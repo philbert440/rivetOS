@@ -1,0 +1,29 @@
+import { describe, it, expect } from 'vitest'
+import { <%= className %> } from './index.js'
+
+describe('<%= className %>', () => {
+  it('should create an instance', () => {
+    const channel = new <%= className %>('test', { agent: 'opus' })
+    expect(channel.id).toBe('test')
+    expect(channel.platform).toBe('<%= name %>')
+  })
+
+  it('should start and stop without error', async () => {
+    const channel = new <%= className %>('test', {})
+    await channel.start()
+    await channel.stop()
+  })
+
+  it('should register message handler', () => {
+    const channel = new <%= className %>('test', {})
+    const handler = async () => {}
+    channel.onMessage(handler)
+    // Handler is registered (no public accessor, but no throw)
+  })
+
+  it('should register command handler', () => {
+    const channel = new <%= className %>('test', {})
+    const handler = async () => {}
+    channel.onCommand(handler)
+  })
+})

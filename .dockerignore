@@ -1,0 +1,71 @@
+# Dependencies — installed fresh inside the container
+node_modules/
+
+# Build outputs — rebuilt inside the container
+**/dist/
+.nx/
+
+# Git history
+.git/
+.gitignore
+
+# IDE / OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Docker files (avoid recursive context)
+docker-compose.yaml
+.dockerignore
+
+# Documentation (not needed at runtime)
+docs/
+LICENSE
+
+# Test files
+**/*.test.ts
+**/*.spec.ts
+**/__tests__/
+**/test/
+**/tests/
+
+# Site (not needed in agent container)
+apps/site/
+
+# Infrastructure as Code (not needed at runtime)
+infra/providers/
+infra/components/
+infra/orchestrator.ts
+infra/index.ts
+Pulumi*.yaml
+
+# Development config (mounted at runtime, not baked in)
+.env
+.env.*
+!.env.example
+
+# Workspace data (mounted at runtime, not baked in)
+workspace/
+memory/
+skills/
+
+# CI / tooling
+.github/
+.husky/
+.changeset/
+npm-debug.log*
+
+# Rivet workspace files (agent-specific, not baked in)
+CORE.md
+USER.md
+WORKSPACE.md
+MEMORY.md
+HEARTBEAT.md
+ARCHITECTURE.md
+CAPABILITIES.md
+COLLABORATION.md
+
+# Generated files
+*.tgz

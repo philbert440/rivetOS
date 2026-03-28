@@ -1,0 +1,39 @@
+# Local-Only — No cloud APIs, fully self-hosted
+#
+# Uses Ollama for the LLM. No API keys needed.
+# Good for privacy-focused setups or offline use.
+#
+# Prerequisites:
+#   - Ollama running locally (brew install ollama / curl -fsSL https://ollama.com/install.sh | sh)
+#   - A model pulled: ollama pull qwen2.5:32b
+#   - PostgreSQL running locally
+
+runtime:
+  workspace: ./workspace
+  default_agent: local
+  max_tool_iterations: 50
+
+agents:
+  local:
+    provider: ollama
+    local: true             # Extended context — includes CAPABILITIES.md and daily notes
+
+providers:
+  ollama:
+    model: qwen2.5:32b
+    base_url: http://localhost:11434
+    # Other good local models:
+    #   llama3.1:70b      — strong reasoning
+    #   mistral:7b        — fast and lightweight
+    #   codellama:34b     — code-focused
+
+channels:
+  # Telegram — simple 1:1 chat
+  telegram:
+    owner_id: "YOUR_TELEGRAM_USER_ID"
+    # Bot token via env: TELEGRAM_BOT_TOKEN
+
+memory:
+  postgres:
+    # Connection string via env: RIVETOS_PG_URL
+    # Example: postgresql://localhost:5432/rivetos

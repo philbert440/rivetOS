@@ -1,0 +1,33 @@
+{
+  "name": "site",
+  "root": "apps/site",
+  "sourceRoot": "apps/site/src",
+  "projectType": "application",
+  "targets": {
+    "dev": {
+      "command": "npm run dev",
+      "options": {
+        "cwd": "apps/site"
+      }
+    },
+    "build": {
+      "command": "npm run build",
+      "options": {
+        "cwd": "apps/site"
+      },
+      "inputs": [
+        "{projectRoot}/src/**/*",
+        "{projectRoot}/astro.config.mjs",
+        "{projectRoot}/package.json"
+      ],
+      "outputs": ["{projectRoot}/dist"]
+    },
+    "preview": {
+      "command": "npm run preview",
+      "options": {
+        "cwd": "apps/site"
+      },
+      "dependsOn": ["build"]
+    }
+  }
+}

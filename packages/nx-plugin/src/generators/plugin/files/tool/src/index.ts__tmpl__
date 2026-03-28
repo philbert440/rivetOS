@@ -1,0 +1,48 @@
+/**
+ * <%= packageName %>
+ *
+ * <%= description %>
+ */
+
+import type { Tool, ToolResult, ToolContext } from '@rivetos/types'
+
+// ---------------------------------------------------------------------------
+// Tool
+// ---------------------------------------------------------------------------
+
+export class <%= className %> implements Tool {
+  name = '<%= name %>'
+  description = '<%= description %>'
+
+  parameters: Record<string, unknown> = {
+    type: 'object',
+    properties: {
+      // TODO: Define your tool parameters
+      input: {
+        type: 'string',
+        description: 'Input for the tool',
+      },
+    },
+    required: ['input'],
+  }
+
+  async execute(
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+    context?: ToolContext,
+  ): Promise<ToolResult> {
+    const input = args.input as string
+
+    // TODO: Implement tool logic
+    // Use signal?.throwIfAborted() to support cancellation
+    // Use context?.workingDir for file-based tools
+    signal?.throwIfAborted()
+
+    return `Tool <%= name %> executed with input: ${input}`
+  }
+}
+
+/** Factory function — returns all tool instances from this package */
+export function createTools(): Tool[] {
+  return [new <%= className %>()]
+}

@@ -1,0 +1,85 @@
+{
+  "name": "rivetos",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight, stable agent runtime. Zero bloat. Zero lock-in. Just the loop.",
+  "license": "Apache-2.0",
+  "author": "Philip Tompkins",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "runtime",
+    "llm",
+    "telegram",
+    "discord",
+    "typescript",
+    "open-source",
+    "claude",
+    "grok",
+    "gemini",
+    "ollama"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "overrides": {
+    "axios": "^1.14.0",
+    "tar": "^7.5.11",
+    "zod": "^3.25.76"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "infra",
+    "plugins/channels/*",
+    "plugins/memory/*",
+    "plugins/providers/*",
+    "plugins/tools/*"
+  ],
+  "bin": {
+    "rivetos": "./packages/cli/dist/index.js"
+  },
+  "scripts": {
+    "postinstall": "npm run build && npm run link-cli",
+    "link-cli": "node scripts/link-cli.mjs",
+    "build": "nx run-many -t build --exclude container-agent,container-datahub",
+    "lint": "nx run-many -t lint",
+    "test": "nx run-many -t test",
+    "typecheck": "nx run-many -t typecheck",
+    "ci": "nx run-many -t lint build test",
+    "ci:affected": "nx affected -t lint build test",
+    "dev": "tsx packages/cli/src/index.ts start",
+    "cli": "tsx packages/cli/src/index.ts",
+    "graph": "nx graph",
+    "containers:build": "nx run container-agent:build && nx run container-datahub:build",
+    "compose:up": "docker compose up -d",
+    "compose:down": "docker compose down"
+  },
+  "bugs": {
+    "url": "https://github.com/philbert440/rivetOS/issues"
+  },
+  "homepage": "https://rivetos.dev",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@nx/js": "^22.6.4",
+    "@types/node": "^25.5.2",
+    "eslint": "^10.2.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
+    "nx": "^22.6.4",
+    "prettier": "^3.8.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.58.0",
+    "vitest": "^4.1.2",
+    "zod": "^3.25.76"
+  },
+  "dependencies": {
+    "yaml": "^2.8.3"
+  }
+}

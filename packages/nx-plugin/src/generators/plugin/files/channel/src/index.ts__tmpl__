@@ -1,0 +1,107 @@
+/**
+ * <%= packageName %>
+ *
+ * <%= description %>
+ */
+
+import type {
+  Channel,
+  InboundMessage,
+  OutboundMessage,
+  Attachment,
+  ResolvedAttachment,
+} from '@rivetos/types'
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+export interface <%= className %>Config {
+  /** Add your config fields here */
+  apiKey?: string
+  /** Agent to route messages to (for channel binding) */
+  agent?: string
+}
+
+// ---------------------------------------------------------------------------
+// Channel
+// ---------------------------------------------------------------------------
+
+export class <%= className %> implements Channel {
+  id: string
+  platform = '<%= name %>'
+
+  private config: <%= className %>Config
+  private messageHandler?: (message: InboundMessage) => Promise<void>
+  private commandHandler?: (command: string, args: string, message: InboundMessage) => Promise<void>
+
+  constructor(id: string, config: <%= className %>Config) {
+    this.id = id
+    this.config = config
+  }
+
+  async start(): Promise<void> {
+    // TODO: Connect to the platform, set up event listeners
+    console.log(`[<%= name %>] Channel ${this.id} started`)
+  }
+
+  async stop(): Promise<void> {
+    // TODO: Disconnect from the platform, clean up
+    console.log(`[<%= name %>] Channel ${this.id} stopped`)
+  }
+
+  async send(message: OutboundMessage): Promise<string | null> {
+    // TODO: Send a message to the platform
+    // Return the platform message ID, or null on failure
+    console.log(`[<%= name %>] send:`, message.text?.slice(0, 100))
+    return null
+  }
+
+  async edit(channelId: string, messageId: string, text: string): Promise<string | null> {
+    // TODO: Edit an existing message
+    console.log(`[<%= name %>] edit: ${messageId}`)
+    return messageId
+  }
+
+  async react(channelId: string, messageId: string, emoji: string): Promise<void> {
+    // TODO: Add a reaction to a message
+    console.log(`[<%= name %>] react: ${emoji} on ${messageId}`)
+  }
+
+  async resolveAttachment(attachment: Attachment): Promise<ResolvedAttachment | null> {
+    // TODO: Download and base64-encode the attachment
+    return null
+  }
+
+  onMessage(handler: (message: InboundMessage) => Promise<void>): void {
+    this.messageHandler = handler
+  }
+
+  onCommand(
+    handler: (command: string, args: string, message: InboundMessage) => Promise<void>,
+  ): void {
+    this.commandHandler = handler
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal helpers
+  // ---------------------------------------------------------------------------
+
+  /** Call this when your platform receives a message */
+  protected async handleIncoming(text: string, userId: string, chatId: string): Promise<void> {
+    if (!this.messageHandler) return
+
+    const message: InboundMessage = {
+      id: `<%= name %>-${Date.now()}`,
+      userId,
+      channelId: chatId,
+      chatType: 'private',
+      text,
+      platform: '<%= name %>',
+      agent: this.config.agent,
+      timestamp: Date.now(),
+    }
+
+    await this.messageHandler(message)
+  }
+}

@@ -1,0 +1,66 @@
+# RivetOS Configuration
+# Copy to ~/.rivetos/config.yaml and fill in your values.
+# API keys via env vars — never in this file.
+
+runtime:
+  workspace: ~/.rivetos/workspace
+  default_agent: opus
+  max_tool_iterations: 15
+
+agents:
+  opus:
+    provider: anthropic
+    default_thinking: medium
+
+providers:
+  anthropic:
+    model: claude-sonnet-4-20250514
+    max_tokens: 8192
+    # api_key via env: ANTHROPIC_API_KEY
+
+channels:
+  discord:
+    # bot_token via env: DISCORD_BOT_TOKEN
+    owner_id: ""
+    channel_bindings: {}
+
+memory:
+  postgres:
+    # connection_string via env: RIVETOS_PG_URL
+
+# ---------------------------------------------------------------------------
+# Deployment (optional) — uncomment to enable containerized deployment.
+# If omitted, RivetOS runs bare-metal (just: rivetos start).
+# ---------------------------------------------------------------------------
+# deployment:
+#   target: docker                      # docker | proxmox | kubernetes | manual
+#
+#   datahub:
+#     postgres: true
+#     shared_storage: true
+#     shared_mount_path: /shared
+#
+#   image:
+#     build_from_source: true           # Build from local source tree (default)
+#     # registry: ghcr.io/philbert440   # For pre-built images
+#     # tag: latest
+#
+#   # Docker-specific (when target: docker)
+#   docker:
+#     network: rivetos-net
+#     postgres_port: 5432
+#
+#   # Proxmox-specific (when target: proxmox)
+#   # proxmox:
+#   #   api_url: https://192.168.1.1:8006
+#   #   nodes:
+#   #     - name: pve1
+#   #       host: 192.168.1.1
+#   #       role: datahub
+#   #     - name: pve2
+#   #       host: 192.168.1.2
+#   #       role: agents
+#   #   network:
+#   #     bridge: vmbr1
+#   #     subnet: 192.168.1.0/24
+#   #     gateway: 192.168.1.1

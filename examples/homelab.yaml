@@ -1,0 +1,108 @@
+# Homelab — Multi-node Proxmox deployment
+#
+# Three Proxmox nodes. Datahub on one, agents distributed across the others.
+# NFS-shared storage for agent collaboration.
+# Container images built from source.
+#
+# Prerequisites:
+#   - Proxmox VE 8.x on each node
+#   - Network bridge (vmbr1) configured
+#   - API access from the machine running rivetos infra
+
+runtime:
+  workspace: ./workspace
+  default_agent: opus
+  max_tool_iterations: 100
+
+  coding_pipeline:
+    builder_agent: grok
+    validator_agent: opus
+
+  fallbacks:
+    - providerId: anthropic
+      fallbacks:
+        - "google:gemini-2.5-pro"
+
+  heartbeats:
+    - agent: opus
+      schedule: "*/30 * * * *"
+      prompt: "Check email, calendar, and system health. HEARTBEAT_OK if nothing."
+      output_channel: discord:YOUR_OPS_CHANNEL_ID
+      quiet_hours:
+        start: 23
+        end: 8
+
+  safety:
+    shellDanger: true
+    audit: true
+
+agents:
+  opus:
+    provider: anthropic
+    default_thinking: medium
+  grok:
+    provider: xai
+  local:
+    provider: ollama
+    local: true
+
+providers:
+  anthropic:
+    model: claude-sonnet-4-20250514
+    max_tokens: 16384
+  xai:
+    model: grok-3
+  ollama:
+    model: qwen2.5:32b
+    base_url: http://192.168.1.100:11434  # Ollama on the local agent's host
+
+channels:
+  discord:
+    channel_bindings:
+      "OPUS_CHANNEL": opus
+      "GROK_CHANNEL": grok
+      "LOCAL_CHANNEL": local
+  agent:
+    port: 3100
+    secret: ${RIVETOS_AGENT_SECRET}
+
+memory:
+  postgres:
+    # Datahub Postgres
+    # connection_string via env: RIVETOS_PG_URL
+
+# ---------------------------------------------------------------------------
+# Deployment — Proxmox infrastructure as code
+# ---------------------------------------------------------------------------
+
+deployment:
+  target: proxmox
+
+  datahub:
+    postgres: true
+    shared_storage: true
+    shared_mount_path: /shared
+
+  image:
+    build_from_source: true
+
+  proxmox:
+    api_url: https://192.168.1.1:8006
+    # API token via env: PROXMOX_API_TOKEN
+    nodes:
+      - name: pve1
+        host: 192.168.1.1
+        role: datahub          # Postgres + NFS + shared storage
+        ctid_start: 106
+      - name: pve2
+        host: 192.168.1.2
+        role: agents            # Opus + Grok
+        ctid_start: 101
+      - name: pve3
+        host: 192.168.1.3
+        role: agents            # Local (Ollama)
+        ctid_start: 100
+    network:
+      bridge: vmbr1
+      subnet: 192.168.1.0/24
+      gateway: 192.168.1.1

@@ -1,0 +1,78 @@
+/**
+ * <%= packageName %>
+ *
+ * <%= description %>
+ */
+
+import type {
+  Provider,
+  LLMChunk,
+  LLMResponse,
+  ChatOptions,
+  Message,
+} from '@rivetos/types'
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+export interface <%= className %>Config {
+  apiKey: string
+  model?: string
+  baseUrl?: string
+  maxTokens?: number
+}
+
+// ---------------------------------------------------------------------------
+// Provider
+// ---------------------------------------------------------------------------
+
+export class <%= className %> implements Provider {
+  id: string
+  name = '<%= name %>'
+
+  private config: <%= className %>Config
+
+  constructor(id: string, config: <%= className %>Config) {
+    this.id = id
+    this.config = config
+  }
+
+  async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
+    // TODO: Implement streaming chat
+    // 1. Convert messages to provider API format
+    // 2. Include tools from options.tools if present
+    // 3. Make streaming API request
+    // 4. Yield LLMChunk events as they arrive
+
+    // Example structure:
+    yield { type: 'text', delta: 'Hello from <%= name %>!' }
+    yield {
+      type: 'done',
+      usage: { promptTokens: 0, completionTokens: 0 },
+    }
+  }
+
+  async chat(messages: Message[], options?: ChatOptions): Promise<LLMResponse> {
+    // TODO: Implement non-streaming chat (optional — streaming is primary)
+    // Default implementation collects stream chunks
+    let content = ''
+    let usage = { promptTokens: 0, completionTokens: 0 }
+
+    for await (const chunk of this.chatStream(messages, options)) {
+      if (chunk.type === 'text' && chunk.delta) {
+        content += chunk.delta
+      }
+      if (chunk.usage) {
+        usage = chunk.usage
+      }
+    }
+
+    return { type: 'text', content, usage }
+  }
+
+  async isAvailable(): Promise<boolean> {
+    // TODO: Check if the API key is valid / service is reachable
+    return Boolean(this.config.apiKey)
+  }
+}

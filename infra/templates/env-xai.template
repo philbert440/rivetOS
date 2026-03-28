@@ -1,0 +1,6 @@
+# RivetOS — xAI (Grok) agent environment
+RIVETOS_TELEGRAM_TOKEN=__ENTER_TOKEN__
+XAI_API_KEY=__ENTER_KEY__
+RIVETOS_PG_URL=postgres://rivet_phil:__PASSWORD__@__DATAHUB_IP__:5432/phil_memory
+RIVETOS_EMBED_URL=http://__EMBED_HOST__:9401
+RIVETOS_LOG_LEVEL=info

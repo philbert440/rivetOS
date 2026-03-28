@@ -1,0 +1,51 @@
+{
+  "name": "@rivetos/cli",
+  "version": "0.4.0",
+  "description": "RivetOS command-line interface",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "rivetos": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/",
+    "test": "echo \"no tests yet\"",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.2.0",
+    "@rivetos/boot": "*",
+    "@rivetos/infra": "*",
+    "@rivetos/provider-anthropic": "*",
+    "@rivetos/types": "*",
+    "yaml": "^2.8.3"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git",
+    "directory": "packages/cli"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

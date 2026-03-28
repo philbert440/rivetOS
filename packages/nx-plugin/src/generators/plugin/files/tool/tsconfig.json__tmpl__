@@ -1,0 +1,6 @@
+{
+  "extends": "<%= relRoot %>/tsconfig.base.json",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "include": ["src/**/*"],
+  "references": [{ "path": "<%= relRoot %>/packages/types" }]
+}

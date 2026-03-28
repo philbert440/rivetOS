@@ -1,0 +1,119 @@
+# RivetOS Docker Compose
+#
+# Quick start:
+#   cp .env.example .env      # Add your API keys
+#   docker compose up -d       # Start datahub + one agent
+#
+# Multi-agent:
+#   docker compose --profile multi up -d   # Start all agents
+#
+# Data Persistence:
+#   - Workspace files (CORE.md, memory/, skills/) → bind mount from host ./workspace/
+#   - Agent config → bind mount from host ./config.yaml (read-only)
+#   - Postgres data → named volume rivetos-pgdata
+#   - Shared storage → named volume rivetos-shared
+#   - Secrets → .env file on host (never baked into images)
+#
+#   Rebuilding containers (rivetos update) preserves ALL user data.
+#   See infra/containers/DATA-PERSISTENCE.md for full details.
+#
+# The agent service is a template (x-agent) that can be instantiated
+# multiple times with different configs for multi-agent setups.
+
+# ---------------------------------------------------------------------------
+# Shared agent definition — DRY base for all agent services
+# ---------------------------------------------------------------------------
+x-agent: &agent-base
+  build:
+    context: .
+    dockerfile: infra/containers/agent/Dockerfile
+  env_file: ${RIVETOS_ENV_FILE:-.env}
+  depends_on:
+    datahub:
+      condition: service_healthy
+  volumes:
+    - rivetos-shared:/shared
+  networks:
+    - rivetos-net
+  restart: unless-stopped
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+services:
+
+  # --- Datahub: Postgres + shared storage ---
+  datahub:
+    build:
+      context: infra/containers/datahub
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rivetos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rivetos}
+      POSTGRES_DB: ${POSTGRES_DB:-rivetos}
+    volumes:
+      - rivetos-pgdata:/var/lib/postgresql/data
+      - rivetos-shared:/shared
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - rivetos-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rivetos}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --- Primary agent (default profile) ---
+  agent:
+    <<: *agent-base
+    container_name: rivetos-agent
+    environment:
+      RIVETOS_PG_URL: postgresql://${POSTGRES_USER:-rivetos}:${POSTGRES_PASSWORD:-rivetos}@datahub:5432/${POSTGRES_DB:-rivetos}
+    volumes:
+      - rivetos-shared:/shared
+      - ${RIVETOS_CONFIG:-./config.yaml}:/home/rivetos/.rivetos/config.yaml:ro
+      - ${RIVETOS_WORKSPACE:-./workspace}:/home/rivetos/.rivetos/workspace
+
+  # --- Additional agents (multi profile) ---
+  # Activate with: docker compose --profile multi up -d
+  # Each agent gets its own config mounted in.
+
+  agent-2:
+    <<: *agent-base
+    container_name: rivetos-agent-2
+    profiles: ["multi"]
+    environment:
+      RIVETOS_PG_URL: postgresql://${POSTGRES_USER:-rivetos}:${POSTGRES_PASSWORD:-rivetos}@datahub:5432/${POSTGRES_DB:-rivetos}
+    volumes:
+      - rivetos-shared:/shared
+      - ${RIVETOS_CONFIG_2:-./config-agent-2.yaml}:/home/rivetos/.rivetos/config.yaml:ro
+      - ${RIVETOS_WORKSPACE_2:-./workspace-2}:/home/rivetos/.rivetos/workspace
+
+  agent-3:
+    <<: *agent-base
+    container_name: rivetos-agent-3
+    profiles: ["multi"]
+    environment:
+      RIVETOS_PG_URL: postgresql://${POSTGRES_USER:-rivetos}:${POSTGRES_PASSWORD:-rivetos}@datahub:5432/${POSTGRES_DB:-rivetos}
+    volumes:
+      - rivetos-shared:/shared
+      - ${RIVETOS_CONFIG_3:-./config-agent-3.yaml}:/home/rivetos/.rivetos/config.yaml:ro
+      - ${RIVETOS_WORKSPACE_3:-./workspace-3}:/home/rivetos/.rivetos/workspace
+
+# ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  rivetos-pgdata:
+    name: rivetos-pgdata
+  rivetos-shared:
+    name: rivetos-shared
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+networks:
+  rivetos-net:
+    name: rivetos-net
+    driver: bridge
