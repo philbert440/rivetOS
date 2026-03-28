@@ -1,0 +1,33 @@
+{
+  "name": "rivetos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lightweight, stable agent runtime. MIT licensed.",
+  "license": "MIT",
+  "author": "Philip Tompkins",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git"
+  },
+  "workspaces": [
+    "packages/*",
+    "plugins/*"
+  ],
+  "scripts": {
+    "build": "npx nx run-many -t build",
+    "test": "npx nx run-many -t test",
+    "dev": "npx tsx packages/core/src/index.ts",
+    "graph": "npx nx graph"
+  },
+  "bugs": {
+    "url": "https://github.com/philbert440/rivetOS/issues"
+  },
+  "homepage": "https://rivetos.dev",
+  "devDependencies": {
+    "@nx/js": "^22.6.3",
+    "@types/node": "^22.15.18",
+    "nx": "^22.6.3",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
