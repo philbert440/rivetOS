@@ -13,6 +13,7 @@ import type {
   InboundMessage,
   OutboundMessage,
 } from '@rivetos/types';
+import { splitMessage } from '@rivetos/types';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -221,7 +222,7 @@ export class TelegramChannel implements Channel {
 
       // Split long messages (Telegram limit: 4096 chars)
       if (text.length > 4096) {
-        const chunks = this.splitMessage(text, 4096);
+        const chunks = splitMessage(text, 4096);
         let lastId: string | null = null;
         for (let i = 0; i < chunks.length; i++) {
           const sent = await this.bot.api.sendMessage(msg.channelId, chunks[i], {
@@ -253,25 +254,6 @@ export class TelegramChannel implements Channel {
         return null;
       }
     }
-  }
-
-  private splitMessage(text: string, maxLen: number): string[] {
-    const chunks: string[] = [];
-    let remaining = text;
-    while (remaining.length > 0) {
-      if (remaining.length <= maxLen) {
-        chunks.push(remaining);
-        break;
-      }
-      // Try to split at newline near the limit
-      let splitAt = remaining.lastIndexOf('\n', maxLen);
-      if (splitAt === -1 || splitAt < maxLen * 0.5) {
-        splitAt = maxLen;
-      }
-      chunks.push(remaining.slice(0, splitAt));
-      remaining = remaining.slice(splitAt).trimStart();
-    }
-    return chunks;
   }
 
   async edit(channelId: string, messageId: string, text: string): Promise<boolean> {
