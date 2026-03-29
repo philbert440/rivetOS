@@ -1,0 +1,14 @@
+{
+  "name": "@rivetos/provider-xai",
+  "version": "0.1.0",
+  "description": "xAI Grok provider — streaming, tool calling, conv caching",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@rivetos/types": "*"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@rivetos/provider-ollama",
+  "version": "0.1.0",
+  "description": "Ollama provider — native API, streaming, model management",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@rivetos/types": "*"
+  }
+}
