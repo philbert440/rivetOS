@@ -195,10 +195,8 @@ export class AnthropicProvider implements Provider {
     const thinking = options?.thinking ?? 'off';
     const budget = THINKING_BUDGETS[thinking];
     if (budget !== null) {
-      // max_tokens must be > budget_tokens — scale up if needed
-      if (budget >= body.max_tokens) {
-        body.max_tokens = budget + 4096;
-      }
+      // max_tokens must be > budget_tokens — always ensure full response space
+      body.max_tokens = budget + this.maxTokens;
       body.thinking = { type: 'enabled', budget_tokens: budget };
     }
 

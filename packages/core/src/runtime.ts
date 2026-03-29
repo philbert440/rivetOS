@@ -617,7 +617,6 @@ export class Runtime {
       router: this.router,
       workspace: this.workspace,
       tools: this.tools,
-      onStream: this.onStream,
     });
     this.registerTool(delegation.createDelegationTool());
 

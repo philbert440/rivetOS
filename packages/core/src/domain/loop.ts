@@ -94,7 +94,9 @@ export class AgentLoop {
     let totalUsage = { promptTokens: 0, completionTokens: 0 };
     let partialResponse = '';
 
-    while (true) {
+    const hardCap = this.maxIterations * 5; // Safety cap (default: 75)
+
+    while (iterations < hardCap) {
       if (signal?.aborted) {
         return { response: '', toolsUsed, iterations, aborted: true, partialResponse, usage: totalUsage };
       }
@@ -253,7 +255,7 @@ export class AgentLoop {
       partialResponse = textContent;
       iterations++;
 
-      // Progress update every maxIterations — never stop, just report
+      // Progress update every maxIterations
       if (iterations > 0 && iterations % this.maxIterations === 0) {
         this.emit({
           type: 'status',
@@ -261,6 +263,16 @@ export class AgentLoop {
         });
       }
     }
+
+    // Hard cap reached — safety stop
+    this.emit({ type: 'error', content: `⚠️ Safety cap reached (${iterations} tool iterations)` });
+    return {
+      response: `I've used ${iterations} tool iterations (safety cap). Here's where I am — let me know if you want me to continue.`,
+      toolsUsed,
+      iterations,
+      aborted: false,
+      usage: totalUsage,
+    };
   }
 
   // -----------------------------------------------------------------------

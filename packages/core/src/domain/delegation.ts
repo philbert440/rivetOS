@@ -10,7 +10,6 @@ import type {
   DelegationRequest,
   DelegationResult,
   Tool,
-  StreamHandler,
 } from '@rivetos/types';
 import { AgentLoop } from './loop.js';
 import type { Router } from './router.js';
@@ -20,7 +19,6 @@ export interface DelegationConfig {
   router: Router;
   workspace: WorkspaceLoader;
   tools: Tool[];
-  onStream?: StreamHandler;
 }
 
 export class DelegationEngine {
@@ -34,7 +32,7 @@ export class DelegationEngine {
    * Delegate a task to another agent. Blocks until the delegate completes.
    */
   async delegate(request: DelegationRequest): Promise<DelegationResult> {
-    const { router, workspace, tools, onStream } = this.config;
+    const { router, workspace, tools } = this.config;
 
     // Resolve the delegate agent's provider
     const agents = router.getAgents();
@@ -71,13 +69,8 @@ export class DelegationEngine {
         systemPrompt: enrichedPrompt,
         provider,
         tools,
-        onStream: (event) => {
-          // Prefix delegate events so you can tell them apart
-          onStream?.({
-            ...event,
-            content: `[${request.toAgent}] ${event.content}`,
-          });
-        },
+        // Delegate stream events are logged but not forwarded to the parent channel
+        // (the parent agent will summarize the result in its own response)
       });
 
       const result = await loop.run(request.task, [], abort.signal);
