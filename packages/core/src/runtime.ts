@@ -186,6 +186,7 @@ export class Runtime {
         maxIterations: this.config.maxToolIterations,
         thinking: session.thinking,
         onStream: streamHandler,
+        agentId: agent.id,
       });
       this.activeLoops.set(sessionKey, loop);
 

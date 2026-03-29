@@ -8,7 +8,7 @@
 export type { Message, ToolCall } from './message.js';
 export type { Provider, LLMResponse, LLMChunk, ChatOptions, ThinkingLevel } from './provider.js';
 export type { Channel, InboundMessage, OutboundMessage, Attachment, Button, EmbedData } from './channel.js';
-export type { Tool, ToolDefinition } from './tool.js';
+export type { Tool, ToolDefinition, ToolContext } from './tool.js';
 export type { Memory, MemoryEntry, MemorySearchResult } from './memory.js';
 export type { Workspace, WorkspaceFile } from './workspace.js';
 export type { RuntimeConfig, AgentConfig, HeartbeatConfig } from './config.js';

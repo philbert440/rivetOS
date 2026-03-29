@@ -33,6 +33,8 @@ export interface AgentLoopConfig {
   provider: Provider;
   thinking?: ThinkingLevel;
   onStream?: StreamHandler;
+  /** Agent ID — passed to tools via ToolContext */
+  agentId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +240,7 @@ export class AgentLoop {
           result = `Error: Unknown tool "${tc.name}"`;
         } else {
           try {
-            result = await tool.execute(tc.arguments, signal);
+            result = await tool.execute(tc.arguments, signal, { agentId: this.config.agentId });
           } catch (err: any) {
             result = `Error: ${err.message}`;
           }

@@ -131,9 +131,9 @@ export class DelegationEngine {
         },
         required: ['to_agent', 'task'],
       },
-      execute: async (args: Record<string, unknown>): Promise<string> => {
+      execute: async (args: Record<string, unknown>, _signal?: AbortSignal, context?: { agentId?: string }): Promise<string> => {
         const result = await this.delegate({
-          fromAgent: 'self',
+          fromAgent: context?.agentId ?? 'unknown',
           toAgent: args.to_agent as string,
           task: args.task as string,
           context: args.context as string[] | undefined,

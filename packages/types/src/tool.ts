@@ -8,6 +8,13 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>;
 }
 
+export interface ToolContext {
+  /** The agent invoking this tool */
+  agentId?: string;
+  /** Abort signal for cancellation */
+  signal?: AbortSignal;
+}
+
 export interface Tool extends ToolDefinition {
-  execute(args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
+  execute(args: Record<string, unknown>, signal?: AbortSignal, context?: ToolContext): Promise<string>;
 }
