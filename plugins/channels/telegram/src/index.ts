@@ -14,6 +14,7 @@ import type {
   OutboundMessage,
 } from '@rivetos/types';
 import { splitMessage } from '@rivetos/types';
+import { markdownToTelegramHtml } from './format.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -216,41 +217,52 @@ export class TelegramChannel implements Channel {
   // -----------------------------------------------------------------------
 
   async send(msg: OutboundMessage): Promise<string | null> {
+    const raw = msg.text ?? '';
+    if (!raw) return null;
+
+    const html = markdownToTelegramHtml(raw);
+    const keyboard = msg.buttons ? this.buildKeyboard(msg.buttons) : undefined;
+
+    // Split long messages (Telegram limit: 4096 chars)
+    const chunks = splitMessage(html, 4096);
+    let lastId: string | null = null;
+
+    for (let i = 0; i < chunks.length; i++) {
+      lastId = await this.sendHtml(msg.channelId, chunks[i], {
+        replyToMessageId: i === 0 ? msg.replyToMessageId : undefined,
+        keyboard: i === chunks.length - 1 ? keyboard : undefined,
+        silent: msg.silent,
+      });
+    }
+
+    return lastId;
+  }
+
+  /** Send HTML with fallback to plain text */
+  private async sendHtml(
+    chatId: string,
+    html: string,
+    options?: { replyToMessageId?: string; keyboard?: InlineKeyboard; silent?: boolean },
+  ): Promise<string | null> {
     try {
-      const text = msg.text ?? '';
-      const keyboard = msg.buttons ? this.buildKeyboard(msg.buttons) : undefined;
-
-      // Split long messages (Telegram limit: 4096 chars)
-      if (text.length > 4096) {
-        const chunks = splitMessage(text, 4096);
-        let lastId: string | null = null;
-        for (let i = 0; i < chunks.length; i++) {
-          const sent = await this.bot.api.sendMessage(msg.channelId, chunks[i], {
-            reply_parameters: i === 0 && msg.replyToMessageId ? { message_id: Number(msg.replyToMessageId) } : undefined,
-            reply_markup: i === chunks.length - 1 ? keyboard : undefined,
-            disable_notification: msg.silent,
-          });
-          lastId = String(sent.message_id);
-        }
-        return lastId;
-      }
-
-      const sent = await this.bot.api.sendMessage(msg.channelId, text, {
-        reply_parameters: msg.replyToMessageId ? { message_id: Number(msg.replyToMessageId) } : undefined,
-        reply_markup: keyboard,
-        disable_notification: msg.silent,
+      const sent = await this.bot.api.sendMessage(chatId, html, {
+        parse_mode: 'HTML',
+        reply_parameters: options?.replyToMessageId ? { message_id: Number(options.replyToMessageId) } : undefined,
+        reply_markup: options?.keyboard,
+        disable_notification: options?.silent,
       });
       return String(sent.message_id);
-    } catch (err: any) {
-      // Retry without formatting
+    } catch {
+      // HTML formatting failed — retry as plain text (strip tags)
       try {
-        const sent = await this.bot.api.sendMessage(msg.channelId, msg.text ?? '', {
-          reply_parameters: msg.replyToMessageId ? { message_id: Number(msg.replyToMessageId) } : undefined,
-          disable_notification: msg.silent,
+        const sent = await this.bot.api.sendMessage(chatId, html.replace(/<[^>]+>/g, ''), {
+          reply_parameters: options?.replyToMessageId ? { message_id: Number(options.replyToMessageId) } : undefined,
+          reply_markup: options?.keyboard,
+          disable_notification: options?.silent,
         });
         return String(sent.message_id);
-      } catch (retryErr: any) {
-        console.error('[Telegram] Send failed:', retryErr.message);
+      } catch (err: any) {
+        console.error('[Telegram] Send failed:', err.message);
         return null;
       }
     }
@@ -258,10 +270,19 @@ export class TelegramChannel implements Channel {
 
   async edit(channelId: string, messageId: string, text: string): Promise<boolean> {
     try {
-      await this.bot.api.editMessageText(channelId, Number(messageId), text);
+      const html = markdownToTelegramHtml(text);
+      await this.bot.api.editMessageText(channelId, Number(messageId), html, {
+        parse_mode: 'HTML',
+      });
       return true;
     } catch {
-      return false;
+      // Retry without formatting
+      try {
+        await this.bot.api.editMessageText(channelId, Number(messageId), text);
+        return true;
+      } catch {
+        return false;
+      }
     }
   }
 
