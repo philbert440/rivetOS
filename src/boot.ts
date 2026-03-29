@@ -21,6 +21,7 @@ import { OpenAICompatProvider } from '../plugins/providers/openai-compat/src/ind
 // Channels
 import { TelegramChannel } from '../plugins/channels/telegram/src/index.js';
 import { DiscordChannel } from '../plugins/channels/discord/src/index.js';
+import { VoicePlugin } from '../plugins/channels/voice-discord/src/index.js';
 
 // Tools
 import { ShellTool } from '../plugins/tools/shell/src/index.js';
@@ -144,6 +145,24 @@ export async function boot(configPath?: string) {
           mentionOnly: channelConfig.mention_only as boolean,
         }));
         break;
+      case 'voice':
+      case 'voice-discord': {
+        const voicePlugin = new VoicePlugin({
+          discordToken: channelConfig.bot_token as string ?? process.env.VOICE_BOT_TOKEN ?? process.env.DISCORD_BOT_TOKEN ?? '',
+          xaiApiKey: channelConfig.xai_api_key as string ?? process.env.XAI_API_KEY ?? '',
+          guildId: channelConfig.guild_id as string ?? '',
+          allowedUsers: channelConfig.allowed_users as string[] ?? [],
+          voice: channelConfig.voice as string,
+          instructions: channelConfig.instructions as string,
+          transcriptDir: channelConfig.transcript_dir as string,
+        });
+        // Voice plugin manages its own lifecycle (not a Channel)
+        voicePlugin.start().catch((err: any) => log.error(`Voice plugin failed: ${err.message}`));
+        // Register for shutdown
+        const origStop = runtime.stop.bind(runtime);
+        runtime.stop = async () => { await voicePlugin.stop(); await origStop(); };
+        break;
+      }
       // TODO: Add cli channel
         default:
           log.warn(`Unknown channel: ${id} (skipped)`);

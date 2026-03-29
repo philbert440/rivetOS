@@ -1,0 +1,20 @@
+{
+  "name": "@rivetos/channel-voice-discord",
+  "version": "0.1.0",
+  "description": "Discord voice channel — xAI Realtime API, auto-join, DAVE E2EE",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@rivetos/types": "*",
+    "@discordjs/voice": "^0.19.1",
+    "@discordjs/opus": "^0.9.0",
+    "discord.js": "^14.18.0",
+    "prism-media": "^1.3.5",
+    "ws": "^8.14.2",
+    "sodium-native": "^4.0.4"
+  }
+}
