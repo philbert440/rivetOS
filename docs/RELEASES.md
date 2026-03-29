@@ -1,4 +1,6 @@
-# Release Strategy
+# RivetOS Release Strategy
+
+**Last updated:** March 2026
 
 ## Versioning
 

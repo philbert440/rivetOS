@@ -1,7 +1,5 @@
 # RivetOS Architecture
 
-> Draft — needs Phil's review before implementation continues.
-
 ## Design Principles
 
 1. **Domain-Driven Design** — Core domain is pure business logic. No framework dependencies, no I/O, no platform specifics. Plugins adapt the outside world to the domain.

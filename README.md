@@ -12,7 +12,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 ## Features
 
-- **Tiny core** — ~1,000 lines of domain logic. Routes messages, executes tools, manages lifecycle.
+- **Tiny core** — A minimal, stable core that routes messages, executes tools, and manages lifecycle.
 - **Streaming-first** — `AsyncIterable<LLMChunk>` from every provider. See responses as they generate.
 - **Plugin everything** — Channels, providers, memory, tools — all swappable via clean interfaces.
 - **5 providers** — Anthropic (with OAuth subscription auth), Google Gemini, xAI Grok, Ollama, OpenAI-compatible.

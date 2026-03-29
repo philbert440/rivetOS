@@ -1,19 +1,22 @@
 # Phase 2 — Production Ready
 
-## Priority
+## Current Status (Updated March 2026)
 
-| Priority | Feature | Status |
-|----------|---------|--------|
-| 🔴 | Discord channel plugin (#deep-thinking, #brainstorm, #research) | TODO |
-| 🔴 | Voice plugin (xAI Realtime, port from rivet-voice) | TODO |
-| 🔴 | Heartbeat/cron (email checks, infra monitoring) | TODO |
-| 🟡 | xAI + Google providers wired in config | TODO |
-| 🟡 | Cut over CT 101 + CT 102 (replace OpenClaw) | TODO |
-| 🟡 | fromAgent context in delegation | TODO |
-| 🟡 | File read/write tools | TODO |
-| 🟡 | Web search tool | TODO |
-| 🟢 | Systemd service template (rivetos config init-service) | TODO |
-| 🟢 | Token tracking | TODO |
+Some Phase 2 items have been implemented, others are still pending.
+
+| Status | Feature |
+|--------|---------|
+| 🟢 | Core runtime + plugin system |
+| 🟢 | Telegram + Discord channels |
+| 🟢 | Multiple providers (Anthropic, xAI, Google, Ollama, OpenAI-compat) |
+| 🟢 | Streaming + proper interrupt handling |
+| 🟢 | Workspace file injection (SOUL.md, AGENTS.md, etc.) |
+| 🟡 | Voice plugin (partial — needs xAI Realtime port) |
+| 🟡 | Advanced memory features (LCM integration is there, background embedder partial) |
+| 🔴 | Full heartbeat/cron system |
+| 🔴 | Systemd service template + `rivetos config init-service` |
+| 🔴 | Web search + file I/O tools |
+| 🔴 | Delegation improvements (`fromAgent` context) |
 
 ## Not Phase 2
 - Web dashboard

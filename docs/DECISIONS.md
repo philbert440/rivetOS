@@ -1,6 +1,6 @@
 # Design Decisions
 
-Answers to the open questions from ARCHITECTURE.md. Decided 2026-03-28.
+Last updated: March 2026. Many of these have now been implemented.
 
 ## 1. Config format → YAML
 YAML over TOML. More familiar, more expressive for nested config like channel bindings.

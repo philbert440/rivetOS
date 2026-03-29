@@ -1,5 +1,7 @@
 # Contributing to RivetOS
 
+**Last updated:** March 2026
+
 Thanks for your interest in contributing! This guide will help you get started.
 
 ## Prerequisites
