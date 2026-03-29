@@ -11,7 +11,6 @@ import { AudioPlayer } from './audio-player.js';
 import { TranscriptLogger } from './transcript.js';
 import type { VoicePluginConfig } from './plugin.js';
 import pg from 'pg';
-import { LcmSearchEngine } from '../../../memory/postgres-lcm/src/search.js';
 
 const { Pool } = pg;
 
@@ -28,7 +27,7 @@ export class VoiceSession {
   private decoders = new Map<string, any>();
   private audioReady = false;
   private lcmPool: pg.Pool | null = null;
-  private searchEngine: LcmSearchEngine | null = null;
+  
 
   constructor(connection: VoiceConnection, config: VoicePluginConfig) {
     this.connection = connection;
@@ -39,7 +38,7 @@ export class VoiceSession {
     // LCM memory pool
     if (config.lcmConnectionString) {
       this.lcmPool = new Pool({ connectionString: config.lcmConnectionString, max: 2 });
-      this.searchEngine = new LcmSearchEngine(this.lcmPool);
+      
     }
 
     // Transcript logger
@@ -167,24 +166,28 @@ export class VoiceSession {
     console.info(`Function call: ${name}(${JSON.stringify(args)})`);
 
     if (name === 'search_memories') {
-      if (!this.searchEngine) {
+      if (!this.lcmPool) {
         return JSON.stringify({ error: 'Memory search not configured (no lcmConnectionString)' });
       }
       try {
-        const hits = await this.searchEngine.search(args.query ?? '', {
-          mode: 'fts',
-          scope: 'both',
-          limit: args.limit ?? 10,
-        });
+        const query = String(args.query ?? '');
+        const limit = Math.min(Number(args.limit) || 10, 20);
+        const result = await this.lcmPool.query(
+          `SELECT m.message_id as id, m.content, m.role, m.created_at,
+                  ts_rank_cd(m.content_tsv, plainto_tsquery('english', $1)) AS score
+           FROM messages m
+           WHERE m.content_tsv @@ plainto_tsquery('english', $1)
+           ORDER BY score DESC LIMIT $2`,
+          [query, limit],
+        );
         return JSON.stringify({
-          query: args.query,
-          results: hits.map((h) => ({
-            id: h.id,
-            type: h.type,
-            content: h.content.slice(0, 500),
-            role: h.role,
-            similarity: h.similarity,
-            createdAt: h.createdAt,
+          query,
+          results: result.rows.map((r: any) => ({
+            id: r.id,
+            content: r.content?.slice(0, 500),
+            role: r.role,
+            score: parseFloat(r.score),
+            date: r.created_at,
           })),
         });
       } catch (err: any) {
