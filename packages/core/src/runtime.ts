@@ -208,15 +208,20 @@ export class Runtime {
         session.history.splice(0, session.history.length - 200);
       }
 
+      // Clean up streaming state BEFORE sending final response
+      // (prevents timer-based stream sends from firing after the final response)
+      const streamMsgId = this.streamingMessages.get(sessionKey);
+      this.cleanupStreamState(sessionKey);
+
       // Send final response (unless silent or aborted)
       if (result.response && !result.aborted) {
         const isSilent = SILENT_RESPONSES.some((s) => result.response.trim() === s);
         if (!isSilent) {
-          // If we were streaming and have an existing message, edit it with the final text
-          const streamMsgId = this.streamingMessages.get(sessionKey);
           if (streamMsgId && channel.edit) {
+            // Edit the streaming message with the final complete text
             await channel.edit(message.channelId, streamMsgId, result.response).catch(() => {});
           } else {
+            // No streaming message — send fresh
             await channel.send({
               channelId: message.channelId,
               text: result.response,
@@ -225,9 +230,6 @@ export class Runtime {
           }
         }
       }
-
-      // Clean up streaming state
-      this.cleanupStreamState(sessionKey);
 
       // Append to memory
       if (this.memory) {
