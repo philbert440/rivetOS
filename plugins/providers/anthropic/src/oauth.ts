@@ -233,16 +233,6 @@ export class TokenManager {
       throw new Error('No Anthropic credentials. Run the OAuth login flow first.');
     }
 
-    // If we have a refresh token and the access token is expired, try refresh
-    // But don't fail if refresh doesn't work — the token may still be valid
-    if (this.tokens.refreshToken && this.tokens.expiresAt > 0 && Date.now() >= this.tokens.expiresAt) {
-      try {
-        await this.refresh();
-      } catch (err: any) {
-        console.warn(`[Anthropic] Token refresh failed (using existing token): ${err.message}`);
-      }
-    }
-
     return this.tokens.accessToken;
   }
 
