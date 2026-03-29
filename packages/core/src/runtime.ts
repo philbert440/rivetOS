@@ -568,23 +568,13 @@ export class Runtime {
       }
 
       case 'tools': {
-        if (args.trim() === 'list') {
-          // /tools list — show available tools
-          const toolList = this.tools.map((t) => `• **${t.name}** — ${t.description.slice(0, 80)}`);
-          await channel.send({
-            channelId: message.channelId,
-            text: `🔧 Available tools (${this.tools.length}):\n${toolList.join('\n')}`,
-          });
-        } else {
-          // /tools — toggle tool call visibility
-          const session = await this.getOrCreateSession(sessionKey, message);
-          session.toolsVisible = !session.toolsVisible;
-          await this.saveSessionSettings(session);
-          await channel.send({
-            channelId: message.channelId,
-            text: `🔧 Tool calls: ${session.toolsVisible ? 'visible' : 'hidden'}`,
-          });
-        }
+        const session = await this.getOrCreateSession(sessionKey, message);
+        session.toolsVisible = !session.toolsVisible;
+        await this.saveSessionSettings(session);
+        await channel.send({
+          channelId: message.channelId,
+          text: `🔧 Tool calls: ${session.toolsVisible ? 'visible' : 'hidden'}`,
+        });
         break;
       }
 
