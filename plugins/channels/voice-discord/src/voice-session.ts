@@ -166,13 +166,13 @@ export class VoiceSession {
     console.info(`Function call: ${name}(${JSON.stringify(args)})`);
 
     if (name === 'search_memories') {
-      if (!this.lcmPool) {
+      if (!this.postgresPool) {
         return JSON.stringify({ error: 'Memory search not configured (no postgresConnectionString)' });
       }
       try {
         const query = String(args.query ?? '');
         const limit = Math.min(Number(args.limit) || 10, 20);
-        const result = await this.lcmPool.query(
+        const result = await this.postgresPool.query(
           `SELECT m.message_id as id, m.content, m.role, m.created_at,
                   ts_rank_cd(m.content_tsv, plainto_tsquery('english', $1)) AS score
            FROM messages m
@@ -197,12 +197,12 @@ export class VoiceSession {
     }
 
     if (name === 'get_recent_conversations') {
-      if (!this.lcmPool) {
+      if (!this.postgresPool) {
         return JSON.stringify({ error: 'Memory not configured (no postgresConnectionString)' });
       }
       try {
         const limit = args.limit ?? 20;
-        const result = await this.lcmPool.query(
+        const result = await this.postgresPool.query(
           `SELECT m.content, m.role, m.created_at, c.agent_id
            FROM messages m
            JOIN conversations c ON c.conversation_id = m.conversation_id
