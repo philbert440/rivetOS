@@ -20,6 +20,7 @@ import { OpenAICompatProvider } from '../plugins/providers/openai-compat/src/ind
 
 // Channels
 import { TelegramChannel } from '../plugins/channels/telegram/src/index.js';
+import { DiscordChannel } from '../plugins/channels/discord/src/index.js';
 
 // Tools
 import { ShellTool } from '../plugins/tools/shell/src/index.js';
@@ -132,7 +133,18 @@ export async function boot(configPath?: string) {
             agent: channelConfig.agent as string,
           }));
           break;
-        // TODO: Add discord, cli channels
+      case 'discord':
+        runtime.registerChannel(new DiscordChannel({
+          botToken: channelConfig.bot_token as string ?? process.env.DISCORD_BOT_TOKEN ?? '',
+          ownerId: channelConfig.owner_id as string ?? '',
+          allowedGuilds: channelConfig.allowed_guilds as string[],
+          allowedChannels: channelConfig.allowed_channels as string[],
+          allowedUsers: channelConfig.allowed_users as string[],
+          channelBindings: channelConfig.channel_bindings as Record<string, string>,
+          mentionOnly: channelConfig.mention_only as boolean,
+        }));
+        break;
+      // TODO: Add cli channel
         default:
           log.warn(`Unknown channel: ${id} (skipped)`);
       }

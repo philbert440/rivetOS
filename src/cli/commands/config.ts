@@ -54,6 +54,15 @@ channels:
     allowed_users:
       - "8093148723"
 
+  discord:
+    # auth: DISCORD_BOT_TOKEN env var
+    owner_id: "your-discord-user-id"
+    channel_bindings:
+      # channel_id: agent_id
+      # "1234567890": "opus"
+      # "1234567891": "grok"
+      # "1234567892": "gemini"
+
 memory:
   postgres:
     # auth: RIVETOS_PG_URL env var
