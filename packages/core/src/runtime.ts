@@ -283,6 +283,9 @@ export class Runtime {
   /** Buffered reasoning for batched send */
   private reasoningBuffers: Map<string, string> = new Map();
   private reasoningTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  /** Consolidated tool call log — single message updated in-place */
+  private toolLogMessages: Map<string, string> = new Map(); // sessionKey → messageId
+  private toolLogContent: Map<string, string[]> = new Map(); // sessionKey → log lines
 
   private handleStreamEvent(
     channel: Channel,
@@ -352,21 +355,25 @@ export class Runtime {
 
       case 'tool_start': {
         if (!session.toolsVisible) return;
-        channel.send({
-          channelId: message.channelId,
-          text: `🔧 ${event.content}`,
-          silent: true,
-        }).catch(() => {});
+        // Append to consolidated tool log
+        const startLines = this.toolLogContent.get(sessionKey) ?? [];
+        startLines.push(event.content);
+        this.toolLogContent.set(sessionKey, startLines);
+        this.updateToolLog(channel, message.channelId, sessionKey);
         break;
       }
 
       case 'tool_result': {
         if (!session.toolsVisible) return;
-        channel.send({
-          channelId: message.channelId,
-          text: event.content,
-          silent: true,
-        }).catch(() => {});
+        // Update the last line with the result
+        const resultLines = this.toolLogContent.get(sessionKey) ?? [];
+        if (resultLines.length > 0) {
+          resultLines[resultLines.length - 1] = event.content;
+        } else {
+          resultLines.push(event.content);
+        }
+        this.toolLogContent.set(sessionKey, resultLines);
+        this.updateToolLog(channel, message.channelId, sessionKey);
         break;
       }
 
@@ -390,6 +397,29 @@ export class Runtime {
   }
 
   /**
+   * Update the consolidated tool log message (single message, edited in-place).
+   */
+  private async updateToolLog(channel: Channel, channelId: string, sessionKey: string): Promise<void> {
+    const lines = this.toolLogContent.get(sessionKey) ?? [];
+    // Keep last 10 lines to avoid message getting too long
+    const display = lines.slice(-10).join('\n');
+    const msgId = this.toolLogMessages.get(sessionKey);
+
+    if (msgId && channel.edit) {
+      await channel.edit(channelId, msgId, display).catch(() => {});
+    } else {
+      const sentId = await channel.send({
+        channelId,
+        text: display,
+        silent: true,
+      });
+      if (sentId) {
+        this.toolLogMessages.set(sessionKey, sentId);
+      }
+    }
+  }
+
+  /**
    * Clean up streaming state after a turn completes.
    */
   private cleanupStreamState(sessionKey: string): void {
@@ -401,6 +431,9 @@ export class Runtime {
     const rTimer = this.reasoningTimers.get(sessionKey);
     if (rTimer) { clearTimeout(rTimer); this.reasoningTimers.delete(sessionKey); }
     this.reasoningBuffers.delete(sessionKey);
+    // Clean up tool log
+    this.toolLogMessages.delete(sessionKey);
+    this.toolLogContent.delete(sessionKey);
   }
 
   // -----------------------------------------------------------------------
