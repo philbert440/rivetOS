@@ -1,4 +1,4 @@
-# @rivetos/memory-postgres-lcm
+# @rivetos/memory-postgres
 
 Memory plugin that adapts over the existing LCM (Lossless Context Management) PostgreSQL schema.
 
@@ -34,15 +34,16 @@ Memory plugin that adapts over the existing LCM (Lossless Context Management) Po
 
 | Tool | Replaces | What it does |
 |------|----------|-------------|
-| `memory_grep` | `lcm_grep` | Search messages + summaries (FTS, trigram, regex) |
-| `memory_expand` | `lcm_expand` | Drill into summary DAG, get children + source messages |
-| `memory_describe` | `lcm_describe` | Inspect summary metadata |
+| `memory_grep` | Search messages + summaries (FTS, trigram, regex, semantic) |
+| `memory_expand` | Drill into summary DAG, get children + source messages |
+| `memory_describe` | Inspect summary metadata |
+| `memory_expand_query` | Ask a focused question against expanded context |
 
 ## Configuration
 
 ```yaml
 memory:
-  plugin: postgres-lcm
+  plugin: postgres
   connection_string: ${RIVETOS_PG_URL}
 ```
 

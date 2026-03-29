@@ -1,5 +1,5 @@
 {
-  "name": "@rivetos/memory-postgres-lcm",
+  "name": "@rivetos/memory-postgres",
   "version": "0.1.0",
   "description": "Memory plugin — adapter over existing LCM PostgreSQL tables",
   "license": "MIT",

@@ -164,7 +164,7 @@ async function migrate(): Promise<void> {
             row.tool_name ?? null,
             toolArgs,
             row.tool_output ?? null,
-            JSON.stringify({ lcm_message_id: row.message_id }),
+            JSON.stringify({ message_id: row.message_id }),
             row.embedding,
             row.created_at,
           ],

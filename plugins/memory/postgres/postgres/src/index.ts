@@ -1,5 +1,5 @@
 /**
- * @rivetos/memory-postgres-lcm
+ * @rivetos/memory-postgres
  *
  * Memory plugin that adapts over the existing LCM PostgreSQL schema.
  * No migration. No new tables. Reads and writes the same tables that

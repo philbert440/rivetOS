@@ -1,7 +1,7 @@
 /**
  * LCM Expander — DAG traversal over the summary tree.
  *
- * Replicates lcm_expand and lcm_describe functionality.
+ * Implements memory_expand and memory_describe functionality using the new summary DAG.
  * Walks summary_parents downward, then summary_messages for leaf content.
  */
 

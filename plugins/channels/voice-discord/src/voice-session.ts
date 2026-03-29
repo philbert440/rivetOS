@@ -26,7 +26,7 @@ export class VoiceSession {
   private opusStreams = new Map<string, any>();
   private decoders = new Map<string, any>();
   private audioReady = false;
-  private lcmPool: pg.Pool | null = null;
+  private postgresPool: pg.Pool | null = null;
   
 
   constructor(connection: VoiceConnection, config: VoicePluginConfig) {
@@ -35,9 +35,9 @@ export class VoiceSession {
     
     this.sessionId = `session_${Date.now()}`;
 
-    // LCM memory pool
-    if (config.lcmConnectionString) {
-      this.lcmPool = new Pool({ connectionString: config.lcmConnectionString, max: 2 });
+    // Memory pool
+    if (config.postgresConnectionString) {
+      this.postgresPool = new Pool({ connectionString: config.postgresConnectionString, max: 2 });
       
     }
 
@@ -167,7 +167,7 @@ export class VoiceSession {
 
     if (name === 'search_memories') {
       if (!this.lcmPool) {
-        return JSON.stringify({ error: 'Memory search not configured (no lcmConnectionString)' });
+        return JSON.stringify({ error: 'Memory search not configured (no postgresConnectionString)' });
       }
       try {
         const query = String(args.query ?? '');
@@ -198,7 +198,7 @@ export class VoiceSession {
 
     if (name === 'get_recent_conversations') {
       if (!this.lcmPool) {
-        return JSON.stringify({ error: 'Memory not configured (no lcmConnectionString)' });
+        return JSON.stringify({ error: 'Memory not configured (no postgresConnectionString)' });
       }
       try {
         const limit = args.limit ?? 20;
@@ -264,6 +264,6 @@ export class VoiceSession {
     this.xai.disconnect();
     this.audioPlayer.stop();
     this.connection.destroy();
-    this.lcmPool?.end().catch(() => {});
+    this.postgresPool?.end().catch(() => {});
   }
 }

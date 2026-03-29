@@ -89,7 +89,7 @@ rivetos start
 | `provider-ollama` | Provider | Native Ollama API with model management |
 | `provider-openai-compat` | Provider | Any OpenAI-compatible endpoint (llama-server, vLLM, etc.) |
 | `channel-telegram` | Channel | Telegram Bot API via grammY |
-| `memory-postgres-lcm` | Memory | Full transcript archive over LCM PostgreSQL tables |
+| `memory-postgres` | Memory | Full transcript archive over PostgreSQL + embeddings |
 | `tool-shell` | Tool | Shell command execution with AbortSignal |
 
 ## Configuration

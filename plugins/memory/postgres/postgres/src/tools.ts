@@ -3,7 +3,7 @@
  *
  * These let any agent search conversation history, drill into summaries,
  * and inspect the summary DAG — same capabilities as OpenClaw's
- * lcm_grep, lcm_expand, lcm_describe, and lcm_expand_query.
+ * memory_grep, memory_expand, memory_describe, and memory_expand_query.
  */
 
 import type { Tool } from '@rivetos/types';

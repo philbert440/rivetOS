@@ -1,7 +1,7 @@
 /**
  * LCM Search Engine — FTS, vector, and regex search across messages + summaries.
  *
- * Replicates lcm_grep functionality.
+ * Implements memory_grep functionality using PostgreSQL FTS + embeddings.
  */
 
 import pg from 'pg';
