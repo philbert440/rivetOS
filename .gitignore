@@ -4,3 +4,6 @@ dist/
 *.tsbuildinfo
 .env
 .env.*
+*-tokens.json
+.credentials.json
+*.pid

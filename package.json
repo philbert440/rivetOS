@@ -2,21 +2,42 @@
   "name": "rivetos",
   "version": "0.1.0",
   "private": true,
-  "description": "Lightweight, stable agent runtime. MIT licensed.",
+  "description": "Lightweight, stable agent runtime. Zero bloat. Zero lock-in. Just the loop.",
   "license": "MIT",
   "author": "Philip Tompkins",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/philbert440/rivetOS.git"
   },
+  "keywords": [
+    "ai",
+    "agent",
+    "runtime",
+    "llm",
+    "telegram",
+    "discord",
+    "typescript",
+    "open-source",
+    "claude",
+    "grok",
+    "gemini",
+    "ollama"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "workspaces": [
     "packages/*",
     "plugins/*"
   ],
+  "bin": {
+    "rivetos": "./src/cli/index.ts"
+  },
   "scripts": {
     "build": "npx nx run-many -t build",
-    "test": "npx nx run-many -t test",
-    "dev": "npx tsx packages/core/src/index.ts",
+    "test": "node --import tsx --test 'packages/*/src/**/*.test.ts' 'plugins/**/src/**/*.test.ts'",
+    "dev": "npx tsx src/boot.ts",
+    "cli": "npx tsx src/cli/index.ts",
     "graph": "npx nx graph"
   },
   "bugs": {
@@ -29,5 +50,12 @@
     "nx": "^22.6.3",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "@types/pg": "^8.20.0",
+    "grammy": "^1.41.1",
+    "pg": "^8.20.0",
+    "yaml": "^2.8.3"
   }
 }

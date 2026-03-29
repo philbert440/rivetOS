@@ -17,8 +17,12 @@
     "baseUrl": ".",
     "paths": {
       "@rivetos/types": ["packages/types/src/index.ts"],
-      "@rivetos/core": ["packages/core/src/index.ts"]
+      "@rivetos/core": ["packages/core/src/index.ts"],
+      "@rivetos/provider-anthropic": ["plugins/providers/anthropic/src/index.ts"],
+      "@rivetos/channel-telegram": ["plugins/channels/telegram/src/index.ts"],
+      "@rivetos/tool-shell": ["plugins/tools/shell/src/index.ts"],
+      "@rivetos/memory-postgres-lcm": ["plugins/memory/postgres-lcm/src/index.ts"]
     }
   },
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
