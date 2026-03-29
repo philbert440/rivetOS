@@ -1,0 +1,30 @@
+# RivetOS Configuration
+# Copy to ~/.rivetos/config.yaml and fill in your values.
+# API keys via env vars — never in this file.
+
+runtime:
+  workspace: ~/.rivetos/workspace
+  default_agent: opus
+  max_tool_iterations: 15
+
+agents:
+  opus:
+    provider: anthropic
+    default_thinking: medium
+
+providers:
+  anthropic:
+    model: claude-opus-4-6
+    max_tokens: 8192
+    # api_key via env: ANTHROPIC_API_KEY
+
+channels:
+  telegram:
+    # bot_token via env: TELEGRAM_BOT_TOKEN
+    owner_id: "8093148723"
+    allowed_users:
+      - "8093148723"
+
+memory:
+  postgres:
+    # connection_string via env: RIVETOS_PG_URL
