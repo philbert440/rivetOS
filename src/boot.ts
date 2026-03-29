@@ -156,6 +156,7 @@ export async function boot(configPath?: string) {
           voice: channelConfig.voice as string,
           instructions: channelConfig.instructions as string,
           transcriptDir: channelConfig.transcript_dir as string,
+          lcmConnectionString: config.memory?.postgres?.connection_string as string ?? process.env.RIVETOS_PG_URL ?? '',
         });
         // Voice plugin manages its own lifecycle (not a Channel)
         voicePlugin.start().catch((err: any) => log.error(`Voice plugin failed: ${err.message}`));

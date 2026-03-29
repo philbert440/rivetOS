@@ -52,7 +52,6 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.80.0",
     "@types/pg": "^8.20.0",
     "discord.js": "^14.25.1",
     "grammy": "^1.41.1",

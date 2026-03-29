@@ -1,3 +1,5 @@
+// TODO: Add integration tests (see rivetos-full-review-final.md #12)
+
 /**
  * @rivetos/channel-telegram
  *

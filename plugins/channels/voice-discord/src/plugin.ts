@@ -32,6 +32,7 @@ export interface VoicePluginConfig {
   transcriptDir?: string;
   leaveGracePeriodMs?: number;
   xaiCollectionId?: string;
+  lcmConnectionString?: string;
 }
 
 // ---------------------------------------------------------------------------

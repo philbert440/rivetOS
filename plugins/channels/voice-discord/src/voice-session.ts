@@ -10,7 +10,10 @@ import { XAIRealtimeClient, type XAIConfig } from './xai-client.js';
 import { AudioPlayer } from './audio-player.js';
 import { TranscriptLogger } from './transcript.js';
 import type { VoicePluginConfig } from './plugin.js';
+import pg from 'pg';
+import { LcmSearchEngine } from '../../../memory/postgres-lcm/src/search.js';
 
+const { Pool } = pg;
 
 export class VoiceSession {
   private connection: VoiceConnection;
@@ -24,12 +27,20 @@ export class VoiceSession {
   private opusStreams = new Map<string, any>();
   private decoders = new Map<string, any>();
   private audioReady = false;
+  private lcmPool: pg.Pool | null = null;
+  private searchEngine: LcmSearchEngine | null = null;
 
   constructor(connection: VoiceConnection, config: VoicePluginConfig) {
     this.connection = connection;
     this.config = config;
     
     this.sessionId = `session_${Date.now()}`;
+
+    // LCM memory pool
+    if (config.lcmConnectionString) {
+      this.lcmPool = new Pool({ connectionString: config.lcmConnectionString, max: 2 });
+      this.searchEngine = new LcmSearchEngine(this.lcmPool);
+    }
 
     // Transcript logger
     this.transcript = new TranscriptLogger(
@@ -155,22 +166,59 @@ export class VoiceSession {
 
     console.info(`Function call: ${name}(${JSON.stringify(args)})`);
 
-    // TODO: Wire to memory-postgres TranscriptStore for search_memories
-    // and get_recent_conversations. For now, return a placeholder.
-    // The LCM client code from rivet-voice can be imported directly
-    // once memory-postgres plugin is wired up.
-
     if (name === 'search_memories') {
-      return JSON.stringify({
-        info: 'Memory search not yet wired to TinyClaw memory-postgres plugin',
-        query: args.query,
-      });
+      if (!this.searchEngine) {
+        return JSON.stringify({ error: 'Memory search not configured (no lcmConnectionString)' });
+      }
+      try {
+        const hits = await this.searchEngine.search(args.query ?? '', {
+          mode: 'fts',
+          scope: 'both',
+          limit: args.limit ?? 10,
+        });
+        return JSON.stringify({
+          query: args.query,
+          results: hits.map((h) => ({
+            id: h.id,
+            type: h.type,
+            content: h.content.slice(0, 500),
+            role: h.role,
+            similarity: h.similarity,
+            createdAt: h.createdAt,
+          })),
+        });
+      } catch (err: any) {
+        console.error('[Voice] search_memories error:', err.message);
+        return JSON.stringify({ error: `Search failed: ${err.message}` });
+      }
     }
 
     if (name === 'get_recent_conversations') {
-      return JSON.stringify({
-        info: 'Recent conversations not yet wired to TinyClaw memory-postgres plugin',
-      });
+      if (!this.lcmPool) {
+        return JSON.stringify({ error: 'Memory not configured (no lcmConnectionString)' });
+      }
+      try {
+        const limit = args.limit ?? 20;
+        const result = await this.lcmPool.query(
+          `SELECT m.content, m.role, m.created_at, c.agent_id
+           FROM messages m
+           JOIN conversations c ON c.conversation_id = m.conversation_id
+           ORDER BY m.created_at DESC
+           LIMIT $1`,
+          [limit],
+        );
+        return JSON.stringify({
+          messages: result.rows.map((r: any) => ({
+            role: r.role,
+            content: r.content.slice(0, 500),
+            agent: r.agent_id,
+            createdAt: r.created_at,
+          })),
+        });
+      } catch (err: any) {
+        console.error('[Voice] get_recent_conversations error:', err.message);
+        return JSON.stringify({ error: `Query failed: ${err.message}` });
+      }
     }
 
     return JSON.stringify({ error: `Unknown function: ${name}` });
@@ -213,5 +261,6 @@ export class VoiceSession {
     this.xai.disconnect();
     this.audioPlayer.stop();
     this.connection.destroy();
+    this.lcmPool?.end().catch(() => {});
   }
 }

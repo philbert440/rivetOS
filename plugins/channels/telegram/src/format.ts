@@ -90,6 +90,13 @@ function processHeadings(text: string): string {
   return text.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
 }
 
+/** Convert markdown lists to Telegram-friendly format */
+function processLists(text: string): string {
+  // Unordered: - item or * item → • item
+  text = text.replace(/^(\s*)[-*]\s+/gm, '$1• ');
+  return text;
+}
+
 /** Convert blockquotes */
 function processBlockquotes(text: string): string {
   // Match consecutive lines starting with >
@@ -131,6 +138,7 @@ export function markdownToTelegramHtml(markdown: string): string {
       let text = escapeHtml(block.content);
       text = processHeadings(text);
       text = processBlockquotes(text);
+      text = processLists(text);
       text = processInline(text);
       parts.push(text);
     }

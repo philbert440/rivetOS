@@ -1,3 +1,5 @@
+// TODO: Support agent-scoped tool filtering (see review #13)
+
 /**
  * Delegation — agent-to-agent task handoff.
  *

@@ -30,6 +30,23 @@ import { logger } from './logger.js';
 
 const log = logger('Runtime');
 
+/** Safe character limit for streaming message edits (leaves room for HTML overhead) */
+const STREAM_TEXT_LIMIT = 3800;
+
+// ---------------------------------------------------------------------------
+// Stream State
+// ---------------------------------------------------------------------------
+
+interface SessionStreamState {
+  messageId: string | null;
+  textBuffer: string;
+  textTimer: ReturnType<typeof setTimeout> | null;
+  reasoningBuffer: string;
+  reasoningTimer: ReturnType<typeof setTimeout> | null;
+  toolLogMessageId: string | null;
+  toolLogLines: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -214,7 +231,7 @@ export class Runtime {
 
       // Clean up streaming state BEFORE sending final response
       // (prevents timer-based stream sends from firing after the final response)
-      const streamMsgId = this.streamingMessages.get(sessionKey);
+      const streamMsgId = this.streamState.get(sessionKey)?.messageId ?? null;
       this.cleanupStreamState(sessionKey);
 
       // Send final response (unless silent or aborted)
@@ -280,18 +297,25 @@ export class Runtime {
   // Stream Events → Channel
   // -----------------------------------------------------------------------
 
-  /** Active streaming message IDs — for editing messages in-place */
-  private streamingMessages: Map<string, string> = new Map();
-  /** Buffered text for streaming updates */
-  private streamBuffers: Map<string, string> = new Map();
-  /** Throttle timer for streaming edits */
-  private streamTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-  /** Buffered reasoning for batched send */
-  private reasoningBuffers: Map<string, string> = new Map();
-  private reasoningTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-  /** Consolidated tool call log — single message updated in-place */
-  private toolLogMessages: Map<string, string> = new Map(); // sessionKey → messageId
-  private toolLogContent: Map<string, string[]> = new Map(); // sessionKey → log lines
+  /** Per-session streaming state (replaces 7 separate Maps) */
+  private streamState: Map<string, SessionStreamState> = new Map();
+
+  private getStreamState(sessionKey: string): SessionStreamState {
+    let state = this.streamState.get(sessionKey);
+    if (!state) {
+      state = {
+        messageId: null,
+        textBuffer: '',
+        textTimer: null,
+        reasoningBuffer: '',
+        reasoningTimer: null,
+        toolLogMessageId: null,
+        toolLogLines: [],
+      };
+      this.streamState.set(sessionKey, state);
+    }
+    return state;
+  }
 
   private handleStreamEvent(
     channel: Channel,
@@ -301,23 +325,32 @@ export class Runtime {
   ): void {
     const sessionKey = `${message.channelId}:${message.userId}`;
 
+    const ss = this.getStreamState(sessionKey);
+
     switch (event.type) {
       case 'text': {
         // Buffer text and throttle edits (every 500ms)
-        const current = this.streamBuffers.get(sessionKey) ?? '';
-        this.streamBuffers.set(sessionKey, current + (event.content ?? ''));
+        ss.textBuffer += event.content ?? '';
 
-        if (!this.streamTimers.has(sessionKey)) {
-          this.streamTimers.set(sessionKey, setTimeout(async () => {
-            this.streamTimers.delete(sessionKey);
-            const text = this.streamBuffers.get(sessionKey) ?? '';
+        if (!ss.textTimer) {
+          ss.textTimer = setTimeout(async () => {
+            ss.textTimer = null;
+            const text = ss.textBuffer;
             if (!text) return;
 
-            const msgId = this.streamingMessages.get(sessionKey);
-            if (msgId && channel.edit) {
+            // If buffer exceeds platform limit, finalize current message and start a new one
+            if (text.length > STREAM_TEXT_LIMIT && ss.messageId && channel.edit) {
+              await channel.edit(message.channelId, ss.messageId, text.slice(0, STREAM_TEXT_LIMIT)).catch(() => {});
+              // Clear the streaming message so next chunk starts a fresh message
+              ss.messageId = null;
+              ss.textBuffer = text.slice(STREAM_TEXT_LIMIT);
+              return;
+            }
+
+            if (ss.messageId && channel.edit) {
               // Edit existing message with accumulated text
-              await channel.edit(message.channelId, msgId, text).catch(() => {});
-            } else if (!msgId) {
+              await channel.edit(message.channelId, ss.messageId, text).catch(() => {});
+            } else if (!ss.messageId) {
               // Send first chunk as a new message
               const sentId = await channel.send({
                 channelId: message.channelId,
@@ -325,10 +358,10 @@ export class Runtime {
                 replyToMessageId: message.id,
               }).catch(() => null);
               if (sentId) {
-                this.streamingMessages.set(sessionKey, sentId);
+                ss.messageId = sentId;
               }
             }
-          }, 500));
+          }, 500);
         }
         break;
       }
@@ -336,15 +369,13 @@ export class Runtime {
       case 'reasoning': {
         if (!session.reasoningVisible) return;
         // Buffer reasoning chunks and send batched (every 2 seconds)
-        const rKey = sessionKey;
-        const current = this.reasoningBuffers.get(rKey) ?? '';
-        this.reasoningBuffers.set(rKey, current + (event.content ?? ''));
+        ss.reasoningBuffer += event.content ?? '';
 
-        if (!this.reasoningTimers.has(rKey)) {
-          this.reasoningTimers.set(rKey, setTimeout(async () => {
-            this.reasoningTimers.delete(rKey);
-            const buffered = this.reasoningBuffers.get(rKey) ?? '';
-            this.reasoningBuffers.delete(rKey);
+        if (!ss.reasoningTimer) {
+          ss.reasoningTimer = setTimeout(async () => {
+            ss.reasoningTimer = null;
+            const buffered = ss.reasoningBuffer;
+            ss.reasoningBuffer = '';
             if (buffered) {
               // Truncate to reasonable length for Telegram
               const display = buffered.length > 2000 ? buffered.slice(0, 2000) + '…' : buffered;
@@ -354,31 +385,25 @@ export class Runtime {
                 silent: true,
               }).catch(() => {});
             }
-          }, 2000));
+          }, 2000);
         }
         break;
       }
 
       case 'tool_start': {
         if (!session.toolsVisible) return;
-        // Append to consolidated tool log
-        const startLines = this.toolLogContent.get(sessionKey) ?? [];
-        startLines.push(event.content);
-        this.toolLogContent.set(sessionKey, startLines);
+        ss.toolLogLines.push(event.content);
         this.updateToolLog(channel, message.channelId, sessionKey);
         break;
       }
 
       case 'tool_result': {
         if (!session.toolsVisible) return;
-        // Update the last line with the result
-        const resultLines = this.toolLogContent.get(sessionKey) ?? [];
-        if (resultLines.length > 0) {
-          resultLines[resultLines.length - 1] = event.content;
+        if (ss.toolLogLines.length > 0) {
+          ss.toolLogLines[ss.toolLogLines.length - 1] = event.content;
         } else {
-          resultLines.push(event.content);
+          ss.toolLogLines.push(event.content);
         }
-        this.toolLogContent.set(sessionKey, resultLines);
         this.updateToolLog(channel, message.channelId, sessionKey);
         break;
       }
@@ -406,13 +431,12 @@ export class Runtime {
    * Update the consolidated tool log message (single message, edited in-place).
    */
   private async updateToolLog(channel: Channel, channelId: string, sessionKey: string): Promise<void> {
-    const lines = this.toolLogContent.get(sessionKey) ?? [];
+    const ss = this.getStreamState(sessionKey);
     // Keep last 10 lines to avoid message getting too long
-    const display = lines.slice(-10).join('\n');
-    const msgId = this.toolLogMessages.get(sessionKey);
+    const display = ss.toolLogLines.slice(-10).join('\n');
 
-    if (msgId && channel.edit) {
-      await channel.edit(channelId, msgId, display).catch(() => {});
+    if (ss.toolLogMessageId && channel.edit) {
+      await channel.edit(channelId, ss.toolLogMessageId, display).catch(() => {});
     } else {
       const sentId = await channel.send({
         channelId,
@@ -420,7 +444,7 @@ export class Runtime {
         silent: true,
       });
       if (sentId) {
-        this.toolLogMessages.set(sessionKey, sentId);
+        ss.toolLogMessageId = sentId;
       }
     }
   }
@@ -429,17 +453,12 @@ export class Runtime {
    * Clean up streaming state after a turn completes.
    */
   private cleanupStreamState(sessionKey: string): void {
-    this.streamingMessages.delete(sessionKey);
-    this.streamBuffers.delete(sessionKey);
-    const timer = this.streamTimers.get(sessionKey);
-    if (timer) { clearTimeout(timer); this.streamTimers.delete(sessionKey); }
-    // Flush any remaining reasoning buffer
-    const rTimer = this.reasoningTimers.get(sessionKey);
-    if (rTimer) { clearTimeout(rTimer); this.reasoningTimers.delete(sessionKey); }
-    this.reasoningBuffers.delete(sessionKey);
-    // Clean up tool log
-    this.toolLogMessages.delete(sessionKey);
-    this.toolLogContent.delete(sessionKey);
+    const ss = this.streamState.get(sessionKey);
+    if (ss) {
+      if (ss.textTimer) clearTimeout(ss.textTimer);
+      if (ss.reasoningTimer) clearTimeout(ss.reasoningTimer);
+    }
+    this.streamState.delete(sessionKey);
   }
 
   // -----------------------------------------------------------------------

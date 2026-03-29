@@ -61,15 +61,14 @@ function parseSchedule(schedule: string | number): number {
 function isQuietHours(quiet?: { start: number; end: number }): boolean {
   if (!quiet) return false;
 
-  const now = new Date();
-  const hour = now.getHours();
+  const hour = new Date().getHours();
 
-  if (quiet.start <= quiet.end) {
-    // e.g., 23-7 wraps around midnight
-    return hour >= quiet.start || hour < quiet.end;
-  } else {
-    // e.g., 9-17 (normal range)
+  if (quiet.start < quiet.end) {
+    // Normal range: e.g., 9-17
     return hour >= quiet.start && hour < quiet.end;
+  } else {
+    // Wraps midnight: e.g., 23-7
+    return hour >= quiet.start || hour < quiet.end;
   }
 }
 
