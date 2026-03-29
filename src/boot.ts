@@ -26,6 +26,7 @@ import { DiscordChannel } from '../plugins/channels/discord/src/index.js';
 // Tools
 import { ShellTool } from '../plugins/tools/shell/src/index.js';
 import { CodingPipeline, createCodingPipelineTool } from '../plugins/tools/coding-pipeline/src/index.js';
+import type { Tool } from '@rivetos/types';
 import { createCodingPipelineTool } from '../plugins/tools/coding-pipeline/src/index.js';
 
 // Memory
@@ -236,42 +237,37 @@ export async function boot(configPath?: string) {
     cwd: config.runtime.workspace.replace('~', process.env.HOME ?? '.'),
   }));
 
-  // Register coding pipeline (uses sub-agents internally)
-  // The pipeline needs a handle to spawn sub-agents — we create a lightweight adapter
-  // that delegates to the runtime's sub-agent manager (registered during start())
-  const pipelineConfig = config.runtime.coding_pipeline as Record<string, unknown> | undefined;
-  if (pipelineConfig !== undefined || config.agents.grok || config.agents.local) {
-    runtime.registerTool(createCodingPipelineTool(
-      {
-        builderAgent: (pipelineConfig?.builder_agent as string) ?? 'grok',
-        validatorAgent: (pipelineConfig?.validator_agent as string) ?? 'opus',
-        maxBuildCycles: (pipelineConfig?.max_build_cycles as number) ?? 3,
-        maxValidationRejections: (pipelineConfig?.max_validation_rejections as number) ?? 2,
-        workingDir: config.runtime.workspace.replace('~', process.env.HOME ?? '.'),
-        autoCommit: (pipelineConfig?.auto_commit as boolean) ?? true,
-        autoPush: (pipelineConfig?.auto_push as boolean) ?? true,
-      },
-      {
-        // Adapter: delegates to runtime's sub-agent manager
-        async spawn(request) {
-          // Use delegation engine directly since sub-agent manager is internal to runtime
-          const { DelegationEngine } = await import('../packages/core/src/domain/delegation.js');
-          const engine = new DelegationEngine({
-            router: (runtime as any).router,
-            workspace: (runtime as any).workspace,
-            tools: (runtime as any).tools,
-          });
-          const result = await engine.delegate({
-            fromAgent: request.agent === 'grok' ? 'opus' : 'grok',
-            toAgent: request.agent,
-            task: request.task,
-            timeoutMs: request.timeoutMs,
-          });
-          return { response: result.response, status: result.status };
-        },
-      },
-    ));
-  }
+  // Register coding pipeline (uses sub-agents for build→review→validate loop)
+  const pipelineCfg = config.runtime.coding_pipeline as Record<string, unknown> | undefined;
+  const pipeline = new CodingPipeline({
+    builderAgent: (pipelineCfg?.builder_agent as string) ?? 'grok',
+    validatorAgent: (pipelineCfg?.validator_agent as string) ?? 'opus',
+    maxBuildLoops: (pipelineCfg?.max_build_loops as number) ?? 3,
+    maxValidationLoops: (pipelineCfg?.max_validation_loops as number) ?? 2,
+    workingDir: config.runtime.workspace.replace('~', process.env.HOME ?? '.'),
+    autoCommit: (pipelineCfg?.auto_commit as boolean) ?? true,
+  });
+
+  // Wire pipeline to sub-agent tools (after all tools registered)
+  // The pipeline calls subagent_spawn/shell internally via tool executors
+  const findTool = (name: string) => {
+    const allTools = (runtime as any).tools as Tool[];
+    const tool = allTools?.find((t: any) => t.name === name);
+    return tool ? (args: Record<string, unknown>) => tool.execute(args) : async () => 'Tool not available';
+  };
+  // Deferred — tools registered during runtime.start(), so we set executors lazily
+  const origStart = runtime.start.bind(runtime);
+  (runtime as any)._origStart = origStart;
+  runtime.start = async () => {
+    await origStart();
+    pipeline.setToolExecutors({
+      subagentSpawn: findTool('subagent_spawn'),
+      subagentSend: findTool('subagent_send'),
+      subagentKill: findTool('subagent_kill'),
+      shellExec: findTool('shell'),
+    });
+  };
+  runtime.registerTool(createCodingPipelineTool(pipeline));
 
   // Write PID file
   const pidPath = resolve(process.env.HOME ?? '.', '.rivetos', 'rivetos.pid');
