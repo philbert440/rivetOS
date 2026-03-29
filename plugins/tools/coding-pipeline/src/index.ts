@@ -23,12 +23,10 @@ import type { Tool, ToolContext } from '@rivetos/types';
 export interface CodingPipelineConfig {
   /** Agent that builds code (default: 'grok') */
   builderAgent?: string;
-  /** Agent that validates code (default: 'opus') */
-  validatorAgent?: string;
+
   /** Max build→review loops before escalating (default: 3) */
   maxBuildLoops?: number;
-  /** Max validator rejection loops before giving up (default: 2) */
-  maxValidationLoops?: number;
+
   /** Working directory for code operations */
   workingDir?: string;
   /** Auto-commit on approval (default: true) */
@@ -39,7 +37,7 @@ export interface CodingPipelineConfig {
 // Pipeline State
 // ---------------------------------------------------------------------------
 
-type PipelinePhase = 'BUILD' | 'SELF_REVIEW' | 'VALIDATE' | 'FIX' | 'COMMIT' | 'DONE' | 'FAILED';
+type PipelinePhase = 'BUILD' | 'SELF_REVIEW' | 'RETURN_FOR_VALIDATION' | 'FIX' | 'COMMIT' | 'DONE' | 'FAILED';
 
 interface PipelineContext {
   spec: string;
@@ -88,29 +86,7 @@ ${buildLog}
 If everything looks clean, respond with exactly: LGTM
 If there are issues, list them as numbered items and fix them.`;
 
-const VALIDATOR_SYSTEM = `You are a principal engineer performing a final validation review.
-You are READ ONLY — do not edit code. Only compile findings.
 
-Look for:
-- Correctness vs spec
-- Architectural concerns
-- Missing tests
-- Security issues
-- Edge cases
-
-If everything passes, respond with exactly: VALIDATED
-If there are issues, list each finding with severity (P0/P1/P2).`;
-
-const VALIDATOR_PROMPT = (spec: string, diff: string) => `
-## Validation Review
-
-### Original Spec
-${spec}
-
-### Changes Made
-${diff}
-
-Review these changes against the spec. Are they correct, complete, and production-ready?`;
 
 // ---------------------------------------------------------------------------
 // Pipeline
@@ -192,9 +168,10 @@ export class CodingPipeline {
         case 'SELF_REVIEW':
           phase = await this.selfReview(ctx);
           break;
-        case 'VALIDATE':
-          phase = await this.validate(ctx);
-          break;
+        case 'RETURN_FOR_VALIDATION':
+          // Don't spawn a validator — return to the calling agent with the diff
+          // The architect (who has full context) validates in their own turn
+          return this.buildValidationReport(ctx);
         case 'FIX':
           phase = await this.fix(ctx);
           break;
@@ -268,65 +245,55 @@ export class CodingPipeline {
 
       if (result.toUpperCase().includes('LGTM')) {
         this.log(ctx, `✅ Self-review passed`);
-        return 'VALIDATE';
+        return 'RETURN_FOR_VALIDATION';
       }
 
       this.log(ctx, `⚠️ Self-review found issues`);
       if (ctx.buildLoops >= this.config.maxBuildLoops) {
         this.log(ctx, `⚠️ Max build loops (${this.config.maxBuildLoops}) reached, sending to validator anyway`);
-        return 'VALIDATE';
+        return 'RETURN_FOR_VALIDATION';
       }
       return 'FIX';
     } catch (err: any) {
       this.log(ctx, `❌ Self-review failed: ${err.message}`);
-      return 'VALIDATE'; // Skip review on error, let validator catch issues
+      return 'RETURN_FOR_VALIDATION'; // Skip review on error, let validator catch issues
     }
   }
 
   // -----------------------------------------------------------------------
-  // Phase: VALIDATE — Opus reviews the code
+  // Return to calling agent for validation
   // -----------------------------------------------------------------------
 
-  private async validate(ctx: PipelineContext): Promise<PipelinePhase> {
-    this.log(ctx, `🔬 ${this.config.validatorAgent} validating...`);
-
-    // Get git diff for the validator
+  private async buildValidationReport(ctx: PipelineContext): Promise<string> {
     let diff = '';
     try {
       diff = await this.shellExec!({ command: `cd ${ctx.workingDir} && git diff --stat && git diff` });
     } catch {
-      diff = ctx.buildOutput; // Fallback to build output if no git
+      diff = ctx.buildOutput;
     }
 
-    const task = `${VALIDATOR_SYSTEM}\n\n${VALIDATOR_PROMPT(ctx.spec, diff)}`;
-
-    try {
-      const result = await this.subagentSpawn!({
-        agent: this.config.validatorAgent,
-        task,
-        mode: 'run',
-        timeout_ms: 180000,
-      });
-
-      ctx.validationFindings = result;
-
-      if (result.toUpperCase().includes('VALIDATED')) {
-        this.log(ctx, `✅ Validation passed`);
-        return 'COMMIT';
-      }
-
-      this.log(ctx, `⚠️ Validator found issues`);
-      ctx.validationLoops++;
-
-      if (ctx.validationLoops >= this.config.maxValidationLoops) {
-        this.log(ctx, `❌ Max validation loops (${this.config.maxValidationLoops}) reached`);
-        return 'FAILED';
-      }
-      return 'FIX';
-    } catch (err: any) {
-      this.log(ctx, `❌ Validation failed: ${err.message}`);
-      return 'FAILED';
-    }
+    return [
+      `## 🔬 Ready for Your Review`,
+      '',
+      `### Spec`,
+      ctx.spec,
+      '',
+      `### Build Summary (${ctx.buildLoops} loops)`,
+      ctx.buildOutput.slice(0, 2000),
+      '',
+      ctx.reviewFindings ? `### Self-Review Result\n${ctx.reviewFindings.slice(0, 1000)}` : '',
+      '',
+      `### Diff`,
+      '```',
+      diff.slice(0, 3000),
+      '```',
+      '',
+      `### Your Call`,
+      `If approved, I'll commit and push.`,
+      `If issues found, tell me what to fix and I'll run the pipeline again.`,
+      '',
+      ...ctx.logs,
+    ].filter(Boolean).join('\n');
   }
 
   // -----------------------------------------------------------------------
@@ -362,7 +329,7 @@ Fix all issues listed above. Working directory: ${ctx.workingDir}`;
       // After a fix from validation findings, go back to validate
       if (ctx.validationFindings) {
         ctx.validationFindings = '';
-        return 'VALIDATE';
+        return 'RETURN_FOR_VALIDATION';
       }
       // After a fix from self-review, re-review
       return 'SELF_REVIEW';
