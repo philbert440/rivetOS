@@ -27,10 +27,7 @@ import { DiscordChannel } from '../plugins/channels/discord/src/index.js';
 import { ShellTool } from '../plugins/tools/shell/src/index.js';
 
 // Memory
-import { LcmMemory, LcmSearchEngine, LcmExpander, createMemoryTools, BackgroundEmbedder } from '../plugins/memory/postgres-lcm/src/index.js';
-import pg from 'pg';
-
-const { Pool } = pg;
+import { PostgresMemory, SearchEngine, Expander, createMemoryTools, BackgroundEmbedder, BackgroundCompactor } from '../plugins/memory/postgres/src/index.js';
 const log = logger('Boot');
 
 export async function boot(configPath?: string) {
@@ -182,14 +179,21 @@ export async function boot(configPath?: string) {
 
     if (connectionString) {
       try {
-        const memory = new LcmMemory({ connectionString });
+        const memory = new PostgresMemory({ connectionString });
         runtime.registerMemory(memory);
 
-        // Create a shared pool for search/expand tools
-        const pool = new Pool({ connectionString, max: 3 });
-        const searchEngine = new LcmSearchEngine(pool);
-        const expanderInstance = new LcmExpander(pool);
-        const memoryTools = createMemoryTools(searchEngine, expanderInstance);
+        // Use the adapter's internal pool and engines (no duplicate pool)
+        const searchEngine = memory.getSearchEngine();
+        const expanderInstance = memory.getExpander();
+
+        // Compactor config
+        const compactorEndpoint = pgConfig.compactor_endpoint as string ?? process.env.RIVETOS_COMPACTOR_URL ?? '';
+        const compactorModel = pgConfig.compactor_model as string ?? 'rivet-v0.1';
+
+        const memoryTools = createMemoryTools(searchEngine, expanderInstance, {
+          compactorEndpoint: compactorEndpoint || undefined,
+          compactorModel,
+        });
         for (const tool of memoryTools) {
           runtime.registerTool(tool);
         }
@@ -206,7 +210,19 @@ export async function boot(configPath?: string) {
           embedder.start();
         }
 
-        log.info('Memory: postgres-lcm');
+        // Start background compactor if endpoint configured
+        if (compactorEndpoint) {
+          const compactor = new BackgroundCompactor({
+            connectionString,
+            compactorEndpoint,
+            compactorModel,
+            intervalMs: 1_800_000, // 30 minutes
+          });
+          compactor.start();
+          log.info(`Compactor: ${compactorEndpoint} (model: ${compactorModel})`);
+        }
+
+        log.info('Memory: postgres (ros_* tables)');
       } catch (err: any) {
         log.error(`Failed to initialize memory: ${err.message}`);
       }
