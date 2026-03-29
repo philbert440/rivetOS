@@ -21,6 +21,7 @@ const COMMANDS: Record<string, () => Promise<void>> = {
   doctor: () => import('./commands/doctor.js').then((m) => m.default()),
   config: () => import('./commands/config.js').then((m) => m.default()),
   version: () => import('./commands/version.js').then((m) => m.default()),
+  service: () => import('./commands/service.js').then((m) => m.default()),
   help: () => showHelp(),
   // Provider commands — rivetos <provider> <action>
   anthropic: () => import('./commands/provider.js').then((m) => m.default('anthropic')),
@@ -40,6 +41,14 @@ async function showHelp(): Promise<void> {
     rivetos doctor                      Check config and connectivity
     rivetos config init                 Generate default config.yaml
     rivetos version                     Show version
+
+  Service:
+    rivetos service init                Generate systemd unit file
+    rivetos service start               Start the service
+    rivetos service stop                Stop the service
+    rivetos service restart             Restart the service
+    rivetos service status              Show service status
+    rivetos service logs                Tail service logs
 
   Providers:
     rivetos anthropic setup             OAuth login for Claude subscription

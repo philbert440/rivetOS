@@ -14,6 +14,14 @@ runtime:
   workspace: ~/.rivetos/workspace
   default_agent: opus
   max_tool_iterations: 15
+  heartbeats:
+    - agent: opus
+      schedule: 30m
+      prompt: "Read HEARTBEAT.md if it exists. Follow it. If nothing needs attention, reply HEARTBEAT_OK."
+      output_channel: ""  # channel ID to send proactive messages, or empty for silent
+      quiet_hours:
+        start: 23
+        end: 7
 
 agents:
   opus:

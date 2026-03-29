@@ -14,6 +14,7 @@ export { WorkspaceLoader } from './domain/workspace.js';
 export { MessageQueue, isCommand, parseCommand } from './domain/queue.js';
 export { SILENT_RESPONSES } from './domain/constants.js';
 export { DelegationEngine } from './domain/delegation.js';
+export { createHeartbeatRunner } from './domain/heartbeat.js';
 
 // Logger
 export { logger, setLogLevel, getLogLevel } from './logger.js';

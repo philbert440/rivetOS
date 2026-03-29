@@ -50,6 +50,7 @@ export async function boot(configPath?: string) {
       provider: agent.provider,
       defaultThinking: (agent.default_thinking as any) ?? 'medium',
     })),
+    heartbeats: config.runtime.heartbeats as any[],
   });
 
   // Register providers
