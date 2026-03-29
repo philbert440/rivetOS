@@ -529,6 +529,7 @@ export class Runtime {
           `Queue: ${queueDepth} pending`,
           `Thinking: ${session?.thinking ?? 'default'}`,
           `Reasoning visible: ${session?.reasoningVisible ? 'on' : 'off'}`,
+          `Tools visible: ${session?.toolsVisible ? 'on' : 'off'}`,
           `History: ${session?.history.length ?? 0} messages`,
         ];
         await channel.send({ channelId: message.channelId, text: lines.join('\n') });
@@ -536,12 +537,7 @@ export class Runtime {
       }
 
       case 'think': {
-        let session = this.sessions.get(sessionKey);
-        if (!session) {
-          const { agent } = this.router.route(message);
-          session = await this.createSession(sessionKey, agent);
-          this.sessions.set(sessionKey, session);
-        }
+        const session = await this.getOrCreateSession(sessionKey, message);
         const levels: Set<string> = new Set(['off', 'low', 'medium', 'high']);
         if (args.trim() && levels.has(args.trim())) {
           session.thinking = args.trim() as ThinkingLevel;
@@ -554,12 +550,7 @@ export class Runtime {
       }
 
       case 'reasoning': {
-        let session = this.sessions.get(sessionKey);
-        if (!session) {
-          const { agent } = this.router.route(message);
-          session = await this.createSession(sessionKey, agent);
-          this.sessions.set(sessionKey, session);
-        }
+        const session = await this.getOrCreateSession(sessionKey, message);
         session.reasoningVisible = !session.reasoningVisible;
         await this.saveSessionSettings(session);
         await channel.send({
@@ -593,6 +584,19 @@ export class Runtime {
   // -----------------------------------------------------------------------
   // Session Management
   // -----------------------------------------------------------------------
+
+  /**
+   * Get existing session or create a new one (with history + settings restore).
+   */
+  private async getOrCreateSession(sessionKey: string, message: InboundMessage): Promise<SessionState> {
+    let session = this.sessions.get(sessionKey);
+    if (!session) {
+      const { agent } = this.router.route(message);
+      session = await this.createSession(sessionKey, agent);
+      this.sessions.set(sessionKey, session);
+    }
+    return session;
+  }
 
   private async createSession(sessionKey: string, agent: AgentConfig): Promise<SessionState> {
     // Restore history
