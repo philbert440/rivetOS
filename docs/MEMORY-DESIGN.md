@@ -88,7 +88,10 @@ Group messages into sessions.
 CREATE TABLE conversations (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_key   TEXT NOT NULL,           -- channelId:userId
-  agent         TEXT NOT NULL,
+  agent         TEXT NOT NULL,           -- opus, grok, gemini, local
+  channel       TEXT NOT NULL,           -- telegram, discord, voice, cli, heartbeat
+  channel_id    TEXT,                    -- platform chat/channel ID (e.g., Telegram chat ID, Discord channel ID)
+  bot_identity  TEXT,                    -- @RivetGeminiBot, RivetOpus#4006
   title         TEXT,
   settings      JSONB DEFAULT '{}',      -- thinking, reasoningVisible, toolsVisible
   active        BOOLEAN DEFAULT true,
@@ -96,7 +99,12 @@ CREATE TABLE conversations (
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- "What was I talking about with Grok on Discord?"
+-- → agent='grok' AND channel='discord'
+-- "Show me what happened in #brainstorm last week"
+-- → channel_id='1474965558851145793' AND created_at > NOW() - INTERVAL '7 days'
 CREATE INDEX idx_conversations_session ON conversations (session_key, active, updated_at DESC);
+CREATE INDEX idx_conversations_agent_channel ON conversations (agent, channel, updated_at DESC);
 ```
 
 ### summaries
