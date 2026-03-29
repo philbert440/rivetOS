@@ -568,11 +568,23 @@ export class Runtime {
       }
 
       case 'tools': {
-        const toolList = this.tools.map((t) => `• **${t.name}** — ${t.description.slice(0, 80)}`);
-        await channel.send({
-          channelId: message.channelId,
-          text: `🔧 Available tools (${this.tools.length}):\n${toolList.join('\n')}`,
-        });
+        if (args.trim() === 'list') {
+          // /tools list — show available tools
+          const toolList = this.tools.map((t) => `• **${t.name}** — ${t.description.slice(0, 80)}`);
+          await channel.send({
+            channelId: message.channelId,
+            text: `🔧 Available tools (${this.tools.length}):\n${toolList.join('\n')}`,
+          });
+        } else {
+          // /tools — toggle tool call visibility
+          const session = await this.getOrCreateSession(sessionKey, message);
+          session.toolsVisible = !session.toolsVisible;
+          await this.saveSessionSettings(session);
+          await channel.send({
+            channelId: message.channelId,
+            text: `🔧 Tool calls: ${session.toolsVisible ? 'visible' : 'hidden'}`,
+          });
+        }
         break;
       }
 
@@ -612,7 +624,7 @@ export class Runtime {
     // Restore settings
     let thinking = agent.defaultThinking ?? 'medium';
     let reasoningVisible = false;
-    let toolsVisible = true;
+    let toolsVisible = false;
 
     if (this.memory?.loadSessionSettings) {
       try {
@@ -625,7 +637,7 @@ export class Runtime {
       } catch {}
     }
 
-    return { id: sessionKey, thinking, reasoningVisible, toolsVisible, history };
+    return { id: sessionKey, thinking, reasoningVisible, toolsVisible: toolsVisible ?? false, history };
   }
 
   /**
