@@ -25,7 +25,7 @@ import { TelegramChannel } from '../plugins/channels/telegram/src/index.js';
 import { ShellTool } from '../plugins/tools/shell/src/index.js';
 
 // Memory
-import { LcmMemory, LcmSearchEngine, LcmExpander, createMemoryTools } from '../plugins/memory/postgres-lcm/src/index.js';
+import { LcmMemory, LcmSearchEngine, LcmExpander, createMemoryTools, BackgroundEmbedder } from '../plugins/memory/postgres-lcm/src/index.js';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -158,6 +158,18 @@ export async function boot(configPath?: string) {
         const memoryTools = createMemoryTools(searchEngine, expanderInstance);
         for (const tool of memoryTools) {
           runtime.registerTool(tool);
+        }
+
+        // Start background embedder if endpoint configured
+        const embedEndpoint = pgConfig.embed_endpoint as string ?? process.env.RIVETOS_EMBED_URL ?? '';
+        if (embedEndpoint) {
+          const embedder = new BackgroundEmbedder({
+            connectionString,
+            embedEndpoint,
+            batchSize: 10,
+            intervalMs: 30000,
+          });
+          embedder.start();
         }
 
         log.info('Memory: postgres-lcm');

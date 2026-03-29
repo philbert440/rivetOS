@@ -13,3 +13,4 @@ export { LcmMemory } from './adapter.js';
 export { LcmSearchEngine } from './search.js';
 export { LcmExpander } from './expand.js';
 export { createMemoryTools } from './tools.js';
+export { BackgroundEmbedder } from './embedder.js';
