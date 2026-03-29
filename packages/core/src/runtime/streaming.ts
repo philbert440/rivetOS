@@ -1,8 +1,12 @@
 /**
- * Stream Manager — owns all streaming state and stream-to-channel logic.
+ * StreamManager — handles streaming events from agent turns to channels.
  *
- * Handles buffering, throttling, and sending streaming events (text,
- * reasoning, tool logs) to channels via edit/send.
+ * Design:
+ * - Text streams into a SINGLE message that gets edited progressively
+ * - The final response EDITS that same message (no duplicate)
+ * - Reasoning appears as inline italics within the streamed message
+ * - Tool calls show in a consolidated log message
+ * - Everything cleans up after the turn
  */
 
 import type { Channel, InboundMessage, SessionState, StreamEvent } from '@rivetos/types';
@@ -10,40 +14,66 @@ import { logger } from '../logger.js';
 
 const log = logger('StreamManager');
 
-/** Safe character limit for streaming message edits (leaves room for HTML overhead) */
-const STREAM_TEXT_LIMIT = 3800;
+// How often to edit the streaming message (ms)
+const EDIT_INTERVAL = 800;
+// Platform-safe text limit (leaves room for HTML)
+const TEXT_LIMIT = 3800;
 
 // ---------------------------------------------------------------------------
-// Per-session stream state
+// Stream State per session
 // ---------------------------------------------------------------------------
 
-export interface SessionStreamState {
+interface SessionStreamState {
+  /** The message being edited with streaming text */
   messageId: string | null;
+  /** Accumulated text from the LLM */
   textBuffer: string;
-  textTimer: ReturnType<typeof setTimeout> | null;
+  /** Accumulated reasoning (shown inline as italics) */
   reasoningBuffer: string;
-  reasoningTimer: ReturnType<typeof setTimeout> | null;
-  toolLogMessageId: string | null;
+  /** Pending edit timer */
+  editTimer: ReturnType<typeof setTimeout> | null;
+  /** Tool call log lines */
   toolLogLines: string[];
+  /** Tool log message ID */
+  toolLogMessageId: string | null;
+}
+
+function createState(): SessionStreamState {
+  return {
+    messageId: null,
+    textBuffer: '',
+    reasoningBuffer: '',
+    editTimer: null,
+    toolLogLines: [],
+    toolLogMessageId: null,
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Stream Manager
+// StreamManager
 // ---------------------------------------------------------------------------
 
 export class StreamManager {
-  private streamState: Map<string, SessionStreamState> = new Map();
+  private state: Map<string, SessionStreamState> = new Map();
 
-  /**
-   * Get the streaming message ID for a session (used by runtime to decide
-   * whether to edit the existing message or send a new one for the final response).
-   */
-  getStreamMessageId(sessionKey: string): string | null {
-    return this.streamState.get(sessionKey)?.messageId ?? null;
+  private getState(sessionKey: string): SessionStreamState {
+    let ss = this.state.get(sessionKey);
+    if (!ss) {
+      ss = createState();
+      this.state.set(sessionKey, ss);
+    }
+    return ss;
   }
 
   /**
-   * Handle a stream event — routes to the appropriate channel operation.
+   * Get the streaming message ID (so the runtime can edit it with the final response).
+   */
+  getStreamMessageId(sessionKey: string): string | null {
+    return this.state.get(sessionKey)?.messageId ?? null;
+  }
+
+  /**
+   * Handle a stream event from the agent loop.
    */
   handleStreamEvent(
     channel: Channel,
@@ -52,80 +82,39 @@ export class StreamManager {
     event: StreamEvent,
   ): void {
     const sessionKey = `${message.channelId}:${message.userId}`;
-    const ss = this.getOrCreate(sessionKey);
+    const ss = this.getState(sessionKey);
 
     switch (event.type) {
       case 'text': {
         ss.textBuffer += event.content ?? '';
-
-        if (!ss.textTimer) {
-          ss.textTimer = setTimeout(async () => {
-            ss.textTimer = null;
-            const text = ss.textBuffer;
-            if (!text) return;
-
-            // Buffer exceeds platform limit — finalize current message, start fresh
-            if (text.length > STREAM_TEXT_LIMIT && ss.messageId && channel.edit) {
-              await channel.edit(message.channelId, ss.messageId, text.slice(0, STREAM_TEXT_LIMIT)).catch(() => {});
-              ss.messageId = null;
-              ss.textBuffer = text.slice(STREAM_TEXT_LIMIT);
-              return;
-            }
-
-            if (ss.messageId && channel.edit) {
-              await channel.edit(message.channelId, ss.messageId, text).catch(() => {});
-            } else if (!ss.messageId) {
-              const sentId = await channel.send({
-                channelId: message.channelId,
-                text: text.slice(0, 200) + '…',
-                replyToMessageId: message.id,
-              }).catch(() => null);
-              if (sentId) {
-                ss.messageId = sentId;
-              }
-            }
-          }, 500);
-        }
+        this.scheduleEdit(channel, message, ss);
         break;
       }
 
       case 'reasoning': {
         if (!session.reasoningVisible) return;
+        // Reasoning accumulates — will be included as italics in the next edit
         ss.reasoningBuffer += event.content ?? '';
-
-        if (!ss.reasoningTimer) {
-          ss.reasoningTimer = setTimeout(async () => {
-            ss.reasoningTimer = null;
-            const buffered = ss.reasoningBuffer;
-            ss.reasoningBuffer = '';
-            if (buffered) {
-              const display = buffered.length > 2000 ? buffered.slice(0, 2000) + '…' : buffered;
-              channel.send({
-                channelId: message.channelId,
-                text: `🧠 ${display}`,
-                silent: true,
-              }).catch(() => {});
-            }
-          }, 2000);
-        }
+        this.scheduleEdit(channel, message, ss);
         break;
       }
 
       case 'tool_start': {
         if (!session.toolsVisible) return;
         ss.toolLogLines.push(event.content);
-        this.updateToolLog(channel, message.channelId, sessionKey);
+        this.updateToolLog(channel, message.channelId, ss);
         break;
       }
 
       case 'tool_result': {
         if (!session.toolsVisible) return;
+        // Replace last line with result
         if (ss.toolLogLines.length > 0) {
           ss.toolLogLines[ss.toolLogLines.length - 1] = event.content;
         } else {
           ss.toolLogLines.push(event.content);
         }
-        this.updateToolLog(channel, message.channelId, sessionKey);
+        this.updateToolLog(channel, message.channelId, ss);
         break;
       }
 
@@ -149,54 +138,83 @@ export class StreamManager {
   }
 
   /**
-   * Clean up streaming state after a turn completes.
-   * Clears timers and removes the state entry.
+   * Build the display text: reasoning (italics) + text content.
    */
-  cleanupStreamState(sessionKey: string): void {
-    const ss = this.streamState.get(sessionKey);
-    if (ss) {
-      if (ss.textTimer) clearTimeout(ss.textTimer);
-      if (ss.reasoningTimer) clearTimeout(ss.reasoningTimer);
+  private buildDisplayText(ss: SessionStreamState): string {
+    let display = '';
+
+    if (ss.reasoningBuffer) {
+      // Show reasoning as italics, truncated to keep it manageable
+      const reasoning = ss.reasoningBuffer.length > 1500
+        ? ss.reasoningBuffer.slice(0, 1500) + '…'
+        : ss.reasoningBuffer;
+      display += `_${reasoning}_\n\n`;
     }
-    this.streamState.delete(sessionKey);
+
+    display += ss.textBuffer;
+    return display;
   }
 
-  // -----------------------------------------------------------------------
-  // Private
-  // -----------------------------------------------------------------------
+  /**
+   * Schedule a throttled edit to the streaming message.
+   */
+  private scheduleEdit(channel: Channel, message: InboundMessage, ss: SessionStreamState): void {
+    if (ss.editTimer) return; // Already scheduled
 
-  private getOrCreate(sessionKey: string): SessionStreamState {
-    let state = this.streamState.get(sessionKey);
-    if (!state) {
-      state = {
-        messageId: null,
-        textBuffer: '',
-        textTimer: null,
-        reasoningBuffer: '',
-        reasoningTimer: null,
-        toolLogMessageId: null,
-        toolLogLines: [],
-      };
-      this.streamState.set(sessionKey, state);
-    }
-    return state;
+    ss.editTimer = setTimeout(async () => {
+      ss.editTimer = null;
+      const display = this.buildDisplayText(ss);
+      if (!display) return;
+
+      if (ss.messageId && channel.edit) {
+        // Edit existing streaming message
+        const truncated = display.length > TEXT_LIMIT
+          ? display.slice(0, TEXT_LIMIT) + '…'
+          : display;
+        await channel.edit(message.channelId, ss.messageId, truncated).catch(() => {});
+      } else if (!ss.messageId) {
+        // First chunk — send new message
+        const preview = display.length > 200 ? display.slice(0, 200) + '…' : display;
+        const sentId = await channel.send({
+          channelId: message.channelId,
+          text: preview,
+          replyToMessageId: message.id,
+        }).catch(() => null);
+        if (sentId) {
+          ss.messageId = sentId;
+        }
+      }
+    }, EDIT_INTERVAL);
   }
 
-  private async updateToolLog(channel: Channel, channelId: string, sessionKey: string): Promise<void> {
-    const ss = this.getOrCreate(sessionKey);
+  /**
+   * Update the consolidated tool log message.
+   */
+  private async updateToolLog(channel: Channel, channelId: string, ss: SessionStreamState): Promise<void> {
     const display = ss.toolLogLines.slice(-10).join('\n');
 
     if (ss.toolLogMessageId && channel.edit) {
       await channel.edit(channelId, ss.toolLogMessageId, display).catch(() => {});
     } else {
-      const sentId = await channel.send({
-        channelId,
-        text: display,
-        silent: true,
-      });
-      if (sentId) {
-        ss.toolLogMessageId = sentId;
-      }
+      const sentId = await channel.send({ channelId, text: display, silent: true }).catch(() => null);
+      if (sentId) ss.toolLogMessageId = sentId;
     }
+  }
+
+  /**
+   * Clean up stream state. Returns the messageId so the runtime can edit it with the final response.
+   */
+  cleanup(sessionKey: string): string | null {
+    const ss = this.state.get(sessionKey);
+    if (!ss) return null;
+
+    const messageId = ss.messageId;
+
+    if (ss.editTimer) {
+      clearTimeout(ss.editTimer);
+    }
+
+    this.state.delete(sessionKey);
+    return messageId;
   }
 }
