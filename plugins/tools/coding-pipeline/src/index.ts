@@ -1,16 +1,17 @@
 /**
  * @rivetos/tool-coding-pipeline
  *
- * Autonomous coding loop:
+ * Autonomous coding pipeline:
  *   1. Opus delegates to Grok with spec + requirements
- *   2. Grok builds (reads files, writes code, runs tests)
- *   3. Grok self-reviews against requirements, loops if issues found
- *   4. Grok sends to Opus for validation
- *   5. Opus validates, sends back with findings or approves
- *   6. On approval: commit + push
+ *   2. Grok builds code, reads files, runs tests
+ *   3. Grok self-reviews against requirements
+ *   4. If issues → Grok fixes and re-loops
+ *   5. If clean → sends to Opus for validation
+ *   6. Opus approves or sends back with findings
+ *   7. On approval → commit + push
  *
- * Uses sub-agent sessions for the Grok↔Opus back-and-forth.
- * Each agent has full tool access (shell, file, git).
+ * Uses the sub-agent system for Grok ↔ Opus communication.
+ * Exposed as a single tool: `coding_pipeline`
  */
 
 import type { Tool, ToolContext } from '@rivetos/types';
@@ -20,44 +21,96 @@ import type { Tool, ToolContext } from '@rivetos/types';
 // ---------------------------------------------------------------------------
 
 export interface CodingPipelineConfig {
-  /** Agent that builds (default: 'grok') */
+  /** Agent that builds code (default: 'grok') */
   builderAgent?: string;
-  /** Agent that validates (default: 'opus') */
+  /** Agent that validates code (default: 'opus') */
   validatorAgent?: string;
-  /** Max build→review cycles before giving up (default: 3) */
-  maxBuildCycles?: number;
-  /** Max validator rejections before escalating to user (default: 2) */
-  maxValidationRejections?: number;
-  /** Working directory for git operations */
+  /** Max build→review loops before escalating (default: 3) */
+  maxBuildLoops?: number;
+  /** Max validator rejection loops before giving up (default: 2) */
+  maxValidationLoops?: number;
+  /** Working directory for code operations */
   workingDir?: string;
   /** Auto-commit on approval (default: true) */
   autoCommit?: boolean;
-  /** Auto-push on commit (default: true) */
-  autoPush?: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Pipeline State
 // ---------------------------------------------------------------------------
 
-interface PipelineState {
+type PipelinePhase = 'BUILD' | 'SELF_REVIEW' | 'VALIDATE' | 'FIX' | 'COMMIT' | 'DONE' | 'FAILED';
+
+interface PipelineContext {
   spec: string;
   files: string[];
-  buildCycle: number;
-  validationCycle: number;
-  builderOutput: string;
+  workingDir: string;
+  buildOutput: string;
   reviewFindings: string;
   validationFindings: string;
-  status: 'building' | 'self-reviewing' | 'validating' | 'fixing' | 'committing' | 'done' | 'failed';
+  buildLoops: number;
+  validationLoops: number;
+  logs: string[];
 }
 
 // ---------------------------------------------------------------------------
-// Types for the sub-agent manager (injected at registration)
+// Prompts
 // ---------------------------------------------------------------------------
 
-interface SubagentHandle {
-  spawn(request: { agent: string; task: string; mode: 'run'; timeoutMs?: number }): Promise<{ response: string; status: string }>;
-}
+const BUILDER_SYSTEM = `You are an expert software engineer. You have access to shell and file tools.
+Your job is to implement code changes according to the spec provided.
+
+Process:
+1. Read existing code to understand patterns and architecture
+2. Implement the changes
+3. Run any relevant tests
+4. Report what you did and any issues found
+
+Be precise. Follow existing patterns. Write production-quality code.`;
+
+const SELF_REVIEW_PROMPT = (spec: string, buildLog: string) => `
+## Self-Review
+
+Review the code changes you just made against the original spec.
+
+### Original Spec
+${spec}
+
+### What was done
+${buildLog}
+
+### Review Checklist
+- Does the implementation match the spec exactly?
+- Are there any bugs, edge cases, or missing error handling?
+- Do tests pass?
+- Are there any security issues?
+
+If everything looks clean, respond with exactly: LGTM
+If there are issues, list them as numbered items and fix them.`;
+
+const VALIDATOR_SYSTEM = `You are a principal engineer performing a final validation review.
+You are READ ONLY — do not edit code. Only compile findings.
+
+Look for:
+- Correctness vs spec
+- Architectural concerns
+- Missing tests
+- Security issues
+- Edge cases
+
+If everything passes, respond with exactly: VALIDATED
+If there are issues, list each finding with severity (P0/P1/P2).`;
+
+const VALIDATOR_PROMPT = (spec: string, diff: string) => `
+## Validation Review
+
+### Original Spec
+${spec}
+
+### Changes Made
+${diff}
+
+Review these changes against the spec. Are they correct, complete, and production-ready?`;
 
 // ---------------------------------------------------------------------------
 // Pipeline
@@ -65,336 +118,333 @@ interface SubagentHandle {
 
 export class CodingPipeline {
   private config: Required<CodingPipelineConfig>;
-  private subagents: SubagentHandle;
+  private subagentSpawn: ((args: Record<string, unknown>) => Promise<string>) | null = null;
+  private subagentSend: ((args: Record<string, unknown>) => Promise<string>) | null = null;
+  private subagentKill: ((args: Record<string, unknown>) => Promise<string>) | null = null;
+  private shellExec: ((args: Record<string, unknown>) => Promise<string>) | null = null;
+  private onProgress?: (message: string) => void;
 
-  constructor(config: CodingPipelineConfig, subagents: SubagentHandle) {
+  constructor(config?: CodingPipelineConfig) {
     this.config = {
-      builderAgent: config.builderAgent ?? 'grok',
-      validatorAgent: config.validatorAgent ?? 'opus',
-      maxBuildCycles: config.maxBuildCycles ?? 3,
-      maxValidationRejections: config.maxValidationRejections ?? 2,
-      workingDir: config.workingDir ?? process.cwd(),
-      autoCommit: config.autoCommit ?? true,
-      autoPush: config.autoPush ?? true,
+      builderAgent: config?.builderAgent ?? 'grok',
+      validatorAgent: config?.validatorAgent ?? 'opus',
+      maxBuildLoops: config?.maxBuildLoops ?? 3,
+      maxValidationLoops: config?.maxValidationLoops ?? 2,
+      workingDir: config?.workingDir ?? process.cwd(),
+      autoCommit: config?.autoCommit ?? true,
     };
-    this.subagents = subagents;
   }
 
-  async run(spec: string, files: string[] = [], onProgress?: (msg: string) => void): Promise<string> {
-    const state: PipelineState = {
+  /**
+   * Inject tool executors. Called by boot.ts after all tools are registered.
+   */
+  setToolExecutors(tools: {
+    subagentSpawn: (args: Record<string, unknown>) => Promise<string>;
+    subagentSend: (args: Record<string, unknown>) => Promise<string>;
+    subagentKill: (args: Record<string, unknown>) => Promise<string>;
+    shellExec: (args: Record<string, unknown>) => Promise<string>;
+  }): void {
+    this.subagentSpawn = tools.subagentSpawn;
+    this.subagentSend = tools.subagentSend;
+    this.subagentKill = tools.subagentKill;
+    this.shellExec = tools.shellExec;
+  }
+
+  setProgressHandler(handler: (message: string) => void): void {
+    this.onProgress = handler;
+  }
+
+  private log(ctx: PipelineContext, message: string): void {
+    ctx.logs.push(message);
+    this.onProgress?.(message);
+  }
+
+  // -----------------------------------------------------------------------
+  // Main Pipeline
+  // -----------------------------------------------------------------------
+
+  async run(spec: string, files: string[] = []): Promise<string> {
+    if (!this.subagentSpawn || !this.subagentSend || !this.shellExec) {
+      return 'Error: Pipeline not initialized — tool executors not set.';
+    }
+
+    const ctx: PipelineContext = {
       spec,
       files,
-      buildCycle: 0,
-      validationCycle: 0,
-      builderOutput: '',
+      workingDir: this.config.workingDir,
+      buildOutput: '',
       reviewFindings: '',
       validationFindings: '',
-      status: 'building',
+      buildLoops: 0,
+      validationLoops: 0,
+      logs: [],
     };
 
-    while (state.status !== 'done' && state.status !== 'failed') {
-      switch (state.status) {
-        case 'building':
-          await this.build(state, onProgress);
+    let phase: PipelinePhase = 'BUILD';
+
+    while (phase !== 'DONE' && phase !== 'FAILED') {
+      this.log(ctx, `📋 Phase: ${phase}`);
+
+      switch (phase) {
+        case 'BUILD':
+          phase = await this.build(ctx);
           break;
-        case 'self-reviewing':
-          await this.selfReview(state, onProgress);
+        case 'SELF_REVIEW':
+          phase = await this.selfReview(ctx);
           break;
-        case 'validating':
-          await this.validate(state, onProgress);
+        case 'VALIDATE':
+          phase = await this.validate(ctx);
           break;
-        case 'fixing':
-          await this.fix(state, onProgress);
+        case 'FIX':
+          phase = await this.fix(ctx);
           break;
-        case 'committing':
-          await this.commit(state, onProgress);
+        case 'COMMIT':
+          phase = await this.commit(ctx);
           break;
       }
     }
 
-    if (state.status === 'failed') {
-      return `❌ Pipeline failed after ${state.buildCycle} build cycles and ${state.validationCycle} validation cycles.\n\nLast findings:\n${state.validationFindings || state.reviewFindings || 'Unknown error'}`;
-    }
+    const summary = [
+      `## Pipeline ${phase === 'DONE' ? '✅ Complete' : '❌ Failed'}`,
+      `Build loops: ${ctx.buildLoops}`,
+      `Validation loops: ${ctx.validationLoops}`,
+      '',
+      '### Log',
+      ...ctx.logs,
+    ].join('\n');
 
-    return `✅ Pipeline completed. ${state.buildCycle} build cycles, ${state.validationCycle} validation cycles.`;
+    return summary;
   }
 
   // -----------------------------------------------------------------------
-  // Step 1: Build
+  // Phase: BUILD — Grok implements the spec
   // -----------------------------------------------------------------------
 
-  private async build(state: PipelineState, onProgress?: (msg: string) => void): Promise<void> {
-    state.buildCycle++;
-    onProgress?.(`🔨 Build cycle ${state.buildCycle}...`);
+  private async build(ctx: PipelineContext): Promise<PipelinePhase> {
+    this.log(ctx, `🔨 Spawning ${this.config.builderAgent} to build...`);
 
-    const filesContext = state.files.length > 0
-      ? `\n\nRelevant files to read first: ${state.files.join(', ')}`
+    const filesContext = ctx.files.length > 0
+      ? `\n\nRelevant files: ${ctx.files.join(', ')}`
       : '';
 
-    const prevFindings = state.validationFindings
-      ? `\n\n## Previous Validation Findings (fix these):\n${state.validationFindings}`
-      : state.reviewFindings
-        ? `\n\n## Previous Self-Review Findings (fix these):\n${state.reviewFindings}`
-        : '';
-
-    const task = `You are a senior software engineer. Build the following feature.
-
-## Spec
-${state.spec}
-${filesContext}
-${prevFindings}
-
-## Instructions
-1. Read the relevant files to understand the codebase patterns and architecture
-2. Write clean, production-quality code following existing conventions
-3. Run any tests that exist to verify your changes
-4. When done, output a summary of what you built and what files you changed
-
-DO NOT explain your thought process. Just build it.`;
+    const task = `${BUILDER_SYSTEM}\n\n## Spec\n${ctx.spec}${filesContext}\n\nWorking directory: ${ctx.workingDir}`;
 
     try {
-      const result = await this.subagents.spawn({
+      const result = await this.subagentSpawn!({
         agent: this.config.builderAgent,
         task,
         mode: 'run',
-        timeoutMs: 300000, // 5 min
+        timeout_ms: 300000, // 5 min
       });
 
-      state.builderOutput = result.response;
-      state.status = 'self-reviewing';
+      ctx.buildOutput = result;
+      ctx.buildLoops++;
+      this.log(ctx, `✅ Build complete (loop ${ctx.buildLoops})`);
+      return 'SELF_REVIEW';
     } catch (err: any) {
-      state.status = 'failed';
-      state.reviewFindings = `Build failed: ${err.message}`;
+      this.log(ctx, `❌ Build failed: ${err.message}`);
+      return 'FAILED';
     }
   }
 
   // -----------------------------------------------------------------------
-  // Step 2: Self-Review
+  // Phase: SELF_REVIEW — Grok reviews its own work
   // -----------------------------------------------------------------------
 
-  private async selfReview(state: PipelineState, onProgress?: (msg: string) => void): Promise<void> {
-    onProgress?.(`🔍 Self-reviewing...`);
+  private async selfReview(ctx: PipelineContext): Promise<PipelinePhase> {
+    this.log(ctx, `🔍 ${this.config.builderAgent} self-reviewing...`);
 
-    const task = `You are a senior code reviewer. Review the changes that were just made.
-
-## Original Spec
-${state.spec}
-
-## What Was Built
-${state.builderOutput}
-
-## Review Instructions
-1. Check: Does the code meet ALL requirements in the spec?
-2. Check: Are there bugs, edge cases, or missing error handling?
-3. Check: Does it follow the codebase's existing patterns and conventions?
-4. Run tests if they exist
-
-If everything is clean, respond with exactly: LGTM
-If there are issues, list them as numbered findings with severity (P0/P1/P2).`;
+    const reviewPrompt = SELF_REVIEW_PROMPT(ctx.spec, ctx.buildOutput);
 
     try {
-      const result = await this.subagents.spawn({
-        agent: this.config.builderAgent, // builder reviews own work
-        task,
+      const result = await this.subagentSpawn!({
+        agent: this.config.builderAgent,
+        task: reviewPrompt,
         mode: 'run',
-        timeoutMs: 120000, // 2 min
+        timeout_ms: 120000,
       });
 
-      if (result.response.trim().toUpperCase().includes('LGTM')) {
-        state.reviewFindings = '';
-        state.status = 'validating';
-      } else {
-        state.reviewFindings = result.response;
-        if (state.buildCycle >= this.config.maxBuildCycles) {
-          onProgress?.(`⚠️ Max build cycles (${this.config.maxBuildCycles}) reached, sending to validator anyway`);
-          state.status = 'validating';
-        } else {
-          state.status = 'fixing';
-        }
+      ctx.reviewFindings = result;
+
+      if (result.toUpperCase().includes('LGTM')) {
+        this.log(ctx, `✅ Self-review passed`);
+        return 'VALIDATE';
       }
+
+      this.log(ctx, `⚠️ Self-review found issues`);
+      if (ctx.buildLoops >= this.config.maxBuildLoops) {
+        this.log(ctx, `⚠️ Max build loops (${this.config.maxBuildLoops}) reached, sending to validator anyway`);
+        return 'VALIDATE';
+      }
+      return 'FIX';
     } catch (err: any) {
-      // Skip review on error, let validator catch issues
-      state.status = 'validating';
+      this.log(ctx, `❌ Self-review failed: ${err.message}`);
+      return 'VALIDATE'; // Skip review on error, let validator catch issues
     }
   }
 
   // -----------------------------------------------------------------------
-  // Step 3: Validate (different agent)
+  // Phase: VALIDATE — Opus reviews the code
   // -----------------------------------------------------------------------
 
-  private async validate(state: PipelineState, onProgress?: (msg: string) => void): Promise<void> {
-    state.validationCycle++;
-    onProgress?.(`✅ Validation cycle ${state.validationCycle}...`);
+  private async validate(ctx: PipelineContext): Promise<PipelinePhase> {
+    this.log(ctx, `🔬 ${this.config.validatorAgent} validating...`);
 
-    const task = `You are a principal engineer performing a final validation review. You are READ ONLY — do not modify any files.
+    // Get git diff for the validator
+    let diff = '';
+    try {
+      diff = await this.shellExec!({ command: `cd ${ctx.workingDir} && git diff --stat && git diff` });
+    } catch {
+      diff = ctx.buildOutput; // Fallback to build output if no git
+    }
 
-## Original Spec
-${state.spec}
-
-## What Was Built
-${state.builderOutput}
-
-${state.reviewFindings ? `## Self-Review Findings (already addressed or accepted)\n${state.reviewFindings}` : ''}
-
-## Validation Instructions
-1. Read the actual files that were changed (use shell tool to cat them)
-2. Verify the code meets ALL requirements in the spec
-3. Check for: correctness, architectural concerns, missing tests, security issues
-4. Run tests if they exist
-
-If everything passes, respond with exactly: VALIDATED
-If there are issues, list them as numbered findings with severity (P0 = blocking, P1 = should fix, P2 = minor).
-Only P0 findings should block — P1/P2 can be addressed later.`;
+    const task = `${VALIDATOR_SYSTEM}\n\n${VALIDATOR_PROMPT(ctx.spec, diff)}`;
 
     try {
-      const result = await this.subagents.spawn({
+      const result = await this.subagentSpawn!({
         agent: this.config.validatorAgent,
         task,
         mode: 'run',
-        timeoutMs: 180000, // 3 min
+        timeout_ms: 180000,
       });
 
-      if (result.response.trim().toUpperCase().includes('VALIDATED')) {
-        state.validationFindings = '';
-        state.status = 'committing';
-      } else {
-        state.validationFindings = result.response;
-        if (state.validationCycle >= this.config.maxValidationRejections) {
-          onProgress?.(`⚠️ Max validation rejections (${this.config.maxValidationRejections}), escalating to user`);
-          state.status = 'failed';
-        } else {
-          onProgress?.(`🔄 Validator found issues, sending back to builder`);
-          state.status = 'building'; // Full rebuild with findings
-        }
+      ctx.validationFindings = result;
+
+      if (result.toUpperCase().includes('VALIDATED')) {
+        this.log(ctx, `✅ Validation passed`);
+        return 'COMMIT';
       }
+
+      this.log(ctx, `⚠️ Validator found issues`);
+      ctx.validationLoops++;
+
+      if (ctx.validationLoops >= this.config.maxValidationLoops) {
+        this.log(ctx, `❌ Max validation loops (${this.config.maxValidationLoops}) reached`);
+        return 'FAILED';
+      }
+      return 'FIX';
     } catch (err: any) {
-      state.status = 'failed';
-      state.validationFindings = `Validation failed: ${err.message}`;
+      this.log(ctx, `❌ Validation failed: ${err.message}`);
+      return 'FAILED';
     }
   }
 
   // -----------------------------------------------------------------------
-  // Step 2b: Fix (builder addresses self-review findings)
+  // Phase: FIX — Grok fixes issues from review or validation
   // -----------------------------------------------------------------------
 
-  private async fix(state: PipelineState, onProgress?: (msg: string) => void): Promise<void> {
-    onProgress?.(`🔧 Fixing self-review findings...`);
+  private async fix(ctx: PipelineContext): Promise<PipelinePhase> {
+    const findings = ctx.validationFindings || ctx.reviewFindings;
+    this.log(ctx, `🔧 ${this.config.builderAgent} fixing issues...`);
 
-    const task = `You are a senior software engineer fixing code based on review feedback.
+    const task = `${BUILDER_SYSTEM}
 
 ## Original Spec
-${state.spec}
+${ctx.spec}
 
-## Findings to Fix
-${state.reviewFindings}
+## Issues Found
+${findings}
 
-## Instructions
-1. Address every finding listed above
-2. Read the current code, make targeted fixes
-3. Run tests to verify
-4. Output a summary of what you fixed
-
-DO NOT explain your thought process. Just fix it.`;
+Fix all issues listed above. Working directory: ${ctx.workingDir}`;
 
     try {
-      const result = await this.subagents.spawn({
+      const result = await this.subagentSpawn!({
         agent: this.config.builderAgent,
         task,
         mode: 'run',
-        timeoutMs: 180000,
+        timeout_ms: 300000,
       });
 
-      state.builderOutput = result.response;
-      state.status = 'self-reviewing';
+      ctx.buildOutput = result;
+      ctx.buildLoops++;
+      this.log(ctx, `✅ Fix complete (loop ${ctx.buildLoops})`);
+
+      // After a fix from validation findings, go back to validate
+      if (ctx.validationFindings) {
+        ctx.validationFindings = '';
+        return 'VALIDATE';
+      }
+      // After a fix from self-review, re-review
+      return 'SELF_REVIEW';
     } catch (err: any) {
-      // If fix fails, try to validate what we have
-      state.status = 'validating';
+      this.log(ctx, `❌ Fix failed: ${err.message}`);
+      return 'FAILED';
     }
   }
 
   // -----------------------------------------------------------------------
-  // Step 4: Commit
+  // Phase: COMMIT — auto-commit and push
   // -----------------------------------------------------------------------
 
-  private async commit(state: PipelineState, onProgress?: (msg: string) => void): Promise<void> {
+  private async commit(ctx: PipelineContext): Promise<PipelinePhase> {
     if (!this.config.autoCommit) {
-      state.status = 'done';
-      return;
+      this.log(ctx, `✅ Pipeline complete (auto-commit disabled)`);
+      return 'DONE';
     }
 
-    onProgress?.(`📦 Committing...`);
-
-    const commitMsg = state.spec.split('\n')[0].slice(0, 72);
-
-    const task = `Run these shell commands in order:
-
-1. \`cd ${this.config.workingDir} && git add -A\`
-2. \`git diff --cached --stat\` — show what's being committed
-3. \`git commit -m "feat: ${commitMsg}"\`
-${this.config.autoPush ? `4. \`git push\`` : ''}
-
-Output the commit hash and diff stat.`;
+    this.log(ctx, `📦 Committing...`);
 
     try {
-      const result = await this.subagents.spawn({
-        agent: this.config.builderAgent,
-        task,
-        mode: 'run',
-        timeoutMs: 30000,
+      const commitMsg = `feat: ${ctx.spec.split('\n')[0].slice(0, 72)}`;
+      const result = await this.shellExec!({
+        command: `cd ${ctx.workingDir} && git add -A && git diff --cached --stat && git commit -m "${commitMsg.replace(/"/g, '\\"')}" && git push`,
       });
 
-      onProgress?.(`📦 ${result.response.slice(0, 200)}`);
-      state.status = 'done';
-    } catch {
-      // Commit failure doesn't fail the pipeline — code is validated
-      state.status = 'done';
+      this.log(ctx, `✅ Committed and pushed`);
+      this.log(ctx, result.slice(0, 200));
+      return 'DONE';
+    } catch (err: any) {
+      this.log(ctx, `⚠️ Commit failed: ${err.message} (code is valid, commit manually)`);
+      return 'DONE'; // Code is valid even if commit fails
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Tool Factory
+// Tool Definition
 // ---------------------------------------------------------------------------
 
-export function createCodingPipelineTool(
-  config: CodingPipelineConfig,
-  subagents: SubagentHandle,
-): Tool {
-  const pipeline = new CodingPipeline(config, subagents);
-
+export function createCodingPipelineTool(pipeline: CodingPipeline): Tool {
   return {
     name: 'coding_pipeline',
     description:
-      'Run the autonomous coding pipeline. Grok builds from a spec, self-reviews, ' +
-      'Opus validates, fix loop until clean, then commits. Use for significant ' +
-      'features or changes that benefit from build→review→validate rigor.',
+      'Run the autonomous coding pipeline. Grok builds code from a spec, ' +
+      'self-reviews, Opus validates, fixes loop until clean, then commits. ' +
+      'Use for: building features, fixing bugs, refactoring code.',
     parameters: {
       type: 'object',
       properties: {
         spec: {
           type: 'string',
-          description: 'Detailed spec for what to build. Be specific about requirements.',
+          description: 'Detailed spec of what to build or fix',
         },
         files: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Relevant file paths the builder should read first',
+          description: 'Relevant file paths for context (optional)',
+        },
+        working_dir: {
+          type: 'string',
+          description: 'Working directory for code operations (optional)',
+        },
+        auto_commit: {
+          type: 'boolean',
+          description: 'Auto-commit on approval (default: true)',
         },
       },
       required: ['spec'],
     },
-    async execute(args: Record<string, unknown>, signal?: AbortSignal, context?: ToolContext): Promise<string> {
-      const progressLines: string[] = [];
-
-      const result = await pipeline.run(
+    execute: async (args: Record<string, unknown>): Promise<string> => {
+      if (args.working_dir) {
+        (pipeline as any).config.workingDir = args.working_dir as string;
+      }
+      if (args.auto_commit !== undefined) {
+        (pipeline as any).config.autoCommit = args.auto_commit as boolean;
+      }
+      return pipeline.run(
         args.spec as string,
-        args.files as string[] | undefined,
-        (msg) => progressLines.push(msg),
+        (args.files as string[]) ?? [],
       );
-
-      return progressLines.length > 0
-        ? `${progressLines.join('\n')}\n\n${result}`
-        : result;
     },
   };
 }

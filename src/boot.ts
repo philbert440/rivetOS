@@ -25,6 +25,7 @@ import { DiscordChannel } from '../plugins/channels/discord/src/index.js';
 
 // Tools
 import { ShellTool } from '../plugins/tools/shell/src/index.js';
+import { CodingPipeline, createCodingPipelineTool } from '../plugins/tools/coding-pipeline/src/index.js';
 import { createCodingPipelineTool } from '../plugins/tools/coding-pipeline/src/index.js';
 
 // Memory
