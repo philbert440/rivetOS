@@ -21,7 +21,7 @@ import { OpenAICompatProvider } from '../plugins/providers/openai-compat/src/ind
 // Channels
 import { TelegramChannel } from '../plugins/channels/telegram/src/index.js';
 import { DiscordChannel } from '../plugins/channels/discord/src/index.js';
-import { VoicePlugin } from '../plugins/channels/voice-discord/src/index.js';
+// Voice plugin imported lazily — native deps (opus, sodium) may not be installed
 
 // Tools
 import { ShellTool } from '../plugins/tools/shell/src/index.js';
@@ -148,6 +148,7 @@ export async function boot(configPath?: string) {
         break;
       case 'voice':
       case 'voice-discord': {
+        const { VoicePlugin } = await import('../plugins/channels/voice-discord/src/index.js');
         const voicePlugin = new VoicePlugin({
           discordToken: channelConfig.bot_token as string ?? process.env.VOICE_BOT_TOKEN ?? process.env.DISCORD_BOT_TOKEN ?? '',
           xaiApiKey: channelConfig.xai_api_key as string ?? process.env.XAI_API_KEY ?? '',
