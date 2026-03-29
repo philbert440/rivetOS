@@ -60,7 +60,7 @@ export class TelegramChannel implements Channel {
       await next();
     });
 
-    const commands = ['new', 'stop', 'interrupt', 'steer', 'status', 'model', 'think', 'reasoning', 'tools'];
+    const commands = ['start', 'new', 'stop', 'interrupt', 'steer', 'status', 'model', 'think', 'reasoning', 'tools'];
 
     for (const cmd of commands) {
       this.bot.command(cmd, (ctx) => this.handleCommand(ctx, cmd));

@@ -89,4 +89,5 @@ export type RuntimeCommand =
   | 'status'
   | 'model'
   | 'think'
-  | 'reasoning';
+  | 'reasoning'
+  | 'tools';

@@ -317,7 +317,7 @@ export class Runtime {
                 channelId: message.channelId,
                 text: text.slice(0, 200) + '…',
                 replyToMessageId: message.id,
-              });
+              }).catch(() => null);
               if (sentId) {
                 this.streamingMessages.set(sessionKey, sentId);
               }
@@ -556,6 +556,14 @@ export class Runtime {
         await channel.send({
           channelId: message.channelId,
           text: `🧠 Reasoning: ${session.reasoningVisible ? 'visible' : 'hidden'}`,
+        });
+        break;
+      }
+
+      case 'start': {
+        await channel.send({
+          channelId: message.channelId,
+          text: '👋 RivetOS v0.1.0 — ready.',
         });
         break;
       }
