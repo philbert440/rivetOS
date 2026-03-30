@@ -26,6 +26,7 @@ import { DiscordChannel } from '../plugins/channels/discord/src/index.js';
 // Tools
 import { ShellTool } from '../plugins/tools/shell/src/index.js';
 import { CodingPipeline, createCodingPipelineTool } from '../plugins/tools/coding-pipeline/src/index.js';
+import { createWebTools } from '../plugins/tools/web-search/src/index.js';
 import type { Tool } from '@rivetos/types';
 import { createCodingPipelineTool } from '../plugins/tools/coding-pipeline/src/index.js';
 
@@ -236,6 +237,16 @@ export async function boot(configPath?: string) {
   runtime.registerTool(new ShellTool({
     cwd: config.runtime.workspace.replace('~', process.env.HOME ?? '.'),
   }));
+
+  // Register web search + fetch tools (Google CSE for non-xAI providers)
+  // xAI has native web search built into the Responses API
+  const webTools = createWebTools({
+    googleApiKey: process.env.GOOGLE_CSE_API_KEY ?? process.env.GOOGLE_API_KEY,
+    googleCseId: process.env.GOOGLE_CSE_ID,
+  });
+  for (const tool of webTools) {
+    runtime.registerTool(tool);
+  }
 
   // Register coding pipeline (uses sub-agents for build→review→validate loop)
   const pipelineCfg = config.runtime.coding_pipeline as Record<string, unknown> | undefined;

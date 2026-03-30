@@ -137,7 +137,11 @@ export class XAIProvider implements Provider {
     }
 
     if (options?.tools?.length) {
-      body.tools = convertTools(options.tools);
+      body.tools = [
+        // xAI native web search — handled server-side
+        { type: 'web_search' },
+        ...convertTools(options.tools),
+      ];
     }
 
     const controller = new AbortController();
