@@ -127,6 +127,12 @@ export class AgentLoop {
 
       try {
         for await (const chunk of this.config.provider.chatStream(messages, options)) {
+          // Capture usage from ANY chunk (not just 'done') — prevents lost tracking on abort
+          if (chunk.usage) {
+            totalUsage.promptTokens = Math.max(totalUsage.promptTokens, chunk.usage.promptTokens);
+            totalUsage.completionTokens = Math.max(totalUsage.completionTokens, chunk.usage.completionTokens);
+          }
+
           if (signal?.aborted) {
             return { response: '', toolsUsed, iterations, aborted: true, partialResponse: textContent || partialResponse, usage: totalUsage };
           }

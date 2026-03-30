@@ -40,7 +40,7 @@ export interface XAIProviderConfig {
 type ResponsesInput =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string }
+  | { role: 'assistant'; content: string; tool_calls?: any[] }
   | { type: 'function_call_output'; call_id: string; output: string };
 
 // ---------------------------------------------------------------------------
@@ -59,9 +59,24 @@ function convertMessages(messages: Message[]): ResponsesInput[] {
         output: msg.content || '',
       });
     } else if (msg.role === 'assistant') {
-      // Assistant messages — content only, tool calls are tracked server-side
-      if (msg.content) {
-        result.push({ role: 'assistant', content: msg.content });
+      // Because store: false, we must explicitly send previous tool calls
+      // back to the API so it understands the function_call_output that follows.
+      const assistantMsg: any = { role: 'assistant', content: msg.content || '' };
+
+      if (msg.toolCalls && msg.toolCalls.length > 0) {
+        assistantMsg.tool_calls = msg.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: 'function',
+          function: {
+            name: tc.name,
+            arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments),
+          },
+        }));
+      }
+
+      // Push if there is text content OR tool calls
+      if (assistantMsg.content || assistantMsg.tool_calls) {
+        result.push(assistantMsg);
       }
     } else {
       // system / user — pass through
@@ -217,20 +232,32 @@ export class XAIProvider implements Provider {
               };
             }
           } else if (event.type === 'response.function_call_arguments.delta') {
-            // Find the pending tool call and append args
-            const lastIdx = toolCallIndex - 1;
-            const pending = pendingToolCalls.get(lastIdx);
+            // Match by call_id/item_id, fallback to last created
+            let targetIdx = toolCallIndex - 1;
+            const matchId = event.call_id ?? event.item_id;
+            if (matchId) {
+              for (const [idx, tc] of pendingToolCalls.entries()) {
+                if (tc.id === matchId) { targetIdx = idx; break; }
+              }
+            }
+            const pending = pendingToolCalls.get(targetIdx);
             if (pending) {
               pending.args += event.delta ?? '';
               yield {
                 type: 'tool_call_delta',
                 delta: event.delta ?? '',
-                toolCall: { index: lastIdx },
+                toolCall: { index: targetIdx },
               };
             }
           } else if (event.type === 'response.function_call_arguments.done') {
-            const lastIdx = toolCallIndex - 1;
-            yield { type: 'tool_call_done', toolCall: { index: lastIdx } };
+            let targetIdx = toolCallIndex - 1;
+            const matchId = event.call_id ?? event.item_id;
+            if (matchId) {
+              for (const [idx, tc] of pendingToolCalls.entries()) {
+                if (tc.id === matchId) { targetIdx = idx; break; }
+              }
+            }
+            yield { type: 'tool_call_done', toolCall: { index: targetIdx } };
           } else if (event.type === 'response.output_text.delta') {
             if (event.delta) {
               yield { type: 'text', delta: event.delta };

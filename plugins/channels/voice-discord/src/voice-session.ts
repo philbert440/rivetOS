@@ -26,7 +26,7 @@ export class VoiceSession {
   private opusStreams = new Map<string, any>();
   private decoders = new Map<string, any>();
   private audioReady = false;
-  private postgresPool: pg.Pool | null = null;
+  private postgresPool: pg.Pool | null = null; // Shared pool from plugin, NOT owned by session
   
 
   constructor(connection: VoiceConnection, config: VoicePluginConfig) {
@@ -37,7 +37,8 @@ export class VoiceSession {
 
     // Memory pool
     if (config.postgresConnectionString) {
-      this.postgresPool = new Pool({ connectionString: config.postgresConnectionString, max: 2 });
+      // Accept an existing pool from the plugin level — don't create per-session
+      this.postgresPool = (config as any).postgresPool ?? new Pool({ connectionString: config.postgresConnectionString, max: 2 });
       
     }
 
@@ -173,9 +174,9 @@ export class VoiceSession {
         const query = String(args.query ?? '');
         const limit = Math.min(Number(args.limit) || 10, 20);
         const result = await this.postgresPool.query(
-          `SELECT m.message_id as id, m.content, m.role, m.created_at,
+          `SELECT m.id, m.content, m.role, m.created_at,
                   ts_rank_cd(m.content_tsv, plainto_tsquery('english', $1)) AS score
-           FROM messages m
+           FROM ros_messages m
            WHERE m.content_tsv @@ plainto_tsquery('english', $1)
            ORDER BY score DESC LIMIT $2`,
           [query, limit],
@@ -204,8 +205,8 @@ export class VoiceSession {
         const limit = args.limit ?? 20;
         const result = await this.postgresPool.query(
           `SELECT m.content, m.role, m.created_at, c.agent_id
-           FROM messages m
-           JOIN conversations c ON c.conversation_id = m.conversation_id
+           FROM ros_messages m
+           JOIN ros_conversations c ON c.id = m.conversation_id
            ORDER BY m.created_at DESC
            LIMIT $1`,
           [limit],

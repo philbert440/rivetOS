@@ -64,7 +64,7 @@ export class SessionManager {
   }
 
   /**
-   * Delete a session (used by /new).
+   * Delete a session (used by /new). Next message creates a truly fresh session.
    */
   delete(sessionKey: string): void {
     this.sessions.delete(sessionKey);
@@ -81,14 +81,26 @@ export class SessionManager {
    * Create a new session, restoring history and settings from memory if available.
    */
   async createSession(sessionKey: string, agent: AgentConfig): Promise<SessionState> {
-    // Restore history from memory
-    let history: Message[] = [];
+    // Fresh session — empty conversation history.
+    // Inject a brief recent activity summary so the agent has context
+    // without loading 100 raw messages.
+    const history: Message[] = [];
+
     if (this.memory) {
       try {
-        history = await this.memory.getSessionHistory(sessionKey, { limit: 100 });
-      } catch (err: any) {
-        log.warn(`Failed to restore session history: ${err.message}`);
-      }
+        // Get a short summary of recent activity (last 2 days, ~500 tokens max)
+        const recentContext = await this.memory.getContextForTurn(
+          'recent activity summary',
+          agent.id,
+          { maxTokens: 500 },
+        );
+        if (recentContext && recentContext.trim()) {
+          history.push({
+            role: 'system',
+            content: `## Recent Activity (last 48h)\n${recentContext}`,
+          });
+        }
+      } catch {}
     }
 
     // Restore settings
