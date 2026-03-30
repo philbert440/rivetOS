@@ -13,7 +13,7 @@
 import type { Channel, InboundMessage, SessionState, StreamEvent } from '@rivetos/types';
 
 // Throttle: don't edit more often than this
-const EDIT_INTERVAL_MS = 1000;
+const EDIT_INTERVAL_MS = 600;
 // Platform-safe text limit
 const TEXT_LIMIT = 3800;
 
