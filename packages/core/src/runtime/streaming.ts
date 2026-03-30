@@ -1,51 +1,55 @@
 /**
  * StreamManager — handles streaming events from agent turns to channels.
  *
- * Design:
- * - Text streams into a SINGLE message that gets edited progressively
- * - The final response EDITS that same message (no duplicate)
- * - Reasoning appears as inline italics within the streamed message
- * - Tool calls show in a consolidated log message
- * - Everything cleans up after the turn
+ * Rules:
+ * 1. ONE streaming text message per turn — sent on first text, edited as more arrives
+ * 2. Reasoning shown as inline italics in the SAME message (not separate)
+ * 3. Tool calls in ONE consolidated log message (edited in-place)
+ * 4. Status/progress updates edit the tool log (not separate messages)
+ * 5. Final response EDITS the streaming message (no duplicate)
+ * 6. Errors are the only thing that sends a NEW message mid-turn
  */
 
 import type { Channel, InboundMessage, SessionState, StreamEvent } from '@rivetos/types';
-import { logger } from '../logger.js';
 
-const log = logger('StreamManager');
-
-// How often to edit the streaming message (ms)
-const EDIT_INTERVAL = 800;
-// Platform-safe text limit (leaves room for HTML)
+// Throttle: don't edit more often than this
+const EDIT_INTERVAL_MS = 1000;
+// Platform-safe text limit
 const TEXT_LIMIT = 3800;
 
 // ---------------------------------------------------------------------------
-// Stream State per session
+// State
 // ---------------------------------------------------------------------------
 
-interface SessionStreamState {
-  /** The message being edited with streaming text */
+interface StreamState {
+  /** Main message being edited with text + reasoning */
   messageId: string | null;
-  /** Accumulated text from the LLM */
-  textBuffer: string;
-  /** Accumulated reasoning (shown inline as italics) */
-  reasoningBuffer: string;
-  /** Pending edit timer */
+  /** Accumulated response text */
+  text: string;
+  /** Accumulated reasoning text */
+  reasoning: string;
+  /** Whether an edit is scheduled */
+  editPending: boolean;
+  /** Timer for throttled edits */
   editTimer: ReturnType<typeof setTimeout> | null;
-  /** Tool call log lines */
-  toolLogLines: string[];
+  /** Whether cleanup has been called (prevents post-cleanup edits) */
+  cleaned: boolean;
   /** Tool log message ID */
-  toolLogMessageId: string | null;
+  toolMessageId: string | null;
+  /** Tool log lines */
+  toolLines: string[];
 }
 
-function createState(): SessionStreamState {
+function freshState(): StreamState {
   return {
     messageId: null,
-    textBuffer: '',
-    reasoningBuffer: '',
+    text: '',
+    reasoning: '',
+    editPending: false,
     editTimer: null,
-    toolLogLines: [],
-    toolLogMessageId: null,
+    cleaned: false,
+    toolMessageId: null,
+    toolLines: [],
   };
 }
 
@@ -54,167 +58,140 @@ function createState(): SessionStreamState {
 // ---------------------------------------------------------------------------
 
 export class StreamManager {
-  private state: Map<string, SessionStreamState> = new Map();
+  private states: Map<string, StreamState> = new Map();
 
-  private getState(sessionKey: string): SessionStreamState {
-    let ss = this.state.get(sessionKey);
-    if (!ss) {
-      ss = createState();
-      this.state.set(sessionKey, ss);
-    }
-    return ss;
+  private get(key: string): StreamState {
+    let s = this.states.get(key);
+    if (!s) { s = freshState(); this.states.set(key, s); }
+    return s;
   }
 
-  /**
-   * Get the streaming message ID (so the runtime can edit it with the final response).
-   */
-  getStreamMessageId(sessionKey: string): string | null {
-    return this.state.get(sessionKey)?.messageId ?? null;
+  getStreamMessageId(key: string): string | null {
+    return this.states.get(key)?.messageId ?? null;
   }
 
-  /**
-   * Handle a stream event from the agent loop.
-   */
   handleStreamEvent(
     channel: Channel,
     message: InboundMessage,
     session: SessionState,
     event: StreamEvent,
   ): void {
-    const sessionKey = `${message.channelId}:${message.userId}`;
-    const ss = this.getState(sessionKey);
+    const key = `${message.channelId}:${message.userId}`;
+    const s = this.get(key);
+    if (s.cleaned) return; // Turn is over, ignore late events
 
     switch (event.type) {
-      case 'text': {
-        ss.textBuffer += event.content ?? '';
-        this.scheduleEdit(channel, message, ss);
+      case 'text':
+        s.text += event.content ?? '';
+        this.throttledEdit(channel, message, s);
         break;
-      }
 
-      case 'reasoning': {
+      case 'reasoning':
         if (!session.reasoningVisible) return;
-        // Reasoning accumulates — will be included as italics in the next edit
-        ss.reasoningBuffer += event.content ?? '';
-        this.scheduleEdit(channel, message, ss);
+        s.reasoning += event.content ?? '';
+        this.throttledEdit(channel, message, s);
         break;
-      }
 
-      case 'tool_start': {
+      case 'tool_start':
         if (!session.toolsVisible) return;
-        ss.toolLogLines.push(event.content);
-        this.updateToolLog(channel, message.channelId, ss);
+        s.toolLines.push(event.content);
+        this.editToolLog(channel, message.channelId, s);
         break;
-      }
 
-      case 'tool_result': {
+      case 'tool_result':
         if (!session.toolsVisible) return;
-        // Replace last line with result
-        if (ss.toolLogLines.length > 0) {
-          ss.toolLogLines[ss.toolLogLines.length - 1] = event.content;
+        if (s.toolLines.length > 0) {
+          s.toolLines[s.toolLines.length - 1] = event.content;
         } else {
-          ss.toolLogLines.push(event.content);
+          s.toolLines.push(event.content);
         }
-        this.updateToolLog(channel, message.channelId, ss);
+        this.editToolLog(channel, message.channelId, s);
         break;
-      }
 
-      case 'status': {
-        channel.send({
-          channelId: message.channelId,
-          text: event.content,
-          silent: true,
-        }).catch(() => {});
+      case 'status':
+        // Progress updates go into the tool log, not separate messages
+        s.toolLines.push(event.content);
+        this.editToolLog(channel, message.channelId, s);
         break;
-      }
 
-      case 'error': {
-        channel.send({
-          channelId: message.channelId,
-          text: `⚠️ ${event.content}`,
-        }).catch(() => {});
+      case 'error':
+        // Errors are the only thing that gets a separate message
+        channel.send({ channelId: message.channelId, text: `⚠️ ${event.content}` }).catch(() => {});
         break;
-      }
     }
   }
 
-  /**
-   * Build the display text: reasoning (italics) + text content.
-   */
-  private buildDisplayText(ss: SessionStreamState): string {
-    let display = '';
+  // -----------------------------------------------------------------------
+  // Text + reasoning → ONE message, throttled edits
+  // -----------------------------------------------------------------------
 
-    if (ss.reasoningBuffer) {
-      // Show reasoning as italics, truncated to keep it manageable
-      const reasoning = ss.reasoningBuffer.length > 1500
-        ? ss.reasoningBuffer.slice(0, 1500) + '…'
-        : ss.reasoningBuffer;
-      display += `_${reasoning}_\n\n`;
-    }
+  private throttledEdit(channel: Channel, message: InboundMessage, s: StreamState): void {
+    if (s.editPending || s.cleaned) return;
+    s.editPending = true;
 
-    display += ss.textBuffer;
-    return display;
-  }
+    s.editTimer = setTimeout(async () => {
+      s.editPending = false;
+      s.editTimer = null;
+      if (s.cleaned) return; // Check again after timeout
 
-  /**
-   * Schedule a throttled edit to the streaming message.
-   */
-  private scheduleEdit(channel: Channel, message: InboundMessage, ss: SessionStreamState): void {
-    if (ss.editTimer) return; // Already scheduled
-
-    ss.editTimer = setTimeout(async () => {
-      ss.editTimer = null;
-      const display = this.buildDisplayText(ss);
+      const display = this.buildDisplay(s);
       if (!display) return;
 
-      if (ss.messageId && channel.edit) {
-        // Edit existing streaming message
-        const truncated = display.length > TEXT_LIMIT
-          ? display.slice(0, TEXT_LIMIT) + '…'
-          : display;
-        await channel.edit(message.channelId, ss.messageId, truncated).catch(() => {});
-      } else if (!ss.messageId) {
-        // First chunk — send new message
-        const preview = display.length > 200 ? display.slice(0, 200) + '…' : display;
+      const truncated = display.length > TEXT_LIMIT ? display.slice(0, TEXT_LIMIT) + '…' : display;
+
+      if (s.messageId && channel.edit) {
+        await channel.edit(message.channelId, s.messageId, truncated).catch(() => {});
+      } else if (!s.messageId) {
         const sentId = await channel.send({
           channelId: message.channelId,
-          text: preview,
+          text: truncated,
           replyToMessageId: message.id,
         }).catch(() => null);
-        if (sentId) {
-          ss.messageId = sentId;
-        }
+        if (sentId) s.messageId = sentId;
       }
-    }, EDIT_INTERVAL);
+    }, EDIT_INTERVAL_MS);
   }
 
-  /**
-   * Update the consolidated tool log message.
-   */
-  private async updateToolLog(channel: Channel, channelId: string, ss: SessionStreamState): Promise<void> {
-    const display = ss.toolLogLines.slice(-10).join('\n');
+  private buildDisplay(s: StreamState): string {
+    let out = '';
+    if (s.reasoning) {
+      // Reasoning as italics, capped
+      const r = s.reasoning.length > 1200 ? s.reasoning.slice(-1200) : s.reasoning;
+      out += `_🧠 ${r}_\n\n`;
+    }
+    out += s.text;
+    return out.trim();
+  }
 
-    if (ss.toolLogMessageId && channel.edit) {
-      await channel.edit(channelId, ss.toolLogMessageId, display).catch(() => {});
+  // -----------------------------------------------------------------------
+  // Tool log → ONE message, edited in-place
+  // -----------------------------------------------------------------------
+
+  private async editToolLog(channel: Channel, channelId: string, s: StreamState): Promise<void> {
+    if (s.cleaned) return;
+    const display = s.toolLines.slice(-8).join('\n');
+
+    if (s.toolMessageId && channel.edit) {
+      await channel.edit(channelId, s.toolMessageId, display).catch(() => {});
     } else {
       const sentId = await channel.send({ channelId, text: display, silent: true }).catch(() => null);
-      if (sentId) ss.toolLogMessageId = sentId;
+      if (sentId) s.toolMessageId = sentId;
     }
   }
 
-  /**
-   * Clean up stream state. Returns the messageId so the runtime can edit it with the final response.
-   */
-  cleanup(sessionKey: string): string | null {
-    const ss = this.state.get(sessionKey);
-    if (!ss) return null;
+  // -----------------------------------------------------------------------
+  // Cleanup — returns messageId for final response edit
+  // -----------------------------------------------------------------------
 
-    const messageId = ss.messageId;
+  cleanup(key: string): string | null {
+    const s = this.states.get(key);
+    if (!s) return null;
 
-    if (ss.editTimer) {
-      clearTimeout(ss.editTimer);
-    }
+    s.cleaned = true; // Prevent any late edits
+    if (s.editTimer) clearTimeout(s.editTimer);
 
-    this.state.delete(sessionKey);
+    const messageId = s.messageId;
+    this.states.delete(key);
     return messageId;
   }
 }
