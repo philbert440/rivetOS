@@ -28,6 +28,8 @@ export interface SessionState {
   reasoningVisible: boolean;
   toolsVisible: boolean;
   history: Message[];
+  /** System prompt — built once on session init, reused every turn */
+  systemPrompt?: string;
 }
 
 // ---------------------------------------------------------------------------

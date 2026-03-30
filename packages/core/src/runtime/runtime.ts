@@ -189,30 +189,24 @@ export class Runtime {
         this.sessionManager.set(sessionKey, session);
       }
 
-      // Build system prompt
-      let systemPrompt = await this.workspace.buildSystemPrompt(agent.id);
+      // System prompt — built once on session init, reused every turn
+      // Memory context is NOT auto-injected — agent uses memory_grep tools
+      let systemPrompt = session.systemPrompt;
+      if (!systemPrompt) {
+        systemPrompt = await this.workspace.buildSystemPrompt(agent.id);
+        session.systemPrompt = systemPrompt;
+      }
 
-      // Skill matching — prepend SKILL.md if a skill matches
+      // Skill matching — lightweight per-turn check, prepends if matched
       const matchedSkill = this.skillManager.match(message.text);
+      let turnPrompt = systemPrompt;
       if (matchedSkill) {
         try {
           const skillContent = await this.skillManager.load(matchedSkill.name);
-          systemPrompt = `## Active Skill: ${matchedSkill.name}\n${skillContent}\n\n${systemPrompt}`;
+          turnPrompt = `## Active Skill: ${matchedSkill.name}\n${skillContent}\n\n${systemPrompt}`;
           log.debug(`Activated skill: ${matchedSkill.name}`);
         } catch (err: any) {
           log.warn(`Failed to load matched skill "${matchedSkill.name}": ${err.message}`);
-        }
-      }
-
-      // Enrich with memory context
-      if (this.memory) {
-        try {
-          const memCtx = await this.memory.getContextForTurn(message.text, agent.id);
-          if (memCtx) {
-            systemPrompt += `\n\n## Transcript Context\n${memCtx}`;
-          }
-        } catch (err: any) {
-          log.warn(`Memory context retrieval failed: ${err.message}`);
         }
       }
 
@@ -228,7 +222,7 @@ export class Runtime {
 
       // Create and run agent loop
       const loop = new AgentLoop({
-        systemPrompt,
+        systemPrompt: turnPrompt,
         provider,
         tools: this.tools,
         maxIterations: this.config.maxToolIterations,
@@ -392,7 +386,7 @@ export class Runtime {
             timestamp: Math.floor(Date.now() / 1000),
           });
 
-          const systemPrompt = await this.workspace.buildSystemPrompt(hbConfig.agent);
+          const systemPrompt = await this.workspace.buildHeartbeatPrompt(hbConfig.agent);
           const loop = new AgentLoop({
             systemPrompt,
             provider,

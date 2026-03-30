@@ -1,29 +1,29 @@
 /**
  * Workspace Loader — reads workspace files and builds the system prompt.
  *
- * Load order:
- * 1. SOUL.md — personality
- * 2. IDENTITY.md — who the agent is
- * 3. USER.md — who the owner is
- * 4. AGENTS.md — operating instructions
- * 5. TOOLS.md — tool usage notes
- * 6. MEMORY.md — long-term curated memory
- * 7. HEARTBEAT.md — heartbeat configuration
- * 8. memory/YYYY-MM-DD.md — today + yesterday
+ * System prompt files (loaded on /new, cached for the session):
+ *   SOUL.md     — personality
+ *   IDENTITY.md — who the agent is
+ *   USER.md     — who the owner is
+ *   AGENTS.md   — operating instructions
+ *
+ * NOT in system prompt (agent uses tools to access these):
+ *   TOOLS.md        — read via file tool if needed
+ *   MEMORY.md       — search via memory_grep
+ *   HEARTBEAT.md    — only injected during heartbeat turns
+ *   memory/*.md     — search via memory_grep
  */
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { WorkspaceFile, Workspace } from '@rivetos/types';
 
-const LOAD_ORDER = [
+/** Core files that define the agent — always in system prompt */
+const CORE_FILES = [
   'SOUL.md',
   'IDENTITY.md',
   'USER.md',
   'AGENTS.md',
-  'TOOLS.md',
-  'MEMORY.md',
-  'HEARTBEAT.md',
 ];
 
 export class WorkspaceLoader implements Workspace {
@@ -34,24 +34,26 @@ export class WorkspaceLoader implements Workspace {
     this.baseDir = baseDir;
   }
 
+  /**
+   * Load ONLY the core workspace files for system prompt injection.
+   * Called once on session init (/new), not every turn.
+   */
   async load(): Promise<WorkspaceFile[]> {
     const files: WorkspaceFile[] = [];
-
-    for (const name of LOAD_ORDER) {
+    for (const name of CORE_FILES) {
       const content = await this.read(name);
       if (content) {
         files.push({ name, path: join(this.baseDir, name), content });
       }
     }
-
-    const memoryFiles = await this.loadRecentMemory(1);
-    files.push(...memoryFiles);
-
     return files;
   }
 
+  /**
+   * Load a specific file by name. Used by heartbeat (HEARTBEAT.md)
+   * or agent tools that need workspace file access.
+   */
   async read(filename: string): Promise<string | null> {
-    // Check cache first
     if (this.cache.has(filename)) {
       return this.cache.get(filename)!;
     }
@@ -74,6 +76,10 @@ export class WorkspaceLoader implements Workspace {
     this.cache.set(filename, content);
   }
 
+  /**
+   * Build the system prompt from core files only.
+   * This is injected ONCE on session init, not every turn.
+   */
   async buildSystemPrompt(agentId?: string): Promise<string> {
     const files = await this.load();
     let prompt = '';
@@ -86,20 +92,16 @@ export class WorkspaceLoader implements Workspace {
     return prompt.trim();
   }
 
-  private async loadRecentMemory(daysBack: number): Promise<WorkspaceFile[]> {
-    const files: WorkspaceFile[] = [];
-    const now = new Date();
-    for (let i = 0; i <= daysBack; i++) {
-      const date = new Date(now);
-      date.setDate(date.getDate() - i);
-      const dateStr = date.toISOString().split('T')[0];
-      const filename = `memory/${dateStr}.md`;
-      const content = await this.read(filename);
-      if (content) {
-        files.push({ name: filename, path: join(this.baseDir, filename), content });
-      }
+  /**
+   * Build system prompt for heartbeat turns — includes HEARTBEAT.md.
+   */
+  async buildHeartbeatPrompt(agentId?: string): Promise<string> {
+    const base = await this.buildSystemPrompt(agentId);
+    const heartbeat = await this.read('HEARTBEAT.md');
+    if (heartbeat) {
+      return base + `\n\n## HEARTBEAT.md\n${heartbeat}`;
     }
-    return files;
+    return base;
   }
 
   /** Clear cache — forces re-read on next load (used by /new). */
