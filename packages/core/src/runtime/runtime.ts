@@ -200,18 +200,9 @@ export class Runtime {
         session.systemPrompt = systemPrompt;
       }
 
-      // Skill matching — lightweight per-turn check, prepends if matched
-      const matchedSkill = this.skillManager.match(message.text);
-      let turnPrompt = systemPrompt;
-      if (matchedSkill) {
-        try {
-          const skillContent = await this.skillManager.load(matchedSkill.name);
-          turnPrompt = `## Active Skill: ${matchedSkill.name}\n${skillContent}\n\n${systemPrompt}`;
-          log.debug(`Activated skill: ${matchedSkill.name}`);
-        } catch (err: any) {
-          log.warn(`Failed to load matched skill "${matchedSkill.name}": ${err.message}`);
-        }
-      }
+      // No per-turn skill injection — agent uses skill_list tool to discover
+      // and reads SKILL.md via shell when needed
+      const turnPrompt = systemPrompt;
 
       // Create abort controller
       const abort = new AbortController();
