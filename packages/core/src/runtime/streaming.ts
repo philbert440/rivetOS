@@ -82,12 +82,26 @@ export class StreamManager {
 
     switch (event.type) {
       case 'text':
+        // Clear "thinking" placeholder if it was set
+        if ((s as any)._thinkingPlaceholder) {
+          s.text = '';
+          delete (s as any)._thinkingPlaceholder;
+        }
         s.text += event.content ?? '';
         this.throttledEdit(channel, message, s);
         break;
 
       case 'reasoning':
-        if (!session.reasoningVisible) return;
+        if (!session.reasoningVisible) {
+          // Even when hidden, show a one-time "thinking" indicator
+          // so the user knows the model is working, not stalled
+          if (!s.messageId && !s.text) {
+            s.text = '🧠 _Thinking..._';
+            this.throttledEdit(channel, message, s);
+            (s as any)._thinkingPlaceholder = true;
+          }
+          return;
+        }
         s.reasoning += event.content ?? '';
         this.throttledEdit(channel, message, s);
         break;

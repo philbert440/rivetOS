@@ -243,6 +243,11 @@ export class OpenAICompatProvider implements Provider {
           const delta = choice.delta;
           if (!delta) continue;
 
+
+          // Native reasoning_content field (llama-server, OpenAI o-series)
+          if (delta.reasoning_content) {
+            yield { type: 'reasoning', delta: delta.reasoning_content as string };
+          }
           // Text content — detect <think> blocks (Qwen via llama-server)
           if (delta.content) {
             const text = delta.content as string;
