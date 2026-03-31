@@ -38,6 +38,8 @@ export interface SessionStreamState {
   toolMessageId: string | null;
   /** Tool log lines */
   toolLines: string[];
+  /** Whether current text is a "Thinking..." placeholder */
+  thinkingPlaceholder: boolean;
 }
 
 function freshState(): SessionStreamState {
@@ -50,6 +52,7 @@ function freshState(): SessionStreamState {
     cleaned: false,
     toolMessageId: null,
     toolLines: [],
+    thinkingPlaceholder: false,
   };
 }
 
@@ -83,9 +86,9 @@ export class StreamManager {
     switch (event.type) {
       case 'text':
         // Clear "thinking" placeholder if it was set
-        if ((s as any)._thinkingPlaceholder) {
+        if (s.thinkingPlaceholder) {
           s.text = '';
-          delete (s as any)._thinkingPlaceholder;
+          s.thinkingPlaceholder = false;
         }
         s.text += event.content ?? '';
         this.throttledEdit(channel, message, s);
@@ -98,7 +101,7 @@ export class StreamManager {
           if (!s.messageId && !s.text) {
             s.text = '🧠 _Thinking..._';
             this.throttledEdit(channel, message, s);
-            (s as any)._thinkingPlaceholder = true;
+            s.thinkingPlaceholder = true;
           }
           return;
         }
