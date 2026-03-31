@@ -28,7 +28,6 @@ import { ShellTool } from '../plugins/tools/shell/src/index.js';
 import { CodingPipeline, createCodingPipelineTool } from '../plugins/tools/coding-pipeline/src/index.js';
 import { createWebTools } from '../plugins/tools/web-search/src/index.js';
 import type { Tool } from '@rivetos/types';
-import { createCodingPipelineTool } from '../plugins/tools/coding-pipeline/src/index.js';
 
 // Memory
 import { PostgresMemory, SearchEngine, Expander, createMemoryTools, BackgroundEmbedder, BackgroundCompactor } from '../plugins/memory/postgres/src/index.js';
