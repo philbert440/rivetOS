@@ -95,6 +95,7 @@ export class AgentLoop {
     let iterations = 0;
     let totalUsage = { promptTokens: 0, completionTokens: 0 };
     let partialResponse = '';
+    let lastError = '';
 
     const hardCap = this.maxIterations * 5; // Safety cap (default: 75)
 
@@ -196,7 +197,8 @@ export class AgentLoop {
               break;
 
             case 'error':
-              this.emit({ type: 'error', content: chunk.error ?? 'Unknown provider error' });
+              lastError = chunk.error ?? 'Unknown provider error';
+              this.emit({ type: 'error', content: lastError });
               break;
           }
         }
@@ -209,8 +211,11 @@ export class AgentLoop {
 
       // Text response — done
       if (!hasToolCalls) {
+        // If no text was produced but an error occurred, surface the error
+        // so the user doesn't get a blank message
+        const finalResponse = textContent.trim() || (lastError ? `⚠️ ${lastError}` : '');
         return {
-          response: textContent.trim(),
+          response: finalResponse,
           toolsUsed,
           iterations,
           aborted: false,

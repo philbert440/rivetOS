@@ -15,6 +15,7 @@
  *
  * Streaming via SSE. Optional auth. Lenient JSON parsing for
  * llama-server's occasional malformed tool call arguments.
+ * Configurable stream timeouts to prevent hanging on stalled models.
  */
 
 import type {
@@ -42,6 +43,39 @@ export interface OpenAICompatProviderConfig {
   id?: string;
   /** Custom display name (default: 'OpenAI Compatible') */
   name?: string;
+  /** Max ms to wait for the first SSE chunk (default: 120000 = 2 min) */
+  firstChunkTimeoutMs?: number;
+  /** Max ms to wait between subsequent SSE chunks (default: 30000 = 30s) */
+  chunkTimeoutMs?: number;
+  /** Repetition penalty for llama-server (default: undefined — not sent) */
+  repeatPenalty?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Timeout helper
+// ---------------------------------------------------------------------------
+
+class ReadTimeoutError extends Error {
+  constructor(seconds: number) {
+    super(`Timed out after ${seconds}s`);
+    this.name = 'ReadTimeoutError';
+  }
+}
+
+function readWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new ReadTimeoutError(timeoutMs / 1000)),
+      timeoutMs,
+    );
+    reader.read().then(
+      (result) => { clearTimeout(timer); resolve(result); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +123,9 @@ export class OpenAICompatProvider implements Provider {
   private model: string;
   private maxTokens: number;
   private temperature: number;
+  private firstChunkTimeoutMs: number;
+  private chunkTimeoutMs: number;
+  private repeatPenalty: number | undefined;
 
   constructor(config: OpenAICompatProviderConfig) {
     this.id = config.id ?? 'openai-compat';
@@ -98,6 +135,9 @@ export class OpenAICompatProvider implements Provider {
     this.model = config.model ?? 'default';
     this.maxTokens = config.maxTokens ?? 4096;
     this.temperature = config.temperature ?? 0.6;
+    this.firstChunkTimeoutMs = config.firstChunkTimeoutMs ?? 120_000;
+    this.chunkTimeoutMs = config.chunkTimeoutMs ?? 30_000;
+    this.repeatPenalty = config.repeatPenalty;
   }
 
   // -----------------------------------------------------------------------
@@ -115,6 +155,11 @@ export class OpenAICompatProvider implements Provider {
 
     if (options?.tools?.length) {
       body.tools = convertTools(options.tools);
+    }
+
+    // llama-server specific: repeat_penalty reduces hallucination
+    if (this.repeatPenalty !== undefined) {
+      body.repeat_penalty = this.repeatPenalty;
     }
 
     const headers: Record<string, string> = {
@@ -148,12 +193,34 @@ export class OpenAICompatProvider implements Provider {
     let buffer = '';
     let usage = { promptTokens: 0, completionTokens: 0 };
     let inThinking = false;
+    let isFirstChunk = true;
 
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        // Apply timeout: longer for first chunk (model may be thinking),
+        // shorter between subsequent chunks (stream should be flowing)
+        const timeoutMs = isFirstChunk ? this.firstChunkTimeoutMs : this.chunkTimeoutMs;
+        let readResult: ReadableStreamReadResult<Uint8Array>;
+
+        try {
+          readResult = await readWithTimeout(reader, timeoutMs);
+        } catch (err: any) {
+          if (err instanceof ReadTimeoutError) {
+            const phase = isFirstChunk ? 'first response' : 'next chunk';
+            yield {
+              type: 'error',
+              error: `Provider timed out waiting for ${phase} (${timeoutMs / 1000}s). The model may be overloaded or the context too large.`,
+            };
+            try { reader.cancel(); } catch {}
+            return;
+          }
+          throw err; // Re-throw non-timeout errors (abort, network, etc.)
+        }
+
+        const { done, value } = readResult;
         if (done) break;
 
+        isFirstChunk = false;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';

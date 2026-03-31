@@ -7,6 +7,10 @@
  * Supports: text, photos, voice, documents, inline buttons, reactions,
  * reply threading, slash commands, message editing (for streaming).
  * Sends typing indicator while the agent is processing.
+ *
+ * 409 Conflict handling: if another bot instance is polling the same
+ * token, retries with backoff instead of crashing. Gives up after 5
+ * consecutive conflicts within 60 seconds.
  */
 
 import { Bot, Context, InlineKeyboard, InputFile } from 'grammy';
@@ -46,6 +50,13 @@ export class TelegramChannel implements Channel {
   /** Active typing intervals per chat — cleared when a turn ends */
   private typingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
 
+  /** 409 conflict tracking — retry with backoff, give up after threshold */
+  private conflict409Count = 0;
+  private conflict409FirstTime = 0;
+  private static readonly MAX_409_RETRIES = 5;
+  private static readonly CONFLICT_WINDOW_MS = 60_000;
+  private static readonly RETRY_DELAY_MS = 5_000;
+
   constructor(config: TelegramChannelConfig) {
     this.config = config;
     this.id = `telegram:${config.ownerId}`;
@@ -58,9 +69,11 @@ export class TelegramChannel implements Channel {
   // -----------------------------------------------------------------------
 
   private setupHandlers(): void {
-    // Global middleware — catches EVERY update for debugging
+    // Global middleware — catches EVERY update for debugging + resets conflict counter
     this.bot.use(async (ctx, next) => {
       console.log(`[Telegram] Update type=${ctx.updateType} text="${ctx.message?.text?.slice(0, 30) ?? ''}" from=${ctx.from?.id}`);
+      // Successful update received — reset conflict counter
+      this.conflict409Count = 0;
       await next();
     });
 
@@ -326,8 +339,55 @@ export class TelegramChannel implements Channel {
   }
 
   async start(): Promise<void> {
-    // Catch polling errors
-    this.bot.catch((err) => {
+    // Catch polling errors — handle 409 conflicts with retry
+    this.bot.catch(async (err: any) => {
+      const errMsg = String(err?.error?.description ?? err?.message ?? err);
+
+      // 409 Conflict: another bot instance is polling the same token
+      if (errMsg.includes('409') || errMsg.includes('Conflict') || errMsg.includes('terminated by other')) {
+        this.conflict409Count++;
+        if (this.conflict409Count === 1) {
+          this.conflict409FirstTime = Date.now();
+        }
+
+        console.error(
+          `[Telegram] 409 Conflict — another instance is polling this bot token (${this.conflict409Count} consecutive)`,
+        );
+
+        // Too many in a short window? Give up — something else is running.
+        const elapsed = Date.now() - this.conflict409FirstTime;
+        if (
+          this.conflict409Count >= TelegramChannel.MAX_409_RETRIES &&
+          elapsed < TelegramChannel.CONFLICT_WINDOW_MS
+        ) {
+          console.error(
+            `[Telegram] Too many 409 conflicts (${this.conflict409Count} in ${Math.round(elapsed / 1000)}s) — another bot instance is likely running. Stopping.`,
+          );
+          return;
+        }
+
+        // Retry: stop polling, wait, restart
+        console.log(`[Telegram] Retrying in ${TelegramChannel.RETRY_DELAY_MS / 1000}s...`);
+        try { this.bot.stop(); } catch {}
+        await new Promise((r) => setTimeout(r, TelegramChannel.RETRY_DELAY_MS));
+        try {
+          this.bot.start({
+            drop_pending_updates: true,
+            onStart: (info) => console.log(`[Telegram] Bot restarted after 409: @${info.username}`),
+          });
+        } catch (restartErr: any) {
+          console.error(`[Telegram] Failed to restart after 409:`, restartErr.message);
+        }
+        return;
+      }
+
+      // 401 Unauthorized — invalid token, no point retrying
+      if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
+        console.error('[Telegram] 401 Unauthorized — bot token is invalid. Stopping.');
+        return;
+      }
+
+      // All other errors — log and continue (don't crash)
       console.error('[Telegram] Bot error:', err);
     });
 

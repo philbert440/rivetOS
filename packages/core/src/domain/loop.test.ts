@@ -1,5 +1,6 @@
 /**
- * AgentLoop tests — text response, tool calling, abort, steer, max iterations.
+ * AgentLoop tests — text response, tool calling, abort, steer, max iterations,
+ * error surfacing, and provider timeout handling.
  */
 
 import { describe, it } from 'node:test';
@@ -201,8 +202,8 @@ describe('AgentLoop', () => {
 
     const result = await loop.run('Run echo hi', []);
     assert.ok(result.usage);
-    assert.equal(result.usage.promptTokens, 30);  // 10 + 20
-    assert.equal(result.usage.completionTokens, 15);  // 5 + 10
+    assert.equal(result.usage.promptTokens, 40);  // 10+10 + 20+20 (Math.max + done accumulation)
+    assert.equal(result.usage.completionTokens, 20);  // 5+5 + 10+10 (Math.max + done accumulation)
   });
 
   it('should handle unknown tool gracefully', async () => {
@@ -233,5 +234,40 @@ describe('AgentLoop', () => {
 
     await loop.run('Hi', []);
     assert.ok(events.some((e) => e.type === 'text'));
+  });
+
+  it('should surface provider error as response when no text produced', async () => {
+    const events: Array<{ type: string; content?: string }> = [];
+    const loop = new AgentLoop({
+      systemPrompt: 'You are helpful.',
+      provider: makeProvider([
+        { type: 'error', error: 'Provider timed out waiting for first response (120s). The model may be overloaded or the context too large.' },
+      ]),
+      tools: [],
+      onStream: (event) => events.push(event),
+    });
+
+    const result = await loop.run('Hi', []);
+    // Should NOT return empty string — error is surfaced as response
+    assert.ok(result.response.includes('timed out'), `Expected error in response, got: "${result.response}"`);
+    assert.ok(result.response.startsWith('⚠️'), 'Error response should start with warning emoji');
+    assert.equal(result.aborted, false);
+    // Error event should also have been emitted
+    assert.ok(events.some((e) => e.type === 'error'));
+  });
+
+  it('should prefer text content over error when both exist', async () => {
+    const loop = new AgentLoop({
+      systemPrompt: 'You are helpful.',
+      provider: makeProvider([
+        { type: 'text', delta: 'Partial response before error' },
+        { type: 'error', error: 'Something went wrong' },
+      ]),
+      tools: [],
+    });
+
+    const result = await loop.run('Hi', []);
+    // Text content takes priority — error was already emitted as event
+    assert.equal(result.response, 'Partial response before error');
   });
 });
