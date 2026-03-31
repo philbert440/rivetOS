@@ -21,7 +21,7 @@ const TEXT_LIMIT = 3800;
 // State
 // ---------------------------------------------------------------------------
 
-interface StreamState {
+export interface SessionStreamState {
   /** Main message being edited with text + reasoning */
   messageId: string | null;
   /** Accumulated response text */
@@ -40,7 +40,7 @@ interface StreamState {
   toolLines: string[];
 }
 
-function freshState(): StreamState {
+function freshState(): SessionStreamState {
   return {
     messageId: null,
     text: '',
@@ -58,9 +58,9 @@ function freshState(): StreamState {
 // ---------------------------------------------------------------------------
 
 export class StreamManager {
-  private states: Map<string, StreamState> = new Map();
+  private states: Map<string, SessionStreamState> = new Map();
 
-  private get(key: string): StreamState {
+  private get(key: string): SessionStreamState {
     let s = this.states.get(key);
     if (!s) { s = freshState(); this.states.set(key, s); }
     return s;
@@ -125,7 +125,7 @@ export class StreamManager {
   // Text + reasoning → ONE message, throttled edits
   // -----------------------------------------------------------------------
 
-  private throttledEdit(channel: Channel, message: InboundMessage, s: StreamState): void {
+  private throttledEdit(channel: Channel, message: InboundMessage, s: SessionStreamState): void {
     if (s.editPending || s.cleaned) return;
     s.editPending = true;
 
@@ -152,7 +152,7 @@ export class StreamManager {
     }, EDIT_INTERVAL_MS);
   }
 
-  private buildDisplay(s: StreamState): string {
+  private buildDisplay(s: SessionStreamState): string {
     let out = '';
     if (s.reasoning) {
       // Reasoning as italics, capped
@@ -167,7 +167,7 @@ export class StreamManager {
   // Tool log → ONE message, edited in-place
   // -----------------------------------------------------------------------
 
-  private async editToolLog(channel: Channel, channelId: string, s: StreamState): Promise<void> {
+  private async editToolLog(channel: Channel, channelId: string, s: SessionStreamState): Promise<void> {
     if (s.cleaned) return;
     const display = s.toolLines.slice(-8).join('\n');
 
