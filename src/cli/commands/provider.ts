@@ -184,7 +184,7 @@ async function handleOllama(action: string): Promise<void> {
       try {
         const res = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(5000) });
         if (res.ok) {
-          const data = (await res.json()) as any;
+          const data = await res.json() as Record<string, unknown>;
           const models = data.models ?? [];
           console.log(`  Connectivity: ✅`);
           console.log(`  Models loaded: ${models.length}`);
@@ -205,7 +205,7 @@ async function handleOllama(action: string): Promise<void> {
     case 'models': {
       try {
         const res = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(5000) });
-        const data = (await res.json()) as any;
+        const data = await res.json() as Record<string, unknown>;
         const models = data.models ?? [];
         if (models.length === 0) {
           console.log('No models found. Pull one: rivetos ollama pull <model>');

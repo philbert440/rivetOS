@@ -79,7 +79,7 @@ export function createHeartbeatRunner(
   configs: HeartbeatConfig[],
   handler: HeartbeatHandler,
 ): HeartbeatRunner {
-  const timers: ReturnType<typeof setInterval>[] = [];
+  const timers: (ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>)[] = [];
 
   return {
     start() {
@@ -101,7 +101,7 @@ export function createHeartbeatRunner(
 
         timers.push(timer);
         // Store the initial delay timer too for cleanup
-        timers.push(initialDelay as any);
+        timers.push(initialDelay);
       }
     },
 

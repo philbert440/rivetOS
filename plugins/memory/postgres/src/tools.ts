@@ -83,8 +83,8 @@ function createGrepTool(searchEngine: SearchEngine): Tool {
     },
     async execute(args: Record<string, unknown>): Promise<string> {
       const results = await searchEngine.search(args.query as string, {
-        mode: (args.mode as any) ?? 'fts',
-        scope: (args.scope as any) ?? 'both',
+        mode: (args.mode as string | undefined) ?? 'fts',
+        scope: (args.scope as string | undefined) ?? 'both',
         limit: (args.limit as number) ?? 20,
         agent: args.agent as string | undefined,
       });
@@ -342,7 +342,7 @@ async function queryLlm(
       return `Rivet Local query failed: ${response.status} ${response.statusText}`;
     }
 
-    const data = (await response.json()) as any;
+    const data = await response.json() as Record<string, unknown>;
     return data.choices?.[0]?.message?.content ?? 'No answer generated.';
   } catch (err: any) {
     return `Failed to query Rivet Local: ${err.message}`;

@@ -310,7 +310,7 @@ export class OllamaProvider implements Provider {
   async listModels(): Promise<Array<{ name: string; size: number; modified_at: string }>> {
     const res = await fetch(`${this.baseUrl}/api/tags`);
     if (!res.ok) throw new Error(`Failed to list models: ${res.status}`);
-    const data = (await res.json()) as any;
+    const data = await res.json() as Record<string, unknown>;
     return data.models ?? [];
   }
 

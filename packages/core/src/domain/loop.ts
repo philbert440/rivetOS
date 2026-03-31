@@ -124,6 +124,7 @@ export class AgentLoop {
       let textContent = '';
       let reasoningContent = '';
       const pendingToolCalls: Map<number, ToolCall> = new Map();
+      const argsDelta: Map<number, string> = new Map();
       let hasToolCalls = false;
 
       try {
@@ -170,7 +171,7 @@ export class AgentLoop {
                 const tc = pendingToolCalls.get(chunk.toolCall.index);
                 if (tc) {
                   // Store raw delta, parse when done
-                  (tc as any)._argsDelta = ((tc as any)._argsDelta ?? '') + chunk.delta;
+                  argsDelta.set(chunk.toolCall.index, (argsDelta.get(chunk.toolCall.index) ?? '') + chunk.delta);
                 }
               }
               break;
@@ -178,13 +179,14 @@ export class AgentLoop {
             case 'tool_call_done':
               if (chunk.toolCall?.index !== undefined) {
                 const tc = pendingToolCalls.get(chunk.toolCall.index);
-                if (tc && (tc as any)._argsDelta) {
+                const rawArgs = argsDelta.get(chunk.toolCall.index);
+                if (tc && rawArgs) {
                   try {
-                    tc.arguments = JSON.parse((tc as any)._argsDelta);
+                    tc.arguments = JSON.parse(rawArgs);
                   } catch {
-                    tc.arguments = { raw: (tc as any)._argsDelta };
+                    tc.arguments = { raw: rawArgs };
                   }
-                  delete (tc as any)._argsDelta;
+                  argsDelta.delete(chunk.toolCall.index);
                 }
               }
               break;

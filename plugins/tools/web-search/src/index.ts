@@ -76,7 +76,7 @@ export class WebSearchTool implements Tool {
         return `Search failed (${response.status}): ${err.slice(0, 200)}`;
       }
 
-      const data = (await response.json()) as any;
+      const data = await response.json() as Record<string, unknown>;
       const items = data.items ?? [];
 
       if (items.length === 0) return `No results found for: ${query}`;

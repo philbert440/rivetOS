@@ -62,6 +62,9 @@ export class Runtime {
   private workspace: WorkspaceLoader;
   private channels: Map<string, Channel> = new Map();
   private tools: Tool[] = [];
+
+  /** Public access to registered tools (for boot wiring) */
+  getTools(): Tool[] { return this.tools; }
   private memory?: Memory;
   private config: RuntimeConfig;
   private heartbeatRunner?: HeartbeatRunner;

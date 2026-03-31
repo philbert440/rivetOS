@@ -276,7 +276,7 @@ export class BackgroundCompactor {
         return null;
       }
 
-      const data = (await response.json()) as any;
+      const data = await response.json() as Record<string, unknown>;
       return data.choices?.[0]?.message?.content ?? null;
     } catch (err: any) {
       console.error(`[Compactor] LLM call failed: ${err.message}`);

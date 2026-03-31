@@ -48,9 +48,9 @@ export async function boot(configPath?: string) {
       id,
       name: id,
       provider: agent.provider,
-      defaultThinking: (agent.default_thinking as any) ?? 'medium',
+      defaultThinking: (agent.default_thinking as string) ?? 'medium',
     })),
-    heartbeats: config.runtime.heartbeats as any[],
+    heartbeats: config.runtime.heartbeats as import('@rivetos/types').HeartbeatConfig[],
   });
 
   // Register providers
@@ -261,13 +261,13 @@ export async function boot(configPath?: string) {
   // Wire pipeline to sub-agent tools (after all tools registered)
   // The pipeline calls subagent_spawn/shell internally via tool executors
   const findTool = (name: string) => {
-    const allTools = (runtime as any).tools as Tool[];
+    const allTools = runtime.getTools();
     const tool = allTools?.find((t: any) => t.name === name);
     return tool ? (args: Record<string, unknown>) => tool.execute(args) : async () => 'Tool not available';
   };
   // Deferred — tools registered during runtime.start(), so we set executors lazily
   const origStart = runtime.start.bind(runtime);
-  (runtime as any)._origStart = origStart;
+  // Voice plugin shutdown handled via process signal
   runtime.start = async () => {
     await origStart();
     pipeline.setToolExecutors({
