@@ -38,7 +38,7 @@ export class VoiceSession {
     // Memory pool
     if (config.postgresConnectionString) {
       // Accept an existing pool from the plugin level — don't create per-session
-      this.postgresPool = (config as any).postgresPool ?? new Pool({ connectionString: config.postgresConnectionString, max: 2 });
+      this.postgresPool = config.postgresPool ?? new Pool({ connectionString: config.postgresConnectionString, max: 2 });
       
     }
 

@@ -12,7 +12,7 @@ const { Pool } = pg;
 
 const CONNECTION_STRING =
   process.env.RIVETOS_PG_URL ??
-  'postgresql://lcm_phil:pheon.lcm4@10.4.20.106:5432/phil_memory';
+  process.env.RIVETOS_PG_URL ?? '';
 
 const BATCH_SIZE = 2000;
 const WORKERS = 4;

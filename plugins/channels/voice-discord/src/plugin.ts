@@ -33,6 +33,8 @@ export interface VoicePluginConfig {
   leaveGracePeriodMs?: number;
   xaiCollectionId?: string;
   postgresConnectionString?: string;
+  /** Shared postgres pool (avoids creating per-session pools) */
+  postgresPool?: import('pg').Pool;
   /** Shared pg Pool — passed from boot.ts, NOT created per session */
   sharedPool?: import('pg').Pool;
 }

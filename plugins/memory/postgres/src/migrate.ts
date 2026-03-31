@@ -20,7 +20,7 @@ const { Pool } = pg;
 
 const CONNECTION_STRING =
   process.env.RIVETOS_PG_URL ??
-  'postgresql://rivet_agent:rivet_agent_2025@10.4.20.106:5432/phil_memory';
+  process.env.RIVETOS_PG_URL ?? '';
 
 // ---------------------------------------------------------------------------
 // Entry point

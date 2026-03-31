@@ -130,6 +130,14 @@ export class CodingPipeline {
     this.onProgress = handler;
   }
 
+  setWorkingDir(dir: string): void {
+    this.config.workingDir = dir;
+  }
+
+  setAutoCommit(val: boolean): void {
+    this.config.autoCommit = val;
+  }
+
   private log(ctx: PipelineContext, message: string): void {
     ctx.logs.push(message);
     this.onProgress?.(message);
@@ -403,10 +411,10 @@ export function createCodingPipelineTool(pipeline: CodingPipeline): Tool {
     },
     execute: async (args: Record<string, unknown>): Promise<string> => {
       if (args.working_dir) {
-        (pipeline as any).config.workingDir = args.working_dir as string;
+        pipeline.setWorkingDir(args.working_dir as string);
       }
       if (args.auto_commit !== undefined) {
-        (pipeline as any).config.autoCommit = args.auto_commit as boolean;
+        pipeline.setAutoCommit(args.auto_commit as boolean);
       }
       return pipeline.run(
         args.spec as string,
