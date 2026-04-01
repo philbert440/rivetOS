@@ -177,15 +177,15 @@ export class AnthropicProvider implements Provider {
       stream: true,
     };
 
-    // System prompt — OAuth requires Claude Code identity prefix
+    // System prompt — with ephemeral caching for token savings (~90% cheaper on cache hits)
     if (this.authMode === 'oauth') {
       const blocks: any[] = [
-        { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude." },
+        { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude.", cache_control: { type: 'ephemeral' } },
       ];
-      if (system) blocks.push({ type: 'text', text: system });
+      if (system) blocks.push({ type: 'text', text: system, cache_control: { type: 'ephemeral' } });
       body.system = blocks;
     } else if (system) {
-      body.system = system;
+      body.system = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
     }
 
     if (options?.tools?.length) {

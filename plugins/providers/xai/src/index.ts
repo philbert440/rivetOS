@@ -2,11 +2,11 @@
  * @rivetos/provider-xai
  *
  * xAI Grok provider using the Responses API (/v1/responses).
- * - Stateless for now (full input each turn) — stateful via previous_response_id later
+ * - Stateful conversations via previous_response_id (server stores history, we only send new messages)
  * - Encrypted reasoning passthrough
  * - Native SSE streaming
  * - No reasoning_effort (grok-4 always reasons)
- * - store: false (we manage our own memory)
+ * - store: true (server keeps conversation, massive token savings)
  * - 1-hour timeout for reasoning models
  */
 
@@ -29,7 +29,7 @@ export interface XAIProviderConfig {
   model?: string;           // Default: 'grok-4.20-reasoning'
   baseUrl?: string;         // Default: 'https://api.x.ai/v1'
   temperature?: number;     // Default: not set (reasoning models don't use it)
-  store?: boolean;          // Default: false (we manage our own memory)
+  store?: boolean;          // Default: true (server stores conversation, only new messages sent)
   timeoutMs?: number;       // Default: 3600000 (1 hour for reasoning)
 }
 
@@ -109,14 +109,21 @@ export class XAIProvider implements Provider {
   private temperature: number | undefined;
   private store: boolean;
   private timeoutMs: number;
+  /** Track response IDs for stateful conversation continuity */
+  private lastResponseId: string | null = null;
 
   constructor(config: XAIProviderConfig) {
     this.apiKey = config.apiKey;
     this.model = config.model ?? 'grok-4.20-reasoning';
     this.baseUrl = config.baseUrl ?? 'https://api.x.ai/v1';
     this.temperature = config.temperature;
-    this.store = config.store ?? false;
+    this.store = config.store ?? true; // Server-side storage = no re-sending history
     this.timeoutMs = config.timeoutMs ?? 3_600_000;
+  }
+
+  /** Reset conversation state (called by /new) */
+  resetConversation(): void {
+    this.lastResponseId = null;
   }
 
   // -----------------------------------------------------------------------
@@ -124,13 +131,31 @@ export class XAIProvider implements Provider {
   // -----------------------------------------------------------------------
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
+    const allMessages = convertMessages(messages);
+
+    // If we have a previous response ID, only send NEW messages (last user + any tool results)
+    // Server already has the full conversation history
+    let input: ResponsesInput[];
+    if (this.store && this.lastResponseId) {
+      // Find the last user message and any tool results after it
+      const lastUserIdx = allMessages.findLastIndex((m) => 'role' in m && m.role === 'user');
+      input = lastUserIdx >= 0 ? allMessages.slice(lastUserIdx) : allMessages;
+    } else {
+      input = allMessages;
+    }
+
     const body: Record<string, unknown> = {
       model: this.model,
-      input: convertMessages(messages),
+      input,
       stream: true,
       store: this.store,
       include: ['reasoning.encrypted_content'],
     };
+
+    // Continue from previous response if available
+    if (this.store && this.lastResponseId) {
+      body.previous_response_id = this.lastResponseId;
+    }
 
     if (this.temperature !== undefined) {
       body.temperature = this.temperature;
@@ -271,11 +296,19 @@ export class XAIProvider implements Provider {
               yield { type: 'reasoning', delta: event.delta };
             }
           } else if (event.type === 'response.completed' || event.type === 'response.done') {
-            // Extract usage from the completed response
+            // Extract usage + response ID for stateful conversation
             const resp = event.response;
+            if (resp?.id) {
+              this.lastResponseId = resp.id;
+            }
             if (resp?.usage) {
               usage.promptTokens = resp.usage.input_tokens ?? resp.usage.prompt_tokens ?? 0;
               usage.completionTokens = resp.usage.output_tokens ?? resp.usage.completion_tokens ?? 0;
+            }
+          } else if (event.type === 'response.created') {
+            // Also capture ID from response.created event
+            if (event.response?.id) {
+              this.lastResponseId = event.response.id;
             }
           }
 
