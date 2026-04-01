@@ -111,6 +111,8 @@ export async function boot(configPath?: string) {
             model: providerConfig.model as string,
             maxTokens: providerConfig.max_tokens as number,
             temperature: providerConfig.temperature as number,
+            topP: providerConfig.top_p as number,
+            repeatPenalty: providerConfig.repeat_penalty as number,
             id: id,
             name: providerConfig.name as string ?? id,
           }));

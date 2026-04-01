@@ -53,7 +53,10 @@ providers:
   llama-server:
     base_url: http://10.4.20.12:8000/v1
     model: rivet-v0.1
-    temperature: 0.6
+    temperature: 0.4
+    top_p: 0.85
+    max_tokens: 16384
+    repeat_penalty: 1.1
 
 channels:
   telegram:

@@ -196,7 +196,10 @@ export class Runtime {
       // Memory context is NOT auto-injected — agent uses memory_grep tools
       let systemPrompt = session.systemPrompt;
       if (!systemPrompt) {
-        systemPrompt = await this.workspace.buildSystemPrompt(agent.id);
+        // Local models get extended context (TOOLS.md, MEMORY.md, daily notes)
+        // since tokens are free. Cloud APIs get minimal context.
+        const isLocal = agent.provider === 'llama-server' || agent.provider === 'ollama' || agent.provider === 'openai-compat';
+        systemPrompt = await this.workspace.buildSystemPrompt(agent.id, isLocal);
         session.systemPrompt = systemPrompt;
       }
 

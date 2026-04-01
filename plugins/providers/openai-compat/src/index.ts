@@ -37,8 +37,11 @@ export interface OpenAICompatProviderConfig {
   baseUrl: string;              // e.g., 'http://10.4.20.12:8000/v1'
   apiKey?: string;              // Optional — local servers often need none
   model?: string;               // Default: 'default'
-  maxTokens?: number;           // Default: 4096
-  temperature?: number;         // Default: 0.6
+  maxTokens?: number;           // Default: 4096 (set higher for local — tokens are free)
+  temperature?: number;         // Default: 0.6 (lower = more precise for local)
+  topP?: number;                // Default: 0.9 (tighter = less noise)
+  /** Number of context tokens (llama-server num_ctx) */
+  numCtx?: number;
   /** Custom provider ID (default: 'openai-compat') */
   id?: string;
   /** Custom display name (default: 'OpenAI Compatible') */
@@ -123,6 +126,7 @@ export class OpenAICompatProvider implements Provider {
   private model: string;
   private maxTokens: number;
   private temperature: number;
+  private topP: number;
   private firstChunkTimeoutMs: number;
   private chunkTimeoutMs: number;
   private repeatPenalty: number | undefined;
@@ -135,6 +139,7 @@ export class OpenAICompatProvider implements Provider {
     this.model = config.model ?? 'default';
     this.maxTokens = config.maxTokens ?? 4096;
     this.temperature = config.temperature ?? 0.6;
+    this.topP = config.topP ?? 0.9;
     this.firstChunkTimeoutMs = config.firstChunkTimeoutMs ?? 120_000;
     this.chunkTimeoutMs = config.chunkTimeoutMs ?? 30_000;
     this.repeatPenalty = config.repeatPenalty;
@@ -149,6 +154,7 @@ export class OpenAICompatProvider implements Provider {
       model: this.model,
       max_tokens: this.maxTokens,
       temperature: this.temperature,
+      top_p: this.topP,
       messages: convertMessages(messages),
       stream: true,
     };
@@ -157,7 +163,7 @@ export class OpenAICompatProvider implements Provider {
       body.tools = convertTools(options.tools);
     }
 
-    // llama-server specific: repeat_penalty reduces hallucination
+    // llama-server specific tuning
     if (this.repeatPenalty !== undefined) {
       body.repeat_penalty = this.repeatPenalty;
     }

@@ -18,12 +18,22 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { WorkspaceFile, Workspace } from '@rivetos/types';
 
-/** Core files that define the agent — always in system prompt */
+/** Core files — always in system prompt (minimal, for paid APIs) */
 const CORE_FILES = [
   'SOUL.md',
   'IDENTITY.md',
   'USER.md',
   'AGENTS.md',
+];
+
+/** Extended files — included for local models where tokens are free */
+const EXTENDED_FILES = [
+  'SOUL.md',
+  'IDENTITY.md',
+  'USER.md',
+  'AGENTS.md',
+  'TOOLS.md',
+  'MEMORY.md',
 ];
 
 export class WorkspaceLoader implements Workspace {
@@ -35,15 +45,41 @@ export class WorkspaceLoader implements Workspace {
   }
 
   /**
-   * Load ONLY the core workspace files for system prompt injection.
+   * Load workspace files for system prompt injection.
    * Called once on session init (/new), not every turn.
+   *
+   * @param extended — true for local models where tokens are free (includes TOOLS.md, MEMORY.md)
    */
-  async load(): Promise<WorkspaceFile[]> {
+  async load(extended = false): Promise<WorkspaceFile[]> {
+    const fileList = extended ? EXTENDED_FILES : CORE_FILES;
     const files: WorkspaceFile[] = [];
-    for (const name of CORE_FILES) {
+    for (const name of fileList) {
       const content = await this.read(name);
       if (content) {
         files.push({ name, path: join(this.baseDir, name), content });
+      }
+    }
+
+    // For extended mode, also load recent daily notes
+    if (extended) {
+      const memoryFiles = await this.loadRecentMemory(2);
+      files.push(...memoryFiles);
+    }
+
+    return files;
+  }
+
+  private async loadRecentMemory(daysBack: number): Promise<WorkspaceFile[]> {
+    const files: WorkspaceFile[] = [];
+    const now = new Date();
+    for (let i = 0; i <= daysBack; i++) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split('T')[0];
+      const filename = `memory/${dateStr}.md`;
+      const content = await this.read(filename);
+      if (content) {
+        files.push({ name: filename, path: join(this.baseDir, filename), content });
       }
     }
     return files;
@@ -80,8 +116,8 @@ export class WorkspaceLoader implements Workspace {
    * Build the system prompt from core files only.
    * This is injected ONCE on session init, not every turn.
    */
-  async buildSystemPrompt(agentId?: string): Promise<string> {
-    const files = await this.load();
+  async buildSystemPrompt(agentId?: string, extended = false): Promise<string> {
+    const files = await this.load(extended);
     let prompt = '';
     for (const file of files) {
       prompt += `\n\n## ${file.name}\n${file.content}`;
