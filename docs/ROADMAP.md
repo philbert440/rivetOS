@@ -24,9 +24,13 @@
 - [ ] **Memory embedder:** Background embedder partially implemented — needs completion and error recovery
 - [ ] **Web search 403:** Google CSE API returning 403 — diagnose quota/billing/key issue or add fallback provider
 
-### 0.3 — CI Pipeline
-- [ ] GitHub Actions workflow: lint → type-check → test on push/PR
-- [ ] Nx-aware caching (only rebuild/test affected packages)
+### 0.3 — CI Pipeline & Build System
+- [x] GitHub Actions workflow: lint → type-check → test on push/PR
+- [ ] **Fix workspace globs:** `"plugins/*"` → `"plugins/channels/*", "plugins/providers/*", "plugins/tools/*", "plugins/memory/*"` so Nx sees all 17 packages (currently only sees 2)
+- [ ] **Per-package test scripts:** Add `test` script to every package that has test files (core, types, shell, anthropic/oauth)
+- [ ] **Root test via Nx:** Change `npm test` from raw glob to `npx nx run-many -t test` — enables caching, parallelism, affected-only
+- [ ] **CI uses Nx affected:** `npx nx affected -t test build` with `NX_BASE`/`NX_HEAD` — PRs only test/build what changed
+- [ ] **Nx cache in CI:** GitHub Actions cache or Nx Cloud free tier so cache survives across runs
 - [ ] Branch protection: require CI pass before merge to `main`
 
 ### 0.4 — Config Validation
@@ -34,6 +38,18 @@
 - [ ] Helpful error messages: "provider 'xai' referenced by agent 'grok' but not defined in [providers]"
 - [ ] Warn on common mistakes (API key in config file, missing env var)
 - [ ] `rivetos doctor` validates config + connectivity to all configured providers/channels
+
+### 0.5 — CLI Tools
+- [x] `rivetos version` — dynamic from package.json + git short hash
+- [x] `rivetos init` — first-run setup (config, workspace, symlink)
+- [x] `rivetos update` — git pull, npm install, re-symlink
+- [x] `rivetos start/stop/status` — runtime lifecycle
+- [x] `rivetos help` — command reference
+- [ ] `rivetos logs` — tail runtime logs with filtering (journalctl wrapper + structured log parsing)
+- [ ] `rivetos config validate` — check config without starting (dry-run of schema validation from 0.4)
+- [ ] `rivetos skills list` — show all discovered skills with trigger counts
+- [ ] `rivetos plugins list` — show loaded plugins with status
+- [ ] `rivetos mesh list/ping/remove` — fleet management (depends on 0.6 mesh registry)
 
 ---
 
@@ -431,12 +447,12 @@ Items that don't fit cleanly into a milestone but shouldn't be forgotten. If the
 
 ---
 
-## Milestone 0.5: Pre-Packaged Agent Containers + Auto-Mesh
+## Milestone 0.6: Pre-Packaged Agent Containers + Auto-Mesh
 
 **Target: v0.2.0 (ships with Foundation)**
 **Theme:** Clone a golden Proxmox template → first-boot wizard asks "who are you?" → fully meshed agent in 60 seconds.
 
-### 0.5.1 — Golden Container Template
+### 0.6.1 — Golden Container Template
 - [ ] Pre-packaged Proxmox LXC template with everything pre-installed:
   - Node.js, npm, git, common tools
   - `/opt/rivetos/` repo cloned and built
@@ -449,7 +465,7 @@ Items that don't fit cleanly into a milestone but shouldn't be forgotten. If the
 - [ ] Template versioning: tag template with RivetOS version, rebuild on major updates
 - [ ] Proxmox API script or CLI to clone template with CT ID + hostname + IP
 
-### 0.5.2 — First-Boot Identity Wizard (`rivetos init`)
+### 0.6.2 — First-Boot Identity Wizard (`rivetos init`)
 - [ ] Detect first-run state (no `~/.rivetos/config.yaml`)
 - [ ] Interactive setup:
   - Agent name (e.g., "grok", "opus", "gemini", "local")
@@ -460,7 +476,7 @@ Items that don't fit cleanly into a milestone but shouldn't be forgotten. If the
 - [ ] Write config, create workspace, generate SSH keypair
 - [ ] Each agent gets its own soul — different personality, different strengths, same team
 
-### 0.5.3 — Auto-Mesh on First Boot (`rivetos init --join <host>`)
+### 0.6.3 — Auto-Mesh on First Boot (`rivetos init --join <host>`)
 - [ ] Connect to any existing RivetOS node (the "seed node")
 - [ ] Seed node shares its mesh registry (all known agents + IPs + capabilities)
 - [ ] Bidirectional SSH key exchange: new node ↔ all existing nodes
@@ -468,7 +484,7 @@ Items that don't fit cleanly into a milestone but shouldn't be forgotten. If the
 - [ ] New agent registered in mesh registry, propagated to all nodes
 - [ ] Full mesh established — every node can reach every other node
 
-### 0.5.4 — Mesh Registry
+### 0.6.4 — Mesh Registry
 - [ ] `~/.rivetos/mesh.json` — source of truth per node, synced across fleet
 - [ ] Per-node entry: agent name, host, IP, port, model, provider, capabilities, tags
 - [ ] Auto-sync on change (push to all peers, or piggyback on syncthing)
@@ -476,14 +492,14 @@ Items that don't fit cleanly into a milestone but shouldn't be forgotten. If the
 - [ ] `rivetos mesh ping` — health check across the fleet
 - [ ] `rivetos mesh remove <agent>` — deregister, revoke keys, clean up
 
-### 0.5.5 — Mesh-Aware Delegation
+### 0.6.5 — Mesh-Aware Delegation
 - [ ] `delegate_task` / `subagent_spawn` read mesh registry for available agents
 - [ ] Name-based routing: "delegate to grok" → resolve host from mesh → execute
 - [ ] Capability-based routing: "need a fast model" → pick by tags/provider
 - [ ] Fallback chains: if target is down, try next agent with matching capability
 - [ ] Cross-node tool execution: CT101 agent invokes a tool running on CT103
 
-### 0.5.6 — Fleet Management
+### 0.6.6 — Fleet Management
 - [ ] `rivetos update --mesh` — rolling update across all nodes
 - [ ] One at a time, health check between each, rollback on failure
 - [ ] Version consistency warnings if nodes drift
