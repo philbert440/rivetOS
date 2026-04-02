@@ -431,44 +431,60 @@ Items that don't fit cleanly into a milestone but shouldn't be forgotten. If the
 
 ---
 
-## Milestone 0.5: Zero-to-Mesh Agent Provisioning
+## Milestone 0.5: Pre-Packaged Agent Containers + Auto-Mesh
+
 **Target: v0.2.0 (ships with Foundation)**
-**Theme:** `rivetos init --join` on a bare Ubuntu box → fully meshed agent in 60 seconds.
+**Theme:** Clone a golden Proxmox template → first-boot wizard asks "who are you?" → fully meshed agent in 60 seconds.
 
-### 0.5.1 — `rivetos init` Enhancements
-- [ ] Detect bare Ubuntu install (no config, no workspace, no keys)
-- [ ] Interactive setup: ask for agent name, provider, API keys
-- [ ] Generate SSH keypair if none exists
-- [ ] Create philbot user (consistent across fleet)
-- [ ] Symlink binary to `/usr/local/bin/rivetos`
-- [ ] Create systemd service + enable
-- [ ] Write config.yaml with defaults + user overrides
+### 0.5.1 — Golden Container Template
+- [ ] Pre-packaged Proxmox LXC template with everything pre-installed:
+  - Node.js, npm, git, common tools
+  - `/opt/rivetos/` repo cloned and built
+  - `/usr/local/bin/rivetos` symlinked
+  - `rivetos.service` in systemd (enabled, but waits for first-run config)
+  - `philbot` user created with standard config
+  - SSH hardened (`prohibit-password`, `MaxAuthTries 3`)
+  - OTel collector ready (just needs endpoint config)
+  - No template bloat (no postfix, no snapd, no avahi)
+- [ ] Template versioning: tag template with RivetOS version, rebuild on major updates
+- [ ] Proxmox API script or CLI to clone template with CT ID + hostname + IP
 
-### 0.5.2 — `rivetos init --join <host>`
-- [ ] Connect to an existing RivetOS instance (the "seed node")
-- [ ] Seed node shares its mesh registry (list of all known agents + connection info)
-- [ ] New node generates SSH key → distributes public key to all existing nodes
-- [ ] All existing nodes push their public keys to the new node
-- [ ] Full SSH mesh established automatically (config entries + authorized_keys)
-- [ ] New agent registered in mesh registry on all nodes
+### 0.5.2 — First-Boot Identity Wizard (`rivetos init`)
+- [ ] Detect first-run state (no `~/.rivetos/config.yaml`)
+- [ ] Interactive setup:
+  - Agent name (e.g., "grok", "opus", "gemini", "local")
+  - Provider + API keys (or local model endpoint)
+  - Personality: generates `SOUL.md`, `IDENTITY.md` unique to this agent
+  - Channel bindings (Discord channel IDs, Telegram tokens)
+  - Heartbeat schedule
+- [ ] Write config, create workspace, generate SSH keypair
+- [ ] Each agent gets its own soul — different personality, different strengths, same team
 
-### 0.5.3 — Mesh Registry
-- [ ] Simple JSON/YAML registry: `~/.rivetos/mesh.json`
-- [ ] Per-node entry: agent name, host, IP, SSH port, capabilities (model, provider, tools)
-- [ ] Synced across all nodes (push on change, or piggyback on syncthing)
-- [ ] `rivetos mesh list` — show all known agents, connectivity status
-- [ ] `rivetos mesh ping` — health check all nodes
-- [ ] `rivetos mesh remove <agent>` — deregister + clean up keys
+### 0.5.3 — Auto-Mesh on First Boot (`rivetos init --join <host>`)
+- [ ] Connect to any existing RivetOS node (the "seed node")
+- [ ] Seed node shares its mesh registry (all known agents + IPs + capabilities)
+- [ ] Bidirectional SSH key exchange: new node ↔ all existing nodes
+- [ ] SSH config entries written automatically (`ssh ct100`, `ssh rivet-grok`, etc.)
+- [ ] New agent registered in mesh registry, propagated to all nodes
+- [ ] Full mesh established — every node can reach every other node
 
-### 0.5.4 — Auto-Discovery for Delegation
-- [ ] `delegate_task` and `subagent_spawn` read mesh registry for available agents
-- [ ] Agent resolution: "delegate to grok" → look up which host runs grok → SSH + execute
-- [ ] Capability-based routing: "delegate to a fast model" → pick from mesh by tags
-- [ ] Fallback: if target agent is down, try next agent with matching capability
-- [ ] Cross-node tool execution: agent on CT101 can invoke a tool on CT103's runtime
+### 0.5.4 — Mesh Registry
+- [ ] `~/.rivetos/mesh.json` — source of truth per node, synced across fleet
+- [ ] Per-node entry: agent name, host, IP, port, model, provider, capabilities, tags
+- [ ] Auto-sync on change (push to all peers, or piggyback on syncthing)
+- [ ] `rivetos mesh list` — all agents, status, versions
+- [ ] `rivetos mesh ping` — health check across the fleet
+- [ ] `rivetos mesh remove <agent>` — deregister, revoke keys, clean up
 
-### 0.5.5 — `rivetos update` Mesh-Aware
-- [ ] `rivetos update --mesh` — pull + rebuild on ALL nodes in the mesh
-- [ ] Rolling update: one node at a time, health check between each
-- [ ] Rollback if a node fails health check after update
-- [ ] Version consistency check: warn if mesh nodes are running different versions
+### 0.5.5 — Mesh-Aware Delegation
+- [ ] `delegate_task` / `subagent_spawn` read mesh registry for available agents
+- [ ] Name-based routing: "delegate to grok" → resolve host from mesh → execute
+- [ ] Capability-based routing: "need a fast model" → pick by tags/provider
+- [ ] Fallback chains: if target is down, try next agent with matching capability
+- [ ] Cross-node tool execution: CT101 agent invokes a tool running on CT103
+
+### 0.5.6 — Fleet Management
+- [ ] `rivetos update --mesh` — rolling update across all nodes
+- [ ] One at a time, health check between each, rollback on failure
+- [ ] Version consistency warnings if nodes drift
+- [ ] Template rebuild pipeline: update template → `rivetos mesh upgrade` pushes to fleet
