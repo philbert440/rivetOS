@@ -428,3 +428,47 @@ Items that don't fit cleanly into a milestone but shouldn't be forgotten. If the
 - [ ] **Plugin hot-reload:** Currently all plugin changes require a full restart. Would benefit from watch-mode reload during development.
 - [ ] **WhatsApp channel plugin:** Formatting notes exist in AGENTS.md but no WhatsApp channel implementation exists yet.
 - [ ] **Additional providers (DeepSeek, etc.):** As new model providers emerge, add OpenAI-compatible shims or native integrations.
+
+---
+
+## Milestone 0.5: Zero-to-Mesh Agent Provisioning
+**Target: v0.2.0 (ships with Foundation)**
+**Theme:** `rivetos init --join` on a bare Ubuntu box → fully meshed agent in 60 seconds.
+
+### 0.5.1 — `rivetos init` Enhancements
+- [ ] Detect bare Ubuntu install (no config, no workspace, no keys)
+- [ ] Interactive setup: ask for agent name, provider, API keys
+- [ ] Generate SSH keypair if none exists
+- [ ] Create philbot user (consistent across fleet)
+- [ ] Symlink binary to `/usr/local/bin/rivetos`
+- [ ] Create systemd service + enable
+- [ ] Write config.yaml with defaults + user overrides
+
+### 0.5.2 — `rivetos init --join <host>`
+- [ ] Connect to an existing RivetOS instance (the "seed node")
+- [ ] Seed node shares its mesh registry (list of all known agents + connection info)
+- [ ] New node generates SSH key → distributes public key to all existing nodes
+- [ ] All existing nodes push their public keys to the new node
+- [ ] Full SSH mesh established automatically (config entries + authorized_keys)
+- [ ] New agent registered in mesh registry on all nodes
+
+### 0.5.3 — Mesh Registry
+- [ ] Simple JSON/YAML registry: `~/.rivetos/mesh.json`
+- [ ] Per-node entry: agent name, host, IP, SSH port, capabilities (model, provider, tools)
+- [ ] Synced across all nodes (push on change, or piggyback on syncthing)
+- [ ] `rivetos mesh list` — show all known agents, connectivity status
+- [ ] `rivetos mesh ping` — health check all nodes
+- [ ] `rivetos mesh remove <agent>` — deregister + clean up keys
+
+### 0.5.4 — Auto-Discovery for Delegation
+- [ ] `delegate_task` and `subagent_spawn` read mesh registry for available agents
+- [ ] Agent resolution: "delegate to grok" → look up which host runs grok → SSH + execute
+- [ ] Capability-based routing: "delegate to a fast model" → pick from mesh by tags
+- [ ] Fallback: if target agent is down, try next agent with matching capability
+- [ ] Cross-node tool execution: agent on CT101 can invoke a tool on CT103's runtime
+
+### 0.5.5 — `rivetos update` Mesh-Aware
+- [ ] `rivetos update --mesh` — pull + rebuild on ALL nodes in the mesh
+- [ ] Rolling update: one node at a time, health check between each
+- [ ] Rollback if a node fails health check after update
+- [ ] Version consistency check: warn if mesh nodes are running different versions
