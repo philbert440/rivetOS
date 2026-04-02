@@ -24,14 +24,14 @@
 - [x] **Memory embedder:** Background embedder fixed — error recovery and batch processing
 - [ ] **Web search 403:** Google CSE API returning 403 — diagnose quota/billing/key issue or add fallback provider
 
-### 0.3 — CI Pipeline & Build System
+### 0.3 — CI Pipeline & Build System ✅
 - [x] GitHub Actions workflow: lint → type-check → test on push/PR
-- [ ] **Fix workspace globs:** `"plugins/*"` → `"plugins/channels/*", "plugins/providers/*", "plugins/tools/*", "plugins/memory/*"` so Nx sees all 17 packages (currently only sees 2)
-- [ ] **Per-package test scripts:** Add `test` script to every package that has test files (core, types, shell, anthropic/oauth)
-- [ ] **Root test via Nx:** Change `npm test` from raw glob to `npx nx run-many -t test` — enables caching, parallelism, affected-only
-- [ ] **CI uses Nx affected:** `npx nx affected -t test build` with `NX_BASE`/`NX_HEAD` — PRs only test/build what changed
-- [ ] **Nx cache in CI:** GitHub Actions cache or Nx Cloud free tier so cache survives across runs
-- [ ] Branch protection: require CI pass before merge to `main`
+- [x] **Fix workspace globs:** `plugins/*` → `plugins/{channels,memory,providers,tools}/*` — Nx sees all 17 packages
+- [x] **Per-package test scripts:** All 17 packages have `test` scripts (real or no-op)
+- [x] **Root test via Nx:** `npm test` → `npx nx run-many -t test` — caching, parallelism, affected-only
+- [x] **CI uses Nx affected:** `npx nx affected -t test build` with `nrwl/nx-set-shas`, `fetch-depth: 0`
+- [x] **Nx cache in CI:** GitHub Actions cache for `.nx/cache` across runs
+- [ ] Branch protection: require CI pass before merge to `main` *(GitHub settings — manual)*
 
 ### 0.4 — Config Validation
 - [ ] Schema validation on startup (missing required fields, invalid types, unknown keys)
