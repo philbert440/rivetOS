@@ -27,6 +27,9 @@ import { DiscordChannel } from '../plugins/channels/discord/src/index.js';
 import { ShellTool } from '../plugins/tools/shell/src/index.js';
 import { CodingPipeline, createCodingPipelineTool } from '../plugins/tools/coding-pipeline/src/index.js';
 import { createWebTools } from '../plugins/tools/web-search/src/index.js';
+import { createFileToolsPlugin } from '../plugins/tools/file/src/index.js';
+import { createSearchToolsPlugin } from '../plugins/tools/search/src/index.js';
+import { createInteractionToolsPlugin } from '../plugins/tools/interaction/src/index.js';
 import type { Tool } from '@rivetos/types';
 
 // Memory
@@ -239,6 +242,24 @@ export async function boot(configPath?: string) {
   runtime.registerTool(new ShellTool({
     cwd: config.runtime.workspace.replace('~', process.env.HOME ?? '.'),
   }));
+
+  // Register file tools (file_read, file_write, file_edit)
+  const filePlugin = createFileToolsPlugin();
+  for (const tool of filePlugin.getTools()) {
+    runtime.registerTool(tool);
+  }
+
+  // Register search tools (search_glob, search_grep)
+  const searchPlugin = createSearchToolsPlugin();
+  for (const tool of searchPlugin.getTools()) {
+    runtime.registerTool(tool);
+  }
+
+  // Register interaction tools (todo)
+  const interactionPlugin = createInteractionToolsPlugin();
+  for (const tool of interactionPlugin.getTools()) {
+    runtime.registerTool(tool);
+  }
 
   // Register web search + fetch tools (Google CSE for non-xAI providers)
   // xAI has native web search built into the Responses API

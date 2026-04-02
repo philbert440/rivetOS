@@ -129,7 +129,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 - Returns the user's response as a string
 - Useful for confirmation gates, ambiguous instructions, preference collection
 
-### 1.10 — Task List (`todo`)
+### 1.10 — Task List (`todo`) ✅
 **Plugin:** `plugins/tools/interaction/`
 
 - Read/write a structured task list persisted to a file
@@ -364,7 +364,7 @@ These are the `ls`, `cat`, `grep` of an agent OS. Every install gets them.
 | `web_search` | `@rivetos/tool-web` | Exists, needs upgrade |
 | `web_fetch` | `@rivetos/tool-web` | Exists, needs upgrade |
 | `ask_user` | `@rivetos/tool-interaction` | Build new |
-| `todo` | `@rivetos/tool-interaction` | Build new |
+| `todo` | `@rivetos/tool-interaction` | ✅ Done |
 | `memory_search` | `@rivetos/tool-memory` | Build new |
 
 ### Skills (optional, user-installed)
