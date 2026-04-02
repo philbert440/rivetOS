@@ -1,11 +1,15 @@
 /**
  * rivetos config <subcommand>
  *
- * config init — generate default config.yaml
+ * config init     — generate default config.yaml
+ * config show     — print current config path
+ * config validate — validate config schema without starting
  */
 
-import { writeFile, mkdir, access } from 'node:fs/promises';
+import { writeFile, readFile, mkdir, access } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
+import { parse as parseYaml } from 'yaml';
+import { validateConfig, formatValidationResult } from '../../validate.js';
 
 const DEFAULT_CONFIG = `# RivetOS Configuration
 # API keys via environment variables — never in this file.
@@ -86,8 +90,9 @@ export default async function config(): Promise<void> {
     console.log('Usage: rivetos config <subcommand>');
     console.log('');
     console.log('Subcommands:');
-    console.log('  init    Generate default config.yaml');
-    console.log('  show    Print current config path');
+    console.log('  init       Generate default config.yaml');
+    console.log('  show       Print current config path');
+    console.log('  validate   Validate config schema (dry run — does not start)');
     return;
   }
 
@@ -116,6 +121,36 @@ export default async function config(): Promise<void> {
         console.log(configPath);
       } catch {
         console.log('No config found. Run: rivetos config init');
+      }
+      break;
+    }
+
+    case 'validate': {
+      const configPath = process.argv[4] ?? resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml');
+
+      let raw: string;
+      try {
+        raw = await readFile(configPath, 'utf-8');
+      } catch {
+        console.error(`❌ Cannot read config file: ${configPath}`);
+        process.exit(1);
+        return; // unreachable but makes TS happy
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = parseYaml(raw);
+      } catch (err: any) {
+        console.error(`❌ Failed to parse YAML: ${err.message}`);
+        process.exit(1);
+        return;
+      }
+
+      const result = validateConfig(parsed);
+      console.log(formatValidationResult(result));
+
+      if (!result.valid) {
+        process.exit(1);
       }
       break;
     }

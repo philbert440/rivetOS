@@ -31,13 +31,13 @@
 - [x] **Root test via Nx:** `npm test` → `npx nx run-many -t test` — caching, parallelism, affected-only
 - [x] **CI uses Nx affected:** `npx nx affected -t test build` with `nrwl/nx-set-shas`, `fetch-depth: 0`
 - [x] **Nx cache in CI:** GitHub Actions cache for `.nx/cache` across runs
-- [ ] Branch protection: require CI pass before merge to `main` *(GitHub settings — manual)*
+- [x] Branch protection: require CI pass before merge to `main` *(GitHub settings — manual)*
 
-### 0.4 — Config Validation
-- [ ] Schema validation on startup (missing required fields, invalid types, unknown keys)
-- [ ] Helpful error messages: "provider 'xai' referenced by agent 'grok' but not defined in [providers]"
-- [ ] Warn on common mistakes (API key in config file, missing env var)
-- [ ] `rivetos doctor` validates config + connectivity to all configured providers/channels
+### 0.4 — Config Validation ✅
+- [x] Schema validation on startup (missing required fields, invalid types, unknown keys)
+- [x] Helpful error messages: "provider 'xai' referenced by agent 'grok' but not defined in [providers]"
+- [x] Warn on common mistakes (API key in config file, missing env var)
+- [x] `rivetos doctor` validates config + connectivity to all configured providers/channels
 
 ### 0.5 — CLI Tools
 - [x] `rivetos version` — dynamic from package.json + git short hash
@@ -46,7 +46,7 @@
 - [x] `rivetos start/stop/status` — runtime lifecycle
 - [x] `rivetos help` — command reference
 - [ ] `rivetos logs` — tail runtime logs with filtering (journalctl wrapper + structured log parsing)
-- [ ] `rivetos config validate` — check config without starting (dry-run of schema validation from 0.4)
+- [x] `rivetos config validate` — check config without starting (dry-run of schema validation from 0.4)
 - [ ] `rivetos skills list` — show all discovered skills with trigger counts
 - [ ] `rivetos plugins list` — show loaded plugins with status
 - [ ] `rivetos mesh list/ping/remove` — fleet management (depends on 0.6 mesh registry)

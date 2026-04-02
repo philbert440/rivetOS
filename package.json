@@ -1,6 +1,6 @@
 {
   "name": "rivetos",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "private": true,
   "description": "Lightweight, stable agent runtime. Zero bloat. Zero lock-in. Just the loop.",
   "license": "MIT",
@@ -38,7 +38,7 @@
   },
   "scripts": {
     "build": "npx nx run-many -t build",
-    "test": "npx nx run-many -t test",
+    "test": "npx nx run-many -t test && node --import tsx --test src/validate.test.ts",
     "dev": "npx tsx src/boot.ts",
     "cli": "npx tsx src/cli/index.ts",
     "graph": "npx nx graph"
