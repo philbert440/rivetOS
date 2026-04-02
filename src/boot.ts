@@ -198,6 +198,7 @@ export async function boot(configPath?: string) {
         const memoryTools = createMemoryTools(searchEngine, expanderInstance, {
           compactorEndpoint: compactorEndpoint || undefined,
           compactorModel,
+          pool: memory.getPool(),
         });
         for (const tool of memoryTools) {
           runtime.registerTool(tool);
