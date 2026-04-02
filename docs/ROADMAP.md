@@ -10,18 +10,18 @@
 **Target: v0.2.0**  
 **Theme:** You can't ship what doesn't test.
 
-### 0.1 — Test Coverage for Core Domain
-- [ ] Unit tests for `AgentLoop` (turn execution, tool iteration limits, abort/steer)
-- [ ] Unit tests for `Router` (agent resolution, provider mapping, fallback behavior)
-- [ ] Unit tests for `WorkspaceLoader` (file injection, caching, system prompt construction)
-- [ ] Unit tests for `MessageQueue` (ordering, dedup, command interception)
-- [ ] Unit tests for `SkillManager` (discovery, frontmatter parsing, trigger matching)
-- [ ] Integration test: full turn lifecycle (message in → provider call → tool execution → response out)
+### 0.1 — Test Coverage for Core Domain ✅
+- [x] Unit tests for `AgentLoop` (turn execution, tool iteration limits, abort/steer) — `loop.test.ts`
+- [x] Unit tests for `Router` (agent resolution, provider mapping, fallback behavior) — `router.test.ts`
+- [x] Unit tests for `WorkspaceLoader` (file injection, caching, system prompt construction) — `workspace.test.ts` (15 tests)
+- [x] Unit tests for `MessageQueue` (ordering, dedup, command interception) — `queue.test.ts`
+- [x] Unit tests for `SkillManager` (discovery, frontmatter parsing, trigger matching) — `skills.test.ts` (18 tests)
+- [x] Integration test: full turn lifecycle (message in → provider call → tool execution → response out) — `runtime.test.ts`
 
-### 0.2 — Fix Known Bugs
-- [ ] **skill_dirs wiring:** `boot.ts` doesn't pass `config.runtime.skill_dirs` to Runtime constructor — config is dead
-- [ ] **Compaction:** Background compactor is incomplete — messages accumulate without summarization
-- [ ] **Memory embedder:** Background embedder partially implemented — needs completion and error recovery
+### 0.2 — Fix Known Bugs ✅
+- [x] **skill_dirs wiring:** `boot.ts` now passes `config.runtime.skill_dirs` to Runtime constructor
+- [x] **Compaction:** Background compactor fixed — proper scoring and summarization
+- [x] **Memory embedder:** Background embedder fixed — error recovery and batch processing
 - [ ] **Web search 403:** Google CSE API returning 403 — diagnose quota/billing/key issue or add fallback provider
 
 ### 0.3 — CI Pipeline & Build System
