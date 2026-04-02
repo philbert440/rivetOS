@@ -1,0 +1,15 @@
+{
+  "name": "@rivetos/tool-file",
+  "version": "0.1.0",
+  "description": "File read, write, and edit tools for RivetOS agents",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@rivetos/types": "*"
+  }
+}

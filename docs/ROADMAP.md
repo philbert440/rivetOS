@@ -414,3 +414,17 @@ These are `apt install` packages. Available in a skills registry, installed per-
 5. **Phil uses it daily.** If it breaks Phil's workflow, it's a P0 bug regardless of milestone.
 6. **Boring technology.** TypeScript, Node.js, PostgreSQL, systemd. No experiments in the foundation.
 7. **Ship the README.** If a plugin doesn't have a README that a stranger can follow, it's not done.
+
+---
+
+## Loose Ends — Tie Up If Not Addressed Along the Way
+
+Items that don't fit cleanly into a milestone but shouldn't be forgotten. If they get resolved as part of another milestone, check them off here and note where.
+
+- [ ] **Voice plugin / xAI Realtime API:** Existing voice plugin is incomplete. Needs finish-out for TTS/STT streaming via xAI or ElevenLabs.
+- [ ] **Cron scheduler:** Distinct from the heartbeat system. Precise time-based task scheduling (exact times, recurring schedules) with isolated execution context. AGENTS.md references "heartbeat vs cron" but no cron implementation exists.
+- [ ] **OAuth token auto-refresh:** Google Workspace tokens expire and currently require manual re-auth. Needs automatic refresh-token flow.
+- [ ] **Delegation `fromAgent` context bug:** Delegated agents don't receive context about who delegated to them and why. Partially addressed by 3.4 but the existing bug should be fixed independently.
+- [ ] **Plugin hot-reload:** Currently all plugin changes require a full restart. Would benefit from watch-mode reload during development.
+- [ ] **WhatsApp channel plugin:** Formatting notes exist in AGENTS.md but no WhatsApp channel implementation exists yet.
+- [ ] **Additional providers (DeepSeek, etc.):** As new model providers emerge, add OpenAI-compatible shims or native integrations.
