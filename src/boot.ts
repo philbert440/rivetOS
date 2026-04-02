@@ -54,6 +54,7 @@ export async function boot(configPath?: string) {
       defaultThinking: (agent.default_thinking as string) ?? 'medium',
     })),
     heartbeats: config.runtime.heartbeats as import('@rivetos/types').HeartbeatConfig[],
+    skillDirs: config.runtime.skill_dirs,
   });
 
   // Register providers

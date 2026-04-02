@@ -10,6 +10,22 @@ export interface RivetConfig {
     workspace: string;
     default_agent: string;
     max_tool_iterations?: number;
+    skill_dirs?: string[];
+    heartbeats?: Array<{
+      agent: string;
+      schedule: string;
+      timezone?: string;
+      prompt: string;
+      outputChannel?: string;
+      quietHours?: { start: number; end: number };
+    }>;
+    coding_pipeline?: {
+      builder_agent?: string;
+      validator_agent?: string;
+      max_build_loops?: number;
+      max_validation_loops?: number;
+      auto_commit?: boolean;
+    };
   };
   agents: Record<string, {
     provider: string;
