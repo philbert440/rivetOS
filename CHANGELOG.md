@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-04-02
+
+### Added
+- **Config validation engine** (`src/validate.ts`) — schema validation on startup with structured error/warning reporting
+  - Missing required fields, invalid types, unknown keys
+  - Cross-reference validation: agents ↔ providers, heartbeats, channel bindings, coding pipeline
+  - Warns on hardcoded API keys/tokens in config (use env vars)
+  - Warns on out-of-range values (temperature, max_tokens)
+  - Human-readable error messages with config path and available options
+- **`rivetos config validate`** CLI command — dry-run config validation without starting the runtime
+- **Upgraded `rivetos doctor`** — now runs schema validation, config-aware env var checks, and provider connectivity tests
+- 62 unit tests for config validation covering all sections, cross-references, edge cases
+- `ConfigValidationError` thrown on boot with formatted output when config is invalid
+
+### Changed
+- `loadConfig()` now validates schema before resolving env vars — catches structural issues early
+- `rivetos doctor` version bumped to match package version
+- Root test script now includes `src/validate.test.ts` alongside Nx project tests
+
 ## [0.1.0] - 2026-03-28
 
 ### Added

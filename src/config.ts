@@ -1,9 +1,10 @@
 /**
- * Config Loader — reads YAML config, resolves env vars, returns typed config.
+ * Config Loader — reads YAML config, validates schema, resolves env vars, returns typed config.
  */
 
 import { readFile } from 'node:fs/promises';
 import { parse as parseYaml } from 'yaml';
+import { validateConfig, formatValidationResult } from './validate.js';
 
 export interface RivetConfig {
   runtime: {
@@ -36,14 +37,42 @@ export interface RivetConfig {
   memory?: Record<string, Record<string, unknown>>;
 }
 
+export class ConfigValidationError extends Error {
+  constructor(public readonly formatted: string) {
+    super('Config validation failed');
+    this.name = 'ConfigValidationError';
+  }
+}
+
 /**
  * Load and parse YAML config file.
+ * Validates schema (on raw parsed YAML, before env resolution).
  * Resolves ${ENV_VAR} references in string values.
+ * Throws ConfigValidationError if validation fails.
  */
 export async function loadConfig(path: string): Promise<RivetConfig> {
   const raw = await readFile(path, 'utf-8');
-  const parsed = parseYaml(raw) as RivetConfig;
-  return resolveEnvVars(parsed);
+  const parsed = parseYaml(raw);
+
+  // Validate before env resolution — catches structural issues and
+  // can warn about missing env vars (${FOO} patterns still present)
+  const result = validateConfig(parsed);
+
+  // Log warnings to stderr (non-fatal)
+  if (result.warnings.length > 0) {
+    for (const warn of result.warnings) {
+      console.warn(`[RivetOS] [WARN] [Config] ${warn.path ? `[${warn.path}] ` : ''}${warn.message}`);
+    }
+  }
+
+  // Fatal errors — refuse to boot
+  if (!result.valid) {
+    const formatted = formatValidationResult(result);
+    console.error(`[RivetOS] [ERROR] [Config] Validation failed:\n${formatted}`);
+    throw new ConfigValidationError(formatted);
+  }
+
+  return resolveEnvVars(parsed as RivetConfig);
 }
 
 function resolveEnvVars<T>(obj: T): T {

@@ -7,3 +7,4 @@ dist/
 *-tokens.json
 .credentials.json
 *.pid
+memory/
