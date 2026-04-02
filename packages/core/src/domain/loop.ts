@@ -161,6 +161,7 @@ export class AgentLoop {
                   id: chunk.toolCall.id ?? `tc-${Date.now()}-${chunk.toolCall.index}`,
                   name: chunk.toolCall.name ?? '',
                   arguments: {},
+                  thoughtSignature: chunk.toolCall.thoughtSignature,
                 });
               }
               break;

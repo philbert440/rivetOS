@@ -85,11 +85,11 @@ function convertMessages(messages: Message[]): { systemInstruction?: string; con
       }
       if (msg.toolCalls?.length) {
         for (const tc of msg.toolCalls) {
-          const part: GeminiPart = { functionCall: { name: tc.name, args: tc.arguments } };
+          const fcPart: GeminiPart = { functionCall: { name: tc.name, args: tc.arguments } };
           if (tc.thoughtSignature) {
-            (part as any).thoughtSignature = tc.thoughtSignature;
+            (fcPart as any).thoughtSignature = tc.thoughtSignature;
           }
-          parts.push(part);
+          parts.push(fcPart);
         }
       }
       if (parts.length > 0) {
@@ -278,7 +278,7 @@ export class GoogleProvider implements Provider {
     let currentToolArgs = '';
     let currentToolId = '';
     let currentToolName = '';
-    let currentThoughtSignature = '';
+    let currentThoughtSignature: string | undefined;
     let usage = { promptTokens: 0, completionTokens: 0 };
 
     for await (const chunk of this.chatStream(messages, options)) {
@@ -292,7 +292,7 @@ export class GoogleProvider implements Provider {
         case 'tool_call_start':
           currentToolId = chunk.toolCall?.id ?? '';
           currentToolName = chunk.toolCall?.name ?? '';
-          currentThoughtSignature = chunk.toolCall?.thoughtSignature ?? '';
+          currentThoughtSignature = chunk.toolCall?.thoughtSignature;
           currentToolArgs = '';
           break;
         case 'tool_call_delta':
@@ -301,15 +301,7 @@ export class GoogleProvider implements Provider {
         case 'tool_call_done':
           let args: Record<string, unknown> = {};
           try { args = JSON.parse(currentToolArgs); } catch { args = { raw: currentToolArgs }; }
-          const tc: ToolCall = { 
-            id: currentToolId, 
-            name: currentToolName, 
-            arguments: args 
-          };
-          if (currentThoughtSignature) {
-            tc.thoughtSignature = currentThoughtSignature;
-          }
-          toolCalls.push(tc);
+          toolCalls.push({ id: currentToolId, name: currentToolName, arguments: args, thoughtSignature: currentThoughtSignature });
           break;
         case 'done':
           if (chunk.usage) usage = chunk.usage;
