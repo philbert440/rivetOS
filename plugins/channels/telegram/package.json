@@ -1,12 +1,13 @@
 {
   "name": "@rivetos/channel-telegram",
   "version": "0.1.0",
-  "description": "Telegram channel — grammY, Bot API, streaming message edits",
+  "description": "Telegram channel \u2014 grammY, Bot API, streaming message edits",
   "license": "MIT",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "echo \"no tests yet\""
   },
   "dependencies": {
     "@rivetos/types": "*",

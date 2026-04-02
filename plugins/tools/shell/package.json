@@ -1,12 +1,13 @@
 {
   "name": "@rivetos/tool-shell",
   "version": "0.1.0",
-  "description": "Shell command execution tool — reference Tool implementation",
+  "description": "Shell command execution tool \u2014 reference Tool implementation",
   "license": "MIT",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "@rivetos/types": "*"

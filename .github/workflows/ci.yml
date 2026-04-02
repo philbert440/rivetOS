@@ -9,13 +9,15 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+
     strategy:
       matrix:
         node-version: [22]
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needed for nx affected
 
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -23,8 +25,28 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
+      - name: Restore Nx cache
+        uses: actions/cache@v4
+        with:
+          path: .nx/cache
+          key: nx-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            nx-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
+            nx-${{ runner.os }}-
+
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
-        run: npm test
+      - name: Set Nx SHAs
+        uses: nrwl/nx-set-shas@v4
+
+      - name: Lint affected
+        run: npx nx affected -t lint --parallel=3
+        continue-on-error: true # lint target doesn't exist yet on all packages
+
+      - name: Test affected
+        run: npx nx affected -t test --parallel=3
+
+      - name: Build affected
+        run: npx nx affected -t build --parallel=3
+        continue-on-error: true # build target doesn't exist yet on all packages

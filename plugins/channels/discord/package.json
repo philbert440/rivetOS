@@ -1,12 +1,13 @@
 {
   "name": "@rivetos/channel-discord",
   "version": "0.1.0",
-  "description": "Discord channel — discord.js v14, channel bindings, threads, embeds",
+  "description": "Discord channel \u2014 discord.js v14, channel bindings, threads, embeds",
   "license": "MIT",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "echo \"no tests yet\""
   },
   "dependencies": {
     "@rivetos/types": "*",

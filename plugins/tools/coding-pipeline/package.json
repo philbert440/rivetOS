@@ -1,12 +1,13 @@
 {
   "name": "@rivetos/tool-coding-pipeline",
   "version": "0.1.0",
-  "description": "Autonomous coding pipeline — Grok builds, self-reviews, Opus validates",
+  "description": "Autonomous coding pipeline \u2014 Grok builds, self-reviews, Opus validates",
   "license": "MIT",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "echo \"no tests yet\""
   },
   "dependencies": {
     "@rivetos/types": "*"

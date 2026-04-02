@@ -28,14 +28,17 @@
   },
   "workspaces": [
     "packages/*",
-    "plugins/*"
+    "plugins/channels/*",
+    "plugins/memory/*",
+    "plugins/providers/*",
+    "plugins/tools/*"
   ],
   "bin": {
     "rivetos": "./src/cli/index.ts"
   },
   "scripts": {
     "build": "npx nx run-many -t build",
-    "test": "node --import tsx --test 'packages/*/src/**/*.test.ts' 'plugins/**/src/**/*.test.ts'",
+    "test": "npx nx run-many -t test",
     "dev": "npx tsx src/boot.ts",
     "cli": "npx tsx src/cli/index.ts",
     "graph": "npx nx graph"
