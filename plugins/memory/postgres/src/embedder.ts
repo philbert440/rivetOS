@@ -22,6 +22,8 @@ export interface EmbedderConfig {
   embedEndpoint: string;
   /** Messages per cycle (default: 10) */
   batchSize?: number;
+  /** Embedding model name (default: "nemotron") */
+  model?: string;
   /** Milliseconds between cycles (default: 30000) */
   intervalMs?: number;
 }
@@ -35,9 +37,11 @@ export class BackgroundEmbedder {
   private config: EmbedderConfig;
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private model: string;
 
   constructor(config: EmbedderConfig) {
     this.config = config;
+    this.model = config.model ?? 'nemotron';
     this.pool = new pg.Pool({ connectionString: config.connectionString, max: 2 });
   }
 
@@ -130,16 +134,16 @@ export class BackgroundEmbedder {
   private async embed(text: string): Promise<number[] | null> {
     const truncated = text.length > 8000 ? text.slice(0, 8000) : text;
 
-    const response = await fetch(`${this.config.embedEndpoint}/embed`, {
+    const response = await fetch(`${this.config.embedEndpoint}/v1/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: truncated }),
+      body: JSON.stringify({ input: truncated, model: this.model }),
       signal: AbortSignal.timeout(10_000),
     });
 
     if (!response.ok) return null;
 
-    const data = (await response.json()) as { embedding: number[] };
-    return data.embedding;
+    const data = (await response.json()) as { data: Array<{ embedding: number[] }> };
+    return data.data?.[0]?.embedding ?? null;
   }
 }

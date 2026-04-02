@@ -277,7 +277,9 @@ export class BackgroundCompactor {
       }
 
       const data = await response.json() as Record<string, unknown>;
-      return data.choices?.[0]?.message?.content ?? null;
+      const message = (data as any).choices?.[0]?.message;
+      // Prefer content, fall back to reasoning_content (QwQ/reasoning models)
+      return message?.content || message?.reasoning_content || null;
     } catch (err: any) {
       console.error(`[Compactor] LLM call failed: ${err.message}`);
       return null;
