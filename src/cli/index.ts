@@ -4,10 +4,12 @@
  * RivetOS CLI
  *
  * Usage:
+ *   rivetos init                     — first-run setup
  *   rivetos start                    — start the runtime
  *   rivetos start --config <path>    — start with specific config
  *   rivetos stop                     — stop the running instance
  *   rivetos status                   — show runtime status
+ *   rivetos update                   — pull latest, rebuild, re-symlink
  *   rivetos login anthropic          — OAuth login for Anthropic (Claude subscription)
  *   rivetos doctor                   — check config, providers, connectivity
  *   rivetos config init              — generate default config.yaml
@@ -15,9 +17,11 @@
  */
 
 const COMMANDS: Record<string, () => Promise<void>> = {
+  init: () => import('./commands/init.js').then((m) => m.default()),
   start: () => import('./commands/start.js').then((m) => m.default()),
   stop: () => import('./commands/stop.js').then((m) => m.default()),
   status: () => import('./commands/status.js').then((m) => m.default()),
+  update: () => import('./commands/update.js').then((m) => m.default()),
   doctor: () => import('./commands/doctor.js').then((m) => m.default()),
   config: () => import('./commands/config.js').then((m) => m.default()),
   version: () => import('./commands/version.js').then((m) => m.default()),
@@ -33,6 +37,10 @@ const COMMANDS: Record<string, () => Promise<void>> = {
 async function showHelp(): Promise<void> {
   console.log(`
   rivetos — Lightweight, stable agent runtime
+
+  Setup:
+    rivetos init                        First-run setup (config, workspace, symlink)
+    rivetos update                      Pull latest, rebuild, re-symlink
 
   Usage:
     rivetos start [--config <path>]     Start the runtime
