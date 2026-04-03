@@ -169,7 +169,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 
 ---
 
-## Milestone 2: Hooks & Lifecycle Events
+## Milestone 2: Hooks & Lifecycle Events ✅
 **Target: v0.2.0**  
 **Theme:** Extensibility without touching core.
 
@@ -184,23 +184,34 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 - [ ] Hook handler types: `shell` (run a command), `http` (webhook) — currently only `internal` (TypeScript function)
 - [ ] Hooks defined in config.yaml (declarative registration at boot — types ready, loader not implemented)
 
-### 2.2 — Safety Hooks (PreToolUse)
-- Block dangerous shell commands before execution (infrastructure ready via `tool:before` + `blocked` flag)
-- Require confirmation for file writes outside workspace
-- Log all tool invocations to audit file
-- Custom rules: "never run npm publish without --dry-run first"
+### 2.2 — Safety Hooks (PreToolUse) ✅
+- [x] **Shell danger blocker:** Blocks catastrophic commands (rm -rf /, fork bombs, pipe-to-shell), warns on risky ones (force push, hard reset)
+- [x] **Workspace fence:** Blocks file operations outside allowed directories, always allows /tmp
+- [x] **Audit logger:** Logs all tool invocations to `.data/audit/YYYY-MM-DD.jsonl`, redacts secrets, truncates long values
+- [x] **Custom rule engine:** User-defined block/warn patterns per tool. Ships with: npm-dry-run, no-delete-git, warn-config-write
+- [x] **Priority ordering:** Shell danger (10) → workspace fence (15) → custom rules (20) → audit (90)
+- [x] **Boot wiring:** All safety hooks registered at startup from config
+- [x] **29 tests** — blocking, warnings, fence boundaries, audit logging, secret redaction, custom rules, priority ordering
 
-### 2.3 — Auto-Actions (PostToolUse)
-- Auto-format files after edit (prettier, eslint --fix) (infrastructure ready via `tool:after`)
-- Auto-lint after code changes
-- Auto-run tests after file modifications in src/
-- Custom: "after any git commit, run the pre-push checks"
+### 2.3 — Auto-Actions (PostToolUse) ✅
+- [x] **Auto-format:** Runs prettier after file_write/file_edit on JS/TS/JSON/CSS/MD/YAML (opt-in via config)
+- [x] **Auto-lint:** Runs eslint --fix after file_write/file_edit on JS/TS files (opt-in)
+- [x] **Auto-test:** Runs vitest --related after source file changes (skips test files themselves) (opt-in)
+- [x] **Auto git check:** Runs tsc --noEmit after git commit (opt-in)
+- [x] **Custom actions:** User-defined post-tool commands with file interpolation, file pattern filters, soft-fail option
+- [x] **All opt-in:** Nothing runs by default. Enable via `runtime.auto_actions` config.
+- [x] **Injected shell executor:** Testable without real child_process
+- [x] **21 tests** — format, lint, test, git check, custom actions, soft fail, aggregate config
 
-### 2.4 — Session Hooks
-- `session:start`: load additional context, check calendar, greet user
-- `session:end`: auto-commit pending changes, write session summary, update daily notes
-- `compact:before`: save important context before compaction
-- `compact:after`: verify critical context survived compaction
+### 2.4 — Session Hooks ✅
+- [x] **session:start:** Records session metadata, loads daily context from workspace notes
+- [x] **session:end — summary:** Writes session summary (agent, turns, tokens) to daily notes
+- [x] **session:end — auto-commit:** Auto-commits pending workspace changes on session end (opt-in, off by default)
+- [x] **compact:before:** Captures pre-compaction snapshot (message count, timestamp) for verification
+- [x] **compact:after:** Calculates compression ratio, verifies context survived, logs to daily notes
+- [x] **Injected file writer + shell:** Fully testable without real filesystem
+- [x] **Boot wiring:** All session hooks registered at startup (auto-commit opt-in)
+- [x] **18 tests** — start context, summary writing, auto-commit, compaction snapshot/verify, pipeline integration
 
 ### 2.5 — Provider Fallback Chains ✅
 - [x] Generalized fallback system across **all providers** via hook pipeline
