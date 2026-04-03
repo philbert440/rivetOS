@@ -10,7 +10,7 @@
  *   adapter.ts   — implements Memory interface from @rivetos/types
  *   search.ts    — hybrid FTS + semantic + temporal + importance scoring
  *   expand.ts    — summary DAG traversal (parent_id on ros_summaries)
- *   tools.ts     — agent tools: memory_grep, memory_expand, memory_describe, memory_expand_query
+ *   tools.ts     — agent tools: memory_search (unified), memory_browse, memory_stats
  *   embedder.ts  — background job: embed messages + summaries via Nemotron
  *   compactor.ts — background job: summarize old messages via Rivet Local
  *   scoring.ts   — pure domain: relevance scoring functions (no I/O)

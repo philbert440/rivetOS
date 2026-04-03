@@ -157,14 +157,15 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 - Gives models a working scratchpad for multi-step plans
 - Returns formatted task list with status indicators
 
-### 1.11 — Memory Search (`memory_search`) ✅
+### 1.11 — Memory Tools (consolidated) ✅
 **Plugin:** `plugins/memory/postgres/` (tools live alongside the memory adapter)
 
-- [x] Expose the Memory plugin's search capabilities as tools
-- [x] Six tools: `memory_grep` (FTS/trigram/regex), `memory_expand` (DAG drill-down), `memory_describe` (node metadata), `memory_expand_query` (search + expand + LLM synthesis), `memory_browse` (chronological), `memory_stats` (diagnostics)
+- [x] **`memory_search`** — Unified search + auto-expand. Replaces `memory_grep`, `memory_expand`, `memory_describe`, `memory_expand_query`. Searches messages + summaries, auto-expands top summary hits to children/source messages, returns structured scored output. Supports FTS/trigram/regex modes, agent/date filters, optional LLM synthesis.
+- [x] **`memory_browse`** — Chronological message browsing (unchanged). For reviewing sessions and catching up on activity.
+- [x] **`memory_stats`** — System health diagnostics. Embedding queue depth, unsummarized message counts, conversations needing compaction, orphan summaries, summary tree depth, embedding coverage, freshness indicators.
 - [x] Filter by agent, time range, scope (messages/summaries/both)
-- [x] Returns scored results with timestamps and context
 - [x] Wired in `boot.ts` — registered when memory plugin initializes
+- [x] Consolidated from 6 tools → 3 (less tool-call orchestration needed by the LLM)
 
 ---
 
