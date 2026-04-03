@@ -2,7 +2,7 @@
 
 **Version:** v0.0.x → v1.0.0 LTS  
 **Last updated:** April 2026  
-**Philosophy:** The lightweight Linux of agent runtimes. Tiny core, stable kernel, everything else is a plugin or skill.
+**Philosophy:** The lightweight Linux of agent runtimes. Small clean stable core, everything else is a plugin or skill.
 
 ---
 
