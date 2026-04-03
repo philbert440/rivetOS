@@ -1,13 +1,13 @@
 # RivetOS Roadmap
 
-**Version:** v0.1.0 → v1.0.0 LTS  
+**Version:** v0.0.x → v1.0.0 LTS  
 **Last updated:** April 2026  
 **Philosophy:** The lightweight Linux of agent runtimes. Tiny core, stable kernel, everything else is a plugin or skill.
 
 ---
 
 ## Milestone 0: Foundation — Make It Reliable
-**Target: v0.2.0**  
+**Target: v0.0.x** ✅  
 **Theme:** You can't ship what doesn't test.
 
 ### 0.1 — Test Coverage for Core Domain ✅
@@ -55,7 +55,7 @@
 ---
 
 ## Milestone 1: Coreutils — The Base Toolset
-**Target: v0.3.0**  
+**Target: v0.1.0**  
 **Theme:** Every agent needs these. They ship with every RivetOS install.
 
 Modeled after the Claude Code core tool patterns — battle-tested primitives adapted for multi-model, multi-agent use. These replace the current "everything goes through shell" approach with purpose-built tools that have safety rails, structured output, and audit trails.
@@ -168,7 +168,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 ---
 
 ## Milestone 2: Hooks & Lifecycle Events
-**Target: v0.4.0**  
+**Target: v0.2.0**  
 **Theme:** Extensibility without touching core.
 
 ### 2.1 — Hook System Architecture
@@ -199,7 +199,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 ---
 
 ## Milestone 3: Agent Capabilities
-**Target: v0.5.0**  
+**Target: v0.3.0**  
 **Theme:** Smarter agents, not just more tools.
 
 ### 3.1 — Plan Mode
@@ -232,7 +232,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 ---
 
 ## Milestone 4: Memory & Context
-**Target: v0.6.0**  
+**Target: v0.4.0**  
 **Theme:** Agents that actually remember.
 
 ### 4.1 — Complete Background Embedder
@@ -266,7 +266,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 ---
 
 ## Milestone 5: Developer Experience
-**Target: v0.7.0**  
+**Target: v0.5.0**  
 **Theme:** Make it easy for others to build on.
 
 ### 5.1 — Plugin SDK
@@ -297,7 +297,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 ---
 
 ## Milestone 6: Production Hardening
-**Target: v0.8.0 → v0.9.0**  
+**Target: v0.6.0**  
 **Theme:** Ready for other people to run.
 
 ### 6.1 — Error Handling & Recovery
@@ -471,14 +471,14 @@ These are `apt install` packages. Available in a skills registry, installed per-
 
 | Version | Milestone | Target |
 |---------|-----------|--------|
-| v0.2.0 | Foundation (tests, bugs, CI) | Q2 2026 |
-| v0.3.0 | Coreutils (11 base tools) | Q2 2026 |
-| v0.4.0 | Hooks & Lifecycle | Q3 2026 |
-| v0.5.0 | Agent Capabilities (plan, batch, worktrees) | Q3 2026 |
-| v0.6.0 | Memory & Context | Q3 2026 |
-| v0.7.0 | Developer Experience (SDK, docs, CLI) | Q4 2026 |
-| v0.8-0.9 | Production Hardening (+ IaC, containers, auto-mesh) | Q4 2026 |
-| v1.0.0 | LTS Release + Public Launch | Q1 2027 |
+| v0.0.x | M0: Foundation (tests, bugs, CI, CLI) | ✅ Done |
+| v0.1.0 | M1: Coreutils (11 base tools) | Q2 2026 |
+| v0.2.0 | M2: Hooks & Lifecycle | Q2 2026 |
+| v0.3.0 | M3: Agent Capabilities (plan, batch, worktrees) | Q3 2026 |
+| v0.4.0 | M4: Memory & Context | Q3 2026 |
+| v0.5.0 | M5: Developer Experience (SDK, docs, CLI) | Q3 2026 |
+| v0.6.0 | M6: Production Hardening (+ IaC, containers, auto-mesh) | Q4 2026 |
+| v1.0.0 | M7: LTS Release + Public Launch | Q1 2027 |
 
 ---
 
