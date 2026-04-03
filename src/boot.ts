@@ -35,6 +35,9 @@ import { createSearchToolsPlugin } from '../plugins/tools/search/src/index.js';
 import { createInteractionToolsPlugin } from '../plugins/tools/interaction/src/index.js';
 import type { Tool } from '@rivetos/types';
 
+// MCP
+import { MCPClientPlugin } from '../plugins/tools/mcp-client/src/index.js';
+
 // Memory
 import { PostgresMemory, SearchEngine, Expander, createMemoryTools, BackgroundEmbedder, BackgroundCompactor } from '../plugins/memory/postgres/src/index.js';
 const log = logger('Boot');
@@ -300,6 +303,28 @@ export async function boot(configPath?: string) {
   });
   for (const tool of webTools) {
     runtime.registerTool(tool);
+  }
+
+  // Register MCP server tools
+  if (config.mcp?.servers && Object.keys(config.mcp.servers).length > 0) {
+    try {
+      const mcpPlugin = new MCPClientPlugin({
+        servers: config.mcp.servers as any,
+      });
+      const mcpTools = await mcpPlugin.connect();
+      for (const tool of mcpTools) {
+        runtime.registerTool(tool);
+      }
+      if (mcpTools.length > 0) {
+        log.info(`MCP: ${mcpTools.length} tool(s) from ${Object.keys(config.mcp.servers).length} server(s)`);
+      }
+
+      // Register for shutdown
+      const origStop = runtime.stop.bind(runtime);
+      runtime.stop = async () => { await mcpPlugin.disconnect(); await origStop(); };
+    } catch (err: any) {
+      log.error(`Failed to initialize MCP client: ${err.message}`);
+    }
   }
 
   // Register coding pipeline (uses sub-agents for build→review→validate loop)

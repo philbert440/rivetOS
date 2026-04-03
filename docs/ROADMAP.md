@@ -214,13 +214,18 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 - [x] **16 tests** — trigger codes, timeout, auth, chain progression, exhaustion, cross-provider, session isolation, composability
 - [ ] Metrics: track fallback frequency per provider (feed into M6 observability)
 
-### 2.6 — MCP Client Plugin
-- MCP (Model Context Protocol) client as a tool plugin
-- Connect to local MCP servers (Nemotron on GERTY, Google Workspace MCP)
-- Discover tools from MCP server → register as regular RivetOS tools
-- MCP tool results → `ToolResult` (including multimodal content)
-- Config: `mcp_servers` section with server name, command/URL, auth
-- Start with stdio transport (local), add SSE/HTTP later
+### 2.6 — MCP Client Plugin ✅
+- [x] MCP client as a tool plugin (`@rivetos/tool-mcp-client`)
+- [x] Connect to MCP servers via stdio, StreamableHTTP, or SSE transport
+- [x] Discover tools via `listTools()` → register as native RivetOS tools
+- [x] MCP tool results → `ToolResult` (text or multimodal `ContentPart[]`)
+- [x] Config: `mcp.servers` section in config.yaml with transport, command/URL, toolPrefix, env, timeout
+- [x] Auto-reconnect on disconnect (configurable)
+- [x] Tool prefix support to avoid name collisions across servers
+- [x] Boot integration: MCP servers connect at startup, tools registered, shutdown on stop
+- [x] **22 tests** — connection, discovery, execution, error handling, multimodal, multi-server
+- [ ] Test against live Nemotron MCP server on GERTY (SSH access needed)
+- [ ] Test against Google Workspace MCP server
 - **NOT an MCP server** — RivetOS exposes its own tools via its own plugin system, not MCP
 
 ---
