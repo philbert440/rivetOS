@@ -198,6 +198,24 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 - `PreCompact`: save important context before compaction
 - `PostCompact`: verify critical context survived compaction
 
+### 2.5 — Provider Fallback Chains
+- Generalized fallback system across **all providers**, not just Google
+- Config: `fallbacks: ['model-b', 'model-c']` per provider
+- Triggers: 429 rate limit, 503 service unavailable, timeout, auth failure (configurable)
+- Cascade: try primary → fallback1 → fallback2 → yield error
+- Logging: warn on each fallback step with model name + reason
+- Metrics: track fallback frequency per provider (feed into M6 observability)
+- **Reference implementation:** Google provider already has a working 27-line prototype (`feat/provider-fallbacks-2` branch — now captured here, branch deleted)
+
+### 2.6 — MCP Client Plugin
+- MCP (Model Context Protocol) client as a tool plugin
+- Connect to local MCP servers (Nemotron on GERTY, Google Workspace MCP)
+- Discover tools from MCP server → register as regular RivetOS tools
+- MCP tool results → `ToolResult` (including multimodal content)
+- Config: `mcp_servers` section with server name, command/URL, auth
+- Start with stdio transport (local), add SSE/HTTP later
+- **NOT an MCP server** — RivetOS exposes its own tools via its own plugin system, not MCP
+
 ---
 
 ## Milestone 3: Agent Capabilities
@@ -230,6 +248,20 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 - Delegation chains: A delegates to B, B can delegate to C (with depth limit)
 - Result caching: same delegation request within a session returns cached result
 - Timeout handling: graceful timeout with partial result return
+
+### 3.5 — Dynamic Routing
+- Extend `Router` beyond static agent-name mapping
+- **Content-based routing:** Route messages to agents by topic/capability match (e.g., "code question" → Grok, "research" → Local)
+- **Load-based routing:** If an agent is busy/slow, route to next capable agent
+- **Cost-based routing:** Prefer cheaper models for simple queries, expensive for complex
+- Keep it lightweight: Router interface stays simple, strategy pattern for routing logic
+- Foundation only — advanced routing (A2A protocol, cross-node mesh) deferred to M6
+
+### 3.6 — Capability-Based Delegation
+- Delegate by capability, not just agent name: `delegate({ capability: 'fast-code' })` instead of `delegate({ to: 'grok' })`
+- Agent capability registry: each agent declares what it's good at (code, research, creative, analysis)
+- Router resolves capability → agent at delegation time
+- Enables graceful degradation: if the best agent for a capability is down, pick the next best
 
 ---
 
