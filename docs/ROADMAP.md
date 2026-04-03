@@ -54,7 +54,7 @@
 
 ---
 
-## Milestone 1: Coreutils — The Base Toolset
+## Milestone 1: Coreutils — The Base Toolset ✅
 **Target: v0.1.0**  
 **Theme:** Every agent needs these. They ship with every RivetOS install.
 
@@ -157,14 +157,14 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 - Gives models a working scratchpad for multi-step plans
 - Returns formatted task list with status indicators
 
-### 1.11 — Memory Search (`memory_search`)
-**Plugin:** `plugins/tools/memory/`
+### 1.11 — Memory Search (`memory_search`) ✅
+**Plugin:** `plugins/memory/postgres/` (tools live alongside the memory adapter)
 
-- Expose the Memory plugin's search capabilities as a tool
-- Full-text search, vector similarity, or hybrid
-- Filter by agent, time range, conversation
-- Returns scored results with timestamps and context
-- Lets the model explicitly search its own memory rather than relying on automatic context injection
+- [x] Expose the Memory plugin's search capabilities as tools
+- [x] Six tools: `memory_grep` (FTS/trigram/regex), `memory_expand` (DAG drill-down), `memory_describe` (node metadata), `memory_expand_query` (search + expand + LLM synthesis), `memory_browse` (chronological), `memory_stats` (diagnostics)
+- [x] Filter by agent, time range, scope (messages/summaries/both)
+- [x] Returns scored results with timestamps and context
+- [x] Wired in `boot.ts` — registered when memory plugin initializes
 
 ---
 
