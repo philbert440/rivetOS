@@ -2,7 +2,7 @@
  * Router tests — agent registration, provider lookup, routing, health check.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it, beforeEach } from 'vitest';
 import * as assert from 'node:assert/strict';
 import { Router } from './router.js';
 import type { Provider, AgentConfig, InboundMessage, LLMChunk, Message, ChatOptions } from '@rivetos/types';

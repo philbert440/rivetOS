@@ -54,97 +54,98 @@
 
 ---
 
-## Milestone 1: Coreutils — The Base Toolset
+## Milestone 1: Coreutils — The Base Toolset ✅
 **Target: v0.1.0**  
 **Theme:** Every agent needs these. They ship with every RivetOS install.
 
 Modeled after the Claude Code core tool patterns — battle-tested primitives adapted for multi-model, multi-agent use. These replace the current "everything goes through shell" approach with purpose-built tools that have safety rails, structured output, and audit trails.
 
-### 1.1 — File Read (`file_read`)
+### 1.1 — File Read (`file_read`) ✅
 **Plugin:** `plugins/tools/file/`
 
-- Read files with line numbers, range selection (`start_line`, `end_line`)
-- Support text files, JSON, YAML, TOML, markdown
-- Image files → base64 for vision-capable models, description for others
-- PDF → text extraction (pdftotext or similar)
-- Jupyter notebooks → cell-by-cell rendering
-- Max file size guard (configurable, default 1MB)
-- Returns line-numbered output for precise referencing
+- [x] Read files with line numbers, range selection (`start_line`, `end_line`)
+- [x] Binary file detection
+- [x] Max file size guard (configurable, default 1MB)
+- [x] Returns line-numbered output for precise referencing
+- [ ] Image files → base64 for vision-capable models, description for others
+- [ ] PDF → text extraction (pdftotext or similar)
+- [ ] Jupyter notebooks → cell-by-cell rendering
 
-### 1.2 — File Write (`file_write`)
+### 1.2 — File Write (`file_write`) ✅
 **Plugin:** `plugins/tools/file/`
 
-- Write or overwrite a file with full content
-- Create parent directories automatically
-- **Safety:** Require `file_read` of the target before overwrite (prevent blind overwrites)
-- File permissions preserved on overwrite
-- Returns confirmation with byte count and path
+- [x] Write or overwrite a file with full content
+- [x] Create parent directories automatically
+- [x] Backup option (`.bak` file)
+- [x] Returns confirmation with byte count and path
+- [ ] **Safety:** Require `file_read` of the target before overwrite (prevent blind overwrites)
 
-### 1.3 — File Edit (`file_edit`)
+### 1.3 — File Edit (`file_edit`) ✅
 **Plugin:** `plugins/tools/file/`
 
-- Surgical edits: provide `old_string` (exact match) and `new_string` (replacement)
-- Must match exactly one location in the file (fail if ambiguous)
-- **Safety:** Require `file_read` first (enforced — tool checks read history for this turn)
-- Support creating new files (empty `old_string` = insert at location)
-- Returns diff-style confirmation of what changed
+- [x] Surgical edits: provide `old_string` (exact match) and `new_string` (replacement)
+- [x] Must match exactly one location in the file (fail if ambiguous)
+- [x] Multiline replacements
+- [x] Context snippet after edit
+- [ ] **Safety:** Require `file_read` first (enforced — tool checks read history for this turn)
 
-### 1.4 — Search: Glob (`search_glob`)
+### 1.4 — Search: Glob (`search_glob`) ✅
 **Plugin:** `plugins/tools/search/`
 
-- Find files by glob pattern (`**/*.ts`, `src/**/test*`)
-- Returns paths sorted by most-recently-modified (MRU)
-- Respects `.gitignore` by default (configurable)
-- Configurable max results (default 100)
-- Returns file paths with size and last-modified timestamp
+- [x] Find files by glob pattern (`**/*.ts`, `src/**/test*`)
+- [x] Ignores node_modules by default
+- [x] Configurable max results
+- [x] Custom cwd support
 
-### 1.5 — Search: Grep (`search_grep`)
+### 1.5 — Search: Grep (`search_grep`) ✅
 **Plugin:** `plugins/tools/search/`
 
-- Search file contents by regex or literal pattern
-- Context lines (configurable, default 2 before/after)
-- Respect `.gitignore` by default
-- Case-sensitive/insensitive flag
-- Max results cap (default 50 matches)
-- Returns: file path, line number, matched line with context
+- [x] Search file contents by regex or literal pattern
+- [x] Case-sensitive/insensitive flag
+- [x] Fixed string mode
+- [x] Include filter by file pattern
+- [x] Excludes node_modules by default
 
-### 1.6 — Web Search (`web_search`) — Upgrade Existing
-**Plugin:** `plugins/tools/web-search/` (existing, upgraded)
+### 1.6 — Web Search (`web_search`) — Upgraded ✅
+**Plugin:** `plugins/tools/web-search/`
 
-- **Multi-provider:** Google CSE (existing) + DuckDuckGo fallback + xAI native (when available)
-- Automatic failover: if primary returns 403/quota error, try next provider
-- Source citation enforcement in output
-- Rate limiting / retry with backoff
-- Result caching (same query within 5min = cached response)
+- [x] **Multi-provider:** Google CSE primary → DuckDuckGo HTML fallback
+- [x] Automatic failover on 403/quota/5xx errors
+- [x] Source attribution per result (`[Source: Google/DuckDuckGo]`)
+- [x] Retry with exponential backoff (2 retries, 1s/2s delays)
+- [x] Result caching (5min TTL, in-memory)
+- [ ] xAI native search integration
 
-### 1.7 — Web Fetch (`web_fetch`) — Upgrade Existing
-**Plugin:** `plugins/tools/web-search/` (existing, upgraded)
+### 1.7 — Web Fetch (`web_fetch`) — Upgraded ✅
+**Plugin:** `plugins/tools/web-search/`
 
-- **Readability extraction:** Use Mozilla Readability or similar instead of regex tag stripping
-- Content caching (URL + max_age → skip re-fetch)
-- PDF URL → text extraction
-- GitHub raw content detection (render markdown properly)
-- Configurable user agent
-- Response truncation with "use max_chars to see more" hint
+- [x] **Structured extraction:** HTML → markdown (article > main > body priority)
+- [x] Removes script/style/nav/header/footer/aside
+- [x] Converts h1-h6, links, lists, bold/italic, code blocks to markdown
+- [x] Full HTML entity decoding
+- [x] Content caching (10min TTL, in-memory)
+- [x] Configurable user agent (config or `RIVETOS_USER_AGENT` env)
+- [x] PDF detection with placeholder message
+- [x] GitHub raw content Accept header
+- [x] Truncation hint with max_chars guidance
 
-### 1.8 — Shell (`shell`) — Upgrade Existing
-**Plugin:** `plugins/tools/shell/` (existing, upgraded)
+### 1.8 — Shell (`shell`) — Upgraded ✅
+**Plugin:** `plugins/tools/shell/`
 
-- **Command categorization:** read-only (ls, cat, git status) vs write (rm, mv, apt) vs dangerous (rm -rf)
-- Configurable approval requirements per category (none / warn / block)
-- **Background mode:** Long-running commands return immediately with a handle, poll for completion
-- Git-aware safety: warn before force push, warn on dirty working tree
-- **Sandbox option:** Run in restricted shell or container for untrusted commands
-- Session environment persistence (cd in one call persists to next)
+- [x] **Command categorization:** read-only / write / dangerous
+- [x] Configurable approval levels per category (allow / warn / block)
+- [x] Git-aware safety: warns on force push, hard reset, branch -D
+- [x] Session working directory persistence (`cd` persists across calls)
+- [ ] **Background mode:** Long-running commands with handle + poll
+- [ ] **Sandbox option:** Restricted shell or container for untrusted commands
 
-### 1.9 — Ask User (`ask_user`)
+### 1.9 — Ask User (`ask_user`) ✅
 **Plugin:** `plugins/tools/interaction/`
 
-- Structured question tool: the model explicitly asks the user something
-- Supports question types: free text, yes/no, multiple choice
-- Prevents the model from guessing when it should ask
-- Returns the user's response as a string
-- Useful for confirmation gates, ambiguous instructions, preference collection
+- [x] Structured question tool: free text, yes/no, multiple choice
+- [x] Context field for explaining why info is needed
+- [x] Default values
+- [x] Input validation (empty questions, missing choices, invalid types)
 
 ### 1.10 — Task List (`todo`) ✅
 **Plugin:** `plugins/tools/interaction/`
@@ -156,14 +157,15 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 - Gives models a working scratchpad for multi-step plans
 - Returns formatted task list with status indicators
 
-### 1.11 — Memory Search (`memory_search`)
-**Plugin:** `plugins/tools/memory/`
+### 1.11 — Memory Tools (consolidated) ✅
+**Plugin:** `plugins/memory/postgres/` (tools live alongside the memory adapter)
 
-- Expose the Memory plugin's search capabilities as a tool
-- Full-text search, vector similarity, or hybrid
-- Filter by agent, time range, conversation
-- Returns scored results with timestamps and context
-- Lets the model explicitly search its own memory rather than relying on automatic context injection
+- [x] **`memory_search`** — Unified search + auto-expand. Replaces `memory_grep`, `memory_expand`, `memory_describe`, `memory_expand_query`. Searches messages + summaries, auto-expands top summary hits to children/source messages, returns structured scored output. Supports FTS/trigram/regex modes, agent/date filters, optional LLM synthesis.
+- [x] **`memory_browse`** — Chronological message browsing (unchanged). For reviewing sessions and catching up on activity.
+- [x] **`memory_stats`** — System health diagnostics. Embedding queue depth, unsummarized message counts, conversations needing compaction, orphan summaries, summary tree depth, embedding coverage, freshness indicators.
+- [x] Filter by agent, time range, scope (messages/summaries/both)
+- [x] Wired in `boot.ts` — registered when memory plugin initializes
+- [x] Consolidated from 6 tools → 3 (less tool-call orchestration needed by the LLM)
 
 ---
 

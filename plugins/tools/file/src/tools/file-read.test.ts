@@ -2,7 +2,7 @@
  * file_read tool tests
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,7 +12,7 @@ import { createFileReadTool } from './file-read.js';
 const TEST_DIR = join(tmpdir(), `rivetos-file-read-test-${Date.now()}`);
 
 describe('file_read', () => {
-  before(() => {
+  beforeAll(() => {
     mkdirSync(TEST_DIR, { recursive: true });
     writeFileSync(join(TEST_DIR, 'hello.txt'), 'line one\nline two\nline three\nline four\nline five\n');
     writeFileSync(join(TEST_DIR, 'empty.txt'), '');
@@ -24,7 +24,7 @@ describe('file_read', () => {
     writeFileSync(join(TEST_DIR, 'binary.bin'), binBuf);
   });
 
-  after(() => {
+  afterAll(() => {
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 

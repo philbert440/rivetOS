@@ -3,7 +3,7 @@
  * unknown keys, type checks, and helpful error messages.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import * as assert from 'node:assert/strict';
 import { validateConfig, formatValidationResult, type ValidationResult } from './validate.js';
 

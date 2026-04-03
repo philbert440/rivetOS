@@ -2,7 +2,7 @@
  * file_edit tool tests
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,11 +12,11 @@ import { createFileEditTool } from './file-edit.js';
 const TEST_DIR = join(tmpdir(), `rivetos-file-edit-test-${Date.now()}`);
 
 describe('file_edit', () => {
-  before(() => {
+  beforeAll(() => {
     mkdirSync(TEST_DIR, { recursive: true });
   });
 
-  after(() => {
+  afterAll(() => {
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 

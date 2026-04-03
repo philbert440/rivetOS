@@ -2,7 +2,7 @@
  * search_glob tool tests
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,7 +12,7 @@ import { createSearchGlobTool } from './search-glob.js';
 const TEST_DIR = join(tmpdir(), `rivetos-search-glob-test-${Date.now()}`);
 
 describe('search_glob', () => {
-  before(() => {
+  beforeAll(() => {
     mkdirSync(join(TEST_DIR, 'src', 'utils'), { recursive: true });
     mkdirSync(join(TEST_DIR, 'src', 'tools'), { recursive: true });
     mkdirSync(join(TEST_DIR, 'node_modules', 'dep'), { recursive: true });
@@ -24,7 +24,7 @@ describe('search_glob', () => {
     writeFileSync(join(TEST_DIR, 'node_modules', 'dep', 'index.js'), 'module.exports = {};');
   });
 
-  after(() => {
+  afterAll(() => {
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 

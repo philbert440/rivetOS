@@ -2,7 +2,7 @@
  * search_grep tool tests
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,7 +12,7 @@ import { createSearchGrepTool } from './search-grep.js';
 const TEST_DIR = join(tmpdir(), `rivetos-search-grep-test-${Date.now()}`);
 
 describe('search_grep', () => {
-  before(() => {
+  beforeAll(() => {
     mkdirSync(join(TEST_DIR, 'src'), { recursive: true });
     mkdirSync(join(TEST_DIR, 'node_modules', 'dep'), { recursive: true });
     writeFileSync(join(TEST_DIR, 'src', 'index.ts'), 'const foo = "hello";\nconst bar = "world";\nexport { foo, bar };\n');
@@ -21,7 +21,7 @@ describe('search_grep', () => {
     writeFileSync(join(TEST_DIR, 'node_modules', 'dep', 'index.js'), 'const hello = "should be excluded";\n');
   });
 
-  after(() => {
+  afterAll(() => {
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
