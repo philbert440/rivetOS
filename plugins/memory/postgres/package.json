@@ -12,6 +12,6 @@
   },
   "dependencies": {
     "@rivetos/types": "*",
-    "pg": "^8.13.0"
+    "pg": "^8.20.0"
   }
 }
