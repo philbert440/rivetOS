@@ -35,6 +35,19 @@ export interface RivetConfig {
   providers: Record<string, Record<string, unknown>>;
   channels: Record<string, Record<string, unknown>>;
   memory?: Record<string, Record<string, unknown>>;
+  mcp?: {
+    servers?: Record<string, {
+      transport: 'stdio' | 'streamable-http' | 'sse';
+      command?: string;
+      args?: string[];
+      env?: Record<string, string>;
+      cwd?: string;
+      url?: string;
+      toolPrefix?: string;
+      connectTimeout?: number;
+      autoReconnect?: boolean;
+    }>;
+  };
 }
 
 export class ConfigValidationError extends Error {

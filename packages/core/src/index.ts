@@ -8,6 +8,9 @@
 // Domain
 export { AgentLoop } from './domain/loop.js';
 export type { AgentLoopConfig, TurnResult } from './domain/loop.js';
+export { HookPipelineImpl } from './domain/hooks.js';
+export type { HookLogger } from './domain/hooks.js';
+export { createFallbackHook, createFallbackHookWithState } from './domain/fallback.js';
 export { Router } from './domain/router.js';
 export type { RouteResult } from './domain/router.js';
 export { WorkspaceLoader } from './domain/workspace.js';

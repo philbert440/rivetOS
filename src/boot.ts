@@ -9,7 +9,10 @@
 import { resolve } from 'node:path';
 import { loadConfig } from './config.js';
 import { Runtime } from '../packages/core/src/runtime.js';
+import { HookPipelineImpl } from '../packages/core/src/domain/hooks.js';
+import { createFallbackHook } from '../packages/core/src/domain/fallback.js';
 import { logger } from '../packages/core/src/logger.js';
+import type { FallbackConfig } from '@rivetos/types';
 
 // Providers
 import { AnthropicProvider } from '../plugins/providers/anthropic/src/index.js';
@@ -32,6 +35,9 @@ import { createSearchToolsPlugin } from '../plugins/tools/search/src/index.js';
 import { createInteractionToolsPlugin } from '../plugins/tools/interaction/src/index.js';
 import type { Tool } from '@rivetos/types';
 
+// MCP
+import { MCPClientPlugin } from '../plugins/tools/mcp-client/src/index.js';
+
 // Memory
 import { PostgresMemory, SearchEngine, Expander, createMemoryTools, BackgroundEmbedder, BackgroundCompactor } from '../plugins/memory/postgres/src/index.js';
 const log = logger('Boot');
@@ -41,6 +47,31 @@ export async function boot(configPath?: string) {
 
   log.info(`Loading config from ${configPath}`);
   const config = await loadConfig(configPath);
+
+  // Create hook pipeline
+  const hooks = new HookPipelineImpl(log);
+
+  // Register fallback chains from config
+  const fallbackConfigs: FallbackConfig[] = [];
+  if (config.runtime.fallbacks) {
+    for (const fb of config.runtime.fallbacks as FallbackConfig[]) {
+      fallbackConfigs.push(fb);
+    }
+  }
+  // Also check per-agent fallbacks
+  for (const [id, agent] of Object.entries(config.agents)) {
+    const agentFallbacks = agent.fallbacks as string[] | undefined;
+    if (agentFallbacks?.length) {
+      fallbackConfigs.push({
+        providerId: agent.provider as string,
+        fallbacks: agentFallbacks,
+      });
+    }
+  }
+  if (fallbackConfigs.length > 0) {
+    hooks.register(createFallbackHook(fallbackConfigs));
+    log.info(`Hooks: ${fallbackConfigs.length} fallback chain(s) registered`);
+  }
 
   // Create runtime
   const runtime = new Runtime({
@@ -55,6 +86,8 @@ export async function boot(configPath?: string) {
     })),
     heartbeats: config.runtime.heartbeats as import('@rivetos/types').HeartbeatConfig[],
     skillDirs: config.runtime.skill_dirs,
+    hooks,
+    fallbacks: fallbackConfigs,
   });
 
   // Register providers
@@ -270,6 +303,28 @@ export async function boot(configPath?: string) {
   });
   for (const tool of webTools) {
     runtime.registerTool(tool);
+  }
+
+  // Register MCP server tools
+  if (config.mcp?.servers && Object.keys(config.mcp.servers).length > 0) {
+    try {
+      const mcpPlugin = new MCPClientPlugin({
+        servers: config.mcp.servers as any,
+      });
+      const mcpTools = await mcpPlugin.connect();
+      for (const tool of mcpTools) {
+        runtime.registerTool(tool);
+      }
+      if (mcpTools.length > 0) {
+        log.info(`MCP: ${mcpTools.length} tool(s) from ${Object.keys(config.mcp.servers).length} server(s)`);
+      }
+
+      // Register for shutdown
+      const origStop = runtime.stop.bind(runtime);
+      runtime.stop = async () => { await mcpPlugin.disconnect(); await origStop(); };
+    } catch (err: any) {
+      log.error(`Failed to initialize MCP client: ${err.message}`);
+    }
   }
 
   // Register coding pipeline (uses sub-agents for build→review→validate loop)

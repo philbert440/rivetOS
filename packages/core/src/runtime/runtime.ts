@@ -23,6 +23,10 @@ import type {
   StreamHandler,
   Message,
   ContentPart,
+  HookPipeline,
+  TurnBeforeContext,
+  TurnAfterContext,
+  FallbackConfig,
 } from '@rivetos/types';
 import { getTextContent } from '@rivetos/types';
 import { writeFile, mkdir } from 'node:fs/promises';
@@ -56,6 +60,10 @@ export interface RuntimeConfig {
   heartbeats?: import('@rivetos/types').HeartbeatConfig[];
   /** Directories to scan for skills (default: ~/.rivetos/skills/) */
   skillDirs?: string[];
+  /** Hook pipeline instance (created by boot, shared across runtime) */
+  hooks?: HookPipeline;
+  /** Provider fallback chains */
+  fallbacks?: FallbackConfig[];
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +230,24 @@ export class Runtime {
       };
       this.streamHandlers.set(sessionKey, streamHandler);
 
+      // --- Hook: turn:before ---
+      if (this.config.hooks) {
+        const turnBeforeCtx: TurnBeforeContext = {
+          event: 'turn:before',
+          userMessage: message.text,
+          agentId: agent.id,
+          sessionId: sessionKey,
+          timestamp: Date.now(),
+          metadata: {},
+        };
+        const turnBeforeResult = await this.config.hooks.run(turnBeforeCtx);
+        if (turnBeforeCtx.skip) {
+          log.debug(`Turn skipped by hook: ${turnBeforeCtx.skipReason ?? 'no reason'}`);
+          queue?.endTurn();
+          return;
+        }
+      }
+
       // Create and run agent loop
       const loop = new AgentLoop({
         systemPrompt: turnPrompt,
@@ -232,6 +258,14 @@ export class Runtime {
         onStream: streamHandler,
         agentId: agent.id,
         imageDir: join(this.config.workspaceDir, '.data', 'images'),
+        hooks: this.config.hooks,
+        sessionId: sessionKey,
+        resolveProvider: (id: string) => {
+          // Resolve a provider by ID for fallback chains
+          // Supports "provider:model" syntax — returns the provider, model swap happens in the hook
+          const providerId = id.includes(':') ? id.split(':')[0] : id;
+          return this.router.getProviders().find((p) => p.id === providerId);
+        },
       });
       this.activeLoops.set(sessionKey, loop);
 
@@ -301,6 +335,23 @@ export class Runtime {
       log.debug('Running agent loop...');
       const result = await loop.run(userContent, session.history, abort.signal);
       log.debug(`Loop result: aborted=${result.aborted}, response=${result.response?.slice(0, 100)}`);
+
+      // --- Hook: turn:after ---
+      if (this.config.hooks) {
+        const turnAfterCtx: TurnAfterContext = {
+          event: 'turn:after',
+          response: result.response,
+          toolsUsed: result.toolsUsed,
+          iterations: result.iterations,
+          aborted: result.aborted,
+          usage: result.usage,
+          agentId: agent.id,
+          sessionId: sessionKey,
+          timestamp: Date.now(),
+          metadata: {},
+        };
+        await this.config.hooks.run(turnAfterCtx);
+      }
 
       // Cleanup
       this.aborts.delete(sessionKey);
