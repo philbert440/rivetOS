@@ -97,15 +97,26 @@ function convertMessages(messages: Message[]): { systemInstruction?: string; con
     }
 
     if (msg.role === 'tool') {
-      contents.push({
-        role: 'user',
-        parts: [{
-          functionResponse: {
-            name: msg.toolCallId ?? 'unknown',
-            response: { content: extractText(msg.content) },
-          },
-        }],
-      });
+      const parts: GeminiPart[] = [{
+        functionResponse: {
+          name: msg.toolCallId ?? 'unknown',
+          response: { content: extractText(msg.content) },
+        },
+      }];
+      // If tool result includes images, add as inline data parts
+      if (typeof msg.content !== 'string' && Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part.type === 'image' && part.data) {
+            parts.push({
+              inlineData: {
+                mimeType: part.mimeType ?? 'image/jpeg',
+                data: part.data,
+              },
+            });
+          }
+        }
+      }
+      contents.push({ role: 'user', parts });
       continue;
     }
 

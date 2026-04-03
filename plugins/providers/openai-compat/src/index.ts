@@ -130,6 +130,18 @@ function convertMessages(messages: Message[]): OAIMessage[] {
       return oai;
     }
 
+    // Handle multimodal tool results — most local servers only support text in tool results
+    if (msg.role === 'tool' && typeof msg.content !== 'string' && Array.isArray(msg.content)) {
+      let textContent = extractText(msg.content);
+      const imageCount = msg.content.filter((p) => p.type === 'image').length;
+      if (imageCount > 0) {
+        textContent += `\n[${imageCount} image(s) returned — saved to disk]`;
+      }
+      const oai: OAIMessage = { role: 'tool', content: textContent || null };
+      if (msg.toolCallId) oai.tool_call_id = msg.toolCallId;
+      return oai;
+    }
+
     const textContent = extractText(msg.content);
     const oai: OAIMessage = { role: msg.role, content: textContent || null };
     if (msg.toolCalls?.length) {

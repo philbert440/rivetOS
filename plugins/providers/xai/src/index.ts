@@ -83,10 +83,18 @@ function convertMessages(messages: Message[]): ResponsesInput[] {
   for (const msg of messages) {
     if (msg.role === 'tool') {
       // Tool results → function_call_output items
+      // Note: xAI function_call_output only supports text — images are described as references
+      let output = extractText(msg.content) || '';
+      if (typeof msg.content !== 'string' && Array.isArray(msg.content)) {
+        const imageCount = msg.content.filter((p) => p.type === 'image').length;
+        if (imageCount > 0) {
+          output += `\n[${imageCount} image(s) returned — see image content in context]`;
+        }
+      }
       result.push({
         type: 'function_call_output',
         call_id: msg.toolCallId ?? '',
-        output: extractText(msg.content) || '',
+        output,
       });
     } else if (msg.role === 'assistant') {
       const assistantMsg: any = { role: 'assistant', content: extractText(msg.content) || '' };

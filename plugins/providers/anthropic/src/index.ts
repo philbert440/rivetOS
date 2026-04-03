@@ -90,12 +90,42 @@ function convertMessages(messages: Message[]): { system: string; converted: any[
     }
 
     if (msg.role === 'tool') {
+      // Build tool result content — supports multimodal (text + images)
+      let toolContent: any;
+      if (typeof msg.content === 'string') {
+        toolContent = msg.content;
+      } else {
+        // Multimodal tool result — convert to Anthropic content blocks
+        const blocks: any[] = [];
+        for (const part of msg.content) {
+          if (part.type === 'text') {
+            blocks.push({ type: 'text', text: part.text });
+          } else if (part.type === 'image') {
+            if (part.data) {
+              blocks.push({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: part.mimeType ?? 'image/jpeg',
+                  data: part.data,
+                },
+              });
+            } else if (part.url) {
+              blocks.push({
+                type: 'image',
+                source: { type: 'url', url: part.url },
+              });
+            }
+          }
+        }
+        toolContent = blocks.length > 0 ? blocks : '';
+      }
       converted.push({
         role: 'user',
         content: [{
           type: 'tool_result',
           tool_use_id: msg.toolCallId ?? 'unknown',
-          content: typeof msg.content === 'string' ? msg.content : msg.content.filter((p) => p.type === 'text').map((p) => (p as any).text).join(''),
+          content: toolContent,
         }],
       });
       continue;

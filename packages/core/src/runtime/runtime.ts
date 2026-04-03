@@ -231,6 +231,7 @@ export class Runtime {
         thinking: session.thinking,
         onStream: streamHandler,
         agentId: agent.id,
+        imageDir: join(this.config.workspaceDir, '.data', 'images'),
       });
       this.activeLoops.set(sessionKey, loop);
 
