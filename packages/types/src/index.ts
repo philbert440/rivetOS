@@ -15,4 +15,27 @@ export type { RuntimeConfig, AgentConfig, HeartbeatConfig } from './config.js';
 export type { StreamEvent, StreamHandler, SessionState, QueuedMessage, DelegationRequest, DelegationResult, TokenUsage, SilentResponse, RuntimeCommand } from './events.js';
 export type { SubagentSession, SubagentSpawnRequest, SubagentManager } from './subagent.js';
 export type { Skill, SkillManager } from './skill.js';
+export type {
+  HookEventName,
+  HookContext,
+  HookContextBase,
+  ProviderBeforeContext,
+  ProviderAfterContext,
+  ProviderErrorContext,
+  ToolBeforeContext,
+  ToolAfterContext,
+  SessionStartContext,
+  SessionEndContext,
+  TurnBeforeContext,
+  TurnAfterContext,
+  CompactBeforeContext,
+  CompactAfterContext,
+  HookErrorMode,
+  HookHandlerFn,
+  HookRegistration,
+  HookPipelineResult,
+  HookPipeline,
+  HookConfig,
+  FallbackConfig,
+} from './hooks.js';
 export { splitMessage, getTextContent, hasImages, getToolResultText, getToolResultImages, toolResultHasImages } from './utils.js';

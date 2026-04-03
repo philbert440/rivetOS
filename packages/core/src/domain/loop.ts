@@ -22,6 +22,12 @@ import type {
   StreamHandler,
   ChatOptions,
   ThinkingLevel,
+  HookPipeline,
+  ProviderBeforeContext,
+  ProviderAfterContext,
+  ProviderErrorContext,
+  ToolBeforeContext,
+  ToolAfterContext,
 } from '@rivetos/types';
 import { getToolResultText, toolResultHasImages, getToolResultImages } from '@rivetos/types';
 import { writeFile, mkdir } from 'node:fs/promises';
@@ -43,6 +49,12 @@ export interface AgentLoopConfig {
   agentId?: string;
   /** Directory to save tool-produced images (default: .data/images in cwd) */
   imageDir?: string;
+  /** Hook pipeline for lifecycle events (optional — loop works without it) */
+  hooks?: HookPipeline;
+  /** Session ID for hook context */
+  sessionId?: string;
+  /** Resolve a provider by ID (for fallback chains) */
+  resolveProvider?: (providerId: string) => Provider | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,14 +142,36 @@ export class AgentLoop {
         thinking: this.config.thinking,
       };
 
+      // --- Hook: provider:before ---
+      let activeProvider = this.config.provider;
+      if (this.config.hooks) {
+        const beforeCtx: ProviderBeforeContext = {
+          event: 'provider:before',
+          providerId: activeProvider.id,
+          model: (activeProvider as any).model ?? 'unknown',
+          messages: messages as unknown[],
+          tools: toolDefs as unknown[],
+          agentId: this.config.agentId,
+          sessionId: this.config.sessionId,
+          timestamp: Date.now(),
+          metadata: {},
+        };
+        const beforeResult = await this.config.hooks.run(beforeCtx);
+        if (beforeResult.aborted || beforeCtx.skip) {
+          // Hook said skip this provider — return empty (fallback will handle via provider:error)
+          return { response: '', toolsUsed, iterations, aborted: true, partialResponse, usage: totalUsage };
+        }
+      }
+
       let textContent = '';
       let reasoningContent = '';
       const pendingToolCalls: Map<number, ToolCall> = new Map();
       const argsDelta: Map<number, string> = new Map();
       let hasToolCalls = false;
+      const streamStartTime = Date.now();
 
       try {
-        for await (const chunk of this.config.provider.chatStream(messages, options)) {
+        for await (const chunk of activeProvider.chatStream(messages, options)) {
           // Capture usage from ANY chunk (not just 'done') — prevents lost tracking on abort
           if (chunk.usage) {
             totalUsage.promptTokens = Math.max(totalUsage.promptTokens, chunk.usage.promptTokens);
@@ -218,7 +252,55 @@ export class AgentLoop {
         if (signal?.aborted) {
           return { response: '', toolsUsed, iterations, aborted: true, partialResponse: textContent || partialResponse, usage: totalUsage };
         }
+
+        // --- Hook: provider:error (fallback chain) ---
+        if (this.config.hooks) {
+          const statusCode = err.status ?? err.statusCode ?? (err.message?.includes('429') ? 429 : undefined);
+          const errorCtx: ProviderErrorContext = {
+            event: 'provider:error',
+            providerId: activeProvider.id,
+            model: (activeProvider as any).model ?? 'unknown',
+            error: err instanceof Error ? err : new Error(String(err)),
+            statusCode,
+            agentId: this.config.agentId,
+            sessionId: this.config.sessionId,
+            timestamp: Date.now(),
+            metadata: {},
+          };
+          const errorResult = await this.config.hooks.run(errorCtx);
+
+          // If a fallback hook set retry info, switch provider and retry this iteration
+          if (errorCtx.retry) {
+            const fallbackProvider = this.config.resolveProvider?.(errorCtx.retry.providerId);
+            if (fallbackProvider) {
+              this.emit({
+                type: 'status',
+                content: `⚡ Falling back: ${activeProvider.id} → ${errorCtx.retry.providerId}:${errorCtx.retry.model}`,
+              });
+              activeProvider = fallbackProvider;
+              continue; // Retry the while loop with the new provider
+            }
+          }
+        }
+
         throw err;
+      }
+
+      // --- Hook: provider:after ---
+      if (this.config.hooks) {
+        const afterCtx: ProviderAfterContext = {
+          event: 'provider:after',
+          providerId: activeProvider.id,
+          model: (activeProvider as any).model ?? 'unknown',
+          usage: { ...totalUsage },
+          latencyMs: Date.now() - streamStartTime,
+          hasToolCalls,
+          agentId: this.config.agentId,
+          sessionId: this.config.sessionId,
+          timestamp: Date.now(),
+          metadata: {},
+        };
+        await this.config.hooks.run(afterCtx);
       }
 
       // Text response — done
@@ -252,12 +334,38 @@ export class AgentLoop {
         const tool = this.config.tools.find((t) => t.name === tc.name);
         toolsUsed.push(tc.name);
 
+        // --- Hook: tool:before ---
+        if (this.config.hooks) {
+          const toolBeforeCtx: ToolBeforeContext = {
+            event: 'tool:before',
+            toolName: tc.name,
+            args: { ...tc.arguments },
+            agentId: this.config.agentId,
+            sessionId: this.config.sessionId,
+            timestamp: Date.now(),
+            metadata: {},
+          };
+          const toolBeforeResult = await this.config.hooks.run(toolBeforeCtx);
+
+          if (toolBeforeCtx.blocked) {
+            // Tool was blocked by a safety hook
+            const blockMsg = toolBeforeCtx.blockReason ?? 'Blocked by safety hook';
+            this.emit({ type: 'tool_result', content: `🚫 ${tc.name}: ${blockMsg}` });
+            messages.push({ role: 'tool', content: `Blocked: ${blockMsg}`, toolCallId: tc.id });
+            continue;
+          }
+
+          // Hooks may have modified args
+          tc.arguments = toolBeforeCtx.args;
+        }
+
         this.emit({
           type: 'tool_start',
           content: `🔧 ${tc.name}`,
           metadata: { args: this.summarizeArgs(tc.arguments) },
         });
 
+        const toolStartTime = Date.now();
         let rawResult: ToolResult;
         if (!tool) {
           rawResult = `Error: Unknown tool "${tc.name}"`;
@@ -267,6 +375,24 @@ export class AgentLoop {
           } catch (err: any) {
             rawResult = `Error: ${err.message}`;
           }
+        }
+
+        // --- Hook: tool:after ---
+        if (this.config.hooks) {
+          const resultText = getToolResultText(rawResult);
+          const toolAfterCtx: ToolAfterContext = {
+            event: 'tool:after',
+            toolName: tc.name,
+            args: tc.arguments,
+            result: rawResult,
+            durationMs: Date.now() - toolStartTime,
+            isError: resultText.startsWith('Error'),
+            agentId: this.config.agentId,
+            sessionId: this.config.sessionId,
+            timestamp: Date.now(),
+            metadata: {},
+          };
+          await this.config.hooks.run(toolAfterCtx);
         }
 
         // Process tool result — handle multimodal (images)

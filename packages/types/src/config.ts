@@ -3,6 +3,7 @@
  */
 
 import type { ThinkingLevel } from './provider.js';
+import type { HookConfig, FallbackConfig } from './hooks.js';
 
 export interface RuntimeConfig {
   agents: AgentConfig[];
@@ -10,6 +11,10 @@ export interface RuntimeConfig {
   defaultAgent: string;
   maxToolIterations?: number;
   heartbeats?: HeartbeatConfig[];
+  /** Declarative hook definitions (loaded from config) */
+  hooks?: HookConfig[];
+  /** Provider fallback chains */
+  fallbacks?: FallbackConfig[];
 }
 
 export interface AgentConfig {
@@ -20,6 +25,10 @@ export interface AgentConfig {
   providerConfig?: Record<string, unknown>;
   /** Default thinking level for this agent */
   defaultThinking?: ThinkingLevel;
+  /** Per-agent hook overrides */
+  hooks?: HookConfig[];
+  /** Per-agent fallback chain (overrides global fallback for this agent's provider) */
+  fallbacks?: string[];
 }
 
 export interface HeartbeatConfig {
