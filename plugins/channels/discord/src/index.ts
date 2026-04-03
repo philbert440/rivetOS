@@ -36,6 +36,8 @@ import type {
   Channel,
   InboundMessage,
   OutboundMessage,
+  Attachment,
+  ResolvedAttachment,
 } from '@rivetos/types';
 import { splitMessage } from '@rivetos/types';
 
@@ -319,6 +321,22 @@ export class DiscordChannel implements Channel {
       const msg = await (channel as TextChannel).messages.fetch(messageId);
       await msg.react(emoji);
     } catch {}
+  }
+
+  // -----------------------------------------------------------------------
+  // Attachment Resolution
+  // -----------------------------------------------------------------------
+
+  async resolveAttachment(attachment: Attachment): Promise<ResolvedAttachment | null> {
+    // Discord attachments have public CDN URLs — no download needed
+    if (!attachment.url) return null;
+
+    return {
+      type: attachment.type,
+      url: attachment.url,
+      mimeType: attachment.mimeType,
+      fileName: attachment.fileName,
+    };
   }
 
   // -----------------------------------------------------------------------

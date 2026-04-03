@@ -10,10 +10,12 @@
 
 import type {
   Message,
+  ContentPart,
   Provider,
   Tool,
   ToolDefinition,
   ToolCall,
+  ToolResult,
   LLMChunk,
   LLMResponse,
   StreamEvent,
@@ -21,6 +23,10 @@ import type {
   ChatOptions,
   ThinkingLevel,
 } from '@rivetos/types';
+import { getToolResultText, toolResultHasImages, getToolResultImages } from '@rivetos/types';
+import { writeFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -35,6 +41,8 @@ export interface AgentLoopConfig {
   onStream?: StreamHandler;
   /** Agent ID — passed to tools via ToolContext */
   agentId?: string;
+  /** Directory to save tool-produced images (default: .data/images in cwd) */
+  imageDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,8 +85,9 @@ export class AgentLoop {
 
   /**
    * Run one turn.
+   * userMessage can be a plain string or multimodal ContentPart[] (text + images).
    */
-  async run(userMessage: string, history: Message[], signal?: AbortSignal): Promise<TurnResult> {
+  async run(userMessage: string | ContentPart[], history: Message[], signal?: AbortSignal): Promise<TurnResult> {
     const messages: Message[] = [
       { role: 'system', content: this.config.systemPrompt },
       ...history,
@@ -249,23 +258,73 @@ export class AgentLoop {
           metadata: { args: this.summarizeArgs(tc.arguments) },
         });
 
-        let result: string;
+        let rawResult: ToolResult;
         if (!tool) {
-          result = `Error: Unknown tool "${tc.name}"`;
+          rawResult = `Error: Unknown tool "${tc.name}"`;
         } else {
           try {
-            result = await tool.execute(tc.arguments, signal, { agentId: this.config.agentId });
+            rawResult = await tool.execute(tc.arguments, signal, { agentId: this.config.agentId });
           } catch (err: any) {
-            result = `Error: ${err.message}`;
+            rawResult = `Error: ${err.message}`;
           }
         }
 
+        // Process tool result — handle multimodal (images)
+        const resultText = getToolResultText(rawResult);
+        const isError = resultText.startsWith('Error');
+
         this.emit({
           type: 'tool_result',
-          content: `${result.startsWith('Error') ? '❌' : '✅'} ${tc.name}: ${result.slice(0, 200)}`,
+          content: `${isError ? '❌' : '✅'} ${tc.name}: ${resultText.slice(0, 200)}`,
         });
 
-        messages.push({ role: 'tool', content: result, toolCallId: tc.id });
+        // If tool returned images, save them to disk and build multimodal message
+        if (toolResultHasImages(rawResult)) {
+          const images = getToolResultImages(rawResult);
+          const contentParts: ContentPart[] = [];
+          const savedPaths: string[] = [];
+
+          // Add text part if present
+          if (resultText) {
+            contentParts.push({ type: 'text', text: resultText });
+          }
+
+          // Save each image and add to content
+          for (const img of images) {
+            const imageDir = this.config.imageDir ?? join(process.cwd(), '.data', 'images');
+            await mkdir(imageDir, { recursive: true });
+            const ext = (img.mimeType?.split('/')[1] ?? 'jpg').replace('jpeg', 'jpg');
+            const fileName = `tool-${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`;
+            const filePath = join(imageDir, fileName);
+
+            if (img.data) {
+              await writeFile(filePath, Buffer.from(img.data, 'base64'));
+              savedPaths.push(filePath);
+              contentParts.push({ type: 'image', data: img.data, mimeType: img.mimeType ?? 'image/jpeg' });
+            } else if (img.url) {
+              // Download and save
+              try {
+                const imgRes = await fetch(img.url);
+                if (imgRes.ok) {
+                  const buf = Buffer.from(await imgRes.arrayBuffer());
+                  await writeFile(filePath, buf);
+                  savedPaths.push(filePath);
+                  const b64 = buf.toString('base64');
+                  contentParts.push({ type: 'image', data: b64, mimeType: img.mimeType ?? 'image/jpeg' });
+                }
+              } catch {
+                // Skip failed image downloads
+              }
+            }
+          }
+
+          // Send multimodal content to provider for this turn,
+          // but store [image:path] references in the message for history
+          messages.push({ role: 'tool', content: contentParts, toolCallId: tc.id });
+        } else {
+          // Plain text result
+          messages.push({ role: 'tool', content: typeof rawResult === 'string' ? rawResult : resultText, toolCallId: tc.id });
+        }
       }
 
       partialResponse = textContent;

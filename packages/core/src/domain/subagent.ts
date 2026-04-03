@@ -20,6 +20,7 @@ import type {
   Tool,
   Message,
 } from '@rivetos/types';
+import { getTextContent } from '@rivetos/types';
 import { AgentLoop } from './loop.js';
 import type { Router } from './router.js';
 import type { WorkspaceLoader } from './workspace.js';
@@ -323,7 +324,7 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
         if (args.mode === 'run') {
           // One-shot: return the last assistant message
           const lastMsg = session.history.find((m) => m.role === 'assistant');
-          return lastMsg?.content ?? '[No response from sub-agent]';
+          return lastMsg ? getTextContent(lastMsg.content) : '[No response from sub-agent]';
         } else {
           // Session mode: return session ID + initial response
           const lastMsg = session.history.find((m) => m.role === 'assistant');
@@ -331,7 +332,7 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
             sessionId: session.id,
             agent: session.childAgent,
             status: session.status,
-            response: lastMsg?.content ?? '[No initial response]',
+            response: lastMsg ? getTextContent(lastMsg.content) : '[No initial response]',
           });
         }
       } catch (err: any) {

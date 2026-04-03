@@ -21,6 +21,7 @@
 import type {
   Provider,
   Message,
+  ContentPart,
   ToolCall,
   ToolDefinition,
   ChatOptions,
@@ -87,14 +88,62 @@ function readWithTimeout(
 
 interface OAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: string | any[] | null;
   tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
   tool_call_id?: string;
 }
 
+/** Extract text from string | ContentPart[] */
+function extractText(content: string | ContentPart[]): string {
+  if (typeof content === 'string') return content;
+  return content.filter((p) => p.type === 'text').map((p) => (p as any).text).join('');
+}
+
+/** Convert ContentPart[] to OpenAI multimodal content blocks */
+function convertContentPartsToOpenAI(parts: ContentPart[]): any[] {
+  const blocks: any[] = [];
+  for (const part of parts) {
+    if (part.type === 'text') {
+      blocks.push({ type: 'text', text: part.text });
+    } else if (part.type === 'image') {
+      if (part.data) {
+        blocks.push({
+          type: 'image_url',
+          image_url: { url: `data:${part.mimeType ?? 'image/jpeg'};base64,${part.data}` },
+        });
+      } else if (part.url) {
+        blocks.push({
+          type: 'image_url',
+          image_url: { url: part.url },
+        });
+      }
+    }
+  }
+  return blocks;
+}
+
 function convertMessages(messages: Message[]): OAIMessage[] {
   return messages.map((msg) => {
-    const oai: OAIMessage = { role: msg.role, content: msg.content || null };
+    // Handle multimodal user messages
+    if (msg.role === 'user' && typeof msg.content !== 'string' && Array.isArray(msg.content)) {
+      const oai: OAIMessage = { role: 'user', content: convertContentPartsToOpenAI(msg.content) };
+      return oai;
+    }
+
+    // Handle multimodal tool results — most local servers only support text in tool results
+    if (msg.role === 'tool' && typeof msg.content !== 'string' && Array.isArray(msg.content)) {
+      let textContent = extractText(msg.content);
+      const imageCount = msg.content.filter((p) => p.type === 'image').length;
+      if (imageCount > 0) {
+        textContent += `\n[${imageCount} image(s) returned — saved to disk]`;
+      }
+      const oai: OAIMessage = { role: 'tool', content: textContent || null };
+      if (msg.toolCallId) oai.tool_call_id = msg.toolCallId;
+      return oai;
+    }
+
+    const textContent = extractText(msg.content);
+    const oai: OAIMessage = { role: msg.role, content: textContent || null };
     if (msg.toolCalls?.length) {
       oai.tool_calls = msg.toolCalls.map((tc) => ({
         id: tc.id,

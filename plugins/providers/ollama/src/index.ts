@@ -18,6 +18,7 @@
 import type {
   Provider,
   Message,
+  ContentPart,
   ToolCall,
   ToolDefinition,
   ChatOptions,
@@ -46,19 +47,42 @@ export interface OllamaProviderConfig {
 interface OllamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /** Ollama uses a separate images array for base64 image data */
+  images?: string[];
   tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
+}
+
+/** Extract text from string | ContentPart[] */
+function extractText(content: string | ContentPart[]): string {
+  if (typeof content === 'string') return content;
+  return content.filter((p) => p.type === 'text').map((p) => (p as any).text).join('');
+}
+
+/** Extract base64 image data from ContentPart[] */
+function extractImages(content: string | ContentPart[]): string[] {
+  if (typeof content === 'string') return [];
+  return content
+    .filter((p) => p.type === 'image' && (p as any).data)
+    .map((p) => (p as any).data);
 }
 
 function convertMessages(messages: Message[], thinking?: ThinkingLevel): OllamaMessage[] {
   return messages.map((msg, i) => {
-    const ollama: OllamaMessage = { role: msg.role, content: msg.content };
+    const textContent = extractText(msg.content);
+    const ollama: OllamaMessage = { role: msg.role, content: textContent };
+
+    // Add images if present
+    const images = extractImages(msg.content);
+    if (images.length > 0) {
+      ollama.images = images;
+    }
 
     // For Qwen models: prepend /think or /no_think to the first user message
     if (msg.role === 'user' && i === messages.findIndex((m) => m.role === 'user')) {
       if (thinking === 'off') {
-        ollama.content = `/no_think\n${msg.content}`;
+        ollama.content = `/no_think\n${ollama.content}`;
       } else if (thinking && thinking !== 'off') {
-        ollama.content = `/think\n${msg.content}`;
+        ollama.content = `/think\n${ollama.content}`;
       }
     }
 
