@@ -13,6 +13,7 @@
 import type {
   Provider,
   Message,
+  ContentPart,
   ToolCall,
   ToolDefinition,
   ChatOptions,
@@ -39,13 +40,42 @@ export interface XAIProviderConfig {
 
 type ResponsesInput =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string | any[] }
   | { role: 'assistant'; content: string; tool_calls?: any[] }
   | { type: 'function_call_output'; call_id: string; output: string };
 
 // ---------------------------------------------------------------------------
 // Message conversion (Responses API format)
 // ---------------------------------------------------------------------------
+
+/** Convert ContentPart[] to xAI/OpenAI multimodal content blocks */
+function convertContentPartsToOpenAI(parts: ContentPart[]): any[] {
+  const blocks: any[] = [];
+  for (const part of parts) {
+    if (part.type === 'text') {
+      blocks.push({ type: 'text', text: part.text });
+    } else if (part.type === 'image') {
+      if (part.data) {
+        blocks.push({
+          type: 'image_url',
+          image_url: { url: `data:${part.mimeType ?? 'image/jpeg'};base64,${part.data}` },
+        });
+      } else if (part.url) {
+        blocks.push({
+          type: 'image_url',
+          image_url: { url: part.url },
+        });
+      }
+    }
+  }
+  return blocks;
+}
+
+/** Extract text from string | ContentPart[] */
+function extractText(content: string | ContentPart[]): string {
+  if (typeof content === 'string') return content;
+  return content.filter((p) => p.type === 'text').map((p) => (p as any).text).join('');
+}
 
 function convertMessages(messages: Message[]): ResponsesInput[] {
   const result: ResponsesInput[] = [];
@@ -56,12 +86,10 @@ function convertMessages(messages: Message[]): ResponsesInput[] {
       result.push({
         type: 'function_call_output',
         call_id: msg.toolCallId ?? '',
-        output: msg.content || '',
+        output: extractText(msg.content) || '',
       });
     } else if (msg.role === 'assistant') {
-      // Because store: false, we must explicitly send previous tool calls
-      // back to the API so it understands the function_call_output that follows.
-      const assistantMsg: any = { role: 'assistant', content: msg.content || '' };
+      const assistantMsg: any = { role: 'assistant', content: extractText(msg.content) || '' };
 
       if (msg.toolCalls && msg.toolCalls.length > 0) {
         assistantMsg.tool_calls = msg.toolCalls.map((tc) => ({
@@ -74,13 +102,15 @@ function convertMessages(messages: Message[]): ResponsesInput[] {
         }));
       }
 
-      // Push if there is text content OR tool calls
       if (assistantMsg.content || assistantMsg.tool_calls) {
         result.push(assistantMsg);
       }
+    } else if (msg.role === 'user' && typeof msg.content !== 'string' && Array.isArray(msg.content)) {
+      // Multimodal user message
+      result.push({ role: 'user', content: convertContentPartsToOpenAI(msg.content) });
     } else {
-      // system / user — pass through
-      result.push({ role: msg.role, content: msg.content || '' });
+      // system / plain user — pass through
+      result.push({ role: msg.role as 'system' | 'user', content: extractText(msg.content) || '' });
     }
   }
 

@@ -22,7 +22,12 @@ import type {
   AgentConfig,
   StreamHandler,
   Message,
+  ContentPart,
 } from '@rivetos/types';
+import { getTextContent } from '@rivetos/types';
+import { writeFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { SILENT_RESPONSES } from '../domain/constants.js';
 import { AgentLoop } from '../domain/loop.js';
 import { Router } from '../domain/router.js';
@@ -229,8 +234,71 @@ export class Runtime {
       });
       this.activeLoops.set(sessionKey, loop);
 
+      // Build user content — multimodal if attachments present
+      let userContent: string | ContentPart[] = message.text;
+      const savedImagePaths: string[] = [];
+
+      if (message.attachments?.length && channel.resolveAttachment) {
+        const parts: ContentPart[] = [];
+        if (message.text) {
+          parts.push({ type: 'text', text: message.text });
+        }
+
+        for (const attachment of message.attachments) {
+          if (attachment.type !== 'photo') continue; // Only images for now
+
+          const resolved = await channel.resolveAttachment(attachment);
+          if (!resolved) continue;
+
+          // Save image to disk
+          const imageDir = join(this.config.workspaceDir, '.data', 'images');
+          await mkdir(imageDir, { recursive: true });
+          const ext = (resolved.mimeType?.split('/')[1] ?? 'jpg').replace('jpeg', 'jpg');
+          const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`;
+          const filePath = join(imageDir, fileName);
+
+          if (resolved.data) {
+            await writeFile(filePath, Buffer.from(resolved.data, 'base64'));
+          } else if (resolved.url) {
+            // Download from URL and save
+            try {
+              const imgRes = await fetch(resolved.url);
+              if (imgRes.ok) {
+                const buf = Buffer.from(await imgRes.arrayBuffer());
+                await writeFile(filePath, buf);
+                // Also base64 encode for the LLM
+                resolved.data = buf.toString('base64');
+              }
+            } catch (err: any) {
+              log.error(`Failed to download image from ${resolved.url}: ${err.message}`);
+            }
+          }
+
+          savedImagePaths.push(filePath);
+
+          // Build image part for LLM
+          if (resolved.data) {
+            parts.push({
+              type: 'image',
+              data: resolved.data,
+              mimeType: resolved.mimeType ?? 'image/jpeg',
+            });
+          } else if (resolved.url) {
+            parts.push({
+              type: 'image',
+              url: resolved.url,
+              mimeType: resolved.mimeType ?? 'image/jpeg',
+            });
+          }
+        }
+
+        if (parts.some((p) => p.type === 'image')) {
+          userContent = parts;
+        }
+      }
+
       log.debug('Running agent loop...');
-      const result = await loop.run(message.text, session.history, abort.signal);
+      const result = await loop.run(userContent, session.history, abort.signal);
       log.debug(`Loop result: aborted=${result.aborted}, response=${result.response?.slice(0, 100)}`);
 
       // Cleanup
@@ -238,8 +306,13 @@ export class Runtime {
       this.activeLoops.delete(sessionKey);
       this.streamHandlers.delete(sessionKey);
 
-      // Update history
-      session.history.push({ role: 'user', content: message.text });
+      // Update history — store image references (not base64) to avoid bloat
+      let historyContent: string = message.text;
+      if (savedImagePaths.length > 0) {
+        const refs = savedImagePaths.map((p) => `[image:${p}]`).join(' ');
+        historyContent = historyContent ? `${historyContent}\n${refs}` : refs;
+      }
+      session.history.push({ role: 'user', content: historyContent });
       if (result.response) {
         session.history.push({ role: 'assistant', content: result.response });
       }
@@ -268,7 +341,7 @@ export class Runtime {
         }
       }
 
-      // Append to memory
+      // Append to memory (with image references, not base64)
       if (this.memory) {
         try {
           await this.memory.append({
@@ -276,8 +349,13 @@ export class Runtime {
             agent: agent.id,
             channel: channel.platform,
             role: 'user',
-            content: message.text,
-            metadata: { userId: message.userId, username: message.username, displayName: message.displayName },
+            content: historyContent,
+            metadata: {
+              userId: message.userId,
+              username: message.username,
+              displayName: message.displayName,
+              ...(savedImagePaths.length > 0 ? { images: savedImagePaths } : {}),
+            },
           });
           if (result.response) {
             await this.memory.append({

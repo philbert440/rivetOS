@@ -11,6 +11,7 @@
 import type {
   Provider,
   Message,
+  ContentPart,
   ToolCall,
   ToolDefinition,
   ChatOptions,
@@ -47,13 +48,44 @@ const THINKING_BUDGETS: Record<ThinkingLevel, number | null> = {
 // Message conversion
 // ---------------------------------------------------------------------------
 
+/** Convert ContentPart[] to Anthropic content blocks */
+function convertContentParts(parts: ContentPart[]): any[] {
+  const blocks: any[] = [];
+  for (const part of parts) {
+    if (part.type === 'text') {
+      blocks.push({ type: 'text', text: part.text });
+    } else if (part.type === 'image') {
+      if (part.data) {
+        blocks.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: part.mimeType ?? 'image/jpeg',
+            data: part.data,
+          },
+        });
+      } else if (part.url) {
+        blocks.push({
+          type: 'image',
+          source: {
+            type: 'url',
+            url: part.url,
+          },
+        });
+      }
+    }
+  }
+  return blocks;
+}
+
 function convertMessages(messages: Message[]): { system: string; converted: any[] } {
   let system = '';
   const converted: any[] = [];
 
   for (const msg of messages) {
     if (msg.role === 'system') {
-      system += (system ? '\n\n' : '') + msg.content;
+      const text = typeof msg.content === 'string' ? msg.content : msg.content.filter((p) => p.type === 'text').map((p) => (p as any).text).join('');
+      system += (system ? '\n\n' : '') + text;
       continue;
     }
 
@@ -63,7 +95,7 @@ function convertMessages(messages: Message[]): { system: string; converted: any[
         content: [{
           type: 'tool_result',
           tool_use_id: msg.toolCallId ?? 'unknown',
-          content: msg.content,
+          content: typeof msg.content === 'string' ? msg.content : msg.content.filter((p) => p.type === 'text').map((p) => (p as any).text).join(''),
         }],
       });
       continue;
@@ -71,7 +103,8 @@ function convertMessages(messages: Message[]): { system: string; converted: any[
 
     if (msg.role === 'assistant' && msg.toolCalls?.length) {
       const blocks: any[] = [];
-      if (msg.content) blocks.push({ type: 'text', text: msg.content });
+      const textContent = typeof msg.content === 'string' ? msg.content : msg.content.filter((p) => p.type === 'text').map((p) => (p as any).text).join('');
+      if (textContent) blocks.push({ type: 'text', text: textContent });
       for (const tc of msg.toolCalls) {
         blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
       }
@@ -79,10 +112,18 @@ function convertMessages(messages: Message[]): { system: string; converted: any[
       continue;
     }
 
-    converted.push({
-      role: msg.role === 'user' ? 'user' : 'assistant',
-      content: msg.content,
-    });
+    // User or plain assistant — handle multimodal content
+    if (typeof msg.content !== 'string' && Array.isArray(msg.content)) {
+      converted.push({
+        role: msg.role === 'user' ? 'user' : 'assistant',
+        content: convertContentParts(msg.content),
+      });
+    } else {
+      converted.push({
+        role: msg.role === 'user' ? 'user' : 'assistant',
+        content: msg.content,
+      });
+    }
   }
 
   return { system, converted };

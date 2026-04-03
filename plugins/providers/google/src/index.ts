@@ -10,6 +10,7 @@
 import type {
   Provider,
   Message,
+  ContentPart,
   ToolCall,
   ToolDefinition,
   ChatOptions,
@@ -51,8 +52,38 @@ interface GeminiContent {
 
 type GeminiPart =
   | { text: string; thoughtSignature?: string }
+  | { inlineData: { mimeType: string; data: string } }
   | { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string }
   | { functionResponse: { name: string; response: { content: string } } };
+
+/** Extract text from string | ContentPart[] */
+function extractText(content: string | ContentPart[]): string {
+  if (typeof content === 'string') return content;
+  return content.filter((p) => p.type === 'text').map((p) => (p as any).text).join('');
+}
+
+/** Convert ContentPart[] to Gemini parts */
+function convertContentPartsToGemini(parts: ContentPart[]): GeminiPart[] {
+  const geminiParts: GeminiPart[] = [];
+  for (const part of parts) {
+    if (part.type === 'text') {
+      geminiParts.push({ text: part.text });
+    } else if (part.type === 'image') {
+      if (part.data) {
+        geminiParts.push({
+          inlineData: {
+            mimeType: part.mimeType ?? 'image/jpeg',
+            data: part.data,
+          },
+        });
+      }
+      // Note: Gemini doesn't support URL-based images directly — they must be
+      // uploaded via File API or sent as inline data. URL images are skipped here;
+      // the runtime pre-downloads and base64-encodes them.
+    }
+  }
+  return geminiParts;
+}
 
 function convertMessages(messages: Message[]): { systemInstruction?: string; contents: GeminiContent[] } {
   let systemInstruction: string | undefined;
@@ -60,18 +91,18 @@ function convertMessages(messages: Message[]): { systemInstruction?: string; con
 
   for (const msg of messages) {
     if (msg.role === 'system') {
-      systemInstruction = (systemInstruction ?? '') + (systemInstruction ? '\n\n' : '') + msg.content;
+      const text = extractText(msg.content);
+      systemInstruction = (systemInstruction ?? '') + (systemInstruction ? '\n\n' : '') + text;
       continue;
     }
 
     if (msg.role === 'tool') {
-      // Tool results go as user role with functionResponse parts
       contents.push({
         role: 'user',
         parts: [{
           functionResponse: {
             name: msg.toolCallId ?? 'unknown',
-            response: { content: msg.content },
+            response: { content: extractText(msg.content) },
           },
         }],
       });
@@ -80,8 +111,9 @@ function convertMessages(messages: Message[]): { systemInstruction?: string; con
 
     if (msg.role === 'assistant') {
       const parts: GeminiPart[] = [];
-      if (msg.content) {
-        parts.push({ text: msg.content });
+      const textContent = extractText(msg.content);
+      if (textContent) {
+        parts.push({ text: textContent });
       }
       if (msg.toolCalls?.length) {
         for (const tc of msg.toolCalls) {
@@ -98,8 +130,12 @@ function convertMessages(messages: Message[]): { systemInstruction?: string; con
       continue;
     }
 
-    // User message
-    contents.push({ role: 'user', parts: [{ text: msg.content }] });
+    // User message — handle multimodal content
+    if (typeof msg.content !== 'string' && Array.isArray(msg.content)) {
+      contents.push({ role: 'user', parts: convertContentPartsToGemini(msg.content) });
+    } else {
+      contents.push({ role: 'user', parts: [{ text: msg.content as string }] });
+    }
   }
 
   return { systemInstruction, contents };

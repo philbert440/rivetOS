@@ -10,6 +10,7 @@
 
 import type {
   Message,
+  ContentPart,
   Provider,
   Tool,
   ToolDefinition,
@@ -77,8 +78,9 @@ export class AgentLoop {
 
   /**
    * Run one turn.
+   * userMessage can be a plain string or multimodal ContentPart[] (text + images).
    */
-  async run(userMessage: string, history: Message[], signal?: AbortSignal): Promise<TurnResult> {
+  async run(userMessage: string | ContentPart[], history: Message[], signal?: AbortSignal): Promise<TurnResult> {
     const messages: Message[] = [
       { role: 'system', content: this.config.systemPrompt },
       ...history,

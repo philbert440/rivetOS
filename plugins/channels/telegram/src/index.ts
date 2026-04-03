@@ -18,6 +18,8 @@ import type {
   Channel,
   InboundMessage,
   OutboundMessage,
+  Attachment,
+  ResolvedAttachment,
 } from '@rivetos/types';
 import { splitMessage } from '@rivetos/types';
 import { markdownToTelegramHtml } from './format.js';
@@ -308,6 +310,52 @@ export class TelegramChannel implements Channel {
       ]);
     } catch {
       // Reaction failures are non-critical
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Attachment Resolution
+  // -----------------------------------------------------------------------
+
+  async resolveAttachment(attachment: Attachment): Promise<ResolvedAttachment | null> {
+    if (!attachment.fileId) return null;
+
+    try {
+      // Get file info from Telegram
+      const file = await this.bot.api.getFile(attachment.fileId);
+      if (!file.file_path) return null;
+
+      // Download the file
+      const fileUrl = `https://api.telegram.org/file/bot${this.config.botToken}/${file.file_path}`;
+      const response = await fetch(fileUrl);
+      if (!response.ok) return null;
+
+      const buffer = await response.arrayBuffer();
+      const base64 = Buffer.from(buffer).toString('base64');
+
+      // Infer MIME type from file path
+      const ext = file.file_path.split('.').pop()?.toLowerCase();
+      const mimeMap: Record<string, string> = {
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        gif: 'image/gif',
+        webp: 'image/webp',
+        mp4: 'video/mp4',
+        ogg: 'audio/ogg',
+        oga: 'audio/ogg',
+        pdf: 'application/pdf',
+      };
+
+      return {
+        type: attachment.type,
+        data: base64,
+        mimeType: attachment.mimeType ?? mimeMap[ext ?? ''] ?? 'application/octet-stream',
+        fileName: attachment.fileName ?? file.file_path.split('/').pop(),
+      };
+    } catch (err: any) {
+      console.error(`[Telegram] Failed to resolve attachment: ${err.message}`);
+      return null;
     }
   }
 
