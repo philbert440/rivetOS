@@ -173,39 +173,46 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 **Target: v0.2.0**  
 **Theme:** Extensibility without touching core.
 
-### 2.1 — Hook System Architecture
-- Define lifecycle events: `SessionStart`, `PreToolUse`, `PostToolUse`, `PreResponse`, `PostResponse`, `SessionEnd`, `PreCompact`, `PostCompact`
-- Hook handler types: `shell` (run a command), `http` (webhook), `internal` (TypeScript function)
-- Hooks defined in config.yaml under `hooks:` section
-- Multiple hooks per event, executed in order
-- Hook failure modes: `continue` (log and proceed), `abort` (stop the turn), `retry`
+### 2.1 — Hook System Architecture ✅
+- [x] Lifecycle events: `provider:before`, `provider:after`, `provider:error`, `tool:before`, `tool:after`, `session:start`, `session:end`, `turn:before`, `turn:after`, `compact:before`, `compact:after`
+- [x] **Types:** Full type system in `@rivetos/types` — `HookContext` variants for each event with typed fields (provider, model, args, results, usage, latency, etc.)
+- [x] **HookPipelineImpl:** Async composable pipeline in `@rivetos/core` — priority ordering (0-99), data passing via mutable context, short-circuit (abort/skip), agent/tool filters, error modes (continue/abort/retry)
+- [x] **Wired into AgentLoop:** `provider:before` (pre-request), `provider:after` (post-response), `provider:error` (fallback trigger), `tool:before` (safety gate — can block), `tool:after` (post-execution metrics)
+- [x] **Wired into Runtime:** `turn:before` (pre-processing, can skip), `turn:after` (post-turn analytics)
+- [x] Config types: `HookConfig` for declarative hooks, `FallbackConfig` for fallback chains
+- [x] **25 tests** — priority, data passing, short-circuit, error modes, filters, async, composability
+- [ ] Hook handler types: `shell` (run a command), `http` (webhook) — currently only `internal` (TypeScript function)
+- [ ] Hooks defined in config.yaml (declarative registration at boot — types ready, loader not implemented)
 
 ### 2.2 — Safety Hooks (PreToolUse)
-- Block dangerous shell commands before execution
+- Block dangerous shell commands before execution (infrastructure ready via `tool:before` + `blocked` flag)
 - Require confirmation for file writes outside workspace
 - Log all tool invocations to audit file
 - Custom rules: "never run npm publish without --dry-run first"
 
 ### 2.3 — Auto-Actions (PostToolUse)
-- Auto-format files after edit (prettier, eslint --fix)
+- Auto-format files after edit (prettier, eslint --fix) (infrastructure ready via `tool:after`)
 - Auto-lint after code changes
 - Auto-run tests after file modifications in src/
 - Custom: "after any git commit, run the pre-push checks"
 
 ### 2.4 — Session Hooks
-- `SessionStart`: load additional context, check calendar, greet user
-- `SessionEnd`: auto-commit pending changes, write session summary, update daily notes
-- `PreCompact`: save important context before compaction
-- `PostCompact`: verify critical context survived compaction
+- `session:start`: load additional context, check calendar, greet user
+- `session:end`: auto-commit pending changes, write session summary, update daily notes
+- `compact:before`: save important context before compaction
+- `compact:after`: verify critical context survived compaction
 
-### 2.5 — Provider Fallback Chains
-- Generalized fallback system across **all providers**, not just Google
-- Config: `fallbacks: ['model-b', 'model-c']` per provider
-- Triggers: 429 rate limit, 503 service unavailable, timeout, auth failure (configurable)
-- Cascade: try primary → fallback1 → fallback2 → yield error
-- Logging: warn on each fallback step with model name + reason
-- Metrics: track fallback frequency per provider (feed into M6 observability)
-- **Reference implementation:** Google provider already has a working 27-line prototype (`feat/provider-fallbacks-2` branch — now captured here, branch deleted)
+### 2.5 — Provider Fallback Chains ✅
+- [x] Generalized fallback system across **all providers** via hook pipeline
+- [x] Config: `fallbacks: ['model-b', 'provider:model-c']` — same-provider or cross-provider
+- [x] Triggers: configurable per chain — status codes (default: 429, 503), timeout detection (ETIMEDOUT, socket hang up, AbortError), optional auth failure
+- [x] Cascade: progresses through chain, exhausts gracefully, resets on cooldown (5min)
+- [x] Session isolation: separate fallback state per provider:session
+- [x] Metadata: `fallbackFrom`, `fallbackTo`, `fallbackIndex`, `fallbackReason` for downstream hooks
+- [x] Boot wiring: config → `createFallbackHook()` → pipeline registration
+- [x] Per-agent fallback support: `agent.fallbacks: ['model-a', 'model-b']`
+- [x] **16 tests** — trigger codes, timeout, auth, chain progression, exhaustion, cross-provider, session isolation, composability
+- [ ] Metrics: track fallback frequency per provider (feed into M6 observability)
 
 ### 2.6 — MCP Client Plugin
 - MCP (Model Context Protocol) client as a tool plugin

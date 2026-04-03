@@ -9,7 +9,10 @@
 import { resolve } from 'node:path';
 import { loadConfig } from './config.js';
 import { Runtime } from '../packages/core/src/runtime.js';
+import { HookPipelineImpl } from '../packages/core/src/domain/hooks.js';
+import { createFallbackHook } from '../packages/core/src/domain/fallback.js';
 import { logger } from '../packages/core/src/logger.js';
+import type { FallbackConfig } from '@rivetos/types';
 
 // Providers
 import { AnthropicProvider } from '../plugins/providers/anthropic/src/index.js';
@@ -42,6 +45,31 @@ export async function boot(configPath?: string) {
   log.info(`Loading config from ${configPath}`);
   const config = await loadConfig(configPath);
 
+  // Create hook pipeline
+  const hooks = new HookPipelineImpl(log);
+
+  // Register fallback chains from config
+  const fallbackConfigs: FallbackConfig[] = [];
+  if (config.runtime.fallbacks) {
+    for (const fb of config.runtime.fallbacks as FallbackConfig[]) {
+      fallbackConfigs.push(fb);
+    }
+  }
+  // Also check per-agent fallbacks
+  for (const [id, agent] of Object.entries(config.agents)) {
+    const agentFallbacks = agent.fallbacks as string[] | undefined;
+    if (agentFallbacks?.length) {
+      fallbackConfigs.push({
+        providerId: agent.provider as string,
+        fallbacks: agentFallbacks,
+      });
+    }
+  }
+  if (fallbackConfigs.length > 0) {
+    hooks.register(createFallbackHook(fallbackConfigs));
+    log.info(`Hooks: ${fallbackConfigs.length} fallback chain(s) registered`);
+  }
+
   // Create runtime
   const runtime = new Runtime({
     workspaceDir: config.runtime.workspace.replace('~', process.env.HOME ?? '.'),
@@ -55,6 +83,8 @@ export async function boot(configPath?: string) {
     })),
     heartbeats: config.runtime.heartbeats as import('@rivetos/types').HeartbeatConfig[],
     skillDirs: config.runtime.skill_dirs,
+    hooks,
+    fallbacks: fallbackConfigs,
   });
 
   // Register providers
