@@ -8,7 +8,7 @@
  * Uses mock implementations of Provider, Channel, Memory, and Tool.
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import * as assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -230,7 +230,7 @@ async function waitForSent(channel: { sent: SentMessage[] }, count: number, time
 describe('Runtime Integration', () => {
   let workspaceDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     workspaceDir = await mkdtemp(join(tmpdir(), 'rivetos-test-'));
     // Create minimal workspace files
     await writeFile(join(workspaceDir, 'SOUL.md'), '# Test Soul');
@@ -240,7 +240,7 @@ describe('Runtime Integration', () => {
     await mkdir(join(workspaceDir, 'memory'), { recursive: true });
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(workspaceDir, { recursive: true, force: true });
   });
 

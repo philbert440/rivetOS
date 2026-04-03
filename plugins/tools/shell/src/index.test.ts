@@ -2,7 +2,7 @@
  * ShellTool tests — command execution, blocked commands, timeout, abort.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import * as assert from 'node:assert/strict';
 import { ShellTool } from './index.js';
 

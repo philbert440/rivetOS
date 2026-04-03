@@ -38,7 +38,7 @@
   },
   "scripts": {
     "build": "npx nx run-many -t build",
-    "test": "npx nx run-many -t test && node --import tsx --test src/validate.test.ts",
+    "test": "vitest run",
     "dev": "npx tsx src/boot.ts",
     "cli": "npx tsx packages/cli/src/index.ts",
     "graph": "npx nx graph"
@@ -52,7 +52,8 @@
     "@types/node": "^22.15.18",
     "nx": "^22.6.3",
     "tsx": "^4.19.4",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.2"
   },
   "dependencies": {
     "@types/pg": "^8.20.0",

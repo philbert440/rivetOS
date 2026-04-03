@@ -5,7 +5,7 @@
  * and are accessible at the module boundary.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import * as assert from 'node:assert/strict';
 
 describe('@rivetos/types exports', () => {

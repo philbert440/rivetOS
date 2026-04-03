@@ -2,7 +2,7 @@
  * MessageQueue tests — enqueue, turn lifecycle, command parsing.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it, beforeEach } from 'vitest';
 import * as assert from 'node:assert/strict';
 import { MessageQueue, isCommand, parseCommand } from './queue.js';
 import type { InboundMessage } from '@rivetos/types';

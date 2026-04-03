@@ -3,7 +3,7 @@
  * error surfacing, and provider timeout handling.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import * as assert from 'node:assert/strict';
 import { AgentLoop } from './loop.js';
 import type { Provider, LLMChunk, Message, ChatOptions, Tool } from '@rivetos/types';

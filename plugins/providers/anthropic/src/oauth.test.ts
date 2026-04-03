@@ -2,7 +2,7 @@
  * Anthropic OAuth utility tests — auth mode detection, base64url encoding.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import * as assert from 'node:assert/strict';
 import { detectAuthMode } from './oauth.js';
 
