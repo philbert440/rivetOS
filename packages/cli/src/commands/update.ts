@@ -15,7 +15,7 @@ import { execSync } from 'node:child_process';
 import { unlinkSync, symlinkSync, readlinkSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(__dirname, '..', '..', '..');
+const ROOT = resolve(__dirname, '..', '..', '..', '..');
 
 function exec(cmd: string): string {
   return execSync(cmd, { cwd: ROOT, encoding: 'utf-8', timeout: 120000, env: { ...process.env, HOME: process.env.HOME || '/root' } }).trim();

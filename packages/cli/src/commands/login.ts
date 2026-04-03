@@ -20,7 +20,7 @@ export default async function login(): Promise<void> {
     case 'anthropic': {
       // Dynamic import so we don't load OAuth deps unless needed
       const { generateAuthUrl, exchangeCode, saveTokens } = await import(
-        '../../../plugins/providers/anthropic/src/oauth.js'
+        '../../../../plugins/providers/anthropic/src/oauth.js'
       );
       const { createInterface } = await import('node:readline');
 

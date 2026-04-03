@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * RivetOS CLI
+ * RivetOS CLI — @rivetos/cli
  *
  * Usage:
  *   rivetos init                     — first-run setup
@@ -13,6 +13,9 @@
  *   rivetos login anthropic          — OAuth login for Anthropic (Claude subscription)
  *   rivetos doctor                   — check config, providers, connectivity
  *   rivetos config init              — generate default config.yaml
+ *   rivetos logs                     — tail runtime logs with filtering
+ *   rivetos skills list              — show all discovered skills
+ *   rivetos plugins list             — show loaded plugins with status
  *   rivetos version                  — show version
  */
 
@@ -26,6 +29,9 @@ const COMMANDS: Record<string, () => Promise<void>> = {
   config: () => import('./commands/config.js').then((m) => m.default()),
   version: () => import('./commands/version.js').then((m) => m.default()),
   service: () => import('./commands/service.js').then((m) => m.default()),
+  logs: () => import('./commands/logs.js').then((m) => m.default()),
+  skills: () => import('./commands/skills.js').then((m) => m.default()),
+  plugins: () => import('./commands/plugins.js').then((m) => m.default()),
   help: () => showHelp(),
   // Provider commands — rivetos <provider> <action>
   anthropic: () => import('./commands/provider.js').then((m) => m.default('anthropic')),
@@ -49,6 +55,11 @@ async function showHelp(): Promise<void> {
     rivetos doctor                      Check config and connectivity
     rivetos config init                 Generate default config.yaml
     rivetos version                     Show version
+
+  Introspection:
+    rivetos logs [options]              Tail runtime logs (--lines, --follow, --since, --grep)
+    rivetos skills list                 Show all discovered skills
+    rivetos plugins list                Show configured plugins with status
 
   Service:
     rivetos service init                Generate systemd unit file

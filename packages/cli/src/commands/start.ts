@@ -37,6 +37,6 @@ export default async function start(): Promise<void> {
   }
 
   // Import and run boot
-  const { boot } = await import('../../boot.js');
+  const { boot } = await import('../../../../src/boot.js');
   await boot(configPath);
 }

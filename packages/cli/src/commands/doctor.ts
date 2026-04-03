@@ -8,7 +8,7 @@
 import { readFile, access } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { validateConfig, formatValidationResult } from '../../validate.js';
+import { validateConfig, formatValidationResult } from '../validate.js';
 
 const VERSION = '0.1.4';
 

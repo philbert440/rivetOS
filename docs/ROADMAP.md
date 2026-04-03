@@ -39,17 +39,18 @@
 - [x] Warn on common mistakes (API key in config file, missing env var)
 - [x] `rivetos doctor` validates config + connectivity to all configured providers/channels
 
-### 0.5 — CLI Tools
+### 0.5 — CLI Tools ✅
 - [x] `rivetos version` — dynamic from package.json + git short hash
 - [x] `rivetos init` — first-run setup (config, workspace, symlink)
 - [x] `rivetos update` — git pull, npm install, re-symlink
 - [x] `rivetos start/stop/status` — runtime lifecycle
 - [x] `rivetos help` — command reference
-- [ ] `rivetos logs` — tail runtime logs with filtering (journalctl wrapper + structured log parsing)
+- [x] `rivetos logs` — tail runtime logs with filtering (journalctl wrapper + structured log parsing)
 - [x] `rivetos config validate` — check config without starting (dry-run of schema validation from 0.4)
-- [ ] `rivetos skills list` — show all discovered skills with trigger counts
-- [ ] `rivetos plugins list` — show loaded plugins with status
-- [ ] `rivetos mesh list/ping/remove` — fleet management (depends on 0.6 mesh registry)
+- [x] `rivetos skills list` — show all discovered skills with trigger counts
+- [x] `rivetos plugins list` — show loaded plugins with status
+- [x] `rivetos login` — OAuth login for Anthropic subscription auth
+- [x] **CLI extracted to `@rivetos/cli`** — independent Nx package at `packages/cli/`, own build/test, path alias in tsconfig.base
 
 ---
 

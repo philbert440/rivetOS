@@ -21,7 +21,8 @@
       "@rivetos/provider-anthropic": ["plugins/providers/anthropic/src/index.ts"],
       "@rivetos/channel-telegram": ["plugins/channels/telegram/src/index.ts"],
       "@rivetos/tool-shell": ["plugins/tools/shell/src/index.ts"],
-      "@rivetos/memory-postgres": ["plugins/memory/postgres/src/index.ts"]
+      "@rivetos/memory-postgres": ["plugins/memory/postgres/src/index.ts"],
+      "@rivetos/cli": ["packages/cli/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
