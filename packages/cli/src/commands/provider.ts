@@ -47,7 +47,7 @@ async function handleAnthropic(action: string): Promise<void> {
     case 'setup':
     case 'login': {
       const { saveTokens, detectAuthMode } = await import(
-        '../../../plugins/providers/anthropic/src/oauth.js'
+        '../../../../plugins/providers/anthropic/src/oauth.js'
       );
       const { createInterface } = await import('node:readline');
 
@@ -96,7 +96,7 @@ async function handleAnthropic(action: string): Promise<void> {
 
     case 'status': {
       const { loadTokens } = await import(
-        '../../../plugins/providers/anthropic/src/oauth.js'
+        '../../../../plugins/providers/anthropic/src/oauth.js'
       );
       const tokens = await loadTokens();
 

@@ -9,7 +9,7 @@
 import { writeFile, readFile, mkdir, access } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { validateConfig, formatValidationResult } from '../../validate.js';
+import { validateConfig, formatValidationResult } from '../validate.js';
 
 const DEFAULT_CONFIG = `# RivetOS Configuration
 # API keys via environment variables — never in this file.

@@ -1,13 +1,13 @@
 # RivetOS Roadmap
 
-**Version:** v0.1.0 → v1.0.0 LTS  
+**Version:** v0.0.x → v1.0.0 LTS  
 **Last updated:** April 2026  
 **Philosophy:** The lightweight Linux of agent runtimes. Tiny core, stable kernel, everything else is a plugin or skill.
 
 ---
 
 ## Milestone 0: Foundation — Make It Reliable
-**Target: v0.2.0**  
+**Target: v0.0.x** ✅  
 **Theme:** You can't ship what doesn't test.
 
 ### 0.1 — Test Coverage for Core Domain ✅
@@ -39,22 +39,23 @@
 - [x] Warn on common mistakes (API key in config file, missing env var)
 - [x] `rivetos doctor` validates config + connectivity to all configured providers/channels
 
-### 0.5 — CLI Tools
+### 0.5 — CLI Tools ✅
 - [x] `rivetos version` — dynamic from package.json + git short hash
 - [x] `rivetos init` — first-run setup (config, workspace, symlink)
 - [x] `rivetos update` — git pull, npm install, re-symlink
 - [x] `rivetos start/stop/status` — runtime lifecycle
 - [x] `rivetos help` — command reference
-- [ ] `rivetos logs` — tail runtime logs with filtering (journalctl wrapper + structured log parsing)
+- [x] `rivetos logs` — tail runtime logs with filtering (journalctl wrapper + structured log parsing)
 - [x] `rivetos config validate` — check config without starting (dry-run of schema validation from 0.4)
-- [ ] `rivetos skills list` — show all discovered skills with trigger counts
-- [ ] `rivetos plugins list` — show loaded plugins with status
-- [ ] `rivetos mesh list/ping/remove` — fleet management (depends on 0.6 mesh registry)
+- [x] `rivetos skills list` — show all discovered skills with trigger counts
+- [x] `rivetos plugins list` — show loaded plugins with status
+- [x] `rivetos login` — OAuth login for Anthropic subscription auth
+- [x] **CLI extracted to `@rivetos/cli`** — independent Nx package at `packages/cli/`, own build/test, path alias in tsconfig.base
 
 ---
 
 ## Milestone 1: Coreutils — The Base Toolset
-**Target: v0.3.0**  
+**Target: v0.1.0**  
 **Theme:** Every agent needs these. They ship with every RivetOS install.
 
 Modeled after the Claude Code core tool patterns — battle-tested primitives adapted for multi-model, multi-agent use. These replace the current "everything goes through shell" approach with purpose-built tools that have safety rails, structured output, and audit trails.
@@ -167,7 +168,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 ---
 
 ## Milestone 2: Hooks & Lifecycle Events
-**Target: v0.4.0**  
+**Target: v0.2.0**  
 **Theme:** Extensibility without touching core.
 
 ### 2.1 — Hook System Architecture
@@ -198,7 +199,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 ---
 
 ## Milestone 3: Agent Capabilities
-**Target: v0.5.0**  
+**Target: v0.3.0**  
 **Theme:** Smarter agents, not just more tools.
 
 ### 3.1 — Plan Mode
@@ -231,7 +232,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 ---
 
 ## Milestone 4: Memory & Context
-**Target: v0.6.0**  
+**Target: v0.4.0**  
 **Theme:** Agents that actually remember.
 
 ### 4.1 — Complete Background Embedder
@@ -265,7 +266,7 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 ---
 
 ## Milestone 5: Developer Experience
-**Target: v0.7.0**  
+**Target: v0.5.0**  
 **Theme:** Make it easy for others to build on.
 
 ### 5.1 — Plugin SDK
@@ -290,16 +291,13 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 - API reference auto-generated from TypeScript interfaces
 
 ### 5.4 — CLI Improvements
-- `rivetos logs` — tail runtime logs with filtering
-- `rivetos config validate` — check config without starting
-- `rivetos skills list` — show all discovered skills with trigger counts
-- `rivetos plugins list` — show loaded plugins with status
 - `rivetos benchmark` — simple latency test against configured providers
+- Additional CLI polish deferred from 0.5 (TBD based on usage patterns)
 
 ---
 
 ## Milestone 6: Production Hardening
-**Target: v0.8.0 → v0.9.0**  
+**Target: v0.6.0**  
 **Theme:** Ready for other people to run.
 
 ### 6.1 — Error Handling & Recovery
@@ -329,6 +327,69 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 - Auto-restart on crash with backoff
 - Environment file for secrets
 - Journal integration for logging
+
+### 6.5 — Infrastructure as Code Research
+- [ ] Evaluate IaC tools for the monorepo (Pulumi, Terraform, Ansible, or combination)
+- [ ] Define what gets codified: CT provisioning, networking, SSH config, service setup
+- [ ] Decide on platform direction (Proxmox vs. alternatives — keep options open)
+- [ ] Prototype: single declarative file → deploy a new agent node end-to-end
+- [ ] Document findings and recommendation in `docs/INFRASTRUCTURE.md`
+
+### 6.6 — Pre-Packaged Agent Containers + Auto-Mesh
+**Theme:** Clone a golden template → first-boot wizard asks "who are you?" → fully meshed agent in 60 seconds.
+
+#### 6.6.1 — Golden Container Template
+- [ ] Pre-packaged container template with everything pre-installed:
+  - Node.js, npm, git, common tools
+  - `/opt/rivetos/` repo cloned and built
+  - `/usr/local/bin/rivetos` symlinked
+  - `rivetos.service` in systemd (enabled, but waits for first-run config)
+  - `philbot` user created with standard config
+  - SSH hardened (`prohibit-password`, `MaxAuthTries 3`)
+  - OTel collector ready (just needs endpoint config)
+  - No template bloat (no postfix, no snapd, no avahi)
+- [ ] Template versioning: tag template with RivetOS version, rebuild on major updates
+- [ ] Provisioning script or CLI to clone template with ID + hostname + IP
+
+#### 6.6.2 — First-Boot Identity Wizard (`rivetos init`)
+- [ ] Detect first-run state (no `~/.rivetos/config.yaml`)
+- [ ] Interactive setup:
+  - Agent name (e.g., "grok", "opus", "gemini", "local")
+  - Provider + API keys (or local model endpoint)
+  - Personality: generates `SOUL.md`, `IDENTITY.md` unique to this agent
+  - Channel bindings (Discord channel IDs, Telegram tokens)
+  - Heartbeat schedule
+- [ ] Write config, create workspace, generate SSH keypair
+- [ ] Each agent gets its own soul — different personality, different strengths, same team
+
+#### 6.6.3 — Auto-Mesh on First Boot (`rivetos init --join <host>`)
+- [ ] Connect to any existing RivetOS node (the "seed node")
+- [ ] Seed node shares its mesh registry (all known agents + IPs + capabilities)
+- [ ] Bidirectional SSH key exchange: new node ↔ all existing nodes
+- [ ] SSH config entries written automatically (`ssh ct100`, `ssh rivet-grok`, etc.)
+- [ ] New agent registered in mesh registry, propagated to all nodes
+- [ ] Full mesh established — every node can reach every other node
+
+#### 6.6.4 — Mesh Registry
+- [ ] `~/.rivetos/mesh.json` — source of truth per node, synced across fleet
+- [ ] Per-node entry: agent name, host, IP, port, model, provider, capabilities, tags
+- [ ] Auto-sync on change (push to all peers, or piggyback on syncthing)
+- [ ] `rivetos mesh list` — all agents, status, versions
+- [ ] `rivetos mesh ping` — health check across the fleet
+- [ ] `rivetos mesh remove <agent>` — deregister, revoke keys, clean up
+
+#### 6.6.5 — Mesh-Aware Delegation
+- [ ] `delegate_task` / `subagent_spawn` read mesh registry for available agents
+- [ ] Name-based routing: "delegate to grok" → resolve host from mesh → execute
+- [ ] Capability-based routing: "need a fast model" → pick by tags/provider
+- [ ] Fallback chains: if target is down, try next agent with matching capability
+- [ ] Cross-node tool execution: CT101 agent invokes a tool running on CT103
+
+#### 6.6.6 — Fleet Management
+- [ ] `rivetos update --mesh` — rolling update across all nodes
+- [ ] One at a time, health check between each, rollback on failure
+- [ ] Version consistency warnings if nodes drift
+- [ ] Template rebuild pipeline: update template → `rivetos mesh upgrade` pushes to fleet
 
 ---
 
@@ -410,14 +471,14 @@ These are `apt install` packages. Available in a skills registry, installed per-
 
 | Version | Milestone | Target |
 |---------|-----------|--------|
-| v0.2.0 | Foundation (tests, bugs, CI) | Q2 2026 |
-| v0.3.0 | Coreutils (11 base tools) | Q2 2026 |
-| v0.4.0 | Hooks & Lifecycle | Q3 2026 |
-| v0.5.0 | Agent Capabilities (plan, batch, worktrees) | Q3 2026 |
-| v0.6.0 | Memory & Context | Q3 2026 |
-| v0.7.0 | Developer Experience (SDK, docs, CLI) | Q4 2026 |
-| v0.8-0.9 | Production Hardening | Q4 2026 |
-| v1.0.0 | LTS Release + Public Launch | Q1 2027 |
+| v0.0.x | M0: Foundation (tests, bugs, CI, CLI) | ✅ Done |
+| v0.1.0 | M1: Coreutils (11 base tools) | Q2 2026 |
+| v0.2.0 | M2: Hooks & Lifecycle | Q2 2026 |
+| v0.3.0 | M3: Agent Capabilities (plan, batch, worktrees) | Q3 2026 |
+| v0.4.0 | M4: Memory & Context | Q3 2026 |
+| v0.5.0 | M5: Developer Experience (SDK, docs, CLI) | Q3 2026 |
+| v0.6.0 | M6: Production Hardening (+ IaC, containers, auto-mesh) | Q4 2026 |
+| v1.0.0 | M7: LTS Release + Public Launch | Q1 2027 |
 
 ---
 
@@ -445,62 +506,4 @@ Items that don't fit cleanly into a milestone but shouldn't be forgotten. If the
 - [ ] **WhatsApp channel plugin:** Formatting notes exist in AGENTS.md but no WhatsApp channel implementation exists yet.
 - [ ] **Additional providers (DeepSeek, etc.):** As new model providers emerge, add OpenAI-compatible shims or native integrations.
 
----
 
-## Milestone 0.6: Pre-Packaged Agent Containers + Auto-Mesh
-
-**Target: v0.2.0 (ships with Foundation)**
-**Theme:** Clone a golden Proxmox template → first-boot wizard asks "who are you?" → fully meshed agent in 60 seconds.
-
-### 0.6.1 — Golden Container Template
-- [ ] Pre-packaged Proxmox LXC template with everything pre-installed:
-  - Node.js, npm, git, common tools
-  - `/opt/rivetos/` repo cloned and built
-  - `/usr/local/bin/rivetos` symlinked
-  - `rivetos.service` in systemd (enabled, but waits for first-run config)
-  - `philbot` user created with standard config
-  - SSH hardened (`prohibit-password`, `MaxAuthTries 3`)
-  - OTel collector ready (just needs endpoint config)
-  - No template bloat (no postfix, no snapd, no avahi)
-- [ ] Template versioning: tag template with RivetOS version, rebuild on major updates
-- [ ] Proxmox API script or CLI to clone template with CT ID + hostname + IP
-
-### 0.6.2 — First-Boot Identity Wizard (`rivetos init`)
-- [ ] Detect first-run state (no `~/.rivetos/config.yaml`)
-- [ ] Interactive setup:
-  - Agent name (e.g., "grok", "opus", "gemini", "local")
-  - Provider + API keys (or local model endpoint)
-  - Personality: generates `SOUL.md`, `IDENTITY.md` unique to this agent
-  - Channel bindings (Discord channel IDs, Telegram tokens)
-  - Heartbeat schedule
-- [ ] Write config, create workspace, generate SSH keypair
-- [ ] Each agent gets its own soul — different personality, different strengths, same team
-
-### 0.6.3 — Auto-Mesh on First Boot (`rivetos init --join <host>`)
-- [ ] Connect to any existing RivetOS node (the "seed node")
-- [ ] Seed node shares its mesh registry (all known agents + IPs + capabilities)
-- [ ] Bidirectional SSH key exchange: new node ↔ all existing nodes
-- [ ] SSH config entries written automatically (`ssh ct100`, `ssh rivet-grok`, etc.)
-- [ ] New agent registered in mesh registry, propagated to all nodes
-- [ ] Full mesh established — every node can reach every other node
-
-### 0.6.4 — Mesh Registry
-- [ ] `~/.rivetos/mesh.json` — source of truth per node, synced across fleet
-- [ ] Per-node entry: agent name, host, IP, port, model, provider, capabilities, tags
-- [ ] Auto-sync on change (push to all peers, or piggyback on syncthing)
-- [ ] `rivetos mesh list` — all agents, status, versions
-- [ ] `rivetos mesh ping` — health check across the fleet
-- [ ] `rivetos mesh remove <agent>` — deregister, revoke keys, clean up
-
-### 0.6.5 — Mesh-Aware Delegation
-- [ ] `delegate_task` / `subagent_spawn` read mesh registry for available agents
-- [ ] Name-based routing: "delegate to grok" → resolve host from mesh → execute
-- [ ] Capability-based routing: "need a fast model" → pick by tags/provider
-- [ ] Fallback chains: if target is down, try next agent with matching capability
-- [ ] Cross-node tool execution: CT101 agent invokes a tool running on CT103
-
-### 0.6.6 — Fleet Management
-- [ ] `rivetos update --mesh` — rolling update across all nodes
-- [ ] One at a time, health check between each, rollback on failure
-- [ ] Version consistency warnings if nodes drift
-- [ ] Template rebuild pipeline: update template → `rivetos mesh upgrade` pushes to fleet
