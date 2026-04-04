@@ -80,11 +80,11 @@ export class AgentChannel implements Channel {
 
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server = createServer((req, res) => this.handleRequest(req, res))
+      this.server = createServer((req, res) => void this.handleRequest(req, res))
 
-      this.server.on('error', (err: any) => {
+      this.server.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
-          reject(new Error(`Agent channel port ${this.port} is already in use`))
+          reject(new Error(`Agent channel port ${String(this.port)} is already in use`))
         } else {
           reject(err)
         }
@@ -98,7 +98,7 @@ export class AgentChannel implements Channel {
 
   async stop(): Promise<void> {
     // Clear pending responses
-    for (const [id, pending] of this.pendingResponses) {
+    for (const [_id, pending] of this.pendingResponses) {
       clearTimeout(pending.timeout)
       pending.resolve('[channel shutting down]')
     }
@@ -113,16 +113,16 @@ export class AgentChannel implements Channel {
     })
   }
 
-  async send(message: OutboundMessage): Promise<string | null> {
+  send(message: OutboundMessage): Promise<string | null> {
     // "Sending" on the agent channel means resolving a pending response
     const pending = this.pendingResponses.get(message.channelId)
     if (pending && message.text) {
       clearTimeout(pending.timeout)
       pending.resolve(message.text)
       this.pendingResponses.delete(message.channelId)
-      return message.channelId
+      return Promise.resolve(message.channelId)
     }
-    return null
+    return Promise.resolve(null)
   }
 
   onMessage(handler: (message: InboundMessage) => Promise<void>): void {
@@ -188,7 +188,7 @@ export class AgentChannel implements Channel {
     let body: AgentMessageBody
     try {
       const rawBody = await readBody(req)
-      body = JSON.parse(rawBody)
+      body = JSON.parse(rawBody) as AgentMessageBody
     } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Invalid JSON body' }))
@@ -239,11 +239,12 @@ export class AgentChannel implements Channel {
       try {
         if (this.messageHandler) {
           // Don't await — let it process asynchronously while we wait on the response promise
-          this.messageHandler(inbound).catch((err) => {
+          this.messageHandler(inbound).catch((err: unknown) => {
             const pending = this.pendingResponses.get(requestId)
             if (pending) {
               clearTimeout(pending.timeout)
-              pending.resolve(`[error processing message: ${err.message}]`)
+              const msg = err instanceof Error ? err.message : String(err)
+              pending.resolve(`[error processing message: ${msg}]`)
               this.pendingResponses.delete(requestId)
             }
           })
@@ -264,14 +265,15 @@ export class AgentChannel implements Channel {
             timestamp: Date.now(),
           }),
         )
-      } catch (err: any) {
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
         res.writeHead(500, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: `Processing failed: ${err.message}` }))
+        res.end(JSON.stringify({ error: `Processing failed: ${msg}` }))
       }
     } else {
       // Fire and forget
       if (this.messageHandler) {
-        this.messageHandler(inbound).catch(() => {}) // Errors are swallowed in async mode
+        void this.messageHandler(inbound) // Errors are swallowed in async mode
       }
 
       res.writeHead(202, { 'Content-Type': 'application/json' })
@@ -322,7 +324,7 @@ export class AgentChannel implements Channel {
         },
         required: ['to_agent', 'message'],
       },
-      execute: async (args, _signal, context) => {
+      execute: async (args) => {
         const toAgent = args.to_agent as string
         const message = args.message as string
         const waitForResponse = (args.wait_for_response as boolean) ?? true
@@ -347,8 +349,9 @@ export class AgentChannel implements Channel {
           } else {
             return `Message sent to ${toAgent} (async — no response expected). Request ID: ${response.requestId}`
           }
-        } catch (err: any) {
-          return `Error sending message to ${toAgent}: ${err.message}`
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : String(error)
+          return `Error sending message to ${toAgent}: ${msg}`
         }
       },
     }
@@ -416,7 +419,7 @@ interface AgentMessageResponse {
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
-    req.on('data', (chunk) => chunks.push(chunk))
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')))
     req.on('error', reject)
   })

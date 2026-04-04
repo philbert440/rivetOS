@@ -5,7 +5,8 @@
  * Handles DAVE E2EE transition before subscribing to audio.
  */
 
-import { VoiceConnection, EndBehaviorType } from '@discordjs/voice'
+import { type VoiceConnection, EndBehaviorType } from '@discordjs/voice'
+import type { Readable } from 'node:stream'
 import { XAIRealtimeClient, type XAIConfig } from './xai-client.js'
 import { AudioPlayer } from './audio-player.js'
 import { TranscriptLogger } from './transcript.js'
@@ -13,6 +14,39 @@ import type { VoicePluginConfig } from './plugin.js'
 import pg from 'pg'
 
 const { Pool } = pg
+
+// ---------------------------------------------------------------------------
+// Types for prism-media (no @types available)
+// ---------------------------------------------------------------------------
+
+interface OpusDecoder extends Readable {
+  destroy(): void
+}
+
+interface PrismMedia {
+  opus: {
+    Decoder: new (opts: { rate: number; channels: number; frameSize: number }) => OpusDecoder
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DB row types
+// ---------------------------------------------------------------------------
+
+interface MemorySearchRow {
+  id: string
+  content: string
+  role: string
+  score: string
+  created_at: string
+}
+
+interface RecentMessageRow {
+  content: string
+  role: string
+  created_at: string
+  agent_id: string
+}
 
 export class VoiceSession {
   private connection: VoiceConnection
@@ -23,8 +57,8 @@ export class VoiceSession {
   private config: VoicePluginConfig
   private sessionId: string
   private subscribedUsers = new Set<string>()
-  private opusStreams = new Map<string, any>()
-  private decoders = new Map<string, any>()
+  private opusStreams = new Map<string, Readable>()
+  private decoders = new Map<string, OpusDecoder>()
   private audioReady = false
   private postgresPool: pg.Pool | null = null // Shared pool from plugin, NOT owned by session
 
@@ -85,7 +119,8 @@ export class VoiceSession {
     this.xai.connect()
 
     // DAVE E2EE transition — wait for key exchange before audio
-    this.connection.on('transitioned' as any, () => {
+    // 'transitioned' is a non-standard event not in @discordjs/voice types
+    ;(this.connection as NodeJS.EventEmitter).on('transitioned', () => {
       if (!this.audioReady) {
         console.info('DAVE transition complete — audio ready')
         this.audioReady = true
@@ -121,14 +156,15 @@ export class VoiceSession {
       end: { behavior: EndBehaviorType.Manual },
     })
 
-    const prism = require('prism-media')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const prism = require('prism-media') as PrismMedia
     const decoder = new prism.opus.Decoder({
       rate: this.config.sampleRate ?? 24000,
       channels: 1,
       frameSize: 960,
     })
 
-    this.opusStreams.set(userId, opusStream)
+    this.opusStreams.set(userId, opusStream as unknown as Readable)
     this.decoders.set(userId, decoder)
 
     opusStream.pipe(decoder)
@@ -161,9 +197,9 @@ export class VoiceSession {
     _callId: string,
     rawArgs: string,
   ): Promise<string> {
-    let args: any
+    let args: Record<string, unknown>
     try {
-      args = JSON.parse(rawArgs || '{}')
+      args = JSON.parse(rawArgs || '{}') as Record<string, unknown>
     } catch {
       args = {}
     }
@@ -177,9 +213,9 @@ export class VoiceSession {
         })
       }
       try {
-        const query = String(args.query ?? '')
+        const query = typeof args.query === 'string' ? args.query : ''
         const limit = Math.min(Number(args.limit) || 10, 20)
-        const result = await this.postgresPool.query(
+        const result = await this.postgresPool.query<MemorySearchRow>(
           `SELECT m.id, m.content, m.role, m.created_at,
                   ts_rank_cd(m.content_tsv, plainto_tsquery('english', $1)) AS score
            FROM ros_messages m
@@ -189,7 +225,7 @@ export class VoiceSession {
         )
         return JSON.stringify({
           query,
-          results: result.rows.map((r: any) => ({
+          results: result.rows.map((r) => ({
             id: r.id,
             content: r.content?.slice(0, 500),
             role: r.role,
@@ -197,9 +233,10 @@ export class VoiceSession {
             date: r.created_at,
           })),
         })
-      } catch (err: any) {
-        console.error('[Voice] search_memories error:', err.message)
-        return JSON.stringify({ error: `Search failed: ${err.message}` })
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error('[Voice] search_memories error:', message)
+        return JSON.stringify({ error: `Search failed: ${message}` })
       }
     }
 
@@ -208,8 +245,8 @@ export class VoiceSession {
         return JSON.stringify({ error: 'Memory not configured (no postgresConnectionString)' })
       }
       try {
-        const limit = args.limit ?? 20
-        const result = await this.postgresPool.query(
+        const limit = (args.limit as number | undefined) ?? 20
+        const result = await this.postgresPool.query<RecentMessageRow>(
           `SELECT m.content, m.role, m.created_at, c.agent_id
            FROM ros_messages m
            JOIN ros_conversations c ON c.id = m.conversation_id
@@ -218,16 +255,17 @@ export class VoiceSession {
           [limit],
         )
         return JSON.stringify({
-          messages: result.rows.map((r: any) => ({
+          messages: result.rows.map((r) => ({
             role: r.role,
             content: r.content.slice(0, 500),
             agent: r.agent_id,
             createdAt: r.created_at,
           })),
         })
-      } catch (err: any) {
-        console.error('[Voice] get_recent_conversations error:', err.message)
-        return JSON.stringify({ error: `Query failed: ${err.message}` })
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error('[Voice] get_recent_conversations error:', message)
+        return JSON.stringify({ error: `Query failed: ${message}` })
       }
     }
 
@@ -259,12 +297,16 @@ export class VoiceSession {
     for (const [, stream] of this.opusStreams) {
       try {
         stream.destroy()
-      } catch {}
+      } catch {
+        // cleanup — ignore errors
+      }
     }
     for (const [, decoder] of this.decoders) {
       try {
         decoder.destroy()
-      } catch {}
+      } catch {
+        // cleanup — ignore errors
+      }
     }
     this.opusStreams.clear()
     this.decoders.clear()
@@ -274,6 +316,6 @@ export class VoiceSession {
     this.xai.disconnect()
     this.audioPlayer.stop()
     this.connection.destroy()
-    this.postgresPool?.end().catch(() => {})
+    void this.postgresPool?.end()
   }
 }

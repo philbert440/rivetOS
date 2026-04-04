@@ -31,11 +31,34 @@ export interface XAICallbacks {
 }
 
 // ---------------------------------------------------------------------------
-// Tools
+// xAI event shapes (partial — only fields we access)
 // ---------------------------------------------------------------------------
 
-function buildTools(collectionId?: string): any[] {
-  const tools: any[] = [
+interface XAIEvent {
+  type: string
+  delta?: string
+  transcript?: string
+  name?: string
+  call_id?: string
+  arguments?: string
+  error?: { message?: string }
+}
+
+// ---------------------------------------------------------------------------
+// Tool definitions
+// ---------------------------------------------------------------------------
+
+interface XAITool {
+  type: string
+  name?: string
+  description?: string
+  parameters?: Record<string, unknown>
+  vector_store_ids?: string[]
+  max_num_results?: number
+}
+
+function buildTools(collectionId?: string): XAITool[] {
+  const tools: XAITool[] = [
     { type: 'web_search' },
     {
       type: 'function',
@@ -132,8 +155,9 @@ export class XAIRealtimeClient {
 
     this.ws.on('message', (data: Buffer) => {
       try {
-        this.handleEvent(JSON.parse(data.toString()))
-      } catch (err: any) {
+        const event = JSON.parse(data.toString()) as XAIEvent
+        this.handleEvent(event)
+      } catch {
         // Parse error — skip
       }
     })
@@ -204,7 +228,7 @@ export class XAIRealtimeClient {
   // Event Handler
   // -----------------------------------------------------------------------
 
-  private handleEvent(event: any): void {
+  private handleEvent(event: XAIEvent): void {
     switch (event.type) {
       // Session lifecycle
       case 'conversation.created':
@@ -242,14 +266,14 @@ export class XAIRealtimeClient {
       case 'response.audio_transcript.done':
       case 'response.output_audio_transcript.done':
         if (this.assistantTranscriptBuffer || event.transcript) {
-          this.callbacks.onAssistantTranscript(this.assistantTranscriptBuffer || event.transcript)
+          this.callbacks.onAssistantTranscript(this.assistantTranscriptBuffer || event.transcript!)
           this.assistantTranscriptBuffer = ''
         }
         break
 
       // Function calls
       case 'response.function_call_arguments.done':
-        this.handleFunctionCall(event.name, event.call_id, event.arguments)
+        void this.handleFunctionCall(event.name!, event.call_id!, event.arguments!)
         break
 
       // Response lifecycle
@@ -296,7 +320,8 @@ export class XAIRealtimeClient {
         )
         this.ws.send(JSON.stringify({ type: 'response.create' }))
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(
           JSON.stringify({
@@ -304,7 +329,7 @@ export class XAIRealtimeClient {
             item: {
               type: 'function_call_output',
               call_id: callId,
-              output: JSON.stringify({ error: err.message }),
+              output: JSON.stringify({ error: message }),
             },
           }),
         )

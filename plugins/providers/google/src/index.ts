@@ -42,7 +42,7 @@ const THINKING_BUDGETS: Record<ThinkingLevel, number | null> = {
 }
 
 // ---------------------------------------------------------------------------
-// Message conversion — Gemini uses a different format
+// Gemini API types
 // ---------------------------------------------------------------------------
 
 interface GeminiContent {
@@ -56,12 +56,55 @@ type GeminiPart =
   | { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string }
   | { functionResponse: { name: string; response: { content: string } } }
 
+interface GeminiStreamPart {
+  text?: string
+  thought?: string
+  functionCall?: { name: string; args?: Record<string, unknown> }
+  thoughtSignature?: string
+}
+
+interface GeminiCandidate {
+  content?: { parts?: GeminiStreamPart[] }
+}
+
+interface GeminiUsageMetadata {
+  promptTokenCount?: number
+  candidatesTokenCount?: number
+}
+
+interface GeminiStreamEvent {
+  candidates?: GeminiCandidate[]
+  usageMetadata?: GeminiUsageMetadata
+}
+
+interface GeminiRequestBody {
+  contents: GeminiContent[]
+  generationConfig: {
+    maxOutputTokens: number
+    thinkingConfig?: { thinkingBudget: number }
+  }
+  systemInstruction?: { parts: [{ text: string }] }
+  tools?: GeminiFunctionDeclarations[]
+}
+
+interface GeminiFunctionDeclarations {
+  functionDeclarations: Array<{
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }>
+}
+
+// ---------------------------------------------------------------------------
+// Message conversion — Gemini uses a different format
+// ---------------------------------------------------------------------------
+
 /** Extract text from string | ContentPart[] */
 function extractText(content: string | ContentPart[]): string {
   if (typeof content === 'string') return content
   return content
-    .filter((p) => p.type === 'text')
-    .map((p) => (p as any).text)
+    .filter((p): p is ContentPart & { type: 'text'; text: string } => p.type === 'text')
+    .map((p) => p.text)
     .join('')
 }
 
@@ -136,9 +179,12 @@ function convertMessages(messages: Message[]): {
       }
       if (msg.toolCalls?.length) {
         for (const tc of msg.toolCalls) {
-          const fcPart: GeminiPart = { functionCall: { name: tc.name, args: tc.arguments } }
+          const fcPart: GeminiPart & {
+            functionCall: { name: string; args: Record<string, unknown> }
+            thoughtSignature?: string
+          } = { functionCall: { name: tc.name, args: tc.arguments } }
           if (tc.thoughtSignature) {
-            ;(fcPart as any).thoughtSignature = tc.thoughtSignature
+            fcPart.thoughtSignature = tc.thoughtSignature
           }
           parts.push(fcPart)
         }
@@ -160,7 +206,7 @@ function convertMessages(messages: Message[]): {
   return { systemInstruction, contents }
 }
 
-function convertTools(tools: ToolDefinition[]): any {
+function convertTools(tools: ToolDefinition[]): GeminiFunctionDeclarations {
   return {
     functionDeclarations: tools.map((t) => ({
       name: t.name,
@@ -196,7 +242,7 @@ export class GoogleProvider implements Provider {
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     const { systemInstruction, contents } = convertMessages(messages)
 
-    const body: any = {
+    const body: GeminiRequestBody = {
       contents,
       generationConfig: {
         maxOutputTokens: this.maxTokens,
@@ -248,10 +294,10 @@ export class GoogleProvider implements Provider {
 
     try {
       while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
+        const readResult = await reader.read()
+        if (readResult.done) break
 
-        buffer += decoder.decode(value, { stream: true })
+        buffer += decoder.decode(readResult.value as Uint8Array, { stream: true })
         const lines = buffer.split('\n')
         buffer = lines.pop() ?? ''
 
@@ -260,9 +306,9 @@ export class GoogleProvider implements Provider {
           const data = line.slice(6).trim()
           if (!data || data === '[DONE]') continue
 
-          let event: any
+          let event: GeminiStreamEvent
           try {
-            event = JSON.parse(data)
+            event = JSON.parse(data) as GeminiStreamEvent
           } catch {
             continue
           }
@@ -354,18 +400,20 @@ export class GoogleProvider implements Provider {
           currentToolArgs += chunk.delta ?? ''
           break
         case 'tool_call_done':
-          let args: Record<string, unknown> = {}
-          try {
-            args = JSON.parse(currentToolArgs)
-          } catch {
-            args = { raw: currentToolArgs }
+          {
+            let args: Record<string, unknown> = {}
+            try {
+              args = JSON.parse(currentToolArgs) as Record<string, unknown>
+            } catch {
+              args = { raw: currentToolArgs }
+            }
+            toolCalls.push({
+              id: currentToolId,
+              name: currentToolName,
+              arguments: args,
+              thoughtSignature: currentThoughtSignature,
+            })
           }
-          toolCalls.push({
-            id: currentToolId,
-            name: currentToolName,
-            arguments: args,
-            thoughtSignature: currentThoughtSignature,
-          })
           break
         case 'done':
           if (chunk.usage) usage = chunk.usage

@@ -97,67 +97,13 @@ export class DiscordChannel implements Channel {
   // -----------------------------------------------------------------------
 
   private setupHandlers(): void {
-    this.client.on('messageCreate', async (msg) => {
-      if (msg.author.bot) return
-      if (!this.isAllowed(msg)) return
-
-      const inbound = this.buildInbound(msg)
-
-      // Slash-like commands
-      if (inbound.text.startsWith('/')) {
-        const [cmd, ...rest] = inbound.text.slice(1).split(/\s+/)
-        const commands = new Set([
-          'new',
-          'stop',
-          'interrupt',
-          'steer',
-          'status',
-          'model',
-          'think',
-          'reasoning',
-          'tools',
-          'start',
-        ])
-        if (commands.has(cmd) && this.commandHandler) {
-          await this.commandHandler(cmd, rest.join(' '), inbound)
-          return
-        }
-      }
-
-      if (this.messageHandler) {
-        this.startTyping(msg.channelId)
-        try {
-          await this.messageHandler(inbound)
-        } finally {
-          this.stopTyping(msg.channelId)
-        }
-      }
+    this.client.on('messageCreate', (msg) => {
+      void this.handleMessage(msg)
     })
 
     // Button interactions
-    this.client.on('interactionCreate', async (interaction: Interaction) => {
-      if (!interaction.isButton()) return
-
-      const inbound: InboundMessage = {
-        id: interaction.message.id,
-        userId: interaction.user.id,
-        username: interaction.user.username,
-        displayName: interaction.user.displayName,
-        channelId: interaction.channelId,
-        chatType: interaction.guildId ? 'guild' : 'dm',
-        text: '',
-        platform: 'discord',
-        agent: this.getAgentForChannel(interaction.channelId),
-        timestamp: Math.floor(interaction.createdTimestamp / 1000),
-      }
-
-      // Route callback data as command
-      if (this.commandHandler && interaction.customId.startsWith('/')) {
-        const [cmd, ...rest] = interaction.customId.slice(1).split(/\s+/)
-        await this.commandHandler(cmd, rest.join(' '), inbound)
-      }
-
-      await interaction.deferUpdate()
+    this.client.on('interactionCreate', (interaction: Interaction) => {
+      void this.handleInteraction(interaction)
     })
 
     this.client.once('ready', () => {

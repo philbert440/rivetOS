@@ -3,8 +3,22 @@
  * Manages bot lifecycle: slash commands, auto-join/leave, voice session creation.
  */
 
-import { Client, GatewayIntentBits, SlashCommandBuilder, type VoiceState } from 'discord.js'
-import { joinVoiceChannel, VoiceConnectionStatus, entersState } from '@discordjs/voice'
+import {
+  Client,
+  GatewayIntentBits,
+  SlashCommandBuilder,
+  type ChatInputCommandInteraction,
+  type VoiceBasedChannel,
+  type VoiceState,
+  type GuildMember,
+} from 'discord.js'
+import {
+  joinVoiceChannel,
+  VoiceConnectionStatus,
+  entersState,
+  type DiscordGatewayAdapterCreator,
+} from '@discordjs/voice'
+import type { VoiceConnectionState } from '@discordjs/voice'
 import { VoiceSession } from './voice-session.js'
 
 // ---------------------------------------------------------------------------
@@ -58,19 +72,19 @@ export class VoicePlugin {
   }
 
   private setupHandlers(): void {
-    this.client.once('ready', async () => {
+    this.client.once('ready', () => {
       console.log(`[Voice] Bot ready: ${this.client.user?.tag}`)
-      await this.registerCommands()
-      await this.startupScan()
+      void this.registerCommands()
+      void this.startupScan()
     })
 
     this.client.on('voiceStateUpdate', (oldState, newState) => {
-      this.handleVoiceStateUpdate(oldState, newState)
+      void this.handleVoiceStateUpdate(oldState, newState)
     })
 
-    this.client.on('interactionCreate', async (interaction) => {
+    this.client.on('interactionCreate', (interaction) => {
       if (!interaction.isChatInputCommand() || interaction.commandName !== 'voice') return
-      await this.handleSlashCommand(interaction)
+      void this.handleSlashCommand(interaction)
     })
   }
 
@@ -103,42 +117,56 @@ export class VoicePlugin {
     if (guild) await guild.commands.set(commands)
   }
 
-  private async handleSlashCommand(interaction: any): Promise<void> {
+  private async handleSlashCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     const subcommand = interaction.options.getSubcommand()
 
     switch (subcommand) {
       case 'join': {
-        const member = interaction.member
-        const channel = member.voice?.channel
-        if (!channel)
-          return interaction.reply({
+        const member = interaction.member as GuildMember | null
+        const channel = member?.voice?.channel
+        if (!channel) {
+          await interaction.reply({
             content: 'You need to be in a voice channel.',
             ephemeral: true,
           })
-        if (this.session)
-          return interaction.reply({ content: 'Already connected.', ephemeral: true })
+          return
+        }
+        if (this.session) {
+          await interaction.reply({ content: 'Already connected.', ephemeral: true })
+          return
+        }
         try {
           await this.joinChannel(channel.id, channel.guild.id, channel.guild.voiceAdapterCreator)
           await interaction.reply('Joined.')
-        } catch (err: any) {
-          console.error('[Voice] Join failed:', err.message)
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err)
+          console.error('[Voice] Join failed:', message)
           await interaction.reply({ content: 'Failed to join.', ephemeral: true })
         }
         break
       }
       case 'leave': {
-        if (!this.session) return interaction.reply({ content: 'Not connected.', ephemeral: true })
+        if (!this.session) {
+          await interaction.reply({ content: 'Not connected.', ephemeral: true })
+          return
+        }
         this.destroySession()
         await interaction.reply('Left.')
         break
       }
       case 'status': {
-        if (!this.session) return interaction.reply({ content: 'Not connected.', ephemeral: true })
+        if (!this.session) {
+          await interaction.reply({ content: 'Not connected.', ephemeral: true })
+          return
+        }
         await interaction.reply(this.session.getStatus())
         break
       }
       case 'voice': {
-        if (!this.session) return interaction.reply({ content: 'Not connected.', ephemeral: true })
+        if (!this.session) {
+          await interaction.reply({ content: 'Not connected.', ephemeral: true })
+          return
+        }
         const name = interaction.options.getString('name')!
         this.session.setVoice(name)
         await interaction.reply(`Voice changed to ${name}.`)
@@ -168,8 +196,9 @@ export class VoicePlugin {
       try {
         console.log(`[Voice] Auto-joining ${channel.name} (${newState.member?.user.tag})`)
         await this.joinChannel(channel.id, channel.guild.id, channel.guild.voiceAdapterCreator)
-      } catch (err: any) {
-        console.error('[Voice] Auto-join failed:', err.message)
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error('[Voice] Auto-join failed:', message)
       }
     }
 
@@ -177,7 +206,7 @@ export class VoicePlugin {
       const channel = oldState.channel
       if (!channel) return
       const allowedStillIn = channel.members.some(
-        (m) => this.config.allowedUsers.includes(m.id) && !m.user.bot,
+        (m: GuildMember) => this.config.allowedUsers.includes(m.id) && !m.user.bot,
       )
       if (allowedStillIn) return
 
@@ -186,8 +215,9 @@ export class VoicePlugin {
       this.leaveTimeout = setTimeout(() => {
         const ch = oldState.guild.channels.cache.get(oldState.channelId!)
         if (ch && 'members' in ch) {
-          const stillIn = (ch as any).members.some(
-            (m: any) => this.config.allowedUsers.includes(m.id) && !m.user.bot,
+          const members = (ch as VoiceBasedChannel).members
+          const stillIn = members.some(
+            (m: GuildMember) => this.config.allowedUsers.includes(m.id) && !m.user.bot,
           )
           if (stillIn) return
         }
@@ -220,8 +250,9 @@ export class VoicePlugin {
           break
         }
       }
-    } catch (err: any) {
-      console.error('[Voice] Startup scan failed:', err.message)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[Voice] Startup scan failed:', message)
     }
   }
 
@@ -232,7 +263,7 @@ export class VoicePlugin {
   private async joinChannel(
     channelId: string,
     guildId: string,
-    adapterCreator: any,
+    adapterCreator: DiscordGatewayAdapterCreator,
   ): Promise<void> {
     const connection = joinVoiceChannel({
       channelId,
@@ -243,8 +274,8 @@ export class VoicePlugin {
       decryptionFailureTolerance: 100,
     })
 
-    connection.on('stateChange', (_old: any, _new: any) => {
-      console.log(`[Voice] VC: ${_old.status} → ${_new.status}`)
+    connection.on('stateChange', (oldS: VoiceConnectionState, newS: VoiceConnectionState) => {
+      console.log(`[Voice] VC: ${oldS.status} → ${newS.status}`)
     })
 
     await entersState(connection, VoiceConnectionStatus.Ready, 30_000)
@@ -266,10 +297,10 @@ export class VoicePlugin {
     await this.client.login(this.config.discordToken)
   }
 
-  async stop(): Promise<void> {
+  stop(): void {
     console.log('[Voice] Stopping...')
     this.destroySession()
     if (this.leaveTimeout) clearTimeout(this.leaveTimeout)
-    this.client.destroy()
+    void this.client.destroy()
   }
 }

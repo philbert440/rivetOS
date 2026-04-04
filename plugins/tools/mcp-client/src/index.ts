@@ -29,6 +29,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { Tool, ToolResult } from '@rivetos/types'
 import type { ContentPart } from '@rivetos/types'
 
@@ -62,6 +63,38 @@ export interface MCPClientConfig {
 }
 
 // ---------------------------------------------------------------------------
+// MCP result content types (from MCP SDK)
+// ---------------------------------------------------------------------------
+
+interface MCPTextContent {
+  type: 'text'
+  text: string
+}
+
+interface MCPImageContent {
+  type: 'image'
+  data: string
+  mimeType: string
+}
+
+interface MCPResourceContent {
+  type: 'resource'
+  resource: {
+    uri: string
+    text?: string
+    blob?: string
+    mimeType?: string
+  }
+}
+
+type MCPContentBlock = MCPTextContent | MCPImageContent | MCPResourceContent | { type: string }
+
+interface MCPCallToolResult {
+  content?: MCPContentBlock[]
+  isError?: boolean
+}
+
+// ---------------------------------------------------------------------------
 // MCP Connection — wraps a single MCP server connection
 // ---------------------------------------------------------------------------
 
@@ -69,7 +102,7 @@ interface MCPConnection {
   id: string
   config: MCPServerConfig
   client: Client
-  transport: StdioClientTransport | /* StreamableHTTPClientTransport | SSEClientTransport */ any
+  transport: Transport
   connected: boolean
   tools: MCPDiscoveredTool[]
 }
@@ -115,8 +148,9 @@ export class MCPClientPlugin {
         console.log(
           `[MCP] Connected to "${serverId}" — ${conn.tools.length} tool(s): ${conn.tools.map((t) => t.rivetName).join(', ')}`,
         )
-      } catch (err: any) {
-        console.error(`[MCP] Failed to connect to "${serverId}": ${err.message}`)
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(`[MCP] Failed to connect to "${serverId}": ${message}`)
       }
     }
 
@@ -132,8 +166,9 @@ export class MCPClientPlugin {
         await conn.transport.close()
         conn.connected = false
         console.log(`[MCP] Disconnected from "${id}"`)
-      } catch (err: any) {
-        console.error(`[MCP] Error disconnecting "${id}": ${err.message}`)
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(`[MCP] Error disconnecting "${id}": ${message}`)
       }
     }
     this.connections.clear()
@@ -157,7 +192,7 @@ export class MCPClientPlugin {
   private async connectServer(id: string, config: MCPServerConfig): Promise<MCPConnection> {
     const client = new Client({ name: 'rivet-os', version: '0.2.0' }, { capabilities: {} })
 
-    let transport: any
+    let transport: Transport
 
     switch (config.transport) {
       case 'stdio': {
@@ -187,12 +222,14 @@ export class MCPClientPlugin {
         if (!config.url) {
           throw new Error(`MCP server "${id}": sse transport requires "url"`)
         }
+        // SSEClientTransport is deprecated but some servers still require it
+        // eslint-disable-next-line @typescript-eslint/no-deprecated -- SSE still needed for legacy servers
         const { SSEClientTransport } = await import('@modelcontextprotocol/sdk/client/sse.js')
-        transport = new SSEClientTransport(new URL(config.url))
+        transport = new SSEClientTransport(new URL(config.url)) as unknown as Transport
         break
       }
       default:
-        throw new Error(`MCP server "${id}": unknown transport "${config.transport}"`)
+        throw new Error(`MCP server "${id}": unknown transport "${config.transport as string}"`)
     }
 
     // Connect with timeout
@@ -226,7 +263,9 @@ export class MCPClientPlugin {
       // Auto-reconnect
       if (config.autoReconnect !== false) {
         console.log(`[MCP] Scheduling reconnect for "${id}" in 5s...`)
-        setTimeout(() => this.reconnect(id), 5_000)
+        setTimeout(() => {
+          void this.reconnect(id)
+        }, 5_000)
       }
     }
 
@@ -250,10 +289,13 @@ export class MCPClientPlugin {
       const conn = await this.connectServer(id, existing.config)
       this.connections.set(id, conn)
       console.log(`[MCP] Reconnected to "${id}" — ${conn.tools.length} tool(s)`)
-    } catch (err: any) {
-      console.error(`[MCP] Reconnect to "${id}" failed: ${err.message}`)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[MCP] Reconnect to "${id}" failed: ${message}`)
       // Retry again in 30s
-      setTimeout(() => this.reconnect(id), 30_000)
+      setTimeout(() => {
+        void this.reconnect(id)
+      }, 30_000)
     }
   }
 
@@ -267,21 +309,25 @@ export class MCPClientPlugin {
       description: mcpTool.description,
       parameters: mcpTool.inputSchema,
 
-      execute: async (args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> => {
+      execute: async (
+        args: Record<string, unknown>,
+        _signal?: AbortSignal,
+      ): Promise<ToolResult> => {
         if (!conn.connected) {
           return `Error: MCP server "${conn.id}" is disconnected`
         }
 
         try {
-          const result = await conn.client.callTool({
+          const result = (await conn.client.callTool({
             name: mcpTool.mcpName,
             arguments: args,
-          })
+          })) as MCPCallToolResult
 
           // Convert MCP result content to RivetOS ToolResult
           return this.convertResult(result)
-        } catch (err: any) {
-          return `Error calling MCP tool "${mcpTool.mcpName}" on "${conn.id}": ${err.message}`
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err)
+          return `Error calling MCP tool "${mcpTool.mcpName}" on "${conn.id}": ${message}`
         }
       },
     }))
@@ -291,20 +337,20 @@ export class MCPClientPlugin {
   // Internal: Convert MCP tool result to RivetOS ToolResult
   // -----------------------------------------------------------------------
 
-  private convertResult(result: any): ToolResult {
+  private convertResult(result: MCPCallToolResult): ToolResult {
     const content = result.content
     if (!Array.isArray(content) || content.length === 0) {
       return result.isError ? `Error: ${JSON.stringify(result)}` : 'No output'
     }
 
     // Check if there are any non-text content blocks
-    const hasMultimodal = content.some((c: any) => c.type !== 'text')
+    const hasMultimodal = content.some((c) => c.type !== 'text')
 
     if (!hasMultimodal) {
       // All text — join into a single string
       const text = content
-        .filter((c: any) => c.type === 'text')
-        .map((c: any) => c.text)
+        .filter((c): c is MCPTextContent => c.type === 'text')
+        .map((c) => c.text)
         .join('\n')
 
       return result.isError ? `Error: ${text}` : text
@@ -316,32 +362,34 @@ export class MCPClientPlugin {
     for (const block of content) {
       switch (block.type) {
         case 'text':
-          parts.push({ type: 'text', text: block.text })
+          parts.push({ type: 'text', text: (block as MCPTextContent).text })
           break
         case 'image':
           parts.push({
             type: 'image',
-            data: block.data,
-            mimeType: block.mimeType ?? 'image/png',
+            data: (block as MCPImageContent).data,
+            mimeType: (block as MCPImageContent).mimeType ?? 'image/png',
           })
           break
-        case 'resource':
+        case 'resource': {
           // Resource content — extract text or blob
-          if (block.resource?.text) {
-            parts.push({ type: 'text', text: block.resource.text })
-          } else if (block.resource?.blob) {
-            const mime = block.resource?.mimeType ?? 'application/octet-stream'
+          const resource = (block as MCPResourceContent).resource
+          if (resource.text) {
+            parts.push({ type: 'text', text: resource.text })
+          } else if (resource.blob) {
+            const mime = resource.mimeType ?? 'application/octet-stream'
             if (mime.startsWith('image/')) {
               parts.push({
                 type: 'image',
-                data: block.resource.blob,
+                data: resource.blob,
                 mimeType: mime,
               })
             } else {
-              parts.push({ type: 'text', text: `[binary resource: ${block.resource.uri}]` })
+              parts.push({ type: 'text', text: `[binary resource: ${resource.uri}]` })
             }
           }
           break
+        }
         default:
           parts.push({ type: 'text', text: `[unsupported MCP content type: ${block.type}]` })
       }
