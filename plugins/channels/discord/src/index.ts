@@ -113,7 +113,12 @@ export class DiscordChannel implements Channel {
       }
 
       if (this.messageHandler) {
-        await this.messageHandler(inbound);
+        this.startTyping(msg.channelId);
+        try {
+          await this.messageHandler(inbound);
+        } finally {
+          this.stopTyping(msg.channelId);
+        }
       }
     });
 
@@ -350,7 +355,7 @@ export class DiscordChannel implements Channel {
    * Start sending typing indicator every 8 seconds.
    * Discord's typing indicator expires after ~10 seconds, so 8s keeps it alive.
    */
-  startTyping(channelId: string): void {
+  private startTyping(channelId: string): void {
     this.stopTyping(channelId);
 
     this.sendTypingAction(channelId);
@@ -358,7 +363,7 @@ export class DiscordChannel implements Channel {
     this.typingIntervals.set(channelId, interval);
   }
 
-  stopTyping(channelId: string): void {
+  private stopTyping(channelId: string): void {
     const interval = this.typingIntervals.get(channelId);
     if (interval) {
       clearInterval(interval);
