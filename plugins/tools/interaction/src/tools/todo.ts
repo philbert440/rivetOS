@@ -65,7 +65,7 @@ export function createTodoTool(): Tool {
 
       switch (operation) {
         case 'add': {
-          const text = (args.task as string | undefined) ?? ''.trim()
+          const text = ((args.task as string | undefined) ?? '').trim()
           if (!text) return 'Error: task text is required for add'
 
           const id = nextId++
@@ -81,7 +81,7 @@ export function createTodoTool(): Tool {
           if (!task) return `Error: task #${id} not found`
 
           if (args.new_text !== undefined) {
-            const newText = (args.new_text as string | undefined).trim()
+            const newText = ((args.new_text as string | undefined) ?? '').trim()
             if (newText) task.text = newText
           }
           if ((args.status as string | undefined) !== undefined) {
