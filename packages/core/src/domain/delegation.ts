@@ -226,6 +226,7 @@ export class DelegationEngine {
       }
 
       if (turnResult.aborted) {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- timedOut is mutated asynchronously in setTimeout callback
         if (timedOut) {
           // Timeout — return partial result if available
           const result: DelegationResult = {
@@ -320,7 +321,7 @@ export class DelegationEngine {
             toAgent: args.to_agent as string,
             task: args.task as string,
             context: args.context as string[] | undefined,
-            timeoutMs: (args.timeout_ms as number) ?? 120000,
+            timeoutMs: (args.timeout_ms as number | undefined) ?? 120000,
           },
           chainDepth,
         )

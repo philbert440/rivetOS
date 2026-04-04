@@ -92,7 +92,7 @@ export class StreamManager {
           s.text = ''
           s.thinkingPlaceholder = false
         }
-        s.text += event.content ?? ''
+        s.text += event.content
         this.throttledEdit(channel, message, s)
         break
 
@@ -107,7 +107,7 @@ export class StreamManager {
           }
           return
         }
-        s.reasoning += event.content ?? ''
+        s.reasoning += event.content
         this.throttledEdit(channel, message, s)
         break
 

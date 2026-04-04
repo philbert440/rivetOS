@@ -295,10 +295,9 @@ export function createCustomRulesHook(rules: SafetyRule[]): HookRegistration<Too
             ctx.blockReason = rule.description
             return 'abort'
           }
-          if (rule.action === 'warn') {
-            ctx.metadata.warnings = ctx.metadata.warnings ?? []
-            ;(ctx.metadata.warnings as string[]).push(`⚠️ ${rule.description}`)
-          }
+          // Only remaining action after 'block' (which returns above) is 'warn'
+          ctx.metadata.warnings = ctx.metadata.warnings ?? []
+          ;(ctx.metadata.warnings as string[]).push(`⚠️ ${rule.description}`)
         }
       }
     },

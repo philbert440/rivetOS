@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /**
  * Agent Loop — the core execution cycle.
  *
@@ -158,7 +158,8 @@ export class AgentLoop {
         const beforeCtx: ProviderBeforeContext = {
           event: 'provider:before',
           providerId: activeProvider.id,
-          model: (activeProvider as any).model ?? 'unknown',
+          model:
+            ((activeProvider as Record<string, unknown>).model as string | undefined) ?? 'unknown',
           messages: messages as unknown[],
           tools: toolDefs as unknown[],
           agentId: this.config.agentId,
@@ -278,7 +279,7 @@ export class AgentLoop {
               break
           }
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (signal?.aborted) {
           return {
             response: '',
@@ -292,12 +293,18 @@ export class AgentLoop {
 
         // --- Hook: provider:error (fallback chain) ---
         if (this.config.hooks) {
+          const errObj = err as Record<string, unknown>
+          const errMsg = typeof errObj.message === 'string' ? errObj.message : ''
           const statusCode =
-            err.status ?? err.statusCode ?? (err.message?.includes('429') ? 429 : undefined)
+            (errObj.status as number | undefined) ??
+            (errObj.statusCode as number | undefined) ??
+            (errMsg.includes('429') ? 429 : undefined)
           const errorCtx: ProviderErrorContext = {
             event: 'provider:error',
             providerId: activeProvider.id,
-            model: (activeProvider as any).model ?? 'unknown',
+            model:
+              ((activeProvider as Record<string, unknown>).model as string | undefined) ??
+              'unknown',
             error: err instanceof Error ? err : new Error(String(err)),
             statusCode,
             agentId: this.config.agentId,
@@ -329,7 +336,8 @@ export class AgentLoop {
         const afterCtx: ProviderAfterContext = {
           event: 'provider:after',
           providerId: activeProvider.id,
-          model: (activeProvider as any).model ?? 'unknown',
+          model:
+            ((activeProvider as Record<string, unknown>).model as string | undefined) ?? 'unknown',
           usage: { ...totalUsage },
           latencyMs: Date.now() - streamStartTime,
           hasToolCalls,
@@ -417,8 +425,8 @@ export class AgentLoop {
         } else {
           try {
             rawResult = await tool.execute(tc.arguments, signal, { agentId: this.config.agentId })
-          } catch (err: any) {
-            rawResult = `Error: ${err.message}`
+          } catch (err: unknown) {
+            rawResult = `Error: ${err instanceof Error ? err.message : String(err)}`
           }
         }
 

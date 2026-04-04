@@ -22,7 +22,7 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 3,
 }
 
-let currentLevel: LogLevel = (process.env.RIVETOS_LOG_LEVEL as LogLevel) ?? 'info'
+let currentLevel: LogLevel = (process.env.RIVETOS_LOG_LEVEL as LogLevel | undefined) ?? 'info'
 
 if (!Object.hasOwn(LEVEL_PRIORITY, currentLevel)) {
   currentLevel = 'info'

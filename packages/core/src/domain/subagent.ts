@@ -437,8 +437,9 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
     // eslint-disable-next-line @typescript-eslint/require-await
     execute: async (args) => {
       try {
-        manager.kill(args.session_id as string)
-        return `Sub-agent session ${args.session_id} killed.`
+        const sessionId = args.session_id as string
+        manager.kill(sessionId)
+        return `Sub-agent session ${sessionId} killed.`
       } catch (err: unknown) {
         return `Error: ${(err as Error).message}`
       }

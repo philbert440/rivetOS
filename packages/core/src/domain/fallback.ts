@@ -56,7 +56,7 @@ function isTimeoutError(error: Error): boolean {
 
 function isAuthError(statusCode?: number, error?: Error): boolean {
   if (statusCode === 401 || statusCode === 403) return true
-  const msg = error?.message?.toLowerCase() ?? ''
+  const msg = error?.message.toLowerCase() ?? ''
   return (
     msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('invalid api key')
   )

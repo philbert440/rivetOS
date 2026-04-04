@@ -114,9 +114,9 @@ export class SessionManager {
       try {
         const settings = await this.memory.loadSessionSettings(sessionKey)
         if (settings) {
-          thinking = (settings.thinking as ThinkingLevel) ?? thinking
-          reasoningVisible = (settings.reasoningVisible as boolean) ?? reasoningVisible
-          toolsVisible = (settings.toolsVisible as boolean) ?? toolsVisible
+          thinking = (settings.thinking as ThinkingLevel | undefined) ?? thinking
+          reasoningVisible = (settings.reasoningVisible as boolean | undefined) ?? reasoningVisible
+          toolsVisible = (settings.toolsVisible as boolean | undefined) ?? toolsVisible
         }
       } catch {
         /* expected */

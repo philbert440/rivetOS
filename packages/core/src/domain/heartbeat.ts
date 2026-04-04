@@ -38,6 +38,7 @@ function parseSchedule(schedule: string | number): number {
   }
 
   const value = parseInt(match[1])
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- match[2] is undefined for unmatched optional regex group
   const unit = (match[2] ?? 'm').toLowerCase()
 
   switch (unit) {

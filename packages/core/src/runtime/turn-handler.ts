@@ -150,7 +150,7 @@ export class TurnHandler {
       log.debug('Running agent loop...')
       const result = await loop.run(userContent, session.history, abort.signal)
       log.debug(
-        `Loop result: aborted=${result.aborted}, response=${result.response?.slice(0, 100)}`,
+        `Loop result: aborted=${String(result.aborted)}, response=${result.response.slice(0, 100)}`,
       )
 
       // --- Hook: turn:after ---
@@ -235,7 +235,12 @@ export class TurnHandler {
     agent: AgentConfig,
     sessionKey: string,
     historyContent: string,
-    result: { response: string; toolsUsed: string[]; iterations: number; usage?: any },
+    result: {
+      response: string
+      toolsUsed: string[]
+      iterations: number
+      usage?: { promptTokens: number; completionTokens: number }
+    },
     message: InboundMessage,
     savedImagePaths: string[],
   ): Promise<void> {
