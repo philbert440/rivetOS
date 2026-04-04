@@ -12,22 +12,22 @@
  */
 
 /** Decay rate: how fast memories fade without reinforcement */
-const DECAY_LAMBDA = 0.05;
+const DECAY_LAMBDA = 0.05
 
 /** Reinforcement coefficient: how much each access slows decay */
-const REINFORCEMENT_ALPHA = 0.02;
+const REINFORCEMENT_ALPHA = 0.02
 
 /** Weight for full-text search rank */
-export const W_FTS = 0.3;
+export const W_FTS = 0.3
 
 /** Weight for semantic (embedding) similarity */
-export const W_SEMANTIC = 0.3;
+export const W_SEMANTIC = 0.3
 
 /** Weight for temporal decay score */
-export const W_TEMPORAL = 0.3;
+export const W_TEMPORAL = 0.3
 
 /** Weight for content importance */
-export const W_IMPORTANCE = 0.1;
+export const W_IMPORTANCE = 0.1
 
 // ---------------------------------------------------------------------------
 // Temporal Decay
@@ -43,7 +43,7 @@ export const W_IMPORTANCE = 0.1;
  * @returns score in range [0, ~1.5] (can exceed 1.0 for heavily reinforced items)
  */
 export function temporalDecay(daysSinceAccess: number, accessCount: number): number {
-  return Math.exp(-DECAY_LAMBDA * daysSinceAccess) * (1.0 + REINFORCEMENT_ALPHA * accessCount);
+  return Math.exp(-DECAY_LAMBDA * daysSinceAccess) * (1.0 + REINFORCEMENT_ALPHA * accessCount)
 }
 
 // ---------------------------------------------------------------------------
@@ -58,14 +58,14 @@ export function temporalDecay(daysSinceAccess: number, accessCount: number): num
  * Regular conversation is baseline.
  */
 export function importanceForRole(role: string, hasToolCall: boolean): number {
-  if (role === 'system') return 0.9;
-  if (hasToolCall) return 0.7;
-  if (role === 'user') return 0.6;
-  return 0.5; // assistant without tools
+  if (role === 'system') return 0.9
+  if (hasToolCall) return 0.7
+  if (role === 'user') return 0.6
+  return 0.5 // assistant without tools
 }
 
 /** Importance for summaries (always mid-range) */
-export const SUMMARY_IMPORTANCE = 0.6;
+export const SUMMARY_IMPORTANCE = 0.6
 
 // ---------------------------------------------------------------------------
 // Composite Relevance
@@ -93,7 +93,7 @@ export function computeRelevance(
     semanticSim * W_SEMANTIC +
     temporalScore * W_TEMPORAL +
     importance * W_IMPORTANCE
-  );
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ export function computeRelevance(
  * Expects columns: last_accessed_at, created_at, access_count
  */
 export function temporalDecaySql(alias: string): string {
-  return `EXP(-${DECAY_LAMBDA} * EXTRACT(EPOCH FROM (NOW() - COALESCE(${alias}.last_accessed_at, ${alias}.created_at))) / 86400.0) * (1.0 + ${REINFORCEMENT_ALPHA} * COALESCE(${alias}.access_count, 0))`;
+  return `EXP(-${DECAY_LAMBDA} * EXTRACT(EPOCH FROM (NOW() - COALESCE(${alias}.last_accessed_at, ${alias}.created_at))) / 86400.0) * (1.0 + ${REINFORCEMENT_ALPHA} * COALESCE(${alias}.access_count, 0))`
 }
 
 /**
@@ -116,5 +116,5 @@ export function temporalDecaySql(alias: string): string {
  * Expects columns: role, tool_name
  */
 export function importanceSql(alias: string): string {
-  return `CASE WHEN ${alias}.role = 'system' THEN 0.9 WHEN ${alias}.tool_name IS NOT NULL THEN 0.7 WHEN ${alias}.role = 'user' THEN 0.6 ELSE 0.5 END`;
+  return `CASE WHEN ${alias}.role = 'system' THEN 0.9 WHEN ${alias}.tool_name IS NOT NULL THEN 0.7 WHEN ${alias}.role = 'user' THEN 0.6 ELSE 0.5 END`
 }

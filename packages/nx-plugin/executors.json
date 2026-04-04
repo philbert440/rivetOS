@@ -1,0 +1,9 @@
+{
+  "executors": {
+    "serve": {
+      "implementation": "./src/executors/serve/executor",
+      "schema": "./src/executors/serve/schema.json",
+      "description": "Run a RivetOS agent with a specific channel for development"
+    }
+  }
+}

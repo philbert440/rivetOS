@@ -25,82 +25,137 @@ import type {
   LLMChunk,
   LLMResponse,
   ThinkingLevel,
-} from '@rivetos/types';
+} from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 export interface OllamaProviderConfig {
-  baseUrl?: string;         // Default: 'http://localhost:11434'
-  model?: string;           // Default: 'llama3.1'
-  numCtx?: number;          // Context window size (0 = model default)
-  temperature?: number;     // Default: 0.7
-  topP?: number;            // Default: 0.9
-  keepAlive?: string;       // Default: '30m'
+  baseUrl?: string // Default: 'http://localhost:11434'
+  model?: string // Default: 'llama3.1'
+  numCtx?: number // Context window size (0 = model default)
+  temperature?: number // Default: 0.7
+  topP?: number // Default: 0.9
+  keepAlive?: string // Default: '30m'
+}
+
+// ---------------------------------------------------------------------------
+// API types
+// ---------------------------------------------------------------------------
+
+interface OllamaMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string
+  /** Ollama uses a separate images array for base64 image data */
+  images?: string[]
+  tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>
+}
+
+interface OllamaFunctionTool {
+  type: 'function'
+  function: { name: string; description: string; parameters: Record<string, unknown> }
+}
+
+interface OllamaRequestBody {
+  model: string
+  messages: OllamaMessage[]
+  stream: boolean
+  keep_alive: string
+  options: {
+    temperature: number
+    top_p: number
+    num_ctx?: number
+  }
+  tools?: OllamaFunctionTool[]
+}
+
+interface OllamaStreamEvent {
+  message?: {
+    content?: string
+    tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>
+  }
+  done?: boolean
+  prompt_eval_count?: number
+  eval_count?: number
+}
+
+interface OllamaModelInfo {
+  name: string
+  size: number
+  modified_at: string
+}
+
+interface OllamaModelListResponse {
+  models?: OllamaModelInfo[]
 }
 
 // ---------------------------------------------------------------------------
 // Message conversion
 // ---------------------------------------------------------------------------
 
-interface OllamaMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
-  /** Ollama uses a separate images array for base64 image data */
-  images?: string[];
-  tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
-}
-
 /** Extract text from string | ContentPart[] */
 function extractText(content: string | ContentPart[]): string {
-  if (typeof content === 'string') return content;
-  return content.filter((p) => p.type === 'text').map((p) => (p as any).text).join('');
+  if (typeof content === 'string') return content
+  return content
+    .filter((p): p is ContentPart & { type: 'text' } => p.type === 'text')
+    .map((p) => p.text)
+    .join('')
 }
 
 /** Extract base64 image data from ContentPart[] */
 function extractImages(content: string | ContentPart[]): string[] {
-  if (typeof content === 'string') return [];
+  if (typeof content === 'string') return []
   return content
-    .filter((p) => p.type === 'image' && (p as any).data)
-    .map((p) => (p as any).data);
+    .filter(
+      (p): p is ContentPart & { type: 'image'; data: string } => p.type === 'image' && !!p.data,
+    )
+    .map((p) => p.data)
 }
 
 function convertMessages(messages: Message[], thinking?: ThinkingLevel): OllamaMessage[] {
   return messages.map((msg, i) => {
-    const textContent = extractText(msg.content);
-    const ollama: OllamaMessage = { role: msg.role, content: textContent };
+    const textContent = extractText(msg.content)
+    const ollama: OllamaMessage = { role: msg.role, content: textContent }
 
     // Add images if present
-    const images = extractImages(msg.content);
+    const images = extractImages(msg.content)
     if (images.length > 0) {
-      ollama.images = images;
+      ollama.images = images
     }
 
     // For Qwen models: prepend /think or /no_think to the first user message
     if (msg.role === 'user' && i === messages.findIndex((m) => m.role === 'user')) {
       if (thinking === 'off') {
-        ollama.content = `/no_think\n${ollama.content}`;
+        ollama.content = `/no_think\n${ollama.content}`
       } else if (thinking) {
-        ollama.content = `/think\n${ollama.content}`;
+        ollama.content = `/think\n${ollama.content}`
       }
     }
 
     if (msg.role === 'assistant' && msg.toolCalls?.length) {
       ollama.tool_calls = msg.toolCalls.map((tc) => ({
         function: { name: tc.name, arguments: tc.arguments },
-      }));
+      }))
     }
 
-    return ollama;
-  });
+    return ollama
+  })
 }
 
-function convertTools(tools: ToolDefinition[]): any[] {
+function convertTools(tools: ToolDefinition[]): OllamaFunctionTool[] {
   return tools.map((t) => ({
-    type: 'function',
+    type: 'function' as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
-  }));
+  }))
+}
+
+// ---------------------------------------------------------------------------
+// Type guard
+// ---------------------------------------------------------------------------
+
+function isOllamaEvent(value: unknown): value is OllamaStreamEvent {
+  return typeof value === 'object' && value !== null
 }
 
 // ---------------------------------------------------------------------------
@@ -108,22 +163,22 @@ function convertTools(tools: ToolDefinition[]): any[] {
 // ---------------------------------------------------------------------------
 
 export class OllamaProvider implements Provider {
-  id = 'ollama';
-  name = 'Ollama';
-  private baseUrl: string;
-  private model: string;
-  private numCtx: number;
-  private temperature: number;
-  private topP: number;
-  private keepAlive: string;
+  id = 'ollama'
+  name = 'Ollama'
+  private baseUrl: string
+  private model: string
+  private numCtx: number
+  private temperature: number
+  private topP: number
+  private keepAlive: string
 
   constructor(config: OllamaProviderConfig = {}) {
-    this.baseUrl = config.baseUrl ?? 'http://localhost:11434';
-    this.model = config.model ?? 'llama3.1';
-    this.numCtx = config.numCtx ?? 0;
-    this.temperature = config.temperature ?? 0.7;
-    this.topP = config.topP ?? 0.9;
-    this.keepAlive = config.keepAlive ?? '30m';
+    this.baseUrl = config.baseUrl ?? 'http://localhost:11434'
+    this.model = config.model ?? 'llama3.1'
+    this.numCtx = config.numCtx ?? 0
+    this.temperature = config.temperature ?? 0.7
+    this.topP = config.topP ?? 0.9
+    this.keepAlive = config.keepAlive ?? '30m'
   }
 
   // -----------------------------------------------------------------------
@@ -131,23 +186,25 @@ export class OllamaProvider implements Provider {
   // -----------------------------------------------------------------------
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
-    const body: any = {
+    const bodyOptions: OllamaRequestBody['options'] = {
+      temperature: this.temperature,
+      top_p: this.topP,
+    }
+
+    if (this.numCtx > 0) {
+      bodyOptions.num_ctx = this.numCtx
+    }
+
+    const body: OllamaRequestBody = {
       model: this.model,
       messages: convertMessages(messages, options?.thinking),
       stream: true,
       keep_alive: this.keepAlive,
-      options: {
-        temperature: this.temperature,
-        top_p: this.topP,
-      },
-    };
-
-    if (this.numCtx > 0) {
-      body.options.num_ctx = this.numCtx;
+      options: bodyOptions,
     }
 
     if (options?.tools?.length) {
-      body.tools = convertTools(options.tools);
+      body.tools = convertTools(options.tools)
     }
 
     const response = await fetch(`${this.baseUrl}/api/chat`, {
@@ -155,73 +212,75 @@ export class OllamaProvider implements Provider {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: options?.signal,
-    });
+    })
 
     if (!response.ok) {
-      const err = await response.text().catch(() => 'unknown');
-      yield { type: 'error', error: `Ollama ${response.status}: ${err}` };
-      return;
+      const err = await response.text().catch(() => 'unknown')
+      yield { type: 'error', error: `Ollama ${String(response.status)}: ${err}` }
+      return
     }
 
     if (!response.body) {
-      yield { type: 'error', error: 'No response body' };
-      return;
+      yield { type: 'error', error: 'No response body' }
+      return
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let usage = { promptTokens: 0, completionTokens: 0 };
-    let toolCallIndex = 0;
-    let inThinking = false;
+    const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const usage = { promptTokens: 0, completionTokens: 0 }
+    let toolCallIndex = 0
+    let inThinking = false
 
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      for (;;) {
+        const result = await reader.read()
+        if (result.done) break
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
+        buffer += decoder.decode(result.value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
 
         for (const line of lines) {
-          if (!line.trim()) continue;
+          if (!line.trim()) continue
 
-          let event: any;
+          let event: OllamaStreamEvent
           try {
-            event = JSON.parse(line);
+            const parsed: unknown = JSON.parse(line)
+            if (!isOllamaEvent(parsed)) continue
+            event = parsed
           } catch {
-            continue;
+            continue
           }
 
-          const msg = event.message;
+          const msg = event.message
 
           // Text content
           if (msg?.content) {
-            const text = msg.content;
+            const text = msg.content
 
             // Detect Qwen <think> blocks
             if (text.includes('<think>')) {
-              inThinking = true;
-              const before = text.split('<think>')[0];
-              const after = text.split('<think>')[1] ?? '';
-              if (before) yield { type: 'text', delta: before };
-              if (after) yield { type: 'reasoning', delta: after };
-              continue;
+              inThinking = true
+              const before = text.split('<think>')[0]
+              const after = text.split('<think>')[1] ?? ''
+              if (before) yield { type: 'text', delta: before }
+              if (after) yield { type: 'reasoning', delta: after }
+              continue
             }
             if (text.includes('</think>')) {
-              inThinking = false;
-              const before = text.split('</think>')[0];
-              const after = text.split('</think>')[1] ?? '';
-              if (before) yield { type: 'reasoning', delta: before };
-              if (after) yield { type: 'text', delta: after };
-              continue;
+              inThinking = false
+              const before = text.split('</think>')[0]
+              const after = text.split('</think>')[1] ?? ''
+              if (before) yield { type: 'reasoning', delta: before }
+              if (after) yield { type: 'text', delta: after }
+              continue
             }
 
             if (inThinking) {
-              yield { type: 'reasoning', delta: text };
+              yield { type: 'reasoning', delta: text }
             } else {
-              yield { type: 'text', delta: text };
+              yield { type: 'text', delta: text }
             }
           }
 
@@ -232,35 +291,35 @@ export class OllamaProvider implements Provider {
                 type: 'tool_call_start',
                 toolCall: {
                   index: toolCallIndex,
-                  id: `ollama-tc-${Date.now()}-${toolCallIndex}`,
+                  id: `ollama-tc-${String(Date.now())}-${String(toolCallIndex)}`,
                   name: tc.function.name,
                 },
-              };
+              }
               yield {
                 type: 'tool_call_delta',
-                delta: JSON.stringify(tc.function.arguments ?? {}),
+                delta: JSON.stringify(tc.function.arguments),
                 toolCall: { index: toolCallIndex },
-              };
+              }
               yield {
                 type: 'tool_call_done',
                 toolCall: { index: toolCallIndex },
-              };
-              toolCallIndex++;
+              }
+              toolCallIndex++
             }
           }
 
           // Done event
           if (event.done) {
-            if (event.prompt_eval_count) usage.promptTokens = event.prompt_eval_count;
-            if (event.eval_count) usage.completionTokens = event.eval_count;
+            if (event.prompt_eval_count) usage.promptTokens = event.prompt_eval_count
+            if (event.eval_count) usage.completionTokens = event.eval_count
           }
         }
       }
     } finally {
-      reader.releaseLock();
+      reader.releaseLock()
     }
 
-    yield { type: 'done', usage };
+    yield { type: 'done', usage }
   }
 
   // -----------------------------------------------------------------------
@@ -268,50 +327,54 @@ export class OllamaProvider implements Provider {
   // -----------------------------------------------------------------------
 
   async chat(messages: Message[], options?: ChatOptions): Promise<LLMResponse> {
-    let text = '';
-    let reasoning = '';
-    const toolCalls: ToolCall[] = [];
-    let currentArgs = '';
-    let currentId = '';
-    let currentName = '';
-    let usage = { promptTokens: 0, completionTokens: 0 };
+    let text = ''
+    let reasoning = ''
+    const toolCalls: ToolCall[] = []
+    let currentArgs = ''
+    let currentId = ''
+    let currentName = ''
+    let usage = { promptTokens: 0, completionTokens: 0 }
 
     for await (const chunk of this.chatStream(messages, options)) {
       switch (chunk.type) {
         case 'text':
-          text += chunk.delta ?? '';
-          break;
+          text += chunk.delta ?? ''
+          break
         case 'reasoning':
-          reasoning += chunk.delta ?? '';
-          break;
+          reasoning += chunk.delta ?? ''
+          break
         case 'tool_call_start':
-          currentId = chunk.toolCall?.id ?? '';
-          currentName = chunk.toolCall?.name ?? '';
-          currentArgs = '';
-          break;
+          currentId = chunk.toolCall?.id ?? ''
+          currentName = chunk.toolCall?.name ?? ''
+          currentArgs = ''
+          break
         case 'tool_call_delta':
-          currentArgs += chunk.delta ?? '';
-          break;
+          currentArgs += chunk.delta ?? ''
+          break
         case 'tool_call_done': {
-          let args: Record<string, unknown> = {};
-          try { args = JSON.parse(currentArgs); } catch { args = { raw: currentArgs }; }
-          toolCalls.push({ id: currentId, name: currentName, arguments: args });
-          break;
+          let args: Record<string, unknown>
+          try {
+            args = JSON.parse(currentArgs) as Record<string, unknown>
+          } catch {
+            args = { raw: currentArgs }
+          }
+          toolCalls.push({ id: currentId, name: currentName, arguments: args })
+          break
         }
         case 'done':
-          if (chunk.usage) usage = chunk.usage;
-          break;
+          if (chunk.usage) usage = chunk.usage
+          break
         case 'error':
-          throw new Error(chunk.error);
+          throw new Error(chunk.error)
       }
     }
 
     if (toolCalls.length > 0) {
-      return { type: 'tool_calls', toolCalls, content: text, usage };
+      return { type: 'tool_calls', toolCalls, content: text, usage }
     }
 
-    const fullContent = reasoning ? `<thinking>${reasoning}</thinking>\n\n${text}` : text;
-    return { type: 'text', content: fullContent, usage };
+    const fullContent = reasoning ? `<thinking>${reasoning}</thinking>\n\n${text}` : text
+    return { type: 'text', content: fullContent, usage }
   }
 
   // -----------------------------------------------------------------------
@@ -320,10 +383,10 @@ export class OllamaProvider implements Provider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/tags`);
-      return res.ok;
+      const res = await fetch(`${this.baseUrl}/api/tags`)
+      return res.ok
     } catch {
-      return false;
+      return false
     }
   }
 
@@ -331,21 +394,21 @@ export class OllamaProvider implements Provider {
   // Ollama-specific: model management
   // -----------------------------------------------------------------------
 
-  async listModels(): Promise<Array<{ name: string; size: number; modified_at: string }>> {
-    const res = await fetch(`${this.baseUrl}/api/tags`);
-    if (!res.ok) throw new Error(`Failed to list models: ${res.status}`);
-    const data = await res.json() as { models?: Array<{ name: string; size: number; modified_at: string }> };
-    return data.models ?? [];
+  async listModels(): Promise<OllamaModelInfo[]> {
+    const res = await fetch(`${this.baseUrl}/api/tags`)
+    if (!res.ok) throw new Error(`Failed to list models: ${String(res.status)}`)
+    const data = (await res.json()) as OllamaModelListResponse
+    return data.models ?? []
   }
 
-  async showModel(model?: string): Promise<any> {
+  async showModel(model?: string): Promise<unknown> {
     const res = await fetch(`${this.baseUrl}/api/show`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model ?? this.model }),
-    });
-    if (!res.ok) throw new Error(`Failed to show model: ${res.status}`);
-    return res.json();
+    })
+    if (!res.ok) throw new Error(`Failed to show model: ${String(res.status)}`)
+    return res.json()
   }
 
   async pullModel(model: string): Promise<void> {
@@ -353,8 +416,8 @@ export class OllamaProvider implements Provider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, stream: false }),
-    });
-    if (!res.ok) throw new Error(`Failed to pull: ${res.status}`);
+    })
+    if (!res.ok) throw new Error(`Failed to pull: ${String(res.status)}`)
   }
 
   async unloadModel(model?: string): Promise<void> {
@@ -362,10 +425,10 @@ export class OllamaProvider implements Provider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model ?? this.model, messages: [], keep_alive: '0' }),
-    });
+    })
   }
 
   switchModel(model: string): void {
-    this.model = model;
+    this.model = model
   }
 }

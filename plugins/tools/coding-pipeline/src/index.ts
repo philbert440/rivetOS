@@ -14,7 +14,7 @@
  * Exposed as a single tool: `coding_pipeline`
  */
 
-import type { Tool, ToolContext } from '@rivetos/types';
+import type { Tool } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -22,39 +22,46 @@ import type { Tool, ToolContext } from '@rivetos/types';
 
 export interface CodingPipelineConfig {
   /** Agent that builds code (default: 'grok') */
-  builderAgent?: string;
+  builderAgent?: string
 
   /** Agent that validates code (default: 'opus') */
-  validatorAgent?: string;
+  validatorAgent?: string
 
   /** Max build→review loops before escalating (default: 3) */
-  maxBuildLoops?: number;
+  maxBuildLoops?: number
 
   /** Max validation loops before accepting (default: 2) */
-  maxValidationLoops?: number;
+  maxValidationLoops?: number
 
   /** Working directory for code operations */
-  workingDir?: string;
+  workingDir?: string
   /** Auto-commit on approval (default: true) */
-  autoCommit?: boolean;
+  autoCommit?: boolean
 }
 
 // ---------------------------------------------------------------------------
 // Pipeline State
 // ---------------------------------------------------------------------------
 
-type PipelinePhase = 'BUILD' | 'SELF_REVIEW' | 'RETURN_FOR_VALIDATION' | 'FIX' | 'COMMIT' | 'DONE' | 'FAILED';
+type PipelinePhase =
+  | 'BUILD'
+  | 'SELF_REVIEW'
+  | 'RETURN_FOR_VALIDATION'
+  | 'FIX'
+  | 'COMMIT'
+  | 'DONE'
+  | 'FAILED'
 
 interface PipelineContext {
-  spec: string;
-  files: string[];
-  workingDir: string;
-  buildOutput: string;
-  reviewFindings: string;
-  validationFindings: string;
-  buildLoops: number;
-  validationLoops: number;
-  logs: string[];
+  spec: string
+  files: string[]
+  workingDir: string
+  buildOutput: string
+  reviewFindings: string
+  validationFindings: string
+  buildLoops: number
+  validationLoops: number
+  logs: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +77,7 @@ Process:
 3. Run any relevant tests
 4. Report what you did and any issues found
 
-Be precise. Follow existing patterns. Write production-quality code.`;
+Be precise. Follow existing patterns. Write production-quality code.`
 
 const SELF_REVIEW_PROMPT = (spec: string, buildLog: string) => `
 ## Self-Review
@@ -90,21 +97,19 @@ ${buildLog}
 - Are there any security issues?
 
 If everything looks clean, respond with exactly: LGTM
-If there are issues, list them as numbered items and fix them.`;
-
-
+If there are issues, list them as numbered items and fix them.`
 
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
 
 export class CodingPipeline {
-  private config: Required<CodingPipelineConfig>;
-  private subagentSpawn: ((args: Record<string, unknown>) => Promise<string>) | null = null;
-  private subagentSend: ((args: Record<string, unknown>) => Promise<string>) | null = null;
-  private subagentKill: ((args: Record<string, unknown>) => Promise<string>) | null = null;
-  private shellExec: ((args: Record<string, unknown>) => Promise<string>) | null = null;
-  private onProgress?: (message: string) => void;
+  private config: Required<CodingPipelineConfig>
+  private subagentSpawn: ((args: Record<string, unknown>) => Promise<string>) | null = null
+  private subagentSend: ((args: Record<string, unknown>) => Promise<string>) | null = null
+  private subagentKill: ((args: Record<string, unknown>) => Promise<string>) | null = null
+  private shellExec: ((args: Record<string, unknown>) => Promise<string>) | null = null
+  private onProgress?: (message: string) => void
 
   constructor(config?: CodingPipelineConfig) {
     this.config = {
@@ -114,39 +119,39 @@ export class CodingPipeline {
       maxValidationLoops: config?.maxValidationLoops ?? 2,
       workingDir: config?.workingDir ?? process.cwd(),
       autoCommit: config?.autoCommit ?? true,
-    };
+    }
   }
 
   /**
    * Inject tool executors. Called by boot.ts after all tools are registered.
    */
   setToolExecutors(tools: {
-    subagentSpawn: (args: Record<string, unknown>) => Promise<string>;
-    subagentSend: (args: Record<string, unknown>) => Promise<string>;
-    subagentKill: (args: Record<string, unknown>) => Promise<string>;
-    shellExec: (args: Record<string, unknown>) => Promise<string>;
+    subagentSpawn: (args: Record<string, unknown>) => Promise<string>
+    subagentSend: (args: Record<string, unknown>) => Promise<string>
+    subagentKill: (args: Record<string, unknown>) => Promise<string>
+    shellExec: (args: Record<string, unknown>) => Promise<string>
   }): void {
-    this.subagentSpawn = tools.subagentSpawn;
-    this.subagentSend = tools.subagentSend;
-    this.subagentKill = tools.subagentKill;
-    this.shellExec = tools.shellExec;
+    this.subagentSpawn = tools.subagentSpawn
+    this.subagentSend = tools.subagentSend
+    this.subagentKill = tools.subagentKill
+    this.shellExec = tools.shellExec
   }
 
   setProgressHandler(handler: (message: string) => void): void {
-    this.onProgress = handler;
+    this.onProgress = handler
   }
 
   setWorkingDir(dir: string): void {
-    this.config.workingDir = dir;
+    this.config.workingDir = dir
   }
 
   setAutoCommit(val: boolean): void {
-    this.config.autoCommit = val;
+    this.config.autoCommit = val
   }
 
   private log(ctx: PipelineContext, message: string): void {
-    ctx.logs.push(message);
-    this.onProgress?.(message);
+    ctx.logs.push(message)
+    this.onProgress?.(message)
   }
 
   // -----------------------------------------------------------------------
@@ -155,7 +160,7 @@ export class CodingPipeline {
 
   async run(spec: string, files: string[] = []): Promise<string> {
     if (!this.subagentSpawn || !this.subagentSend || !this.shellExec) {
-      return 'Error: Pipeline not initialized — tool executors not set.';
+      return 'Error: Pipeline not initialized — tool executors not set.'
     }
 
     const ctx: PipelineContext = {
@@ -168,30 +173,30 @@ export class CodingPipeline {
       buildLoops: 0,
       validationLoops: 0,
       logs: [],
-    };
+    }
 
-    let phase: PipelinePhase = 'BUILD';
+    let phase: PipelinePhase = 'BUILD'
 
     while (phase !== 'DONE' && phase !== 'FAILED') {
-      this.log(ctx, `📋 Phase: ${phase}`);
+      this.log(ctx, `📋 Phase: ${phase}`)
 
       switch (phase) {
         case 'BUILD':
-          phase = await this.build(ctx);
-          break;
+          phase = await this.build(ctx)
+          break
         case 'SELF_REVIEW':
-          phase = await this.selfReview(ctx);
-          break;
+          phase = await this.selfReview(ctx)
+          break
         case 'RETURN_FOR_VALIDATION':
           // Don't spawn a validator — return to the calling agent with the diff
           // The architect (who has full context) validates in their own turn
-          return this.buildValidationReport(ctx);
+          return this.buildValidationReport(ctx)
         case 'FIX':
-          phase = await this.fix(ctx);
-          break;
+          phase = await this.fix(ctx)
+          break
         case 'COMMIT':
-          phase = await this.commit(ctx);
-          break;
+          phase = await this.commit(ctx)
+          break
       }
     }
 
@@ -202,9 +207,9 @@ export class CodingPipeline {
       '',
       '### Log',
       ...ctx.logs,
-    ].join('\n');
+    ].join('\n')
 
-    return summary;
+    return summary
   }
 
   // -----------------------------------------------------------------------
@@ -212,13 +217,11 @@ export class CodingPipeline {
   // -----------------------------------------------------------------------
 
   private async build(ctx: PipelineContext): Promise<PipelinePhase> {
-    this.log(ctx, `🔨 Spawning ${this.config.builderAgent} to build...`);
+    this.log(ctx, `🔨 Spawning ${this.config.builderAgent} to build...`)
 
-    const filesContext = ctx.files.length > 0
-      ? `\n\nRelevant files: ${ctx.files.join(', ')}`
-      : '';
+    const filesContext = ctx.files.length > 0 ? `\n\nRelevant files: ${ctx.files.join(', ')}` : ''
 
-    const task = `${BUILDER_SYSTEM}\n\n## Spec\n${ctx.spec}${filesContext}\n\nWorking directory: ${ctx.workingDir}`;
+    const task = `${BUILDER_SYSTEM}\n\n## Spec\n${ctx.spec}${filesContext}\n\nWorking directory: ${ctx.workingDir}`
 
     try {
       const result = await this.subagentSpawn!({
@@ -226,15 +229,15 @@ export class CodingPipeline {
         task,
         mode: 'run',
         timeout_ms: 300000, // 5 min
-      });
+      })
 
-      ctx.buildOutput = result;
-      ctx.buildLoops++;
-      this.log(ctx, `✅ Build complete (loop ${ctx.buildLoops})`);
-      return 'SELF_REVIEW';
-    } catch (err: any) {
-      this.log(ctx, `❌ Build failed: ${err.message}`);
-      return 'FAILED';
+      ctx.buildOutput = result
+      ctx.buildLoops++
+      this.log(ctx, `✅ Build complete (loop ${ctx.buildLoops})`)
+      return 'SELF_REVIEW'
+    } catch (err: unknown) {
+      this.log(ctx, `❌ Build failed: ${(err as Error).message}`)
+      return 'FAILED'
     }
   }
 
@@ -243,9 +246,9 @@ export class CodingPipeline {
   // -----------------------------------------------------------------------
 
   private async selfReview(ctx: PipelineContext): Promise<PipelinePhase> {
-    this.log(ctx, `🔍 ${this.config.builderAgent} self-reviewing...`);
+    this.log(ctx, `🔍 ${this.config.builderAgent} self-reviewing...`)
 
-    const reviewPrompt = SELF_REVIEW_PROMPT(ctx.spec, ctx.buildOutput);
+    const reviewPrompt = SELF_REVIEW_PROMPT(ctx.spec, ctx.buildOutput)
 
     try {
       const result = await this.subagentSpawn!({
@@ -253,24 +256,27 @@ export class CodingPipeline {
         task: reviewPrompt,
         mode: 'run',
         timeout_ms: 120000,
-      });
+      })
 
-      ctx.reviewFindings = result;
+      ctx.reviewFindings = result
 
       if (result.toUpperCase().includes('LGTM')) {
-        this.log(ctx, `✅ Self-review passed`);
-        return 'RETURN_FOR_VALIDATION';
+        this.log(ctx, `✅ Self-review passed`)
+        return 'RETURN_FOR_VALIDATION'
       }
 
-      this.log(ctx, `⚠️ Self-review found issues`);
+      this.log(ctx, `⚠️ Self-review found issues`)
       if (ctx.buildLoops >= this.config.maxBuildLoops) {
-        this.log(ctx, `⚠️ Max build loops (${this.config.maxBuildLoops}) reached, sending to validator anyway`);
-        return 'RETURN_FOR_VALIDATION';
+        this.log(
+          ctx,
+          `⚠️ Max build loops (${this.config.maxBuildLoops}) reached, sending to validator anyway`,
+        )
+        return 'RETURN_FOR_VALIDATION'
       }
-      return 'FIX';
-    } catch (err: any) {
-      this.log(ctx, `❌ Self-review failed: ${err.message}`);
-      return 'RETURN_FOR_VALIDATION'; // Skip review on error, let validator catch issues
+      return 'FIX'
+    } catch (err: unknown) {
+      this.log(ctx, `❌ Self-review failed: ${(err as Error).message}`)
+      return 'RETURN_FOR_VALIDATION' // Skip review on error, let validator catch issues
     }
   }
 
@@ -279,11 +285,13 @@ export class CodingPipeline {
   // -----------------------------------------------------------------------
 
   private async buildValidationReport(ctx: PipelineContext): Promise<string> {
-    let diff = '';
+    let diff: string
     try {
-      diff = await this.shellExec!({ command: `cd ${ctx.workingDir} && git diff --stat && git diff` });
+      diff = await this.shellExec!({
+        command: `cd ${ctx.workingDir} && git diff --stat && git diff`,
+      })
     } catch {
-      diff = ctx.buildOutput;
+      diff = ctx.buildOutput
     }
 
     return [
@@ -307,7 +315,9 @@ export class CodingPipeline {
       `If issues found, tell me what to fix and I'll run the pipeline again.`,
       '',
       ...ctx.logs,
-    ].filter(Boolean).join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n')
   }
 
   // -----------------------------------------------------------------------
@@ -315,8 +325,8 @@ export class CodingPipeline {
   // -----------------------------------------------------------------------
 
   private async fix(ctx: PipelineContext): Promise<PipelinePhase> {
-    const findings = ctx.validationFindings || ctx.reviewFindings;
-    this.log(ctx, `🔧 ${this.config.builderAgent} fixing issues...`);
+    const findings = ctx.validationFindings || ctx.reviewFindings
+    this.log(ctx, `🔧 ${this.config.builderAgent} fixing issues...`)
 
     const task = `${BUILDER_SYSTEM}
 
@@ -326,7 +336,7 @@ ${ctx.spec}
 ## Issues Found
 ${findings}
 
-Fix all issues listed above. Working directory: ${ctx.workingDir}`;
+Fix all issues listed above. Working directory: ${ctx.workingDir}`
 
     try {
       const result = await this.subagentSpawn!({
@@ -334,22 +344,22 @@ Fix all issues listed above. Working directory: ${ctx.workingDir}`;
         task,
         mode: 'run',
         timeout_ms: 300000,
-      });
+      })
 
-      ctx.buildOutput = result;
-      ctx.buildLoops++;
-      this.log(ctx, `✅ Fix complete (loop ${ctx.buildLoops})`);
+      ctx.buildOutput = result
+      ctx.buildLoops++
+      this.log(ctx, `✅ Fix complete (loop ${ctx.buildLoops})`)
 
       // After a fix from validation findings, go back to validate
       if (ctx.validationFindings) {
-        ctx.validationFindings = '';
-        return 'RETURN_FOR_VALIDATION';
+        ctx.validationFindings = ''
+        return 'RETURN_FOR_VALIDATION'
       }
       // After a fix from self-review, re-review
-      return 'SELF_REVIEW';
-    } catch (err: any) {
-      this.log(ctx, `❌ Fix failed: ${err.message}`);
-      return 'FAILED';
+      return 'SELF_REVIEW'
+    } catch (err: unknown) {
+      this.log(ctx, `❌ Fix failed: ${(err as Error).message}`)
+      return 'FAILED'
     }
   }
 
@@ -359,24 +369,24 @@ Fix all issues listed above. Working directory: ${ctx.workingDir}`;
 
   private async commit(ctx: PipelineContext): Promise<PipelinePhase> {
     if (!this.config.autoCommit) {
-      this.log(ctx, `✅ Pipeline complete (auto-commit disabled)`);
-      return 'DONE';
+      this.log(ctx, `✅ Pipeline complete (auto-commit disabled)`)
+      return 'DONE'
     }
 
-    this.log(ctx, `📦 Committing...`);
+    this.log(ctx, `📦 Committing...`)
 
     try {
-      const commitMsg = `feat: ${ctx.spec.split('\n')[0].slice(0, 72)}`;
+      const commitMsg = `feat: ${ctx.spec.split('\n')[0].slice(0, 72)}`
       const result = await this.shellExec!({
         command: `cd ${ctx.workingDir} && git add -A && git diff --cached --stat && git commit -m "${commitMsg.replace(/"/g, '\\"')}" && git push`,
-      });
+      })
 
-      this.log(ctx, `✅ Committed and pushed`);
-      this.log(ctx, result.slice(0, 200));
-      return 'DONE';
-    } catch (err: any) {
-      this.log(ctx, `⚠️ Commit failed: ${err.message} (code is valid, commit manually)`);
-      return 'DONE'; // Code is valid even if commit fails
+      this.log(ctx, `✅ Committed and pushed`)
+      this.log(ctx, result.slice(0, 200))
+      return 'DONE'
+    } catch (err: unknown) {
+      this.log(ctx, `⚠️ Commit failed: ${(err as Error).message} (code is valid, commit manually)`)
+      return 'DONE' // Code is valid even if commit fails
     }
   }
 }
@@ -417,15 +427,12 @@ export function createCodingPipelineTool(pipeline: CodingPipeline): Tool {
     },
     execute: async (args: Record<string, unknown>): Promise<string> => {
       if (args.working_dir) {
-        pipeline.setWorkingDir(args.working_dir as string);
+        pipeline.setWorkingDir(args.working_dir as string)
       }
       if (args.auto_commit !== undefined) {
-        pipeline.setAutoCommit(args.auto_commit as boolean);
+        pipeline.setAutoCommit(args.auto_commit as boolean)
       }
-      return pipeline.run(
-        args.spec as string,
-        (args.files as string[]) ?? [],
-      );
+      return pipeline.run(args.spec as string, (args.files as string[] | undefined) ?? [])
     },
-  };
+  }
 }

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/schema",
+  "id": "RivetOSPlugin",
+  "title": "RivetOS Plugin Generator",
+  "description": "Scaffold a new RivetOS plugin (channel, provider, or tool)",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Plugin name (e.g. 'slack', 'mistral', 'database')",
+      "x-prompt": "What is the plugin name?"
+    },
+    "type": {
+      "type": "string",
+      "description": "Plugin type",
+      "enum": ["channel", "provider", "tool"],
+      "x-prompt": {
+        "message": "What type of plugin?",
+        "type": "list",
+        "items": [
+          { "value": "channel", "label": "Channel — receive and send messages on a surface" },
+          { "value": "provider", "label": "Provider — talks to an LLM (Claude, GPT, etc.)" },
+          { "value": "tool", "label": "Tool — an action the agent can take" }
+        ]
+      }
+    },
+    "description": {
+      "type": "string",
+      "description": "Short description of the plugin",
+      "x-prompt": "Short description:"
+    },
+    "skipTests": {
+      "type": "boolean",
+      "description": "Skip generating test files",
+      "default": false
+    }
+  },
+  "required": ["name", "type"]
+}

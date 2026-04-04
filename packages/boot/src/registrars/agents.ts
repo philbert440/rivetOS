@@ -6,23 +6,23 @@
  * and makes registration consistent with providers, channels, and tools.
  */
 
-import type { Runtime } from '@rivetos/core';
+import type { Runtime } from '@rivetos/core'
 import {
   DelegationEngine,
   SubagentManagerImpl,
   createSubagentTools,
   SkillManagerImpl,
   createSkillListTool,
-} from '@rivetos/core';
-import type { RivetConfig } from '../config.js';
-import { logger } from '@rivetos/core';
+} from '@rivetos/core'
+import type { RivetConfig } from '../config.js'
+import { logger } from '@rivetos/core'
 
-const log = logger('Boot:Agents');
+const log = logger('Boot:Agents')
 
 export async function registerAgentTools(
   runtime: Runtime,
   config: RivetConfig,
-  workspaceDir: string,
+  _workspaceDir: string,
 ): Promise<void> {
   // Delegation — agent-to-agent task handoff
   const delegation = new DelegationEngine({
@@ -30,8 +30,8 @@ export async function registerAgentTools(
     workspace: runtime.getWorkspace(),
     tools: runtime.getTools(),
     hooks: runtime.getHooks(),
-  });
-  runtime.registerTool(delegation.createDelegationTool());
+  })
+  runtime.registerTool(delegation.createDelegationTool())
 
   // Sub-agents — spawn/send/kill child sessions
   const subagentManager = new SubagentManagerImpl({
@@ -39,19 +39,17 @@ export async function registerAgentTools(
     workspace: runtime.getWorkspace(),
     tools: runtime.getTools(),
     hooks: runtime.getHooks(),
-  });
+  })
   for (const tool of createSubagentTools(subagentManager)) {
-    runtime.registerTool(tool);
+    runtime.registerTool(tool)
   }
 
   // Skills — discover and list available skills
-  const skillManager = new SkillManagerImpl();
-  const defaultSkillDirs = [
-    `${process.env.HOME ?? '~'}/.rivetos/skills`,
-  ];
-  const skillDirs = config.runtime.skill_dirs ?? defaultSkillDirs;
-  await skillManager.discover(skillDirs);
-  runtime.registerTool(createSkillListTool(skillManager));
+  const skillManager = new SkillManagerImpl()
+  const defaultSkillDirs = [`${process.env.HOME ?? '~'}/.rivetos/skills`]
+  const skillDirs = config.runtime.skill_dirs ?? defaultSkillDirs
+  await skillManager.discover(skillDirs)
+  runtime.registerTool(createSkillListTool(skillManager))
 
-  log.info('Delegation, sub-agent, and skill tools registered');
+  log.info('Delegation, sub-agent, and skill tools registered')
 }

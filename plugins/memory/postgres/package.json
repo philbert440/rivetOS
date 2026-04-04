@@ -1,15 +1,16 @@
 {
   "name": "@rivetos/memory-postgres",
   "version": "0.2.0",
-  "description": "RivetOS Memory System \u2014 hybrid-scored search, background compaction, summary DAG",
+  "description": "RivetOS Memory System — hybrid-scored search, background compaction, summary DAG",
   "license": "MIT",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "migrate": "npx tsx src/migrate.ts",
-    "test": "echo \"no tests yet\""
+    "lint": "eslint src/",
+    "test": "echo \"no tests yet\"",
+    "migrate": "npx tsx src/migrate.ts"
   },
   "dependencies": {
     "@rivetos/types": "*",

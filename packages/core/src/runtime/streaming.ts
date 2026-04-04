@@ -11,10 +11,10 @@
  * 7. Errors are the only thing that sends a NEW message mid-turn
  */
 
-import type { Channel, InboundMessage, SessionState, StreamEvent } from '@rivetos/types';
+import type { Channel, InboundMessage, SessionState, StreamEvent } from '@rivetos/types'
 
 // Throttle: don't edit more often than this
-const EDIT_INTERVAL_MS = 600;
+const EDIT_INTERVAL_MS = 600
 
 // ---------------------------------------------------------------------------
 // State
@@ -22,23 +22,23 @@ const EDIT_INTERVAL_MS = 600;
 
 export interface SessionStreamState {
   /** Current streaming message ID (null until first text arrives) */
-  messageId: string | null;
+  messageId: string | null
   /** Accumulated text for the current turn */
-  text: string;
+  text: string
   /** Accumulated reasoning text */
-  reasoning: string;
+  reasoning: string
   /** Whether an edit is scheduled */
-  editPending: boolean;
+  editPending: boolean
   /** Timer for throttled edits */
-  editTimer: ReturnType<typeof setTimeout> | null;
+  editTimer: ReturnType<typeof setTimeout> | null
   /** Whether cleanup has been called (prevents post-cleanup edits) */
-  cleaned: boolean;
+  cleaned: boolean
   /** Tool log message ID */
-  toolMessageId: string | null;
+  toolMessageId: string | null
   /** Tool log lines */
-  toolLines: string[];
+  toolLines: string[]
   /** Whether current text is a "Thinking..." placeholder */
-  thinkingPlaceholder: boolean;
+  thinkingPlaceholder: boolean
 }
 
 function freshState(): SessionStreamState {
@@ -52,7 +52,7 @@ function freshState(): SessionStreamState {
     toolMessageId: null,
     toolLines: [],
     thinkingPlaceholder: false,
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -60,16 +60,19 @@ function freshState(): SessionStreamState {
 // ---------------------------------------------------------------------------
 
 export class StreamManager {
-  private states: Map<string, SessionStreamState> = new Map();
+  private states: Map<string, SessionStreamState> = new Map()
 
   private get(key: string): SessionStreamState {
-    let s = this.states.get(key);
-    if (!s) { s = freshState(); this.states.set(key, s); }
-    return s;
+    let s = this.states.get(key)
+    if (!s) {
+      s = freshState()
+      this.states.set(key, s)
+    }
+    return s
   }
 
   getStreamMessageId(key: string): string | null {
-    return this.states.get(key)?.messageId ?? null;
+    return this.states.get(key)?.messageId ?? null
   }
 
   handleStreamEvent(
@@ -78,62 +81,62 @@ export class StreamManager {
     session: SessionState,
     event: StreamEvent,
   ): void {
-    const key = `${message.channelId}:${message.userId}`;
-    const s = this.get(key);
-    if (s.cleaned) return; // Turn is over, ignore late events
+    const key = `${message.channelId}:${message.userId}`
+    const s = this.get(key)
+    if (s.cleaned) return // Turn is over, ignore late events
 
     switch (event.type) {
       case 'text':
         // Clear "thinking" placeholder if it was set
         if (s.thinkingPlaceholder) {
-          s.text = '';
-          s.thinkingPlaceholder = false;
+          s.text = ''
+          s.thinkingPlaceholder = false
         }
-        s.text += event.content ?? '';
-        this.throttledEdit(channel, message, s);
-        break;
+        s.text += event.content
+        this.throttledEdit(channel, message, s)
+        break
 
       case 'reasoning':
         if (!session.reasoningVisible) {
           // Even when hidden, show a one-time "thinking" indicator
           // so the user knows the model is working, not stalled
           if (!s.messageId && !s.text) {
-            s.text = '🧠 _Thinking..._';
-            this.throttledEdit(channel, message, s);
-            s.thinkingPlaceholder = true;
+            s.text = '🧠 _Thinking..._'
+            this.throttledEdit(channel, message, s)
+            s.thinkingPlaceholder = true
           }
-          return;
+          return
         }
-        s.reasoning += event.content ?? '';
-        this.throttledEdit(channel, message, s);
-        break;
+        s.reasoning += event.content
+        this.throttledEdit(channel, message, s)
+        break
 
       case 'tool_start':
-        if (!session.toolsVisible) return;
-        s.toolLines.push(event.content);
-        this.editToolLog(channel, message.channelId, s);
-        break;
+        if (!session.toolsVisible) return
+        s.toolLines.push(event.content)
+        this.editToolLog(channel, message.channelId, s)
+        break
 
       case 'tool_result':
-        if (!session.toolsVisible) return;
+        if (!session.toolsVisible) return
         if (s.toolLines.length > 0) {
-          s.toolLines[s.toolLines.length - 1] = event.content;
+          s.toolLines[s.toolLines.length - 1] = event.content
         } else {
-          s.toolLines.push(event.content);
+          s.toolLines.push(event.content)
         }
-        this.editToolLog(channel, message.channelId, s);
-        break;
+        this.editToolLog(channel, message.channelId, s)
+        break
 
       case 'status':
         // Progress updates go into the tool log, not separate messages
-        s.toolLines.push(event.content);
-        this.editToolLog(channel, message.channelId, s);
-        break;
+        s.toolLines.push(event.content)
+        this.editToolLog(channel, message.channelId, s)
+        break
 
       case 'error':
         // Errors are the only thing that gets a separate message
-        channel.send({ channelId: message.channelId, text: `⚠️ ${event.content}` }).catch(() => {});
-        break;
+        channel.send({ channelId: message.channelId, text: `⚠️ ${event.content}` }).catch(() => {})
+        break
     }
   }
 
@@ -142,57 +145,69 @@ export class StreamManager {
   // -----------------------------------------------------------------------
 
   private throttledEdit(channel: Channel, message: InboundMessage, s: SessionStreamState): void {
-    if (s.editPending || s.cleaned) return;
-    s.editPending = true;
+    if (s.editPending || s.cleaned) return
+    s.editPending = true
 
-    s.editTimer = setTimeout(async () => {
-      s.editPending = false;
-      s.editTimer = null;
-      if (s.cleaned) return;
+    s.editTimer = setTimeout(() => {
+      s.editPending = false
+      s.editTimer = null
+      if (s.cleaned) return
 
-      const display = this.buildDisplay(s);
-      if (!display) return;
+      const display = this.buildDisplay(s)
+      if (!display) return
 
       if (s.messageId && channel.edit) {
         // Edit existing message — channel handles overflow if text is too long
-        const newId = await channel.edit(message.channelId, s.messageId, display).catch(() => null);
-        if (newId) s.messageId = newId;
+        void channel
+          .edit(message.channelId, s.messageId, display)
+          .catch(() => null)
+          .then((newId) => {
+            if (newId) s.messageId = newId
+          })
       } else if (!s.messageId) {
         // First text — send a new message
-        const sentId = await channel.send({
-          channelId: message.channelId,
-          text: display,
-          replyToMessageId: message.id,
-        }).catch(() => null);
-        if (sentId) s.messageId = sentId;
+        void channel
+          .send({
+            channelId: message.channelId,
+            text: display,
+            replyToMessageId: message.id,
+          })
+          .catch(() => null)
+          .then((sentId) => {
+            if (sentId) s.messageId = sentId
+          })
       }
-    }, EDIT_INTERVAL_MS);
+    }, EDIT_INTERVAL_MS)
   }
 
   private buildDisplay(s: SessionStreamState): string {
-    let out = '';
+    let out = ''
     if (s.reasoning) {
       // Reasoning as italics, capped to avoid huge messages
-      const r = s.reasoning.length > 1200 ? s.reasoning.slice(-1200) : s.reasoning;
-      out += `_🧠 ${r}_\n\n`;
+      const r = s.reasoning.length > 1200 ? s.reasoning.slice(-1200) : s.reasoning
+      out += `_🧠 ${r}_\n\n`
     }
-    out += s.text;
-    return out.trim();
+    out += s.text
+    return out.trim()
   }
 
   // -----------------------------------------------------------------------
   // Tool log → ONE message, edited in-place
   // -----------------------------------------------------------------------
 
-  private async editToolLog(channel: Channel, channelId: string, s: SessionStreamState): Promise<void> {
-    if (s.cleaned) return;
-    const display = s.toolLines.slice(-8).join('\n');
+  private editToolLog(channel: Channel, channelId: string, s: SessionStreamState): void {
+    if (s.cleaned) return
+    const display = s.toolLines.slice(-8).join('\n')
 
     if (s.toolMessageId && channel.edit) {
-      await channel.edit(channelId, s.toolMessageId, display).catch(() => {});
+      void channel.edit(channelId, s.toolMessageId, display).catch(() => {})
     } else {
-      const sentId = await channel.send({ channelId, text: display, silent: true }).catch(() => null);
-      if (sentId) s.toolMessageId = sentId;
+      void channel
+        .send({ channelId, text: display, silent: true })
+        .catch(() => null)
+        .then((sentId) => {
+          if (sentId) s.toolMessageId = sentId
+        })
     }
   }
 
@@ -201,14 +216,14 @@ export class StreamManager {
   // -----------------------------------------------------------------------
 
   cleanup(key: string): { messageId: string | null; accumulatedText: string } {
-    const s = this.states.get(key);
-    if (!s) return { messageId: null, accumulatedText: '' };
+    const s = this.states.get(key)
+    if (!s) return { messageId: null, accumulatedText: '' }
 
-    s.cleaned = true; // Prevent any late edits
-    if (s.editTimer) clearTimeout(s.editTimer);
+    s.cleaned = true // Prevent any late edits
+    if (s.editTimer) clearTimeout(s.editTimer)
 
-    const { messageId, text } = s;
-    this.states.delete(key);
-    return { messageId, accumulatedText: text };
+    const { messageId, text } = s
+    this.states.delete(key)
+    return { messageId, accumulatedText: text }
   }
 }

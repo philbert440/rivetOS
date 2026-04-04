@@ -6,10 +6,10 @@
  * config validate — validate config schema without starting
  */
 
-import { writeFile, readFile, mkdir, access } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
-import { parse as parseYaml } from 'yaml';
-import { validateConfig, formatValidationResult } from '../validate.js';
+import { writeFile, readFile, mkdir, access } from 'node:fs/promises'
+import { resolve, dirname } from 'node:path'
+import { parse as parseYaml } from 'yaml'
+import { validateConfig, formatValidationResult } from '../validate.js'
 
 const DEFAULT_CONFIG = `# RivetOS Configuration
 # API keys via environment variables — never in this file.
@@ -81,82 +81,85 @@ channels:
 memory:
   postgres:
     # auth: RIVETOS_PG_URL env var
-`;
+`
 
 export default async function config(): Promise<void> {
-  const subcommand = process.argv[3];
+  const subcommand = process.argv[3]
 
   if (!subcommand || subcommand === 'help') {
-    console.log('Usage: rivetos config <subcommand>');
-    console.log('');
-    console.log('Subcommands:');
-    console.log('  init       Generate default config.yaml');
-    console.log('  show       Print current config path');
-    console.log('  validate   Validate config schema (dry run — does not start)');
-    return;
+    console.log('Usage: rivetos config <subcommand>')
+    console.log('')
+    console.log('Subcommands:')
+    console.log('  init       Generate default config.yaml')
+    console.log('  show       Print current config path')
+    console.log('  validate   Validate config schema (dry run — does not start)')
+    return
   }
 
   switch (subcommand) {
     case 'init': {
-      const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml');
+      const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
 
       try {
-        await access(configPath);
-        console.log(`Config already exists: ${configPath}`);
-        console.log('Delete it first if you want to regenerate.');
-        return;
-      } catch {}
+        await access(configPath)
+        console.log(`Config already exists: ${configPath}`)
+        console.log('Delete it first if you want to regenerate.')
+        return
+      } catch {
+        /* expected - file may not exist */
+      }
 
-      await mkdir(dirname(configPath), { recursive: true });
-      await writeFile(configPath, DEFAULT_CONFIG, 'utf-8');
-      console.log(`✅ Config created: ${configPath}`);
-      console.log('Edit it to match your setup, then run: rivetos start');
-      break;
+      await mkdir(dirname(configPath), { recursive: true })
+      await writeFile(configPath, DEFAULT_CONFIG, 'utf-8')
+      console.log(`✅ Config created: ${configPath}`)
+      console.log('Edit it to match your setup, then run: rivetos start')
+      break
     }
 
     case 'show': {
-      const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml');
+      const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
       try {
-        await access(configPath);
-        console.log(configPath);
+        await access(configPath)
+        console.log(configPath)
       } catch {
-        console.log('No config found. Run: rivetos config init');
+        console.log('No config found. Run: rivetos config init')
       }
-      break;
+      break
     }
 
     case 'validate': {
-      const configPath = process.argv[4] ?? resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml');
+      const configPath =
+        process.argv[4] ?? resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
 
-      let raw: string;
+      let raw: string
       try {
-        raw = await readFile(configPath, 'utf-8');
+        raw = await readFile(configPath, 'utf-8')
       } catch {
-        console.error(`❌ Cannot read config file: ${configPath}`);
-        process.exit(1);
-        return; // unreachable but makes TS happy
+        console.error(`❌ Cannot read config file: ${configPath}`)
+        process.exit(1)
+        return // unreachable but makes TS happy
       }
 
-      let parsed: unknown;
+      let parsed: unknown
       try {
-        parsed = parseYaml(raw);
-      } catch (err: any) {
-        console.error(`❌ Failed to parse YAML: ${err.message}`);
-        process.exit(1);
-        return;
+        parsed = parseYaml(raw)
+      } catch (err: unknown) {
+        console.error(`❌ Failed to parse YAML: ${(err as Error).message}`)
+        process.exit(1)
+        return
       }
 
-      const result = validateConfig(parsed);
-      console.log(formatValidationResult(result));
+      const result = validateConfig(parsed)
+      console.log(formatValidationResult(result))
 
       if (!result.valid) {
-        process.exit(1);
+        process.exit(1)
       }
-      break;
+      break
     }
 
     default:
-      console.error(`Unknown subcommand: ${subcommand}`);
-      process.exit(1);
+      console.error(`Unknown subcommand: ${subcommand}`)
+      process.exit(1)
   }
 }

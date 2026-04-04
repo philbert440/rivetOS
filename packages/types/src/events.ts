@@ -2,34 +2,42 @@
  * Stream events and runtime control types.
  */
 
-import type { Message } from './message.js';
-import type { ThinkingLevel } from './provider.js';
-import type { InboundMessage } from './channel.js';
+import type { Message } from './message.js'
+import type { ThinkingLevel } from './provider.js'
+import type { InboundMessage } from './channel.js'
 
 // ---------------------------------------------------------------------------
 // Stream Events — runtime → channel for live updates
 // ---------------------------------------------------------------------------
 
 export interface StreamEvent {
-  type: 'text' | 'reasoning' | 'tool_start' | 'tool_result' | 'status' | 'interrupt' | 'done' | 'error';
-  content: string;
-  metadata?: Record<string, unknown>;
+  type:
+    | 'text'
+    | 'reasoning'
+    | 'tool_start'
+    | 'tool_result'
+    | 'status'
+    | 'interrupt'
+    | 'done'
+    | 'error'
+  content: string
+  metadata?: Record<string, unknown>
 }
 
-export type StreamHandler = (event: StreamEvent) => void;
+export type StreamHandler = (event: StreamEvent) => void
 
 // ---------------------------------------------------------------------------
 // Session State
 // ---------------------------------------------------------------------------
 
 export interface SessionState {
-  id: string;
-  thinking: ThinkingLevel;
-  reasoningVisible: boolean;
-  toolsVisible: boolean;
-  history: Message[];
+  id: string
+  thinking: ThinkingLevel
+  reasoningVisible: boolean
+  toolsVisible: boolean
+  history: Message[]
   /** System prompt — built once on session init, reused every turn */
-  systemPrompt?: string;
+  systemPrompt?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -37,8 +45,8 @@ export interface SessionState {
 // ---------------------------------------------------------------------------
 
 export interface QueuedMessage {
-  message: InboundMessage;
-  receivedAt: number;
+  message: InboundMessage
+  receivedAt: number
 }
 
 // ---------------------------------------------------------------------------
@@ -46,18 +54,18 @@ export interface QueuedMessage {
 // ---------------------------------------------------------------------------
 
 export interface DelegationRequest {
-  fromAgent: string;
-  toAgent: string;
-  task: string;
-  context?: string[];
-  timeoutMs?: number;
+  fromAgent: string
+  toAgent: string
+  task: string
+  context?: string[]
+  timeoutMs?: number
 }
 
 export interface DelegationResult {
-  status: 'completed' | 'failed' | 'timeout';
-  response: string;
-  iterations?: number;
-  usage?: TokenUsage;
+  status: 'completed' | 'failed' | 'timeout'
+  response: string
+  iterations?: number
+  usage?: TokenUsage
 }
 
 // ---------------------------------------------------------------------------
@@ -65,12 +73,12 @@ export interface DelegationResult {
 // ---------------------------------------------------------------------------
 
 export interface TokenUsage {
-  agent: string;
-  provider: string;
-  model: string;
-  promptTokens: number;
-  completionTokens: number;
-  timestamp: number;
+  agent: string
+  provider: string
+  model: string
+  promptTokens: number
+  completionTokens: number
+  timestamp: number
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +86,7 @@ export interface TokenUsage {
 // ---------------------------------------------------------------------------
 
 /** Response strings that the runtime should swallow (not send to channel) */
-export type SilentResponse = 'NO_REPLY' | 'HEARTBEAT_OK';
+export type SilentResponse = 'NO_REPLY' | 'HEARTBEAT_OK'
 
 // ---------------------------------------------------------------------------
 // Runtime Commands
@@ -93,4 +101,4 @@ export type RuntimeCommand =
   | 'model'
   | 'think'
   | 'reasoning'
-  | 'tools';
+  | 'tools'

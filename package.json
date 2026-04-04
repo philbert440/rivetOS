@@ -41,22 +41,32 @@
     "rivetos": "./packages/cli/src/index.ts"
   },
   "scripts": {
-    "build": "npx nx run-many -t build",
-    "test": "vitest run",
-    "dev": "npx tsx src/boot.ts",
-    "cli": "npx tsx packages/cli/src/index.ts",
-    "graph": "npx nx graph"
+    "build": "nx run-many -t build",
+    "lint": "nx run-many -t lint",
+    "test": "nx run-many -t test",
+    "typecheck": "nx run-many -t typecheck",
+    "ci": "nx run-many -t lint build test",
+    "ci:affected": "nx affected -t lint build test",
+    "dev": "tsx packages/cli/src/index.ts start",
+    "cli": "tsx packages/cli/src/index.ts",
+    "graph": "nx graph"
   },
   "bugs": {
     "url": "https://github.com/philbert440/rivetOS/issues"
   },
   "homepage": "https://rivetos.dev",
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@nx/js": "^22.6.4",
     "@types/node": "^25.5.2",
+    "eslint": "^10.2.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
     "nx": "^22.6.4",
+    "prettier": "^3.8.1",
     "tsx": "^4.21.0",
     "typescript": "^5.8.3",
+    "typescript-eslint": "^8.58.0",
     "vitest": "^4.1.2"
   },
   "dependencies": {

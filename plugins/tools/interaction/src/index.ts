@@ -4,12 +4,12 @@
  * Interaction tools (todo, ask_user) for RivetOS agents.
  */
 
-export { createTodoTool } from './tools/todo.js';
-export { createAskUserTool } from './tools/ask-user.js';
+export { createTodoTool } from './tools/todo.js'
+export { createAskUserTool } from './tools/ask-user.js'
 
-import type { Plugin, PluginConfig } from '@rivetos/types';
-import { createTodoTool } from './tools/todo.js';
-import { createAskUserTool } from './tools/ask-user.js';
+import type { Plugin, PluginConfig } from '@rivetos/types'
+import { createTodoTool } from './tools/todo.js'
+import { createAskUserTool } from './tools/ask-user.js'
 
 export function createInteractionToolsPlugin(): Plugin {
   return {
@@ -18,11 +18,8 @@ export function createInteractionToolsPlugin(): Plugin {
     description: 'Interaction tools (todo, ask_user)',
     async init(_config: PluginConfig) {},
     getTools() {
-      return [
-        createTodoTool(),
-        createAskUserTool(),
-      ];
+      return [createTodoTool(), createAskUserTool()]
     },
     async shutdown() {},
-  };
+  }
 }

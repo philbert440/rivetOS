@@ -12,69 +12,69 @@ import type {
   Message,
   SessionState,
   ThinkingLevel,
-} from '@rivetos/types';
-import type { Router } from '../domain/router.js';
-import { logger } from '../logger.js';
+} from '@rivetos/types'
+import type { Router } from '../domain/router.js'
+import { logger } from '../logger.js'
 
-const log = logger('SessionManager');
+const _log = logger('SessionManager')
 
 // ---------------------------------------------------------------------------
 // Session Manager
 // ---------------------------------------------------------------------------
 
 export class SessionManager {
-  private sessions: Map<string, SessionState> = new Map();
-  private router: Router;
-  private memory?: Memory;
+  private sessions: Map<string, SessionState> = new Map()
+  private router: Router
+  private memory?: Memory
 
   constructor(router: Router, memory?: Memory) {
-    this.router = router;
-    this.memory = memory;
+    this.router = router
+    this.memory = memory
   }
 
   setMemory(memory: Memory): void {
-    this.memory = memory;
+    this.memory = memory
   }
 
   /**
    * Get existing session or create a new one (restoring history + settings).
    */
   async getOrCreateSession(sessionKey: string, message: InboundMessage): Promise<SessionState> {
-    let session = this.sessions.get(sessionKey);
+    let session = this.sessions.get(sessionKey)
     if (!session) {
-      const { agent } = this.router.route(message);
-      session = await this.createSession(sessionKey, agent);
-      this.sessions.set(sessionKey, session);
+      const { agent } = this.router.route(message)
+      session = await this.createSession(sessionKey, agent)
+      this.sessions.set(sessionKey, session)
     }
-    return session;
+    return session
   }
 
   /**
    * Get an existing session (no creation).
    */
   get(sessionKey: string): SessionState | undefined {
-    return this.sessions.get(sessionKey);
+    return this.sessions.get(sessionKey)
   }
 
   /**
    * Set a session in the map.
    */
   set(sessionKey: string, session: SessionState): void {
-    this.sessions.set(sessionKey, session);
+    this.sessions.set(sessionKey, session)
   }
 
   /**
    * Delete a session (used by /new). Next message creates a truly fresh session.
    */
   delete(sessionKey: string): void {
-    this.sessions.delete(sessionKey);
+    this.sessions.delete(sessionKey)
   }
 
   /**
    * Check if a session exists.
    */
   has(sessionKey: string): boolean {
-    return this.sessions.has(sessionKey);
+    return this.sessions.has(sessionKey)
   }
 
   /**
@@ -84,7 +84,7 @@ export class SessionManager {
     // Fresh session — empty conversation history.
     // Inject a brief recent activity summary so the agent has context
     // without loading 100 raw messages.
-    const history: Message[] = [];
+    const history: Message[] = []
 
     if (this.memory) {
       try {
@@ -93,46 +93,52 @@ export class SessionManager {
           'recent activity summary',
           agent.id,
           { maxTokens: 500 },
-        );
+        )
         if (recentContext && recentContext.trim()) {
           history.push({
             role: 'system',
             content: `## Recent Activity (last 48h)\n${recentContext}`,
-          });
+          })
         }
-      } catch {}
+      } catch {
+        /* expected */
+      }
     }
 
     // Restore settings
-    let thinking: ThinkingLevel = agent.defaultThinking ?? 'medium';
-    let reasoningVisible = false;
-    let toolsVisible = false;
+    let thinking: ThinkingLevel = agent.defaultThinking ?? 'medium'
+    let reasoningVisible = false
+    let toolsVisible = false
 
     if (this.memory?.loadSessionSettings) {
       try {
-        const settings = await this.memory.loadSessionSettings(sessionKey);
+        const settings = await this.memory.loadSessionSettings(sessionKey)
         if (settings) {
-          thinking = (settings.thinking as ThinkingLevel) ?? thinking;
-          reasoningVisible = (settings.reasoningVisible as boolean) ?? reasoningVisible;
-          toolsVisible = (settings.toolsVisible as boolean) ?? toolsVisible;
+          thinking = (settings.thinking as ThinkingLevel | undefined) ?? thinking
+          reasoningVisible = (settings.reasoningVisible as boolean | undefined) ?? reasoningVisible
+          toolsVisible = (settings.toolsVisible as boolean | undefined) ?? toolsVisible
         }
-      } catch {}
+      } catch {
+        /* expected */
+      }
     }
 
-    return { id: sessionKey, thinking, reasoningVisible, toolsVisible, history };
+    return { id: sessionKey, thinking, reasoningVisible, toolsVisible, history }
   }
 
   /**
    * Persist session settings after a change.
    */
   async saveSessionSettings(session: SessionState): Promise<void> {
-    if (!this.memory?.saveSessionSettings) return;
+    if (!this.memory?.saveSessionSettings) return
     try {
       await this.memory.saveSessionSettings(session.id, {
         thinking: session.thinking,
         reasoningVisible: session.reasoningVisible,
         toolsVisible: session.toolsVisible,
-      });
-    } catch {}
+      })
+    } catch {
+      /* expected */
+    }
   }
 }

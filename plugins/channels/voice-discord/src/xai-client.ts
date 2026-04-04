@@ -6,36 +6,59 @@
  * Auto-reconnect with exponential backoff.
  */
 
-import WebSocket from 'ws';
+import WebSocket from 'ws'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface XAIConfig {
-  apiKey: string;
-  voice: string;
-  instructions: string;
-  sampleRate: number;
-  silenceDurationMs: number;
-  collectionId?: string;
+  apiKey: string
+  voice: string
+  instructions: string
+  sampleRate: number
+  silenceDurationMs: number
+  collectionId?: string
 }
 
 export interface XAICallbacks {
-  onAudio: (audio: Buffer) => void;
-  onUserTranscript: (text: string) => void;
-  onAssistantTranscript: (text: string) => void;
-  onResponseDone: () => void;
-  onFunctionCall: (name: string, callId: string, args: string) => Promise<string>;
-  onError: (error: Error) => void;
+  onAudio: (audio: Buffer) => void
+  onUserTranscript: (text: string) => void
+  onAssistantTranscript: (text: string) => void
+  onResponseDone: () => void
+  onFunctionCall: (name: string, callId: string, args: string) => Promise<string>
+  onError: (error: Error) => void
 }
 
 // ---------------------------------------------------------------------------
-// Tools
+// xAI event shapes (partial — only fields we access)
 // ---------------------------------------------------------------------------
 
-function buildTools(collectionId?: string): any[] {
-  const tools: any[] = [
+interface XAIEvent {
+  type: string
+  delta?: string
+  transcript?: string
+  name?: string
+  call_id?: string
+  arguments?: string
+  error?: { message?: string }
+}
+
+// ---------------------------------------------------------------------------
+// Tool definitions
+// ---------------------------------------------------------------------------
+
+interface XAITool {
+  type: string
+  name?: string
+  description?: string
+  parameters?: Record<string, unknown>
+  vector_store_ids?: string[]
+  max_num_results?: number
+}
+
+function buildTools(collectionId?: string): XAITool[] {
+  const tools: XAITool[] = [
     { type: 'web_search' },
     {
       type: 'function',
@@ -72,17 +95,17 @@ function buildTools(collectionId?: string): any[] {
         required: [],
       },
     },
-  ];
+  ]
 
   if (collectionId) {
     tools.push({
       type: 'file_search',
       vector_store_ids: [collectionId],
       max_num_results: 10,
-    });
+    })
   }
 
-  return tools;
+  return tools
 }
 
 // ---------------------------------------------------------------------------
@@ -90,19 +113,19 @@ function buildTools(collectionId?: string): any[] {
 // ---------------------------------------------------------------------------
 
 export class XAIRealtimeClient {
-  private ws: WebSocket | null = null;
-  private callbacks: XAICallbacks;
-  private config: XAIConfig;
-  private sessionConfigured = false;
-  private sessionConfigSent = false;
-  private reconnectAttempts = 0;
-  private maxReconnects = 5;
-  private assistantTranscriptBuffer = '';
-  private intentionalClose = false;
+  private ws: WebSocket | null = null
+  private callbacks: XAICallbacks
+  private config: XAIConfig
+  private sessionConfigured = false
+  private sessionConfigSent = false
+  private reconnectAttempts = 0
+  private maxReconnects = 5
+  private assistantTranscriptBuffer = ''
+  private intentionalClose = false
 
   constructor(config: XAIConfig, callbacks: XAICallbacks) {
-    this.config = config;
-    this.callbacks = callbacks;
+    this.config = config
+    this.callbacks = callbacks
   }
 
   // -----------------------------------------------------------------------
@@ -110,51 +133,52 @@ export class XAIRealtimeClient {
   // -----------------------------------------------------------------------
 
   connect(): void {
-    this.intentionalClose = false;
-    this.doConnect();
+    this.intentionalClose = false
+    this.doConnect()
   }
 
   isReady(): boolean {
-    return this.sessionConfigured;
+    return this.sessionConfigured
   }
 
   private doConnect(): void {
-    this.sessionConfigured = false;
-    this.sessionConfigSent = false;
+    this.sessionConfigured = false
+    this.sessionConfigSent = false
 
     this.ws = new WebSocket('wss://api.x.ai/v1/realtime', {
       headers: { Authorization: `Bearer ${this.config.apiKey}` },
-    });
+    })
 
     this.ws.on('open', () => {
-      this.reconnectAttempts = 0;
-    });
+      this.reconnectAttempts = 0
+    })
 
     this.ws.on('message', (data: Buffer) => {
       try {
-        this.handleEvent(JSON.parse(data.toString()));
-      } catch (err: any) {
+        const event = JSON.parse(data.toString()) as XAIEvent
+        this.handleEvent(event)
+      } catch {
         // Parse error — skip
       }
-    });
+    })
 
     this.ws.on('error', (err) => {
-      this.callbacks.onError(err as Error);
-    });
+      this.callbacks.onError(err)
+    })
 
     this.ws.on('close', () => {
-      if (!this.intentionalClose) this.reconnect();
-    });
+      if (!this.intentionalClose) this.reconnect()
+    })
   }
 
   private reconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnects) {
-      this.callbacks.onError(new Error('Max reconnect attempts reached'));
-      return;
+      this.callbacks.onError(new Error('Max reconnect attempts reached'))
+      return
     }
-    const delay = 1000 * Math.pow(2, this.reconnectAttempts);
-    this.reconnectAttempts++;
-    setTimeout(() => this.doConnect(), delay);
+    const delay = 1000 * Math.pow(2, this.reconnectAttempts)
+    this.reconnectAttempts++
+    setTimeout(() => this.doConnect(), delay)
   }
 
   // -----------------------------------------------------------------------
@@ -162,7 +186,7 @@ export class XAIRealtimeClient {
   // -----------------------------------------------------------------------
 
   updateSession(voice: string, instructions: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
 
     this.ws.send(
       JSON.stringify({
@@ -182,8 +206,8 @@ export class XAIRealtimeClient {
           tools: buildTools(this.config.collectionId),
         },
       }),
-    );
-    this.sessionConfigSent = true;
+    )
+    this.sessionConfigSent = true
   }
 
   // -----------------------------------------------------------------------
@@ -191,78 +215,76 @@ export class XAIRealtimeClient {
   // -----------------------------------------------------------------------
 
   sendAudio(pcm: Buffer): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.sessionConfigured) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.sessionConfigured) return
     this.ws.send(
       JSON.stringify({
         type: 'input_audio_buffer.append',
         audio: pcm.toString('base64'),
       }),
-    );
+    )
   }
 
   // -----------------------------------------------------------------------
   // Event Handler
   // -----------------------------------------------------------------------
 
-  private handleEvent(event: any): void {
+  private handleEvent(event: XAIEvent): void {
     switch (event.type) {
       // Session lifecycle
       case 'conversation.created':
       case 'session.created':
         if (!this.sessionConfigSent) {
-          this.updateSession(this.config.voice, this.config.instructions);
+          this.updateSession(this.config.voice, this.config.instructions)
         }
-        break;
+        break
 
       case 'session.updated':
-        this.sessionConfigured = true;
-        break;
+        this.sessionConfigured = true
+        break
 
       // Audio output
       case 'response.audio.delta':
       case 'response.output_audio.delta':
         if (event.delta) {
-          this.callbacks.onAudio(Buffer.from(event.delta, 'base64'));
+          this.callbacks.onAudio(Buffer.from(event.delta, 'base64'))
         }
-        break;
+        break
 
       // User transcription
       case 'conversation.item.input_audio_transcription.completed':
         if (event.transcript) {
-          this.callbacks.onUserTranscript(event.transcript);
+          this.callbacks.onUserTranscript(event.transcript)
         }
-        break;
+        break
 
       // Assistant transcription (streaming)
       case 'response.audio_transcript.delta':
       case 'response.output_audio_transcript.delta':
-        if (event.delta) this.assistantTranscriptBuffer += event.delta;
-        break;
+        if (event.delta) this.assistantTranscriptBuffer += event.delta
+        break
 
       case 'response.audio_transcript.done':
       case 'response.output_audio_transcript.done':
         if (this.assistantTranscriptBuffer || event.transcript) {
-          this.callbacks.onAssistantTranscript(
-            this.assistantTranscriptBuffer || event.transcript,
-          );
-          this.assistantTranscriptBuffer = '';
+          this.callbacks.onAssistantTranscript(this.assistantTranscriptBuffer || event.transcript!)
+          this.assistantTranscriptBuffer = ''
         }
-        break;
+        break
 
       // Function calls
       case 'response.function_call_arguments.done':
-        this.handleFunctionCall(event.name, event.call_id, event.arguments);
-        break;
+        void this.handleFunctionCall(event.name!, event.call_id!, event.arguments!)
+        break
 
       // Response lifecycle
       case 'response.done':
-        this.callbacks.onResponseDone();
-        break;
+        this.callbacks.onResponseDone()
+        break
 
       // Errors
       case 'error':
-        this.callbacks.onError(new Error(event.error?.message ?? 'Unknown xAI error'));
-        break;
+        this.callbacks.onError(new Error(event.error?.message ?? 'Unknown xAI error'))
+        break
 
       // Silently ignore expected events
       case 'input_audio_buffer.speech_started':
@@ -274,7 +296,7 @@ export class XAIRealtimeClient {
       case 'conversation.item.created':
       case 'conversation.item.added':
       case 'rate_limits.updated':
-        break;
+        break
     }
   }
 
@@ -284,10 +306,10 @@ export class XAIRealtimeClient {
 
   private async handleFunctionCall(name: string, callId: string, rawArgs: string): Promise<void> {
     try {
-      const result = await this.callbacks.onFunctionCall(name, callId, rawArgs);
+      const result = await this.callbacks.onFunctionCall(name, callId, rawArgs)
 
       // Sanitize lone surrogates that xAI rejects
-      const sanitized = result.replace(/[\uD800-\uDFFF]/g, '\uFFFD');
+      const sanitized = result.replace(/[\uD800-\uDFFF]/g, '\uFFFD')
 
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(
@@ -295,10 +317,11 @@ export class XAIRealtimeClient {
             type: 'conversation.item.create',
             item: { type: 'function_call_output', call_id: callId, output: sanitized },
           }),
-        );
-        this.ws.send(JSON.stringify({ type: 'response.create' }));
+        )
+        this.ws.send(JSON.stringify({ type: 'response.create' }))
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(
           JSON.stringify({
@@ -306,11 +329,11 @@ export class XAIRealtimeClient {
             item: {
               type: 'function_call_output',
               call_id: callId,
-              output: JSON.stringify({ error: err.message }),
+              output: JSON.stringify({ error: message }),
             },
           }),
-        );
-        this.ws.send(JSON.stringify({ type: 'response.create' }));
+        )
+        this.ws.send(JSON.stringify({ type: 'response.create' }))
       }
     }
   }
@@ -320,8 +343,8 @@ export class XAIRealtimeClient {
   // -----------------------------------------------------------------------
 
   disconnect(): void {
-    this.intentionalClose = true;
-    this.ws?.close();
-    this.ws = null;
+    this.intentionalClose = true
+    this.ws?.close()
+    this.ws = null
   }
 }

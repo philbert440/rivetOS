@@ -17,22 +17,22 @@
  *   migrate.ts   — one-shot migration from LCM tables (standalone script)
  */
 
-export { PostgresMemory } from './adapter.js';
-export type { PostgresMemoryConfig } from './adapter.js';
+export { PostgresMemory } from './adapter.js'
+export type { PostgresMemoryConfig } from './adapter.js'
 
-export { SearchEngine } from './search.js';
-export type { SearchOptions, SearchHit } from './search.js';
+export { SearchEngine } from './search.js'
+export type { SearchOptions, SearchHit } from './search.js'
 
-export { Expander } from './expand.js';
-export type { SummaryNode, ExpandResult } from './expand.js';
+export { Expander } from './expand.js'
+export type { SummaryNode, ExpandResult } from './expand.js'
 
-export { createMemoryTools } from './tools.js';
-export type { MemoryToolsConfig } from './tools.js';
+export { createMemoryTools } from './tools.js'
+export type { MemoryToolsConfig } from './tools.js'
 
-export { BackgroundEmbedder } from './embedder.js';
-export type { EmbedderConfig } from './embedder.js';
+export { BackgroundEmbedder } from './embedder.js'
+export type { EmbedderConfig } from './embedder.js'
 
-export { BackgroundCompactor } from './compactor.js';
-export type { CompactorConfig } from './compactor.js';
+export { BackgroundCompactor } from './compactor.js'
+export type { CompactorConfig } from './compactor.js'
 
-export { computeRelevance, temporalDecay } from './scoring.js';
+export { computeRelevance, temporalDecay } from './scoring.js'

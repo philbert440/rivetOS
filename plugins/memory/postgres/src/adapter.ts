@@ -14,28 +14,45 @@
  *   relevance = (fts × 0.3) + (semantic × 0.3) + (temporal × 0.3) + (importance × 0.1)
  */
 
-import pg from 'pg';
-import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types';
-import { SearchEngine } from './search.js';
-import { Expander } from './expand.js';
-import {
-  temporalDecay,
-  importanceForRole,
-  computeRelevance,
-  SUMMARY_IMPORTANCE,
-} from './scoring.js';
+import pg from 'pg'
+import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types'
+import { SearchEngine } from './search.js'
+import { Expander } from './expand.js'
 
-const { Pool } = pg;
-const MS_PER_DAY = 86_400_000;
+const { Pool } = pg
+const MS_PER_DAY = 86_400_000
+
+// ---------------------------------------------------------------------------
+// Row interfaces
+// ---------------------------------------------------------------------------
+
+interface IdRow {
+  id: string
+}
+
+interface RecentMessageRow {
+  content: string
+  role: string
+  created_at: Date
+}
+
+interface SessionMessageRow {
+  role: string
+  content: string
+}
+
+interface SettingsRow {
+  settings: Record<string, unknown> | null
+}
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 export interface PostgresMemoryConfig {
-  connectionString: string;
+  connectionString: string
   /** Maximum pool connections (default: 5) */
-  maxConnections?: number;
+  maxConnections?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -43,32 +60,32 @@ export interface PostgresMemoryConfig {
 // ---------------------------------------------------------------------------
 
 export class PostgresMemory implements Memory {
-  private pool: pg.Pool;
-  private searchEngine: SearchEngine;
-  private expander: Expander;
+  private pool: pg.Pool
+  private searchEngine: SearchEngine
+  private expander: Expander
 
   constructor(config: PostgresMemoryConfig) {
     this.pool = new Pool({
       connectionString: config.connectionString,
       max: config.maxConnections ?? 5,
-    });
-    this.searchEngine = new SearchEngine(this.pool);
-    this.expander = new Expander(this.pool);
+    })
+    this.searchEngine = new SearchEngine(this.pool)
+    this.expander = new Expander(this.pool)
   }
 
   /** Expose pool for boot.ts to create shared search/expand instances */
   getPool(): pg.Pool {
-    return this.pool;
+    return this.pool
   }
 
   /** Expose the internal search engine */
   getSearchEngine(): SearchEngine {
-    return this.searchEngine;
+    return this.searchEngine
   }
 
   /** Expose the internal expander */
   getExpander(): Expander {
-    return this.expander;
+    return this.expander
   }
 
   // -----------------------------------------------------------------------
@@ -76,18 +93,18 @@ export class PostgresMemory implements Memory {
   // -----------------------------------------------------------------------
 
   async append(entry: MemoryEntry): Promise<string> {
-    const client = await this.pool.connect();
+    const client = await this.pool.connect()
     try {
-      await client.query('BEGIN');
+      await client.query('BEGIN')
 
       const convId = await this.ensureConversation(
         client,
         entry.sessionId,
         entry.agent,
         entry.channel,
-      );
+      )
 
-      const result = await client.query(
+      const result = await client.query<IdRow>(
         `INSERT INTO ros_messages
            (conversation_id, agent, channel, role, content,
             tool_name, tool_args, tool_result, metadata, created_at)
@@ -96,7 +113,7 @@ export class PostgresMemory implements Memory {
         [
           convId,
           entry.agent,
-          entry.channel ?? 'unknown',
+          entry.channel,
           entry.role,
           entry.content,
           entry.toolName ?? null,
@@ -105,20 +122,17 @@ export class PostgresMemory implements Memory {
           entry.metadata ? JSON.stringify(entry.metadata) : '{}',
           entry.createdAt ?? null,
         ],
-      );
+      )
 
-      await client.query(
-        'UPDATE ros_conversations SET updated_at = NOW() WHERE id = $1',
-        [convId],
-      );
+      await client.query('UPDATE ros_conversations SET updated_at = NOW() WHERE id = $1', [convId])
 
-      await client.query('COMMIT');
-      return result.rows[0].id;
+      await client.query('COMMIT')
+      return result.rows[0].id
     } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
+      await client.query('ROLLBACK')
+      throw err
     } finally {
-      client.release();
+      client.release()
     }
   }
 
@@ -129,9 +143,9 @@ export class PostgresMemory implements Memory {
   async search(
     query: string,
     options?: {
-      agent?: string;
-      limit?: number;
-      scope?: 'messages' | 'summaries' | 'both';
+      agent?: string
+      limit?: number
+      scope?: 'messages' | 'summaries' | 'both'
     },
   ): Promise<MemorySearchResult[]> {
     const hits = await this.searchEngine.search(query, {
@@ -139,7 +153,7 @@ export class PostgresMemory implements Memory {
       scope: options?.scope ?? 'both',
       limit: options?.limit ?? 20,
       agent: options?.agent,
-    });
+    })
 
     return hits.map((h) => ({
       id: h.id,
@@ -148,7 +162,7 @@ export class PostgresMemory implements Memory {
       agent: h.agent,
       relevanceScore: h.score,
       createdAt: h.createdAt,
-    }));
+    }))
   }
 
   // -----------------------------------------------------------------------
@@ -160,13 +174,13 @@ export class PostgresMemory implements Memory {
     agent: string,
     options?: { maxTokens?: number },
   ): Promise<string> {
-    const maxTokens = options?.maxTokens ?? 4000;
-    const sections: string[] = [];
-    let tokenEstimate = 0;
-    const seen = new Set<string>();
+    const maxTokens = options?.maxTokens ?? 4000
+    const sections: string[] = []
+    let tokenEstimate = 0
+    const seen = new Set<string>()
 
     // 1. Recent messages from this agent's active conversations
-    const recent = await this.pool.query(
+    const recent = await this.pool.query<RecentMessageRow>(
       `SELECT m.content, m.role, m.created_at
        FROM ros_messages m
        JOIN ros_conversations c ON c.id = m.conversation_id
@@ -174,17 +188,17 @@ export class PostgresMemory implements Memory {
        ORDER BY m.created_at DESC
        LIMIT 5`,
       [agent],
-    );
+    )
 
     if (recent.rows.length > 0) {
-      sections.push('\n## Recent');
+      sections.push('\n## Recent')
       for (const row of recent.rows.reverse()) {
-        if (seen.has(row.content)) continue;
-        seen.add(row.content);
-        const line = `[${row.role}] ${row.content.slice(0, 500)}`;
-        tokenEstimate += Math.ceil(line.length / 4);
-        if (tokenEstimate > maxTokens) break;
-        sections.push(line);
+        if (seen.has(row.content)) continue
+        seen.add(row.content)
+        const line = `[${row.role}] ${row.content.slice(0, 500)}`
+        tokenEstimate += Math.ceil(line.length / 4)
+        if (tokenEstimate > maxTokens) break
+        sections.push(line)
       }
     }
 
@@ -193,35 +207,32 @@ export class PostgresMemory implements Memory {
       agent,
       limit: 10,
       scope: 'both',
-    });
+    })
 
     if (relevant.length > 0) {
-      sections.push('\n## Relevant Context');
+      sections.push('\n## Relevant Context')
       for (const r of relevant) {
-        if (seen.has(r.content)) continue;
-        seen.add(r.content);
-        const age = Math.floor((Date.now() - r.createdAt.getTime()) / MS_PER_DAY);
-        const line = `[${r.agent}/${r.role}, ${age}d ago] ${r.content.slice(0, 500)}`;
-        tokenEstimate += Math.ceil(line.length / 4);
-        if (tokenEstimate > maxTokens) break;
-        sections.push(line);
+        if (seen.has(r.content)) continue
+        seen.add(r.content)
+        const age = Math.floor((Date.now() - r.createdAt.getTime()) / MS_PER_DAY)
+        const line = `[${r.agent}/${r.role}, ${String(age)}d ago] ${r.content.slice(0, 500)}`
+        tokenEstimate += Math.ceil(line.length / 4)
+        if (tokenEstimate > maxTokens) break
+        sections.push(line)
       }
     }
 
-    return sections.join('\n');
+    return sections.join('\n')
   }
 
   // -----------------------------------------------------------------------
   // getSessionHistory — restore conversation on startup/reconnect
   // -----------------------------------------------------------------------
 
-  async getSessionHistory(
-    sessionId: string,
-    options?: { limit?: number },
-  ): Promise<Message[]> {
-    const limit = options?.limit ?? 100;
+  async getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]> {
+    const limit = options?.limit ?? 100
 
-    const result = await this.pool.query(
+    const result = await this.pool.query<SessionMessageRow>(
       `SELECT m.role, m.content
        FROM ros_messages m
        JOIN ros_conversations c ON c.id = m.conversation_id
@@ -229,44 +240,39 @@ export class PostgresMemory implements Memory {
        ORDER BY m.created_at DESC
        LIMIT $2`,
       [sessionId, limit],
-    );
+    )
 
     // Reverse to chronological order
     return result.rows.reverse().map((r) => ({
       role: r.role as Message['role'],
       content: r.content,
-    }));
+    }))
   }
 
   // -----------------------------------------------------------------------
   // Session settings — persisted in ros_conversations.settings (JSONB)
   // -----------------------------------------------------------------------
 
-  async saveSessionSettings(
-    sessionId: string,
-    settings: Record<string, unknown>,
-  ): Promise<void> {
+  async saveSessionSettings(sessionId: string, settings: Record<string, unknown>): Promise<void> {
     await this.pool.query(
       `UPDATE ros_conversations SET settings = $1
        WHERE session_key = $2 AND active = true`,
       [JSON.stringify(settings), sessionId],
-    );
+    )
   }
 
-  async loadSessionSettings(
-    sessionId: string,
-  ): Promise<Record<string, unknown> | null> {
-    const result = await this.pool.query(
+  async loadSessionSettings(sessionId: string): Promise<Record<string, unknown> | null> {
+    const result = await this.pool.query<SettingsRow>(
       `SELECT settings FROM ros_conversations
        WHERE session_key = $1 AND active = true
        ORDER BY updated_at DESC LIMIT 1`,
       [sessionId],
-    );
+    )
 
-    if (result.rows.length === 0) return null;
-    const settings = result.rows[0].settings;
-    if (!settings || typeof settings !== 'object') return null;
-    return settings as Record<string, unknown>;
+    if (result.rows.length === 0) return null
+    const settings = result.rows[0].settings
+    if (!settings || typeof settings !== 'object') return null
+    return settings
   }
 
   // -----------------------------------------------------------------------
@@ -274,7 +280,7 @@ export class PostgresMemory implements Memory {
   // -----------------------------------------------------------------------
 
   async close(): Promise<void> {
-    await this.pool.end();
+    await this.pool.end()
   }
 
   // -----------------------------------------------------------------------
@@ -288,25 +294,25 @@ export class PostgresMemory implements Memory {
     channel?: string,
   ): Promise<string> {
     // Try to find an active conversation for this session + agent
-    const existing = await client.query(
+    const existing = await client.query<IdRow>(
       `SELECT id FROM ros_conversations
        WHERE session_key = $1 AND agent = $2 AND active = true
        ORDER BY updated_at DESC LIMIT 1`,
       [sessionId, agent],
-    );
+    )
 
     if (existing.rows.length > 0) {
-      return existing.rows[0].id;
+      return existing.rows[0].id
     }
 
     // Create a new conversation
-    const result = await client.query(
+    const result = await client.query<IdRow>(
       `INSERT INTO ros_conversations (session_key, agent, channel, title, created_at, updated_at)
        VALUES ($1, $2, $3, $4, NOW(), NOW())
        RETURNING id`,
       [sessionId, agent, channel ?? 'unknown', `Session ${sessionId}`],
-    );
+    )
 
-    return result.rows[0].id;
+    return result.rows[0].id
   }
 }

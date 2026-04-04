@@ -12,39 +12,57 @@
  * If it starts with sk-ant-api, it's a regular API key.
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { randomBytes, createHash } from 'node:crypto';
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { join, dirname } from 'node:path'
+import { randomBytes, createHash } from 'node:crypto'
 
 // ---------------------------------------------------------------------------
 // Constants (from Anthropic's OAuth spec, same as Claude Code uses)
 // ---------------------------------------------------------------------------
 
-const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
-const TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
-const MANUAL_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
-const SCOPES = 'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload';
+const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
+const AUTHORIZE_URL = 'https://claude.ai/oauth/authorize'
+const TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
+const MANUAL_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback'
+const SCOPES =
+  'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload'
+
+/** Shape of the token endpoint response */
+interface TokenResponse {
+  access_token: string
+  refresh_token: string
+  expires_in: number
+}
+
+function isTokenResponse(value: unknown): value is TokenResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'access_token' in value &&
+    'refresh_token' in value &&
+    'expires_in' in value
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface OAuthTokens {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number;  // ms since epoch
+  accessToken: string
+  refreshToken: string
+  expiresAt: number // ms since epoch
 }
 
-export type AuthMode = 'api_key' | 'oauth';
+export type AuthMode = 'api_key' | 'oauth'
 
 // ---------------------------------------------------------------------------
 // Detection
 // ---------------------------------------------------------------------------
 
 export function detectAuthMode(key: string): AuthMode {
-  if (key.includes('sk-ant-oat')) return 'oauth';
-  return 'api_key';
+  if (key.includes('sk-ant-oat')) return 'oauth'
+  return 'api_key'
 }
 
 // ---------------------------------------------------------------------------
@@ -52,42 +70,35 @@ export function detectAuthMode(key: string): AuthMode {
 // ---------------------------------------------------------------------------
 
 function base64url(buffer: Buffer): string {
-  return buffer.toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
+  return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-async function generatePKCE(): Promise<{ verifier: string; challenge: string }> {
-  const verifier = base64url(randomBytes(32));
-  const hash = createHash('sha256').update(verifier).digest();
-  const challenge = base64url(hash);
-  return { verifier, challenge };
+function generatePKCE(): { verifier: string; challenge: string } {
+  const verifier = base64url(randomBytes(32))
+  const hash = createHash('sha256').update(verifier).digest()
+  const challenge = base64url(hash)
+  return { verifier, challenge }
 }
 
 // ---------------------------------------------------------------------------
 // Token Storage
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TOKEN_PATH = join(
-  process.env.HOME ?? '.',
-  '.rivetos',
-  'anthropic-tokens.json',
-);
+const DEFAULT_TOKEN_PATH = join(process.env.HOME ?? '.', '.rivetos', 'anthropic-tokens.json')
 
 export async function loadTokens(path?: string): Promise<OAuthTokens | null> {
   try {
-    const raw = await readFile(path ?? DEFAULT_TOKEN_PATH, 'utf-8');
-    return JSON.parse(raw) as OAuthTokens;
+    const raw = await readFile(path ?? DEFAULT_TOKEN_PATH, 'utf-8')
+    return JSON.parse(raw) as OAuthTokens
   } catch {
-    return null;
+    return null
   }
 }
 
 export async function saveTokens(tokens: OAuthTokens, path?: string): Promise<void> {
-  const tokenPath = path ?? DEFAULT_TOKEN_PATH;
-  await mkdir(dirname(tokenPath), { recursive: true });
-  await writeFile(tokenPath, JSON.stringify(tokens, null, 2), { mode: 0o600 });
+  const tokenPath = path ?? DEFAULT_TOKEN_PATH
+  await mkdir(dirname(tokenPath), { recursive: true })
+  await writeFile(tokenPath, JSON.stringify(tokens, null, 2), { mode: 0o600 })
 }
 
 // ---------------------------------------------------------------------------
@@ -108,19 +119,22 @@ export async function refreshAccessToken(refreshToken: string): Promise<OAuthTok
       scope: SCOPES,
     }),
     signal: AbortSignal.timeout(30_000),
-  });
+  })
 
-  const body = await response.text();
+  const body = await response.text()
   if (!response.ok) {
-    throw new Error(`Token refresh failed (${response.status}): ${body}`);
+    throw new Error(`Token refresh failed (${response.status}): ${body}`)
   }
 
-  const data = JSON.parse(body);
+  const raw: unknown = JSON.parse(body)
+  if (!isTokenResponse(raw)) {
+    throw new Error(`Invalid token response: ${body.slice(0, 200)}`)
+  }
   return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresAt: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000, // 5 min buffer
-  };
+    accessToken: raw.access_token,
+    refreshToken: raw.refresh_token,
+    expiresAt: Date.now() + raw.expires_in * 1000 - 5 * 60 * 1000, // 5 min buffer
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -131,8 +145,8 @@ export async function refreshAccessToken(refreshToken: string): Promise<OAuthTok
  * Generate the authorization URL for the user to visit.
  * Returns the URL and the PKCE verifier (needed for code exchange).
  */
-export async function generateAuthUrl(): Promise<{ url: string; verifier: string }> {
-  const { verifier, challenge } = await generatePKCE();
+export function generateAuthUrl(): { url: string; verifier: string } {
+  const { verifier, challenge } = generatePKCE()
 
   const params = new URLSearchParams({
     code: 'true',
@@ -143,22 +157,19 @@ export async function generateAuthUrl(): Promise<{ url: string; verifier: string
     code_challenge: challenge,
     code_challenge_method: 'S256',
     state: verifier,
-  });
+  })
 
   return {
     url: `${AUTHORIZE_URL}?${params.toString()}`,
     verifier,
-  };
+  }
 }
 
 /**
  * Exchange an authorization code for tokens.
  * The code comes from the redirect URL after the user approves.
  */
-export async function exchangeCode(
-  code: string,
-  verifier: string,
-): Promise<OAuthTokens> {
+export async function exchangeCode(code: string, verifier: string): Promise<OAuthTokens> {
   const response = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: {
@@ -174,19 +185,22 @@ export async function exchangeCode(
       code_verifier: verifier,
     }),
     signal: AbortSignal.timeout(30_000),
-  });
+  })
 
-  const body = await response.text();
+  const body = await response.text()
   if (!response.ok) {
-    throw new Error(`Code exchange failed (${response.status}): ${body}`);
+    throw new Error(`Code exchange failed (${response.status}): ${body}`)
   }
 
-  const data = JSON.parse(body);
+  const raw: unknown = JSON.parse(body)
+  if (!isTokenResponse(raw)) {
+    throw new Error(`Invalid token response: ${body.slice(0, 200)}`)
+  }
   return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresAt: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
-  };
+    accessToken: raw.access_token,
+    refreshToken: raw.refresh_token,
+    expiresAt: Date.now() + raw.expires_in * 1000 - 5 * 60 * 1000,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -194,12 +208,12 @@ export async function exchangeCode(
 // ---------------------------------------------------------------------------
 
 export class TokenManager {
-  private tokens: OAuthTokens | null = null;
-  private tokenPath: string;
-  private refreshing: Promise<OAuthTokens> | null = null;
+  private tokens: OAuthTokens | null = null
+  private tokenPath: string
+  private refreshing: Promise<OAuthTokens> | null = null
 
   constructor(tokenPath?: string) {
-    this.tokenPath = tokenPath ?? DEFAULT_TOKEN_PATH;
+    this.tokenPath = tokenPath ?? DEFAULT_TOKEN_PATH
   }
 
   /**
@@ -209,10 +223,10 @@ export class TokenManager {
    */
   async initialize(accessToken?: string): Promise<void> {
     // Try to load stored tokens first
-    const stored = await loadTokens(this.tokenPath);
+    const stored = await loadTokens(this.tokenPath)
     if (stored) {
-      this.tokens = stored;
-      return;
+      this.tokens = stored
+      return
     }
 
     // Fall back to the provided access token (no refresh capability until login)
@@ -221,43 +235,43 @@ export class TokenManager {
         accessToken,
         refreshToken: '',
         expiresAt: 0, // unknown expiry — will fail and prompt login
-      };
+      }
     }
   }
 
   /**
    * Get a valid access token. Refreshes automatically if expired.
    */
-  async getAccessToken(): Promise<string> {
+  getAccessToken(): string {
     if (!this.tokens) {
-      throw new Error('No Anthropic credentials. Run the OAuth login flow first.');
+      throw new Error('No Anthropic credentials. Run the OAuth login flow first.')
     }
 
-    return this.tokens.accessToken;
+    return this.tokens.accessToken
   }
 
   /**
    * Check if we have valid tokens (or can refresh).
    */
   get isAuthenticated(): boolean {
-    if (!this.tokens) return false;
-    if (this.tokens.refreshToken) return true; // can always refresh
-    return this.tokens.accessToken.length > 0;
+    if (!this.tokens) return false
+    if (this.tokens.refreshToken) return true // can always refresh
+    return this.tokens.accessToken.length > 0
   }
 
   /**
    * Check if this is an OAuth token (vs regular API key).
    */
   get isOAuth(): boolean {
-    return this.tokens?.accessToken.includes('sk-ant-oat') ?? false;
+    return this.tokens?.accessToken.includes('sk-ant-oat') ?? false
   }
 
   /**
    * Store tokens from a login flow.
    */
   async setTokens(tokens: OAuthTokens): Promise<void> {
-    this.tokens = tokens;
-    await saveTokens(tokens, this.tokenPath);
+    this.tokens = tokens
+    await saveTokens(tokens, this.tokenPath)
   }
 
   /**
@@ -265,20 +279,20 @@ export class TokenManager {
    */
   private async refresh(): Promise<void> {
     if (!this.tokens?.refreshToken) {
-      throw new Error('No refresh token available. Run the OAuth login flow.');
+      throw new Error('No refresh token available. Run the OAuth login flow.')
     }
 
     // Deduplicate concurrent refresh attempts
     if (!this.refreshing) {
-      this.refreshing = refreshAccessToken(this.tokens.refreshToken);
+      this.refreshing = refreshAccessToken(this.tokens.refreshToken)
     }
 
     try {
-      const newTokens = await this.refreshing;
-      this.tokens = newTokens;
-      await saveTokens(newTokens, this.tokenPath);
+      const newTokens = await this.refreshing
+      this.tokens = newTokens
+      await saveTokens(newTokens, this.tokenPath)
     } finally {
-      this.refreshing = null;
+      this.refreshing = null
     }
   }
 }

@@ -21,36 +21,36 @@ import type {
   HookPipeline as IHookPipeline,
   HookPipelineResult,
   HookHandlerFn,
-} from '@rivetos/types';
+} from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Logger interface — injected, not imported (pure domain)
 // ---------------------------------------------------------------------------
 
 export interface HookLogger {
-  debug(msg: string): void;
-  warn(msg: string): void;
-  error(msg: string): void;
+  debug(msg: string): void
+  warn(msg: string): void
+  error(msg: string): void
 }
 
 const nullLogger: HookLogger = {
   debug() {},
   warn() {},
   error() {},
-};
+}
 
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
 
 export class HookPipelineImpl implements IHookPipeline {
-  private hooks: Map<string, HookRegistration> = new Map();
-  private sorted: Map<HookEventName, HookRegistration[]> = new Map();
-  private dirty = true;
-  private log: HookLogger;
+  private hooks: Map<string, HookRegistration> = new Map()
+  private sorted: Map<HookEventName, HookRegistration[]> = new Map()
+  private dirty = true
+  private log: HookLogger
 
   constructor(logger?: HookLogger) {
-    this.log = logger ?? nullLogger;
+    this.log = logger ?? nullLogger
   }
 
   // -----------------------------------------------------------------------
@@ -59,7 +59,7 @@ export class HookPipelineImpl implements IHookPipeline {
 
   register<T extends HookContext>(hook: HookRegistration<T>): void {
     if (this.hooks.has(hook.id)) {
-      this.log.warn(`Hook "${hook.id}" already registered — replacing`);
+      this.log.warn(`Hook "${hook.id}" already registered — replacing`)
     }
     // Normalize defaults
     const normalized: HookRegistration = {
@@ -68,29 +68,29 @@ export class HookPipelineImpl implements IHookPipeline {
       onError: hook.onError ?? 'continue',
       enabled: hook.enabled ?? true,
       handler: hook.handler as HookHandlerFn,
-    };
-    this.hooks.set(hook.id, normalized);
-    this.dirty = true;
+    }
+    this.hooks.set(hook.id, normalized)
+    this.dirty = true
   }
 
   unregister(hookId: string): boolean {
-    const deleted = this.hooks.delete(hookId);
-    if (deleted) this.dirty = true;
-    return deleted;
+    const deleted = this.hooks.delete(hookId)
+    if (deleted) this.dirty = true
+    return deleted
   }
 
   clear(): void {
-    this.hooks.clear();
-    this.sorted.clear();
-    this.dirty = false;
+    this.hooks.clear()
+    this.sorted.clear()
+    this.dirty = false
   }
 
   getHooks(event?: HookEventName): HookRegistration[] {
     if (event) {
-      this.rebuildIfDirty();
-      return this.sorted.get(event) ?? [];
+      this.rebuildIfDirty()
+      return this.sorted.get(event) ?? []
     }
-    return [...this.hooks.values()];
+    return [...this.hooks.values()]
   }
 
   // -----------------------------------------------------------------------
@@ -98,91 +98,92 @@ export class HookPipelineImpl implements IHookPipeline {
   // -----------------------------------------------------------------------
 
   async run<T extends HookContext>(ctx: T): Promise<HookPipelineResult<T>> {
-    this.rebuildIfDirty();
+    this.rebuildIfDirty()
 
-    const hooks = this.sorted.get(ctx.event) ?? [];
+    const hooks = this.sorted.get(ctx.event) ?? []
     const result: HookPipelineResult<T> = {
       context: ctx,
       aborted: false,
       skipped: false,
       errors: [],
       ran: [],
-    };
+    }
 
     for (const hook of hooks) {
       // Skip disabled hooks
-      if (!hook.enabled) continue;
+      if (!hook.enabled) continue
 
       // Agent filter
       if (hook.agentFilter?.length && ctx.agentId) {
-        if (!hook.agentFilter.includes(ctx.agentId)) continue;
+        if (!hook.agentFilter.includes(ctx.agentId)) continue
       }
 
       // Tool filter (only applies to tool:before/after)
       if (hook.toolFilter?.length && 'toolName' in ctx) {
-        if (!hook.toolFilter.includes((ctx as any).toolName)) continue;
+        if (!hook.toolFilter.includes(String((ctx as unknown as Record<string, unknown>).toolName)))
+          continue
       }
 
       // Execute
       try {
-        this.log.debug(`Hook "${hook.id}" running for ${ctx.event}`);
-        const signal = await hook.handler(ctx);
-        result.ran.push(hook.id);
+        this.log.debug(`Hook "${hook.id}" running for ${ctx.event}`)
+        const signal = await hook.handler(ctx)
+        result.ran.push(hook.id)
 
         if (signal === 'abort') {
-          this.log.debug(`Hook "${hook.id}" aborted pipeline`);
-          result.aborted = true;
-          break;
+          this.log.debug(`Hook "${hook.id}" aborted pipeline`)
+          result.aborted = true
+          break
         }
 
         if (signal === 'skip') {
-          this.log.debug(`Hook "${hook.id}" skipped remaining hooks`);
-          result.skipped = true;
-          break;
+          this.log.debug(`Hook "${hook.id}" skipped remaining hooks`)
+          result.skipped = true
+          break
         }
-      } catch (err: any) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        this.log.error(`Hook "${hook.id}" threw: ${error.message}`);
+      } catch (err: unknown) {
+        const error = err instanceof Error ? err : new Error(String(err))
+        this.log.error(`Hook "${hook.id}" threw: ${error.message}`)
 
         switch (hook.onError) {
           case 'abort':
-            result.errors.push({ hookId: hook.id, error });
-            result.aborted = true;
-            return result;
+            result.errors.push({ hookId: hook.id, error })
+            result.aborted = true
+            return result
 
           case 'retry':
             // Retry once
             try {
-              this.log.debug(`Hook "${hook.id}" retrying...`);
-              const retrySignal = await hook.handler(ctx);
-              result.ran.push(hook.id);
+              this.log.debug(`Hook "${hook.id}" retrying...`)
+              const retrySignal = await hook.handler(ctx)
+              result.ran.push(hook.id)
               if (retrySignal === 'abort') {
-                result.aborted = true;
-                return result;
+                result.aborted = true
+                return result
               }
               if (retrySignal === 'skip') {
-                result.skipped = true;
-                return result;
+                result.skipped = true
+                return result
               }
-            } catch (retryErr: any) {
-              const retryError = retryErr instanceof Error ? retryErr : new Error(String(retryErr));
-              this.log.error(`Hook "${hook.id}" retry failed: ${retryError.message}`);
-              result.errors.push({ hookId: hook.id, error: retryError });
+            } catch (retryErr: unknown) {
+              const retryError = retryErr instanceof Error ? retryErr : new Error(String(retryErr))
+              this.log.error(`Hook "${hook.id}" retry failed: ${retryError.message}`)
+              result.errors.push({ hookId: hook.id, error: retryError })
               // After retry failure, continue (don't cascade)
             }
-            break;
+            break
 
           case 'continue':
           default:
-            result.errors.push({ hookId: hook.id, error });
-            result.ran.push(hook.id);
+            result.errors.push({ hookId: hook.id, error })
+            result.ran.push(hook.id)
             // Continue to next hook
-            break;
+            break
         }
       }
     }
 
-    return result;
+    return result
   }
 
   // -----------------------------------------------------------------------
@@ -190,25 +191,25 @@ export class HookPipelineImpl implements IHookPipeline {
   // -----------------------------------------------------------------------
 
   private rebuildIfDirty(): void {
-    if (!this.dirty) return;
+    if (!this.dirty) return
 
-    this.sorted.clear();
-    const all = [...this.hooks.values()];
+    this.sorted.clear()
+    const all = [...this.hooks.values()]
 
     for (const hook of all) {
-      let list = this.sorted.get(hook.event);
+      let list = this.sorted.get(hook.event)
       if (!list) {
-        list = [];
-        this.sorted.set(hook.event, list);
+        list = []
+        this.sorted.set(hook.event, list)
       }
-      list.push(hook);
+      list.push(hook)
     }
 
     // Sort each event's hooks by priority
     for (const [, list] of this.sorted) {
-      list.sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50));
+      list.sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50))
     }
 
-    this.dirty = false;
+    this.dirty = false
   }
 }

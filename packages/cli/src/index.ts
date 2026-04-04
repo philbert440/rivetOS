@@ -19,7 +19,7 @@
  *   rivetos version                  — show version
  */
 
-const COMMANDS: Record<string, () => Promise<void>> = {
+const COMMANDS: Partial<Record<string, () => Promise<void> | void>> = {
   init: () => import('./commands/init.js').then((m) => m.default()),
   start: () => import('./commands/start.js').then((m) => m.default()),
   stop: () => import('./commands/stop.js').then((m) => m.default()),
@@ -38,9 +38,9 @@ const COMMANDS: Record<string, () => Promise<void>> = {
   xai: () => import('./commands/provider.js').then((m) => m.default('xai')),
   google: () => import('./commands/provider.js').then((m) => m.default('google')),
   ollama: () => import('./commands/provider.js').then((m) => m.default('ollama')),
-};
+}
 
-async function showHelp(): Promise<void> {
+function showHelp(): void {
   console.log(`
   rivetos — Lightweight, stable agent runtime
 
@@ -79,31 +79,31 @@ async function showHelp(): Promise<void> {
     rivetos ollama pull <model>         Pull a model
 
   Docs: https://rivetos.dev
-  `);
+  `)
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const command = args[0];
+  const args = process.argv.slice(2)
+  const command = args[0]
 
   if (!command || command === '--help' || command === '-h') {
-    await showHelp();
-    return;
+    showHelp()
+    return
   }
 
-  const handler = COMMANDS[command];
+  const handler = COMMANDS[command]
   if (!handler) {
-    console.error(`Unknown command: ${command}`);
-    await showHelp();
-    process.exit(1);
+    console.error(`Unknown command: ${command}`)
+    showHelp()
+    process.exit(1)
   }
 
   try {
-    await handler();
-  } catch (err: any) {
-    console.error(`Error: ${err.message}`);
-    process.exit(1);
+    await handler()
+  } catch (err: unknown) {
+    console.error(`Error: ${(err as Error).message}`)
+    process.exit(1)
   }
 }
 
-main();
+void main()

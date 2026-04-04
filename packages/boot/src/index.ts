@@ -43,7 +43,7 @@ export async function boot(configPath?: string): Promise<void> {
       id,
       name: id,
       provider: agent.provider,
-      defaultThinking: (agent.default_thinking as ThinkingLevel) ?? 'medium',
+      defaultThinking: (agent.default_thinking as ThinkingLevel | undefined) ?? 'medium',
       local: agent.local ?? false,
     })),
     heartbeats: config.runtime.heartbeats as HeartbeatConfig[],
@@ -68,5 +68,3 @@ export async function boot(configPath?: string): Promise<void> {
   // 6. Start
   await runtime.start()
 }
-
-

@@ -6,23 +6,22 @@ on:
   pull_request:
     branches: [main]
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
-    strategy:
-      matrix:
-        node-version: [22]
+jobs:
+  ci:
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # needed for nx affected
+          fetch-depth: 0
 
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 22
           cache: npm
 
       - name: Restore Nx cache
@@ -37,16 +36,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Set Nx SHAs
-        uses: nrwl/nx-set-shas@v4
+      - uses: nrwl/nx-set-shas@v4
 
-      - name: Lint affected
-        run: npx nx affected -t lint --parallel=3
-        continue-on-error: true # lint target doesn't exist yet on all packages
+      - name: Lint
+        run: npx nx affected -t lint --parallel=5
 
-      - name: Test affected
-        run: npx nx affected -t test --parallel=3
+      - name: Build
+        run: npx nx affected -t build --parallel=5
 
-      - name: Build affected
-        run: npx nx affected -t build --parallel=3
-        continue-on-error: true # build target doesn't exist yet on all packages
+      - name: Test
+        run: npx nx affected -t test --parallel=5

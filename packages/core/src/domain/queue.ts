@@ -10,28 +10,36 @@
  * This is the thing that broke OpenClaw. Keep it simple.
  */
 
-import type { InboundMessage, QueuedMessage, RuntimeCommand } from '@rivetos/types';
+import type { InboundMessage, QueuedMessage, RuntimeCommand } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Known Commands
 // ---------------------------------------------------------------------------
 
 const COMMANDS: Set<string> = new Set([
-  'stop', 'interrupt', 'steer', 'new', 'status', 'model', 'think', 'reasoning', 'tools',
-]);
+  'stop',
+  'interrupt',
+  'steer',
+  'new',
+  'status',
+  'model',
+  'think',
+  'reasoning',
+  'tools',
+])
 
 export function isCommand(text: string): text is `/${RuntimeCommand}` {
-  if (!text.startsWith('/')) return false;
-  const cmd = text.slice(1).split(/\s+/)[0];
-  return COMMANDS.has(cmd);
+  if (!text.startsWith('/')) return false
+  const cmd = text.slice(1).split(/\s+/)[0]
+  return COMMANDS.has(cmd)
 }
 
 export function parseCommand(text: string): { command: RuntimeCommand; args: string } | null {
-  if (!text.startsWith('/')) return null;
-  const parts = text.slice(1).split(/\s+/);
-  const cmd = parts[0];
-  if (!COMMANDS.has(cmd)) return null;
-  return { command: cmd as RuntimeCommand, args: parts.slice(1).join(' ') };
+  if (!text.startsWith('/')) return null
+  const parts = text.slice(1).split(/\s+/)
+  const cmd = parts[0]
+  if (!COMMANDS.has(cmd)) return null
+  return { command: cmd as RuntimeCommand, args: parts.slice(1).join(' ') }
 }
 
 // ---------------------------------------------------------------------------
@@ -39,23 +47,23 @@ export function parseCommand(text: string): { command: RuntimeCommand; args: str
 // ---------------------------------------------------------------------------
 
 export class MessageQueue {
-  private queue: QueuedMessage[] = [];
-  private processing = false;
-  private handler?: (message: InboundMessage) => Promise<void>;
+  private queue: QueuedMessage[] = []
+  private processing = false
+  private handler?: (message: InboundMessage) => Promise<void>
 
   /**
    * Set the handler that processes messages.
    * Called when a queued message is ready to be processed.
    */
   setHandler(handler: (message: InboundMessage) => Promise<void>): void {
-    this.handler = handler;
+    this.handler = handler
   }
 
   /**
    * Whether a turn is currently being processed.
    */
   get isProcessing(): boolean {
-    return this.processing;
+    return this.processing
   }
 
   /**
@@ -64,40 +72,40 @@ export class MessageQueue {
    */
   async enqueue(message: InboundMessage): Promise<void> {
     if (this.processing) {
-      this.queue.push({ message, receivedAt: Date.now() });
-      return;
+      this.queue.push({ message, receivedAt: Date.now() })
+      return
     }
 
-    await this.process(message);
+    await this.process(message)
   }
 
   /**
    * Mark a turn as active. Messages arriving now will be queued.
    */
   beginTurn(): void {
-    this.processing = true;
+    this.processing = true
   }
 
   /**
    * Mark a turn as complete. Process any queued messages.
    */
   async endTurn(): Promise<void> {
-    this.processing = false;
-    await this.drainQueue();
+    this.processing = false
+    await this.drainQueue()
   }
 
   /**
    * Number of messages waiting.
    */
   get depth(): number {
-    return this.queue.length;
+    return this.queue.length
   }
 
   /**
    * Clear all queued messages (used by /stop, /new).
    */
   clear(): void {
-    this.queue = [];
+    this.queue = []
   }
 
   // -----------------------------------------------------------------------
@@ -105,21 +113,21 @@ export class MessageQueue {
   // -----------------------------------------------------------------------
 
   private async process(message: InboundMessage): Promise<void> {
-    if (!this.handler) return;
-    this.processing = true;
+    if (!this.handler) return
+    this.processing = true
     try {
-      await this.handler(message);
+      await this.handler(message)
     } finally {
-      this.processing = false;
-      await this.drainQueue();
+      this.processing = false
+      await this.drainQueue()
     }
   }
 
   private async drainQueue(): Promise<void> {
     while (this.queue.length > 0 && !this.processing) {
-      const next = this.queue.shift();
+      const next = this.queue.shift()
       if (next) {
-        await this.process(next.message);
+        await this.process(next.message)
       }
     }
   }

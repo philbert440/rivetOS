@@ -18,7 +18,37 @@
  * added when we have enough leaves to warrant it.
  */
 
-import pg from 'pg';
+import pg from 'pg'
+
+// ---------------------------------------------------------------------------
+// Row interfaces
+// ---------------------------------------------------------------------------
+
+interface CandidateRow {
+  conversation_id: string
+  unsummarized: string
+}
+
+interface CompactMessageRow {
+  id: string
+  role: string
+  content: string
+  agent: string
+  created_at: Date
+}
+
+interface IdRow {
+  id: string
+}
+
+interface LlmResponse {
+  choices?: Array<{
+    message?: {
+      content?: string | null
+      reasoning_content?: string | null
+    }
+  }>
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -26,17 +56,17 @@ import pg from 'pg';
 
 export interface CompactorConfig {
   /** PostgreSQL connection string */
-  connectionString: string;
+  connectionString: string
   /** LLM endpoint for summarization (default: http://10.4.20.12:8000/v1) */
-  compactorEndpoint?: string;
+  compactorEndpoint?: string
   /** Model name (default: rivet-v0.1) */
-  compactorModel?: string;
+  compactorModel?: string
   /** Milliseconds between cycles (default: 1800000 = 30 min) */
-  intervalMs?: number;
+  intervalMs?: number
   /** Minimum unsummarized messages to trigger compaction (default: 50) */
-  minUnsummarized?: number;
+  minUnsummarized?: number
   /** Messages per compaction batch (default: 25) */
-  batchSize?: number;
+  batchSize?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -46,66 +76,66 @@ export interface CompactorConfig {
 const SUMMARIZE_SYSTEM_PROMPT =
   'Summarize these conversation messages concisely. Preserve: key decisions, ' +
   'technical details, configurations, action items, state changes, problems solved. ' +
-  'Format as bullet points.';
+  'Format as bullet points.'
 
 /** Minimum messages in a batch to be worth summarizing */
-const MIN_BATCH_SIZE = 5;
+const MIN_BATCH_SIZE = 5
 
 /** Maximum conversations to compact per cycle */
-const MAX_CONVERSATIONS_PER_CYCLE = 5;
+const MAX_CONVERSATIONS_PER_CYCLE = 5
 
 /** LLM request timeout */
-const LLM_TIMEOUT_MS = 60_000;
+const LLM_TIMEOUT_MS = 60_000
 
 /** Max content per message in the LLM prompt (avoid blowing context) */
-const MAX_MSG_CONTENT_FOR_PROMPT = 1000;
+const MAX_MSG_CONTENT_FOR_PROMPT = 1000
 
 // ---------------------------------------------------------------------------
 // Compactor
 // ---------------------------------------------------------------------------
 
 export class BackgroundCompactor {
-  private pool: pg.Pool;
-  private endpoint: string;
-  private model: string;
-  private intervalMs: number;
-  private minUnsummarized: number;
-  private batchSize: number;
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private running = false;
+  private pool: pg.Pool
+  private endpoint: string
+  private model: string
+  private intervalMs: number
+  private minUnsummarized: number
+  private batchSize: number
+  private timer: ReturnType<typeof setInterval> | null = null
+  private running = false
 
   constructor(config: CompactorConfig) {
-    this.endpoint = config.compactorEndpoint ?? 'http://10.4.20.12:8000/v1';
-    this.model = config.compactorModel ?? 'rivet-v0.1';
-    this.intervalMs = config.intervalMs ?? 1_800_000;
-    this.minUnsummarized = config.minUnsummarized ?? 50;
-    this.batchSize = config.batchSize ?? 25;
-    this.pool = new pg.Pool({ connectionString: config.connectionString, max: 2 });
+    this.endpoint = config.compactorEndpoint ?? 'http://10.4.20.12:8000/v1'
+    this.model = config.compactorModel ?? 'rivet-v0.1'
+    this.intervalMs = config.intervalMs ?? 1_800_000
+    this.minUnsummarized = config.minUnsummarized ?? 50
+    this.batchSize = config.batchSize ?? 25
+    this.pool = new pg.Pool({ connectionString: config.connectionString, max: 2 })
   }
 
   start(): void {
-    if (this.timer) return;
+    if (this.timer) return
     console.log(
-      `[Compactor] Starting (every ${this.intervalMs / 60_000}min, ` +
-        `threshold ${this.minUnsummarized} msgs, batch ${this.batchSize})`,
-    );
-    console.log(`[Compactor] Endpoint: ${this.endpoint} (model: ${this.model})`);
+      `[Compactor] Starting (every ${String(this.intervalMs / 60_000)}min, ` +
+        `threshold ${String(this.minUnsummarized)} msgs, batch ${String(this.batchSize)})`,
+    )
+    console.log(`[Compactor] Endpoint: ${this.endpoint} (model: ${this.model})`)
 
     // Delay first run by 60s to let the system settle on boot
-    setTimeout(() => this.cycle(), 60_000);
-    this.timer = setInterval(() => this.cycle(), this.intervalMs);
+    setTimeout(() => void this.cycle(), 60_000)
+    this.timer = setInterval(() => void this.cycle(), this.intervalMs)
   }
 
   stop(): void {
     if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+      clearInterval(this.timer)
+      this.timer = null
     }
   }
 
   async close(): Promise<void> {
-    this.stop();
-    await this.pool.end();
+    this.stop()
+    await this.pool.end()
   }
 
   // -----------------------------------------------------------------------
@@ -113,13 +143,12 @@ export class BackgroundCompactor {
   // -----------------------------------------------------------------------
 
   private async cycle(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
+    if (this.running) return
+    this.running = true
 
     try {
       // Find conversations with enough unsummarized messages.
-      // "Unsummarized" = messages not referenced by any ros_summary_sources row.
-      const candidates = await this.pool.query(
+      const candidates = await this.pool.query<CandidateRow>(
         `SELECT m.conversation_id, COUNT(*) AS unsummarized
          FROM ros_messages m
          LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
@@ -131,30 +160,28 @@ export class BackgroundCompactor {
          ORDER BY COUNT(*) DESC
          LIMIT $2`,
         [this.minUnsummarized, MAX_CONVERSATIONS_PER_CYCLE],
-      );
+      )
 
       if (candidates.rows.length === 0) {
-        this.running = false;
-        return;
+        this.running = false
+        return
       }
 
-      console.log(
-        `[Compactor] ${candidates.rows.length} conversation(s) need compaction`,
-      );
+      console.log(`[Compactor] ${String(candidates.rows.length)} conversation(s) need compaction`)
 
       for (const row of candidates.rows) {
         try {
-          await this.compactConversation(row.conversation_id);
-        } catch (err: any) {
-          console.error(
-            `[Compactor] Failed conversation ${row.conversation_id}: ${err.message}`,
-          );
+          await this.compactConversation(row.conversation_id)
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : String(error)
+          console.error(`[Compactor] Failed conversation ${row.conversation_id}: ${msg}`)
         }
       }
-    } catch (err: any) {
-      console.error(`[Compactor] Cycle failed: ${err.message}`);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error(`[Compactor] Cycle failed: ${msg}`)
     } finally {
-      this.running = false;
+      this.running = false
     }
   }
 
@@ -164,7 +191,7 @@ export class BackgroundCompactor {
 
   private async compactConversation(conversationId: string): Promise<void> {
     // Get the oldest N unsummarized messages
-    const messages = await this.pool.query(
+    const messages = await this.pool.query<CompactMessageRow>(
       `SELECT m.id, m.role, m.content, m.agent, m.created_at
        FROM ros_messages m
        LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
@@ -175,39 +202,37 @@ export class BackgroundCompactor {
        ORDER BY m.created_at ASC
        LIMIT $2`,
       [conversationId, this.batchSize],
-    );
+    )
 
-    if (messages.rows.length < MIN_BATCH_SIZE) return;
+    if (messages.rows.length < MIN_BATCH_SIZE) return
 
     // Format for the LLM
     const formatted = messages.rows
-      .map((m: any) => `[${m.role}] ${m.content.slice(0, MAX_MSG_CONTENT_FOR_PROMPT)}`)
-      .join('\n');
+      .map((m) => `[${m.role}] ${m.content.slice(0, MAX_MSG_CONTENT_FOR_PROMPT)}`)
+      .join('\n')
 
     // Call Rivet Local for summarization
-    const summaryText = await this.summarize(formatted);
+    const summaryText = await this.summarize(formatted)
     if (!summaryText) {
-      console.error(
-        `[Compactor] Empty summary for conversation ${conversationId}`,
-      );
-      return;
+      console.error(`[Compactor] Empty summary for conversation ${conversationId}`)
+      return
     }
 
     // Find the conversation's latest leaf summary to chain as parent
-    const latestLeaf = await this.pool.query(
+    const latestLeaf = await this.pool.query<IdRow>(
       `SELECT id FROM ros_summaries
        WHERE conversation_id = $1 AND kind = 'leaf'
        ORDER BY created_at DESC LIMIT 1`,
       [conversationId],
-    );
-    const parentId = latestLeaf.rows.length > 0 ? latestLeaf.rows[0].id : null;
+    )
+    const parentId = latestLeaf.rows.length > 0 ? latestLeaf.rows[0].id : null
 
     // Write summary + links in one transaction
-    const client = await this.pool.connect();
+    const client = await this.pool.connect()
     try {
-      await client.query('BEGIN');
+      await client.query('BEGIN')
 
-      const sumResult = await client.query(
+      const sumResult = await client.query<IdRow>(
         `INSERT INTO ros_summaries
            (conversation_id, parent_id, depth, content, kind,
             message_count, earliest_at, latest_at, model)
@@ -222,8 +247,8 @@ export class BackgroundCompactor {
           messages.rows[messages.rows.length - 1].created_at,
           this.model,
         ],
-      );
-      const summaryId = sumResult.rows[0].id;
+      )
+      const summaryId = sumResult.rows[0].id
 
       // Link each source message with ordinal
       for (let i = 0; i < messages.rows.length; i++) {
@@ -231,20 +256,20 @@ export class BackgroundCompactor {
           `INSERT INTO ros_summary_sources (summary_id, message_id, ordinal)
            VALUES ($1, $2, $3)`,
           [summaryId, messages.rows[i].id, i],
-        );
+        )
       }
 
-      await client.query('COMMIT');
+      await client.query('COMMIT')
 
       console.log(
         `[Compactor] Created summary ${summaryId} ` +
-          `(${messages.rows.length} messages, conversation ${conversationId})`,
-      );
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
+          `(${String(messages.rows.length)} messages, conversation ${conversationId})`,
+      )
+    } catch (err: unknown) {
+      await client.query('ROLLBACK')
+      throw err
     } finally {
-      client.release();
+      client.release()
     }
   }
 
@@ -267,22 +292,21 @@ export class BackgroundCompactor {
           temperature: 0.3,
         }),
         signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
-      });
+      })
 
       if (!response.ok) {
-        console.error(
-          `[Compactor] LLM returned ${response.status}: ${response.statusText}`,
-        );
-        return null;
+        console.error(`[Compactor] LLM returned ${String(response.status)}: ${response.statusText}`)
+        return null
       }
 
-      const data = await response.json() as Record<string, unknown>;
-      const message = (data as any).choices?.[0]?.message;
+      const data = (await response.json()) as LlmResponse
+      const message = data.choices?.[0]?.message
       // Prefer content, fall back to reasoning_content (QwQ/reasoning models)
-      return message?.content || message?.reasoning_content || null;
-    } catch (err: any) {
-      console.error(`[Compactor] LLM call failed: ${err.message}`);
-      return null;
+      return message?.content ?? message?.reasoning_content ?? null
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error(`[Compactor] LLM call failed: ${msg}`)
+      return null
     }
   }
 }
