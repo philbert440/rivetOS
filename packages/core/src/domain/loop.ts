@@ -28,7 +28,12 @@ import type {
   ToolBeforeContext,
   ToolAfterContext,
 } from '@rivetos/types'
-import { getToolResultText, toolResultHasImages, getToolResultImages } from '@rivetos/types'
+import {
+  getToolResultText,
+  toolResultHasImages,
+  getToolResultImages,
+  ProviderError,
+} from '@rivetos/types'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -296,19 +301,18 @@ export class AgentLoop {
 
         // --- Hook: provider:error (fallback chain) ---
         if (this.config.hooks) {
-          const errObj = err as Record<string, unknown>
-          const errMsg = typeof errObj.message === 'string' ? errObj.message : ''
-          const statusCode =
-            (errObj.status as number | undefined) ??
-            (errObj.statusCode as number | undefined) ??
-            (errMsg.includes('429') ? 429 : undefined)
+          const isProviderError = err instanceof ProviderError
+          const statusCode = isProviderError ? err.statusCode : undefined
+          const errorProviderId = isProviderError ? err.providerId : activeProvider.id
           const errorCtx: ProviderErrorContext = {
             event: 'provider:error',
-            providerId: activeProvider.id,
+            providerId: errorProviderId,
             model:
+              activeModelOverride ??
               ((activeProvider as unknown as Record<string, unknown>).model as
                 | string
-                | undefined) ?? 'unknown',
+                | undefined) ??
+              'unknown',
             error: err instanceof Error ? err : new Error(String(err)),
             statusCode,
             agentId: this.config.agentId,
@@ -322,9 +326,10 @@ export class AgentLoop {
           if (errorCtx.retry) {
             const fallbackProvider = this.config.resolveProvider?.(errorCtx.retry.providerId)
             if (fallbackProvider) {
+              const statusLabel = statusCode ? ` (${statusCode})` : ''
               this.emit({
                 type: 'status',
-                content: `⚡ Falling back: ${activeProvider.id} → ${errorCtx.retry.providerId}:${errorCtx.retry.model}`,
+                content: `⚠️ ${errorProviderId}${statusLabel} — falling back to ${errorCtx.retry.providerId}/${errorCtx.retry.model}`,
               })
               activeProvider = fallbackProvider
               activeModelOverride = errorCtx.retry.model

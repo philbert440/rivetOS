@@ -26,6 +26,7 @@ import type {
   LLMResponse,
   ThinkingLevel,
 } from '@rivetos/types'
+import { ProviderError } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -217,13 +218,15 @@ export class OllamaProvider implements Provider {
 
     if (!response.ok) {
       const err = await response.text().catch(() => 'unknown')
-      yield { type: 'error', error: `Ollama ${String(response.status)}: ${err}` }
-      return
+      throw new ProviderError(
+        `Ollama ${String(response.status)}: ${err.slice(0, 500)}`,
+        response.status,
+        this.id,
+      )
     }
 
     if (!response.body) {
-      yield { type: 'error', error: 'No response body' }
-      return
+      throw new ProviderError('No response body', 0, this.id, false)
     }
 
     const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader()

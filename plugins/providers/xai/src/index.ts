@@ -20,6 +20,7 @@ import type {
   LLMChunk,
   LLMResponse,
 } from '@rivetos/types'
+import { ProviderError } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -311,22 +312,24 @@ export class XAIProvider implements Provider {
       })
     } catch (err: unknown) {
       clearTimeout(timeout)
+      if (err instanceof ProviderError) throw err
       const message = err instanceof Error ? err.message : String(err)
-      yield { type: 'error', error: `xAI fetch failed: ${message}` }
-      return
+      throw new ProviderError(`xAI fetch failed: ${message}`, 0, 'xai', false)
     }
 
     if (!response.ok) {
       clearTimeout(timeout)
       const err = await response.text().catch(() => 'unknown')
-      yield { type: 'error', error: `xAI ${String(response.status)}: ${err}` }
-      return
+      throw new ProviderError(
+        `xAI ${String(response.status)}: ${err.slice(0, 500)}`,
+        response.status,
+        'xai',
+      )
     }
 
     if (!response.body) {
       clearTimeout(timeout)
-      yield { type: 'error', error: 'No response body' }
-      return
+      throw new ProviderError('No response body', 0, 'xai', false)
     }
 
     const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader()

@@ -18,6 +18,7 @@ import type {
   LLMResponse,
   ThinkingLevel,
 } from '@rivetos/types'
+import { ProviderError } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -279,13 +280,15 @@ export class GoogleProvider implements Provider {
 
     if (!response.ok) {
       const err = await response.text().catch(() => 'unknown')
-      yield { type: 'error', error: `Google ${response.status}: ${err}` }
-      return
+      throw new ProviderError(
+        `Google ${response.status}: ${err.slice(0, 500)}`,
+        response.status,
+        'google',
+      )
     }
 
     if (!response.body) {
-      yield { type: 'error', error: 'No response body' }
-      return
+      throw new ProviderError('No response body', 0, 'google', false)
     }
 
     const reader = response.body.getReader()

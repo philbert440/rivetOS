@@ -7,6 +7,7 @@
 
 export type { Message, ToolCall, ContentPart, TextPart, ImagePart } from './message.js'
 export type { Provider, LLMResponse, LLMChunk, ChatOptions, ThinkingLevel } from './provider.js'
+export { ProviderError } from './provider.js'
 export type {
   Channel,
   EditResult,

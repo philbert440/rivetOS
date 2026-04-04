@@ -56,3 +56,22 @@ export interface Provider {
   chat?(messages: Message[], options?: ChatOptions): Promise<LLMResponse>
   isAvailable(): Promise<boolean>
 }
+
+// ---------------------------------------------------------------------------
+// ProviderError — thrown by providers for retryable failures
+// ---------------------------------------------------------------------------
+
+const RETRYABLE_STATUS_CODES = new Set([429, 503, 529])
+
+/** Error thrown by providers for HTTP failures. Retryable errors trigger fallback chains. */
+export class ProviderError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly providerId: string,
+    public readonly retryable: boolean = RETRYABLE_STATUS_CODES.has(statusCode),
+  ) {
+    super(message)
+    this.name = 'ProviderError'
+  }
+}

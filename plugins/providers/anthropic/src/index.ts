@@ -19,6 +19,7 @@ import type {
   LLMResponse,
   ThinkingLevel,
 } from '@rivetos/types'
+import { ProviderError } from '@rivetos/types'
 import { TokenManager, detectAuthMode } from './oauth.js'
 
 // ---------------------------------------------------------------------------
@@ -99,7 +100,7 @@ interface AnthropicSSEEvent {
     partial_json?: string
   }
   usage?: { output_tokens?: number }
-  error?: { message?: string }
+  error?: { message?: string; type?: string }
 }
 
 // ---------------------------------------------------------------------------
@@ -364,14 +365,15 @@ export class AnthropicProvider implements Provider {
 
     if (!response.ok) {
       const err = await response.text().catch(() => 'unknown')
-      console.error(`[Anthropic] API error ${String(response.status)}: ${err.slice(0, 500)}`)
-      yield { type: 'error', error: `Anthropic ${String(response.status)}: ${err.slice(0, 200)}` }
-      return
+      throw new ProviderError(
+        `Anthropic ${String(response.status)}: ${err.slice(0, 500)}`,
+        response.status,
+        'anthropic',
+      )
     }
 
     if (!response.body) {
-      yield { type: 'error', error: 'No response body' }
-      return
+      throw new ProviderError('No response body', 0, 'anthropic', false)
     }
 
     // Parse SSE stream
@@ -474,14 +476,23 @@ export class AnthropicProvider implements Provider {
             case 'ping':
               break
 
-            case 'error':
-              yield { type: 'error', error: parsed.error?.message ?? 'Stream error' }
+            case 'error': {
+              const errMsg = parsed.error?.message ?? 'Stream error'
+              const errType = parsed.error?.type
+              // Anthropic sends 'overloaded_error' as an SSE error event on 529
+              if (errType === 'overloaded_error' || errMsg.includes('overloaded')) {
+                throw new ProviderError(`Anthropic 529: ${errMsg}`, 529, 'anthropic')
+              }
+              yield { type: 'error', error: errMsg }
               break
+            }
           }
         }
       }
     } catch (err: unknown) {
       if (options?.signal?.aborted) return
+      // Re-throw ProviderErrors so the loop's fallback chain can catch them
+      if (err instanceof ProviderError) throw err
       const message = err instanceof Error ? err.message : String(err)
       console.error('[Anthropic] Stream error:', message)
       yield { type: 'error', error: message }

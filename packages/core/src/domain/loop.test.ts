@@ -9,6 +9,7 @@ import { AgentLoop } from './loop.js';
 import { HookPipelineImpl } from './hooks.js';
 import { createFallbackHookWithState } from './fallback.js';
 import type { Provider, LLMChunk, Message, ChatOptions, Tool, FallbackConfig } from '@rivetos/types';
+import { ProviderError } from '@rivetos/types';
 
 // ---------------------------------------------------------------------------
 // Mock provider — yields configurable chunks
@@ -289,10 +290,8 @@ describe('AgentLoop', () => {
         modelsUsed.push(options?.modelOverride);
         callCount++;
         if (callCount === 1) {
-          // Simulate 429 by throwing
-          const err = new Error('RESOURCE_EXHAUSTED') as Error & { status: number };
-          err.status = 429;
-          throw err;
+          // Simulate 429 by throwing ProviderError
+          throw new ProviderError('RESOURCE_EXHAUSTED', 429, 'google');
         }
         yield { type: 'text', delta: 'Fallback response' };
         yield { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } };
@@ -341,9 +340,7 @@ describe('AgentLoop', () => {
         modelsUsed.push(options?.modelOverride);
         callCount++;
         if (callCount <= 2) {
-          const err = new Error('RESOURCE_EXHAUSTED') as Error & { status: number };
-          err.status = 429;
-          throw err;
+          throw new ProviderError('RESOURCE_EXHAUSTED', 429, 'google');
         }
         yield { type: 'text', delta: 'Third time lucky' };
         yield { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } };
