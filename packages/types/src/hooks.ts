@@ -271,10 +271,11 @@ export type HookErrorMode = 'continue' | 'abort' | 'retry'
  * - 'abort': stop the pipeline, no more hooks run
  * - 'skip': skip remaining hooks but don't error (soft abort)
  */
+// eslint-disable-next-line @typescript-eslint/no-invalid-void-type
+export type HookHandlerReturn = void | undefined | 'abort' | 'skip'
 export type HookHandlerFn<T extends HookContext = HookContext> = (
   ctx: T,
-  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type
-) => Promise<void | undefined | 'abort' | 'skip'> | void | undefined | 'abort' | 'skip'
+) => Promise<HookHandlerReturn> | HookHandlerReturn
 
 /**
  * A registered hook with metadata.

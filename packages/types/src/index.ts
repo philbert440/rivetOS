@@ -52,6 +52,7 @@ export type {
   DelegationBeforeContext,
   DelegationAfterContext,
   HookErrorMode,
+  HookHandlerReturn,
   HookHandlerFn,
   HookRegistration,
   HookPipelineResult,

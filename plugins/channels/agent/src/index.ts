@@ -327,8 +327,8 @@ export class AgentChannel implements Channel {
       execute: async (args) => {
         const toAgent = args.to_agent as string
         const message = args.message as string
-        const waitForResponse = (args.wait_for_response as boolean) ?? true
-        const timeoutMs = (args.timeout_ms as number) ?? 120000
+        const waitForResponse = args.wait_for_response != null ? (args.wait_for_response as boolean) : true
+        const timeoutMs = args.timeout_ms != null ? (args.timeout_ms as number) : 120000
 
         const peer = this.config.peers?.[toAgent]
         if (!peer) {

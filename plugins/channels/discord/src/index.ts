@@ -210,8 +210,12 @@ export class DiscordChannel implements Channel {
       if (!channel || !('send' in channel)) return null
       const sendable = channel as TextChannel | ThreadChannel
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const options: Record<string, any> = {}
+      const options: {
+        embeds?: EmbedBuilder[]
+        components?: ActionRowBuilder<ButtonBuilder>[]
+        reply?: { messageReference: string }
+        flags?: number[]
+      } = {}
 
       // Text — split at Discord's 2000 char limit
       if (msg.text) {
@@ -249,7 +253,7 @@ export class DiscordChannel implements Channel {
 
         // Reply reference
         if (msg.replyToMessageId) {
-          options.reply = { messageId: msg.replyToMessageId }
+          options.reply = { messageReference: msg.replyToMessageId }
         }
 
         // Silent
@@ -335,14 +339,14 @@ export class DiscordChannel implements Channel {
 
   async resolveAttachment(attachment: Attachment): Promise<ResolvedAttachment | null> {
     // Discord attachments have public CDN URLs — no download needed
-    if (!attachment.url) return null
+    if (!attachment.url) return await Promise.resolve(null)
 
-    return {
+    return await Promise.resolve({
       type: attachment.type,
       url: attachment.url,
       mimeType: attachment.mimeType,
       fileName: attachment.fileName,
-    }
+    })
   }
 
   // -----------------------------------------------------------------------

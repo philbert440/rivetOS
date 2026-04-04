@@ -127,7 +127,7 @@ export class TelegramChannel implements Channel {
     // All non-command messages
     this.bot.on('message', (ctx) => {
       // Skip if it's a command (already handled by bot.command above)
-      if (ctx.message?.text?.startsWith('/')) return
+      if (ctx.message.text?.startsWith('/')) return
       void this.handleMessage(ctx)
     })
   }
@@ -411,7 +411,7 @@ export class TelegramChannel implements Channel {
       return {
         type: attachment.type,
         data: base64,
-        mimeType: attachment.mimeType ?? mimeMap[ext ?? ''] ?? 'application/octet-stream',
+        mimeType: attachment.mimeType || mimeMap[ext ?? ''] || 'application/octet-stream',
         fileName: attachment.fileName ?? file.file_path.split('/').pop(),
       }
     } catch (err: unknown) {
@@ -453,7 +453,7 @@ export class TelegramChannel implements Channel {
     // Catch polling errors — handle 409 conflicts with retry
     this.bot.catch(async (err: unknown) => {
       const errObj = err as { error?: { description?: string }; message?: string }
-      const errMsg = String(errObj?.error?.description ?? errObj?.message ?? err)
+      const errMsg = String(errObj.error?.description ?? errObj.message ?? err)
 
       // 409 Conflict: another bot instance is polling the same token
       if (
