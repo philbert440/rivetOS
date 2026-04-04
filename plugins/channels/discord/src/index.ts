@@ -212,7 +212,8 @@ export class DiscordChannel implements Channel {
       if (!channel || !('send' in channel)) return null
       const sendable = channel as TextChannel | ThreadChannel
 
-      const options: Record<string, unknown> = {}
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const options: Record<string, any> = {}
 
       // Text — split at Discord's 2000 char limit
       if (msg.text) {
@@ -334,7 +335,7 @@ export class DiscordChannel implements Channel {
   // Attachment Resolution
   // -----------------------------------------------------------------------
 
-  resolveAttachment(attachment: Attachment): ResolvedAttachment | null {
+  async resolveAttachment(attachment: Attachment): Promise<ResolvedAttachment | null> {
     // Discord attachments have public CDN URLs — no download needed
     if (!attachment.url) return null
 
@@ -407,6 +408,54 @@ export class DiscordChannel implements Channel {
   // Lifecycle
   // -----------------------------------------------------------------------
 
+  // -----------------------------------------------------------------------
+  // Inbound Handlers
+  // -----------------------------------------------------------------------
+
+  private async handleMessage(msg: DiscordMessage): Promise<void> {
+    // Ignore bots
+    if (msg.author.bot) return
+    // Check access control
+    if (!this.isAllowed(msg)) return
+
+    // Check for slash-like commands: /command args
+    const match = msg.content.match(/^\/(\w+)\s*(.*)/)
+    if (match && this.commandHandler) {
+      const inbound = this.buildInbound(msg)
+      await this.commandHandler(match[1], match[2], inbound)
+      return
+    }
+
+    if (this.messageHandler) {
+      const inbound = this.buildInbound(msg)
+      await this.messageHandler(inbound)
+    }
+  }
+
+  private async handleInteraction(interaction: Interaction): Promise<void> {
+    if (!interaction.isButton()) return
+    if (!this.commandHandler) return
+
+    const inbound: InboundMessage = {
+      id: interaction.id,
+      userId: interaction.user.id,
+      username: interaction.user.username,
+      displayName: interaction.user.displayName,
+      channelId: interaction.channelId,
+      chatType: 'button',
+      text: interaction.customId,
+      platform: 'discord',
+      timestamp: Date.now(),
+    }
+
+    await interaction.deferUpdate().catch(() => {})
+    await this.commandHandler('button', interaction.customId, inbound)
+  }
+
+  // -----------------------------------------------------------------------
+  // Lifecycle
+  // -----------------------------------------------------------------------
+
   onMessage(handler: (message: InboundMessage) => Promise<void>): void {
     this.messageHandler = handler
   }
@@ -422,12 +471,12 @@ export class DiscordChannel implements Channel {
     await this.client.login(this.config.botToken)
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     console.log('[Discord] Stopping...')
     // Clear all typing intervals
     for (const [channelId] of this.typingIntervals) {
       this.stopTyping(channelId)
     }
-    void this.client.destroy()
+    await this.client.destroy()
   }
 }
