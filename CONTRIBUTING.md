@@ -24,7 +24,7 @@ Thanks for your interest in contributing! This guide covers development setup, t
    ```
 4. **Verify everything works:**
    ```bash
-   npm run ci    # runs lint + build + test across all 21 packages
+   npm run ci    # runs lint + build + test across all 22 packages
    ```
 5. **Create a branch** from `main`:
    ```bash
@@ -33,7 +33,7 @@ Thanks for your interest in contributing! This guide covers development setup, t
 
 ## Working with Nx
 
-RivetOS uses [Nx](https://nx.dev) to orchestrate the monorepo. Nx understands the dependency graph between the 21 packages and provides caching, parallel execution, and affected-only runs.
+RivetOS uses [Nx](https://nx.dev) to orchestrate the monorepo. Nx understands the dependency graph between the 22 packages and provides caching, parallel execution, and affected-only runs.
 
 ### Everyday commands
 
@@ -56,6 +56,10 @@ npx nx run tool-shell:test              # Test the shell tool plugin
 # ── Only what you changed ────────────────────────────────
 npx nx affected -t test                 # Test packages affected by your changes
 npx nx affected -t lint build test      # Full pipeline, affected only
+
+# ── @rivetos/nx generators ───────────────────────────────
+npx nx g @rivetos/nx:plugin             # Scaffold a new channel/provider/tool plugin
+npx nx g @rivetos/nx:pr                 # Interactive PR wizard with quality gates
 ```
 
 ### Package names for `nx run`
@@ -83,6 +87,7 @@ Core packages use their directory name. Plugins use the directory name without t
 | `plugins/tools/interaction` | `tool-interaction` | `npx nx run tool-interaction:test` |
 | `plugins/tools/mcp-client` | `tool-mcp-client` | `npx nx run tool-mcp-client:build` |
 | `plugins/tools/coding-pipeline` | `tool-coding-pipeline` | `npx nx run tool-coding-pipeline:lint` |
+| `packages/nx-plugin` | `@rivetos/nx` | `npx nx run @rivetos/nx:test` |
 
 > **Tip:** Run `npx nx show projects` to list all project names, or `npx nx show project <name>` to see available targets for a specific project.
 
@@ -184,6 +189,43 @@ Types → Domain → Runtime → Boot
 
 ## Adding a New Plugin
 
+The recommended way to add a plugin is with the `@rivetos/nx` generator:
+
+```bash
+npx nx g @rivetos/nx:plugin
+```
+
+This will interactively prompt for plugin type, name, and description, then scaffold the entire package with:
+- `package.json` (scoped `@rivetos/<type>-<name>`, depends on `@rivetos/types`)
+- `tsconfig.json` (extends root `tsconfig.base.json`)
+- `src/index.ts` (interface stub implementing `Channel`, `Provider`, or `Tool`)
+- `src/index.test.ts` (skeleton test file)
+- `eslint.config.mjs` (inherits shared config)
+
+You can also pass options directly:
+
+```bash
+npx nx g @rivetos/nx:plugin --type=channel --name=slack --description="Slack workspace integration"
+npx nx g @rivetos/nx:plugin --type=provider --name=mistral --description="Mistral AI models"
+npx nx g @rivetos/nx:plugin --type=tool --name=database --description="SQL query tool"
+```
+
+After scaffolding:
+
+1. **Implement** the interface in `src/index.ts` — the stub has TODO comments for each method.
+2. **Register** the plugin in `packages/boot/` via a registrar.
+3. **Write tests** — the skeleton test file is ready to fill in.
+4. **Verify:**
+   ```bash
+   npx nx run <project-name>:lint
+   npx nx run <project-name>:build
+   npx nx run <project-name>:test
+   npx nx graph    # confirm it appears with correct dependencies
+   ```
+
+<details>
+<summary>Manual setup (without generator)</summary>
+
 1. Create the package directory:
    ```bash
    mkdir -p plugins/<category>/<name>
@@ -224,6 +266,7 @@ Types → Domain → Runtime → Boot
    npx nx run <project-name>:test
    npx nx graph    # confirm it appears with correct dependencies
    ```
+</details>
 
 ## Testing
 
@@ -246,9 +289,32 @@ npx nx affected -t test
 npx nx run core:test -- --coverage
 ```
 
-## PR Checklist
+## Creating a Pull Request
 
-Before submitting a pull request, verify:
+The recommended way to create a PR is with the `@rivetos/nx` PR generator:
+
+```bash
+npx nx g @rivetos/nx:pr
+```
+
+This will:
+1. Ask for change type (feat/fix/refactor/chore/docs/plugin/test/perf)
+2. Create a branch with conventional naming (e.g., `feat/add-slack-channel`)
+3. Detect affected packages from your changes
+4. Run `nx affected -t lint build test` as a quality gate (**must pass**)
+5. Generate a PR description with affected packages, summary, and checklist
+6. Create the PR via `gh pr create` with appropriate labels
+
+You can also pass options directly:
+
+```bash
+npx nx g @rivetos/nx:pr --type=feat --description="Add Slack channel" --issue=34
+npx nx g @rivetos/nx:pr --dryRun    # preview without creating anything
+```
+
+### Manual PR checklist
+
+If you're not using the PR generator, verify before submitting:
 
 - [ ] Branch is based on `main`
 - [ ] Commit messages follow conventional commits
