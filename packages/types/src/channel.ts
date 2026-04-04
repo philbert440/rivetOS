@@ -67,6 +67,12 @@ export interface ResolvedAttachment {
   fileName?: string
 }
 
+/** Result from editing a message that may have overflowed into multiple messages */
+export interface EditResult {
+  /** All message IDs in order: [primary, overflow1, overflow2, ...] */
+  messageIds: string[]
+}
+
 export interface Channel {
   id: string
   platform: string
@@ -76,12 +82,23 @@ export interface Channel {
   /**
    * Edit a message. If text exceeds the platform limit, the channel
    * handles overflow internally — edit the current message with as much
-   * as fits, send the rest as new messages, return the final message ID.
+   * as fits, send the rest as continuation messages.
    *
-   * Returns the ID of the last message (same as input if no overflow,
-   * new ID if overflow created continuation messages), or null on failure.
+   * @param channelId - Channel/chat ID
+   * @param messageId - Primary message to edit
+   * @param text - New full text content
+   * @param overflowIds - IDs of overflow messages from a previous edit.
+   *   Pass these so the channel can re-edit them instead of creating new ones.
+   *
+   * Returns an EditResult with all message IDs (primary + overflow),
+   * or null on failure.
    */
-  edit?(channelId: string, messageId: string, text: string): Promise<string | null>
+  edit?(
+    channelId: string,
+    messageId: string,
+    text: string,
+    overflowIds?: string[],
+  ): Promise<EditResult | null>
   react?(channelId: string, messageId: string, emoji: string): Promise<void>
   /** Resolve attachment data (download from platform API, base64 encode, etc.) */
   resolveAttachment?(attachment: Attachment): Promise<ResolvedAttachment | null>

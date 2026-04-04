@@ -186,14 +186,16 @@ export class TurnHandler {
       }
 
       // Clean up streaming state before sending final response
-      const { messageId: streamMsgId } = streamManager.cleanup(sessionKey)
+      const { messageId: streamMsgId, overflowIds } = streamManager.cleanup(sessionKey)
 
       // Send final response
       if (result.response && !result.aborted) {
         const isSilent = SILENT_RESPONSES.some((s) => result.response.trim() === s)
         if (!isSilent) {
           if (streamMsgId && channel.edit) {
-            await channel.edit(message.channelId, streamMsgId, result.response).catch(() => {})
+            await channel
+              .edit(message.channelId, streamMsgId, result.response, overflowIds)
+              .catch(() => {})
           } else {
             await channel.send({
               channelId: message.channelId,

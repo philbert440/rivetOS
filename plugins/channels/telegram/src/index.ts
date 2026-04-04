@@ -16,6 +16,7 @@
 import { Bot, Context, InlineKeyboard } from 'grammy'
 import type {
   Channel,
+  EditResult,
   InboundMessage,
   OutboundMessage,
   Attachment,
@@ -326,26 +327,44 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  async edit(channelId: string, messageId: string, text: string): Promise<string | null> {
+  async edit(
+    channelId: string,
+    messageId: string,
+    text: string,
+    overflowIds: string[] = [],
+  ): Promise<EditResult | null> {
     try {
-      if (text.length <= this.maxMessageLength) {
-        // Fits in one message — simple edit
-        await this.editHtml(channelId, messageId, text)
-        return messageId
-      }
-
-      // Overflow: split, edit current message with first chunk, send rest as new messages
       const html = markdownToTelegramHtml(text)
       const chunks = splitMessage(html, this.maxMessageLength)
+      const resultIds: string[] = [messageId]
 
+      // Edit primary message with first chunk
       await this.editHtml(channelId, messageId, chunks[0])
 
-      let lastId: string = messageId
+      // Handle overflow chunks — re-edit existing overflow messages when possible
       for (let i = 1; i < chunks.length; i++) {
-        const sentId = await this.sendHtml(channelId, chunks[i])
-        if (sentId) lastId = sentId
+        const existingId = overflowIds[i - 1]
+        if (existingId) {
+          // Re-edit previously-created overflow message
+          await this.editHtml(channelId, existingId, chunks[i])
+          resultIds.push(existingId)
+        } else {
+          // No existing overflow message — send a new one
+          const sentId = await this.sendHtml(channelId, chunks[i])
+          resultIds.push(sentId ?? messageId)
+        }
       }
-      return lastId
+
+      // Clean up stale overflow messages (text got shorter, fewer chunks needed)
+      for (let i = chunks.length - 1; i < overflowIds.length; i++) {
+        try {
+          await this.bot.api.deleteMessage(channelId, Number(overflowIds[i]))
+        } catch {
+          /* non-critical — message may already be gone */
+        }
+      }
+
+      return { messageIds: resultIds }
     } catch {
       return null
     }
