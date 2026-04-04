@@ -273,6 +273,7 @@ export type HookErrorMode = 'continue' | 'abort' | 'retry'
  */
 export type HookHandlerFn<T extends HookContext = HookContext> = (
   ctx: T,
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type
 ) => Promise<void | undefined | 'abort' | 'skip'> | void | undefined | 'abort' | 'skip'
 
 /**

@@ -159,7 +159,8 @@ export class AgentLoop {
           event: 'provider:before',
           providerId: activeProvider.id,
           model:
-            ((activeProvider as unknown as Record<string, unknown>).model as string | undefined) ?? 'unknown',
+            ((activeProvider as unknown as Record<string, unknown>).model as string | undefined) ??
+            'unknown',
           messages: messages as unknown[],
           tools: toolDefs as unknown[],
           agentId: this.config.agentId,
@@ -303,8 +304,9 @@ export class AgentLoop {
             event: 'provider:error',
             providerId: activeProvider.id,
             model:
-              ((activeProvider as unknown as Record<string, unknown>).model as string | undefined) ??
-              'unknown',
+              ((activeProvider as unknown as Record<string, unknown>).model as
+                | string
+                | undefined) ?? 'unknown',
             error: err instanceof Error ? err : new Error(String(err)),
             statusCode,
             agentId: this.config.agentId,
@@ -337,7 +339,8 @@ export class AgentLoop {
           event: 'provider:after',
           providerId: activeProvider.id,
           model:
-            ((activeProvider as unknown as Record<string, unknown>).model as string | undefined) ?? 'unknown',
+            ((activeProvider as unknown as Record<string, unknown>).model as string | undefined) ??
+            'unknown',
           usage: { ...totalUsage },
           latencyMs: Date.now() - streamStartTime,
           hasToolCalls,

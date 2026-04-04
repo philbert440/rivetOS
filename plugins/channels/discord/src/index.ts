@@ -98,14 +98,12 @@ export class DiscordChannel implements Channel {
 
   private setupHandlers(): void {
     this.client.on('messageCreate', (msg) => {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       void this.handleMessage(msg)
     })
 
     // Button interactions
 
     this.client.on('interactionCreate', (interaction: Interaction) => {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       void this.handleInteraction(interaction)
     })
 

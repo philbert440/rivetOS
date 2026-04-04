@@ -13,7 +13,13 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { SubagentSession, SubagentSpawnRequest, SubagentManager, Tool, Provider } from '@rivetos/types'
+import type {
+  SubagentSession,
+  SubagentSpawnRequest,
+  SubagentManager,
+  Tool,
+  Provider,
+} from '@rivetos/types'
 import { getTextContent } from '@rivetos/types'
 import { AgentLoop } from './loop.js'
 import type { Router } from './router.js'
