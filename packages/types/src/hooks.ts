@@ -52,7 +52,9 @@ export type HookEventName =
   | 'turn:before'
   | 'turn:after'
   | 'compact:before'
-  | 'compact:after';
+  | 'compact:after'
+  | 'delegation:before'
+  | 'delegation:after';
 
 // ---------------------------------------------------------------------------
 // Hook Context — data passed through the pipeline
@@ -205,6 +207,39 @@ export interface CompactAfterContext extends HookContextBase {
   summary?: string;
 }
 
+/** Context for delegation:before — before delegating to another agent */
+export interface DelegationBeforeContext extends HookContextBase {
+  event: 'delegation:before';
+  /** Agent initiating the delegation */
+  fromAgent: string;
+  /** Target agent */
+  toAgent: string;
+  /** Task being delegated */
+  task: string;
+  /** Current chain depth */
+  chainDepth: number;
+  /** If set to true, block the delegation */
+  blocked?: boolean;
+  /** Reason for blocking */
+  blockReason?: string;
+}
+
+/** Context for delegation:after — after delegation completes */
+export interface DelegationAfterContext extends HookContextBase {
+  event: 'delegation:after';
+  fromAgent: string;
+  toAgent: string;
+  task: string;
+  /** Result status */
+  status: 'completed' | 'failed' | 'timeout' | 'cached';
+  /** Duration in ms */
+  durationMs: number;
+  /** Token usage from the delegate */
+  usage?: { promptTokens: number; completionTokens: number };
+  /** Whether the result came from cache */
+  cached: boolean;
+}
+
 /** Union of all context types */
 export type HookContext =
   | ProviderBeforeContext
@@ -217,7 +252,9 @@ export type HookContext =
   | TurnBeforeContext
   | TurnAfterContext
   | CompactBeforeContext
-  | CompactAfterContext;
+  | CompactAfterContext
+  | DelegationBeforeContext
+  | DelegationAfterContext;
 
 // ---------------------------------------------------------------------------
 // Hook Handler

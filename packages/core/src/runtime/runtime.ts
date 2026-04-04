@@ -451,6 +451,7 @@ export class Runtime {
       router: this.router,
       workspace: this.workspace,
       tools: this.tools,
+      hooks: this.config.hooks,
     });
     this.registerTool(delegation.createDelegationTool());
 
@@ -459,6 +460,7 @@ export class Runtime {
       router: this.router,
       workspace: this.workspace,
       tools: this.tools,
+      hooks: this.config.hooks,
     });
     for (const tool of createSubagentTools(subagentManager)) {
       this.registerTool(tool);
