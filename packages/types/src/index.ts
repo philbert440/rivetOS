@@ -30,6 +30,8 @@ export type {
   TurnAfterContext,
   CompactBeforeContext,
   CompactAfterContext,
+  DelegationBeforeContext,
+  DelegationAfterContext,
   HookErrorMode,
   HookHandlerFn,
   HookRegistration,

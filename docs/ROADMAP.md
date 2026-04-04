@@ -241,50 +241,36 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 
 ---
 
-## Milestone 3: Agent Capabilities
+## Milestone 3: Multi-Agent Communication
 **Target: v0.3.0**  
-**Theme:** Smarter agents, not just more tools.
+**Theme:** Agents that can work together — within an instance and across the network.
 
-### 3.1 — Plan Mode
-- Read-only exploration mode: only read tools enabled (file_read, search_glob, search_grep, web_search, web_fetch, memory_search)
-- Write tools (file_write, file_edit, shell with side effects) blocked with helpful message
-- Agent produces structured plan: steps, files to modify, tests to run, risks
-- User approves → mode switches to execute
-- `/plan` command to enter, `/execute` to approve and switch
+### 3.1 — Delegation (Intra-Instance) ✅
+Delegation = synchronous, intra-instance. One agent spawns a sub-loop with a different provider/model within the same process. Caller waits for the result.
 
-### 3.2 — Git Worktree Isolation for Subagents
-- When `subagent_spawn` is used for code tasks, auto-create a git worktree
-- Subagent operates in isolated copy of repo
-- On completion: merge back to main worktree or create PR branch
-- Enables true parallel code changes without conflict
-- Cleanup: auto-remove worktree after merge
+**Already exists:** `DelegationEngine` + `SubagentManagerImpl` with `delegate_task`, `subagent_spawn`, `subagent_send`, `subagent_list`, `subagent_kill` tools. Wired in `Runtime.start()`.
 
-### 3.3 — Batch Mode
-- Decompose large tasks into independent units (like Claude Code's /batch)
-- Spawn N subagents, each in its own worktree
-- Each implements its unit, runs tests, reports results
-- Coordinator agent merges results and resolves conflicts
-- Progress tracking: show status of all units
+**Improvements completed:**
+- [x] `fromAgent` context: delegated agent gets rich context (requesting agent, chain depth, additional context lines)
+- [x] Delegation chains: A delegates to B, B can delegate to C (configurable depth limit, default 3)
+- [x] Result caching: same task+agent returns cached result (5 min TTL, configurable)
+- [x] Timeout handling: graceful timeout with partial result return
+- [x] Hook integration: `delegation:before` / `delegation:after` events on the hook pipeline (blocking support)
+- [x] **26 tests** for DelegationEngine (basic, chains, cache, timeout, hooks, tool)
+- [x] **20 tests** for SubagentManagerImpl (spawn run/session, send, yield, kill, list, tools)
 
-### 3.4 — Delegation Improvements
-- `fromAgent` context: delegated agent knows who asked and why
-- Delegation chains: A delegates to B, B can delegate to C (with depth limit)
-- Result caching: same delegation request within a session returns cached result
-- Timeout handling: graceful timeout with partial result return
+### 3.2 — Inter-Agent Messaging (Cross-Instance)
+Messaging = asynchronous, cross-instance. Agent-to-agent communication over HTTP. The receiving agent processes the message through its **full normal pipeline** — memory, hooks, tools, everything. It's treated like a message from a real user, except tagged as coming from another agent.
 
-### 3.5 — Dynamic Routing
-- Extend `Router` beyond static agent-name mapping
-- **Content-based routing:** Route messages to agents by topic/capability match (e.g., "code question" → Grok, "research" → Local)
-- **Load-based routing:** If an agent is busy/slow, route to next capable agent
-- **Cost-based routing:** Prefer cheaper models for simple queries, expensive for complex
-- Keep it lightweight: Router interface stays simple, strategy pattern for routing logic
-- Foundation only — advanced routing (A2A protocol, cross-node mesh) deferred to M6
-
-### 3.6 — Capability-Based Delegation
-- Delegate by capability, not just agent name: `delegate({ capability: 'fast-code' })` instead of `delegate({ to: 'grok' })`
-- Agent capability registry: each agent declares what it's good at (code, research, creative, analysis)
-- Router resolves capability → agent at delegation time
-- Enables graceful degradation: if the best agent for a capability is down, pick the next best
+**Architecture:**
+- [x] **Agent Channel Plugin** (`@rivetos/channel-agent`) — HTTP endpoint for incoming agent messages. Delivers as `InboundMessage` with `platform: 'agent'` and `metadata.fromAgent`.
+- [x] **Agent Messaging Tool** (`agent_message`) — sends messages to remote agents via HTTP. Supports sync (wait for response) and async (fire and forget).
+- [x] **Peer Config** — `peers` section in config with URL and optional per-peer secret override.
+- [x] **Auth** — shared secret via Bearer token. Rejects unauthorized/invalid requests.
+- [x] **Memory** — receiving agent records with `channel: 'agent'`, `userId: 'agent:<name>'`, full pipeline applies.
+- [x] **Response flow** — sync mode: response sent back in HTTP response body. Async mode: returns 202 accepted.
+- [x] **Health endpoint** — `GET /health` returns agent info and status.
+- [x] **19 tests** — lifecycle, health, auth (401/403), message delivery, sync/async modes, tool schema, peer messaging, bidirectional communication
 
 ---
 

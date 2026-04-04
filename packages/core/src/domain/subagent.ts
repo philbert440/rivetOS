@@ -36,6 +36,8 @@ export interface SubagentManagerConfig {
   router: Router;
   workspace: WorkspaceLoader;
   tools: Tool[];
+  /** Hook pipeline for delegation events */
+  hooks?: import('@rivetos/types').HookPipeline;
 }
 
 // ---------------------------------------------------------------------------
