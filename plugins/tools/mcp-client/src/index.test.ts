@@ -274,8 +274,9 @@ describe('MCPClientPlugin', () => {
       const parts = result as any[];
       expect(parts).toHaveLength(2);
       expect(parts[0]).toEqual({ type: 'text', text: 'Here is the image:' });
-      expect(parts[1].type).toBe('image_url');
-      expect(parts[1].image_url.url).toBe('data:image/png;base64,base64data==');
+      expect(parts[1].type).toBe('image');
+      expect(parts[1].data).toBe('base64data==');
+      expect(parts[1].mimeType).toBe('image/png');
     });
 
     it('converts resource with text to ContentPart', async () => {
@@ -320,8 +321,9 @@ describe('MCPClientPlugin', () => {
 
       expect(Array.isArray(result)).toBe(true);
       const parts = result as any[];
-      expect(parts[0].type).toBe('image_url');
-      expect(parts[0].image_url.url).toBe('data:image/jpeg;base64,jpegdata==');
+      expect(parts[0].type).toBe('image');
+      expect(parts[0].data).toBe('jpegdata==');
+      expect(parts[0].mimeType).toBe('image/jpeg');
     });
 
     it('handles unsupported content types gracefully', async () => {

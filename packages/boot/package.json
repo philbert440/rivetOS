@@ -1,0 +1,34 @@
+{
+  "name": "@rivetos/boot",
+  "version": "0.1.0",
+  "description": "RivetOS composition root — config loading, plugin wiring, lifecycle",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@rivetos/types": "*",
+    "@rivetos/core": "*",
+    "@rivetos/provider-anthropic": "*",
+    "@rivetos/provider-google": "*",
+    "@rivetos/provider-xai": "*",
+    "@rivetos/provider-ollama": "*",
+    "@rivetos/provider-openai-compat": "*",
+    "@rivetos/channel-telegram": "*",
+    "@rivetos/channel-discord": "*",
+    "@rivetos/channel-voice-discord": "*",
+    "@rivetos/tool-shell": "*",
+    "@rivetos/tool-file": "*",
+    "@rivetos/tool-search": "*",
+    "@rivetos/tool-interaction": "*",
+    "@rivetos/tool-web-search": "*",
+    "@rivetos/tool-mcp-client": "*",
+    "@rivetos/tool-coding-pipeline": "*",
+    "@rivetos/memory-postgres": "*",
+    "yaml": "^2.8.3"
+  }
+}

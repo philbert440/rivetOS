@@ -11,6 +11,16 @@
  *   rivetos ollama pull <model>  — pull a model
  */
 
+interface OllamaModel {
+  name: string;
+  size: number;
+  modified_at?: string;
+}
+
+interface OllamaTagsResponse {
+  models: OllamaModel[];
+}
+
 export default async function provider(providerName: string): Promise<void> {
   const action = process.argv[3];
 
@@ -47,7 +57,7 @@ async function handleAnthropic(action: string): Promise<void> {
     case 'setup':
     case 'login': {
       const { saveTokens, detectAuthMode } = await import(
-        '../../../../plugins/providers/anthropic/src/oauth.js'
+        '@rivetos/provider-anthropic'
       );
       const { createInterface } = await import('node:readline');
 
@@ -96,7 +106,7 @@ async function handleAnthropic(action: string): Promise<void> {
 
     case 'status': {
       const { loadTokens } = await import(
-        '../../../../plugins/providers/anthropic/src/oauth.js'
+        '@rivetos/provider-anthropic'
       );
       const tokens = await loadTokens();
 
@@ -184,7 +194,7 @@ async function handleOllama(action: string): Promise<void> {
       try {
         const res = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(5000) });
         if (res.ok) {
-          const data = await res.json() as Record<string, unknown>;
+          const data = await res.json() as OllamaTagsResponse;
           const models = data.models ?? [];
           console.log(`  Connectivity: ✅`);
           console.log(`  Models loaded: ${models.length}`);
@@ -205,7 +215,7 @@ async function handleOllama(action: string): Promise<void> {
     case 'models': {
       try {
         const res = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(5000) });
-        const data = await res.json() as Record<string, unknown>;
+        const data = await res.json() as OllamaTagsResponse;
         const models = data.models ?? [];
         if (models.length === 0) {
           console.log('No models found. Pull one: rivetos ollama pull <model>');

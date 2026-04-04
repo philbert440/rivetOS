@@ -66,10 +66,13 @@ class ReadTimeoutError extends Error {
   }
 }
 
+/** Result of ReadableStreamDefaultReader.read() — inlined to avoid DOM lib dependency */
+type StreamReadResult<T> = { done: false; value: T } | { done: true; value: T | undefined };
+
 function readWithTimeout(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
-): Promise<ReadableStreamReadResult<Uint8Array>> {
+): Promise<StreamReadResult<Uint8Array>> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new ReadTimeoutError(timeoutMs / 1000)),
@@ -255,7 +258,7 @@ export class OpenAICompatProvider implements Provider {
         // Apply timeout: longer for first chunk (model may be thinking),
         // shorter between subsequent chunks (stream should be flowing)
         const timeoutMs = isFirstChunk ? this.firstChunkTimeoutMs : this.chunkTimeoutMs;
-        let readResult: ReadableStreamReadResult<Uint8Array>;
+        let readResult: StreamReadResult<Uint8Array>;
 
         try {
           readResult = await readWithTimeout(reader, timeoutMs);

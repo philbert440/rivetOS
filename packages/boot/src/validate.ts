@@ -31,6 +31,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   'providers',
   'channels',
   'memory',
+  'mcp',
 ]);
 
 /** Known runtime keys */
@@ -41,12 +42,16 @@ const KNOWN_RUNTIME_KEYS = new Set([
   'skill_dirs',
   'heartbeats',
   'coding_pipeline',
+  'fallbacks',
+  'safety',
+  'auto_actions',
 ]);
 
 /** Known agent keys */
 const KNOWN_AGENT_KEYS = new Set([
   'provider',
   'default_thinking',
+  'fallbacks',
 ]);
 
 /** Valid thinking levels */
@@ -112,14 +117,10 @@ const API_KEY_PATTERNS = [
 
 /**
  * Validate a parsed config object. Returns structured errors and warnings.
- *
- * Does NOT resolve env vars — call this on the raw parsed YAML before env resolution
- * so we can warn about missing env vars. Or call on resolved config to catch empty values.
  */
 export function validateConfig(config: unknown): ValidationResult {
   const issues: ValidationIssue[] = [];
 
-  // Must be an object
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     issues.push({ severity: 'error', path: '', message: 'Config must be a YAML object (got ' + typeof config + ')' });
     return toResult(issues);
@@ -127,7 +128,6 @@ export function validateConfig(config: unknown): ValidationResult {
 
   const cfg = config as Record<string, unknown>;
 
-  // Check for unknown top-level keys
   for (const key of Object.keys(cfg)) {
     if (!KNOWN_TOP_LEVEL_KEYS.has(key)) {
       issues.push({ severity: 'warning', path: key, message: `Unknown top-level key "${key}" — will be ignored` });
@@ -190,35 +190,30 @@ export function validateConfig(config: unknown): ValidationResult {
 // ---------------------------------------------------------------------------
 
 function validateRuntime(runtime: Record<string, unknown>, issues: ValidationIssue[]): void {
-  // Unknown keys
   for (const key of Object.keys(runtime)) {
     if (!KNOWN_RUNTIME_KEYS.has(key)) {
       issues.push({ severity: 'warning', path: `runtime.${key}`, message: `Unknown runtime key "${key}"` });
     }
   }
 
-  // workspace (required)
   if (!runtime.workspace) {
     issues.push({ severity: 'error', path: 'runtime.workspace', message: 'Missing required field "runtime.workspace"' });
   } else if (typeof runtime.workspace !== 'string') {
     issues.push({ severity: 'error', path: 'runtime.workspace', message: '"runtime.workspace" must be a string path' });
   }
 
-  // default_agent (required)
   if (!runtime.default_agent) {
     issues.push({ severity: 'error', path: 'runtime.default_agent', message: 'Missing required field "runtime.default_agent"' });
   } else if (typeof runtime.default_agent !== 'string') {
     issues.push({ severity: 'error', path: 'runtime.default_agent', message: '"runtime.default_agent" must be a string' });
   }
 
-  // max_tool_iterations (optional, must be positive int)
   if (runtime.max_tool_iterations !== undefined) {
     if (typeof runtime.max_tool_iterations !== 'number' || runtime.max_tool_iterations < 1) {
       issues.push({ severity: 'error', path: 'runtime.max_tool_iterations', message: '"runtime.max_tool_iterations" must be a positive integer' });
     }
   }
 
-  // skill_dirs (optional, must be string array)
   if (runtime.skill_dirs !== undefined) {
     if (!Array.isArray(runtime.skill_dirs)) {
       issues.push({ severity: 'error', path: 'runtime.skill_dirs', message: '"runtime.skill_dirs" must be an array of paths' });
@@ -231,7 +226,6 @@ function validateRuntime(runtime: Record<string, unknown>, issues: ValidationIss
     }
   }
 
-  // heartbeats (optional, must be array)
   if (runtime.heartbeats !== undefined) {
     if (!Array.isArray(runtime.heartbeats)) {
       issues.push({ severity: 'error', path: 'runtime.heartbeats', message: '"runtime.heartbeats" must be an array' });
@@ -242,7 +236,6 @@ function validateRuntime(runtime: Record<string, unknown>, issues: ValidationIss
     }
   }
 
-  // coding_pipeline (optional)
   if (runtime.coding_pipeline !== undefined) {
     if (typeof runtime.coding_pipeline !== 'object' || Array.isArray(runtime.coding_pipeline)) {
       issues.push({ severity: 'error', path: 'runtime.coding_pipeline', message: '"runtime.coding_pipeline" must be an object' });
@@ -262,7 +255,6 @@ function validateHeartbeat(hb: unknown, index: number, issues: ValidationIssue[]
 
   const entry = hb as Record<string, unknown>;
 
-  // Unknown keys
   for (const key of Object.keys(entry)) {
     if (!KNOWN_HEARTBEAT_KEYS.has(key)) {
       issues.push({ severity: 'warning', path: `${path}.${key}`, message: `Unknown heartbeat key "${key}"` });
@@ -281,7 +273,6 @@ function validateHeartbeat(hb: unknown, index: number, issues: ValidationIssue[]
     issues.push({ severity: 'error', path: `${path}.prompt`, message: 'Heartbeat requires a string "prompt" field' });
   }
 
-  // quiet_hours
   if (entry.quiet_hours !== undefined) {
     if (typeof entry.quiet_hours !== 'object' || Array.isArray(entry.quiet_hours)) {
       issues.push({ severity: 'error', path: `${path}.quiet_hours`, message: '"quiet_hours" must be an object with "start" and "end" (0-23)' });
@@ -337,21 +328,18 @@ function validateAgents(agents: Record<string, unknown>, fullConfig: Record<stri
 
     const agent = agentCfg as Record<string, unknown>;
 
-    // Unknown keys
     for (const key of Object.keys(agent)) {
       if (!KNOWN_AGENT_KEYS.has(key)) {
         issues.push({ severity: 'warning', path: `${path}.${key}`, message: `Unknown agent key "${key}"` });
       }
     }
 
-    // provider (required)
     if (!agent.provider) {
       issues.push({ severity: 'error', path: `${path}.provider`, message: `Agent "${name}" is missing required field "provider"` });
     } else if (typeof agent.provider !== 'string') {
       issues.push({ severity: 'error', path: `${path}.provider`, message: `Agent "${name}" provider must be a string` });
     }
 
-    // default_thinking (optional, must be valid)
     if (agent.default_thinking !== undefined) {
       if (typeof agent.default_thinking !== 'string' || !VALID_THINKING_LEVELS.has(agent.default_thinking)) {
         issues.push({
@@ -380,11 +368,9 @@ function validateProviders(providers: Record<string, unknown>, issues: Validatio
 
     const provider = providerCfg as Record<string, unknown>;
 
-    // Check if it's a known provider type
     if (!KNOWN_PROVIDERS[name]) {
-      issues.push({ severity: 'warning', path, message: `Unknown provider type "${name}" — make sure boot.ts has a handler for it` });
+      issues.push({ severity: 'warning', path, message: `Unknown provider type "${name}" — make sure a registrar handles it` });
     } else {
-      // Check for unknown keys within a known provider
       const knownKeys = KNOWN_PROVIDERS[name];
       for (const key of Object.keys(provider)) {
         if (!knownKeys.has(key)) {
@@ -393,19 +379,16 @@ function validateProviders(providers: Record<string, unknown>, issues: Validatio
       }
     }
 
-    // model (required for all providers)
     if (!provider.model) {
       issues.push({ severity: 'error', path: `${path}.model`, message: `Provider "${name}" is missing required field "model"` });
     } else if (typeof provider.model !== 'string') {
       issues.push({ severity: 'error', path: `${path}.model`, message: `Provider "${name}" model must be a string` });
     }
 
-    // base_url required for ollama, openai-compat, llama-server
     if ((name === 'ollama' || name === 'openai-compat' || name === 'llama-server') && !provider.base_url) {
       issues.push({ severity: 'error', path: `${path}.base_url`, message: `Provider "${name}" requires "base_url"` });
     }
 
-    // Warn if API key is hardcoded (not an env var reference)
     if (provider.api_key && typeof provider.api_key === 'string') {
       const key = provider.api_key;
       if (!key.includes('${') && API_KEY_PATTERNS.some((p) => p.test(key))) {
@@ -417,14 +400,12 @@ function validateProviders(providers: Record<string, unknown>, issues: Validatio
       }
     }
 
-    // max_tokens (optional, positive number)
     if (provider.max_tokens !== undefined) {
       if (typeof provider.max_tokens !== 'number' || provider.max_tokens < 1) {
         issues.push({ severity: 'error', path: `${path}.max_tokens`, message: `Provider "${name}" max_tokens must be a positive number` });
       }
     }
 
-    // temperature (optional, 0-2 range)
     if (provider.temperature !== undefined) {
       if (typeof provider.temperature !== 'number' || provider.temperature < 0 || provider.temperature > 2) {
         issues.push({ severity: 'warning', path: `${path}.temperature`, message: `Provider "${name}" temperature ${provider.temperature} is outside typical range (0-2)` });
@@ -445,7 +426,7 @@ function validateChannels(channels: Record<string, unknown>, issues: ValidationI
     const channel = channelCfg as Record<string, unknown>;
 
     if (!KNOWN_CHANNELS[name]) {
-      issues.push({ severity: 'warning', path, message: `Unknown channel type "${name}" — make sure boot.ts has a handler for it` });
+      issues.push({ severity: 'warning', path, message: `Unknown channel type "${name}" — make sure a registrar handles it` });
     } else {
       const knownKeys = KNOWN_CHANNELS[name];
       for (const key of Object.keys(channel)) {
@@ -455,7 +436,6 @@ function validateChannels(channels: Record<string, unknown>, issues: ValidationI
       }
     }
 
-    // Warn if bot token is hardcoded
     if (channel.bot_token && typeof channel.bot_token === 'string') {
       const token = channel.bot_token;
       if (!token.includes('${') && token.length > 20) {
@@ -467,7 +447,6 @@ function validateChannels(channels: Record<string, unknown>, issues: ValidationI
       }
     }
 
-    // Discord-specific: channel_bindings should be object
     if (name === 'discord' && channel.channel_bindings !== undefined) {
       if (typeof channel.channel_bindings !== 'object' || Array.isArray(channel.channel_bindings)) {
         issues.push({ severity: 'error', path: `${path}.channel_bindings`, message: '"channel_bindings" must be an object mapping channel IDs to agent IDs' });
@@ -477,7 +456,6 @@ function validateChannels(channels: Record<string, unknown>, issues: ValidationI
 }
 
 function validateMemory(memory: Record<string, unknown>, issues: ValidationIssue[]): void {
-  // Currently only postgres is supported
   for (const key of Object.keys(memory)) {
     if (key !== 'postgres') {
       issues.push({ severity: 'warning', path: `memory.${key}`, message: `Unknown memory backend "${key}" — only "postgres" is currently supported` });
@@ -510,7 +488,6 @@ function validateCrossReferences(cfg: Record<string, unknown>, issues: Validatio
   const providerIds = new Set(Object.keys(providers));
   const agentIds = new Set(Object.keys(agents));
 
-  // Each agent's provider must exist in providers section
   for (const [name, agent] of Object.entries(agents)) {
     if (agent && typeof agent === 'object' && typeof agent.provider === 'string') {
       if (!providerIds.has(agent.provider)) {
@@ -523,7 +500,6 @@ function validateCrossReferences(cfg: Record<string, unknown>, issues: Validatio
     }
   }
 
-  // default_agent must exist in agents section
   if (typeof runtime.default_agent === 'string' && runtime.default_agent) {
     if (!agentIds.has(runtime.default_agent)) {
       issues.push({
@@ -534,7 +510,6 @@ function validateCrossReferences(cfg: Record<string, unknown>, issues: Validatio
     }
   }
 
-  // Heartbeat agents must exist
   if (Array.isArray(runtime.heartbeats)) {
     for (let i = 0; i < runtime.heartbeats.length; i++) {
       const hb = runtime.heartbeats[i] as Record<string, unknown> | null;
@@ -548,7 +523,6 @@ function validateCrossReferences(cfg: Record<string, unknown>, issues: Validatio
     }
   }
 
-  // Coding pipeline agents must exist
   if (runtime.coding_pipeline && typeof runtime.coding_pipeline === 'object') {
     const pipeline = runtime.coding_pipeline as Record<string, unknown>;
     if (typeof pipeline.builder_agent === 'string' && !agentIds.has(pipeline.builder_agent)) {
@@ -567,7 +541,6 @@ function validateCrossReferences(cfg: Record<string, unknown>, issues: Validatio
     }
   }
 
-  // Discord channel_bindings agent refs must exist
   const channels = (cfg.channels ?? {}) as Record<string, Record<string, unknown>>;
   const discord = channels.discord;
   if (discord && typeof discord.channel_bindings === 'object' && discord.channel_bindings) {
@@ -583,7 +556,6 @@ function validateCrossReferences(cfg: Record<string, unknown>, issues: Validatio
     }
   }
 
-  // Telegram agent ref (optional) must exist
   const telegram = channels.telegram;
   if (telegram && typeof telegram.agent === 'string' && !agentIds.has(telegram.agent)) {
     issues.push({
@@ -601,11 +573,7 @@ function validateCrossReferences(cfg: Record<string, unknown>, issues: Validatio
 function toResult(issues: ValidationIssue[]): ValidationResult {
   const errors = issues.filter((i) => i.severity === 'error');
   const warnings = issues.filter((i) => i.severity === 'warning');
-  return {
-    valid: errors.length === 0,
-    errors,
-    warnings,
-  };
+  return { valid: errors.length === 0, errors, warnings };
 }
 
 /**

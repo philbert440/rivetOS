@@ -22,3 +22,5 @@ plugins/**/src/**/*.js
 plugins/**/src/**/*.js.map
 plugins/**/src/**/*.d.ts
 plugins/**/src/**/*.d.ts.map
+dep-graph.json
+REFACTOR_PROGRESS.md

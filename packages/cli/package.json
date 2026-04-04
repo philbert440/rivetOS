@@ -3,14 +3,18 @@
   "version": "0.0.5",
   "description": "RivetOS command-line interface",
   "license": "MIT",
+  "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "echo \"no tests yet\""
   },
   "dependencies": {
     "@rivetos/types": "*",
+    "@rivetos/boot": "*",
+    "@rivetos/provider-anthropic": "*",
     "yaml": "^2.8.3"
   }
 }

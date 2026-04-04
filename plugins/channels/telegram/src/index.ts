@@ -73,7 +73,8 @@ export class TelegramChannel implements Channel {
   private setupHandlers(): void {
     // Global middleware — catches EVERY update for debugging + resets conflict counter
     this.bot.use(async (ctx, next) => {
-      console.log(`[Telegram] Update type=${ctx.updateType} text="${ctx.message?.text?.slice(0, 30) ?? ''}" from=${ctx.from?.id}`);
+      const updateType = ctx.message ? 'message' : ctx.callbackQuery ? 'callback_query' : ctx.editedMessage ? 'edited_message' : 'other';
+      console.log(`[Telegram] Update type=${updateType} text="${ctx.message?.text?.slice(0, 30) ?? ''}" from=${ctx.from?.id}`);
       // Successful update received — reset conflict counter
       this.conflict409Count = 0;
       await next();

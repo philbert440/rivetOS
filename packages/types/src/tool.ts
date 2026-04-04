@@ -15,6 +15,8 @@ export interface ToolContext {
   agentId?: string;
   /** Abort signal for cancellation */
   signal?: AbortSignal;
+  /** Working directory for file-based tools */
+  workingDir?: string;
 }
 
 /**

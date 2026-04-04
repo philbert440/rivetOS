@@ -1,9 +1,9 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2023",
     "module": "Node16",
     "moduleResolution": "Node16",
-    "lib": ["ES2022"],
+    "lib": ["ES2023"],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -13,17 +13,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "dist",
-    "rootDir": "src",
-    "baseUrl": ".",
-    "paths": {
-      "@rivetos/types": ["packages/types/src/index.ts"],
-      "@rivetos/core": ["packages/core/src/index.ts"],
-      "@rivetos/provider-anthropic": ["plugins/providers/anthropic/src/index.ts"],
-      "@rivetos/channel-telegram": ["plugins/channels/telegram/src/index.ts"],
-      "@rivetos/tool-shell": ["plugins/tools/shell/src/index.ts"],
-      "@rivetos/memory-postgres": ["plugins/memory/postgres/src/index.ts"],
-      "@rivetos/cli": ["packages/cli/src/index.ts"]
-    }
+    "rootDir": "src"
   },
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }

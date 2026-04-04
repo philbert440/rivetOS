@@ -483,3 +483,7 @@ export class AnthropicProvider implements Provider {
     }
   }
 }
+
+// OAuth utilities
+export { loadTokens, saveTokens, detectAuthMode, generateAuthUrl, exchangeCode } from "./oauth.js";
+export type { OAuthTokens, AuthMode } from "./oauth.js";

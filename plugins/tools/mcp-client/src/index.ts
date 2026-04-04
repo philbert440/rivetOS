@@ -323,10 +323,9 @@ export class MCPClientPlugin {
           break;
         case 'image':
           parts.push({
-            type: 'image_url',
-            image_url: {
-              url: `data:${block.mimeType ?? 'image/png'};base64,${block.data}`,
-            },
+            type: 'image',
+            data: block.data,
+            mimeType: block.mimeType ?? 'image/png',
           });
           break;
         case 'resource':
@@ -337,8 +336,9 @@ export class MCPClientPlugin {
             const mime = block.resource?.mimeType ?? 'application/octet-stream';
             if (mime.startsWith('image/')) {
               parts.push({
-                type: 'image_url',
-                image_url: { url: `data:${mime};base64,${block.resource.blob}` },
+                type: 'image',
+                data: block.resource.blob,
+                mimeType: mime,
               });
             } else {
               parts.push({ type: 'text', text: `[binary resource: ${block.resource.uri}]` });

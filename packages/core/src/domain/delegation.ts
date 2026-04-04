@@ -18,6 +18,7 @@
 import type {
   DelegationRequest,
   DelegationResult,
+  TokenUsage,
   Tool,
   HookPipeline,
   DelegationBeforeContext,
@@ -199,6 +200,18 @@ export class DelegationEngine {
 
       const turnResult = await loop.run(request.task, [], abort.signal);
 
+      // Enrich raw token counts into a full TokenUsage with agent metadata
+      const enrichUsage = (raw?: { promptTokens: number; completionTokens: number }): TokenUsage | undefined => {
+        if (!raw) return undefined;
+        return {
+          ...raw,
+          agent: request.toAgent,
+          provider: agent.provider,
+          model: provider.name,
+          timestamp: Date.now(),
+        };
+      };
+
       if (turnResult.aborted) {
         if (timedOut) {
           // Timeout — return partial result if available
@@ -208,7 +221,7 @@ export class DelegationEngine {
               ? `Delegation to ${request.toAgent} timed out after ${request.timeoutMs}ms. Partial result:\n\n${turnResult.partialResponse}`
               : `Delegation to ${request.toAgent} timed out after ${request.timeoutMs}ms (no partial result available).`,
             iterations: turnResult.iterations,
-            usage: turnResult.usage,
+            usage: enrichUsage(turnResult.usage),
           };
           await this.fireAfterHook(request, result, startTime, chainDepth, false);
           return result;
@@ -228,7 +241,7 @@ export class DelegationEngine {
         status: 'completed',
         response: turnResult.response,
         iterations: turnResult.iterations,
-        usage: turnResult.usage,
+        usage: enrichUsage(turnResult.usage),
       };
 
       // Cache the result

@@ -13,6 +13,11 @@
     "test": {
       "inputs": ["default", "^default"],
       "cache": true
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "inputs": ["default", "^default"],
+      "cache": true
     }
   }
 }

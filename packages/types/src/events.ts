@@ -57,6 +57,7 @@ export interface DelegationResult {
   status: 'completed' | 'failed' | 'timeout';
   response: string;
   iterations?: number;
+  usage?: TokenUsage;
 }
 
 // ---------------------------------------------------------------------------

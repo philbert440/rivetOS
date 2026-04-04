@@ -6,6 +6,7 @@
 import { describe, it } from 'vitest';
 import * as assert from 'node:assert/strict';
 import { validateConfig, formatValidationResult, type ValidationResult } from './validate.js';
+// Migrated from /src/validate.test.ts → packages/boot/src/validate.test.ts
 
 /** Minimal valid config for baseline tests */
 function validConfig(): Record<string, unknown> {

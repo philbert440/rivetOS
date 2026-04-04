@@ -24,8 +24,14 @@ export interface CodingPipelineConfig {
   /** Agent that builds code (default: 'grok') */
   builderAgent?: string;
 
+  /** Agent that validates code (default: 'opus') */
+  validatorAgent?: string;
+
   /** Max build→review loops before escalating (default: 3) */
   maxBuildLoops?: number;
+
+  /** Max validation loops before accepting (default: 2) */
+  maxValidationLoops?: number;
 
   /** Working directory for code operations */
   workingDir?: string;

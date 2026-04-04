@@ -81,7 +81,7 @@ function convertMessages(messages: Message[], thinking?: ThinkingLevel): OllamaM
     if (msg.role === 'user' && i === messages.findIndex((m) => m.role === 'user')) {
       if (thinking === 'off') {
         ollama.content = `/no_think\n${ollama.content}`;
-      } else if (thinking && thinking !== 'off') {
+      } else if (thinking) {
         ollama.content = `/think\n${ollama.content}`;
       }
     }
@@ -334,7 +334,7 @@ export class OllamaProvider implements Provider {
   async listModels(): Promise<Array<{ name: string; size: number; modified_at: string }>> {
     const res = await fetch(`${this.baseUrl}/api/tags`);
     if (!res.ok) throw new Error(`Failed to list models: ${res.status}`);
-    const data = await res.json() as Record<string, unknown>;
+    const data = await res.json() as { models?: Array<{ name: string; size: number; modified_at: string }> };
     return data.models ?? [];
   }
 
