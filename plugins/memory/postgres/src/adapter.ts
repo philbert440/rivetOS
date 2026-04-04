@@ -113,7 +113,7 @@ export class PostgresMemory implements Memory {
         [
           convId,
           entry.agent,
-          entry.channel ?? 'unknown',
+          entry.channel,
           entry.role,
           entry.content,
           entry.toolName ?? null,

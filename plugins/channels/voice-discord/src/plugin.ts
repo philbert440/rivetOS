@@ -123,7 +123,7 @@ export class VoicePlugin {
     switch (subcommand) {
       case 'join': {
         const member = interaction.member as GuildMember | null
-        const channel = member?.voice?.channel
+        const channel = member?.voice.channel
         if (!channel) {
           await interaction.reply({
             content: 'You need to be in a voice channel.',

@@ -247,7 +247,7 @@ export class MCPClientPlugin {
     const toolsResponse = await client.listTools()
     const prefix = config.toolPrefix ?? ''
 
-    const tools: MCPDiscoveredTool[] = (toolsResponse.tools ?? []).map((t) => ({
+    const tools: MCPDiscoveredTool[] = toolsResponse.tools.map((t) => ({
       mcpName: t.name,
       rivetName: prefix ? `${prefix}${t.name}` : t.name,
       description: t.description ?? `MCP tool from ${id}`,
@@ -368,7 +368,7 @@ export class MCPClientPlugin {
           parts.push({
             type: 'image',
             data: (block as MCPImageContent).data,
-            mimeType: (block as MCPImageContent).mimeType ?? 'image/png',
+            mimeType: (block as MCPImageContent).mimeType,
           })
           break
         case 'resource': {

@@ -279,7 +279,7 @@ export class WebSearchTool implements Tool {
           () => provider.search(query, count),
           (err) => {
             if (isTransientError(err)) return true
-            const status = (err as { status?: number })?.status
+            const status = (err as { status?: number }).status
             return typeof status === 'number' && isTransientStatus(status)
           },
         )

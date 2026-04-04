@@ -78,6 +78,7 @@ export function createFileEditTool(): Tool {
         // Count occurrences
         let count = 0
         let searchIdx = 0
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         while (true) {
           const idx = content.indexOf(oldString, searchIdx)
           if (idx === -1) break

@@ -114,7 +114,8 @@ function convertContentPartsToGemini(parts: ContentPart[]): GeminiPart[] {
   for (const part of parts) {
     if (part.type === 'text') {
       geminiParts.push({ text: part.text })
-    } else if (part.type === 'image') {
+    } else {
+      // part.type === 'image'
       if (part.data) {
         geminiParts.push({
           inlineData: {
@@ -293,6 +294,7 @@ export class GoogleProvider implements Provider {
     const usage = { promptTokens: 0, completionTokens: 0 }
 
     try {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       while (true) {
         const readResult = await reader.read()
         if (readResult.done) break

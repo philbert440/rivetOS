@@ -432,7 +432,7 @@ export function createCodingPipelineTool(pipeline: CodingPipeline): Tool {
       if (args.auto_commit !== undefined) {
         pipeline.setAutoCommit(args.auto_commit as boolean)
       }
-      return pipeline.run(args.spec as string, (args.files as string[]) ?? [])
+      return pipeline.run(args.spec as string, (args.files as string[] | undefined) ?? [])
     },
   }
 }

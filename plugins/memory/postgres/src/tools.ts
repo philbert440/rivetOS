@@ -188,7 +188,7 @@ function createSearchTool(
       const query = args.query as string
       const mode = (args.mode as string | undefined) ?? 'fts'
       const scope = (args.scope as string | undefined) ?? 'both'
-      const limit = Math.min(Math.max((args.limit as number) ?? 10, 1), 50)
+      const limit = Math.min(Math.max((args.limit as number | undefined) ?? 10, 1), 50)
       const agent = args.agent as string | undefined
       const since = args.since as string | undefined
       const before = args.before as string | undefined
@@ -420,7 +420,7 @@ function createBrowseTool(pool: pg.Pool): Tool {
         pi++
       }
 
-      const limit = Math.min(Math.max((args.limit as number) ?? 50, 1), 200)
+      const limit = Math.min(Math.max((args.limit as number | undefined) ?? 50, 1), 200)
       params.push(limit)
       const limitIdx = pi
 

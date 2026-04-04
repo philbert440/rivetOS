@@ -227,7 +227,7 @@ export class VoiceSession {
           query,
           results: result.rows.map((r) => ({
             id: r.id,
-            content: r.content?.slice(0, 500),
+            content: r.content.slice(0, 500),
             role: r.role,
             score: parseFloat(r.score),
             date: r.created_at,
