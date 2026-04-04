@@ -6,7 +6,7 @@
  */
 
 import { type VoiceConnection, EndBehaviorType } from '@discordjs/voice'
-import type { Readable } from 'node:stream'
+import type { Readable, Transform } from 'node:stream'
 import { XAIRealtimeClient, type XAIConfig } from './xai-client.js'
 import { AudioPlayer } from './audio-player.js'
 import { TranscriptLogger } from './transcript.js'
@@ -19,8 +19,8 @@ const { Pool } = pg
 // Types for prism-media (no @types available)
 // ---------------------------------------------------------------------------
 
-interface OpusDecoder extends Readable {
-  destroy(): void
+interface OpusDecoder extends Transform {
+  destroy(error?: Error): this
 }
 
 interface PrismMedia {
