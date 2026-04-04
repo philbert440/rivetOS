@@ -5,8 +5,9 @@
 > Zero bloat. Zero lock-in. Just the loop.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/Node.js-24%2B-green.svg)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org)
+[![Nx](https://img.shields.io/badge/Nx-22-blue.svg)](https://nx.dev)
 
 RivetOS is a personal AI agent runtime built for reliability. A tiny, stable core routes messages between channels and LLM providers. Everything else is a plugin.
 
@@ -24,7 +25,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **Interrupt that works** — `AbortController` propagated to every API call and tool. When you say stop, it stops.
 - **Session persistence** — Conversations survive restarts. `/new` is the only thing that clears history.
 - **Thinking control** — Toggle reasoning depth per-turn: off, low, medium, high.
-- **Type-safe monorepo** — 21 packages, all typecheck independently via `tsc --noEmit`.
+- **Type-safe monorepo** — 21 Nx-managed packages, all lint/build/test independently.
 - **LTS releases** — Pin a version. It won't break for 12 months.
 - **Apache 2.0 licensed** — No CLA, no dual-licensing, no surprises. Patent grant included.
 
@@ -44,6 +45,97 @@ rivetos anthropic setup
 # Start the runtime
 rivetos start
 ```
+
+## Monorepo Structure
+
+RivetOS is an [Nx](https://nx.dev)-managed monorepo with 21 packages across 4 core modules and 17 plugins:
+
+```
+rivetOS/
+├── packages/
+│   ├── types/          # Interfaces & contracts — zero dependencies
+│   ├── core/           # Domain logic, agent loop, runtime
+│   ├── boot/           # Composition root, plugin wiring
+│   └── cli/            # CLI entry point (rivetos start/stop/...)
+├── plugins/
+│   ├── channels/       # telegram, discord, agent, voice-discord
+│   ├── providers/      # anthropic, google, xai, ollama, openai-compat
+│   ├── memory/         # postgres (pgvector + FTS)
+│   └── tools/          # shell, file, search, web-search, interaction,
+│                       # mcp-client, coding-pipeline
+├── nx.json             # Nx config — targets, caching, inputs
+├── eslint.config.mjs   # Shared ESLint config (flat config)
+├── tsconfig.base.json  # Shared TS paths & compiler options
+└── vitest.config.ts    # Shared Vitest config
+```
+
+## Development
+
+### Prerequisites
+
+- **Node.js ≥ 22** — [download](https://nodejs.org)
+- **npm** (comes with Node)
+- **Git**
+
+### Install & verify
+
+```bash
+npm install          # installs all 21 packages via npm workspaces
+npm run ci           # lint + build + test (what CI runs)
+```
+
+### Nx commands
+
+Nx orchestrates all builds, tests, and linting. It understands the dependency graph between packages and caches results.
+
+```bash
+# ── Run across all packages ──────────────────────────────
+npx nx run-many -t lint              # ESLint all 21 packages
+npx nx run-many -t build             # tsc all 21 packages (respects dep order)
+npx nx run-many -t test              # Vitest all 21 packages
+npx nx run-many -t typecheck         # tsc --noEmit all packages
+npx nx run-many -t lint build test   # Full CI pipeline
+
+# ── Run for a single package ─────────────────────────────
+npx nx run core:test                 # Test @rivetos/core
+npx nx run types:build               # Build @rivetos/types
+npx nx run channel-telegram:lint     # Lint the Telegram plugin
+npx nx run provider-anthropic:test   # Test Anthropic provider
+
+# ── Smart: only what changed ─────────────────────────────
+npx nx affected -t lint              # Lint only packages affected by your changes
+npx nx affected -t build             # Build only affected
+npx nx affected -t test              # Test only affected
+npx nx affected -t lint build test   # Full pipeline, affected only
+
+# ── Explore & debug ──────────────────────────────────────
+npx nx graph                         # Open interactive dependency graph in browser
+npx nx show projects                 # List all 21 project names
+npx nx show project core             # Show targets/config for a specific project
+npx nx run-many -t build --verbose   # Verbose output for debugging
+npx nx reset                         # Clear Nx cache (if builds seem stale)
+```
+
+### NPM script shortcuts
+
+These are defined in the root `package.json` and wrap common Nx commands:
+
+```bash
+npm run lint         # nx run-many -t lint
+npm run build        # nx run-many -t build
+npm test             # nx run-many -t test
+npm run typecheck    # nx run-many -t typecheck
+npm run ci           # nx run-many -t lint build test
+npm run dev          # tsx packages/cli/src/index.ts start
+npm run cli          # tsx packages/cli/src/index.ts (pass args after --)
+npm run graph        # nx graph
+```
+
+### Caching
+
+Nx caches lint, build, test, and typecheck results. If inputs haven't changed, replayed from cache. The CI workflow also persists `.nx/cache` between runs via GitHub Actions cache.
+
+To clear local cache: `npx nx reset`
 
 ## Architecture
 
