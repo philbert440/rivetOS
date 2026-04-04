@@ -92,9 +92,9 @@ export default async function doctor(): Promise<void> {
   if (rawConfig) {
     try {
       const parsed = parseYaml(rawConfig) as Record<string, unknown>
-      const providers = (parsed.providers ?? {}) as Record<string, Record<string, unknown>>
-      const channels = (parsed.channels ?? {}) as Record<string, Record<string, unknown>>
-      const memory = (parsed.memory ?? {}) as Record<string, Record<string, unknown>>
+      const providers = (parsed.providers ?? {}) as Partial<Record<string, Record<string, unknown>>>
+      const channels = (parsed.channels ?? {}) as Partial<Record<string, Record<string, unknown>>>
+      const memory = (parsed.memory ?? {}) as Partial<Record<string, Record<string, unknown>>>
 
       // Provider API keys
       if (providers.anthropic && !providers.anthropic.api_key) {
@@ -181,7 +181,7 @@ export default async function doctor(): Promise<void> {
   if (rawConfig) {
     try {
       const parsed = parseYaml(rawConfig) as Record<string, unknown>
-      const providers = (parsed.providers ?? {}) as Record<string, Record<string, unknown>>
+      const providers = (parsed.providers ?? {}) as Partial<Record<string, Record<string, unknown>>>
 
       for (const [name, providerCfg] of Object.entries(providers)) {
         try {
@@ -223,7 +223,7 @@ async function checkProviderConnectivity(
 
   switch (name) {
     case 'anthropic': {
-      const apiKey = (config.api_key as string) ?? process.env.ANTHROPIC_API_KEY ?? ''
+      const apiKey = (config.api_key as string | undefined) ?? process.env.ANTHROPIC_API_KEY ?? ''
       if (!apiKey) {
         // Try OAuth
         try {
@@ -260,7 +260,7 @@ async function checkProviderConnectivity(
     }
 
     case 'xai': {
-      const apiKey = (config.api_key as string) ?? process.env.XAI_API_KEY ?? ''
+      const apiKey = (config.api_key as string | undefined) ?? process.env.XAI_API_KEY ?? ''
       if (!apiKey) return false
       const resp = await fetch('https://api.x.ai/v1/models', {
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -270,7 +270,7 @@ async function checkProviderConnectivity(
     }
 
     case 'google': {
-      const apiKey = (config.api_key as string) ?? process.env.GOOGLE_API_KEY ?? ''
+      const apiKey = (config.api_key as string | undefined) ?? process.env.GOOGLE_API_KEY ?? ''
       if (!apiKey) return false
       const resp = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
@@ -282,7 +282,7 @@ async function checkProviderConnectivity(
     }
 
     case 'ollama': {
-      const baseUrl = (config.base_url as string) ?? 'http://localhost:11434'
+      const baseUrl = (config.base_url as string | undefined) ?? 'http://localhost:11434'
       const resp = await fetch(`${baseUrl}/api/tags`, {
         signal: AbortSignal.timeout(timeout),
       })

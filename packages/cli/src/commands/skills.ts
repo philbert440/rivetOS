@@ -345,7 +345,10 @@ export default async function skills(): Promise<void> {
       for (const skill of discovered) {
         const triggerStr = String(skill.triggerCount).padEnd(maxTriggers)
         // Truncate description to fit terminal
-        const maxDesc = Math.max((process.stdout.columns ?? 100) - maxName - maxTriggers - 8, 20)
+        const maxDesc = Math.max(
+          ((process.stdout.columns as number | undefined) ?? 100) - maxName - maxTriggers - 8,
+          20,
+        )
         const desc =
           skill.description.length > maxDesc
             ? skill.description.slice(0, maxDesc - 1) + '…'

@@ -19,7 +19,7 @@
  *   rivetos version                  — show version
  */
 
-const COMMANDS: Record<string, () => Promise<void>> = {
+const COMMANDS: Partial<Record<string, () => Promise<void>>> = {
   init: () => import('./commands/init.js').then((m) => m.default()),
   start: () => import('./commands/start.js').then((m) => m.default()),
   stop: () => import('./commands/stop.js').then((m) => m.default()),

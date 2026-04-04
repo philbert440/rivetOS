@@ -205,7 +205,7 @@ async function handleOllama(action: string): Promise<void> {
         const res = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(5000) })
         if (res.ok) {
           const data = (await res.json()) as OllamaTagsResponse
-          const models = data.models ?? []
+          const models = data.models
           console.log(`  Connectivity: ✅`)
           console.log(`  Models loaded: ${models.length}`)
           for (const m of models.slice(0, 5)) {
@@ -226,7 +226,7 @@ async function handleOllama(action: string): Promise<void> {
       try {
         const res = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(5000) })
         const data = (await res.json()) as OllamaTagsResponse
-        const models = data.models ?? []
+        const models = data.models
         if (models.length === 0) {
           console.log('No models found. Pull one: rivetos ollama pull <model>')
           return
@@ -266,7 +266,7 @@ async function handleOllama(action: string): Promise<void> {
         const decoder = new TextDecoder()
         let lastStatus = ''
 
-        while (true) {
+        for (;;) {
           const { done, value } = (await reader.read()) as { done: boolean; value?: Uint8Array }
           if (done) break
           const lines = decoder.decode(value, { stream: true }).split('\n').filter(Boolean)

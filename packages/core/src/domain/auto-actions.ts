@@ -121,7 +121,7 @@ export function createAutoLintHook(config: AutoActionConfig): HookRegistration<T
           ctx.metadata.autoLint = {
             file: filePath,
             status: 'issues',
-            output: result.stderr?.slice(0, 500),
+            output: result.stderr.slice(0, 500),
           }
         }
       } catch {
@@ -171,7 +171,7 @@ export function createAutoTestHook(config: AutoActionConfig): HookRegistration<T
         ctx.metadata.autoTest = {
           file: filePath,
           status: result.exitCode === 0 ? 'passed' : 'failed',
-          output: result.stdout?.slice(-500),
+          output: result.stdout.slice(-500),
         }
       } catch {
         ctx.metadata.autoTest = {
@@ -205,7 +205,7 @@ export function createAutoGitCheckHook(
     handler: async (ctx) => {
       if (ctx.isError) return
 
-      const command = (ctx.args.command as string) ?? ''
+      const command = (ctx.args.command as string | undefined) ?? ''
       if (!command.includes('git commit')) return
 
       try {
@@ -213,7 +213,7 @@ export function createAutoGitCheckHook(
         const result = await config.shell.exec('npx tsc --noEmit 2>&1 | tail -10', config.cwd)
         ctx.metadata.autoGitCheck = {
           status: result.exitCode === 0 ? 'passed' : 'issues',
-          output: result.stdout?.slice(-300),
+          output: result.stdout.slice(-300),
         }
       } catch {
         ctx.metadata.autoGitCheck = { status: 'skipped', reason: 'tsc not available' }
@@ -255,7 +255,7 @@ export function createCustomActionHook(
         const result = await config.shell.exec(command, config.cwd)
         ctx.metadata[`auto:${action.id}`] = {
           status: result.exitCode === 0 ? 'success' : 'failed',
-          output: result.stdout?.slice(-300),
+          output: result.stdout.slice(-300),
         }
       } catch (err: unknown) {
         ctx.metadata[`auto:${action.id}`] = {

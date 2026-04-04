@@ -162,7 +162,7 @@ export default async function plugins(): Promise<void> {
       const results: PluginInfo[] = []
 
       // Providers
-      const providers = (config.providers ?? {}) as Record<string, Record<string, unknown>>
+      const providers = (config.providers ?? {}) as Partial<Record<string, Record<string, unknown>>>
       const installedProviders = installed.get('providers') ?? new Set()
 
       for (const [name, provConfig] of Object.entries(providers)) {
@@ -189,7 +189,7 @@ export default async function plugins(): Promise<void> {
       }
 
       // Channels
-      const channels = (config.channels ?? {}) as Record<string, Record<string, unknown>>
+      const channels = (config.channels ?? {}) as Partial<Record<string, Record<string, unknown>>>
       const installedChannels = installed.get('channels') ?? new Set()
 
       for (const [name, chanConfig] of Object.entries(channels)) {
@@ -214,7 +214,7 @@ export default async function plugins(): Promise<void> {
       }
 
       // Memory
-      const memory = (config.memory ?? {}) as Record<string, Record<string, unknown>>
+      const memory = (config.memory ?? {}) as Partial<Record<string, Record<string, unknown>>>
       const installedMemory = installed.get('memory') ?? new Set()
 
       for (const [name, memConfig] of Object.entries(memory)) {
@@ -269,7 +269,7 @@ export default async function plugins(): Promise<void> {
       }
 
       // Group by type
-      const groups: Record<string, PluginInfo[]> = {}
+      const groups: Partial<Record<string, PluginInfo[]>> = {}
       for (const r of results) {
         ;(groups[r.type] ??= []).push(r)
       }
