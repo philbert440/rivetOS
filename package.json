@@ -41,11 +41,14 @@
     "rivetos": "./packages/cli/src/index.ts"
   },
   "scripts": {
-    "build": "npx nx run-many -t build",
-    "test": "vitest run",
-    "dev": "npx tsx packages/cli/src/index.ts start",
-    "cli": "npx tsx packages/cli/src/index.ts",
-    "graph": "npx nx graph"
+    "build": "nx run-many -t build",
+    "lint": "nx run-many -t lint",
+    "test": "nx run-many -t test",
+    "typecheck": "nx run-many -t typecheck",
+    "ci": "nx run-many -t lint build test",
+    "dev": "tsx packages/cli/src/index.ts start",
+    "cli": "tsx packages/cli/src/index.ts",
+    "graph": "nx graph"
   },
   "bugs": {
     "url": "https://github.com/philbert440/rivetOS/issues"

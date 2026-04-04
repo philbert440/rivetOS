@@ -1,13 +1,14 @@
 {
   "name": "@rivetos/provider-anthropic",
   "version": "0.1.0",
-  "description": "Anthropic Claude provider \u2014 streaming, tool calling, thinking",
+  "description": "Anthropic Claude provider — streaming, tool calling, thinking",
   "license": "MIT",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/",
     "test": "vitest run"
   },
   "dependencies": {

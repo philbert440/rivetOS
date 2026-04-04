@@ -1,13 +1,14 @@
 {
   "name": "@rivetos/channel-voice-discord",
   "version": "0.1.0",
-  "description": "Discord voice channel \u2014 xAI Realtime API, auto-join, DAVE E2EE",
+  "description": "Discord voice channel — xAI Realtime API, auto-join, DAVE E2EE",
   "license": "MIT",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/",
     "test": "echo \"no tests yet\""
   },
   "dependencies": {

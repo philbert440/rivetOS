@@ -1,13 +1,14 @@
 {
   "name": "@rivetos/core",
   "version": "0.1.0",
-  "description": "RivetOS agent runtime \u2014 the loop, the router, the lifecycle",
+  "description": "RivetOS agent runtime — the loop, the router, the lifecycle",
   "license": "Apache-2.0",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/",
     "dev": "tsx src/index.ts",
     "test": "vitest run"
   },
