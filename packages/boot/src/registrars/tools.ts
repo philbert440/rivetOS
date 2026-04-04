@@ -111,13 +111,13 @@ async function registerCodingPipeline(
   // Wire pipeline to sub-agent tools — deferred until tools are registered during start()
   const findTool = (name: string): ((args: Record<string, unknown>) => Promise<string>) => {
     const allTools = runtime.getTools()
-    const tool = allTools?.find((t: Tool) => t.name === name)
+    const tool = allTools.find((t: Tool) => t.name === name)
     return tool
       ? async (args: Record<string, unknown>) => {
           const result = await tool.execute(args)
           return typeof result === 'string' ? result : JSON.stringify(result)
         }
-      : async () => 'Tool not available'
+      : () => Promise.resolve('Tool not available')
   }
 
   const origStart = runtime.start.bind(runtime)

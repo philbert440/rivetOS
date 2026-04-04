@@ -113,7 +113,7 @@ export class ConfigValidationError extends Error {
  */
 export async function loadConfig(path: string): Promise<RivetConfig> {
   const raw = await readFile(path, 'utf-8')
-  const parsed = parseYaml(raw)
+  const parsed: unknown = parseYaml(raw)
 
   const result = validateConfig(parsed)
 
@@ -138,7 +138,7 @@ export async function loadConfig(path: string): Promise<RivetConfig> {
 
 function resolveEnvVars<T>(obj: T): T {
   if (typeof obj === 'string') {
-    return obj.replace(/\$\{(\w+)\}/g, (_, name) => {
+    return obj.replace(/\$\{(\w+)\}/g, (_, name: string) => {
       return process.env[name] ?? ''
     }) as T
   }

@@ -93,6 +93,7 @@ export function createFallbackHook(
     priority: 10, // Run early — other error hooks may want to know if fallback happened
     description: 'Provider fallback chains — retries with next model on failure',
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     handler: async (ctx: ProviderErrorContext) => {
       const config = configMap.get(ctx.providerId)
       if (!config || config.fallbacks.length === 0) return
@@ -189,6 +190,7 @@ export function createFallbackHookWithState(configs: FallbackConfig[]): {
 
   const hookWithState: HookRegistration<ProviderErrorContext> = {
     ...hook,
+    // eslint-disable-next-line @typescript-eslint/require-await
     handler: async (ctx: ProviderErrorContext) => {
       const config = configMap.get(ctx.providerId)
       if (!config || config.fallbacks.length === 0) return

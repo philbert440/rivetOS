@@ -13,13 +13,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type {
-  SubagentSession,
-  SubagentSpawnRequest,
-  SubagentManager,
-  Tool,
-  Message,
-} from '@rivetos/types'
+import type { SubagentSession, SubagentSpawnRequest, SubagentManager, Tool } from '@rivetos/types'
 import { getTextContent } from '@rivetos/types'
 import { AgentLoop } from './loop.js'
 import type { Router } from './router.js'
@@ -130,9 +124,9 @@ export class SubagentManagerImpl implements SubagentManager {
           { role: 'assistant', content: response },
         )
         return this.toPublicSession(session)
-      } catch (err: any) {
+      } catch (err: unknown) {
         session.status = 'failed'
-        log.error(`Sub-agent ${sessionId} failed: ${err.message}`)
+        log.error(`Sub-agent ${sessionId} failed: ${(err as Error).message}`)
         throw err
       }
     } else {
@@ -153,10 +147,10 @@ export class SubagentManagerImpl implements SubagentManager {
         // Keep session alive — don't mark completed
         if (timeoutHandle) clearTimeout(timeoutHandle)
         return this.toPublicSession(session)
-      } catch (err: any) {
+      } catch (err: unknown) {
         session.status = 'failed'
         if (timeoutHandle) clearTimeout(timeoutHandle)
-        log.error(`Sub-agent ${sessionId} failed on initial turn: ${err.message}`)
+        log.error(`Sub-agent ${sessionId} failed on initial turn: ${(err as Error).message}`)
         throw err
       }
     }
@@ -205,7 +199,7 @@ export class SubagentManagerImpl implements SubagentManager {
         { role: 'assistant', content: response },
       )
       return response
-    } catch (err: any) {
+    } catch (err: unknown) {
       session.status = 'failed'
       throw err
     }
@@ -246,7 +240,7 @@ export class SubagentManagerImpl implements SubagentManager {
   private async runOneShot(
     session: InternalSession,
     systemPrompt: string,
-    provider: any,
+    provider: unknown,
     tools: Tool[],
     task: string,
     abort: AbortController,
@@ -271,7 +265,7 @@ export class SubagentManagerImpl implements SubagentManager {
   private async runTurn(
     session: InternalSession,
     systemPrompt: string,
-    provider: any,
+    provider: unknown,
     tools: Tool[],
     userMessage: string,
     signal: AbortSignal,
@@ -340,7 +334,8 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
       },
       required: ['agent', 'task', 'mode'],
     },
-    execute: async (args, signal, context) => {
+
+    execute: async (args, _signal, _context) => {
       try {
         const session = await manager.spawn({
           agent: args.agent as string,
@@ -363,8 +358,8 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
             response: lastMsg ? getTextContent(lastMsg.content) : '[No initial response]',
           })
         }
-      } catch (err: any) {
-        return `Error spawning sub-agent: ${err.message}`
+      } catch (err: unknown) {
+        return `Error spawning sub-agent: ${(err as Error).message}`
       }
     },
   }
@@ -388,12 +383,13 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
       },
       required: ['session_id', 'message'],
     },
+
     execute: async (args) => {
       try {
         const response = await manager.send(args.session_id as string, args.message as string)
         return response
-      } catch (err: any) {
-        return `Error: ${err.message}`
+      } catch (err: unknown) {
+        return `Error: ${(err as Error).message}`
       }
     },
   }
@@ -405,6 +401,7 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
       type: 'object',
       properties: {},
     },
+    // eslint-disable-next-line @typescript-eslint/require-await
     execute: async () => {
       const sessions = manager.list()
       if (sessions.length === 0) {
@@ -437,12 +434,13 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
       },
       required: ['session_id'],
     },
+    // eslint-disable-next-line @typescript-eslint/require-await
     execute: async (args) => {
       try {
         manager.kill(args.session_id as string)
         return `Sub-agent session ${args.session_id} killed.`
-      } catch (err: any) {
-        return `Error: ${err.message}`
+      } catch (err: unknown) {
+        return `Error: ${(err as Error).message}`
       }
     },
   }

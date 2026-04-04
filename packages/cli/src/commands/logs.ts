@@ -108,7 +108,7 @@ Examples:
 `)
 }
 
-export default async function logs(): Promise<void> {
+export default function logs(): void {
   const opts = parseArgs()
 
   if (!serviceExists()) {
@@ -167,11 +167,11 @@ export default async function logs(): Promise<void> {
         maxBuffer: 1024 * 1024 * 5, // 5MB
       })
       process.stdout.write(output)
-    } catch (err: any) {
-      if (err.stdout) {
-        process.stdout.write(err.stdout)
+    } catch (err: unknown) {
+      if ((err as { stdout?: string }).stdout) {
+        process.stdout.write((err as { stdout?: string }).stdout)
       } else {
-        console.error(`Failed to read logs: ${err.message}`)
+        console.error(`Failed to read logs: ${(err as Error).message}`)
         process.exit(1)
       }
     }

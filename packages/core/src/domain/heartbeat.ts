@@ -90,11 +90,13 @@ export function createHeartbeatRunner(
         console.log(`[Heartbeat] Scheduling "${name}" every ${Math.round(intervalMs / 60000)} min`)
 
         // Run first heartbeat after a short delay (not immediately on startup)
+        // eslint-disable-next-line @typescript-eslint/no-misused-promises
         const initialDelay = setTimeout(async () => {
           await runHeartbeat(config, handler)
         }, 10000) // 10 sec delay on first run
 
         // Then on interval
+        // eslint-disable-next-line @typescript-eslint/no-misused-promises
         const timer = setInterval(async () => {
           await runHeartbeat(config, handler)
         }, intervalMs)
@@ -124,7 +126,7 @@ async function runHeartbeat(config: HeartbeatConfig, handler: HeartbeatHandler):
 
   try {
     await handler(config)
-  } catch (err: any) {
-    console.error(`[Heartbeat] Error running ${config.agent}: ${err.message}`)
+  } catch (err: unknown) {
+    console.error(`[Heartbeat] Error running ${config.agent}: ${(err as Error).message}`)
   }
 }

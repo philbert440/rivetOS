@@ -105,7 +105,9 @@ export default async function config(): Promise<void> {
         console.log(`Config already exists: ${configPath}`)
         console.log('Delete it first if you want to regenerate.')
         return
-      } catch {}
+      } catch {
+        /* expected - file may not exist */
+      }
 
       await mkdir(dirname(configPath), { recursive: true })
       await writeFile(configPath, DEFAULT_CONFIG, 'utf-8')
@@ -141,8 +143,8 @@ export default async function config(): Promise<void> {
       let parsed: unknown
       try {
         parsed = parseYaml(raw)
-      } catch (err: any) {
-        console.error(`❌ Failed to parse YAML: ${err.message}`)
+      } catch (err: unknown) {
+        console.error(`❌ Failed to parse YAML: ${(err as Error).message}`)
         process.exit(1)
         return
       }

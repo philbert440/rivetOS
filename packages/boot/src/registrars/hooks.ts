@@ -94,7 +94,7 @@ export async function registerHooks(
             encoding: 'utf-8',
             stdio: ['pipe', 'pipe', 'pipe'],
           })
-          return { stdout: stdout ?? '', stderr: '', exitCode: 0 }
+          return { stdout, stderr: '', exitCode: 0 }
         } catch (err: unknown) {
           const e = err as { stdout?: string; stderr?: string; status?: number }
           return {

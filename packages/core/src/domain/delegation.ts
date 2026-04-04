@@ -262,10 +262,10 @@ export class DelegationEngine {
 
       await this.fireAfterHook(request, result, startTime, chainDepth, false)
       return result
-    } catch (err: any) {
+    } catch (err: unknown) {
       const result: DelegationResult = {
         status: 'failed',
-        response: `Delegation to ${request.toAgent} failed: ${err.message}`,
+        response: `Delegation to ${request.toAgent} failed: ${(err as Error).message}`,
       }
       await this.fireAfterHook(request, result, startTime, chainDepth, false)
       return result

@@ -10,7 +10,7 @@
  *   rivetos service logs       Tail service logs
  */
 
-import { writeFile, readFile, access } from 'node:fs/promises'
+import { writeFile, access } from 'node:fs/promises'
 import { execSync } from 'node:child_process'
 import { resolve } from 'node:path'
 
@@ -32,8 +32,9 @@ function systemctl(cmd: string): string {
   const userFlag = isRoot() ? '' : '--user'
   try {
     return execSync(`systemctl ${userFlag} ${cmd}`, { encoding: 'utf-8', timeout: 10000 })
-  } catch (err: any) {
-    return err.stdout ?? err.message
+  } catch (err: unknown) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+    return err.stdout ?? (err as Error).message
   }
 }
 
@@ -67,7 +68,9 @@ export default async function service(): Promise<void> {
       try {
         await access(tsxPath)
         execStart = `${tsxPath} ${bootPath} ${configFile}`
-      } catch {}
+      } catch {
+        /* expected */
+      }
 
       const unit = `[Unit]
 Description=RivetOS Agent Runtime
@@ -93,7 +96,9 @@ WantedBy=${isRoot() ? 'multi-user.target' : 'default.target'}
         console.log(`Service file already exists: ${servicePath}`)
         console.log('Delete it first if you want to regenerate.')
         return
-      } catch {}
+      } catch {
+        /* expected */
+      }
 
       const { mkdirSync } = await import('node:fs')
       const { dirname } = await import('node:path')
@@ -136,7 +141,9 @@ WantedBy=${isRoot() ? 'multi-user.target' : 'default.target'}
       const userFlag = isRoot() ? '' : '--user '
       try {
         execSync(`journalctl ${userFlag}-u ${SERVICE_NAME} -f --no-pager`, { stdio: 'inherit' })
-      } catch {}
+      } catch {
+        /* expected */
+      }
       break
     }
 

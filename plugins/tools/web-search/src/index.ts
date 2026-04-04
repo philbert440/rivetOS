@@ -126,9 +126,12 @@ function createGoogleProvider(apiKey: string, cseId: string): SearchProvider {
         num: String(count),
       })
 
-      const response = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`, {
-        signal: AbortSignal.timeout(10_000),
-      })
+      const response = await fetch(
+        `https://www.googleapis.com/customsearch/v1?${params.toString()}`,
+        {
+          signal: AbortSignal.timeout(10_000),
+        },
+      )
 
       if (!response.ok) {
         if (response.status === 403 || response.status === 429 || response.status >= 500) {
@@ -140,8 +143,10 @@ function createGoogleProvider(apiKey: string, cseId: string): SearchProvider {
         throw new Error(`Google CSE failed (${response.status}): ${body.slice(0, 200)}`)
       }
 
-      const data = (await response.json()) as Record<string, any>
-      const items: any[] = data.items ?? []
+      const data = (await response.json()) as {
+        items?: Array<{ title?: string; snippet?: string; link?: string }>
+      }
+      const items = data.items ?? []
 
       return items.map((item) => ({
         title: item.title ?? '',
@@ -162,7 +167,7 @@ function createDdgProvider(): SearchProvider {
     name: 'DuckDuckGo',
     async search(query: string, count: number): Promise<SearchResult[]> {
       const params = new URLSearchParams({ q: query })
-      const response = await fetch(`https://html.duckduckgo.com/html/?${params}`, {
+      const response = await fetch(`https://html.duckduckgo.com/html/?${params.toString()}`, {
         method: 'POST',
         headers: {
           'User-Agent': 'RivetOS/0.1.0 (web-search)',
@@ -255,7 +260,7 @@ export class WebSearchTool implements Tool {
   }
 
   async execute(args: Record<string, unknown>): Promise<string> {
-    const query = String(args.query ?? '').trim()
+    const query = (args.query as string | undefined) ?? ''.trim()
     const count = Math.min(Number(args.count) || this.maxResults, 10)
 
     if (!query) return 'Error: No search query provided'
@@ -274,7 +279,7 @@ export class WebSearchTool implements Tool {
           () => provider.search(query, count),
           (err) => {
             if (isTransientError(err)) return true
-            const status = (err as any)?.status
+            const status = (err as { status?: number })?.status
             return typeof status === 'number' && isTransientStatus(status)
           },
         )
@@ -293,8 +298,8 @@ export class WebSearchTool implements Tool {
 
         cacheSet(this.cache, cacheKey, output, SEARCH_CACHE_TTL)
         return output
-      } catch (err: any) {
-        errors.push(`${provider.name}: ${err.message}`)
+      } catch (err: unknown) {
+        errors.push(`${provider.name}: ${(err as Error).message}`)
       }
     }
 
@@ -336,7 +341,7 @@ export class WebFetchTool implements Tool {
   }
 
   async execute(args: Record<string, unknown>): Promise<string> {
-    const url = String(args.url ?? '').trim()
+    const url = (args.url as string | undefined) ?? ''.trim()
     const maxChars = Number(args.max_chars) || this.defaultMaxChars
 
     if (!url) return 'Error: No URL provided'
@@ -404,8 +409,8 @@ export class WebFetchTool implements Tool {
 
       cacheSet(this.cache, cacheKey, result, FETCH_CACHE_TTL)
       return result
-    } catch (err: any) {
-      return `Fetch error: ${err.message}`
+    } catch (err: unknown) {
+      return `Fetch error: ${(err as Error).message}`
     }
   }
 
@@ -514,7 +519,7 @@ function decodeHtmlEntities(text: string): string {
   // Numeric entities (decimal and hex)
   result = result.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
   result = result.replace(/&#x([0-9a-fA-F]+);/g, (_, code) =>
-    String.fromCharCode(parseInt(code, 16)),
+    String.fromCharCode(parseInt(code as string, 16)),
   )
 
   return result

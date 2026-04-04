@@ -148,7 +148,7 @@ export class StreamManager {
     if (s.editPending || s.cleaned) return
     s.editPending = true
 
-    s.editTimer = setTimeout(async () => {
+    s.editTimer = setTimeout(() => {
       s.editPending = false
       s.editTimer = null
       if (s.cleaned) return
@@ -158,18 +158,24 @@ export class StreamManager {
 
       if (s.messageId && channel.edit) {
         // Edit existing message — channel handles overflow if text is too long
-        const newId = await channel.edit(message.channelId, s.messageId, display).catch(() => null)
-        if (newId) s.messageId = newId
+        void channel
+          .edit(message.channelId, s.messageId, display)
+          .catch(() => null)
+          .then((newId) => {
+            if (newId) s.messageId = newId
+          })
       } else if (!s.messageId) {
         // First text — send a new message
-        const sentId = await channel
+        void channel
           .send({
             channelId: message.channelId,
             text: display,
             replyToMessageId: message.id,
           })
           .catch(() => null)
-        if (sentId) s.messageId = sentId
+          .then((sentId) => {
+            if (sentId) s.messageId = sentId
+          })
       }
     }, EDIT_INTERVAL_MS)
   }
@@ -189,21 +195,19 @@ export class StreamManager {
   // Tool log → ONE message, edited in-place
   // -----------------------------------------------------------------------
 
-  private async editToolLog(
-    channel: Channel,
-    channelId: string,
-    s: SessionStreamState,
-  ): Promise<void> {
+  private editToolLog(channel: Channel, channelId: string, s: SessionStreamState): void {
     if (s.cleaned) return
     const display = s.toolLines.slice(-8).join('\n')
 
     if (s.toolMessageId && channel.edit) {
-      await channel.edit(channelId, s.toolMessageId, display).catch(() => {})
+      void channel.edit(channelId, s.toolMessageId, display).catch(() => {})
     } else {
-      const sentId = await channel
+      void channel
         .send({ channelId, text: display, silent: true })
         .catch(() => null)
-      if (sentId) s.toolMessageId = sentId
+        .then((sentId) => {
+          if (sentId) s.toolMessageId = sentId
+        })
     }
   }
 

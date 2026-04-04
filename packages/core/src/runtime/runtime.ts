@@ -19,7 +19,6 @@ import type {
   Provider,
   Tool,
   Memory,
-  InboundMessage,
   AgentConfig,
   StreamHandler,
   HookPipeline,
@@ -221,8 +220,8 @@ export class Runtime {
       try {
         await channel.start()
         log.info(`Channel ${id} (${channel.platform}): started`)
-      } catch (err: any) {
-        log.error(`Channel ${id} failed to start: ${err.message}`)
+      } catch (err: unknown) {
+        log.error(`Channel ${id} failed to start: ${(err as Error).message}`)
       }
     }
 
@@ -299,8 +298,8 @@ export class Runtime {
     for (const [id, channel] of this.channels) {
       try {
         await channel.stop()
-      } catch (err: any) {
-        log.error(`Channel ${id} stop failed: ${err.message}`)
+      } catch (err: unknown) {
+        log.error(`Channel ${id} stop failed: ${(err as Error).message}`)
       }
     }
 

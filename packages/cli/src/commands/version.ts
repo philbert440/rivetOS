@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
 /**
  * rivetos version
  */
@@ -15,7 +16,9 @@ export default async function version(): Promise<void> {
   let commit = ''
   try {
     commit = execSync('git rev-parse --short HEAD', { cwd: ROOT, encoding: 'utf-8' }).trim()
-  } catch {}
+  } catch {
+    /* expected */
+  }
 
   const ver = `RivetOS v${pkg.version}`
   console.log(commit ? `${ver} (${commit})` : ver)

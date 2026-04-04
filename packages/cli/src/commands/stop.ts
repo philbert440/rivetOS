@@ -14,10 +14,10 @@ export default async function stop(): Promise<void> {
     const pid = parseInt(await readFile(PID_FILE, 'utf-8'))
     process.kill(pid, 'SIGTERM')
     console.log(`Sent SIGTERM to PID ${pid}`)
-  } catch (err: any) {
-    if (err.code === 'ENOENT') {
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       console.log('No running instance found (no PID file).')
-    } else if (err.code === 'ESRCH') {
+    } else if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
       console.log('PID file exists but process is not running.')
     } else {
       throw err

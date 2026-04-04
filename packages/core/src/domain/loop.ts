@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call */
 /**
  * Agent Loop — the core execution cycle.
  *
@@ -16,8 +17,6 @@ import type {
   ToolDefinition,
   ToolCall,
   ToolResult,
-  LLMChunk,
-  LLMResponse,
   StreamEvent,
   StreamHandler,
   ChatOptions,
@@ -182,7 +181,7 @@ export class AgentLoop {
       }
 
       let textContent = ''
-      let reasoningContent = ''
+      let _reasoningContent = ''
       const pendingToolCalls: Map<number, ToolCall> = new Map()
       const argsDelta: Map<number, string> = new Map()
       let hasToolCalls = false
@@ -220,7 +219,7 @@ export class AgentLoop {
 
             case 'reasoning':
               if (chunk.delta) {
-                reasoningContent += chunk.delta
+                _reasoningContent += chunk.delta
                 this.emit({ type: 'reasoning', content: chunk.delta })
               }
               break
@@ -306,7 +305,7 @@ export class AgentLoop {
             timestamp: Date.now(),
             metadata: {},
           }
-          const errorResult = await this.config.hooks.run(errorCtx)
+          const _errorResult = await this.config.hooks.run(errorCtx)
 
           // If a fallback hook set retry info, switch provider and retry this iteration
           if (errorCtx.retry) {
@@ -316,7 +315,7 @@ export class AgentLoop {
                 type: 'status',
                 content: `⚡ Falling back: ${activeProvider.id} → ${errorCtx.retry.providerId}:${errorCtx.retry.model}`,
               })
-              activeProvider = fallbackProvider
+              activeProvider = fallbackProvider // eslint-disable-line no-useless-assignment
               continue // Retry the while loop with the new provider
             }
           }
@@ -391,7 +390,7 @@ export class AgentLoop {
             timestamp: Date.now(),
             metadata: {},
           }
-          const toolBeforeResult = await this.config.hooks.run(toolBeforeCtx)
+          const _toolBeforeResult = await this.config.hooks.run(toolBeforeCtx)
 
           if (toolBeforeCtx.blocked) {
             // Tool was blocked by a safety hook

@@ -13,7 +13,7 @@ import { createFileReadTool, type FileReadConfig } from './tools/file-read.js'
 import { createFileWriteTool } from './tools/file-write.js'
 import { createFileEditTool } from './tools/file-edit.js'
 
-export interface FileToolsConfig extends FileReadConfig {}
+export type FileToolsConfig = FileReadConfig
 
 export function createFileToolsPlugin(config?: FileToolsConfig): Plugin {
   return {

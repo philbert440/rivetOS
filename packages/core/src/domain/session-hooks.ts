@@ -171,8 +171,8 @@ export function createAutoCommitHook(
           status: commitResult.exitCode === 0 ? 'committed' : 'failed',
           output: commitResult.stdout.slice(0, 200),
         }
-      } catch (err: any) {
-        hookCtx.metadata.autoCommit = { status: 'error', message: err.message }
+      } catch (err: unknown) {
+        hookCtx.metadata.autoCommit = { status: 'error', message: (err as Error).message }
       }
     },
     priority: 40, // Before summary (so summary includes the commit)

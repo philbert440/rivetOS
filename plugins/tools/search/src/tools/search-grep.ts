@@ -55,18 +55,18 @@ export function createSearchGrepTool(config?: SearchGrepConfig): Tool {
       signal?: AbortSignal,
       context?: ToolContext,
     ): Promise<string> {
-      const pattern = String(args.pattern ?? '')
+      const pattern = (args.pattern as string | undefined) ?? ''
       if (!pattern) return 'Error: No search pattern provided'
 
       const searchPath = args.path
-        ? isAbsolute(String(args.path))
-          ? String(args.path)
-          : resolve(context?.workingDir ?? process.cwd(), String(args.path))
+        ? isAbsolute(args.path as string | undefined)
+          ? (args.path as string | undefined)
+          : resolve(context?.workingDir ?? process.cwd(), args.path as string | undefined)
         : (context?.workingDir ?? process.cwd())
 
       const fixedStrings = args.fixed_strings === true
       const caseInsensitive = args.case_insensitive === true
-      const include = args.include ? String(args.include) : undefined
+      const include = args.include ? (args.include as string | undefined) : undefined
 
       // Build grep command
       const parts: string[] = ['grep', '-rn', '--color=never', `-m ${maxResults}`]
@@ -94,10 +94,10 @@ export function createSearchGrepTool(config?: SearchGrepConfig): Tool {
         let stderr = ''
 
         child.stdout?.on('data', (data) => {
-          stdout += data
+          stdout += String(data)
         })
         child.stderr?.on('data', (data) => {
-          stderr += data
+          stderr += String(data)
         })
 
         if (signal) {

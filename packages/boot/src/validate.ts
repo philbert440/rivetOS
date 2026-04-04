@@ -516,7 +516,7 @@ function validateAgents(
         issues.push({
           severity: 'error',
           path: `${path}.default_thinking`,
-          message: `Agent "${name}" default_thinking must be one of: ${[...VALID_THINKING_LEVELS].join(', ')} (got "${agent.default_thinking}")`,
+          message: `Agent "${name}" default_thinking must be one of: ${[...VALID_THINKING_LEVELS].join(', ')} (got "${agent.default_thinking as string}")`,
         })
       }
     }
@@ -617,7 +617,7 @@ function validateProviders(providers: Record<string, unknown>, issues: Validatio
         issues.push({
           severity: 'warning',
           path: `${path}.temperature`,
-          message: `Provider "${name}" temperature ${provider.temperature} is outside typical range (0-2)`,
+          message: `Provider "${name}" temperature ${provider.temperature as number} is outside typical range (0-2)`,
         })
       }
     }

@@ -119,7 +119,7 @@ export class TurnHandler {
         await this.deps.hooks.run(ctx)
         if (ctx.skip) {
           log.debug(`Turn skipped by hook: ${ctx.skipReason ?? 'no reason'}`)
-          queue?.endTurn()
+          void queue?.endTurn()
           return
         }
       }
@@ -214,19 +214,19 @@ export class TurnHandler {
         message,
         savedImagePaths,
       )
-    } catch (err: any) {
-      log.error(`Error handling message: ${err.message}`)
+    } catch (err: unknown) {
+      log.error(`Error handling message: ${(err as Error).message}`)
       try {
         await channel.send({
           channelId: message.channelId,
-          text: `⚠️ Error: ${err.message}`,
+          text: `⚠️ Error: ${(err as Error).message}`,
           replyToMessageId: message.id,
         })
-      } catch (sendErr: any) {
-        log.error(`Failed to send error message: ${sendErr.message}`)
+      } catch (sendErr: unknown) {
+        log.error(`Failed to send error message: ${(sendErr as Error).message}`)
       }
     } finally {
-      queue?.endTurn()
+      void queue?.endTurn()
     }
   }
 
@@ -269,8 +269,8 @@ export class TurnHandler {
           },
         })
       }
-    } catch (err: any) {
-      log.error(`Memory append failed: ${err.message}`)
+    } catch (err: unknown) {
+      log.error(`Memory append failed: ${(err as Error).message}`)
     }
   }
 }

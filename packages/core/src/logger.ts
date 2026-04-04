@@ -24,7 +24,7 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
 
 let currentLevel: LogLevel = (process.env.RIVETOS_LOG_LEVEL as LogLevel) ?? 'info'
 
-if (!LEVEL_PRIORITY.hasOwnProperty(currentLevel)) {
+if (!Object.hasOwn(LEVEL_PRIORITY, currentLevel)) {
   currentLevel = 'info'
 }
 

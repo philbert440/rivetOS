@@ -16,10 +16,13 @@ export async function registerChannels(runtime: Runtime, config: RivetConfig): P
           const { TelegramChannel } = await import('@rivetos/channel-telegram')
           runtime.registerChannel(
             new TelegramChannel({
-              botToken: (channelConfig.bot_token as string) ?? process.env.TELEGRAM_BOT_TOKEN ?? '',
-              ownerId: (channelConfig.owner_id as string) ?? '',
-              allowedUsers: channelConfig.allowed_users as string[],
-              agent: channelConfig.agent as string,
+              botToken:
+                (channelConfig.bot_token as string | undefined) ??
+                process.env.TELEGRAM_BOT_TOKEN ??
+                '',
+              ownerId: (channelConfig.owner_id as string | undefined) ?? '',
+              allowedUsers: channelConfig.allowed_users as string[] | undefined,
+              agent: channelConfig.agent as string | undefined,
             }),
           )
           break
@@ -29,13 +32,16 @@ export async function registerChannels(runtime: Runtime, config: RivetConfig): P
           const { DiscordChannel } = await import('@rivetos/channel-discord')
           runtime.registerChannel(
             new DiscordChannel({
-              botToken: (channelConfig.bot_token as string) ?? process.env.DISCORD_BOT_TOKEN ?? '',
-              ownerId: (channelConfig.owner_id as string) ?? '',
-              allowedGuilds: channelConfig.allowed_guilds as string[],
-              allowedChannels: channelConfig.allowed_channels as string[],
-              allowedUsers: channelConfig.allowed_users as string[],
-              channelBindings: channelConfig.channel_bindings as Record<string, string>,
-              mentionOnly: channelConfig.mention_only as boolean,
+              botToken:
+                (channelConfig.bot_token as string | undefined) ??
+                process.env.DISCORD_BOT_TOKEN ??
+                '',
+              ownerId: (channelConfig.owner_id as string | undefined) ?? '',
+              allowedGuilds: channelConfig.allowed_guilds as string[] | undefined,
+              allowedChannels: channelConfig.allowed_channels as string[] | undefined,
+              allowedUsers: channelConfig.allowed_users as string[] | undefined,
+              channelBindings: channelConfig.channel_bindings as Record<string, string> | undefined,
+              mentionOnly: channelConfig.mention_only as boolean | undefined,
             }),
           )
           break
@@ -46,18 +52,19 @@ export async function registerChannels(runtime: Runtime, config: RivetConfig): P
           const { VoicePlugin } = await import('@rivetos/channel-voice-discord')
           const voicePlugin = new VoicePlugin({
             discordToken:
-              (channelConfig.bot_token as string) ??
+              (channelConfig.bot_token as string | undefined) ??
               process.env.VOICE_BOT_TOKEN ??
               process.env.DISCORD_BOT_TOKEN ??
               '',
-            xaiApiKey: (channelConfig.xai_api_key as string) ?? process.env.XAI_API_KEY ?? '',
-            guildId: (channelConfig.guild_id as string) ?? '',
-            allowedUsers: (channelConfig.allowed_users as string[]) ?? [],
-            voice: channelConfig.voice as string,
-            instructions: channelConfig.instructions as string,
-            transcriptDir: channelConfig.transcript_dir as string,
+            xaiApiKey:
+              (channelConfig.xai_api_key as string | undefined) ?? process.env.XAI_API_KEY ?? '',
+            guildId: (channelConfig.guild_id as string | undefined) ?? '',
+            allowedUsers: (channelConfig.allowed_users as string[] | undefined) ?? [],
+            voice: channelConfig.voice as string | undefined,
+            instructions: channelConfig.instructions as string | undefined,
+            transcriptDir: channelConfig.transcript_dir as string | undefined,
             postgresConnectionString:
-              (config.memory?.postgres?.connection_string as string) ??
+              (config.memory?.postgres.connection_string as string | undefined) ??
               process.env.RIVETOS_PG_URL ??
               '',
           })
@@ -69,7 +76,7 @@ export async function registerChannels(runtime: Runtime, config: RivetConfig): P
           // Register for shutdown
           const origStop = runtime.stop.bind(runtime)
           runtime.stop = async () => {
-            await voicePlugin.stop()
+            voicePlugin.stop()
             await origStop()
           }
           break

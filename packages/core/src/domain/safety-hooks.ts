@@ -107,6 +107,7 @@ export function createShellDangerHook(): HookRegistration<ToolBeforeContext> {
     id: 'safety:shell-danger',
     event: 'tool:before',
     handler: (ctx) => {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string
       const command = String(ctx.args.command ?? '')
         .trim()
         .toLowerCase()
@@ -169,6 +170,7 @@ export function createWorkspaceFenceHook(
       if (!fencedTools.has(ctx.toolName)) return
 
       // Extract path from args — different tools use different arg names
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string
       const targetPath = String(ctx.args.path ?? ctx.args.file ?? ctx.args.cwd ?? '')
       if (!targetPath) return
 
@@ -317,6 +319,7 @@ export const RULE_NPM_DRY_RUN: SafetyRule = {
   action: 'block',
   description: 'npm publish requires --dry-run flag',
   match: (_tool, args) => {
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string
     const cmd = String(args.command ?? '')
     return cmd.includes('npm publish') && !cmd.includes('--dry-run')
   },
@@ -329,6 +332,7 @@ export const RULE_WARN_CONFIG_WRITE: SafetyRule = {
   action: 'warn',
   description: 'Modifying a config file — double-check the changes',
   match: (_tool, args) => {
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string
     const path = String(args.path ?? '')
     return /\.(ya?ml|json|toml|env|ini|conf|cfg)$/i.test(path)
   },
@@ -341,6 +345,7 @@ export const RULE_NO_DELETE_GIT: SafetyRule = {
   action: 'block',
   description: 'Deleting .git directories is blocked',
   match: (_tool, args) => {
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string
     const cmd = String(args.command ?? '')
     return /rm\s+.*\.git\b/.test(cmd)
   },

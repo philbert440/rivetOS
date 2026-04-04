@@ -205,7 +205,7 @@ export function createAutoGitCheckHook(
     handler: async (ctx) => {
       if (ctx.isError) return
 
-      const command = String(ctx.args.command ?? '')
+      const command = (ctx.args.command as string) ?? ''
       if (!command.includes('git commit')) return
 
       try {
@@ -257,10 +257,10 @@ export function createCustomActionHook(
           status: result.exitCode === 0 ? 'success' : 'failed',
           output: result.stdout?.slice(-300),
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         ctx.metadata[`auto:${action.id}`] = {
           status: 'error',
-          message: err.message,
+          message: (err as Error).message,
         }
         if (!action.softFail) throw err
       }

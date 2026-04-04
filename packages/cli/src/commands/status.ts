@@ -38,7 +38,9 @@ export default async function status(): Promise<void> {
       await readFile(candidate)
       console.log(`Config: ${candidate}`)
       break
-    } catch {}
+    } catch {
+      /* expected */
+    }
   }
 
   console.log(`Workspace: ${resolve(process.env.HOME ?? '.', '.rivetos', 'workspace')}`)

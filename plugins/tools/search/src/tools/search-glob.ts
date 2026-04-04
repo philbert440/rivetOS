@@ -44,13 +44,13 @@ export function createSearchGlobTool(config?: SearchGlobConfig): Tool {
       _signal?: AbortSignal,
       context?: ToolContext,
     ): Promise<string> {
-      const pattern = String(args.pattern ?? '')
+      const pattern = (args.pattern as string | undefined) ?? ''
       if (!pattern) return 'Error: No glob pattern provided'
 
       const searchDir = args.cwd
-        ? isAbsolute(String(args.cwd))
-          ? String(args.cwd)
-          : resolve(context?.workingDir ?? process.cwd(), String(args.cwd))
+        ? isAbsolute(args.cwd as string | undefined)
+          ? (args.cwd as string | undefined)
+          : resolve(context?.workingDir ?? process.cwd(), args.cwd as string | undefined)
         : (context?.workingDir ?? process.cwd())
 
       try {
@@ -72,8 +72,8 @@ export function createSearchGlobTool(config?: SearchGlobConfig): Tool {
         const truncated = sorted.length >= maxResults
         const header = `Found ${sorted.length}${truncated ? '+' : ''} files:`
         return `${header}\n${sorted.join('\n')}`
-      } catch (err: any) {
-        return `Error: ${err.message}`
+      } catch (err: unknown) {
+        return `Error: ${(err as Error).message}`
       }
     },
   }

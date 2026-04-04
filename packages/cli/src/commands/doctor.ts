@@ -8,7 +8,7 @@
 import { readFile, access } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import { validateConfig, formatValidationResult } from '../validate.js'
+import { validateConfig } from '../validate.js'
 
 const VERSION = '0.1.4'
 
@@ -32,7 +32,7 @@ export default async function doctor(): Promise<void> {
   console.log('')
   if (rawConfig) {
     try {
-      const parsed = parseYaml(rawConfig)
+      const parsed = parseYaml(rawConfig) as Record<string, unknown>
       const result = validateConfig(parsed)
 
       if (result.valid && result.warnings.length === 0) {
@@ -45,15 +45,15 @@ export default async function doctor(): Promise<void> {
       } else {
         console.log(`❌ Config schema: ${result.errors.length} error(s)`)
         for (const err of result.errors) {
-          console.log(`   ❌ [${err.path}] ${err.message}`)
+          console.log(`   ❌ [${err.path}] ${(err as Error).message}`)
         }
         for (const warn of result.warnings) {
           console.log(`   ⚠️  [${warn.path}] ${warn.message}`)
         }
         issues += result.errors.length
       }
-    } catch (err: any) {
-      console.log(`❌ Config schema: failed to parse YAML — ${err.message}`)
+    } catch (err: unknown) {
+      console.log(`❌ Config schema: failed to parse YAML — ${(err as Error).message}`)
       issues++
     }
   } else {
@@ -126,7 +126,9 @@ export default async function doctor(): Promise<void> {
       if (memory.postgres && !memory.postgres.connection_string) {
         envChecks.push({ name: 'RIVETOS_PG_URL', context: 'memory: postgres' })
       }
-    } catch {}
+    } catch {
+      /* expected */
+    }
   }
 
   // Fallback if no config
@@ -152,7 +154,11 @@ export default async function doctor(): Promise<void> {
   const tokenPath = resolve(process.env.HOME ?? '.', '.rivetos', 'anthropic-tokens.json')
   try {
     const raw = await readFile(tokenPath, 'utf-8')
-    const tokens = JSON.parse(raw)
+    const tokens = JSON.parse(raw) as {
+      expiresAt: number
+      refreshToken?: string
+      accessToken?: string
+    } as { expiresAt: number; refreshToken?: string; accessToken?: string }
     const expired = Date.now() >= tokens.expiresAt
     const hasRefresh = !!tokens.refreshToken
     if (hasRefresh) {
@@ -186,12 +192,14 @@ export default async function doctor(): Promise<void> {
             console.log(`❌ Provider ${name}: unreachable`)
             issues++
           }
-        } catch (err: any) {
-          console.log(`❌ Provider ${name}: ${err.message}`)
+        } catch (err: unknown) {
+          console.log(`❌ Provider ${name}: ${(err as Error).message}`)
           issues++
         }
       }
-    } catch {}
+    } catch {
+      /* expected */
+    }
   }
 
   // Summary
@@ -221,7 +229,11 @@ async function checkProviderConnectivity(
         try {
           const tokenPath = resolve(process.env.HOME ?? '.', '.rivetos', 'anthropic-tokens.json')
           const raw = await readFile(tokenPath, 'utf-8')
-          const tokens = JSON.parse(raw)
+          const tokens = JSON.parse(raw) as {
+            expiresAt: number
+            refreshToken?: string
+            accessToken?: string
+          } as { expiresAt: number; refreshToken?: string; accessToken?: string }
           if (tokens.accessToken) {
             const resp = await fetch('https://api.anthropic.com/v1/models', {
               headers: {
@@ -232,7 +244,9 @@ async function checkProviderConnectivity(
             })
             return resp.ok || resp.status === 401 // 401 = reachable, just bad key
           }
-        } catch {}
+        } catch {
+          /* expected */
+        }
         return false
       }
       const resp = await fetch('https://api.anthropic.com/v1/models', {

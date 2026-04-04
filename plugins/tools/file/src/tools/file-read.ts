@@ -55,7 +55,7 @@ export function createFileReadTool(config?: FileReadConfig): Tool {
       _signal?: AbortSignal,
       context?: ToolContext,
     ): Promise<string> {
-      const filePath = String(args.path ?? '')
+      const filePath = (args.path as string | undefined) ?? ''
       if (!filePath) return 'Error: No file path provided'
 
       const resolved = isAbsolute(filePath)
@@ -116,11 +116,11 @@ export function createFileReadTool(config?: FileReadConfig): Tool {
         }
 
         return sliced.join('\n')
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (err.code === 'ENOENT') return `Error: File not found: ${resolved}`
         if (err.code === 'EACCES') return `Error: Permission denied: ${resolved}`
         if (err.code === 'EISDIR') return `Error: Path is a directory: ${resolved}`
-        return `Error: ${err.message}`
+        return `Error: ${(err as Error).message}`
       }
     },
   }

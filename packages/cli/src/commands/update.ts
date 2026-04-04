@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
 /**
  * rivetos update
  *
@@ -54,10 +55,10 @@ export default async function update(): Promise<void> {
   try {
     const pullOutput = exec('git pull --ff-only')
     console.log(`  ${pullOutput}\n`)
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('  ❌ Git pull failed. Resolve manually:')
     console.error(`     cd ${ROOT} && git status`)
-    console.error(`  ${err.message}`)
+    console.error(`  ${(err as Error).message}`)
     process.exit(1)
   }
 
@@ -66,8 +67,8 @@ export default async function update(): Promise<void> {
   try {
     exec('npm install --no-audit --no-fund')
     console.log('  ✅ Dependencies installed\n')
-  } catch (err: any) {
-    console.error(`  ❌ npm install failed: ${err.message}`)
+  } catch (err: unknown) {
+    console.error(`  ❌ npm install failed: ${(err as Error).message}`)
     process.exit(1)
   }
 
@@ -87,11 +88,11 @@ export default async function update(): Promise<void> {
       symlinkSync(binSource, binTarget)
       console.log(`  ✅ Symlink created: ${binTarget} → ${binSource}`)
     }
-  } catch (err: any) {
-    if (err.code === 'EACCES') {
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
       console.log(`  ⚠️  Permission denied updating symlink. Try: sudo rivetos update`)
     } else {
-      console.log(`  ⚠️  Symlink error: ${err.message}`)
+      console.log(`  ⚠️  Symlink error: ${(err as Error).message}`)
     }
   }
 

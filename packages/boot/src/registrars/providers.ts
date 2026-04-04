@@ -14,7 +14,8 @@ export async function registerProviders(runtime: Runtime, config: RivetConfig): 
       switch (id) {
         case 'anthropic': {
           const { AnthropicProvider } = await import('@rivetos/provider-anthropic')
-          let apiKey = (providerConfig.api_key as string) ?? process.env.ANTHROPIC_API_KEY ?? ''
+          let apiKey =
+            (providerConfig.api_key as string | undefined) ?? process.env.ANTHROPIC_API_KEY ?? ''
           if (!apiKey) {
             try {
               const { loadTokens } = await import('@rivetos/provider-anthropic')
@@ -45,7 +46,8 @@ export async function registerProviders(runtime: Runtime, config: RivetConfig): 
           const { GoogleProvider } = await import('@rivetos/provider-google')
           runtime.registerProvider(
             new GoogleProvider({
-              apiKey: (providerConfig.api_key as string) ?? process.env.GOOGLE_API_KEY ?? '',
+              apiKey:
+                (providerConfig.api_key as string | undefined) ?? process.env.GOOGLE_API_KEY ?? '',
               model: providerConfig.model as string,
               maxTokens: providerConfig.max_tokens as number,
             }),
@@ -57,7 +59,8 @@ export async function registerProviders(runtime: Runtime, config: RivetConfig): 
           const { XAIProvider } = await import('@rivetos/provider-xai')
           runtime.registerProvider(
             new XAIProvider({
-              apiKey: (providerConfig.api_key as string) ?? process.env.XAI_API_KEY ?? '',
+              apiKey:
+                (providerConfig.api_key as string | undefined) ?? process.env.XAI_API_KEY ?? '',
               model: providerConfig.model as string,
               temperature: providerConfig.temperature as number,
             }),
@@ -92,7 +95,7 @@ export async function registerProviders(runtime: Runtime, config: RivetConfig): 
               topP: providerConfig.top_p as number,
               repeatPenalty: providerConfig.repeat_penalty as number,
               id,
-              name: (providerConfig.name as string) ?? id,
+              name: (providerConfig.name as string | undefined) ?? id,
             }),
           )
           break

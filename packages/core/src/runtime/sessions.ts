@@ -16,7 +16,7 @@ import type {
 import type { Router } from '../domain/router.js'
 import { logger } from '../logger.js'
 
-const log = logger('SessionManager')
+const _log = logger('SessionManager')
 
 // ---------------------------------------------------------------------------
 // Session Manager
@@ -100,7 +100,9 @@ export class SessionManager {
             content: `## Recent Activity (last 48h)\n${recentContext}`,
           })
         }
-      } catch {}
+      } catch {
+        /* expected */
+      }
     }
 
     // Restore settings
@@ -116,7 +118,9 @@ export class SessionManager {
           reasoningVisible = (settings.reasoningVisible as boolean) ?? reasoningVisible
           toolsVisible = (settings.toolsVisible as boolean) ?? toolsVisible
         }
-      } catch {}
+      } catch {
+        /* expected */
+      }
     }
 
     return { id: sessionKey, thinking, reasoningVisible, toolsVisible, history }
@@ -133,6 +137,8 @@ export class SessionManager {
         reasoningVisible: session.reasoningVisible,
         toolsVisible: session.toolsVisible,
       })
-    } catch {}
+    } catch {
+      /* expected */
+    }
   }
 }

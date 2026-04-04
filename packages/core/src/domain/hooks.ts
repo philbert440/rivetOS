@@ -120,7 +120,7 @@ export class HookPipelineImpl implements IHookPipeline {
 
       // Tool filter (only applies to tool:before/after)
       if (hook.toolFilter?.length && 'toolName' in ctx) {
-        if (!hook.toolFilter.includes((ctx as any).toolName)) continue
+        if (!hook.toolFilter.includes(String((ctx as Record<string, unknown>).toolName))) continue
       }
 
       // Execute
@@ -140,7 +140,7 @@ export class HookPipelineImpl implements IHookPipeline {
           result.skipped = true
           break
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         const error = err instanceof Error ? err : new Error(String(err))
         this.log.error(`Hook "${hook.id}" threw: ${error.message}`)
 
@@ -164,7 +164,7 @@ export class HookPipelineImpl implements IHookPipeline {
                 result.skipped = true
                 return result
               }
-            } catch (retryErr: any) {
+            } catch (retryErr: unknown) {
               const retryError = retryErr instanceof Error ? retryErr : new Error(String(retryErr))
               this.log.error(`Hook "${hook.id}" retry failed: ${retryError.message}`)
               result.errors.push({ hookId: hook.id, error: retryError })

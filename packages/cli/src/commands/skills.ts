@@ -282,14 +282,18 @@ async function getSkillDirs(): Promise<string[]> {
     if (dirs && dirs.length > 0) {
       return dirs.map((d) => d.replace('~', process.env.HOME ?? '.'))
     }
-  } catch {}
+  } catch {
+    /* expected */
+  }
 
   // Also check if skills exist in the repo root (for development)
   const repoSkills = resolve(process.cwd(), 'skills')
   try {
     await access(repoSkills)
     defaults.push(repoSkills)
-  } catch {}
+  } catch {
+    /* expected */
+  }
 
   return defaults
 }

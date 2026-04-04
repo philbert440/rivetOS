@@ -98,11 +98,14 @@ export class DiscordChannel implements Channel {
 
   private setupHandlers(): void {
     this.client.on('messageCreate', (msg) => {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       void this.handleMessage(msg)
     })
 
     // Button interactions
+
     this.client.on('interactionCreate', (interaction: Interaction) => {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       void this.handleInteraction(interaction)
     })
 
@@ -209,7 +212,7 @@ export class DiscordChannel implements Channel {
       if (!channel || !('send' in channel)) return null
       const sendable = channel as TextChannel | ThreadChannel
 
-      const options: any = {}
+      const options: Record<string, unknown> = {}
 
       // Text — split at Discord's 2000 char limit
       if (msg.text) {
@@ -281,8 +284,8 @@ export class DiscordChannel implements Channel {
       }
 
       return null
-    } catch (err: any) {
-      console.error('[Discord] Send failed:', err.message)
+    } catch (err: unknown) {
+      console.error('[Discord] Send failed:', (err as Error).message)
       return null
     }
   }
@@ -322,14 +325,16 @@ export class DiscordChannel implements Channel {
       if (!channel || !('messages' in channel)) return
       const msg = await (channel as TextChannel).messages.fetch(messageId)
       await msg.react(emoji)
-    } catch {}
+    } catch {
+      /* reaction not critical */
+    }
   }
 
   // -----------------------------------------------------------------------
   // Attachment Resolution
   // -----------------------------------------------------------------------
 
-  async resolveAttachment(attachment: Attachment): Promise<ResolvedAttachment | null> {
+  resolveAttachment(attachment: Attachment): ResolvedAttachment | null {
     // Discord attachments have public CDN URLs — no download needed
     if (!attachment.url) return null
 
@@ -417,12 +422,12 @@ export class DiscordChannel implements Channel {
     await this.client.login(this.config.botToken)
   }
 
-  async stop(): Promise<void> {
+  stop(): void {
     console.log('[Discord] Stopping...')
     // Clear all typing intervals
     for (const [channelId] of this.typingIntervals) {
       this.stopTyping(channelId)
     }
-    this.client.destroy()
+    void this.client.destroy()
   }
 }

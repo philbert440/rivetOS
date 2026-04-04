@@ -14,7 +14,7 @@
  * Exposed as a single tool: `coding_pipeline`
  */
 
-import type { Tool, ToolContext } from '@rivetos/types'
+import type { Tool, _ } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -235,8 +235,8 @@ export class CodingPipeline {
       ctx.buildLoops++
       this.log(ctx, `✅ Build complete (loop ${ctx.buildLoops})`)
       return 'SELF_REVIEW'
-    } catch (err: any) {
-      this.log(ctx, `❌ Build failed: ${err.message}`)
+    } catch (err: unknown) {
+      this.log(ctx, `❌ Build failed: ${(err as Error).message}`)
       return 'FAILED'
     }
   }
@@ -274,8 +274,8 @@ export class CodingPipeline {
         return 'RETURN_FOR_VALIDATION'
       }
       return 'FIX'
-    } catch (err: any) {
-      this.log(ctx, `❌ Self-review failed: ${err.message}`)
+    } catch (err: unknown) {
+      this.log(ctx, `❌ Self-review failed: ${(err as Error).message}`)
       return 'RETURN_FOR_VALIDATION' // Skip review on error, let validator catch issues
     }
   }
@@ -285,7 +285,7 @@ export class CodingPipeline {
   // -----------------------------------------------------------------------
 
   private async buildValidationReport(ctx: PipelineContext): Promise<string> {
-    let diff = ''
+    let diff: string
     try {
       diff = await this.shellExec!({
         command: `cd ${ctx.workingDir} && git diff --stat && git diff`,
@@ -357,8 +357,8 @@ Fix all issues listed above. Working directory: ${ctx.workingDir}`
       }
       // After a fix from self-review, re-review
       return 'SELF_REVIEW'
-    } catch (err: any) {
-      this.log(ctx, `❌ Fix failed: ${err.message}`)
+    } catch (err: unknown) {
+      this.log(ctx, `❌ Fix failed: ${(err as Error).message}`)
       return 'FAILED'
     }
   }
@@ -384,8 +384,8 @@ Fix all issues listed above. Working directory: ${ctx.workingDir}`
       this.log(ctx, `✅ Committed and pushed`)
       this.log(ctx, result.slice(0, 200))
       return 'DONE'
-    } catch (err: any) {
-      this.log(ctx, `⚠️ Commit failed: ${err.message} (code is valid, commit manually)`)
+    } catch (err: unknown) {
+      this.log(ctx, `⚠️ Commit failed: ${(err as Error).message} (code is valid, commit manually)`)
       return 'DONE' // Code is valid even if commit fails
     }
   }

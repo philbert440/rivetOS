@@ -27,7 +27,9 @@ export default async function start(): Promise<void> {
         await import('node:fs/promises').then((fs) => fs.access(candidate))
         configPath = candidate
         break
-      } catch {}
+      } catch {
+        /* expected */
+      }
     }
   }
 

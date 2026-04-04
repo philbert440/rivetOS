@@ -25,7 +25,7 @@ export default async function login(): Promise<void> {
 
       console.log('🔐 Anthropic OAuth Login\n')
 
-      const { url, verifier } = await generateAuthUrl()
+      const { url, verifier } = generateAuthUrl()
 
       console.log('Open this URL in your browser:\n')
       console.log(url)
@@ -51,7 +51,9 @@ export default async function login(): Promise<void> {
         const parsed = new URL(code)
         const urlCode = parsed.searchParams.get('code')
         if (urlCode) authCode = urlCode
-      } catch {}
+      } catch {
+        /* URL parse failed, use raw code */
+      }
 
       console.log('\nExchanging code for tokens...')
       const tokens = await exchangeCode(authCode, verifier)

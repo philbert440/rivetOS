@@ -148,11 +148,11 @@ export default async function init(): Promise<void> {
       await symlink(binSource, binTarget)
       console.log(`  ✅ ${binTarget} → ${binSource}`)
     }
-  } catch (err: any) {
-    if (err.code === 'EACCES') {
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
       console.log(`  ❌ Permission denied creating symlink. Try: sudo rivetos init`)
     } else {
-      console.log(`  ❌ Symlink error: ${err.message}`)
+      console.log(`  ❌ Symlink error: ${(err as Error).message}`)
     }
   }
 

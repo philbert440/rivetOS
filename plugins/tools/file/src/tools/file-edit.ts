@@ -61,9 +61,9 @@ export function createFileEditTool(): Tool {
       _signal?: AbortSignal,
       context?: ToolContext,
     ): Promise<string> {
-      const filePath = String(args.path ?? '')
-      const oldString = String(args.old_string ?? '')
-      const newString = String(args.new_string ?? '')
+      const filePath = (args.path as string | undefined) ?? ''
+      const oldString = (args.old_string as string | undefined) ?? ''
+      const newString = (args.new_string as string | undefined) ?? ''
 
       if (!filePath) return 'Error: No file path provided'
       if (!oldString) return 'Error: old_string cannot be empty'
@@ -100,10 +100,10 @@ export function createFileEditTool(): Tool {
 
         const snippet = getEditSnippet(updated, newString, CONTEXT_LINES)
         return `Edited ${resolved}\n\n${snippet}`
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (err.code === 'ENOENT') return `Error: File not found: ${resolved}`
         if (err.code === 'EACCES') return `Error: Permission denied: ${resolved}`
-        return `Error: ${err.message}`
+        return `Error: ${(err as Error).message}`
       }
     },
   }

@@ -31,8 +31,8 @@ export function createFileWriteTool(): Tool {
       _signal?: AbortSignal,
       context?: ToolContext,
     ): Promise<string> {
-      const filePath = String(args.path ?? '')
-      const content = String(args.content ?? '')
+      const filePath = (args.path as string | undefined) ?? ''
+      const content = (args.content as string | undefined) ?? ''
       const backup = args.backup === true
 
       if (!filePath) return 'Error: No file path provided'
@@ -66,9 +66,9 @@ export function createFileWriteTool(): Tool {
         const backupNote = backup && existed ? ' (backup saved as .bak)' : ''
 
         return `${action} ${resolved} (${bytes} bytes)${backupNote}`
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (err.code === 'EACCES') return `Error: Permission denied: ${resolved}`
-        return `Error: ${err.message}`
+        return `Error: ${(err as Error).message}`
       }
     },
   }

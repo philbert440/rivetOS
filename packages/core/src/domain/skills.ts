@@ -9,7 +9,7 @@
  */
 
 import { readFile, readdir, stat } from 'node:fs/promises'
-import { join, basename } from 'node:path'
+import { join } from 'node:path'
 import type { Skill, SkillManager, Tool } from '@rivetos/types'
 import { logger } from '../logger.js'
 
@@ -248,11 +248,11 @@ export class SkillManagerImpl implements SkillManager {
 
             this.skills.set(name, skill)
             log.debug(`Discovered skill: ${name} (${triggers.length} triggers)`)
-          } catch (err: any) {
-            log.warn(`Failed to parse skill at ${skillMdPath}: ${err.message}`)
+          } catch (err: unknown) {
+            log.warn(`Failed to parse skill at ${skillMdPath}: ${(err as Error).message}`)
           }
         }
-      } catch (err: any) {
+      } catch (_err: unknown) {
         // Directory doesn't exist — that's fine
         log.debug(`Skill directory not found: ${dir}`)
       }
@@ -356,6 +356,7 @@ export function createSkillListTool(manager: SkillManager): Tool {
       type: 'object',
       properties: {},
     },
+    // eslint-disable-next-line @typescript-eslint/require-await
     execute: async () => {
       const skills = manager.list()
       if (skills.length === 0) {

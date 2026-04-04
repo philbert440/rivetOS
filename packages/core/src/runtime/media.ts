@@ -67,8 +67,8 @@ export async function resolveAttachments(
           await writeFile(filePath, buf)
           resolved.data = buf.toString('base64')
         }
-      } catch (err: any) {
-        log.error(`Failed to download image from ${resolved.url}: ${err.message}`)
+      } catch (err: unknown) {
+        log.error(`Failed to download image from ${resolved.url}: ${(err as Error).message}`)
       }
     }
 

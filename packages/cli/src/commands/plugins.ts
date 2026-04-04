@@ -45,10 +45,14 @@ async function getInstalledPlugins(): Promise<Map<string, Set<string>>> {
           try {
             await access(join(dir, entry.name, 'src', 'index.ts'))
             set.add(entry.name)
-          } catch {}
+          } catch {
+            /* expected */
+          }
         }
       }
-    } catch {}
+    } catch {
+      /* expected */
+    }
     installed.set(category, set)
   }
 
@@ -86,7 +90,9 @@ async function checkProviderAuth(
       const tokenPath = resolve(process.env.HOME ?? '.', '.rivetos', 'anthropic-tokens.json')
       accessSync(tokenPath)
       return { ok: true, detail: 'OAuth tokens stored' }
-    } catch {}
+    } catch {
+      /* expected */
+    }
   }
 
   return { ok: false, detail: envVar ? `${envVar} not set` : 'unknown auth' }

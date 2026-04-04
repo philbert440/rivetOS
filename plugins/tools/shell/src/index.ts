@@ -209,7 +209,7 @@ export class ShellTool implements Tool {
     signal?: AbortSignal,
     _ctx?: ToolContext,
   ): Promise<string> {
-    const command = String(args.command ?? '')
+    const command = (args.command as string | undefined) ?? ''
     const cwdOverride = args.cwd as string | undefined
 
     if (!command.trim()) {
@@ -280,8 +280,8 @@ export class ShellTool implements Tool {
           maxBuffer: this.config.maxOutput,
           env: { ...process.env, TERM: 'dumb' },
         })
-      } catch (err: any) {
-        resolve(`Error: ${err.message}`)
+      } catch (err: unknown) {
+        resolve(`Error: ${(err as Error).message}`)
         return
       }
 
@@ -289,10 +289,10 @@ export class ShellTool implements Tool {
       let stderr = ''
 
       child.stdout?.on('data', (data) => {
-        stdout += data
+        stdout += String(data)
       })
       child.stderr?.on('data', (data) => {
-        stderr += data
+        stderr += String(data)
       })
 
       // AbortSignal support

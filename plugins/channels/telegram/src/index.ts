@@ -13,7 +13,7 @@
  * consecutive conflicts within 60 seconds.
  */
 
-import { Bot, Context, InlineKeyboard, InputFile } from 'grammy'
+import { Bot, Context, InlineKeyboard, _ } from 'grammy'
 import type {
   Channel,
   InboundMessage,
@@ -128,7 +128,7 @@ export class TelegramChannel implements Channel {
     this.bot.on('message', (ctx) => {
       // Skip if it's a command (already handled by bot.command above)
       if (ctx.message?.text?.startsWith('/')) return
-      this.handleMessage(ctx)
+      void this.handleMessage(ctx)
     })
   }
 
@@ -147,11 +147,13 @@ export class TelegramChannel implements Channel {
       this.startTyping(chatId)
       try {
         await this.messageHandler(msg)
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error(`[Telegram] Handler error:`, err)
         try {
-          await ctx.reply(`⚠️ Error: ${err.message}`)
-        } catch {}
+          await ctx.reply(`⚠️ Error: ${(err as Error).message}`)
+        } catch {
+          /* non-critical */
+        }
       } finally {
         this.stopTyping(chatId)
       }
@@ -317,8 +319,8 @@ export class TelegramChannel implements Channel {
           disable_notification: options?.silent,
         })
         return String(sent.message_id)
-      } catch (err: any) {
-        console.error('[Telegram] Send failed:', err.message)
+      } catch (err: unknown) {
+        console.error('[Telegram] Send failed:', (err as Error).message)
         return null
       }
     }
@@ -365,7 +367,7 @@ export class TelegramChannel implements Channel {
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
     try {
       await this.bot.api.setMessageReaction(channelId, Number(messageId), [
-        { type: 'emoji', emoji: emoji as any },
+        { type: 'emoji' as const, emoji },
       ])
     } catch {
       // Reaction failures are non-critical
@@ -412,8 +414,8 @@ export class TelegramChannel implements Channel {
         mimeType: attachment.mimeType ?? mimeMap[ext ?? ''] ?? 'application/octet-stream',
         fileName: attachment.fileName ?? file.file_path.split('/').pop(),
       }
-    } catch (err: any) {
-      console.error(`[Telegram] Failed to resolve attachment: ${err.message}`)
+    } catch (err: unknown) {
+      console.error(`[Telegram] Failed to resolve attachment: ${(err as Error).message}`)
       return null
     }
   }
@@ -449,8 +451,9 @@ export class TelegramChannel implements Channel {
 
   async start(): Promise<void> {
     // Catch polling errors — handle 409 conflicts with retry
-    this.bot.catch(async (err: any) => {
-      const errMsg = String(err?.error?.description ?? err?.message ?? err)
+    this.bot.catch(async (err: unknown) => {
+      const errObj = err as { error?: { description?: string }; message?: string }
+      const errMsg = String(errObj?.error?.description ?? errObj?.message ?? err)
 
       // 409 Conflict: another bot instance is polling the same token
       if (
@@ -482,16 +485,18 @@ export class TelegramChannel implements Channel {
         // Retry: stop polling, wait, restart
         console.log(`[Telegram] Retrying in ${TelegramChannel.RETRY_DELAY_MS / 1000}s...`)
         try {
-          this.bot.stop()
-        } catch {}
+          void this.bot.stop()
+        } catch {
+          /* non-critical */
+        }
         await new Promise((r) => setTimeout(r, TelegramChannel.RETRY_DELAY_MS))
         try {
-          this.bot.start({
+          await this.bot.start({
             drop_pending_updates: true,
             onStart: (info) => console.log(`[Telegram] Bot restarted after 409: @${info.username}`),
           })
-        } catch (restartErr: any) {
-          console.error(`[Telegram] Failed to restart after 409:`, restartErr.message)
+        } catch (restartErr: unknown) {
+          console.error(`[Telegram] Failed to restart after 409:`, (restartErr as Error).message)
         }
         return
       }
@@ -506,7 +511,7 @@ export class TelegramChannel implements Channel {
       console.error('[Telegram] Bot error:', err)
     })
 
-    this.bot.start({
+    await this.bot.start({
       drop_pending_updates: true,
       onStart: (info) => console.log(`[Telegram] Bot started: @${info.username}`),
     })
@@ -517,6 +522,6 @@ export class TelegramChannel implements Channel {
     for (const [chatId] of this.typingIntervals) {
       this.stopTyping(chatId)
     }
-    this.bot.stop()
+    await this.bot.stop()
   }
 }

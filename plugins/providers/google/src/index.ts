@@ -401,7 +401,7 @@ export class GoogleProvider implements Provider {
           break
         case 'tool_call_done':
           {
-            let args: Record<string, unknown> = {}
+            let args: Record<string, unknown>
             try {
               args = JSON.parse(currentToolArgs) as Record<string, unknown>
             } catch {

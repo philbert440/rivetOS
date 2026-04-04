@@ -44,6 +44,14 @@ export function registerShutdownHandlers(runtime: Runtime, pidDir: string = DEFA
     process.exit(0)
   }
 
-  process.on('SIGINT', shutdown)
-  process.on('SIGTERM', shutdown)
+  process.on('SIGINT', () => {
+    shutdown().catch(() => {
+      /* noop */
+    })
+  })
+  process.on('SIGTERM', () => {
+    shutdown().catch(() => {
+      /* noop */
+    })
+  })
 }

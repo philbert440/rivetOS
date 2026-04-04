@@ -13,7 +13,7 @@ export async function registerMemory(runtime: Runtime, config: RivetConfig): Pro
 
   const pgConfig = config.memory.postgres
   const connectionString =
-    (pgConfig.connection_string as string) ?? process.env.RIVETOS_PG_URL ?? ''
+    (pgConfig.connection_string as string | undefined) ?? process.env.RIVETOS_PG_URL ?? ''
 
   if (!connectionString) return
 
@@ -29,8 +29,8 @@ export async function registerMemory(runtime: Runtime, config: RivetConfig): Pro
     const expander = memory.getExpander()
 
     const compactorEndpoint =
-      (pgConfig.compactor_endpoint as string) ?? process.env.RIVETOS_COMPACTOR_URL ?? ''
-    const compactorModel = (pgConfig.compactor_model as string) ?? 'rivet-v0.1'
+      (pgConfig.compactor_endpoint as string | undefined) ?? process.env.RIVETOS_COMPACTOR_URL ?? ''
+    const compactorModel = (pgConfig.compactor_model as string | undefined) ?? 'rivet-v0.1'
 
     const memoryTools = createMemoryTools(searchEngine, expander, {
       compactorEndpoint: compactorEndpoint || undefined,
@@ -43,7 +43,8 @@ export async function registerMemory(runtime: Runtime, config: RivetConfig): Pro
     }
 
     // Background embedder
-    const embedEndpoint = (pgConfig.embed_endpoint as string) ?? process.env.RIVETOS_EMBED_URL ?? ''
+    const embedEndpoint =
+      (pgConfig.embed_endpoint as string | undefined) ?? process.env.RIVETOS_EMBED_URL ?? ''
     if (embedEndpoint) {
       const embedder = new BackgroundEmbedder({
         connectionString,

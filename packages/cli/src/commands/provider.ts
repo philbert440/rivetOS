@@ -179,8 +179,8 @@ async function handleSimpleProvider(
           })
           console.log(`  Connectivity: ${res.ok ? '✅' : '❌'} (${res.status})`)
         }
-      } catch (err: any) {
-        console.log(`  Connectivity: ❌ (${err.message})`)
+      } catch (err: unknown) {
+        console.log(`  Connectivity: ❌ (${(err as Error).message})`)
       }
       break
     }
@@ -216,8 +216,8 @@ async function handleOllama(action: string): Promise<void> {
         } else {
           console.log(`  Connectivity: ❌ (${res.status})`)
         }
-      } catch (err: any) {
-        console.log(`  Connectivity: ❌ (${err.message})`)
+      } catch (err: unknown) {
+        console.log(`  Connectivity: ❌ (${(err as Error).message})`)
       }
       break
     }
@@ -236,8 +236,8 @@ async function handleOllama(action: string): Promise<void> {
           const sizeMB = Math.round(m.size / 1024 / 1024)
           console.log(`  ${m.name}  (${sizeMB}MB, modified ${m.modified_at?.split('T')[0] ?? '?'})`)
         }
-      } catch (err: any) {
-        console.error(`Failed to connect: ${err.message}`)
+      } catch (err: unknown) {
+        console.error(`Failed to connect: ${(err as Error).message}`)
       }
       break
     }
@@ -267,22 +267,24 @@ async function handleOllama(action: string): Promise<void> {
         let lastStatus = ''
 
         while (true) {
-          const { done, value } = await reader.read()
+          const { done, value } = (await reader.read()) as { done: boolean; value?: Uint8Array }
           if (done) break
           const lines = decoder.decode(value, { stream: true }).split('\n').filter(Boolean)
           for (const line of lines) {
             try {
-              const data = JSON.parse(line)
+              const data = JSON.parse(line) as { status?: string } as { status?: string }
               if (data.status && data.status !== lastStatus) {
                 console.log(`  ${data.status}`)
                 lastStatus = data.status
               }
-            } catch {}
+            } catch {
+              /* expected - partial JSON */
+            }
           }
         }
         console.log('✅ Done')
-      } catch (err: any) {
-        console.error(`Failed: ${err.message}`)
+      } catch (err: unknown) {
+        console.error(`Failed: ${(err as Error).message}`)
       }
       break
     }

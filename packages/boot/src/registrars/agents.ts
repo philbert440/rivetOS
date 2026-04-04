@@ -22,7 +22,7 @@ const log = logger('Boot:Agents')
 export async function registerAgentTools(
   runtime: Runtime,
   config: RivetConfig,
-  workspaceDir: string,
+  _workspaceDir: string,
 ): Promise<void> {
   // Delegation — agent-to-agent task handoff
   const delegation = new DelegationEngine({

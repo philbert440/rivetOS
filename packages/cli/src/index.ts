@@ -40,7 +40,7 @@ const COMMANDS: Record<string, () => Promise<void>> = {
   ollama: () => import('./commands/provider.js').then((m) => m.default('ollama')),
 }
 
-async function showHelp(): Promise<void> {
+function showHelp(): Promise<void> {
   console.log(`
   rivetos — Lightweight, stable agent runtime
 
@@ -100,10 +100,10 @@ async function main(): Promise<void> {
 
   try {
     await handler()
-  } catch (err: any) {
-    console.error(`Error: ${err.message}`)
+  } catch (err: unknown) {
+    console.error(`Error: ${(err as Error).message}`)
     process.exit(1)
   }
 }
 
-main()
+void main()

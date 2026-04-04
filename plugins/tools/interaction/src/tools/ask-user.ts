@@ -55,6 +55,7 @@ export function createAskUserTool(): Tool {
       required: ['question'],
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async execute(
       rawArgs: Record<string, unknown>,
       _signal?: AbortSignal,

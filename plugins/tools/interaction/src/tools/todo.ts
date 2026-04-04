@@ -55,16 +55,17 @@ export function createTodoTool(): Tool {
       required: ['operation'],
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     async execute(
       args: Record<string, unknown>,
       _signal?: AbortSignal,
       _context?: ToolContext,
     ): Promise<string> {
-      const operation = String(args.operation ?? '')
+      const operation = (args.operation as string | undefined) ?? ''
 
       switch (operation) {
         case 'add': {
-          const text = String(args.task ?? '').trim()
+          const text = (args.task as string | undefined) ?? ''.trim()
           if (!text) return 'Error: task text is required for add'
 
           const id = nextId++
@@ -80,15 +81,15 @@ export function createTodoTool(): Tool {
           if (!task) return `Error: task #${id} not found`
 
           if (args.new_text !== undefined) {
-            const newText = String(args.new_text).trim()
+            const newText = (args.new_text as string | undefined).trim()
             if (newText) task.text = newText
           }
-          if (args.status !== undefined) {
-            const status = String(args.status) as TaskStatus
+          if ((args.status as string | undefined) !== undefined) {
+            const status = String(args.status as string | undefined) as TaskStatus
             if (['pending', 'in_progress', 'done'].includes(status)) {
               task.status = status
             } else {
-              return `Error: invalid status "${args.status}" — use pending, in_progress, or done`
+              return `Error: invalid status "${args.status as string | undefined}" — use pending, in_progress, or done`
             }
           }
 
