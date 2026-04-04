@@ -122,6 +122,8 @@ export class AgentLoop {
     let lastError = ''
 
     const hardCap = this.maxIterations * 5 // Safety cap (default: 75)
+    let activeModelOverride: string | undefined
+    let activeProvider = this.config.provider
 
     while (iterations < hardCap) {
       if (signal?.aborted) {
@@ -150,10 +152,10 @@ export class AgentLoop {
         tools: toolDefs.length > 0 ? toolDefs : undefined,
         signal,
         thinking: this.config.thinking,
+        modelOverride: activeModelOverride,
       }
 
       // --- Hook: provider:before ---
-      let activeProvider = this.config.provider
       if (this.config.hooks) {
         const beforeCtx: ProviderBeforeContext = {
           event: 'provider:before',
@@ -324,8 +326,9 @@ export class AgentLoop {
                 type: 'status',
                 content: `⚡ Falling back: ${activeProvider.id} → ${errorCtx.retry.providerId}:${errorCtx.retry.model}`,
               })
-              activeProvider = fallbackProvider // eslint-disable-line no-useless-assignment
-              continue // Retry the while loop with the new provider
+              activeProvider = fallbackProvider
+              activeModelOverride = errorCtx.retry.model
+              continue // Retry the while loop with the new provider/model
             }
           }
         }

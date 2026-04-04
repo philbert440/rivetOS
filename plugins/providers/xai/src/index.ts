@@ -245,6 +245,7 @@ export class XAIProvider implements Provider {
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     const allMessages = convertMessages(messages)
+    const model = options?.modelOverride ?? this.model
 
     // If we have a previous response ID, only send NEW messages (last user + any tool results)
     // Server already has the full conversation history
@@ -258,7 +259,7 @@ export class XAIProvider implements Provider {
     }
 
     const body: Record<string, unknown> = {
-      model: this.model,
+      model,
       input,
       stream: true,
       store: this.store,

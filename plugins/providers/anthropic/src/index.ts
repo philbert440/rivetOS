@@ -319,9 +319,10 @@ export class AnthropicProvider implements Provider {
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     const { system, converted } = convertMessages(messages)
     const headers = await this.buildHeaders()
+    const model = options?.modelOverride ?? this.model
 
     const body: AnthropicRequestBody = {
-      model: this.model,
+      model,
       max_tokens: this.maxTokens,
       messages: converted,
       stream: true,

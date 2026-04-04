@@ -186,6 +186,7 @@ export class OllamaProvider implements Provider {
   // -----------------------------------------------------------------------
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
+    const model = options?.modelOverride ?? this.model
     const bodyOptions: OllamaRequestBody['options'] = {
       temperature: this.temperature,
       top_p: this.topP,
@@ -196,7 +197,7 @@ export class OllamaProvider implements Provider {
     }
 
     const body: OllamaRequestBody = {
-      model: this.model,
+      model,
       messages: convertMessages(messages, options?.thinking),
       stream: true,
       keep_alive: this.keepAlive,
