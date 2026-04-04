@@ -9,6 +9,7 @@ export type { Message, ToolCall, ContentPart, TextPart, ImagePart } from './mess
 export type { Provider, LLMResponse, LLMChunk, ChatOptions, ThinkingLevel } from './provider.js'
 export type {
   Channel,
+  EditResult,
   InboundMessage,
   OutboundMessage,
   Attachment,

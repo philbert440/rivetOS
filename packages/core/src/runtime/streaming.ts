@@ -11,7 +11,7 @@
  * 7. Errors are the only thing that sends a NEW message mid-turn
  */
 
-import type { Channel, InboundMessage, SessionState, StreamEvent } from '@rivetos/types'
+import type { Channel, EditResult, InboundMessage, SessionState, StreamEvent } from '@rivetos/types'
 
 // Throttle: don't edit more often than this
 const EDIT_INTERVAL_MS = 600
@@ -23,6 +23,8 @@ const EDIT_INTERVAL_MS = 600
 export interface SessionStreamState {
   /** Current streaming message ID (null until first text arrives) */
   messageId: string | null
+  /** IDs of overflow messages created when text exceeds platform limit */
+  overflowIds: string[]
   /** Accumulated text for the current turn */
   text: string
   /** Accumulated reasoning text */
@@ -44,6 +46,7 @@ export interface SessionStreamState {
 function freshState(): SessionStreamState {
   return {
     messageId: null,
+    overflowIds: [],
     text: '',
     reasoning: '',
     editPending: false,
@@ -159,10 +162,13 @@ export class StreamManager {
       if (s.messageId && channel.edit) {
         // Edit existing message — channel handles overflow if text is too long
         void channel
-          .edit(message.channelId, s.messageId, display)
+          .edit(message.channelId, s.messageId, display, s.overflowIds)
           .catch(() => null)
-          .then((newId) => {
-            if (newId) s.messageId = newId
+          .then((result: EditResult | null) => {
+            if (result) {
+              s.messageId = result.messageIds[0]
+              s.overflowIds = result.messageIds.slice(1)
+            }
           })
       } else if (!s.messageId) {
         // First text — send a new message
@@ -200,6 +206,7 @@ export class StreamManager {
     const display = s.toolLines.slice(-8).join('\n')
 
     if (s.toolMessageId && channel.edit) {
+      // Tool logs are short — no overflow tracking needed
       void channel.edit(channelId, s.toolMessageId, display).catch(() => {})
     } else {
       void channel
@@ -215,15 +222,19 @@ export class StreamManager {
   // Cleanup — returns last messageId and accumulated text
   // -----------------------------------------------------------------------
 
-  cleanup(key: string): { messageId: string | null; accumulatedText: string } {
+  cleanup(key: string): {
+    messageId: string | null
+    overflowIds: string[]
+    accumulatedText: string
+  } {
     const s = this.states.get(key)
-    if (!s) return { messageId: null, accumulatedText: '' }
+    if (!s) return { messageId: null, overflowIds: [], accumulatedText: '' }
 
     s.cleaned = true // Prevent any late edits
     if (s.editTimer) clearTimeout(s.editTimer)
 
-    const { messageId, text } = s
+    const { messageId, overflowIds, text } = s
     this.states.delete(key)
-    return { messageId, accumulatedText: text }
+    return { messageId, overflowIds, accumulatedText: text }
   }
 }

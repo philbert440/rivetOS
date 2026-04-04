@@ -34,6 +34,7 @@ import {
 } from 'discord.js'
 import type {
   Channel,
+  EditResult,
   InboundMessage,
   OutboundMessage,
   Attachment,
@@ -293,30 +294,50 @@ export class DiscordChannel implements Channel {
     }
   }
 
-  async edit(channelId: string, messageId: string, text: string): Promise<string | null> {
+  async edit(
+    channelId: string,
+    messageId: string,
+    text: string,
+    overflowIds: string[] = [],
+  ): Promise<EditResult | null> {
     try {
       const channel = await this.client.channels.fetch(channelId)
       if (!channel || !('messages' in channel)) return null
       const textChannel = channel as TextChannel
 
-      if (text.length <= this.maxMessageLength) {
-        // Fits in one message — simple edit
-        const msg = await textChannel.messages.fetch(messageId)
-        await msg.edit({ content: text })
-        return messageId
-      }
-
-      // Overflow: split, edit current message with first chunk, send rest as new messages
       const chunks = splitMessage(text, this.maxMessageLength)
+      const resultIds: string[] = [messageId]
+
+      // Edit primary message with first chunk
       const msg = await textChannel.messages.fetch(messageId)
       await msg.edit({ content: chunks[0] })
 
-      let lastId: string = messageId
+      // Handle overflow chunks — re-edit existing overflow messages when possible
       for (let i = 1; i < chunks.length; i++) {
-        const sent = await textChannel.send({ content: chunks[i] })
-        lastId = sent.id
+        const existingId = overflowIds[i - 1]
+        if (existingId) {
+          // Re-edit previously-created overflow message
+          const overflowMsg = await textChannel.messages.fetch(existingId)
+          await overflowMsg.edit({ content: chunks[i] })
+          resultIds.push(existingId)
+        } else {
+          // No existing overflow message — send a new one
+          const sent = await textChannel.send({ content: chunks[i] })
+          resultIds.push(sent.id)
+        }
       }
-      return lastId
+
+      // Clean up stale overflow messages (text got shorter, fewer chunks needed)
+      for (let i = chunks.length - 1; i < overflowIds.length; i++) {
+        try {
+          const staleMsg = await textChannel.messages.fetch(overflowIds[i])
+          await staleMsg.delete()
+        } catch {
+          /* non-critical — message may already be gone */
+        }
+      }
+
+      return { messageIds: resultIds }
     } catch {
       return null
     }
