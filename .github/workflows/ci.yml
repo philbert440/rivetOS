@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  ci:
     runs-on: ubuntu-latest
 
     strategy:
@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # needed for nx affected
+          fetch-depth: 0
 
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -40,13 +40,11 @@ jobs:
       - name: Set Nx SHAs
         uses: nrwl/nx-set-shas@v4
 
-      - name: Lint affected
+      - name: Lint
         run: npx nx affected -t lint --parallel=3
-        continue-on-error: true # lint target doesn't exist yet on all packages
 
-      - name: Test affected
-        run: npx nx affected -t test --parallel=3
-
-      - name: Build affected
+      - name: Build
         run: npx nx affected -t build --parallel=3
-        continue-on-error: true # build target doesn't exist yet on all packages
+
+      - name: Test
+        run: npx nx affected -t test --parallel=3
