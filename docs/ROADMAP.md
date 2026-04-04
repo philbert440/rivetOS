@@ -447,7 +447,7 @@ Messaging = asynchronous, cross-instance. Agent-to-agent communication over HTTP
 - [ ] `rivetos doctor` passes on clean install (macOS, Ubuntu, Debian)
 - [ ] 30 days running in production (Phil's daily driver) without intervention
 - [ ] CHANGELOG.md complete from v0.1.0 → v1.0.0
-- [ ] LICENSE, CODE_OF_CONDUCT, CONTRIBUTING reviewed and finalized
+- [ ] LICENSE, CONTRIBUTING reviewed and finalized
 
 ### 7.1 — LTS Branch
 - Create `lts/1.0` branch
