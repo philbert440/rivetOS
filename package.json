@@ -3,7 +3,7 @@
   "version": "0.0.5",
   "private": true,
   "description": "Lightweight, stable agent runtime. Zero bloat. Zero lock-in. Just the loop.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Philip Tompkins",
   "repository": {
     "type": "git",

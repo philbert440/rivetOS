@@ -2,7 +2,7 @@
   "name": "@rivetos/boot",
   "version": "0.1.0",
   "description": "RivetOS composition root — config loading, plugin wiring, lifecycle",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {

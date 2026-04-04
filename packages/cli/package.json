@@ -2,7 +2,7 @@
   "name": "@rivetos/cli",
   "version": "0.0.5",
   "description": "RivetOS command-line interface",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",

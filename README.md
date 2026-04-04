@@ -1,10 +1,10 @@
 # RivetOS
 
-**Lightweight, stable agent runtime. MIT licensed.**
+**Lightweight, stable agent runtime. Apache 2.0 licensed.**
 
 > Zero bloat. Zero lock-in. Just the loop.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org)
 
@@ -21,7 +21,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **Session persistence** — Conversations survive restarts. `/new` is the only thing that clears history.
 - **Thinking control** — Toggle reasoning depth per-turn: off, low, medium, high.
 - **LTS releases** — Pin a version. It won't break for 12 months.
-- **MIT licensed** — No CLA, no dual-licensing, no surprises.
+- **Apache 2.0 licensed** — No CLA, no dual-licensing, no surprises. Patent grant included.
 
 ## Quick Start
 
@@ -172,7 +172,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and PR
 
 ## License
 
-[MIT](LICENSE) — do whatever you want.
+[Apache License 2.0](LICENSE)
 
 ---
 
