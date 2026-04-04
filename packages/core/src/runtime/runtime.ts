@@ -374,41 +374,17 @@ export class Runtime {
       }
 
       // Clean up streaming state BEFORE sending final response
-      // Cleanup streaming — get the last message ID, all chain IDs, and accumulated text
-      const { messageId: streamMsgId, accumulatedText, messageIds: streamMsgIds } = this.streamManager.cleanup(sessionKey);
+      const { messageId: streamMsgId } = this.streamManager.cleanup(sessionKey);
 
       // Send final response (unless silent or aborted)
       if (result.response && !result.aborted) {
         const isSilent = SILENT_RESPONSES.some((s) => result.response.trim() === s);
         if (!isSilent) {
-          const maxLen = channel.maxMessageLength ?? 2000;
-
-          if (result.response.length <= maxLen && streamMsgId && channel.edit) {
-            // Simple case: response fits in one message — edit the streaming message
+          if (streamMsgId && channel.edit) {
+            // Edit the streaming message — channel handles overflow internally
             await channel.edit(message.channelId, streamMsgId, result.response).catch(() => {});
-          } else if (result.response.length > maxLen) {
-            // Long response: split into chunks and deliver as a message chain.
-            // Edit the last streaming message with the first chunk, send the rest as new messages.
-            const chunks = this.splitForPlatform(result.response, maxLen);
-
-            if (streamMsgId && channel.edit) {
-              await channel.edit(message.channelId, streamMsgId, chunks[0]).catch(() => {});
-            } else {
-              await channel.send({
-                channelId: message.channelId,
-                text: chunks[0],
-                replyToMessageId: message.id,
-              });
-            }
-
-            for (let i = 1; i < chunks.length; i++) {
-              await channel.send({
-                channelId: message.channelId,
-                text: chunks[i],
-              });
-            }
           } else {
-            // No streaming message to edit — send normally
+            // No streaming message to edit — send normally (send handles splitting)
             await channel.send({
               channelId: message.channelId,
               text: result.response,
@@ -462,46 +438,6 @@ export class Runtime {
     } finally {
       queue?.endTurn();
     }
-  }
-
-  // -----------------------------------------------------------------------
-  // Message Splitting
-  // -----------------------------------------------------------------------
-
-  /** Split text at paragraph/line/sentence boundaries to fit platform limits */
-  private splitForPlatform(text: string, maxLength: number): string[] {
-    if (text.length <= maxLength) return [text];
-
-    const chunks: string[] = [];
-    let remaining = text;
-
-    while (remaining.length > 0) {
-      if (remaining.length <= maxLength) {
-        chunks.push(remaining);
-        break;
-      }
-
-      // Try paragraph break first
-      let splitAt = remaining.lastIndexOf('\n\n', maxLength);
-      // Then single newline
-      if (splitAt === -1 || splitAt < maxLength * 0.3) {
-        splitAt = remaining.lastIndexOf('\n', maxLength);
-      }
-      // Then sentence end
-      if (splitAt === -1 || splitAt < maxLength * 0.3) {
-        splitAt = remaining.lastIndexOf('. ', maxLength);
-        if (splitAt > 0) splitAt += 1; // Include the period
-      }
-      // Hard cut as last resort
-      if (splitAt === -1 || splitAt < maxLength * 0.3) {
-        splitAt = maxLength;
-      }
-
-      chunks.push(remaining.slice(0, splitAt));
-      remaining = remaining.slice(splitAt).trimStart();
-    }
-
-    return chunks;
   }
 
   // -----------------------------------------------------------------------

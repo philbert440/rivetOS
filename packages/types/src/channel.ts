@@ -70,12 +70,18 @@ export interface ResolvedAttachment {
 export interface Channel {
   id: string;
   platform: string;
-  /** Maximum characters per message for this platform (used by StreamManager for message chains) */
-  maxMessageLength?: number;
   start(): Promise<void>;
   stop(): Promise<void>;
   send(message: OutboundMessage): Promise<string | null>;
-  edit?(channelId: string, messageId: string, text: string): Promise<boolean>;
+  /**
+   * Edit a message. If text exceeds the platform limit, the channel
+   * handles overflow internally — edit the current message with as much
+   * as fits, send the rest as new messages, return the final message ID.
+   *
+   * Returns the ID of the last message (same as input if no overflow,
+   * new ID if overflow created continuation messages), or null on failure.
+   */
+  edit?(channelId: string, messageId: string, text: string): Promise<string | null>;
   react?(channelId: string, messageId: string, emoji: string): Promise<void>;
   /** Resolve attachment data (download from platform API, base64 encode, etc.) */
   resolveAttachment?(attachment: Attachment): Promise<ResolvedAttachment | null>;

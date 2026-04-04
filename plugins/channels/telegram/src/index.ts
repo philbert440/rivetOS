@@ -288,25 +288,41 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  async edit(channelId: string, messageId: string, text: string): Promise<boolean> {
+  async edit(channelId: string, messageId: string, text: string): Promise<string | null> {
     try {
-      // If text exceeds Telegram's limit, return false so the runtime
-      // falls through to send() which handles splitting natively.
-      if (text.length > 4096) return false;
+      if (text.length <= this.maxMessageLength) {
+        // Fits in one message — simple edit
+        await this.editHtml(channelId, messageId, text);
+        return messageId;
+      }
 
+      // Overflow: split, edit current message with first chunk, send rest as new messages
       const html = markdownToTelegramHtml(text);
+      const chunks = splitMessage(html, this.maxMessageLength);
+
+      await this.editHtml(channelId, messageId, chunks[0]);
+
+      let lastId: string = messageId;
+      for (let i = 1; i < chunks.length; i++) {
+        const sentId = await this.sendHtml(channelId, chunks[i]);
+        if (sentId) lastId = sentId;
+      }
+      return lastId;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Edit a single message with HTML, falling back to plain text */
+  private async editHtml(channelId: string, messageId: string, text: string): Promise<void> {
+    const html = markdownToTelegramHtml(text);
+    try {
       await this.bot.api.editMessageText(channelId, Number(messageId), html, {
         parse_mode: 'HTML',
       });
-      return true;
     } catch {
       // Retry without formatting
-      try {
-        await this.bot.api.editMessageText(channelId, Number(messageId), text);
-        return true;
-      } catch {
-        return false;
-      }
+      await this.bot.api.editMessageText(channelId, Number(messageId), text);
     }
   }
 

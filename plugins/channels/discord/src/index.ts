@@ -311,19 +311,32 @@ export class DiscordChannel implements Channel {
     }
   }
 
-  async edit(channelId: string, messageId: string, text: string): Promise<boolean> {
+  async edit(channelId: string, messageId: string, text: string): Promise<string | null> {
     try {
-      // If text exceeds Discord's limit, return false so the runtime
-      // falls through to send() which handles splitting natively.
-      if (text.length > 2000) return false;
-
       const channel = await this.client.channels.fetch(channelId);
-      if (!channel || !('messages' in channel)) return false;
-      const msg = await (channel as TextChannel).messages.fetch(messageId);
-      await msg.edit({ content: text });
-      return true;
+      if (!channel || !('messages' in channel)) return null;
+      const textChannel = channel as TextChannel;
+
+      if (text.length <= this.maxMessageLength) {
+        // Fits in one message — simple edit
+        const msg = await textChannel.messages.fetch(messageId);
+        await msg.edit({ content: text });
+        return messageId;
+      }
+
+      // Overflow: split, edit current message with first chunk, send rest as new messages
+      const chunks = splitMessage(text, this.maxMessageLength);
+      const msg = await textChannel.messages.fetch(messageId);
+      await msg.edit({ content: chunks[0] });
+
+      let lastId: string = messageId;
+      for (let i = 1; i < chunks.length; i++) {
+        const sent = await textChannel.send({ content: chunks[i] });
+        lastId = sent.id;
+      }
+      return lastId;
     } catch {
-      return false;
+      return null;
     }
   }
 
