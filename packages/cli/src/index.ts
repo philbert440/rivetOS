@@ -38,7 +38,7 @@ const COMMANDS: Record<string, () => Promise<void>> = {
   xai: () => import('./commands/provider.js').then((m) => m.default('xai')),
   google: () => import('./commands/provider.js').then((m) => m.default('google')),
   ollama: () => import('./commands/provider.js').then((m) => m.default('ollama')),
-};
+}
 
 async function showHelp(): Promise<void> {
   console.log(`
@@ -79,31 +79,31 @@ async function showHelp(): Promise<void> {
     rivetos ollama pull <model>         Pull a model
 
   Docs: https://rivetos.dev
-  `);
+  `)
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const command = args[0];
+  const args = process.argv.slice(2)
+  const command = args[0]
 
   if (!command || command === '--help' || command === '-h') {
-    await showHelp();
-    return;
+    await showHelp()
+    return
   }
 
-  const handler = COMMANDS[command];
+  const handler = COMMANDS[command]
   if (!handler) {
-    console.error(`Unknown command: ${command}`);
-    await showHelp();
-    process.exit(1);
+    console.error(`Unknown command: ${command}`)
+    await showHelp()
+    process.exit(1)
   }
 
   try {
-    await handler();
+    await handler()
   } catch (err: any) {
-    console.error(`Error: ${err.message}`);
-    process.exit(1);
+    console.error(`Error: ${err.message}`)
+    process.exit(1)
   }
 }
 
-main();
+main()

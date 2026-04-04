@@ -19,5 +19,5 @@
  * - Slash commands: /voice join, leave, status, voice
  */
 
-export { VoicePlugin } from './plugin.js';
-export type { VoicePluginConfig } from './plugin.js';
+export { VoicePlugin } from './plugin.js'
+export type { VoicePluginConfig } from './plugin.js'

@@ -27,10 +27,10 @@
  *           NEMOTRON_MODEL: nemotron-8b
  */
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import type { Tool, ToolResult } from '@rivetos/types';
-import type { ContentPart } from '@rivetos/types';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import type { Tool, ToolResult } from '@rivetos/types'
+import type { ContentPart } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config Types
@@ -38,27 +38,27 @@ import type { ContentPart } from '@rivetos/types';
 
 export interface MCPServerConfig {
   /** Transport type */
-  transport: 'stdio' | 'streamable-http' | 'sse';
+  transport: 'stdio' | 'streamable-http' | 'sse'
   /** For stdio: command to run */
-  command?: string;
+  command?: string
   /** For stdio: command arguments */
-  args?: string[];
+  args?: string[]
   /** For stdio: environment variables */
-  env?: Record<string, string>;
+  env?: Record<string, string>
   /** For stdio: working directory */
-  cwd?: string;
+  cwd?: string
   /** For HTTP/SSE: server URL */
-  url?: string;
+  url?: string
   /** Optional prefix for tool names to avoid collisions (e.g. "gws_" → "gws_send_email") */
-  toolPrefix?: string;
+  toolPrefix?: string
   /** Connection timeout in ms (default: 30000) */
-  connectTimeout?: number;
+  connectTimeout?: number
   /** Whether to reconnect on disconnect (default: true) */
-  autoReconnect?: boolean;
+  autoReconnect?: boolean
 }
 
 export interface MCPClientConfig {
-  servers: Record<string, MCPServerConfig>;
+  servers: Record<string, MCPServerConfig>
 }
 
 // ---------------------------------------------------------------------------
@@ -66,23 +66,23 @@ export interface MCPClientConfig {
 // ---------------------------------------------------------------------------
 
 interface MCPConnection {
-  id: string;
-  config: MCPServerConfig;
-  client: Client;
-  transport: StdioClientTransport | /* StreamableHTTPClientTransport | SSEClientTransport */ any;
-  connected: boolean;
-  tools: MCPDiscoveredTool[];
+  id: string
+  config: MCPServerConfig
+  client: Client
+  transport: StdioClientTransport | /* StreamableHTTPClientTransport | SSEClientTransport */ any
+  connected: boolean
+  tools: MCPDiscoveredTool[]
 }
 
 interface MCPDiscoveredTool {
   /** Original name from MCP server */
-  mcpName: string;
+  mcpName: string
   /** RivetOS tool name (with optional prefix) */
-  rivetName: string;
+  rivetName: string
   /** Tool description */
-  description: string;
+  description: string
   /** JSON Schema for parameters */
-  inputSchema: Record<string, unknown>;
+  inputSchema: Record<string, unknown>
 }
 
 // ---------------------------------------------------------------------------
@@ -90,11 +90,11 @@ interface MCPDiscoveredTool {
 // ---------------------------------------------------------------------------
 
 export class MCPClientPlugin {
-  private connections: Map<string, MCPConnection> = new Map();
-  private config: MCPClientConfig;
+  private connections: Map<string, MCPConnection> = new Map()
+  private config: MCPClientConfig
 
   constructor(config: MCPClientConfig) {
-    this.config = config;
+    this.config = config
   }
 
   /**
@@ -102,25 +102,25 @@ export class MCPClientPlugin {
    * Returns an array of RivetOS Tool wrappers.
    */
   async connect(): Promise<Tool[]> {
-    const allTools: Tool[] = [];
+    const allTools: Tool[] = []
 
     for (const [serverId, serverConfig] of Object.entries(this.config.servers)) {
       try {
-        const conn = await this.connectServer(serverId, serverConfig);
-        this.connections.set(serverId, conn);
+        const conn = await this.connectServer(serverId, serverConfig)
+        this.connections.set(serverId, conn)
 
-        const tools = this.wrapTools(conn);
-        allTools.push(...tools);
+        const tools = this.wrapTools(conn)
+        allTools.push(...tools)
 
         console.log(
-          `[MCP] Connected to "${serverId}" — ${conn.tools.length} tool(s): ${conn.tools.map(t => t.rivetName).join(', ')}`,
-        );
+          `[MCP] Connected to "${serverId}" — ${conn.tools.length} tool(s): ${conn.tools.map((t) => t.rivetName).join(', ')}`,
+        )
       } catch (err: any) {
-        console.error(`[MCP] Failed to connect to "${serverId}": ${err.message}`);
+        console.error(`[MCP] Failed to connect to "${serverId}": ${err.message}`)
       }
     }
 
-    return allTools;
+    return allTools
   }
 
   /**
@@ -129,14 +129,14 @@ export class MCPClientPlugin {
   async disconnect(): Promise<void> {
     for (const [id, conn] of this.connections) {
       try {
-        await conn.transport.close();
-        conn.connected = false;
-        console.log(`[MCP] Disconnected from "${id}"`);
+        await conn.transport.close()
+        conn.connected = false
+        console.log(`[MCP] Disconnected from "${id}"`)
       } catch (err: any) {
-        console.error(`[MCP] Error disconnecting "${id}": ${err.message}`);
+        console.error(`[MCP] Error disconnecting "${id}": ${err.message}`)
       }
     }
-    this.connections.clear();
+    this.connections.clear()
   }
 
   /**
@@ -147,7 +147,7 @@ export class MCPClientPlugin {
       serverId: id,
       connected: conn.connected,
       toolCount: conn.tools.length,
-    }));
+    }))
   }
 
   // -----------------------------------------------------------------------
@@ -155,17 +155,14 @@ export class MCPClientPlugin {
   // -----------------------------------------------------------------------
 
   private async connectServer(id: string, config: MCPServerConfig): Promise<MCPConnection> {
-    const client = new Client(
-      { name: 'rivet-os', version: '0.2.0' },
-      { capabilities: {} },
-    );
+    const client = new Client({ name: 'rivet-os', version: '0.2.0' }, { capabilities: {} })
 
-    let transport: any;
+    let transport: any
 
     switch (config.transport) {
       case 'stdio': {
         if (!config.command) {
-          throw new Error(`MCP server "${id}": stdio transport requires "command"`);
+          throw new Error(`MCP server "${id}": stdio transport requires "command"`)
         }
         transport = new StdioClientTransport({
           command: config.command,
@@ -173,71 +170,71 @@ export class MCPClientPlugin {
           env: { ...process.env, ...(config.env ?? {}) } as Record<string, string>,
           cwd: config.cwd,
           stderr: 'pipe',
-        });
-        break;
+        })
+        break
       }
       case 'streamable-http': {
         if (!config.url) {
-          throw new Error(`MCP server "${id}": streamable-http transport requires "url"`);
+          throw new Error(`MCP server "${id}": streamable-http transport requires "url"`)
         }
         // Dynamic import to avoid bundling HTTP transport when only using stdio
-        const { StreamableHTTPClientTransport } = await import(
-          '@modelcontextprotocol/sdk/client/streamableHttp.js'
-        );
-        transport = new StreamableHTTPClientTransport(new URL(config.url));
-        break;
+        const { StreamableHTTPClientTransport } =
+          await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
+        transport = new StreamableHTTPClientTransport(new URL(config.url))
+        break
       }
       case 'sse': {
         if (!config.url) {
-          throw new Error(`MCP server "${id}": sse transport requires "url"`);
+          throw new Error(`MCP server "${id}": sse transport requires "url"`)
         }
-        const { SSEClientTransport } = await import(
-          '@modelcontextprotocol/sdk/client/sse.js'
-        );
-        transport = new SSEClientTransport(new URL(config.url));
-        break;
+        const { SSEClientTransport } = await import('@modelcontextprotocol/sdk/client/sse.js')
+        transport = new SSEClientTransport(new URL(config.url))
+        break
       }
       default:
-        throw new Error(`MCP server "${id}": unknown transport "${config.transport}"`);
+        throw new Error(`MCP server "${id}": unknown transport "${config.transport}"`)
     }
 
     // Connect with timeout
-    const timeout = config.connectTimeout ?? 30_000;
-    const connectPromise = client.connect(transport);
+    const timeout = config.connectTimeout ?? 30_000
+    const connectPromise = client.connect(transport)
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Connection to "${id}" timed out after ${timeout}ms`)), timeout),
-    );
-    await Promise.race([connectPromise, timeoutPromise]);
+      setTimeout(
+        () => reject(new Error(`Connection to "${id}" timed out after ${timeout}ms`)),
+        timeout,
+      ),
+    )
+    await Promise.race([connectPromise, timeoutPromise])
 
     // Discover tools
-    const toolsResponse = await client.listTools();
-    const prefix = config.toolPrefix ?? '';
+    const toolsResponse = await client.listTools()
+    const prefix = config.toolPrefix ?? ''
 
     const tools: MCPDiscoveredTool[] = (toolsResponse.tools ?? []).map((t) => ({
       mcpName: t.name,
       rivetName: prefix ? `${prefix}${t.name}` : t.name,
       description: t.description ?? `MCP tool from ${id}`,
       inputSchema: t.inputSchema as Record<string, unknown>,
-    }));
+    }))
 
     // Handle disconnection
     transport.onclose = () => {
-      console.warn(`[MCP] Connection to "${id}" closed`);
-      const conn = this.connections.get(id);
-      if (conn) conn.connected = false;
+      console.warn(`[MCP] Connection to "${id}" closed`)
+      const conn = this.connections.get(id)
+      if (conn) conn.connected = false
 
       // Auto-reconnect
       if (config.autoReconnect !== false) {
-        console.log(`[MCP] Scheduling reconnect for "${id}" in 5s...`);
-        setTimeout(() => this.reconnect(id), 5_000);
+        console.log(`[MCP] Scheduling reconnect for "${id}" in 5s...`)
+        setTimeout(() => this.reconnect(id), 5_000)
       }
-    };
+    }
 
     transport.onerror = (err: Error) => {
-      console.error(`[MCP] Transport error for "${id}": ${err.message}`);
-    };
+      console.error(`[MCP] Transport error for "${id}": ${err.message}`)
+    }
 
-    return { id, config, client, transport, connected: true, tools };
+    return { id, config, client, transport, connected: true, tools }
   }
 
   // -----------------------------------------------------------------------
@@ -245,18 +242,18 @@ export class MCPClientPlugin {
   // -----------------------------------------------------------------------
 
   private async reconnect(id: string): Promise<void> {
-    const existing = this.connections.get(id);
-    if (!existing || existing.connected) return;
+    const existing = this.connections.get(id)
+    if (!existing || existing.connected) return
 
     try {
-      console.log(`[MCP] Reconnecting to "${id}"...`);
-      const conn = await this.connectServer(id, existing.config);
-      this.connections.set(id, conn);
-      console.log(`[MCP] Reconnected to "${id}" — ${conn.tools.length} tool(s)`);
+      console.log(`[MCP] Reconnecting to "${id}"...`)
+      const conn = await this.connectServer(id, existing.config)
+      this.connections.set(id, conn)
+      console.log(`[MCP] Reconnected to "${id}" — ${conn.tools.length} tool(s)`)
     } catch (err: any) {
-      console.error(`[MCP] Reconnect to "${id}" failed: ${err.message}`);
+      console.error(`[MCP] Reconnect to "${id}" failed: ${err.message}`)
       // Retry again in 30s
-      setTimeout(() => this.reconnect(id), 30_000);
+      setTimeout(() => this.reconnect(id), 30_000)
     }
   }
 
@@ -272,22 +269,22 @@ export class MCPClientPlugin {
 
       execute: async (args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> => {
         if (!conn.connected) {
-          return `Error: MCP server "${conn.id}" is disconnected`;
+          return `Error: MCP server "${conn.id}" is disconnected`
         }
 
         try {
           const result = await conn.client.callTool({
             name: mcpTool.mcpName,
             arguments: args,
-          });
+          })
 
           // Convert MCP result content to RivetOS ToolResult
-          return this.convertResult(result);
+          return this.convertResult(result)
         } catch (err: any) {
-          return `Error calling MCP tool "${mcpTool.mcpName}" on "${conn.id}": ${err.message}`;
+          return `Error calling MCP tool "${mcpTool.mcpName}" on "${conn.id}": ${err.message}`
         }
       },
-    }));
+    }))
   }
 
   // -----------------------------------------------------------------------
@@ -295,62 +292,62 @@ export class MCPClientPlugin {
   // -----------------------------------------------------------------------
 
   private convertResult(result: any): ToolResult {
-    const content = result.content;
+    const content = result.content
     if (!Array.isArray(content) || content.length === 0) {
-      return result.isError ? `Error: ${JSON.stringify(result)}` : 'No output';
+      return result.isError ? `Error: ${JSON.stringify(result)}` : 'No output'
     }
 
     // Check if there are any non-text content blocks
-    const hasMultimodal = content.some((c: any) => c.type !== 'text');
+    const hasMultimodal = content.some((c: any) => c.type !== 'text')
 
     if (!hasMultimodal) {
       // All text — join into a single string
       const text = content
         .filter((c: any) => c.type === 'text')
         .map((c: any) => c.text)
-        .join('\n');
+        .join('\n')
 
-      return result.isError ? `Error: ${text}` : text;
+      return result.isError ? `Error: ${text}` : text
     }
 
     // Multimodal — convert to ContentPart[]
-    const parts: ContentPart[] = [];
+    const parts: ContentPart[] = []
 
     for (const block of content) {
       switch (block.type) {
         case 'text':
-          parts.push({ type: 'text', text: block.text });
-          break;
+          parts.push({ type: 'text', text: block.text })
+          break
         case 'image':
           parts.push({
             type: 'image',
             data: block.data,
             mimeType: block.mimeType ?? 'image/png',
-          });
-          break;
+          })
+          break
         case 'resource':
           // Resource content — extract text or blob
           if (block.resource?.text) {
-            parts.push({ type: 'text', text: block.resource.text });
+            parts.push({ type: 'text', text: block.resource.text })
           } else if (block.resource?.blob) {
-            const mime = block.resource?.mimeType ?? 'application/octet-stream';
+            const mime = block.resource?.mimeType ?? 'application/octet-stream'
             if (mime.startsWith('image/')) {
               parts.push({
                 type: 'image',
                 data: block.resource.blob,
                 mimeType: mime,
-              });
+              })
             } else {
-              parts.push({ type: 'text', text: `[binary resource: ${block.resource.uri}]` });
+              parts.push({ type: 'text', text: `[binary resource: ${block.resource.uri}]` })
             }
           }
-          break;
+          break
         default:
-          parts.push({ type: 'text', text: `[unsupported MCP content type: ${block.type}]` });
+          parts.push({ type: 'text', text: `[unsupported MCP content type: ${block.type}]` })
       }
     }
 
-    return parts;
+    return parts
   }
 }
 
@@ -359,5 +356,5 @@ export class MCPClientPlugin {
 // ---------------------------------------------------------------------------
 
 export function createMCPClientPlugin(config: MCPClientConfig): MCPClientPlugin {
-  return new MCPClientPlugin(config);
+  return new MCPClientPlugin(config)
 }

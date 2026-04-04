@@ -11,11 +11,7 @@
  * Pure domain logic — filesystem writes are injected via interfaces.
  */
 
-import type {
-  HookRegistration,
-  ToolBeforeContext,
-  ToolAfterContext,
-} from '@rivetos/types';
+import type { HookRegistration, ToolBeforeContext, ToolAfterContext } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,33 +19,33 @@ import type {
 
 export interface SafetyRule {
   /** Unique ID for this rule */
-  id: string;
+  id: string
   /** Which tools this rule applies to (empty = all tools) */
-  tools?: string[];
+  tools?: string[]
   /** Action when matched: 'block' stops execution, 'warn' adds a warning to metadata */
-  action: 'block' | 'warn';
+  action: 'block' | 'warn'
   /** Human-readable description of the rule */
-  description: string;
+  description: string
   /** Match function — receives tool name and args, returns true if rule triggers */
-  match: (toolName: string, args: Record<string, unknown>) => boolean;
+  match: (toolName: string, args: Record<string, unknown>) => boolean
 }
 
 export interface AuditEntry {
-  timestamp: string;
-  event: 'tool:before' | 'tool:after';
-  toolName: string;
-  args: Record<string, unknown>;
-  agentId?: string;
-  sessionId?: string;
-  blocked?: boolean;
-  blockReason?: string;
+  timestamp: string
+  event: 'tool:before' | 'tool:after'
+  toolName: string
+  args: Record<string, unknown>
+  agentId?: string
+  sessionId?: string
+  blocked?: boolean
+  blockReason?: string
   /** For tool:after entries */
-  durationMs?: number;
-  isError?: boolean;
+  durationMs?: number
+  isError?: boolean
 }
 
 export interface AuditWriter {
-  write(entry: AuditEntry): Promise<void>;
+  write(entry: AuditEntry): Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -63,7 +59,7 @@ const BLOCKED_PATTERNS = [
   'rm -rf *',
   'rm -rf .',
   'mkfs',
-  ':(){:|:&};:',         // fork bomb
+  ':(){:|:&};:', // fork bomb
   'dd if=/dev/zero',
   'dd if=/dev/random',
   '> /dev/sda',
@@ -77,14 +73,14 @@ const BLOCKED_PATTERNS = [
   'kill -9 1',
   'kill -9 -1',
   'pkill -9',
-  'npm publish',           // accidental publish
+  'npm publish', // accidental publish
   'npx publish',
-  'curl | sh',             // pipe to shell (literal adjacent)
+  'curl | sh', // pipe to shell (literal adjacent)
   'curl | bash',
-  '| sh',                  // anything piped to sh/bash
+  '| sh', // anything piped to sh/bash
   '| bash',
-  '| sudo',                // anything piped to sudo
-];
+  '| sudo', // anything piped to sudo
+]
 
 /** Patterns that get a warning but proceed. */
 const WARN_PATTERNS = [
@@ -100,7 +96,7 @@ const WARN_PATTERNS = [
   { pattern: 'pip install', reason: 'Installing Python packages — check for conflicts' },
   { pattern: 'apt install', reason: 'System package install — may require sudo' },
   { pattern: 'apt remove', reason: 'System package removal' },
-];
+]
 
 /**
  * Creates a tool:before hook that blocks dangerous shell commands
@@ -111,23 +107,25 @@ export function createShellDangerHook(): HookRegistration<ToolBeforeContext> {
     id: 'safety:shell-danger',
     event: 'tool:before',
     handler: (ctx) => {
-      const command = String(ctx.args.command ?? '').trim().toLowerCase();
-      if (!command) return;
+      const command = String(ctx.args.command ?? '')
+        .trim()
+        .toLowerCase()
+      if (!command) return
 
       // Check blocked patterns
       for (const pattern of BLOCKED_PATTERNS) {
         if (command.includes(pattern.toLowerCase())) {
-          ctx.blocked = true;
-          ctx.blockReason = `Dangerous command blocked: "${pattern}". This command can cause irreversible damage.`;
-          return 'abort';
+          ctx.blocked = true
+          ctx.blockReason = `Dangerous command blocked: "${pattern}". This command can cause irreversible damage.`
+          return 'abort'
         }
       }
 
       // Check warn patterns
       for (const { pattern, reason } of WARN_PATTERNS) {
         if (command.includes(pattern.toLowerCase())) {
-          ctx.metadata.warnings = ctx.metadata.warnings ?? [];
-          (ctx.metadata.warnings as string[]).push(`⚠️ ${reason}`);
+          ctx.metadata.warnings = ctx.metadata.warnings ?? []
+          ;(ctx.metadata.warnings as string[]).push(`⚠️ ${reason}`)
         }
       }
     },
@@ -135,7 +133,7 @@ export function createShellDangerHook(): HookRegistration<ToolBeforeContext> {
     toolFilter: ['shell'],
     onError: 'abort', // If safety check itself fails, block
     description: 'Blocks dangerous shell commands, warns on risky ones',
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -144,56 +142,57 @@ export function createShellDangerHook(): HookRegistration<ToolBeforeContext> {
 
 export interface WorkspaceFenceConfig {
   /** Allowed directories — file operations outside these are blocked */
-  allowedDirs: string[];
+  allowedDirs: string[]
   /** Additional paths to always allow (e.g., /tmp) */
-  alwaysAllow?: string[];
+  alwaysAllow?: string[]
   /** Tools this fence applies to (default: file_read, file_write, file_edit) */
-  tools?: string[];
+  tools?: string[]
 }
 
 /**
  * Creates a tool:before hook that blocks file operations outside
  * the workspace boundary.
  */
-export function createWorkspaceFenceHook(config: WorkspaceFenceConfig): HookRegistration<ToolBeforeContext> {
-  const allowedDirs = [
-    ...config.allowedDirs,
-    ...(config.alwaysAllow ?? ['/tmp', '/var/tmp']),
-  ].map(normalizePath);
+export function createWorkspaceFenceHook(
+  config: WorkspaceFenceConfig,
+): HookRegistration<ToolBeforeContext> {
+  const allowedDirs = [...config.allowedDirs, ...(config.alwaysAllow ?? ['/tmp', '/var/tmp'])].map(
+    normalizePath,
+  )
 
-  const fencedTools = new Set(config.tools ?? ['file_read', 'file_write', 'file_edit']);
+  const fencedTools = new Set(config.tools ?? ['file_read', 'file_write', 'file_edit'])
 
   return {
     id: 'safety:workspace-fence',
     event: 'tool:before',
     handler: (ctx) => {
-      if (!fencedTools.has(ctx.toolName)) return;
+      if (!fencedTools.has(ctx.toolName)) return
 
       // Extract path from args — different tools use different arg names
-      const targetPath = String(ctx.args.path ?? ctx.args.file ?? ctx.args.cwd ?? '');
-      if (!targetPath) return;
+      const targetPath = String(ctx.args.path ?? ctx.args.file ?? ctx.args.cwd ?? '')
+      if (!targetPath) return
 
-      const normalized = normalizePath(targetPath);
+      const normalized = normalizePath(targetPath)
 
       // Check if path is inside any allowed directory
-      const isAllowed = allowedDirs.some((dir) => normalized.startsWith(dir));
+      const isAllowed = allowedDirs.some((dir) => normalized.startsWith(dir))
       if (!isAllowed) {
-        ctx.blocked = true;
-        ctx.blockReason = `File operation blocked: "${targetPath}" is outside the allowed workspace. Allowed: ${config.allowedDirs.join(', ')}`;
-        return 'abort';
+        ctx.blocked = true
+        ctx.blockReason = `File operation blocked: "${targetPath}" is outside the allowed workspace. Allowed: ${config.allowedDirs.join(', ')}`
+        return 'abort'
       }
     },
     priority: 15, // After shell danger, before custom rules
     onError: 'abort',
     description: 'Blocks file operations outside workspace boundaries',
-  };
+  }
 }
 
 function normalizePath(p: string): string {
   // Basic normalization — resolve ~ and ensure trailing slash consistency
-  const resolved = p.replace(/^~/, process.env.HOME ?? '/root');
+  const resolved = p.replace(/^~/, process.env.HOME ?? '/root')
   // Remove trailing slashes for consistent comparison
-  return resolved.replace(/\/+$/, '');
+  return resolved.replace(/\/+$/, '')
 }
 
 // ---------------------------------------------------------------------------
@@ -219,13 +218,13 @@ export function createAuditHooks(writer: AuditWriter): HookRegistration<any>[] {
         sessionId: ctx.sessionId,
         blocked: ctx.blocked,
         blockReason: ctx.blockReason,
-      };
-      await writer.write(entry);
+      }
+      await writer.write(entry)
     },
     priority: 90, // Run late — after all safety checks so we capture block status
     onError: 'continue', // Audit failure shouldn't block tool execution
     description: 'Logs tool invocation to audit trail (before)',
-  };
+  }
 
   const afterHook: HookRegistration<ToolAfterContext> = {
     id: 'safety:audit-after',
@@ -240,35 +239,35 @@ export function createAuditHooks(writer: AuditWriter): HookRegistration<any>[] {
         sessionId: ctx.sessionId,
         durationMs: ctx.durationMs,
         isError: ctx.isError,
-      };
-      await writer.write(entry);
+      }
+      await writer.write(entry)
     },
     priority: 90,
     onError: 'continue',
     description: 'Logs tool result to audit trail (after)',
-  };
+  }
 
-  return [beforeHook, afterHook];
+  return [beforeHook, afterHook]
 }
 
 /**
  * Sanitize args for audit logging — truncate long values, redact secrets.
  */
 function sanitizeArgs(args: Record<string, unknown>): Record<string, unknown> {
-  const sanitized: Record<string, unknown> = {};
-  const secretKeys = new Set(['password', 'token', 'secret', 'api_key', 'apiKey', 'key']);
+  const sanitized: Record<string, unknown> = {}
+  const secretKeys = new Set(['password', 'token', 'secret', 'api_key', 'apiKey', 'key'])
 
   for (const [key, value] of Object.entries(args)) {
     if (secretKeys.has(key.toLowerCase())) {
-      sanitized[key] = '[REDACTED]';
+      sanitized[key] = '[REDACTED]'
     } else if (typeof value === 'string' && value.length > 500) {
-      sanitized[key] = value.slice(0, 500) + `… [${value.length} chars]`;
+      sanitized[key] = value.slice(0, 500) + `… [${value.length} chars]`
     } else {
-      sanitized[key] = value;
+      sanitized[key] = value
     }
   }
 
-  return sanitized;
+  return sanitized
 }
 
 // ---------------------------------------------------------------------------
@@ -286,17 +285,17 @@ export function createCustomRulesHook(rules: SafetyRule[]): HookRegistration<Too
     handler: (ctx) => {
       for (const rule of rules) {
         // Skip if rule has a tool filter and current tool doesn't match
-        if (rule.tools?.length && !rule.tools.includes(ctx.toolName)) continue;
+        if (rule.tools?.length && !rule.tools.includes(ctx.toolName)) continue
 
         if (rule.match(ctx.toolName, ctx.args)) {
           if (rule.action === 'block') {
-            ctx.blocked = true;
-            ctx.blockReason = rule.description;
-            return 'abort';
+            ctx.blocked = true
+            ctx.blockReason = rule.description
+            return 'abort'
           }
           if (rule.action === 'warn') {
-            ctx.metadata.warnings = ctx.metadata.warnings ?? [];
-            (ctx.metadata.warnings as string[]).push(`⚠️ ${rule.description}`);
+            ctx.metadata.warnings = ctx.metadata.warnings ?? []
+            ;(ctx.metadata.warnings as string[]).push(`⚠️ ${rule.description}`)
           }
         }
       }
@@ -304,7 +303,7 @@ export function createCustomRulesHook(rules: SafetyRule[]): HookRegistration<Too
     priority: 20, // After shell danger (10), after workspace fence (15)
     onError: 'continue', // Custom rule failure shouldn't block
     description: `Custom safety rules (${rules.length} rules)`,
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,10 +317,10 @@ export const RULE_NPM_DRY_RUN: SafetyRule = {
   action: 'block',
   description: 'npm publish requires --dry-run flag',
   match: (_tool, args) => {
-    const cmd = String(args.command ?? '');
-    return cmd.includes('npm publish') && !cmd.includes('--dry-run');
+    const cmd = String(args.command ?? '')
+    return cmd.includes('npm publish') && !cmd.includes('--dry-run')
   },
-};
+}
 
 /** Warn on file_write to config files */
 export const RULE_WARN_CONFIG_WRITE: SafetyRule = {
@@ -330,10 +329,10 @@ export const RULE_WARN_CONFIG_WRITE: SafetyRule = {
   action: 'warn',
   description: 'Modifying a config file — double-check the changes',
   match: (_tool, args) => {
-    const path = String(args.path ?? '');
-    return /\.(ya?ml|json|toml|env|ini|conf|cfg)$/i.test(path);
+    const path = String(args.path ?? '')
+    return /\.(ya?ml|json|toml|env|ini|conf|cfg)$/i.test(path)
   },
-};
+}
 
 /** Block deleting .git directories */
 export const RULE_NO_DELETE_GIT: SafetyRule = {
@@ -342,10 +341,10 @@ export const RULE_NO_DELETE_GIT: SafetyRule = {
   action: 'block',
   description: 'Deleting .git directories is blocked',
   match: (_tool, args) => {
-    const cmd = String(args.command ?? '');
-    return /rm\s+.*\.git\b/.test(cmd);
+    const cmd = String(args.command ?? '')
+    return /rm\s+.*\.git\b/.test(cmd)
   },
-};
+}
 
 // ---------------------------------------------------------------------------
 // Convenience: register all safety hooks at once
@@ -353,13 +352,13 @@ export const RULE_NO_DELETE_GIT: SafetyRule = {
 
 export interface SafetyHooksConfig {
   /** Enable shell danger blocker (default: true) */
-  shellDanger?: boolean;
+  shellDanger?: boolean
   /** Workspace fence config (optional — disabled if not provided) */
-  workspaceFence?: WorkspaceFenceConfig;
+  workspaceFence?: WorkspaceFenceConfig
   /** Audit writer (optional — disabled if not provided) */
-  auditWriter?: AuditWriter;
+  auditWriter?: AuditWriter
   /** Custom rules (optional) */
-  customRules?: SafetyRule[];
+  customRules?: SafetyRule[]
 }
 
 /**
@@ -368,23 +367,23 @@ export interface SafetyHooksConfig {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createSafetyHooks(config: SafetyHooksConfig): HookRegistration<any>[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const hooks: HookRegistration<any>[] = [];
+  const hooks: HookRegistration<any>[] = []
 
   if (config.shellDanger !== false) {
-    hooks.push(createShellDangerHook());
+    hooks.push(createShellDangerHook())
   }
 
   if (config.workspaceFence) {
-    hooks.push(createWorkspaceFenceHook(config.workspaceFence));
+    hooks.push(createWorkspaceFenceHook(config.workspaceFence))
   }
 
   if (config.auditWriter) {
-    hooks.push(...createAuditHooks(config.auditWriter));
+    hooks.push(...createAuditHooks(config.auditWriter))
   }
 
   if (config.customRules?.length) {
-    hooks.push(createCustomRulesHook(config.customRules));
+    hooks.push(createCustomRulesHook(config.customRules))
   }
 
-  return hooks;
+  return hooks
 }

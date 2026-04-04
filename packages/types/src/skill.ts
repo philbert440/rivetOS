@@ -12,13 +12,13 @@
 
 export interface Skill {
   /** Skill name (directory name or frontmatter override) */
-  name: string;
+  name: string
   /** Human-readable description of what this skill does */
-  description: string;
+  description: string
   /** Absolute path to the SKILL.md file */
-  location: string;
+  location: string
   /** Keywords/patterns that activate this skill */
-  triggers?: string[];
+  triggers?: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -31,19 +31,19 @@ export interface SkillManager {
    * Parses frontmatter for name, description, and triggers.
    * Returns all discovered skills.
    */
-  discover(skillDirs: string[]): Promise<Skill[]>;
+  discover(skillDirs: string[]): Promise<Skill[]>
 
   /**
    * Load and return the full SKILL.md content for a given skill name.
    */
-  load(skillName: string): Promise<string>;
+  load(skillName: string): Promise<string>
 
   /**
    * Given a user message, find the best matching skill by
    * keyword/trigger matching. Returns null if no skill matches.
    */
-  match(query: string): Skill | null;
+  match(query: string): Skill | null
 
   /** Return all discovered skills. */
-  list(): Skill[];
+  list(): Skill[]
 }

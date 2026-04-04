@@ -6,5 +6,5 @@
  * was importing from the old path.
  */
 
-export { Runtime } from './runtime/runtime.js';
-export type { RuntimeConfig } from './runtime/runtime.js';
+export { Runtime } from './runtime/runtime.js'
+export type { RuntimeConfig } from './runtime/runtime.js'

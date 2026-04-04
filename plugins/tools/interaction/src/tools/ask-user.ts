@@ -8,16 +8,16 @@
  * The user's reply arrives as a new message in the next turn.
  */
 
-import type { Tool, ToolContext } from '@rivetos/types';
+import type { Tool, ToolContext } from '@rivetos/types'
 
-type QuestionType = 'free_text' | 'yes_no' | 'multiple_choice';
+type QuestionType = 'free_text' | 'yes_no' | 'multiple_choice'
 
 interface AskUserArgs {
-  question: string;
-  type?: QuestionType;
-  choices?: string[];
-  default_value?: string;
-  context?: string;
+  question: string
+  type?: QuestionType
+  choices?: string[]
+  default_value?: string
+  context?: string
 }
 
 export function createAskUserTool(): Tool {
@@ -55,54 +55,56 @@ export function createAskUserTool(): Tool {
       required: ['question'],
     },
 
-    async execute(rawArgs: Record<string, unknown>, _signal?: AbortSignal, _ctx?: ToolContext): Promise<string> {
-      const args = rawArgs as unknown as AskUserArgs;
+    async execute(
+      rawArgs: Record<string, unknown>,
+      _signal?: AbortSignal,
+      _ctx?: ToolContext,
+    ): Promise<string> {
+      const args = rawArgs as unknown as AskUserArgs
 
       if (!args.question || typeof args.question !== 'string' || !args.question.trim()) {
-        return 'Error: question is required and must be a non-empty string.';
+        return 'Error: question is required and must be a non-empty string.'
       }
 
-      const type: QuestionType = args.type ?? 'free_text';
-      const validTypes: QuestionType[] = ['free_text', 'yes_no', 'multiple_choice'];
+      const type: QuestionType = args.type ?? 'free_text'
+      const validTypes: QuestionType[] = ['free_text', 'yes_no', 'multiple_choice']
 
       if (!validTypes.includes(type)) {
-        return `Error: invalid type "${type}". Must be one of: ${validTypes.join(', ')}`;
+        return `Error: invalid type "${type}". Must be one of: ${validTypes.join(', ')}`
       }
 
       if (type === 'multiple_choice') {
         if (!args.choices || !Array.isArray(args.choices) || args.choices.length < 2) {
-          return 'Error: multiple_choice requires a "choices" array with at least 2 options.';
+          return 'Error: multiple_choice requires a "choices" array with at least 2 options.'
         }
       }
 
       // Build the formatted question
-      const parts: string[] = [];
+      const parts: string[] = []
 
       if (args.context) {
-        parts.push(`Context: ${args.context}`);
-        parts.push('');
+        parts.push(`Context: ${args.context}`)
+        parts.push('')
       }
 
-      parts.push(`Question: ${args.question.trim()}`);
+      parts.push(`Question: ${args.question.trim()}`)
 
       if (type === 'yes_no') {
-        const defaultHint = args.default_value
-          ? ` (default: ${args.default_value})`
-          : '';
-        parts.push(`Options: Yes / No${defaultHint}`);
+        const defaultHint = args.default_value ? ` (default: ${args.default_value})` : ''
+        parts.push(`Options: Yes / No${defaultHint}`)
       } else if (type === 'multiple_choice' && args.choices) {
-        parts.push('Options:');
+        parts.push('Options:')
         args.choices.forEach((choice, i) => {
-          parts.push(`  ${i + 1}. ${choice}`);
-        });
+          parts.push(`  ${i + 1}. ${choice}`)
+        })
         if (args.default_value) {
-          parts.push(`Default: ${args.default_value}`);
+          parts.push(`Default: ${args.default_value}`)
         }
       } else if (args.default_value) {
-        parts.push(`Default: ${args.default_value}`);
+        parts.push(`Default: ${args.default_value}`)
       }
 
-      return parts.join('\n');
+      return parts.join('\n')
     },
-  };
+  }
 }

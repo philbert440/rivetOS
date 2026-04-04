@@ -54,7 +54,7 @@ export type HookEventName =
   | 'compact:before'
   | 'compact:after'
   | 'delegation:before'
-  | 'delegation:after';
+  | 'delegation:after'
 
 // ---------------------------------------------------------------------------
 // Hook Context — data passed through the pipeline
@@ -66,178 +66,178 @@ export type HookEventName =
  */
 export interface HookContextBase {
   /** The event that triggered this hook */
-  event: HookEventName;
+  event: HookEventName
   /** Agent ID */
-  agentId?: string;
+  agentId?: string
   /** Session ID */
-  sessionId?: string;
+  sessionId?: string
   /** Timestamp when the event was emitted */
-  timestamp: number;
+  timestamp: number
   /** Arbitrary metadata hooks can read/write to pass data downstream */
-  metadata: Record<string, unknown>;
+  metadata: Record<string, unknown>
 }
 
 /** Context for provider:before — inspect/modify the request before it goes out */
 export interface ProviderBeforeContext extends HookContextBase {
-  event: 'provider:before';
+  event: 'provider:before'
   /** Provider being called */
-  providerId: string;
+  providerId: string
   /** Model being used */
-  model: string;
+  model: string
   /** Message array (mutable — hooks can modify) */
-  messages: unknown[];
+  messages: unknown[]
   /** Tool definitions (mutable) */
-  tools?: unknown[];
+  tools?: unknown[]
   /** If set to true by a hook, skip this provider and try next fallback */
-  skip?: boolean;
+  skip?: boolean
 }
 
 /** Context for provider:after — inspect the response */
 export interface ProviderAfterContext extends HookContextBase {
-  event: 'provider:after';
-  providerId: string;
-  model: string;
+  event: 'provider:after'
+  providerId: string
+  model: string
   /** Token usage from the response */
-  usage?: { promptTokens: number; completionTokens: number };
+  usage?: { promptTokens: number; completionTokens: number }
   /** Response latency in ms */
-  latencyMs: number;
+  latencyMs: number
   /** Whether tool calls were made */
-  hasToolCalls: boolean;
+  hasToolCalls: boolean
 }
 
 /** Context for provider:error — decide what to do after failure */
 export interface ProviderErrorContext extends HookContextBase {
-  event: 'provider:error';
-  providerId: string;
-  model: string;
+  event: 'provider:error'
+  providerId: string
+  model: string
   /** The error that occurred */
-  error: Error;
+  error: Error
   /** HTTP status code if available */
-  statusCode?: number;
+  statusCode?: number
   /** Whether to retry with a different provider/model. Set by fallback hooks. */
   retry?: {
-    providerId: string;
-    model: string;
-  };
+    providerId: string
+    model: string
+  }
 }
 
 /** Context for tool:before — inspect/block tool execution */
 export interface ToolBeforeContext extends HookContextBase {
-  event: 'tool:before';
+  event: 'tool:before'
   /** Tool being called */
-  toolName: string;
+  toolName: string
   /** Arguments (mutable — hooks can modify) */
-  args: Record<string, unknown>;
+  args: Record<string, unknown>
   /** If set to true, block the tool call and return blockReason */
-  blocked?: boolean;
+  blocked?: boolean
   /** Reason for blocking (shown to the LLM) */
-  blockReason?: string;
+  blockReason?: string
 }
 
 /** Context for tool:after — inspect tool results */
 export interface ToolAfterContext extends HookContextBase {
-  event: 'tool:after';
-  toolName: string;
-  args: Record<string, unknown>;
+  event: 'tool:after'
+  toolName: string
+  args: Record<string, unknown>
   /** Tool result (text or multimodal) */
-  result: unknown;
+  result: unknown
   /** Execution time in ms */
-  durationMs: number;
+  durationMs: number
   /** Whether the tool errored */
-  isError: boolean;
+  isError: boolean
 }
 
 /** Context for session:start */
 export interface SessionStartContext extends HookContextBase {
-  event: 'session:start';
+  event: 'session:start'
   /** Channel platform (telegram, discord, etc.) */
-  platform?: string;
+  platform?: string
   /** User ID */
-  userId?: string;
+  userId?: string
 }
 
 /** Context for session:end */
 export interface SessionEndContext extends HookContextBase {
-  event: 'session:end';
+  event: 'session:end'
   /** Number of turns in the session */
-  turnCount?: number;
+  turnCount?: number
   /** Total tokens used */
-  totalTokens?: { prompt: number; completion: number };
+  totalTokens?: { prompt: number; completion: number }
 }
 
 /** Context for turn:before — before processing a user message */
 export interface TurnBeforeContext extends HookContextBase {
-  event: 'turn:before';
+  event: 'turn:before'
   /** User message text */
-  userMessage: string;
+  userMessage: string
   /** If set to true, skip processing this message */
-  skip?: boolean;
+  skip?: boolean
   /** Reason for skipping */
-  skipReason?: string;
+  skipReason?: string
 }
 
 /** Context for turn:after — after turn completes */
 export interface TurnAfterContext extends HookContextBase {
-  event: 'turn:after';
+  event: 'turn:after'
   /** Agent response text */
-  response: string;
+  response: string
   /** Tools used during the turn */
-  toolsUsed: string[];
+  toolsUsed: string[]
   /** Number of tool iterations */
-  iterations: number;
+  iterations: number
   /** Whether the turn was aborted */
-  aborted: boolean;
+  aborted: boolean
   /** Token usage */
-  usage?: { promptTokens: number; completionTokens: number };
+  usage?: { promptTokens: number; completionTokens: number }
 }
 
 /** Context for compact:before */
 export interface CompactBeforeContext extends HookContextBase {
-  event: 'compact:before';
+  event: 'compact:before'
   /** Number of messages being compacted */
-  messageCount: number;
+  messageCount: number
 }
 
 /** Context for compact:after */
 export interface CompactAfterContext extends HookContextBase {
-  event: 'compact:after';
+  event: 'compact:after'
   /** Number of messages after compaction */
-  remainingMessages: number;
+  remainingMessages: number
   /** Summary that was generated */
-  summary?: string;
+  summary?: string
 }
 
 /** Context for delegation:before — before delegating to another agent */
 export interface DelegationBeforeContext extends HookContextBase {
-  event: 'delegation:before';
+  event: 'delegation:before'
   /** Agent initiating the delegation */
-  fromAgent: string;
+  fromAgent: string
   /** Target agent */
-  toAgent: string;
+  toAgent: string
   /** Task being delegated */
-  task: string;
+  task: string
   /** Current chain depth */
-  chainDepth: number;
+  chainDepth: number
   /** If set to true, block the delegation */
-  blocked?: boolean;
+  blocked?: boolean
   /** Reason for blocking */
-  blockReason?: string;
+  blockReason?: string
 }
 
 /** Context for delegation:after — after delegation completes */
 export interface DelegationAfterContext extends HookContextBase {
-  event: 'delegation:after';
-  fromAgent: string;
-  toAgent: string;
-  task: string;
+  event: 'delegation:after'
+  fromAgent: string
+  toAgent: string
+  task: string
   /** Result status */
-  status: 'completed' | 'failed' | 'timeout' | 'cached';
+  status: 'completed' | 'failed' | 'timeout' | 'cached'
   /** Duration in ms */
-  durationMs: number;
+  durationMs: number
   /** Token usage from the delegate */
-  usage?: { promptTokens: number; completionTokens: number };
+  usage?: { promptTokens: number; completionTokens: number }
   /** Whether the result came from cache */
-  cached: boolean;
+  cached: boolean
 }
 
 /** Union of all context types */
@@ -254,14 +254,14 @@ export type HookContext =
   | CompactBeforeContext
   | CompactAfterContext
   | DelegationBeforeContext
-  | DelegationAfterContext;
+  | DelegationAfterContext
 
 // ---------------------------------------------------------------------------
 // Hook Handler
 // ---------------------------------------------------------------------------
 
 /** What to do when a hook errors */
-export type HookErrorMode = 'continue' | 'abort' | 'retry';
+export type HookErrorMode = 'continue' | 'abort' | 'retry'
 
 /**
  * A hook handler — a function that receives context and can modify it.
@@ -273,30 +273,30 @@ export type HookErrorMode = 'continue' | 'abort' | 'retry';
  */
 export type HookHandlerFn<T extends HookContext = HookContext> = (
   ctx: T,
-) => Promise<void | 'abort' | 'skip'> | void | 'abort' | 'skip';
+) => Promise<void | 'abort' | 'skip'> | void | 'abort' | 'skip'
 
 /**
  * A registered hook with metadata.
  */
 export interface HookRegistration<T extends HookContext = HookContext> {
   /** Unique ID for this hook (for removal/debugging) */
-  id: string;
+  id: string
   /** Event to listen for */
-  event: HookEventName;
+  event: HookEventName
   /** Handler function */
-  handler: HookHandlerFn<T>;
+  handler: HookHandlerFn<T>
   /** Priority: lower = runs first. Default: 50. Range: 0-99. */
-  priority?: number;
+  priority?: number
   /** What to do if this hook throws. Default: 'continue'. */
-  onError?: HookErrorMode;
+  onError?: HookErrorMode
   /** Optional: only run for specific agents */
-  agentFilter?: string[];
+  agentFilter?: string[]
   /** Optional: only run for specific tools (tool:before/after) */
-  toolFilter?: string[];
+  toolFilter?: string[]
   /** Description for logging/debugging */
-  description?: string;
+  description?: string
   /** Whether this hook is enabled. Default: true. */
-  enabled?: boolean;
+  enabled?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -308,15 +308,15 @@ export interface HookRegistration<T extends HookContext = HookContext> {
  */
 export interface HookPipelineResult<T extends HookContext = HookContext> {
   /** The (possibly mutated) context after all hooks ran */
-  context: T;
+  context: T
   /** Whether the pipeline was aborted by a hook */
-  aborted: boolean;
+  aborted: boolean
   /** Whether the pipeline was skipped (soft abort) */
-  skipped: boolean;
+  skipped: boolean
   /** Errors from hooks that used 'continue' error mode */
-  errors: Array<{ hookId: string; error: Error }>;
+  errors: Array<{ hookId: string; error: Error }>
   /** IDs of hooks that ran */
-  ran: string[];
+  ran: string[]
 }
 
 /**
@@ -324,19 +324,19 @@ export interface HookPipelineResult<T extends HookContext = HookContext> {
  */
 export interface HookPipeline {
   /** Register a hook */
-  register<T extends HookContext>(hook: HookRegistration<T>): void;
+  register<T extends HookContext>(hook: HookRegistration<T>): void
 
   /** Unregister a hook by ID */
-  unregister(hookId: string): boolean;
+  unregister(hookId: string): boolean
 
   /** Run all hooks for an event, passing context through the pipeline */
-  run<T extends HookContext>(ctx: T): Promise<HookPipelineResult<T>>;
+  run<T extends HookContext>(ctx: T): Promise<HookPipelineResult<T>>
 
   /** Get all registered hooks (optionally filtered by event) */
-  getHooks(event?: HookEventName): HookRegistration[];
+  getHooks(event?: HookEventName): HookRegistration[]
 
   /** Clear all hooks (for testing) */
-  clear(): void;
+  clear(): void
 }
 
 // ---------------------------------------------------------------------------
@@ -348,25 +348,25 @@ export interface HookPipeline {
  */
 export interface HookConfig {
   /** Unique ID */
-  id: string;
+  id: string
   /** Event to listen for */
-  event: HookEventName;
+  event: HookEventName
   /** Handler type */
-  type: 'shell' | 'http' | 'internal';
+  type: 'shell' | 'http' | 'internal'
   /** For shell: command to run. For http: URL. For internal: module path. */
-  target: string;
+  target: string
   /** Priority (0-99, default 50) */
-  priority?: number;
+  priority?: number
   /** Error mode */
-  onError?: HookErrorMode;
+  onError?: HookErrorMode
   /** Agent filter */
-  agentFilter?: string[];
+  agentFilter?: string[]
   /** Tool filter */
-  toolFilter?: string[];
+  toolFilter?: string[]
   /** Description */
-  description?: string;
+  description?: string
   /** Enabled (default true) */
-  enabled?: boolean;
+  enabled?: boolean
 }
 
 /**
@@ -374,13 +374,13 @@ export interface HookConfig {
  */
 export interface FallbackConfig {
   /** Provider ID this fallback chain belongs to */
-  providerId: string;
+  providerId: string
   /** Ordered list of fallback models: provider:model or just model (same provider) */
-  fallbacks: string[];
+  fallbacks: string[]
   /** Error codes that trigger fallback (default: [429, 503]) */
-  triggerCodes?: number[];
+  triggerCodes?: number[]
   /** Also trigger on timeout (default: true) */
-  triggerOnTimeout?: boolean;
+  triggerOnTimeout?: boolean
   /** Also trigger on auth failure (default: false) */
-  triggerOnAuthFailure?: boolean;
+  triggerOnAuthFailure?: boolean
 }

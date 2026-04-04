@@ -68,5 +68,3 @@ export async function boot(configPath?: string): Promise<void> {
   // 6. Start
   await runtime.start()
 }
-
-

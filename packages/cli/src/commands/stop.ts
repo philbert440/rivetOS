@@ -4,23 +4,23 @@
  * Sends SIGTERM to the running rivetos process.
  */
 
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 
-const PID_FILE = resolve(process.env.HOME ?? '.', '.rivetos', 'rivetos.pid');
+const PID_FILE = resolve(process.env.HOME ?? '.', '.rivetos', 'rivetos.pid')
 
 export default async function stop(): Promise<void> {
   try {
-    const pid = parseInt(await readFile(PID_FILE, 'utf-8'));
-    process.kill(pid, 'SIGTERM');
-    console.log(`Sent SIGTERM to PID ${pid}`);
+    const pid = parseInt(await readFile(PID_FILE, 'utf-8'))
+    process.kill(pid, 'SIGTERM')
+    console.log(`Sent SIGTERM to PID ${pid}`)
   } catch (err: any) {
     if (err.code === 'ENOENT') {
-      console.log('No running instance found (no PID file).');
+      console.log('No running instance found (no PID file).')
     } else if (err.code === 'ESRCH') {
-      console.log('PID file exists but process is not running.');
+      console.log('PID file exists but process is not running.')
     } else {
-      throw err;
+      throw err
     }
   }
 }

@@ -16,13 +16,8 @@
  * to peer agents on other instances.
  */
 
-import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
-import type {
-  Channel,
-  InboundMessage,
-  OutboundMessage,
-  Tool,
-} from '@rivetos/types';
+import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
+import type { Channel, InboundMessage, OutboundMessage, Tool } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -30,22 +25,22 @@ import type {
 
 export interface AgentChannelConfig {
   /** Port to listen on (default: 3100) */
-  port?: number;
+  port?: number
   /** Bind address (default: 0.0.0.0) */
-  host?: string;
+  host?: string
   /** Shared secret for authenticating peer agents */
-  secret: string;
+  secret: string
   /** This agent's ID */
-  agentId: string;
+  agentId: string
   /** Peer agents: name → URL mapping */
-  peers?: Record<string, PeerConfig>;
+  peers?: Record<string, PeerConfig>
 }
 
 export interface PeerConfig {
   /** Base URL of the peer agent (e.g., http://10.4.20.102:3100) */
-  url: string;
+  url: string
   /** Override secret for this specific peer (optional, defaults to channel secret) */
-  secret?: string;
+  secret?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -53,27 +48,30 @@ export interface PeerConfig {
 // ---------------------------------------------------------------------------
 
 export class AgentChannel implements Channel {
-  id: string;
-  platform = 'agent';
+  id: string
+  platform = 'agent'
 
-  private config: AgentChannelConfig;
-  private server?: Server;
-  private port: number;
-  private host: string;
-  private messageHandler?: (message: InboundMessage) => Promise<void>;
-  private commandHandler?: (command: string, args: string, message: InboundMessage) => Promise<void>;
+  private config: AgentChannelConfig
+  private server?: Server
+  private port: number
+  private host: string
+  private messageHandler?: (message: InboundMessage) => Promise<void>
+  private commandHandler?: (command: string, args: string, message: InboundMessage) => Promise<void>
 
   /** Pending responses — maps request ID to response resolver */
-  private pendingResponses: Map<string, {
-    resolve: (response: string) => void;
-    timeout: ReturnType<typeof setTimeout>;
-  }> = new Map();
+  private pendingResponses: Map<
+    string,
+    {
+      resolve: (response: string) => void
+      timeout: ReturnType<typeof setTimeout>
+    }
+  > = new Map()
 
   constructor(config: AgentChannelConfig) {
-    this.config = config;
-    this.id = `agent-${config.agentId}`;
-    this.port = config.port ?? 3100;
-    this.host = config.host ?? '0.0.0.0';
+    this.config = config
+    this.id = `agent-${config.agentId}`
+    this.port = config.port ?? 3100
+    this.host = config.host ?? '0.0.0.0'
   }
 
   // -----------------------------------------------------------------------
@@ -82,57 +80,59 @@ export class AgentChannel implements Channel {
 
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server = createServer((req, res) => this.handleRequest(req, res));
+      this.server = createServer((req, res) => this.handleRequest(req, res))
 
       this.server.on('error', (err: any) => {
         if (err.code === 'EADDRINUSE') {
-          reject(new Error(`Agent channel port ${this.port} is already in use`));
+          reject(new Error(`Agent channel port ${this.port} is already in use`))
         } else {
-          reject(err);
+          reject(err)
         }
-      });
+      })
 
       this.server.listen(this.port, this.host, () => {
-        resolve();
-      });
-    });
+        resolve()
+      })
+    })
   }
 
   async stop(): Promise<void> {
     // Clear pending responses
     for (const [id, pending] of this.pendingResponses) {
-      clearTimeout(pending.timeout);
-      pending.resolve('[channel shutting down]');
+      clearTimeout(pending.timeout)
+      pending.resolve('[channel shutting down]')
     }
-    this.pendingResponses.clear();
+    this.pendingResponses.clear()
 
     return new Promise((resolve) => {
       if (this.server) {
-        this.server.close(() => resolve());
+        this.server.close(() => resolve())
       } else {
-        resolve();
+        resolve()
       }
-    });
+    })
   }
 
   async send(message: OutboundMessage): Promise<string | null> {
     // "Sending" on the agent channel means resolving a pending response
-    const pending = this.pendingResponses.get(message.channelId);
+    const pending = this.pendingResponses.get(message.channelId)
     if (pending && message.text) {
-      clearTimeout(pending.timeout);
-      pending.resolve(message.text);
-      this.pendingResponses.delete(message.channelId);
-      return message.channelId;
+      clearTimeout(pending.timeout)
+      pending.resolve(message.text)
+      this.pendingResponses.delete(message.channelId)
+      return message.channelId
     }
-    return null;
+    return null
   }
 
   onMessage(handler: (message: InboundMessage) => Promise<void>): void {
-    this.messageHandler = handler;
+    this.messageHandler = handler
   }
 
-  onCommand(handler: (command: string, args: string, message: InboundMessage) => Promise<void>): void {
-    this.commandHandler = handler;
+  onCommand(
+    handler: (command: string, args: string, message: InboundMessage) => Promise<void>,
+  ): void {
+    this.commandHandler = handler
   }
 
   // -----------------------------------------------------------------------
@@ -146,64 +146,64 @@ export class AgentChannel implements Channel {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, GET',
         'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-      });
-      res.end();
-      return;
+      })
+      res.end()
+      return
     }
 
     // Health check
     if (req.method === 'GET' && req.url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', agent: this.config.agentId, timestamp: Date.now() }));
-      return;
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ status: 'ok', agent: this.config.agentId, timestamp: Date.now() }))
+      return
     }
 
     // Agent message endpoint
     if (req.method === 'POST' && req.url === '/api/message') {
-      await this.handleAgentMessage(req, res);
-      return;
+      await this.handleAgentMessage(req, res)
+      return
     }
 
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not found' }));
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Not found' }))
   }
 
   private async handleAgentMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // Auth check
-    const authHeader = req.headers.authorization;
+    const authHeader = req.headers.authorization
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing or invalid authorization' }));
-      return;
+      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Missing or invalid authorization' }))
+      return
     }
 
-    const token = authHeader.slice(7);
+    const token = authHeader.slice(7)
     if (token !== this.config.secret) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid secret' }));
-      return;
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Invalid secret' }))
+      return
     }
 
     // Parse body
-    let body: AgentMessageBody;
+    let body: AgentMessageBody
     try {
-      const rawBody = await readBody(req);
-      body = JSON.parse(rawBody);
+      const rawBody = await readBody(req)
+      body = JSON.parse(rawBody)
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      return;
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }))
+      return
     }
 
     if (!body.fromAgent || !body.message) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required fields: fromAgent, message' }));
-      return;
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Missing required fields: fromAgent, message' }))
+      return
     }
 
-    const requestId = `agent-msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const waitForResponse = body.waitForResponse !== false; // Default: true
-    const timeoutMs = body.timeoutMs ?? 120000;
+    const requestId = `agent-msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const waitForResponse = body.waitForResponse !== false // Default: true
+    const timeoutMs = body.timeoutMs ?? 120000
 
     // Build InboundMessage
     const inbound: InboundMessage = {
@@ -222,63 +222,67 @@ export class AgentChannel implements Channel {
         conversationId: body.conversationId,
         isAgentMessage: true,
       },
-    };
+    }
 
     if (waitForResponse) {
       // Create a response promise that the send() method will resolve
       const responsePromise = new Promise<string>((resolve) => {
         const timeout = setTimeout(() => {
-          this.pendingResponses.delete(requestId);
-          resolve('[timeout — agent did not respond in time]');
-        }, timeoutMs);
+          this.pendingResponses.delete(requestId)
+          resolve('[timeout — agent did not respond in time]')
+        }, timeoutMs)
 
-        this.pendingResponses.set(requestId, { resolve, timeout });
-      });
+        this.pendingResponses.set(requestId, { resolve, timeout })
+      })
 
       // Dispatch the message through the normal pipeline
       try {
         if (this.messageHandler) {
           // Don't await — let it process asynchronously while we wait on the response promise
           this.messageHandler(inbound).catch((err) => {
-            const pending = this.pendingResponses.get(requestId);
+            const pending = this.pendingResponses.get(requestId)
             if (pending) {
-              clearTimeout(pending.timeout);
-              pending.resolve(`[error processing message: ${err.message}]`);
-              this.pendingResponses.delete(requestId);
+              clearTimeout(pending.timeout)
+              pending.resolve(`[error processing message: ${err.message}]`)
+              this.pendingResponses.delete(requestId)
             }
-          });
+          })
         } else {
-          res.writeHead(503, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No message handler registered' }));
-          return;
+          res.writeHead(503, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'No message handler registered' }))
+          return
         }
 
-        const response = await responsePromise;
+        const response = await responsePromise
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          response,
-          agent: this.config.agentId,
-          fromAgent: body.fromAgent,
-          timestamp: Date.now(),
-        }));
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            response,
+            agent: this.config.agentId,
+            fromAgent: body.fromAgent,
+            timestamp: Date.now(),
+          }),
+        )
       } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Processing failed: ${err.message}` }));
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `Processing failed: ${err.message}` }))
       }
     } else {
       // Fire and forget
       if (this.messageHandler) {
-        this.messageHandler(inbound).catch(() => {}); // Errors are swallowed in async mode
+        this.messageHandler(inbound).catch(() => {}) // Errors are swallowed in async mode
       }
 
-      res.writeHead(202, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        status: 'accepted',
-        requestId,
-        agent: this.config.agentId,
-        timestamp: Date.now(),
-      }));
+      res.writeHead(202, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          status: 'accepted',
+          requestId,
+          agent: this.config.agentId,
+          timestamp: Date.now(),
+        }),
+      )
     }
   }
 
@@ -294,7 +298,7 @@ export class AgentChannel implements Channel {
       name: 'agent_message',
       description:
         'Send a message to another agent on a different instance. ' +
-        'The message goes through the remote agent\'s full pipeline (memory, hooks, tools). ' +
+        "The message goes through the remote agent's full pipeline (memory, hooks, tools). " +
         'Use for cross-instance collaboration — the remote agent sees it as a real message.',
       parameters: {
         type: 'object',
@@ -319,15 +323,15 @@ export class AgentChannel implements Channel {
         required: ['to_agent', 'message'],
       },
       execute: async (args, _signal, context) => {
-        const toAgent = args.to_agent as string;
-        const message = args.message as string;
-        const waitForResponse = (args.wait_for_response as boolean) ?? true;
-        const timeoutMs = (args.timeout_ms as number) ?? 120000;
+        const toAgent = args.to_agent as string
+        const message = args.message as string
+        const waitForResponse = (args.wait_for_response as boolean) ?? true
+        const timeoutMs = (args.timeout_ms as number) ?? 120000
 
-        const peer = this.config.peers?.[toAgent];
+        const peer = this.config.peers?.[toAgent]
         if (!peer) {
-          const available = Object.keys(this.config.peers ?? {}).join(', ') || 'none';
-          return `Error: Unknown peer agent "${toAgent}". Available peers: ${available}`;
+          const available = Object.keys(this.config.peers ?? {}).join(', ') || 'none'
+          return `Error: Unknown peer agent "${toAgent}". Available peers: ${available}`
         }
 
         try {
@@ -336,18 +340,18 @@ export class AgentChannel implements Channel {
             message,
             waitForResponse,
             timeoutMs,
-          });
+          })
 
           if (waitForResponse) {
-            return response.response ?? '[no response]';
+            return response.response ?? '[no response]'
           } else {
-            return `Message sent to ${toAgent} (async — no response expected). Request ID: ${response.requestId}`;
+            return `Message sent to ${toAgent} (async — no response expected). Request ID: ${response.requestId}`
           }
         } catch (err: any) {
-          return `Error sending message to ${toAgent}: ${err.message}`;
+          return `Error sending message to ${toAgent}: ${err.message}`
         }
       },
-    };
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -355,31 +359,31 @@ export class AgentChannel implements Channel {
   // -----------------------------------------------------------------------
 
   async sendToPeer(peer: PeerConfig, body: AgentMessageBody): Promise<AgentMessageResponse> {
-    const secret = peer.secret ?? this.config.secret;
-    const url = `${peer.url.replace(/\/$/, '')}/api/message`;
+    const secret = peer.secret ?? this.config.secret
+    const url = `${peer.url.replace(/\/$/, '')}/api/message`
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), (body.timeoutMs ?? 120000) + 5000); // Extra 5s for network
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), (body.timeoutMs ?? 120000) + 5000) // Extra 5s for network
 
     try {
       const res = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${secret}`,
+          Authorization: `Bearer ${secret}`,
         },
         body: JSON.stringify(body),
         signal: controller.signal,
-      });
+      })
 
       if (!res.ok) {
-        const errBody = await res.text().catch(() => 'unknown error');
-        throw new Error(`HTTP ${res.status}: ${errBody}`);
+        const errBody = await res.text().catch(() => 'unknown error')
+        throw new Error(`HTTP ${res.status}: ${errBody}`)
       }
 
-      return await res.json() as AgentMessageResponse;
+      return (await res.json()) as AgentMessageResponse
     } finally {
-      clearTimeout(timeout);
+      clearTimeout(timeout)
     }
   }
 }
@@ -389,20 +393,20 @@ export class AgentChannel implements Channel {
 // ---------------------------------------------------------------------------
 
 interface AgentMessageBody {
-  fromAgent: string;
-  message: string;
-  conversationId?: string;
-  waitForResponse?: boolean;
-  timeoutMs?: number;
+  fromAgent: string
+  message: string
+  conversationId?: string
+  waitForResponse?: boolean
+  timeoutMs?: number
 }
 
 interface AgentMessageResponse {
-  response?: string;
-  agent?: string;
-  fromAgent?: string;
-  requestId?: string;
-  status?: string;
-  timestamp?: number;
+  response?: string
+  agent?: string
+  fromAgent?: string
+  requestId?: string
+  status?: string
+  timestamp?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -411,9 +415,9 @@ interface AgentMessageResponse {
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-    req.on('error', reject);
-  });
+    const chunks: Buffer[] = []
+    req.on('data', (chunk) => chunks.push(chunk))
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')))
+    req.on('error', reject)
+  })
 }

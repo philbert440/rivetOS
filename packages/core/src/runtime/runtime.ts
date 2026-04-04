@@ -24,37 +24,37 @@ import type {
   StreamHandler,
   HookPipeline,
   FallbackConfig,
-} from '@rivetos/types';
-import { SILENT_RESPONSES } from '../domain/constants.js';
-import { AgentLoop } from '../domain/loop.js';
-import { Router } from '../domain/router.js';
-import { WorkspaceLoader } from '../domain/workspace.js';
-import { MessageQueue, isCommand, parseCommand } from '../domain/queue.js';
-import { createHeartbeatRunner, type HeartbeatRunner } from '../domain/heartbeat.js';
-import { CommandHandler } from './commands.js';
-import { StreamManager } from './streaming.js';
-import { SessionManager } from './sessions.js';
-import { TurnHandler } from './turn-handler.js';
-import { logger } from '../logger.js';
+} from '@rivetos/types'
+import { SILENT_RESPONSES } from '../domain/constants.js'
+import { AgentLoop } from '../domain/loop.js'
+import { Router } from '../domain/router.js'
+import { WorkspaceLoader } from '../domain/workspace.js'
+import { MessageQueue, isCommand, parseCommand } from '../domain/queue.js'
+import { createHeartbeatRunner, type HeartbeatRunner } from '../domain/heartbeat.js'
+import { CommandHandler } from './commands.js'
+import { StreamManager } from './streaming.js'
+import { SessionManager } from './sessions.js'
+import { TurnHandler } from './turn-handler.js'
+import { logger } from '../logger.js'
 
-const log = logger('Runtime');
+const log = logger('Runtime')
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 export interface RuntimeConfig {
-  workspaceDir: string;
-  defaultAgent: string;
-  agents: AgentConfig[];
-  maxToolIterations?: number;
-  heartbeats?: import('@rivetos/types').HeartbeatConfig[];
+  workspaceDir: string
+  defaultAgent: string
+  agents: AgentConfig[]
+  maxToolIterations?: number
+  heartbeats?: import('@rivetos/types').HeartbeatConfig[]
   /** Directories to scan for skills (default: ~/.rivetos/skills/) */
-  skillDirs?: string[];
+  skillDirs?: string[]
   /** Hook pipeline instance (created by boot, shared across runtime) */
-  hooks?: HookPipeline;
+  hooks?: HookPipeline
   /** Provider fallback chains */
-  fallbacks?: FallbackConfig[];
+  fallbacks?: FallbackConfig[]
 }
 
 // ---------------------------------------------------------------------------
@@ -62,35 +62,35 @@ export interface RuntimeConfig {
 // ---------------------------------------------------------------------------
 
 export class Runtime {
-  private router: Router;
-  private workspace: WorkspaceLoader;
-  private channels: Map<string, Channel> = new Map();
-  private tools: Tool[] = [];
-  private memory?: Memory;
-  private config: RuntimeConfig;
-  private heartbeatRunner?: HeartbeatRunner;
+  private router: Router
+  private workspace: WorkspaceLoader
+  private channels: Map<string, Channel> = new Map()
+  private tools: Tool[] = []
+  private memory?: Memory
+  private config: RuntimeConfig
+  private heartbeatRunner?: HeartbeatRunner
 
   // Composed modules
-  private commandHandler!: CommandHandler;
-  private streamManager: StreamManager;
-  private sessionManager: SessionManager;
-  private turnHandler!: TurnHandler;
+  private commandHandler!: CommandHandler
+  private streamManager: StreamManager
+  private sessionManager: SessionManager
+  private turnHandler!: TurnHandler
 
   // Shared state maps (runtime owns, turn handler references)
-  private aborts: Map<string, AbortController> = new Map();
-  private activeLoops: Map<string, AgentLoop> = new Map();
-  private queues: Map<string, MessageQueue> = new Map();
-  private streamHandlers: Map<string, StreamHandler> = new Map();
+  private aborts: Map<string, AbortController> = new Map()
+  private activeLoops: Map<string, AgentLoop> = new Map()
+  private queues: Map<string, MessageQueue> = new Map()
+  private streamHandlers: Map<string, StreamHandler> = new Map()
 
   constructor(config: RuntimeConfig) {
-    this.config = config;
-    this.router = new Router(config.defaultAgent);
-    this.workspace = new WorkspaceLoader(config.workspaceDir);
-    this.streamManager = new StreamManager();
-    this.sessionManager = new SessionManager(this.router);
+    this.config = config
+    this.router = new Router(config.defaultAgent)
+    this.workspace = new WorkspaceLoader(config.workspaceDir)
+    this.streamManager = new StreamManager()
+    this.sessionManager = new SessionManager(this.router)
 
     for (const agent of config.agents) {
-      this.router.registerAgent(agent);
+      this.router.registerAgent(agent)
     }
 
     // Wire turn handler
@@ -109,7 +109,7 @@ export class Runtime {
       activeLoops: this.activeLoops,
       streamHandlers: this.streamHandlers,
       queues: this.queues,
-    });
+    })
 
     // Wire command handler
     this.commandHandler = new CommandHandler({
@@ -118,76 +118,88 @@ export class Runtime {
       sessionManager: this.sessionManager,
       streamManager: this.streamManager,
       getAbort: (key) => this.aborts.get(key),
-      deleteAbort: (key) => { this.aborts.delete(key); },
+      deleteAbort: (key) => {
+        this.aborts.delete(key)
+      },
       getActiveLoop: (key) => this.activeLoops.get(key),
-      deleteActiveLoop: (key) => { this.activeLoops.delete(key); },
+      deleteActiveLoop: (key) => {
+        this.activeLoops.delete(key)
+      },
       getQueue: (key) => this.queues.get(key),
       handleMessage: (ch, msg) => this.turnHandler.handle(ch, msg),
-    });
+    })
   }
 
   // -----------------------------------------------------------------------
   // Accessors — for boot registrars that need internal wiring
   // -----------------------------------------------------------------------
 
-  getRouter(): Router { return this.router; }
-  getWorkspace(): WorkspaceLoader { return this.workspace; }
-  getHooks(): HookPipeline | undefined { return this.config.hooks; }
-  getTools(): Tool[] { return this.tools; }
+  getRouter(): Router {
+    return this.router
+  }
+  getWorkspace(): WorkspaceLoader {
+    return this.workspace
+  }
+  getHooks(): HookPipeline | undefined {
+    return this.config.hooks
+  }
+  getTools(): Tool[] {
+    return this.tools
+  }
 
   // -----------------------------------------------------------------------
   // Registration
   // -----------------------------------------------------------------------
 
   registerProvider(provider: Provider): void {
-    this.router.registerProvider(provider);
+    this.router.registerProvider(provider)
   }
 
   registerChannel(channel: Channel): void {
-    this.channels.set(channel.id, channel);
+    this.channels.set(channel.id, channel)
 
     channel.onMessage(async (message) => {
-      const sessionKey = `${message.channelId}:${message.userId}`;
+      const sessionKey = `${message.channelId}:${message.userId}`
 
       // Commands always execute immediately — never queued
       if (isCommand(message.text)) {
-        const parsed = parseCommand(message.text);
+        const parsed = parseCommand(message.text)
         if (parsed) {
-          await this.commandHandler.handle(channel, parsed.command, parsed.args, message);
-          return;
+          await this.commandHandler.handle(channel, parsed.command, parsed.args, message)
+          return
         }
       }
 
       // Get or create queue for this session
-      let queue = this.queues.get(sessionKey);
+      let queue = this.queues.get(sessionKey)
       if (!queue) {
-        queue = new MessageQueue();
-        queue.setHandler((msg) => this.turnHandler.handle(channel, msg));
-        this.queues.set(sessionKey, queue);
+        queue = new MessageQueue()
+        queue.setHandler((msg) => this.turnHandler.handle(channel, msg))
+        this.queues.set(sessionKey, queue)
       }
 
       // If a turn is active, acknowledge the queued message
       if (queue.isProcessing) {
-        channel.react?.(message.channelId, message.id, '👀').catch(() => {});
+        channel.react?.(message.channelId, message.id, '👀').catch(() => {})
       }
 
-      await queue.enqueue(message);
-    });
+      await queue.enqueue(message)
+    })
 
     channel.onCommand(async (command, args, message) => {
-      await this.commandHandler.handle(channel, command, args, message);
-    });
+      await this.commandHandler.handle(channel, command, args, message)
+    })
   }
 
   registerTool(tool: Tool): void {
-    this.tools.push(tool);
+    this.tools.push(tool)
   }
 
   registerMemory(memory: Memory): void {
-    this.memory = memory;
-    this.sessionManager.setMemory(memory);
+    this.memory = memory
+    this.sessionManager.setMemory(memory)
     // Update the turn handler's reference
-    this.turnHandler.setMemory(memory);
+    this.turnHandler.setMemory(memory)
   }
 
   // -----------------------------------------------------------------------
@@ -195,102 +207,103 @@ export class Runtime {
   // -----------------------------------------------------------------------
 
   async start(): Promise<void> {
-    log.info('Starting...');
+    log.info('Starting...')
 
-    const files = await this.workspace.load();
-    log.info(`Workspace: ${files.length} files from ${this.config.workspaceDir}`);
+    const files = await this.workspace.load()
+    log.info(`Workspace: ${files.length} files from ${this.config.workspaceDir}`)
 
-    const health = await this.router.healthCheck();
+    const health = await this.router.healthCheck()
     for (const [id, ok] of Object.entries(health)) {
-      log.info(`Provider ${id}: ${ok ? '✅' : '❌'}`);
+      log.info(`Provider ${id}: ${ok ? '✅' : '❌'}`)
     }
 
     for (const [id, channel] of this.channels) {
       try {
-        await channel.start();
-        log.info(`Channel ${id} (${channel.platform}): started`);
+        await channel.start()
+        log.info(`Channel ${id} (${channel.platform}): started`)
       } catch (err: any) {
-        log.error(`Channel ${id} failed to start: ${err.message}`);
+        log.error(`Channel ${id} failed to start: ${err.message}`)
       }
     }
 
     // Start heartbeats
     if (this.config.heartbeats?.length) {
-      this.heartbeatRunner = createHeartbeatRunner(
-        this.config.heartbeats,
-        async (hbConfig) => {
-          const agentConfig = this.router.getAgents().find((a) => a.id === hbConfig.agent);
-          if (!agentConfig) {
-            log.warn(`Heartbeat agent "${hbConfig.agent}" not found`);
-            return;
-          }
+      this.heartbeatRunner = createHeartbeatRunner(this.config.heartbeats, async (hbConfig) => {
+        const agentConfig = this.router.getAgents().find((a) => a.id === hbConfig.agent)
+        if (!agentConfig) {
+          log.warn(`Heartbeat agent "${hbConfig.agent}" not found`)
+          return
+        }
 
-          const { provider } = this.router.route({
-            id: 'heartbeat',
-            userId: 'system:heartbeat',
-            channelId: 'heartbeat',
-            chatType: 'system',
-            text: hbConfig.prompt,
-            platform: 'heartbeat',
-            agent: hbConfig.agent,
-            timestamp: Math.floor(Date.now() / 1000),
-          });
+        const { provider } = this.router.route({
+          id: 'heartbeat',
+          userId: 'system:heartbeat',
+          channelId: 'heartbeat',
+          chatType: 'system',
+          text: hbConfig.prompt,
+          platform: 'heartbeat',
+          agent: hbConfig.agent,
+          timestamp: Math.floor(Date.now() / 1000),
+        })
 
-          const systemPrompt = await this.workspace.buildHeartbeatPrompt(hbConfig.agent);
-          const loop = new AgentLoop({
-            systemPrompt,
-            provider,
-            tools: this.tools,
-            agentId: hbConfig.agent,
-          });
+        const systemPrompt = await this.workspace.buildHeartbeatPrompt(hbConfig.agent)
+        const loop = new AgentLoop({
+          systemPrompt,
+          provider,
+          tools: this.tools,
+          agentId: hbConfig.agent,
+        })
 
-          const result = await loop.run(hbConfig.prompt, []);
+        const result = await loop.run(hbConfig.prompt, [])
 
-          if (result.response && hbConfig.outputChannel) {
-            const isSilent = SILENT_RESPONSES.some((s) => result.response.trim() === s);
-            if (!isSilent) {
-              for (const [, ch] of this.channels) {
-                await ch.send({ channelId: hbConfig.outputChannel, text: result.response }).catch(() => {});
-              }
+        if (result.response && hbConfig.outputChannel) {
+          const isSilent = SILENT_RESPONSES.some((s) => result.response.trim() === s)
+          if (!isSilent) {
+            for (const [, ch] of this.channels) {
+              await ch
+                .send({ channelId: hbConfig.outputChannel, text: result.response })
+                .catch(() => {})
             }
           }
+        }
 
-          if (this.memory) {
-            await this.memory.append({
+        if (this.memory) {
+          await this.memory
+            .append({
               sessionId: `heartbeat:${hbConfig.agent}`,
               agent: hbConfig.agent,
               channel: 'heartbeat',
               role: 'assistant',
               content: result.response,
-            }).catch(() => {});
-          }
-        },
-      );
-      this.heartbeatRunner.start();
+            })
+            .catch(() => {})
+        }
+      })
+      this.heartbeatRunner.start()
     }
 
-    log.info('Ready.');
+    log.info('Ready.')
   }
 
   async stop(): Promise<void> {
-    log.info('Stopping...');
+    log.info('Stopping...')
 
-    this.heartbeatRunner?.stop();
+    this.heartbeatRunner?.stop()
 
     for (const [, abort] of this.aborts) {
-      abort.abort('Runtime shutdown');
+      abort.abort('Runtime shutdown')
     }
-    this.aborts.clear();
-    this.activeLoops.clear();
+    this.aborts.clear()
+    this.activeLoops.clear()
 
     for (const [id, channel] of this.channels) {
       try {
-        await channel.stop();
+        await channel.stop()
       } catch (err: any) {
-        log.error(`Channel ${id} stop failed: ${err.message}`);
+        log.error(`Channel ${id} stop failed: ${err.message}`)
       }
     }
 
-    log.info('Stopped.');
+    log.info('Stopped.')
   }
 }

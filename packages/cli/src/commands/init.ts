@@ -9,12 +9,12 @@
  * 5. Print next steps
  */
 
-import { writeFile, mkdir, access, readlink, symlink } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { writeFile, mkdir, access, readlink, symlink } from 'node:fs/promises'
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(__dirname, '..', '..', '..', '..');
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const ROOT = resolve(__dirname, '..', '..', '..', '..')
 
 const DEFAULT_CONFIG = `# RivetOS Configuration
 # API keys via environment variables — never in this file.
@@ -73,7 +73,7 @@ channels:
 
 memory:
   postgres: {}
-`;
+`
 
 const TEMPLATES: Record<string, string> = {
   'SOUL.md': '# SOUL.md\n\nDefine who you are here.\n',
@@ -82,77 +82,77 @@ const TEMPLATES: Record<string, string> = {
   'USER.md': '# USER.md\n\nAbout your human.\n',
   'TOOLS.md': '# TOOLS.md\n\nTool notes and configurations.\n',
   'MEMORY.md': '# MEMORY.md\n\nLong-term memory.\n',
-};
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
-    await access(path);
-    return true;
+    await access(path)
+    return true
   } catch {
-    return false;
+    return false
   }
 }
 
 export default async function init(): Promise<void> {
-  const home = process.env.HOME ?? '/root';
-  const rivetDir = resolve(home, '.rivetos');
-  const workspaceDir = resolve(rivetDir, 'workspace');
-  const memoryDir = resolve(workspaceDir, 'memory');
-  const configPath = resolve(rivetDir, 'config.yaml');
-  const binSource = resolve(ROOT, 'bin', 'rivetos');
-  const binTarget = '/usr/local/bin/rivetos';
+  const home = process.env.HOME ?? '/root'
+  const rivetDir = resolve(home, '.rivetos')
+  const workspaceDir = resolve(rivetDir, 'workspace')
+  const memoryDir = resolve(workspaceDir, 'memory')
+  const configPath = resolve(rivetDir, 'config.yaml')
+  const binSource = resolve(ROOT, 'bin', 'rivetos')
+  const binTarget = '/usr/local/bin/rivetos'
 
-  console.log('RivetOS Init\n');
+  console.log('RivetOS Init\n')
 
   // 1. Create directories
   for (const dir of [rivetDir, workspaceDir, memoryDir]) {
     if (await exists(dir)) {
-      console.log(`  ⏭️  ${dir} (exists)`);
+      console.log(`  ⏭️  ${dir} (exists)`)
     } else {
-      await mkdir(dir, { recursive: true });
-      console.log(`  ✅ ${dir}`);
+      await mkdir(dir, { recursive: true })
+      console.log(`  ✅ ${dir}`)
     }
   }
 
   // 2. Config
   if (await exists(configPath)) {
-    console.log(`  ⏭️  ${configPath} (exists)`);
+    console.log(`  ⏭️  ${configPath} (exists)`)
   } else {
-    await writeFile(configPath, DEFAULT_CONFIG, 'utf-8');
-    console.log(`  ✅ ${configPath}`);
+    await writeFile(configPath, DEFAULT_CONFIG, 'utf-8')
+    console.log(`  ✅ ${configPath}`)
   }
 
   // 3. Workspace templates
   for (const [name, content] of Object.entries(TEMPLATES)) {
-    const filePath = resolve(workspaceDir, name);
+    const filePath = resolve(workspaceDir, name)
     if (await exists(filePath)) {
-      console.log(`  ⏭️  ${name} (exists)`);
+      console.log(`  ⏭️  ${name} (exists)`)
     } else {
-      await writeFile(filePath, content, 'utf-8');
-      console.log(`  ✅ ${name}`);
+      await writeFile(filePath, content, 'utf-8')
+      console.log(`  ✅ ${name}`)
     }
   }
 
   // 4. Symlink binary
-  console.log('');
+  console.log('')
   try {
     if (await exists(binTarget)) {
-      const current = await readlink(binTarget);
+      const current = await readlink(binTarget)
       if (current === binSource) {
-        console.log(`  ⏭️  ${binTarget} → ${binSource} (exists)`);
+        console.log(`  ⏭️  ${binTarget} → ${binSource} (exists)`)
       } else {
-        console.log(`  ⚠️  ${binTarget} exists but points to ${current}`);
-        console.log(`      Remove it manually if you want to re-link.`);
+        console.log(`  ⚠️  ${binTarget} exists but points to ${current}`)
+        console.log(`      Remove it manually if you want to re-link.`)
       }
     } else {
-      await symlink(binSource, binTarget);
-      console.log(`  ✅ ${binTarget} → ${binSource}`);
+      await symlink(binSource, binTarget)
+      console.log(`  ✅ ${binTarget} → ${binSource}`)
     }
   } catch (err: any) {
     if (err.code === 'EACCES') {
-      console.log(`  ❌ Permission denied creating symlink. Try: sudo rivetos init`);
+      console.log(`  ❌ Permission denied creating symlink. Try: sudo rivetos init`)
     } else {
-      console.log(`  ❌ Symlink error: ${err.message}`);
+      console.log(`  ❌ Symlink error: ${err.message}`)
     }
   }
 
@@ -162,5 +162,5 @@ Done! Next steps:
   1. Edit ${configPath} with your API keys and settings
   2. Run: rivetos doctor    — verify connectivity
   3. Run: rivetos start     — launch the runtime
-`);
+`)
 }

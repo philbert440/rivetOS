@@ -12,29 +12,79 @@
  *   - Abort signal support
  */
 
-import { exec, type ChildProcess } from 'node:child_process';
-import type { Tool, ToolContext } from '@rivetos/types';
+import { exec, type ChildProcess } from 'node:child_process'
+import type { Tool, ToolContext } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Command categories
 // ---------------------------------------------------------------------------
 
-type CommandCategory = 'read' | 'write' | 'dangerous';
-type ApprovalLevel = 'allow' | 'warn' | 'block';
+type CommandCategory = 'read' | 'write' | 'dangerous'
+type ApprovalLevel = 'allow' | 'warn' | 'block'
 
 /** Commands considered read-only (safe). */
 const READ_COMMANDS = new Set([
-  'ls', 'cat', 'head', 'tail', 'wc', 'find', 'which', 'whoami', 'hostname',
-  'date', 'uptime', 'df', 'du', 'free', 'top', 'ps', 'env', 'printenv',
-  'echo', 'pwd', 'id', 'groups', 'file', 'stat', 'readlink', 'realpath',
-  'git status', 'git log', 'git diff', 'git show', 'git branch', 'git remote',
-  'git stash list', 'git tag', 'git describe', 'git rev-parse',
-  'npm ls', 'npm view', 'npm outdated', 'npx nx graph',
-  'docker ps', 'docker images', 'docker logs',
-  'curl', 'wget', 'dig', 'nslookup', 'ping', 'traceroute',
-  'tree', 'less', 'more', 'grep', 'awk', 'sed', 'sort', 'uniq', 'cut',
-  'jq', 'yq',
-]);
+  'ls',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'find',
+  'which',
+  'whoami',
+  'hostname',
+  'date',
+  'uptime',
+  'df',
+  'du',
+  'free',
+  'top',
+  'ps',
+  'env',
+  'printenv',
+  'echo',
+  'pwd',
+  'id',
+  'groups',
+  'file',
+  'stat',
+  'readlink',
+  'realpath',
+  'git status',
+  'git log',
+  'git diff',
+  'git show',
+  'git branch',
+  'git remote',
+  'git stash list',
+  'git tag',
+  'git describe',
+  'git rev-parse',
+  'npm ls',
+  'npm view',
+  'npm outdated',
+  'npx nx graph',
+  'docker ps',
+  'docker images',
+  'docker logs',
+  'curl',
+  'wget',
+  'dig',
+  'nslookup',
+  'ping',
+  'traceroute',
+  'tree',
+  'less',
+  'more',
+  'grep',
+  'awk',
+  'sed',
+  'sort',
+  'uniq',
+  'cut',
+  'jq',
+  'yq',
+])
 
 /** Commands that are destructive / dangerous. */
 const DANGEROUS_PATTERNS = [
@@ -42,7 +92,7 @@ const DANGEROUS_PATTERNS = [
   'rm -rf ~',
   'rm -rf *',
   'mkfs',
-  ':(){:|:&};:',         // fork bomb
+  ':(){:|:&};:', // fork bomb
   'dd if=',
   '> /dev/sda',
   'chmod -R 777 /',
@@ -53,7 +103,7 @@ const DANGEROUS_PATTERNS = [
   'systemctl stop',
   'kill -9 1',
   'pkill -9',
-];
+]
 
 /** Git commands that warrant a warning. */
 const GIT_WARN_PATTERNS = [
@@ -64,36 +114,36 @@ const GIT_WARN_PATTERNS = [
   'git checkout -- .',
   'git stash drop',
   'git branch -D',
-];
+]
 
 function categorizeCommand(command: string): CommandCategory {
-  const trimmed = command.trim();
-  const firstWord = trimmed.split(/\s+/)[0];
+  const trimmed = command.trim()
+  const firstWord = trimmed.split(/\s+/)[0]
 
   // Check dangerous first
   for (const pattern of DANGEROUS_PATTERNS) {
-    if (trimmed.includes(pattern)) return 'dangerous';
+    if (trimmed.includes(pattern)) return 'dangerous'
   }
 
   // Check read-only
-  if (READ_COMMANDS.has(firstWord)) return 'read';
+  if (READ_COMMANDS.has(firstWord)) return 'read'
 
   // Check multi-word read commands (like 'git status')
   for (const readCmd of READ_COMMANDS) {
-    if (readCmd.includes(' ') && trimmed.startsWith(readCmd)) return 'read';
+    if (readCmd.includes(' ') && trimmed.startsWith(readCmd)) return 'read'
   }
 
   // Everything else is 'write'
-  return 'write';
+  return 'write'
 }
 
 function checkGitWarnings(command: string): string | null {
   for (const pattern of GIT_WARN_PATTERNS) {
     if (command.includes(pattern)) {
-      return `⚠️ Git warning: "${pattern}" detected. This can cause data loss.`;
+      return `⚠️ Git warning: "${pattern}" detected. This can cause data loss.`
     }
   }
-  return null;
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -102,19 +152,19 @@ function checkGitWarnings(command: string): string | null {
 
 export interface ShellToolConfig {
   /** Working directory for commands (default: process.cwd()) */
-  cwd?: string;
+  cwd?: string
   /** Command timeout in ms (default: 60000) */
-  timeoutMs?: number;
+  timeoutMs?: number
   /** Max output size in bytes (default: 100KB) */
-  maxOutput?: number;
+  maxOutput?: number
   /** Blocked commands (security) */
-  blocked?: string[];
+  blocked?: string[]
   /** Approval levels per category */
   approval?: {
-    read?: ApprovalLevel;
-    write?: ApprovalLevel;
-    dangerous?: ApprovalLevel;
-  };
+    read?: ApprovalLevel
+    write?: ApprovalLevel
+    dangerous?: ApprovalLevel
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -122,10 +172,10 @@ export interface ShellToolConfig {
 // ---------------------------------------------------------------------------
 
 export class ShellTool implements Tool {
-  name = 'shell';
+  name = 'shell'
   description =
     'Execute a shell command and return the output. Use for: running scripts, ' +
-    'checking system status, git operations, file operations.';
+    'checking system status, git operations, file operations.'
   parameters = {
     type: 'object',
     properties: {
@@ -133,10 +183,10 @@ export class ShellTool implements Tool {
       cwd: { type: 'string', description: 'Working directory (optional)' },
     },
     required: ['command'],
-  };
+  }
 
-  private config: Required<ShellToolConfig>;
-  private sessionCwd: string;
+  private config: Required<ShellToolConfig>
+  private sessionCwd: string
 
   constructor(config?: ShellToolConfig) {
     this.config = {
@@ -150,74 +200,78 @@ export class ShellTool implements Tool {
         dangerous: config?.approval?.dangerous ?? 'block',
         ...config?.approval,
       },
-    };
-    this.sessionCwd = this.config.cwd;
+    }
+    this.sessionCwd = this.config.cwd
   }
 
-  async execute(args: Record<string, unknown>, signal?: AbortSignal, _ctx?: ToolContext): Promise<string> {
-    const command = String(args.command ?? '');
-    const cwdOverride = args.cwd as string | undefined;
+  async execute(
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+    _ctx?: ToolContext,
+  ): Promise<string> {
+    const command = String(args.command ?? '')
+    const cwdOverride = args.cwd as string | undefined
 
     if (!command.trim()) {
-      return 'Error: No command provided';
+      return 'Error: No command provided'
     }
 
     // Security: blocked patterns
     for (const blocked of this.config.blocked) {
       if (command.includes(blocked)) {
-        return `Error: Command blocked (matches "${blocked}")`;
+        return `Error: Command blocked (matches "${blocked}")`
       }
     }
 
     // Command categorization
-    const category = categorizeCommand(command);
-    const approval = this.config.approval[category];
+    const category = categorizeCommand(command)
+    const approval = this.config.approval[category]
 
     if (approval === 'block') {
-      return `Error: Command blocked (category: ${category}). This command requires elevated approval.`;
+      return `Error: Command blocked (category: ${category}). This command requires elevated approval.`
     }
 
     // Determine working directory
-    const cwd = cwdOverride ?? this.sessionCwd;
+    const cwd = cwdOverride ?? this.sessionCwd
 
     // Build output parts
-    const warnings: string[] = [];
+    const warnings: string[] = []
 
     if (approval === 'warn') {
-      warnings.push(`⚠️ Warning: This is a ${category} command. Proceeding anyway.`);
+      warnings.push(`⚠️ Warning: This is a ${category} command. Proceeding anyway.`)
     }
 
     // Git safety
-    const gitWarning = checkGitWarnings(command);
+    const gitWarning = checkGitWarnings(command)
     if (gitWarning) {
-      warnings.push(gitWarning);
+      warnings.push(gitWarning)
     }
 
     // Handle `cd` — update session cwd
-    const cdMatch = command.match(/^cd\s+(.+)$/);
+    const cdMatch = command.match(/^cd\s+(.+)$/)
     if (cdMatch) {
-      const targetDir = cdMatch[1].trim().replace(/^["']|["']$/g, '');
+      const targetDir = cdMatch[1].trim().replace(/^["']|["']$/g, '')
       // Resolve relative to current session cwd
-      const { resolve } = await import('node:path');
-      const newCwd = resolve(cwd, targetDir);
+      const { resolve } = await import('node:path')
+      const newCwd = resolve(cwd, targetDir)
 
       // Verify it exists
       try {
-        const { statSync } = await import('node:fs');
-        const stat = statSync(newCwd);
+        const { statSync } = await import('node:fs')
+        const stat = statSync(newCwd)
         if (!stat.isDirectory()) {
-          return `Error: ${newCwd} is not a directory`;
+          return `Error: ${newCwd} is not a directory`
         }
-        this.sessionCwd = newCwd;
-        return `Changed directory to ${newCwd}`;
+        this.sessionCwd = newCwd
+        return `Changed directory to ${newCwd}`
       } catch {
-        return `Error: Directory not found: ${newCwd}`;
+        return `Error: Directory not found: ${newCwd}`
       }
     }
 
     // Execute
     return new Promise<string>((resolve) => {
-      let child: ChildProcess;
+      let child: ChildProcess
 
       try {
         child = exec(command, {
@@ -225,68 +279,73 @@ export class ShellTool implements Tool {
           timeout: this.config.timeoutMs,
           maxBuffer: this.config.maxOutput,
           env: { ...process.env, TERM: 'dumb' },
-        });
+        })
       } catch (err: any) {
-        resolve(`Error: ${err.message}`);
-        return;
+        resolve(`Error: ${err.message}`)
+        return
       }
 
-      let stdout = '';
-      let stderr = '';
+      let stdout = ''
+      let stderr = ''
 
-      child.stdout?.on('data', (data) => { stdout += data; });
-      child.stderr?.on('data', (data) => { stderr += data; });
+      child.stdout?.on('data', (data) => {
+        stdout += data
+      })
+      child.stderr?.on('data', (data) => {
+        stderr += data
+      })
 
       // AbortSignal support
       if (signal) {
         const onAbort = () => {
-          child.kill('SIGTERM');
-          setTimeout(() => child.kill('SIGKILL'), 2000);
-        };
-        signal.addEventListener('abort', onAbort, { once: true });
-        child.on('exit', () => signal.removeEventListener('abort', onAbort));
+          child.kill('SIGTERM')
+          setTimeout(() => child.kill('SIGKILL'), 2000)
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        child.on('exit', () => signal.removeEventListener('abort', onAbort))
       }
 
       child.on('error', (err) => {
-        resolve(formatOutput(warnings, `Error: ${err.message}`));
-      });
+        resolve(formatOutput(warnings, `Error: ${err.message}`))
+      })
 
       child.on('exit', (code) => {
-        const output = (stdout + (stderr ? `\n[stderr] ${stderr}` : '')).trim();
+        const output = (stdout + (stderr ? `\n[stderr] ${stderr}` : '')).trim()
 
         if (signal?.aborted) {
-          resolve('Command aborted');
-          return;
+          resolve('Command aborted')
+          return
         }
 
         if (output.length > this.config.maxOutput) {
           resolve(
             formatOutput(
               warnings,
-              output.slice(0, this.config.maxOutput) + `\n[truncated at ${this.config.maxOutput} bytes]`,
+              output.slice(0, this.config.maxOutput) +
+                `\n[truncated at ${this.config.maxOutput} bytes]`,
             ),
-          );
-          return;
+          )
+          return
         }
 
         if (code !== 0 && code !== null) {
-          resolve(formatOutput(warnings, `${output}\n[exit code: ${code}]`));
-          return;
+          resolve(formatOutput(warnings, `${output}\n[exit code: ${code}]`))
+          return
         }
 
-        resolve(formatOutput(warnings, output || '(no output)'));
-      });
-    });
+        resolve(formatOutput(warnings, output || '(no output)'))
+      })
+    })
   }
 
   /** Get the current session working directory. */
   getSessionCwd(): string {
-    return this.sessionCwd;
+    return this.sessionCwd
   }
 
   /** Reset session cwd to the original config cwd. */
   resetSessionCwd(): void {
-    this.sessionCwd = this.config.cwd;
+    this.sessionCwd = this.config.cwd
   }
 }
 
@@ -295,13 +354,13 @@ export class ShellTool implements Tool {
 // ---------------------------------------------------------------------------
 
 function formatOutput(warnings: string[], output: string): string {
-  if (warnings.length === 0) return output;
-  return warnings.join('\n') + '\n\n' + output;
+  if (warnings.length === 0) return output
+  return warnings.join('\n') + '\n\n' + output
 }
 
 // ---------------------------------------------------------------------------
 // Exports for testing
 // ---------------------------------------------------------------------------
 
-export { categorizeCommand, checkGitWarnings };
-export type { CommandCategory };
+export { categorizeCommand, checkGitWarnings }
+export type { CommandCategory }

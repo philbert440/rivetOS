@@ -13,77 +13,77 @@
  *   rivetos logs --json                Output raw JSON (if structured logging enabled)
  */
 
-import { execSync, spawn } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process'
 
-const SERVICE_NAME = 'rivetos';
+const SERVICE_NAME = 'rivetos'
 
 interface LogOptions {
-  follow: boolean;
-  lines: number;
-  since: string | null;
-  grep: string | null;
-  json: boolean;
+  follow: boolean
+  lines: number
+  since: string | null
+  grep: string | null
+  json: boolean
 }
 
 function parseArgs(): LogOptions {
-  const args = process.argv.slice(3);
+  const args = process.argv.slice(3)
   const opts: LogOptions = {
     follow: false,
     lines: 50,
     since: null,
     grep: null,
     json: false,
-  };
+  }
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case '-f':
       case '--follow':
-        opts.follow = true;
-        break;
+        opts.follow = true
+        break
       case '-n':
       case '--lines':
-        opts.lines = parseInt(args[++i], 10) || 50;
-        break;
+        opts.lines = parseInt(args[++i], 10) || 50
+        break
       case '--since':
-        opts.since = args[++i] ?? null;
-        break;
+        opts.since = args[++i] ?? null
+        break
       case '--grep':
       case '-g':
-        opts.grep = args[++i] ?? null;
-        break;
+        opts.grep = args[++i] ?? null
+        break
       case '--json':
-        opts.json = true;
-        break;
+        opts.json = true
+        break
       case '--help':
       case '-h':
-        showHelp();
-        process.exit(0);
-        break;
+        showHelp()
+        process.exit(0)
+        break
       default:
-        console.error(`Unknown option: ${args[i]}`);
-        showHelp();
-        process.exit(1);
+        console.error(`Unknown option: ${args[i]}`)
+        showHelp()
+        process.exit(1)
     }
   }
 
-  return opts;
+  return opts
 }
 
 function isRoot(): boolean {
-  return process.getuid?.() === 0;
+  return process.getuid?.() === 0
 }
 
 function serviceExists(): boolean {
-  const userFlag = isRoot() ? '' : '--user';
+  const userFlag = isRoot() ? '' : '--user'
   try {
     const output = execSync(`systemctl ${userFlag} is-enabled ${SERVICE_NAME} 2>/dev/null`, {
       encoding: 'utf-8',
       timeout: 5000,
-    }).trim();
-    return output === 'enabled' || output === 'disabled';
+    }).trim()
+    return output === 'enabled' || output === 'disabled'
   } catch {
-    return false;
+    return false
   }
 }
 
@@ -105,72 +105,74 @@ Examples:
   rivetos logs --since "30 min ago"   Entries from last 30 minutes
   rivetos logs --grep "error"         Only lines matching "error"
   rivetos logs -f --grep "Boot"       Follow, filtering for boot messages
-`);
+`)
 }
 
 export default async function logs(): Promise<void> {
-  const opts = parseArgs();
+  const opts = parseArgs()
 
   if (!serviceExists()) {
-    console.error('❌ RivetOS service not found in systemd.');
-    console.error('');
-    console.error('If running interactively, logs go to stdout.');
-    console.error('To set up the service: rivetos service init');
-    process.exit(1);
+    console.error('❌ RivetOS service not found in systemd.')
+    console.error('')
+    console.error('If running interactively, logs go to stdout.')
+    console.error('To set up the service: rivetos service init')
+    process.exit(1)
   }
 
   // Build journalctl command
-  const userFlag = isRoot() ? '' : '--user';
-  const jctlArgs: string[] = ['journalctl', userFlag, '-u', SERVICE_NAME, '--no-pager'].filter(Boolean);
+  const userFlag = isRoot() ? '' : '--user'
+  const jctlArgs: string[] = ['journalctl', userFlag, '-u', SERVICE_NAME, '--no-pager'].filter(
+    Boolean,
+  )
 
   if (opts.follow) {
-    jctlArgs.push('-f');
+    jctlArgs.push('-f')
   } else {
-    jctlArgs.push('-n', String(opts.lines));
+    jctlArgs.push('-n', String(opts.lines))
   }
 
   if (opts.since) {
-    jctlArgs.push('--since', opts.since);
+    jctlArgs.push('--since', opts.since)
   }
 
   if (opts.grep) {
-    jctlArgs.push('--grep', opts.grep);
+    jctlArgs.push('--grep', opts.grep)
   }
 
   if (opts.json) {
-    jctlArgs.push('-o', 'json');
+    jctlArgs.push('-o', 'json')
   } else {
-    jctlArgs.push('-o', 'short-iso');
+    jctlArgs.push('-o', 'short-iso')
   }
 
   // Use spawn for --follow (streaming), execSync for one-shot
   if (opts.follow) {
     const child = spawn(jctlArgs[0], jctlArgs.slice(1), {
       stdio: 'inherit',
-    });
+    })
 
     // Forward SIGINT to child for clean exit
     process.on('SIGINT', () => {
-      child.kill('SIGINT');
-    });
+      child.kill('SIGINT')
+    })
 
     child.on('exit', (code) => {
-      process.exit(code ?? 0);
-    });
+      process.exit(code ?? 0)
+    })
   } else {
     try {
       const output = execSync(jctlArgs.join(' '), {
         encoding: 'utf-8',
         timeout: 10000,
         maxBuffer: 1024 * 1024 * 5, // 5MB
-      });
-      process.stdout.write(output);
+      })
+      process.stdout.write(output)
     } catch (err: any) {
       if (err.stdout) {
-        process.stdout.write(err.stdout);
+        process.stdout.write(err.stdout)
       } else {
-        console.error(`Failed to read logs: ${err.message}`);
-        process.exit(1);
+        console.error(`Failed to read logs: ${err.message}`)
+        process.exit(1)
       }
     }
   }

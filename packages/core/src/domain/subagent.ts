@@ -12,32 +12,32 @@
  * plus the internal Router and WorkspaceLoader.
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto'
 import type {
   SubagentSession,
   SubagentSpawnRequest,
   SubagentManager,
   Tool,
   Message,
-} from '@rivetos/types';
-import { getTextContent } from '@rivetos/types';
-import { AgentLoop } from './loop.js';
-import type { Router } from './router.js';
-import type { WorkspaceLoader } from './workspace.js';
-import { logger } from '../logger.js';
+} from '@rivetos/types'
+import { getTextContent } from '@rivetos/types'
+import { AgentLoop } from './loop.js'
+import type { Router } from './router.js'
+import type { WorkspaceLoader } from './workspace.js'
+import { logger } from '../logger.js'
 
-const log = logger('SubagentManager');
+const log = logger('SubagentManager')
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 export interface SubagentManagerConfig {
-  router: Router;
-  workspace: WorkspaceLoader;
-  tools: Tool[];
+  router: Router
+  workspace: WorkspaceLoader
+  tools: Tool[]
   /** Hook pipeline for delegation events */
-  hooks?: import('@rivetos/types').HookPipeline;
+  hooks?: import('@rivetos/types').HookPipeline
 }
 
 // ---------------------------------------------------------------------------
@@ -46,56 +46,54 @@ export interface SubagentManagerConfig {
 
 /** Internal session state — extends the public SubagentSession with private fields */
 interface InternalSession extends SubagentSession {
-  abort: AbortController;
+  abort: AbortController
   /** Promise that resolves when a 'run' mode session completes */
-  completion?: Promise<string>;
+  completion?: Promise<string>
 }
 
 export class SubagentManagerImpl implements SubagentManager {
-  private config: SubagentManagerConfig;
-  private sessions: Map<string, InternalSession> = new Map();
+  private config: SubagentManagerConfig
+  private sessions: Map<string, InternalSession> = new Map()
 
   constructor(config: SubagentManagerConfig) {
-    this.config = config;
+    this.config = config
   }
 
   async spawn(request: SubagentSpawnRequest): Promise<SubagentSession> {
-    const { router, workspace, tools } = this.config;
+    const { router, workspace, tools } = this.config
 
     // Resolve the child agent and its provider
-    const agents = router.getAgents();
-    const agent = agents.find((a) => a.id === request.agent);
+    const agents = router.getAgents()
+    const agent = agents.find((a) => a.id === request.agent)
     if (!agent) {
       throw new Error(
         `Unknown agent: "${request.agent}". Available: ${agents.map((a) => a.id).join(', ')}`,
-      );
+      )
     }
 
-    const providers = router.getProviders();
-    const provider = providers.find((p) => p.id === agent.provider);
+    const providers = router.getProviders()
+    const provider = providers.find((p) => p.id === agent.provider)
     if (!provider) {
-      throw new Error(
-        `Provider "${agent.provider}" not available for agent "${request.agent}"`,
-      );
+      throw new Error(`Provider "${agent.provider}" not available for agent "${request.agent}"`)
     }
 
     // Build system prompt for the child
-    const systemPrompt = await workspace.buildSystemPrompt(agent.id);
+    const systemPrompt = await workspace.buildSystemPrompt(agent.id)
     const enrichedPrompt =
       systemPrompt +
       '\n\n## Sub-agent Context\n' +
       `You are running as a sub-agent. Mode: ${request.mode}.\n` +
-      `Complete your assigned task thoroughly.`;
+      `Complete your assigned task thoroughly.`
 
-    const sessionId = randomUUID();
-    const abort = new AbortController();
+    const sessionId = randomUUID()
+    const abort = new AbortController()
 
     // Apply timeout if specified
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
     if (request.timeoutMs) {
       timeoutHandle = setTimeout(() => {
-        abort.abort(`Sub-agent timeout after ${request.timeoutMs}ms`);
-      }, request.timeoutMs);
+        abort.abort(`Sub-agent timeout after ${request.timeoutMs}ms`)
+      }, request.timeoutMs)
     }
 
     const session: InternalSession = {
@@ -107,118 +105,138 @@ export class SubagentManagerImpl implements SubagentManager {
       history: [],
       createdAt: Date.now(),
       abort,
-    };
+    }
 
-    this.sessions.set(sessionId, session);
+    this.sessions.set(sessionId, session)
 
     if (request.mode === 'run') {
       // One-shot: run the task, wait for completion, return result
-      const completion = this.runOneShot(session, enrichedPrompt, provider, tools, request.task, abort, timeoutHandle);
-      session.completion = completion;
+      const completion = this.runOneShot(
+        session,
+        enrichedPrompt,
+        provider,
+        tools,
+        request.task,
+        abort,
+        timeoutHandle,
+      )
+      session.completion = completion
 
       try {
-        const response = await completion;
-        session.status = 'completed';
+        const response = await completion
+        session.status = 'completed'
         session.history.push(
           { role: 'user', content: request.task },
           { role: 'assistant', content: response },
-        );
-        return this.toPublicSession(session);
+        )
+        return this.toPublicSession(session)
       } catch (err: any) {
-        session.status = 'failed';
-        log.error(`Sub-agent ${sessionId} failed: ${err.message}`);
-        throw err;
+        session.status = 'failed'
+        log.error(`Sub-agent ${sessionId} failed: ${err.message}`)
+        throw err
       }
     } else {
       // Session mode: run initial task, keep session alive for follow-ups
       try {
-        const response = await this.runTurn(session, enrichedPrompt, provider, tools, request.task, abort.signal);
+        const response = await this.runTurn(
+          session,
+          enrichedPrompt,
+          provider,
+          tools,
+          request.task,
+          abort.signal,
+        )
         session.history.push(
           { role: 'user', content: request.task },
           { role: 'assistant', content: response },
-        );
+        )
         // Keep session alive — don't mark completed
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-        return this.toPublicSession(session);
+        if (timeoutHandle) clearTimeout(timeoutHandle)
+        return this.toPublicSession(session)
       } catch (err: any) {
-        session.status = 'failed';
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-        log.error(`Sub-agent ${sessionId} failed on initial turn: ${err.message}`);
-        throw err;
+        session.status = 'failed'
+        if (timeoutHandle) clearTimeout(timeoutHandle)
+        log.error(`Sub-agent ${sessionId} failed on initial turn: ${err.message}`)
+        throw err
       }
     }
   }
 
   async send(sessionId: string, message: string): Promise<string> {
-    const session = this.sessions.get(sessionId);
+    const session = this.sessions.get(sessionId)
     if (!session) {
-      throw new Error(`Sub-agent session not found: ${sessionId}`);
+      throw new Error(`Sub-agent session not found: ${sessionId}`)
     }
     if (session.status !== 'running' && session.status !== 'yielded') {
-      throw new Error(
-        `Sub-agent session ${sessionId} is ${session.status} — cannot send messages`,
-      );
+      throw new Error(`Sub-agent session ${sessionId} is ${session.status} — cannot send messages`)
     }
 
-    const { router, workspace, tools } = this.config;
+    const { router, workspace, tools } = this.config
 
-    const agent = router.getAgents().find((a) => a.id === session.childAgent);
+    const agent = router.getAgents().find((a) => a.id === session.childAgent)
     if (!agent) {
-      throw new Error(`Agent "${session.childAgent}" no longer registered`);
+      throw new Error(`Agent "${session.childAgent}" no longer registered`)
     }
 
-    const provider = router.getProviders().find((p) => p.id === agent.provider);
+    const provider = router.getProviders().find((p) => p.id === agent.provider)
     if (!provider) {
-      throw new Error(`Provider "${agent.provider}" not available`);
+      throw new Error(`Provider "${agent.provider}" not available`)
     }
 
-    const systemPrompt = await workspace.buildSystemPrompt(agent.id);
+    const systemPrompt = await workspace.buildSystemPrompt(agent.id)
     const enrichedPrompt =
       systemPrompt +
       '\n\n## Sub-agent Context\n' +
-      'You are running as a persistent sub-agent session. Continue the conversation.';
+      'You are running as a persistent sub-agent session. Continue the conversation.'
 
-    session.status = 'running';
+    session.status = 'running'
 
     try {
-      const response = await this.runTurn(session, enrichedPrompt, provider, tools, message, session.abort.signal);
+      const response = await this.runTurn(
+        session,
+        enrichedPrompt,
+        provider,
+        tools,
+        message,
+        session.abort.signal,
+      )
       session.history.push(
         { role: 'user', content: message },
         { role: 'assistant', content: response },
-      );
-      return response;
+      )
+      return response
     } catch (err: any) {
-      session.status = 'failed';
-      throw err;
+      session.status = 'failed'
+      throw err
     }
   }
 
   yield(sessionId: string, message?: string): void {
-    const session = this.sessions.get(sessionId);
+    const session = this.sessions.get(sessionId)
     if (!session) {
-      throw new Error(`Sub-agent session not found: ${sessionId}`);
+      throw new Error(`Sub-agent session not found: ${sessionId}`)
     }
-    session.status = 'yielded';
+    session.status = 'yielded'
     if (message) {
-      log.info(`Sub-agent ${sessionId} yielded with message: ${message.slice(0, 100)}`);
+      log.info(`Sub-agent ${sessionId} yielded with message: ${message.slice(0, 100)}`)
     }
   }
 
   list(): SubagentSession[] {
     return [...this.sessions.values()]
       .filter((s) => s.status === 'running' || s.status === 'yielded')
-      .map((s) => this.toPublicSession(s));
+      .map((s) => this.toPublicSession(s))
   }
 
   kill(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
+    const session = this.sessions.get(sessionId)
     if (!session) {
-      throw new Error(`Sub-agent session not found: ${sessionId}`);
+      throw new Error(`Sub-agent session not found: ${sessionId}`)
     }
-    session.abort.abort('Killed by parent');
-    session.status = 'failed';
-    this.sessions.delete(sessionId);
-    log.info(`Sub-agent ${sessionId} killed`);
+    session.abort.abort('Killed by parent')
+    session.status = 'failed'
+    this.sessions.delete(sessionId)
+    log.info(`Sub-agent ${sessionId} killed`)
   }
 
   // -----------------------------------------------------------------------
@@ -235,11 +253,18 @@ export class SubagentManagerImpl implements SubagentManager {
     timeoutHandle?: ReturnType<typeof setTimeout>,
   ): Promise<string> {
     try {
-      const response = await this.runTurn(session, systemPrompt, provider, tools, task, abort.signal);
-      return response;
+      const response = await this.runTurn(
+        session,
+        systemPrompt,
+        provider,
+        tools,
+        task,
+        abort.signal,
+      )
+      return response
     } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-      this.sessions.delete(session.id);
+      if (timeoutHandle) clearTimeout(timeoutHandle)
+      this.sessions.delete(session.id)
     }
   }
 
@@ -256,15 +281,15 @@ export class SubagentManagerImpl implements SubagentManager {
       provider,
       tools,
       agentId: session.childAgent,
-    });
+    })
 
-    const result = await loop.run(userMessage, session.history, signal);
+    const result = await loop.run(userMessage, session.history, signal)
 
     if (result.aborted) {
-      throw new Error('Sub-agent was aborted');
+      throw new Error('Sub-agent was aborted')
     }
 
-    return result.response;
+    return result.response
   }
 
   private toPublicSession(session: InternalSession): SubagentSession {
@@ -276,7 +301,7 @@ export class SubagentManagerImpl implements SubagentManager {
       status: session.status,
       history: [...session.history],
       createdAt: session.createdAt,
-    };
+    }
   }
 }
 
@@ -305,7 +330,8 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
         mode: {
           type: 'string',
           enum: ['run', 'session'],
-          description: '"run" = one-shot (returns result), "session" = persistent (stays alive for follow-ups)',
+          description:
+            '"run" = one-shot (returns result), "session" = persistent (stays alive for follow-ups)',
         },
         timeout_ms: {
           type: 'number',
@@ -321,27 +347,27 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
           task: args.task as string,
           mode: args.mode as 'run' | 'session',
           timeoutMs: args.timeout_ms as number | undefined,
-        });
+        })
 
         if (args.mode === 'run') {
           // One-shot: return the last assistant message
-          const lastMsg = session.history.find((m) => m.role === 'assistant');
-          return lastMsg ? getTextContent(lastMsg.content) : '[No response from sub-agent]';
+          const lastMsg = session.history.find((m) => m.role === 'assistant')
+          return lastMsg ? getTextContent(lastMsg.content) : '[No response from sub-agent]'
         } else {
           // Session mode: return session ID + initial response
-          const lastMsg = session.history.find((m) => m.role === 'assistant');
+          const lastMsg = session.history.find((m) => m.role === 'assistant')
           return JSON.stringify({
             sessionId: session.id,
             agent: session.childAgent,
             status: session.status,
             response: lastMsg ? getTextContent(lastMsg.content) : '[No initial response]',
-          });
+          })
         }
       } catch (err: any) {
-        return `Error spawning sub-agent: ${err.message}`;
+        return `Error spawning sub-agent: ${err.message}`
       }
     },
-  };
+  }
 
   const sendTool: Tool = {
     name: 'subagent_send',
@@ -364,16 +390,13 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
     },
     execute: async (args) => {
       try {
-        const response = await manager.send(
-          args.session_id as string,
-          args.message as string,
-        );
-        return response;
+        const response = await manager.send(args.session_id as string, args.message as string)
+        return response
       } catch (err: any) {
-        return `Error: ${err.message}`;
+        return `Error: ${err.message}`
       }
     },
-  };
+  }
 
   const listTool: Tool = {
     name: 'subagent_list',
@@ -383,9 +406,9 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
       properties: {},
     },
     execute: async () => {
-      const sessions = manager.list();
+      const sessions = manager.list()
       if (sessions.length === 0) {
-        return 'No active sub-agent sessions.';
+        return 'No active sub-agent sessions.'
       }
       return JSON.stringify(
         sessions.map((s) => ({
@@ -397,9 +420,9 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
         })),
         null,
         2,
-      );
+      )
     },
-  };
+  }
 
   const killTool: Tool = {
     name: 'subagent_kill',
@@ -416,13 +439,13 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
     },
     execute: async (args) => {
       try {
-        manager.kill(args.session_id as string);
-        return `Sub-agent session ${args.session_id} killed.`;
+        manager.kill(args.session_id as string)
+        return `Sub-agent session ${args.session_id} killed.`
       } catch (err: any) {
-        return `Error: ${err.message}`;
+        return `Error: ${err.message}`
       }
     },
-  };
+  }
 
-  return [spawnTool, sendTool, listTool, killTool];
+  return [spawnTool, sendTool, listTool, killTool]
 }

@@ -17,17 +17,17 @@ import type {
   LLMChunk,
   LLMResponse,
   ThinkingLevel,
-} from '@rivetos/types';
+} from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 export interface GoogleProviderConfig {
-  apiKey: string;
-  model?: string;          // Default: 'gemini-2.5-pro'
-  maxTokens?: number;      // Default: 8192
-  baseUrl?: string;        // Default: 'https://generativelanguage.googleapis.com/v1beta'
+  apiKey: string
+  model?: string // Default: 'gemini-2.5-pro'
+  maxTokens?: number // Default: 8192
+  baseUrl?: string // Default: 'https://generativelanguage.googleapis.com/v1beta'
 }
 
 // ---------------------------------------------------------------------------
@@ -39,35 +39,38 @@ const THINKING_BUDGETS: Record<ThinkingLevel, number | null> = {
   low: 1024,
   medium: 8192,
   high: 32768,
-};
+}
 
 // ---------------------------------------------------------------------------
 // Message conversion — Gemini uses a different format
 // ---------------------------------------------------------------------------
 
 interface GeminiContent {
-  role: 'user' | 'model';
-  parts: GeminiPart[];
+  role: 'user' | 'model'
+  parts: GeminiPart[]
 }
 
 type GeminiPart =
   | { text: string; thoughtSignature?: string }
   | { inlineData: { mimeType: string; data: string } }
   | { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string }
-  | { functionResponse: { name: string; response: { content: string } } };
+  | { functionResponse: { name: string; response: { content: string } } }
 
 /** Extract text from string | ContentPart[] */
 function extractText(content: string | ContentPart[]): string {
-  if (typeof content === 'string') return content;
-  return content.filter((p) => p.type === 'text').map((p) => (p as any).text).join('');
+  if (typeof content === 'string') return content
+  return content
+    .filter((p) => p.type === 'text')
+    .map((p) => (p as any).text)
+    .join('')
 }
 
 /** Convert ContentPart[] to Gemini parts */
 function convertContentPartsToGemini(parts: ContentPart[]): GeminiPart[] {
-  const geminiParts: GeminiPart[] = [];
+  const geminiParts: GeminiPart[] = []
   for (const part of parts) {
     if (part.type === 'text') {
-      geminiParts.push({ text: part.text });
+      geminiParts.push({ text: part.text })
     } else if (part.type === 'image') {
       if (part.data) {
         geminiParts.push({
@@ -75,34 +78,39 @@ function convertContentPartsToGemini(parts: ContentPart[]): GeminiPart[] {
             mimeType: part.mimeType ?? 'image/jpeg',
             data: part.data,
           },
-        });
+        })
       }
       // Note: Gemini doesn't support URL-based images directly — they must be
       // uploaded via File API or sent as inline data. URL images are skipped here;
       // the runtime pre-downloads and base64-encodes them.
     }
   }
-  return geminiParts;
+  return geminiParts
 }
 
-function convertMessages(messages: Message[]): { systemInstruction?: string; contents: GeminiContent[] } {
-  let systemInstruction: string | undefined;
-  const contents: GeminiContent[] = [];
+function convertMessages(messages: Message[]): {
+  systemInstruction?: string
+  contents: GeminiContent[]
+} {
+  let systemInstruction: string | undefined
+  const contents: GeminiContent[] = []
 
   for (const msg of messages) {
     if (msg.role === 'system') {
-      const text = extractText(msg.content);
-      systemInstruction = (systemInstruction ?? '') + (systemInstruction ? '\n\n' : '') + text;
-      continue;
+      const text = extractText(msg.content)
+      systemInstruction = (systemInstruction ?? '') + (systemInstruction ? '\n\n' : '') + text
+      continue
     }
 
     if (msg.role === 'tool') {
-      const parts: GeminiPart[] = [{
-        functionResponse: {
-          name: msg.toolCallId ?? 'unknown',
-          response: { content: extractText(msg.content) },
+      const parts: GeminiPart[] = [
+        {
+          functionResponse: {
+            name: msg.toolCallId ?? 'unknown',
+            response: { content: extractText(msg.content) },
+          },
         },
-      }];
+      ]
       // If tool result includes images, add as inline data parts
       if (typeof msg.content !== 'string' && Array.isArray(msg.content)) {
         for (const part of msg.content) {
@@ -112,44 +120,44 @@ function convertMessages(messages: Message[]): { systemInstruction?: string; con
                 mimeType: part.mimeType ?? 'image/jpeg',
                 data: part.data,
               },
-            });
+            })
           }
         }
       }
-      contents.push({ role: 'user', parts });
-      continue;
+      contents.push({ role: 'user', parts })
+      continue
     }
 
     if (msg.role === 'assistant') {
-      const parts: GeminiPart[] = [];
-      const textContent = extractText(msg.content);
+      const parts: GeminiPart[] = []
+      const textContent = extractText(msg.content)
       if (textContent) {
-        parts.push({ text: textContent });
+        parts.push({ text: textContent })
       }
       if (msg.toolCalls?.length) {
         for (const tc of msg.toolCalls) {
-          const fcPart: GeminiPart = { functionCall: { name: tc.name, args: tc.arguments } };
+          const fcPart: GeminiPart = { functionCall: { name: tc.name, args: tc.arguments } }
           if (tc.thoughtSignature) {
-            (fcPart as any).thoughtSignature = tc.thoughtSignature;
+            ;(fcPart as any).thoughtSignature = tc.thoughtSignature
           }
-          parts.push(fcPart);
+          parts.push(fcPart)
         }
       }
       if (parts.length > 0) {
-        contents.push({ role: 'model', parts });
+        contents.push({ role: 'model', parts })
       }
-      continue;
+      continue
     }
 
     // User message — handle multimodal content
     if (typeof msg.content !== 'string' && Array.isArray(msg.content)) {
-      contents.push({ role: 'user', parts: convertContentPartsToGemini(msg.content) });
+      contents.push({ role: 'user', parts: convertContentPartsToGemini(msg.content) })
     } else {
-      contents.push({ role: 'user', parts: [{ text: msg.content as string }] });
+      contents.push({ role: 'user', parts: [{ text: msg.content }] })
     }
   }
 
-  return { systemInstruction, contents };
+  return { systemInstruction, contents }
 }
 
 function convertTools(tools: ToolDefinition[]): any {
@@ -159,7 +167,7 @@ function convertTools(tools: ToolDefinition[]): any {
       description: t.description,
       parameters: t.parameters,
     })),
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,18 +175,18 @@ function convertTools(tools: ToolDefinition[]): any {
 // ---------------------------------------------------------------------------
 
 export class GoogleProvider implements Provider {
-  id = 'google';
-  name = 'Google Gemini';
-  private apiKey: string;
-  private model: string;
-  private maxTokens: number;
-  private baseUrl: string;
+  id = 'google'
+  name = 'Google Gemini'
+  private apiKey: string
+  private model: string
+  private maxTokens: number
+  private baseUrl: string
 
   constructor(config: GoogleProviderConfig) {
-    this.apiKey = config.apiKey;
-    this.model = config.model ?? 'gemini-2.5-pro';
-    this.maxTokens = config.maxTokens ?? 8192;
-    this.baseUrl = config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta';
+    this.apiKey = config.apiKey
+    this.model = config.model ?? 'gemini-2.5-pro'
+    this.maxTokens = config.maxTokens ?? 8192
+    this.baseUrl = config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta'
   }
 
   // -----------------------------------------------------------------------
@@ -186,92 +194,92 @@ export class GoogleProvider implements Provider {
   // -----------------------------------------------------------------------
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
-    const { systemInstruction, contents } = convertMessages(messages);
+    const { systemInstruction, contents } = convertMessages(messages)
 
     const body: any = {
       contents,
       generationConfig: {
         maxOutputTokens: this.maxTokens,
       },
-    };
+    }
 
     if (systemInstruction) {
-      body.systemInstruction = { parts: [{ text: systemInstruction }] };
+      body.systemInstruction = { parts: [{ text: systemInstruction }] }
     }
 
     if (options?.tools?.length) {
-      body.tools = [convertTools(options.tools)];
+      body.tools = [convertTools(options.tools)]
     }
 
     // Thinking config
-    const thinking = options?.thinking ?? 'off';
-    const budget = THINKING_BUDGETS[thinking];
+    const thinking = options?.thinking ?? 'off'
+    const budget = THINKING_BUDGETS[thinking]
     if (budget !== null && budget > 0) {
       body.generationConfig.thinkingConfig = {
         thinkingBudget: budget,
-      };
+      }
     }
 
-    const url = `${this.baseUrl}/models/${this.model}:streamGenerateContent?key=${this.apiKey}&alt=sse`;
+    const url = `${this.baseUrl}/models/${this.model}:streamGenerateContent?key=${this.apiKey}&alt=sse`
 
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: options?.signal,
-    });
+    })
 
     if (!response.ok) {
-      const err = await response.text().catch(() => 'unknown');
-      yield { type: 'error', error: `Google ${response.status}: ${err}` };
-      return;
+      const err = await response.text().catch(() => 'unknown')
+      yield { type: 'error', error: `Google ${response.status}: ${err}` }
+      return
     }
 
     if (!response.body) {
-      yield { type: 'error', error: 'No response body' };
-      return;
+      yield { type: 'error', error: 'No response body' }
+      return
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let toolCallIndex = 0;
-    let usage = { promptTokens: 0, completionTokens: 0 };
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let toolCallIndex = 0
+    const usage = { promptTokens: 0, completionTokens: 0 }
 
     try {
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const { done, value } = await reader.read()
+        if (done) break
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
 
         for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const data = line.slice(6).trim();
-          if (!data || data === '[DONE]') continue;
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6).trim()
+          if (!data || data === '[DONE]') continue
 
-          let event: any;
+          let event: any
           try {
-            event = JSON.parse(data);
+            event = JSON.parse(data)
           } catch {
-            continue;
+            continue
           }
 
           // Process candidates
-          const candidates = event.candidates ?? [];
+          const candidates = event.candidates ?? []
           for (const candidate of candidates) {
-            const parts = candidate.content?.parts ?? [];
+            const parts = candidate.content?.parts ?? []
             for (const part of parts) {
               // Text
               if (part.text !== undefined) {
-                yield { type: 'text', delta: part.text };
+                yield { type: 'text', delta: part.text }
               }
 
               // Thinking/reasoning
               if (part.thought !== undefined) {
-                yield { type: 'reasoning', delta: part.thought };
+                yield { type: 'reasoning', delta: part.thought }
               }
 
               // Function call
@@ -284,34 +292,34 @@ export class GoogleProvider implements Provider {
                     name: part.functionCall.name,
                     thoughtSignature: part.thoughtSignature,
                   },
-                };
+                }
                 // Gemini sends complete args in one shot (not streamed)
                 yield {
                   type: 'tool_call_delta',
                   delta: JSON.stringify(part.functionCall.args ?? {}),
                   toolCall: { index: toolCallIndex },
-                };
+                }
                 yield {
                   type: 'tool_call_done',
                   toolCall: { index: toolCallIndex },
-                };
-                toolCallIndex++;
+                }
+                toolCallIndex++
               }
             }
           }
 
           // Usage metadata
           if (event.usageMetadata) {
-            usage.promptTokens = event.usageMetadata.promptTokenCount ?? 0;
-            usage.completionTokens = event.usageMetadata.candidatesTokenCount ?? 0;
+            usage.promptTokens = event.usageMetadata.promptTokenCount ?? 0
+            usage.completionTokens = event.usageMetadata.candidatesTokenCount ?? 0
           }
         }
       }
     } finally {
-      reader.releaseLock();
+      reader.releaseLock()
     }
 
-    yield { type: 'done', usage };
+    yield { type: 'done', usage }
   }
 
   // -----------------------------------------------------------------------
@@ -319,51 +327,60 @@ export class GoogleProvider implements Provider {
   // -----------------------------------------------------------------------
 
   async chat(messages: Message[], options?: ChatOptions): Promise<LLMResponse> {
-    let text = '';
-    let reasoning = '';
-    const toolCalls: ToolCall[] = [];
-    let currentToolArgs = '';
-    let currentToolId = '';
-    let currentToolName = '';
-    let currentThoughtSignature: string | undefined;
-    let usage = { promptTokens: 0, completionTokens: 0 };
+    let text = ''
+    let reasoning = ''
+    const toolCalls: ToolCall[] = []
+    let currentToolArgs = ''
+    let currentToolId = ''
+    let currentToolName = ''
+    let currentThoughtSignature: string | undefined
+    let usage = { promptTokens: 0, completionTokens: 0 }
 
     for await (const chunk of this.chatStream(messages, options)) {
       switch (chunk.type) {
         case 'text':
-          text += chunk.delta ?? '';
-          break;
+          text += chunk.delta ?? ''
+          break
         case 'reasoning':
-          reasoning += chunk.delta ?? '';
-          break;
+          reasoning += chunk.delta ?? ''
+          break
         case 'tool_call_start':
-          currentToolId = chunk.toolCall?.id ?? '';
-          currentToolName = chunk.toolCall?.name ?? '';
-          currentThoughtSignature = chunk.toolCall?.thoughtSignature;
-          currentToolArgs = '';
-          break;
+          currentToolId = chunk.toolCall?.id ?? ''
+          currentToolName = chunk.toolCall?.name ?? ''
+          currentThoughtSignature = chunk.toolCall?.thoughtSignature
+          currentToolArgs = ''
+          break
         case 'tool_call_delta':
-          currentToolArgs += chunk.delta ?? '';
-          break;
+          currentToolArgs += chunk.delta ?? ''
+          break
         case 'tool_call_done':
-          let args: Record<string, unknown> = {};
-          try { args = JSON.parse(currentToolArgs); } catch { args = { raw: currentToolArgs }; }
-          toolCalls.push({ id: currentToolId, name: currentToolName, arguments: args, thoughtSignature: currentThoughtSignature });
-          break;
+          let args: Record<string, unknown> = {}
+          try {
+            args = JSON.parse(currentToolArgs)
+          } catch {
+            args = { raw: currentToolArgs }
+          }
+          toolCalls.push({
+            id: currentToolId,
+            name: currentToolName,
+            arguments: args,
+            thoughtSignature: currentThoughtSignature,
+          })
+          break
         case 'done':
-          if (chunk.usage) usage = chunk.usage;
-          break;
+          if (chunk.usage) usage = chunk.usage
+          break
         case 'error':
-          throw new Error(chunk.error);
+          throw new Error(chunk.error)
       }
     }
 
     if (toolCalls.length > 0) {
-      return { type: 'tool_calls', toolCalls, content: text, usage };
+      return { type: 'tool_calls', toolCalls, content: text, usage }
     }
 
-    const fullContent = reasoning ? `<thinking>${reasoning}</thinking>\n\n${text}` : text;
-    return { type: 'text', content: fullContent, usage };
+    const fullContent = reasoning ? `<thinking>${reasoning}</thinking>\n\n${text}` : text
+    return { type: 'text', content: fullContent, usage }
   }
 
   // -----------------------------------------------------------------------
@@ -372,12 +389,10 @@ export class GoogleProvider implements Provider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const res = await fetch(
-        `${this.baseUrl}/models/${this.model}?key=${this.apiKey}`,
-      );
-      return res.ok;
+      const res = await fetch(`${this.baseUrl}/models/${this.model}?key=${this.apiKey}`)
+      return res.ok
     } catch {
-      return false;
+      return false
     }
   }
 }

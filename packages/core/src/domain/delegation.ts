@@ -23,25 +23,25 @@ import type {
   HookPipeline,
   DelegationBeforeContext,
   DelegationAfterContext,
-} from '@rivetos/types';
-import { AgentLoop } from './loop.js';
-import type { Router } from './router.js';
-import type { WorkspaceLoader } from './workspace.js';
+} from '@rivetos/types'
+import { AgentLoop } from './loop.js'
+import type { Router } from './router.js'
+import type { WorkspaceLoader } from './workspace.js'
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 export interface DelegationConfig {
-  router: Router;
-  workspace: WorkspaceLoader;
-  tools: Tool[];
+  router: Router
+  workspace: WorkspaceLoader
+  tools: Tool[]
   /** Maximum delegation chain depth (default: 3) */
-  maxChainDepth?: number;
+  maxChainDepth?: number
   /** Cache TTL in ms (default: 300000 = 5 min) */
-  cacheTtlMs?: number;
+  cacheTtlMs?: number
   /** Hook pipeline for delegation:before/after events */
-  hooks?: HookPipeline;
+  hooks?: HookPipeline
 }
 
 // ---------------------------------------------------------------------------
@@ -49,8 +49,8 @@ export interface DelegationConfig {
 // ---------------------------------------------------------------------------
 
 interface CacheEntry {
-  result: DelegationResult;
-  timestamp: number;
+  result: DelegationResult
+  timestamp: number
 }
 
 // ---------------------------------------------------------------------------
@@ -58,15 +58,15 @@ interface CacheEntry {
 // ---------------------------------------------------------------------------
 
 export class DelegationEngine {
-  private config: DelegationConfig;
-  private maxChainDepth: number;
-  private cacheTtlMs: number;
-  private cache: Map<string, CacheEntry> = new Map();
+  private config: DelegationConfig
+  private maxChainDepth: number
+  private cacheTtlMs: number
+  private cache: Map<string, CacheEntry> = new Map()
 
   constructor(config: DelegationConfig) {
-    this.config = config;
-    this.maxChainDepth = config.maxChainDepth ?? 3;
-    this.cacheTtlMs = config.cacheTtlMs ?? 300_000;
+    this.config = config
+    this.maxChainDepth = config.maxChainDepth ?? 3
+    this.cacheTtlMs = config.cacheTtlMs ?? 300_000
   }
 
   /**
@@ -76,25 +76,32 @@ export class DelegationEngine {
    * @param chainDepth - Current depth in a delegation chain (0 = top level)
    */
   async delegate(request: DelegationRequest, chainDepth = 0): Promise<DelegationResult> {
-    const startTime = Date.now();
+    const startTime = Date.now()
 
     // --- Chain depth check ---
     if (chainDepth >= this.maxChainDepth) {
       return {
         status: 'failed',
-        response: `Delegation chain depth limit reached (${this.maxChainDepth}). ` +
+        response:
+          `Delegation chain depth limit reached (${this.maxChainDepth}). ` +
           `Chain: ${request.fromAgent} → ${request.toAgent} at depth ${chainDepth}. ` +
           `Increase maxChainDepth in config if deeper chains are needed.`,
-      };
+      }
     }
 
     // --- Cache check ---
-    const cacheKey = this.buildCacheKey(request);
-    const cached = this.getFromCache(cacheKey);
+    const cacheKey = this.buildCacheKey(request)
+    const cached = this.getFromCache(cacheKey)
     if (cached) {
       // Fire delegation:after with cached=true
-      await this.fireAfterHook(request, { ...cached, status: 'completed' }, startTime, chainDepth, true);
-      return { ...cached, status: 'completed' };
+      await this.fireAfterHook(
+        request,
+        { ...cached, status: 'completed' },
+        startTime,
+        chainDepth,
+        true,
+      )
+      return { ...cached, status: 'completed' }
     }
 
     // --- Hook: delegation:before ---
@@ -108,86 +115,89 @@ export class DelegationEngine {
         agentId: request.fromAgent,
         timestamp: Date.now(),
         metadata: {},
-      };
-      await this.config.hooks.run(beforeCtx);
+      }
+      await this.config.hooks.run(beforeCtx)
 
       if (beforeCtx.blocked) {
         const result: DelegationResult = {
           status: 'failed',
           response: `Delegation blocked: ${beforeCtx.blockReason ?? 'blocked by hook'}`,
-        };
-        await this.fireAfterHook(request, result, startTime, chainDepth, false);
-        return result;
+        }
+        await this.fireAfterHook(request, result, startTime, chainDepth, false)
+        return result
       }
     }
 
     // --- Resolve agent and provider ---
-    const { router, workspace, tools } = this.config;
+    const { router, workspace, tools } = this.config
 
-    const agents = router.getAgents();
-    const agent = agents.find((a) => a.id === request.toAgent);
+    const agents = router.getAgents()
+    const agent = agents.find((a) => a.id === request.toAgent)
     if (!agent) {
       const result: DelegationResult = {
         status: 'failed',
         response: `Unknown agent: ${request.toAgent}. Available: ${agents.map((a) => a.id).join(', ')}`,
-      };
-      await this.fireAfterHook(request, result, startTime, chainDepth, false);
-      return result;
+      }
+      await this.fireAfterHook(request, result, startTime, chainDepth, false)
+      return result
     }
 
-    const providers = router.getProviders();
-    const provider = providers.find((p) => p.id === agent.provider);
+    const providers = router.getProviders()
+    const provider = providers.find((p) => p.id === agent.provider)
     if (!provider) {
       const result: DelegationResult = {
         status: 'failed',
         response: `Provider ${agent.provider} not available for agent ${request.toAgent}`,
-      };
-      await this.fireAfterHook(request, result, startTime, chainDepth, false);
-      return result;
+      }
+      await this.fireAfterHook(request, result, startTime, chainDepth, false)
+      return result
     }
 
     // --- Build enriched system prompt with fromAgent context ---
-    const systemPrompt = await workspace.buildSystemPrompt(agent.id);
+    const systemPrompt = await workspace.buildSystemPrompt(agent.id)
     const contextLines = [
       `## Delegation Context`,
       `You are being delegated a task by **${request.fromAgent}**.`,
       ``,
       `**Requesting agent:** ${request.fromAgent}`,
       `**Chain depth:** ${chainDepth} (max: ${this.maxChainDepth})`,
-    ];
+    ]
 
     if (request.context?.length) {
-      contextLines.push(``, `**Additional context:**`);
+      contextLines.push(``, `**Additional context:**`)
       for (const line of request.context) {
-        contextLines.push(`- ${line}`);
+        contextLines.push(`- ${line}`)
       }
     }
 
     if (chainDepth > 0) {
-      contextLines.push(``, `> You are in a delegation chain. You may delegate to other agents (depth ${chainDepth + 1}/${this.maxChainDepth}).`);
+      contextLines.push(
+        ``,
+        `> You are in a delegation chain. You may delegate to other agents (depth ${chainDepth + 1}/${this.maxChainDepth}).`,
+      )
     }
 
-    const enrichedPrompt = systemPrompt + '\n\n' + contextLines.join('\n');
+    const enrichedPrompt = systemPrompt + '\n\n' + contextLines.join('\n')
 
     // --- Create abort controller with timeout ---
-    const abort = new AbortController();
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    let timedOut = false;
+    const abort = new AbortController()
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    let timedOut = false
 
     if (request.timeoutMs) {
       timeoutId = setTimeout(() => {
-        timedOut = true;
-        abort.abort('Delegation timeout');
-      }, request.timeoutMs);
+        timedOut = true
+        abort.abort('Delegation timeout')
+      }, request.timeoutMs)
     }
 
     try {
       // Build tools with delegation capability (for chains)
-      const delegationTools = [...tools];
+      const delegationTools = [...tools]
 
       // If we have room in the chain, give the delegate the delegation tool too
       if (chainDepth + 1 < this.maxChainDepth) {
-        delegationTools.push(this.createDelegationTool(chainDepth + 1));
+        delegationTools.push(this.createDelegationTool(chainDepth + 1))
       }
 
       const loop = new AgentLoop({
@@ -196,21 +206,24 @@ export class DelegationEngine {
         tools: delegationTools,
         agentId: request.toAgent,
         hooks: this.config.hooks,
-      });
+      })
 
-      const turnResult = await loop.run(request.task, [], abort.signal);
+      const turnResult = await loop.run(request.task, [], abort.signal)
 
       // Enrich raw token counts into a full TokenUsage with agent metadata
-      const enrichUsage = (raw?: { promptTokens: number; completionTokens: number }): TokenUsage | undefined => {
-        if (!raw) return undefined;
+      const enrichUsage = (raw?: {
+        promptTokens: number
+        completionTokens: number
+      }): TokenUsage | undefined => {
+        if (!raw) return undefined
         return {
           ...raw,
           agent: request.toAgent,
           provider: agent.provider,
           model: provider.name,
           timestamp: Date.now(),
-        };
-      };
+        }
+      }
 
       if (turnResult.aborted) {
         if (timedOut) {
@@ -222,9 +235,9 @@ export class DelegationEngine {
               : `Delegation to ${request.toAgent} timed out after ${request.timeoutMs}ms (no partial result available).`,
             iterations: turnResult.iterations,
             usage: enrichUsage(turnResult.usage),
-          };
-          await this.fireAfterHook(request, result, startTime, chainDepth, false);
-          return result;
+          }
+          await this.fireAfterHook(request, result, startTime, chainDepth, false)
+          return result
         }
 
         // Aborted (not timeout)
@@ -232,9 +245,9 @@ export class DelegationEngine {
           status: 'failed',
           response: `Delegation to ${request.toAgent} was aborted.`,
           iterations: turnResult.iterations,
-        };
-        await this.fireAfterHook(request, result, startTime, chainDepth, false);
-        return result;
+        }
+        await this.fireAfterHook(request, result, startTime, chainDepth, false)
+        return result
       }
 
       const result: DelegationResult = {
@@ -242,22 +255,22 @@ export class DelegationEngine {
         response: turnResult.response,
         iterations: turnResult.iterations,
         usage: enrichUsage(turnResult.usage),
-      };
+      }
 
       // Cache the result
-      this.putInCache(cacheKey, result);
+      this.putInCache(cacheKey, result)
 
-      await this.fireAfterHook(request, result, startTime, chainDepth, false);
-      return result;
+      await this.fireAfterHook(request, result, startTime, chainDepth, false)
+      return result
     } catch (err: any) {
       const result: DelegationResult = {
         status: 'failed',
         response: `Delegation to ${request.toAgent} failed: ${err.message}`,
-      };
-      await this.fireAfterHook(request, result, startTime, chainDepth, false);
-      return result;
+      }
+      await this.fireAfterHook(request, result, startTime, chainDepth, false)
+      return result
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId)
     }
   }
 
@@ -296,31 +309,38 @@ export class DelegationEngine {
         },
         required: ['to_agent', 'task'],
       },
-      execute: async (args: Record<string, unknown>, _signal?: AbortSignal, context?: { agentId?: string }): Promise<string> => {
-        const result = await this.delegate({
-          fromAgent: context?.agentId ?? 'unknown',
-          toAgent: args.to_agent as string,
-          task: args.task as string,
-          context: args.context as string[] | undefined,
-          timeoutMs: (args.timeout_ms as number) ?? 120000,
-        }, chainDepth);
+      execute: async (
+        args: Record<string, unknown>,
+        _signal?: AbortSignal,
+        context?: { agentId?: string },
+      ): Promise<string> => {
+        const result = await this.delegate(
+          {
+            fromAgent: context?.agentId ?? 'unknown',
+            toAgent: args.to_agent as string,
+            task: args.task as string,
+            context: args.context as string[] | undefined,
+            timeoutMs: (args.timeout_ms as number) ?? 120000,
+          },
+          chainDepth,
+        )
 
         if (result.status === 'completed') {
-          return result.response;
+          return result.response
         }
-        return `[${result.status}] ${result.response}`;
+        return `[${result.status}] ${result.response}`
       },
-    };
+    }
   }
 
   /** Clear the result cache */
   clearCache(): void {
-    this.cache.clear();
+    this.cache.clear()
   }
 
   /** Get cache size (for testing/metrics) */
   get cacheSize(): number {
-    return this.cache.size;
+    return this.cache.size
   }
 
   // -----------------------------------------------------------------------
@@ -328,25 +348,25 @@ export class DelegationEngine {
   // -----------------------------------------------------------------------
 
   private buildCacheKey(request: DelegationRequest): string {
-    return `${request.fromAgent}:${request.toAgent}:${request.task}`;
+    return `${request.fromAgent}:${request.toAgent}:${request.task}`
   }
 
   private getFromCache(key: string): DelegationResult | undefined {
-    const entry = this.cache.get(key);
-    if (!entry) return undefined;
+    const entry = this.cache.get(key)
+    if (!entry) return undefined
 
     if (Date.now() - entry.timestamp > this.cacheTtlMs) {
-      this.cache.delete(key);
-      return undefined;
+      this.cache.delete(key)
+      return undefined
     }
 
-    return entry.result;
+    return entry.result
   }
 
   private putInCache(key: string, result: DelegationResult): void {
     // Only cache successful results
-    if (result.status !== 'completed') return;
-    this.cache.set(key, { result, timestamp: Date.now() });
+    if (result.status !== 'completed') return
+    this.cache.set(key, { result, timestamp: Date.now() })
   }
 
   // -----------------------------------------------------------------------
@@ -360,21 +380,21 @@ export class DelegationEngine {
     chainDepth: number,
     cached: boolean,
   ): Promise<void> {
-    if (!this.config.hooks) return;
+    if (!this.config.hooks) return
 
     const afterCtx: DelegationAfterContext = {
       event: 'delegation:after',
       fromAgent: request.fromAgent,
       toAgent: request.toAgent,
       task: request.task,
-      status: cached ? 'cached' : result.status as 'completed' | 'failed' | 'timeout',
+      status: cached ? 'cached' : result.status,
       durationMs: Date.now() - startTime,
       usage: result.usage,
       cached,
       agentId: request.fromAgent,
       timestamp: Date.now(),
       metadata: {},
-    };
-    await this.config.hooks.run(afterCtx);
+    }
+    await this.config.hooks.run(afterCtx)
   }
 }
