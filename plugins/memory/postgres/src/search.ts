@@ -51,6 +51,34 @@ export interface SearchHit {
 }
 
 // ---------------------------------------------------------------------------
+// Row interfaces
+// ---------------------------------------------------------------------------
+
+interface MessageSearchRow {
+  id: string
+  content: string
+  role: string
+  agent: string
+  conversation_id: string
+  created_at: Date
+  score: string
+}
+
+interface SummarySearchRow {
+  id: string
+  content: string
+  role: string
+  agent: string
+  conversation_id: string
+  created_at: Date
+  kind: string
+  earliest_at: Date | null
+  latest_at: Date | null
+  score: string
+  semantic_sim?: string
+}
+
+// ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
 
@@ -88,7 +116,7 @@ export class SearchEngine {
     const topResults = results.slice(0, limit)
 
     // Bump access counts (non-blocking, fire-and-forget)
-    this.bumpAccess(topResults).catch(() => {})
+    void this.bumpAccess(topResults)
 
     return topResults
   }
@@ -127,10 +155,10 @@ export class SearchEngine {
         LIMIT $1
       `
 
-      const res = await this.pool.query(sql, [limit])
+      const res = await this.pool.query<MessageSearchRow>(sql, [limit])
       results.push(
-        ...res.rows.map((r: any) => ({
-          id: String(r.id),
+        ...res.rows.map((r) => ({
+          id: r.id,
           type: 'message' as const,
           content: r.content,
           role: r.role,
@@ -161,10 +189,10 @@ export class SearchEngine {
         LIMIT $1
       `
 
-      const res = await this.pool.query(sql, [limit])
+      const res = await this.pool.query<SummarySearchRow>(sql, [limit])
       results.push(
-        ...res.rows.map((r: any) => ({
-          id: String(r.id),
+        ...res.rows.map((r) => ({
+          id: r.id,
           type: 'summary' as const,
           content: r.content,
           role: r.role,
@@ -173,15 +201,15 @@ export class SearchEngine {
           score: parseFloat(r.score),
           createdAt: r.created_at,
           kind: r.kind,
-          earliestAt: r.earliest_at,
-          latestAt: r.latest_at,
+          earliestAt: r.earliest_at ?? undefined,
+          latestAt: r.latest_at ?? undefined,
         })),
       )
     }
 
     results.sort((a, b) => b.score - a.score)
     const topResults = results.slice(0, limit)
-    this.bumpAccess(topResults).catch(() => {})
+    void this.bumpAccess(topResults)
     return topResults
   }
 
@@ -196,24 +224,24 @@ export class SearchEngine {
     options?: SearchOptions,
   ): Promise<SearchHit[]> {
     const conditions: string[] = []
-    const params: any[] = []
+    const params: unknown[] = []
     let pi = 1 // parameter index
 
     // Agent filter
     if (options?.agent) {
-      conditions.push(`m.agent = $${pi}`)
+      conditions.push(`m.agent = $${String(pi)}`)
       params.push(options.agent)
       pi++
     }
 
     // Date filters
     if (options?.since) {
-      conditions.push(`m.created_at >= $${pi}`)
+      conditions.push(`m.created_at >= $${String(pi)}`)
       params.push(options.since)
       pi++
     }
     if (options?.before) {
-      conditions.push(`m.created_at < $${pi}`)
+      conditions.push(`m.created_at < $${String(pi)}`)
       params.push(options.before)
       pi++
     }
@@ -228,15 +256,15 @@ export class SearchEngine {
 
     switch (mode) {
       case 'fts':
-        matchCondition = `m.content_tsv @@ plainto_tsquery('english', $${queryParamIdx})`
-        ftsScoreExpr = `ts_rank_cd(m.content_tsv, plainto_tsquery('english', $${queryParamIdx}))`
+        matchCondition = `m.content_tsv @@ plainto_tsquery('english', $${String(queryParamIdx)})`
+        ftsScoreExpr = `ts_rank_cd(m.content_tsv, plainto_tsquery('english', $${String(queryParamIdx)}))`
         break
       case 'trigram':
-        matchCondition = `similarity(m.content, $${queryParamIdx}) > 0.3`
-        ftsScoreExpr = `similarity(m.content, $${queryParamIdx})`
+        matchCondition = `similarity(m.content, $${String(queryParamIdx)}) > 0.3`
+        ftsScoreExpr = `similarity(m.content, $${String(queryParamIdx)})`
         break
       case 'regex':
-        matchCondition = `m.content ~* $${queryParamIdx}`
+        matchCondition = `m.content ~* $${String(queryParamIdx)}`
         ftsScoreExpr = '1.0'
         break
       default:
@@ -248,7 +276,6 @@ export class SearchEngine {
     // Limit param
     params.push(limit)
     const limitIdx = pi
-    pi++
 
     const temporal = temporalDecaySql('m')
     const importance = importanceSql('m')
@@ -268,13 +295,13 @@ export class SearchEngine {
       FROM ros_messages m
       WHERE ${conditions.join(' AND ')}
       ORDER BY score DESC
-      LIMIT $${limitIdx}
+      LIMIT $${String(limitIdx)}
     `
 
-    const result = await this.pool.query(sql, params)
+    const result = await this.pool.query<MessageSearchRow>(sql, params)
 
-    return result.rows.map((r: any) => ({
-      id: String(r.id),
+    return result.rows.map((r) => ({
+      id: r.id,
       type: 'message' as const,
       content: r.content,
       role: r.role,
@@ -296,17 +323,17 @@ export class SearchEngine {
     options?: SearchOptions,
   ): Promise<SearchHit[]> {
     const conditions: string[] = []
-    const params: any[] = []
+    const params: unknown[] = []
     let pi = 1
 
     // Date filters (agent filter doesn't apply to summaries — they're cross-agent)
     if (options?.since) {
-      conditions.push(`s.created_at >= $${pi}`)
+      conditions.push(`s.created_at >= $${String(pi)}`)
       params.push(options.since)
       pi++
     }
     if (options?.before) {
-      conditions.push(`s.created_at < $${pi}`)
+      conditions.push(`s.created_at < $${String(pi)}`)
       params.push(options.before)
       pi++
     }
@@ -320,15 +347,15 @@ export class SearchEngine {
 
     switch (mode) {
       case 'fts':
-        matchCondition = `s.content_tsv @@ plainto_tsquery('english', $${queryParamIdx})`
-        ftsScoreExpr = `ts_rank_cd(s.content_tsv, plainto_tsquery('english', $${queryParamIdx}))`
+        matchCondition = `s.content_tsv @@ plainto_tsquery('english', $${String(queryParamIdx)})`
+        ftsScoreExpr = `ts_rank_cd(s.content_tsv, plainto_tsquery('english', $${String(queryParamIdx)}))`
         break
       case 'trigram':
-        matchCondition = `similarity(s.content, $${queryParamIdx}) > 0.3`
-        ftsScoreExpr = `similarity(s.content, $${queryParamIdx})`
+        matchCondition = `similarity(s.content, $${String(queryParamIdx)}) > 0.3`
+        ftsScoreExpr = `similarity(s.content, $${String(queryParamIdx)})`
         break
       case 'regex':
-        matchCondition = `s.content ~* $${queryParamIdx}`
+        matchCondition = `s.content ~* $${String(queryParamIdx)}`
         ftsScoreExpr = '1.0'
         break
       default:
@@ -339,7 +366,6 @@ export class SearchEngine {
 
     params.push(limit)
     const limitIdx = pi
-    pi++
 
     const temporal = temporalDecaySql('s')
     const semanticProxy = `LEAST(LENGTH(s.content) / 1000.0, 1.0)`
@@ -357,13 +383,13 @@ export class SearchEngine {
       FROM ros_summaries s
       WHERE ${conditions.join(' AND ')}
       ORDER BY score DESC
-      LIMIT $${limitIdx}
+      LIMIT $${String(limitIdx)}
     `
 
-    const result = await this.pool.query(sql, params)
+    const result = await this.pool.query<SummarySearchRow>(sql, params)
 
-    return result.rows.map((r: any) => ({
-      id: String(r.id),
+    return result.rows.map((r) => ({
+      id: r.id,
       type: 'summary' as const,
       content: r.content,
       role: r.role,
@@ -372,8 +398,8 @@ export class SearchEngine {
       score: parseFloat(r.score),
       createdAt: r.created_at,
       kind: r.kind,
-      earliestAt: r.earliest_at,
-      latestAt: r.latest_at,
+      earliestAt: r.earliest_at ?? undefined,
+      latestAt: r.latest_at ?? undefined,
     }))
   }
 

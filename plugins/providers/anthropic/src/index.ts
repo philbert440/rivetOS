@@ -2,7 +2,7 @@
  * @rivetos/provider-anthropic
  *
  * Anthropic Claude provider.
- * - API key mode (sk-ant-api03-): uses official SDK
+ * - API key mode (sk-ant-api03-): uses raw fetch
  * - OAuth mode (sk-ant-oat01-): uses raw fetch (SDK doesn't handle OAuth correctly)
  *
  * The raw fetch approach matches the exact curl command proven to work.
@@ -45,16 +45,75 @@ const THINKING_BUDGETS: Record<ThinkingLevel, number | null> = {
 }
 
 // ---------------------------------------------------------------------------
+// API types
+// ---------------------------------------------------------------------------
+
+interface AnthropicContentBlock {
+  type: 'text' | 'image' | 'tool_use' | 'tool_result'
+  text?: string
+  source?: { type: string; media_type?: string; data?: string; url?: string }
+  id?: string
+  name?: string
+  input?: Record<string, unknown>
+  tool_use_id?: string
+  content?: string | AnthropicContentBlock[]
+  cache_control?: { type: string }
+}
+
+interface AnthropicMessage {
+  role: 'user' | 'assistant'
+  content: string | AnthropicContentBlock[]
+}
+
+interface AnthropicTool {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+}
+
+interface AnthropicRequestBody {
+  model: string
+  max_tokens: number
+  messages: AnthropicMessage[]
+  stream: boolean
+  system?: AnthropicContentBlock[] | string
+  tools?: AnthropicTool[]
+  thinking?: { type: 'enabled'; budget_tokens: number }
+}
+
+/** SSE event from Anthropic's streaming API */
+interface AnthropicSSEEvent {
+  type?: string
+  message?: {
+    usage?: { input_tokens?: number; output_tokens?: number }
+  }
+  content_block?: {
+    type?: string
+    id?: string
+    name?: string
+  }
+  delta?: {
+    type?: string
+    text?: string
+    thinking?: string
+    partial_json?: string
+  }
+  usage?: { output_tokens?: number }
+  error?: { message?: string }
+}
+
+// ---------------------------------------------------------------------------
 // Message conversion
 // ---------------------------------------------------------------------------
 
 /** Convert ContentPart[] to Anthropic content blocks */
-function convertContentParts(parts: ContentPart[]): any[] {
-  const blocks: any[] = []
+function convertContentParts(parts: ContentPart[]): AnthropicContentBlock[] {
+  const blocks: AnthropicContentBlock[] = []
   for (const part of parts) {
     if (part.type === 'text') {
       blocks.push({ type: 'text', text: part.text })
-    } else if (part.type === 'image') {
+    } else {
+      // ImagePart
       if (part.data) {
         blocks.push({
           type: 'image',
@@ -78,35 +137,38 @@ function convertContentParts(parts: ContentPart[]): any[] {
   return blocks
 }
 
-function convertMessages(messages: Message[]): { system: string; converted: any[] } {
+/** Extract text from ContentPart[] */
+function extractTextFromParts(parts: ContentPart[]): string {
+  return parts
+    .filter((p): p is ContentPart & { type: 'text' } => p.type === 'text')
+    .map((p) => p.text)
+    .join('')
+}
+
+function convertMessages(messages: Message[]): { system: string; converted: AnthropicMessage[] } {
   let system = ''
-  const converted: any[] = []
+  const converted: AnthropicMessage[] = []
 
   for (const msg of messages) {
     if (msg.role === 'system') {
-      const text =
-        typeof msg.content === 'string'
-          ? msg.content
-          : msg.content
-              .filter((p) => p.type === 'text')
-              .map((p) => (p as any).text)
-              .join('')
+      const text = typeof msg.content === 'string' ? msg.content : extractTextFromParts(msg.content)
       system += (system ? '\n\n' : '') + text
       continue
     }
 
     if (msg.role === 'tool') {
       // Build tool result content — supports multimodal (text + images)
-      let toolContent: any
+      let toolContent: string | AnthropicContentBlock[]
       if (typeof msg.content === 'string') {
         toolContent = msg.content
       } else {
         // Multimodal tool result — convert to Anthropic content blocks
-        const blocks: any[] = []
+        const blocks: AnthropicContentBlock[] = []
         for (const part of msg.content) {
           if (part.type === 'text') {
             blocks.push({ type: 'text', text: part.text })
-          } else if (part.type === 'image') {
+          } else {
+            // ImagePart
             if (part.data) {
               blocks.push({
                 type: 'image',
@@ -140,14 +202,9 @@ function convertMessages(messages: Message[]): { system: string; converted: any[
     }
 
     if (msg.role === 'assistant' && msg.toolCalls?.length) {
-      const blocks: any[] = []
+      const blocks: AnthropicContentBlock[] = []
       const textContent =
-        typeof msg.content === 'string'
-          ? msg.content
-          : msg.content
-              .filter((p) => p.type === 'text')
-              .map((p) => (p as any).text)
-              .join('')
+        typeof msg.content === 'string' ? msg.content : extractTextFromParts(msg.content)
       if (textContent) blocks.push({ type: 'text', text: textContent })
       for (const tc of msg.toolCalls) {
         blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments })
@@ -165,7 +222,7 @@ function convertMessages(messages: Message[]): { system: string; converted: any[
     } else {
       converted.push({
         role: msg.role === 'user' ? 'user' : 'assistant',
-        content: msg.content,
+        content: typeof msg.content === 'string' ? msg.content : extractTextFromParts(msg.content),
       })
     }
   }
@@ -173,12 +230,20 @@ function convertMessages(messages: Message[]): { system: string; converted: any[
   return { system, converted }
 }
 
-function convertTools(tools: ToolDefinition[]): any[] {
+function convertTools(tools: ToolDefinition[]): AnthropicTool[] {
   return tools.map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.parameters,
   }))
+}
+
+// ---------------------------------------------------------------------------
+// Type guard
+// ---------------------------------------------------------------------------
+
+function isAnthropicEvent(value: unknown): value is AnthropicSSEEvent {
+  return typeof value === 'object' && value !== null
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +320,7 @@ export class AnthropicProvider implements Provider {
     const { system, converted } = convertMessages(messages)
     const headers = await this.buildHeaders()
 
-    const body: any = {
+    const body: AnthropicRequestBody = {
       model: this.model,
       max_tokens: this.maxTokens,
       messages: converted,
@@ -264,7 +329,7 @@ export class AnthropicProvider implements Provider {
 
     // System prompt — with ephemeral caching for token savings (~90% cheaper on cache hits)
     if (this.authMode === 'oauth') {
-      const blocks: any[] = [
+      const blocks: AnthropicContentBlock[] = [
         {
           type: 'text',
           text: "You are Claude Code, Anthropic's official CLI for Claude.",
@@ -298,8 +363,8 @@ export class AnthropicProvider implements Provider {
 
     if (!response.ok) {
       const err = await response.text().catch(() => 'unknown')
-      console.error(`[Anthropic] API error ${response.status}: ${err.slice(0, 500)}`)
-      yield { type: 'error', error: `Anthropic ${response.status}: ${err.slice(0, 200)}` }
+      console.error(`[Anthropic] API error ${String(response.status)}: ${err.slice(0, 500)}`)
+      yield { type: 'error', error: `Anthropic ${String(response.status)}: ${err.slice(0, 200)}` }
       return
     }
 
@@ -309,7 +374,7 @@ export class AnthropicProvider implements Provider {
     }
 
     // Parse SSE stream
-    const reader = response.body.getReader()
+    const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
     let toolCallIndex = 0
@@ -317,11 +382,11 @@ export class AnthropicProvider implements Provider {
     const usage = { promptTokens: 0, completionTokens: 0 }
 
     try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
+      for (;;) {
+        const result = await reader.read()
+        if (result.done) break
 
-        buffer += decoder.decode(value, { stream: true })
+        buffer += decoder.decode(result.value, { stream: true })
 
         // Split on double newline (SSE event boundary)
         const events = buffer.split('\n\n')
@@ -342,9 +407,11 @@ export class AnthropicProvider implements Provider {
 
           if (!data || data === '[DONE]') continue
 
-          let parsed: any
+          let parsed: AnthropicSSEEvent
           try {
-            parsed = JSON.parse(data)
+            const raw: unknown = JSON.parse(data)
+            if (!isAnthropicEvent(raw)) continue
+            parsed = raw
           } catch {
             continue
           }
@@ -363,8 +430,8 @@ export class AnthropicProvider implements Provider {
                   type: 'tool_call_start',
                   toolCall: {
                     index: toolCallIndex,
-                    id: parsed.content_block.id,
-                    name: parsed.content_block.name,
+                    id: parsed.content_block?.id,
+                    name: parsed.content_block?.name,
                   },
                 }
               }
@@ -372,11 +439,11 @@ export class AnthropicProvider implements Provider {
 
             case 'content_block_delta': {
               const delta = parsed.delta
-              if (delta?.type === 'text_delta') {
+              if (delta?.type === 'text_delta' && delta.text) {
                 yield { type: 'text', delta: delta.text }
-              } else if (delta?.type === 'thinking_delta') {
+              } else if (delta?.type === 'thinking_delta' && delta.thinking) {
                 yield { type: 'reasoning', delta: delta.thinking }
-              } else if (delta?.type === 'input_json_delta') {
+              } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
                 yield {
                   type: 'tool_call_delta',
                   delta: delta.partial_json,
@@ -412,10 +479,11 @@ export class AnthropicProvider implements Provider {
           }
         }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (options?.signal?.aborted) return
-      console.error('[Anthropic] Stream error:', err.message)
-      yield { type: 'error', error: err.message }
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[Anthropic] Stream error:', message)
+      yield { type: 'error', error: message }
     } finally {
       reader.releaseLock()
     }
@@ -454,9 +522,9 @@ export class AnthropicProvider implements Provider {
           break
         case 'tool_call_done':
           if (currentToolName) {
-            let args: Record<string, unknown> = {}
+            let args: Record<string, unknown>
             try {
-              args = JSON.parse(currentToolArgs)
+              args = JSON.parse(currentToolArgs) as Record<string, unknown>
             } catch {
               args = { raw: currentToolArgs }
             }
@@ -486,14 +554,18 @@ export class AnthropicProvider implements Provider {
   async isAvailable(): Promise<boolean> {
     try {
       const headers = await this.buildHeaders()
-      const body: any = {
+      const body: AnthropicRequestBody = {
         model: this.model,
         max_tokens: 1,
         messages: [{ role: 'user', content: 'ping' }],
+        stream: false,
       }
       if (this.authMode === 'oauth') {
         body.system = [
-          { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude." },
+          {
+            type: 'text',
+            text: "You are Claude Code, Anthropic's official CLI for Claude.",
+          },
         ]
       }
       const res = await fetch(`${this.baseUrl}/v1/messages`, {

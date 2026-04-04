@@ -16,6 +16,86 @@ import type { SearchEngine, SearchHit } from './search.js'
 import type { Expander, SummaryNode } from './expand.js'
 
 // ---------------------------------------------------------------------------
+// Row interfaces for pg query results
+// ---------------------------------------------------------------------------
+
+interface MessageRow {
+  id: string
+  role: string
+  agent: string
+  content: string
+  created_at: Date
+  conversation_id: string
+  tool_name: string | null
+}
+
+interface CountRow {
+  total: string
+  oldest: Date | null
+  newest: Date | null
+}
+
+interface AgentCountRow {
+  agent: string
+  count: string
+}
+
+interface RoleCountRow {
+  role: string
+  count: string
+}
+
+interface ConversationTotalRow {
+  total: string
+  active: string
+}
+
+interface SummaryKindRow {
+  kind: string
+  count: string
+  max_depth: number
+}
+
+interface EmbedQueueRow {
+  msg_queue: string
+  sum_queue: string
+}
+
+interface EmbedCoverageRow {
+  total: string
+  embedded: string
+}
+
+interface UnsummarizedRow {
+  count: string
+}
+
+interface CompactionRow {
+  conversation_id: string
+  agent: string
+  unsummarized: string
+}
+
+interface TreeDepthRow {
+  max_depth: number | null
+  root_count: string
+  child_count: string
+}
+
+interface FreshnessRow {
+  newest_message: Date | null
+  newest_summary: Date | null
+}
+
+interface LlmResponse {
+  choices?: Array<{
+    message?: {
+      content?: string
+    }
+  }>
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -168,7 +248,7 @@ function createSearchTool(
       const sections: string[] = []
       sections.push(`## Memory Search: "${query}"`)
       sections.push(
-        `Found ${results.length} results (${summaryHits.length} summaries, ${messageHits.length} messages)\n`,
+        `Found ${String(results.length)} results (${String(summaryHits.length)} summaries, ${String(messageHits.length)} messages)\n`,
       )
 
       // Expanded summaries first (highest signal)
@@ -182,31 +262,31 @@ function createSearchTool(
               : fmtDate(hit.createdAt)
 
           sections.push(
-            `**[${hit.kind ?? 'summary'}]** (${age}d ago, score: ${hit.score.toFixed(3)}, period: ${period})`,
+            `**[${hit.kind ?? 'summary'}]** (${String(age)}d ago, score: ${hit.score.toFixed(3)}, period: ${period})`,
           )
           sections.push(hit.content)
 
           if (children.length > 0) {
-            sections.push(`\n  **Children (${children.length}):**`)
+            sections.push(`\n  **Children (${String(children.length)}):**`)
             for (const child of children.slice(0, 5)) {
               const preview =
                 child.content.length > 200 ? child.content.slice(0, 200) + '…' : child.content
               sections.push(`  - [${child.kind}] ${preview}`)
             }
             if (children.length > 5) {
-              sections.push(`  - ... and ${children.length - 5} more`)
+              sections.push(`  - ... and ${String(children.length - 5)} more`)
             }
           }
 
           if (sourceMessages.length > 0) {
-            sections.push(`\n  **Source messages (${sourceMessages.length}):**`)
+            sections.push(`\n  **Source messages (${String(sourceMessages.length)}):**`)
             for (const msg of sourceMessages.slice(0, 8)) {
               const msgContent =
                 msg.content.length > 300 ? msg.content.slice(0, 300) + '…' : msg.content
               sections.push(`  > [${msg.role}] ${msgContent}`)
             }
             if (sourceMessages.length > 8) {
-              sections.push(`  > ... and ${sourceMessages.length - 8} more messages`)
+              sections.push(`  > ... and ${String(sourceMessages.length - 8)} more messages`)
             }
           }
 
@@ -221,7 +301,7 @@ function createSearchTool(
             const age = Math.floor((Date.now() - hit.createdAt.getTime()) / MS_PER_DAY)
             const preview = hit.content.length > 300 ? hit.content.slice(0, 300) + '…' : hit.content
             sections.push(
-              `- [${hit.kind ?? 'summary'}] (${age}d ago, score: ${hit.score.toFixed(3)}) ${preview}`,
+              `- [${hit.kind ?? 'summary'}] (${String(age)}d ago, score: ${hit.score.toFixed(3)}) ${preview}`,
             )
           }
           sections.push('')
@@ -233,7 +313,7 @@ function createSearchTool(
           const age = Math.floor((Date.now() - hit.createdAt.getTime()) / MS_PER_DAY)
           const preview = hit.content.length > 300 ? hit.content.slice(0, 300) + '…' : hit.content
           sections.push(
-            `- [${hit.kind ?? 'summary'}/${hit.id}] (${age}d ago, score: ${hit.score.toFixed(3)}) ${preview}`,
+            `- [${hit.kind ?? 'summary'}/${hit.id}] (${String(age)}d ago, score: ${hit.score.toFixed(3)}) ${preview}`,
           )
         }
         sections.push('')
@@ -246,7 +326,7 @@ function createSearchTool(
           const age = Math.floor((Date.now() - hit.createdAt.getTime()) / MS_PER_DAY)
           const preview = hit.content.length > 400 ? hit.content.slice(0, 400) + '…' : hit.content
           sections.push(
-            `- [${hit.agent}/${hit.role}] (${age}d ago, score: ${hit.score.toFixed(3)}) ${preview}`,
+            `- [${hit.agent}/${hit.role}] (${String(age)}d ago, score: ${hit.score.toFixed(3)}) ${preview}`,
           )
         }
       }
@@ -270,7 +350,7 @@ function createSearchTool(
 }
 
 // ---------------------------------------------------------------------------
-// memory_browse — chronological message browsing (unchanged)
+// memory_browse — chronological message browsing
 // ---------------------------------------------------------------------------
 
 function createBrowseTool(pool: pg.Pool): Tool {
@@ -317,25 +397,25 @@ function createBrowseTool(pool: pg.Pool): Tool {
       let pi = 1
 
       if (args.conversation_id) {
-        conditions.push(`m.conversation_id = $${pi}`)
+        conditions.push(`m.conversation_id = $${String(pi)}`)
         params.push(args.conversation_id)
         pi++
       }
 
       if (args.agent) {
-        conditions.push(`m.agent = $${pi}`)
+        conditions.push(`m.agent = $${String(pi)}`)
         params.push(args.agent)
         pi++
       }
 
       if (args.since) {
-        conditions.push(`m.created_at >= $${pi}`)
+        conditions.push(`m.created_at >= $${String(pi)}`)
         params.push(args.since)
         pi++
       }
 
       if (args.before) {
-        conditions.push(`m.created_at < $${pi}`)
+        conditions.push(`m.created_at < $${String(pi)}`)
         params.push(args.before)
         pi++
       }
@@ -353,27 +433,28 @@ function createBrowseTool(pool: pg.Pool): Tool {
         FROM ros_messages m
         ${where}
         ORDER BY m.created_at ${order}
-        LIMIT $${limitIdx}
+        LIMIT $${String(limitIdx)}
       `
 
       try {
-        const result = await pool.query(sql, params)
+        const result = await pool.query<MessageRow>(sql, params)
 
         if (result.rows.length === 0) return 'No messages found.'
 
-        const lines = result.rows.map((r: any) => {
-          const ts = (r.created_at as Date).toISOString().replace('T', ' ').slice(0, 19)
+        const lines = result.rows.map((r) => {
+          const ts = r.created_at.toISOString().replace('T', ' ').slice(0, 19)
           const tool = r.tool_name ? ` [tool: ${r.tool_name}]` : ''
           const content = r.content.length > 500 ? r.content.slice(0, 500) + '…' : r.content
           return `[${ts}] ${r.agent}/${r.role}${tool}\n${content}`
         })
 
         return (
-          `## Messages (${result.rows.length} returned, ${order === 'DESC' ? 'newest' : 'oldest'} first)\n\n` +
+          `## Messages (${String(result.rows.length)} returned, ${order === 'DESC' ? 'newest' : 'oldest'} first)\n\n` +
           lines.join('\n\n---\n\n')
         )
-      } catch (err: any) {
-        return `Browse failed: ${err.message}`
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        return `Browse failed: ${msg}`
       }
     },
   }
@@ -409,7 +490,7 @@ function createStatsTool(pool: pg.Pool): Tool {
         // --- Message totals + date range ---
         const msgWhere = agentFilter ? 'WHERE agent = $1' : ''
         const msgParams = agentFilter ? [agentFilter] : []
-        const msgTotals = await pool.query(
+        const msgTotals = await pool.query<CountRow>(
           `SELECT COUNT(*) AS total,
                   MIN(created_at) AS oldest,
                   MAX(created_at) AS newest
@@ -423,7 +504,7 @@ function createStatsTool(pool: pg.Pool): Tool {
         )
 
         // --- Messages by agent ---
-        const byAgent = await pool.query(
+        const byAgent = await pool.query<AgentCountRow>(
           `SELECT agent, COUNT(*) AS count
            FROM ros_messages
            ${msgWhere}
@@ -434,13 +515,13 @@ function createStatsTool(pool: pg.Pool): Tool {
           sections.push(
             '\n**By agent:**\n' +
               byAgent.rows
-                .map((r: any) => `  ${r.agent}: ${Number(r.count).toLocaleString()}`)
+                .map((r) => `  ${r.agent}: ${Number(r.count).toLocaleString()}`)
                 .join('\n'),
           )
         }
 
         // --- Messages by role ---
-        const byRole = await pool.query(
+        const byRole = await pool.query<RoleCountRow>(
           `SELECT role, COUNT(*) AS count
            FROM ros_messages
            ${msgWhere}
@@ -450,14 +531,12 @@ function createStatsTool(pool: pg.Pool): Tool {
         if (byRole.rows.length > 0) {
           sections.push(
             '\n**By role:**\n' +
-              byRole.rows
-                .map((r: any) => `  ${r.role}: ${Number(r.count).toLocaleString()}`)
-                .join('\n'),
+              byRole.rows.map((r) => `  ${r.role}: ${Number(r.count).toLocaleString()}`).join('\n'),
           )
         }
 
         // --- Conversations ---
-        const convTotals = await pool.query(
+        const convTotals = await pool.query<ConversationTotalRow>(
           `SELECT COUNT(*) AS total,
                   COUNT(*) FILTER (WHERE active) AS active
            FROM ros_conversations`,
@@ -466,22 +545,19 @@ function createStatsTool(pool: pg.Pool): Tool {
         sections.push(`\n**Conversations:** ${ct.total} total, ${ct.active} active`)
 
         // --- Summary counts by kind ---
-        const byKind = await pool.query(
+        const byKind = await pool.query<SummaryKindRow>(
           `SELECT kind, COUNT(*) AS count, MAX(depth) AS max_depth
            FROM ros_summaries
            GROUP BY kind ORDER BY count DESC`,
         )
         if (byKind.rows.length > 0) {
-          const totalSummaries = byKind.rows.reduce(
-            (sum: number, r: any) => sum + Number(r.count),
-            0,
-          )
+          const totalSummaries = byKind.rows.reduce((sum, r) => sum + Number(r.count), 0)
           sections.push(
             `\n**Summaries:** ${totalSummaries.toLocaleString()} total\n` +
               byKind.rows
                 .map(
-                  (r: any) =>
-                    `  ${r.kind}: ${Number(r.count).toLocaleString()} (max depth: ${r.max_depth})`,
+                  (r) =>
+                    `  ${r.kind}: ${Number(r.count).toLocaleString()} (max depth: ${String(r.max_depth)})`,
                 )
                 .join('\n'),
           )
@@ -490,7 +566,7 @@ function createStatsTool(pool: pg.Pool): Tool {
         }
 
         // --- HEALTH: Embedding queue ---
-        const embedQueue = await pool.query(`
+        const embedQueue = await pool.query<EmbedQueueRow>(`
           SELECT
             (SELECT COUNT(*) FROM ros_messages WHERE embedding IS NULL AND content IS NOT NULL AND LENGTH(content) > 20) AS msg_queue,
             (SELECT COUNT(*) FROM ros_summaries WHERE embedding IS NULL AND content IS NOT NULL) AS sum_queue
@@ -503,8 +579,8 @@ function createStatsTool(pool: pg.Pool): Tool {
           queueTotal === 0
             ? '✅ caught up'
             : queueTotal < 50
-              ? `⏳ ${queueTotal} pending`
-              : `⚠️ ${queueTotal} pending (backlog)`
+              ? `⏳ ${String(queueTotal)} pending`
+              : `⚠️ ${String(queueTotal)} pending (backlog)`
 
         sections.push(
           `\n**Embedding queue:** ${queueStatus}` +
@@ -513,11 +589,11 @@ function createStatsTool(pool: pg.Pool): Tool {
         )
 
         // --- HEALTH: Embedding coverage ---
-        const msgEmbed = await pool.query(
+        const msgEmbed = await pool.query<EmbedCoverageRow>(
           `SELECT COUNT(*) AS total, COUNT(embedding) AS embedded FROM ros_messages`,
         )
         const me = msgEmbed.rows[0]
-        const sumEmbed = await pool.query(
+        const sumEmbed = await pool.query<EmbedCoverageRow>(
           `SELECT COUNT(*) AS total, COUNT(embedding) AS embedded FROM ros_summaries`,
         )
         const se = sumEmbed.rows[0]
@@ -532,7 +608,7 @@ function createStatsTool(pool: pg.Pool): Tool {
         )
 
         // --- HEALTH: Unsummarized messages ---
-        const unsummarized = await pool.query(`
+        const unsummarized = await pool.query<UnsummarizedRow>(`
           SELECT COUNT(*) AS count
           FROM ros_messages m
           LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
@@ -548,7 +624,7 @@ function createStatsTool(pool: pg.Pool): Tool {
         )
 
         // --- HEALTH: Conversations needing compaction ---
-        const needsCompaction = await pool.query(`
+        const needsCompaction = await pool.query<CompactionRow>(`
           SELECT m.conversation_id, c.agent, COUNT(*) AS unsummarized
           FROM ros_messages m
           LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
@@ -566,7 +642,7 @@ function createStatsTool(pool: pg.Pool): Tool {
             `\n**Conversations needing compaction (≥50 unsummarized):**\n` +
               needsCompaction.rows
                 .map(
-                  (r: any) =>
+                  (r) =>
                     `  ${r.agent}: ${Number(r.unsummarized).toLocaleString()} unsummarized (conv: ${r.conversation_id.slice(0, 8)}…)`,
                 )
                 .join('\n'),
@@ -574,7 +650,7 @@ function createStatsTool(pool: pg.Pool): Tool {
         }
 
         // --- HEALTH: Orphan summaries (no source messages) ---
-        const orphanSums = await pool.query(`
+        const orphanSums = await pool.query<UnsummarizedRow>(`
           SELECT COUNT(*) AS count
           FROM ros_summaries s
           LEFT JOIN ros_summary_sources ss ON ss.summary_id = s.id
@@ -582,11 +658,13 @@ function createStatsTool(pool: pg.Pool): Tool {
         `)
         const orphanCount = Number(orphanSums.rows[0].count)
         if (orphanCount > 0) {
-          sections.push(`\n**⚠️ Orphan leaf summaries (no source messages):** ${orphanCount}`)
+          sections.push(
+            `\n**⚠️ Orphan leaf summaries (no source messages):** ${String(orphanCount)}`,
+          )
         }
 
         // --- HEALTH: Summary tree depth ---
-        const treeDepth = await pool.query(`
+        const treeDepth = await pool.query<TreeDepthRow>(`
           SELECT MAX(depth) AS max_depth,
                  COUNT(*) FILTER (WHERE parent_id IS NULL AND kind != 'leaf') AS root_count,
                  COUNT(*) FILTER (WHERE parent_id IS NOT NULL) AS child_count
@@ -595,13 +673,13 @@ function createStatsTool(pool: pg.Pool): Tool {
         const td = treeDepth.rows[0]
         sections.push(
           `\n**Summary tree:**` +
-            `\n  Max depth: ${td.max_depth ?? 0}` +
+            `\n  Max depth: ${String(td.max_depth ?? 0)}` +
             `\n  Root summaries: ${td.root_count}` +
             `\n  Child summaries: ${td.child_count}`,
         )
 
         // --- HEALTH: Freshness ---
-        const freshness = await pool.query(`
+        const freshness = await pool.query<FreshnessRow>(`
           SELECT
             (SELECT MAX(created_at) FROM ros_messages) AS newest_message,
             (SELECT MAX(created_at) FROM ros_summaries) AS newest_summary
@@ -616,8 +694,9 @@ function createStatsTool(pool: pg.Pool): Tool {
         )
 
         return sections.join('\n')
-      } catch (err: any) {
-        return `Stats query failed: ${err.message}`
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        return `Stats query failed: ${msg}`
       }
     },
   }
@@ -659,13 +738,14 @@ async function queryLlm(
     })
 
     if (!response.ok) {
-      return `LLM synthesis failed: ${response.status} ${response.statusText}`
+      return `LLM synthesis failed: ${String(response.status)} ${response.statusText}`
     }
 
-    const data = (await response.json()) as Record<string, unknown>
-    return (data as any).choices?.[0]?.message?.content ?? 'No answer generated.'
-  } catch (err: any) {
-    return `Failed to synthesize answer: ${err.message}`
+    const data = (await response.json()) as LlmResponse
+    return data.choices?.[0]?.message?.content ?? 'No answer generated.'
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error)
+    return `Failed to synthesize answer: ${msg}`
   }
 }
 
@@ -680,7 +760,7 @@ function fmtDate(d: Date | null): string {
 function timeSince(d: Date): string {
   const ms = Date.now() - d.getTime()
   if (ms < 60_000) return 'just now'
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`
-  if (ms < MS_PER_DAY) return `${Math.floor(ms / 3_600_000)}h ago`
-  return `${Math.floor(ms / MS_PER_DAY)}d ago`
+  if (ms < 3_600_000) return `${String(Math.floor(ms / 60_000))}m ago`
+  if (ms < MS_PER_DAY) return `${String(Math.floor(ms / 3_600_000))}h ago`
+  return `${String(Math.floor(ms / MS_PER_DAY))}d ago`
 }

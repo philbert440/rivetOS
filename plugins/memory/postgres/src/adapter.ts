@@ -18,15 +18,32 @@ import pg from 'pg'
 import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types'
 import { SearchEngine } from './search.js'
 import { Expander } from './expand.js'
-import {
-  temporalDecay,
-  importanceForRole,
-  computeRelevance,
-  SUMMARY_IMPORTANCE,
-} from './scoring.js'
 
 const { Pool } = pg
 const MS_PER_DAY = 86_400_000
+
+// ---------------------------------------------------------------------------
+// Row interfaces
+// ---------------------------------------------------------------------------
+
+interface IdRow {
+  id: string
+}
+
+interface RecentMessageRow {
+  content: string
+  role: string
+  created_at: Date
+}
+
+interface SessionMessageRow {
+  role: string
+  content: string
+}
+
+interface SettingsRow {
+  settings: Record<string, unknown> | null
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -87,7 +104,7 @@ export class PostgresMemory implements Memory {
         entry.channel,
       )
 
-      const result = await client.query(
+      const result = await client.query<IdRow>(
         `INSERT INTO ros_messages
            (conversation_id, agent, channel, role, content,
             tool_name, tool_args, tool_result, metadata, created_at)
@@ -163,7 +180,7 @@ export class PostgresMemory implements Memory {
     const seen = new Set<string>()
 
     // 1. Recent messages from this agent's active conversations
-    const recent = await this.pool.query(
+    const recent = await this.pool.query<RecentMessageRow>(
       `SELECT m.content, m.role, m.created_at
        FROM ros_messages m
        JOIN ros_conversations c ON c.id = m.conversation_id
@@ -198,7 +215,7 @@ export class PostgresMemory implements Memory {
         if (seen.has(r.content)) continue
         seen.add(r.content)
         const age = Math.floor((Date.now() - r.createdAt.getTime()) / MS_PER_DAY)
-        const line = `[${r.agent}/${r.role}, ${age}d ago] ${r.content.slice(0, 500)}`
+        const line = `[${r.agent}/${r.role}, ${String(age)}d ago] ${r.content.slice(0, 500)}`
         tokenEstimate += Math.ceil(line.length / 4)
         if (tokenEstimate > maxTokens) break
         sections.push(line)
@@ -215,7 +232,7 @@ export class PostgresMemory implements Memory {
   async getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]> {
     const limit = options?.limit ?? 100
 
-    const result = await this.pool.query(
+    const result = await this.pool.query<SessionMessageRow>(
       `SELECT m.role, m.content
        FROM ros_messages m
        JOIN ros_conversations c ON c.id = m.conversation_id
@@ -245,7 +262,7 @@ export class PostgresMemory implements Memory {
   }
 
   async loadSessionSettings(sessionId: string): Promise<Record<string, unknown> | null> {
-    const result = await this.pool.query(
+    const result = await this.pool.query<SettingsRow>(
       `SELECT settings FROM ros_conversations
        WHERE session_key = $1 AND active = true
        ORDER BY updated_at DESC LIMIT 1`,
@@ -255,7 +272,7 @@ export class PostgresMemory implements Memory {
     if (result.rows.length === 0) return null
     const settings = result.rows[0].settings
     if (!settings || typeof settings !== 'object') return null
-    return settings as Record<string, unknown>
+    return settings
   }
 
   // -----------------------------------------------------------------------
@@ -277,7 +294,7 @@ export class PostgresMemory implements Memory {
     channel?: string,
   ): Promise<string> {
     // Try to find an active conversation for this session + agent
-    const existing = await client.query(
+    const existing = await client.query<IdRow>(
       `SELECT id FROM ros_conversations
        WHERE session_key = $1 AND agent = $2 AND active = true
        ORDER BY updated_at DESC LIMIT 1`,
@@ -289,7 +306,7 @@ export class PostgresMemory implements Memory {
     }
 
     // Create a new conversation
-    const result = await client.query(
+    const result = await client.query<IdRow>(
       `INSERT INTO ros_conversations (session_key, agent, channel, title, created_at, updated_at)
        VALUES ($1, $2, $3, $4, NOW(), NOW())
        RETURNING id`,

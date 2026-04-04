@@ -10,7 +10,70 @@ import pg from 'pg'
 
 const { Pool } = pg
 
-const CONNECTION_STRING = process.env.RIVETOS_PG_URL ?? process.env.RIVETOS_PG_URL ?? ''
+// ---------------------------------------------------------------------------
+// Row interfaces
+// ---------------------------------------------------------------------------
+
+interface CountRow {
+  n: number
+}
+
+interface RangeRow {
+  lo: number
+  hi: number
+}
+
+interface ConvMapRow {
+  old_id: number
+  new_id: string
+}
+
+interface MessageSourceRow {
+  message_id: number
+  conversation_id: number
+  role: string
+  content: string
+  created_at: Date
+  agent_id: string | null
+  tool_name: string | null
+  tool_input: string | null
+  tool_output: string | null
+}
+
+interface IdRow {
+  id: string
+}
+
+interface SummarySourceRow {
+  summary_id: string
+  conversation_id: number
+  kind: string
+  depth: number
+  content: string
+  descendant_count: number
+  earliest_at: Date | null
+  latest_at: Date | null
+  embedding: unknown
+  model: string | null
+  created_at: Date
+}
+
+interface ParentRow {
+  summary_id: string
+  parent_summary_id: string
+}
+
+interface SummaryMessageRow {
+  summary_id: string
+  message_id: number
+  ordinal: number
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+const CONNECTION_STRING = process.env.RIVETOS_PG_URL ?? ''
 
 const BATCH_SIZE = 2000
 const WORKERS = 4
@@ -21,7 +84,7 @@ const EMBEDDING_BATCH = 500
 // ---------------------------------------------------------------------------
 
 async function count(pool: pg.Pool, table: string): Promise<number> {
-  const res = await pool.query(`SELECT count(*)::int AS n FROM ${table}`)
+  const res = await pool.query<CountRow>(`SELECT count(*)::int AS n FROM ${table}`)
   return res.rows[0].n
 }
 
@@ -38,7 +101,7 @@ async function printCounts(pool: pg.Pool, label: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function buildConvMap(pool: pg.Pool): Promise<Map<number, string>> {
-  const res = await pool.query(`
+  const res = await pool.query<ConvMapRow>(`
     SELECT c.conversation_id AS old_id, rc.id AS new_id
     FROM conversations c
     JOIN ros_conversations rc
@@ -49,7 +112,7 @@ async function buildConvMap(pool: pg.Pool): Promise<Map<number, string>> {
   for (const row of res.rows) {
     map.set(row.old_id, row.new_id)
   }
-  console.log(`  Built conversation mapping: ${map.size} entries`)
+  console.log(`  Built conversation mapping: ${String(map.size)} entries`)
   return map
 }
 
@@ -66,7 +129,7 @@ async function migrateMessages(
   const totalMsgs = await count(pool, 'messages')
   console.log(`  Source: ${totalMsgs.toLocaleString()} messages`)
 
-  const rangeRes = await pool.query(
+  const rangeRes = await pool.query<RangeRow>(
     'SELECT min(message_id) AS lo, max(message_id) AS hi FROM messages',
   )
   const lo = rangeRes.rows[0].lo
@@ -88,7 +151,7 @@ async function migrateMessages(
       try {
         await client.query('BEGIN')
 
-        const msgRows = await client.query(
+        const msgRows = await client.query<MessageSourceRow>(
           `SELECT m.message_id, m.conversation_id, m.role, m.content, m.created_at,
                   c.agent_id,
                   tp.tool_name, tp.tool_input, tp.tool_output
@@ -120,7 +183,7 @@ async function migrateMessages(
           }
 
           // Insert WITHOUT embedding — skip HNSW entirely
-          const res = await client.query(
+          const res = await client.query<IdRow>(
             `INSERT INTO ros_messages
                (conversation_id, agent, channel, role, content,
                 tool_name, tool_args, tool_result,
@@ -151,10 +214,10 @@ async function migrateMessages(
         if (progressTotal % 10000 < BATCH_SIZE) {
           const rate = Math.round(progressTotal / elapsed)
           console.log(
-            `  ... ${progressTotal.toLocaleString()} messages (${rate}/s, ${elapsed.toFixed(0)}s)`,
+            `  ... ${progressTotal.toLocaleString()} messages (${String(rate)}/s, ${elapsed.toFixed(0)}s)`,
           )
         }
-      } catch (err) {
+      } catch (err: unknown) {
         await client.query('ROLLBACK')
         throw err
       } finally {
@@ -190,7 +253,7 @@ async function backfillEmbeddings(pool: pg.Pool): Promise<void> {
 
   // Join ros_messages to old messages via lcm_message_id in metadata
   // Process in batches to avoid locking everything
-  const totalRes = await pool.query(`
+  const totalRes = await pool.query<CountRow>(`
     SELECT count(*)::int AS n
     FROM ros_messages rm
     JOIN messages m ON m.message_id = (rm.metadata->>'lcm_message_id')::int
@@ -220,7 +283,7 @@ async function backfillEmbeddings(pool: pg.Pool): Promise<void> {
     if (updated % 5000 < EMBEDDING_BATCH) {
       const elapsed = (Date.now() - startTime) / 1000
       const rate = Math.round(updated / elapsed)
-      console.log(`  ... ${updated.toLocaleString()} embeddings (${rate}/s)`)
+      console.log(`  ... ${updated.toLocaleString()} embeddings (${String(rate)}/s)`)
     }
 
     // Safety: if nothing was updated, we're done
@@ -247,7 +310,7 @@ async function migrateSummaries(
   try {
     await client.query('BEGIN')
 
-    const sumRows = await client.query(
+    const sumRows = await client.query<SummarySourceRow>(
       `SELECT s.summary_id, s.conversation_id, s.kind, s.depth, s.content,
               s.descendant_count, s.earliest_at, s.latest_at,
               s.embedding, s.model, s.created_at
@@ -259,7 +322,7 @@ async function migrateSummaries(
       const newConvId = convMap.get(row.conversation_id)
       if (!newConvId) continue
 
-      const res = await client.query(
+      const res = await client.query<IdRow>(
         `INSERT INTO ros_summaries
            (conversation_id, depth, content, kind, message_count,
             earliest_at, latest_at, embedding, model, created_at)
@@ -283,11 +346,11 @@ async function migrateSummaries(
     }
 
     await client.query('COMMIT')
-    console.log(`  Migrated ${sumMap.size} summaries`)
+    console.log(`  Migrated ${String(sumMap.size)} summaries`)
 
     // Set parent_id
     await client.query('BEGIN')
-    const parentResult = await client.query(`
+    const parentResult = await client.query<ParentRow>(`
       SELECT DISTINCT ON (sp.summary_id)
         sp.summary_id, sp.parent_summary_id
       FROM summary_parents sp
@@ -307,7 +370,7 @@ async function migrateSummaries(
       }
     }
     await client.query('COMMIT')
-    console.log(`  Set parent_id for ${parentsSet} summaries`)
+    console.log(`  Set parent_id for ${String(parentsSet)} summaries`)
   } finally {
     client.release()
   }
@@ -322,14 +385,14 @@ async function migrateSummarySources(
 ): Promise<void> {
   console.log('\n[4] Migrating summary_sources...')
 
-  const rows = await pool.query(
+  const rows = await pool.query<SummaryMessageRow>(
     'SELECT summary_id, message_id, ordinal FROM summary_messages ORDER BY summary_id, ordinal',
   )
 
   let migrated = 0
   let batch: { sumId: string; msgId: string; ordinal: number }[] = []
 
-  const flush = async () => {
+  const flush = async (): Promise<void> => {
     if (batch.length === 0) return
     const client = await pool.connect()
     try {
@@ -369,7 +432,7 @@ async function migrate(): Promise<void> {
   const pool = new Pool({ connectionString: CONNECTION_STRING, max: WORKERS + 2 })
 
   console.log('=== RivetOS Memory Migration v2: LCM → ros_* ===')
-  console.log(`  Workers: ${WORKERS}, Batch size: ${BATCH_SIZE}`)
+  console.log(`  Workers: ${String(WORKERS)}, Batch size: ${String(BATCH_SIZE)}`)
   console.log(`  Strategy: Insert without embeddings → backfill after\n`)
 
   await printCounts(pool, 'BEFORE')
@@ -400,7 +463,7 @@ async function migrate(): Promise<void> {
   await pool.end()
 }
 
-migrate().catch((err) => {
+migrate().catch((err: unknown) => {
   console.error('❌ Fatal:', err)
   process.exit(1)
 })

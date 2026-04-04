@@ -27,6 +27,23 @@ const MANUAL_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback'
 const SCOPES =
   'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload'
 
+/** Shape of the token endpoint response */
+interface TokenResponse {
+  access_token: string
+  refresh_token: string
+  expires_in: number
+}
+
+function isTokenResponse(value: unknown): value is TokenResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'access_token' in value &&
+    'refresh_token' in value &&
+    'expires_in' in value
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -56,7 +73,7 @@ function base64url(buffer: Buffer): string {
   return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-async function generatePKCE(): Promise<{ verifier: string; challenge: string }> {
+function generatePKCE(): { verifier: string; challenge: string } {
   const verifier = base64url(randomBytes(32))
   const hash = createHash('sha256').update(verifier).digest()
   const challenge = base64url(hash)
@@ -109,11 +126,14 @@ export async function refreshAccessToken(refreshToken: string): Promise<OAuthTok
     throw new Error(`Token refresh failed (${response.status}): ${body}`)
   }
 
-  const data = JSON.parse(body)
+  const raw: unknown = JSON.parse(body)
+  if (!isTokenResponse(raw)) {
+    throw new Error(`Invalid token response: ${body.slice(0, 200)}`)
+  }
   return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresAt: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000, // 5 min buffer
+    accessToken: raw.access_token,
+    refreshToken: raw.refresh_token,
+    expiresAt: Date.now() + raw.expires_in * 1000 - 5 * 60 * 1000, // 5 min buffer
   }
 }
 
@@ -125,8 +145,8 @@ export async function refreshAccessToken(refreshToken: string): Promise<OAuthTok
  * Generate the authorization URL for the user to visit.
  * Returns the URL and the PKCE verifier (needed for code exchange).
  */
-export async function generateAuthUrl(): Promise<{ url: string; verifier: string }> {
-  const { verifier, challenge } = await generatePKCE()
+export function generateAuthUrl(): { url: string; verifier: string } {
+  const { verifier, challenge } = generatePKCE()
 
   const params = new URLSearchParams({
     code: 'true',
@@ -172,11 +192,14 @@ export async function exchangeCode(code: string, verifier: string): Promise<OAut
     throw new Error(`Code exchange failed (${response.status}): ${body}`)
   }
 
-  const data = JSON.parse(body)
+  const raw: unknown = JSON.parse(body)
+  if (!isTokenResponse(raw)) {
+    throw new Error(`Invalid token response: ${body.slice(0, 200)}`)
+  }
   return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresAt: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
+    accessToken: raw.access_token,
+    refreshToken: raw.refresh_token,
+    expiresAt: Date.now() + raw.expires_in * 1000 - 5 * 60 * 1000,
   }
 }
 
@@ -219,7 +242,7 @@ export class TokenManager {
   /**
    * Get a valid access token. Refreshes automatically if expired.
    */
-  async getAccessToken(): Promise<string> {
+  getAccessToken(): string {
     if (!this.tokens) {
       throw new Error('No Anthropic credentials. Run the OAuth login flow first.')
     }

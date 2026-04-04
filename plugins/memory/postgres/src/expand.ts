@@ -46,6 +46,31 @@ export interface ExpandResult {
 }
 
 // ---------------------------------------------------------------------------
+// Row interfaces
+// ---------------------------------------------------------------------------
+
+interface SummaryNodeRow {
+  id: string
+  conversation_id: string | null
+  kind: string
+  depth: number
+  content: string
+  message_count: number
+  earliest_at: Date | null
+  latest_at: Date | null
+  created_at: Date
+  model: string | null
+  access_count: number | null
+}
+
+interface SourceMessageRow {
+  id: string
+  role: string
+  content: string
+  created_at: Date
+}
+
+// ---------------------------------------------------------------------------
 // Expander
 // ---------------------------------------------------------------------------
 
@@ -60,7 +85,7 @@ export class Expander {
    * Describe a single summary node — metadata only.
    */
   async describe(summaryId: string): Promise<SummaryNode | null> {
-    const result = await this.pool.query(
+    const result = await this.pool.query<SummaryNodeRow>(
       `SELECT id, conversation_id, kind, depth, content, message_count,
               earliest_at, latest_at, created_at, model, access_count
        FROM ros_summaries
@@ -116,7 +141,7 @@ export class Expander {
    * Get direct children: summaries whose parent_id points to this summary.
    */
   private async getChildren(summaryId: string): Promise<SummaryNode[]> {
-    const result = await this.pool.query(
+    const result = await this.pool.query<SummaryNodeRow>(
       `SELECT id, conversation_id, kind, depth, content, message_count,
               earliest_at, latest_at, created_at, model, access_count
        FROM ros_summaries
@@ -132,7 +157,7 @@ export class Expander {
    * Get source messages linked via ros_summary_sources.
    */
   private async getSourceMessages(summaryId: string): Promise<SourceMessage[]> {
-    const result = await this.pool.query(
+    const result = await this.pool.query<SourceMessageRow>(
       `SELECT m.id, m.role, m.content, m.created_at
        FROM ros_messages m
        JOIN ros_summary_sources ss ON ss.message_id = m.id
@@ -153,7 +178,7 @@ export class Expander {
   // Row → domain object
   // -----------------------------------------------------------------------
 
-  private toNode(row: any): SummaryNode {
+  private toNode(row: SummaryNodeRow): SummaryNode {
     return {
       summaryId: row.id,
       conversationId: row.conversation_id,

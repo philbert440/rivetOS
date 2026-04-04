@@ -21,6 +21,36 @@
 import pg from 'pg'
 
 // ---------------------------------------------------------------------------
+// Row interfaces
+// ---------------------------------------------------------------------------
+
+interface CandidateRow {
+  conversation_id: string
+  unsummarized: string
+}
+
+interface CompactMessageRow {
+  id: string
+  role: string
+  content: string
+  agent: string
+  created_at: Date
+}
+
+interface IdRow {
+  id: string
+}
+
+interface LlmResponse {
+  choices?: Array<{
+    message?: {
+      content?: string | null
+      reasoning_content?: string | null
+    }
+  }>
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -86,14 +116,14 @@ export class BackgroundCompactor {
   start(): void {
     if (this.timer) return
     console.log(
-      `[Compactor] Starting (every ${this.intervalMs / 60_000}min, ` +
-        `threshold ${this.minUnsummarized} msgs, batch ${this.batchSize})`,
+      `[Compactor] Starting (every ${String(this.intervalMs / 60_000)}min, ` +
+        `threshold ${String(this.minUnsummarized)} msgs, batch ${String(this.batchSize)})`,
     )
     console.log(`[Compactor] Endpoint: ${this.endpoint} (model: ${this.model})`)
 
     // Delay first run by 60s to let the system settle on boot
-    setTimeout(() => this.cycle(), 60_000)
-    this.timer = setInterval(() => this.cycle(), this.intervalMs)
+    setTimeout(() => void this.cycle(), 60_000)
+    this.timer = setInterval(() => void this.cycle(), this.intervalMs)
   }
 
   stop(): void {
@@ -118,8 +148,7 @@ export class BackgroundCompactor {
 
     try {
       // Find conversations with enough unsummarized messages.
-      // "Unsummarized" = messages not referenced by any ros_summary_sources row.
-      const candidates = await this.pool.query(
+      const candidates = await this.pool.query<CandidateRow>(
         `SELECT m.conversation_id, COUNT(*) AS unsummarized
          FROM ros_messages m
          LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
@@ -138,17 +167,19 @@ export class BackgroundCompactor {
         return
       }
 
-      console.log(`[Compactor] ${candidates.rows.length} conversation(s) need compaction`)
+      console.log(`[Compactor] ${String(candidates.rows.length)} conversation(s) need compaction`)
 
       for (const row of candidates.rows) {
         try {
           await this.compactConversation(row.conversation_id)
-        } catch (err: any) {
-          console.error(`[Compactor] Failed conversation ${row.conversation_id}: ${err.message}`)
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : String(error)
+          console.error(`[Compactor] Failed conversation ${row.conversation_id}: ${msg}`)
         }
       }
-    } catch (err: any) {
-      console.error(`[Compactor] Cycle failed: ${err.message}`)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error(`[Compactor] Cycle failed: ${msg}`)
     } finally {
       this.running = false
     }
@@ -160,7 +191,7 @@ export class BackgroundCompactor {
 
   private async compactConversation(conversationId: string): Promise<void> {
     // Get the oldest N unsummarized messages
-    const messages = await this.pool.query(
+    const messages = await this.pool.query<CompactMessageRow>(
       `SELECT m.id, m.role, m.content, m.agent, m.created_at
        FROM ros_messages m
        LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
@@ -177,7 +208,7 @@ export class BackgroundCompactor {
 
     // Format for the LLM
     const formatted = messages.rows
-      .map((m: any) => `[${m.role}] ${m.content.slice(0, MAX_MSG_CONTENT_FOR_PROMPT)}`)
+      .map((m) => `[${m.role}] ${m.content.slice(0, MAX_MSG_CONTENT_FOR_PROMPT)}`)
       .join('\n')
 
     // Call Rivet Local for summarization
@@ -188,7 +219,7 @@ export class BackgroundCompactor {
     }
 
     // Find the conversation's latest leaf summary to chain as parent
-    const latestLeaf = await this.pool.query(
+    const latestLeaf = await this.pool.query<IdRow>(
       `SELECT id FROM ros_summaries
        WHERE conversation_id = $1 AND kind = 'leaf'
        ORDER BY created_at DESC LIMIT 1`,
@@ -201,7 +232,7 @@ export class BackgroundCompactor {
     try {
       await client.query('BEGIN')
 
-      const sumResult = await client.query(
+      const sumResult = await client.query<IdRow>(
         `INSERT INTO ros_summaries
            (conversation_id, parent_id, depth, content, kind,
             message_count, earliest_at, latest_at, model)
@@ -232,9 +263,9 @@ export class BackgroundCompactor {
 
       console.log(
         `[Compactor] Created summary ${summaryId} ` +
-          `(${messages.rows.length} messages, conversation ${conversationId})`,
+          `(${String(messages.rows.length)} messages, conversation ${conversationId})`,
       )
-    } catch (err) {
+    } catch (err: unknown) {
       await client.query('ROLLBACK')
       throw err
     } finally {
@@ -264,16 +295,17 @@ export class BackgroundCompactor {
       })
 
       if (!response.ok) {
-        console.error(`[Compactor] LLM returned ${response.status}: ${response.statusText}`)
+        console.error(`[Compactor] LLM returned ${String(response.status)}: ${response.statusText}`)
         return null
       }
 
-      const data = (await response.json()) as Record<string, unknown>
-      const message = (data as any).choices?.[0]?.message
+      const data = (await response.json()) as LlmResponse
+      const message = data.choices?.[0]?.message
       // Prefer content, fall back to reasoning_content (QwQ/reasoning models)
-      return message?.content || message?.reasoning_content || null
-    } catch (err: any) {
-      console.error(`[Compactor] LLM call failed: ${err.message}`)
+      return message?.content ?? message?.reasoning_content ?? null
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error(`[Compactor] LLM call failed: ${msg}`)
       return null
     }
   }

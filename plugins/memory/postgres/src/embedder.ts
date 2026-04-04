@@ -12,6 +12,21 @@
 import pg from 'pg'
 
 // ---------------------------------------------------------------------------
+// Row interfaces
+// ---------------------------------------------------------------------------
+
+interface EmbeddableRow {
+  id: string
+  content: string
+}
+
+interface EmbeddingResponse {
+  data?: Array<{
+    embedding?: number[]
+  }>
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -49,11 +64,11 @@ export class BackgroundEmbedder {
     if (this.timer) return
     const interval = this.config.intervalMs ?? 30_000
     const batch = this.config.batchSize ?? 10
-    console.log(`[Embedder] Starting (every ${interval / 1000}s, batch ${batch})`)
+    console.log(`[Embedder] Starting (every ${String(interval / 1000)}s, batch ${String(batch)})`)
 
     // Run immediately, then on interval
-    this.cycle()
-    this.timer = setInterval(() => this.cycle(), interval)
+    void this.cycle()
+    this.timer = setInterval(() => void this.cycle(), interval)
   }
 
   stop(): void {
@@ -84,10 +99,11 @@ export class BackgroundEmbedder {
       total += await this.embedTable('ros_summaries', batch)
 
       if (total > 0) {
-        console.log(`[Embedder] Embedded ${total} items`)
+        console.log(`[Embedder] Embedded ${String(total)} items`)
       }
-    } catch (err: any) {
-      console.error(`[Embedder] Cycle failed: ${err.message}`)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error(`[Embedder] Cycle failed: ${msg}`)
     } finally {
       this.running = false
     }
@@ -98,7 +114,7 @@ export class BackgroundEmbedder {
    * Returns the number of successfully embedded rows.
    */
   private async embedTable(table: string, limit: number): Promise<number> {
-    const result = await this.pool.query(
+    const result = await this.pool.query<EmbeddableRow>(
       `SELECT id, content FROM ${table}
        WHERE embedding IS NULL
          AND content IS NOT NULL
@@ -119,8 +135,9 @@ export class BackgroundEmbedder {
           ])
           embedded++
         }
-      } catch (err: any) {
-        console.error(`[Embedder] Failed ${table} ${row.id}: ${err.message}`)
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        console.error(`[Embedder] Failed ${table} ${row.id}: ${msg}`)
       }
     }
 
@@ -143,7 +160,7 @@ export class BackgroundEmbedder {
 
     if (!response.ok) return null
 
-    const data = (await response.json()) as { data: Array<{ embedding: number[] }> }
+    const data = (await response.json()) as EmbeddingResponse
     return data.data?.[0]?.embedding ?? null
   }
 }
