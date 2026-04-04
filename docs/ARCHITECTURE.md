@@ -5,7 +5,7 @@
 1. **Domain-Driven Design** — Core domain is pure business logic. No framework dependencies, no I/O, no platform specifics. Plugins adapt the outside world to the domain.
 2. **Clean Architecture** — Dependencies point inward. Core knows nothing about Telegram, Discord, PostgreSQL, or Anthropic. Plugins know about core, never the reverse.
 3. **Stability over features** — LTS releases. A working version stays working.
-4. **Own every line** — MIT licensed. No CLA, no dual-licensing. Fork-friendly.
+4. **Own every line** — Apache 2.0 licensed. No CLA, no dual-licensing. Fork-friendly. Patent grant included.
 5. **Boring technology** — TypeScript, Node.js, Nx. No experiments in the foundation.
 6. **Example-driven extensibility** — Core plugins are the reference implementation. Adding a new channel, provider, or tool should be obvious from reading an existing one.
 
@@ -17,9 +17,12 @@
 │                                                     │
 │  Channels    Providers    Memory    Tools            │
 │  Telegram    Anthropic    Postgres  Shell            │
-│  Discord     xAI         (future)  Web Search       │
-│  CLI         Ollama                File I/O          │
-│  Voice       OpenAI-compat         Coding Pipeline   │
+│  Discord     Google                 File I/O         │
+│  Agent       xAI                    Search (glob/grep)│
+│  Voice       Ollama                 Web Search/Fetch  │
+│  CLI         OpenAI-compat         Interaction        │
+│                                    MCP Client         │
+│                                    Coding Pipeline    │
 │                                                     │
 │  All plugins implement core interfaces.             │
 │  All plugins are replaceable.                       │
@@ -27,20 +30,31 @@
 ├─────────────────────────────────────────────────────┤
 │                  Application Layer                   │
 │                                                     │
-│  Runtime         — orchestrates startup, shutdown,   │
-│                    wires plugins together             │
-│  Config Loader   — reads TOML, resolves env vars,    │
-│                    instantiates plugins               │
+│  Boot         — composition root, reads YAML config, │
+│                  wires plugins via registrars         │
+│  Runtime      — thin compositor, registration,       │
+│                  routing, lifecycle                   │
+│  TurnHandler  — single message turn processing       │
+│  CLI          — rivetos start/stop/status/doctor      │
 │                                                     │
 │  This layer composes domain + plugins.              │
 │  It is the only layer that knows concrete types.    │
 ├─────────────────────────────────────────────────────┤
 │                    Domain Layer                       │
 │                                                     │
-│  Agent Loop      — message → LLM → tools → response │
-│  Router          — inbound message → agent → provider│
-│  Workspace       — load/inject workspace files       │
-│  Lifecycle       — start, stop, interrupt, steer     │
+│  Agent Loop   — message → LLM → tools → response    │
+│  Router       — inbound message → agent → provider   │
+│  Workspace    — load/inject workspace files          │
+│  Queue        — message ordering, command intercept  │
+│  Hooks        — composable pipeline (before/after)   │
+│  Delegation   — intra-instance agent-to-agent        │
+│  Subagent     — child session management             │
+│  Skills       — skill discovery and matching         │
+│  Heartbeat    — periodic scheduling                  │
+│  Safety       — shell danger, workspace fence, audit │
+│  Fallback     — provider fallback chains             │
+│  Auto-Actions — post-tool automation (format, lint)  │
+│  Sessions     — session lifecycle and history        │
 │                                                     │
 │  Pure logic. No I/O. Depends only on interfaces     │
 │  defined in @rivetos/types.                         │
@@ -49,7 +63,7 @@
 │                                                     │
 │  Provider, Channel, Tool, Memory, Workspace          │
 │  Message, ToolCall, InboundMessage, OutboundMessage  │
-│  AgentConfig, RuntimeConfig, StreamEvent             │
+│  AgentConfig, RuntimeConfig, StreamEvent, HookConfig │
 │                                                     │
 │  Interfaces only. Zero dependencies. Leaf package.  │
 │  Every other package depends on this. Nothing else. │
@@ -95,30 +109,44 @@ Workspace    — owns file loading and system prompt construction.
 ## System Overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      RivetOS Runtime                     │
-│                                                          │
-│  ┌──────────┐    ┌──────────┐    ┌──────────────────┐   │
-│  │ Channels │───▶│  Router  │───▶│   Agent Loop     │   │
-│  │ (plugin) │    │ (domain) │    │   (domain)       │   │
-│  │          │    │          │    │                   │   │
-│  │ Telegram │    │ message  │    │ build context     │   │
-│  │ Discord  │    │  → agent │    │ call provider     │   │
-│  │ CLI      │    │  → prov  │    │ execute tools     │   │
-│  │ Voice    │    │          │    │ check abort/steer │   │
-│  └──────────┘    └──────────┘    └────────┬──────────┘   │
-│       ▲                                    │              │
-│       │              ┌─────────────────────┘              │
-│       │              ▼                                    │
-│  ┌──────────┐    ┌──────────┐    ┌──────────────────┐   │
-│  │ Response │◀───│Workspace │    │     Memory        │   │
-│  │ sent to  │    │ (domain) │    │    (plugin)       │   │
-│  │ channel  │    │          │    │                   │   │
-│  │          │    │ SOUL.md  │    │ append transcript  │   │
-│  │          │    │ AGENTS.md│    │ search context     │   │
-│  │          │    │ memory/  │    │ hybrid FTS+vector  │   │
-│  └──────────┘    └──────────┘    └──────────────────┘   │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                       RivetOS Runtime                         │
+│                                                               │
+│  ┌──────────┐    ┌──────────┐    ┌────────────────────────┐  │
+│  │ Channels │───▶│  Router  │───▶│     Turn Handler       │  │
+│  │ (plugin) │    │ (domain) │    │     (application)      │  │
+│  │          │    │          │    │                         │  │
+│  │ Telegram │    │ message  │    │ hooks → media → loop   │  │
+│  │ Discord  │    │  → agent │    │  → stream → respond    │  │
+│  │ Agent    │    │  → prov  │    │  → memory append       │  │
+│  │ Voice    │    │          │    │                         │  │
+│  │ CLI      │    │          │    │ Delegates to AgentLoop  │  │
+│  └──────────┘    └──────────┘    └───────────┬────────────┘  │
+│       ▲                                       │               │
+│       │              ┌────────────────────────┘               │
+│       │              ▼                                        │
+│  ┌──────────┐    ┌──────────┐    ┌──────────────────────┐    │
+│  │ Response │◀───│Workspace │    │     Memory            │    │
+│  │ sent to  │    │ (domain) │    │    (plugin)           │    │
+│  │ channel  │    │          │    │                       │    │
+│  │          │    │ SOUL.md  │    │ append transcript      │    │
+│  │          │    │ AGENTS.md│    │ search context         │    │
+│  │          │    │ memory/  │    │ hybrid FTS+vector      │    │
+│  └──────────┘    └──────────┘    └──────────────────────┘    │
+│                                                               │
+│  ┌──────────────────────────────────────────────────────┐    │
+│  │                    Boot Layer                         │    │
+│  │                                                      │    │
+│  │  Config loader → Registrars → Lifecycle              │    │
+│  │                                                      │    │
+│  │  registrars/providers.ts  — instantiate providers     │    │
+│  │  registrars/channels.ts   — instantiate channels      │    │
+│  │  registrars/hooks.ts      — wire safety/fallback/etc  │    │
+│  │  registrars/tools.ts      — register all tools        │    │
+│  │  registrars/memory.ts     — wire memory backend       │    │
+│  │  registrars/agents.ts     — delegation/subagent/skills│    │
+│  └──────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Message Lifecycle
@@ -127,37 +155,40 @@ Workspace    — owns file loading and system prompt construction.
 1. Channel (plugin) receives inbound message
 2. Runtime (application) passes to Router (domain)
 3. Router determines: which agent? which provider?
-4. Runtime asks Workspace (domain) to build system prompt
-5. Runtime asks Memory (plugin) for relevant transcript context
-6. Runtime creates AgentLoop (domain) for this turn:
-   a. Send messages + tools to Provider (plugin)
-   b. If text response → done
-   c. If tool calls → execute via Tool (plugin) → append results → go to (a)
-   d. Check AbortSignal between iterations (/stop)
-   e. Check steer queue between iterations (/steer)
-   f. Max iteration limit prevents runaway
-7. Runtime sends response back via Channel (plugin)
-8. Runtime appends user message + response to Memory (plugin)
+4. Turn Handler creates a turn:
+   a. Execute turn:before hooks
+   b. Build system prompt from Workspace (domain)
+   c. Resolve attachments via Media module
+   d. Create AgentLoop (domain) for this turn:
+      i.   Send messages + tools to Provider (plugin)
+      ii.  If text response → stream to channel
+      iii. If tool calls → execute via Tool (plugin) → append results → go to (i)
+      iv.  Check AbortSignal between iterations (/stop)
+      v.   Check steer queue between iterations (/steer)
+      vi.  Max iteration limit prevents runaway (safety cap)
+   e. Execute turn:after hooks
+5. Turn Handler sends response back via Channel (plugin)
+6. Turn Handler appends user message + response to Memory (plugin)
 ```
 
-Notice: the domain layer (steps 3, 4, 6) never touches I/O. It works with interfaces. The application layer (Runtime) is the compositor that wires real plugins to domain logic.
+Notice: the domain layer (steps 3, 4d) never touches I/O. It works with interfaces. The application layer (Turn Handler) is the compositor that wires real plugins to domain logic.
 
 ## Monorepo Structure
 
 ```
 rivetOS/
-  docs/                              ← architecture, guides
+  docs/                              ← architecture, design docs
   packages/
     types/                           ← interfaces only, zero deps
       src/
         index.ts                     ← all exports
-        message.ts                   ← Message, ToolCall
-        provider.ts                  ← Provider, LLMResponse
+        message.ts                   ← Message, ToolCall, ContentPart
+        provider.ts                  ← Provider, LLMResponse, StreamEvent
         channel.ts                   ← Channel, InboundMessage, OutboundMessage
-        tool.ts                      ← Tool, ToolDefinition
+        tool.ts                      ← Tool, ToolDefinition, ToolResult
         memory.ts                    ← Memory, MemoryEntry, MemorySearchResult
         workspace.ts                 ← Workspace, WorkspaceFile
-        config.ts                    ← AgentConfig, RuntimeConfig
+        config.ts                    ← AgentConfig, RuntimeConfig, HookConfig
         events.ts                    ← StreamEvent, StreamHandler
     core/                            ← domain + application layer
       src/
@@ -165,34 +196,66 @@ rivetOS/
           loop.ts                    ← AgentLoop — the turn executor
           router.ts                  ← Router — message → agent → provider
           workspace.ts               ← WorkspaceLoader — file loading + prompt building
-        runtime.ts                   ← Runtime — the compositor/orchestrator
-        config.ts                    ← Config loader (TOML → RuntimeConfig)
-        index.ts                     ← public API
+          queue.ts                   ← MessageQueue — ordering, dedup
+          hooks.ts                   ← HookPipelineImpl — composable async pipeline
+          delegation.ts              ← DelegationEngine — intra-instance delegation
+          subagent.ts                ← SubagentManagerImpl — child sessions
+          skills.ts                  ← SkillManager — discovery and matching
+          heartbeat.ts               ← HeartbeatRunner — periodic scheduling
+          safety-hooks.ts            ← Shell danger, workspace fence, audit
+          fallback.ts                ← Provider fallback chains
+          auto-actions.ts            ← Post-tool automation
+          session-hooks.ts           ← Session lifecycle hooks
+          constants.ts               ← Shared constants
+        runtime/
+          runtime.ts                 ← Runtime — thin compositor, registration
+          turn-handler.ts            ← TurnHandler — single turn processing
+          media.ts                   ← Attachment resolution, download, multimodal
+          streaming.ts               ← StreamManager — stream events → channel
+          sessions.ts                ← Session lifecycle and history
+          commands.ts                ← Slash command processing
+          index.ts                   ← Public API
+        index.ts                     ← Package exports
+    boot/                            ← composition root
+      src/
+        index.ts                     ← boot() — load config, call registrars, start
+        config.ts                    ← Config loader (YAML → RuntimeConfig)
+        validate.ts                  ← Config schema validation
+        lifecycle.ts                 ← PID file, signals, shutdown
+        registrars/
+          providers.ts               ← Instantiate and register providers
+          channels.ts                ← Instantiate and register channels
+          hooks.ts                   ← Wire safety, fallback, auto-actions, sessions
+          tools.ts                   ← Register all tool plugins
+          memory.ts                  ← Wire memory backend
+          agents.ts                  ← Delegation, subagent, skills registration
+    cli/                             ← command-line interface
+      src/
+        index.ts                     ← Entry point
+        commands/                    ← start, stop, status, doctor, config, etc.
   plugins/
     channels/
       telegram/                      ← grammY, Telegram Bot API
-        src/index.ts
-        README.md                    ← how to add a channel (reference example)
       discord/                       ← discord.js v14
+      agent/                         ← HTTP agent-to-agent channel
       voice-discord/                 ← xAI Realtime API
-      cli/                           ← local terminal (dev/testing)
     providers/
-      anthropic/                     ← Claude (native Messages API)
-        src/index.ts
-        README.md                    ← how to add a provider (reference example)
+      anthropic/                     ← Claude (native Messages API + OAuth)
+      google/                        ← Gemini (Generative Language API)
       xai/                           ← Grok
       ollama/                        ← Ollama (native API)
       openai-compat/                 ← Any OpenAI-compatible endpoint
     memory/
-      postgres/                      ← full transcript + hybrid search
-        src/index.ts
-        README.md                    ← how to add a memory backend
+      postgres/                      ← Full transcript + hybrid search + summary DAG
     tools/
-      shell/                         ← shell command execution
-      file/                          ← file read/write/search
-      web-search/                    ← web search
-      web-fetch/                     ← URL fetch + extraction
-      coding-pipeline/               ← build → review → validate loop
+      shell/                         ← Shell command execution with safety
+      file/                          ← file_read, file_write, file_edit
+      search/                        ← search_glob, search_grep
+      web-search/                    ← web_search, web_fetch
+      interaction/                   ← ask_user, todo
+      mcp-client/                    ← MCP server connection + tool discovery
+      coding-pipeline/               ← Build → review → validate loop
+  skills/                            ← Optional per-instance skills
 ```
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
@@ -205,7 +268,8 @@ Every plugin directory includes a README.md that serves as documentation AND a g
 interface Provider {
   id: string;
   name: string;
-  chat(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): Promise<LLMResponse>;
+  chat(messages: Message[], tools?: ToolDefinition[], options?: ProviderOptions): Promise<LLMResponse>;
+  stream(messages: Message[], tools?: ToolDefinition[], options?: ProviderOptions): AsyncIterable<StreamEvent>;
   isAvailable(): Promise<boolean>;
 }
 ```
@@ -218,13 +282,20 @@ Reference implementation: `plugins/providers/anthropic/`
 interface Channel {
   id: string;
   platform: string;
+  maxMessageLength?: number;
   start(): Promise<void>;
   stop(): Promise<void>;
-  send(message: OutboundMessage): Promise<string | null>;
-  onMessage(handler: (message: InboundMessage) => Promise<void>): void;
-  onCommand(handler: (command: string, args: string, message: InboundMessage) => Promise<void>): void;
+  send(channelId: string, text: string, options?: SendOptions): Promise<string | null>;
+  edit(messageId: string, text: string, channelId: string): Promise<string | null>;
+  react?(messageId: string, emoji: string, channelId: string): Promise<void>;
+  startTyping?(channelId: string): void;
+  stopTyping?(channelId: string): void;
+  onMessage(handler: MessageHandler): void;
+  onCommand(handler: CommandHandler): void;
 }
 ```
+
+Message splitting and typing indicators are the channel's responsibility — each plugin handles its own platform limits internally. The runtime never knows about message length or typing refresh intervals.
 
 Reference implementation: `plugins/channels/telegram/`
 
@@ -235,7 +306,7 @@ interface Tool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  execute(args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
+  execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
 }
 ```
 
@@ -246,8 +317,8 @@ Reference implementation: `plugins/tools/shell/`
 ```typescript
 interface Memory {
   append(entry: MemoryEntry): Promise<string>;
-  search(query: string, options?: { agent?: string; limit?: number }): Promise<MemorySearchResult[]>;
-  getContextForTurn(query: string, agent: string, options?: { maxTokens?: number }): Promise<string>;
+  search(query: string, options?: SearchOptions): Promise<MemorySearchResult[]>;
+  getContextForTurn(query: string, agent: string, options?: ContextOptions): Promise<string>;
 }
 ```
 
@@ -255,22 +326,23 @@ Reference implementation: `plugins/memory/postgres/`
 
 ## Routing Model
 
-### Current: Static binding
+### Static binding (current)
 
-```toml
-[channels.discord]
-channel_bindings = { "channel_id_1" = "opus", "channel_id_2" = "grok" }
+```yaml
+channels:
+  discord:
+    channel_bindings:
+      "channel_id_1": opus
+      "channel_id_2": grok
 ```
 
 Message arrives in channel → agent determined by binding → provider determined by agent config.
 
-### Future (if needed): Smart routing
+### Inter-agent messaging
 
-Query classification → tier → provider. Only build this when static routing isn't enough.
+Agent channel plugin (`@rivetos/channel-agent`) exposes an HTTP endpoint. Agents send messages to peers via the `agent_message` tool. Incoming agent messages are processed through the full pipeline — memory, hooks, tools, everything.
 
 ## Interrupt Model
-
-The thing that broke OpenClaw. Getting this right matters.
 
 ### /stop — Abort current turn
 - Each turn creates an `AbortController`
@@ -279,7 +351,7 @@ The thing that broke OpenClaw. Getting this right matters.
   - Provider `chat()` (cancels HTTP request via fetch signal)
   - Tool `execute()` (cancels shell commands, etc.)
   - Checked between tool iterations in AgentLoop
-- Response: immediate. No queue delays. No "processing, please wait."
+- Response: immediate. No queue delays.
 
 ### /steer — Inject mid-turn context
 - Pushes a message onto the AgentLoop's steer queue
@@ -291,56 +363,56 @@ The thing that broke OpenClaw. Getting this right matters.
 - Clears in-memory conversation history
 - Transcript in postgres is unaffected (it's permanent)
 
-### Why this works where OpenClaw failed
-OpenClaw's interrupt model was built on queue modes (collect/steer/interrupt) that coalesced messages and processed them after the current turn. When the current turn was stuck in a long exec call, /stop went into the queue and waited. RivetOS skips the queue entirely — AbortController is synchronous signal propagation. When you say stop, the fetch call is cancelled mid-flight.
+### Why this works
+AbortController is synchronous signal propagation. When you say stop, the fetch call is cancelled mid-flight. No queue modes, no message coalescing, no waiting for the current turn to finish.
+
+## Hook System
+
+Composable async pipeline with priority ordering (0-99):
+
+**Lifecycle events:** `provider:before`, `provider:after`, `provider:error`, `tool:before`, `tool:after`, `turn:before`, `turn:after`, `session:start`, `session:end`, `compact:before`, `compact:after`, `delegation:before`, `delegation:after`
+
+**Built-in hooks (wired via boot registrars):**
+- **Safety hooks** — Shell danger blocker (P10), workspace fence (P15), custom rules (P20), audit logger (P90)
+- **Fallback chains** — Cross-provider failover on 429/503/timeout
+- **Auto-actions** — Post-tool format/lint/test (opt-in)
+- **Session hooks** — Daily context loading, session summaries, auto-commit
 
 ## Configuration
 
-TOML. Not JSON (too fragile), not YAML (too ambiguous).
+YAML with `${ENV_VAR}` resolution. API keys always via environment variables.
 
-```toml
-[runtime]
-workspace = "~/.rivetos/workspace"
-default_agent = "opus"
-max_tool_iterations = 15
+```yaml
+runtime:
+  workspace: ~/.rivetos/workspace
+  default_agent: opus
+  max_tool_iterations: 75
 
-[agents.opus]
-provider = "anthropic"
+agents:
+  opus:
+    provider: anthropic
+    default_thinking: medium
+    fallbacks: ['google:gemini-2.5-pro']
+  grok:
+    provider: xai
 
-[agents.grok]
-provider = "xai"
+providers:
+  anthropic:
+    model: claude-opus-4-6
+  xai:
+    model: grok-4-1-fast
 
-[agents.local]
-provider = "ollama"
+channels:
+  telegram:
+    owner_id: "your-telegram-user-id"
+  discord:
+    channel_bindings:
+      "channel_id": opus
 
-[providers.anthropic]
-model = "claude-opus-4-6"
-max_tokens = 8192
-# api_key via env: ANTHROPIC_API_KEY
-
-[providers.xai]
-model = "grok-4-1-fast"
-# api_key via env: XAI_API_KEY
-
-[providers.ollama]
-base_url = "http://localhost:11434"
-model = "qwen3.5:27b"
-
-[channels.telegram]
-# bot_token via env: TELEGRAM_BOT_TOKEN
-owner_id = "8093148723"
-allowed_users = ["8093148723"]
-
-[channels.discord]
-# bot_token via env: DISCORD_BOT_TOKEN
-owner_id = "..."
-channel_bindings = { "ch1" = "opus", "ch2" = "grok" }
-
-[memory.postgres]
-# connection_string via env: RIVETOS_PG_URL
+memory:
+  postgres:
+    connection_string: ${RIVETOS_PG_URL}
 ```
-
-**Rule: API keys and secrets always via environment variables. Never in config files.**
 
 ## LTS Strategy
 
@@ -350,16 +422,3 @@ channel_bindings = { "ch1" = "opus", "ch2" = "grok" }
   - No new features, no breaking changes
   - Maintained for 12 months minimum
 - Semantic versioning: MAJOR.MINOR.PATCH
-
-## Open Questions
-
-1. **Config format** — TOML vs YAML?
-2. **Heartbeat/cron** — Core domain or plugin?
-3. **Multi-instance** — One process with multiple agents, or one process per agent?
-4. **Streaming** — Stream LLM responses to channels in real-time, or wait for complete?
-5. **Plugin discovery** — Explicit in config, or auto-discover from plugins/ directory?
-6. **Existing data** — Migration for 66K messages in phil_memory?
-7. **Voice** — Same process or separate? Different resource profile (WebSocket, audio).
-8. **Web dashboard** — Yes / no / later?
-9. **File watching** — Hot-reload workspace files on change, or restart only?
-10. **Session persistence** — History survives restarts (from postgres), or fresh each time?

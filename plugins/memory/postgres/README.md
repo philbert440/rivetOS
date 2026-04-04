@@ -14,7 +14,7 @@ RivetOS Memory System — persistent transcript storage with hybrid-scored searc
 │  adapter.ts       →   PostgresMemory (implements Memory)│
 │  search.ts        →   SearchEngine (hybrid scoring)     │
 │  expand.ts        →   Expander (summary DAG traversal)  │
-│  tools.ts         →   Agent tools (memory_grep, etc.)   │
+│  tools.ts         →   Agent tools (memory_search, etc.) │
 ├─────────────────────────────────────────────────────────┤
 │  embedder.ts      →   Background: Nemotron embeddings   │
 │  compactor.ts     →   Background: Rivet Local summaries │
@@ -28,7 +28,7 @@ RivetOS Memory System — persistent transcript storage with hybrid-scored searc
 - **scoring.ts** — Pure functions, zero imports beyond constants. Defines the relevance formula and exports SQL fragments for database-side evaluation. You can unit test this without a database.
 - **adapter.ts** — The `PostgresMemory` class implements `Memory` from `@rivetos/types`. This is the composition root: it owns the pool and instantiates `SearchEngine` and `Expander` internally.
 - **search.ts / expand.ts** — Data-access engines. They take a `pg.Pool` and execute queries. They use scoring constants from `scoring.ts` but never call LLMs or external services.
-- **tools.ts** — Thin tool wrappers around `SearchEngine` and `Expander`. Each tool implements the `Tool` interface from `@rivetos/types`. The `memory_expand_query` tool calls an LLM endpoint.
+- **tools.ts** — Thin tool wrappers around `SearchEngine` and `Expander`. Each tool implements the `Tool` interface from `@rivetos/types`.
 - **embedder.ts / compactor.ts** — Background services on timers. They own their own pools (small, max 2 connections) and run independently of the message pipeline.
 
 ## Tables (ros_* prefix)
@@ -54,17 +54,16 @@ Access tracking: when a message or summary is returned in search results, its `a
 
 | Tool | Description |
 |------|-------------|
-| `memory_grep` | Search across messages and summaries (FTS, trigram, regex) |
-| `memory_expand` | Drill into a summary → children + source messages |
-| `memory_describe` | Metadata for a single summary node |
-| `memory_expand_query` | Ask a question answered from expanded memory context via Rivet Local |
+| `memory_search` | Unified search across messages and summaries. Auto-expands top summary hits to children/source messages. Supports FTS, trigram, and regex modes. Agent/date filters, optional LLM synthesis. |
+| `memory_browse` | Chronological message browsing. For reviewing sessions and catching up on activity. |
+| `memory_stats` | System health diagnostics. Embedding queue depth, unsummarized message counts, compaction status, summary tree depth, embedding coverage. |
 
 ## Config (in config.yaml)
 
 ```yaml
 memory:
   postgres:
-    connection_string: postgresql://user:pass@host:5432/phil_memory
+    connection_string: ${RIVETOS_PG_URL}
     embed_endpoint: http://10.4.20.12:9401       # Nemotron embedding service
     compactor_endpoint: http://10.4.20.12:8000/v1 # Rivet Local for summarization
     compactor_model: rivet-v0.1
@@ -82,7 +81,6 @@ Migrates conversations, messages (with tool data from message_parts), summaries 
 
 1. Implement the `Memory` interface from `@rivetos/types`
 2. Create search and expand engines for your storage layer
-3. Use `createMemoryTools()` to wrap them as agent tools
-4. Register via `runtime.registerMemory()` and `runtime.registerTool()` in boot.ts
+3. Register via boot registrars (`boot/src/registrars/memory.ts`)
 
 The `scoring.ts` module is reusable — its pure functions work regardless of storage backend.

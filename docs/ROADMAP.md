@@ -241,16 +241,14 @@ Modeled after the Claude Code core tool patterns — battle-tested primitives ad
 
 ---
 
-## Milestone 3: Multi-Agent Communication
+## Milestone 3: Multi-Agent Communication ✅
 **Target: v0.3.0**  
 **Theme:** Agents that can work together — within an instance and across the network.
 
 ### 3.1 — Delegation (Intra-Instance) ✅
 Delegation = synchronous, intra-instance. One agent spawns a sub-loop with a different provider/model within the same process. Caller waits for the result.
 
-**Already exists:** `DelegationEngine` + `SubagentManagerImpl` with `delegate_task`, `subagent_spawn`, `subagent_send`, `subagent_list`, `subagent_kill` tools. Wired in `Runtime.start()`.
-
-**Improvements completed:**
+- [x] `DelegationEngine` + `SubagentManagerImpl` with `delegate_task`, `subagent_spawn`, `subagent_send`, `subagent_list`, `subagent_kill` tools
 - [x] `fromAgent` context: delegated agent gets rich context (requesting agent, chain depth, additional context lines)
 - [x] Delegation chains: A delegates to B, B can delegate to C (configurable depth limit, default 3)
 - [x] Result caching: same task+agent returns cached result (5 min TTL, configurable)
@@ -259,18 +257,17 @@ Delegation = synchronous, intra-instance. One agent spawns a sub-loop with a dif
 - [x] **26 tests** for DelegationEngine (basic, chains, cache, timeout, hooks, tool)
 - [x] **20 tests** for SubagentManagerImpl (spawn run/session, send, yield, kill, list, tools)
 
-### 3.2 — Inter-Agent Messaging (Cross-Instance)
-Messaging = asynchronous, cross-instance. Agent-to-agent communication over HTTP. The receiving agent processes the message through its **full normal pipeline** — memory, hooks, tools, everything. It's treated like a message from a real user, except tagged as coming from another agent.
+### 3.2 — Inter-Agent Messaging (Cross-Instance) ✅
+Messaging = asynchronous, cross-instance. Agent-to-agent communication over HTTP. The receiving agent processes the message through its full normal pipeline.
 
-**Architecture:**
-- [x] **Agent Channel Plugin** (`@rivetos/channel-agent`) — HTTP endpoint for incoming agent messages. Delivers as `InboundMessage` with `platform: 'agent'` and `metadata.fromAgent`.
-- [x] **Agent Messaging Tool** (`agent_message`) — sends messages to remote agents via HTTP. Supports sync (wait for response) and async (fire and forget).
-- [x] **Peer Config** — `peers` section in config with URL and optional per-peer secret override.
-- [x] **Auth** — shared secret via Bearer token. Rejects unauthorized/invalid requests.
-- [x] **Memory** — receiving agent records with `channel: 'agent'`, `userId: 'agent:<name>'`, full pipeline applies.
-- [x] **Response flow** — sync mode: response sent back in HTTP response body. Async mode: returns 202 accepted.
-- [x] **Health endpoint** — `GET /health` returns agent info and status.
-- [x] **19 tests** — lifecycle, health, auth (401/403), message delivery, sync/async modes, tool schema, peer messaging, bidirectional communication
+- [x] **Agent Channel Plugin** (`@rivetos/channel-agent`) — HTTP endpoint for incoming agent messages
+- [x] **Agent Messaging Tool** (`agent_message`) — sends messages to remote agents via HTTP (sync + async modes)
+- [x] **Peer Config** — `peers` section in config with URL and optional per-peer secret override
+- [x] **Auth** — shared secret via Bearer token
+- [x] **Memory** — receiving agent records with `channel: 'agent'`, `userId: 'agent:<name>'`
+- [x] **Response flow** — sync: response in HTTP body. Async: 202 accepted.
+- [x] **Health endpoint** — `GET /health` returns agent info and status
+- [x] **19 tests** — lifecycle, health, auth, message delivery, sync/async, tool schema, peer messaging, bidirectional
 
 ---
 
@@ -512,13 +509,13 @@ These are `apt install` packages. Available in a skills registry, installed per-
 
 ## Version Timeline (Estimated)
 
-| Version | Milestone | Target |
+| Version | Milestone | Status |
 |---------|-----------|--------|
 | v0.0.x | M0: Foundation (tests, bugs, CI, CLI) | ✅ Done |
-| v0.1.0 | M1: Coreutils (11 base tools) | Q2 2026 |
-| v0.2.0 | M2: Hooks & Lifecycle | Q2 2026 |
-| v0.3.0 | M3: Agent Capabilities (plan, batch, worktrees) | Q3 2026 |
-| v0.4.0 | M4: Memory & Context | Q3 2026 |
+| v0.0.x | M1: Coreutils (11 base tools) | ✅ Done |
+| v0.0.x | M2: Hooks & Lifecycle | ✅ Done |
+| v0.0.x | M3: Multi-Agent Communication | ✅ Done |
+| v0.4.0 | M4: Memory & Context | Next |
 | v0.5.0 | M5: Developer Experience (SDK, docs, CLI) | Q3 2026 |
 | v0.6.0 | M6: Production Hardening (+ IaC, containers, auto-mesh) | Q4 2026 |
 | v1.0.0 | M7: LTS Release + Public Launch | Q1 2027 |

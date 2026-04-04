@@ -1,6 +1,6 @@
 # RivetOS Release Strategy
 
-**Last updated:** March 2026
+**Last updated:** April 2026
 
 ## Versioning
 
@@ -45,4 +45,8 @@ Before v1.0.0, the API is unstable. Breaking changes may happen in minor version
 
 ## Current Status
 
-**v0.1.0** — Initial release. API is experimental.
+**v0.0.8** — Pre-release. M0-M3 complete. API is experimental. Apache 2.0 licensed.
+
+## License
+
+[Apache License 2.0](LICENSE)
