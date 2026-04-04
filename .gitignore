@@ -8,3 +8,17 @@ dist/
 .credentials.json
 *.pid
 memory/
+
+# Build artifacts in source directories (tsc output alongside .ts files)
+src/**/*.js
+src/**/*.js.map
+src/**/*.d.ts
+src/**/*.d.ts.map
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.d.ts.map
+plugins/**/src/**/*.js
+plugins/**/src/**/*.js.map
+plugins/**/src/**/*.d.ts
+plugins/**/src/**/*.d.ts.map
