@@ -11,6 +11,11 @@ import { loadConfig } from './config.js';
 import { Runtime } from '../packages/core/src/runtime.js';
 import { HookPipelineImpl } from '../packages/core/src/domain/hooks.js';
 import { createFallbackHook } from '../packages/core/src/domain/fallback.js';
+import { createSafetyHooks, RULE_NPM_DRY_RUN, RULE_WARN_CONFIG_WRITE, RULE_NO_DELETE_GIT } from '../packages/core/src/domain/safety-hooks.js';
+import type { AuditWriter, AuditEntry } from '../packages/core/src/domain/safety-hooks.js';
+import { createAutoActionHooks } from '../packages/core/src/domain/auto-actions.js';
+import type { ShellExecutor } from '../packages/core/src/domain/auto-actions.js';
+import { createSessionHooks } from '../packages/core/src/domain/session-hooks.js';
 import { logger } from '../packages/core/src/logger.js';
 import type { FallbackConfig } from '@rivetos/types';
 
@@ -73,9 +78,118 @@ export async function boot(configPath?: string) {
     log.info(`Hooks: ${fallbackConfigs.length} fallback chain(s) registered`);
   }
 
+  // Register safety hooks (M2.2)
+  const workspaceDir = config.runtime.workspace.replace('~', process.env.HOME ?? '.');
+  const safetyConfig = config.runtime.safety as Record<string, unknown> | undefined;
+  {
+    // File-based audit writer
+    const auditWriter: AuditWriter = {
+      write: async (entry: AuditEntry) => {
+        const { appendFile, mkdir: mkdirAudit } = await import('node:fs/promises');
+        const auditDir = resolve(workspaceDir, '.data', 'audit');
+        await mkdirAudit(auditDir, { recursive: true });
+        const today = new Date().toISOString().split('T')[0];
+        const auditPath = resolve(auditDir, `${today}.jsonl`);
+        await appendFile(auditPath, JSON.stringify(entry) + '\n');
+      },
+    };
+
+    const safetyHooks = createSafetyHooks({
+      shellDanger: safetyConfig?.shellDanger !== false,
+      workspaceFence: safetyConfig?.workspaceFence as any,
+      auditWriter: safetyConfig?.audit !== false ? auditWriter : undefined,
+      customRules: [RULE_NPM_DRY_RUN, RULE_NO_DELETE_GIT, RULE_WARN_CONFIG_WRITE],
+    });
+
+    for (const hook of safetyHooks) {
+      hooks.register(hook);
+    }
+    log.info(`Hooks: ${safetyHooks.length} safety hook(s) registered`);
+  }
+
+  // Register auto-action hooks (M2.3 — all opt-in via config)
+  const autoActionsConfig = config.runtime.auto_actions as Record<string, unknown> | undefined;
+  if (autoActionsConfig) {
+    const shellExec: ShellExecutor = {
+      exec: async (command: string, cwd?: string) => {
+        const { execSync } = await import('node:child_process');
+        try {
+          const stdout = execSync(command, {
+            cwd: cwd ?? workspaceDir,
+            timeout: 30000,
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          return { stdout: stdout ?? '', stderr: '', exitCode: 0 };
+        } catch (err: any) {
+          return {
+            stdout: err.stdout ?? '',
+            stderr: err.stderr ?? '',
+            exitCode: err.status ?? 1,
+          };
+        }
+      },
+    };
+
+    const autoHooks = createAutoActionHooks({
+      shell: shellExec,
+      cwd: workspaceDir,
+      autoFormat: autoActionsConfig.format === true,
+      autoLint: autoActionsConfig.lint === true,
+      autoTest: autoActionsConfig.test === true,
+      autoGitCheck: autoActionsConfig.gitCheck === true,
+    });
+
+    for (const hook of autoHooks) {
+      hooks.register(hook);
+    }
+    if (autoHooks.length > 0) {
+      log.info(`Hooks: ${autoHooks.length} auto-action hook(s) registered`);
+    }
+  }
+
+  // Register session hooks (M2.4)
+  {
+    const { appendFile: appendFs, readFile: readFs, writeFile: writeFs, mkdir: mkdirFs } = await import('node:fs/promises');
+    const sessionHooks = createSessionHooks({
+      context: {
+        workspaceDir,
+        fileWriter: {
+          write: async (path: string, content: string) => {
+            const dir = resolve(path, '..');
+            await mkdirFs(dir, { recursive: true });
+            await writeFs(path, content);
+          },
+          read: async (path: string) => {
+            try {
+              return await readFs(path, 'utf-8');
+            } catch {
+              return null;
+            }
+          },
+          append: async (path: string, content: string) => {
+            const dir = resolve(path, '..');
+            await mkdirFs(dir, { recursive: true });
+            await appendFs(path, content);
+          },
+        },
+      },
+      sessionStart: true,
+      sessionSummary: true,
+      autoCommit: false, // Opt-in — too aggressive as default
+      preCompact: true,
+      postCompact: true,
+    });
+
+    for (const hook of sessionHooks) {
+      hooks.register(hook);
+    }
+    log.info(`Hooks: ${sessionHooks.length} session hook(s) registered`);
+  }
+
   // Create runtime
   const runtime = new Runtime({
-    workspaceDir: config.runtime.workspace.replace('~', process.env.HOME ?? '.'),
+    workspaceDir,
     defaultAgent: config.runtime.default_agent,
     maxToolIterations: config.runtime.max_tool_iterations,
     agents: Object.entries(config.agents).map(([id, agent]) => ({
