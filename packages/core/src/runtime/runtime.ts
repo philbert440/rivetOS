@@ -333,6 +333,7 @@ export class Runtime {
       }
 
       log.debug('Running agent loop...');
+      channel.startTyping?.(message.channelId);
       const result = await loop.run(userContent, session.history, abort.signal);
       log.debug(`Loop result: aborted=${result.aborted}, response=${result.response?.slice(0, 100)}`);
 
@@ -435,6 +436,7 @@ export class Runtime {
         log.error(`Failed to send error message: ${sendErr.message}`);
       }
     } finally {
+      channel.stopTyping?.(message.channelId);
       queue?.endTurn();
     }
   }

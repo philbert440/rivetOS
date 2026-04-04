@@ -70,6 +70,9 @@ export class DiscordChannel implements Channel {
   private messageHandler?: (message: InboundMessage) => Promise<void>;
   private commandHandler?: (command: string, args: string, message: InboundMessage) => Promise<void>;
 
+  /** Active typing intervals per channel — cleared when a turn ends */
+  private typingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
+
   constructor(config: DiscordChannelConfig) {
     this.config = config;
     this.id = `discord:${config.ownerId}`;
@@ -340,6 +343,38 @@ export class DiscordChannel implements Channel {
   }
 
   // -----------------------------------------------------------------------
+  // Typing Indicator
+  // -----------------------------------------------------------------------
+
+  /**
+   * Start sending typing indicator every 8 seconds.
+   * Discord's typing indicator expires after ~10 seconds, so 8s keeps it alive.
+   */
+  startTyping(channelId: string): void {
+    this.stopTyping(channelId);
+
+    this.sendTypingAction(channelId);
+    const interval = setInterval(() => this.sendTypingAction(channelId), 8000);
+    this.typingIntervals.set(channelId, interval);
+  }
+
+  stopTyping(channelId: string): void {
+    const interval = this.typingIntervals.get(channelId);
+    if (interval) {
+      clearInterval(interval);
+      this.typingIntervals.delete(channelId);
+    }
+  }
+
+  private sendTypingAction(channelId: string): void {
+    this.client.channels.fetch(channelId).then((channel) => {
+      if (channel && 'sendTyping' in channel) {
+        (channel as TextChannel).sendTyping().catch(() => {});
+      }
+    }).catch(() => {});
+  }
+
+  // -----------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------
 
@@ -373,6 +408,10 @@ export class DiscordChannel implements Channel {
 
   async stop(): Promise<void> {
     console.log('[Discord] Stopping...');
+    // Clear all typing intervals
+    for (const [channelId] of this.typingIntervals) {
+      this.stopTyping(channelId);
+    }
     this.client.destroy();
   }
 }

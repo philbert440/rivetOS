@@ -79,4 +79,8 @@ export interface Channel {
   resolveAttachment?(attachment: Attachment): Promise<ResolvedAttachment | null>;
   onMessage(handler: (message: InboundMessage) => Promise<void>): void;
   onCommand(handler: (command: string, args: string, message: InboundMessage) => Promise<void>): void;
+  /** Start showing typing indicator (called when processing begins) */
+  startTyping?(channelId: string): void;
+  /** Stop showing typing indicator (called when processing ends) */
+  stopTyping?(channelId: string): void;
 }
