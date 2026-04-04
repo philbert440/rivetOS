@@ -19,7 +19,7 @@
  *   rivetos version                  — show version
  */
 
-const COMMANDS: Partial<Record<string, () => Promise<void>>> = {
+const COMMANDS: Partial<Record<string, () => Promise<void> | void>> = {
   init: () => import('./commands/init.js').then((m) => m.default()),
   start: () => import('./commands/start.js').then((m) => m.default()),
   stop: () => import('./commands/stop.js').then((m) => m.default()),
@@ -40,7 +40,7 @@ const COMMANDS: Partial<Record<string, () => Promise<void>>> = {
   ollama: () => import('./commands/provider.js').then((m) => m.default('ollama')),
 }
 
-function showHelp(): Promise<void> {
+function showHelp(): void {
   console.log(`
   rivetos — Lightweight, stable agent runtime
 
@@ -87,14 +87,14 @@ async function main(): Promise<void> {
   const command = args[0]
 
   if (!command || command === '--help' || command === '-h') {
-    await showHelp()
+    showHelp()
     return
   }
 
   const handler = COMMANDS[command]
   if (!handler) {
     console.error(`Unknown command: ${command}`)
-    await showHelp()
+    showHelp()
     process.exit(1)
   }
 

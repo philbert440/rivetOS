@@ -33,8 +33,8 @@ function systemctl(cmd: string): string {
   try {
     return execSync(`systemctl ${userFlag} ${cmd}`, { encoding: 'utf-8', timeout: 10000 })
   } catch (err: unknown) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-    return err.stdout ?? (err as Error).message
+    const errObj = err as { stdout?: string; message?: string }
+    return errObj.stdout ?? errObj.message ?? 'Unknown error'
   }
 }
 

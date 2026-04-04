@@ -166,6 +166,7 @@ export default async function plugins(): Promise<void> {
       const installedProviders = installed.get('providers') ?? new Set()
 
       for (const [name, provConfig] of Object.entries(providers)) {
+        if (!provConfig) continue
         const auth = await checkProviderAuth(name, provConfig)
         const model = provConfig.model as string | undefined
         results.push({
@@ -193,6 +194,7 @@ export default async function plugins(): Promise<void> {
       const installedChannels = installed.get('channels') ?? new Set()
 
       for (const [name, chanConfig] of Object.entries(channels)) {
+        if (!chanConfig) continue
         const auth = checkChannelAuth(name, chanConfig)
         results.push({
           type: 'channel',
@@ -218,6 +220,7 @@ export default async function plugins(): Promise<void> {
       const installedMemory = installed.get('memory') ?? new Set()
 
       for (const [name, memConfig] of Object.entries(memory)) {
+        if (!memConfig) continue
         const auth = checkMemoryAuth(name, memConfig)
         results.push({
           type: 'memory',

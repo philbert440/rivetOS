@@ -45,7 +45,7 @@ export default async function doctor(): Promise<void> {
       } else {
         console.log(`❌ Config schema: ${result.errors.length} error(s)`)
         for (const err of result.errors) {
-          console.log(`   ❌ [${err.path}] ${(err as Error).message}`)
+          console.log(`   ❌ [${err.path}] ${err.message}`)
         }
         for (const warn of result.warnings) {
           console.log(`   ⚠️  [${warn.path}] ${warn.message}`)
@@ -184,6 +184,7 @@ export default async function doctor(): Promise<void> {
       const providers = (parsed.providers ?? {}) as Partial<Record<string, Record<string, unknown>>>
 
       for (const [name, providerCfg] of Object.entries(providers)) {
+        if (!providerCfg) continue
         try {
           const ok = await checkProviderConnectivity(name, providerCfg)
           if (ok) {

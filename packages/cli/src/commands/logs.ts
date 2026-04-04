@@ -168,8 +168,9 @@ export default function logs(): void {
       })
       process.stdout.write(output)
     } catch (err: unknown) {
-      if ((err as { stdout?: string }).stdout) {
-        process.stdout.write((err as { stdout?: string }).stdout)
+      const errObj = err as { stdout?: string }
+      if (errObj.stdout) {
+        process.stdout.write(errObj.stdout)
       } else {
         console.error(`Failed to read logs: ${(err as Error).message}`)
         process.exit(1)
