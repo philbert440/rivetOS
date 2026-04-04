@@ -70,6 +70,8 @@ export interface ResolvedAttachment {
 export interface Channel {
   id: string;
   platform: string;
+  /** Maximum characters per message for this platform (used by StreamManager for message chains) */
+  maxMessageLength?: number;
   start(): Promise<void>;
   stop(): Promise<void>;
   send(message: OutboundMessage): Promise<string | null>;

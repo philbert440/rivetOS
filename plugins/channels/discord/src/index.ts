@@ -64,6 +64,7 @@ export interface DiscordChannelConfig {
 export class DiscordChannel implements Channel {
   id: string;
   platform = 'discord';
+  maxMessageLength = 2000;
 
   private client: Client;
   private config: DiscordChannelConfig;
@@ -312,10 +313,14 @@ export class DiscordChannel implements Channel {
 
   async edit(channelId: string, messageId: string, text: string): Promise<boolean> {
     try {
+      // If text exceeds Discord's limit, return false so the runtime
+      // falls through to send() which handles splitting natively.
+      if (text.length > 2000) return false;
+
       const channel = await this.client.channels.fetch(channelId);
       if (!channel || !('messages' in channel)) return false;
       const msg = await (channel as TextChannel).messages.fetch(messageId);
-      await msg.edit({ content: text.slice(0, 2000) });
+      await msg.edit({ content: text });
       return true;
     } catch {
       return false;

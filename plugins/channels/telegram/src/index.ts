@@ -43,6 +43,7 @@ export interface TelegramChannelConfig {
 export class TelegramChannel implements Channel {
   id: string;
   platform = 'telegram';
+  maxMessageLength = 4096;
 
   private bot: Bot;
   private config: TelegramChannelConfig;
@@ -289,6 +290,10 @@ export class TelegramChannel implements Channel {
 
   async edit(channelId: string, messageId: string, text: string): Promise<boolean> {
     try {
+      // If text exceeds Telegram's limit, return false so the runtime
+      // falls through to send() which handles splitting natively.
+      if (text.length > 4096) return false;
+
       const html = markdownToTelegramHtml(text);
       await this.bot.api.editMessageText(channelId, Number(messageId), html, {
         parse_mode: 'HTML',

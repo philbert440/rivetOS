@@ -3,30 +3,36 @@
  *
  * Rules:
  * 1. ONE streaming text message per turn — sent on first text, edited as more arrives
- * 2. Reasoning shown as inline italics in the SAME message (not separate)
- * 3. Tool calls in ONE consolidated log message (edited in-place)
- * 4. Status/progress updates edit the tool log (not separate messages)
- * 5. Final response EDITS the streaming message (no duplicate)
- * 6. Errors are the only thing that sends a NEW message mid-turn
+ * 2. When text approaches the platform message limit, freeze the current message
+ *    and start a NEW message (message chain). Prevents truncation on Telegram/Discord.
+ * 3. Reasoning shown as inline italics in the SAME message (not separate)
+ * 4. Tool calls in ONE consolidated log message (edited in-place)
+ * 5. Status/progress updates edit the tool log (not separate messages)
+ * 6. Final response EDITS the last streaming message (no duplicate)
+ * 7. Errors are the only thing that sends a NEW message mid-turn
  */
 
 import type { Channel, InboundMessage, SessionState, StreamEvent } from '@rivetos/types';
 
 // Throttle: don't edit more often than this
 const EDIT_INTERVAL_MS = 600;
-// Platform-safe text limit
-const TEXT_LIMIT = 3800;
+// Default message limit if channel doesn't specify (conservative)
+const DEFAULT_MAX_LENGTH = 2000;
+// Freeze threshold — freeze current message at this % of the limit
+const FREEZE_THRESHOLD = 0.85;
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
 export interface SessionStreamState {
-  /** Main message being edited with text + reasoning */
-  messageId: string | null;
-  /** Accumulated response text */
-  text: string;
-  /** Accumulated reasoning text */
+  /** Chain of message IDs (newest = last) */
+  messageIds: string[];
+  /** Text accumulated in the CURRENT (active) message */
+  currentText: string;
+  /** All text accumulated across the entire chain (for cleanup return) */
+  fullText: string;
+  /** Accumulated reasoning text (only in current message) */
   reasoning: string;
   /** Whether an edit is scheduled */
   editPending: boolean;
@@ -40,12 +46,15 @@ export interface SessionStreamState {
   toolLines: string[];
   /** Whether current text is a "Thinking..." placeholder */
   thinkingPlaceholder: boolean;
+  /** Platform max message length (set when first event arrives) */
+  maxLength: number;
 }
 
-function freshState(): SessionStreamState {
+function freshState(maxLength: number): SessionStreamState {
   return {
-    messageId: null,
-    text: '',
+    messageIds: [],
+    currentText: '',
+    fullText: '',
     reasoning: '',
     editPending: false,
     editTimer: null,
@@ -53,6 +62,7 @@ function freshState(): SessionStreamState {
     toolMessageId: null,
     toolLines: [],
     thinkingPlaceholder: false,
+    maxLength,
   };
 }
 
@@ -63,14 +73,17 @@ function freshState(): SessionStreamState {
 export class StreamManager {
   private states: Map<string, SessionStreamState> = new Map();
 
-  private get(key: string): SessionStreamState {
+  private get(key: string, maxLength: number): SessionStreamState {
     let s = this.states.get(key);
-    if (!s) { s = freshState(); this.states.set(key, s); }
+    if (!s) { s = freshState(maxLength); this.states.set(key, s); }
     return s;
   }
 
   getStreamMessageId(key: string): string | null {
-    return this.states.get(key)?.messageId ?? null;
+    const s = this.states.get(key);
+    if (!s || s.messageIds.length === 0) return null;
+    // Return the last (active) message ID
+    return s.messageIds[s.messageIds.length - 1];
   }
 
   handleStreamEvent(
@@ -80,17 +93,19 @@ export class StreamManager {
     event: StreamEvent,
   ): void {
     const key = `${message.channelId}:${message.userId}`;
-    const s = this.get(key);
+    const maxLength = channel.maxMessageLength ?? DEFAULT_MAX_LENGTH;
+    const s = this.get(key, maxLength);
     if (s.cleaned) return; // Turn is over, ignore late events
 
     switch (event.type) {
       case 'text':
         // Clear "thinking" placeholder if it was set
         if (s.thinkingPlaceholder) {
-          s.text = '';
+          s.currentText = '';
           s.thinkingPlaceholder = false;
         }
-        s.text += event.content ?? '';
+        s.currentText += event.content ?? '';
+        s.fullText += event.content ?? '';
         this.throttledEdit(channel, message, s);
         break;
 
@@ -98,8 +113,8 @@ export class StreamManager {
         if (!session.reasoningVisible) {
           // Even when hidden, show a one-time "thinking" indicator
           // so the user knows the model is working, not stalled
-          if (!s.messageId && !s.text) {
-            s.text = '🧠 _Thinking..._';
+          if (s.messageIds.length === 0 && !s.currentText) {
+            s.currentText = '🧠 _Thinking..._';
             this.throttledEdit(channel, message, s);
             s.thinkingPlaceholder = true;
           }
@@ -139,7 +154,7 @@ export class StreamManager {
   }
 
   // -----------------------------------------------------------------------
-  // Text + reasoning → ONE message, throttled edits
+  // Text + reasoning → message chain, throttled edits
   // -----------------------------------------------------------------------
 
   private throttledEdit(channel: Channel, message: InboundMessage, s: SessionStreamState): void {
@@ -154,29 +169,94 @@ export class StreamManager {
       const display = this.buildDisplay(s);
       if (!display) return;
 
-      const truncated = display.length > TEXT_LIMIT ? display.slice(0, TEXT_LIMIT) + '…' : display;
+      const freezeAt = Math.floor(s.maxLength * FREEZE_THRESHOLD);
 
-      if (s.messageId && channel.edit) {
-        await channel.edit(message.channelId, s.messageId, truncated).catch(() => {});
-      } else if (!s.messageId) {
+      // Check if we need to freeze the current message and start a new one
+      if (display.length > freezeAt && s.messageIds.length > 0) {
+        // Find a clean break point near the freeze threshold
+        const breakPoint = this.findBreakPoint(s.currentText, freezeAt - this.reasoningOverhead(s));
+
+        if (breakPoint > 0 && breakPoint < s.currentText.length) {
+          // Freeze: edit current message with text up to breakpoint
+          const frozenText = s.currentText.slice(0, breakPoint);
+          const frozenDisplay = this.buildDisplayWith(s, frozenText);
+          const currentMsgId = s.messageIds[s.messageIds.length - 1];
+
+          if (currentMsgId && channel.edit) {
+            await channel.edit(message.channelId, currentMsgId, frozenDisplay).catch(() => {});
+          }
+
+          // Start fresh — carry over the remainder
+          const remainder = s.currentText.slice(breakPoint).trimStart();
+          s.currentText = remainder;
+          s.reasoning = ''; // Reasoning stays with the first message
+
+          // Send a new message for the continuation
+          const sentId = await channel.send({
+            channelId: message.channelId,
+            text: remainder.length > s.maxLength ? remainder.slice(0, s.maxLength) : remainder,
+          }).catch(() => null);
+          if (sentId) s.messageIds.push(sentId);
+          return;
+        }
+      }
+
+      // Normal edit — truncate if somehow still over (safety net)
+      const truncated = display.length > s.maxLength ? display.slice(0, s.maxLength - 1) + '…' : display;
+      const currentMsgId = s.messageIds.length > 0 ? s.messageIds[s.messageIds.length - 1] : null;
+
+      if (currentMsgId && channel.edit) {
+        await channel.edit(message.channelId, currentMsgId, truncated).catch(() => {});
+      } else if (!currentMsgId) {
         const sentId = await channel.send({
           channelId: message.channelId,
           text: truncated,
           replyToMessageId: message.id,
         }).catch(() => null);
-        if (sentId) s.messageId = sentId;
+        if (sentId) s.messageIds.push(sentId);
       }
     }, EDIT_INTERVAL_MS);
   }
 
+  /** Find a clean paragraph or line break near the target position */
+  private findBreakPoint(text: string, target: number): number {
+    if (target <= 0 || target >= text.length) return -1;
+
+    // Try paragraph break first
+    let breakAt = text.lastIndexOf('\n\n', target);
+    if (breakAt > target * 0.5) return breakAt;
+
+    // Then single newline
+    breakAt = text.lastIndexOf('\n', target);
+    if (breakAt > target * 0.5) return breakAt;
+
+    // Then sentence end
+    breakAt = text.lastIndexOf('. ', target);
+    if (breakAt > target * 0.5) return breakAt + 1; // Include the period
+
+    // Hard cut as last resort
+    return target;
+  }
+
+  /** Calculate how many chars reasoning takes in the display */
+  private reasoningOverhead(s: SessionStreamState): number {
+    if (!s.reasoning) return 0;
+    const r = s.reasoning.length > 1200 ? 1200 : s.reasoning.length;
+    return r + 10; // "_🧠 " + "_\n\n"
+  }
+
   private buildDisplay(s: SessionStreamState): string {
+    return this.buildDisplayWith(s, s.currentText);
+  }
+
+  private buildDisplayWith(s: SessionStreamState, text: string): string {
     let out = '';
     if (s.reasoning) {
       // Reasoning as italics, capped
       const r = s.reasoning.length > 1200 ? s.reasoning.slice(-1200) : s.reasoning;
       out += `_🧠 ${r}_\n\n`;
     }
-    out += s.text;
+    out += text;
     return out.trim();
   }
 
@@ -197,19 +277,20 @@ export class StreamManager {
   }
 
   // -----------------------------------------------------------------------
-  // Cleanup — returns messageId and accumulated text for final response edit
+  // Cleanup — returns last messageId and full accumulated text
   // -----------------------------------------------------------------------
 
-  cleanup(key: string): { messageId: string | null; accumulatedText: string } {
+  cleanup(key: string): { messageId: string | null; accumulatedText: string; messageIds: string[] } {
     const s = this.states.get(key);
-    if (!s) return { messageId: null, accumulatedText: '' };
+    if (!s) return { messageId: null, accumulatedText: '', messageIds: [] };
 
     s.cleaned = true; // Prevent any late edits
     if (s.editTimer) clearTimeout(s.editTimer);
 
-    const messageId = s.messageId;
-    const accumulatedText = this.buildDisplay(s);
+    const messageId = s.messageIds.length > 0 ? s.messageIds[s.messageIds.length - 1] : null;
+    const accumulatedText = s.fullText;
+    const messageIds = [...s.messageIds];
     this.states.delete(key);
-    return { messageId, accumulatedText };
+    return { messageId, accumulatedText, messageIds };
   }
 }
