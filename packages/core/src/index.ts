@@ -39,3 +39,7 @@ export type { CommandDeps } from './runtime/commands.js';
 export { StreamManager } from './runtime/streaming.js';
 export type { SessionStreamState } from './runtime/streaming.js';
 export { SessionManager } from './runtime/sessions.js';
+export { TurnHandler } from './runtime/turn-handler.js';
+export type { TurnHandlerDeps } from './runtime/turn-handler.js';
+export { resolveAttachments, buildHistoryContent } from './runtime/media.js';
+export type { MediaResult } from './runtime/media.js';

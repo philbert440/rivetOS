@@ -15,6 +15,7 @@ import { registerHooks } from './registrars/hooks.js';
 import { registerProviders } from './registrars/providers.js';
 import { registerChannels } from './registrars/channels.js';
 import { registerTools } from './registrars/tools.js';
+import { registerAgentTools } from './registrars/agents.js';
 import { registerMemory } from './registrars/memory.js';
 import { writePidFile, registerShutdownHandlers } from './lifecycle.js';
 
@@ -43,6 +44,7 @@ export async function boot(configPath?: string): Promise<void> {
       name: id,
       provider: agent.provider,
       defaultThinking: (agent.default_thinking as ThinkingLevel) ?? 'medium',
+      local: agent.local ?? false,
     })),
     heartbeats: config.runtime.heartbeats as HeartbeatConfig[],
     skillDirs: config.runtime.skill_dirs,
@@ -56,11 +58,14 @@ export async function boot(configPath?: string): Promise<void> {
   await registerMemory(runtime, config);
   await registerTools(runtime, config, workspaceDir);
 
-  // 4. Lifecycle
+  // 4. Agent tools (delegation, sub-agents, skills) — after tools so they can reference them
+  await registerAgentTools(runtime, config, workspaceDir);
+
+  // 5. Lifecycle
   await writePidFile();
   registerShutdownHandlers(runtime);
 
-  // 5. Start
+  // 6. Start
   await runtime.start();
 }
 

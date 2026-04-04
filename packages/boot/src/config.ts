@@ -35,6 +35,8 @@ export interface AgentSection {
   provider: string;
   default_thinking?: string;
   fallbacks?: string[];
+  /** Whether this agent uses a local/self-hosted provider (free tokens → extended context) */
+  local?: boolean;
 }
 
 export interface HeartbeatSection {

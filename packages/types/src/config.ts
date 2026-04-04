@@ -29,6 +29,8 @@ export interface AgentConfig {
   hooks?: HookConfig[];
   /** Per-agent fallback chain (overrides global fallback for this agent's provider) */
   fallbacks?: string[];
+  /** Whether this agent uses a local/self-hosted provider (free tokens → extended context) */
+  local?: boolean;
 }
 
 export interface HeartbeatConfig {
