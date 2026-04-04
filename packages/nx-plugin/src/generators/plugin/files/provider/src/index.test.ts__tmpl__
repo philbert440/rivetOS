@@ -1,0 +1,37 @@
+import { describe, it, expect } from 'vitest'
+import { <%= className %> } from './index.js'
+
+describe('<%= className %>', () => {
+  const config = { apiKey: 'test-key', model: 'test-model' }
+
+  it('should create an instance', () => {
+    const provider = new <%= className %>('test', config)
+    expect(provider.id).toBe('test')
+    expect(provider.name).toBe('<%= name %>')
+  })
+
+  it('should report availability based on API key', async () => {
+    const provider = new <%= className %>('test', config)
+    expect(await provider.isAvailable()).toBe(true)
+
+    const noKey = new <%= className %>('test', { apiKey: '' })
+    expect(await noKey.isAvailable()).toBe(false)
+  })
+
+  it('should stream chat responses', async () => {
+    const provider = new <%= className %>('test', config)
+    const chunks = []
+    for await (const chunk of provider.chatStream([])) {
+      chunks.push(chunk)
+    }
+    expect(chunks.length).toBeGreaterThan(0)
+    expect(chunks[chunks.length - 1].type).toBe('done')
+  })
+
+  it('should return non-streaming chat response', async () => {
+    const provider = new <%= className %>('test', config)
+    const response = await provider.chat([])
+    expect(response.type).toBe('text')
+    expect(response.content).toBeDefined()
+  })
+})

@@ -1,0 +1,23 @@
+{
+  "name": "@rivetos/nx",
+  "version": "0.1.0",
+  "description": "Nx plugin for RivetOS — generators and executors for the agent runtime monorepo",
+  "license": "Apache-2.0",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "generators": "./generators.json",
+  "executors": "./executors.json",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@nx/devkit": "^22.6.4",
+    "enquirer": "^2.4.1"
+  },
+  "peerDependencies": {
+    "nx": ">=22.0.0"
+  }
+}

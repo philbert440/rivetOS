@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/schema",
+  "id": "RivetOSPR",
+  "title": "RivetOS PR Generator",
+  "description": "Interactive PR wizard — create branch, run quality gates, create PR with checklist",
+  "type": "object",
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Type of change (conventional commit prefix)",
+      "enum": ["feat", "fix", "refactor", "chore", "docs", "plugin", "test", "perf"],
+      "x-prompt": {
+        "message": "What type of change?",
+        "type": "list",
+        "items": [
+          { "value": "feat", "label": "feat     — New feature" },
+          { "value": "fix", "label": "fix      — Bug fix" },
+          { "value": "refactor", "label": "refactor — Code restructuring" },
+          { "value": "chore", "label": "chore    — Maintenance / deps / CI" },
+          { "value": "docs", "label": "docs     — Documentation only" },
+          { "value": "plugin", "label": "plugin   — New plugin (also scaffolds the plugin)" },
+          { "value": "test", "label": "test     — Adding / fixing tests" },
+          { "value": "perf", "label": "perf     — Performance improvement" }
+        ]
+      }
+    },
+    "description": {
+      "type": "string",
+      "description": "Short description for branch name and PR title",
+      "x-prompt": "Short description (used for branch name and PR title):"
+    },
+    "issue": {
+      "type": "string",
+      "description": "Related GitHub issue number (optional)"
+    },
+    "breaking": {
+      "type": "boolean",
+      "description": "Does this include breaking changes?",
+      "default": false
+    },
+    "draft": {
+      "type": "boolean",
+      "description": "Create as draft PR?",
+      "default": false
+    },
+    "skipValidation": {
+      "type": "boolean",
+      "description": "Skip lint/build/test validation (not recommended)",
+      "default": false
+    },
+    "dryRun": {
+      "type": "boolean",
+      "description": "Preview what would happen without creating branch or PR",
+      "default": false
+    }
+  },
+  "required": ["type", "description"]
+}

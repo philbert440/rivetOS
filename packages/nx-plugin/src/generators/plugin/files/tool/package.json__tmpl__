@@ -1,0 +1,17 @@
+{
+  "name": "<%= packageName %>",
+  "version": "0.1.0",
+  "description": "<%= description %>",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@rivetos/types": "*"
+  }
+}
