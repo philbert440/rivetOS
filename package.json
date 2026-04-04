@@ -46,6 +46,7 @@
     "test": "nx run-many -t test",
     "typecheck": "nx run-many -t typecheck",
     "ci": "nx run-many -t lint build test",
+    "ci:affected": "nx affected -t lint build test",
     "dev": "tsx packages/cli/src/index.ts start",
     "cli": "tsx packages/cli/src/index.ts",
     "graph": "nx graph"
