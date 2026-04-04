@@ -117,10 +117,11 @@ export function createFileReadTool(config?: FileReadConfig): Tool {
 
         return sliced.join('\n')
       } catch (err: unknown) {
-        if (err.code === 'ENOENT') return `Error: File not found: ${resolved}`
-        if (err.code === 'EACCES') return `Error: Permission denied: ${resolved}`
-        if (err.code === 'EISDIR') return `Error: Path is a directory: ${resolved}`
-        return `Error: ${(err as Error).message}`
+        const e = err as NodeJS.ErrnoException
+        if (e.code === 'ENOENT') return `Error: File not found: ${resolved}`
+        if (e.code === 'EACCES') return `Error: Permission denied: ${resolved}`
+        if (e.code === 'EISDIR') return `Error: Path is a directory: ${resolved}`
+        return `Error: ${e.message}`
       }
     },
   }

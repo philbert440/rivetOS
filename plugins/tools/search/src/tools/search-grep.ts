@@ -59,9 +59,9 @@ export function createSearchGrepTool(config?: SearchGrepConfig): Tool {
       if (!pattern) return 'Error: No search pattern provided'
 
       const searchPath = args.path
-        ? isAbsolute(args.path as string | undefined)
-          ? (args.path as string | undefined)
-          : resolve(context?.workingDir ?? process.cwd(), args.path as string | undefined)
+        ? isAbsolute(args.path as string)
+          ? (args.path as string)
+          : resolve(context?.workingDir ?? process.cwd(), args.path as string)
         : (context?.workingDir ?? process.cwd())
 
       const fixedStrings = args.fixed_strings === true

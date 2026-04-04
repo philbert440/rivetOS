@@ -67,8 +67,9 @@ export function createFileWriteTool(): Tool {
 
         return `${action} ${resolved} (${bytes} bytes)${backupNote}`
       } catch (err: unknown) {
-        if (err.code === 'EACCES') return `Error: Permission denied: ${resolved}`
-        return `Error: ${(err as Error).message}`
+        const e = err as NodeJS.ErrnoException
+        if (e.code === 'EACCES') return `Error: Permission denied: ${resolved}`
+        return `Error: ${e.message}`
       }
     },
   }

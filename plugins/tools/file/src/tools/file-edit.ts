@@ -101,9 +101,10 @@ export function createFileEditTool(): Tool {
         const snippet = getEditSnippet(updated, newString, CONTEXT_LINES)
         return `Edited ${resolved}\n\n${snippet}`
       } catch (err: unknown) {
-        if (err.code === 'ENOENT') return `Error: File not found: ${resolved}`
-        if (err.code === 'EACCES') return `Error: Permission denied: ${resolved}`
-        return `Error: ${(err as Error).message}`
+        const e = err as NodeJS.ErrnoException
+        if (e.code === 'ENOENT') return `Error: File not found: ${resolved}`
+        if (e.code === 'EACCES') return `Error: Permission denied: ${resolved}`
+        return `Error: ${e.message}`
       }
     },
   }

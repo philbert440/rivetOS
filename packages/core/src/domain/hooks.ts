@@ -120,7 +120,7 @@ export class HookPipelineImpl implements IHookPipeline {
 
       // Tool filter (only applies to tool:before/after)
       if (hook.toolFilter?.length && 'toolName' in ctx) {
-        if (!hook.toolFilter.includes(String((ctx as Record<string, unknown>).toolName))) continue
+        if (!hook.toolFilter.includes(String((ctx as unknown as Record<string, unknown>).toolName))) continue
       }
 
       // Execute

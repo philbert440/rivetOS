@@ -14,7 +14,7 @@
  * Exposed as a single tool: `coding_pipeline`
  */
 
-import type { Tool, _ } from '@rivetos/types'
+import type { Tool } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config

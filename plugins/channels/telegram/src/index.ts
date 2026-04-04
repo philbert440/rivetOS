@@ -13,7 +13,7 @@
  * consecutive conflicts within 60 seconds.
  */
 
-import { Bot, Context, InlineKeyboard, _ } from 'grammy'
+import { Bot, Context, InlineKeyboard } from 'grammy'
 import type {
   Channel,
   InboundMessage,
@@ -367,7 +367,7 @@ export class TelegramChannel implements Channel {
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
     try {
       await this.bot.api.setMessageReaction(channelId, Number(messageId), [
-        { type: 'emoji' as const, emoji },
+        { type: 'emoji' as const, emoji: emoji as '👍' },
       ])
     } catch {
       // Reaction failures are non-critical

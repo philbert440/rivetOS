@@ -48,9 +48,9 @@ export function createSearchGlobTool(config?: SearchGlobConfig): Tool {
       if (!pattern) return 'Error: No glob pattern provided'
 
       const searchDir = args.cwd
-        ? isAbsolute(args.cwd as string | undefined)
-          ? (args.cwd as string | undefined)
-          : resolve(context?.workingDir ?? process.cwd(), args.cwd as string | undefined)
+        ? isAbsolute(args.cwd as string)
+          ? (args.cwd as string)
+          : resolve(context?.workingDir ?? process.cwd(), args.cwd as string)
         : (context?.workingDir ?? process.cwd())
 
       try {

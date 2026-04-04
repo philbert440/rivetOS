@@ -273,7 +273,7 @@ export type HookErrorMode = 'continue' | 'abort' | 'retry'
  */
 export type HookHandlerFn<T extends HookContext = HookContext> = (
   ctx: T,
-) => Promise<undefined | 'abort' | 'skip'> | undefined | 'abort' | 'skip'
+) => Promise<void | undefined | 'abort' | 'skip'> | void | undefined | 'abort' | 'skip'
 
 /**
  * A registered hook with metadata.

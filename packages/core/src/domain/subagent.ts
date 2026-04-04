@@ -13,7 +13,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { SubagentSession, SubagentSpawnRequest, SubagentManager, Tool } from '@rivetos/types'
+import type { SubagentSession, SubagentSpawnRequest, SubagentManager, Tool, Provider } from '@rivetos/types'
 import { getTextContent } from '@rivetos/types'
 import { AgentLoop } from './loop.js'
 import type { Router } from './router.js'
@@ -240,7 +240,7 @@ export class SubagentManagerImpl implements SubagentManager {
   private async runOneShot(
     session: InternalSession,
     systemPrompt: string,
-    provider: unknown,
+    provider: Provider,
     tools: Tool[],
     task: string,
     abort: AbortController,
@@ -265,7 +265,7 @@ export class SubagentManagerImpl implements SubagentManager {
   private async runTurn(
     session: InternalSession,
     systemPrompt: string,
-    provider: unknown,
+    provider: Provider,
     tools: Tool[],
     userMessage: string,
     signal: AbortSignal,
