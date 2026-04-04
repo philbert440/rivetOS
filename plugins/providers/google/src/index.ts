@@ -242,6 +242,7 @@ export class GoogleProvider implements Provider {
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     const { systemInstruction, contents } = convertMessages(messages)
+    const model = options?.modelOverride ?? this.model
 
     const body: GeminiRequestBody = {
       contents,
@@ -267,7 +268,7 @@ export class GoogleProvider implements Provider {
       }
     }
 
-    const url = `${this.baseUrl}/models/${this.model}:streamGenerateContent?key=${this.apiKey}&alt=sse`
+    const url = `${this.baseUrl}/models/${model}:streamGenerateContent?key=${this.apiKey}&alt=sse`
 
     const response = await fetch(url, {
       method: 'POST',

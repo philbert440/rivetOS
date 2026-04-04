@@ -6,7 +6,9 @@
 import { describe, it } from 'vitest';
 import * as assert from 'node:assert/strict';
 import { AgentLoop } from './loop.js';
-import type { Provider, LLMChunk, Message, ChatOptions, Tool } from '@rivetos/types';
+import { HookPipelineImpl } from './hooks.js';
+import { createFallbackHookWithState } from './fallback.js';
+import type { Provider, LLMChunk, Message, ChatOptions, Tool, FallbackConfig } from '@rivetos/types';
 
 // ---------------------------------------------------------------------------
 // Mock provider — yields configurable chunks
@@ -269,5 +271,109 @@ describe('AgentLoop', () => {
     const result = await loop.run('Hi', []);
     // Text content takes priority — error was already emitted as event
     assert.equal(result.response, 'Partial response before error');
+  });
+
+  // -----------------------------------------------------------------------
+  // Fallback model override — same-provider fallback uses different model
+  // -----------------------------------------------------------------------
+
+  it('should pass modelOverride to provider on same-provider fallback', async () => {
+    const modelsUsed: (string | undefined)[] = [];
+    let callCount = 0;
+
+    // Provider that fails on first call (429), succeeds on second
+    const trackingProvider: Provider = {
+      id: 'google',
+      name: 'Google Gemini',
+      async *chatStream(_messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
+        modelsUsed.push(options?.modelOverride);
+        callCount++;
+        if (callCount === 1) {
+          // Simulate 429 by throwing
+          const err = new Error('RESOURCE_EXHAUSTED') as Error & { status: number };
+          err.status = 429;
+          throw err;
+        }
+        yield { type: 'text', delta: 'Fallback response' };
+        yield { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } };
+      },
+      async isAvailable() { return true; },
+    };
+
+    // Set up fallback hook
+    const pipeline = new HookPipelineImpl();
+    const fallbackConfigs: FallbackConfig[] = [
+      {
+        providerId: 'google',
+        fallbacks: ['gemini-2.0-flash', 'gemini-2.0-flash-lite'],
+        triggerCodes: [429],
+      },
+    ];
+    const { hook } = createFallbackHookWithState(fallbackConfigs);
+    pipeline.register(hook);
+
+    const loop = new AgentLoop({
+      systemPrompt: 'You are helpful.',
+      provider: trackingProvider,
+      tools: [],
+      hooks: pipeline,
+      resolveProvider: (id: string) => (id === 'google' ? trackingProvider : undefined),
+    });
+
+    const result = await loop.run('Hi', []);
+    assert.equal(result.response, 'Fallback response');
+    assert.equal(modelsUsed.length, 2);
+    // First call: no override (uses default model)
+    assert.equal(modelsUsed[0], undefined);
+    // Second call: fallback model override
+    assert.equal(modelsUsed[1], 'gemini-2.0-flash');
+  });
+
+  it('should progress through full fallback chain with model overrides', async () => {
+    const modelsUsed: (string | undefined)[] = [];
+    let callCount = 0;
+
+    // Provider that fails first two calls, succeeds on third
+    const trackingProvider: Provider = {
+      id: 'google',
+      name: 'Google Gemini',
+      async *chatStream(_messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
+        modelsUsed.push(options?.modelOverride);
+        callCount++;
+        if (callCount <= 2) {
+          const err = new Error('RESOURCE_EXHAUSTED') as Error & { status: number };
+          err.status = 429;
+          throw err;
+        }
+        yield { type: 'text', delta: 'Third time lucky' };
+        yield { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } };
+      },
+      async isAvailable() { return true; },
+    };
+
+    const pipeline = new HookPipelineImpl();
+    const { hook } = createFallbackHookWithState([
+      {
+        providerId: 'google',
+        fallbacks: ['gemini-3-pro-preview', 'gemini-3-flash-preview'],
+        triggerCodes: [429],
+      },
+    ]);
+    pipeline.register(hook);
+
+    const loop = new AgentLoop({
+      systemPrompt: 'You are helpful.',
+      provider: trackingProvider,
+      tools: [],
+      hooks: pipeline,
+      resolveProvider: (id: string) => (id === 'google' ? trackingProvider : undefined),
+    });
+
+    const result = await loop.run('Hi', []);
+    assert.equal(result.response, 'Third time lucky');
+    assert.equal(modelsUsed.length, 3);
+    assert.equal(modelsUsed[0], undefined);                // Original model
+    assert.equal(modelsUsed[1], 'gemini-3-pro-preview');   // First fallback
+    assert.equal(modelsUsed[2], 'gemini-3-flash-preview'); // Second fallback
   });
 });

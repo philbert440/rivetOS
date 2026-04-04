@@ -15,6 +15,8 @@ export interface ChatOptions {
   tools?: ToolDefinition[]
   signal?: AbortSignal
   thinking?: ThinkingLevel
+  /** Override the provider's default model for this request (used by fallback chains) */
+  modelOverride?: string
 }
 
 // ---------------------------------------------------------------------------

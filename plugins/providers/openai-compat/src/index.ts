@@ -266,8 +266,9 @@ export class OpenAICompatProvider implements Provider {
   // -----------------------------------------------------------------------
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
+    const model = options?.modelOverride ?? this.model
     const body: OAIRequestBody = {
-      model: this.model,
+      model,
       max_tokens: this.maxTokens,
       temperature: this.temperature,
       top_p: this.topP,
