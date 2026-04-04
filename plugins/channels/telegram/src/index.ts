@@ -120,7 +120,7 @@ export class TelegramChannel implements Channel {
     }
     const msg = this.buildInbound(ctx);
     if (msg && this.messageHandler) {
-      this.startTyping(msg.channelId);
+      // Typing is driven by the runtime (channel.startTyping / stopTyping)
       try {
         await this.messageHandler(msg);
       } catch (err: any) {
@@ -128,8 +128,6 @@ export class TelegramChannel implements Channel {
         try {
           await ctx.reply(`⚠️ Error: ${err.message}`);
         } catch {}
-      } finally {
-        this.stopTyping(msg.channelId);
       }
     } else {
       console.log(`[Telegram] No handler registered: handler=${!!this.messageHandler} msg=${!!msg}`);
@@ -153,8 +151,9 @@ export class TelegramChannel implements Channel {
   /**
    * Start sending "typing" action every 4 seconds.
    * Telegram's typing indicator expires after ~5 seconds, so 4s keeps it alive.
+   * Called by the runtime — matches the Channel interface.
    */
-  private startTyping(chatId: string): void {
+  startTyping(chatId: string): void {
     // Clear any existing interval for this chat
     this.stopTyping(chatId);
 
@@ -164,7 +163,7 @@ export class TelegramChannel implements Channel {
     this.typingIntervals.set(chatId, interval);
   }
 
-  private stopTyping(chatId: string): void {
+  stopTyping(chatId: string): void {
     const interval = this.typingIntervals.get(chatId);
     if (interval) {
       clearInterval(interval);
