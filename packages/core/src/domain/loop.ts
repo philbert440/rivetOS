@@ -466,12 +466,16 @@ export class AgentLoop {
     }
 
     // Hard cap reached — safety stop
-    this.emit({ type: 'error', content: `⚠️ Safety cap reached (${iterations} tool iterations)` });
+    // Preserve any partial text the model has produced so the streaming message
+    // isn't overwritten with a generic boilerplate string.
+    const capNotice = `\n\n⚠️ _Safety cap reached (${iterations} tool iterations). Let me know if you want me to continue._`;
+    this.emit({ type: 'status', content: `⚠️ Safety cap reached (${iterations} tool iterations)` });
     return {
-      response: `I've used ${iterations} tool iterations (safety cap). Here's where I am — let me know if you want me to continue.`,
+      response: partialResponse ? partialResponse.trim() + capNotice : capNotice.trim(),
       toolsUsed,
       iterations,
       aborted: false,
+      partialResponse,
       usage: totalUsage,
     };
   }

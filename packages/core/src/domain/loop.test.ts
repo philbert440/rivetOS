@@ -190,7 +190,7 @@ describe('AgentLoop', () => {
 
     const result = await loop.run('Loop forever', []);
     assert.equal(result.iterations, 15); // hardCap = maxIterations * 5 = 15
-    assert.ok(result.response.includes('safety cap'));
+    assert.ok(result.response.toLowerCase().includes('safety cap'));
   });
 
   it('should accumulate token usage across iterations', async () => {

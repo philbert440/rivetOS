@@ -197,18 +197,19 @@ export class StreamManager {
   }
 
   // -----------------------------------------------------------------------
-  // Cleanup — returns messageId for final response edit
+  // Cleanup — returns messageId and accumulated text for final response edit
   // -----------------------------------------------------------------------
 
-  cleanup(key: string): string | null {
+  cleanup(key: string): { messageId: string | null; accumulatedText: string } {
     const s = this.states.get(key);
-    if (!s) return null;
+    if (!s) return { messageId: null, accumulatedText: '' };
 
     s.cleaned = true; // Prevent any late edits
     if (s.editTimer) clearTimeout(s.editTimer);
 
     const messageId = s.messageId;
+    const accumulatedText = this.buildDisplay(s);
     this.states.delete(key);
-    return messageId;
+    return { messageId, accumulatedText };
   }
 }

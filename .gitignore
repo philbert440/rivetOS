@@ -7,7 +7,7 @@ dist/
 *-tokens.json
 .credentials.json
 *.pid
-memory/
+/memory/
 
 # Build artifacts in source directories (tsc output alongside .ts files)
 src/**/*.js

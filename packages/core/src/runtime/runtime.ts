@@ -374,8 +374,8 @@ export class Runtime {
       }
 
       // Clean up streaming state BEFORE sending final response
-      // Cleanup streaming — get the message ID so we can edit it with the final response
-      const streamMsgId = this.streamManager.cleanup(sessionKey);
+      // Cleanup streaming — get the message ID and accumulated text
+      const { messageId: streamMsgId, accumulatedText } = this.streamManager.cleanup(sessionKey);
 
       // Send final response (unless silent or aborted)
       if (result.response && !result.aborted) {
