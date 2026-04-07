@@ -30,6 +30,7 @@ REFACTOR_PROGRESS.md
 # Secrets — fallback passwords, node registry, control plane keys
 # Created at runtime by provision-ct.sh — NEVER commit
 .secrets/
+.npmrc
 
 # User data — lives on host, bind-mounted into containers
 # Never commit user workspace files to the source tree

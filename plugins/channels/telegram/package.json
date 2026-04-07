@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/channel-telegram",
-  "version": "0.4.0",
+  "version": "0.4.0-beta.1",
   "description": "Telegram channel — grammY, Bot API, streaming message edits",
   "license": "MIT",
   "main": "dist/index.js",
