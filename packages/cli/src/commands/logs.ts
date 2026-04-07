@@ -99,15 +99,20 @@ function parseArgs(): LogOptions {
 type DeploymentType = 'docker' | 'systemd' | 'bare'
 
 function detectDeployment(): DeploymentType {
-  // Check for docker compose
-  const composePath = resolve(process.cwd(), 'docker-compose.yaml')
-  const composeAltPath = resolve(process.cwd(), 'docker-compose.yml')
-  if (existsSync(composePath) || existsSync(composeAltPath)) {
-    try {
-      execSync('docker compose ps --quiet 2>/dev/null', { timeout: 5000 })
-      return 'docker'
-    } catch {
-      // Docker compose file exists but containers not running
+  // Skip Docker detection in bare-metal mode
+  if (process.env.RIVETOS_BARE_METAL === '1' || process.argv.includes('--bare-metal')) {
+    // Fall through to systemd/bare detection
+  } else {
+    // Check for docker compose
+    const composePath = resolve(process.cwd(), 'docker-compose.yaml')
+    const composeAltPath = resolve(process.cwd(), 'docker-compose.yml')
+    if (existsSync(composePath) || existsSync(composeAltPath)) {
+      try {
+        execSync('docker compose ps --quiet 2>/dev/null', { timeout: 5000 })
+        return 'docker'
+      } catch {
+        // Docker compose file exists but containers not running
+      }
     }
   }
 
