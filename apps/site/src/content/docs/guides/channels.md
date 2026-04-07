@@ -250,11 +250,11 @@ For mesh networking, also configure the mesh section:
 mesh:
   nodes:
     - name: rivet-opus
-      host: 10.4.20.111
+      host: 192.0.2.10
       port: 3100
       agents: [opus]
     - name: rivet-grok
-      host: 10.4.20.112
+      host: 192.0.2.11
       port: 3100
       agents: [grok]
 ```

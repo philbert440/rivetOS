@@ -261,7 +261,7 @@ agents:
 - **Set `local: true` on the agent** — this includes extended workspace context (CAPABILITIES.md, daily notes) since tokens are free with local inference.
 - **`num_ctx`** is critical for tool-using agents. Most models default to 2048-4096 tokens, which isn't enough. Set `8192` or higher.
 - **`keep_alive`** controls how long the model stays in VRAM after the last request. Set to `0` to unload immediately, or `24h` to keep it warm.
-- **Remote Ollama:** If Ollama runs on a different machine, change `base_url` to point at it (e.g., `http://192.168.1.50:11434`).
+- **Remote Ollama:** If Ollama runs on a different machine, change `base_url` to point at it (e.g., `http://192.0.2.50:11434`).
 
 > **Docs:** [Ollama API Documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)
 
