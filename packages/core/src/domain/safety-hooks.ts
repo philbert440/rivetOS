@@ -316,8 +316,8 @@ export function createCustomRulesHook(rules: SafetyRule[]): HookRegistration<Too
 export const RULE_NPM_DRY_RUN: SafetyRule = {
   id: 'npm-dry-run',
   tools: ['shell'],
-  action: 'block',
-  description: 'npm publish requires --dry-run flag',
+  action: 'warn',
+  description: 'npm publish without --dry-run — proceed with caution',
   match: (_tool, args) => {
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
     const cmd = String(args.command ?? '')
