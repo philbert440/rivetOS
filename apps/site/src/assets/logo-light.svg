@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="bolt" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#059669"/>
+      <stop offset="100%" style="stop-color:#047857"/>
+    </linearGradient>
+  </defs>
+  <!-- Hex nut outline -->
+  <polygon points="100,10 178,55 178,145 100,190 22,145 22,55" 
+           fill="none" stroke="url(#bolt)" stroke-width="6"/>
+  <!-- Center bolt head (hexagon) -->
+  <polygon points="100,60 130,77.3 130,112.7 100,130 70,112.7 70,77.3" 
+           fill="url(#bolt)" opacity="0.9"/>
+  <!-- Thread lines -->
+  <line x1="85" y1="130" x2="85" y2="170" stroke="url(#bolt)" stroke-width="4" opacity="0.6"/>
+  <line x1="100" y1="130" x2="100" y2="175" stroke="url(#bolt)" stroke-width="4" opacity="0.6"/>
+  <line x1="115" y1="130" x2="115" y2="170" stroke="url(#bolt)" stroke-width="4" opacity="0.6"/>
+</svg>

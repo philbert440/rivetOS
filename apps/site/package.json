@@ -1,0 +1,16 @@
+{
+  "name": "@rivetos/site",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.32.0",
+    "astro": "^5.5.0",
+    "sharp": "^0.33.0"
+  }
+}

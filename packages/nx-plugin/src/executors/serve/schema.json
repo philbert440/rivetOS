@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/schema",
+  "title": "RivetOS Serve Executor",
+  "description": "Run a RivetOS agent with a specific channel for development",
+  "type": "object",
+  "properties": {
+    "config": {
+      "type": "string",
+      "description": "Path to config.yaml (default: ~/.rivetos/config.yaml)"
+    },
+    "agent": {
+      "type": "string",
+      "description": "Agent to run (overrides config default_agent)"
+    },
+    "channel": {
+      "type": "string",
+      "description": "Channel to bind (e.g. 'telegram', 'discord', 'terminal')"
+    },
+    "verbose": {
+      "type": "boolean",
+      "description": "Enable verbose logging",
+      "default": false
+    }
+  }
+}

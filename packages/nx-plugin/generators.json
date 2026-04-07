@@ -1,0 +1,14 @@
+{
+  "generators": {
+    "plugin": {
+      "factory": "./src/generators/plugin/generator",
+      "schema": "./src/generators/plugin/schema.json",
+      "description": "Scaffold a new RivetOS plugin (channel, provider, or tool)"
+    },
+    "pr": {
+      "factory": "./src/generators/pr/generator",
+      "schema": "./src/generators/pr/schema.json",
+      "description": "Interactive PR wizard — branch, validate, create PR with checklist"
+    }
+  }
+}

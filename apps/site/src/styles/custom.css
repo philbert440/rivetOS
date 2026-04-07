@@ -1,0 +1,44 @@
+/* RivetOS brand colors */
+:root {
+  --sl-color-accent-low: #064e3b;
+  --sl-color-accent: #10b981;
+  --sl-color-accent-high: #6ee7b7;
+  --sl-color-white: #f8fafc;
+  --sl-color-gray-1: #e2e8f0;
+  --sl-color-gray-2: #94a3b8;
+  --sl-color-gray-3: #64748b;
+  --sl-color-gray-4: #334155;
+  --sl-color-gray-5: #1e293b;
+  --sl-color-gray-6: #0f172a;
+  --sl-color-black: #020617;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #d1fae5;
+  --sl-color-accent: #059669;
+  --sl-color-accent-high: #064e3b;
+  --sl-color-white: #020617;
+  --sl-color-gray-1: #334155;
+  --sl-color-gray-2: #64748b;
+  --sl-color-gray-3: #94a3b8;
+  --sl-color-gray-4: #e2e8f0;
+  --sl-color-gray-5: #f1f5f9;
+  --sl-color-gray-6: #f8fafc;
+  --sl-color-black: #ffffff;
+}
+
+/* Hero section tweaks */
+.hero {
+  padding-block: 3rem;
+}
+
+/* Code block accent */
+.expressive-code .frame {
+  border-color: var(--sl-color-accent-low);
+}
+
+/* Smoother font rendering */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

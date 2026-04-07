@@ -1,0 +1,29 @@
+# Single Agent — Simplest setup
+#
+# One agent, one provider, one channel. Good for personal use.
+# Copy to config.yaml and fill in your values.
+
+runtime:
+  workspace: ./workspace
+  default_agent: assistant
+
+agents:
+  assistant:
+    provider: anthropic
+    default_thinking: medium
+
+providers:
+  anthropic:
+    model: claude-sonnet-4-20250514
+    max_tokens: 8192
+    # API key via env: ANTHROPIC_API_KEY
+
+channels:
+  discord:
+    channel_bindings:
+      "YOUR_CHANNEL_ID": assistant
+    # Bot token via env: DISCORD_BOT_TOKEN
+
+memory:
+  postgres:
+    # Connection string via env: RIVETOS_PG_URL

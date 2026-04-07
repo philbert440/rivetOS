@@ -1,0 +1,51 @@
+{
+  "name": "@rivetos/channel-voice-discord",
+  "version": "0.4.0",
+  "description": "Discord voice channel — xAI Realtime API, auto-join, DAVE E2EE",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/",
+    "test": "echo \"no tests yet\"",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@rivetos/types": "*",
+    "@discordjs/voice": "^0.19.2",
+    "mediaplex": "^1.0.0",
+    "discord.js": "^14.26.2",
+    "ws": "^8.20.0",
+    "sodium-native": "^5.1.0"
+  },
+  "rivetos": {
+    "type": "channel",
+    "name": "voice-discord"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git",
+    "directory": "plugins/channels/voice-discord"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

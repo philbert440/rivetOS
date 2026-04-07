@@ -1,0 +1,79 @@
+# Multi-Agent — Three agents with different strengths
+#
+# Each agent has a different provider and role. Agents can delegate to each other.
+# Discord channels are bound to specific agents.
+
+runtime:
+  workspace: ./workspace
+  default_agent: opus
+  max_tool_iterations: 100
+
+  # Coding pipeline uses two agents for build/review
+  coding_pipeline:
+    builder_agent: grok
+    validator_agent: opus
+    auto_commit: true
+
+  # Provider fallback chains
+  fallbacks:
+    - providerId: anthropic
+      fallbacks:
+        - "google:gemini-2.5-pro"
+        - "xai:grok-3"
+
+  # Heartbeat — periodic background tasks
+  heartbeats:
+    - agent: opus
+      schedule: "*/30 * * * *"
+      prompt: "Check for anything that needs attention. Reply HEARTBEAT_OK if nothing."
+      output_channel: discord:YOUR_OPS_CHANNEL_ID
+      quiet_hours:
+        start: 23
+        end: 8
+
+  # Safety hooks
+  safety:
+    shellDanger: true
+    audit: true
+
+agents:
+  opus:
+    provider: anthropic
+    default_thinking: medium
+    # Opus handles architecture, planning, code review
+  grok:
+    provider: xai
+    # Grok handles code writing, fast tasks
+    tools:
+      exclude:
+        - coding_pipeline    # Don't let Grok call itself in the pipeline
+  local:
+    provider: ollama
+    local: true              # Extended context (free tokens)
+    # Local handles research, summarization
+
+providers:
+  anthropic:
+    model: claude-sonnet-4-20250514
+    max_tokens: 16384
+  xai:
+    model: grok-3
+    max_tokens: 8192
+  ollama:
+    model: qwen2.5:32b
+    base_url: http://localhost:11434
+
+channels:
+  discord:
+    channel_bindings:
+      "OPUS_CHANNEL_ID": opus
+      "GROK_CHANNEL_ID": grok
+      "LOCAL_CHANNEL_ID": local
+  # Agent channel for inter-agent delegation
+  agent:
+    port: 3100
+    secret: ${RIVETOS_AGENT_SECRET}
+
+memory:
+  postgres:
+    # Connection string via env: RIVETOS_PG_URL

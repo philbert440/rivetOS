@@ -1,0 +1,7 @@
+# RivetOS — llama-server (Local) agent environment
+# No provider API key needed — model runs locally on GERTY
+TELEGRAM_BOT_TOKEN=__ENTER_TOKEN__
+RIVETOS_PG_URL=postgres://rivet_phil:__PASSWORD__@10.4.20.110:5432/phil_memory
+RIVETOS_EMBED_URL=http://10.4.20.12:9401
+XAI_API_KEY=__ENTER_KEY__
+RIVETOS_LOG_LEVEL=info

@@ -1,0 +1,45 @@
+runtime:
+  workspace: /root/.rivetos/workspace
+  default_agent: %%AGENT_NAME%%
+  max_tool_iterations: 20
+  skill_dirs:
+    - /opt/rivetos/skills
+  fallbacks:
+    - providerId: google
+      fallbacks:
+        - "google:gemini-3.1-pro-preview-customtools"
+        - "google:gemini-2.5-flash"
+      triggerCodes: [429, 503]
+      triggerOnTimeout: true
+  heartbeats:
+    - agent: %%AGENT_NAME%%
+      schedule: '0 * * * *'
+      timezone: America/New_York
+      prompt: >-
+        Read HEARTBEAT.md if it exists. Follow it. If nothing needs attention,
+        reply HEARTBEAT_OK.
+agents:
+  %%AGENT_NAME%%:
+    provider: google
+    default_thinking: medium
+providers:
+  google:
+    model: %%DEFAULT_MODEL%%
+    max_tokens: 8192
+    available_models:
+      - %%DEFAULT_MODEL%%
+      - gemini-3.1-pro-preview-customtools
+      - gemini-2.5-flash
+channels:
+  telegram:
+    owner_id: '8093148723'
+    bot_token: ${%%TELEGRAM_TOKEN_VAR%%}
+    allowed_users:
+      - '8093148723'
+memory:
+  postgres:
+    connection_string: ${RIVETOS_PG_URL}
+    embed_endpoint: ${RIVETOS_EMBED_URL}
+    compactor_endpoint: https://api.x.ai/v1
+    compactor_model: grok-4-1-fast-reasoning
+    compactor_api_key: ${XAI_API_KEY}
