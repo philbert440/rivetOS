@@ -9,9 +9,9 @@
 #
 # Usage:
 #   ./provision-ct.sh --ctid 114 --hostname rivet-local --node pve3 \
-#       --ip 10.4.20.114 --agent local --provider llama-server \
-#       --model qwen2.5-coder-32b --base-url http://10.4.20.12:8000/v1 \
-#       --secrets-from 10.4.20.111
+#       --ip 192.0.2.114 --agent local --provider llama-server \
+#       --model qwen2.5-coder-32b --base-url http://192.0.2.12:8000/v1 \
+#       --secrets-from 192.0.2.111
 #
 # Prerequisites:
 #   - SSH access to the Proxmox node (as root)
@@ -28,9 +28,9 @@ CTID=""
 HOSTNAME=""
 PVE_NODE=""
 IP=""
-GATEWAY="10.4.20.1"
+GATEWAY=""
 BRIDGE="vmbr0"
-NAMESERVER="10.4.20.1"
+NAMESERVER=""
 CORES=4
 MEMORY=8192
 SWAP=2048
@@ -39,6 +39,7 @@ STORAGE="local-lvm"
 TEMPLATE="ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
 SHARED_MOUNT=""       # Path to shared NFS mount on Proxmox host (optional)
 DATAHUB_IP=""         # IP of DataHub CT (auto-detected from nodes.json or convention)
+EMBED_HOST=""         # IP of embedding server (defaults to DATAHUB_IP if not set)
 AGENT_NAME=""
 PROVIDER_NAME=""
 DEFAULT_MODEL=""      # Model name (auto-set per provider if empty)
@@ -90,6 +91,7 @@ while [[ $# -gt 0 ]]; do
         --git-repo)      GIT_REPO="$2";      shift 2;;
         --shared-mount)  SHARED_MOUNT="$2";  shift 2;;
         --datahub-ip)    DATAHUB_IP="$2";    shift 2;;
+        --embed-host)    EMBED_HOST="$2";    shift 2;;
         --dry-run)       DRY_RUN=true;       shift;;
         --skip-destroy)  SKIP_DESTROY=true;  shift;;
         --privileged)    PRIVILEGED=true;     shift;;
@@ -102,7 +104,7 @@ Required:
   --ctid        Container ID (e.g., 114)
   --hostname    Container hostname (e.g., rivet-local)
   --node        Proxmox node SSH alias or IP (e.g., pve3)
-  --ip          Container IP (e.g., 10.4.20.114)
+  --ip          Container IP (e.g., 192.0.2.114)
   --agent       RivetOS agent name (e.g., local, opus, grok, gemini)
   --provider    AI provider (anthropic, xai, google, llama-server, openai-compat)
 
@@ -122,10 +124,10 @@ Infrastructure:
   --cores       CPU cores (default: 4)
   --memory      RAM in MB (default: 8192)
   --disk        Disk in GB (default: 32)
-  --gateway     Network gateway (default: 10.4.20.1)
+  --gateway     Network gateway (default: 192.0.2.1)
   --privileged  Create privileged CT (default)
   --unprivileged  Create unprivileged CT
-  --datahub-ip  IP of DataHub/NFS server (default: auto-detect or 10.4.20.110)
+  --datahub-ip  IP of DataHub/NFS server (default: auto-detect or 192.0.2.110)
   --restore     Path to backup tarball for workspace restoration
   --dry-run     Print commands without executing
   --skip-destroy  Don't destroy existing CT
@@ -136,7 +138,7 @@ HELPEOF
 done
 
 # Validate required args
-for var in CTID HOSTNAME PVE_NODE IP AGENT_NAME PROVIDER_NAME; do
+for var in CTID HOSTNAME PVE_NODE IP GATEWAY NAMESERVER AGENT_NAME PROVIDER_NAME; do
     if [[ -z "${!var}" ]]; then
         echo "ERROR: --$(echo $var | tr '[:upper:]' '[:lower:]' | tr '_' '-') is required"
         exit 1
@@ -612,8 +614,242 @@ log "  config.yaml generated"
 
 # --- Generate .env from template + secrets ---
 
-# Start with the template
-GENERATED_ENV=$(cat "$ENV_TEMPLATE" | grep -v '^#' | grep -v '^$')
+# Start with the template and substitute infrastructure placeholders
+GENERATED_ENV=$(cat "$ENV_TEMPLATE" | grep -v '^#' | grep -v '^
+if [[ -n "$SECRETS_FROM" ]]; then
+    log "  Pulling shared secrets from ${SECRETS_FROM}..."
+    DONOR_ENV=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "root@${SECRETS_FROM}" "cat /root/.rivetos/.env" 2>/dev/null || true)
+
+    if [[ -n "$DONOR_ENV" ]]; then
+        # Extract shared secrets from donor
+        for SECRET_KEY in RIVETOS_PG_URL RIVETOS_EMBED_URL XAI_API_KEY GOOGLE_API_KEY GOOGLE_CSE_ID GOOGLE_CSE_API_KEY ANTHROPIC_API_KEY DISCORD_BOT_TOKEN; do
+            DONOR_VALUE=$(echo "$DONOR_ENV" | grep "^${SECRET_KEY}=" | head -1 | cut -d'=' -f2-)
+            if [[ -n "$DONOR_VALUE" ]]; then
+                # Replace placeholder in generated env, or add if missing
+                if echo "$GENERATED_ENV" | grep -q "^${SECRET_KEY}="; then
+                    GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|^${SECRET_KEY}=.*|${SECRET_KEY}=${DONOR_VALUE}|")
+                fi
+            fi
+        done
+        log "  Shared secrets merged from ${SECRETS_FROM}"
+    else
+        warn "  Could not pull secrets from ${SECRETS_FROM}"
+    fi
+fi
+
+# Override telegram token if provided directly
+if [[ -n "$TELEGRAM_TOKEN" ]]; then
+    # Replace whichever telegram token var exists in the env
+    GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=${TELEGRAM_TOKEN}|")
+    GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|^RIVETOS_TELEGRAM_TOKEN=.*|RIVETOS_TELEGRAM_TOKEN=${TELEGRAM_TOKEN}|")
+fi
+
+# Override discord token if provided directly
+if [[ -n "$DISCORD_TOKEN" ]]; then
+    GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|^DISCORD_BOT_TOKEN=.*|DISCORD_BOT_TOKEN=${DISCORD_TOKEN}|")
+fi
+
+# Check for remaining placeholders
+UNFILLED=$(echo "$GENERATED_ENV" | grep '__ENTER_\|__PASSWORD__' || true)
+if [[ -n "$UNFILLED" ]]; then
+    warn "  ⚠ Some .env values still need to be filled in:"
+    echo "$UNFILLED" | while read -r line; do
+        warn "    $line"
+    done
+fi
+
+# Write .env to CT
+echo "$GENERATED_ENV" | ssh "$PVE_NODE" "pct exec $CTID -- bash -c 'cat > /root/.rivetos/.env'"
+run_on_ct "chmod 600 /root/.rivetos/.env"
+log "  .env generated"
+
+# Restore workspace from backup if available (overrides template defaults)
+if [[ -n "$RESTORE_FROM" ]] && [[ -f "$RESTORE_FROM" ]]; then
+    log "  Restoring workspace from ${RESTORE_FROM}..."
+    scp -o StrictHostKeyChecking=no "$RESTORE_FROM" "root@${IP}:/tmp/rivetos-data.tar.gz"
+    run_on_ct "cd / && tar xzf /tmp/rivetos-data.tar.gz root/.rivetos/workspace/ 2>/dev/null || true"
+    run_on_ct "rm -f /tmp/rivetos-data.tar.gz"
+    log "  Workspace restored (config.yaml and .env kept from template generation)."
+elif [[ -d "${BACKUP_PATH}" ]] && [[ -f "${BACKUP_PATH}/rivetos-data.tar.gz" ]]; then
+    log "  Restoring workspace from backup..."
+    scp -o StrictHostKeyChecking=no "${BACKUP_PATH}/rivetos-data.tar.gz" "root@${IP}:/tmp/rivetos-data.tar.gz"
+    run_on_ct "cd / && tar xzf /tmp/rivetos-data.tar.gz root/.rivetos/workspace/ 2>/dev/null || true"
+    run_on_ct "rm -f /tmp/rivetos-data.tar.gz"
+    log "  Workspace restored."
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 7: Systemd service
+# ──────────────────────────────────────────────────────────────────────────────
+
+log "Phase 7: Installing systemd service..."
+
+run_on_ct "cat > /etc/systemd/system/rivetos.service << 'SVCEOF'
+[Unit]
+Description=RivetOS Agent Runtime
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/rivetos
+ExecStart=/usr/bin/npx tsx packages/cli/src/index.ts start --config /root/.rivetos/config.yaml
+EnvironmentFile=/root/.rivetos/.env
+Environment=HOME=/root
+Environment=RIVETOS_LOG_LEVEL=info
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+systemctl daemon-reload
+systemctl enable rivetos"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 8: Mesh key exchange
+# ──────────────────────────────────────────────────────────────────────────────
+
+log "Phase 8: Mesh key exchange..."
+
+# Exchange SSH keys with existing mesh peers
+# Read mesh.json from shared storage or fall back to scanning known nodes
+MESH_PEERS=()
+
+if [[ -f "${REPO_ROOT}/.secrets/mesh.json" ]]; then
+    # Parse mesh.json for known node IPs
+    MESH_PEERS=($(python3 -c "
+import json
+try:
+    m = json.load(open('${REPO_ROOT}/.secrets/mesh.json'))
+    for n in m.get('nodes', {}).values():
+        if n.get('host'):
+            print(n['host'])
+except: pass
+" 2>/dev/null || true))
+fi
+
+for PEER_IP in "${MESH_PEERS[@]}"; do
+    # Skip self
+    [[ "$PEER_IP" == "$IP" ]] && continue
+
+    # Add new CT's key to peer's authorized_keys
+    if ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no "root@${PEER_IP}" "echo '${CT_PUBKEY}' >> /root/.ssh/authorized_keys && sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys" 2>/dev/null; then
+        log "  Added mesh key to ${PEER_IP}"
+
+        # Get peer's key and add to new CT
+        PEER_KEY=$(ssh -o ConnectTimeout=3 "root@${PEER_IP}" "cat /root/.ssh/id_ed25519.pub 2>/dev/null" 2>/dev/null || true)
+        if [[ -n "$PEER_KEY" ]]; then
+            run_on_ct "echo '${PEER_KEY}' >> /root/.ssh/authorized_keys && sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys"
+            log "  Added ${PEER_IP}'s key to CT"
+        fi
+    else
+        warn "  Could not reach peer at ${PEER_IP} — manual key exchange needed"
+    fi
+done
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 9: Update secrets store
+# ──────────────────────────────────────────────────────────────────────────────
+
+log "Phase 9: Updating secrets store..."
+
+# Update .secrets/nodes.json with new node info
+python3 -c "
+import json, os
+f = '${NODES_FILE}'
+d = json.load(open(f)) if os.path.exists(f) else {'fallback_password': '', 'nodes': {}}
+d['nodes']['ct${CTID}'] = {
+    'hostname': '${HOSTNAME}',
+    'ip': '${IP}',
+    'agent': '${AGENT_NAME}',
+    'provider': '${PROVIDER_NAME}',
+    'pve_node': '${PVE_NODE}',
+    'provisioned_at': '$(date -Iseconds)'
+}
+json.dump(d, open(f, 'w'), indent=2)
+"
+chmod 600 "$NODES_FILE"
+log "  Node registered in ${NODES_FILE}"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 10: Start and verify
+# ──────────────────────────────────────────────────────────────────────────────
+
+log "Phase 10: Starting RivetOS..."
+
+# Only start if config exists and .env has no unfilled placeholders
+if run_on_ct "test -f /root/.rivetos/config.yaml" 2>/dev/null; then
+    UNFILLED_CHECK=$(run_on_ct "grep -c '__ENTER_\|__PASSWORD__' /root/.rivetos/.env" 2>/dev/null || echo "0")
+    if [[ "$UNFILLED_CHECK" -gt 0 ]]; then
+        warn "⚠️  .env has $UNFILLED_CHECK unfilled placeholder(s). Service not started."
+        warn "   Fill them in: ssh root@${IP} nano /root/.rivetos/.env"
+        warn "   Then start:   ssh root@${IP} systemctl start rivetos"
+    else
+        run_on_ct "systemctl start rivetos"
+        sleep 5
+
+        # Check if service is running
+        STATUS=$(run_on_ct "systemctl is-active rivetos" || true)
+        if [[ "$STATUS" == "active" ]]; then
+            log "✅ RivetOS is running on CT $CTID ($HOSTNAME)"
+        else
+            warn "⚠️  RivetOS service not active. Check logs:"
+            warn "   ssh root@${IP} journalctl -u rivetos -n 50"
+        fi
+    fi
+else
+    warn "No config.yaml found — service not started. This shouldn't happen."
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Summary
+# ──────────────────────────────────────────────────────────────────────────────
+
+log ""
+log "═══════════════════════════════════════════════════════════════"
+log "  Provisioning complete!"
+log "═══════════════════════════════════════════════════════════════"
+log "  CT ID:        $CTID"
+log "  Hostname:     $HOSTNAME"
+log "  IP:           $IP"
+log "  Agent:        $AGENT_NAME"
+log "  Provider:     $PROVIDER_NAME"
+log "  Model:        $DEFAULT_MODEL"
+log "  Deploy:       $DEPLOY_METHOD"
+log "  Node:         $PVE_NODE"
+log "  Storage:      $STORAGE"
+log "  Privileged:   $PRIVILEGED"
+log ""
+log "  Access:"
+log "    ssh root@${IP}                   Direct SSH"
+log "    ssh $PVE_NODE 'pct enter $CTID'  Console via Proxmox"
+log ""
+log "  Manage:"
+log "    ssh root@${IP} systemctl status rivetos"
+log "    ssh root@${IP} journalctl -u rivetos -f"
+log ""
+if [[ "$DEPLOY_METHOD" == "git" ]]; then
+log "  Update:"
+log "    ssh root@${IP} 'cd /opt/rivetos && git pull && npm ci && npx nx run-many -t build --exclude container-agent,container-datahub,site'"
+fi
+log ""
+if [[ -d "${BACKUP_PATH}" ]]; then
+log "  Backup: ${BACKUP_PATH}/"
+fi
+log "═══════════════════════════════════════════════════════════════"
+)
+
+# Resolve EMBED_HOST — default to DATAHUB_IP if not set separately
+EMBED_HOST="${EMBED_HOST:-${DATAHUB_IP}}"
+
+# Substitute infrastructure placeholders in the template
+GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|__DATAHUB_IP__|${DATAHUB_IP}|g")
+GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|__EMBED_HOST__|${EMBED_HOST}|g")
+GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|__GATEWAY__|${GATEWAY}|g")
+GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|__NAMESERVER__|${NAMESERVER}|g")
 
 # If --secrets-from is provided, pull shared secrets from an existing CT
 if [[ -n "$SECRETS_FROM" ]]; then
