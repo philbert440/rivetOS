@@ -235,20 +235,23 @@ async function verifyDataPersistence(): Promise<void> {
     console.log('  ✅ Created ./workspace/ (bind mount target)')
   }
 
-  // Check Docker named volumes exist (pgdata, shared)
-  const volumes = exec('docker volume ls --format "{{.Name}}"', { quiet: true })
-  const volumeList = volumes.split('\n').filter(Boolean)
+  // Check Docker named volumes exist (pgdata, shared) — only for Docker deployments
+  const deployType = await detectDeployment()
+  if (deployType === 'docker') {
+    const volumes = exec('docker volume ls --format "{{.Name}}"', { quiet: true })
+    const volumeList = volumes.split('\n').filter(Boolean)
 
-  if (volumeList.includes('rivetos-pgdata')) {
-    console.log('  ✅ Database volume: rivetos-pgdata')
-  } else {
-    console.log('  ℹ️  Database volume will be created on first start')
-  }
+    if (volumeList.includes('rivetos-pgdata')) {
+      console.log('  ✅ Database volume: rivetos-pgdata')
+    } else {
+      console.log('  ℹ️  Database volume will be created on first start')
+    }
 
-  if (volumeList.includes('rivetos-shared')) {
-    console.log('  ✅ Shared volume: rivetos-shared')
-  } else {
-    console.log('  ℹ️  Shared volume will be created on first start')
+    if (volumeList.includes('rivetos-shared')) {
+      console.log('  ✅ Shared volume: rivetos-shared')
+    } else {
+      console.log('  ℹ️  Shared volume will be created on first start')
+    }
   }
 
   // Check for workspace files that would indicate an active install
@@ -465,19 +468,32 @@ function rsyncUpdateNode(host: string, opts: UpdateOptions): boolean {
   }
 }
 
-async function waitForHealth(host: string, port: number, timeoutMs: number): Promise<boolean> {
+async function waitForHealth(host: string, _port: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   const interval = 3_000
 
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`http://${host}:${String(port)}/api/mesh/ping`, {
+      // Check if the systemd service is active via SSH (bare-metal/Proxmox deployments)
+      const result = execSync(
+        `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no root@${host} "systemctl is-active rivetos" 2>/dev/null`,
+        { timeout: 5_000 },
+      )
+      if (result.toString().trim() === 'active') return true
+    } catch {
+      // Not ready yet — service still starting or SSH not available
+    }
+
+    // Fallback: try HTTP health endpoint (Docker/containerized deployments)
+    try {
+      const res = await fetch(`http://${host}:${String(_port)}/api/mesh/ping`, {
         signal: AbortSignal.timeout(2_000),
       })
       if (res.ok) return true
     } catch {
       // Not ready yet
     }
+
     await new Promise((r) => setTimeout(r, interval))
   }
 
