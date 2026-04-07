@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/channel-voice-discord",
-  "version": "0.4.0",
+  "version": "0.4.0-beta.1",
   "description": "Discord voice channel — xAI Realtime API, auto-join, DAVE E2EE",
   "license": "MIT",
   "main": "dist/index.js",
