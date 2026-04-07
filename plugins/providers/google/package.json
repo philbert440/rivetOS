@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/provider-google",
-  "version": "0.4.0",
+  "version": "0.4.0-beta.1",
   "description": "Google Gemini provider — streaming, tool calling, grounding",
   "license": "MIT",
   "main": "dist/index.js",

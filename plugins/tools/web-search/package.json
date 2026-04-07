@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/tool-web-search",
-  "version": "0.4.0",
+  "version": "0.4.0-beta.1",
   "description": "Web search tool — Google Custom Search for non-xAI providers",
   "license": "MIT",
   "main": "dist/index.js",
