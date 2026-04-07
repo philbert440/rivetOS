@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/boot",
-  "version": "0.4.0",
+  "version": "0.4.0-beta.1",
   "description": "RivetOS composition root — config loading, plugin wiring, lifecycle",
   "license": "Apache-2.0",
   "main": "dist/index.js",
