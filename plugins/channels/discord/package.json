@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/channel-discord",
-  "version": "0.4.0",
+  "version": "0.4.0-beta.1",
   "description": "Discord channel — discord.js v14, channel bindings, threads, embeds",
   "license": "MIT",
   "main": "dist/index.js",

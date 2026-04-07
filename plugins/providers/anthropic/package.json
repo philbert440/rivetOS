@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/provider-anthropic",
-  "version": "0.4.0",
+  "version": "0.4.0-beta.1",
   "description": "Anthropic Claude provider — streaming, tool calling, thinking",
   "license": "MIT",
   "main": "dist/index.js",

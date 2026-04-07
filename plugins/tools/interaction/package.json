@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/tool-interaction",
-  "version": "0.4.0",
+  "version": "0.4.0-beta.1",
   "description": "Interaction tools (todo, ask_user) for RivetOS agents",
   "license": "MIT",
   "main": "dist/index.js",
