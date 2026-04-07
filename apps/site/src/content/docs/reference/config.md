@@ -230,6 +230,8 @@ agents:
 
 LLM provider configuration. Each key is a provider ID referenced by agents.
 
+> **Setup guide:** See [Provider Setup](/guides/providers/) for step-by-step instructions on getting API keys and configuring each provider.
+
 ### Anthropic
 
 ```yaml
@@ -318,6 +320,8 @@ providers:
 ## `channels`
 
 Messaging channel configuration. Each key is a channel ID.
+
+> **Setup guide:** See [Channel Setup](/guides/channels/) for step-by-step instructions on creating bots, getting tokens, and configuring each channel.
 
 ### Discord
 
