@@ -69,10 +69,12 @@ describe('Shell Danger Hook', () => {
     expect(ctx.blocked).toBe(true);
   });
 
-  it('blocks npm publish without dry-run', async () => {
+  it('warns on npm publish', async () => {
     const ctx = makeToolBeforeCtx('shell', { command: 'npm publish' });
-    const result = await pipeline.run(ctx);
-    expect(ctx.blocked).toBe(true);
+    await pipeline.run(ctx);
+    expect(ctx.blocked).toBeUndefined();
+    expect(ctx.metadata.warnings).toBeDefined();
+    expect((ctx.metadata.warnings as string[])[0]).toContain('Publishing to npm');
   });
 
   it('blocks curl piped to shell', async () => {

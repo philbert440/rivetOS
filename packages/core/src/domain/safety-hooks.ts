@@ -73,8 +73,7 @@ const BLOCKED_PATTERNS = [
   'kill -9 1',
   'kill -9 -1',
   'pkill -9',
-  'npm publish', // accidental publish
-  'npx publish',
+
   'curl | sh', // pipe to shell (literal adjacent)
   'curl | bash',
   '| sh', // anything piped to sh/bash
@@ -96,6 +95,8 @@ const WARN_PATTERNS = [
   { pattern: 'pip install', reason: 'Installing Python packages — check for conflicts' },
   { pattern: 'apt install', reason: 'System package install — may require sudo' },
   { pattern: 'apt remove', reason: 'System package removal' },
+  { pattern: 'npm publish', reason: 'Publishing to npm registry — verify package and tag' },
+  { pattern: 'npx publish', reason: 'Publishing to npm registry — verify package and tag' },
 ]
 
 /**
