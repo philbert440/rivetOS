@@ -451,6 +451,11 @@ async function checkOAuth(): Promise<CheckResult[]> {
 function checkContainers(): CheckResult[] {
   const results: CheckResult[] = []
 
+  if (process.env.RIVETOS_BARE_METAL === '1' || process.argv.includes('--bare-metal')) {
+    results.push(check('containers', 'docker', 'pass', 'Docker: skipped (bare-metal mode)'))
+    return results
+  }
+
   // Only check if Docker is available
   try {
     execSync('docker compose version 2>/dev/null', { timeout: 5000, stdio: 'ignore' })

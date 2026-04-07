@@ -30,11 +30,12 @@ interface UpdateOptions {
   restart: boolean
   prebuilt: boolean
   mesh: boolean
+  bareMetal: boolean
 }
 
 function parseArgs(): UpdateOptions {
   const args = process.argv.slice(3)
-  const opts: UpdateOptions = { restart: true, prebuilt: false, mesh: false }
+  const opts: UpdateOptions = { restart: true, prebuilt: false, mesh: false, bareMetal: false }
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
@@ -46,10 +47,16 @@ function parseArgs(): UpdateOptions {
       opts.prebuilt = true
     } else if (arg === '--mesh') {
       opts.mesh = true
+    } else if (arg === '--bare-metal') {
+      opts.bareMetal = true
     } else if (arg === '--help' || arg === '-h') {
       showHelp()
       process.exit(0)
     }
+  }
+
+  if (process.env.RIVETOS_BARE_METAL === '1') {
+    opts.bareMetal = true
   }
 
   return opts
@@ -67,6 +74,7 @@ function showHelp(): void {
     --no-restart       Pull and rebuild only, don't restart
     --prebuilt         Pull pre-built images from GHCR instead of building
     --mesh             Rolling update across all agents
+    --bare-metal       Force bare-metal mode (skip all Docker logic)
 
   What it does:
     1. git pull (or checkout specific version)
@@ -150,7 +158,7 @@ export default async function update(): Promise<void> {
   console.log('  ✅ Dependencies installed')
 
   // Step 3: Detect deployment mode and rebuild if containerized
-  const deployment = await detectDeployment()
+  const deployment = await detectDeployment(opts.bareMetal)
 
   if (deployment === 'docker') {
     // Safety check: verify user data volumes/mounts exist before rebuild
@@ -236,7 +244,9 @@ async function verifyDataPersistence(): Promise<void> {
   }
 
   // Check Docker named volumes exist (pgdata, shared) — only for Docker deployments
-  const deployType = await detectDeployment()
+  const deployType = await detectDeployment(
+    process.env.RIVETOS_BARE_METAL === '1' || process.argv.includes('--bare-metal'),
+  )
   if (deployType === 'docker') {
     const volumes = exec('docker volume ls --format "{{.Name}}"', { quiet: true })
     const volumeList = volumes.split('\n').filter(Boolean)
@@ -323,7 +333,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     }
     execOrFail('npm install --no-audit --no-fund', 'npm install')
 
-    const deployment = await detectDeployment()
+    const deployment = await detectDeployment(localOpts.bareMetal)
     if (deployment === 'docker' && !localOpts.prebuilt) {
       await verifyDataPersistence()
       exec('docker compose build', { quiet: false })
@@ -544,7 +554,11 @@ async function loadMeshFileForUpdate(): Promise<MeshFileForUpdate | null> {
   return null
 }
 
-async function detectDeployment(): Promise<string> {
+async function detectDeployment(forceBareMetal = false): Promise<string> {
+  if (forceBareMetal) {
+    return 'bare-metal'
+  }
+
   // Check for rivet.config.yaml deployment section
   const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
   try {
