@@ -244,14 +244,14 @@ describe('Audit Hooks', () => {
 // ---------------------------------------------------------------------------
 
 describe('Custom Rules Hook', () => {
-  it('blocks npm publish without --dry-run', async () => {
+  it('warns on npm publish without --dry-run', async () => {
     const pipeline = new HookPipelineImpl();
     pipeline.register(createCustomRulesHook([RULE_NPM_DRY_RUN]));
 
     const ctx = makeToolBeforeCtx('shell', { command: 'npm publish --tag latest' });
     await pipeline.run(ctx);
-    expect(ctx.blocked).toBe(true);
-    expect(ctx.blockReason).toContain('--dry-run');
+    expect(ctx.blocked).toBeUndefined();
+    expect(ctx.metadata.warnings).toBeDefined();
   });
 
   it('allows npm publish --dry-run', async () => {
