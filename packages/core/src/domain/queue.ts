@@ -11,34 +11,23 @@
  */
 
 import type { InboundMessage, QueuedMessage, RuntimeCommand } from '@rivetos/types'
+import { COMMAND_NAMES } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
-// Known Commands
+// Command Detection — reads from the shared COMMAND_REGISTRY
 // ---------------------------------------------------------------------------
-
-const COMMANDS: Set<string> = new Set([
-  'stop',
-  'interrupt',
-  'steer',
-  'new',
-  'status',
-  'model',
-  'think',
-  'reasoning',
-  'tools',
-])
 
 export function isCommand(text: string): text is `/${RuntimeCommand}` {
   if (!text.startsWith('/')) return false
   const cmd = text.slice(1).split(/\s+/)[0]
-  return COMMANDS.has(cmd)
+  return COMMAND_NAMES.has(cmd)
 }
 
 export function parseCommand(text: string): { command: RuntimeCommand; args: string } | null {
   if (!text.startsWith('/')) return null
   const parts = text.slice(1).split(/\s+/)
   const cmd = parts[0]
-  if (!COMMANDS.has(cmd)) return null
+  if (!COMMAND_NAMES.has(cmd)) return null
   return { command: cmd as RuntimeCommand, args: parts.slice(1).join(' ') }
 }
 

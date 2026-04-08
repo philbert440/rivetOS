@@ -22,7 +22,7 @@ import type {
   Attachment,
   ResolvedAttachment,
 } from '@rivetos/types'
-import { splitMessage } from '@rivetos/types'
+import { splitMessage, COMMAND_REGISTRY } from '@rivetos/types'
 import { markdownToTelegramHtml } from './format.js'
 
 // ---------------------------------------------------------------------------
@@ -89,18 +89,7 @@ export class TelegramChannel implements Channel {
       await next()
     })
 
-    const commands = [
-      'start',
-      'new',
-      'stop',
-      'interrupt',
-      'steer',
-      'status',
-      'model',
-      'think',
-      'reasoning',
-      'tools',
-    ]
+    const commands = COMMAND_REGISTRY.map((c) => c.name)
 
     for (const cmd of commands) {
       this.bot.command(cmd, (ctx) => this.handleCommand(ctx, cmd))

@@ -7,6 +7,7 @@
 
 import { readFile, writeFile } from 'node:fs/promises'
 import type { Channel, InboundMessage, ThinkingLevel } from '@rivetos/types'
+import { COMMAND_REGISTRY } from '@rivetos/types'
 import type { Router } from '../domain/router.js'
 import type { WorkspaceLoader } from '../domain/workspace.js'
 import type { MessageQueue } from '../domain/queue.js'
@@ -75,6 +76,8 @@ export class CommandHandler {
         return this.tools(channel, message, sessionKey)
       case 'context':
         return this.context(channel, message, args, sessionKey)
+      case 'help':
+        return this.help(channel, message)
       default:
         await channel.send({
           channelId: message.channelId,
@@ -413,6 +416,17 @@ export class CommandHandler {
           text: '📌 **Context commands:**\n- `/context add <file>` — pin a file\n- `/context remove <file>` — unpin\n- `/context list` — show pinned files\n- `/context clear` — unpin all',
         })
     }
+  }
+
+  private async help(channel: Channel, message: InboundMessage): Promise<void> {
+    const lines = ['🤖 **Commands:**']
+    for (const cmd of COMMAND_REGISTRY) {
+      if (cmd.name === 'help') continue // don't list help itself
+      const usage = cmd.args ? ` ${cmd.args}` : ''
+      lines.push(`- \`/${cmd.name}${usage}\` — ${cmd.description}`)
+    }
+    lines.push(`- \`/help\` — Show this list`)
+    await channel.send({ channelId: message.channelId, text: lines.join('\n') })
   }
 
   private formatSize(bytes: number): string {
