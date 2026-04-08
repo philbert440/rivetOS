@@ -123,7 +123,16 @@ export class SessionManager {
       }
     }
 
-    return { id: sessionKey, thinking, reasoningVisible, toolsVisible, history }
+    return {
+      id: sessionKey,
+      thinking,
+      reasoningVisible,
+      toolsVisible,
+      history,
+      userMessageCount: 0,
+      compactionCount: 0,
+      nudgesFired: new Set(),
+    }
   }
 
   /**

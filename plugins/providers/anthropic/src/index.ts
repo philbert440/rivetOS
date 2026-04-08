@@ -32,6 +32,10 @@ export interface AnthropicProviderConfig {
   maxTokens?: number
   baseUrl?: string
   tokenPath?: string
+  /** Context window size in tokens (0 = unknown) */
+  contextWindow?: number
+  /** Max output tokens (0 = unknown) */
+  maxOutputTokens?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +265,8 @@ export class AnthropicProvider implements Provider {
   private authMode: 'api_key' | 'oauth'
   private tokenManager: TokenManager | null = null
   private initialized = false
+  private contextWindow: number
+  private outputTokenLimit: number
 
   constructor(config: AnthropicProviderConfig) {
     this.apiKey = config.apiKey
@@ -268,6 +274,8 @@ export class AnthropicProvider implements Provider {
     this.maxTokens = config.maxTokens ?? 8192
     this.baseUrl = config.baseUrl ?? 'https://api.anthropic.com'
     this.authMode = detectAuthMode(config.apiKey)
+    this.contextWindow = config.contextWindow ?? 0
+    this.outputTokenLimit = config.maxOutputTokens ?? 0
 
     if (this.authMode === 'oauth') {
       this.tokenManager = new TokenManager(config.tokenPath)
@@ -281,6 +289,14 @@ export class AnthropicProvider implements Provider {
 
   setModel(model: string): void {
     this.model = model
+  }
+
+  getContextWindow(): number {
+    return this.contextWindow
+  }
+
+  getMaxOutputTokens(): number {
+    return this.outputTokenLimit
   }
 
   private async ensureInitialized(): Promise<void> {

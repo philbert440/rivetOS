@@ -58,6 +58,7 @@ export type {
 export type { Memory, MemoryEntry, MemorySearchResult } from './memory.js'
 export type { Workspace, WorkspaceFile } from './workspace.js'
 export type {
+  ContextConfig,
   RuntimeConfig,
   AgentConfig,
   AgentToolFilter,

@@ -53,6 +53,10 @@ export interface OpenAICompatProviderConfig {
   chunkTimeoutMs?: number
   /** Repetition penalty for llama-server (default: undefined — not sent) */
   repeatPenalty?: number
+  /** Context window size in tokens (0 = unknown) */
+  contextWindow?: number
+  /** Max output tokens (0 = unknown) */
+  maxOutputTokens?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +251,8 @@ export class OpenAICompatProvider implements Provider {
   private firstChunkTimeoutMs: number
   private chunkTimeoutMs: number
   private repeatPenalty: number | undefined
+  private contextWindowSize: number
+  private outputTokenLimit: number
 
   constructor(config: OpenAICompatProviderConfig) {
     this.id = config.id ?? 'openai-compat'
@@ -260,6 +266,8 @@ export class OpenAICompatProvider implements Provider {
     this.firstChunkTimeoutMs = config.firstChunkTimeoutMs ?? 120_000
     this.chunkTimeoutMs = config.chunkTimeoutMs ?? 30_000
     this.repeatPenalty = config.repeatPenalty
+    this.contextWindowSize = config.contextWindow ?? 0
+    this.outputTokenLimit = config.maxOutputTokens ?? 0
   }
 
   getModel(): string {
@@ -268,6 +276,14 @@ export class OpenAICompatProvider implements Provider {
 
   setModel(model: string): void {
     this.model = model
+  }
+
+  getContextWindow(): number {
+    return this.contextWindowSize
+  }
+
+  getMaxOutputTokens(): number {
+    return this.outputTokenLimit
   }
 
   // -----------------------------------------------------------------------

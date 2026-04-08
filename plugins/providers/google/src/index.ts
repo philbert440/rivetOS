@@ -29,6 +29,10 @@ export interface GoogleProviderConfig {
   model?: string // Default: 'gemini-2.5-pro'
   maxTokens?: number // Default: 8192
   baseUrl?: string // Default: 'https://generativelanguage.googleapis.com/v1beta'
+  /** Context window size in tokens (0 = unknown) */
+  contextWindow?: number
+  /** Max output tokens (0 = unknown) */
+  maxOutputTokens?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -229,12 +233,16 @@ export class GoogleProvider implements Provider {
   private model: string
   private maxTokens: number
   private baseUrl: string
+  private contextWindowSize: number
+  private outputTokenLimit: number
 
   constructor(config: GoogleProviderConfig) {
     this.apiKey = config.apiKey
     this.model = config.model ?? 'gemini-2.5-pro'
     this.maxTokens = config.maxTokens ?? 8192
     this.baseUrl = config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta'
+    this.contextWindowSize = config.contextWindow ?? 0
+    this.outputTokenLimit = config.maxOutputTokens ?? 0
   }
 
   getModel(): string {
@@ -243,6 +251,14 @@ export class GoogleProvider implements Provider {
 
   setModel(model: string): void {
     this.model = model
+  }
+
+  getContextWindow(): number {
+    return this.contextWindowSize
+  }
+
+  getMaxOutputTokens(): number {
+    return this.outputTokenLimit
   }
 
   // -----------------------------------------------------------------------
