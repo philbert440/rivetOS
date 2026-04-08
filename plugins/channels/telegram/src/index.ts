@@ -525,9 +525,27 @@ export class TelegramChannel implements Channel {
       console.error('[Telegram] Bot error:', err)
     })
 
-    await this.bot.start({
-      drop_pending_updates: true,
-      onStart: (info) => console.log(`[Telegram] Bot started: @${info.username}`),
+    // Grammy's bot.start() never resolves — it runs long-polling forever.
+    // We must NOT await it or it blocks the runtime's channel startup loop
+    // (preventing subsequent channels like Discord from starting).
+    // Instead, wrap in a promise that resolves on the onStart callback.
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Telegram bot.start() timed out after 30s'))
+      }, 30_000)
+
+      this.bot.start({
+        drop_pending_updates: true,
+        onStart: (info) => {
+          clearTimeout(timeout)
+          console.log(`[Telegram] Bot started: @${info.username}`)
+          resolve()
+        },
+      }).catch((err: unknown) => {
+        // bot.start() rejected (e.g. 409 conflict, network error)
+        clearTimeout(timeout)
+        reject(err)
+      })
     })
   }
 
