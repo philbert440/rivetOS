@@ -187,6 +187,7 @@ export class TurnHandler {
         session.history.push({ role: 'assistant', content: result.response })
       }
       if (session.history.length > 200) {
+        session.compactions = (session.compactions ?? 0) + 1
         session.history.splice(0, session.history.length - 200)
       }
 

@@ -38,6 +38,8 @@ export interface SessionState {
   history: Message[]
   /** System prompt — built once on session init, reused every turn */
   systemPrompt?: string
+  /** Number of times history was truncated (context window compacted) */
+  compactions?: number
 }
 
 // ---------------------------------------------------------------------------

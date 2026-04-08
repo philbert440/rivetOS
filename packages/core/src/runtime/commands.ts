@@ -185,6 +185,20 @@ export class CommandHandler {
     const isRunning = !!this.deps.getAbort(sessionKey)
     const queueDepth = this.deps.getQueue(sessionKey)?.depth ?? 0
 
+    // Estimate token count from history + system prompt
+    const historyLen = session?.history.length ?? 0
+    let charCount = 0
+    if (session) {
+      for (const msg of session.history) {
+        charCount += typeof msg.content === 'string' ? msg.content.length : 0
+      }
+      if (session.systemPrompt) {
+        charCount += session.systemPrompt.length
+      }
+    }
+    const estimatedTokens = Math.round(charCount / 4)
+    const contextLimit = 200
+
     const lines = [
       '🤖 **RivetOS Status**',
       `Agents: ${agents.map((a) => `${a.id} (${a.provider})`).join(', ')}`,
@@ -193,10 +207,11 @@ export class CommandHandler {
         .join(', ')}`,
       `State: ${isRunning ? '⚙️ Processing' : '💤 Idle'}`,
       `Queue: ${queueDepth} pending`,
+      `Context: ${String(historyLen)} / ${String(contextLimit)} messages (~${estimatedTokens.toLocaleString()} tokens)`,
+      `Compactions: ${String(session?.compactions ?? 0)}`,
       `Thinking: ${session?.thinking ?? 'default'}`,
       `Reasoning visible: ${session?.reasoningVisible ? 'on' : 'off'}`,
       `Tools visible: ${session?.toolsVisible ? 'on' : 'off'}`,
-      `History: ${session?.history.length ?? 0} messages`,
     ]
     await channel.send({ channelId: message.channelId, text: lines.join('\n') })
   }
