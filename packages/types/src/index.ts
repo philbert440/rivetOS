@@ -84,8 +84,9 @@ export type {
   DelegationResult,
   TokenUsage,
   SilentResponse,
-  RuntimeCommand,
 } from './events.js'
+export type { CommandDef, RuntimeCommand } from './commands.js'
+export { COMMAND_REGISTRY, COMMAND_NAMES } from './commands.js'
 export type { SubagentSession, SubagentSpawnRequest, SubagentManager } from './subagent.js'
 export type { Skill, SkillManager } from './skill.js'
 export type {
