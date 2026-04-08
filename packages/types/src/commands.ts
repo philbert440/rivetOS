@@ -48,6 +48,10 @@ export const COMMAND_REGISTRY = [
     description: 'Manage pinned context files',
     args: 'add|remove|list|clear [file]',
   },
+  {
+    name: 'clear' as const,
+    description: 'Clear queued messages without stopping the current turn',
+  },
   { name: 'start' as const, description: 'Show welcome message' },
   { name: 'help' as const, description: 'Show available commands' },
 ] satisfies CommandDef[]

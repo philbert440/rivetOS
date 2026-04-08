@@ -108,6 +108,7 @@ describe('isCommand', () => {
     assert.ok(isCommand('/model'));
     assert.ok(isCommand('/think'));
     assert.ok(isCommand('/reasoning'));
+    assert.ok(isCommand('/clear'));
   });
 
   it('should reject non-commands', () => {

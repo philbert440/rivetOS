@@ -74,6 +74,8 @@ export class CommandHandler {
         return this.model(channel, message, args)
       case 'tools':
         return this.tools(channel, message, sessionKey)
+      case 'clear':
+        return this.clearQueue(channel, message, sessionKey)
       case 'context':
         return this.context(channel, message, args, sessionKey)
       case 'help':
@@ -322,6 +324,27 @@ export class CommandHandler {
       channelId: message.channelId,
       text: `🔧 Tool calls: ${session.toolsVisible ? 'visible' : 'hidden'}`,
     })
+  }
+
+  private async clearQueue(
+    channel: Channel,
+    message: InboundMessage,
+    sessionKey: string,
+  ): Promise<void> {
+    const queue = this.deps.getQueue(sessionKey)
+    const depth = queue?.depth ?? 0
+    if (depth > 0) {
+      queue?.clear()
+      await channel.send({
+        channelId: message.channelId,
+        text: `🗑️ Cleared ${depth} queued message${depth !== 1 ? 's' : ''}.`,
+      })
+    } else {
+      await channel.send({
+        channelId: message.channelId,
+        text: '📭 Queue already empty.',
+      })
+    }
   }
 
   // -----------------------------------------------------------------------
