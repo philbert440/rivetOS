@@ -57,6 +57,9 @@ export class TelegramChannel implements Channel {
   /** 409 conflict tracking — retry with backoff, give up after threshold */
   private conflict409Count = 0
   private conflict409FirstTime = 0
+  /** Flag to ensure handlers and catch are registered only once (prevents listener leaks on reconnect) */
+  private handlersRegistered = false
+
   private static readonly MAX_409_RETRIES = 5
   private static readonly CONFLICT_WINDOW_MS = 60_000
   private static readonly RETRY_DELAY_MS = 5_000
@@ -459,75 +462,100 @@ export class TelegramChannel implements Channel {
   }
 
   async start(): Promise<void> {
+    // Stop any previous polling loop before restarting (idempotent start).
+    // Without this, calling start() while already polling causes a self-409.
+    try {
+      await this.bot.stop()
+    } catch {
+      /* non-critical — bot may not be running */
+    }
+
+    // Reset conflict counter on fresh start (reconnection manager handles retries)
+    this.conflict409Count = 0
+    this.conflict409FirstTime = 0
+
     // Bind event handlers right before start — after registration has wired
     // up messageHandler/commandHandler, so there's no timing gap where events
     // arrive before handlers are set.
-    this.setupHandlers()
+    if (!this.handlersRegistered) {
+      this.setupHandlers()
 
-    // Catch polling errors — handle 409 conflicts with retry
-    this.bot.catch(async (err: unknown) => {
-      const errObj = err as { error?: { description?: string }; message?: string }
-      const errMsg = String(errObj.error?.description ?? errObj.message ?? err)
+      // Simplified catch: no internal retry/start logic (conflicts with ReconnectionManager).
+      // Logs errors, stops polling on fatal 409/401 so reconnection can trigger.
+      this.bot.catch(async (err: unknown) => {
+        const errObj = err as { error?: { description?: string }; message?: string }
+        const errMsg = String(errObj.error?.description ?? errObj.message ?? err)
 
-      // 409 Conflict: another bot instance is polling the same token
-      if (
-        errMsg.includes('409') ||
-        errMsg.includes('Conflict') ||
-        errMsg.includes('terminated by other')
-      ) {
-        this.conflict409Count++
-        if (this.conflict409Count === 1) {
-          this.conflict409FirstTime = Date.now()
-        }
-
-        console.error(
-          `[Telegram] 409 Conflict — another instance is polling this bot token (${this.conflict409Count} consecutive)`,
-        )
-
-        // Too many in a short window? Give up — something else is running.
-        const elapsed = Date.now() - this.conflict409FirstTime
         if (
-          this.conflict409Count >= TelegramChannel.MAX_409_RETRIES &&
-          elapsed < TelegramChannel.CONFLICT_WINDOW_MS
+          errMsg.includes('409') ||
+          errMsg.includes('Conflict') ||
+          errMsg.includes('terminated by other')
         ) {
+          this.conflict409Count++
+          if (this.conflict409Count === 1) {
+            this.conflict409FirstTime = Date.now()
+          }
+
           console.error(
-            `[Telegram] Too many 409 conflicts (${this.conflict409Count} in ${Math.round(elapsed / 1000)}s) — another bot instance is likely running. Stopping.`,
+            `[Telegram] 409 Conflict — another instance is polling this bot token (${this.conflict409Count} consecutive)`,
           )
+
+          const elapsed = Date.now() - this.conflict409FirstTime
+          if (
+            this.conflict409Count >= TelegramChannel.MAX_409_RETRIES &&
+            elapsed < TelegramChannel.CONFLICT_WINDOW_MS
+          ) {
+            console.error(
+              `[Telegram] Too many 409 conflicts (${this.conflict409Count} in ${Math.round(
+                elapsed / 1000,
+              )}s) — another bot instance is likely running. Stopping.`,
+            )
+            try {
+              await this.bot.stop()
+            } catch {
+              /* non-critical */
+            }
+            throw new Error('Telegram 409 threshold exceeded')
+          }
           return
         }
 
-        // Retry: stop polling, wait, restart
-        console.log(`[Telegram] Retrying in ${TelegramChannel.RETRY_DELAY_MS / 1000}s...`)
-        try {
-          void this.bot.stop()
-        } catch {
-          /* non-critical */
+        if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
+          console.error('[Telegram] 401 Unauthorized — bot token is invalid. Stopping.')
+          try {
+            await this.bot.stop()
+          } catch {
+            /* non-critical */
+          }
+          throw err
         }
-        await new Promise((r) => setTimeout(r, TelegramChannel.RETRY_DELAY_MS))
-        try {
-          await this.bot.start({
-            drop_pending_updates: true,
-            onStart: (info) => console.log(`[Telegram] Bot restarted after 409: @${info.username}`),
-          })
-        } catch (restartErr: unknown) {
-          console.error(`[Telegram] Failed to restart after 409:`, (restartErr as Error).message)
-        }
-        return
-      }
 
-      // 401 Unauthorized — invalid token, no point retrying
-      if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
-        console.error('[Telegram] 401 Unauthorized — bot token is invalid. Stopping.')
-        return
-      }
+        console.error('[Telegram] Bot error:', err)
+      })
 
-      // All other errors — log and continue (don't crash)
-      console.error('[Telegram] Bot error:', err)
-    })
+      this.handlersRegistered = true
+    }
 
-    await this.bot.start({
-      drop_pending_updates: true,
-      onStart: (info) => console.log(`[Telegram] Bot started: @${info.username}`),
+    // Grammy's bot.start() never resolves — it runs long-polling forever.
+    // Wrap to resolve on onStart for the runtime.
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Telegram bot.start() timed out after 30s'))
+      }, 30_000)
+
+      this.bot
+        .start({
+          drop_pending_updates: true,
+          onStart: (info) => {
+            clearTimeout(timeout)
+            console.log(`[Telegram] Bot started: @${info.username}`)
+            resolve()
+          },
+        })
+        .catch((err: unknown) => {
+          clearTimeout(timeout)
+          reject(err instanceof Error ? err : new Error(String(err)))
+        })
     })
   }
 
