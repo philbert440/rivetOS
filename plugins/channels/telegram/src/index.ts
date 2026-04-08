@@ -65,7 +65,6 @@ export class TelegramChannel implements Channel {
     this.config = config
     this.id = `telegram:${config.ownerId}`
     this.bot = new Bot(config.botToken)
-    this.setupHandlers()
   }
 
   // -----------------------------------------------------------------------
@@ -471,6 +470,11 @@ export class TelegramChannel implements Channel {
   }
 
   async start(): Promise<void> {
+    // Bind event handlers right before start — after registration has wired
+    // up messageHandler/commandHandler, so there's no timing gap where events
+    // arrive before handlers are set.
+    this.setupHandlers()
+
     // Catch polling errors — handle 409 conflicts with retry
     this.bot.catch(async (err: unknown) => {
       const errObj = err as { error?: { description?: string }; message?: string }
