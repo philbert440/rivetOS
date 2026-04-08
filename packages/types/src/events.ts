@@ -93,16 +93,5 @@ export interface TokenUsage {
 export type SilentResponse = 'NO_REPLY' | 'HEARTBEAT_OK'
 
 // ---------------------------------------------------------------------------
-// Runtime Commands
+// Runtime Commands — defined in commands.ts (single source of truth)
 // ---------------------------------------------------------------------------
-
-export type RuntimeCommand =
-  | 'stop'
-  | 'interrupt'
-  | 'steer'
-  | 'new'
-  | 'status'
-  | 'model'
-  | 'think'
-  | 'reasoning'
-  | 'tools'

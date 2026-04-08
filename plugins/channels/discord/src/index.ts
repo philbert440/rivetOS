@@ -44,7 +44,7 @@ import type {
   Attachment,
   ResolvedAttachment,
 } from '@rivetos/types'
-import { splitMessage } from '@rivetos/types'
+import { splitMessage, COMMAND_NAMES } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -498,9 +498,9 @@ export class DiscordChannel implements Channel {
     this.startTyping(msg.channelId)
 
     try {
-      // Check for slash-like commands: /command args
+      // Check for slash-like commands: /command args (validated against registry)
       const match = msg.content.match(/^\/(\w+)\s*(.*)/)
-      if (match && this.commandHandler) {
+      if (match && this.commandHandler && COMMAND_NAMES.has(match[1])) {
         const inbound = this.buildInbound(msg)
         await this.commandHandler(match[1], match[2], inbound)
         return
