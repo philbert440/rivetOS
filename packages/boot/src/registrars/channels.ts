@@ -41,6 +41,7 @@ function resolveChannelConfig(
         allowedChannels: channelConfig.allowed_channels,
         allowedUsers: channelConfig.allowed_users,
         channelBindings: channelConfig.channel_bindings,
+        mentionOnlyChannels: channelConfig.mention_only_channels,
         mentionOnly: channelConfig.mention_only,
       }
 

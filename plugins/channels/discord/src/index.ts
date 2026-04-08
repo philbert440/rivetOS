@@ -14,7 +14,8 @@
  * - Emoji reactions
  * - Message editing (for streaming)
  * - Message splitting at 2000 chars
- * - Mention-based activation in servers
+ * - Mention-based activation in servers (global or per-channel)
+ * - Per-channel mention-only mode (e.g. #alerts-and-briefs — only responds when @mentioned)
  * - Slash command interception
  * - Typing indicators (start on receive, stop on send/error)
  * - Connection health logging (shard events, errors, warnings)
@@ -58,7 +59,9 @@ export interface DiscordChannelConfig {
   allowedUsers?: string[]
   /** Map channelId → agentId for routing */
   channelBindings?: Record<string, string>
-  /** Only respond when mentioned in servers (default: false) */
+  /** Channels where the bot listens but only responds when @mentioned */
+  mentionOnlyChannels?: string[]
+  /** Only respond when mentioned in servers — global (default: false) */
   mentionOnly?: boolean
 }
 
@@ -145,15 +148,15 @@ export class DiscordChannel implements Channel {
 
   /**
    * Compute effective allowed channels. If explicit allowedChannels is set,
-   * use that. Otherwise, auto-derive from channelBindings keys so bots with
-   * bindings are automatically restricted to only those channels.
+   * use that. Otherwise, auto-derive from channelBindings keys + mentionOnlyChannels
+   * so bots with bindings are automatically restricted to only those channels.
    */
   private get effectiveAllowedChannels(): string[] | undefined {
     if (this.config.allowedChannels?.length) return this.config.allowedChannels
-    if (this.config.channelBindings && Object.keys(this.config.channelBindings).length > 0) {
-      return Object.keys(this.config.channelBindings)
-    }
-    return undefined
+    const bindingKeys = this.config.channelBindings ? Object.keys(this.config.channelBindings) : []
+    const mentionOnly = this.config.mentionOnlyChannels ?? []
+    const derived = [...bindingKeys, ...mentionOnly]
+    return derived.length > 0 ? derived : undefined
   }
 
   private isAllowed(msg: DiscordMessage): boolean {
@@ -186,6 +189,15 @@ export class DiscordChannel implements Channel {
     }
 
     return true
+  }
+
+  /**
+   * Check if a channel (or its thread parent) is mention-only.
+   */
+  private isMentionOnlyChannel(channelId: string, parentId?: string): boolean {
+    const list = this.config.mentionOnlyChannels
+    if (!list?.length) return false
+    return list.includes(channelId) || (parentId ? list.includes(parentId) : false)
   }
 
   // -----------------------------------------------------------------------
@@ -492,6 +504,15 @@ export class DiscordChannel implements Channel {
         `[Discord] Filtered: from=${msg.author.username} in=${msg.channelId} (not allowed)`,
       )
       return
+    }
+
+    // Per-channel mention-only: skip unless @mentioned or it's a slash command
+    const parentId = msg.channel.isThread() ? (msg.channel.parentId ?? undefined) : undefined
+    if (this.isMentionOnlyChannel(msg.channelId, parentId)) {
+      const botId = this.client.user?.id
+      const isMentioned = botId ? msg.mentions.has(botId) : false
+      const isSlashCommand = msg.content.startsWith('/')
+      if (!isMentioned && !isSlashCommand) return
     }
 
     // Start typing indicator — shows "Bot is typing..." in Discord
