@@ -7,7 +7,8 @@
  *
  * Features:
  * - Channel bindings: route #deep-thinking → opus, #brainstorm → grok, #research → gemini
- * - Thread support (create + reply)
+ * - Auto-derived channel restriction from bindings (no separate allowedChannels needed)
+ * - Thread support (create + reply) — threads inherit parent channel's agent binding
  * - Embeds for rich output
  * - Action rows with buttons
  * - Emoji reactions
@@ -15,6 +16,9 @@
  * - Message splitting at 2000 chars
  * - Mention-based activation in servers
  * - Slash command interception
+ * - Typing indicators (start on receive, stop on send/error)
+ * - Connection health logging (shard events, errors, warnings)
+ * - Handler error → user-facing error reply
  * - Markdown renders natively (Discord supports it)
  */
 
@@ -89,8 +93,6 @@ export class DiscordChannel implements Channel {
       ],
       partials: [Partials.Channel, Partials.Message],
     })
-
-    this.setupHandlers()
   }
 
   // -----------------------------------------------------------------------
@@ -103,7 +105,6 @@ export class DiscordChannel implements Channel {
     })
 
     // Button interactions
-
     this.client.on('interactionCreate', (interaction: Interaction) => {
       void this.handleInteraction(interaction)
     })
@@ -111,27 +112,63 @@ export class DiscordChannel implements Channel {
     this.client.once('ready', () => {
       console.log(`[Discord] Bot ready: ${this.client.user?.tag}`)
     })
+
+    // Connection health logging
+    this.client.on('error', (error) => {
+      console.error(`[Discord] Client error: ${error.message}`)
+    })
+
+    this.client.on('warn', (message) => {
+      console.warn(`[Discord] Warning: ${message}`)
+    })
+
+    this.client.on('shardDisconnect', (event, shardId) => {
+      console.error(`[Discord] Shard ${shardId} disconnected (code: ${event.code})`)
+    })
+
+    this.client.on('shardReconnecting', (shardId) => {
+      console.log(`[Discord] Shard ${shardId} reconnecting...`)
+    })
+
+    this.client.on('shardResume', (shardId, replayedEvents) => {
+      console.log(`[Discord] Shard ${shardId} resumed (${replayedEvents} events replayed)`)
+    })
+
+    this.client.on('shardError', (error, shardId) => {
+      console.error(`[Discord] Shard ${shardId} error: ${error.message}`)
+    })
   }
 
   // -----------------------------------------------------------------------
   // Access Control
   // -----------------------------------------------------------------------
 
+  /**
+   * Compute effective allowed channels. If explicit allowedChannels is set,
+   * use that. Otherwise, auto-derive from channelBindings keys so bots with
+   * bindings are automatically restricted to only those channels.
+   */
+  private get effectiveAllowedChannels(): string[] | undefined {
+    if (this.config.allowedChannels?.length) return this.config.allowedChannels
+    if (this.config.channelBindings && Object.keys(this.config.channelBindings).length > 0) {
+      return Object.keys(this.config.channelBindings)
+    }
+    return undefined
+  }
+
   private isAllowed(msg: DiscordMessage): boolean {
     if (this.config.allowedGuilds?.length && msg.guildId) {
       if (!this.config.allowedGuilds.includes(msg.guildId)) return false
     }
 
-    if (this.config.allowedChannels?.length) {
-      // Also allow threads whose parent is in allowedChannels
+    // DMs always pass channel filtering — they have no channelId in bindings
+    const allowed = this.effectiveAllowedChannels
+    if (allowed?.length && msg.channel.type !== ChannelType.DM) {
+      // Also allow threads whose parent is in the allowed list
       const checkId = msg.channel.isThread()
         ? (msg.channel.parentId ?? msg.channelId)
         : msg.channelId
-      if (
-        !this.config.allowedChannels.includes(checkId) &&
-        !this.config.allowedChannels.includes(msg.channelId)
-      )
-        return false
+      if (!allowed.includes(checkId) && !allowed.includes(msg.channelId)) return false
     }
 
     if (this.config.allowedUsers?.length) {
@@ -155,8 +192,16 @@ export class DiscordChannel implements Channel {
   // Channel → Agent Routing
   // -----------------------------------------------------------------------
 
-  private getAgentForChannel(channelId: string): string | undefined {
-    return this.config.channelBindings?.[channelId]
+  /**
+   * Resolve agent binding for a channel. For threads, checks the thread ID
+   * first, then falls back to the parent channel ID so threads inherit
+   * their parent's binding.
+   */
+  private getAgentForChannel(channelId: string, parentId?: string): string | undefined {
+    return (
+      this.config.channelBindings?.[channelId] ??
+      (parentId ? this.config.channelBindings?.[parentId] : undefined)
+    )
   }
 
   // -----------------------------------------------------------------------
@@ -171,6 +216,11 @@ export class DiscordChannel implements Channel {
       text = text.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim()
     }
 
+    // Resolve parent ID for threads so channel bindings route correctly
+    const parentId = msg.channel.isThread()
+      ? ((msg.channel as ThreadChannel).parentId ?? undefined)
+      : undefined
+
     const inbound: InboundMessage = {
       id: msg.id,
       userId: msg.author.id,
@@ -181,7 +231,7 @@ export class DiscordChannel implements Channel {
         msg.channel.type === ChannelType.DM ? 'dm' : msg.channel.isThread() ? 'thread' : 'guild',
       text,
       platform: 'discord',
-      agent: this.getAgentForChannel(msg.channelId),
+      agent: this.getAgentForChannel(msg.channelId, parentId),
       timestamp: Math.floor(msg.createdTimestamp / 1000),
     }
 
@@ -206,6 +256,9 @@ export class DiscordChannel implements Channel {
   // -----------------------------------------------------------------------
 
   async send(msg: OutboundMessage): Promise<string | null> {
+    // Stop typing — we're about to deliver the response
+    this.stopTyping(msg.channelId)
+
     try {
       const channel = await this.client.channels.fetch(msg.channelId)
       if (!channel || !('send' in channel)) return null
@@ -237,19 +290,7 @@ export class DiscordChannel implements Channel {
 
         // Buttons
         if (msg.buttons?.length) {
-          const row = new ActionRowBuilder<ButtonBuilder>()
-          for (const btn of msg.buttons.flat()) {
-            const style =
-              btn.style === 'success'
-                ? ButtonStyle.Success
-                : btn.style === 'danger'
-                  ? ButtonStyle.Danger
-                  : ButtonStyle.Primary
-            row.addComponents(
-              new ButtonBuilder().setCustomId(btn.callbackData).setLabel(btn.text).setStyle(style),
-            )
-          }
-          options.components = [row]
+          options.components = [this.buildKeyboard(msg.buttons)]
         }
 
         // Reply reference
@@ -300,6 +341,9 @@ export class DiscordChannel implements Channel {
     text: string,
     overflowIds: string[] = [],
   ): Promise<EditResult | null> {
+    // Stop typing — we're delivering the final edit
+    this.stopTyping(channelId)
+
     try {
       const channel = await this.client.channels.fetch(channelId)
       if (!channel || !('messages' in channel)) return null
@@ -428,30 +472,53 @@ export class DiscordChannel implements Channel {
   }
 
   // -----------------------------------------------------------------------
-  // Lifecycle
-  // -----------------------------------------------------------------------
-
-  // -----------------------------------------------------------------------
   // Inbound Handlers
   // -----------------------------------------------------------------------
 
   private async handleMessage(msg: DiscordMessage): Promise<void> {
     // Ignore bots
     if (msg.author.bot) return
-    // Check access control
-    if (!this.isAllowed(msg)) return
 
-    // Check for slash-like commands: /command args
-    const match = msg.content.match(/^\/(\w+)\s*(.*)/)
-    if (match && this.commandHandler) {
-      const inbound = this.buildInbound(msg)
-      await this.commandHandler(match[1], match[2], inbound)
+    // Debug logging — like Telegram's middleware
+    const chatType =
+      msg.channel.type === ChannelType.DM ? 'dm' : msg.channel.isThread() ? 'thread' : 'guild'
+    console.log(
+      `[Discord] Message from=${msg.author.username} (${msg.author.id}) in=${msg.channelId} type=${chatType} text="${msg.content.slice(0, 30)}"`,
+    )
+
+    // Check access control
+    if (!this.isAllowed(msg)) {
+      console.log(
+        `[Discord] Filtered: from=${msg.author.username} in=${msg.channelId} (not allowed)`,
+      )
       return
     }
 
-    if (this.messageHandler) {
-      const inbound = this.buildInbound(msg)
-      await this.messageHandler(inbound)
+    // Start typing indicator — shows "Bot is typing..." in Discord
+    this.startTyping(msg.channelId)
+
+    try {
+      // Check for slash-like commands: /command args
+      const match = msg.content.match(/^\/(\w+)\s*(.*)/)
+      if (match && this.commandHandler) {
+        const inbound = this.buildInbound(msg)
+        await this.commandHandler(match[1], match[2], inbound)
+        return
+      }
+
+      if (this.messageHandler) {
+        const inbound = this.buildInbound(msg)
+        await this.messageHandler(inbound)
+      }
+    } catch (err: unknown) {
+      console.error('[Discord] Handler error:', err)
+      try {
+        await msg.reply(`⚠️ Error: ${(err as Error).message}`)
+      } catch {
+        /* non-critical — reply may fail if channel is gone */
+      }
+    } finally {
+      this.stopTyping(msg.channelId)
     }
   }
 
@@ -490,6 +557,18 @@ export class DiscordChannel implements Channel {
   }
 
   async start(): Promise<void> {
+    // Validate token before attempting login
+    if (!this.config.botToken || !this.config.botToken.includes('.')) {
+      throw new Error(
+        '[Discord] Invalid or missing bot token — check DISCORD_BOT_TOKEN in .env (token should be Base64 segments separated by dots)',
+      )
+    }
+
+    // Bind event handlers right before login — after registration has wired
+    // up messageHandler/commandHandler, so there's no timing gap where events
+    // arrive before handlers are set.
+    this.setupHandlers()
+
     console.log('[Discord] Starting...')
     await this.client.login(this.config.botToken)
   }
