@@ -53,20 +53,21 @@ That's it. The wizard handles the rest.
 ## Architecture at a Glance
 
 ```
-┌──────────────────────────────────────────────────┐
-│                   RivetOS Agent                  │
-├──────────┬──────────┬──────────┬─────────────────┤
-│ Channel  │ Provider │  Tools   │     Memory      │
-│ Discord  │ Anthropic│  Shell   │   Postgres +    │
-│  Slack   │  OpenAI  │  Files   │   Embeddings    │
-│ Telegram │   xAI    │   Web    │                 │
-│ WhatsApp │  Ollama  │   MCP    │                 │ 
-├──────────┴──────────┴──────────┴─────────────────┤
-│               Core Runtime Engine                │
-│      Hooks · Skills · Streaming · Learning       │
-├──────────────────────────────────────────────────┤
-│         Container (Docker / LXC / K8s)           │
-└──────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────┐
+│                   RivetOS Agent                   │
+├──────────┬──────────┬──────────┬──────────────────┤
+│ Channel  │ Provider │  Tools   │     Memory       │
+├──────────┬──────────┬──────────┬──────────────────┤
+│ Discord  │ Anthropic│  Shell   │   Postgres w/    │
+│ Telegram │  OpenAI  │  Files   │ tree-based index │
+│          │   xAI    │   Web    │  for embeddings  │
+│          │  Ollama  │   MCP    │ shared by agents │ 
+├──────────┴──────────┴──────────┴──────────────────┤
+│               Core Runtime Engine                 │
+│      Hooks · Skills · Streaming · Learning        │
+├───────────────────────────────────────────────────┤
+│         Container (Docker / LXC / K8s)            │
+└───────────────────────────────────────────────────┘
 ```
 
 ## Ready to dive in?
