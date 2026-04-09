@@ -693,9 +693,18 @@ async function checkPeers(): Promise<CheckResult[]> {
             `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no root@${peer.host} "echo ok"`,
             { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
           )
-          results.push(check('peers', peer.name, 'pass', `Peer ${peer.name} [${peer.role}]: reachable (SSH)`))
+          results.push(
+            check('peers', peer.name, 'pass', `Peer ${peer.name} [${peer.role}]: reachable (SSH)`),
+          )
         } catch {
-          results.push(check('peers', peer.name, 'fail', `Peer ${peer.name} [${peer.role}]: unreachable (SSH)`))
+          results.push(
+            check(
+              'peers',
+              peer.name,
+              'fail',
+              `Peer ${peer.name} [${peer.role}]: unreachable (SSH)`,
+            ),
+          )
         }
         continue
       }
@@ -708,7 +717,12 @@ async function checkPeers(): Promise<CheckResult[]> {
           results.push(check('peers', peer.name, 'pass', `Peer ${peer.name}: reachable`))
         } else {
           results.push(
-            check('peers', peer.name, 'warn', `Peer ${peer.name}: responded ${String(resp.status)}`),
+            check(
+              'peers',
+              peer.name,
+              'warn',
+              `Peer ${peer.name}: responded ${String(resp.status)}`,
+            ),
           )
         }
       } catch {

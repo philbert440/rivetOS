@@ -101,9 +101,10 @@ async function meshList(flags: Flags): Promise<void> {
 
   const agentCount = nodes.filter((n) => !n.role || n.role === 'agent').length
   const otherCount = nodes.length - agentCount
-  const summary = otherCount > 0
-    ? `${String(nodes.length)} node(s) — ${String(agentCount)} agent, ${String(otherCount)} non-agent`
-    : `${String(nodes.length)} node(s)`
+  const summary =
+    otherCount > 0
+      ? `${String(nodes.length)} node(s) — ${String(agentCount)} agent, ${String(otherCount)} non-agent`
+      : `${String(nodes.length)} node(s)`
   console.log(`  Total: ${summary}`)
   console.log('')
 }

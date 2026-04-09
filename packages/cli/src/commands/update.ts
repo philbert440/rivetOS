@@ -374,7 +374,9 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     const isAgent = !node.role || node.role === 'agent'
     const rsyncSuccess = rsyncUpdateNode(node.host, localOpts, isAgent)
     if (rsyncSuccess) {
-      console.log(`  ✅ ${node.name} updated (via rsync${!isAgent ? ` — ${node.role}, sync only` : ''})`)
+      console.log(
+        `  ✅ ${node.name} updated (via rsync${!isAgent ? ` — ${node.role}, sync only` : ''})`,
+      )
       updated++
     } else {
       // Fall back to agent API (Docker/containerized)
@@ -438,7 +440,6 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
  * Returns true on success, false if rsync/SSH isn't available.
  */
 function rsyncUpdateNode(host: string, opts: UpdateOptions, isAgent: boolean = true): boolean {
-
   try {
     // Check if we can SSH to the node
     execSync(
@@ -546,7 +547,10 @@ function isLocalAddress(host: string): boolean {
 
 interface MeshFileForUpdate {
   version: number
-  nodes: Record<string, { id: string; name: string; host: string; port: number; status: string; role?: string }>
+  nodes: Record<
+    string,
+    { id: string; name: string; host: string; port: number; status: string; role?: string }
+  >
   updatedAt: number
 }
 
