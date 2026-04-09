@@ -309,9 +309,15 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     process.exit(1)
   }
 
+  const agentNodes = nodes.filter((n) => n.role !== 'infra')
+  const infraNodes = nodes.filter((n) => n.role === 'infra')
+
   console.log(`  Found ${String(nodes.length)} online node(s):`)
-  for (const node of nodes) {
+  for (const node of agentNodes) {
     console.log(`    • ${node.name} (${node.host}:${String(node.port)})`)
+  }
+  for (const node of infraNodes) {
+    console.log(`    • ${node.name} (${node.host}) [infra — sync only]`)
   }
   console.log('')
 
@@ -365,9 +371,9 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     node.status = 'updating'
 
     // Try rsync-based update first (bare-metal/Proxmox)
-    const rsyncSuccess = rsyncUpdateNode(node.host, localOpts)
+    const rsyncSuccess = rsyncUpdateNode(node.host, localOpts, node.role)
     if (rsyncSuccess) {
-      console.log(`  ✅ ${node.name} updated (via rsync)`)
+      console.log(`  ✅ ${node.name} updated (via rsync${node.role === 'infra' ? ' — sync only' : ''})`)
       updated++
     } else {
       // Fall back to agent API (Docker/containerized)
@@ -406,13 +412,15 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
       }
     }
 
-    // Wait for node to come back healthy
-    console.log(`    Waiting for ${node.name} to be healthy...`)
-    const healthy = await waitForHealth(node.host, node.port, 60_000)
-    if (healthy) {
-      console.log(`    ✅ ${node.name} is healthy`)
-    } else {
-      console.log(`    ⚠️  ${node.name} health check timed out — continuing anyway`)
+    // Wait for node to come back healthy (skip for infra nodes — no service to check)
+    if (node.role !== 'infra') {
+      console.log(`    Waiting for ${node.name} to be healthy...`)
+      const healthy = await waitForHealth(node.host, node.port, 60_000)
+      if (healthy) {
+        console.log(`    ✅ ${node.name} is healthy`)
+      } else {
+        console.log(`    ⚠️  ${node.name} health check timed out — continuing anyway`)
+      }
     }
 
     console.log('')
@@ -428,7 +436,9 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
  * Syncs code from the control plane, rebuilds, and restarts the service.
  * Returns true on success, false if rsync/SSH isn't available.
  */
-function rsyncUpdateNode(host: string, opts: UpdateOptions): boolean {
+function rsyncUpdateNode(host: string, opts: UpdateOptions, role?: string): boolean {
+  const isInfra = role === 'infra'
+
   try {
     // Check if we can SSH to the node
     execSync(
@@ -452,6 +462,12 @@ function rsyncUpdateNode(host: string, opts: UpdateOptions): boolean {
         "${ROOT}/" "root@${host}:/opt/rivetos/"`,
       { encoding: 'utf-8', timeout: 120000, stdio: ['pipe', 'pipe', 'pipe'] },
     )
+
+    // Infra nodes only get code synced — no build or restart
+    if (isInfra) {
+      console.log(`    Skipping build/restart (infra node — sync only)`)
+      return true
+    }
 
     console.log(`    Rebuilding on ${host}...`)
 
@@ -530,7 +546,7 @@ function isLocalAddress(host: string): boolean {
 
 interface MeshFileForUpdate {
   version: number
-  nodes: Record<string, { id: string; name: string; host: string; port: number; status: string }>
+  nodes: Record<string, { id: string; name: string; host: string; port: number; status: string; role?: string }>
   updatedAt: number
 }
 
