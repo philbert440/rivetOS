@@ -32,7 +32,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Docker on your laptop, LXC on Proxmox, Kubernetes in the cloud. Same config, same agents, different providers. No vendor lock-in.
   </Card>
   <Card title="Plugins for everything" icon="add-document">
-    Channels (Discord, Slack, WhatsApp, Telegram), providers (Anthropic, OpenAI, xAI, Ollama), tools (shell, files, web, MCP) — all pluggable, all replaceable.
+    Channels (Discord, Telegram, Voice), providers (Anthropic, OpenAI, xAI, Google, Ollama), tools (shell, files, web, MCP) — all pluggable, all replaceable.
   </Card>
   <Card title="Learns and improves" icon="star">
     Agents create skills from experience, apply them to future tasks, and get better over time. Built-in learning loop with autonomous skill creation.
@@ -53,20 +53,22 @@ That's it. The wizard handles the rest.
 ## Architecture at a Glance
 
 ```
-┌──────────────────────────────────────────────────┐
-│                   RivetOS Agent                  │
-├──────────┬──────────┬──────────┬─────────────────┤
-│ Channel  │ Provider │  Tools   │     Memory      │
-│ Discord  │ Anthropic│  Shell   │   Postgres +    │
-│  Slack   │  OpenAI  │  Files   │   Embeddings    │
-│ Telegram │   xAI    │   Web    │                 │
-│ WhatsApp │  Ollama  │   MCP    │                 │ 
-├──────────┴──────────┴──────────┴─────────────────┤
-│               Core Runtime Engine                │
-│      Hooks · Skills · Streaming · Learning       │
-├──────────────────────────────────────────────────┤
-│         Container (Docker / LXC / K8s)           │
-└──────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────┐
+│                   RivetOS Agent                   │
+├──────────┬──────────┬──────────┬──────────────────┤
+│ Channel  │ Provider │  Tools   │     Memory       │
+├──────────┬──────────┬──────────┬──────────────────┤
+│ Discord  │ Anthropic│  Shell   │   Postgres w/    │
+│ Telegram │  OpenAI  │  Files   │ tree-based index │
+│ Voice    │   xAI    │   Web    │  for embeddings  │
+│          │  Google  │   MCP    │ shared by agents │
+│          │  Ollama  │          │                  │ 
+├──────────┴──────────┴──────────┴──────────────────┤
+│               Core Runtime Engine                 │
+│      Hooks · Skills · Streaming · Learning        │
+├───────────────────────────────────────────────────┤
+│         Container (Docker / LXC / K8s)            │
+└───────────────────────────────────────────────────┘
 ```
 
 ## Ready to dive in?
