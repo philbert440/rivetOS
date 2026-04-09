@@ -23,7 +23,7 @@ RivetOS is an open-source runtime for deploying AI agents as persistent, contain
 An agent is a configured AI model with access to specific channels, tools, and memory. Each agent runs in its own container with its own workspace.
 
 ### Channels
-How users communicate with agents. Discord, Slack, WhatsApp, Telegram, or a terminal CLI. Each channel is a plugin — swap them freely.
+How users communicate with agents. Discord, Telegram, Discord Voice, or agent-to-agent HTTP. Each channel is a plugin — swap them freely.
 
 ### Providers
 The AI model backend. Anthropic, OpenAI, xAI, Google, Ollama (local), or any OpenAI-compatible API. Agents can have fallback providers.

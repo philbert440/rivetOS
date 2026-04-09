@@ -37,7 +37,7 @@ The wizard will:
 1. **Detect your environment** — Docker available? Proxmox? How much memory?
 2. **Choose deployment target** — Docker (recommended), Proxmox, or manual
 3. **Configure agents** — pick a provider, enter your API key, choose a model
-4. **Configure channels** — Discord, Slack, WhatsApp, terminal, or API-only
+4. **Configure channels** — Discord, Telegram, Voice, or API-only
 5. **Review and deploy** — summary of your choices, then one-click deploy
 
 After the wizard completes, your agent is running.

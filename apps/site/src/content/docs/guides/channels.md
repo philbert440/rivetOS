@@ -13,7 +13,7 @@ RivetOS ships with four channel plugins:
 |---------|----------|----------|
 | **Discord** | Discord servers & DMs | Primary chat interface, streaming responses, reactions |
 | **Telegram** | Telegram bots | Mobile-friendly, simple setup |
-| **Voice** | Discord voice channels | Real-time voice conversations via xAI Realtime API |
+| **Voice** | Discord voice channels | Real-time voice conversations via xAI Realtime or Gemini Live API |
 | **Agent** | HTTP (internal) | Agent-to-agent messaging, mesh networking |
 
 ---
@@ -149,12 +149,19 @@ channels:
 
 ## Discord Voice
 
-The voice channel plugin connects your agent to Discord voice channels for real-time spoken conversations using the [xAI Realtime API](https://docs.x.ai/docs/guides/realtime-conversations).
+The voice channel plugin connects your agent to Discord voice channels for real-time spoken conversations. It supports multiple voice providers — choose the one that fits your setup.
+
+### Voice Providers
+
+| Provider | Backend | Best For |
+|----------|---------|----------|
+| **xai** | [xAI Realtime API](https://docs.x.ai/docs/guides/realtime-conversations) | Native xAI users, low-latency |
+| **gemini** | [Gemini Live API](https://ai.google.dev/gemini-api/docs/live) | Google ecosystem, Google Search grounding |
 
 ### Prerequisites
 
 - A Discord bot token (same one used for the text Discord channel is fine, or a separate one)
-- An xAI API key with Realtime API access
+- An API key for your chosen voice provider (xAI or Google)
 - The bot must have **Connect** and **Speak** permissions in the voice channel
 
 ### 1. Configure
@@ -163,17 +170,40 @@ Add keys to `.env`:
 
 ```bash
 DISCORD_VOICE_TOKEN=MTIz...your-token-here
+
+# For xAI provider:
 XAI_API_KEY=xai-...your-key-here
+
+# For Gemini provider:
+GOOGLE_API_KEY=AIza...your-key-here
 ```
 
 Add to `config.yaml`:
 
 ```yaml
+# Example: Gemini Live provider
 channels:
   voice-discord:
+    provider: gemini
+    discord_token: ${DISCORD_VOICE_TOKEN}
+    google_api_key: ${GOOGLE_API_KEY}
+    guild_id: "YOUR_SERVER_ID"
+    voice_channel_id: "YOUR_VOICE_CHANNEL_ID"
+    allowed_users:
+      - "YOUR_USER_ID"
+    voice: "Kore"
+    instructions: "You are a helpful assistant. Be concise in voice responses."
+```
+
+```yaml
+# Example: xAI Realtime provider
+channels:
+  voice-discord:
+    provider: xai
     discord_token: ${DISCORD_VOICE_TOKEN}
     xai_api_key: ${XAI_API_KEY}
     guild_id: "YOUR_SERVER_ID"
+    voice_channel_id: "YOUR_VOICE_CHANNEL_ID"
     allowed_users:
       - "YOUR_USER_ID"
     voice: "Ara"
@@ -184,25 +214,50 @@ channels:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `provider` | string | `xai` | Voice provider: `xai` or `gemini` |
 | `discord_token` | string | **required** | Discord bot token |
-| `xai_api_key` | string | **required** | xAI API key for Realtime API |
 | `guild_id` | string | **required** | Discord server ID |
+| `voice_channel_id` | string | — | Bind to a specific voice channel (recommended for multi-agent) |
 | `allowed_users` | string[] | **required** | User IDs allowed to activate the bot |
-| `voice` | string | `Ara` | Voice to use for text-to-speech |
+| `voice` | string | `Ara` (xAI) / `Kore` (Gemini) | Voice to use for text-to-speech |
 | `instructions` | string | — | System instructions for the voice agent |
 | `silence_duration_ms` | number | `1500` | How long to wait after silence before responding |
 | `sample_rate` | number | `24000` | Audio sample rate (Hz) |
 | `transcript_dir` | string | `transcripts` | Directory for voice transcript logs |
 | `leave_grace_period_ms` | number | `10000` | How long to wait before leaving after everyone else leaves |
-| `xai_collection_id` | string | — | xAI knowledge collection for context |
+| `xai_api_key` | string | — | xAI API key (required for `xai` provider) |
+| `google_api_key` | string | — | Google API key (required for `gemini` provider) |
+| `gemini_model` | string | `gemini-2.0-flash-live-001` | Gemini model for live voice (only for `gemini` provider) |
+| `xai_collection_id` | string | — | xAI knowledge collection for context (only for `xai` provider) |
 
 ### How It Works
 
 1. **Auto-join:** When an allowed user joins a voice channel, the bot automatically joins too
-2. **Voice activity detection (VAD):** The xAI Realtime API detects when you're speaking
-3. **Audio pipeline:** Discord Opus → PCM 24kHz → xAI Realtime → PCM → 48kHz stereo → Discord
+2. **Voice activity detection (VAD):** The provider detects when you're speaking (server-side VAD)
+3. **Audio pipeline:** Discord Opus → PCM → Voice Provider → PCM → 48kHz stereo → Discord
 4. **Auto-leave:** When all users leave, the bot leaves after the grace period
 5. **Transcripts:** All voice conversations are logged to markdown files
+6. **Memory tools:** The voice agent can search your conversation memory via function calling
+
+### Multi-Agent Voice
+
+Each agent can bind to its own voice channel with its own provider:
+
+```yaml
+# Grok uses xAI Realtime in one VC
+channels:
+  voice-discord:
+    provider: xai
+    voice_channel_id: "111222333"
+    # ...
+
+# Opus uses Gemini Live in another VC
+channels:
+  voice-discord:
+    provider: gemini
+    voice_channel_id: "444555666"
+    # ...
+```
 
 ### Slash Commands
 
@@ -322,4 +377,4 @@ Each channel routes messages to agents independently. The same agent can receive
 
 - **[Provider Setup](/guides/providers/)** — Configure the LLMs your agents talk to
 - **[Configuration Reference](/reference/config/)** — Full option tables for all config sections
-- **[Plugin Development](/guides/plugins/)** — Build your own channel plugin (e.g., Slack, WhatsApp)
+- **[Plugin Development](/guides/plugins/)** — Build your own channel plugin
