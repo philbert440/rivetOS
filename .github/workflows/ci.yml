@@ -104,6 +104,9 @@ jobs:
 
       - uses: nrwl/nx-set-shas@v4
 
+      - name: Reset Nx cache
+        run: npx nx reset
+
       - name: Lint
         run: npx nx affected -t lint --parallel=5
 

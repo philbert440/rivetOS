@@ -157,6 +157,9 @@ export default async function update(): Promise<void> {
   execOrFail('npm install --no-audit --no-fund', 'npm install')
   console.log('  ✅ Dependencies installed')
 
+  // Step 2.5: Reset Nx cache to avoid stale artifact warnings
+  exec('npx nx reset', { quiet: true })
+
   // Step 3: Detect deployment mode and rebuild if containerized
   const deployment = await detectDeployment(opts.bareMetal)
 
@@ -338,6 +341,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
       execOrFail('git pull --ff-only', 'git pull')
     }
     execOrFail('npm install --no-audit --no-fund', 'npm install')
+    exec('npx nx reset', { quiet: true })
 
     const deployment = await detectDeployment(localOpts.bareMetal)
     if (deployment === 'docker' && !localOpts.prebuilt) {
@@ -472,9 +476,9 @@ function rsyncUpdateNode(host: string, opts: UpdateOptions, isAgent: boolean = t
 
     console.log(`    Rebuilding on ${host}...`)
 
-    // Install deps + rebuild on remote
+    // Install deps + reset Nx cache + rebuild on remote
     execSync(
-      `ssh root@${host} "cd /opt/rivetos && npm install --no-audit --no-fund 2>&1 | tail -3 && npx nx run-many -t build --exclude container-agent,container-datahub,site 2>&1 | tail -5"`,
+      `ssh root@${host} "cd /opt/rivetos && npm install --no-audit --no-fund 2>&1 | tail -3 && npx nx reset 2>/dev/null && npx nx run-many -t build --exclude container-agent,container-datahub,site 2>&1 | tail -5"`,
       { encoding: 'utf-8', timeout: 300000, stdio: ['pipe', 'pipe', 'pipe'] },
     )
 
