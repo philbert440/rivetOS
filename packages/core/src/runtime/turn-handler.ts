@@ -162,7 +162,7 @@ export class TurnHandler {
           session.history = compactedHistory
           session.compactionCount++
           session.userMessageCount = 0
-          session.nudgesFired = new Set()
+          session.nudgesFired = []
         },
       })
       this.deps.activeLoops.set(sessionKey, loop)

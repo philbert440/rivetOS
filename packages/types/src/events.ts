@@ -44,8 +44,8 @@ export interface SessionState {
   compactionCount: number
   /** Whether a compaction nudge is pending for the next turn */
   compactionPending?: 'soft-40' | 'soft-70' | 'hard' | undefined
-  /** Which nudge tiers have fired this compaction cycle (reset after compaction) */
-  nudgesFired: Set<40 | 70 | 90>
+  /** Which nudge tiers have fired this compaction cycle (reset after compaction). Uses array for clean JSON serialization. */
+  nudgesFired: number[]
 }
 
 // ---------------------------------------------------------------------------

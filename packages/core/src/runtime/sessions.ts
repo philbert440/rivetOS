@@ -131,7 +131,7 @@ export class SessionManager {
       history,
       userMessageCount: 0,
       compactionCount: 0,
-      nudgesFired: new Set(),
+      nudgesFired: [],
     }
   }
 

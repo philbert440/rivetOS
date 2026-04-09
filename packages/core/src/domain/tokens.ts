@@ -1,6 +1,9 @@
 /**
  * Token estimator — rough chars ÷ 4 approximation.
- * Not billing-accurate, but good enough for compaction triggers.
+ * Used as a fallback when provider-reported usage is unavailable
+ * (e.g., first iteration before the provider has responded).
+ * After the first provider response, the loop uses actual promptTokens
+ * from the provider's usage data instead.
  */
 
 import type { Message } from '@rivetos/types'

@@ -138,7 +138,8 @@ export class AgentLoop {
       description:
         'Summarize and compact conversation history to free context window space. ' +
         'Provide ranges of messages to replace with summaries. ' +
-        'Message indices are 0-based positions in the conversation history (excludes system prompt).',
+        'Message indices are 0-based positions in the conversation history ' +
+        '(index 0 = first user or assistant message; system messages are excluded from indexing).',
       parameters: {
         type: 'object',
         properties: {
@@ -188,7 +189,9 @@ export class AgentLoop {
     const contextWindow = this.config.contextWindow ?? 0
     const softNudgePcts = this.config.contextConfig?.softNudgePct ?? [40, 70]
     const hardNudgePct = this.config.contextConfig?.hardNudgePct ?? 90
-    const nudgesFired = new Set<number>()
+    const nudgesFired: number[] = []
+    // Provider-reported token count — used instead of chars/4 estimate after first response
+    let lastKnownPromptTokens = 0
 
     let activeModelOverride: string | undefined
     let activeProvider = this.config.provider
@@ -239,9 +242,9 @@ export class AgentLoop {
       if (
         this.config.userMessageCount &&
         this.config.userMessageCount >= compactAfter &&
-        !nudgesFired.has(0)
+        !nudgesFired.includes(0)
       ) {
-        nudgesFired.add(0) // 0 = user message count trigger
+        nudgesFired.push(0) // 0 = user message count trigger
         messages.push({
           role: 'system',
           content:
@@ -254,16 +257,19 @@ export class AgentLoop {
 
       // --- Trigger B: context window nudges ---
       if (contextWindow > 0) {
-        const currentTokens = estimateTokens(messages)
+        // Use provider-reported token count when available, fall back to chars/4 estimate
+        const currentTokens =
+          lastKnownPromptTokens > 0 ? lastKnownPromptTokens : estimateTokens(messages)
+        const tokenSource = lastKnownPromptTokens > 0 ? 'provider' : 'estimate'
         const pct = Math.floor((currentTokens / contextWindow) * 100)
 
-        if (pct >= hardNudgePct && !nudgesFired.has(hardNudgePct)) {
-          nudgesFired.add(hardNudgePct)
+        if (pct >= hardNudgePct && !nudgesFired.includes(hardNudgePct)) {
+          nudgesFired.push(hardNudgePct)
           messages.push({
             role: 'system',
             content:
               `[SYSTEM — Context Management — REQUIRED]\n` +
-              `Your context is at ${pct}% capacity (~${currentTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens). ` +
+              `Your context is at ${pct}% capacity (~${currentTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens, ${tokenSource}). ` +
               `You must free up space before continuing.\n\n` +
               `Use \`compact_context\` to summarize or remove the least critical material. Focus on:\n` +
               `- Completed tasks and their verbose tool output\n` +
@@ -273,8 +279,8 @@ export class AgentLoop {
           })
         } else {
           for (const nudgePct of softNudgePcts) {
-            if (pct >= nudgePct && !nudgesFired.has(nudgePct)) {
-              nudgesFired.add(nudgePct)
+            if (pct >= nudgePct && !nudgesFired.includes(nudgePct)) {
+              nudgesFired.push(nudgePct)
               const urgency =
                 nudgePct >= 70
                   ? 'You should review your conversation history and use `compact_context` to replace resolved topics with brief summaries. If everything is genuinely still needed, carry on.'
@@ -283,7 +289,7 @@ export class AgentLoop {
                 role: 'system',
                 content:
                   `[SYSTEM — Context Management]\n` +
-                  `Your session context is at ${pct}% (~${currentTokens.toLocaleString()} tokens of ${contextWindow.toLocaleString()} window).\n\n` +
+                  `Your session context is at ${pct}% (~${currentTokens.toLocaleString()} tokens of ${contextWindow.toLocaleString()} window, ${tokenSource}).\n\n` +
                   urgency,
               })
             }
@@ -345,6 +351,10 @@ export class AgentLoop {
               totalUsage.completionTokens,
               chunk.usage.completionTokens,
             )
+            // Track provider-reported prompt tokens for accurate context window checks
+            if (chunk.usage.promptTokens > 0) {
+              lastKnownPromptTokens = chunk.usage.promptTokens
+            }
           }
 
           if (signal?.aborted) {
@@ -729,12 +739,13 @@ export class AgentLoop {
   /**
    * Execute the compact_context built-in tool.
    * Replaces message ranges with summaries in the live messages array.
-   * Indices are 0-based into the conversation history (excludes system prompt at messages[0]).
+   * User-facing indices are 0-based starting from the first non-system message.
+   * The system offset is calculated dynamically to handle any number of leading system messages.
    */
   private executeCompactContext(
     args: Record<string, unknown>,
     messages: Message[],
-    nudgesFired: Set<number>,
+    nudgesFired: number[],
   ): string {
     const replacements = args.replacements as
       | Array<{ start_index: number; end_index: number; summary: string }>
@@ -744,8 +755,14 @@ export class AgentLoop {
       return 'Error: replacements array is required and must not be empty'
     }
 
+    // Find the boundary between system messages and user-addressable conversation.
+    // User indices are 0-based starting from the first non-system message.
+    // This avoids hardcoding assumptions about how many system messages exist at the start.
+    const systemOffset = messages.findIndex((m, i) => i > 0 && m.role !== 'system')
+    const offsetIdx = systemOffset > 0 ? systemOffset : 1 // fallback: assume 1 system message
+    const maxIndex = messages.length - offsetIdx - 1 // -1 for 0-based
+
     // Validate all replacements
-    const maxIndex = messages.length - 2 // -1 for 0-based, -1 for system prompt
     for (const r of replacements) {
       if (
         typeof r.start_index !== 'number' ||
@@ -773,9 +790,9 @@ export class AgentLoop {
     // Process from end to start to avoid index shifting
     const descending = [...sorted].reverse()
     for (const r of descending) {
-      // +1 offset for system prompt at messages[0]
-      const startIdx = r.start_index + 1
-      const endIdx = r.end_index + 1
+      // Offset user-facing indices by the number of leading system messages
+      const startIdx = r.start_index + offsetIdx
+      const endIdx = r.end_index + offsetIdx
       const removeCount = endIdx - startIdx + 1
       totalRemoved += removeCount
 
@@ -786,7 +803,7 @@ export class AgentLoop {
     }
 
     // Reset nudges for next compaction cycle
-    nudgesFired.clear()
+    nudgesFired.length = 0
 
     // Sync compacted history back to the session (excludes system prompt)
     this.config.onCompact?.(messages.slice(1))
