@@ -5,7 +5,7 @@
 runtime:
   workspace: ~/.rivetos/workspace
   default_agent: opus
-  max_tool_iterations: 15
+  turn_timeout: 600
 
 agents:
   opus:

@@ -65,6 +65,10 @@ export interface AgentLoopConfig {
   contextWindow?: number
   /** Context management thresholds */
   contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
+  /** Number of user messages in session (for Trigger A compaction) */
+  userMessageCount?: number
+  /** User message count threshold for compaction nudge (default: 47) */
+  compactAfterMessages?: number
   /** Callback to sync compacted history back to the session */
   onCompact?: (compactedHistory: Message[]) => void
 }
@@ -208,12 +212,9 @@ export class AgentLoop {
           type: 'status',
           content: `⚠️ Turn timeout (${Math.floor(turnTimeout / 1000)}s)`,
         })
-        const capNotice =
-          '\n\n⚠️ _Turn timed out. Let me know if you want me to continue._'
+        const capNotice = '\n\n⚠️ _Turn timed out. Let me know if you want me to continue._'
         return {
-          response: partialResponse
-            ? partialResponse.trim() + capNotice
-            : capNotice.trim(),
+          response: partialResponse ? partialResponse.trim() + capNotice : capNotice.trim(),
           toolsUsed,
           iterations,
           aborted: false,
@@ -233,7 +234,25 @@ export class AgentLoop {
         this.emit({ type: 'interrupt', content: `📨 Steer: ${steerMsg.slice(0, 100)}` })
       }
 
-      // --- Context window nudges ---
+      // --- Trigger A: user message count nudge ---
+      const compactAfter = this.config.compactAfterMessages ?? 47
+      if (
+        this.config.userMessageCount &&
+        this.config.userMessageCount >= compactAfter &&
+        !nudgesFired.has(0)
+      ) {
+        nudgesFired.add(0) // 0 = user message count trigger
+        messages.push({
+          role: 'system',
+          content:
+            `[SYSTEM — Context Management]\n` +
+            `You've had ${this.config.userMessageCount} exchanges in this session. ` +
+            `If there are completed tasks or stale tool output you no longer need, ` +
+            `consider using \`compact_context\` to summarize them. Otherwise, carry on.`,
+        })
+      }
+
+      // --- Trigger B: context window nudges ---
       if (contextWindow > 0) {
         const currentTokens = estimateTokens(messages)
         const pct = Math.floor((currentTokens / contextWindow) * 100)
@@ -705,5 +724,81 @@ export class AgentLoop {
       }
     }
     return summary
+  }
+
+  /**
+   * Execute the compact_context built-in tool.
+   * Replaces message ranges with summaries in the live messages array.
+   * Indices are 0-based into the conversation history (excludes system prompt at messages[0]).
+   */
+  private executeCompactContext(
+    args: Record<string, unknown>,
+    messages: Message[],
+    nudgesFired: Set<number>,
+  ): string {
+    const replacements = args.replacements as
+      | Array<{ start_index: number; end_index: number; summary: string }>
+      | undefined
+
+    if (!replacements || !Array.isArray(replacements) || replacements.length === 0) {
+      return 'Error: replacements array is required and must not be empty'
+    }
+
+    // Validate all replacements
+    const maxIndex = messages.length - 2 // -1 for 0-based, -1 for system prompt
+    for (const r of replacements) {
+      if (
+        typeof r.start_index !== 'number' ||
+        typeof r.end_index !== 'number' ||
+        typeof r.summary !== 'string'
+      ) {
+        return 'Error: each replacement must have start_index (number), end_index (number), summary (string)'
+      }
+      if (r.start_index < 0 || r.end_index < r.start_index || r.end_index > maxIndex) {
+        return `Error: invalid range [${r.start_index}, ${r.end_index}] — valid range is [0, ${maxIndex}]`
+      }
+    }
+
+    // Check for overlaps
+    const sorted = [...replacements].sort((a, b) => a.start_index - b.start_index)
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i].start_index <= sorted[i - 1].end_index) {
+        return `Error: overlapping ranges at [${sorted[i - 1].start_index}, ${sorted[i - 1].end_index}] and [${sorted[i].start_index}, ${sorted[i].end_index}]`
+      }
+    }
+
+    const beforeTokens = estimateTokens(messages)
+    let totalRemoved = 0
+
+    // Process from end to start to avoid index shifting
+    const descending = [...sorted].reverse()
+    for (const r of descending) {
+      // +1 offset for system prompt at messages[0]
+      const startIdx = r.start_index + 1
+      const endIdx = r.end_index + 1
+      const removeCount = endIdx - startIdx + 1
+      totalRemoved += removeCount
+
+      messages.splice(startIdx, removeCount, {
+        role: 'system',
+        content: `[Compacted Context] ${r.summary}`,
+      })
+    }
+
+    // Reset nudges for next compaction cycle
+    nudgesFired.clear()
+
+    // Sync compacted history back to the session (excludes system prompt)
+    this.config.onCompact?.(messages.slice(1))
+
+    const afterTokens = estimateTokens(messages)
+    const savedPct =
+      beforeTokens > 0 ? Math.round(((beforeTokens - afterTokens) / beforeTokens) * 100) : 0
+
+    return (
+      `Compacted ${totalRemoved} messages into ${replacements.length} ` +
+      `summar${replacements.length === 1 ? 'y' : 'ies'}. ` +
+      `Context: ${beforeTokens.toLocaleString()} → ${afterTokens.toLocaleString()} tokens (${savedPct}% freed)`
+    )
   }
 }

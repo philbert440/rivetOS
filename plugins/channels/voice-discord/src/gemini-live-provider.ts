@@ -188,10 +188,7 @@ export class GeminiLiveProvider implements VoiceProvider {
         systemInstruction: {
           parts: [{ text: this.config.instructions }],
         },
-        tools: [
-          { functionDeclarations },
-          { google_search: {} },
-        ],
+        tools: [{ functionDeclarations }, { google_search: {} }],
         // Enable transcription for both input and output
         inputAudioTranscription: {},
         outputAudioTranscription: {},

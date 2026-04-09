@@ -11,7 +11,7 @@
 runtime:
   workspace: ./workspace
   default_agent: local
-  max_tool_iterations: 50
+  turn_timeout: 600
 
 agents:
   local:

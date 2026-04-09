@@ -45,7 +45,10 @@ export interface TurnHandlerDeps {
   hooks?: HookPipeline
   fallbacks?: FallbackConfig[]
   workspaceDir: string
-  maxToolIterations?: number
+  /** Turn wall-clock timeout in seconds */
+  turnTimeout?: number
+  /** Context management config */
+  contextConfig?: { compactAfterMessages?: number; softNudgePct?: number[]; hardNudgePct?: number }
   /** Abort controller map — shared with runtime for /stop support */
   aborts: Map<string, AbortController>
   /** Active loop map — shared with runtime for /steer support */
@@ -135,7 +138,6 @@ export class TurnHandler {
         systemPrompt: session.systemPrompt,
         provider,
         tools: this.deps.tools,
-        maxIterations: this.deps.maxToolIterations,
         thinking: session.thinking,
         onStream: streamHandler,
         agentId: agent.id,
@@ -145,6 +147,22 @@ export class TurnHandler {
         resolveProvider: (id: string) => {
           const providerId = id.includes(':') ? id.split(':')[0] : id
           return router.getProviders().find((p) => p.id === providerId)
+        },
+        turnTimeout: this.deps.turnTimeout ? this.deps.turnTimeout * 1000 : undefined,
+        contextWindow: provider.getContextWindow(),
+        contextConfig: this.deps.contextConfig
+          ? {
+              softNudgePct: this.deps.contextConfig.softNudgePct,
+              hardNudgePct: this.deps.contextConfig.hardNudgePct,
+            }
+          : undefined,
+        userMessageCount: session.userMessageCount,
+        compactAfterMessages: this.deps.contextConfig?.compactAfterMessages,
+        onCompact: (compactedHistory) => {
+          session.history = compactedHistory
+          session.compactionCount++
+          session.userMessageCount = 0
+          session.nudgesFired = new Set()
         },
       })
       this.deps.activeLoops.set(sessionKey, loop)
@@ -183,11 +201,9 @@ export class TurnHandler {
       // Update history
       const historyContent = buildHistoryContent(message.text, savedImagePaths)
       session.history.push({ role: 'user', content: historyContent })
+      session.userMessageCount++
       if (result.response) {
         session.history.push({ role: 'assistant', content: result.response })
-      }
-      if (session.history.length > 200) {
-        session.history.splice(0, session.history.length - 200)
       }
 
       // Clean up streaming state before sending final response

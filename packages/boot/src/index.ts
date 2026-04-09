@@ -73,7 +73,14 @@ export async function boot(configPath?: string): Promise<void> {
   const runtime = new Runtime({
     workspaceDir,
     defaultAgent: config.runtime.default_agent,
-    maxToolIterations: config.runtime.max_tool_iterations,
+    turnTimeout: config.runtime.turn_timeout,
+    contextConfig: config.runtime.context
+      ? {
+          compactAfterMessages: config.runtime.context.compact_after_messages,
+          softNudgePct: config.runtime.context.soft_nudge_pct,
+          hardNudgePct: config.runtime.context.hard_nudge_pct,
+        }
+      : undefined,
     agents: Object.entries(config.agents).map(([id, agent]) => ({
       id,
       name: id,
