@@ -11,6 +11,7 @@
  * cross-instance delegation and coordinated updates.
  */
 
+import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
 
 const HELP = `
@@ -82,21 +83,29 @@ async function meshList(flags: Flags): Promise<void> {
 
   for (const node of nodes) {
     const statusIcon = statusEmoji(node.status)
-    const age = timeSince(node.lastSeen)
-    const agents = node.agents.join(', ')
-    console.log(`  ${statusIcon} ${node.name}`)
+    const age = node.lastSeen ? timeSince(node.lastSeen) : 'unknown'
+    const agents = node.agents?.join(', ')
+    const role = node.role && node.role !== 'agent' ? ` [${node.role}]` : ''
+    console.log(`  ${statusIcon} ${node.name}${role}`)
     console.log(`    ID:        ${node.id}`)
     console.log(`    Host:      ${node.host}:${String(node.port)}`)
+    console.log(`    Role:      ${node.role ?? 'agent'}`)
     console.log(`    Status:    ${node.status}`)
-    console.log(`    Agents:    ${agents || 'none'}`)
-    console.log(`    Providers: ${node.providers.join(', ') || 'none'}`)
-    console.log(`    Models:    ${node.models.join(', ') || 'none'}`)
+    if (agents) console.log(`    Agents:    ${agents}`)
+    if (node.providers?.length) console.log(`    Providers: ${node.providers.join(', ')}`)
+    if (node.models?.length) console.log(`    Models:    ${node.models.join(', ')}`)
     console.log(`    Last seen: ${age}`)
-    console.log(`    Version:   ${node.version}`)
+    if (node.version) console.log(`    Version:   ${node.version}`)
     console.log('')
   }
 
-  console.log(`  Total: ${String(nodes.length)} node(s)`)
+  const agentCount = nodes.filter((n) => !n.role || n.role === 'agent').length
+  const otherCount = nodes.length - agentCount
+  const summary =
+    otherCount > 0
+      ? `${String(nodes.length)} node(s) — ${String(agentCount)} agent, ${String(otherCount)} non-agent`
+      : `${String(nodes.length)} node(s)`
+  console.log(`  Total: ${summary}`)
   console.log('')
 }
 
@@ -120,6 +129,27 @@ async function meshPing(flags: Flags): Promise<void> {
   console.log('')
 
   for (const node of nodes) {
+    const isAgent = !node.role || node.role === 'agent'
+
+    if (!isAgent) {
+      // Non-agent nodes: SSH ping instead of HTTP (no RivetOS service running)
+      const start = Date.now()
+      try {
+        execSync(
+          `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no root@${node.host} "echo ok"`,
+          { encoding: 'utf-8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'] },
+        )
+        const latency = Date.now() - start
+        results.push({ node, status: 'ok', latencyMs: latency })
+        console.log(`  ✅ ${node.name} [${node.role}] (${node.host}) — ${String(latency)}ms (SSH)`)
+      } catch {
+        const latency = Date.now() - start
+        results.push({ node, status: 'error', latencyMs: latency, error: 'SSH unreachable' })
+        console.log(`  ❌ ${node.name} [${node.role}] (${node.host}) — SSH unreachable`)
+      }
+      continue
+    }
+
     const start = Date.now()
     try {
       const res = await fetch(`http://${node.host}:${String(node.port)}/api/mesh/ping`, {
@@ -318,16 +348,17 @@ interface MeshFile {
 interface MeshNode {
   id: string
   name: string
-  agents: string[]
+  role?: string // 'agent' (default), 'datahub', etc. Non-agent nodes are sync-only.
+  agents?: string[]
   host: string
   port: number
-  providers: string[]
-  models: string[]
-  capabilities: string[]
+  providers?: string[]
+  models?: string[]
+  capabilities?: string[]
   status: 'online' | 'offline' | 'degraded' | 'updating'
-  lastSeen: number
-  registeredAt: number
-  version: string
+  lastSeen?: number
+  registeredAt?: number
+  version?: string
 }
 
 interface PingResult {

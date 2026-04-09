@@ -157,6 +157,9 @@ export default async function update(): Promise<void> {
   execOrFail('npm install --no-audit --no-fund', 'npm install')
   console.log('  ✅ Dependencies installed')
 
+  // Step 2.5: Reset Nx cache to avoid stale artifact warnings
+  exec('npx nx reset', { quiet: true })
+
   // Step 3: Detect deployment mode and rebuild if containerized
   const deployment = await detectDeployment(opts.bareMetal)
 
@@ -309,9 +312,15 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     process.exit(1)
   }
 
+  const agentNodes = nodes.filter((n) => !n.role || n.role === 'agent')
+  const nonAgentNodes = nodes.filter((n) => n.role && n.role !== 'agent')
+
   console.log(`  Found ${String(nodes.length)} online node(s):`)
-  for (const node of nodes) {
+  for (const node of agentNodes) {
     console.log(`    • ${node.name} (${node.host}:${String(node.port)})`)
+  }
+  for (const node of nonAgentNodes) {
+    console.log(`    • ${node.name} (${node.host}) [${node.role} — sync only]`)
   }
   console.log('')
 
@@ -332,6 +341,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
       execOrFail('git pull --ff-only', 'git pull')
     }
     execOrFail('npm install --no-audit --no-fund', 'npm install')
+    exec('npx nx reset', { quiet: true })
 
     const deployment = await detectDeployment(localOpts.bareMetal)
     if (deployment === 'docker' && !localOpts.prebuilt) {
@@ -365,9 +375,12 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     node.status = 'updating'
 
     // Try rsync-based update first (bare-metal/Proxmox)
-    const rsyncSuccess = rsyncUpdateNode(node.host, localOpts)
+    const isAgent = !node.role || node.role === 'agent'
+    const rsyncSuccess = rsyncUpdateNode(node.host, localOpts, isAgent)
     if (rsyncSuccess) {
-      console.log(`  ✅ ${node.name} updated (via rsync)`)
+      console.log(
+        `  ✅ ${node.name} updated (via rsync${!isAgent ? ` — ${node.role}, sync only` : ''})`,
+      )
       updated++
     } else {
       // Fall back to agent API (Docker/containerized)
@@ -406,13 +419,15 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
       }
     }
 
-    // Wait for node to come back healthy
-    console.log(`    Waiting for ${node.name} to be healthy...`)
-    const healthy = await waitForHealth(node.host, node.port, 60_000)
-    if (healthy) {
-      console.log(`    ✅ ${node.name} is healthy`)
-    } else {
-      console.log(`    ⚠️  ${node.name} health check timed out — continuing anyway`)
+    // Wait for node to come back healthy (skip for non-agent nodes — no service to check)
+    if (isAgent) {
+      console.log(`    Waiting for ${node.name} to be healthy...`)
+      const healthy = await waitForHealth(node.host, node.port, 60_000)
+      if (healthy) {
+        console.log(`    ✅ ${node.name} is healthy`)
+      } else {
+        console.log(`    ⚠️  ${node.name} health check timed out — continuing anyway`)
+      }
     }
 
     console.log('')
@@ -428,7 +443,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
  * Syncs code from the control plane, rebuilds, and restarts the service.
  * Returns true on success, false if rsync/SSH isn't available.
  */
-function rsyncUpdateNode(host: string, opts: UpdateOptions): boolean {
+function rsyncUpdateNode(host: string, opts: UpdateOptions, isAgent: boolean = true): boolean {
   try {
     // Check if we can SSH to the node
     execSync(
@@ -453,11 +468,17 @@ function rsyncUpdateNode(host: string, opts: UpdateOptions): boolean {
       { encoding: 'utf-8', timeout: 120000, stdio: ['pipe', 'pipe', 'pipe'] },
     )
 
+    // Non-agent nodes only get code synced — no build or restart
+    if (!isAgent) {
+      console.log(`    Skipping build/restart (non-agent node — sync only)`)
+      return true
+    }
+
     console.log(`    Rebuilding on ${host}...`)
 
-    // Install deps + rebuild on remote
+    // Install deps + reset Nx cache + rebuild on remote
     execSync(
-      `ssh root@${host} "cd /opt/rivetos && npm install --no-audit --no-fund 2>&1 | tail -3 && npx nx run-many -t build --exclude container-agent,container-datahub,site 2>&1 | tail -5"`,
+      `ssh root@${host} "cd /opt/rivetos && npm install --no-audit --no-fund 2>&1 | tail -3 && npx nx reset 2>/dev/null && npx nx run-many -t build --exclude container-agent,container-datahub,site 2>&1 | tail -5"`,
       { encoding: 'utf-8', timeout: 300000, stdio: ['pipe', 'pipe', 'pipe'] },
     )
 
@@ -530,7 +551,10 @@ function isLocalAddress(host: string): boolean {
 
 interface MeshFileForUpdate {
   version: number
-  nodes: Record<string, { id: string; name: string; host: string; port: number; status: string }>
+  nodes: Record<
+    string,
+    { id: string; name: string; host: string; port: number; status: string; role?: string }
+  >
   updatedAt: number
 }
 
