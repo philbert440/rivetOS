@@ -658,22 +658,57 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
 async function checkPeers(): Promise<CheckResult[]> {
   const results: CheckResult[] = []
 
-  // Check for mesh.json
-  const meshPath = resolve(process.env.HOME ?? '.', '.rivetos', 'mesh.json')
-  try {
-    const raw = await readFile(meshPath, 'utf-8')
-    const mesh = JSON.parse(raw) as Array<{ name: string; host: string; port: number }>
+  // Check for mesh.json — try shared NFS path first, then local paths
+  const meshPaths = [
+    '/shared/mesh.json',
+    resolve(process.cwd(), 'mesh.json'),
+    resolve(process.env.HOME ?? '.', '.rivetos', 'mesh.json'),
+  ]
 
-    for (const peer of mesh) {
+  let meshRaw: string | null = null
+  for (const p of meshPaths) {
+    try {
+      meshRaw = await readFile(p, 'utf-8')
+      break
+    } catch {
+      // try next
+    }
+  }
+
+  if (!meshRaw) return results
+
+  try {
+    const meshFile = JSON.parse(meshRaw) as {
+      nodes: Record<string, { name: string; host: string; port: number; role?: string }>
+    }
+    const peers = Object.values(meshFile.nodes)
+
+    for (const peer of peers) {
+      const isAgent = !peer.role || peer.role === 'agent'
+
+      if (!isAgent) {
+        // Non-agent nodes: SSH reachability check (no HTTP service)
+        try {
+          execSync(
+            `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no root@${peer.host} "echo ok"`,
+            { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
+          )
+          results.push(check('peers', peer.name, 'pass', `Peer ${peer.name} [${peer.role}]: reachable (SSH)`))
+        } catch {
+          results.push(check('peers', peer.name, 'fail', `Peer ${peer.name} [${peer.role}]: unreachable (SSH)`))
+        }
+        continue
+      }
+
       try {
-        const resp = await fetch(`http://${peer.host}:${peer.port}/health/live`, {
+        const resp = await fetch(`http://${peer.host}:${String(peer.port)}/health/live`, {
           signal: AbortSignal.timeout(3000),
         })
         if (resp.ok) {
           results.push(check('peers', peer.name, 'pass', `Peer ${peer.name}: reachable`))
         } else {
           results.push(
-            check('peers', peer.name, 'warn', `Peer ${peer.name}: responded ${resp.status}`),
+            check('peers', peer.name, 'warn', `Peer ${peer.name}: responded ${String(resp.status)}`),
           )
         }
       } catch {
@@ -681,7 +716,7 @@ async function checkPeers(): Promise<CheckResult[]> {
       }
     }
   } catch {
-    // No mesh.json — not a multi-agent setup, skip
+    // Malformed mesh.json — skip
   }
 
   return results
