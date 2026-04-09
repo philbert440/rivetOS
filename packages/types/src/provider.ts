@@ -59,6 +59,10 @@ export interface Provider {
   getModel(): string
   /** Change the default model at runtime */
   setModel(model: string): void
+  /** Context window size in tokens (0 = unknown/unlimited) */
+  getContextWindow(): number
+  /** Max output tokens (0 = unknown/unlimited) */
+  getMaxOutputTokens(): number
 }
 
 // ---------------------------------------------------------------------------

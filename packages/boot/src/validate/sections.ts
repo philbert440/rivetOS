@@ -58,12 +58,12 @@ export function validateRuntime(runtime: Record<string, unknown>, issues: Valida
     })
   }
 
-  if (runtime.max_tool_iterations !== undefined) {
-    if (typeof runtime.max_tool_iterations !== 'number' || runtime.max_tool_iterations < 1) {
+  if (runtime.turn_timeout !== undefined) {
+    if (typeof runtime.turn_timeout !== 'number' || runtime.turn_timeout < 1) {
       issues.push({
         severity: 'error',
-        path: 'runtime.max_tool_iterations',
-        message: '"runtime.max_tool_iterations" must be a positive integer',
+        path: 'runtime.turn_timeout',
+        message: '"runtime.turn_timeout" must be a positive number (seconds)',
       })
     }
   }

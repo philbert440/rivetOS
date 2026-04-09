@@ -75,7 +75,9 @@ export class CommandHandler {
       case 'tools':
         return this.tools(channel, message, sessionKey)
       case 'context':
-        return this.context(channel, message, args, sessionKey)
+        return this.context(channel, message, sessionKey)
+      case 'clear':
+        return this.clearQueue(channel, message, sessionKey)
       case 'help':
         return this.help(channel, message)
       default:
@@ -325,96 +327,60 @@ export class CommandHandler {
   }
 
   // -----------------------------------------------------------------------
-  // /context — pin/unpin files into the system prompt
+  // /context — show context window stats
   // -----------------------------------------------------------------------
 
   private async context(
     channel: Channel,
     message: InboundMessage,
-    args: string,
     sessionKey: string,
   ): Promise<void> {
-    const parts = args.trim().split(/\s+/)
-    const subcommand = parts[0]?.toLowerCase()
-    const filePath = parts.slice(1).join(' ')
+    const session = this.deps.sessionManager.get(sessionKey)
+    if (!session) {
+      await channel.send({ channelId: message.channelId, text: '💤 No active session.' })
+      return
+    }
 
-    switch (subcommand) {
-      case 'add':
-      case 'pin': {
-        if (!filePath) {
-          await channel.send({
-            channelId: message.channelId,
-            text: '⚠️ Usage: /context add <file path>',
-          })
-          return
-        }
-        const result = await this.deps.workspace.pinFile(filePath)
-        if ('error' in result) {
-          await channel.send({ channelId: message.channelId, text: `❌ ${result.error}` })
-        } else {
-          // Invalidate cached system prompt so next turn rebuilds with the pin
-          const session = this.deps.sessionManager.get(sessionKey)
-          if (session) session.systemPrompt = undefined
-          await channel.send({
-            channelId: message.channelId,
-            text: `📌 Pinned **${result.name}** (${this.formatSize(result.size)})`,
-          })
-        }
-        return
-      }
-      case 'remove':
-      case 'unpin': {
-        if (!filePath) {
-          await channel.send({
-            channelId: message.channelId,
-            text: '⚠️ Usage: /context remove <file path>',
-          })
-          return
-        }
-        const removed = this.deps.workspace.unpinFile(filePath)
-        const session = this.deps.sessionManager.get(sessionKey)
-        if (session) session.systemPrompt = undefined
-        if (removed) {
-          await channel.send({
-            channelId: message.channelId,
-            text: `📌 Unpinned **${filePath}**`,
-          })
-        } else {
-          await channel.send({
-            channelId: message.channelId,
-            text: `⚠️ **${filePath}** was not pinned`,
-          })
-        }
-        return
-      }
-      case 'list': {
-        const pinned = this.deps.workspace.getPinnedFiles()
-        if (pinned.length === 0) {
-          await channel.send({ channelId: message.channelId, text: '📌 No files pinned.' })
-        } else {
-          const lines = pinned.map((f) => `- **${f.name}** (${this.formatSize(f.size)})`)
-          await channel.send({
-            channelId: message.channelId,
-            text: `📌 **Pinned files:**\n${lines.join('\n')}`,
-          })
-        }
-        return
-      }
-      case 'clear': {
-        const count = this.deps.workspace.clearPinnedFiles()
-        const session = this.deps.sessionManager.get(sessionKey)
-        if (session) session.systemPrompt = undefined
-        await channel.send({
-          channelId: message.channelId,
-          text: `📌 Cleared ${count} pinned file${count !== 1 ? 's' : ''}.`,
-        })
-        return
-      }
-      default:
-        await channel.send({
-          channelId: message.channelId,
-          text: '📌 **Context commands:**\n- `/context add <file>` — pin a file\n- `/context remove <file>` — unpin\n- `/context list` — show pinned files\n- `/context clear` — unpin all',
-        })
+    const { estimateTokens } = await import('../domain/tokens.js')
+    const tokens = estimateTokens(session.history)
+    const userCount = session.history.filter((m) => m.role === 'user').length
+    const assistantCount = session.history.filter((m) => m.role === 'assistant').length
+    const { provider } = this.deps.router.route(message)
+    const contextWindow = provider.getContextWindow()
+    const pct = contextWindow > 0 ? ((tokens / contextWindow) * 100).toFixed(1) : 'N/A'
+    const compactThreshold = 47
+
+    const lines = [
+      '📊 **Context Stats**',
+      `- History: ${session.history.length} messages (${userCount} user, ${assistantCount} assistant)`,
+      `- Estimated tokens: ~${tokens.toLocaleString()}`,
+      `- Context window: ${contextWindow > 0 ? contextWindow.toLocaleString() + ' (' + provider.id + ')' : 'unknown'}`,
+      `- Usage: ${pct !== 'N/A' ? pct + '%' : pct}`,
+      `- Compactions: ${session.compactionCount}`,
+      `- User messages since last compaction: ${session.userMessageCount} / ${compactThreshold}`,
+    ]
+    await channel.send({ channelId: message.channelId, text: lines.join('\n') })
+  }
+
+  // -----------------------------------------------------------------------
+  // /clear — clear queued messages
+  // -----------------------------------------------------------------------
+
+  private async clearQueue(
+    channel: Channel,
+    message: InboundMessage,
+    sessionKey: string,
+  ): Promise<void> {
+    const queue = this.deps.getQueue(sessionKey)
+    if (queue && queue.depth > 0) {
+      const count = queue.depth
+      queue.clear()
+      await channel.send({
+        channelId: message.channelId,
+        text: `🗑️ Cleared ${count} queued message${count !== 1 ? 's' : ''}.`,
+      })
+    } else {
+      await channel.send({ channelId: message.channelId, text: '📭 Queue already empty.' })
     }
   }
 
@@ -427,11 +393,5 @@ export class CommandHandler {
     }
     lines.push(`- \`/help\` — Show this list`)
     await channel.send({ channelId: message.channelId, text: lines.join('\n') })
-  }
-
-  private formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes}B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
-    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
   }
 }

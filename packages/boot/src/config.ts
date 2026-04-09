@@ -72,7 +72,14 @@ export interface DeploymentSection {
 export interface RuntimeSection {
   workspace: string
   default_agent: string
-  max_tool_iterations?: number
+  /** Turn wall-clock timeout in seconds (default: 600) */
+  turn_timeout?: number
+  /** Context management config */
+  context?: {
+    compact_after_messages?: number
+    soft_nudge_pct?: number[]
+    hard_nudge_pct?: number
+  }
   skill_dirs?: string[]
   /** Additional directories to scan for plugins (relative to monorepo root) */
   plugin_dirs?: string[]

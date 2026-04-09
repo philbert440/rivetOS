@@ -1,7 +1,7 @@
 runtime:
   workspace: /root/.rivetos/workspace
   default_agent: %%AGENT_NAME%%
-  max_tool_iterations: 20
+  turn_timeout: 600
   skill_dirs:
     - /opt/rivetos/skills
   heartbeats:

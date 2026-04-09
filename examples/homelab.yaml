@@ -12,7 +12,7 @@
 runtime:
   workspace: ./workspace
   default_agent: opus
-  max_tool_iterations: 100
+  turn_timeout: 600
 
   coding_pipeline:
     builder_agent: grok

@@ -33,6 +33,10 @@ export interface XAIProviderConfig {
   temperature?: number // Default: not set (reasoning models don't use it)
   store?: boolean // Default: true (server stores conversation, only new messages sent)
   timeoutMs?: number // Default: 3600000 (1 hour for reasoning)
+  /** Context window size in tokens (0 = unknown) */
+  contextWindow?: number
+  /** Max output tokens (0 = unknown) */
+  maxOutputTokens?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +227,8 @@ export class XAIProvider implements Provider {
   private temperature: number | undefined
   private store: boolean
   private timeoutMs: number
+  private contextWindowSize: number
+  private outputTokenLimit: number
   /** Track response IDs for stateful conversation continuity */
   private lastResponseId: string | null = null
 
@@ -233,6 +239,8 @@ export class XAIProvider implements Provider {
     this.temperature = config.temperature
     this.store = config.store ?? true // Server-side storage = no re-sending history
     this.timeoutMs = config.timeoutMs ?? 3_600_000
+    this.contextWindowSize = config.contextWindow ?? 0
+    this.outputTokenLimit = config.maxOutputTokens ?? 0
   }
 
   getModel(): string {
@@ -241,6 +249,14 @@ export class XAIProvider implements Provider {
 
   setModel(model: string): void {
     this.model = model
+  }
+
+  getContextWindow(): number {
+    return this.contextWindowSize
+  }
+
+  getMaxOutputTokens(): number {
+    return this.outputTokenLimit
   }
 
   /** Reset conversation state (called by /new) */

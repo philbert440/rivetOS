@@ -39,6 +39,10 @@ export interface OllamaProviderConfig {
   temperature?: number // Default: 0.7
   topP?: number // Default: 0.9
   keepAlive?: string // Default: '30m'
+  /** Context window size in tokens (0 = unknown) */
+  contextWindow?: number
+  /** Max output tokens (0 = unknown) */
+  maxOutputTokens?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +176,8 @@ export class OllamaProvider implements Provider {
   private temperature: number
   private topP: number
   private keepAlive: string
+  private contextWindowSize: number
+  private outputTokenLimit: number
 
   constructor(config: OllamaProviderConfig = {}) {
     this.baseUrl = config.baseUrl ?? 'http://localhost:11434'
@@ -180,6 +186,8 @@ export class OllamaProvider implements Provider {
     this.temperature = config.temperature ?? 0.7
     this.topP = config.topP ?? 0.9
     this.keepAlive = config.keepAlive ?? '30m'
+    this.contextWindowSize = config.contextWindow ?? 0
+    this.outputTokenLimit = config.maxOutputTokens ?? 0
   }
 
   getModel(): string {
@@ -188,6 +196,14 @@ export class OllamaProvider implements Provider {
 
   setModel(model: string): void {
     this.model = model
+  }
+
+  getContextWindow(): number {
+    return this.contextWindowSize
+  }
+
+  getMaxOutputTokens(): number {
+    return this.outputTokenLimit
   }
 
   // -----------------------------------------------------------------------

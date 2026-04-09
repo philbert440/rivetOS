@@ -48,7 +48,10 @@ export interface RuntimeConfig {
   workspaceDir: string
   defaultAgent: string
   agents: AgentConfig[]
-  maxToolIterations?: number
+  /** Turn wall-clock timeout in seconds (default: 600) */
+  turnTimeout?: number
+  /** Context management config */
+  contextConfig?: { compactAfterMessages?: number; softNudgePct?: number[]; hardNudgePct?: number }
   heartbeats?: import('@rivetos/types').HeartbeatConfig[]
   /** Directories to scan for skills (default: ~/.rivetos/skills/) */
   skillDirs?: string[]
@@ -120,7 +123,8 @@ export class Runtime {
       hooks: config.hooks,
       fallbacks: config.fallbacks,
       workspaceDir: config.workspaceDir,
-      maxToolIterations: config.maxToolIterations,
+      turnTimeout: config.turnTimeout,
+      contextConfig: config.contextConfig,
       aborts: this.aborts,
       activeLoops: this.activeLoops,
       streamHandlers: this.streamHandlers,

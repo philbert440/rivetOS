@@ -50,6 +50,10 @@ function makeProvider(id: string, chunksOrFactory: LLMChunk[] | ChunkFactory): P
     async isAvailable() {
       return true;
     },
+    getModel() { return 'test-model'; },
+    setModel(_model: string) {},
+    getContextWindow() { return 0; },
+    getMaxOutputTokens() { return 0; },
   };
 }
 
@@ -74,6 +78,10 @@ function makeToolThenTextProvider(id: string): Provider {
     async isAvailable() {
       return true;
     },
+    getModel() { return 'test-model'; },
+    setModel(_model: string) {},
+    getContextWindow() { return 0; },
+    getMaxOutputTokens() { return 0; },
   };
 }
 
@@ -90,6 +98,10 @@ function makeSlowProvider(id: string, delayMs: number, response: string): Provid
     async isAvailable() {
       return true;
     },
+    getModel() { return 'test-model'; },
+    setModel(_model: string) {},
+    getContextWindow() { return 0; },
+    getMaxOutputTokens() { return 0; },
   };
 }
 
@@ -431,6 +443,10 @@ describe('Runtime Integration', () => {
       async isAvailable() {
         return true;
       },
+      getModel() { return 'test-model'; },
+      setModel(_model: string) {},
+      getContextWindow() { return 0; },
+      getMaxOutputTokens() { return 0; },
     };
 
     const channel = makeChannel('test-channel');
