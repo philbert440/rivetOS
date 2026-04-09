@@ -139,16 +139,16 @@ describe('Config Validation', () => {
       assertError(result, 'runtime.workspace', 'must be a string');
     });
 
-    it('rejects non-positive max_tool_iterations', () => {
+    it('rejects non-positive turn_timeout', () => {
       const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).max_tool_iterations = 0;
+      (cfg.runtime as Record<string, unknown>).turn_timeout = 0;
       const result = validateConfig(cfg);
-      assertError(result, 'runtime.max_tool_iterations', 'must be a positive integer');
+      assertError(result, 'runtime.turn_timeout', 'must be a positive number');
     });
 
-    it('accepts valid max_tool_iterations', () => {
+    it('accepts valid turn_timeout', () => {
       const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).max_tool_iterations = 25;
+      (cfg.runtime as Record<string, unknown>).turn_timeout = 600;
       const result = validateConfig(cfg);
       assertValid(result);
     });
@@ -584,7 +584,7 @@ describe('Config Validation', () => {
         runtime: {
           workspace: '~/.rivetos/workspace',
           default_agent: 'opus',
-          max_tool_iterations: 15,
+          turn_timeout: 600,
           skill_dirs: ['~/.rivetos/skills'],
           heartbeats: [
             {

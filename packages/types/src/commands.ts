@@ -43,11 +43,8 @@ export const COMMAND_REGISTRY = [
   { name: 'think' as const, description: 'Set thinking level', args: 'off|low|medium|high' },
   { name: 'reasoning' as const, description: 'Toggle reasoning visibility' },
   { name: 'tools' as const, description: 'Toggle tool call visibility' },
-  {
-    name: 'context' as const,
-    description: 'Manage pinned context files',
-    args: 'add|remove|list|clear [file]',
-  },
+  { name: 'context' as const, description: 'Show context window stats' },
+  { name: 'clear' as const, description: 'Clear queued messages' },
   { name: 'start' as const, description: 'Show welcome message' },
   { name: 'help' as const, description: 'Show available commands' },
 ] satisfies CommandDef[]

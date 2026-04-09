@@ -37,13 +37,13 @@ import {
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { estimateTokens } from './tokens.js'
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 export interface AgentLoopConfig {
-  maxIterations?: number
   systemPrompt: string
   tools: Tool[]
   provider: Provider
@@ -59,6 +59,18 @@ export interface AgentLoopConfig {
   sessionId?: string
   /** Resolve a provider by ID (for fallback chains) */
   resolveProvider?: (providerId: string) => Provider | undefined
+  /** Turn wall-clock timeout in ms (default: 600_000 = 10 min) */
+  turnTimeout?: number
+  /** Context window size in tokens (from provider, 0 = unknown) */
+  contextWindow?: number
+  /** Context management thresholds */
+  contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
+  /** Number of user messages in session (for Trigger A compaction) */
+  userMessageCount?: number
+  /** User message count threshold for compaction nudge (default: 47) */
+  compactAfterMessages?: number
+  /** Callback to sync compacted history back to the session */
+  onCompact?: (compactedHistory: Message[]) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -88,12 +100,10 @@ export interface TurnResult {
 
 export class AgentLoop {
   private config: AgentLoopConfig
-  private maxIterations: number
   private steerQueue: string[] = []
 
   constructor(config: AgentLoopConfig) {
     this.config = config
-    this.maxIterations = config.maxIterations ?? 15
   }
 
   /** Inject a message visible on the next tool iteration. */
@@ -122,6 +132,46 @@ export class AgentLoop {
       parameters: t.parameters,
     }))
 
+    // Add compact_context as a built-in tool (always available)
+    toolDefs.push({
+      name: 'compact_context',
+      description:
+        'Summarize and compact conversation history to free context window space. ' +
+        'Provide ranges of messages to replace with summaries. ' +
+        'Message indices are 0-based positions in the conversation history ' +
+        '(index 0 = first user or assistant message; system messages are excluded from indexing).',
+      parameters: {
+        type: 'object',
+        properties: {
+          replacements: {
+            type: 'array',
+            description: 'Message ranges to replace with summaries',
+            items: {
+              type: 'object',
+              properties: {
+                start_index: {
+                  type: 'number',
+                  description: 'Start index in conversation history (0-based, inclusive)',
+                },
+                end_index: {
+                  type: 'number',
+                  description: 'End index in conversation history (0-based, inclusive)',
+                },
+                summary: {
+                  type: 'string',
+                  description:
+                    'Brief summary replacing these messages. Include key decisions, ' +
+                    'outcomes, and any information still relevant.',
+                },
+              },
+              required: ['start_index', 'end_index', 'summary'],
+            },
+          },
+        },
+        required: ['replacements'],
+      },
+    })
+
     const toolsUsed: string[] = []
     let iterations = 0
     const totalUsage = { promptTokens: 0, completionTokens: 0 }
@@ -129,11 +179,24 @@ export class AgentLoop {
     let lastError = ''
     let hadSteer = false
 
-    const hardCap = this.maxIterations * 5 // Safety cap (default: 100)
+    // Turn timeout replaces maxIterations hard cap
+    const turnStart = Date.now()
+    const turnTimeout = this.config.turnTimeout ?? 600_000
+    let lastProgressEmit = Date.now()
+    let heartbeatCount = 0
+
+    // Context window management
+    const contextWindow = this.config.contextWindow ?? 0
+    const softNudgePcts = this.config.contextConfig?.softNudgePct ?? [40, 70]
+    const hardNudgePct = this.config.contextConfig?.hardNudgePct ?? 90
+    const nudgesFired: number[] = []
+    // Provider-reported token count — used instead of chars/4 estimate after first response
+    let lastKnownPromptTokens = 0
+
     let activeModelOverride: string | undefined
     let activeProvider = this.config.provider
 
-    while (iterations < hardCap) {
+    while (true) {
       if (signal?.aborted) {
         return {
           response: '',
@@ -141,6 +204,23 @@ export class AgentLoop {
           iterations,
           aborted: true,
           partialResponse,
+          usage: totalUsage,
+          hadSteer,
+        }
+      }
+
+      // Turn timeout — wall-clock safety cap
+      if (Date.now() - turnStart > turnTimeout) {
+        this.emit({
+          type: 'status',
+          content: `⚠️ Turn timeout (${Math.floor(turnTimeout / 1000)}s)`,
+        })
+        const capNotice = '\n\n⚠️ _Turn timed out. Let me know if you want me to continue._'
+        return {
+          response: partialResponse ? partialResponse.trim() + capNotice : capNotice.trim(),
+          toolsUsed,
+          iterations,
+          aborted: false,
           usage: totalUsage,
           hadSteer,
         }
@@ -155,6 +235,66 @@ export class AgentLoop {
           content: `[STEER — New message from user during execution]: ${steerMsg}`,
         })
         this.emit({ type: 'interrupt', content: `📨 Steer: ${steerMsg.slice(0, 100)}` })
+      }
+
+      // --- Trigger A: user message count nudge ---
+      const compactAfter = this.config.compactAfterMessages ?? 47
+      if (
+        this.config.userMessageCount &&
+        this.config.userMessageCount >= compactAfter &&
+        !nudgesFired.includes(0)
+      ) {
+        nudgesFired.push(0) // 0 = user message count trigger
+        messages.push({
+          role: 'system',
+          content:
+            `[SYSTEM — Context Management]\n` +
+            `You've had ${this.config.userMessageCount} exchanges in this session. ` +
+            `If there are completed tasks or stale tool output you no longer need, ` +
+            `consider using \`compact_context\` to summarize them. Otherwise, carry on.`,
+        })
+      }
+
+      // --- Trigger B: context window nudges ---
+      if (contextWindow > 0) {
+        // Use provider-reported token count when available, fall back to chars/4 estimate
+        const currentTokens =
+          lastKnownPromptTokens > 0 ? lastKnownPromptTokens : estimateTokens(messages)
+        const tokenSource = lastKnownPromptTokens > 0 ? 'provider' : 'estimate'
+        const pct = Math.floor((currentTokens / contextWindow) * 100)
+
+        if (pct >= hardNudgePct && !nudgesFired.includes(hardNudgePct)) {
+          nudgesFired.push(hardNudgePct)
+          messages.push({
+            role: 'system',
+            content:
+              `[SYSTEM — Context Management — REQUIRED]\n` +
+              `Your context is at ${pct}% capacity (~${currentTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens, ${tokenSource}). ` +
+              `You must free up space before continuing.\n\n` +
+              `Use \`compact_context\` to summarize or remove the least critical material. Focus on:\n` +
+              `- Completed tasks and their verbose tool output\n` +
+              `- Resolved discussion threads\n` +
+              `- Exploratory paths that were abandoned\n\n` +
+              `Preserve: active work context, recent decisions, anything referenced in the current task.`,
+          })
+        } else {
+          for (const nudgePct of softNudgePcts) {
+            if (pct >= nudgePct && !nudgesFired.includes(nudgePct)) {
+              nudgesFired.push(nudgePct)
+              const urgency =
+                nudgePct >= 70
+                  ? 'You should review your conversation history and use `compact_context` to replace resolved topics with brief summaries. If everything is genuinely still needed, carry on.'
+                  : 'If there are completed tasks or stale tool output you no longer need, consider using `compact_context` to summarize them. Otherwise, carry on.'
+              messages.push({
+                role: 'system',
+                content:
+                  `[SYSTEM — Context Management]\n` +
+                  `Your session context is at ${pct}% (~${currentTokens.toLocaleString()} tokens of ${contextWindow.toLocaleString()} window, ${tokenSource}).\n\n` +
+                  urgency,
+              })
+            }
+          }
+        }
       }
 
       // Stream from provider
@@ -211,6 +351,10 @@ export class AgentLoop {
               totalUsage.completionTokens,
               chunk.usage.completionTokens,
             )
+            // Track provider-reported prompt tokens for accurate context window checks
+            if (chunk.usage.promptTokens > 0) {
+              lastKnownPromptTokens = chunk.usage.promptTokens
+            }
           }
 
           if (signal?.aborted) {
@@ -405,6 +549,24 @@ export class AgentLoop {
           }
         }
 
+        // --- Built-in: compact_context ---
+        if (tc.name === 'compact_context') {
+          toolsUsed.push(tc.name)
+          this.emit({
+            type: 'tool_start',
+            content: `🔧 compact_context`,
+            metadata: { args: this.summarizeArgs(tc.arguments) },
+          })
+          const compactResult = this.executeCompactContext(tc.arguments, messages, nudgesFired)
+          const isError = compactResult.startsWith('Error')
+          this.emit({
+            type: 'tool_result',
+            content: `${isError ? '❌' : '✅'} compact_context: ${compactResult.slice(0, 200)}`,
+          })
+          messages.push({ role: 'tool', content: compactResult, toolCallId: tc.id })
+          continue
+        }
+
         const tool = this.config.tools.find((t) => t.name === tc.name)
         toolsUsed.push(tc.name)
 
@@ -542,28 +704,15 @@ export class AgentLoop {
       partialResponse = textContent
       iterations++
 
-      // Progress update every maxIterations
-      if (iterations > 0 && iterations % this.maxIterations === 0) {
+      // Time-based progress heartbeat (every 147s)
+      if (Date.now() - lastProgressEmit > 147_000) {
+        heartbeatCount++
         this.emit({
           type: 'status',
-          content: `⏳ Still working... (${iterations} tool calls so far: ${[...new Set(toolsUsed)].join(', ')})`,
+          content: `⏳ Still working... (${iterations} tool calls, ${Math.floor((Date.now() - turnStart) / 1000)}s, heartbeat #${heartbeatCount})`,
         })
+        lastProgressEmit = Date.now()
       }
-    }
-
-    // Hard cap reached — safety stop
-    // Preserve any partial text the model has produced so the streaming message
-    // isn't overwritten with a generic boilerplate string.
-    const capNotice = `\n\n⚠️ _Safety cap reached (${iterations} tool iterations). Let me know if you want me to continue._`
-    this.emit({ type: 'status', content: `⚠️ Safety cap reached (${iterations} tool iterations)` })
-    return {
-      response: partialResponse ? partialResponse.trim() + capNotice : capNotice.trim(),
-      toolsUsed,
-      iterations,
-      aborted: false,
-      partialResponse,
-      usage: totalUsage,
-      hadSteer,
     }
   }
 
@@ -585,5 +734,88 @@ export class AgentLoop {
       }
     }
     return summary
+  }
+
+  /**
+   * Execute the compact_context built-in tool.
+   * Replaces message ranges with summaries in the live messages array.
+   * User-facing indices are 0-based starting from the first non-system message.
+   * The system offset is calculated dynamically to handle any number of leading system messages.
+   */
+  private executeCompactContext(
+    args: Record<string, unknown>,
+    messages: Message[],
+    nudgesFired: number[],
+  ): string {
+    const replacements = args.replacements as
+      | Array<{ start_index: number; end_index: number; summary: string }>
+      | undefined
+
+    if (!replacements || !Array.isArray(replacements) || replacements.length === 0) {
+      return 'Error: replacements array is required and must not be empty'
+    }
+
+    // Find the boundary between system messages and user-addressable conversation.
+    // User indices are 0-based starting from the first non-system message.
+    // This avoids hardcoding assumptions about how many system messages exist at the start.
+    const systemOffset = messages.findIndex((m, i) => i > 0 && m.role !== 'system')
+    const offsetIdx = systemOffset > 0 ? systemOffset : 1 // fallback: assume 1 system message
+    const maxIndex = messages.length - offsetIdx - 1 // -1 for 0-based
+
+    // Validate all replacements
+    for (const r of replacements) {
+      if (
+        typeof r.start_index !== 'number' ||
+        typeof r.end_index !== 'number' ||
+        typeof r.summary !== 'string'
+      ) {
+        return 'Error: each replacement must have start_index (number), end_index (number), summary (string)'
+      }
+      if (r.start_index < 0 || r.end_index < r.start_index || r.end_index > maxIndex) {
+        return `Error: invalid range [${r.start_index}, ${r.end_index}] — valid range is [0, ${maxIndex}]`
+      }
+    }
+
+    // Check for overlaps
+    const sorted = [...replacements].sort((a, b) => a.start_index - b.start_index)
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i].start_index <= sorted[i - 1].end_index) {
+        return `Error: overlapping ranges at [${sorted[i - 1].start_index}, ${sorted[i - 1].end_index}] and [${sorted[i].start_index}, ${sorted[i].end_index}]`
+      }
+    }
+
+    const beforeTokens = estimateTokens(messages)
+    let totalRemoved = 0
+
+    // Process from end to start to avoid index shifting
+    const descending = [...sorted].reverse()
+    for (const r of descending) {
+      // Offset user-facing indices by the number of leading system messages
+      const startIdx = r.start_index + offsetIdx
+      const endIdx = r.end_index + offsetIdx
+      const removeCount = endIdx - startIdx + 1
+      totalRemoved += removeCount
+
+      messages.splice(startIdx, removeCount, {
+        role: 'system',
+        content: `[Compacted Context] ${r.summary}`,
+      })
+    }
+
+    // Reset nudges for next compaction cycle
+    nudgesFired.length = 0
+
+    // Sync compacted history back to the session (excludes system prompt)
+    this.config.onCompact?.(messages.slice(1))
+
+    const afterTokens = estimateTokens(messages)
+    const savedPct =
+      beforeTokens > 0 ? Math.round(((beforeTokens - afterTokens) / beforeTokens) * 100) : 0
+
+    return (
+      `Compacted ${totalRemoved} messages into ${replacements.length} ` +
+      `summar${replacements.length === 1 ? 'y' : 'ies'}. ` +
+      `Context: ${beforeTokens.toLocaleString()} → ${afterTokens.toLocaleString()} tokens (${savedPct}% freed)`
+    )
   }
 }

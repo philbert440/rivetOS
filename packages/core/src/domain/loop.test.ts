@@ -29,6 +29,8 @@ function makeProvider(chunks: LLMChunk[]): Provider {
     },
     getModel() { return 'mock-model'; },
     setModel() {},
+    getContextWindow() { return 0; },
+    getMaxOutputTokens() { return 0; },
   };
 }
 
@@ -57,6 +59,8 @@ function makeToolThenTextProvider(): Provider {
     },
     getModel() { return 'mock-model'; },
     setModel() {},
+    getContextWindow() { return 0; },
+    getMaxOutputTokens() { return 0; },
   };
 }
 
@@ -152,6 +156,8 @@ describe('AgentLoop', () => {
       async isAvailable() { return true; },
       getModel() { return 'mock-model'; },
       setModel() {},
+      getContextWindow() { return 0; },
+      getMaxOutputTokens() { return 0; },
     };
 
     const loop = new AgentLoop({
@@ -174,7 +180,7 @@ describe('AgentLoop', () => {
     assert.ok(steerMsg.content.includes('Actually, use the -la flag'));
   });
 
-  it('should stop at max iterations', async () => {
+  it('should stop at turn timeout', async () => {
     // Provider always returns tool calls
     let callCount = 0;
     const infiniteToolProvider: Provider = {
@@ -190,18 +196,19 @@ describe('AgentLoop', () => {
       async isAvailable() { return true; },
       getModel() { return 'mock-model'; },
       setModel() {},
+      getContextWindow() { return 0; },
+      getMaxOutputTokens() { return 0; },
     };
 
     const loop = new AgentLoop({
       systemPrompt: 'You are helpful.',
       provider: infiniteToolProvider,
       tools: [makeTool('shell', 'loop')],
-      maxIterations: 3,
+      turnTimeout: 100, // 100ms — will timeout quickly
     });
 
     const result = await loop.run('Loop forever', []);
-    assert.equal(result.iterations, 15); // hardCap = maxIterations * 5 = 15
-    assert.ok(result.response.toLowerCase().includes('safety cap'));
+    assert.ok(result.response.toLowerCase().includes('timed out'));
   });
 
   it('should accumulate token usage across iterations', async () => {
@@ -307,6 +314,8 @@ describe('AgentLoop', () => {
       async isAvailable() { return true; },
       getModel() { return 'gemini-2.5-pro'; },
       setModel() {},
+      getContextWindow() { return 0; },
+      getMaxOutputTokens() { return 0; },
     };
 
     // Set up fallback hook
@@ -358,6 +367,8 @@ describe('AgentLoop', () => {
       async isAvailable() { return true; },
       getModel() { return 'gemini-2.5-pro'; },
       setModel() {},
+      getContextWindow() { return 0; },
+      getMaxOutputTokens() { return 0; },
     };
 
     const pipeline = new HookPipelineImpl();

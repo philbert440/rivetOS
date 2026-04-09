@@ -91,24 +91,33 @@ function buildProviderArgs(
   providerConfig: Record<string, unknown>,
 ): Record<string, unknown> {
   // Map config YAML keys to provider constructor args
+  // Common context window fields — passed to all providers
+  const contextFields = {
+    contextWindow: providerConfig.context_window,
+    maxOutputTokens: providerConfig.max_output_tokens,
+  }
+
   switch (id) {
     case 'anthropic':
       return {
         apiKey: config.apiKey,
         model: providerConfig.model,
         maxTokens: providerConfig.max_tokens,
+        ...contextFields,
       }
     case 'google':
       return {
         apiKey: config.apiKey,
         model: providerConfig.model,
         maxTokens: providerConfig.max_tokens,
+        ...contextFields,
       }
     case 'xai':
       return {
         apiKey: config.apiKey,
         model: providerConfig.model,
         temperature: providerConfig.temperature,
+        ...contextFields,
       }
     case 'ollama':
       return {
@@ -117,6 +126,7 @@ function buildProviderArgs(
         numCtx: providerConfig.num_ctx,
         temperature: providerConfig.temperature,
         keepAlive: providerConfig.keep_alive,
+        ...contextFields,
       }
     case 'openai-compat':
     case 'llama-server':
@@ -130,10 +140,11 @@ function buildProviderArgs(
         repeatPenalty: providerConfig.repeat_penalty,
         id,
         name: (providerConfig.name as string | undefined) ?? id,
+        ...contextFields,
       }
     default:
       // Pass through all config for unknown providers
-      return { apiKey: config.apiKey, ...providerConfig }
+      return { apiKey: config.apiKey, ...providerConfig, ...contextFields }
   }
 }
 
