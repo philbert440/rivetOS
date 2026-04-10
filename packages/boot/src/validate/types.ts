@@ -97,10 +97,25 @@ export const KNOWN_AGENT_KEYS = new Set([
 export const VALID_THINKING_LEVELS = new Set(['off', 'low', 'medium', 'high'])
 
 export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
-  anthropic: new Set(['model', 'max_tokens', 'api_key']),
-  xai: new Set(['model', 'max_tokens', 'api_key', 'temperature']),
-  google: new Set(['model', 'max_tokens', 'api_key']),
-  ollama: new Set(['model', 'base_url', 'num_ctx', 'temperature', 'keep_alive']),
+  anthropic: new Set(['model', 'max_tokens', 'api_key', 'context_window', 'max_output_tokens']),
+  xai: new Set([
+    'model',
+    'max_tokens',
+    'api_key',
+    'temperature',
+    'context_window',
+    'max_output_tokens',
+  ]),
+  google: new Set(['model', 'max_tokens', 'api_key', 'context_window', 'max_output_tokens']),
+  ollama: new Set([
+    'model',
+    'base_url',
+    'num_ctx',
+    'temperature',
+    'keep_alive',
+    'context_window',
+    'max_output_tokens',
+  ]),
   'openai-compat': new Set([
     'model',
     'base_url',
@@ -110,6 +125,8 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'top_p',
     'repeat_penalty',
     'name',
+    'context_window',
+    'max_output_tokens',
   ]),
   'llama-server': new Set([
     'model',
@@ -120,6 +137,8 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'top_p',
     'repeat_penalty',
     'name',
+    'context_window',
+    'max_output_tokens',
   ]),
 }
 
