@@ -312,8 +312,10 @@ providers:
 | `base_url` | string | **required** | API endpoint (must end with `/v1`). |
 | `model` | string | **required** | Model identifier sent with requests. |
 | `api_key` | string | — | API key (if required by the endpoint). |
-| `max_tokens` | number | `4096` | Maximum output tokens. |
+| `max_tokens` | number | `4096` | Maximum output tokens per response. |
 | `temperature` | number | — | Sampling temperature. |
+| `context_window` | number | — | Total context window size (used by `/context` stats and compaction). Match your llama-server `--ctx-size`. |
+| `max_output_tokens` | number | — | Maximum tokens the model can emit in a single reply. |
 
 ---
 

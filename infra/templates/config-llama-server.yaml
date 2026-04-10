@@ -20,6 +20,9 @@ providers:
     base_url: %%BASE_URL%%
     max_tokens: 4096
     temperature: 0.6
+    # Context window size for /context stats and compaction thresholds.
+    # Match the value llama-server was started with (--ctx-size).
+    context_window: 100000
 channels:
   telegram:
     owner_id: '8093148723'
