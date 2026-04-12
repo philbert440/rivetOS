@@ -115,6 +115,75 @@ function execOrFail(cmd: string, label: string): string {
   }
 }
 
+/**
+ * Like execOrFail but throws instead of calling process.exit().
+ * Used inside meshRollingUpdate so a local failure doesn't kill
+ * the entire mesh update — we can report it and continue to remotes.
+ */
+function execOrThrow(cmd: string, label: string): string {
+  try {
+    return execSync(cmd, {
+      cwd: ROOT,
+      encoding: 'utf-8',
+      timeout: 300000,
+      env: { ...process.env, HOME: process.env.HOME ?? '/root' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim()
+  } catch (err: unknown) {
+    throw new Error(`${label} failed: ${(err as Error).message}`)
+  }
+}
+
+/**
+ * Ensure we are on main branch and up-to-date with origin.
+ * If on a feature branch, switches to main first.
+ * If a specific version is requested, checks out that tag instead.
+ */
+function ensureMainBranch(version?: string): void {
+  if (version) {
+    console.log('  Fetching tags...')
+    execOrFail('git fetch --tags', 'git fetch')
+    console.log(`  Checking out ${version}...`)
+    execOrFail(`git checkout ${version}`, `checkout ${version}`)
+    return
+  }
+
+  // Fetch latest from origin
+  execOrFail('git fetch origin', 'git fetch origin')
+
+  // Check current branch — if not on main, switch to it
+  const currentBranch = exec('git branch --show-current', { quiet: true })
+  if (currentBranch && currentBranch !== 'main') {
+    console.log(`  Currently on branch '${currentBranch}', switching to main...`)
+    execOrFail('git checkout main', 'git checkout main')
+  }
+
+  console.log('  Pulling latest...')
+  execOrFail('git pull --ff-only', 'git pull')
+}
+
+/**
+ * Same as ensureMainBranch but uses execOrThrow (no process.exit).
+ * For use inside meshRollingUpdate.
+ */
+function ensureMainBranchSafe(version?: string): void {
+  if (version) {
+    execOrThrow('git fetch --tags', 'git fetch')
+    execOrThrow(`git checkout ${version}`, `checkout ${version}`)
+    return
+  }
+
+  execOrThrow('git fetch origin', 'git fetch origin')
+
+  const currentBranch = exec('git branch --show-current', { quiet: true })
+  if (currentBranch && currentBranch !== 'main') {
+    console.log(`    Currently on branch '${currentBranch}', switching to main...`)
+    execOrThrow('git checkout main', 'git checkout main')
+  }
+
+  execOrThrow('git pull --ff-only', 'git pull')
+}
+
 export default async function update(): Promise<void> {
   const opts = parseArgs()
 
@@ -141,16 +210,8 @@ export default async function update(): Promise<void> {
   console.log(`   Current: v${oldPkg.version} (${oldCommit})`)
   console.log('')
 
-  // Step 1: Git pull or checkout specific version
-  if (opts.version) {
-    console.log(`Fetching tags...`)
-    execOrFail('git fetch --tags', 'git fetch')
-    console.log(`Checking out ${opts.version}...`)
-    execOrFail(`git checkout ${opts.version}`, `checkout ${opts.version}`)
-  } else {
-    console.log('Pulling latest...')
-    execOrFail('git pull --ff-only', 'git pull')
-  }
+  // Step 1: Ensure on main branch and pull latest (or checkout specific version)
+  ensureMainBranch(opts.version)
 
   // Step 2: Install dependencies
   console.log('Installing dependencies...')
@@ -160,7 +221,7 @@ export default async function update(): Promise<void> {
   // Step 2.5: Reset Nx cache to avoid stale artifact warnings
   exec('npx nx reset', { quiet: true })
 
-  // Step 3: Detect deployment mode and rebuild if containerized
+  // Step 3: Detect deployment mode and handle accordingly
   const deployment = await detectDeployment(opts.bareMetal)
 
   if (deployment === 'docker') {
@@ -176,6 +237,14 @@ export default async function update(): Promise<void> {
       exec('docker compose pull', { quiet: false })
       console.log('  ✅ Images pulled')
     }
+  } else if (deployment === 'bare-metal') {
+    // Build TypeScript for bare-metal deployments
+    console.log('\nBuilding...')
+    execOrFail(
+      'npx nx run-many -t build --exclude container-agent,container-datahub,site',
+      'nx build',
+    )
+    console.log('  ✅ Build complete')
   }
 
   // Step 4: Restart
@@ -288,11 +357,12 @@ async function verifyDataPersistence(): Promise<void> {
  * Rolling mesh update — update all peers one at a time.
  *
  * 1. Read mesh.json to get all nodes
- * 2. Update local node first
+ * 2. Update local node first (with error recovery — don't kill the whole mesh update)
  * 3. For each remote peer:
- *    a. SSH in and run `rivetos update`
- *    b. Wait for health check to pass
- *    c. Move to next node
+ *    a. rsync code, rebuild, restart (bare-metal/Proxmox)
+ *    b. Fall back to agent API (Docker)
+ *    c. Wait for health check to pass
+ *    d. Move to next node
  */
 async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   console.log('🔩 RivetOS Mesh Rolling Update')
@@ -328,42 +398,65 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   console.log('  ── Updating local node ──')
   console.log('')
 
-  // Run local update (non-mesh to avoid recursion)
   const localOpts = { ...opts, mesh: false }
+  let localUpdated = false
 
-  // Re-run the git pull + rebuild + restart flow
+  // Wrap local update in try/catch so failures don't kill the mesh update
   const gitDir = exec('git rev-parse --git-dir', { quiet: true })
   if (gitDir) {
-    if (localOpts.version) {
-      execOrFail('git fetch --tags', 'git fetch')
-      execOrFail(`git checkout ${localOpts.version}`, `checkout ${localOpts.version}`)
-    } else {
-      execOrFail('git pull --ff-only', 'git pull')
-    }
-    execOrFail('npm install --no-audit --no-fund', 'npm install')
-    exec('npx nx reset', { quiet: true })
+    try {
+      // Ensure on main branch and pull latest
+      ensureMainBranchSafe(localOpts.version)
+      execOrThrow('npm install --no-audit --no-fund', 'npm install')
+      exec('npx nx reset', { quiet: true })
 
-    const deployment = await detectDeployment(localOpts.bareMetal)
-    if (deployment === 'docker' && !localOpts.prebuilt) {
-      await verifyDataPersistence()
-      exec('docker compose build', { quiet: false })
-    }
-    if (localOpts.restart) {
+      const deployment = await detectDeployment(localOpts.bareMetal)
+
       if (deployment === 'docker') {
-        exec('docker compose up -d', { quiet: false })
+        if (!localOpts.prebuilt) {
+          await verifyDataPersistence()
+          exec('docker compose build', { quiet: false })
+        }
+        if (localOpts.restart) {
+          exec('docker compose up -d', { quiet: false })
+        }
+      } else if (deployment === 'bare-metal') {
+        // Build TypeScript
+        console.log('    Building...')
+        execOrThrow(
+          'npx nx run-many -t build --exclude container-agent,container-datahub,site',
+          'nx build',
+        )
+        if (localOpts.restart) {
+          console.log('    Restarting service...')
+          try {
+            execSync('systemctl restart rivetos', {
+              encoding: 'utf-8',
+              timeout: 30000,
+              stdio: ['pipe', 'pipe', 'pipe'],
+            })
+          } catch {
+            console.log(
+              '    ⚠️  Could not restart via systemd. Restart manually.',
+            )
+          }
+        }
       }
+
+      localUpdated = true
+      console.log('  ✅ Local node updated')
+    } catch (err: unknown) {
+      console.error(`  ❌ Local node update failed: ${(err as Error).message}`)
+      console.error('  Continuing with remote nodes...')
     }
+  } else {
+    console.log('  ⚠️  No git repo found locally — skipping local update')
   }
-  console.log('  ✅ Local node updated')
   console.log('')
 
   // Step 2: Update remote nodes one by one
-  //
-  // Strategy: rsync code from control plane → remote node → rebuild → restart
-  // This is the preferred path for bare-metal/Proxmox deployments.
-  // Falls back to agent API for Docker deployments where SSH isn't available.
-  let updated = 1
-  let failed = 0
+  let updated = localUpdated ? 1 : 0
+  let failed = localUpdated ? 0 : 1
 
   for (const node of nodes) {
     // Skip local node (we already updated it)
@@ -594,6 +687,16 @@ async function detectDeployment(forceBareMetal = false): Promise<string> {
     }
   } catch {
     // No config or parse error
+  }
+
+  // Check for systemd service (bare-metal/Proxmox/VM deployment)
+  // This takes priority over docker-compose.yaml which exists in the repo
+  // for Docker users but is present on bare-metal installs too.
+  try {
+    await access('/etc/systemd/system/rivetos.service')
+    return 'bare-metal'
+  } catch {
+    // No systemd service
   }
 
   // Check for docker-compose.yml in project dir
