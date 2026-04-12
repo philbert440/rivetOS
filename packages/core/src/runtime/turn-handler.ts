@@ -45,7 +45,7 @@ export interface TurnHandlerDeps {
   hooks?: HookPipeline
   fallbacks?: FallbackConfig[]
   workspaceDir: string
-  /** Turn wall-clock timeout in seconds */
+  /** Turn wall-clock timeout in seconds (default: 900) */
   turnTimeout?: number
   /** Context management config */
   contextConfig?: { compactAfterMessages?: number; softNudgePct?: number[]; hardNudgePct?: number }

@@ -72,7 +72,7 @@ export interface DeploymentSection {
 export interface RuntimeSection {
   workspace: string
   default_agent: string
-  /** Turn wall-clock timeout in seconds (default: 600) */
+  /** Turn wall-clock timeout in seconds (default: 900) */
   turn_timeout?: number
   /** Context management config */
   context?: {
