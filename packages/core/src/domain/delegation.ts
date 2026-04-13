@@ -230,8 +230,8 @@ export class DelegationEngine {
     }
 
     try {
-      // Resolve tools at delegation time and filter for the target agent
-      const allTools = this.config.tools()
+      // Resolve tools at delegation time, dedup, and filter for the target agent
+      const allTools = deduplicateTools(this.config.tools())
       const filteredTools = filterToolsForAgent(allTools, request.toAgent, this.config.toolFilter)
       // Remove any existing delegate_task — we'll add our own with proper chain depth
       const delegationTools = filteredTools.filter((t) => t.name !== 'delegate_task')
