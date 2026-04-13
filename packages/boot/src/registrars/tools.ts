@@ -95,9 +95,7 @@ export async function registerTools(
               }
             }
             pluginWithPipeline.pipeline.setToolExecutors({
-              subagentSpawn: lateBind('subagent_spawn'),
-              subagentSend: lateBind('subagent_send'),
-              subagentKill: lateBind('subagent_kill'),
+              delegateTask: lateBind('delegate_task'),
               shellExec: lateBind('shell'),
             })
           }

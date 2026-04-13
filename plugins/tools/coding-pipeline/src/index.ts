@@ -10,7 +10,7 @@
  *   6. Opus approves or sends back with findings
  *   7. On approval → commit + push
  *
- * Uses the sub-agent system for Grok ↔ Opus communication.
+ * Uses delegate_task (mesh-aware) for builder agent communication.
  * Exposed as a single tool: `coding_pipeline`
  */
 
@@ -105,9 +105,7 @@ If there are issues, list them as numbered items and fix them.`
 
 export class CodingPipeline {
   private config: Required<CodingPipelineConfig>
-  private subagentSpawn: ((args: Record<string, unknown>) => Promise<string>) | null = null
-  private subagentSend: ((args: Record<string, unknown>) => Promise<string>) | null = null
-  private subagentKill: ((args: Record<string, unknown>) => Promise<string>) | null = null
+  private delegateTask: ((args: Record<string, unknown>) => Promise<string>) | null = null
   private shellExec: ((args: Record<string, unknown>) => Promise<string>) | null = null
   private onProgress?: (message: string) => void
 
@@ -124,16 +122,14 @@ export class CodingPipeline {
 
   /**
    * Inject tool executors. Called by boot.ts after all tools are registered.
+   * Uses delegate_task (mesh-aware) instead of subagent_spawn so the builder
+   * agent can be reached across the mesh on remote nodes.
    */
   setToolExecutors(tools: {
-    subagentSpawn: (args: Record<string, unknown>) => Promise<string>
-    subagentSend: (args: Record<string, unknown>) => Promise<string>
-    subagentKill: (args: Record<string, unknown>) => Promise<string>
+    delegateTask: (args: Record<string, unknown>) => Promise<string>
     shellExec: (args: Record<string, unknown>) => Promise<string>
   }): void {
-    this.subagentSpawn = tools.subagentSpawn
-    this.subagentSend = tools.subagentSend
-    this.subagentKill = tools.subagentKill
+    this.delegateTask = tools.delegateTask
     this.shellExec = tools.shellExec
   }
 
@@ -159,7 +155,7 @@ export class CodingPipeline {
   // -----------------------------------------------------------------------
 
   async run(spec: string, files: string[] = []): Promise<string> {
-    if (!this.subagentSpawn || !this.subagentSend || !this.shellExec) {
+    if (!this.delegateTask || !this.shellExec) {
       return 'Error: Pipeline not initialized — tool executors not set.'
     }
 
@@ -217,17 +213,16 @@ export class CodingPipeline {
   // -----------------------------------------------------------------------
 
   private async build(ctx: PipelineContext): Promise<PipelinePhase> {
-    this.log(ctx, `🔨 Spawning ${this.config.builderAgent} to build...`)
+    this.log(ctx, `🔨 Delegating to ${this.config.builderAgent} to build...`)
 
     const filesContext = ctx.files.length > 0 ? `\n\nRelevant files: ${ctx.files.join(', ')}` : ''
 
     const task = `${BUILDER_SYSTEM}\n\n## Spec\n${ctx.spec}${filesContext}\n\nWorking directory: ${ctx.workingDir}`
 
     try {
-      const result = await this.subagentSpawn!({
-        agent: this.config.builderAgent,
+      const result = await this.delegateTask!({
+        to_agent: this.config.builderAgent,
         task,
-        mode: 'run',
         timeout_ms: 300000, // 5 min
       })
 
@@ -251,10 +246,9 @@ export class CodingPipeline {
     const reviewPrompt = SELF_REVIEW_PROMPT(ctx.spec, ctx.buildOutput)
 
     try {
-      const result = await this.subagentSpawn!({
-        agent: this.config.builderAgent,
+      const result = await this.delegateTask!({
+        to_agent: this.config.builderAgent,
         task: reviewPrompt,
-        mode: 'run',
         timeout_ms: 120000,
       })
 
@@ -339,10 +333,9 @@ ${findings}
 Fix all issues listed above. Working directory: ${ctx.workingDir}`
 
     try {
-      const result = await this.subagentSpawn!({
-        agent: this.config.builderAgent,
+      const result = await this.delegateTask!({
+        to_agent: this.config.builderAgent,
         task,
-        mode: 'run',
         timeout_ms: 300000,
       })
 
