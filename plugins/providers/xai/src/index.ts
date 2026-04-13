@@ -272,10 +272,14 @@ export class XAIProvider implements Provider {
     const allMessages = convertMessages(messages)
     const model = options?.modelOverride ?? this.model
 
-    // If we have a previous response ID, only send NEW messages (last user + any tool results)
-    // Server already has the full conversation history
+    // If we have a previous response ID AND this isn't a fresh conversation,
+    // only send NEW messages (last user + any tool results).
+    // Server already has the full conversation history.
+    // freshConversation is set by delegation/subagent engines to prevent
+    // conversation state bleed from the shared provider instance.
+    const usePreviousResponse = this.store && this.lastResponseId && !options?.freshConversation
     let input: ResponsesInput[]
-    if (this.store && this.lastResponseId) {
+    if (usePreviousResponse) {
       // Find the last user message and any tool results after it
       const lastUserIdx = allMessages.findLastIndex((m) => 'role' in m && m.role === 'user')
       input = lastUserIdx >= 0 ? allMessages.slice(lastUserIdx) : allMessages
@@ -291,8 +295,8 @@ export class XAIProvider implements Provider {
       include: ['reasoning.encrypted_content'],
     }
 
-    // Continue from previous response if available
-    if (this.store && this.lastResponseId) {
+    // Continue from previous response if available (and not a fresh conversation)
+    if (usePreviousResponse) {
       body.previous_response_id = this.lastResponseId
     }
 

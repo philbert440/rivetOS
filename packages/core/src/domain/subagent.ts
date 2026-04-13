@@ -320,6 +320,7 @@ export class SubagentManagerImpl implements SubagentManager {
       tools,
       modelOverride: session.modelOverride,
       agentId: session.childAgent,
+      freshConversation: true, // Isolate from parent's stateful conversation context
     })
 
     const result = await loop.run(userMessage, session.history, signal)

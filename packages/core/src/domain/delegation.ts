@@ -248,6 +248,7 @@ export class DelegationEngine {
         modelOverride: agent.model,
         agentId: request.toAgent,
         hooks: this.config.hooks,
+        freshConversation: true, // Isolate from parent's stateful conversation context
       })
 
       const turnResult = await loop.run(request.task, [], abort.signal)

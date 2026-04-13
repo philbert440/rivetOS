@@ -72,6 +72,9 @@ export interface AgentLoopConfig {
   contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
   /** Callback to sync compacted history back to the session */
   onCompact?: (compactedHistory: Message[]) => void
+  /** Start a fresh conversation — prevents reuse of stateful provider context (e.g. xAI previous_response_id).
+   *  Set by delegation/subagent engines to isolate conversations. */
+  freshConversation?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +327,7 @@ export class AgentLoop {
         signal,
         thinking: this.config.thinking,
         modelOverride: activeModelOverride,
+        freshConversation: this.config.freshConversation,
       }
 
       // --- Hook: provider:before ---
