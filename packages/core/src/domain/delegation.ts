@@ -232,6 +232,7 @@ export class DelegationEngine {
         systemPrompt: enrichedPrompt,
         provider,
         tools: delegationTools,
+        modelOverride: agent.model,
         agentId: request.toAgent,
         hooks: this.config.hooks,
       })

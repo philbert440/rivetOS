@@ -59,6 +59,10 @@ export interface AgentConfig {
   id: string
   name: string
   provider: string
+  /** Model override — when set, this agent uses a specific model from its provider.
+   *  Allows multiple agents to share one provider but use different models
+   *  (e.g., opus uses claude-opus-4-6, sonnet uses claude-sonnet-4-20250514, same Anthropic provider). */
+  model?: string
   workspaceFiles?: string[]
   providerConfig?: Record<string, unknown>
   /** Default thinking level for this agent */

@@ -88,6 +88,7 @@ export const KNOWN_RUNTIME_KEYS = new Set([
 
 export const KNOWN_AGENT_KEYS = new Set([
   'provider',
+  'model',
   'default_thinking',
   'fallbacks',
   'local',

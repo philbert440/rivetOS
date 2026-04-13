@@ -48,6 +48,9 @@ export interface AgentLoopConfig {
   tools: Tool[]
   provider: Provider
   thinking?: ThinkingLevel
+  /** Model override — use a specific model instead of the provider's default.
+   *  Set from agent config to allow multiple agents on the same provider with different models. */
+  modelOverride?: string
   onStream?: StreamHandler
   /** Agent ID — passed to tools via ToolContext */
   agentId?: string
@@ -198,7 +201,7 @@ export class AgentLoop {
     // Provider-reported token count — used instead of chars/4 estimate after first response
     let lastKnownPromptTokens = 0
 
-    let activeModelOverride: string | undefined
+    let activeModelOverride: string | undefined = this.config.modelOverride
     let activeProvider = this.config.provider
 
     while (true) {

@@ -139,6 +139,7 @@ export class TurnHandler {
         provider,
         tools: this.deps.tools,
         thinking: session.thinking,
+        modelOverride: agent.model,
         onStream: streamHandler,
         agentId: agent.id,
         imageDir,

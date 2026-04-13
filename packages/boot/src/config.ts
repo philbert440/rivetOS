@@ -92,6 +92,9 @@ export interface RuntimeSection {
 
 export interface AgentSection {
   provider: string
+  /** Model override — use a specific model from this provider instead of the provider's default.
+   *  Enables multiple agents to share one provider with different models. */
+  model?: string
   default_thinking?: string
   fallbacks?: string[]
   /** Whether this agent uses a local/self-hosted provider (free tokens → extended context) */

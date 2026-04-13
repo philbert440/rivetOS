@@ -62,6 +62,8 @@ interface InternalSession extends SubagentSession {
   abort: AbortController
   /** Promise that resolves when a 'run' mode session completes */
   completion?: Promise<string>
+  /** Model override from agent config — allows agents on the same provider to use different models */
+  modelOverride?: string
 }
 
 export class SubagentManagerImpl implements SubagentManager {
@@ -118,6 +120,7 @@ export class SubagentManagerImpl implements SubagentManager {
       history: [],
       createdAt: Date.now(),
       abort,
+      modelOverride: agent.model,
     }
 
     this.sessions.set(sessionId, session)
@@ -313,6 +316,7 @@ export class SubagentManagerImpl implements SubagentManager {
       systemPrompt,
       provider,
       tools,
+      modelOverride: session.modelOverride,
       agentId: session.childAgent,
     })
 
