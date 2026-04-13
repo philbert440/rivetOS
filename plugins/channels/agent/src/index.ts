@@ -67,7 +67,7 @@ export class AgentChannel implements Channel {
     string,
     {
       resolve: (response: string) => void
-      timeout: ReturnType<typeof setTimeout>
+      timeout?: ReturnType<typeof setTimeout>
     }
   > = new Map()
 
@@ -103,7 +103,7 @@ export class AgentChannel implements Channel {
   async stop(): Promise<void> {
     // Clear pending responses
     for (const [_id, pending] of this.pendingResponses) {
-      clearTimeout(pending.timeout)
+      if (pending.timeout) clearTimeout(pending.timeout)
       pending.resolve('[channel shutting down]')
     }
     this.pendingResponses.clear()
@@ -121,7 +121,7 @@ export class AgentChannel implements Channel {
     // "Sending" on the agent channel means resolving a pending response
     const pending = this.pendingResponses.get(message.channelId)
     if (pending && message.text) {
-      clearTimeout(pending.timeout)
+      if (pending.timeout) clearTimeout(pending.timeout)
       pending.resolve(message.text)
       this.pendingResponses.delete(message.channelId)
       return Promise.resolve(message.channelId)
@@ -226,7 +226,7 @@ export class AgentChannel implements Channel {
 
     const requestId = `agent-msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const waitForResponse = body.waitForResponse !== false // Default: true
-    const timeoutMs = body.timeoutMs ?? 120000
+    const timeoutMs = body.timeoutMs
 
     // Build InboundMessage
     const inbound: InboundMessage = {
@@ -250,10 +250,13 @@ export class AgentChannel implements Channel {
     if (waitForResponse) {
       // Create a response promise that the send() method will resolve
       const responsePromise = new Promise<string>((resolve) => {
-        const timeout = setTimeout(() => {
-          this.pendingResponses.delete(requestId)
-          resolve('[timeout — agent did not respond in time]')
-        }, timeoutMs)
+        let timeout: ReturnType<typeof setTimeout> | undefined
+        if (timeoutMs) {
+          timeout = setTimeout(() => {
+            this.pendingResponses.delete(requestId)
+            resolve('[timeout — agent did not respond in time]')
+          }, timeoutMs)
+        }
 
         this.pendingResponses.set(requestId, { resolve, timeout })
       })
@@ -265,7 +268,7 @@ export class AgentChannel implements Channel {
           this.messageHandler(inbound).catch((err: unknown) => {
             const pending = this.pendingResponses.get(requestId)
             if (pending) {
-              clearTimeout(pending.timeout)
+              if (pending.timeout) clearTimeout(pending.timeout)
               const msg = err instanceof Error ? err.message : String(err)
               pending.resolve(`[error processing message: ${msg}]`)
               this.pendingResponses.delete(requestId)
@@ -428,7 +431,8 @@ export class AgentChannel implements Channel {
           },
           timeout_ms: {
             type: 'number',
-            description: 'Timeout in ms when waiting for response (default: 120000)',
+            description:
+              'Timeout in ms when waiting for response (default: none — waits until done)',
           },
         },
         required: ['to_agent', 'message'],
@@ -438,7 +442,7 @@ export class AgentChannel implements Channel {
         const message = args.message as string
         const waitForResponse =
           args.wait_for_response != null ? (args.wait_for_response as boolean) : true
-        const timeoutMs = args.timeout_ms != null ? (args.timeout_ms as number) : 120000
+        const timeoutMs = args.timeout_ms != null ? (args.timeout_ms as number) : undefined
 
         const peer = this.config.peers?.[toAgent]
         if (!peer) {
@@ -476,7 +480,11 @@ export class AgentChannel implements Channel {
     const url = `${peer.url.replace(/\/$/, '')}/api/message`
 
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), (body.timeoutMs ?? 120000) + 5000) // Extra 5s for network
+    let timeout: ReturnType<typeof setTimeout> | undefined
+
+    if (body.timeoutMs) {
+      timeout = setTimeout(() => controller.abort(), body.timeoutMs + 5000) // Extra 5s for network
+    }
 
     try {
       const res = await fetch(url, {
@@ -486,7 +494,7 @@ export class AgentChannel implements Channel {
           Authorization: `Bearer ${secret}`,
         },
         body: JSON.stringify(body),
-        signal: controller.signal,
+        signal: body.timeoutMs ? controller.signal : undefined,
       })
 
       if (!res.ok) {
@@ -496,7 +504,7 @@ export class AgentChannel implements Channel {
 
       return (await res.json()) as AgentMessageResponse
     } finally {
-      clearTimeout(timeout)
+      if (timeout) clearTimeout(timeout)
     }
   }
 }
