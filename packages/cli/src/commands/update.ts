@@ -19,7 +19,7 @@
 import { readFile, access } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { execSync } from 'node:child_process'
+import { execSync, spawn } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -432,7 +432,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
 
     // Try rsync-based update first (bare-metal/Proxmox)
     const isAgent = !node.role || node.role === 'agent'
-    const rsyncSuccess = rsyncUpdateNode(node.host, localOpts, isAgent)
+    const rsyncSuccess = await rsyncUpdateNodeAsync(node.host, node.name, localOpts, isAgent)
     if (rsyncSuccess) {
       console.log(
         `  ✅ ${node.name} updated (via rsync${!isAgent ? ` — ${node.role}, sync only` : ''})`,
@@ -542,62 +542,157 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
 }
 
 /**
- * Update a remote node via rsync + SSH.
- * Syncs code from the control plane, rebuilds, and restarts the service.
- * Returns true on success, false if rsync/SSH isn't available.
+ * Run a command on a remote host via SSH using spawn (non-blocking, streamed output).
+ * Resolves on exit code 0, rejects on non-zero exit or timeout.
  */
-function rsyncUpdateNode(host: string, opts: UpdateOptions, isAgent: boolean = true): boolean {
+function sshExec(
+  host: string,
+  command: string,
+  label: string,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-o', 'BatchMode=yes',
+      '-o', 'ConnectTimeout=5',
+      '-o', 'StrictHostKeyChecking=no',
+      `root@${host}`,
+      command,
+    ]
+
+    const proc = spawn('ssh', args, {
+      stdio: 'inherit',
+      env: { ...process.env, HOME: process.env.HOME ?? '/root' },
+    })
+
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL')
+      reject(new Error(`${label} timed out after ${String(Math.round(timeoutMs / 1000))}s`))
+    }, timeoutMs)
+
+    proc.on('error', (err) => {
+      clearTimeout(timer)
+      reject(new Error(`${label} spawn error: ${err.message}`))
+    })
+
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) {
+        resolve()
+      } else {
+        reject(new Error(`${label} exited with code ${String(code)}`))
+      }
+    })
+  })
+}
+
+/**
+ * Run rsync using spawn (non-blocking, streamed output).
+ */
+function rsyncExec(src: string, dest: string, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-az', '--delete',
+      '--exclude=.git/',
+      '--exclude=node_modules/',
+      '--exclude=.secrets/',
+      '--exclude=workspace/',
+      '--exclude=.env',
+      '--exclude=.env.*',
+      '--exclude=*.pid',
+      '--exclude=.nx/',
+      src,
+      dest,
+    ]
+
+    const proc = spawn('rsync', args, {
+      stdio: 'inherit',
+      env: { ...process.env, HOME: process.env.HOME ?? '/root' },
+    })
+
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL')
+      reject(new Error(`rsync timed out after ${String(Math.round(timeoutMs / 1000))}s`))
+    }, timeoutMs)
+
+    proc.on('error', (err) => {
+      clearTimeout(timer)
+      reject(new Error(`rsync spawn error: ${err.message}`))
+    })
+
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) {
+        resolve()
+      } else {
+        reject(new Error(`rsync exited with code ${String(code)}`))
+      }
+    })
+  })
+}
+
+/**
+ * Update a remote node via rsync + SSH.
+ * Uses async spawn for all long-running operations to avoid pipe buffer deadlocks.
+ * Each step has its own timeout and streams output to the console.
+ * Returns true on success, false if SSH isn't available or a step fails.
+ */
+async function rsyncUpdateNodeAsync(
+  host: string,
+  nodeName: string,
+  opts: UpdateOptions,
+  isAgent: boolean = true,
+): Promise<boolean> {
+  const tag = `[${nodeName}]`
+
+  // Step 1: SSH connectivity check (quick, execSync is fine)
   try {
-    // Check if we can SSH to the node
     execSync(
-      `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o PasswordAuthentication=no root@${host} "echo ok"`,
+      `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no root@${host} "echo ok"`,
       { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
     )
+  } catch {
+    console.error(`    ${tag} SSH connection failed — cannot reach ${host}`)
+    return false
+  }
 
-    console.log(`    Syncing code to ${host}...`)
-
-    // rsync the repo (excluding dev files, user data, secrets)
-    execSync(
-      `rsync -az --delete \
-        --exclude='.git/' \
-        --exclude='node_modules/' \
-        --exclude='.secrets/' \
-        --exclude='workspace/' \
-        --exclude='.env' \
-        --exclude='.env.*' \
-        --exclude='*.pid' \
-        --exclude='.nx/' \
-        "${ROOT}/" "root@${host}:/opt/rivetos/"`,
-      { encoding: 'utf-8', timeout: 120000, stdio: ['pipe', 'pipe', 'pipe'] },
-    )
+  try {
+    // Step 2: rsync code (120s)
+    console.log(`    ${tag} Syncing code...`)
+    await rsyncExec(`${ROOT}/`, `root@${host}:/opt/rivetos/`, 120_000)
 
     // Non-agent nodes only get code synced — no build or restart
     if (!isAgent) {
-      console.log(`    Skipping build/restart (non-agent node — sync only)`)
+      console.log(`    ${tag} Sync complete (non-agent node — skipping build/restart)`)
       return true
     }
 
-    console.log(`    Rebuilding on ${host}...`)
+    // Step 3: npm install (120s)
+    console.log(`    ${tag} Installing dependencies...`)
+    await sshExec(host, 'cd /opt/rivetos && npm install --no-audit --no-fund', `${tag} npm install`, 120_000)
 
-    // Install deps + reset Nx cache + rebuild on remote
-    execSync(
-      `ssh root@${host} "cd /opt/rivetos && npm install --no-audit --no-fund 2>&1 | tail -3 && npx nx reset 2>/dev/null && npx nx run-many -t build --exclude container-agent,container-datahub,site 2>&1 | tail -5"`,
-      { encoding: 'utf-8', timeout: 300000, stdio: ['pipe', 'pipe', 'pipe'] },
+    // Step 4: nx reset (15s)
+    console.log(`    ${tag} Resetting Nx cache...`)
+    await sshExec(host, 'cd /opt/rivetos && npx nx reset', `${tag} nx reset`, 15_000)
+
+    // Step 5: nx build (180s)
+    console.log(`    ${tag} Building...`)
+    await sshExec(
+      host,
+      'cd /opt/rivetos && npx nx run-many -t build --exclude container-agent,container-datahub,site',
+      `${tag} nx build`,
+      180_000,
     )
 
-    // Restart the service
+    // Step 6: restart service (30s)
     if (opts.restart) {
-      console.log(`    Restarting service on ${host}...`)
-      execSync(`ssh root@${host} "systemctl restart rivetos"`, {
-        encoding: 'utf-8',
-        timeout: 30000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
+      console.log(`    ${tag} Restarting service...`)
+      await sshExec(host, 'systemctl restart rivetos', `${tag} systemctl restart`, 30_000)
     }
 
     return true
-  } catch {
-    // SSH/rsync not available — fall back to API
+  } catch (err: unknown) {
+    console.error(`    ${tag} ❌ ${(err as Error).message}`)
     return false
   }
 }
