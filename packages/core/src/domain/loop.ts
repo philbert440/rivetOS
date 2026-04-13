@@ -70,10 +70,6 @@ export interface AgentLoopConfig {
   contextWindow?: number
   /** Context management thresholds */
   contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
-  /** Number of user messages in session (for Trigger A compaction) */
-  userMessageCount?: number
-  /** User message count threshold for compaction nudge (default: 47) */
-  compactAfterMessages?: number
   /** Callback to sync compacted history back to the session */
   onCompact?: (compactedHistory: Message[]) => void
 }
@@ -268,25 +264,7 @@ export class AgentLoop {
         this.emit({ type: 'interrupt', content: `📨 Steer: ${steerMsg.slice(0, 100)}` })
       }
 
-      // --- Trigger A: user message count nudge ---
-      const compactAfter = this.config.compactAfterMessages ?? 47
-      if (
-        this.config.userMessageCount &&
-        this.config.userMessageCount >= compactAfter &&
-        !nudgesFired.includes(0)
-      ) {
-        nudgesFired.push(0) // 0 = user message count trigger
-        messages.push({
-          role: 'system',
-          content:
-            `[SYSTEM — Context Management]\n` +
-            `You've had ${this.config.userMessageCount} exchanges in this session. ` +
-            `If there are completed tasks or stale tool output you no longer need, ` +
-            `consider using \`compact_context\` to summarize them. Otherwise, carry on.`,
-        })
-      }
-
-      // --- Trigger B: context window nudges ---
+      // --- Context window nudges (token-percentage based) ---
       if (contextWindow > 0) {
         // Use provider-reported token count when available, fall back to chars/4 estimate
         const currentTokens =
