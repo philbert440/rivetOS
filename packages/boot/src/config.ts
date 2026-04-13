@@ -19,6 +19,34 @@ export interface RivetConfig {
   mcp?: McpSection
   /** Deployment configuration — optional. When present, drives containerized deployment. */
   deployment?: DeploymentSection
+  /** Multi-agent mesh configuration — cross-instance delegation */
+  mesh?: MeshSection
+}
+
+// ---------------------------------------------------------------------------
+// Mesh Section (YAML shape — snake_case)
+// ---------------------------------------------------------------------------
+
+export interface MeshSection {
+  enabled?: boolean
+  node_name?: string
+  secret?: string
+  /** Port for the agent channel HTTP server (default: 3000) */
+  agent_channel_port?: number
+  /** Shared storage directory for mesh.json (default: /shared) */
+  storage_dir?: string
+  discovery?: {
+    mode: 'seed' | 'mdns' | 'static'
+    seed_host?: string
+    seed_port?: number
+  }
+  heartbeat_interval_ms?: number
+  stale_threshold_ms?: number
+  peers?: Array<{
+    name: string
+    host: string
+    port?: number
+  }>
 }
 
 // ---------------------------------------------------------------------------

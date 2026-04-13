@@ -101,6 +101,8 @@ export { metrics } from './runtime/metrics.js'
 export type { TurnMetric, MetricsSnapshot } from './runtime/metrics.js'
 export { HealthServer } from './runtime/health.js'
 export type { HealthStatus, HealthConfig } from './runtime/health.js'
+export { AgentChannelServer } from './runtime/agent-channel.js'
+export type { AgentChannelConfig } from './runtime/agent-channel.js'
 
 // Mesh
 export { FileMeshRegistry, buildLocalNode } from './domain/mesh.js'
