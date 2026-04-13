@@ -21,7 +21,13 @@ import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
-import type { MeshNode, MeshRegistry, MeshConfig, MeshNodeEvent } from '@rivetos/types'
+import type {
+  MeshNode,
+  MeshNodeRole,
+  MeshRegistry,
+  MeshConfig,
+  MeshNodeEvent,
+} from '@rivetos/types'
 import { logger } from '../logger.js'
 
 const log = logger('Mesh')
@@ -317,7 +323,7 @@ export interface BuildLocalNodeArgs {
   /** Node name (default: hostname) */
   name?: string
   /** Node role — 'agent' (default) or infrastructure role like 'datahub' */
-  role?: string
+  role?: MeshNodeRole
   /** Agent IDs running on this instance */
   agents: string[]
   /** Host address */

@@ -37,6 +37,16 @@ Lightweight index into the memory system. Run the referenced queries to pull con
 | Security hardening | `memory_search("secrets scan private IPs security")` |
 | Telegram bug fix | `memory_search("telegram html tags double conversion")` |
 
+## Infrastructure — RivetOS Mesh
+
+| CT | Name | IP | Role |
+|----|------|-----|------|
+| 110 | datahub | 10.4.20.110 | Postgres / NFS shared storage |
+| 111 | rivet-opus | 10.4.20.111 | Agent (Anthropic Opus) |
+| 112 | rivet-grok | 10.4.20.112 | Agent (xAI Grok) |
+| 113 | rivet-gemini | 10.4.20.113 | Agent (Google Gemini) |
+| 114 | rivet-local | 10.4.20.114 | Agent (Qwen via GERTY) |
+
 ## Architecture & Design
 
 | Topic | Query |
