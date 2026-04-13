@@ -248,11 +248,15 @@ function convertMessages(messages: Message[]): { system: string; converted: Anth
 
   const sanitized = converted.filter((msg) => {
     if (msg.role === 'user' && Array.isArray(msg.content)) {
-      const hasOrphanedToolResult = (msg.content as Array<{ type: string; tool_use_id?: string }>).some(
+      const hasOrphanedToolResult = (
+        msg.content as Array<{ type: string; tool_use_id?: string }>
+      ).some(
         (block) => block.type === 'tool_result' && !validToolUseIds.has(block.tool_use_id ?? ''),
       )
       if (hasOrphanedToolResult) {
-        console.warn('[anthropic] Dropped orphaned tool_result message — tool_use_id not found in history')
+        console.warn(
+          '[anthropic] Dropped orphaned tool_result message — tool_use_id not found in history',
+        )
         return false
       }
     }
