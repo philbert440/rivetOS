@@ -16,12 +16,18 @@
 // Mesh Node — a single agent instance in the mesh
 // ---------------------------------------------------------------------------
 
+/** Known mesh node roles. Add new infrastructure roles here as needed. */
+export type MeshNodeRole = 'agent' | 'datahub'
+
 export interface MeshNode {
   /** Unique node ID (generated on first registration) */
   id: string
 
   /** Human-readable name (e.g., "rivet-opus") */
   name: string
+
+  /** Node role — 'agent' (default) runs the full runtime; infrastructure roles like 'datahub' are sync-only */
+  role?: MeshNodeRole
 
   /** Agent IDs running on this node */
   agents: string[]

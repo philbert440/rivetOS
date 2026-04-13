@@ -37,6 +37,12 @@ Lightweight index into the memory system. Run the referenced queries to pull con
 | Security hardening | `memory_search("secrets scan private IPs security")` |
 | Telegram bug fix | `memory_search("telegram html tags double conversion")` |
 
+## Infrastructure — RivetOS Mesh
+
+| Query | Notes |
+|-------|-------|
+| `memory_search("mesh roster CT IP roles")` | 5-node mesh: datahub, opus, grok, gemini, local. IPs in memory (not committed). |
+
 ## Architecture & Design
 
 | Topic | Query |
