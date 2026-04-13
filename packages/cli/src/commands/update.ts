@@ -130,7 +130,7 @@ function execOrThrow(cmd: string, label: string): string {
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim()
   } catch (err: unknown) {
-    throw new Error(`${label} failed: ${(err as Error).message}`)
+    throw new Error(`${label} failed: ${(err as Error).message}`, { cause: err })
   }
 }
 
@@ -436,9 +436,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
               stdio: ['pipe', 'pipe', 'pipe'],
             })
           } catch {
-            console.log(
-              '    ⚠️  Could not restart via systemd. Restart manually.',
-            )
+            console.log('    ⚠️  Could not restart via systemd. Restart manually.')
           }
         }
       }

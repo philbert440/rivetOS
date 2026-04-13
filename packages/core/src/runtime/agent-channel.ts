@@ -179,7 +179,9 @@ export class AgentChannelServer {
       return
     }
 
-    log.info(`Received mesh delegation from ${fromAgent} → ${targetAgent}: ${message.slice(0, 100)}...`)
+    log.info(
+      `Received mesh delegation from ${fromAgent} → ${targetAgent}: ${message.slice(0, 100)}...`,
+    )
 
     const startTime = Date.now()
 

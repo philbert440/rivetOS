@@ -24,7 +24,14 @@ import type { WorkspaceFile, Workspace } from '@rivetos/types'
 const CORE_FILES = ['CORE.md', 'USER.md', 'WORKSPACE.md', 'MEMORY.md', 'FOCUS.md']
 
 /** Extended files — included for local models where tokens are free */
-const EXTENDED_FILES = ['CORE.md', 'USER.md', 'WORKSPACE.md', 'MEMORY.md', 'CAPABILITIES.md', 'FOCUS.md']
+const EXTENDED_FILES = [
+  'CORE.md',
+  'USER.md',
+  'WORKSPACE.md',
+  'MEMORY.md',
+  'CAPABILITIES.md',
+  'FOCUS.md',
+]
 
 /** Max size for a single pinned file (50KB) */
 const MAX_PIN_SIZE = 50 * 1024

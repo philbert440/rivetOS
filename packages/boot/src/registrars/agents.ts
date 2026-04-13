@@ -161,7 +161,7 @@ export async function registerAgentTools(
   runtime.registerTool(createSkillListTool(skillManager))
 
   // Pass embed endpoint for dedup checks (if configured)
-  const pgConfig = config.memory?.postgres as Record<string, unknown> | undefined
+  const pgConfig = config.memory?.postgres
   const rawEmbed = pgConfig?.embed_endpoint
   const embedEndpoint =
     (typeof rawEmbed === 'string' ? rawEmbed : undefined) ?? process.env.RIVETOS_EMBED_URL ?? ''
