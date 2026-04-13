@@ -356,13 +356,17 @@ async function verifyDataPersistence(): Promise<void> {
 /**
  * Rolling mesh update — update all peers one at a time.
  *
+ * Order: remotes first, local last. The local restart kills the CLI process,
+ * so it must be the final operation.
+ *
  * 1. Read mesh.json to get all nodes
- * 2. Update local node first (with error recovery — don't kill the whole mesh update)
- * 3. For each remote peer:
+ * 2. Pull latest code locally (for rsync to remotes)
+ * 3. Update each remote peer:
  *    a. rsync code, rebuild, restart (bare-metal/Proxmox)
  *    b. Fall back to agent API (Docker)
  *    c. Wait for health check to pass
  *    d. Move to next node
+ * 4. Update local node last (restart kills the process)
  */
 async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   console.log('🔩 RivetOS Mesh Rolling Update')
@@ -394,70 +398,31 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   }
   console.log('')
 
-  // Step 1: Update local node first
-  console.log('  ── Updating local node ──')
-  console.log('')
-
   const localOpts = { ...opts, mesh: false }
-  let localUpdated = false
 
-  // Wrap local update in try/catch so failures don't kill the mesh update
+  // Step 0: Pull latest code locally first (needed for rsync to remotes)
   const gitDir = exec('git rev-parse --git-dir', { quiet: true })
   if (gitDir) {
     try {
-      // Ensure on main branch and pull latest
+      console.log('  Pulling latest code...')
       ensureMainBranchSafe(localOpts.version)
       execOrThrow('npm install --no-audit --no-fund', 'npm install')
       exec('npx nx reset', { quiet: true })
-
-      const deployment = await detectDeployment(localOpts.bareMetal)
-
-      if (deployment === 'docker') {
-        if (!localOpts.prebuilt) {
-          await verifyDataPersistence()
-          exec('docker compose build', { quiet: false })
-        }
-        if (localOpts.restart) {
-          exec('docker compose up -d', { quiet: false })
-        }
-      } else if (deployment === 'bare-metal') {
-        // Build TypeScript
-        console.log('    Building...')
-        execOrThrow(
-          'npx nx run-many -t build --exclude container-agent,container-datahub,site',
-          'nx build',
-        )
-        if (localOpts.restart) {
-          console.log('    Restarting service...')
-          try {
-            execSync('systemctl restart rivetos', {
-              encoding: 'utf-8',
-              timeout: 30000,
-              stdio: ['pipe', 'pipe', 'pipe'],
-            })
-          } catch {
-            console.log('    ⚠️  Could not restart via systemd. Restart manually.')
-          }
-        }
-      }
-
-      localUpdated = true
-      console.log('  ✅ Local node updated')
+      console.log('  ✅ Code updated locally')
+      console.log('')
     } catch (err: unknown) {
-      console.error(`  ❌ Local node update failed: ${(err as Error).message}`)
-      console.error('  Continuing with remote nodes...')
+      console.error(`  ❌ Local git pull failed: ${(err as Error).message}`)
+      console.error('  Cannot update remotes without latest code. Aborting.')
+      process.exit(1)
     }
-  } else {
-    console.log('  ⚠️  No git repo found locally — skipping local update')
   }
-  console.log('')
 
-  // Step 2: Update remote nodes one by one
-  let updated = localUpdated ? 1 : 0
-  let failed = localUpdated ? 0 : 1
+  // Step 1: Update remote nodes first (before local restart kills the process)
+  let updated = 0
+  let failed = 0
 
   for (const node of nodes) {
-    // Skip local node (we already updated it)
+    // Skip local node — we do it last
     if (isLocalAddress(node.host)) continue
 
     console.log(`  ── Updating ${node.name} (${node.host}) ──`)
@@ -524,8 +489,55 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     console.log('')
   }
 
+  // Print summary before local update (we won't survive the restart)
   console.log(`  ══════════════════`)
-  console.log(`  Rolling update complete: ${String(updated)} updated, ${String(failed)} failed`)
+  console.log(`  Remote nodes: ${String(updated)} updated, ${String(failed)} failed`)
+  console.log('')
+
+  // Step 2: Update local node last — restart kills the process
+  console.log('  ── Updating local node (this will restart the process) ──')
+  console.log('')
+
+  if (gitDir) {
+    try {
+      const deployment = await detectDeployment(localOpts.bareMetal)
+
+      if (deployment === 'docker') {
+        if (!localOpts.prebuilt) {
+          await verifyDataPersistence()
+          exec('docker compose build', { quiet: false })
+        }
+        if (localOpts.restart) {
+          exec('docker compose up -d', { quiet: false })
+        }
+      } else if (deployment === 'bare-metal') {
+        // Build TypeScript
+        console.log('    Building...')
+        execOrThrow(
+          'npx nx run-many -t build --exclude container-agent,container-datahub,site',
+          'nx build',
+        )
+        if (localOpts.restart) {
+          console.log('    Restarting service...')
+          try {
+            execSync('systemctl restart rivetos', {
+              encoding: 'utf-8',
+              timeout: 30000,
+              stdio: ['pipe', 'pipe', 'pipe'],
+            })
+          } catch {
+            console.log('    ⚠️  Could not restart via systemd. Restart manually.')
+          }
+        }
+      }
+
+      console.log('  ✅ Local node updated')
+    } catch (err: unknown) {
+      console.error(`  ❌ Local node update failed: ${(err as Error).message}`)
+    }
+  } else {
+    console.log('  ⚠️  No git repo found locally — skipping local update')
+  }
   console.log('')
 }
 
