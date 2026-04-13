@@ -196,6 +196,41 @@ describe('FileMeshRegistry', () => {
     expect(retrieved!.status).toBe('offline')
   })
 
+  it('does not prune infrastructure nodes (non-agent role)', async () => {
+    const localNode = buildLocalNode({
+      name: 'local-node',
+      agents: ['opus'],
+      host: '192.168.1.101',
+      port: 3100,
+      providers: [],
+      models: [],
+      version: '0.7.0',
+    })
+    await registry.start(localNode)
+
+    // Register an infrastructure node with stale lastSeen
+    const infraNode = buildLocalNode({
+      name: 'datahub',
+      agents: [],
+      host: '192.168.1.110',
+      port: 3100,
+      providers: [],
+      models: [],
+      role: 'datahub',
+      version: '0.7.0',
+    })
+    infraNode.lastSeen = Date.now() - 100_000
+    await registry.register(infraNode)
+
+    // Prune with 5s threshold — should NOT prune the infra node
+    const pruned = await registry.prune(5_000)
+    expect(pruned).toHaveLength(0)
+
+    // Should still be online
+    const retrieved = await registry.getNode(infraNode.id)
+    expect(retrieved!.status).toBe('online')
+  })
+
   it('buildLocalNode generates valid node with UUID', () => {
     const node = buildLocalNode({
       name: 'test',

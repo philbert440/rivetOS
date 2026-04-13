@@ -121,6 +121,7 @@ export type {
 } from './hooks.js'
 export type {
   MeshNode,
+  MeshNodeRole,
   MeshRegistry,
   MeshConfig,
   MeshDiscoveryConfig,

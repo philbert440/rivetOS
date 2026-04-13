@@ -21,7 +21,13 @@ import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
-import type { MeshNode, MeshRegistry, MeshConfig, MeshNodeEvent } from '@rivetos/types'
+import type {
+  MeshNode,
+  MeshNodeRole,
+  MeshRegistry,
+  MeshConfig,
+  MeshNodeEvent,
+} from '@rivetos/types'
 import { logger } from '../logger.js'
 
 const log = logger('Mesh')
@@ -162,6 +168,9 @@ export class FileMeshRegistry implements MeshRegistry {
     for (const [id, node] of Object.entries(data.nodes)) {
       // Don't prune ourselves or missing entries
       if (id === this.localNodeId || !node) continue
+
+      // Don't prune infrastructure nodes — they don't heartbeat
+      if (node.role && node.role !== 'agent') continue
 
       if (now - node.lastSeen > threshold && node.status !== 'offline') {
         node.status = 'offline'
@@ -313,6 +322,8 @@ export interface BuildLocalNodeArgs {
   existingId?: string
   /** Node name (default: hostname) */
   name?: string
+  /** Node role — 'agent' (default) or infrastructure role like 'datahub' */
+  role?: MeshNodeRole
   /** Agent IDs running on this instance */
   agents: string[]
   /** Host address */
@@ -333,6 +344,7 @@ export function buildLocalNode(args: BuildLocalNodeArgs): MeshNode {
   return {
     id: args.existingId ?? randomUUID(),
     name: args.name ?? hostname(),
+    ...(args.role ? { role: args.role } : {}),
     agents: args.agents,
     host: args.host,
     port: args.port,
