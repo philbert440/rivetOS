@@ -232,7 +232,34 @@ function convertMessages(messages: Message[]): { system: string; converted: Anth
     }
   }
 
-  return { system, converted }
+  // Defensive: strip orphaned tool_result blocks that reference non-existent tool_use IDs.
+  // This prevents 400 errors when history gets corrupted (e.g., after compaction includes
+  // working tool messages that become orphaned on subsequent turns).
+  const validToolUseIds = new Set<string>()
+  for (const msg of converted) {
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      for (const block of msg.content as Array<{ type: string; id?: string }>) {
+        if (block.type === 'tool_use' && block.id) {
+          validToolUseIds.add(block.id)
+        }
+      }
+    }
+  }
+
+  const sanitized = converted.filter((msg) => {
+    if (msg.role === 'user' && Array.isArray(msg.content)) {
+      const hasOrphanedToolResult = (msg.content as Array<{ type: string; tool_use_id?: string }>).some(
+        (block) => block.type === 'tool_result' && !validToolUseIds.has(block.tool_use_id ?? ''),
+      )
+      if (hasOrphanedToolResult) {
+        console.warn('[anthropic] Dropped orphaned tool_result message — tool_use_id not found in history')
+        return false
+      }
+    }
+    return true
+  })
+
+  return { system, converted: sanitized }
 }
 
 function convertTools(tools: ToolDefinition[]): AnthropicTool[] {
