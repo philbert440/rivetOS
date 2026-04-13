@@ -301,10 +301,12 @@ export class XAIProvider implements Provider {
     }
 
     if (options?.tools?.length) {
+      // Filter out function-based web_search — we use xAI's native web_search instead
+      const filteredTools = options.tools.filter((t) => t.name !== 'web_search')
       body.tools = [
         // xAI native web search — handled server-side
         { type: 'web_search' },
-        ...convertTools(options.tools),
+        ...convertTools(filteredTools),
       ]
     }
 

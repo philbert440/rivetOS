@@ -26,6 +26,7 @@ Lightweight index into the memory system. Run the referenced queries to pull con
 | emkit.dev | `memory_search("emkit dev status")` | EM Ops Kit SaaS. Awaiting Phil's QA. |
 | tompkins.app | `memory_search("tompkins app status")` | Family app. Next.js 16, Prisma 7. |
 | GERTY training | `memory_search("gerty training lora status")` | Identity LoRA on V100 GPU 1. |
+| families.app | `memory_search("families app monorepo scaffold")` | Multi-tenant family SaaS. Nx monorepo, Next.js 16. |
 
 ## Recent Work (April 2026)
 
@@ -64,6 +65,6 @@ Lightweight index into the memory system. Run the referenced queries to pull con
 | Lesson | Query |
 |--------|-------|
 | Build artifact issues | `memory_search("build artifacts src gitignore")` |
-| GERTY known-good config | `memory_search("gerty known good configuration")` |
+| GERTY known-good config | See `workspace/shared/GERTY.md` — Gemma 4 31B-IT (Q4_K_M) via llama.cpp on port 8000 |
 | Config safety | `memory_search("config changes test first")` |
 | Docker .dockerignore | `memory_search("dockerignore overly broad md exclude")` |

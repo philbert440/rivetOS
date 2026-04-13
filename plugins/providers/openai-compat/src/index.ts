@@ -53,6 +53,14 @@ export interface OpenAICompatProviderConfig {
   chunkTimeoutMs?: number
   /** Repetition penalty for llama-server (default: undefined — not sent) */
   repeatPenalty?: number
+  /** Top-k sampling (default: undefined — not sent) */
+  topK?: number
+  /** Min-p sampling (default: undefined — not sent) */
+  minP?: number
+  /** Presence penalty (default: undefined — not sent) */
+  presencePenalty?: number
+  /** Frequency penalty (default: undefined — not sent) */
+  frequencyPenalty?: number
   /** Context window size in tokens (0 = unknown) */
   contextWindow?: number
   /** Max output tokens (0 = unknown) */
@@ -94,6 +102,10 @@ interface OAIRequestBody {
   stream: boolean
   tools?: OAIFunctionTool[]
   repeat_penalty?: number
+  top_k?: number
+  min_p?: number
+  presence_penalty?: number
+  frequency_penalty?: number
 }
 
 interface ChatCompletionsToolCallDelta {
@@ -251,6 +263,10 @@ export class OpenAICompatProvider implements Provider {
   private firstChunkTimeoutMs: number
   private chunkTimeoutMs: number
   private repeatPenalty: number | undefined
+  private topK: number | undefined
+  private minP: number | undefined
+  private presencePenalty: number | undefined
+  private frequencyPenalty: number | undefined
   private contextWindowSize: number
   private outputTokenLimit: number
 
@@ -266,6 +282,10 @@ export class OpenAICompatProvider implements Provider {
     this.firstChunkTimeoutMs = config.firstChunkTimeoutMs ?? 120_000
     this.chunkTimeoutMs = config.chunkTimeoutMs ?? 30_000
     this.repeatPenalty = config.repeatPenalty
+    this.topK = config.topK
+    this.minP = config.minP
+    this.presencePenalty = config.presencePenalty
+    this.frequencyPenalty = config.frequencyPenalty
     this.contextWindowSize = config.contextWindow ?? 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
   }
@@ -305,9 +325,21 @@ export class OpenAICompatProvider implements Provider {
       body.tools = convertTools(options.tools)
     }
 
-    // llama-server specific tuning
+    // llama-server specific sampling params — only sent when configured
     if (this.repeatPenalty !== undefined) {
       body.repeat_penalty = this.repeatPenalty
+    }
+    if (this.topK !== undefined) {
+      body.top_k = this.topK
+    }
+    if (this.minP !== undefined) {
+      body.min_p = this.minP
+    }
+    if (this.presencePenalty !== undefined) {
+      body.presence_penalty = this.presencePenalty
+    }
+    if (this.frequencyPenalty !== undefined) {
+      body.frequency_penalty = this.frequencyPenalty
     }
 
     const headers: Record<string, string> = {
@@ -344,6 +376,7 @@ export class OpenAICompatProvider implements Provider {
     const usage = { promptTokens: 0, completionTokens: 0 }
     let inThinking = false
     let isFirstChunk = true
+    const startedToolCallIndices = new Set<number>()
 
     try {
       for (;;) {
@@ -434,6 +467,7 @@ export class OpenAICompatProvider implements Provider {
           if (delta.tool_calls) {
             for (const tc of delta.tool_calls) {
               if (tc.function?.name) {
+                startedToolCallIndices.add(tc.index)
                 yield {
                   type: 'tool_call_start',
                   toolCall: { index: tc.index, id: tc.id, name: tc.function.name },
@@ -450,11 +484,13 @@ export class OpenAICompatProvider implements Provider {
           }
 
           if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop') {
-            if (delta.tool_calls) {
-              for (const tc of delta.tool_calls) {
-                yield { type: 'tool_call_done', toolCall: { index: tc.index } }
-              }
+            // Emit tool_call_done for ALL started tool calls.
+            // Some providers (llama-server + Gemma) send an empty delta
+            // on the final chunk, so we can't rely on delta.tool_calls here.
+            for (const idx of startedToolCallIndices) {
+              yield { type: 'tool_call_done', toolCall: { index: idx } }
             }
+            startedToolCallIndices.clear()
           }
 
           if (event.usage) {
@@ -527,6 +563,19 @@ export class OpenAICompatProvider implements Provider {
           throw new Error(chunk.error)
       }
     }
+
+    // Safety net: flush any pending tool calls that never got a tool_call_done event.
+    // This can happen if a provider sends tool_calls without a proper finish_reason.
+    for (const [, pending] of pendingArgs) {
+      let args: Record<string, unknown>
+      try {
+        args = JSON.parse(pending.args) as Record<string, unknown>
+      } catch {
+        args = { raw: pending.args }
+      }
+      toolCalls.push({ id: pending.id, name: pending.name, arguments: args })
+    }
+    pendingArgs.clear()
 
     if (toolCalls.length > 0) {
       return { type: 'tool_calls', toolCalls, content: text, usage }
