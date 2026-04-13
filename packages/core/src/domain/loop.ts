@@ -211,7 +211,7 @@ export class AgentLoop {
     let activeModelOverride: string | undefined = this.config.modelOverride
     let activeProvider = this.config.provider
 
-    while (true) {
+    for (;;) {
       if (signal?.aborted) {
         return {
           response: '',
