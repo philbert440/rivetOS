@@ -104,7 +104,6 @@ export interface RuntimeSection {
   turn_timeout?: number
   /** Context management config */
   context?: {
-    compact_after_messages?: number
     soft_nudge_pct?: number[]
     hard_nudge_pct?: number
   }

@@ -76,7 +76,6 @@ export async function boot(configPath?: string): Promise<void> {
     turnTimeout: config.runtime.turn_timeout,
     contextConfig: config.runtime.context
       ? {
-          compactAfterMessages: config.runtime.context.compact_after_messages,
           softNudgePct: config.runtime.context.soft_nudge_pct,
           hardNudgePct: config.runtime.context.hard_nudge_pct,
         }

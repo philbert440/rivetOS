@@ -129,7 +129,6 @@ export class SessionManager {
       reasoningVisible,
       toolsVisible,
       history,
-      userMessageCount: 0,
       compactionCount: 0,
       nudgesFired: [],
     }

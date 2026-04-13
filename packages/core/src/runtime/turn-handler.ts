@@ -48,7 +48,7 @@ export interface TurnHandlerDeps {
   /** Turn wall-clock timeout in seconds (default: 900) */
   turnTimeout?: number
   /** Context management config */
-  contextConfig?: { compactAfterMessages?: number; softNudgePct?: number[]; hardNudgePct?: number }
+  contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
   /** Abort controller map — shared with runtime for /stop support */
   aborts: Map<string, AbortController>
   /** Active loop map — shared with runtime for /steer support */
@@ -157,8 +157,6 @@ export class TurnHandler {
               hardNudgePct: this.deps.contextConfig.hardNudgePct,
             }
           : undefined,
-        userMessageCount: session.userMessageCount,
-        compactAfterMessages: this.deps.contextConfig?.compactAfterMessages,
         onCompact: (compactedHistory) => {
           // Sanitize: strip tool-related messages that don't belong in persistent history.
           // The loop's working `messages` array contains intermediate tool_use/tool_result
@@ -174,7 +172,6 @@ export class TurnHandler {
               return m
             })
           session.compactionCount++
-          session.userMessageCount = 0
           session.nudgesFired = []
         },
       })
@@ -214,7 +211,6 @@ export class TurnHandler {
       // Update history
       const historyContent = buildHistoryContent(message.text, savedImagePaths)
       session.history.push({ role: 'user', content: historyContent })
-      session.userMessageCount++
       if (result.response) {
         session.history.push({ role: 'assistant', content: result.response })
       }

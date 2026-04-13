@@ -51,7 +51,7 @@ export interface RuntimeConfig {
   /** Turn wall-clock timeout in seconds (default: 900) */
   turnTimeout?: number
   /** Context management config */
-  contextConfig?: { compactAfterMessages?: number; softNudgePct?: number[]; hardNudgePct?: number }
+  contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
   heartbeats?: import('@rivetos/types').HeartbeatConfig[]
   /** Directories to scan for skills (default: ~/.rivetos/skills/) */
   skillDirs?: string[]
