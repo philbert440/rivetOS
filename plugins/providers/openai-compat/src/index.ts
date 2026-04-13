@@ -344,6 +344,7 @@ export class OpenAICompatProvider implements Provider {
     const usage = { promptTokens: 0, completionTokens: 0 }
     let inThinking = false
     let isFirstChunk = true
+    const startedToolCallIndices = new Set<number>()
 
     try {
       for (;;) {
@@ -434,6 +435,7 @@ export class OpenAICompatProvider implements Provider {
           if (delta.tool_calls) {
             for (const tc of delta.tool_calls) {
               if (tc.function?.name) {
+                startedToolCallIndices.add(tc.index)
                 yield {
                   type: 'tool_call_start',
                   toolCall: { index: tc.index, id: tc.id, name: tc.function.name },
@@ -450,11 +452,13 @@ export class OpenAICompatProvider implements Provider {
           }
 
           if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop') {
-            if (delta.tool_calls) {
-              for (const tc of delta.tool_calls) {
-                yield { type: 'tool_call_done', toolCall: { index: tc.index } }
-              }
+            // Emit tool_call_done for ALL started tool calls.
+            // Some providers (llama-server + Gemma) send an empty delta
+            // on the final chunk, so we can't rely on delta.tool_calls here.
+            for (const idx of startedToolCallIndices) {
+              yield { type: 'tool_call_done', toolCall: { index: idx } }
             }
+            startedToolCallIndices.clear()
           }
 
           if (event.usage) {
@@ -527,6 +531,19 @@ export class OpenAICompatProvider implements Provider {
           throw new Error(chunk.error)
       }
     }
+
+    // Safety net: flush any pending tool calls that never got a tool_call_done event.
+    // This can happen if a provider sends tool_calls without a proper finish_reason.
+    for (const [, pending] of pendingArgs) {
+      let args: Record<string, unknown>
+      try {
+        args = JSON.parse(pending.args) as Record<string, unknown>
+      } catch {
+        args = { raw: pending.args }
+      }
+      toolCalls.push({ id: pending.id, name: pending.name, arguments: args })
+    }
+    pendingArgs.clear()
 
     if (toolCalls.length > 0) {
       return { type: 'tool_calls', toolCalls, content: text, usage }
