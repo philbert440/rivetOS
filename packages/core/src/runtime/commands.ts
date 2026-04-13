@@ -348,8 +348,6 @@ export class CommandHandler {
     const { provider } = this.deps.router.route(message)
     const contextWindow = provider.getContextWindow()
     const pct = contextWindow > 0 ? ((tokens / contextWindow) * 100).toFixed(1) : 'N/A'
-    const compactThreshold = 47
-
     const lines = [
       '📊 **Context Stats**',
       `- History: ${session.history.length} messages (${userCount} user, ${assistantCount} assistant)`,
@@ -357,7 +355,6 @@ export class CommandHandler {
       `- Context window: ${contextWindow > 0 ? contextWindow.toLocaleString() + ' (' + provider.id + ')' : 'unknown'}`,
       `- Usage: ${pct !== 'N/A' ? pct + '%' : pct}`,
       `- Compactions: ${session.compactionCount}`,
-      `- User messages since last compaction: ${session.userMessageCount} / ${compactThreshold}`,
     ]
     await channel.send({ channelId: message.channelId, text: lines.join('\n') })
   }
