@@ -128,17 +128,17 @@ export class FileMeshRegistry implements MeshRegistry {
 
   async findByAgent(agentId: string): Promise<MeshNode[]> {
     const nodes = await this.getNodes()
-    return nodes.filter((n) => n.agents.includes(agentId) && n.status === 'online')
+    return nodes.filter((n) => n.agents?.includes(agentId) && n.status === 'online')
   }
 
   async findByCapability(capability: string): Promise<MeshNode[]> {
     const nodes = await this.getNodes()
-    return nodes.filter((n) => n.capabilities.includes(capability) && n.status === 'online')
+    return nodes.filter((n) => n.capabilities?.includes(capability) && n.status === 'online')
   }
 
   async findByProvider(providerId: string): Promise<MeshNode[]> {
     const nodes = await this.getNodes()
-    return nodes.filter((n) => n.providers.includes(providerId) && n.status === 'online')
+    return nodes.filter((n) => n.providers?.includes(providerId) && n.status === 'online')
   }
 
   async sync(): Promise<void> {
