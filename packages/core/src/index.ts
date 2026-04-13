@@ -52,7 +52,7 @@ export type { RouteResult } from './domain/router.js'
 export { WorkspaceLoader } from './domain/workspace.js'
 export { MessageQueue, isCommand, parseCommand } from './domain/queue.js'
 export { SILENT_RESPONSES } from './domain/constants.js'
-export { DelegationEngine, filterToolsForAgent } from './domain/delegation.js'
+export { DelegationEngine, filterToolsForAgent, deduplicateTools } from './domain/delegation.js'
 export { createHeartbeatRunner } from './domain/heartbeat.js'
 export { SubagentManagerImpl, createSubagentTools } from './domain/subagent.js'
 export {

@@ -25,7 +25,7 @@ import { getTextContent } from '@rivetos/types'
 import { AgentLoop } from './loop.js'
 import type { Router } from './router.js'
 import type { WorkspaceLoader } from './workspace.js'
-import { filterToolsForAgent } from './delegation.js'
+import { filterToolsForAgent, deduplicateTools } from './delegation.js'
 import { logger } from '../logger.js'
 
 const log = logger('SubagentManager')
@@ -125,8 +125,10 @@ export class SubagentManagerImpl implements SubagentManager {
 
     this.sessions.set(sessionId, session)
 
-    // Resolve and filter tools for this agent
-    const tools = filterToolsForAgent(this.config.tools(), request.agent, this.config.toolFilter)
+    // Resolve, filter, and deduplicate tools for this agent
+    const tools = deduplicateTools(
+      filterToolsForAgent(this.config.tools(), request.agent, this.config.toolFilter),
+    )
 
     const startTime = Date.now()
 
