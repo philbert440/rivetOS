@@ -201,6 +201,14 @@ export class AgentLoop {
     // Provider-reported token count — used instead of chars/4 estimate after first response
     let lastKnownPromptTokens = 0
 
+    // Deferred compaction — validated during the turn, applied after the loop exits.
+    // This avoids mutating the live messages array mid-tool-execution.
+    let pendingCompaction: Array<{
+      start_index: number
+      end_index: number
+      summary: string
+    }> | null = null
+
     let activeModelOverride: string | undefined = this.config.modelOverride
     let activeProvider = this.config.provider
 
@@ -242,6 +250,10 @@ export class AgentLoop {
 
       // Turn timeout — wall-clock safety cap
       if (elapsed > turnTimeout) {
+        // Apply deferred compaction before exiting
+        if (pendingCompaction) {
+          this.applyCompaction(pendingCompaction, messages, nudgesFired)
+        }
         this.emit({
           type: 'status',
           content: `⚠️ Turn timeout (${Math.floor(turnTimeout / 1000)}s)`,
@@ -545,6 +557,11 @@ export class AgentLoop {
 
       // Text response — done
       if (!hasToolCalls) {
+        // Apply deferred compaction now that the turn is complete
+        if (pendingCompaction) {
+          this.applyCompaction(pendingCompaction, messages, nudgesFired)
+        }
+
         // If no text was produced but an error occurred, surface the error
         // so the user doesn't get a blank message
         const finalResponse = textContent.trim() || (lastError ? `⚠️ ${lastError}` : '')
@@ -580,7 +597,7 @@ export class AgentLoop {
           }
         }
 
-        // --- Built-in: compact_context ---
+        // --- Built-in: compact_context (deferred — validated now, applied after turn) ---
         if (tc.name === 'compact_context') {
           toolsUsed.push(tc.name)
           this.emit({
@@ -588,13 +605,30 @@ export class AgentLoop {
             content: `🔧 compact_context`,
             metadata: { args: this.summarizeArgs(tc.arguments) },
           })
-          const compactResult = this.executeCompactContext(tc.arguments, messages, nudgesFired)
-          const isError = compactResult.startsWith('Error')
-          this.emit({
-            type: 'tool_result',
-            content: `${isError ? '❌' : '✅'} compact_context: ${compactResult.slice(0, 200)}`,
-          })
-          messages.push({ role: 'tool', content: compactResult, toolCallId: tc.id })
+          const validation = this.validateCompaction(tc.arguments, messages)
+          if (typeof validation === 'string') {
+            // Validation error
+            this.emit({
+              type: 'tool_result',
+              content: `❌ compact_context: ${validation.slice(0, 200)}`,
+            })
+            messages.push({ role: 'tool', content: validation, toolCallId: tc.id })
+          } else {
+            // Valid — stash for deferred application (latest call wins)
+            pendingCompaction = validation
+            const totalToRemove = validation.reduce(
+              (sum, r) => sum + (r.end_index - r.start_index + 1),
+              0,
+            )
+            const result =
+              `Compaction queued: ${totalToRemove} messages will be compacted into ` +
+              `${validation.length} summar${validation.length === 1 ? 'y' : 'ies'} at end of turn.`
+            this.emit({
+              type: 'tool_result',
+              content: `✅ compact_context: ${result}`,
+            })
+            messages.push({ role: 'tool', content: result, toolCallId: tc.id })
+          }
           continue
         }
 
@@ -768,16 +802,14 @@ export class AgentLoop {
   }
 
   /**
-   * Execute the compact_context built-in tool.
-   * Replaces message ranges with summaries in the live messages array.
+   * Validate compact_context arguments without mutating messages.
+   * Returns validated replacements array on success, or an error string on failure.
    * User-facing indices are 0-based starting from the first non-system message.
-   * The system offset is calculated dynamically to handle any number of leading system messages.
    */
-  private executeCompactContext(
+  private validateCompaction(
     args: Record<string, unknown>,
     messages: Message[],
-    nudgesFired: number[],
-  ): string {
+  ): Array<{ start_index: number; end_index: number; summary: string }> | string {
     const replacements = args.replacements as
       | Array<{ start_index: number; end_index: number; summary: string }>
       | undefined
@@ -787,13 +819,10 @@ export class AgentLoop {
     }
 
     // Find the boundary between system messages and user-addressable conversation.
-    // User indices are 0-based starting from the first non-system message.
-    // This avoids hardcoding assumptions about how many system messages exist at the start.
     const systemOffset = messages.findIndex((m, i) => i > 0 && m.role !== 'system')
-    const offsetIdx = systemOffset > 0 ? systemOffset : 1 // fallback: assume 1 system message
-    const maxIndex = messages.length - offsetIdx - 1 // -1 for 0-based
+    const offsetIdx = systemOffset > 0 ? systemOffset : 1
+    const maxIndex = messages.length - offsetIdx - 1
 
-    // Validate all replacements
     for (const r of replacements) {
       if (
         typeof r.start_index !== 'number' ||
@@ -807,7 +836,6 @@ export class AgentLoop {
       }
     }
 
-    // Check for overlaps
     const sorted = [...replacements].sort((a, b) => a.start_index - b.start_index)
     for (let i = 1; i < sorted.length; i++) {
       if (sorted[i].start_index <= sorted[i - 1].end_index) {
@@ -815,18 +843,27 @@ export class AgentLoop {
       }
     }
 
-    const beforeTokens = estimateTokens(messages)
-    let totalRemoved = 0
+    return replacements
+  }
 
-    // Process from end to start to avoid index shifting
+  /**
+   * Apply deferred compaction to the messages array and sync to session.
+   * Called after the turn loop exits — never mid-tool-execution.
+   */
+  private applyCompaction(
+    replacements: Array<{ start_index: number; end_index: number; summary: string }>,
+    messages: Message[],
+    nudgesFired: number[],
+  ): void {
+    const systemOffset = messages.findIndex((m, i) => i > 0 && m.role !== 'system')
+    const offsetIdx = systemOffset > 0 ? systemOffset : 1
+
+    const sorted = [...replacements].sort((a, b) => a.start_index - b.start_index)
     const descending = [...sorted].reverse()
     for (const r of descending) {
-      // Offset user-facing indices by the number of leading system messages
       const startIdx = r.start_index + offsetIdx
       const endIdx = r.end_index + offsetIdx
       const removeCount = endIdx - startIdx + 1
-      totalRemoved += removeCount
-
       messages.splice(startIdx, removeCount, {
         role: 'system',
         content: `[Compacted Context] ${r.summary}`,
@@ -838,15 +875,5 @@ export class AgentLoop {
 
     // Sync compacted history back to the session (excludes system prompt)
     this.config.onCompact?.(messages.slice(1))
-
-    const afterTokens = estimateTokens(messages)
-    const savedPct =
-      beforeTokens > 0 ? Math.round(((beforeTokens - afterTokens) / beforeTokens) * 100) : 0
-
-    return (
-      `Compacted ${totalRemoved} messages into ${replacements.length} ` +
-      `summar${replacements.length === 1 ? 'y' : 'ies'}. ` +
-      `Context: ${beforeTokens.toLocaleString()} → ${afterTokens.toLocaleString()} tokens (${savedPct}% freed)`
-    )
   }
 }
