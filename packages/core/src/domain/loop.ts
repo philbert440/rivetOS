@@ -185,7 +185,7 @@ export class AgentLoop {
 
     // Turn timeout replaces maxIterations hard cap
     const turnStart = Date.now()
-    const turnTimeout = this.config.turnTimeout ?? 900_000
+    const turnTimeout = this.config.turnTimeout ?? 1_800_000
     const gracefulWarningMs = this.config.gracefulWarningMs ?? 180_000
     const gracefulThreshold = turnTimeout - gracefulWarningMs
     let gracefulWarningFired = false

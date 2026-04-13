@@ -98,7 +98,7 @@ function createRequest(overrides: Partial<DelegationRequest> = {}): DelegationRe
     fromAgent: 'opus',
     toAgent: 'grok',
     task: 'Write a hello world function',
-    timeoutMs: 120000,
+    timeoutMs: 1_800_000,
     ...overrides,
   };
 }

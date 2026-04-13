@@ -133,8 +133,20 @@ export class MeshDelegationEngine {
 
     try {
       const controller = new AbortController()
-      const timeoutMs = request.timeoutMs ?? 120_000
-      const timeout = setTimeout(() => controller.abort(), timeoutMs + 5_000)
+      let timeout: ReturnType<typeof setTimeout> | undefined
+
+      if (request.timeoutMs) {
+        timeout = setTimeout(() => controller.abort(), request.timeoutMs + 5_000)
+      }
+
+      const body: Record<string, unknown> = {
+        fromAgent: request.fromAgent,
+        message: `[Mesh delegation] ${request.task}`,
+        waitForResponse: true,
+      }
+      if (request.timeoutMs) {
+        body.timeoutMs = request.timeoutMs
+      }
 
       const res = await fetch(url, {
         method: 'POST',
@@ -142,16 +154,11 @@ export class MeshDelegationEngine {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.config.secret}`,
         },
-        body: JSON.stringify({
-          fromAgent: request.fromAgent,
-          message: `[Mesh delegation] ${request.task}`,
-          waitForResponse: true,
-          timeoutMs,
-        }),
-        signal: controller.signal,
+        body: JSON.stringify(body),
+        signal: request.timeoutMs ? controller.signal : undefined,
       })
 
-      clearTimeout(timeout)
+      if (timeout) clearTimeout(timeout)
 
       if (!res.ok) {
         const errBody = await res.text().catch(() => 'unknown error')
@@ -211,7 +218,7 @@ export class MeshDelegationEngine {
           },
           timeout_ms: {
             type: 'number',
-            description: 'Timeout in milliseconds (default: 120000)',
+            description: 'Timeout in milliseconds (default: none — runs until done)',
           },
         },
         required: ['to_agent', 'task'],
@@ -227,7 +234,7 @@ export class MeshDelegationEngine {
             toAgent: args.to_agent as string,
             task: args.task as string,
             context: args.context as string[] | undefined,
-            timeoutMs: (args.timeout_ms as number | undefined) ?? 120_000,
+            timeoutMs: args.timeout_ms as number | undefined,
           },
           chainDepth,
         )
