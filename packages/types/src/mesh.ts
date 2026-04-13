@@ -23,6 +23,9 @@ export interface MeshNode {
   /** Human-readable name (e.g., "rivet-opus") */
   name: string
 
+  /** Node role — 'agent' (default) runs the full runtime; infrastructure roles like 'datahub' are sync-only */
+  role?: 'agent' | 'datahub' | string
+
   /** Agent IDs running on this node */
   agents: string[]
 

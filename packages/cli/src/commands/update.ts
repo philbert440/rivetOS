@@ -379,7 +379,11 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     process.exit(1)
   }
 
-  const nodes = Object.values(meshFile.nodes).filter((n) => n.status === 'online')
+  // Include online agent nodes + all infrastructure nodes (they don't heartbeat,
+  // so their status is always 'offline' — but we still want to sync code to them)
+  const nodes = Object.values(meshFile.nodes).filter(
+    (n) => n.status === 'online' || (n.role && n.role !== 'agent'),
+  )
 
   if (nodes.length === 0) {
     console.error('  No online nodes in the mesh.')

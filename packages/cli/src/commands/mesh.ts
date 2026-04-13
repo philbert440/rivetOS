@@ -82,19 +82,29 @@ async function meshList(flags: Flags): Promise<void> {
   console.log('')
 
   for (const node of nodes) {
-    const statusIcon = statusEmoji(node.status)
-    const age = node.lastSeen ? timeSince(node.lastSeen) : 'unknown'
+    const isAgent = !node.role || node.role === 'agent'
+    let displayStatus: string = node.status
+    let statusIcon = statusEmoji(node.status)
+
+    // For infrastructure nodes, check SSH reachability instead of relying on heartbeat status
+    if (!isAgent) {
+      const reachable = checkSshReachable(node.host)
+      displayStatus = reachable ? 'available' : 'unreachable'
+      statusIcon = reachable ? '🟢' : '🔴'
+    }
+
+    const age = node.lastSeen ? timeSince(node.lastSeen) : 'never'
     const agents = node.agents?.join(', ')
     const role = node.role && node.role !== 'agent' ? ` [${node.role}]` : ''
     console.log(`  ${statusIcon} ${node.name}${role}`)
     console.log(`    ID:        ${node.id}`)
     console.log(`    Host:      ${node.host}:${String(node.port)}`)
     console.log(`    Role:      ${node.role ?? 'agent'}`)
-    console.log(`    Status:    ${node.status}`)
+    console.log(`    Status:    ${displayStatus}${!isAgent ? ' (via SSH)' : ''}`)
     if (agents) console.log(`    Agents:    ${agents}`)
     if (node.providers?.length) console.log(`    Providers: ${node.providers.join(', ')}`)
     if (node.models?.length) console.log(`    Models:    ${node.models.join(', ')}`)
-    console.log(`    Last seen: ${age}`)
+    if (isAgent) console.log(`    Last seen: ${age}`)
     if (node.version) console.log(`    Version:   ${node.version}`)
     console.log('')
   }
@@ -304,18 +314,33 @@ async function meshStatus(flags: Flags): Promise<void> {
   }
 
   const nodes = Object.values(meshFile.nodes)
-  const online = nodes.filter((n) => n.status === 'online')
-  const offline = nodes.filter((n) => n.status === 'offline')
-  const stale = nodes.filter((n) => n.status === 'degraded')
+  const agentNodes = nodes.filter((n) => !n.role || n.role === 'agent')
+  const infraNodes = nodes.filter((n) => n.role && n.role !== 'agent')
+
+  const online = agentNodes.filter((n) => n.status === 'online')
+  const offline = agentNodes.filter((n) => n.status === 'offline')
+  const stale = agentNodes.filter((n) => n.status === 'degraded')
+
+  // Check SSH reachability for infrastructure nodes
+  const infraReachable = infraNodes.filter((n) => checkSshReachable(n.host))
+  const infraUnreachable = infraNodes.length - infraReachable.length
 
   if (flags.json) {
     console.log(
       JSON.stringify(
         {
           totalNodes: nodes.length,
-          online: online.length,
-          offline: offline.length,
-          degraded: stale.length,
+          agents: {
+            total: agentNodes.length,
+            online: online.length,
+            offline: offline.length,
+            degraded: stale.length,
+          },
+          infrastructure: {
+            total: infraNodes.length,
+            reachable: infraReachable.length,
+            unreachable: infraUnreachable,
+          },
           updatedAt: new Date(meshFile.updatedAt).toISOString(),
         },
         null,
@@ -329,8 +354,13 @@ async function meshStatus(flags: Flags): Promise<void> {
   console.log('  Mesh Status')
   console.log('  ───────────')
   console.log(
-    `  Nodes:    ${String(nodes.length)} total (${String(online.length)} online, ${String(offline.length)} offline, ${String(stale.length)} degraded)`,
+    `  Agents:   ${String(agentNodes.length)} total (${String(online.length)} online, ${String(offline.length)} offline, ${String(stale.length)} degraded)`,
   )
+  if (infraNodes.length > 0) {
+    console.log(
+      `  Infra:    ${String(infraNodes.length)} total (${String(infraReachable.length)} reachable, ${String(infraUnreachable)} unreachable)`,
+    )
+  }
   console.log(`  Updated:  ${new Date(meshFile.updatedAt).toLocaleString()}`)
   console.log('')
 }
@@ -430,6 +460,22 @@ function timeSince(epochMs: number): string {
   if (seconds < 3600) return `${String(Math.floor(seconds / 60))}m ago`
   if (seconds < 86400) return `${String(Math.floor(seconds / 3600))}h ago`
   return `${String(Math.floor(seconds / 86400))}d ago`
+}
+
+/**
+ * Quick SSH reachability check for infrastructure nodes.
+ * Returns true if SSH connection succeeds, false otherwise.
+ */
+function checkSshReachable(host: string): boolean {
+  try {
+    execSync(
+      `ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no root@${host} "echo ok"`,
+      { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
+    )
+    return true
+  } catch {
+    return false
+  }
 }
 
 function getLocalIp(): string {

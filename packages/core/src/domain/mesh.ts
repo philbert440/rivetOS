@@ -163,6 +163,9 @@ export class FileMeshRegistry implements MeshRegistry {
       // Don't prune ourselves or missing entries
       if (id === this.localNodeId || !node) continue
 
+      // Don't prune infrastructure nodes — they don't heartbeat
+      if (node.role && node.role !== 'agent') continue
+
       if (now - node.lastSeen > threshold && node.status !== 'offline') {
         node.status = 'offline'
         data.nodes[id] = node
@@ -313,6 +316,8 @@ export interface BuildLocalNodeArgs {
   existingId?: string
   /** Node name (default: hostname) */
   name?: string
+  /** Node role — 'agent' (default) or infrastructure role like 'datahub' */
+  role?: string
   /** Agent IDs running on this instance */
   agents: string[]
   /** Host address */
@@ -333,6 +338,7 @@ export function buildLocalNode(args: BuildLocalNodeArgs): MeshNode {
   return {
     id: args.existingId ?? randomUUID(),
     name: args.name ?? hostname(),
+    ...(args.role ? { role: args.role } : {}),
     agents: args.agents,
     host: args.host,
     port: args.port,
