@@ -51,6 +51,18 @@ export function filterToolsForAgent(
   return tools
 }
 
+/** Deduplicate tools by name, keeping the last occurrence.
+ *  Prevents "Tool names must be unique" errors from providers
+ *  when tools like delegate_task are registered globally AND
+ *  added again with chain-depth context. */
+export function deduplicateTools(tools: Tool[]): Tool[] {
+  const seen = new Map<string, Tool>()
+  for (const tool of tools) {
+    seen.set(tool.name, tool)
+  }
+  return Array.from(seen.values())
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -221,9 +233,10 @@ export class DelegationEngine {
       // Resolve tools at delegation time and filter for the target agent
       const allTools = this.config.tools()
       const filteredTools = filterToolsForAgent(allTools, request.toAgent, this.config.toolFilter)
-      const delegationTools = [...filteredTools]
+      // Remove any existing delegate_task — we'll add our own with proper chain depth
+      const delegationTools = filteredTools.filter((t) => t.name !== 'delegate_task')
 
-      // If we have room in the chain, give the delegate the delegation tool too
+      // If we have room in the chain, give the delegate the delegation tool with correct depth
       if (chainDepth + 1 < this.maxChainDepth) {
         delegationTools.push(this.createDelegationTool(chainDepth + 1))
       }
@@ -232,6 +245,7 @@ export class DelegationEngine {
         systemPrompt: enrichedPrompt,
         provider,
         tools: delegationTools,
+        modelOverride: agent.model,
         agentId: request.toAgent,
         hooks: this.config.hooks,
       })

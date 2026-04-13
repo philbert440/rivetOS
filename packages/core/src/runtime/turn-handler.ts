@@ -45,7 +45,7 @@ export interface TurnHandlerDeps {
   hooks?: HookPipeline
   fallbacks?: FallbackConfig[]
   workspaceDir: string
-  /** Turn wall-clock timeout in seconds */
+  /** Turn wall-clock timeout in seconds (default: 900) */
   turnTimeout?: number
   /** Context management config */
   contextConfig?: { compactAfterMessages?: number; softNudgePct?: number[]; hardNudgePct?: number }
@@ -139,6 +139,7 @@ export class TurnHandler {
         provider,
         tools: this.deps.tools,
         thinking: session.thinking,
+        modelOverride: agent.model,
         onStream: streamHandler,
         agentId: agent.id,
         imageDir,

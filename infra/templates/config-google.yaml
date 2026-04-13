@@ -1,7 +1,7 @@
 runtime:
   workspace: /root/.rivetos/workspace
   default_agent: %%AGENT_NAME%%
-  turn_timeout: 600
+  turn_timeout: 900
   skill_dirs:
     - /opt/rivetos/skills
   fallbacks:

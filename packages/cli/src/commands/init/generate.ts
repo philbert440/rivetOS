@@ -58,7 +58,7 @@ function buildConfigYaml(state: WizardState): string {
   config.runtime = {
     workspace: '~/.rivetos/workspace',
     default_agent: state.agents[0]?.name ?? 'rivet',
-    turn_timeout: 600,
+    turn_timeout: 900,
   }
 
   // Agents

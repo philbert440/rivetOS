@@ -211,6 +211,57 @@ describe('AgentLoop', () => {
     assert.ok(result.response.toLowerCase().includes('timed out'));
   });
 
+  it('should inject graceful degradation warning before timeout', async () => {
+    // Provider always returns tool calls — track messages to check for warning injection
+    let callCount = 0;
+    const capturedMessages: Message[][] = [];
+    const infiniteToolProvider: Provider = {
+      id: 'mock',
+      name: 'Mock',
+      async *chatStream(messages: Message[], _options?: ChatOptions): AsyncIterable<LLMChunk> {
+        callCount++;
+        capturedMessages.push([...messages]);
+        yield { type: 'tool_call_start', toolCall: { index: 0, id: `tc-${callCount}`, name: 'shell' } };
+        yield { type: 'tool_call_delta', delta: '{"command":"echo loop"}', toolCall: { index: 0 } };
+        yield { type: 'tool_call_done', toolCall: { index: 0 } };
+        yield { type: 'done', usage: { promptTokens: 0, completionTokens: 0 } };
+      },
+      async isAvailable() { return true; },
+      getModel() { return 'mock-model'; },
+      setModel() {},
+      getContextWindow() { return 0; },
+      getMaxOutputTokens() { return 0; },
+    };
+
+    const statusEvents: string[] = [];
+    const loop = new AgentLoop({
+      systemPrompt: 'You are helpful.',
+      provider: infiniteToolProvider,
+      tools: [makeTool('shell', 'loop')],
+      turnTimeout: 200,        // 200ms total
+      gracefulWarningMs: 150,   // warn at 50ms (200-150)
+      onStream: (event) => {
+        if (event.type === 'status') statusEvents.push(event.content ?? '');
+      },
+    });
+
+    const result = await loop.run('Loop forever', []);
+
+    // Should have timed out
+    assert.ok(result.response.toLowerCase().includes('timed out'));
+
+    // Should have emitted the graceful warning status before the hard timeout
+    const warningEmitted = statusEvents.some((s) => s.includes('Approaching turn timeout'));
+    assert.ok(warningEmitted, 'Expected graceful degradation warning status event');
+
+    // Should have injected a system message with the warning
+    const allMessages = capturedMessages.flat();
+    const warningMessage = allMessages.find(
+      (m) => m.role === 'system' && typeof m.content === 'string' && m.content.includes('Turn Timeout Warning'),
+    );
+    assert.ok(warningMessage, 'Expected [SYSTEM — Turn Timeout Warning] message injected into context');
+  });
+
   it('should accumulate token usage across iterations', async () => {
     const loop = new AgentLoop({
       systemPrompt: 'You are helpful.',

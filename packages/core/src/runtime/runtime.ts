@@ -48,7 +48,7 @@ export interface RuntimeConfig {
   workspaceDir: string
   defaultAgent: string
   agents: AgentConfig[]
-  /** Turn wall-clock timeout in seconds (default: 600) */
+  /** Turn wall-clock timeout in seconds (default: 900) */
   turnTimeout?: number
   /** Context management config */
   contextConfig?: { compactAfterMessages?: number; softNudgePct?: number[]; hardNudgePct?: number }

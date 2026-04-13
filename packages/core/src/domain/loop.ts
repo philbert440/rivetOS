@@ -48,6 +48,9 @@ export interface AgentLoopConfig {
   tools: Tool[]
   provider: Provider
   thinking?: ThinkingLevel
+  /** Model override — use a specific model instead of the provider's default.
+   *  Set from agent config to allow multiple agents on the same provider with different models. */
+  modelOverride?: string
   onStream?: StreamHandler
   /** Agent ID — passed to tools via ToolContext */
   agentId?: string
@@ -59,8 +62,10 @@ export interface AgentLoopConfig {
   sessionId?: string
   /** Resolve a provider by ID (for fallback chains) */
   resolveProvider?: (providerId: string) => Provider | undefined
-  /** Turn wall-clock timeout in ms (default: 600_000 = 10 min) */
+  /** Turn wall-clock timeout in ms (default: 900_000 = 15 min) */
   turnTimeout?: number
+  /** Graceful degradation warning offset in ms before timeout (default: 180_000 = 3 min before timeout) */
+  gracefulWarningMs?: number
   /** Context window size in tokens (from provider, 0 = unknown) */
   contextWindow?: number
   /** Context management thresholds */
@@ -181,7 +186,10 @@ export class AgentLoop {
 
     // Turn timeout replaces maxIterations hard cap
     const turnStart = Date.now()
-    const turnTimeout = this.config.turnTimeout ?? 600_000
+    const turnTimeout = this.config.turnTimeout ?? 900_000
+    const gracefulWarningMs = this.config.gracefulWarningMs ?? 180_000
+    const gracefulThreshold = turnTimeout - gracefulWarningMs
+    let gracefulWarningFired = false
     let lastProgressEmit = Date.now()
     let heartbeatCount = 0
 
@@ -193,7 +201,7 @@ export class AgentLoop {
     // Provider-reported token count — used instead of chars/4 estimate after first response
     let lastKnownPromptTokens = 0
 
-    let activeModelOverride: string | undefined
+    let activeModelOverride: string | undefined = this.config.modelOverride
     let activeProvider = this.config.provider
 
     while (true) {
@@ -209,8 +217,31 @@ export class AgentLoop {
         }
       }
 
+      // Graceful degradation warning — nudge agent to wrap up before hard timeout
+      const elapsed = Date.now() - turnStart
+      if (!gracefulWarningFired && elapsed > gracefulThreshold) {
+        gracefulWarningFired = true
+        const remainingSec = Math.floor((turnTimeout - elapsed) / 1000)
+        this.emit({
+          type: 'status',
+          content: `⏳ Approaching turn timeout — ${remainingSec}s remaining`,
+        })
+        messages.push({
+          role: 'system',
+          content:
+            `[SYSTEM — Turn Timeout Warning]\n` +
+            `You have approximately ${remainingSec} seconds before this turn times out.\n\n` +
+            `Wrap up your current work now:\n` +
+            `1. Finish or checkpoint your current task\n` +
+            `2. Write a summary of what you accomplished and what remains to the appropriate file ` +
+            `(AGENT.md, memory notes, or daily log)\n` +
+            `3. List clear next steps so you (or another agent) can pick up exactly where you left off\n\n` +
+            `Do NOT start new long-running operations. Focus on saving state.`,
+        })
+      }
+
       // Turn timeout — wall-clock safety cap
-      if (Date.now() - turnStart > turnTimeout) {
+      if (elapsed > turnTimeout) {
         this.emit({
           type: 'status',
           content: `⚠️ Turn timeout (${Math.floor(turnTimeout / 1000)}s)`,
