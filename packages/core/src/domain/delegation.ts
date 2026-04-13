@@ -354,7 +354,7 @@ export class DelegationEngine {
           },
           timeout_ms: {
             type: 'number',
-            description: 'Timeout in milliseconds (default: 120000)',
+            description: 'Timeout in milliseconds (default: none — runs until done)',
           },
         },
         required: ['to_agent', 'task'],
@@ -370,7 +370,7 @@ export class DelegationEngine {
             toAgent: args.to_agent as string,
             task: args.task as string,
             context: args.context as string[] | undefined,
-            timeoutMs: (args.timeout_ms as number | undefined) ?? 120000,
+            timeoutMs: args.timeout_ms as number | undefined,
           },
           chainDepth,
         )

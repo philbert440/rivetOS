@@ -223,7 +223,7 @@ export class CodingPipeline {
       const result = await this.delegateTask!({
         to_agent: this.config.builderAgent,
         task,
-        timeout_ms: 300000, // 5 min
+        timeout_ms: 1_800_000, // 30 min
       })
 
       ctx.buildOutput = result
@@ -249,7 +249,7 @@ export class CodingPipeline {
       const result = await this.delegateTask!({
         to_agent: this.config.builderAgent,
         task: reviewPrompt,
-        timeout_ms: 120000,
+        timeout_ms: 1_800_000, // 30 min
       })
 
       ctx.reviewFindings = result
@@ -336,7 +336,7 @@ Fix all issues listed above. Working directory: ${ctx.workingDir}`
       const result = await this.delegateTask!({
         to_agent: this.config.builderAgent,
         task,
-        timeout_ms: 300000,
+        timeout_ms: 1_800_000, // 30 min
       })
 
       ctx.buildOutput = result
