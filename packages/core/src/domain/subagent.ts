@@ -25,7 +25,7 @@ import type {
   Provider,
   AgentToolFilter,
 } from '@rivetos/types'
-import { getTextContent } from '@rivetos/types'
+// getTextContent available from @rivetos/types if needed
 import { AgentLoop } from './loop.js'
 import type { Router } from './router.js'
 import type { WorkspaceLoader } from './workspace.js'
@@ -290,7 +290,8 @@ export class SubagentManagerImpl implements SubagentManager {
       iterations: session._iterations,
       toolsUsed: [...new Set(session._toolsUsed)],
       usage: session._usage,
-      durationMs: session.status === 'running' ? Date.now() - session.startTime : session.durationMs,
+      durationMs:
+        session.status === 'running' ? Date.now() - session.startTime : session.durationMs,
       lastResponse: session._lastResponse,
       error: session.error,
     }
@@ -450,7 +451,7 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
           agent: s.childAgent,
           status: s.status,
           elapsed: formatDuration(
-            s.status === 'running' ? Date.now() - s.createdAt : s.durationMs ?? 0,
+            s.status === 'running' ? Date.now() - s.createdAt : (s.durationMs ?? 0),
           ),
           iterations: s.iterations ?? 0,
           messages: s.history.length,
