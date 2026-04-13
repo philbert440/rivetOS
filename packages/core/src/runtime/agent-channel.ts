@@ -6,11 +6,13 @@
  * We route it through the local DelegationEngine as if a local agent asked.
  *
  * Endpoints:
- *   POST /api/message  — receive a delegated task, execute locally, return result
- *   GET  /api/mesh     — return current mesh registry (for seed sync)
- *   GET  /api/agents   — list agents on this node
+ *   GET  /api/mesh/ping — unauthenticated liveness probe (returns { status, node })
+ *   POST /api/message   — receive a delegated task, execute locally, return result
+ *   GET  /api/mesh      — return current mesh registry (for seed sync)
+ *   GET  /api/agents    — list agents on this node
  *
  * Auth: Bearer token in Authorization header, matched against mesh.secret.
+ *       Exception: /api/mesh/ping is unauthenticated (liveness only, no sensitive data).
  */
 
 import { createServer, type Server } from 'node:http'
@@ -118,7 +120,14 @@ export class AgentChannelServer {
     const method = req.method ?? 'GET'
 
     try {
-      // Auth check for all endpoints
+      // Unauthenticated liveness probe — must come before auth check
+      if (method === 'GET' && url === '/api/mesh/ping') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ status: 'ok', node: this.config.localAgents[0] ?? 'unknown' }))
+        return
+      }
+
+      // Auth check for all other endpoints
       if (!this.authenticate(req)) {
         res.writeHead(401, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Unauthorized' }))
