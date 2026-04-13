@@ -22,7 +22,7 @@ export function estimateTokens(messages: Message[]): number {
       for (const part of msg.content) {
         if (part.type === 'text') {
           total += Math.ceil(part.text.length / 4)
-        } else if (part.type === 'image') {
+        } else {
           total += 1000 // rough image token estimate
         }
       }

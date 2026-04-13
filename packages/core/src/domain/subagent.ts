@@ -257,7 +257,7 @@ export class SubagentManagerImpl implements SubagentManager {
       if (result.aborted) {
         session.status = 'failed'
         session.error = 'Aborted'
-        session._lastResponse = result.partialResponse ?? result.response ?? ''
+        session._lastResponse = result.partialResponse ?? result.response
       } else {
         session.status = 'completed'
         session.history.push({ role: 'assistant', content: result.response })
