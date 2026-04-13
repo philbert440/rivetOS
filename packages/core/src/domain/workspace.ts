@@ -6,6 +6,7 @@
  *   USER.md         — who the owner is
  *   WORKSPACE.md    — operating rules + infrastructure context
  *   MEMORY.md       — lightweight context index (tiny, query-based)
+ *   FOCUS.md        — ephemeral: current multi-step task (exists only when mid-flight)
  *
  * Extended (local models where tokens are free, adds):
  *   CAPABILITIES.md — tools, skills, infrastructure reference
@@ -20,10 +21,10 @@ import { join, resolve, isAbsolute, basename } from 'node:path'
 import type { WorkspaceFile, Workspace } from '@rivetos/types'
 
 /** Core files — always in system prompt (minimal, for paid APIs) */
-const CORE_FILES = ['CORE.md', 'USER.md', 'WORKSPACE.md', 'MEMORY.md']
+const CORE_FILES = ['CORE.md', 'USER.md', 'WORKSPACE.md', 'MEMORY.md', 'FOCUS.md']
 
 /** Extended files — included for local models where tokens are free */
-const EXTENDED_FILES = ['CORE.md', 'USER.md', 'WORKSPACE.md', 'MEMORY.md', 'CAPABILITIES.md']
+const EXTENDED_FILES = ['CORE.md', 'USER.md', 'WORKSPACE.md', 'MEMORY.md', 'CAPABILITIES.md', 'FOCUS.md']
 
 /** Max size for a single pinned file (50KB) */
 const MAX_PIN_SIZE = 50 * 1024
