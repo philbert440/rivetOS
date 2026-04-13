@@ -160,7 +160,19 @@ export class TurnHandler {
         userMessageCount: session.userMessageCount,
         compactAfterMessages: this.deps.contextConfig?.compactAfterMessages,
         onCompact: (compactedHistory) => {
+          // Sanitize: strip tool-related messages that don't belong in persistent history.
+          // The loop's working `messages` array contains intermediate tool_use/tool_result
+          // pairs. If saved to session.history, they become orphaned on subsequent turns
+          // and cause Anthropic 400 errors ("unexpected tool_use_id in tool_result blocks").
           session.history = compactedHistory
+            .filter((m) => m.role !== 'tool')
+            .map((m) => {
+              if (m.role === 'assistant' && m.toolCalls) {
+                const { toolCalls: _tc, ...rest } = m
+                return rest
+              }
+              return m
+            })
           session.compactionCount++
           session.userMessageCount = 0
           session.nudgesFired = []
