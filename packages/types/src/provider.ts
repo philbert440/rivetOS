@@ -17,6 +17,9 @@ export interface ChatOptions {
   thinking?: ThinkingLevel
   /** Override the provider's default model for this request (used by fallback chains) */
   modelOverride?: string
+  /** Start a fresh conversation — don't reuse stateful conversation context (e.g. xAI previous_response_id).
+   *  Used by delegation and subagent engines to prevent conversation state bleed. */
+  freshConversation?: boolean
 }
 
 // ---------------------------------------------------------------------------
