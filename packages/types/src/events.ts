@@ -38,8 +38,6 @@ export interface SessionState {
   history: Message[]
   /** System prompt — built once on session init, reused every turn */
   systemPrompt?: string
-  /** Count of user messages since last compaction (or session start) */
-  userMessageCount: number
   /** Number of compactions performed in this session */
   compactionCount: number
   /** Whether a compaction nudge is pending for the next turn */

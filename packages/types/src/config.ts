@@ -7,8 +7,6 @@ import type { HookConfig, FallbackConfig } from './hooks.js'
 import type { MeshConfig } from './mesh.js'
 
 export interface ContextConfig {
-  /** User message count before triggering compaction nudge (default: 47) */
-  compactAfterMessages?: number
   /** Soft nudge percentages (default: [40, 70]) */
   softNudgePct?: number[]
   /** Hard nudge percentage (default: 90) */
@@ -75,8 +73,6 @@ export interface AgentConfig {
   local?: boolean
   /** Tool filtering for when this agent runs as a delegate or sub-agent */
   tools?: AgentToolFilter
-  /** Per-agent context management overrides */
-  context?: { compactAfterMessages?: number }
 }
 
 export interface HeartbeatConfig {
