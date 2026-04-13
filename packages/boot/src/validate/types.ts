@@ -32,6 +32,7 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
   'memory',
   'mcp',
   'deployment',
+  'mesh',
 ])
 
 export const KNOWN_DEPLOYMENT_KEYS = new Set([
@@ -88,6 +89,7 @@ export const KNOWN_RUNTIME_KEYS = new Set([
 
 export const KNOWN_AGENT_KEYS = new Set([
   'provider',
+  'model',
   'default_thinking',
   'fallbacks',
   'local',

@@ -6,7 +6,7 @@
 runtime:
   workspace: ./workspace
   default_agent: opus
-  turn_timeout: 600
+  turn_timeout: 900
 
   # Coding pipeline uses two agents for build/review
   coding_pipeline:

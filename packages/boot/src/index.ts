@@ -85,6 +85,7 @@ export async function boot(configPath?: string): Promise<void> {
       id,
       name: id,
       provider: agent.provider,
+      model: agent.model,
       defaultThinking: (agent.default_thinking as ThinkingLevel | undefined) ?? 'medium',
       local: agent.local ?? false,
       tools: agent.tools,

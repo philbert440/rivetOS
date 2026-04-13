@@ -25,7 +25,7 @@ import { getTextContent } from '@rivetos/types'
 import { AgentLoop } from './loop.js'
 import type { Router } from './router.js'
 import type { WorkspaceLoader } from './workspace.js'
-import { filterToolsForAgent } from './delegation.js'
+import { filterToolsForAgent, deduplicateTools } from './delegation.js'
 import { logger } from '../logger.js'
 
 const log = logger('SubagentManager')
@@ -62,6 +62,8 @@ interface InternalSession extends SubagentSession {
   abort: AbortController
   /** Promise that resolves when a 'run' mode session completes */
   completion?: Promise<string>
+  /** Model override from agent config — allows agents on the same provider to use different models */
+  modelOverride?: string
 }
 
 export class SubagentManagerImpl implements SubagentManager {
@@ -118,12 +120,15 @@ export class SubagentManagerImpl implements SubagentManager {
       history: [],
       createdAt: Date.now(),
       abort,
+      modelOverride: agent.model,
     }
 
     this.sessions.set(sessionId, session)
 
-    // Resolve and filter tools for this agent
-    const tools = filterToolsForAgent(this.config.tools(), request.agent, this.config.toolFilter)
+    // Resolve, filter, and deduplicate tools for this agent
+    const tools = deduplicateTools(
+      filterToolsForAgent(this.config.tools(), request.agent, this.config.toolFilter),
+    )
 
     const startTime = Date.now()
 
@@ -313,6 +318,7 @@ export class SubagentManagerImpl implements SubagentManager {
       systemPrompt,
       provider,
       tools,
+      modelOverride: session.modelOverride,
       agentId: session.childAgent,
     })
 
