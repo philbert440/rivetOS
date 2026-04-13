@@ -1,8 +1,9 @@
 /**
  * Sub-agent orchestration types.
  *
- * Supports one-shot delegation ('run') and persistent interactive
- * sessions ('session') between agents.
+ * Async-first design: spawn fires immediately, caller polls with status().
+ * No synchronous blocking. Sessions persist until explicitly killed or
+ * garbage-collected.
  */
 
 import type { Message } from './message.js'
@@ -21,19 +22,23 @@ export interface SubagentSession {
   /** Provider backing the child agent */
   provider: string
   /** Current session status */
-  status: 'running' | 'completed' | 'failed' | 'yielded'
+  status: 'running' | 'completed' | 'failed'
   /** Conversation history within this sub-agent session */
   history: Message[]
   /** When the session was created (epoch ms) */
   createdAt: number
-  /** Number of tool iterations in the most recent turn */
+  /** Number of tool iterations so far (updated live) */
   iterations?: number
-  /** Names of tools used in the most recent turn */
+  /** Names of tools used so far (updated live) */
   toolsUsed?: string[]
   /** Token usage from the most recent turn */
   usage?: { promptTokens: number; completionTokens: number }
-  /** Wall-clock duration of the most recent turn in milliseconds */
+  /** Wall-clock duration in milliseconds (set on completion) */
   durationMs?: number
+  /** Final response text (set on completion) or partial text (during execution) */
+  lastResponse?: string
+  /** Error message if status is 'failed' */
+  error?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -45,10 +50,35 @@ export interface SubagentSpawnRequest {
   agent: string
   /** Task description or initial message */
   task: string
-  /** 'run' = one-shot (complete task, return result), 'session' = persistent (stays alive) */
-  mode: 'run' | 'session'
-  /** Optional timeout in milliseconds */
+  /** Optional timeout in milliseconds (no default — runs until done or killed) */
   timeoutMs?: number
+}
+
+// ---------------------------------------------------------------------------
+// Status Response — rich progress info for polling
+// ---------------------------------------------------------------------------
+
+export interface SubagentStatusResponse {
+  /** Session ID */
+  id: string
+  /** Child agent ID */
+  agent: string
+  /** Current status */
+  status: 'running' | 'completed' | 'failed'
+  /** Elapsed wall-clock time in ms */
+  elapsedMs: number
+  /** Tool iterations so far */
+  iterations: number
+  /** Tools used so far (deduplicated) */
+  toolsUsed: string[]
+  /** Final or partial response text */
+  lastResponse: string
+  /** Token usage */
+  usage?: { promptTokens: number; completionTokens: number }
+  /** Error message if failed */
+  error?: string
+  /** Message count in history */
+  messageCount: number
 }
 
 // ---------------------------------------------------------------------------
@@ -57,25 +87,25 @@ export interface SubagentSpawnRequest {
 
 export interface SubagentManager {
   /**
-   * Spawn a new sub-agent.
-   * 'run' mode: executes the task and returns when complete.
-   * 'session' mode: starts the session and returns after the first response.
+   * Spawn a new sub-agent. Returns immediately with the session.
+   * The agent runs asynchronously in the background.
    */
-  spawn(request: SubagentSpawnRequest): Promise<SubagentSession>
+  spawn(request: SubagentSpawnRequest): SubagentSession
 
   /**
-   * Send a message to a persistent (session-mode) sub-agent.
-   * Returns the sub-agent's response.
+   * Get detailed status of a sub-agent session.
+   * Returns rich progress info including partial results.
    */
-  send(sessionId: string, message: string): Promise<string>
+  status(sessionId: string): SubagentStatusResponse
 
   /**
-   * Yield the parent agent's turn, allowing a sub-agent's completion
-   * to arrive as the next message in the parent's context.
+   * Send a follow-up message to a sub-agent session.
+   * Only works when the session is completed (starts a new turn).
+   * Returns immediately — poll with status() for the result.
    */
-  yield(sessionId: string, message?: string): void
+  send(sessionId: string, message: string): void
 
-  /** List all active sub-agent sessions. */
+  /** List all sub-agent sessions (all statuses). */
   list(): SubagentSession[]
 
   /** Kill (abort) a running sub-agent session. */

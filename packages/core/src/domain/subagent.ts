@@ -1,12 +1,15 @@
 /**
  * Sub-agent Manager — orchestrates child agent sessions.
  *
- * Supports two modes:
- * - 'run': one-shot delegation. Spawns a child AgentLoop, waits for
- *   completion, returns the result. Session is cleaned up automatically.
- * - 'session': persistent interactive session. Spawns a child AgentLoop
- *   for the initial task, keeps the session alive for follow-up messages
- *   via send().
+ * Async-first design:
+ * - spawn() fires the AgentLoop in the background, returns immediately
+ * - status() polls for progress (iterations, tools, partial/final response)
+ * - send() sends follow-up messages (starts a new background turn)
+ * - kill() aborts a running session
+ * - list() shows all sessions
+ *
+ * No synchronous blocking. The calling agent can fire off work,
+ * do other things, and check back when ready.
  *
  * Pure domain logic. Depends only on interfaces from @rivetos/types
  * plus the internal Router and WorkspaceLoader.
@@ -16,6 +19,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   SubagentSession,
   SubagentSpawnRequest,
+  SubagentStatusResponse,
   SubagentManager,
   Tool,
   Provider,
@@ -46,25 +50,31 @@ export interface SubagentManagerConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Implementation
+// Internal Session State
 // ---------------------------------------------------------------------------
 
-/** Result from a single turn within a sub-agent */
-interface TurnMeta {
-  response: string
-  iterations: number
-  toolsUsed: string[]
-  usage?: { promptTokens: number; completionTokens: number }
-}
-
-/** Internal session state — extends the public SubagentSession with private fields */
+/** Extends the public SubagentSession with private fields */
 interface InternalSession extends SubagentSession {
   abort: AbortController
-  /** Promise that resolves when a 'run' mode session completes */
-  completion?: Promise<string>
-  /** Model override from agent config — allows agents on the same provider to use different models */
+  /** Model override from agent config */
   modelOverride?: string
+  /** Timeout handle (if timeout was specified) */
+  timeoutHandle?: ReturnType<typeof setTimeout>
+  /** Start time for elapsed calculation */
+  startTime: number
+  /** Live-updated iterations count */
+  _iterations: number
+  /** Live-updated tools list */
+  _toolsUsed: string[]
+  /** Live-updated partial response */
+  _lastResponse: string
+  /** Live-updated usage */
+  _usage?: { promptTokens: number; completionTokens: number }
 }
+
+// ---------------------------------------------------------------------------
+// Implementation
+// ---------------------------------------------------------------------------
 
 export class SubagentManagerImpl implements SubagentManager {
   private config: SubagentManagerConfig
@@ -74,7 +84,7 @@ export class SubagentManagerImpl implements SubagentManager {
     this.config = config
   }
 
-  async spawn(request: SubagentSpawnRequest): Promise<SubagentSession> {
+  spawn(request: SubagentSpawnRequest): SubagentSession {
     const { router, workspace } = this.config
 
     // Resolve the child agent and its provider
@@ -92,28 +102,12 @@ export class SubagentManagerImpl implements SubagentManager {
       throw new Error(`Provider "${agent.provider}" not available for agent "${request.agent}"`)
     }
 
-    // Build system prompt for the child
-    const systemPrompt = await workspace.buildSystemPrompt(agent.id)
-    const enrichedPrompt =
-      systemPrompt +
-      '\n\n## Sub-agent Context\n' +
-      `You are running as a sub-agent. Mode: ${request.mode}.\n` +
-      `Complete your assigned task thoroughly.`
-
     const sessionId = randomUUID()
     const abort = new AbortController()
 
-    // Apply timeout if specified
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
-    if (request.timeoutMs) {
-      timeoutHandle = setTimeout(() => {
-        abort.abort(`Sub-agent timeout after ${request.timeoutMs}ms`)
-      }, request.timeoutMs)
-    }
-
     const session: InternalSession = {
       id: sessionId,
-      parentAgent: 'parent', // Will be set by the tool's context
+      parentAgent: 'parent',
       childAgent: request.agent,
       provider: agent.provider,
       status: 'running',
@@ -121,84 +115,57 @@ export class SubagentManagerImpl implements SubagentManager {
       createdAt: Date.now(),
       abort,
       modelOverride: agent.model,
+      startTime: Date.now(),
+      _iterations: 0,
+      _toolsUsed: [],
+      _lastResponse: '',
+    }
+
+    // Apply timeout if specified
+    if (request.timeoutMs) {
+      session.timeoutHandle = setTimeout(() => {
+        abort.abort(`Sub-agent timeout after ${request.timeoutMs}ms`)
+      }, request.timeoutMs)
     }
 
     this.sessions.set(sessionId, session)
 
-    // Resolve, filter, and deduplicate tools for this agent
-    const tools = deduplicateTools(
-      filterToolsForAgent(this.config.tools(), request.agent, this.config.toolFilter),
-    )
+    // Fire the agent loop in the background — no await
+    void this.runInBackground(session, workspace, provider, request.task)
 
-    const startTime = Date.now()
-
-    if (request.mode === 'run') {
-      // One-shot: run the task, wait for completion, return result
-      const completion = this.runOneShot(
-        session,
-        enrichedPrompt,
-        provider,
-        tools,
-        request.task,
-        abort,
-        timeoutHandle,
-      )
-      session.completion = completion
-
-      try {
-        const response = await completion
-        session.status = 'completed'
-        session.durationMs = Date.now() - startTime
-        session.history.push(
-          { role: 'user', content: request.task },
-          { role: 'assistant', content: response },
-        )
-        return this.toPublicSession(session)
-      } catch (err: unknown) {
-        session.status = 'failed'
-        session.durationMs = Date.now() - startTime
-        log.error(`Sub-agent ${sessionId} failed: ${(err as Error).message}`)
-        throw err
-      }
-    } else {
-      // Session mode: run initial task, keep session alive for follow-ups
-      try {
-        const meta = await this.runTurn(
-          session,
-          enrichedPrompt,
-          provider,
-          tools,
-          request.task,
-          abort.signal,
-        )
-        session.iterations = meta.iterations
-        session.toolsUsed = meta.toolsUsed
-        session.usage = meta.usage
-        session.durationMs = Date.now() - startTime
-        session.history.push(
-          { role: 'user', content: request.task },
-          { role: 'assistant', content: meta.response },
-        )
-        // Keep session alive — don't mark completed
-        if (timeoutHandle) clearTimeout(timeoutHandle)
-        return this.toPublicSession(session)
-      } catch (err: unknown) {
-        session.status = 'failed'
-        session.durationMs = Date.now() - startTime
-        if (timeoutHandle) clearTimeout(timeoutHandle)
-        log.error(`Sub-agent ${sessionId} failed on initial turn: ${(err as Error).message}`)
-        throw err
-      }
-    }
+    return this.toPublicSession(session)
   }
 
-  async send(sessionId: string, message: string): Promise<string> {
+  status(sessionId: string): SubagentStatusResponse {
     const session = this.sessions.get(sessionId)
     if (!session) {
       throw new Error(`Sub-agent session not found: ${sessionId}`)
     }
-    if (session.status !== 'running' && session.status !== 'yielded') {
-      throw new Error(`Sub-agent session ${sessionId} is ${session.status} — cannot send messages`)
+
+    return {
+      id: session.id,
+      agent: session.childAgent,
+      status: session.status,
+      elapsedMs: Date.now() - session.startTime,
+      iterations: session._iterations,
+      toolsUsed: [...new Set(session._toolsUsed)],
+      lastResponse: session._lastResponse,
+      usage: session._usage,
+      error: session.error,
+      messageCount: session.history.length,
+    }
+  }
+
+  send(sessionId: string, message: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Sub-agent session not found: ${sessionId}`)
+    }
+    if (session.status === 'running') {
+      throw new Error(`Sub-agent session ${sessionId} is still running — wait for completion`)
+    }
+    if (session.status === 'failed') {
+      throw new Error(`Sub-agent session ${sessionId} has failed — cannot send messages`)
     }
 
     const { router, workspace } = this.config
@@ -213,61 +180,21 @@ export class SubagentManagerImpl implements SubagentManager {
       throw new Error(`Provider "${agent.provider}" not available`)
     }
 
-    const systemPrompt = await workspace.buildSystemPrompt(agent.id)
-    const enrichedPrompt =
-      systemPrompt +
-      '\n\n## Sub-agent Context\n' +
-      'You are running as a persistent sub-agent session. Continue the conversation.'
-
-    // Resolve and filter tools for this agent
-    const tools = filterToolsForAgent(
-      this.config.tools(),
-      session.childAgent,
-      this.config.toolFilter,
-    )
-
+    // Reset session state for new turn
     session.status = 'running'
-    const sendStart = Date.now()
+    session.startTime = Date.now()
+    session._iterations = 0
+    session._toolsUsed = []
+    session._lastResponse = ''
+    session._usage = undefined
+    session.error = undefined
 
-    try {
-      const meta = await this.runTurn(
-        session,
-        enrichedPrompt,
-        provider,
-        tools,
-        message,
-        session.abort.signal,
-      )
-      session.iterations = meta.iterations
-      session.toolsUsed = meta.toolsUsed
-      session.usage = meta.usage
-      session.durationMs = Date.now() - sendStart
-      session.history.push(
-        { role: 'user', content: message },
-        { role: 'assistant', content: meta.response },
-      )
-      return meta.response
-    } catch (err: unknown) {
-      session.status = 'failed'
-      throw err
-    }
-  }
-
-  yield(sessionId: string, message?: string): void {
-    const session = this.sessions.get(sessionId)
-    if (!session) {
-      throw new Error(`Sub-agent session not found: ${sessionId}`)
-    }
-    session.status = 'yielded'
-    if (message) {
-      log.info(`Sub-agent ${sessionId} yielded with message: ${message.slice(0, 100)}`)
-    }
+    // Fire follow-up in background
+    void this.runInBackground(session, workspace, provider, message)
   }
 
   list(): SubagentSession[] {
-    return [...this.sessions.values()]
-      .filter((s) => s.status === 'running' || s.status === 'yielded')
-      .map((s) => this.toPublicSession(s))
+    return [...this.sessions.values()].map((s) => this.toPublicSession(s))
   }
 
   kill(sessionId: string): void {
@@ -276,64 +203,78 @@ export class SubagentManagerImpl implements SubagentManager {
       throw new Error(`Sub-agent session not found: ${sessionId}`)
     }
     session.abort.abort('Killed by parent')
+    if (session.timeoutHandle) clearTimeout(session.timeoutHandle)
     session.status = 'failed'
-    this.sessions.delete(sessionId)
+    session.error = 'Killed by parent'
+    session.durationMs = Date.now() - session.startTime
     log.info(`Sub-agent ${sessionId} killed`)
   }
 
   // -----------------------------------------------------------------------
-  // Internal helpers
+  // Internal — background execution
   // -----------------------------------------------------------------------
 
-  private async runOneShot(
+  private async runInBackground(
     session: InternalSession,
-    systemPrompt: string,
+    workspace: WorkspaceLoader,
     provider: Provider,
-    tools: Tool[],
-    task: string,
-    abort: AbortController,
-    timeoutHandle?: ReturnType<typeof setTimeout>,
-  ): Promise<string> {
-    try {
-      const meta = await this.runTurn(session, systemPrompt, provider, tools, task, abort.signal)
-      session.iterations = meta.iterations
-      session.toolsUsed = meta.toolsUsed
-      session.usage = meta.usage
-      return meta.response
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle)
-      this.sessions.delete(session.id)
-    }
-  }
-
-  private async runTurn(
-    session: InternalSession,
-    systemPrompt: string,
-    provider: Provider,
-    tools: Tool[],
     userMessage: string,
-    signal: AbortSignal,
-  ): Promise<TurnMeta> {
-    const loop = new AgentLoop({
-      systemPrompt,
-      provider,
-      tools,
-      modelOverride: session.modelOverride,
-      agentId: session.childAgent,
-      freshConversation: true, // Isolate from parent's stateful conversation context
-    })
+  ): Promise<void> {
+    try {
+      // Build system prompt
+      const systemPrompt = await workspace.buildSystemPrompt(session.childAgent)
+      const enrichedPrompt =
+        systemPrompt +
+        '\n\n## Sub-agent Context\n' +
+        'You are running as a sub-agent spawned by another agent.\n' +
+        'Complete your assigned task thoroughly. When done, provide a clear summary of what you accomplished.'
 
-    const result = await loop.run(userMessage, session.history, signal)
+      // Resolve, filter, and deduplicate tools
+      const tools = deduplicateTools(
+        filterToolsForAgent(this.config.tools(), session.childAgent, this.config.toolFilter),
+      )
 
-    if (result.aborted) {
-      throw new Error('Sub-agent was aborted')
-    }
+      const loop = new AgentLoop({
+        systemPrompt: enrichedPrompt,
+        provider,
+        tools,
+        modelOverride: session.modelOverride,
+        agentId: session.childAgent,
+        freshConversation: true,
+      })
 
-    return {
-      response: result.response,
-      iterations: result.iterations,
-      toolsUsed: result.toolsUsed,
-      usage: result.usage,
+      // Add user message to history
+      session.history.push({ role: 'user', content: userMessage })
+
+      const result = await loop.run(userMessage, session.history.slice(0, -1), session.abort.signal)
+
+      // Update session with final results
+      session._iterations = result.iterations
+      session._toolsUsed = result.toolsUsed
+      session._usage = result.usage
+      session._lastResponse = result.response
+
+      if (result.aborted) {
+        session.status = 'failed'
+        session.error = 'Aborted'
+        session._lastResponse = result.partialResponse ?? result.response ?? ''
+      } else {
+        session.status = 'completed'
+        session.history.push({ role: 'assistant', content: result.response })
+      }
+
+      session.durationMs = Date.now() - session.startTime
+      session.iterations = result.iterations
+      session.toolsUsed = result.toolsUsed
+      session.usage = result.usage
+      session.lastResponse = session._lastResponse
+    } catch (err: unknown) {
+      session.status = 'failed'
+      session.error = (err as Error).message
+      session.durationMs = Date.now() - session.startTime
+      log.error(`Sub-agent ${session.id} failed: ${(err as Error).message}`)
+    } finally {
+      if (session.timeoutHandle) clearTimeout(session.timeoutHandle)
     }
   }
 
@@ -346,10 +287,12 @@ export class SubagentManagerImpl implements SubagentManager {
       status: session.status,
       history: [...session.history],
       createdAt: session.createdAt,
-      iterations: session.iterations,
-      toolsUsed: session.toolsUsed,
-      usage: session.usage,
-      durationMs: session.durationMs,
+      iterations: session._iterations,
+      toolsUsed: [...new Set(session._toolsUsed)],
+      usage: session._usage,
+      durationMs: session.status === 'running' ? Date.now() - session.startTime : session.durationMs,
+      lastResponse: session._lastResponse,
+      error: session.error,
     }
   }
 }
@@ -362,9 +305,9 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
   const spawnTool: Tool = {
     name: 'subagent_spawn',
     description:
-      'Spawn a sub-agent to handle a task. Use mode "run" for one-shot tasks ' +
-      '(returns the result directly) or "session" for interactive multi-turn ' +
-      'conversations with the sub-agent.',
+      'Spawn a sub-agent to handle a task. Returns immediately with a session ID — ' +
+      'the agent runs in the background. Use subagent_status to check progress ' +
+      'and collect results.',
     parameters: {
       type: 'object',
       properties: {
@@ -374,64 +317,85 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
         },
         task: {
           type: 'string',
-          description: 'Task description or initial message for the sub-agent',
-        },
-        mode: {
-          type: 'string',
-          enum: ['run', 'session'],
-          description:
-            '"run" = one-shot (returns result), "session" = persistent (stays alive for follow-ups)',
+          description: 'Task description for the sub-agent',
         },
         timeout_ms: {
           type: 'number',
-          description: 'Optional timeout in milliseconds (default: none)',
+          description: 'Optional timeout in milliseconds (default: no timeout — runs until done)',
         },
       },
-      required: ['agent', 'task', 'mode'],
+      required: ['agent', 'task'],
     },
 
-    execute: async (args, _signal, _context) => {
+    // eslint-disable-next-line @typescript-eslint/require-await
+    execute: async (args) => {
       try {
-        const session = await manager.spawn({
+        const session = manager.spawn({
           agent: args.agent as string,
           task: args.task as string,
-          mode: args.mode as 'run' | 'session',
           timeoutMs: args.timeout_ms as number | undefined,
         })
 
-        if (args.mode === 'run') {
-          // One-shot: return the last assistant message with metadata footer
-          const lastMsg = session.history.find((m) => m.role === 'assistant')
-          const response = lastMsg
-            ? getTextContent(lastMsg.content)
-            : '[No response from sub-agent]'
-
-          const meta: string[] = []
-          if (session.durationMs != null) meta.push(`${String(session.durationMs)}ms`)
-          if (session.toolsUsed?.length)
-            meta.push(`tools: ${[...new Set(session.toolsUsed)].join(', ')}`)
-          if (session.usage)
-            meta.push(
-              `tokens: ${String(session.usage.promptTokens + session.usage.completionTokens)}`,
-            )
-          if (session.iterations != null) meta.push(`iterations: ${String(session.iterations)}`)
-          const metaLine = meta.length
-            ? `\n\n---\n_Sub-agent [${session.status}]: ${meta.join(' | ')}_`
-            : ''
-
-          return response + metaLine
-        } else {
-          // Session mode: return session ID + initial response
-          const lastMsg = session.history.find((m) => m.role === 'assistant')
-          return JSON.stringify({
-            sessionId: session.id,
-            agent: session.childAgent,
-            status: session.status,
-            response: lastMsg ? getTextContent(lastMsg.content) : '[No initial response]',
-          })
-        }
+        return JSON.stringify({
+          sessionId: session.id,
+          agent: session.childAgent,
+          status: session.status,
+          message: `Sub-agent ${session.childAgent} spawned. Use subagent_status("${session.id}") to check progress.`,
+        })
       } catch (err: unknown) {
         return `Error spawning sub-agent: ${(err as Error).message}`
+      }
+    },
+  }
+
+  const statusTool: Tool = {
+    name: 'subagent_status',
+    description:
+      'Check the status and progress of a sub-agent session. ' +
+      'Returns elapsed time, iterations, tools used, and the response ' +
+      '(partial if still running, final if completed).',
+    parameters: {
+      type: 'object',
+      properties: {
+        session_id: {
+          type: 'string',
+          description: 'Sub-agent session ID (returned by subagent_spawn)',
+        },
+      },
+      required: ['session_id'],
+    },
+
+    // eslint-disable-next-line @typescript-eslint/require-await
+    execute: async (args) => {
+      try {
+        const status = manager.status(args.session_id as string)
+
+        // Format a human-readable summary with all the details
+        const lines: string[] = []
+        lines.push(`**Status:** ${status.status}`)
+        lines.push(`**Agent:** ${status.agent}`)
+        lines.push(`**Elapsed:** ${formatDuration(status.elapsedMs)}`)
+        lines.push(`**Iterations:** ${String(status.iterations)}`)
+        if (status.toolsUsed.length > 0) {
+          lines.push(`**Tools used:** ${status.toolsUsed.join(', ')}`)
+        }
+        if (status.usage) {
+          lines.push(
+            `**Tokens:** ${String(status.usage.promptTokens + status.usage.completionTokens)} (${String(status.usage.promptTokens)} prompt + ${String(status.usage.completionTokens)} completion)`,
+          )
+        }
+        if (status.error) {
+          lines.push(`**Error:** ${status.error}`)
+        }
+        if (status.lastResponse) {
+          lines.push('')
+          lines.push('**Response:**')
+          lines.push(status.lastResponse)
+        }
+
+        return lines.join('\n')
+      } catch (err: unknown) {
+        return `Error: ${(err as Error).message}`
       }
     },
   }
@@ -439,8 +403,8 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
   const sendTool: Tool = {
     name: 'subagent_send',
     description:
-      'Send a message to a persistent sub-agent session. ' +
-      'Only works with sessions spawned in "session" mode.',
+      'Send a follow-up message to a completed sub-agent session. ' +
+      'Starts a new turn in the background — use subagent_status to check results.',
     parameters: {
       type: 'object',
       properties: {
@@ -456,10 +420,11 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
       required: ['session_id', 'message'],
     },
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     execute: async (args) => {
       try {
-        const response = await manager.send(args.session_id as string, args.message as string)
-        return response
+        manager.send(args.session_id as string, args.message as string)
+        return `Follow-up sent. Use subagent_status("${args.session_id as string}") to check progress.`
       } catch (err: unknown) {
         return `Error: ${(err as Error).message}`
       }
@@ -468,7 +433,7 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
 
   const listTool: Tool = {
     name: 'subagent_list',
-    description: 'List all active sub-agent sessions.',
+    description: 'List all sub-agent sessions (running, completed, and failed).',
     parameters: {
       type: 'object',
       properties: {},
@@ -477,15 +442,18 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
     execute: async () => {
       const sessions = manager.list()
       if (sessions.length === 0) {
-        return 'No active sub-agent sessions.'
+        return 'No sub-agent sessions.'
       }
       return JSON.stringify(
         sessions.map((s) => ({
           id: s.id,
           agent: s.childAgent,
           status: s.status,
+          elapsed: formatDuration(
+            s.status === 'running' ? Date.now() - s.createdAt : s.durationMs ?? 0,
+          ),
+          iterations: s.iterations ?? 0,
           messages: s.history.length,
-          createdAt: new Date(s.createdAt).toISOString(),
         })),
         null,
         2,
@@ -518,5 +486,18 @@ export function createSubagentTools(manager: SubagentManager): Tool[] {
     },
   }
 
-  return [spawnTool, sendTool, listTool, killTool]
+  return [spawnTool, statusTool, sendTool, listTool, killTool]
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${String(ms)}ms`
+  const secs = Math.floor(ms / 1000)
+  if (secs < 60) return `${String(secs)}s`
+  const mins = Math.floor(secs / 60)
+  const remainingSecs = secs % 60
+  return `${String(mins)}m ${String(remainingSecs)}s`
 }
