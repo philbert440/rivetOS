@@ -545,17 +545,15 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
  * Run a command on a remote host via SSH using spawn (non-blocking, streamed output).
  * Resolves on exit code 0, rejects on non-zero exit or timeout.
  */
-function sshExec(
-  host: string,
-  command: string,
-  label: string,
-  timeoutMs: number,
-): Promise<void> {
+function sshExec(host: string, command: string, label: string, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const args = [
-      '-o', 'BatchMode=yes',
-      '-o', 'ConnectTimeout=5',
-      '-o', 'StrictHostKeyChecking=no',
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'ConnectTimeout=5',
+      '-o',
+      'StrictHostKeyChecking=no',
       `root@${host}`,
       command,
     ]
@@ -592,7 +590,8 @@ function sshExec(
 function rsyncExec(src: string, dest: string, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const args = [
-      '-az', '--delete',
+      '-az',
+      '--delete',
       '--exclude=.git/',
       '--exclude=node_modules/',
       '--exclude=.secrets/',
@@ -669,7 +668,12 @@ async function rsyncUpdateNodeAsync(
 
     // Step 3: npm install (120s)
     console.log(`    ${tag} Installing dependencies...`)
-    await sshExec(host, 'cd /opt/rivetos && npm install --no-audit --no-fund', `${tag} npm install`, 120_000)
+    await sshExec(
+      host,
+      'cd /opt/rivetos && npm install --no-audit --no-fund',
+      `${tag} npm install`,
+      120_000,
+    )
 
     // Step 4: nx reset (15s)
     console.log(`    ${tag} Resetting Nx cache...`)
