@@ -139,13 +139,13 @@ export class MeshDelegationEngine {
         timeout = setTimeout(() => controller.abort(), request.timeoutMs + 5_000)
       }
 
-      const body: Record<string, unknown> = {
+      const payload: Record<string, unknown> = {
         fromAgent: request.fromAgent,
         message: `[Mesh delegation] ${request.task}`,
         waitForResponse: true,
       }
       if (request.timeoutMs) {
-        body.timeoutMs = request.timeoutMs
+        payload.timeoutMs = request.timeoutMs
       }
 
       const res = await fetch(url, {
@@ -154,7 +154,7 @@ export class MeshDelegationEngine {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.config.secret}`,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(payload),
         signal: request.timeoutMs ? controller.signal : undefined,
       })
 
@@ -169,11 +169,11 @@ export class MeshDelegationEngine {
         }
       }
 
-      const body = (await res.json()) as { response?: string; agent?: string }
+      const resBody = (await res.json()) as { response?: string; agent?: string }
 
       return {
         status: 'completed',
-        response: body.response ?? '[no response from remote agent]',
+        response: resBody.response ?? '[no response from remote agent]',
         durationMs: Date.now() - startTime,
       }
     } catch (err: unknown) {
