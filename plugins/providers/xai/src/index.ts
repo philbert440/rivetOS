@@ -135,8 +135,20 @@ interface XAIFunctionTool {
 
 /** Built-in tool definitions for the request body */
 type XAIBuiltInTool =
-  | { type: 'web_search'; search_parameters?: { filters?: Record<string, unknown> }; enable_image_understanding?: boolean }
-  | { type: 'x_search'; allowed_x_handles?: string[]; excluded_x_handles?: string[]; from_date?: string; to_date?: string; enable_image_understanding?: boolean; enable_video_understanding?: boolean }
+  | {
+      type: 'web_search'
+      search_parameters?: { filters?: Record<string, unknown> }
+      enable_image_understanding?: boolean
+    }
+  | {
+      type: 'x_search'
+      allowed_x_handles?: string[]
+      excluded_x_handles?: string[]
+      from_date?: string
+      to_date?: string
+      enable_image_understanding?: boolean
+      enable_video_understanding?: boolean
+    }
   | { type: 'code_interpreter' }
 
 /** SSE event shape from the xAI Responses API */
@@ -144,17 +156,17 @@ interface ResponsesEvent {
   type?: string
   // output_item.added / output_item.done
   item?: {
-    type?: string           // 'function_call' | 'web_search_call' | 'x_search_call' | 'code_interpreter_call' | 'file_search_call' | 'mcp_call' | 'message'
+    type?: string // 'function_call' | 'web_search_call' | 'x_search_call' | 'code_interpreter_call' | 'file_search_call' | 'mcp_call' | 'message'
     call_id?: string
     id?: string
     name?: string
-    arguments?: string      // for function_call items, full args in non-streaming
-    status?: string         // 'completed' | 'failed' | 'in_progress'
+    arguments?: string // for function_call items, full args in non-streaming
+    status?: string // 'completed' | 'failed' | 'in_progress'
     content?: Array<{
-      type?: string         // 'output_text'
+      type?: string // 'output_text'
       text?: string
       annotations?: Array<{
-        type?: string       // 'url_citation'
+        type?: string // 'url_citation'
         url?: string
         start_index?: number
         end_index?: number
@@ -169,7 +181,7 @@ interface ResponsesEvent {
   // response.completed / response.done / response.created / response.failed / response.incomplete
   response?: {
     id?: string
-    status?: string         // 'completed' | 'failed' | 'incomplete'
+    status?: string // 'completed' | 'failed' | 'incomplete'
     usage?: {
       input_tokens?: number
       output_tokens?: number
@@ -375,7 +387,12 @@ export class XAIProvider implements Provider {
   // Request options
   private reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | undefined
   private maxTurns: number | undefined
-  private toolChoice: 'auto' | 'required' | 'none' | { type: 'function'; function: { name: string } } | undefined
+  private toolChoice:
+    | 'auto'
+    | 'required'
+    | 'none'
+    | { type: 'function'; function: { name: string } }
+    | undefined
   private parallelToolCalls: boolean | undefined
   private truncation: 'auto' | 'disabled' | undefined
   private instructions: string | undefined
@@ -445,7 +462,9 @@ export class XAIProvider implements Provider {
   // Build tools array (built-in + function tools)
   // -----------------------------------------------------------------------
 
-  private buildToolsArray(functionTools?: ToolDefinition[]): (XAIBuiltInTool | XAIFunctionTool)[] | undefined {
+  private buildToolsArray(
+    functionTools?: ToolDefinition[],
+  ): (XAIBuiltInTool | XAIFunctionTool)[] | undefined {
     const tools: (XAIBuiltInTool | XAIFunctionTool)[] = []
 
     // Add configured built-in tools
@@ -471,18 +490,23 @@ export class XAIProvider implements Provider {
   // Resolve reasoning effort (config default + per-request override)
   // -----------------------------------------------------------------------
 
-  private resolveReasoningEffort(model: string, thinking?: ThinkingLevel): { effort: 'low' | 'medium' | 'high' | 'xhigh' } | undefined {
+  private resolveReasoningEffort(
+    model: string,
+    thinking?: ThinkingLevel,
+  ): { effort: 'low' | 'medium' | 'high' | 'xhigh' } | undefined {
     // Per-request override takes precedence
     const level = thinking ?? this.reasoningEffort
     if (!level || level === 'off') return undefined
 
     // 'xhigh' is only valid for multi-agent models — downgrade to 'high' on others
     if (level === 'xhigh' && !model.includes('multi-agent')) {
-      console.warn(`[xai] reasoning.effort 'xhigh' is only valid for multi-agent models — downgrading to 'high' for ${model}`)
+      console.warn(
+        `[xai] reasoning.effort 'xhigh' is only valid for multi-agent models — downgrading to 'high' for ${model}`,
+      )
       return { effort: 'high' }
     }
 
-    return { effort: level as 'low' | 'medium' | 'high' | 'xhigh' }
+    return { effort: level }
   }
 
   // -----------------------------------------------------------------------
@@ -696,7 +720,6 @@ export class XAIProvider implements Provider {
               yield { type: 'status', delta: `${toolType}: ${name}${args}` }
             }
             // 'message' type items — text/reasoning will come via delta events
-
           } else if (event.type === 'response.function_call_arguments.delta') {
             // Client-side function call argument streaming
             let targetIdx = toolCallIndex - 1
@@ -718,7 +741,6 @@ export class XAIProvider implements Provider {
                 toolCall: { index: targetIdx },
               }
             }
-
           } else if (event.type === 'response.function_call_arguments.done') {
             // Client-side function call complete
             let targetIdx = toolCallIndex - 1
@@ -732,19 +754,16 @@ export class XAIProvider implements Provider {
               }
             }
             yield { type: 'tool_call_done', toolCall: { index: targetIdx } }
-
           } else if (event.type === 'response.output_text.delta') {
             // Text content (may include inline citations as [[N]](url) markdown)
             if (event.delta) {
               yield { type: 'text', delta: event.delta }
             }
-
           } else if (event.type === 'response.reasoning.delta') {
             // Reasoning/thinking content
             if (event.delta) {
               yield { type: 'reasoning', delta: event.delta }
             }
-
           } else if (event.type === 'response.output_item.done') {
             // An output item finished. Check for server-side tool completion status.
             const item = event.item
@@ -753,7 +772,6 @@ export class XAIProvider implements Provider {
               const status = item.status ?? 'done'
               yield { type: 'status', delta: `${toolType}: ${status}` }
             }
-
           } else if (event.type === 'response.completed') {
             // Full response complete — extract usage, citations, response ID
             completedSuccessfully = true
@@ -775,7 +793,6 @@ export class XAIProvider implements Provider {
             if (resp?.citations?.length) {
               citations = resp.citations
             }
-
           } else if (event.type === 'response.done') {
             // Alias for response.completed in some API versions
             if (!completedSuccessfully) {
@@ -799,24 +816,21 @@ export class XAIProvider implements Provider {
                 citations = resp.citations
               }
             }
-
           } else if (event.type === 'response.created') {
             // Request accepted — do NOT save response ID here.
             // Wait for response.completed to confirm success.
-
           } else if (event.type === 'response.failed') {
             // Request failed mid-stream
-            const errMsg = event.response?.status === 'failed'
-              ? `xAI response failed${event.error?.message ? `: ${event.error.message}` : ''}`
-              : 'xAI response failed'
+            const errMsg =
+              event.response?.status === 'failed'
+                ? `xAI response failed${event.error?.message ? `: ${event.error.message}` : ''}`
+                : 'xAI response failed'
             yield { type: 'error', error: errMsg }
             // Don't save response ID on failure
-
           } else if (event.type === 'response.incomplete') {
             // Response truncated — model hit limits. Yield what we have.
             // Don't save response ID for incomplete responses — state may be inconsistent
             yield { type: 'status', delta: 'Response truncated (hit output limits)' }
-
           } else if (event.type === 'error') {
             // SSE-level error
             const errMsg = event.error?.message ?? 'Unknown xAI stream error'
