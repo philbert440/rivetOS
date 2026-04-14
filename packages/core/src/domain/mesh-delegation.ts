@@ -79,7 +79,7 @@ export class MeshDelegationEngine {
     log.info(
       `Delegating to ${request.toAgent} remotely via ${route.node.name} (${route.node.host}:${String(route.node.port)})`,
     )
-    return this.delegateRemote(request, route)
+    return this.delegateRemote(request, route, chainDepth)
   }
 
   /**
@@ -126,6 +126,7 @@ export class MeshDelegationEngine {
   private async delegateRemote(
     request: DelegationRequest,
     route: MeshDelegationRoute,
+    chainDepth = 0,
   ): Promise<DelegationResult> {
     const { node } = route
     const url = `http://${node.host}:${String(node.port)}/api/message`
@@ -143,6 +144,7 @@ export class MeshDelegationEngine {
         fromAgent: request.fromAgent,
         message: `[Mesh delegation] ${request.task}`,
         waitForResponse: true,
+        chainDepth: chainDepth + 1, // increment before sending — remote starts one level deeper
       }
       if (request.timeoutMs) {
         payload.timeoutMs = request.timeoutMs
