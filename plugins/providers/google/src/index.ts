@@ -44,6 +44,7 @@ const THINKING_BUDGETS: Record<ThinkingLevel, number | null> = {
   low: 1024,
   medium: 8192,
   high: 32768,
+  xhigh: 32768, // xhigh is xAI multi-agent specific — treat as high for other providers
 }
 
 // ---------------------------------------------------------------------------
