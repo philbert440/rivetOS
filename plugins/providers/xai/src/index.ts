@@ -13,7 +13,7 @@
  * - Real-time status events for server-side tool activity
  * - Citations support (inline + URL list)
  * - Full usage tracking (input, output, reasoning, cached tokens)
- * - reasoning.effort support (all current models: grok-4.20, grok-4-1-fast)
+ * - reasoning.effort support (multi-agent model only; grok-4.20 and grok-4-1-fast reason automatically)
  * - store: true by default; images force store: false
  * - 1-hour timeout for reasoning models
  */
@@ -206,8 +206,8 @@ const SERVER_SIDE_TOOL_TYPES = new Set([
   'mcp_call',
 ])
 
-// All supported models (grok-4.20-*, grok-4-1-fast-*) accept reasoning.effort.
-// No model gating needed — deprecated models are not supported by this provider.
+// reasoning.effort is ONLY supported by grok-4.20-multi-agent (controls agent count).
+// grok-4.20 and grok-4-1-fast reason automatically — sending reasoning.effort causes a 400 error.
 
 // ---------------------------------------------------------------------------
 // Message conversion (xAI Responses API format)
@@ -493,14 +493,13 @@ export class XAIProvider implements Provider {
     const level = thinking ?? this.reasoningEffort
     if (!level || level === 'off') return undefined
 
-    // 'xhigh' is only valid for multi-agent models — downgrade to 'high' on others
-    if (level === 'xhigh' && !model.includes('multi-agent')) {
-      console.warn(
-        `[xai] reasoning.effort 'xhigh' is only valid for multi-agent models — downgrading to 'high' for ${model}`,
-      )
-      return { effort: 'high' }
+    // Only grok-4.20-multi-agent supports reasoning.effort (controls agent count).
+    // grok-4.20 and grok-4-1-fast reason automatically — sending reasoning.effort errors.
+    if (!model.includes('multi-agent')) {
+      return undefined
     }
 
+    // 'xhigh' is only valid for multi-agent models — but we're already gated to multi-agent
     return { effort: level }
   }
 
