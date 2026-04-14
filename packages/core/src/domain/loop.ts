@@ -54,6 +54,8 @@ export interface AgentLoopConfig {
   onStream?: StreamHandler
   /** Agent ID — passed to tools via ToolContext */
   agentId?: string
+  /** Workspace directory — passed to tools via ToolContext for resolving relative paths */
+  workspaceDir?: string
   /** Directory to save tool-produced images (default: .data/images in cwd) */
   imageDir?: string
   /** Hook pipeline for lifecycle events (optional — loop works without it) */
@@ -654,7 +656,10 @@ export class AgentLoop {
           rawResult = `Error: Unknown tool "${tc.name}"`
         } else {
           try {
-            rawResult = await tool.execute(tc.arguments, signal, { agentId: this.config.agentId })
+            rawResult = await tool.execute(tc.arguments, signal, {
+              agentId: this.config.agentId,
+              workingDir: this.config.workspaceDir,
+            })
           } catch (err: unknown) {
             rawResult = `Error: ${err instanceof Error ? err.message : String(err)}`
           }
