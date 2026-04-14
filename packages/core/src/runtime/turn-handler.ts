@@ -226,7 +226,7 @@ export class TurnHandler {
           if (streamMsgId && channel.edit) {
             await channel
               .edit(message.channelId, streamMsgId, result.response, overflowIds)
-              .catch(() => {})
+              .catch(() => {}) // fire-and-forget — edit failure is non-critical
           } else {
             await channel.send({
               channelId: message.channelId,

@@ -48,9 +48,7 @@ async function resolveProviderConfig(
         }
       }
       if (!config.apiKey) {
-        console.warn(
-          '[RivetOS] No Anthropic API key or OAuth token found. Run: rivetos anthropic setup',
-        )
+        log.warn('No Anthropic API key or OAuth token found. Run: rivetos anthropic setup')
       }
       break
     }
