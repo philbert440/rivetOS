@@ -238,8 +238,11 @@ export class DelegationEngine {
       // Remove any existing delegate_task — we'll add our own with proper chain depth
       const delegationTools = filteredTools.filter((t) => t.name !== 'delegate_task')
 
-      // If we have room in the chain, give the delegate the delegation tool with correct depth
-      if (chainDepth + 1 < this.maxChainDepth) {
+      // If we have room in the chain AND delegation isn't suppressed,
+      // give the delegate the delegation tool with correct depth.
+      // noDelegation is set for mesh-received tasks — the agent should
+      // do the work, not re-delegate.
+      if (!request.noDelegation && chainDepth + 1 < this.maxChainDepth) {
         delegationTools.push(this.createDelegationTool(chainDepth + 1))
       }
 

@@ -65,6 +65,10 @@ export interface DelegationRequest {
   task: string
   context?: string[]
   timeoutMs?: number
+  /** When true, the delegate will NOT receive a delegate_task tool.
+   *  Set automatically for mesh-received delegations so agents do the
+   *  work instead of re-delegating. */
+  noDelegation?: boolean
 }
 
 export interface DelegationResult {
