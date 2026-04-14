@@ -201,7 +201,7 @@ export class Runtime {
 
       // If a turn is active, acknowledge the queued message
       if (queue.isProcessing) {
-        channel.react?.(message.channelId, message.id, '👀').catch(() => {})
+        channel.react?.(message.channelId, message.id, '👀').catch(() => {}) // fire-and-forget — reaction is non-critical
       }
 
       await queue.enqueue(message)
@@ -308,7 +308,7 @@ export class Runtime {
             for (const [, ch] of this.channels) {
               await ch
                 .send({ channelId: hbConfig.outputChannel, text: result.response })
-                .catch(() => {})
+                .catch(() => {}) // fire-and-forget — heartbeat delivery is best-effort
             }
           }
         }
@@ -322,7 +322,7 @@ export class Runtime {
               role: 'assistant',
               content: result.response,
             })
-            .catch(() => {})
+            .catch(() => {}) // fire-and-forget — heartbeat memory append is best-effort
         }
       })
       this.heartbeatRunner.start()

@@ -4,7 +4,10 @@
 
 import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
+import { logger } from '@rivetos/core'
 import { validateConfig, formatValidationResult } from './validate/index.js'
+
+const log = logger('Config')
 
 // ---------------------------------------------------------------------------
 // Config Types
@@ -213,13 +216,13 @@ export async function loadConfig(path: string): Promise<RivetConfig> {
 
   if (result.warnings.length > 0) {
     for (const warn of result.warnings) {
-      console.warn(`[RivetOS] [WARN] [Config] ${warn.path ? `[${warn.path}] ` : ''}${warn.message}`)
+      log.warn(`${warn.path ? `[${warn.path}] ` : ''}${warn.message}`)
     }
   }
 
   if (!result.valid) {
     const formatted = formatValidationResult(result)
-    console.error(`[RivetOS] [ERROR] [Config] Validation failed:\n${formatted}`)
+    log.error(`Validation failed:\n${formatted}`)
     throw new ConfigValidationError(formatted)
   }
 

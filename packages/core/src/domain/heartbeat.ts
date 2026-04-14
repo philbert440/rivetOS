@@ -9,6 +9,9 @@
  */
 
 import type { HeartbeatConfig } from '@rivetos/types'
+import { logger } from '../logger.js'
+
+const log = logger('Heartbeat')
 
 export interface HeartbeatRunner {
   start(): void
@@ -33,7 +36,7 @@ function parseSchedule(schedule: string | number): number {
 
   const match = schedule.match(/^(\d+)(m|min|h|hr|s|sec)?$/i)
   if (!match) {
-    console.warn(`[Heartbeat] Unknown schedule format: "${schedule}", defaulting to 30 min`)
+    log.warn(`Unknown schedule format: "${schedule}", defaulting to 30 min`)
     return 30 * 60 * 1000
   }
 
@@ -88,7 +91,7 @@ export function createHeartbeatRunner(
         const intervalMs = parseSchedule(config.schedule)
         const name = `${config.agent}/${config.outputChannel ?? 'silent'}`
 
-        console.log(`[Heartbeat] Scheduling "${name}" every ${Math.round(intervalMs / 60000)} min`)
+        log.info(`Scheduling "${name}" every ${Math.round(intervalMs / 60000)} min`)
 
         // Run first heartbeat after a short delay (not immediately on startup)
         // eslint-disable-next-line @typescript-eslint/no-misused-promises
@@ -114,7 +117,7 @@ export function createHeartbeatRunner(
         clearTimeout(timer)
       }
       timers.length = 0
-      console.log('[Heartbeat] Stopped')
+      log.info('Stopped')
     },
   }
 }
@@ -128,6 +131,6 @@ async function runHeartbeat(config: HeartbeatConfig, handler: HeartbeatHandler):
   try {
     await handler(config)
   } catch (err: unknown) {
-    console.error(`[Heartbeat] Error running ${config.agent}: ${(err as Error).message}`)
+    log.error(`Error running ${config.agent}: ${(err as Error).message}`)
   }
 }

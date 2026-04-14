@@ -138,7 +138,7 @@ export class StreamManager {
 
       case 'error':
         // Errors are the only thing that gets a separate message
-        channel.send({ channelId: message.channelId, text: `⚠️ ${event.content}` }).catch(() => {})
+        channel.send({ channelId: message.channelId, text: `⚠️ ${event.content}` }).catch(() => {}) // fire-and-forget — best-effort error display
         break
     }
   }
@@ -207,7 +207,7 @@ export class StreamManager {
 
     if (s.toolMessageId && channel.edit) {
       // Tool logs are short — no overflow tracking needed
-      void channel.edit(channelId, s.toolMessageId, display).catch(() => {})
+      void channel.edit(channelId, s.toolMessageId, display).catch(() => {}) // fire-and-forget — tool log edit
     } else {
       void channel
         .send({ channelId, text: display, silent: true })

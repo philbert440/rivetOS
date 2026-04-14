@@ -455,10 +455,10 @@ export class DiscordChannel implements Channel {
       .fetch(channelId)
       .then((channel) => {
         if (channel && 'sendTyping' in channel) {
-          ;(channel as TextChannel).sendTyping().catch(() => {})
+          ;(channel as TextChannel).sendTyping().catch(() => {}) // fire-and-forget — typing indicator
         }
       })
-      .catch(() => {})
+      .catch(() => {}) // fire-and-forget — channel fetch for typing
   }
 
   // -----------------------------------------------------------------------
@@ -559,7 +559,7 @@ export class DiscordChannel implements Channel {
       timestamp: Date.now(),
     }
 
-    await interaction.deferUpdate().catch(() => {})
+    await interaction.deferUpdate().catch(() => {}) // fire-and-forget — defer may fail if interaction expired
     await this.commandHandler('button', interaction.customId, inbound)
   }
 
