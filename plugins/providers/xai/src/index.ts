@@ -16,6 +16,7 @@
  * - reasoning.effort support (multi-agent model only; grok-4.20 and grok-4-1-fast reason automatically)
  * - store: true by default; images force store: false
  * - 1-hour timeout for reasoning models
+ * - Prompt caching via stable prompt_cache_key + x-grok-conv-id header
  */
 
 import type {
@@ -32,6 +33,7 @@ import type {
 } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
 import { hasImages } from '@rivetos/types'
+import { randomUUID } from 'node:crypto'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -292,10 +294,22 @@ function convertMessages(messages: Message[]): ResponsesInput[] {
       Array.isArray(msg.content)
     ) {
       // Multimodal user message — use xAI native content blocks
-      result.push({ role: 'user', content: convertContentPartsToXAI(msg.content) })
+      const blocks = convertContentPartsToXAI(msg.content)
+      if (blocks.length > 0) {
+        result.push({ role: 'user', content: blocks })
+      } else {
+        // Fallback: extract text if multimodal conversion produced no blocks
+        const text = extractText(msg.content)
+        if (text) {
+          result.push({ role: 'user', content: text })
+        }
+      }
     } else {
-      // system / plain user — pass through
-      result.push({ role: msg.role, content: extractText(msg.content) || '' })
+      // system / plain user — pass through (skip empty content)
+      const text = extractText(msg.content) || ''
+      if (text) {
+        result.push({ role: msg.role, content: text })
+      }
     }
   }
 
@@ -396,6 +410,8 @@ export class XAIProvider implements Provider {
   private lastResponseId: string | null = null
   /** Track which model the stored conversation belongs to */
   private lastResponseModel: string | null = null
+  /** Stable prompt cache key for xAI prompt caching (persists per conversation) */
+  private promptCacheKey: string | null = null
 
   constructor(config: XAIProviderConfig) {
     this.apiKey = config.apiKey
@@ -441,6 +457,28 @@ export class XAIProvider implements Provider {
   resetConversation(): void {
     this.lastResponseId = null
     this.lastResponseModel = null
+    this.promptCacheKey = null
+  }
+
+  // -----------------------------------------------------------------------
+  // Prompt cache key management
+  // -----------------------------------------------------------------------
+
+  /**
+   * Get or generate a stable prompt_cache_key for xAI prompt caching.
+   * Priority: conversationId from options > existing cached key > new random UUID.
+   * Stable keys ensure cache hits across turns in the same conversation.
+   */
+  private getPromptCacheKey(conversationId?: string): string {
+    if (conversationId) {
+      this.promptCacheKey = conversationId
+      return conversationId
+    }
+    if (this.promptCacheKey) {
+      return this.promptCacheKey
+    }
+    this.promptCacheKey = randomUUID()
+    return this.promptCacheKey
   }
 
   // -----------------------------------------------------------------------
@@ -539,6 +577,19 @@ export class XAIProvider implements Provider {
       input = allMessages
     }
 
+    // Safety: filter out any messages with empty content to prevent
+    // "Each message must have at least one content element" errors
+    input = input.filter((item) => {
+      if (!('role' in item)) return true // function_call, function_call_output — always keep
+      const content = (item as Record<string, unknown>).content
+      if (content === undefined || content === null || content === '') return false
+      if (Array.isArray(content) && content.length === 0) return false
+      return true
+    })
+
+    // Prompt caching: get or generate a stable cache key
+    const promptCacheKey = this.getPromptCacheKey(options?.conversationId)
+
     // Build request body
     const body: Record<string, unknown> = {
       model,
@@ -546,6 +597,7 @@ export class XAIProvider implements Provider {
       stream: true,
       store: storeThisRequest,
       include: this.buildIncludeArray(),
+      prompt_cache_key: promptCacheKey,
     }
 
     // Continue from previous response if available
@@ -624,12 +676,15 @@ export class XAIProvider implements Provider {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.apiKey}`,
+          'x-grok-conv-id': promptCacheKey,
         },
         body: JSON.stringify(body),
         signal: controller.signal,
       })
     } catch (err: unknown) {
       clearTimeout(timeout)
+      // Invalidate continuation state on failure — next turn starts fresh
+      this.lastResponseId = null
       if (err instanceof ProviderError) throw err
       const message = err instanceof Error ? err.message : String(err)
       throw new ProviderError(`xAI fetch failed: ${message}`, 0, 'xai', false)
@@ -638,6 +693,27 @@ export class XAIProvider implements Provider {
     if (!response.ok) {
       clearTimeout(timeout)
       const err = await response.text().catch(() => 'unknown')
+      // Log input shape for debugging 400 errors
+      if (response.status === 400) {
+        const inputSummary = input.map((item) => {
+          if ('role' in item) {
+            const c = (item as Record<string, unknown>).content
+            const contentDesc = Array.isArray(c)
+              ? `array(${(c as unknown[]).length})`
+              : typeof c === 'string'
+                ? `string(${c.length})`
+                : typeof c
+            return `${(item as Record<string, unknown>).role as string}:${contentDesc}`
+          }
+          return ((item as Record<string, unknown>).type as string | undefined) ?? 'unknown'
+        })
+        console.error(
+          `[xAI] 400 error — input shape: [${inputSummary.join(', ')}], ` +
+            `canContinue=${String(canContinue)}, prevResponseId=${this.lastResponseId ?? 'none'}`,
+        )
+      }
+      // Invalidate continuation state on failure — next turn starts fresh
+      this.lastResponseId = null
       throw new ProviderError(
         `xAI ${String(response.status)}: ${err.slice(0, 500)}`,
         response.status,
@@ -782,6 +858,11 @@ export class XAIProvider implements Provider {
               }
               if (resp.usage.prompt_tokens_details?.cached_tokens) {
                 usage.cachedTokens = resp.usage.prompt_tokens_details.cached_tokens
+                if (resp.usage.prompt_tokens_details.cached_tokens > 0) {
+                  console.log(
+                    `[xAI] Prompt cache hit: ${String(resp.usage.prompt_tokens_details.cached_tokens)} cached tokens (key=${promptCacheKey})`,
+                  )
+                }
               }
             }
             if (resp?.citations?.length) {
@@ -804,6 +885,11 @@ export class XAIProvider implements Provider {
                 }
                 if (resp.usage.prompt_tokens_details?.cached_tokens) {
                   usage.cachedTokens = resp.usage.prompt_tokens_details.cached_tokens
+                  if (resp.usage.prompt_tokens_details.cached_tokens > 0) {
+                    console.log(
+                      `[xAI] Prompt cache hit: ${String(resp.usage.prompt_tokens_details.cached_tokens)} cached tokens (key=${promptCacheKey})`,
+                    )
+                  }
                 }
               }
               if (resp?.citations?.length) {
