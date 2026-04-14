@@ -414,7 +414,17 @@ export class DelegationEngine {
   // -----------------------------------------------------------------------
 
   private buildCacheKey(request: DelegationRequest): string {
-    return `${request.fromAgent}:${request.toAgent}:${request.task}`
+    // Include context in the key so different contexts don't collide.
+    // Hash the task+context to avoid unbounded key length.
+    const contextStr = request.context?.join('|') ?? ''
+    const payload = `${request.task}|${contextStr}`
+    // Simple FNV-1a 32-bit hash — fast, good distribution, no crypto overhead
+    let hash = 0x811c9dc5
+    for (let i = 0; i < payload.length; i++) {
+      hash ^= payload.charCodeAt(i)
+      hash = (hash * 0x01000193) >>> 0
+    }
+    return `${request.fromAgent}:${request.toAgent}:${hash.toString(36)}`
   }
 
   private getFromCache(key: string): DelegationResult | undefined {

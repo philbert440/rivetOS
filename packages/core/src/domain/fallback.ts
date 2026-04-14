@@ -74,6 +74,7 @@ function isAuthError(statusCode?: number, error?: Error): boolean {
  */
 export function createFallbackHook(
   configs: FallbackConfig[],
+  externalState?: Map<string, FallbackState>,
 ): HookRegistration<ProviderErrorContext> {
   // Build lookup: providerId → FallbackConfig
   const configMap = new Map<string, FallbackConfig>()
@@ -81,8 +82,8 @@ export function createFallbackHook(
     configMap.set(config.providerId, config)
   }
 
-  // State per provider:session
-  const state = new Map<string, FallbackState>()
+  // State per provider:session (injectable for testing via createFallbackHookWithState)
+  const state = externalState ?? new Map<string, FallbackState>()
 
   // Cooldown: reset fallback index after 5 minutes of no fallbacks
   const COOLDOWN_MS = 5 * 60 * 1000
@@ -169,94 +170,20 @@ export function createFallbackHook(
 }
 
 /**
- * Reset all fallback state. Useful for testing.
+ * Creates a fallback hook with exposed state — for testing.
+ * Wraps the standard createFallbackHook and exposes reset/getState helpers.
  */
 export function createFallbackHookWithState(configs: FallbackConfig[]): {
   hook: HookRegistration<ProviderErrorContext>
   reset: () => void
   getState: () => Map<string, FallbackState>
 } {
-  const hook = createFallbackHook(configs)
-  // Access closure state via a wrapper
+  // Use an injectable state map so we can expose it
   const stateRef = new Map<string, FallbackState>()
-
-  // Re-create with exposed state
-  const configMap = new Map<string, FallbackConfig>()
-  for (const config of configs) {
-    configMap.set(config.providerId, config)
-  }
-
-  const COOLDOWN_MS = 5 * 60 * 1000
-
-  const hookWithState: HookRegistration<ProviderErrorContext> = {
-    ...hook,
-    // eslint-disable-next-line @typescript-eslint/require-await
-    handler: async (ctx: ProviderErrorContext) => {
-      const config = configMap.get(ctx.providerId)
-      if (!config || config.fallbacks.length === 0) return
-
-      const triggerCodes = config.triggerCodes ?? [429, 503]
-      const triggerOnTimeout = config.triggerOnTimeout ?? true
-      const triggerOnAuth = config.triggerOnAuthFailure ?? false
-
-      const codeMatch = ctx.statusCode !== undefined && triggerCodes.includes(ctx.statusCode)
-      const timeoutMatch = triggerOnTimeout && isTimeoutError(ctx.error)
-      const authMatch = triggerOnAuth && isAuthError(ctx.statusCode, ctx.error)
-
-      if (!codeMatch && !timeoutMatch && !authMatch) return
-
-      const stateKey = `${ctx.providerId}:${ctx.sessionId ?? 'global'}`
-      let fallbackState = stateRef.get(stateKey)
-
-      if (!fallbackState) {
-        fallbackState = { index: 0, lastFallback: 0, count: 0 }
-        stateRef.set(stateKey, fallbackState)
-      }
-
-      if (Date.now() - fallbackState.lastFallback > COOLDOWN_MS) {
-        fallbackState.index = 0
-        fallbackState.count = 0
-      }
-
-      if (fallbackState.index >= config.fallbacks.length) {
-        fallbackState.index = 0
-        fallbackState.count = 0
-        return
-      }
-
-      const fallbackSpec = config.fallbacks[fallbackState.index]
-      fallbackState.index++
-      fallbackState.lastFallback = Date.now()
-      fallbackState.count++
-
-      let fallbackProviderId: string
-      let fallbackModel: string
-
-      if (fallbackSpec.includes(':')) {
-        ;[fallbackProviderId, fallbackModel] = fallbackSpec.split(':', 2)
-      } else {
-        fallbackProviderId = ctx.providerId
-        fallbackModel = fallbackSpec
-      }
-
-      ctx.retry = {
-        providerId: fallbackProviderId,
-        model: fallbackModel,
-      }
-
-      ctx.metadata.fallbackFrom = `${ctx.providerId}:${ctx.model}`
-      ctx.metadata.fallbackTo = `${fallbackProviderId}:${fallbackModel}`
-      ctx.metadata.fallbackIndex = fallbackState.index
-      ctx.metadata.fallbackReason = ctx.statusCode
-        ? `HTTP ${ctx.statusCode}`
-        : isTimeoutError(ctx.error)
-          ? 'timeout'
-          : 'auth'
-    },
-  }
+  const hook = createFallbackHook(configs, stateRef)
 
   return {
-    hook: hookWithState,
+    hook,
     reset: () => stateRef.clear(),
     getState: () => stateRef,
   }

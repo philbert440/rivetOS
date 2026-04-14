@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /**
  * Agent Loop — the core execution cycle.
  *
@@ -441,7 +440,7 @@ export class AgentLoop {
                 const rawArgs = argsDelta.get(chunk.toolCall.index)
                 if (tc && rawArgs) {
                   try {
-                    tc.arguments = JSON.parse(rawArgs)
+                    tc.arguments = JSON.parse(rawArgs) as Record<string, unknown>
                   } catch {
                     tc.arguments = { raw: rawArgs }
                   }
