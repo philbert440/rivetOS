@@ -196,13 +196,17 @@ export class AgentChannelServer {
     const startTime = Date.now()
 
     try {
-      // Use the local delegation engine to handle the task
+      // Use the local delegation engine to handle the task.
+      // noDelegation: true prevents the delegate from re-delegating —
+      // when a task arrives over the mesh, the agent should execute it,
+      // not bounce it back out.
       const result = await this.config.delegationEngine.delegate(
         {
           fromAgent,
           toAgent: targetAgent,
           task: message.replace(/^\[Mesh delegation\]\s*/, ''),
           timeoutMs: timeoutMs ?? 120_000,
+          noDelegation: true,
         },
         chainDepth ?? 0, // propagate chain depth from caller (0 if not provided)
       )
