@@ -20,6 +20,9 @@ export interface ChatOptions {
   /** Start a fresh conversation — don't reuse stateful conversation context (e.g. xAI previous_response_id).
    *  Used by delegation and subagent engines to prevent conversation state bleed. */
   freshConversation?: boolean
+  /** Stable conversation identifier for prompt caching (xAI prompt_cache_key, etc.).
+   *  Providers that support prompt caching use this for consistent cache hits. */
+  conversationId?: string
 }
 
 // ---------------------------------------------------------------------------
