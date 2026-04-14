@@ -298,6 +298,9 @@ export class Runtime {
           agentId: hbConfig.agent,
           workspaceDir: this.config.workspaceDir,
           freshConversation: true,
+          turnTimeout: this.config.turnTimeout ? this.config.turnTimeout * 1000 : undefined,
+          contextWindow: provider.getContextWindow(),
+          contextConfig: this.config.contextConfig,
         })
 
         const result = await loop.run(hbConfig.prompt, [])
