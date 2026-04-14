@@ -271,8 +271,8 @@ describe('AgentLoop', () => {
 
     const result = await loop.run('Run echo hi', []);
     assert.ok(result.usage);
-    assert.equal(result.usage.promptTokens, 40);  // 10+10 + 20+20 (Math.max + done accumulation)
-    assert.equal(result.usage.completionTokens, 20);  // 5+5 + 10+10 (Math.max + done accumulation)
+    assert.equal(result.usage.promptTokens, 20);  // max(10, 20) across iterations
+    assert.equal(result.usage.completionTokens, 10);  // max(5, 10) across iterations
   });
 
   it('should handle unknown tool gracefully', async () => {
