@@ -91,8 +91,9 @@ export interface XAIProviderConfig {
 
   // --- Request options ---
 
-  /** Default reasoning effort level. Overridden by ChatOptions.thinking per-request. */
-  reasoningEffort?: 'low' | 'medium' | 'high'
+  /** Default reasoning effort level. Overridden by ChatOptions.thinking per-request.
+   *  'xhigh' is only valid for grok-4.20-multi-agent — will be downgraded to 'high' on other models. */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Limit server-side agentic turns per request. Resets on client-side tool calls. */
   maxTurns?: number
   /** Control when model uses tools: 'auto' | 'required' | 'none' | specific function */
@@ -372,7 +373,7 @@ export class XAIProvider implements Provider {
   private codeExecution: boolean
 
   // Request options
-  private reasoningEffort: 'low' | 'medium' | 'high' | undefined
+  private reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | undefined
   private maxTurns: number | undefined
   private toolChoice: 'auto' | 'required' | 'none' | { type: 'function'; function: { name: string } } | undefined
   private parallelToolCalls: boolean | undefined
@@ -470,13 +471,18 @@ export class XAIProvider implements Provider {
   // Resolve reasoning effort (config default + per-request override)
   // -----------------------------------------------------------------------
 
-  private resolveReasoningEffort(_model: string, thinking?: ThinkingLevel): { effort: 'low' | 'medium' | 'high' } | undefined {
+  private resolveReasoningEffort(model: string, thinking?: ThinkingLevel): { effort: 'low' | 'medium' | 'high' | 'xhigh' } | undefined {
     // Per-request override takes precedence
     const level = thinking ?? this.reasoningEffort
     if (!level || level === 'off') return undefined
 
-    // All supported models (grok-4.20, grok-4-1-fast) accept reasoning.effort
-    return { effort: level as 'low' | 'medium' | 'high' }
+    // 'xhigh' is only valid for multi-agent models — downgrade to 'high' on others
+    if (level === 'xhigh' && !model.includes('multi-agent')) {
+      console.warn(`[xai] reasoning.effort 'xhigh' is only valid for multi-agent models — downgrading to 'high' for ${model}`)
+      return { effort: 'high' }
+    }
+
+    return { effort: level as 'low' | 'medium' | 'high' | 'xhigh' }
   }
 
   // -----------------------------------------------------------------------
