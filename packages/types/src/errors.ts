@@ -2,7 +2,7 @@
  * Structured error hierarchy for RivetOS.
  *
  * Every error is typed, coded, and JSON-serializable for structured logging.
- * All errors carry severity and retryable flags for circuit breakers and log routing.
+ * All errors carry severity and retryable flags for log routing.
  *
  * Hierarchy:
  *   RivetError (base)

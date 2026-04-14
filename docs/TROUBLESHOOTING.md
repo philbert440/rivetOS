@@ -89,8 +89,6 @@ runtime:
         - "google:gemini-2.5-pro"
 ```
 
-The circuit breaker will also prevent hammering a failing provider. It opens after 5 failures in 60 seconds and recovers automatically.
-
 ### "Maximum tool iterations reached"
 
 The agent hit the safety cap (default: 100 iterations per turn).

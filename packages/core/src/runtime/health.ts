@@ -9,7 +9,6 @@
 
 import { createServer, type Server } from 'node:http'
 import { metrics, type MetricsSnapshot } from './metrics.js'
-import { getAllCircuitBreakerStats, type CircuitBreakerStats } from '../domain/circuit-breaker.js'
 import { logger } from '../logger.js'
 
 const log = logger('Health')
@@ -24,7 +23,7 @@ export interface HealthStatus {
   uptime: number
   startedAt: string
   agents: string[]
-  providers: Record<string, { available: boolean; circuitBreaker?: CircuitBreakerStats }>
+  providers: Record<string, { available: boolean }>
   channels: Record<string, { connected: boolean }>
   memory: { connected: boolean }
   metrics: MetricsSnapshot
@@ -122,16 +121,9 @@ export class HealthServer {
     const providerHealth = await this.config.checkProviders()
     const channelStatus = this.config.getChannelStatus()
     const memoryConnected = this.config.getMemoryStatus()
-    const circuitBreakers: Partial<Record<string, CircuitBreakerStats>> =
-      getAllCircuitBreakerStats()
-
     const providers: HealthStatus['providers'] = {}
     for (const [id, available] of Object.entries(providerHealth)) {
-      const cb = circuitBreakers[id]
-      providers[id] = {
-        available,
-        ...(cb ? { circuitBreaker: cb } : {}),
-      }
+      providers[id] = { available }
     }
 
     const channels: HealthStatus['channels'] = {}

@@ -304,7 +304,6 @@ rivetOS/
           heartbeat.ts               ← HeartbeatRunner — periodic scheduling
           safety-hooks.ts            ← Shell danger, workspace fence, audit, custom rules
           fallback.ts                ← Provider fallback chains
-          circuit-breaker.ts         ← Provider failure tracking, open/half-open/closed
           reconnect.ts               ← ReconnectionManager — exponential backoff
           auto-actions.ts            ← Post-tool automation (format, lint, test, git check)
           session-hooks.ts           ← Session lifecycle hooks (summary, auto-commit)
@@ -583,7 +582,7 @@ Composable async pipeline with priority ordering (0-99):
 
 **Built-in hooks (wired via boot registrars):**
 - **Safety hooks** — Shell danger blocker (P10), workspace fence (P15), custom rules (P20), audit logger (P90)
-- **Fallback chains** — Cross-provider failover on 429/503/timeout with circuit breaker integration
+- **Fallback chains** — Cross-provider failover on 429/503/timeout
 - **Auto-actions** — Post-tool format/lint/test/git-check (opt-in)
 - **Session hooks** — Daily context loading, session summaries, auto-commit, pre/post-compact
 

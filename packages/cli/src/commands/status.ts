@@ -18,10 +18,7 @@ interface HealthResponse {
   uptime: number
   startedAt: string
   agents: string[]
-  providers: Record<
-    string,
-    { available: boolean; circuitBreaker?: { state: string; failures: number } }
-  >
+  providers: Record<string, { available: boolean }>
   channels: Record<string, { connected: boolean }>
   memory: { connected: boolean }
   metrics: {
@@ -99,9 +96,7 @@ export default async function status(): Promise<void> {
     console.log('Providers:')
     for (const [id, info] of Object.entries(health.providers)) {
       const icon = info.available ? '✅' : '❌'
-      const cbState = info.circuitBreaker?.state
-      const cbLabel = cbState && cbState !== 'closed' ? ` (circuit: ${cbState})` : ''
-      console.log(`  ${icon} ${id}${cbLabel}`)
+      console.log(`  ${icon} ${id}`)
     }
 
     // Channels

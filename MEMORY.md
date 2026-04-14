@@ -15,7 +15,7 @@ Lightweight index into the memory system. Run the referenced queries to pull con
 | M4 | ✅ Complete | Learning & self-improvement (memory, skills, context loading) |
 | M5 | ✅ Complete | Agent collaboration (delegation, routing, mesh groundwork, /model) |
 | M6 | ✅ Complete | Containerized distribution (Docker, IaC, init wizard, CLI) |
-| M7 | ✅ Complete | Reliability & polish (errors, circuit breakers, logging, mesh, security) |
+| M7 | ✅ Complete | Reliability & polish (errors, logging, mesh, security) |
 | M8 | ✅ Complete | Documentation & launch (docs site, getting-started, plugin/skill guides) |
 
 ## Active Projects

@@ -43,7 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Added
 - **Structured error types** — `RivetError` hierarchy with codes, severity, retryable flags. Subclasses: `ChannelError`, `MemoryError`, `ConfigError`, `ToolError`, `DelegationError`, `RuntimeError`.
 - **Channel reconnection** — `ReconnectionManager` with exponential backoff, jitter, configurable retries.
-- **Provider circuit breaker** — Closed/open/half-open states, windowed failure tracking, auto-recovery.
 - **Memory backend resilience** — Connection pooling, health checks, graceful degradation.
 - **Structured logging** — JSON mode for production, pretty-print for dev. Component-scoped loggers.
 - **`rivetos logs`** — Tail agent logs from CLI. Docker, systemd, and bare-metal backends. Filter by agent, level, pattern, time range.

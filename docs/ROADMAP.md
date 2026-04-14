@@ -191,7 +191,6 @@ Batches are organized to maximize context efficiency — related work is grouped
 - [x] **Channel reconnection** — ReconnectionManager with exponential backoff, jitter, configurable retries
 - [x] **Memory backend resilience** — connection pooling, health checks, graceful degradation if DB is temporarily down
 - [ ] **Crash recovery** — resume active sessions from transcript on restart (deferred — not blocking launch)
-- [x] **Provider circuit breaker** — closed/open/half-open states, windowed failure tracking, auto-recovery
 
 #### 7.2 — Observability ✅
 
