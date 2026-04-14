@@ -164,7 +164,14 @@ export class AgentChannelServer {
   // -----------------------------------------------------------------------
 
   private async handleMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const body = await this.readBody(req)
+    let body: Record<string, unknown> | null
+    try {
+      body = await this.readBody(req)
+    } catch (err) {
+      res.writeHead(413, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+      return
+    }
     if (!body) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Invalid JSON body' }))
@@ -282,10 +289,21 @@ export class AgentChannelServer {
   // Body parsing
   // -----------------------------------------------------------------------
 
+  private static readonly MAX_BODY_SIZE = 10 * 1024 * 1024 // 10 MB
+
   private async readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const chunks: Buffer[] = []
-      req.on('data', (chunk: Buffer) => chunks.push(chunk))
+      let totalBytes = 0
+      req.on('data', (chunk: Buffer) => {
+        totalBytes += chunk.length
+        if (totalBytes > AgentChannelServer.MAX_BODY_SIZE) {
+          req.destroy()
+          reject(new Error('Request body exceeds 10 MB limit'))
+          return
+        }
+        chunks.push(chunk)
+      })
       req.on('end', () => {
         try {
           const raw = Buffer.concat(chunks).toString('utf-8')

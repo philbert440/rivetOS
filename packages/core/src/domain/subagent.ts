@@ -72,7 +72,15 @@ interface InternalSession extends SubagentSession {
   _lastResponse: string
   /** Live-updated usage */
   _usage?: { promptTokens: number; completionTokens: number }
+  /** When the session reached a terminal state (completed/failed/killed) */
+  completedAt?: number
 }
+
+// ---------------------------------------------------------------------------
+// Session TTL — clean up terminal sessions after 1 hour
+// ---------------------------------------------------------------------------
+const SESSION_TTL_MS = 60 * 60 * 1000 // 1 hour
+const CLEANUP_INTERVAL_MS = 15 * 60 * 1000 // 15 minutes
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -81,9 +89,23 @@ interface InternalSession extends SubagentSession {
 export class SubagentManagerImpl implements SubagentManager {
   private config: SubagentManagerConfig
   private sessions: Map<string, InternalSession> = new Map()
+  private cleanupTimer: ReturnType<typeof setInterval>
 
   constructor(config: SubagentManagerConfig) {
     this.config = config
+    this.cleanupTimer = setInterval(() => this.cleanupExpiredSessions(), CLEANUP_INTERVAL_MS)
+    this.cleanupTimer.unref() // Don't prevent process exit
+  }
+
+  /** Remove terminal sessions older than SESSION_TTL_MS */
+  private cleanupExpiredSessions(): void {
+    const now = Date.now()
+    for (const [id, session] of this.sessions) {
+      if (session.completedAt && now - session.completedAt > SESSION_TTL_MS) {
+        this.sessions.delete(id)
+        log.info(`Cleaned up expired sub-agent session ${id} (${session.childAgent})`)
+      }
+    }
   }
 
   spawn(request: SubagentSpawnRequest): SubagentSession {
@@ -209,6 +231,7 @@ export class SubagentManagerImpl implements SubagentManager {
     session.status = 'failed'
     session.error = 'Killed by parent'
     session.durationMs = Date.now() - session.startTime
+    session.completedAt = Date.now()
     log.info(`Sub-agent ${sessionId} killed`)
   }
 
@@ -278,6 +301,7 @@ export class SubagentManagerImpl implements SubagentManager {
       log.error(`Sub-agent ${session.id} failed: ${(err as Error).message}`)
     } finally {
       if (session.timeoutHandle) clearTimeout(session.timeoutHandle)
+      session.completedAt = Date.now()
     }
   }
 
