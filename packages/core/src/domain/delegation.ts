@@ -244,6 +244,12 @@ export class DelegationEngine {
         delegationTools.push(this.createDelegationTool(chainDepth + 1))
       }
 
+      // Pull context window from the provider so the delegated loop gets
+      // proper context management (nudges, compaction prompts).
+      // Without this, contextWindow defaults to 0 = unknown = no nudges,
+      // and local models silently fill their context and degrade.
+      const contextWindow = provider.getContextWindow()
+
       const loop = new AgentLoop({
         systemPrompt: enrichedPrompt,
         provider,
@@ -253,6 +259,8 @@ export class DelegationEngine {
         workspaceDir: this.config.workspaceDir,
         hooks: this.config.hooks,
         freshConversation: true, // Isolate from parent's stateful conversation context
+        contextWindow,
+        turnTimeout: request.timeoutMs, // Align loop timeout with delegation timeout
       })
 
       const turnResult = await loop.run(request.task, [], abort.signal)
