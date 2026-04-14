@@ -337,9 +337,7 @@ export class AgentLoop {
         const beforeCtx: ProviderBeforeContext = {
           event: 'provider:before',
           providerId: activeProvider.id,
-          model:
-            ((activeProvider as unknown as Record<string, unknown>).model as string | undefined) ??
-            'unknown',
+          model: activeProvider.getModel() ?? 'unknown',
           messages: messages as unknown[],
           tools: toolDefs as unknown[],
           agentId: this.config.agentId,
@@ -454,8 +452,8 @@ export class AgentLoop {
 
             case 'done':
               if (chunk.usage) {
-                totalUsage.promptTokens += chunk.usage.promptTokens
-                totalUsage.completionTokens += chunk.usage.completionTokens
+                totalUsage.promptTokens = Math.max(totalUsage.promptTokens, chunk.usage.promptTokens)
+                totalUsage.completionTokens = Math.max(totalUsage.completionTokens, chunk.usage.completionTokens)
               }
               break
 
@@ -486,12 +484,7 @@ export class AgentLoop {
           const errorCtx: ProviderErrorContext = {
             event: 'provider:error',
             providerId: errorProviderId,
-            model:
-              activeModelOverride ??
-              ((activeProvider as unknown as Record<string, unknown>).model as
-                | string
-                | undefined) ??
-              'unknown',
+            model: activeModelOverride ?? activeProvider.getModel() ?? 'unknown',
             error: err instanceof Error ? err : new Error(String(err)),
             statusCode,
             agentId: this.config.agentId,
@@ -525,9 +518,7 @@ export class AgentLoop {
         const afterCtx: ProviderAfterContext = {
           event: 'provider:after',
           providerId: activeProvider.id,
-          model:
-            ((activeProvider as unknown as Record<string, unknown>).model as string | undefined) ??
-            'unknown',
+          model: activeProvider.getModel() ?? 'unknown',
           usage: { ...totalUsage },
           latencyMs: Date.now() - streamStartTime,
           hasToolCalls,
