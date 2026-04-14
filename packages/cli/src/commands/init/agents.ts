@@ -15,7 +15,7 @@ function bail<T>(v: T | symbol): asserts v is T {
 /** Default models per provider */
 const DEFAULT_MODELS: Record<string, string> = {
   anthropic: 'claude-sonnet-4-20250514',
-  xai: 'grok-3',
+  xai: 'grok-4-1-fast-reasoning',
   google: 'gemini-2.5-pro',
   ollama: 'qwen2.5:32b',
   'openai-compat': 'gpt-4o',

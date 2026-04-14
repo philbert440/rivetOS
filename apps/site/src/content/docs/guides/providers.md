@@ -113,7 +113,7 @@ Add to `config.yaml`:
 ```yaml
 providers:
   xai:
-    model: grok-3
+    model: grok-4-1-fast-reasoning
 
 agents:
   grok:
@@ -139,8 +139,8 @@ When `store: true` (default), xAI stores the conversation server-side. Each turn
 
 | Model | Type | Notes |
 |-------|------|-------|
-| `grok-3` | Chat | Fast, capable general model |
-| `grok-4.20-reasoning` | Reasoning | Extended thinking, slower but deeper |
+| `grok-4.20-reasoning` | Flagship | 2M context, fast + agentic, $2.00/$6.00 per M tokens |
+| `grok-4-1-fast-reasoning` | Fast | 10x cheaper ($0.20/$0.50), good for compaction/fallback |
 
 > **Docs:** [xAI API Documentation](https://docs.x.ai/docs)
 
@@ -359,7 +359,7 @@ agents:
     provider: anthropic
     fallbacks:
       - "google:gemini-2.5-pro"
-      - "xai:grok-3"
+      - "xai:grok-4-1-fast-reasoning"
 ```
 
 Or globally:
@@ -370,7 +370,7 @@ runtime:
     - providerId: anthropic
       fallbacks:
         - "google:gemini-2.5-pro"
-        - "xai:grok-3"
+        - "xai:grok-4-1-fast-reasoning"
 ```
 
 Format: `provider_id` uses the provider's default model, `provider_id:model` overrides the model.

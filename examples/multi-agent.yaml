@@ -19,7 +19,7 @@ runtime:
     - providerId: anthropic
       fallbacks:
         - "google:gemini-2.5-pro"
-        - "xai:grok-3"
+        - "xai:grok-4-1-fast-reasoning"
 
   # Heartbeat — periodic background tasks
   heartbeats:
@@ -57,7 +57,7 @@ providers:
     model: claude-sonnet-4-20250514
     max_tokens: 16384
   xai:
-    model: grok-3
+    model: grok-4-1-fast-reasoning
     max_tokens: 8192
   ollama:
     model: qwen2.5:32b

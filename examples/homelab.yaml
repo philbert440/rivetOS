@@ -51,7 +51,7 @@ providers:
     model: claude-sonnet-4-20250514
     max_tokens: 16384
   xai:
-    model: grok-3
+    model: grok-4-1-fast-reasoning
   ollama:
     model: qwen2.5:32b
     base_url: http://192.168.1.100:11434  # Ollama on the local agent's host

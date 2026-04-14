@@ -609,7 +609,7 @@ providers:
   anthropic:
     model: claude-sonnet-4-20250514
   xai:
-    model: grok-3
+    model: grok-4-1-fast-reasoning
 
 channels:
   telegram:

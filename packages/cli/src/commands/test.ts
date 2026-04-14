@@ -165,7 +165,7 @@ async function testProvider(): Promise<{ pass: boolean; message: string; detail?
       case 'xai': {
         const apiKey = (cfg.api_key as string | undefined) ?? process.env.XAI_API_KEY ?? ''
         if (!apiKey) continue
-        const model = (cfg.model as string | undefined) ?? 'grok-3-mini'
+        const model = (cfg.model as string | undefined) ?? 'grok-4-1-fast-reasoning'
         const resp = await fetch('https://api.x.ai/v1/chat/completions', {
           method: 'POST',
           headers: {
