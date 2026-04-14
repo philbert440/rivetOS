@@ -670,11 +670,11 @@ export class XAIProvider implements Provider {
             const contentDesc = Array.isArray(c)
               ? `array(${(c as unknown[]).length})`
               : typeof c === 'string'
-                ? `string(${(c as string).length})`
-                : String(typeof c)
-            return `${String((item as Record<string, unknown>).role)}:${contentDesc}`
+                ? `string(${c.length})`
+                : typeof c
+            return `${(item as Record<string, unknown>).role as string}:${contentDesc}`
           }
-          return String((item as Record<string, unknown>).type ?? 'unknown')
+          return ((item as Record<string, unknown>).type as string | undefined) ?? 'unknown'
         })
         console.error(
           `[xAI] 400 error — input shape: [${inputSummary.join(', ')}], ` +
