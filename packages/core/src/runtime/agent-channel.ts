@@ -57,6 +57,7 @@ interface MessageRequest {
   message: string
   waitForResponse?: boolean
   timeoutMs?: number
+  chainDepth?: number
 }
 
 interface MessageResponse {
@@ -170,7 +171,7 @@ export class AgentChannelServer {
       return
     }
 
-    const { fromAgent, message, timeoutMs } = body as unknown as MessageRequest
+    const { fromAgent, message, timeoutMs, chainDepth } = body as unknown as MessageRequest
 
     if (!fromAgent || !message) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
@@ -203,7 +204,7 @@ export class AgentChannelServer {
           task: message.replace(/^\[Mesh delegation\]\s*/, ''),
           timeoutMs: timeoutMs ?? 120_000,
         },
-        0, // chainDepth 0 — fresh chain on the remote side
+        chainDepth ?? 0, // propagate chain depth from caller (0 if not provided)
       )
 
       const response: MessageResponse = {
