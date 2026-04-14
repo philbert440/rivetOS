@@ -327,7 +327,7 @@ Build on M5's cross-instance messaging to create a self-organizing agent network
 | `file_edit` | `@rivetos/tool-file` | ✅ |
 | `search_glob` | `@rivetos/tool-search` | ✅ |
 | `search_grep` | `@rivetos/tool-search` | ✅ |
-| `web_search` | `@rivetos/tool-web` | ✅ |
+| `internet_search` | `@rivetos/tool-web` | ✅ |
 | `web_fetch` | `@rivetos/tool-web` | ✅ |
 | `ask_user` | `@rivetos/tool-interaction` | ✅ |
 | `todo` | `@rivetos/tool-interaction` | ✅ |

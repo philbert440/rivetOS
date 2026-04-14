@@ -441,7 +441,7 @@ rivetOS/
       shell/                         ← Shell command execution with safety
       file/                          ← file_read, file_write, file_edit (3 tool files)
       search/                        ← search_glob, search_grep (2 tool files)
-      web-search/                    ← web_search, web_fetch
+      web-search/                    ← internet_search, web_fetch
       interaction/                   ← ask_user, todo (2 tool files)
       mcp-client/                    ← MCP server connection + tool discovery
       coding-pipeline/               ← Build → review → validate loop
