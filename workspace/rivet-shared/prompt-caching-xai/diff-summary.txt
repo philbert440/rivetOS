@@ -1,0 +1,20 @@
+Key changes from original plugins/providers/xai/src/index.ts:
+
+1. Updated class comment to include prompt caching support.
+2. Added import for uuid.
+3. Extended interface with XAIExtendedChatOptions (conversationId).
+4. Added promptCacheKey private field and getPromptCacheKey() helper.
+5. In chatStream():
+   - Use XAIExtendedChatOptions
+   - Compute stable promptCacheKey
+   - Add prompt_cache_key to request body
+   - Add x-grok-conv-id header
+   - Added comment block on front-loading static content (system prompts first)
+   - Extended usage object with cachedTokens: 0
+   - In 'response.completed'/'response.done' handler: parse cached_tokens if present and log cache hits
+6. resetConversation() now also clears promptCacheKey.
+7. Updated chat() to accept XAIExtendedChatOptions and forward cachedTokens in usage.
+8. All existing logic (images, previous_response_id, tools, streaming, built-ins, reasoning) preserved exactly.
+9. Production clean: comments, types, error handling, no behavior change without conversationId.
+
+Aligns directly with xAI best practices from https://docs.x.ai/developers/advanced-api-usage/prompt-caching/best-practices.
