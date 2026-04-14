@@ -184,7 +184,7 @@ export class PostgresMemory implements Memory {
       await client.query('COMMIT')
       return result.rows[0].id
     } catch (err) {
-      await client.query('ROLLBACK').catch(() => {})
+      await client.query('ROLLBACK').catch(() => {}) // fire-and-forget — rollback after primary failure
       throw new MemoryError(
         'MEMORY_QUERY_FAILED',
         `Memory append failed: ${(err as Error).message}`,

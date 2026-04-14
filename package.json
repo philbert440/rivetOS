@@ -58,7 +58,8 @@
     "graph": "nx graph",
     "containers:build": "nx run container-agent:build && nx run container-datahub:build",
     "compose:up": "docker compose up -d",
-    "compose:down": "docker compose down"
+    "compose:down": "docker compose down",
+    "clean": "find packages plugins -path '*/src/*.d.ts' -delete && find packages plugins -path '*/src/*.d.ts.map' -delete && echo 'Cleaned build artifacts from src/'"
   },
   "bugs": {
     "url": "https://github.com/philbert440/rivetOS/issues"
