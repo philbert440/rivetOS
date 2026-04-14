@@ -100,9 +100,9 @@ The `chatStream` method must build the request body with:
 }
 ```
 
-**Critical: Built-in tool filtering.** When `options.tools` from the agent loop contains a tool named `web_search`, we should NOT also add xAI's built-in web_search — that would be redundant. The current code always injects `{ type: 'web_search' }` which conflicts with our own `web_search` tool. 
+**Note:** Our own search tool was renamed from `web_search` to `internet_search` to avoid collision with xAI's built-in `web_search` tool. They are now clearly distinct — `internet_search` is our client-side function call (Google CSE / DuckDuckGo); `web_search` is xAI's server-side built-in tool.
 
-**New approach:** Only inject built-in tools that are explicitly configured in `XAIProviderConfig`. Never inject them based on what's in `options.tools`. Our agent's `web_search` tool goes through as a function call; xAI's native web_search is a separate, server-side capability enabled via config.
+**Built-in tool injection:** Only inject built-in tools that are explicitly configured in `XAIProviderConfig`. Never inject them based on what's in `options.tools`. Our agent's `internet_search` tool goes through as a function call; xAI's native `web_search` is a separate, server-side capability enabled via config.
 
 ### 3.3 Server-Side Tool Event Handling
 
