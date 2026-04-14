@@ -179,7 +179,7 @@ export class AgentLoop {
 
     const toolsUsed: string[] = []
     let iterations = 0
-    const totalUsage = { promptTokens: 0, completionTokens: 0 }
+    const totalUsage: { promptTokens: number; completionTokens: number; reasoningTokens?: number; cachedTokens?: number } = { promptTokens: 0, completionTokens: 0 }
     let partialResponse = ''
     let lastError = ''
     let hadSteer = false
@@ -449,6 +449,13 @@ export class AgentLoop {
               }
               break
 
+            case 'status':
+              // Server-side tool activity from provider (e.g., xAI web_search, x_search)
+              if (chunk.delta) {
+                this.emit({ type: 'status', content: `🔍 ${chunk.delta}` })
+              }
+              break
+
             case 'done':
               if (chunk.usage) {
                 totalUsage.promptTokens = Math.max(
@@ -459,6 +466,12 @@ export class AgentLoop {
                   totalUsage.completionTokens,
                   chunk.usage.completionTokens,
                 )
+                if (chunk.usage.reasoningTokens) {
+                  totalUsage.reasoningTokens = chunk.usage.reasoningTokens
+                }
+                if (chunk.usage.cachedTokens) {
+                  totalUsage.cachedTokens = chunk.usage.cachedTokens
+                }
               }
               break
 

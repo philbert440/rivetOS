@@ -26,11 +26,21 @@ export interface ChatOptions {
 // Response Types
 // ---------------------------------------------------------------------------
 
+/** Token usage from a provider response */
+export interface LLMUsage {
+  promptTokens: number
+  completionTokens: number
+  /** Tokens used for reasoning/thinking (xAI, OpenAI o-series) */
+  reasoningTokens?: number
+  /** Tokens served from prompt cache */
+  cachedTokens?: number
+}
+
 export interface LLMResponse {
   type: 'text' | 'tool_calls'
   content?: string
   toolCalls?: ToolCall[]
-  usage?: { promptTokens: number; completionTokens: number }
+  usage?: LLMUsage
 }
 
 export interface LLMChunk {
@@ -40,11 +50,14 @@ export interface LLMChunk {
     | 'tool_call_start'
     | 'tool_call_delta'
     | 'tool_call_done'
+    | 'status'
     | 'done'
     | 'error'
   delta?: string
   toolCall?: Partial<ToolCall> & { index?: number }
-  usage?: { promptTokens: number; completionTokens: number }
+  usage?: LLMUsage
+  /** Citations (URLs) from server-side search tools — populated on 'done' chunks */
+  citations?: string[]
   error?: string
 }
 
