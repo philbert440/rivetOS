@@ -18,6 +18,9 @@
 import { readFile } from 'node:fs/promises'
 import { join, resolve, isAbsolute, basename } from 'node:path'
 import type { WorkspaceFile, Workspace } from '@rivetos/types'
+import { logger } from '../logger.js'
+
+const log = logger('Workspace')
 
 /** Core files — always in system prompt (minimal, for paid APIs) */
 const CORE_FILES = ['CORE.md', 'USER.md', 'WORKSPACE.md', 'MEMORY.md']
@@ -172,8 +175,8 @@ export class WorkspaceLoader implements Workspace {
   async buildSystemPrompt(agentId?: string, extended = false): Promise<string> {
     const files = await this.load(extended)
     if (files.length === 0) {
-      console.warn(
-        `[workspace] ⚠️ No workspace files loaded from ${this.baseDir} — agent will boot without personality files`,
+      log.warn(
+        `No workspace files loaded from ${this.baseDir} — agent will boot without personality files`,
       )
     }
     let prompt = ''
