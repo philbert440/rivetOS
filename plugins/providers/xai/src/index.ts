@@ -114,16 +114,11 @@ type XAIContentBlock =
   | { type: 'input_text'; text: string }
   | { type: 'input_image'; image_url: string; detail?: string }
 
-interface XAIToolCall {
-  id: string
-  type: 'function'
-  function: { name: string; arguments: string }
-}
-
 type ResponsesInput =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | XAIContentBlock[] }
-  | { role: 'assistant'; content: string; tool_calls?: XAIToolCall[] }
+  | { role: 'assistant'; content: string }
+  | { type: 'function_call'; id: string; call_id: string; name: string; arguments: string }
   | { type: 'function_call_output'; call_id: string; output: string }
 
 interface XAIFunctionTool {
@@ -272,24 +267,24 @@ function convertMessages(messages: Message[]): ResponsesInput[] {
       })
     } else if (msg.role === 'assistant') {
       const content = extractText(msg.content) || ''
-      const toolCallsList: XAIToolCall[] | undefined =
-        msg.toolCalls && msg.toolCalls.length > 0
-          ? msg.toolCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments:
-                  typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments),
-              },
-            }))
-          : undefined
 
-      if (content || toolCallsList) {
-        const assistantMsg: ResponsesInput = toolCallsList
-          ? { role: 'assistant', content, tool_calls: toolCallsList }
-          : { role: 'assistant', content }
-        result.push(assistantMsg)
+      // Emit text content as a plain assistant message
+      if (content) {
+        result.push({ role: 'assistant', content })
+      }
+
+      // Emit tool calls as separate function_call items (Responses API format)
+      if (msg.toolCalls && msg.toolCalls.length > 0) {
+        for (const tc of msg.toolCalls) {
+          result.push({
+            type: 'function_call',
+            id: tc.id,
+            call_id: tc.id,
+            name: tc.name,
+            arguments:
+              typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments),
+          })
+        }
       }
     } else if (
       msg.role === 'user' &&
