@@ -38,7 +38,7 @@ Extend `XAIProviderConfig` with:
 
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
-| `reasoningEffort` | `'low' \| 'medium' \| 'high'` | undefined | Maps to `reasoning.effort` in request body. Supported by all current models (grok-4.20 and grok-4-1-fast families). |
+| `reasoningEffort` | `'low' \| 'medium' \| 'high' \| 'xhigh'` | undefined | Maps to `reasoning.effort` in request body. All models support low/medium/high. `xhigh` is only valid for `grok-4.20-multi-agent` (controls 16 sub-agents). |
 | `webSearch` | `boolean \| WebSearchConfig` | `false` | Enable native web search. `true` = default config. Object = with filters. |
 | `xSearch` | `boolean \| XSearchConfig` | `false` | Enable native X search. `true` = default config. Object = with filters. |
 | `codeExecution` | `boolean` | `false` | Enable server-side code interpreter. |
@@ -251,15 +251,17 @@ Should be dynamic based on config:
 
 Our `ChatOptions.thinking` uses `ThinkingLevel = 'off' | 'low' | 'medium' | 'high'`.
 
-xAI `reasoning.effort` accepts `'low' | 'medium' | 'high'`.
+xAI `reasoning.effort` accepts `'low' | 'medium' | 'high' | 'xhigh'`.
 
 Mapping:
 - `'off'` → omit `reasoning` from request body entirely  
-- `'low'` / `'medium'` / `'high'` → `{ reasoning: { effort: level } }`
+- `'low'` / `'medium'` / `'high'` / `'xhigh'` → `{ reasoning: { effort: level } }`
+
+**Note:** `xhigh` is only valid for `grok-4.20-multi-agent`. Sending it to other models may error — the provider should validate and downgrade to `high` with a warning log if the model doesn't support it.
 
 Config-level `reasoningEffort` is the default. `ChatOptions.thinking` overrides per-request.
 
-**Model gating:** grok-4.20 and grok-4-1-fast support `reasoning.effort`. Plain grok-4 does NOT — it errors with a 400 if you send it. The provider must check the model name and omit `reasoning.effort` for grok-4.
+**No model gating needed for low/medium/high:** All three supported models accept these values.
 
 ### 3.11 Conversation State Management
 
@@ -416,7 +418,7 @@ When sending function call results back:
 ### Request Body Fields
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `model` | string | ✅ | e.g., `grok-4.20-reasoning`, `grok-4`, `grok-4-1-fast-reasoning` |
+| `model` | string | ✅ | `grok-4.20-reasoning` (flagship), `grok-4-1-fast-reasoning` (fast/cheap), or `grok-4.20-multi-agent-0309` (deep research) |
 | `input` | array | ✅ | Messages + function_call_outputs |
 | `stream` | boolean | | Default: false |
 | `store` | boolean | | Default: true. Force false for images. 30-day retention. |
@@ -428,7 +430,7 @@ When sending function call results back:
 | `max_turns` | number | | Limits server-side agentic turns. Resets on client-side tool calls. |
 | `max_output_tokens` | number | | Limit output length |
 | `temperature` | number | | Not supported by reasoning models |
-| `reasoning` | object | | `{ effort: 'low' \| 'medium' \| 'high' }`. Supported by grok-4.20 and grok-4-1-fast. NOT supported by grok-4. |
+| `reasoning` | object | | `{ effort: 'low' \| 'medium' \| 'high' }`. Supported by both models. |
 | `truncation` | string | | `auto` or `disabled` |
 | `instructions` | string | | Developer instructions |
 | `response_format` | object | | Structured output (NOT implementing) |
@@ -460,15 +462,57 @@ When sending function call results back:
 
 ### Supported Models
 
-Supported models: grok-4.20, grok-4, and grok-4-1-fast (reasoning variants only). All deprecated models (grok-3, grok-3-mini) are no longer supported.
+Three models are supported. Everything else (grok-4, grok-3, grok-3-mini) is deprecated — costs more and performs worse.
 
 | Model | Context | reasoning.effort | Pricing (in/out per M) | Notes |
 |-------|---------|-----------------|----------------------|-------|
 | `grok-4.20-0309-reasoning` | 2M | ✅ | $2.00 / $6.00 | Flagship. Fast + agentic. Alias: `grok-4.20-reasoning`. |
-| `grok-4` | 256K | ❌ (errors!) | deprecated pricing | Deep reasoning. Slower. No reasoning.effort support. |
 | `grok-4-1-fast-reasoning` | — | ✅ | $0.20 / $0.50 | Fast + cheap. 10x cheaper than 4.20. Good for compaction/fallback. |
+| `grok-4.20-multi-agent-0309` | 2M | ✅ (controls agent count) | $2.00 / $6.00 | Multi-agent deep research. Same base price but higher token usage. |
+
+Non-reasoning variants also exist (`grok-4.20-0309-non-reasoning`, `grok-4-1-fast-non-reasoning`) at the same price points, but we always want reasoning enabled.
 
 **Default model:** `grok-4.20-reasoning` (alias for latest dated version)
+
+### Multi-Agent Model (`grok-4.20-multi-agent-0309`)
+
+A distinct model that orchestrates multiple xAI sub-agents server-side for deep research tasks. When you send a query, xAI spins up a team of sub-agents that search, analyze, cross-reference, and synthesize — all server-side. A "leader agent" compiles the final answer.
+
+**How `reasoning.effort` maps to agent count:**
+
+| reasoning.effort | Sub-agents | Use case |
+|-----------------|-----------|----------|
+| `low` | 4 | Quick multi-source lookups |
+| `medium` | 4 | Moderate research |
+| `high` | 16 | Deep, thorough investigation |
+| `xhigh` | 16 | Maximum depth |
+
+**Note:** `xhigh` is unique to the multi-agent model — not available on other models.
+
+**Supported built-in tools:** `web_search`, `x_search`, `code_execution`, `collections_search`. Same streaming events as regular models — `web_search_call`, `x_search_call`, `code_interpreter_call` status events all work.
+
+**API surface:** Identical to the standard Responses API. Same endpoint, same request body, same SSE events. The only difference is the model name and the reasoning.effort → agent count behavior.
+
+**Intended usage:** Dedicated `#deep-research` Discord channel bound to this model with `reasoning.effort: high` (16 agents) as default. Users go to that channel when they want thorough multi-source investigation; everything else stays on the standard models.
+
+**Provider impact:** Minimal. The provider already supports everything this model needs. The only addition is:
+1. Support `'xhigh'` as a valid reasoning.effort value (only for multi-agent model)
+2. Document the channel config pattern
+
+**Channel config example:**
+```yaml
+discord:
+  channels:
+    deep-research:  # 1493715076727836913
+      agent: grok
+      model: grok-4.20-multi-agent-0309
+      providerConfig:
+        reasoningEffort: high
+        webSearch: true
+        xSearch: true
+        codeExecution: true
+        maxTurns: 20  # let the sub-agents run deep
+```
 
 ---
 
@@ -487,8 +531,8 @@ Supported models: grok-4.20, grok-4, and grok-4-1-fast (reasoning variants only)
 - [ ] Conversation continuity (previous_response_id)
 - [ ] freshConversation isolation
 - [ ] Model switch → conversation state reset
-- [ ] reasoning.effort with grok-4.20 (should work)
-- [ ] reasoning.effort with grok-4-1-fast (should work)
+- [ ] reasoning.effort with grok-4.20-reasoning
+- [ ] reasoning.effort with grok-4-1-fast-reasoning
 - [ ] Abort signal
 - [ ] Usage tracking (input, output, reasoning, cached tokens)
 - [ ] Error handling (429, 400, 500)
@@ -501,6 +545,10 @@ Supported models: grok-4.20, grok-4, and grok-4-1-fast (reasoning variants only)
 - [ ] max_output_tokens
 - [ ] response.failed event handling
 - [ ] response.incomplete event handling
+- [ ] Multi-agent model basic query (grok-4.20-multi-agent-0309)
+- [ ] Multi-agent reasoning.effort → agent count (low/medium=4, high/xhigh=16)
+- [ ] Multi-agent with web_search + x_search built-in tools
+- [ ] xhigh reasoning.effort rejected on non-multi-agent models (downgrade to high)
 
 ---
 

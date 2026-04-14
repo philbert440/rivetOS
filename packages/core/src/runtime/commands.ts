@@ -210,7 +210,7 @@ export class CommandHandler {
     sessionKey: string,
   ): Promise<void> {
     const session = await this.deps.sessionManager.getOrCreateSession(sessionKey, message)
-    const levels: Set<string> = new Set(['off', 'low', 'medium', 'high'])
+    const levels: Set<string> = new Set(['off', 'low', 'medium', 'high', 'xhigh'])
     if (args.trim() && levels.has(args.trim())) {
       session.thinking = args.trim() as ThinkingLevel
       await this.deps.sessionManager.saveSessionSettings(session)
@@ -218,7 +218,7 @@ export class CommandHandler {
     } else {
       await channel.send({
         channelId: message.channelId,
-        text: `🧠 Thinking: ${session.thinking}\nUsage: /think off|low|medium|high`,
+        text: `🧠 Thinking: ${session.thinking}\nUsage: /think off|low|medium|high|xhigh`,
       })
     }
   }

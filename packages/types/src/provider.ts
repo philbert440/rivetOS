@@ -9,7 +9,7 @@ import type { ToolDefinition } from './tool.js'
 // Thinking / Reasoning Control
 // ---------------------------------------------------------------------------
 
-export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high'
+export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh'
 
 export interface ChatOptions {
   tools?: ToolDefinition[]
