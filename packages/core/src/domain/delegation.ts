@@ -80,6 +80,8 @@ export interface DelegationConfig {
   hooks?: HookPipeline
   /** Per-agent tool filtering (exclude/include lists) */
   toolFilter?: Record<string, AgentToolFilter>
+  /** Workspace directory — passed to tools via ToolContext for resolving relative paths */
+  workspaceDir?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +249,7 @@ export class DelegationEngine {
         tools: delegationTools,
         modelOverride: agent.model,
         agentId: request.toAgent,
+        workspaceDir: this.config.workspaceDir,
         hooks: this.config.hooks,
         freshConversation: true, // Isolate from parent's stateful conversation context
       })

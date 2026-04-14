@@ -47,6 +47,8 @@ export interface SubagentManagerConfig {
   hooks?: import('@rivetos/types').HookPipeline
   /** Per-agent tool filtering (exclude/include lists) */
   toolFilter?: Record<string, AgentToolFilter>
+  /** Workspace directory — passed to tools via ToolContext for resolving relative paths */
+  workspaceDir?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +242,7 @@ export class SubagentManagerImpl implements SubagentManager {
         tools,
         modelOverride: session.modelOverride,
         agentId: session.childAgent,
+        workspaceDir: this.config.workspaceDir,
         freshConversation: true,
       })
 
