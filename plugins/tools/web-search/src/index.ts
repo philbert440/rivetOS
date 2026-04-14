@@ -4,7 +4,7 @@
  * Web search + URL fetch tools.
  *
  * Two tools:
- *   web_search — search the web (Google CSE → DuckDuckGo fallback)
+ *   internet_search — search the web (Google CSE → DuckDuckGo fallback)
  *   web_fetch  — fetch and extract readable content from a URL
  *
  * Features:
@@ -226,7 +226,7 @@ function parseDdgResults(html: string, maxResults: number): SearchResult[] {
 // ---------------------------------------------------------------------------
 
 export class WebSearchTool implements Tool {
-  name = 'web_search'
+  name = 'internet_search'
   description =
     'Search the web using Google. Returns titles, snippets, and URLs. ' +
     'Use when you need current information, facts, or to find resources.'

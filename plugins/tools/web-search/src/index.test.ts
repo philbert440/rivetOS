@@ -56,7 +56,7 @@ describe('WebSearchTool', () => {
 
   it('has correct tool metadata', () => {
     const tool = new WebSearchTool();
-    assert.equal(tool.name, 'web_search');
+    assert.equal(tool.name, 'internet_search');
     assert.ok(tool.description.length > 0);
     assert.ok((tool.parameters as any).required.includes('query'));
   });

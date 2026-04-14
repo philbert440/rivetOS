@@ -10,7 +10,7 @@ Gives agents the ability to search the web and fetch content from URLs. Search u
 
 ## Tools provided
 
-- **`web_search`** — search the web using Google CSE (falls back to DuckDuckGo)
+- **`internet_search`** — search the web using Google CSE (falls back to DuckDuckGo)
 - **`web_fetch`** — fetch and extract readable text/markdown content from a URL
 
 ## Features
