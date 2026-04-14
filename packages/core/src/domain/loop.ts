@@ -179,7 +179,12 @@ export class AgentLoop {
 
     const toolsUsed: string[] = []
     let iterations = 0
-    const totalUsage: { promptTokens: number; completionTokens: number; reasoningTokens?: number; cachedTokens?: number } = { promptTokens: 0, completionTokens: 0 }
+    const totalUsage: {
+      promptTokens: number
+      completionTokens: number
+      reasoningTokens?: number
+      cachedTokens?: number
+    } = { promptTokens: 0, completionTokens: 0 }
     let partialResponse = ''
     let lastError = ''
     let hadSteer = false
