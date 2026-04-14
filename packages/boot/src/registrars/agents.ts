@@ -32,7 +32,7 @@ const log = logger('Boot:Agents')
 export async function registerAgentTools(
   runtime: Runtime,
   config: RivetConfig,
-  _workspaceDir: string,
+  workspaceDir: string,
 ): Promise<void> {
   // Build tool filter from agent configs
   const toolFilter: Record<string, { exclude?: string[]; include?: string[] }> = {}
@@ -50,6 +50,7 @@ export async function registerAgentTools(
     tools: () => runtime.getTools(),
     hooks: runtime.getHooks(),
     toolFilter: hasFilters ? toolFilter : undefined,
+    workspaceDir,
   })
 
   // Determine if mesh is enabled
@@ -148,6 +149,7 @@ export async function registerAgentTools(
     tools: () => runtime.getTools(),
     hooks: runtime.getHooks(),
     toolFilter: hasFilters ? toolFilter : undefined,
+    workspaceDir,
   })
   for (const tool of createSubagentTools(subagentManager)) {
     runtime.registerTool(tool)
