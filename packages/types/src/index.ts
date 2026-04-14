@@ -10,6 +10,7 @@ export type {
   Provider,
   LLMResponse,
   LLMChunk,
+  LLMUsage,
   ChatOptions,
   ThinkingLevel,
   ProviderErrorCode,
