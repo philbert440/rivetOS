@@ -51,7 +51,7 @@ rivetos mesh status    # Local mesh status
 - ❌ Manually SSH into each instance to git pull/build/restart
 - ❌ Write custom shell loops to update instances
 - ❌ Forget that `rivetos update --mesh` exists
-- ❌ Use `ssh root@10.4.20.112` for deployments EVER
+- ❌ Use `ssh root@<node-ip>` for deployments EVER
 
 ## Troubleshooting
 
