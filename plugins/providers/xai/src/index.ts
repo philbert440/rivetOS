@@ -1,13 +1,20 @@
 /**
  * @rivetos/provider-xai
  *
- * xAI Grok provider using the native Responses API (/v1/responses).
+ * xAI Grok provider — first-class native implementation of the Responses API.
+ *
+ * Features:
+ * - Native Responses API endpoint (/v1/responses)
  * - Stateful conversations via previous_response_id (server stores history)
- * - Encrypted reasoning passthrough
- * - Native SSE streaming with Responses API event format
+ * - Encrypted reasoning passthrough for stateless continuity
+ * - Native SSE streaming with full Responses API event handling
  * - Image understanding with input_image content blocks
- * - store: true by default (server keeps conversation, massive token savings)
- * - Images force store: false per xAI docs
+ * - Server-side tools: web_search, x_search, code_interpreter
+ * - Real-time status events for server-side tool activity
+ * - Citations support (inline + URL list)
+ * - Full usage tracking (input, output, reasoning, cached tokens)
+ * - Model-gated reasoning.effort (grok-4.20 yes, grok-4 no)
+ * - store: true by default; images force store: false
  * - 1-hour timeout for reasoning models
  */
 
@@ -20,6 +27,8 @@ import type {
   ChatOptions,
   LLMChunk,
   LLMResponse,
+  LLMUsage,
+  ThinkingLevel,
 } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
 import { hasImages } from '@rivetos/types'
@@ -28,17 +37,73 @@ import { hasImages } from '@rivetos/types'
 // Config
 // ---------------------------------------------------------------------------
 
+/** Web search filter configuration for xAI's built-in web_search tool */
+export interface WebSearchConfig {
+  /** Domains to restrict search to (max 5). Mutually exclusive with excludedDomains. */
+  allowedDomains?: string[]
+  /** Domains to exclude from search (max 5). Mutually exclusive with allowedDomains. */
+  excludedDomains?: string[]
+  /** Enable image understanding in web search results */
+  enableImageUnderstanding?: boolean
+}
+
+/** X/Twitter search filter configuration for xAI's built-in x_search tool */
+export interface XSearchConfig {
+  /** X handles to restrict search to (max 10). Mutually exclusive with excludedXHandles. */
+  allowedXHandles?: string[]
+  /** X handles to exclude from search (max 10). Mutually exclusive with allowedXHandles. */
+  excludedXHandles?: string[]
+  /** Only return posts from this date onward (ISO8601 "YYYY-MM-DD") */
+  fromDate?: string
+  /** Only return posts up to this date (ISO8601 "YYYY-MM-DD") */
+  toDate?: string
+  /** Enable image understanding in X search results */
+  enableImageUnderstanding?: boolean
+  /** Enable video understanding in X search results */
+  enableVideoUnderstanding?: boolean
+}
+
 export interface XAIProviderConfig {
   apiKey: string
-  model?: string // Default: 'grok-4.20-reasoning'
-  baseUrl?: string // Default: 'https://api.x.ai/v1'
-  temperature?: number // Default: not set (reasoning models don't use it)
-  store?: boolean // Default: true (server stores conversation, only new messages sent)
-  timeoutMs?: number // Default: 3600000 (1 hour for reasoning)
+  /** Model ID. Default: 'grok-4.20-reasoning' */
+  model?: string
+  /** API base URL. Default: 'https://api.x.ai/v1' */
+  baseUrl?: string
+  /** Temperature for sampling. Not supported by reasoning models. */
+  temperature?: number
+  /** Whether to store conversations server-side. Default: true */
+  store?: boolean
+  /** Request timeout in ms. Default: 3600000 (1 hour for reasoning) */
+  timeoutMs?: number
   /** Context window size in tokens (0 = unknown) */
   contextWindow?: number
   /** Max output tokens (0 = unknown) */
   maxOutputTokens?: number
+
+  // --- Server-side tools ---
+
+  /** Enable xAI's built-in web search. `true` = default config, object = with filters. */
+  webSearch?: boolean | WebSearchConfig
+  /** Enable xAI's built-in X/Twitter search. `true` = default config, object = with filters. */
+  xSearch?: boolean | XSearchConfig
+  /** Enable xAI's built-in code interpreter. */
+  codeExecution?: boolean
+
+  // --- Request options ---
+
+  /** Default reasoning effort level. Overridden by ChatOptions.thinking per-request.
+   *  Only supported by grok-3-mini and grok-4.20 models — errors on grok-4. */
+  reasoningEffort?: 'low' | 'medium' | 'high'
+  /** Limit server-side agentic turns per request. Resets on client-side tool calls. */
+  maxTurns?: number
+  /** Control when model uses tools: 'auto' | 'required' | 'none' | specific function */
+  toolChoice?: 'auto' | 'required' | 'none' | { type: 'function'; function: { name: string } }
+  /** Whether model can request multiple tool calls in one response. Default: true (API default) */
+  parallelToolCalls?: boolean
+  /** Server-side context truncation strategy */
+  truncation?: 'auto' | 'disabled'
+  /** Developer instructions (separate from system prompt, persisted server-side) */
+  instructions?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -68,20 +133,76 @@ interface XAIFunctionTool {
   parameters: Record<string, unknown>
 }
 
+/** Built-in tool definitions for the request body */
+type XAIBuiltInTool =
+  | { type: 'web_search'; search_parameters?: { filters?: Record<string, unknown> }; enable_image_understanding?: boolean }
+  | { type: 'x_search'; allowed_x_handles?: string[]; excluded_x_handles?: string[]; from_date?: string; to_date?: string; enable_image_understanding?: boolean; enable_video_understanding?: boolean }
+  | { type: 'code_interpreter' }
+
 /** SSE event shape from the xAI Responses API */
 interface ResponsesEvent {
   type?: string
-  item?: { type?: string; call_id?: string; id?: string; name?: string }
+  // output_item.added / output_item.done
+  item?: {
+    type?: string           // 'function_call' | 'web_search_call' | 'x_search_call' | 'code_interpreter_call' | 'file_search_call' | 'mcp_call' | 'message'
+    call_id?: string
+    id?: string
+    name?: string
+    arguments?: string      // for function_call items, full args in non-streaming
+    status?: string         // 'completed' | 'failed' | 'in_progress'
+    content?: Array<{
+      type?: string         // 'output_text'
+      text?: string
+      annotations?: Array<{
+        type?: string       // 'url_citation'
+        url?: string
+        start_index?: number
+        end_index?: number
+        title?: string
+      }>
+    }>
+  }
+  // function_call_arguments.delta / .done
   call_id?: string
   item_id?: string
   delta?: string
+  // response.completed / response.done / response.created / response.failed / response.incomplete
   response?: {
     id?: string
+    status?: string         // 'completed' | 'failed' | 'incomplete'
     usage?: {
       input_tokens?: number
       output_tokens?: number
+      completion_tokens_details?: {
+        reasoning_tokens?: number
+      }
+      prompt_tokens_details?: {
+        cached_tokens?: number
+      }
     }
+    citations?: string[]
   }
+  // error events
+  error?: {
+    message?: string
+    type?: string
+    code?: string
+  }
+}
+
+// Server-side tool types — events we observe but don't execute
+const SERVER_SIDE_TOOL_TYPES = new Set([
+  'web_search_call',
+  'x_search_call',
+  'code_interpreter_call',
+  'file_search_call',
+  'mcp_call',
+])
+
+// Models that support reasoning.effort
+// grok-4 (without 4.20) does NOT support it and will error
+function supportsReasoningEffort(model: string): boolean {
+  return model.includes('mini') || model.includes('4.20')
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +308,45 @@ function convertTools(tools: ToolDefinition[]): XAIFunctionTool[] {
 }
 
 // ---------------------------------------------------------------------------
+// Built-in tool construction
+// ---------------------------------------------------------------------------
+
+function buildWebSearchTool(config: boolean | WebSearchConfig): XAIBuiltInTool {
+  if (config === true || typeof config === 'boolean') {
+    return { type: 'web_search' }
+  }
+  const tool: XAIBuiltInTool & { type: 'web_search' } = { type: 'web_search' }
+  if (config.enableImageUnderstanding) {
+    tool.enable_image_understanding = true
+  }
+  if (config.allowedDomains?.length || config.excludedDomains?.length) {
+    const filters: Record<string, unknown> = {}
+    if (config.allowedDomains?.length) {
+      filters.allowed_domains = config.allowedDomains
+    }
+    if (config.excludedDomains?.length) {
+      filters.excluded_domains = config.excludedDomains
+    }
+    tool.search_parameters = { filters }
+  }
+  return tool
+}
+
+function buildXSearchTool(config: boolean | XSearchConfig): XAIBuiltInTool {
+  if (config === true || typeof config === 'boolean') {
+    return { type: 'x_search' }
+  }
+  const tool: Record<string, unknown> = { type: 'x_search' }
+  if (config.allowedXHandles?.length) tool.allowed_x_handles = config.allowedXHandles
+  if (config.excludedXHandles?.length) tool.excluded_x_handles = config.excludedXHandles
+  if (config.fromDate) tool.from_date = config.fromDate
+  if (config.toDate) tool.to_date = config.toDate
+  if (config.enableImageUnderstanding) tool.enable_image_understanding = true
+  if (config.enableVideoUnderstanding) tool.enable_video_understanding = true
+  return tool as XAIBuiltInTool
+}
+
+// ---------------------------------------------------------------------------
 // Type guard for SSE events
 // ---------------------------------------------------------------------------
 
@@ -209,18 +369,47 @@ export class XAIProvider implements Provider {
   private timeoutMs: number
   private contextWindowSize: number
   private outputTokenLimit: number
+
+  // Server-side tools config
+  private webSearch: boolean | WebSearchConfig
+  private xSearch: boolean | XSearchConfig
+  private codeExecution: boolean
+
+  // Request options
+  private reasoningEffort: 'low' | 'medium' | 'high' | undefined
+  private maxTurns: number | undefined
+  private toolChoice: 'auto' | 'required' | 'none' | { type: 'function'; function: { name: string } } | undefined
+  private parallelToolCalls: boolean | undefined
+  private truncation: 'auto' | 'disabled' | undefined
+  private instructions: string | undefined
+
   /** Track response IDs for stateful conversation continuity */
   private lastResponseId: string | null = null
+  /** Track which model the stored conversation belongs to */
+  private lastResponseModel: string | null = null
 
   constructor(config: XAIProviderConfig) {
     this.apiKey = config.apiKey
     this.model = config.model ?? 'grok-4.20-reasoning'
     this.baseUrl = config.baseUrl ?? 'https://api.x.ai/v1'
     this.temperature = config.temperature
-    this.store = config.store ?? true // Server-side storage = no re-sending history
+    this.store = config.store ?? true
     this.timeoutMs = config.timeoutMs ?? 3_600_000
     this.contextWindowSize = config.contextWindow ?? 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
+
+    // Server-side tools
+    this.webSearch = config.webSearch ?? false
+    this.xSearch = config.xSearch ?? false
+    this.codeExecution = config.codeExecution ?? false
+
+    // Request options
+    this.reasoningEffort = config.reasoningEffort
+    this.maxTurns = config.maxTurns
+    this.toolChoice = config.toolChoice
+    this.parallelToolCalls = config.parallelToolCalls
+    this.truncation = config.truncation
+    this.instructions = config.instructions
   }
 
   getModel(): string {
@@ -242,6 +431,58 @@ export class XAIProvider implements Provider {
   /** Reset conversation state (called by /new) */
   resetConversation(): void {
     this.lastResponseId = null
+    this.lastResponseModel = null
+  }
+
+  // -----------------------------------------------------------------------
+  // Build include array
+  // -----------------------------------------------------------------------
+
+  private buildIncludeArray(): string[] {
+    const include: string[] = ['reasoning.encrypted_content']
+    // Future: add 'verbose_streaming', 'web_search_call.action.sources', etc. based on config
+    return include
+  }
+
+  // -----------------------------------------------------------------------
+  // Build tools array (built-in + function tools)
+  // -----------------------------------------------------------------------
+
+  private buildToolsArray(functionTools?: ToolDefinition[]): (XAIBuiltInTool | XAIFunctionTool)[] | undefined {
+    const tools: (XAIBuiltInTool | XAIFunctionTool)[] = []
+
+    // Add configured built-in tools
+    if (this.webSearch) {
+      tools.push(buildWebSearchTool(this.webSearch))
+    }
+    if (this.xSearch) {
+      tools.push(buildXSearchTool(this.xSearch))
+    }
+    if (this.codeExecution) {
+      tools.push({ type: 'code_interpreter' })
+    }
+
+    // Add function tools from the agent loop
+    if (functionTools?.length) {
+      tools.push(...convertTools(functionTools))
+    }
+
+    return tools.length > 0 ? tools : undefined
+  }
+
+  // -----------------------------------------------------------------------
+  // Resolve reasoning effort (config default + per-request override + model gating)
+  // -----------------------------------------------------------------------
+
+  private resolveReasoningEffort(model: string, thinking?: ThinkingLevel): { effort: 'low' | 'medium' | 'high' } | undefined {
+    // Per-request override takes precedence
+    const level = thinking ?? this.reasoningEffort
+    if (!level || level === 'off') return undefined
+
+    // Model gating: grok-4 (without 4.20) errors on reasoning.effort
+    if (!supportsReasoningEffort(model)) return undefined
+
+    return { effort: level as 'low' | 'medium' | 'high' }
   }
 
   // -----------------------------------------------------------------------
@@ -256,51 +497,92 @@ export class XAIProvider implements Provider {
     // history on the server. Otherwise the request may fail."
     const containsImages = messages.some((m) => hasImages(m.content))
 
-    // If we have a previous response ID AND this isn't a fresh conversation
-    // AND there are no images, only send NEW messages (last user + any tool results).
-    // Server already has the full conversation history.
-    // freshConversation is set by delegation/subagent engines to prevent
-    // conversation state bleed from the shared provider instance.
-    const usePreviousResponse =
-      this.store && this.lastResponseId && !options?.freshConversation && !containsImages
+    // Determine store for this request — force false when images present
+    const storeThisRequest = containsImages ? false : this.store
+
+    // Check if we can continue from a previous response:
+    // - Must have a stored response ID
+    // - Must not be a fresh conversation (delegation/subagent)
+    // - Must not have images (store: false)
+    // - Model must match the stored conversation's model
+    const canContinue =
+      storeThisRequest &&
+      this.lastResponseId &&
+      !options?.freshConversation &&
+      this.lastResponseModel === model
+
     let input: ResponsesInput[]
-    if (usePreviousResponse) {
-      // Find the last user message and any tool results after it
+    if (canContinue) {
+      // Server already has the full conversation history.
+      // Only send NEW messages (last user + any tool results after it).
       const lastUserIdx = allMessages.findLastIndex((m) => 'role' in m && m.role === 'user')
       input = lastUserIdx >= 0 ? allMessages.slice(lastUserIdx) : allMessages
     } else {
       input = allMessages
     }
 
-    // Determine store for this request — force false when images present
-    const storeThisRequest = containsImages ? false : this.store
-
+    // Build request body
     const body: Record<string, unknown> = {
       model,
       input,
       stream: true,
       store: storeThisRequest,
-      include: ['reasoning.encrypted_content'],
+      include: this.buildIncludeArray(),
     }
 
     // Continue from previous response if available
-    if (usePreviousResponse) {
+    if (canContinue) {
       body.previous_response_id = this.lastResponseId
     }
 
+    // Temperature (not supported by reasoning models, but pass if configured)
     if (this.temperature !== undefined) {
       body.temperature = this.temperature
     }
 
-    if (options?.tools?.length) {
-      // Filter out function-based web_search — we use xAI's native web_search instead
-      const filteredTools = options.tools.filter((t) => t.name !== 'web_search')
-      body.tools = [
-        // xAI native web search — handled server-side
-        { type: 'web_search' },
-        ...convertTools(filteredTools),
-      ]
+    // Tools array (built-in + function tools)
+    const tools = this.buildToolsArray(options?.tools)
+    if (tools) {
+      body.tools = tools
     }
+
+    // Tool choice
+    if (this.toolChoice !== undefined) {
+      body.tool_choice = this.toolChoice
+    }
+
+    // Parallel tool calls
+    if (this.parallelToolCalls !== undefined) {
+      body.parallel_tool_calls = this.parallelToolCalls
+    }
+
+    // Max turns (server-side agentic loop limit)
+    if (this.maxTurns !== undefined) {
+      body.max_turns = this.maxTurns
+    }
+
+    // Max output tokens
+    if (this.outputTokenLimit > 0) {
+      body.max_output_tokens = this.outputTokenLimit
+    }
+
+    // Reasoning effort (model-gated)
+    const reasoning = this.resolveReasoningEffort(model, options?.thinking)
+    if (reasoning) {
+      body.reasoning = reasoning
+    }
+
+    // Truncation
+    if (this.truncation !== undefined) {
+      body.truncation = this.truncation
+    }
+
+    // Developer instructions
+    if (this.instructions !== undefined) {
+      body.instructions = this.instructions
+    }
+
+    // --- Fetch ---
 
     const controller = new AbortController()
     const signal = options?.signal
@@ -350,14 +632,20 @@ export class XAIProvider implements Provider {
       throw new ProviderError('No response body', 0, 'xai', false)
     }
 
+    // --- Stream parsing ---
+
     const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    const usage = { promptTokens: 0, completionTokens: 0 }
+    const usage: LLMUsage = { promptTokens: 0, completionTokens: 0 }
+    let citations: string[] | undefined
 
-    // Track tool calls being assembled
+    // Track tool calls being assembled (client-side function calls only)
     const pendingToolCalls: Map<number, { id: string; name: string; args: string }> = new Map()
     let toolCallIndex = 0
+
+    // Track whether we got a successful completion (for response ID management)
+    let completedSuccessfully = false
 
     try {
       for (;;) {
@@ -382,10 +670,14 @@ export class XAIProvider implements Provider {
             continue
           }
 
-          // xAI Responses API streaming events
+          // ----- xAI Responses API streaming events -----
+
           if (event.type === 'response.output_item.added') {
             const item = event.item
-            if (item?.type === 'function_call') {
+            if (!item?.type) continue
+
+            if (item.type === 'function_call') {
+              // Client-side tool call — yield to agent loop for execution
               const idx = toolCallIndex++
               pendingToolCalls.set(idx, {
                 id: item.call_id ?? item.id ?? `tc-${String(idx)}`,
@@ -396,9 +688,17 @@ export class XAIProvider implements Provider {
                 type: 'tool_call_start',
                 toolCall: { index: idx, id: item.call_id ?? item.id, name: item.name },
               }
+            } else if (SERVER_SIDE_TOOL_TYPES.has(item.type)) {
+              // Server-side tool — xAI executes this, we just observe
+              const toolType = item.type.replace('_call', '')
+              const name = item.name ?? toolType
+              const args = item.arguments ? `(${item.arguments})` : ''
+              yield { type: 'status', delta: `${toolType}: ${name}${args}` }
             }
+            // 'message' type items — text/reasoning will come via delta events
+
           } else if (event.type === 'response.function_call_arguments.delta') {
-            // Match by call_id/item_id, fallback to last created
+            // Client-side function call argument streaming
             let targetIdx = toolCallIndex - 1
             const matchId = event.call_id ?? event.item_id
             if (matchId) {
@@ -418,7 +718,9 @@ export class XAIProvider implements Provider {
                 toolCall: { index: targetIdx },
               }
             }
+
           } else if (event.type === 'response.function_call_arguments.done') {
+            // Client-side function call complete
             let targetIdx = toolCallIndex - 1
             const matchId = event.call_id ?? event.item_id
             if (matchId) {
@@ -430,30 +732,95 @@ export class XAIProvider implements Provider {
               }
             }
             yield { type: 'tool_call_done', toolCall: { index: targetIdx } }
+
           } else if (event.type === 'response.output_text.delta') {
+            // Text content (may include inline citations as [[N]](url) markdown)
             if (event.delta) {
               yield { type: 'text', delta: event.delta }
             }
+
           } else if (event.type === 'response.reasoning.delta') {
+            // Reasoning/thinking content
             if (event.delta) {
               yield { type: 'reasoning', delta: event.delta }
             }
-          } else if (event.type === 'response.completed' || event.type === 'response.done') {
-            // Extract usage + response ID for stateful conversation
+
+          } else if (event.type === 'response.output_item.done') {
+            // An output item finished. Check for server-side tool completion status.
+            const item = event.item
+            if (item?.type && SERVER_SIDE_TOOL_TYPES.has(item.type)) {
+              const toolType = item.type.replace('_call', '')
+              const status = item.status ?? 'done'
+              yield { type: 'status', delta: `${toolType}: ${status}` }
+            }
+
+          } else if (event.type === 'response.completed') {
+            // Full response complete — extract usage, citations, response ID
+            completedSuccessfully = true
             const resp = event.response
-            // Only track response ID when store is enabled (not for image requests)
             if (resp?.id && storeThisRequest) {
               this.lastResponseId = resp.id
+              this.lastResponseModel = model
             }
             if (resp?.usage) {
               usage.promptTokens = resp.usage.input_tokens ?? 0
               usage.completionTokens = resp.usage.output_tokens ?? 0
+              if (resp.usage.completion_tokens_details?.reasoning_tokens) {
+                usage.reasoningTokens = resp.usage.completion_tokens_details.reasoning_tokens
+              }
+              if (resp.usage.prompt_tokens_details?.cached_tokens) {
+                usage.cachedTokens = resp.usage.prompt_tokens_details.cached_tokens
+              }
             }
+            if (resp?.citations?.length) {
+              citations = resp.citations
+            }
+
+          } else if (event.type === 'response.done') {
+            // Alias for response.completed in some API versions
+            if (!completedSuccessfully) {
+              completedSuccessfully = true
+              const resp = event.response
+              if (resp?.id && storeThisRequest) {
+                this.lastResponseId = resp.id
+                this.lastResponseModel = model
+              }
+              if (resp?.usage) {
+                usage.promptTokens = resp.usage.input_tokens ?? 0
+                usage.completionTokens = resp.usage.output_tokens ?? 0
+                if (resp.usage.completion_tokens_details?.reasoning_tokens) {
+                  usage.reasoningTokens = resp.usage.completion_tokens_details.reasoning_tokens
+                }
+                if (resp.usage.prompt_tokens_details?.cached_tokens) {
+                  usage.cachedTokens = resp.usage.prompt_tokens_details.cached_tokens
+                }
+              }
+              if (resp?.citations?.length) {
+                citations = resp.citations
+              }
+            }
+
           } else if (event.type === 'response.created') {
-            // Also capture ID from response.created event (only when storing)
-            if (event.response?.id && storeThisRequest) {
-              this.lastResponseId = event.response.id
-            }
+            // Request accepted — do NOT save response ID here.
+            // Wait for response.completed to confirm success.
+
+          } else if (event.type === 'response.failed') {
+            // Request failed mid-stream
+            const errMsg = event.response?.status === 'failed'
+              ? `xAI response failed${event.error?.message ? `: ${event.error.message}` : ''}`
+              : 'xAI response failed'
+            yield { type: 'error', error: errMsg }
+            // Don't save response ID on failure
+
+          } else if (event.type === 'response.incomplete') {
+            // Response truncated — model hit limits. Yield what we have.
+            // Don't save response ID for incomplete responses — state may be inconsistent
+            yield { type: 'status', delta: 'Response truncated (hit output limits)' }
+
+          } else if (event.type === 'error') {
+            // SSE-level error
+            const errMsg = event.error?.message ?? 'Unknown xAI stream error'
+            yield { type: 'error', error: errMsg }
           }
         }
       }
@@ -462,7 +829,12 @@ export class XAIProvider implements Provider {
       reader.releaseLock()
     }
 
-    yield { type: 'done', usage }
+    // Yield final done chunk with usage and citations
+    const doneChunk: LLMChunk = { type: 'done', usage }
+    if (citations?.length) {
+      doneChunk.citations = citations
+    }
+    yield doneChunk
   }
 
   // -----------------------------------------------------------------------
@@ -474,7 +846,7 @@ export class XAIProvider implements Provider {
     let reasoning = ''
     const toolCalls: ToolCall[] = []
     const pendingArgs: Map<number, { id: string; name: string; args: string }> = new Map()
-    let usage = { promptTokens: 0, completionTokens: 0 }
+    let usage: LLMUsage = { promptTokens: 0, completionTokens: 0 }
 
     for await (const chunk of this.chatStream(messages, options)) {
       switch (chunk.type) {
@@ -514,6 +886,9 @@ export class XAIProvider implements Provider {
           }
           break
         }
+        case 'status':
+          // Server-side tool activity — informational, not actionable in non-streaming mode
+          break
         case 'done':
           if (chunk.usage) usage = chunk.usage
           break
