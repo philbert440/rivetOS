@@ -1,15 +1,15 @@
 ---
 name: websearch
-description: Search the web in real-time. Primary provider is Google Custom Search (works with any model). Optional xAI native web search for grok-4 family models with richer results and citations. Returns up-to-date information for any query requiring current news, facts, documentation, or research. Automatically falls back between providers if one fails.
+description: Search the web in real-time. Primary provider is Google Custom Search (works with any model). Optional xAI native web search for richer results and citations. Returns up-to-date information for any query requiring current news, facts, documentation, or research. Automatically falls back between providers if one fails.
 ---
 
 # Web Search
 
 Real-time web search with two providers:
 - **Primary (Google):** Custom Search JSON API — fast, model-agnostic, works everywhere
-- **Optional (xAI):** Native `web_search` tool via Responses API — richer results for grok-4 family
+- **Optional (xAI):** Native `web_search` tool via Responses API — richer results with citations
 
-Google is the default because it works with any model. Use `--provider xai` for richer results when running on grok-4.
+Google is the default because it works with any model. Use `--provider xai` for richer results when running on xAI models.
 
 ## Prerequisites
 
@@ -41,9 +41,9 @@ node /root/.rivetos/skills/websearch/scripts/search.mjs "TypeScript 5.8 features
 node /root/.rivetos/skills/websearch/scripts/search.mjs "web search API" --site docs.x.ai
 ```
 
-### Use xAI native search (grok-4 family, richer results)
+### Use xAI native search (richer results with citations)
 ```bash
-node /root/.rivetos/skills/websearch/scripts/search.mjs "grok-4 API documentation" --provider xai
+node /root/.rivetos/skills/websearch/scripts/search.mjs "xAI API documentation" --provider xai
 ```
 
 ### xAI with domain filters
@@ -85,7 +85,7 @@ node /root/.rivetos/skills/websearch/scripts/search.mjs "SpaceX launch schedule"
 
 ### xAI Native Web Search (Optional)
 - Uses the Responses API with native `web_search` tool
-- Best with grok-4 family models
+- Works with grok-4.20 and grok-4-1-fast models
 - Returns full LLM-synthesized answers with inline citations
 - Supports domain filtering and image understanding
 - Richer output but slower and more expensive

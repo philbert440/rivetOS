@@ -38,7 +38,7 @@ Extend `XAIProviderConfig` with:
 
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
-| `reasoningEffort` | `'low' \| 'medium' \| 'high'` | undefined | Maps to `reasoning.effort` in request body. **Note:** Grok 4 does NOT support this — only Grok 3 mini / Grok 4.20. Must be omitted for grok-4 models. |
+| `reasoningEffort` | `'low' \| 'medium' \| 'high'` | undefined | Maps to `reasoning.effort` in request body. Supported by all current models (grok-4.20 and grok-4-1-fast families). |
 | `webSearch` | `boolean \| WebSearchConfig` | `false` | Enable native web search. `true` = default config. Object = with filters. |
 | `xSearch` | `boolean \| XSearchConfig` | `false` | Enable native X search. `true` = default config. Object = with filters. |
 | `codeExecution` | `boolean` | `false` | Enable server-side code interpreter. |
@@ -259,10 +259,7 @@ Mapping:
 
 Config-level `reasoningEffort` is the default. `ChatOptions.thinking` overrides per-request.
 
-**Model gating:** Grok 4 does NOT support `reasoning_effort`. It errors with a 400. Only grok-3-mini, grok-4.20, and grok-4.20-reasoning support it. The provider should check the model name and only include `reasoning.effort` for supported models.
-
-Models that support reasoning.effort: anything with "mini" or "4.20" in the name.
-Models that DON'T: "grok-4" (without 4.20).
+**Model gating:** grok-4.20 and grok-4-1-fast support `reasoning.effort`. Plain grok-4 does NOT — it errors with a 400 if you send it. The provider must check the model name and omit `reasoning.effort` for grok-4.
 
 ### 3.11 Conversation State Management
 
@@ -278,12 +275,11 @@ Add a `lastResponseModel: string | null` field to track which model the stored c
 
 ### 3.12 Error Handling Improvements
 
-1. **Grok 4 specific errors:** If `reasoning_effort` is sent to grok-4, the API returns a 400. Model gating should prevent this, but if it slips through, the error should be clear.
-2. **Rate limiting:** xAI returns 429. Already handled by `ProviderError` with `RETRYABLE_STATUS_CODES`.
-3. **Usage guideline violations:** xAI returns specific error codes for content policy. Surface these as non-retryable `ProviderError`.
-4. **Store failure:** If an image request fails with a store-related error, ensure we retry with `store: false`.
-5. **SSE error events:** Handle `type: 'error'` events in the SSE stream — surface as `LLMChunk { type: 'error' }`.
-6. **`response.incomplete` event:** Handle truncation — model hit limits. Yield done with whatever we have.
+1. **Rate limiting:** xAI returns 429. Already handled by `ProviderError` with `RETRYABLE_STATUS_CODES`.
+2. **Usage guideline violations:** xAI returns specific error codes for content policy. Surface these as non-retryable `ProviderError`.
+3. **Store failure:** If an image request fails with a store-related error, ensure we retry with `store: false`.
+4. **SSE error events:** Handle `type: 'error'` events in the SSE stream — surface as `LLMChunk { type: 'error' }`.
+5. **`response.incomplete` event:** Handle truncation — model hit limits. Yield done with whatever we have.
 
 ### 3.13 ResponsesEvent Type — Full Shape
 
@@ -368,7 +364,7 @@ When sending function call results back:
 
 4. Build request body dynamically (section 3.2)
 5. Fix built-in tool injection logic — only inject what's configured, not hardcoded
-6. Add `reasoning.effort` mapping with model gating (section 3.10)
+6. Add `reasoning.effort` mapping (section 3.10) — no model gating needed, all supported models accept it
 7. Add `max_output_tokens`, `tool_choice`, `parallel_tool_calls`, `max_turns`, `truncation`, `instructions` to request body when configured
 8. Make `include` array dynamic (section 3.9)
 
@@ -420,7 +416,7 @@ When sending function call results back:
 ### Request Body Fields
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `model` | string | ✅ | e.g., `grok-4.20-reasoning`, `grok-4` |
+| `model` | string | ✅ | e.g., `grok-4.20-reasoning`, `grok-4`, `grok-4-1-fast-reasoning` |
 | `input` | array | ✅ | Messages + function_call_outputs |
 | `stream` | boolean | | Default: false |
 | `store` | boolean | | Default: true. Force false for images. 30-day retention. |
@@ -432,7 +428,7 @@ When sending function call results back:
 | `max_turns` | number | | Limits server-side agentic turns. Resets on client-side tool calls. |
 | `max_output_tokens` | number | | Limit output length |
 | `temperature` | number | | Not supported by reasoning models |
-| `reasoning` | object | | `{ effort: 'low' \| 'medium' \| 'high' }`. NOT supported by grok-4. |
+| `reasoning` | object | | `{ effort: 'low' \| 'medium' \| 'high' }`. Supported by grok-4.20 and grok-4-1-fast. NOT supported by grok-4. |
 | `truncation` | string | | `auto` or `disabled` |
 | `instructions` | string | | Developer instructions |
 | `response_format` | object | | Structured output (NOT implementing) |
@@ -462,12 +458,17 @@ When sending function call results back:
 
 **Billing note:** Only successful tool executions are billed. Failed attempts are not charged.
 
-### Models
-| Model | Context | Reasoning | reasoning.effort | Notes |
-|-------|---------|-----------|-----------------|-------|
-| `grok-4.20-reasoning` | 2M | ✅ | ✅ | Flagship. Fast + agentic. |
-| `grok-4` | 256K | ✅ | ❌ (errors!) | Deep reasoning. Slower. |
-| `grok-3-mini` | 131K | ✅ | ✅ | Small, fast. |
+### Supported Models
+
+Supported models: grok-4.20, grok-4, and grok-4-1-fast (reasoning variants only). All deprecated models (grok-3, grok-3-mini) are no longer supported.
+
+| Model | Context | reasoning.effort | Pricing (in/out per M) | Notes |
+|-------|---------|-----------------|----------------------|-------|
+| `grok-4.20-0309-reasoning` | 2M | ✅ | $2.00 / $6.00 | Flagship. Fast + agentic. Alias: `grok-4.20-reasoning`. |
+| `grok-4` | 256K | ❌ (errors!) | deprecated pricing | Deep reasoning. Slower. No reasoning.effort support. |
+| `grok-4-1-fast-reasoning` | — | ✅ | $0.20 / $0.50 | Fast + cheap. 10x cheaper than 4.20. Good for compaction/fallback. |
+
+**Default model:** `grok-4.20-reasoning` (alias for latest dated version)
 
 ---
 
@@ -487,7 +488,7 @@ When sending function call results back:
 - [ ] freshConversation isolation
 - [ ] Model switch → conversation state reset
 - [ ] reasoning.effort with grok-4.20 (should work)
-- [ ] reasoning.effort with grok-4 (should be omitted)
+- [ ] reasoning.effort with grok-4-1-fast (should work)
 - [ ] Abort signal
 - [ ] Usage tracking (input, output, reasoning, cached tokens)
 - [ ] Error handling (429, 400, 500)

@@ -93,7 +93,7 @@ agents:
     channels: [discord]
   - name: grok
     provider: xai
-    model: grok-3
+    model: grok-4-1-fast-reasoning
     channels: [discord]
 
 # Provider-specific overrides (optional)

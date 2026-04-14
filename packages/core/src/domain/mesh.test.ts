@@ -36,7 +36,7 @@ describe('FileMeshRegistry', () => {
       host: '192.168.1.101',
       port: 3100,
       providers: ['anthropic', 'xai'],
-      models: ['claude-sonnet-4-20250514', 'grok-3'],
+      models: ['claude-sonnet-4-20250514', 'grok-4-1-fast-reasoning'],
       version: '0.7.0',
     })
 
@@ -76,7 +76,7 @@ describe('FileMeshRegistry', () => {
       host: '192.168.1.102',
       port: 3100,
       providers: ['xai'],
-      models: ['grok-3'],
+      models: ['grok-4-1-fast-reasoning'],
       version: '0.7.0',
     })
 
@@ -102,7 +102,7 @@ describe('FileMeshRegistry', () => {
       host: '192.168.1.101',
       port: 3100,
       providers: ['anthropic', 'xai'],
-      models: ['claude-sonnet-4-20250514', 'grok-3'],
+      models: ['claude-sonnet-4-20250514', 'grok-4-1-fast-reasoning'],
       version: '0.7.0',
     })
 
