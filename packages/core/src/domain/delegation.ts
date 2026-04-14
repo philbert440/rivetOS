@@ -80,6 +80,10 @@ export interface DelegationConfig {
   toolFilter?: Record<string, AgentToolFilter>
   /** Workspace directory — passed to tools via ToolContext for resolving relative paths */
   workspaceDir?: string
+  /** Turn wall-clock timeout in seconds (from RuntimeConfig) */
+  turnTimeout?: number
+  /** Context management thresholds */
+  contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +257,9 @@ export class DelegationEngine {
         workspaceDir: this.config.workspaceDir,
         hooks: this.config.hooks,
         freshConversation: true, // Isolate from parent's stateful conversation context
+        turnTimeout: this.config.turnTimeout ? this.config.turnTimeout * 1000 : undefined,
+        contextWindow: provider.getContextWindow(),
+        contextConfig: this.config.contextConfig,
       })
 
       const turnResult = await loop.run(request.task, [], abort.signal)

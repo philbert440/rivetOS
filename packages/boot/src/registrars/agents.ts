@@ -43,6 +43,14 @@ export async function registerAgentTools(
   }
   const hasFilters = Object.keys(toolFilter).length > 0
 
+  // Context config — convert snake_case YAML to camelCase for the engine
+  const contextConfig = config.runtime.context
+    ? {
+        softNudgePct: config.runtime.context.soft_nudge_pct,
+        hardNudgePct: config.runtime.context.hard_nudge_pct,
+      }
+    : undefined
+
   // Build the local delegation engine (always needed — mesh wraps it)
   const localDelegation = new DelegationEngine({
     router: runtime.getRouter(),
@@ -51,6 +59,8 @@ export async function registerAgentTools(
     hooks: runtime.getHooks(),
     toolFilter: hasFilters ? toolFilter : undefined,
     workspaceDir,
+    turnTimeout: config.runtime.turn_timeout,
+    contextConfig,
   })
 
   // Determine if mesh is enabled
@@ -150,6 +160,8 @@ export async function registerAgentTools(
     hooks: runtime.getHooks(),
     toolFilter: hasFilters ? toolFilter : undefined,
     workspaceDir,
+    turnTimeout: config.runtime.turn_timeout,
+    contextConfig,
   })
   for (const tool of createSubagentTools(subagentManager)) {
     runtime.registerTool(tool)
