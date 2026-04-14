@@ -297,6 +297,7 @@ export class Runtime {
           tools: this.tools,
           agentId: hbConfig.agent,
           workspaceDir: this.config.workspaceDir,
+          freshConversation: true,
         })
 
         const result = await loop.run(hbConfig.prompt, [])

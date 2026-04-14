@@ -30,11 +30,16 @@ function createMockRouter(agents: Array<{ id: string; provider: string }> = []):
 
   const mockProviders = [...new Set(agents.map((a) => a.provider))].map((p) => ({
     id: p,
+    name: p,
     chatStream: vi.fn(async function* () {
       yield { type: 'text' as const, delta: 'Delegated result from ' + p };
       yield { type: 'done' as const, usage: { promptTokens: 10, completionTokens: 20 } };
     }),
     healthCheck: vi.fn(async () => true),
+    getModel: () => `mock-model-${p}`,
+    setModel: vi.fn(),
+    getContextWindow: () => 0,
+    getMaxOutputTokens: () => 0,
   }));
 
   return {
