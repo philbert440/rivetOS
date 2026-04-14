@@ -354,19 +354,13 @@ async function verifyDataPersistence(): Promise<void> {
 }
 
 /**
- * Rolling mesh update — update all peers one at a time.
- *
- * Order: remotes first, local last. The local restart kills the CLI process,
- * so it must be the final operation.
+ * Rolling mesh update — all remotes in parallel, local last.
  *
  * 1. Read mesh.json to get all nodes
- * 2. Pull latest code locally (for rsync to remotes)
- * 3. Update each remote peer:
- *    a. rsync code, rebuild, restart (bare-metal/Proxmox)
- *    b. Fall back to agent API (Docker)
- *    c. Wait for health check to pass
- *    d. Move to next node
- * 4. Update local node last (restart kills the process)
+ * 2. Pull latest code locally (git pull)
+ * 3. Update all remote nodes in parallel (git pull + build + restart)
+ * 4. Print summary table
+ * 5. Update local node last (restart kills the process)
  */
 async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   console.log('🔩 RivetOS Mesh Rolling Update')
@@ -404,107 +398,96 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
 
   const localOpts = { ...opts, mesh: false }
 
-  // Step 0: Pull latest code locally first (needed for rsync to remotes)
+  // Step 0: Pull latest code locally first
   const gitDir = exec('git rev-parse --git-dir', { quiet: true })
   if (gitDir) {
     try {
-      console.log('  Pulling latest code...')
+      console.log('  Pulling latest code locally...')
       ensureMainBranchSafe(localOpts.version)
-      execOrThrow('npm install --no-audit --no-fund', 'npm install')
-      exec('npx nx reset', { quiet: true })
       console.log('  ✅ Code updated locally')
       console.log('')
     } catch (err: unknown) {
       console.error(`  ❌ Local git pull failed: ${(err as Error).message}`)
-      console.error('  Cannot update remotes without latest code. Aborting.')
+      console.error('  Aborting.')
       process.exit(1)
     }
   }
 
-  // Step 1: Update remote nodes first (before local restart kills the process)
-  let updated = 0
-  let failed = 0
+  // Step 1: Update ALL remote nodes in parallel
+  const remoteNodes = nodes.filter((n) => !isLocalAddress(n.host))
+  console.log(`  Updating ${String(remoteNodes.length)} remote node(s) in parallel...`)
+  console.log('')
 
-  for (const node of nodes) {
-    // Skip local node — we do it last
-    if (isLocalAddress(node.host)) continue
+  const results = await Promise.all(
+    remoteNodes.map((node) => {
+      const isAgent = !node.role || node.role === 'agent'
+      return gitUpdateNodeAsync(node.host, node.name, localOpts, isAgent)
+    }),
+  )
 
-    console.log(`  ── Updating ${node.name} (${node.host}) ──`)
-
-    // Mark node as updating in mesh
-    node.status = 'updating'
-
-    // Try rsync-based update first (bare-metal/Proxmox)
+  // Step 2: Wait for health on agent nodes that succeeded
+  const healthPromises: Promise<void>[] = []
+  for (let i = 0; i < remoteNodes.length; i++) {
+    const node = remoteNodes[i]
+    const result = results[i]
     const isAgent = !node.role || node.role === 'agent'
-    const rsyncSuccess = await rsyncUpdateNodeAsync(node.host, node.name, localOpts, isAgent)
-    if (rsyncSuccess) {
-      console.log(
-        `  ✅ ${node.name} updated (via rsync${!isAgent ? ` — ${node.role}, sync only` : ''})`,
+    if (result.success && isAgent) {
+      healthPromises.push(
+        waitForHealth(node.host, node.port, 60_000).then((healthy) => {
+          if (healthy) {
+            console.log(`    ✅ ${node.name} is healthy`)
+          } else {
+            console.log(`    ⚠️  ${node.name} health check timed out`)
+          }
+        }),
       )
-      updated++
-    } else {
-      // Fall back to agent API (Docker/containerized)
-      try {
-        const secret = process.env.RIVETOS_AGENT_SECRET ?? ''
-        const updateMsg = localOpts.version
-          ? `[System] Run: rivetos update --version ${localOpts.version}`
-          : '[System] Run: rivetos update'
-
-        const res = await fetch(`http://${node.host}:${String(node.port)}/api/message`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${secret}`,
-          },
-          body: JSON.stringify({
-            fromAgent: 'mesh-update',
-            message: updateMsg,
-            waitForResponse: true,
-            timeoutMs: 300_000, // 5 min for build
-          }),
-          signal: AbortSignal.timeout(310_000),
-        })
-
-        if (res.ok) {
-          console.log(`  ✅ ${node.name} updated (via API)`)
-          updated++
-        } else {
-          const body = await res.text()
-          console.error(`  ❌ ${node.name} update failed: HTTP ${String(res.status)} — ${body}`)
-          failed++
-        }
-      } catch (err: unknown) {
-        console.error(`  ❌ ${node.name} update failed: ${(err as Error).message}`)
-        failed++
-      }
     }
-
-    // Wait for node to come back healthy (skip for non-agent nodes — no service to check)
-    if (isAgent) {
-      console.log(`    Waiting for ${node.name} to be healthy...`)
-      const healthy = await waitForHealth(node.host, node.port, 60_000)
-      if (healthy) {
-        console.log(`    ✅ ${node.name} is healthy`)
-      } else {
-        console.log(`    ⚠️  ${node.name} health check timed out — continuing anyway`)
-      }
-    }
-
+  }
+  if (healthPromises.length > 0) {
+    console.log('  Waiting for health checks...')
+    await Promise.all(healthPromises)
     console.log('')
   }
 
-  // Print summary before local update (we won't survive the restart)
-  console.log(`  ══════════════════`)
-  console.log(`  Remote nodes: ${String(updated)} updated, ${String(failed)} failed`)
+  // Step 3: Print summary table
+  let updated = 0
+  let failedCount = 0
+
+  console.log('  ══════════════════════════════════════════════')
+  console.log('  Node          Status          Commit    Time')
+  console.log('  ──────────────────────────────────────────────')
+  for (let i = 0; i < remoteNodes.length; i++) {
+    const node = remoteNodes[i]
+    const result = results[i]
+    const isAgent = !node.role || node.role === 'agent'
+    const name = node.name.padEnd(14)
+    const elapsed = `${String(Math.round(result.elapsedMs / 1000))}s`
+
+    if (result.success) {
+      const status = isAgent ? '✅' : '✅ (sync)'
+      console.log(`  ${name}${status.padEnd(16)}${(result.commit ?? '—').padEnd(10)}${elapsed}`)
+      updated++
+    } else {
+      const status = `❌ ${result.failedStep ?? 'unknown'}`
+      console.log(`  ${name}${status.padEnd(16)}${'—'.padEnd(10)}${elapsed}`)
+      failedCount++
+    }
+  }
+  console.log('  ══════════════════════════════════════════════')
+  console.log(`  Remote: ${String(updated)} updated, ${String(failedCount)} failed`)
   console.log('')
 
-  // Step 2: Update local node last — restart kills the process
+  // Step 4: Update local node last — restart kills the process
   console.log('  ── Updating local node (this will restart the process) ──')
   console.log('')
 
   if (gitDir) {
     try {
       const deployment = await detectDeployment(localOpts.bareMetal)
+
+      // Install + build locally (git pull already done in step 0)
+      execOrThrow('npm install --no-audit --no-fund', 'npm install')
+      exec('npx nx reset', { quiet: true })
 
       if (deployment === 'docker') {
         if (!localOpts.prebuilt) {
@@ -515,7 +498,6 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
           exec('docker compose up -d', { quiet: false })
         }
       } else if (deployment === 'bare-metal') {
-        // Build TypeScript
         console.log('    Building...')
         execOrThrow(
           'npx nx run-many -t build --exclude container-agent,container-datahub,site',
@@ -588,89 +570,59 @@ function sshExec(host: string, command: string, label: string, timeoutMs: number
   })
 }
 
-/**
- * Run rsync using spawn (non-blocking, streamed output).
- */
-function rsyncExec(src: string, dest: string, timeoutMs: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      '-az',
-      '--delete',
-      '--exclude=.git/',
-      '--exclude=node_modules/',
-      '--exclude=.secrets/',
-      '--exclude=workspace/',
-      '--exclude=.env',
-      '--exclude=.env.*',
-      '--exclude=*.pid',
-      '--exclude=.nx/',
-      src,
-      dest,
-    ]
-
-    const proc = spawn('rsync', args, {
-      stdio: 'inherit',
-      env: { ...process.env, HOME: process.env.HOME ?? '/root' },
-    })
-
-    const timer = setTimeout(() => {
-      proc.kill('SIGKILL')
-      reject(new Error(`rsync timed out after ${String(Math.round(timeoutMs / 1000))}s`))
-    }, timeoutMs)
-
-    proc.on('error', (err) => {
-      clearTimeout(timer)
-      reject(new Error(`rsync spawn error: ${err.message}`))
-    })
-
-    proc.on('close', (code) => {
-      clearTimeout(timer)
-      if (code === 0) {
-        resolve()
-      } else {
-        reject(new Error(`rsync exited with code ${String(code)}`))
-      }
-    })
-  })
+interface NodeUpdateResult {
+  success: boolean
+  commit?: string
+  failedStep?: string
+  elapsedMs: number
 }
 
 /**
- * Update a remote node via rsync + SSH.
- * Uses async spawn for all long-running operations to avoid pipe buffer deadlocks.
- * Each step has its own timeout and streams output to the console.
- * Returns true on success, false if SSH isn't available or a step fails.
+ * Update a remote node via git pull + SSH.
+ * Each step logs progress with [nodeName] prefix and has its own timeout.
+ * Returns a result object with success/failure details for the summary table.
  */
-async function rsyncUpdateNodeAsync(
+async function gitUpdateNodeAsync(
   host: string,
   nodeName: string,
   opts: UpdateOptions,
   isAgent: boolean = true,
-): Promise<boolean> {
+): Promise<NodeUpdateResult> {
   const tag = `[${nodeName}]`
+  const start = Date.now()
 
-  // Step 1: SSH connectivity check (quick, execSync is fine)
+  // Step 1: SSH connectivity check
   try {
     execSync(
       `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no root@${host} "echo ok"`,
       { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
     )
   } catch {
-    console.error(`    ${tag} SSH connection failed — cannot reach ${host}`)
-    return false
+    console.error(`    ${tag} ❌ SSH connection failed — cannot reach ${host}`)
+    return { success: false, failedStep: 'ssh', elapsedMs: Date.now() - start }
   }
 
+  // Step 2: git pull
   try {
-    // Step 2: rsync code (120s)
-    console.log(`    ${tag} Syncing code...`)
-    await rsyncExec(`${ROOT}/`, `root@${host}:/opt/rivetos/`, 120_000)
+    console.log(`    ${tag} Pulling latest code...`)
+    const gitCmd = opts.version
+      ? `cd /opt/rivetos && git fetch --tags && git checkout ${opts.version}`
+      : 'cd /opt/rivetos && git fetch origin && git checkout main && git pull --ff-only'
+    await sshExec(host, gitCmd, `${tag} git pull`, 30_000)
+  } catch (err: unknown) {
+    console.error(`    ${tag} ❌ git pull failed: ${(err as Error).message}`)
+    return { success: false, failedStep: 'git', elapsedMs: Date.now() - start }
+  }
 
-    // Non-agent nodes only get code synced — no build or restart
-    if (!isAgent) {
-      console.log(`    ${tag} Sync complete (non-agent node — skipping build/restart)`)
-      return true
-    }
+  // Non-agent nodes only need code sync — no build or restart
+  if (!isAgent) {
+    const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD')
+    console.log(`    ${tag} ✅ Synced (${commit || 'unknown'})`)
+    return { success: true, commit: commit || undefined, elapsedMs: Date.now() - start }
+  }
 
-    // Step 3: npm install (120s)
+  // Step 3: npm install
+  try {
     console.log(`    ${tag} Installing dependencies...`)
     await sshExec(
       host,
@@ -678,30 +630,54 @@ async function rsyncUpdateNodeAsync(
       `${tag} npm install`,
       120_000,
     )
+  } catch (err: unknown) {
+    console.error(`    ${tag} ❌ npm install failed: ${(err as Error).message}`)
+    return { success: false, failedStep: 'npm', elapsedMs: Date.now() - start }
+  }
 
-    // Step 4: nx reset (15s)
-    console.log(`    ${tag} Resetting Nx cache...`)
-    await sshExec(host, 'cd /opt/rivetos && npx nx reset', `${tag} nx reset`, 15_000)
-
-    // Step 5: nx build (180s)
+  // Step 4: nx reset + build
+  try {
     console.log(`    ${tag} Building...`)
     await sshExec(
       host,
-      'cd /opt/rivetos && npx nx run-many -t build --exclude container-agent,container-datahub,site',
-      `${tag} nx build`,
+      'cd /opt/rivetos && npx nx reset && npx nx run-many -t build --exclude container-agent,container-datahub,site',
+      `${tag} build`,
       180_000,
     )
-
-    // Step 6: restart service (30s)
-    if (opts.restart) {
-      console.log(`    ${tag} Restarting service...`)
-      await sshExec(host, 'systemctl restart rivetos', `${tag} systemctl restart`, 30_000)
-    }
-
-    return true
   } catch (err: unknown) {
-    console.error(`    ${tag} ❌ ${(err as Error).message}`)
-    return false
+    console.error(`    ${tag} ❌ Build failed: ${(err as Error).message}`)
+    return { success: false, failedStep: 'build', elapsedMs: Date.now() - start }
+  }
+
+  // Step 5: restart service
+  if (opts.restart) {
+    try {
+      console.log(`    ${tag} Restarting service...`)
+      await sshExec(host, 'systemctl restart rivetos', `${tag} restart`, 30_000)
+    } catch (err: unknown) {
+      console.error(`    ${tag} ❌ Restart failed: ${(err as Error).message}`)
+      return { success: false, failedStep: 'restart', elapsedMs: Date.now() - start }
+    }
+  }
+
+  // Get final commit SHA
+  const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD')
+  console.log(`    ${tag} ✅ Done (${commit || 'unknown'})`)
+  return { success: true, commit: commit || undefined, elapsedMs: Date.now() - start }
+}
+
+/**
+ * Quick SSH command that returns stdout, or empty string on failure.
+ * Used for non-critical checks like getting the commit SHA.
+ */
+function sshExecQuiet(host: string, command: string): string {
+  try {
+    return execSync(
+      `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no root@${host} "${command}"`,
+      { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
+    ).trim()
+  } catch {
+    return ''
   }
 }
 
