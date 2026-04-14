@@ -134,7 +134,7 @@ runtime:
     - providerId: anthropic
       fallbacks:
         - "google:gemini-2.5-pro"
-        - "xai:grok-3"
+        - "xai:grok-4-1-fast-reasoning"
 ```
 
 | Key | Type | Description |
@@ -255,12 +255,12 @@ providers:
 ```yaml
 providers:
   xai:
-    model: grok-3
+    model: grok-4-1-fast-reasoning
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `model` | string | `grok-3` | Model identifier. |
+| `model` | string | `grok-4-1-fast-reasoning` | Model identifier. |
 | `api_key` | string | `${XAI_API_KEY}` | API key. |
 | `max_tokens` | number | `4096` | Maximum output tokens. |
 | `temperature` | number | — | Sampling temperature. |

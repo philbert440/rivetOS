@@ -13,7 +13,7 @@
  * - Real-time status events for server-side tool activity
  * - Citations support (inline + URL list)
  * - Full usage tracking (input, output, reasoning, cached tokens)
- * - Model-gated reasoning.effort (grok-4.20 yes, grok-4 no)
+ * - reasoning.effort support (all current models: grok-4.20, grok-4-1-fast)
  * - store: true by default; images force store: false
  * - 1-hour timeout for reasoning models
  */
@@ -91,8 +91,7 @@ export interface XAIProviderConfig {
 
   // --- Request options ---
 
-  /** Default reasoning effort level. Overridden by ChatOptions.thinking per-request.
-   *  Only supported by grok-3-mini and grok-4.20 models — errors on grok-4. */
+  /** Default reasoning effort level. Overridden by ChatOptions.thinking per-request. */
   reasoningEffort?: 'low' | 'medium' | 'high'
   /** Limit server-side agentic turns per request. Resets on client-side tool calls. */
   maxTurns?: number
@@ -199,11 +198,8 @@ const SERVER_SIDE_TOOL_TYPES = new Set([
   'mcp_call',
 ])
 
-// Models that support reasoning.effort
-// grok-4 (without 4.20) does NOT support it and will error
-function supportsReasoningEffort(model: string): boolean {
-  return model.includes('mini') || model.includes('4.20')
-}
+// All supported models (grok-4.20-*, grok-4-1-fast-*) accept reasoning.effort.
+// No model gating needed — deprecated models are not supported by this provider.
 
 // ---------------------------------------------------------------------------
 // Message conversion (xAI Responses API format)
@@ -471,17 +467,15 @@ export class XAIProvider implements Provider {
   }
 
   // -----------------------------------------------------------------------
-  // Resolve reasoning effort (config default + per-request override + model gating)
+  // Resolve reasoning effort (config default + per-request override)
   // -----------------------------------------------------------------------
 
-  private resolveReasoningEffort(model: string, thinking?: ThinkingLevel): { effort: 'low' | 'medium' | 'high' } | undefined {
+  private resolveReasoningEffort(_model: string, thinking?: ThinkingLevel): { effort: 'low' | 'medium' | 'high' } | undefined {
     // Per-request override takes precedence
     const level = thinking ?? this.reasoningEffort
     if (!level || level === 'off') return undefined
 
-    // Model gating: grok-4 (without 4.20) errors on reasoning.effort
-    if (!supportsReasoningEffort(model)) return undefined
-
+    // All supported models (grok-4.20, grok-4-1-fast) accept reasoning.effort
     return { effort: level as 'low' | 'medium' | 'high' }
   }
 

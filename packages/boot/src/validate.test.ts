@@ -560,7 +560,7 @@ describe('Config Validation', () => {
         },
         providers: {
           anthropic: { model: 'claude-opus-4-6', max_tokens: 8192 },
-          xai: { model: 'grok-3', max_tokens: 8192 },
+          xai: { model: 'grok-4-1-fast-reasoning', max_tokens: 8192 },
         },
         channels: {
           discord: {
@@ -611,7 +611,7 @@ describe('Config Validation', () => {
         },
         providers: {
           anthropic: { model: 'claude-opus-4-6', max_tokens: 8192 },
-          xai: { model: 'grok-3-fast', max_tokens: 8192 },
+          xai: { model: 'grok-4-1-fast-reasoning', max_tokens: 8192 },
           google: { model: 'gemini-2.5-pro', max_tokens: 8192 },
           'llama-server': { base_url: 'http://192.168.1.50:8000/v1', model: 'rivet-v0.1', temperature: 0.4 },
         },
