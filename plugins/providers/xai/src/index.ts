@@ -1,12 +1,13 @@
 /**
  * @rivetos/provider-xai
  *
- * xAI Grok provider using the Responses API (/v1/responses).
- * - Stateful conversations via previous_response_id (server stores history, we only send new messages)
+ * xAI Grok provider using the native Responses API (/v1/responses).
+ * - Stateful conversations via previous_response_id (server stores history)
  * - Encrypted reasoning passthrough
- * - Native SSE streaming
- * - No reasoning_effort (grok-4 always reasons)
- * - store: true (server keeps conversation, massive token savings)
+ * - Native SSE streaming with Responses API event format
+ * - Image understanding with input_image content blocks
+ * - store: true by default (server keeps conversation, massive token savings)
+ * - Images force store: false per xAI docs
  * - 1-hour timeout for reasoning models
  */
 
@@ -21,6 +22,7 @@ import type {
   LLMResponse,
 } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
+import { hasImages } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -40,16 +42,14 @@ export interface XAIProviderConfig {
 }
 
 // ---------------------------------------------------------------------------
-// API types — Responses API + Chat Completions fallback
+// API types — xAI Responses API
 // ---------------------------------------------------------------------------
 
-interface OpenAIContentBlock {
-  type: 'text' | 'image_url'
-  text?: string
-  image_url?: { url: string }
-}
+type XAIContentBlock =
+  | { type: 'input_text'; text: string }
+  | { type: 'input_image'; image_url: string; detail?: string }
 
-interface OpenAIToolCall {
+interface XAIToolCall {
   id: string
   type: 'function'
   function: { name: string; arguments: string }
@@ -57,18 +57,18 @@ interface OpenAIToolCall {
 
 type ResponsesInput =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string | OpenAIContentBlock[] }
-  | { role: 'assistant'; content: string; tool_calls?: OpenAIToolCall[] }
+  | { role: 'user'; content: string | XAIContentBlock[] }
+  | { role: 'assistant'; content: string; tool_calls?: XAIToolCall[] }
   | { type: 'function_call_output'; call_id: string; output: string }
 
-interface OpenAIFunctionTool {
+interface XAIFunctionTool {
   type: 'function'
   name: string
   description: string
   parameters: Record<string, unknown>
 }
 
-/** SSE event shape from the Responses API */
+/** SSE event shape from the xAI Responses API */
 interface ResponsesEvent {
   type?: string
   item?: { type?: string; call_id?: string; id?: string; name?: string }
@@ -80,51 +80,31 @@ interface ResponsesEvent {
     usage?: {
       input_tokens?: number
       output_tokens?: number
-      prompt_tokens?: number
-      completion_tokens?: number
     }
   }
-  /** Chat Completions fallback fields */
-  choices?: ChatCompletionsChoice[]
-  usage?: { prompt_tokens?: number; completion_tokens?: number }
-}
-
-interface ChatCompletionsChoice {
-  delta?: {
-    content?: string
-    reasoning_content?: string
-    tool_calls?: ChatCompletionsToolCallDelta[]
-  }
-  finish_reason?: string
-}
-
-interface ChatCompletionsToolCallDelta {
-  index: number
-  id?: string
-  function?: { name?: string; arguments?: string }
 }
 
 // ---------------------------------------------------------------------------
-// Message conversion (Responses API format)
+// Message conversion (xAI Responses API format)
 // ---------------------------------------------------------------------------
 
-/** Convert ContentPart[] to xAI/OpenAI multimodal content blocks */
-function convertContentPartsToOpenAI(parts: ContentPart[]): OpenAIContentBlock[] {
-  const blocks: OpenAIContentBlock[] = []
+/** Convert ContentPart[] to xAI native multimodal content blocks */
+function convertContentPartsToXAI(parts: ContentPart[]): XAIContentBlock[] {
+  const blocks: XAIContentBlock[] = []
   for (const part of parts) {
     if (part.type === 'text') {
-      blocks.push({ type: 'text', text: part.text })
+      blocks.push({ type: 'input_text', text: part.text })
     } else {
-      // ImagePart
+      // ImagePart — xAI expects image_url as a flat string
       if (part.data) {
         blocks.push({
-          type: 'image_url',
-          image_url: { url: `data:${part.mimeType ?? 'image/jpeg'};base64,${part.data}` },
+          type: 'input_image',
+          image_url: `data:${part.mimeType ?? 'image/jpeg'};base64,${part.data}`,
         })
       } else if (part.url) {
         blocks.push({
-          type: 'image_url',
-          image_url: { url: part.url },
+          type: 'input_image',
+          image_url: part.url,
         })
       }
     }
@@ -162,7 +142,7 @@ function convertMessages(messages: Message[]): ResponsesInput[] {
       })
     } else if (msg.role === 'assistant') {
       const content = extractText(msg.content) || ''
-      const toolCallsList: OpenAIToolCall[] | undefined =
+      const toolCallsList: XAIToolCall[] | undefined =
         msg.toolCalls && msg.toolCalls.length > 0
           ? msg.toolCalls.map((tc) => ({
               id: tc.id,
@@ -186,8 +166,8 @@ function convertMessages(messages: Message[]): ResponsesInput[] {
       typeof msg.content !== 'string' &&
       Array.isArray(msg.content)
     ) {
-      // Multimodal user message
-      result.push({ role: 'user', content: convertContentPartsToOpenAI(msg.content) })
+      // Multimodal user message — use xAI native content blocks
+      result.push({ role: 'user', content: convertContentPartsToXAI(msg.content) })
     } else {
       // system / plain user — pass through
       result.push({ role: msg.role, content: extractText(msg.content) || '' })
@@ -197,7 +177,7 @@ function convertMessages(messages: Message[]): ResponsesInput[] {
   return result
 }
 
-function convertTools(tools: ToolDefinition[]): OpenAIFunctionTool[] {
+function convertTools(tools: ToolDefinition[]): XAIFunctionTool[] {
   return tools.map((t) => ({
     type: 'function' as const,
     name: t.name,
@@ -265,19 +245,24 @@ export class XAIProvider implements Provider {
   }
 
   // -----------------------------------------------------------------------
-  // chatStream — SSE streaming via Responses API
+  // chatStream — SSE streaming via xAI Responses API
   // -----------------------------------------------------------------------
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     const allMessages = convertMessages(messages)
     const model = options?.modelOverride ?? this.model
 
-    // If we have a previous response ID AND this isn't a fresh conversation,
-    // only send NEW messages (last user + any tool results).
+    // xAI docs: "When sending images, it is advised to not store request/response
+    // history on the server. Otherwise the request may fail."
+    const containsImages = messages.some((m) => hasImages(m.content))
+
+    // If we have a previous response ID AND this isn't a fresh conversation
+    // AND there are no images, only send NEW messages (last user + any tool results).
     // Server already has the full conversation history.
     // freshConversation is set by delegation/subagent engines to prevent
     // conversation state bleed from the shared provider instance.
-    const usePreviousResponse = this.store && this.lastResponseId && !options?.freshConversation
+    const usePreviousResponse =
+      this.store && this.lastResponseId && !options?.freshConversation && !containsImages
     let input: ResponsesInput[]
     if (usePreviousResponse) {
       // Find the last user message and any tool results after it
@@ -287,15 +272,18 @@ export class XAIProvider implements Provider {
       input = allMessages
     }
 
+    // Determine store for this request — force false when images present
+    const storeThisRequest = containsImages ? false : this.store
+
     const body: Record<string, unknown> = {
       model,
       input,
       stream: true,
-      store: this.store,
+      store: storeThisRequest,
       include: ['reasoning.encrypted_content'],
     }
 
-    // Continue from previous response if available (and not a fresh conversation)
+    // Continue from previous response if available
     if (usePreviousResponse) {
       body.previous_response_id = this.lastResponseId
     }
@@ -394,8 +382,7 @@ export class XAIProvider implements Provider {
             continue
           }
 
-          // Responses API streaming: events have a `type` field
-          // Handle both Responses API event format and Chat Completions delta format
+          // xAI Responses API streaming events
           if (event.type === 'response.output_item.added') {
             const item = event.item
             if (item?.type === 'function_call') {
@@ -454,60 +441,19 @@ export class XAIProvider implements Provider {
           } else if (event.type === 'response.completed' || event.type === 'response.done') {
             // Extract usage + response ID for stateful conversation
             const resp = event.response
-            if (resp?.id) {
+            // Only track response ID when store is enabled (not for image requests)
+            if (resp?.id && storeThisRequest) {
               this.lastResponseId = resp.id
             }
             if (resp?.usage) {
-              usage.promptTokens = resp.usage.input_tokens ?? resp.usage.prompt_tokens ?? 0
-              usage.completionTokens = resp.usage.output_tokens ?? resp.usage.completion_tokens ?? 0
+              usage.promptTokens = resp.usage.input_tokens ?? 0
+              usage.completionTokens = resp.usage.output_tokens ?? 0
             }
           } else if (event.type === 'response.created') {
-            // Also capture ID from response.created event
-            if (event.response?.id) {
+            // Also capture ID from response.created event (only when storing)
+            if (event.response?.id && storeThisRequest) {
               this.lastResponseId = event.response.id
             }
-          }
-
-          // Fallback: Chat Completions delta format (in case xAI sends it)
-          const choice = event.choices?.[0]
-          if (choice) {
-            const delta = choice.delta
-            if (delta?.content) {
-              yield { type: 'text', delta: delta.content }
-            }
-            if (delta?.reasoning_content) {
-              yield { type: 'reasoning', delta: delta.reasoning_content }
-            }
-            if (delta?.tool_calls) {
-              for (const tc of delta.tool_calls) {
-                if (tc.function?.name) {
-                  yield {
-                    type: 'tool_call_start',
-                    toolCall: { index: tc.index, id: tc.id, name: tc.function.name },
-                  }
-                }
-                if (tc.function?.arguments) {
-                  yield {
-                    type: 'tool_call_delta',
-                    delta: tc.function.arguments,
-                    toolCall: { index: tc.index },
-                  }
-                }
-              }
-            }
-            if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop') {
-              if (delta?.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  yield { type: 'tool_call_done', toolCall: { index: tc.index } }
-                }
-              }
-            }
-          }
-
-          // Usage from Chat Completions format
-          if (event.usage) {
-            usage.promptTokens = event.usage.prompt_tokens ?? 0
-            usage.completionTokens = event.usage.completion_tokens ?? 0
           }
         }
       }
