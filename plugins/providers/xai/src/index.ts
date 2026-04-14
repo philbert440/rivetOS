@@ -292,10 +292,22 @@ function convertMessages(messages: Message[]): ResponsesInput[] {
       Array.isArray(msg.content)
     ) {
       // Multimodal user message — use xAI native content blocks
-      result.push({ role: 'user', content: convertContentPartsToXAI(msg.content) })
+      const blocks = convertContentPartsToXAI(msg.content)
+      if (blocks.length > 0) {
+        result.push({ role: 'user', content: blocks })
+      } else {
+        // Fallback: extract text if multimodal conversion produced no blocks
+        const text = extractText(msg.content)
+        if (text) {
+          result.push({ role: 'user', content: text })
+        }
+      }
     } else {
-      // system / plain user — pass through
-      result.push({ role: msg.role, content: extractText(msg.content) || '' })
+      // system / plain user — pass through (skip empty content)
+      const text = extractText(msg.content) || ''
+      if (text) {
+        result.push({ role: msg.role, content: text })
+      }
     }
   }
 
@@ -539,6 +551,16 @@ export class XAIProvider implements Provider {
       input = allMessages
     }
 
+    // Safety: filter out any messages with empty content to prevent
+    // "Each message must have at least one content element" errors
+    input = input.filter((item) => {
+      if (!('role' in item)) return true // function_call, function_call_output — always keep
+      const content = (item as Record<string, unknown>).content
+      if (content === undefined || content === null || content === '') return false
+      if (Array.isArray(content) && content.length === 0) return false
+      return true
+    })
+
     // Build request body
     const body: Record<string, unknown> = {
       model,
@@ -630,6 +652,8 @@ export class XAIProvider implements Provider {
       })
     } catch (err: unknown) {
       clearTimeout(timeout)
+      // Invalidate continuation state on failure — next turn starts fresh
+      this.lastResponseId = null
       if (err instanceof ProviderError) throw err
       const message = err instanceof Error ? err.message : String(err)
       throw new ProviderError(`xAI fetch failed: ${message}`, 0, 'xai', false)
@@ -638,6 +662,27 @@ export class XAIProvider implements Provider {
     if (!response.ok) {
       clearTimeout(timeout)
       const err = await response.text().catch(() => 'unknown')
+      // Log input shape for debugging 400 errors
+      if (response.status === 400) {
+        const inputSummary = input.map((item) => {
+          if ('role' in item) {
+            const c = (item as Record<string, unknown>).content
+            const contentDesc = Array.isArray(c)
+              ? `array(${(c as unknown[]).length})`
+              : typeof c === 'string'
+                ? `string(${(c as string).length})`
+                : String(typeof c)
+            return `${String((item as Record<string, unknown>).role)}:${contentDesc}`
+          }
+          return String((item as Record<string, unknown>).type ?? 'unknown')
+        })
+        console.error(
+          `[xAI] 400 error — input shape: [${inputSummary.join(', ')}], ` +
+            `canContinue=${String(canContinue)}, prevResponseId=${this.lastResponseId ?? 'none'}`,
+        )
+      }
+      // Invalidate continuation state on failure — next turn starts fresh
+      this.lastResponseId = null
       throw new ProviderError(
         `xAI ${String(response.status)}: ${err.slice(0, 500)}`,
         response.status,
