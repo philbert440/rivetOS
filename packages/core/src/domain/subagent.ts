@@ -49,6 +49,10 @@ export interface SubagentManagerConfig {
   toolFilter?: Record<string, AgentToolFilter>
   /** Workspace directory — passed to tools via ToolContext for resolving relative paths */
   workspaceDir?: string
+  /** Turn wall-clock timeout in seconds (passed to spawned AgentLoop as ms) */
+  turnTimeout?: number
+  /** Context management thresholds (passed to spawned AgentLoop) */
+  contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +271,9 @@ export class SubagentManagerImpl implements SubagentManager {
         agentId: session.childAgent,
         workspaceDir: this.config.workspaceDir,
         freshConversation: true,
+        turnTimeout: this.config.turnTimeout ? this.config.turnTimeout * 1000 : undefined,
+        contextWindow: provider.getContextWindow(),
+        contextConfig: this.config.contextConfig,
       })
 
       // Add user message to history

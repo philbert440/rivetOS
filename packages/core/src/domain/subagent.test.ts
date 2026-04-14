@@ -51,6 +51,7 @@ function createMockRouter(
         }
       }),
       healthCheck: vi.fn(async () => true),
+      getContextWindow: () => 0,
     }),
   )
 
