@@ -542,31 +542,16 @@ export class XAIProvider implements Provider {
   }
 
   // -----------------------------------------------------------------------
-  // chatStream — SSE streaming via xAI Responses API
+  // Build request body (extracted for continuation fallback retry)
   // -----------------------------------------------------------------------
 
-  async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
-    const allMessages = convertMessages(messages)
-    const model = options?.modelOverride ?? this.model
-
-    // xAI docs: "When sending images, it is advised to not store request/response
-    // history on the server. Otherwise the request may fail."
-    const containsImages = messages.some((m) => hasImages(m.content))
-
-    // Determine store for this request — force false when images present
-    const storeThisRequest = containsImages ? false : this.store
-
-    // Check if we can continue from a previous response:
-    // - Must have a stored response ID
-    // - Must not be a fresh conversation (delegation/subagent)
-    // - Must not have images (store: false)
-    // - Model must match the stored conversation's model
-    const canContinue =
-      storeThisRequest &&
-      this.lastResponseId &&
-      !options?.freshConversation &&
-      this.lastResponseModel === model
-
+  private buildRequestBody(
+    allMessages: ResponsesInput[],
+    model: string,
+    storeThisRequest: boolean,
+    canContinue: boolean,
+    options?: ChatOptions,
+  ): { input: ResponsesInput[]; body: Record<string, unknown>; promptCacheKey: string } {
     let input: ResponsesInput[]
     if (canContinue) {
       // Server has everything up to + including its last response.
@@ -671,7 +656,45 @@ export class XAIProvider implements Provider {
       body.instructions = this.instructions
     }
 
-    // --- Fetch ---
+    return { input, body, promptCacheKey }
+  }
+
+  // -----------------------------------------------------------------------
+  // chatStream — SSE streaming via xAI Responses API
+  // -----------------------------------------------------------------------
+
+  async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
+    const allMessages = convertMessages(messages)
+    const model = options?.modelOverride ?? this.model
+
+    // xAI docs: "When sending images, it is advised to not store request/response
+    // history on the server. Otherwise the request may fail."
+    const containsImages = messages.some((m) => hasImages(m.content))
+
+    // Determine store for this request — force false when images present
+    const storeThisRequest = containsImages ? false : this.store
+
+    // Check if we can continue from a previous response:
+    // - Must have a stored response ID
+    // - Must not be a fresh conversation (delegation/subagent)
+    // - Must not have images (store: false)
+    // - Model must match the stored conversation's model
+    const canContinue =
+      storeThisRequest &&
+      this.lastResponseId &&
+      !options?.freshConversation &&
+      this.lastResponseModel === model
+
+    // --- Build input & request body ---
+    const { input, body, promptCacheKey } = this.buildRequestBody(
+      allMessages,
+      model,
+      storeThisRequest,
+      !!canContinue,
+      options,
+    )
+
+    // --- Fetch (with continuation fallback on 400) ---
 
     const controller = new AbortController()
     const signal = options?.signal
@@ -710,9 +733,9 @@ export class XAIProvider implements Provider {
     }
 
     if (!response.ok) {
-      clearTimeout(timeout)
-      const err = await response.text().catch(() => 'unknown')
-      // Log input shape for debugging 400 errors
+      const errBody = await response.text().catch(() => 'unknown')
+
+      // Log response body + input shape for debugging 400 errors
       if (response.status === 400) {
         const inputSummary = input.map((item) => {
           if ('role' in item) {
@@ -727,17 +750,83 @@ export class XAIProvider implements Provider {
           return ((item as Record<string, unknown>).type as string | undefined) ?? 'unknown'
         })
         console.error(
-          `[xAI] 400 error — input shape: [${inputSummary.join(', ')}], ` +
+          `[xAI] 400 error — response: ${errBody.slice(0, 1000)}\n` +
+            `  input shape: [${inputSummary.join(', ')}], ` +
             `canContinue=${String(canContinue)}, prevResponseId=${this.lastResponseId ?? 'none'}`,
         )
+
+        // --- Continuation fallback ---
+        // If we were using previous_response_id and got a 400, xAI's server-side
+        // stored conversation may have stale/invalid state (e.g. empty content from
+        // tool-call-only assistant turns). Retry once with the full conversation
+        // instead of relying on server-side continuation.
+        if (canContinue) {
+          console.warn(
+            `[xAI] Continuation 400 — retrying without previous_response_id (full conversation)`,
+          )
+          this.lastResponseId = null
+
+          // Rebuild with canContinue=false → sends full conversation
+          const fallback = this.buildRequestBody(
+            allMessages,
+            model,
+            storeThisRequest,
+            false,
+            options,
+          )
+
+          let fallbackResponse: Response
+          try {
+            fallbackResponse = await fetch(`${this.baseUrl}/responses`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${this.apiKey}`,
+                'x-grok-conv-id': fallback.promptCacheKey,
+              },
+              body: JSON.stringify(fallback.body),
+              signal: controller.signal,
+            })
+          } catch (retryErr: unknown) {
+            clearTimeout(timeout)
+            if (retryErr instanceof ProviderError) throw retryErr
+            const message = retryErr instanceof Error ? retryErr.message : String(retryErr)
+            throw new ProviderError(`xAI fetch failed (fallback): ${message}`, 0, 'xai', false)
+          }
+
+          if (!fallbackResponse.ok) {
+            clearTimeout(timeout)
+            const fallbackErr = await fallbackResponse.text().catch(() => 'unknown')
+            console.error(`[xAI] Fallback also failed — response: ${fallbackErr.slice(0, 1000)}`)
+            throw new ProviderError(
+              `xAI ${String(fallbackResponse.status)}: ${fallbackErr.slice(0, 500)}`,
+              fallbackResponse.status,
+              'xai',
+            )
+          }
+
+          // Fallback succeeded — use this response for streaming
+          response = fallbackResponse
+        } else {
+          clearTimeout(timeout)
+          // Invalidate continuation state on failure — next turn starts fresh
+          this.lastResponseId = null
+          throw new ProviderError(
+            `xAI ${String(response.status)}: ${errBody.slice(0, 500)}`,
+            response.status,
+            'xai',
+          )
+        }
+      } else {
+        clearTimeout(timeout)
+        // Invalidate continuation state on failure — next turn starts fresh
+        this.lastResponseId = null
+        throw new ProviderError(
+          `xAI ${String(response.status)}: ${errBody.slice(0, 500)}`,
+          response.status,
+          'xai',
+        )
       }
-      // Invalidate continuation state on failure — next turn starts fresh
-      this.lastResponseId = null
-      throw new ProviderError(
-        `xAI ${String(response.status)}: ${err.slice(0, 500)}`,
-        response.status,
-        'xai',
-      )
     }
 
     if (!response.body) {
