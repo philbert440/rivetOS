@@ -589,9 +589,7 @@ export class XAIProvider implements Provider {
         input = allMessages.slice(lastFnCallIdx + 1)
       } else {
         // New user turn — send from the last user message forward.
-        const lastUserIdx = allMessages.findLastIndex(
-          (m) => 'role' in m && m.role === 'user',
-        )
+        const lastUserIdx = allMessages.findLastIndex((m) => 'role' in m && m.role === 'user')
         input = lastUserIdx >= 0 ? allMessages.slice(lastUserIdx) : allMessages
       }
     } else {
