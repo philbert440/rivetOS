@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Documentation Audit and Core Sync (2026-04-15)
+
+- Expanded public site architecture documentation with the full Every Session core loop, Decision Gate, Rivet Collective, show-your-work spoiler convention, heartbeat best practices (including when to reply `HEARTBEAT_OK`), `FOCUS.md`/`AGENT.md` continuity pattern, memory maintenance, test-first config changes, and external-vs-internal boundaries. All text pulled directly from `workspace/CORE.md`, `workspace/WORKSPACE.md`, and `workspace/CAPABILITIES.md`. Added text-based flow diagram.
+- Updated provider documentation and xAI plugin README with latest continuation logic (only newest turn after `previous_response_id`), `conversationId` promotion, `rivetos update --mesh`, `rivet-provider-update-workflow` skill reference, and PR #72.
+- Updated introduction to better reflect "not a chatbot, engineering partner" persona and Collective.
+- Self-reviewed against current runtime (heartbeats, subagents, `coding_pipeline`, `skill_manage`). All changes limited to listed files plus directly related xAI provider and root CHANGELOG.md. Commit only — no push or PR.
+
 ## [0.4.0] - 2026-04-05
 
 ### First Public Beta

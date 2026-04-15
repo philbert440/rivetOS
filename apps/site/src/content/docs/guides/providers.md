@@ -131,9 +131,9 @@ agents:
 | `store` | boolean | `true` | Server-side conversation storage. When enabled, only new messages are sent each turn |
 | `timeout_ms` | number | `3600000` | Request timeout in milliseconds (default: 1 hour for reasoning) |
 
-### Conversation Caching
+### Conversation Caching and Continuation Logic
 
-When `store: true` (default), xAI stores the conversation server-side. Each turn only sends new messages, reducing token usage and latency. The provider manages `previous_response_id` automatically.
+The xAI provider uses the Responses API with server-side conversation storage (`store: true` by default). After the continuation logic fix (PR #72), only the newest user/assistant/tool turn is sent along with `previous_response_id`. Full history is never re-sent. `XAIExtendedChatOptions.conversationId` was promoted to the shared `@rivetos/types/ChatOptions` interface. Use the `rivet-provider-update-workflow` skill (via `skill_manage`) or the `rivetos update --mesh` command to keep provider plugins current across a fleet. See `plugins/providers/xai/README.md` and `workspace/CORE.md` for agent developers. The provider manages `previous_response_id` automatically.
 
 ### Models
 

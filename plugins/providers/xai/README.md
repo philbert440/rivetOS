@@ -11,12 +11,17 @@ Connects a RivetOS agent to xAI's Grok models using the Responses API (`/v1/resp
 ## Features
 
 - **Responses API** — uses `/v1/responses` for stateful conversations
-- **Server-side history** — `store: true` keeps conversation on xAI's servers, only new messages sent per turn
+- **Continuation logic fix (PR #72)** — only the newest user/assistant/tool turn is sent after `previous_response_id`; full history is never re-sent
+- **Server-side history** — `store: true` (default) keeps conversation on xAI's servers, only new messages sent per turn
+- **conversationId promotion** — `XAIExtendedChatOptions.conversationId` promoted to shared `@rivetos/types/ChatOptions`
 - **Streaming** — native SSE streaming with text + tool call deltas
 - **Tool calling** — full function calling support
 - **Encrypted reasoning** — passthrough for Grok's encrypted reasoning tokens
 - **Long timeouts** — 1-hour default timeout for reasoning models
 - **Chat Completions fallback** — automatically falls back for non-reasoning models
+- **Fleet updates** — use `rivetos update --mesh` or the `rivet-provider-update-workflow` skill (via `skill_manage` tool) to keep providers current
+
+Last updated: 2026-04-15 (docs audit syncing with current runtime behavior).
 
 ## Installation
 
