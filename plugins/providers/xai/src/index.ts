@@ -569,10 +569,31 @@ export class XAIProvider implements Provider {
 
     let input: ResponsesInput[]
     if (canContinue) {
-      // Server already has the full conversation history.
-      // Only send NEW messages (last user + any tool results after it).
-      const lastUserIdx = allMessages.findLastIndex((m) => 'role' in m && m.role === 'user')
-      input = lastUserIdx >= 0 ? allMessages.slice(lastUserIdx) : allMessages
+      // Server has everything up to + including its last response.
+      // Find what's genuinely NEW since that response.
+      //
+      // Tool call continuations: the server's response output included the
+      // function_call items. Everything AFTER the last function_call is new
+      // (function_call_output items, steer/system messages, etc.).
+      //
+      // New user turns: no function_call items in the current input, so
+      // the new content starts at the last user message.
+      const lastFnCallIdx = allMessages.findLastIndex(
+        (m) => 'type' in m && m.type === 'function_call',
+      )
+
+      if (lastFnCallIdx >= 0) {
+        // Tool call continuation — send only what's after the last function_call.
+        // The server already has the user message, assistant response, and
+        // function_call items from its stored conversation.
+        input = allMessages.slice(lastFnCallIdx + 1)
+      } else {
+        // New user turn — send from the last user message forward.
+        const lastUserIdx = allMessages.findLastIndex(
+          (m) => 'role' in m && m.role === 'user',
+        )
+        input = lastUserIdx >= 0 ? allMessages.slice(lastUserIdx) : allMessages
+      }
     } else {
       input = allMessages
     }
