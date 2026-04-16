@@ -316,17 +316,9 @@ export class Runtime {
           }
         }
 
-        if (this.memory) {
-          await this.memory
-            .append({
-              sessionId: `heartbeat:${hbConfig.agent}`,
-              agent: hbConfig.agent,
-              channel: 'heartbeat',
-              role: 'assistant',
-              content: result.response,
-            })
-            .catch(() => {}) // fire-and-forget — heartbeat memory append is best-effort
-        }
+        // Heartbeat responses are NOT persisted to memory — they are ephemeral.
+        // Storing them pollutes getContextForTurn's "Recent" section and causes
+        // real user conversations to be displaced by HEARTBEAT_OK noise.
       })
       this.heartbeatRunner.start()
     }
