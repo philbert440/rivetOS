@@ -85,6 +85,7 @@ export async function registerMemory(
       (pgConfig.compactor_api_key as string | undefined) ??
       process.env.RIVETOS_COMPACTOR_API_KEY ??
       ''
+    const compactorConcurrency = (pgConfig.compactor_concurrency as number | undefined) ?? 1
 
     const memoryTools = createMemoryTools(searchEngine, expander, {
       compactorEndpoint: compactorEndpoint || undefined,
@@ -124,10 +125,11 @@ export async function registerMemory(
         compactorEndpoint,
         compactorModel,
         compactorApiKey: compactorApiKey || undefined,
+        compactorConcurrency,
         intervalMs: 1_800_000, // 30 minutes
       })
       compactor.start()
-      log.info(`Compactor: ${compactorEndpoint} (model: ${compactorModel})`)
+      log.info(`Compactor: ${compactorEndpoint} (model: ${compactorModel}, concurrency: ${compactorConcurrency})`)
     }
 
     // Background review loop (M4.2) — turn counting + background LLM review
@@ -136,6 +138,7 @@ export async function registerMemory(
         reviewEndpoint: compactorEndpoint,
         reviewModel: compactorModel,
         reviewApiKey: compactorApiKey || undefined,
+        reviewConcurrency: compactorConcurrency,
         pool: memory.getPool(),
         turnThreshold: 10,
         iterationThreshold: 15,
