@@ -3,11 +3,11 @@
  * the background review loop (M4.2).
  *
  * Embedding and compaction are handled by dedicated event-driven workers
- * on the Datahub (CT110), NOT by agent CTs. See:
- *   services/embedding-worker/   — Postgres LISTEN → Nemotron GPU
- *   services/compaction-worker/  — Postgres LISTEN → E2B CPU
+ * on the Datahub ONLY. Agent nodes no longer run BackgroundEmbedder or
+ * BackgroundCompactor. See:
+ *   services/embedding-worker/   — Postgres LISTEN/NOTIFY → Nemotron
+ *   services/compaction-worker/  — Postgres LISTEN/NOTIFY → E2B (review + compaction)
  */
-
 import type { Runtime } from '@rivetos/core'
 import type {
   Memory,
@@ -63,7 +63,6 @@ export async function registerMemory(
 
   try {
     // Dynamic import — resolved at runtime via npm workspaces, not at compile time.
-    // Using a variable prevents TypeScript from statically resolving the module.
     const memoryPkg = '@rivetos/memory-postgres'
     const { PostgresMemory, createMemoryTools, ensureEmbedderSchema, ReviewLoop } = (await import(
       memoryPkg
@@ -80,25 +79,20 @@ export async function registerMemory(
     // Ensure embed_failures / embed_error columns exist (schema migration)
     await ensureEmbedderSchema(pool)
 
-    // Memory tools (search, browse, stats) — no compactor config needed,
-    // compaction is handled by the Datahub worker
-    const memoryTools = createMemoryTools(searchEngine, expander, {
-      pool,
-    })
+    // Memory tools (search, browse, stats) — no compactor/embedding config needed on agents
+    const memoryTools = createMemoryTools(searchEngine, expander, { pool })
 
     for (const tool of memoryTools) {
       runtime.registerTool(tool)
     }
 
     // NOTE: BackgroundEmbedder and BackgroundCompactor are NO LONGER started
-    // on agent CTs. They run as dedicated systemd services on the Datahub:
-    //   rivet-embedder.service  — event-driven via Postgres LISTEN/NOTIFY
-    //   rivet-compactor.service — event-driven via Postgres LISTEN/NOTIFY
-    // See: infra/containers/datahub/setup-workers.sh
+    // on agent nodes. They run as dedicated systemd services on the Datahub only:
+    //   rivet-embedder.service
+    //   rivet-compactor.service
+    //
+    // The review loop still runs on every agent (it enqueues work via Postgres).
 
-    // Background review loop (M4.2) — turn counting + background LLM review
-    // The review loop still runs on agent CTs — it fires after turns and
-    // enqueues compaction work via the Postgres compaction queue.
     const reviewEndpoint =
       (pgConfig.review_endpoint as string | undefined) ?? process.env.RIVETOS_REVIEW_URL ?? ''
     const reviewModel = (pgConfig.review_model as string | undefined) ?? 'rivet-v0.1'
@@ -119,14 +113,12 @@ export async function registerMemory(
       hooks.register({
         id: 'memory:review-loop',
         event: 'turn:after',
-        priority: 95, // Run very late — after all other turn:after hooks
+        priority: 95,
         description: 'Background memory review — counts turns and triggers LLM review',
-        onError: 'continue', // NEVER block a turn for review
+        onError: 'continue',
         handler: (ctx: TurnAfterContext) => {
-          // Only review non-aborted turns
           if (ctx.aborted) return
 
-          // Detect error recovery: same tool appearing consecutively
           const hadErrorRecovery = ctx.toolsUsed.some((t, i) => i > 0 && ctx.toolsUsed[i - 1] === t)
 
           reviewLoop.onTurnComplete({
@@ -140,14 +132,13 @@ export async function registerMemory(
             usage: ctx.usage,
           })
 
-          // Return immediately — review runs in background
           return
         },
       })
 
       log.info(`Review loop: active (threshold: 10 turns, endpoint: ${reviewEndpoint})`)
 
-      // Delegation tracking — persist delegation events for learning and auditing
+      // Delegation tracking
       hooks.register({
         id: 'memory:delegation-tracker',
         event: 'delegation:after',
@@ -192,9 +183,7 @@ export async function registerMemory(
           )
 
           if (ctx.status === 'completed') {
-            log.debug(
-              `📨 Delegation tracked: ${ctx.fromAgent} → ${ctx.toAgent} (${String(ctx.durationMs)}ms)`,
-            )
+            log.debug(`📨 Delegation tracked: ${ctx.fromAgent} → ${ctx.toAgent} (${String(ctx.durationMs)}ms)`)
           } else {
             log.warn(`📨 Delegation ${ctx.status}: ${ctx.fromAgent} → ${ctx.toAgent}`)
           }
@@ -204,7 +193,7 @@ export async function registerMemory(
       log.info('Delegation tracker: active')
     }
 
-    log.info('Memory: postgres (ros_* tables, embedder/compactor on Datahub)')
+    log.info('Memory: postgres (ros_* tables + centralized workers on Datahub)')
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     log.error(`Failed to initialize memory: ${message}`)
