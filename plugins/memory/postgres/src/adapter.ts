@@ -247,7 +247,7 @@ export class PostgresMemory implements Memory {
        FROM ros_messages m
        JOIN ros_conversations c ON c.id = m.conversation_id
        WHERE c.agent = $1 AND c.active = true
-         AND c.session_key NOT LIKE 'heartbeat:%'
+         AND (c.session_key NOT LIKE 'heartbeat:%' OR c.session_key IS NULL)
        ORDER BY m.created_at DESC
        LIMIT 5`,
       [agent],
