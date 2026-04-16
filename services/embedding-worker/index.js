@@ -61,35 +61,63 @@ pool.on('error', (err) => {
 // Listener — dedicated connection for LISTEN/NOTIFY
 // ---------------------------------------------------------------------------
 
+let listenerClient = null
+const MAX_RECONNECT_DELAY = 60_000
+let reconnectDelay = 5_000
+
 async function startListener() {
+  // Clean up previous listener if it exists
+  if (listenerClient) {
+    try {
+      listenerClient.removeAllListeners()
+      await listenerClient.end()
+    } catch (_) {
+      // ignore cleanup errors
+    }
+    listenerClient = null
+  }
+
   const client = new pg.Client({ connectionString: PG_URL })
+  listenerClient = client
 
   client.on('error', (err) => {
     console.error('[EmbedWorker] Listener connection error:', err.message)
-    // Reconnect after a delay
-    setTimeout(() => {
-      console.log('[EmbedWorker] Reconnecting listener...')
-      startListener().catch((e) =>
-        console.error('[EmbedWorker] Reconnect failed:', e.message),
-      )
-    }, 5000)
+    scheduleReconnect()
   })
 
-  await client.connect()
-  await client.query('LISTEN embedding_work')
-  console.log('[EmbedWorker] Listening on channel: embedding_work')
+  try {
+    await client.connect()
+    await client.query('LISTEN embedding_work')
+    console.log('[EmbedWorker] Listening on channel: embedding_work')
+    reconnectDelay = 5_000 // reset on success
 
-  client.on('notification', (_msg) => {
-    // Don't process inline — just flag that work is available
-    // This avoids blocking the notification handler
-    if (!processing) {
-      void processQueue()
-    } else {
-      drainRequested = true
-    }
-  })
+    client.on('notification', (_msg) => {
+      // Don't process inline — just flag that work is available
+      // This avoids blocking the notification handler
+      if (!processing) {
+        void processQueue()
+      } else {
+        drainRequested = true
+      }
+    })
+  } catch (err) {
+    console.error('[EmbedWorker] Failed to connect listener:', err.message)
+    scheduleReconnect()
+    return null
+  }
 
   return client
+}
+
+function scheduleReconnect() {
+  console.log(`[EmbedWorker] Reconnecting listener in ${reconnectDelay / 1000}s...`)
+  setTimeout(() => {
+    startListener().catch((e) =>
+      console.error('[EmbedWorker] Reconnect failed:', e.message),
+    )
+  }, reconnectDelay)
+  // Exponential backoff capped at MAX_RECONNECT_DELAY
+  reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY)
 }
 
 // ---------------------------------------------------------------------------

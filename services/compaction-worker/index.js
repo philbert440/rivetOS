@@ -131,83 +131,167 @@ function sleep(ms) {
 }
 
 // ---------------------------------------------------------------------------
-// Listener
+// Listener — dedicated connection for LISTEN/NOTIFY
 // ---------------------------------------------------------------------------
 
+let listenerClient = null
+const MAX_RECONNECT_DELAY = 60_000
+let reconnectDelay = 5_000
+
 async function startListener() {
+  // Clean up previous listener if it exists
+  if (listenerClient) {
+    try {
+      listenerClient.removeAllListeners()
+      await listenerClient.end()
+    } catch (_) {
+      // ignore cleanup errors
+    }
+    listenerClient = null
+  }
+
   const client = new pg.Client({ connectionString: PG_URL })
+  listenerClient = client
 
   client.on('error', (err) => {
     console.error('[CompactWorker] Listener connection error:', err.message)
-    setTimeout(() => {
-      console.log('[CompactWorker] Reconnecting listener...')
-      startListener().catch((e) =>
-        console.error('[CompactWorker] Reconnect failed:', e.message),
-      )
-    }, 5000)
+    scheduleReconnect()
   })
 
-  await client.connect()
-  await client.query('LISTEN compaction_work')
-  console.log('[CompactWorker] Listening on channel: compaction_work')
+  try {
+    await client.connect()
+    await client.query('LISTEN compaction_work')
+    console.log('[CompactWorker] Listening on channel: compaction_work')
+    reconnectDelay = 5_000 // reset on success
 
-  client.on('notification', (_msg) => {
-    if (!processing) {
-      void processQueue()
-    } else {
-      drainRequested = true
-    }
-  })
+    client.on('notification', (_msg) => {
+      if (!processing) {
+        void processQueue()
+      } else {
+        drainRequested = true
+      }
+    })
+  } catch (err) {
+    console.error('[CompactWorker] Failed to connect listener:', err.message)
+    scheduleReconnect()
+    return null
+  }
 
   return client
+}
+
+function scheduleReconnect() {
+  console.log(`[CompactWorker] Reconnecting listener in ${reconnectDelay / 1000}s...`)
+  setTimeout(() => {
+    startListener().catch((e) =>
+      console.error('[CompactWorker] Reconnect failed:', e.message),
+    )
+  }, reconnectDelay)
+  reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY)
 }
 
 // ---------------------------------------------------------------------------
 // LLM call — full thinking enabled
 // ---------------------------------------------------------------------------
 
+const LLM_MAX_RETRIES = parseInt(process.env.COMPACT_LLM_RETRIES ?? '2', 10)
+
 async function callLlm(systemPrompt, userContent, maxTokens) {
   metrics.llmCalls++
 
-  try {
-    const headers = { 'Content-Type': 'application/json' }
-    if (LLM_API_KEY) {
-      headers['Authorization'] = `Bearer ${LLM_API_KEY}`
-    }
-
-    const response = await fetch(`${LLM_URL}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: LLM_MODEL,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userContent },
-        ],
-        max_tokens: maxTokens,
-        temperature: LLM_TEMPERATURE,
-        // Full thinking enabled — no enable_thinking: false
-        // The model will reason deeply before producing the summary
-      }),
-      signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
-    })
-
-    if (!response.ok) {
-      metrics.llmFailures++
-      console.error(`[CompactWorker] LLM returned ${response.status}: ${response.statusText}`)
-      return null
-    }
-
-    const data = await response.json()
-    const message = data.choices?.[0]?.message
-
-    // Support both content and reasoning_content (thinking models)
-    return message?.content ?? message?.reasoning_content ?? null
-  } catch (err) {
-    metrics.llmFailures++
-    console.error(`[CompactWorker] LLM call failed: ${err.message}`)
-    return null
+  const headers = { 'Content-Type': 'application/json' }
+  if (LLM_API_KEY) {
+    headers['Authorization'] = `Bearer ${LLM_API_KEY}`
   }
+
+  const body = JSON.stringify({
+    model: LLM_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent },
+    ],
+    max_tokens: maxTokens,
+    temperature: LLM_TEMPERATURE,
+    // Full thinking enabled — no enable_thinking: false
+    // The model will reason deeply before producing the summary
+  })
+
+  let lastError = null
+
+  for (let attempt = 0; attempt <= LLM_MAX_RETRIES; attempt++) {
+    try {
+      const response = await fetch(`${LLM_URL}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body,
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+      })
+
+      // Non-retryable error (4xx)
+      if (!response.ok && response.status < 500) {
+        metrics.llmFailures++
+        console.error(
+          `[CompactWorker] LLM returned ${response.status}: ${response.statusText} (not retrying)`,
+        )
+        return null
+      }
+
+      // Retryable error (5xx, server overloaded, etc.)
+      if (!response.ok) {
+        lastError = new Error(`HTTP ${response.status}: ${response.statusText}`)
+        if (attempt < LLM_MAX_RETRIES) {
+          const delay = Math.pow(2, attempt) * 5_000 // 5s, 10s — longer for LLM
+          console.error(
+            `[CompactWorker] LLM ${response.status}, retry ${attempt + 1}/${LLM_MAX_RETRIES} in ${delay / 1000}s`,
+          )
+          await sleep(delay)
+          continue
+        }
+        break
+      }
+
+      const data = await response.json()
+      const message = data.choices?.[0]?.message
+
+      // Support both content and reasoning_content (thinking models)
+      const content = message?.content ?? message?.reasoning_content ?? null
+
+      // Guard against empty responses — retry if we got nothing useful
+      if (!content || content.trim().length < 20) {
+        lastError = new Error('Empty or too-short LLM response')
+        if (attempt < LLM_MAX_RETRIES) {
+          const delay = Math.pow(2, attempt) * 5_000
+          console.error(
+            `[CompactWorker] LLM returned empty/short content, retry ${attempt + 1}/${LLM_MAX_RETRIES} in ${delay / 1000}s`,
+          )
+          await sleep(delay)
+          continue
+        }
+        break
+      }
+
+      return content
+    } catch (err) {
+      lastError = err
+
+      // Timeout or network error — retry
+      if (attempt < LLM_MAX_RETRIES) {
+        const delay = Math.pow(2, attempt) * 5_000
+        console.error(
+          `[CompactWorker] LLM error: ${err.message}, retry ${attempt + 1}/${LLM_MAX_RETRIES} in ${delay / 1000}s`,
+        )
+        await sleep(delay)
+        continue
+      }
+      break
+    }
+  }
+
+  metrics.llmFailures++
+  console.error(
+    `[CompactWorker] LLM call failed after ${LLM_MAX_RETRIES + 1} attempts: ${lastError?.message}`,
+  )
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -464,11 +548,25 @@ async function compactConversation(conversationId) {
 // Process queue
 // ---------------------------------------------------------------------------
 
+const STALE_LOCK_MINUTES = 15 // If locked for >15 min, assume the worker crashed
+
 async function processQueue() {
   if (processing) return
   processing = true
 
   try {
+    // Recover stale locks — entries stuck in 'processing' from a previous crash
+    const recovered = await pool.query(
+      `UPDATE ros_compaction_queue
+       SET status = 'pending', locked_at = NULL
+       WHERE status = 'processing'
+         AND locked_at < NOW() - interval '${STALE_LOCK_MINUTES} minutes'
+       RETURNING id`,
+    )
+    if (recovered.rowCount > 0) {
+      console.log(`[CompactWorker] Recovered ${recovered.rowCount} stale lock(s)`)
+    }
+
     let totalProcessed = 0
 
     do {
