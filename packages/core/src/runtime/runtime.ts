@@ -316,9 +316,9 @@ export class Runtime {
           }
         }
 
-        // Heartbeat responses are NOT persisted to memory — they are ephemeral.
-        // Storing them pollutes getContextForTurn's "Recent" section and causes
-        // real user conversations to be displaced by HEARTBEAT_OK noise.
+        // Heartbeat responses are deliberately not persisted. They were polluting
+        // getContextForTurn() "Recent" section and causing agents to believe they
+        // were still in heartbeat mode during real user conversations.
       })
       this.heartbeatRunner.start()
     }
