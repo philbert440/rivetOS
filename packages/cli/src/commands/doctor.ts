@@ -658,9 +658,9 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
 async function checkPeers(): Promise<CheckResult[]> {
   const results: CheckResult[] = []
 
-  // Check for mesh.json — try shared NFS path first, then local paths
+  // Check for mesh.json — try canonical NFS path first, then local paths
   const meshPaths = [
-    '/shared/mesh.json',
+    '/rivet-shared/mesh.json',
     resolve(process.cwd(), 'mesh.json'),
     resolve(process.env.HOME ?? '.', '.rivetos', 'mesh.json'),
   ]
@@ -678,10 +678,24 @@ async function checkPeers(): Promise<CheckResult[]> {
   if (!meshRaw) return results
 
   try {
-    const meshFile = JSON.parse(meshRaw) as {
-      nodes: Record<string, { name: string; host: string; port: number; role?: string }>
+    const parsed = JSON.parse(meshRaw) as {
+      nodes:
+        | Record<string, { name: string; host: string; port: number; role?: string }>
+        | Array<{ name: string; ip?: string; host?: string; port?: number; role?: string }>
     }
-    const peers = Object.values(meshFile.nodes)
+
+    // Normalize legacy array format to Record
+    let peers: Array<{ name: string; host: string; port: number; role?: string }>
+    if (Array.isArray(parsed.nodes)) {
+      peers = parsed.nodes.map((n) => ({
+        name: n.name,
+        host: n.ip ?? n.host ?? '',
+        port: n.port ?? 3100,
+        role: n.role === 'primary' ? 'agent' : n.role,
+      }))
+    } else {
+      peers = Object.values(parsed.nodes)
+    }
 
     for (const peer of peers) {
       const isAgent = !peer.role || peer.role === 'agent'

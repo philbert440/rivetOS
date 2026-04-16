@@ -743,7 +743,7 @@ interface MeshFileForUpdate {
 async function loadMeshFileForUpdate(): Promise<MeshFileForUpdate | null> {
   const { join } = await import('node:path')
   const paths = [
-    '/shared/mesh.json',
+    '/rivet-shared/mesh.json',
     join(ROOT, 'mesh.json'),
     join(process.env.HOME ?? '~', '.rivetos', 'mesh.json'),
   ]
@@ -751,13 +751,49 @@ async function loadMeshFileForUpdate(): Promise<MeshFileForUpdate | null> {
   for (const p of paths) {
     try {
       const raw = await readFile(p, 'utf-8')
-      return JSON.parse(raw) as MeshFileForUpdate
+      const parsed = JSON.parse(raw) as MeshFileForUpdate | LegacyMeshFile
+      return normalizeMeshFile(parsed)
     } catch {
       // try next
     }
   }
 
   return null
+}
+
+/** Legacy mesh.json format — flat array with `ip` instead of `host` */
+interface LegacyMeshFile {
+  nodes: Array<{ name: string; ip: string; role?: string }>
+  updatedAt?: number
+}
+
+/** Normalize legacy array-based mesh.json to the Record-based format */
+function normalizeMeshFile(parsed: MeshFileForUpdate | LegacyMeshFile): MeshFileForUpdate {
+  // Already in the correct format (nodes is a Record, not an Array)
+  if (!Array.isArray(parsed.nodes)) {
+    return parsed as MeshFileForUpdate
+  }
+
+  // Migrate legacy array format
+  const nodes: MeshFileForUpdate['nodes'] = {}
+  for (const entry of parsed.nodes) {
+    const host = 'ip' in entry ? (entry as { ip: string }).ip : (entry as { host?: string }).host ?? ''
+    const id = entry.name
+    nodes[id] = {
+      id,
+      name: entry.name,
+      host,
+      port: 3100,
+      status: 'offline',
+      role: entry.role === 'primary' ? 'agent' : entry.role,
+    }
+  }
+
+  return {
+    version: 1,
+    nodes,
+    updatedAt: parsed.updatedAt ?? Date.now(),
+  }
 }
 
 async function detectDeployment(forceBareMetal = false): Promise<string> {

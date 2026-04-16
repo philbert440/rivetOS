@@ -65,6 +65,12 @@ interface MeshFile {
   updatedAt: number
 }
 
+/** Legacy mesh.json format — flat array with `ip` instead of `host` */
+interface LegacyMeshFile {
+  nodes: Array<{ name: string; ip?: string; role?: string }>
+  updatedAt?: number
+}
+
 export class FileMeshRegistry implements MeshRegistry {
   private config: MeshRegistryConfig
   private filePath: string
@@ -298,7 +304,40 @@ export class FileMeshRegistry implements MeshRegistry {
   private async load(): Promise<MeshFile> {
     try {
       const raw = await readFile(this.filePath, 'utf-8')
-      return JSON.parse(raw) as MeshFile
+      const parsed = JSON.parse(raw) as MeshFile | LegacyMeshFile
+
+      // Migrate legacy array-based mesh.json (hand-written, uses `ip` instead of `host`)
+      if (Array.isArray((parsed as LegacyMeshFile).nodes)) {
+        const legacy = parsed as LegacyMeshFile
+        const migrated: MeshFile = {
+          version: 1,
+          nodes: {},
+          updatedAt: legacy.updatedAt ?? Date.now(),
+        }
+        for (const entry of legacy.nodes) {
+          const host = entry.ip ?? (entry as unknown as { host?: string }).host ?? ''
+          migrated.nodes[entry.name] = {
+            id: entry.name,
+            name: entry.name,
+            role: entry.role === 'primary' ? 'agent' : (entry.role as MeshNodeRole | undefined),
+            agents: [],
+            host,
+            port: 3100,
+            providers: [],
+            models: [],
+            capabilities: [],
+            status: 'offline',
+            lastSeen: 0,
+            registeredAt: Date.now(),
+            version: '0.0.0',
+          }
+        }
+        log.info('Migrated legacy array-format mesh.json to Record format')
+        await this.save(migrated)
+        return migrated
+      }
+
+      return parsed as MeshFile
     } catch {
       // File doesn't exist yet — return empty registry
       return { version: 1, nodes: {}, updatedAt: Date.now() }
