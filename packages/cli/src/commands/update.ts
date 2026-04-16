@@ -158,8 +158,8 @@ function ensureMainBranch(version?: string): void {
     execOrFail('git checkout main', 'git checkout main')
   }
 
-  console.log('  Pulling latest...')
-  execOrFail('git pull --ff-only', 'git pull')
+  console.log('  Resetting to origin/main...')
+  execOrFail('git reset --hard origin/main', 'git reset')
 }
 
 /**
@@ -181,7 +181,7 @@ function ensureMainBranchSafe(version?: string): void {
     execOrThrow('git checkout main', 'git checkout main')
   }
 
-  execOrThrow('git pull --ff-only', 'git pull')
+  execOrThrow('git reset --hard origin/main', 'git reset')
 }
 
 export default async function update(): Promise<void> {
@@ -607,7 +607,7 @@ async function gitUpdateNodeAsync(
     console.log(`    ${tag} Pulling latest code...`)
     const gitCmd = opts.version
       ? `cd /opt/rivetos && git fetch --tags && git checkout ${opts.version}`
-      : 'cd /opt/rivetos && git fetch origin && git checkout main && git pull --ff-only'
+      : 'cd /opt/rivetos && git fetch origin && git checkout main && git reset --hard origin/main'
     await sshExec(host, gitCmd, `${tag} git pull`, 30_000)
   } catch (err: unknown) {
     console.error(`    ${tag} ❌ git pull failed: ${(err as Error).message}`)
