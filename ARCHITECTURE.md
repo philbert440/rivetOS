@@ -388,34 +388,34 @@ infra/src/
 
 ### Memory Workers (Datahub Services)
 
-Embedding and compaction run as **event-driven workers on Datahub** (CT110), co-located with Postgres. No agent CT runs background memory jobs — the workers are the sole consumers.
+Embedding and compaction run as **event-driven workers on Datahub**, co-located with Postgres. No agent node runs background memory jobs — the workers are the sole consumers.
 
 ```
-┌──────────────────────────────────────────────────┐
-│  Datahub (CT110)  —  Postgres 16 + Workers       │
-│                                                  │
-│  ┌──────────────────┐  ┌───────────────────────┐ │
-│  │ Embedding Worker  │  │ Compaction Worker      │ │
-│  │ LISTEN embed_work │  │ LISTEN compact_work    │ │
-│  │ → Nemotron (GPU)  │  │ → Gemma-4-E2B (CPU)   │ │
-│  │   port 9401       │  │   port 8001            │ │
-│  └──────────────────┘  └───────────────────────┘ │
-│                                                  │
-│  Postgres triggers fire on:                      │
-│  • INSERT ros_messages  → embed queue + NOTIFY   │
-│  • INSERT ros_summaries → embed queue + NOTIFY   │
-│  • Message threshold    → compact queue + NOTIFY │
-│  • Session idle (15min) → compact queue + NOTIFY │
-│  • Explicit request     → compact queue + NOTIFY │
-└──────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│  Datahub  —  Postgres 16 + Workers                 │
+│                                                    │
+│  ┌──────────────────┐  ┌─────────────────────────┐ │
+│  │ Embedding Worker  │  │ Compaction Worker        │ │
+│  │ LISTEN embed_work │  │ LISTEN compact_work      │ │
+│  │ → Embed model     │  │ → Summarization model    │ │
+│  │   (GPU endpoint)  │  │   (CPU endpoint)         │ │
+│  └──────────────────┘  └─────────────────────────┘ │
+│                                                    │
+│  Postgres triggers fire on:                        │
+│  • INSERT ros_messages  → embed queue + NOTIFY     │
+│  • INSERT ros_summaries → embed queue + NOTIFY     │
+│  • Message threshold    → compact queue + NOTIFY   │
+│  • Session idle (15min) → compact queue + NOTIFY   │
+│  • Explicit request     → compact queue + NOTIFY   │
+└────────────────────────────────────────────────────┘
          │                          │
          ▼                          ▼
-┌────────────────────────────────────────────────┐
-│  GERTY (PVE3 / 10.4.20.12)  —  Inference      │
-│                                                │
-│  Nemotron-8B (GPU, port 9401) — embeddings     │
-│  Gemma-4-E2B (CPU, port 8001) — summarization  │
-└────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│  Inference Server  —  GPU + CPU                  │
+│                                                  │
+│  Embedding model (GPU)    — vector embeddings    │
+│  Summarization model (CPU) — compaction/summary  │
+└──────────────────────────────────────────────────┘
 ```
 
 **Embedding flow:**
