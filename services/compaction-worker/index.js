@@ -28,7 +28,8 @@ if (!PG_URL) {
   process.exit(1)
 }
 
-const LLM_URL = process.env.RIVETOS_COMPACTOR_URL ?? 'http://10.4.20.12:8001/v1'
+const LLM_URL = process.env.RIVETOS_COMPACTOR_URL
+if (!LLM_URL) { console.error('RIVETOS_COMPACTOR_URL is required'); process.exit(1) }
 const LLM_MODEL = process.env.RIVETOS_COMPACTOR_MODEL ?? 'gemma-4-E2B-it-Q4_K_M.gguf'
 const LLM_API_KEY = process.env.RIVETOS_COMPACTOR_API_KEY ?? ''
 

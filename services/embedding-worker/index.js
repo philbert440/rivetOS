@@ -21,7 +21,8 @@ if (!PG_URL) {
   process.exit(1)
 }
 
-const EMBED_URL = process.env.RIVETOS_EMBED_URL ?? 'http://10.4.20.12:9401'
+const EMBED_URL = process.env.RIVETOS_EMBED_URL
+if (!EMBED_URL) { console.error('RIVETOS_EMBED_URL is required'); process.exit(1) }
 const EMBED_MODEL = process.env.RIVETOS_EMBED_MODEL ?? 'nemotron'
 const BATCH_SIZE = parseInt(process.env.EMBED_BATCH_SIZE ?? '50', 10)
 const API_BATCH_SIZE = parseInt(process.env.EMBED_API_BATCH_SIZE ?? '8', 10)

@@ -18,8 +18,8 @@ set -e
 #
 # Environment variables (set before running or edit .env files after):
 #   RIVETOS_PG_URL         — Postgres connection string
-#   RIVETOS_EMBED_URL      — Nemotron embedding endpoint (default: http://10.4.20.12:9401)
-#   RIVETOS_COMPACTOR_URL  — E2B compaction endpoint (default: http://10.4.20.12:8001/v1)
+#   RIVETOS_EMBED_URL      — Nemotron embedding endpoint (required, e.g. http://your-gpu-host:9401)
+#   RIVETOS_COMPACTOR_URL  — E2B compaction endpoint (required, e.g. http://your-llm-host:8001/v1)
 # ===========================================================================
 
 RIVETOS_DIR="/opt/rivetos"
@@ -80,8 +80,8 @@ if [ ! -f "${CONFIG_DIR}/embedder.env" ]; then
 # Postgres connection string (required)
 RIVETOS_PG_URL=postgres://user:pass@localhost:5432/dbname
 
-# Nemotron embedding service on GERTY GPU
-RIVETOS_EMBED_URL=http://10.4.20.12:9401
+# Nemotron embedding service (GPU inference server)
+RIVETOS_EMBED_URL=http://your-gpu-host:9401
 RIVETOS_EMBED_MODEL=nemotron
 
 # Batch sizes
@@ -114,8 +114,8 @@ if [ ! -f "${CONFIG_DIR}/compactor.env" ]; then
 # Postgres connection string (required)
 RIVETOS_PG_URL=postgres://user:pass@localhost:5432/dbname
 
-# Gemma-4-E2B summarization service on GERTY CPU
-RIVETOS_COMPACTOR_URL=http://10.4.20.12:8001/v1
+# LLM summarization service (CPU inference server)
+RIVETOS_COMPACTOR_URL=http://your-llm-host:8001/v1
 RIVETOS_COMPACTOR_MODEL=gemma-4-E2B-it-Q4_K_M.gguf
 
 # LLM timeout — generous for thinking model (10 minutes)

@@ -32,7 +32,7 @@ memory:
     # See: infra/containers/datahub/setup-workers.sh
     #
     # Optional: review loop endpoint for background memory consolidation
-    # review_endpoint: http://10.4.20.12:8001/v1
+    # review_endpoint: http://your-llm-host:8001/v1
     # review_model: gemma-4-E2B-it-Q4_K_M.gguf
 
 # ---------------------------------------------------------------------------
