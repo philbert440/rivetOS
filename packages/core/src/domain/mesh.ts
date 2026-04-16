@@ -74,10 +74,11 @@ export class FileMeshRegistry implements MeshRegistry {
   constructor(config: MeshRegistryConfig) {
     this.config = config
 
-    // Force use of canonical /rivet-shared (the NFS mount from datahub)
-    // so **all** nodes read/write the exact same authoritative mesh.json.
-    const canonicalPath = join(CANONICAL_SHARED_PATH, MESH_FILE)
-    this.filePath = canonicalPath
+    // Use provided storageDir if given (e.g., tests), otherwise default to
+    // the canonical /rivet-shared (the NFS mount from datahub) so all
+    // production nodes read/write the same authoritative mesh.json.
+    const dir = config.storageDir || CANONICAL_SHARED_PATH
+    this.filePath = join(dir, MESH_FILE)
   }
 
   // -----------------------------------------------------------------------
