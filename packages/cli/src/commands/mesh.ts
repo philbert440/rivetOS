@@ -418,14 +418,10 @@ function parseFlags(args: string[]): Flags {
 
 async function loadMeshFile(): Promise<MeshFile | null> {
   const { readFile } = await import('node:fs/promises')
-  const { join } = await import('node:path')
 
-  // Check /shared/mesh.json first (container/NFS), then workspace
-  const paths = [
-    '/shared/mesh.json',
-    join(process.cwd(), 'mesh.json'),
-    join(process.env.HOME ?? '~', '.rivetos', 'mesh.json'),
-  ]
+  // All nodes now use the single canonical file at /rivet-shared/mesh.json
+  // (the NFS mount from the datahub). This ensures one source of truth.
+  const paths = ['/rivet-shared/mesh.json']
 
   for (const p of paths) {
     try {

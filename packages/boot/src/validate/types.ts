@@ -202,10 +202,9 @@ export const KNOWN_PIPELINE_KEYS = new Set([
 
 export const KNOWN_MEMORY_POSTGRES_KEYS = new Set([
   'connection_string',
-  'embed_endpoint',
-  'compactor_endpoint',
-  'compactor_model',
-  'compactor_api_key',
+  'review_endpoint',
+  'review_model',
+  'review_api_key',
 ])
 
 export const API_KEY_PATTERNS = [

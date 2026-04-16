@@ -1,0 +1,17 @@
+{
+  "name": "@rivetos/compaction-worker",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Event-driven compaction/summarization worker — LISTEN/NOTIFY on Postgres, calls E2B CPU",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "pg": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

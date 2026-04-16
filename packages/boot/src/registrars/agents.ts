@@ -174,11 +174,9 @@ export async function registerAgentTools(
   await skillManager.discover(skillDirs)
   runtime.registerTool(createSkillListTool(skillManager))
 
-  // Pass embed endpoint for dedup checks (if configured)
-  const pgConfig = config.memory?.postgres
-  const rawEmbed = pgConfig?.embed_endpoint
-  const embedEndpoint =
-    (typeof rawEmbed === 'string' ? rawEmbed : undefined) ?? process.env.RIVETOS_EMBED_URL ?? ''
+  // Pass embed endpoint for dedup checks — uses environment variable
+  // (embedding service runs on Datahub/GERTY, not configured per-agent)
+  const embedEndpoint = process.env.RIVETOS_EMBED_URL ?? ''
   runtime.registerTool(
     createSkillManageTool(skillManager, {
       skillDirs,

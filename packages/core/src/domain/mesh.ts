@@ -1,8 +1,8 @@
 /**
  * Mesh Registry — manages the local view of all known nodes in the mesh.
  *
- * The registry persists to a `mesh.json` file in shared storage (/shared/)
- * or falls back to the workspace directory. Each node writes its own entry
+ * The registry persists to a single authoritative `mesh.json` at `/rivet-shared/mesh.json`
+ * (NFS export from the datahub). All nodes read/write this exact file.
  * and reads others' entries. This is a shared-file based registry — no
  * separate coordination service needed.
  *
@@ -39,6 +39,7 @@ const log = logger('Mesh')
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000
 const DEFAULT_STALE_THRESHOLD_MS = 90_000
 const MESH_FILE = 'mesh.json'
+const CANONICAL_SHARED_PATH = '/rivet-shared'
 
 // ---------------------------------------------------------------------------
 // File-based Mesh Registry
@@ -72,7 +73,12 @@ export class FileMeshRegistry implements MeshRegistry {
 
   constructor(config: MeshRegistryConfig) {
     this.config = config
-    this.filePath = join(config.storageDir, MESH_FILE)
+
+    // Use provided storageDir if given (e.g., tests), otherwise default to
+    // the canonical /rivet-shared (the NFS mount from datahub) so all
+    // production nodes read/write the same authoritative mesh.json.
+    const dir = config.storageDir || CANONICAL_SHARED_PATH
+    this.filePath = join(dir, MESH_FILE)
   }
 
   // -----------------------------------------------------------------------
