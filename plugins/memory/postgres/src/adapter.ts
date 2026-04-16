@@ -241,12 +241,13 @@ export class PostgresMemory implements Memory {
     let tokenEstimate = 0
     const seen = new Set<string>()
 
-    // 1. Recent messages from this agent's active conversations
+    // 1. Recent messages from this agent's active conversations (exclude heartbeat noise)
     const recent = await this.pool.query<RecentMessageRow>(
       `SELECT m.content, m.role, m.created_at
        FROM ros_messages m
        JOIN ros_conversations c ON c.id = m.conversation_id
        WHERE c.agent = $1 AND c.active = true
+         AND c.session_key NOT LIKE 'heartbeat:%'
        ORDER BY m.created_at DESC
        LIMIT 5`,
       [agent],
