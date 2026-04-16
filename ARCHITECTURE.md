@@ -72,6 +72,10 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │       └── postgres/            # PostgreSQL (conversations, messages, search,
 │                                #   embeddings, compaction, summaries, review loop)
 │
+├── services/                    # Event-driven workers (run on Datahub, not agents)
+│   ├── embedding-worker/        # Postgres LISTEN → Nemotron GPU embeddings
+│   └── compaction-worker/       # Postgres LISTEN → Gemma-4-E2B CPU summarization
+│
 ├── infra/                       # 956 lines — Infrastructure as Code (Pulumi)
 │   ├── containers/
 │   │   ├── agent/               # Agent Dockerfile (multi-stage, non-root, tini)
@@ -382,6 +386,54 @@ infra/src/
 
 `InfraProvider` interface: `up()`, `preview()`, `destroy()`, `status()`, `logs()`
 
+### Memory Workers (Datahub Services)
+
+Embedding and compaction run as **event-driven workers on Datahub**, co-located with Postgres. No agent node runs background memory jobs — the workers are the sole consumers.
+
+```
+┌────────────────────────────────────────────────────┐
+│  Datahub  —  Postgres 16 + Workers                 │
+│                                                    │
+│  ┌──────────────────┐  ┌─────────────────────────┐ │
+│  │ Embedding Worker  │  │ Compaction Worker        │ │
+│  │ LISTEN embed_work │  │ LISTEN compact_work      │ │
+│  │ → Embed model     │  │ → Summarization model    │ │
+│  │   (GPU endpoint)  │  │   (CPU endpoint)         │ │
+│  └──────────────────┘  └─────────────────────────┘ │
+│                                                    │
+│  Postgres triggers fire on:                        │
+│  • INSERT ros_messages  → embed queue + NOTIFY     │
+│  • INSERT ros_summaries → embed queue + NOTIFY     │
+│  • Message threshold    → compact queue + NOTIFY   │
+│  • Session idle (15min) → compact queue + NOTIFY   │
+│  • Explicit request     → compact queue + NOTIFY   │
+└────────────────────────────────────────────────────┘
+         │                          │
+         ▼                          ▼
+┌──────────────────────────────────────────────────┐
+│  Inference Server  —  GPU + CPU                  │
+│                                                  │
+│  Embedding model (GPU)    — vector embeddings    │
+│  Summarization model (CPU) — compaction/summary  │
+└──────────────────────────────────────────────────┘
+```
+
+**Embedding flow:**
+1. Message INSERT → Postgres trigger → `ros_embedding_queue` row + `NOTIFY embedding_work`
+2. Worker wakes → fetches batch → calls Nemotron on GERTY GPU
+3. Writes vector back to source row → deletes queue entry
+4. Retries with exponential backoff on transient errors; max 3 attempts per item
+
+**Compaction flow (three trigger paths):**
+1. **Message threshold** — Postgres trigger counts unsummarized messages per conversation, enqueues at 50+
+2. **Session idle** — 5-minute periodic check finds conversations with no activity for 15 min + 10+ unsummarized messages
+3. **Explicit request** — Agent or API inserts directly into `ros_compaction_queue`
+
+Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled on Gemma-4-E2B with generous token budgets (4096/6144/8192) and 10-minute timeout.
+
+**Source:** `services/embedding-worker/` and `services/compaction-worker/`
+**Setup:** `infra/containers/datahub/init-db.sh` (schema) + `infra/containers/datahub/setup-workers.sh` (Node.js, systemd)
+
 ### Data Persistence
 
 Containers are stateless. All user data lives on volumes:
@@ -610,7 +662,7 @@ deployment:             # Optional — drives containerized deployment
 
 3. **Voice plugin lifecycle hack** — `voice-discord` isn't a Channel, it manages its own lifecycle. The registrar monkey-patches `runtime.stop()` to include voice cleanup. Same pattern used for MCP client.
 
-4. **Memory registrar is overloaded** — `registrars/memory.ts` wires up Postgres, embedder, compactor, review loop, and delegation tracking all in one function. Could be decomposed.
+4. **Memory registrar still references old background jobs** — `registrars/memory.ts` previously wired up BackgroundEmbedder and BackgroundCompactor as in-process polling loops. These are now replaced by event-driven Datahub workers (`services/embedding-worker/`, `services/compaction-worker/`). The registrar should be cleaned up to remove dead code paths.
 
 5. **Old `init.ts` still runs** — The original `commands/init.ts` (20 lines) just calls the wizard. The wizard modules exist in `commands/init/` but the full flow (detect → deploy → agents → channels → review → generate) needs end-to-end testing.
 
