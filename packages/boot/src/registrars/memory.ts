@@ -65,12 +65,9 @@ export async function registerMemory(
     // Dynamic import — resolved at runtime via npm workspaces, not at compile time.
     // Using a variable prevents TypeScript from statically resolving the module.
     const memoryPkg = '@rivetos/memory-postgres'
-    const {
-      PostgresMemory,
-      createMemoryTools,
-      ensureEmbedderSchema,
-      ReviewLoop,
-    } = (await import(memoryPkg)) as MemoryPostgresModule
+    const { PostgresMemory, createMemoryTools, ensureEmbedderSchema, ReviewLoop } = (await import(
+      memoryPkg
+    )) as MemoryPostgresModule
 
     const memory: PostgresMemoryInstance = new PostgresMemory({ connectionString })
     runtime.registerMemory(memory)
@@ -106,9 +103,7 @@ export async function registerMemory(
       (pgConfig.review_endpoint as string | undefined) ?? process.env.RIVETOS_REVIEW_URL ?? ''
     const reviewModel = (pgConfig.review_model as string | undefined) ?? 'rivet-v0.1'
     const reviewApiKey =
-      (pgConfig.review_api_key as string | undefined) ??
-      process.env.RIVETOS_REVIEW_API_KEY ??
-      ''
+      (pgConfig.review_api_key as string | undefined) ?? process.env.RIVETOS_REVIEW_API_KEY ?? ''
 
     if (hooks && reviewEndpoint) {
       const reviewLoop = new ReviewLoop({
