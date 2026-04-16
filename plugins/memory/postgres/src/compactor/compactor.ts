@@ -31,6 +31,7 @@
 import pg from 'pg'
 import {
   fmtDate,
+  sanitizeForJson,
   MIN_BATCH_SIZE,
   MAX_CONVERSATIONS_PER_CYCLE,
   LLM_TIMEOUT_MS,
@@ -196,7 +197,7 @@ export class BackgroundCompactor {
     if (messages.rows.length < MIN_BATCH_SIZE) return
 
     const formatted = messages.rows
-      .map((m) => `[${m.role}] ${m.content.slice(0, MAX_MSG_CONTENT_FOR_PROMPT)}`)
+      .map((m) => `[${m.role}] ${sanitizeForJson(m.content.slice(0, MAX_MSG_CONTENT_FOR_PROMPT))}`)
       .join('\n')
 
     const summaryText = await this.callLlm(LEAF_SYSTEM_PROMPT, formatted, 1000)
@@ -299,7 +300,7 @@ export class BackgroundCompactor {
           s.earliest_at && s.latest_at
             ? `${fmtDate(s.earliest_at)} → ${fmtDate(s.latest_at)}`
             : fmtDate(s.created_at)
-        return `[Leaf ${String(i + 1)}, ${period}, ${String(s.message_count)} msgs]\n${s.content.slice(0, MAX_SUMMARY_CONTENT_FOR_PROMPT)}`
+        return `[Leaf ${String(i + 1)}, ${period}, ${String(s.message_count)} msgs]\n${sanitizeForJson(s.content.slice(0, MAX_SUMMARY_CONTENT_FOR_PROMPT))}`
       })
       .join('\n\n')
 
@@ -392,7 +393,7 @@ export class BackgroundCompactor {
           s.earliest_at && s.latest_at
             ? `${fmtDate(s.earliest_at)} → ${fmtDate(s.latest_at)}`
             : fmtDate(s.created_at)
-        return `[Branch ${String(i + 1)}, ${period}, ${String(s.message_count)} msgs]\n${s.content.slice(0, MAX_SUMMARY_CONTENT_FOR_PROMPT)}`
+        return `[Branch ${String(i + 1)}, ${period}, ${String(s.message_count)} msgs]\n${sanitizeForJson(s.content.slice(0, MAX_SUMMARY_CONTENT_FOR_PROMPT))}`
       })
       .join('\n\n')
 

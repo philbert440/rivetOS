@@ -149,3 +149,19 @@ export const MAX_SUMMARY_CONTENT_FOR_PROMPT = 2000
 export function fmtDate(d: Date | null): string {
   return d?.toISOString().split('T')[0] ?? '?'
 }
+
+/**
+ * Strip lone surrogates and non-whitespace ASCII control characters
+ * so the string is safe for strict JSON parsers (e.g., llama-server).
+ *
+ * - Removes high surrogates (U+D800..U+DBFF) not followed by a low surrogate
+ * - Removes lone low surrogates (U+DC00..U+DFFF) not preceded by a high surrogate
+ * - Removes ASCII control chars 0x00-0x1F except tab (0x09), newline (0x0A), CR (0x0D)
+ */
+export function sanitizeForJson(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\x00-\x08\x0B\x0C\x0E-\x1F]/g,
+    '',
+  )
+}
