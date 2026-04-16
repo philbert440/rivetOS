@@ -418,7 +418,6 @@ function parseFlags(args: string[]): Flags {
 
 async function loadMeshFile(): Promise<MeshFile | null> {
   const { readFile } = await import('node:fs/promises')
-  const { join } = await import('node:path')
 
   // All nodes now use the single canonical file at /rivet-shared/mesh.json
   // (the NFS mount from the datahub). This ensures one source of truth.

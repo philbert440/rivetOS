@@ -185,7 +185,7 @@ export async function registerMemory(
           if (ctx.status === 'completed') {
             log.debug(
               `📨 Delegation tracked: ${ctx.fromAgent} → ${ctx.toAgent} ` +
-                `(${String(ctx.durationMs)}ms)`
+                `(${String(ctx.durationMs)}ms)`,
             )
           } else {
             log.warn(`📨 Delegation ${ctx.status}: ${ctx.fromAgent} → ${ctx.toAgent}`)
