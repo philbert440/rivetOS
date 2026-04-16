@@ -777,7 +777,8 @@ function normalizeMeshFile(parsed: MeshFileForUpdate | LegacyMeshFile): MeshFile
   // Migrate legacy array format
   const nodes: MeshFileForUpdate['nodes'] = {}
   for (const entry of parsed.nodes) {
-    const host = 'ip' in entry ? (entry as { ip: string }).ip : (entry as { host?: string }).host ?? ''
+    const host =
+      'ip' in entry ? (entry as { ip: string }).ip : ((entry as { host?: string }).host ?? '')
     const id = entry.name
     nodes[id] = {
       id,
