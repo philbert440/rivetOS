@@ -755,11 +755,11 @@ export class XAIProvider implements Provider {
             `canContinue=${String(canContinue)}, prevResponseId=${this.lastResponseId ?? 'none'}`,
         )
 
-        // --- Continuation fallback ---
-        // If we were using previous_response_id and got a 400, xAI's server-side
-        // stored conversation may have stale/invalid state (e.g. empty content from
-        // tool-call-only assistant turns). Retry once with the full conversation
-        // instead of relying on server-side continuation.
+        // --- Continuation fallback (safety net) ---
+        // Primary defense: we skip saving lastResponseId for tool-call-only responses
+        // (see hadTextContent check in response.completed handler), preventing poisoned
+        // continuation chains from forming. This fallback catches any remaining edge
+        // cases where server-side state becomes invalid despite our prevention logic.
         if (canContinue) {
           console.warn(
             `[xAI] Continuation 400 — retrying without previous_response_id (full conversation)`,
@@ -848,6 +848,11 @@ export class XAIProvider implements Provider {
 
     // Track whether we got a successful completion (for response ID management)
     let completedSuccessfully = false
+    // Track whether the response included actual text content (not just tool calls).
+    // We only save the response ID for continuation when text was emitted — tool-call-only
+    // responses can create poisoned server-side state where xAI stores an assistant message
+    // with empty content, which then fails validation on the next continuation attempt.
+    let hadTextContent = false
 
     try {
       for (;;) {
@@ -935,6 +940,7 @@ export class XAIProvider implements Provider {
           } else if (event.type === 'response.output_text.delta') {
             // Text content (may include inline citations as [[N]](url) markdown)
             if (event.delta) {
+              hadTextContent = true
               yield { type: 'text', delta: event.delta }
             }
           } else if (event.type === 'response.reasoning.delta') {
@@ -954,9 +960,20 @@ export class XAIProvider implements Provider {
             // Full response complete — extract usage, citations, response ID
             completedSuccessfully = true
             const resp = event.response
-            if (resp?.id && storeThisRequest) {
+            if (resp?.id && storeThisRequest && hadTextContent) {
+              // Only save response ID for continuation when the response had text content.
+              // Tool-call-only responses create poisoned server-side state: xAI stores an
+              // assistant message with empty content, and continuation against it fails with
+              // "Each message must have at least one content element".
               this.lastResponseId = resp.id
               this.lastResponseModel = model
+            } else if (resp?.id && storeThisRequest && !hadTextContent) {
+              // Tool-call-only response — don't continue from this state.
+              // Next request will send the full conversation, which we control.
+              console.log(
+                `[xAI] Skipping continuation save — tool-call-only response (id=${resp.id})`,
+              )
+              this.lastResponseId = null
             }
             if (resp?.usage) {
               usage.promptTokens = resp.usage.input_tokens ?? 0
@@ -981,9 +998,14 @@ export class XAIProvider implements Provider {
             if (!completedSuccessfully) {
               completedSuccessfully = true
               const resp = event.response
-              if (resp?.id && storeThisRequest) {
+              if (resp?.id && storeThisRequest && hadTextContent) {
                 this.lastResponseId = resp.id
                 this.lastResponseModel = model
+              } else if (resp?.id && storeThisRequest && !hadTextContent) {
+                console.log(
+                  `[xAI] Skipping continuation save — tool-call-only response (id=${resp.id})`,
+                )
+                this.lastResponseId = null
               }
               if (resp?.usage) {
                 usage.promptTokens = resp.usage.input_tokens ?? 0
