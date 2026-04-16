@@ -39,7 +39,8 @@
     "plugins/channels/*",
     "plugins/memory/*",
     "plugins/providers/*",
-    "plugins/tools/*"
+    "plugins/tools/*",
+    "services/*"
   ],
   "bin": {
     "rivetos": "./packages/cli/dist/index.js"

@@ -1,0 +1,17 @@
+{
+  "name": "@rivetos/embedding-worker",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Event-driven embedding worker — LISTEN/NOTIFY on Postgres, calls Nemotron GPU",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "pg": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

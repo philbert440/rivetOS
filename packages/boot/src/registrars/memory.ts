@@ -1,6 +1,11 @@
 /**
- * Memory Registrar — sets up PostgreSQL-backed memory with search, embedding, compaction,
- * and the background review loop (M4.2).
+ * Memory Registrar — sets up PostgreSQL-backed memory with search and
+ * the background review loop (M4.2).
+ *
+ * Embedding and compaction are handled by dedicated event-driven workers
+ * on the Datahub (CT110), NOT by agent CTs. See:
+ *   services/embedding-worker/   — Postgres LISTEN → Nemotron GPU
+ *   services/compaction-worker/  — Postgres LISTEN → E2B CPU
  */
 
 import type { Runtime } from '@rivetos/core'
@@ -37,8 +42,6 @@ interface MemoryPostgresModule {
     expander: unknown,
     opts: Record<string, unknown>,
   ) => Tool[]
-  BackgroundEmbedder: new (opts: Record<string, unknown>) => { start(): void }
-  BackgroundCompactor: new (opts: Record<string, unknown>) => { start(): void }
   ensureEmbedderSchema: (pool: PgPool) => Promise<void>
   ReviewLoop: new (opts: Record<string, unknown>) => {
     onTurnComplete(ctx: Record<string, unknown>): void
@@ -65,8 +68,6 @@ export async function registerMemory(
     const {
       PostgresMemory,
       createMemoryTools,
-      BackgroundEmbedder,
-      BackgroundCompactor,
       ensureEmbedderSchema,
       ReviewLoop,
     } = (await import(memoryPkg)) as MemoryPostgresModule
@@ -77,66 +78,44 @@ export async function registerMemory(
     // Use the adapter's internal pool and engines (no duplicate pool)
     const searchEngine = memory.getSearchEngine()
     const expander = memory.getExpander()
+    const pool = memory.getPool()
 
-    const compactorEndpoint =
-      (pgConfig.compactor_endpoint as string | undefined) ?? process.env.RIVETOS_COMPACTOR_URL ?? ''
-    const compactorModel = (pgConfig.compactor_model as string | undefined) ?? 'rivet-v0.1'
-    const compactorApiKey =
-      (pgConfig.compactor_api_key as string | undefined) ??
-      process.env.RIVETOS_COMPACTOR_API_KEY ??
-      ''
+    // Ensure embed_failures / embed_error columns exist (schema migration)
+    await ensureEmbedderSchema(pool)
 
+    // Memory tools (search, browse, stats) — no compactor config needed,
+    // compaction is handled by the Datahub worker
     const memoryTools = createMemoryTools(searchEngine, expander, {
-      compactorEndpoint: compactorEndpoint || undefined,
-      compactorModel,
-      compactorApiKey: compactorApiKey || undefined,
-      pool: memory.getPool(),
+      pool,
     })
 
     for (const tool of memoryTools) {
       runtime.registerTool(tool)
     }
 
-    // Background embedder
-    const embedEndpoint =
-      (pgConfig.embed_endpoint as string | undefined) ?? process.env.RIVETOS_EMBED_URL ?? ''
-    if (embedEndpoint) {
-      // Ensure embed_failures / embed_error columns exist
-      await ensureEmbedderSchema(memory.getPool())
-
-      const embedder = new BackgroundEmbedder({
-        connectionString,
-        embedEndpoint,
-        batchSize: 50,
-        apiBatchSize: 8,
-        intervalMs: 30_000,
-        maxRetries: 3,
-        maxFailures: 3,
-      })
-      embedder.start()
-      log.info(`Embedder: ${embedEndpoint} (batch 50, api batch 8)`)
-    }
-
-    // Background compactor
-    if (compactorEndpoint) {
-      const compactor = new BackgroundCompactor({
-        connectionString,
-        compactorEndpoint,
-        compactorModel,
-        compactorApiKey: compactorApiKey || undefined,
-        intervalMs: 1_800_000, // 30 minutes
-      })
-      compactor.start()
-      log.info(`Compactor: ${compactorEndpoint} (model: ${compactorModel})`)
-    }
+    // NOTE: BackgroundEmbedder and BackgroundCompactor are NO LONGER started
+    // on agent CTs. They run as dedicated systemd services on the Datahub:
+    //   rivet-embedder.service  — event-driven via Postgres LISTEN/NOTIFY
+    //   rivet-compactor.service — event-driven via Postgres LISTEN/NOTIFY
+    // See: infra/containers/datahub/setup-workers.sh
 
     // Background review loop (M4.2) — turn counting + background LLM review
-    if (hooks && compactorEndpoint) {
+    // The review loop still runs on agent CTs — it fires after turns and
+    // enqueues compaction work via the Postgres compaction queue.
+    const reviewEndpoint =
+      (pgConfig.review_endpoint as string | undefined) ?? process.env.RIVETOS_REVIEW_URL ?? ''
+    const reviewModel = (pgConfig.review_model as string | undefined) ?? 'rivet-v0.1'
+    const reviewApiKey =
+      (pgConfig.review_api_key as string | undefined) ??
+      process.env.RIVETOS_REVIEW_API_KEY ??
+      ''
+
+    if (hooks && reviewEndpoint) {
       const reviewLoop = new ReviewLoop({
-        reviewEndpoint: compactorEndpoint,
-        reviewModel: compactorModel,
-        reviewApiKey: compactorApiKey || undefined,
-        pool: memory.getPool(),
+        reviewEndpoint,
+        reviewModel,
+        reviewApiKey: reviewApiKey || undefined,
+        pool,
         turnThreshold: 10,
         iterationThreshold: 15,
         verbose: true,
@@ -171,7 +150,7 @@ export async function registerMemory(
         },
       })
 
-      log.info('Review loop: active (threshold: 10 turns)')
+      log.info(`Review loop: active (threshold: 10 turns, endpoint: ${reviewEndpoint})`)
 
       // Delegation tracking — persist delegation events for learning and auditing
       hooks.register({
@@ -191,7 +170,6 @@ export async function registerMemory(
           if (ctx.cached) parts.push('(cached result)')
           const insight = parts.join(' | ')
 
-          const pool = memory.getPool()
           const conv = await pool.query(
             `SELECT id FROM ros_conversations WHERE agent = $1 AND active = true ORDER BY updated_at DESC LIMIT 1`,
             [ctx.agentId],
@@ -231,7 +209,7 @@ export async function registerMemory(
       log.info('Delegation tracker: active')
     }
 
-    log.info('Memory: postgres (ros_* tables)')
+    log.info('Memory: postgres (ros_* tables, embedder/compactor on Datahub)')
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     log.error(`Failed to initialize memory: ${message}`)
