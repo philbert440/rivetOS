@@ -159,8 +159,8 @@ export function fmtDate(d: Date | null): string {
  * - Removes ASCII control chars 0x00-0x1F except tab (0x09), newline (0x0A), CR (0x0D)
  */
 export function sanitizeForJson(text: string): string {
-  // eslint-disable-next-line no-control-regex
   return text.replace(
+    // eslint-disable-next-line no-control-regex
     /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\x00-\x08\x0B\x0C\x0E-\x1F]/g,
     '',
   )
