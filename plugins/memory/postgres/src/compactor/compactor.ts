@@ -65,6 +65,9 @@ export class BackgroundCompactor {
   private rootBatchSize: number
   private timer: ReturnType<typeof setInterval> | null = null
   private running: boolean = false
+  private circuitBreaker: Map<string, { failures: number; lastFailAt: number }> = new Map()
+  private static readonly CIRCUIT_BREAKER_THRESHOLD = 3
+  private static readonly CIRCUIT_BREAKER_RESET_MS = 3_600_000 // 1 hour
 
   private metrics: CompactorMetrics = {
     cyclesCompleted: 0,
@@ -88,7 +91,7 @@ export class BackgroundCompactor {
     this.apiKey = config.compactorApiKey ?? ''
     this.intervalMs = config.intervalMs ?? 1_800_000
     this.minUnsummarized = config.minUnsummarized ?? 50
-    this.batchSize = config.batchSize ?? 25
+    this.batchSize = config.batchSize ?? 10
     this.minLeafsForBranch = config.minLeafsForBranch ?? 5
     this.branchBatchSize = config.branchBatchSize ?? 8
     this.minBranchesForRoot = config.minBranchesForRoot ?? 3
@@ -174,6 +177,20 @@ export class BackgroundCompactor {
     )
 
     for (const row of candidates.rows) {
+      // Circuit breaker: skip conversations that repeatedly fail
+      const cb = this.circuitBreaker.get(row.conversation_id)
+      if (cb && cb.failures >= BackgroundCompactor.CIRCUIT_BREAKER_THRESHOLD) {
+        if (Date.now() - cb.lastFailAt < BackgroundCompactor.CIRCUIT_BREAKER_RESET_MS) {
+          console.log(
+            `[Compactor] Circuit breaker: skipping ${row.conversation_id.slice(0, 8)}… ` +
+              `(${String(cb.failures)} consecutive failures, will retry after reset)`,
+          )
+          continue
+        }
+        this.circuitBreaker.delete(row.conversation_id)
+        console.log(`[Compactor] Circuit breaker reset for ${row.conversation_id.slice(0, 8)}…`)
+      }
+
       try {
         await this.compactLeafConversation(row.conversation_id)
       } catch (error: unknown) {
@@ -202,9 +219,19 @@ export class BackgroundCompactor {
 
     const summaryText = await this.callLlm(LEAF_SYSTEM_PROMPT, formatted, 1000)
     if (!summaryText) {
-      console.error(`[Compactor] Empty leaf summary for conversation ${conversationId}`)
+      const entry = this.circuitBreaker.get(conversationId) ?? { failures: 0, lastFailAt: 0 }
+      entry.failures++
+      entry.lastFailAt = Date.now()
+      this.circuitBreaker.set(conversationId, entry)
+      console.error(
+        `[Compactor] Empty leaf summary for ${conversationId.slice(0, 8)}… ` +
+          `(failure ${String(entry.failures)}/${String(BackgroundCompactor.CIRCUIT_BREAKER_THRESHOLD)})`,
+      )
       return
     }
+
+    // Success — clear circuit breaker
+    this.circuitBreaker.delete(conversationId)
 
     const client = await this.pool.connect()
     try {
