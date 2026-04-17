@@ -18,6 +18,7 @@ import pg from 'pg'
 import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types'
 import { MemoryError } from '@rivetos/types'
 import { SearchEngine } from './search.js'
+import type { SearchEngineConfig } from './search.js'
 import { Expander } from './expand.js'
 
 const { Pool } = pg
@@ -58,6 +59,10 @@ export interface PostgresMemoryConfig {
   connectionTimeoutMs?: number
   /** Idle timeout in ms before releasing connection (default: 30000) */
   idleTimeoutMs?: number
+  /** Embedding service URL for query-time hybrid search (e.g., http://10.4.20.12:9401) */
+  embedEndpoint?: string
+  /** Embedding model name (default: 'nemotron') */
+  embedModel?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +94,11 @@ export class PostgresMemory implements Memory {
       this.connected = true
     })
 
-    this.searchEngine = new SearchEngine(this.pool)
+    // Build search engine config — pass embedding endpoint for hybrid search
+    const searchConfig: SearchEngineConfig | undefined =
+      config.embedEndpoint ? { embedEndpoint: config.embedEndpoint, embedModel: config.embedModel } : undefined
+
+    this.searchEngine = new SearchEngine(this.pool, searchConfig)
     this.expander = new Expander(this.pool)
   }
 

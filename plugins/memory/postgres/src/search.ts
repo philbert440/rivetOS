@@ -2,10 +2,17 @@
  * SearchEngine — hybrid FTS + semantic + temporal + importance scoring.
  *
  * Supports four search modes:
- *   fts     — PostgreSQL full-text search (ts_rank_cd)
+ *   fts     — PostgreSQL full-text search (ts_rank_cd) + real cosine similarity
  *   vector  — cosine similarity via pgvector (requires pre-computed embedding)
  *   trigram — fuzzy matching via pg_trgm
  *   regex   — PostgreSQL regex (~*)
+ *
+ * When mode=fts and an embedding endpoint is configured, the query is embedded
+ * at search time and combined with FTS rank for true hybrid scoring:
+ *   relevance = (fts_rank × 0.3) + (cosine_sim × 0.3) + (temporal × 0.3) + (importance × 0.1)
+ *
+ * Falls back gracefully to a length-based semantic proxy if embedding is
+ * unavailable or fails.
  *
  * Scoring uses the formulas from scoring.ts, expressed as SQL for
  * database-side evaluation. Access counts are bumped for returned results.
@@ -50,6 +57,13 @@ export interface SearchHit {
   latestAt?: Date
 }
 
+export interface SearchEngineConfig {
+  /** Embedding service URL for query-time embedding (e.g., http://10.4.20.12:9401) */
+  embedEndpoint?: string
+  /** Model name for embedding (default: 'nemotron') */
+  embedModel?: string
+}
+
 // ---------------------------------------------------------------------------
 // Row interfaces
 // ---------------------------------------------------------------------------
@@ -78,19 +92,47 @@ interface SummarySearchRow {
   semantic_sim?: string
 }
 
+interface EmbedResponseItem {
+  embedding?: number[]
+  index?: number
+}
+
+interface EmbedResponse {
+  data?: EmbedResponseItem[]
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Query embedding timeout — single text, should be fast */
+const EMBED_TIMEOUT_MS = 5_000
+
+/** Fallback semantic proxy when embedding is unavailable */
+const SEMANTIC_PROXY = (alias: string): string =>
+  `LEAST(LENGTH(${alias}.content) / 1000.0, 1.0)`
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
 
 export class SearchEngine {
   private pool: pg.Pool
+  private embedEndpoint: string | null
+  private embedModel: string
 
-  constructor(pool: pg.Pool) {
+  constructor(pool: pg.Pool, config?: SearchEngineConfig) {
     this.pool = pool
+    this.embedEndpoint = config?.embedEndpoint ?? null
+    this.embedModel = config?.embedModel ?? 'nemotron'
   }
 
   /**
    * Search messages and/or summaries with hybrid scoring.
+   *
+   * For FTS mode: embeds the query once and passes to both message and
+   * summary search for real cosine similarity scoring. Falls back to
+   * length-based proxy if embedding fails.
    *
    * Results are scored, sorted by relevance, and the top N returned.
    * Access counts are incremented for returned results.
@@ -101,13 +143,19 @@ export class SearchEngine {
     const limit = options?.limit ?? 20
     const results: SearchHit[] = []
 
+    // Embed query once for FTS hybrid scoring
+    let queryEmbedding: number[] | null = null
+    if (mode === 'fts' && this.embedEndpoint) {
+      queryEmbedding = await this.embedQuery(query)
+    }
+
     if (scope === 'messages' || scope === 'both') {
-      const hits = await this.searchMessages(query, mode, limit, options)
+      const hits = await this.searchMessages(query, mode, limit, options, queryEmbedding)
       results.push(...hits)
     }
 
     if (scope === 'summaries' || scope === 'both') {
-      const hits = await this.searchSummaries(query, mode, limit, options)
+      const hits = await this.searchSummaries(query, mode, limit, options, queryEmbedding)
       results.push(...hits)
     }
 
@@ -214,6 +262,59 @@ export class SearchEngine {
   }
 
   // -----------------------------------------------------------------------
+  // Query embedding — call Nemotron at search time
+  // -----------------------------------------------------------------------
+
+  /**
+   * Embed a query string via the configured embedding endpoint.
+   * Returns null on any failure (timeout, network, bad response).
+   * Caller should fall back to the length-based semantic proxy.
+   */
+  private async embedQuery(text: string): Promise<number[] | null> {
+    if (!this.embedEndpoint) return null
+
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS)
+
+      const response = await fetch(`${this.embedEndpoint}/v1/embeddings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: [text.slice(0, 8000)],
+          model: this.embedModel,
+        }),
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeout)
+
+      if (!response.ok) {
+        console.warn(`[SearchEngine] Query embedding failed: HTTP ${String(response.status)}`)
+        return null
+      }
+
+      const data = (await response.json()) as EmbedResponse
+      const vec = data.data?.[0]?.embedding
+      if (!vec || !Array.isArray(vec) || vec.length === 0) {
+        console.warn('[SearchEngine] Query embedding returned empty/invalid vector')
+        return null
+      }
+
+      return vec
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // Don't log abort as an error — it's expected on timeout
+      if (msg.includes('abort')) {
+        console.warn('[SearchEngine] Query embedding timed out (5s)')
+      } else {
+        console.warn(`[SearchEngine] Query embedding failed: ${msg}`)
+      }
+      return null
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Internal: message search
   // -----------------------------------------------------------------------
 
@@ -222,6 +323,7 @@ export class SearchEngine {
     mode: string,
     limit: number,
     options?: SearchOptions,
+    queryEmbedding?: number[] | null,
   ): Promise<SearchHit[]> {
     const conditions: string[] = []
     const params: unknown[] = []
@@ -280,15 +382,22 @@ export class SearchEngine {
     const temporal = temporalDecaySql('m')
     const importance = importanceSql('m')
 
-    // Composite score: FTS (0.3) + semantic proxy (0.3) + temporal (0.3) + importance (0.1)
-    // For text-only searches, we use length as a semantic proxy (longer = more context)
-    const semanticProxy = `LEAST(LENGTH(m.content) / 1000.0, 1.0)`
+    // Semantic scoring: real cosine similarity when we have a query embedding,
+    // otherwise fall back to length-based proxy
+    let semanticExpr: string
+    if (mode === 'fts' && queryEmbedding) {
+      const vecLiteral = `[${queryEmbedding.join(',')}]`
+      // COALESCE: use real cosine sim when row has embedding, fall back to length proxy
+      semanticExpr = `COALESCE(1 - (m.embedding <=> '${vecLiteral}'::halfvec), ${SEMANTIC_PROXY('m')})`
+    } else {
+      semanticExpr = SEMANTIC_PROXY('m')
+    }
 
     const sql = `
       SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
              (
                ${ftsScoreExpr} * ${W_FTS}
-               + ${semanticProxy} * ${W_SEMANTIC}
+               + ${semanticExpr} * ${W_SEMANTIC}
                + (${temporal}) * ${W_TEMPORAL}
                + (${importance}) * ${W_IMPORTANCE}
              ) AS score
@@ -321,6 +430,7 @@ export class SearchEngine {
     mode: string,
     limit: number,
     options?: SearchOptions,
+    queryEmbedding?: number[] | null,
   ): Promise<SearchHit[]> {
     const conditions: string[] = []
     const params: unknown[] = []
@@ -368,7 +478,15 @@ export class SearchEngine {
     const limitIdx = pi
 
     const temporal = temporalDecaySql('s')
-    const semanticProxy = `LEAST(LENGTH(s.content) / 1000.0, 1.0)`
+
+    // Semantic scoring: real cosine similarity when we have a query embedding
+    let semanticExpr: string
+    if (mode === 'fts' && queryEmbedding) {
+      const vecLiteral = `[${queryEmbedding.join(',')}]`
+      semanticExpr = `COALESCE(1 - (s.embedding <=> '${vecLiteral}'::halfvec), ${SEMANTIC_PROXY('s')})`
+    } else {
+      semanticExpr = SEMANTIC_PROXY('s')
+    }
 
     const sql = `
       SELECT s.id, s.content, s.kind AS role, 'summary' AS agent,
@@ -376,7 +494,7 @@ export class SearchEngine {
              s.kind, s.earliest_at, s.latest_at,
              (
                ${ftsScoreExpr} * ${W_FTS}
-               + ${semanticProxy} * ${W_SEMANTIC}
+               + ${semanticExpr} * ${W_SEMANTIC}
                + (${temporal}) * ${W_TEMPORAL}
                + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE}
              ) AS score
