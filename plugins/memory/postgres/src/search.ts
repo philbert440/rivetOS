@@ -58,7 +58,7 @@ export interface SearchHit {
 }
 
 export interface SearchEngineConfig {
-  /** Embedding service URL for query-time embedding (e.g., http://10.4.20.12:9401) */
+  /** Embedding service URL for query-time embedding (e.g., http://192.0.2.1:9401) */
   embedEndpoint?: string
   /** Model name for embedding (default: 'nemotron') */
   embedModel?: string
