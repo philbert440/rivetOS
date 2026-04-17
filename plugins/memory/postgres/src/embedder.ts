@@ -383,11 +383,7 @@ export class BackgroundEmbedder {
    * Persist a vector (or mark the row as failed if vec is null).
    * Returns true on successful store, false on any failure path.
    */
-  private async storeVector(
-    table: string,
-    id: string,
-    vec: number[] | null,
-  ): Promise<boolean> {
+  private async storeVector(table: string, id: string, vec: number[] | null): Promise<boolean> {
     if (!vec) {
       await this.markFailure(table, id, 'Embedding returned null after retries')
       this.metrics.totalFailed++

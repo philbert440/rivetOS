@@ -738,7 +738,9 @@ async function checkProviderConnectivity(
     }
 
     case 'llama-server': {
-      const baseUrl = (config.base_url as string | undefined)?.replace(/\/$/, '').replace(/\/v1$/, '')
+      const baseUrl = (config.base_url as string | undefined)
+        ?.replace(/\/$/, '')
+        .replace(/\/v1$/, '')
       if (!baseUrl) return false
       const resp = await fetch(`${baseUrl}/health`, {
         signal: AbortSignal.timeout(timeout),

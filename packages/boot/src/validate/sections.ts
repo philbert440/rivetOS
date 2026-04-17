@@ -399,10 +399,7 @@ export function validateProviders(
       })
     }
 
-    if (
-      (name === 'ollama' || name === 'llama-server') &&
-      !provider.base_url
-    ) {
+    if ((name === 'ollama' || name === 'llama-server') && !provider.base_url) {
       issues.push({
         severity: 'error',
         path: `${path}.base_url`,
