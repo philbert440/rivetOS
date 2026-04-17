@@ -59,7 +59,7 @@ export interface PostgresMemoryConfig {
   connectionTimeoutMs?: number
   /** Idle timeout in ms before releasing connection (default: 30000) */
   idleTimeoutMs?: number
-  /** Embedding service URL for query-time hybrid search (e.g., http://10.4.20.12:9401) */
+  /** Embedding service URL for query-time hybrid search (e.g., http://192.0.2.1:9401) */
   embedEndpoint?: string
   /** Embedding model name (default: 'nemotron') */
   embedModel?: string
