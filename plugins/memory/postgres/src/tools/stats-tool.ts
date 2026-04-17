@@ -113,7 +113,7 @@ export function createStatsTool(pool: pg.Pool): Tool {
         // Embedding queue
         const embedQueue = await pool.query<EmbedQueueRow>(`
           SELECT
-            (SELECT COUNT(*) FROM ros_messages WHERE embedding IS NULL AND content IS NOT NULL AND LENGTH(content) > 20) AS msg_queue,
+            (SELECT COUNT(*) FROM ros_messages WHERE embedding IS NULL AND content IS NOT NULL AND LENGTH(content) > 0) AS msg_queue,
             (SELECT COUNT(*) FROM ros_summaries WHERE embedding IS NULL AND content IS NOT NULL) AS sum_queue
         `)
         const eq = embedQueue.rows[0]
