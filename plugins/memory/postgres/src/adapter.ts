@@ -95,8 +95,9 @@ export class PostgresMemory implements Memory {
     })
 
     // Build search engine config — pass embedding endpoint for hybrid search
-    const searchConfig: SearchEngineConfig | undefined =
-      config.embedEndpoint ? { embedEndpoint: config.embedEndpoint, embedModel: config.embedModel } : undefined
+    const searchConfig: SearchEngineConfig | undefined = config.embedEndpoint
+      ? { embedEndpoint: config.embedEndpoint, embedModel: config.embedModel }
+      : undefined
 
     this.searchEngine = new SearchEngine(this.pool, searchConfig)
     this.expander = new Expander(this.pool)

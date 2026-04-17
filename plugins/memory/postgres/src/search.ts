@@ -109,8 +109,7 @@ interface EmbedResponse {
 const EMBED_TIMEOUT_MS = 5_000
 
 /** Fallback semantic proxy when embedding is unavailable */
-const SEMANTIC_PROXY = (alias: string): string =>
-  `LEAST(LENGTH(${alias}.content) / 1000.0, 1.0)`
+const SEMANTIC_PROXY = (alias: string): string => `LEAST(LENGTH(${alias}.content) / 1000.0, 1.0)`
 
 // ---------------------------------------------------------------------------
 // Engine
