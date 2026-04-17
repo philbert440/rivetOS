@@ -78,7 +78,7 @@ Core packages use their directory name. Plugins use the directory name without t
 | `plugins/providers/google` | `provider-google` | `npx nx run provider-google:lint` |
 | `plugins/providers/xai` | `provider-xai` | `npx nx run provider-xai:test` |
 | `plugins/providers/ollama` | `provider-ollama` | `npx nx run provider-ollama:build` |
-| `plugins/providers/openai-compat` | `provider-openai-compat` | `npx nx run provider-openai-compat:lint` |
+| `plugins/providers/llama-server` | `@rivetos/provider-llama-server` | `npx nx run provider-llama-server:lint` |
 | `plugins/memory/postgres` | `memory-postgres` | `npx nx run memory-postgres:build` |
 | `plugins/tools/shell` | `tool-shell` | `npx nx run tool-shell:test` |
 | `plugins/tools/file` | `tool-file` | `npx nx run tool-file:test` |

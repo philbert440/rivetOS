@@ -61,7 +61,7 @@ jobs:
             plugins/providers/anthropic
             plugins/providers/google
             plugins/providers/ollama
-            plugins/providers/openai-compat
+            plugins/providers/llama-server
             plugins/providers/xai
             plugins/tools/coding-pipeline
             plugins/tools/file

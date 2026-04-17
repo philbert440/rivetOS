@@ -22,7 +22,7 @@
 │  Discord     Google                 File I/O           │
 │  Agent       xAI                    Search (glob/grep) │
 │  Voice       Ollama                 Web Search/Fetch   │
-│              OpenAI-compat          Interaction        │
+│              llama-server           Interaction        │
 │                                     MCP Client         │
 │                                     Coding Pipeline    │
 │                                                        │
@@ -405,7 +405,7 @@ rivetOS/
       ollama/                        ← Ollama (native API)
         src/
           index.ts                   ← OllamaProvider
-      openai-compat/                 ← Any OpenAI-compatible endpoint
+      llama-server/                  ← llama.cpp server (native API)
         src/
           index.ts                   ← OpenAICompatProvider
     memory/

@@ -197,7 +197,7 @@ export function createPlugin() {
 | xAI | `plugins/providers/xai/` | Live search, conversation caching |
 | Google | `plugins/providers/google/` | Thought signatures for function calling |
 | Ollama | `plugins/providers/ollama/` | Native API, model management |
-| OpenAI-compat | `plugins/providers/openai-compat/` | Generic — works with any OpenAI-compatible endpoint |
+| llama-server | `plugins/providers/llama-server/` | Native llama.cpp server API (sampling, <think>, lenient tools) |
 
 ---
 

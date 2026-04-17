@@ -23,7 +23,7 @@
 
 ## Overview
 
-RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic, xAI, Google, Ollama, OpenAI-compatible) to messaging channels (Discord, Telegram, voice) with a tool execution loop, persistent memory, and multi-agent orchestration.
+RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic, xAI, Google, Ollama, llama-server) to messaging channels (Discord, Telegram, voice) with a tool execution loop, persistent memory, and multi-agent orchestration.
 
 **Key Numbers:**
 - ~49k lines of source code (excluding tests)
@@ -51,7 +51,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   ├── google/              # Gemini (thought signatures for function calling)
 │   │   ├── xai/                 # Grok (streaming, live search)
 │   │   ├── ollama/              # Local Ollama models
-│   │   └── openai-compat/       # Generic OpenAI-compatible (llama-server, etc.)
+│   │   └── llama-server/        # Native llama.cpp server (sampling, <think>, tools)
 │   │
 │   ├── channels/                # 17,734 lines — Messaging surface adapters
 │   │   ├── discord/             # Discord (edit, react, embed, overflow, bindings)

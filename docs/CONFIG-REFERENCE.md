@@ -288,26 +288,38 @@ providers:
 | `temperature` | number | — | Sampling temperature. |
 | `num_ctx` | number | — | Context window size. |
 
-### OpenAI-Compatible
+### llama-server
 
-Works with llama-server, vLLM, LM Studio, OpenRouter, Together AI, etc.
+Native provider for `llama-server` binary from llama.cpp. Exposes full sampling controls (mirostat, typical_p, repeat_last_n, seed, etc.).
 
 ```yaml
 providers:
   llama-server:
-    base_url: http://localhost:8000/v1
-    model: local-model
+    base_url: http://localhost:8080
+    model: default
+    typical_p: 0.9
+    mirostat: 2
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `base_url` | string | **required** | API endpoint (must end with `/v1`). |
-| `model` | string | **required** | Model identifier sent with requests. |
-| `api_key` | string | — | API key (if required by the endpoint). |
-| `max_tokens` | number | `4096` | Maximum output tokens. |
-| `temperature` | number | — | Sampling temperature. |
+| `base_url` | string | `http://localhost:8080` | Must point to your `llama-server` (no trailing `/v1`). |
+| `model` | string | `default` | Model alias or path known to the server. |
+| `num_ctx` | number | `8192` | Context window (matches server `-c`). |
+| `temperature` | number | `0.7` | Sampling temperature. |
+| `top_p` | number | `0.9` | Nucleus sampling. |
+| `typical_p` | number | `0.9` | Locally typical sampling (llama.cpp specific). |
+| `repeat_penalty` | number | `1.1` | Repetition penalty. |
+| `repeat_last_n` | number | `64` | Last N tokens for repetition. |
+| `mirostat` | number | `0` | 0=off, 1=v1, 2=v2. |
+| `mirostat_tau` | number | `5.0` | Target surprise for Mirostat. |
+| `mirostat_eta` | number | `0.1` | Learning rate for Mirostat. |
+| `seed` | number | `-1` | Random seed (`-1` = random). |
+| `api_key` | string | — | Optional (for `--api-key` on server). |
 
 ---
+
+
 
 ## `channels`
 

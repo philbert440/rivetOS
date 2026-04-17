@@ -7,7 +7,7 @@
 
 ## What It Is
 
-Lightweight AI agent runtime. Connects LLM providers (Anthropic, xAI, Google, Ollama, OpenAI-compat) to messaging channels (Discord, Telegram, voice) with a tool execution loop, persistent memory, and multi-agent orchestration.
+Lightweight AI agent runtime. Connects LLM providers (Anthropic, xAI, Google, Ollama, llama-server) to messaging channels (Discord, Telegram, voice) with a tool execution loop, persistent memory, and multi-agent orchestration.
 
 - **Repo:** `github.com/philbert440/rivetOS` → `/opt/rivetos`
 - **Version:** v0.4.0 (all milestones M0–M8 complete, pending end-to-end testing for v1.0)
@@ -51,7 +51,7 @@ Lightweight AI agent runtime. Connects LLM providers (Anthropic, xAI, Google, Ol
 
 | Category | Interface | Plugins |
 |----------|-----------|---------|
-| Provider | `Provider` | anthropic, xai, google, ollama, openai-compat |
+| Provider | `Provider` | anthropic, xai, google, ollama, llama-server |
 | Channel | `Channel` | discord, telegram, agent (HTTP), voice-discord |
 | Tool | `Tool` | shell, file, search, web-search, interaction, mcp-client, coding-pipeline |
 | Memory | `Memory` | postgres (pgvector, embeddings, compaction, summaries) |

@@ -18,7 +18,7 @@ const DEFAULT_MODELS: Record<string, string> = {
   xai: 'grok-4-1-fast-reasoning',
   google: 'gemini-2.5-pro',
   ollama: 'qwen2.5:32b',
-  'openai-compat': 'gpt-4o',
+  'llama-server': 'default',
 }
 
 /** Environment variable name for each provider's API key */
@@ -26,7 +26,6 @@ export const PROVIDER_ENV_KEYS: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   xai: 'XAI_API_KEY',
   google: 'GOOGLE_API_KEY',
-  'openai-compat': 'OPENAI_API_KEY',
 }
 
 export async function configureAgents(): Promise<WizardAgent[]> {
@@ -65,9 +64,9 @@ export async function configureAgents(): Promise<WizardAgent[]> {
         { value: 'google' as const, label: 'Google', hint: 'Gemini' },
         { value: 'ollama' as const, label: 'Ollama', hint: 'local models' },
         {
-          value: 'openai-compat' as const,
-          label: 'OpenAI Compatible',
-          hint: 'OpenRouter, Together, etc.',
+          value: 'llama-server' as const,
+          label: 'llama.cpp server (local)',
+          hint: 'llama-server binary',
         },
       ],
     })
@@ -86,20 +85,14 @@ export async function configureAgents(): Promise<WizardAgent[]> {
       })
       bail(urlResult)
       baseUrl = urlResult
-    } else if (provider === 'openai-compat') {
+    } else if (provider === 'llama-server') {
       const urlResult = await p.text({
-        message: 'API base URL',
-        placeholder: 'https://openrouter.ai/api/v1',
+        message: 'llama-server base URL',
+        placeholder: 'http://localhost:8080',
+        defaultValue: 'http://localhost:8080',
       })
       bail(urlResult)
       baseUrl = urlResult
-
-      const keyResult = await p.password({
-        message: 'API key',
-        validate: (val) => (val && val.trim() ? undefined : 'API key is required'),
-      })
-      bail(keyResult)
-      apiKey = keyResult
     } else {
       // Standard providers with API keys
       const envKey = PROVIDER_ENV_KEYS[provider]

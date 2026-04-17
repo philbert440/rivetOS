@@ -2,7 +2,7 @@
 title: Provider Setup
 sidebar:
   order: 6
-description: How to configure LLM providers — Anthropic, xAI, Google, Ollama, and OpenAI-compatible
+description: How to configure LLM providers — Anthropic, xAI, Google, Ollama, and llama.cpp server
 ---
 
 Providers connect your agents to large language models. Each provider plugin handles API authentication, streaming, tool calling format differences, and thinking/reasoning support so your agent config stays clean.
@@ -15,7 +15,7 @@ RivetOS ships with five provider plugins:
 | **xAI** | Grok 3, Grok 4 | ✅ | Responses API, conversation caching |
 | **Google** | Gemini 2.5 Pro, Flash | ✅ | Thought signatures for function calling |
 | **Ollama** | Any local model | — | Local inference, no API key needed |
-| **OpenAI-Compatible** | Any OpenAI-format API | — | vLLM, llama-server, LM Studio, OpenRouter, etc. |
+| **llama.cpp server** | Any model served by llama-server | — | Local `llama-server` binary (native sampling, <think> tags, lenient tool calling) |
 
 ---
 
@@ -267,85 +267,73 @@ agents:
 
 ---
 
-## OpenAI-Compatible
+## llama.cpp server (Local)
 
-A generic provider that works with any API that follows the OpenAI Chat Completions format. Useful for:
+The native provider for [`llama-server`](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) — the built-in HTTP server from the llama.cpp project.
 
-- **[vLLM](https://docs.vllm.ai/)** — High-throughput inference server
-- **[llama-server](https://github.com/ggerganov/llama.cpp/tree/master/examples/server)** — llama.cpp's built-in server
-- **[LM Studio](https://lmstudio.ai/)** — Desktop app with a local server mode
-- **[OpenRouter](https://openrouter.ai/)** — Unified API for 100+ models
-- **[Together AI](https://www.together.ai/)** — Cloud inference with open models
+It uses the native `/completion` and `/infill` endpoints (not the OpenAI compat layer). This gives full access to llama.cpp sampling parameters (`typical_p`, `mirostat`, `repeat_last_n`, `seed`, etc.), native `<think>` / `<thinking>` tag support, and lenient JSON tool-call parsing.
 
-### Configure
+### 1. Install & Run llama-server
 
-For a local server (no API key):
+```bash
+# Build from source (recommended for latest features)
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+make -j server
+
+# Or use prebuilt binaries from https://github.com/ggerganov/llama.cpp/releases
+
+# Run with a model (adjust -m, --host, --port)
+./llama-server -m models/Meta-Llama-3.1-70B-Instruct-Q4_K_M.gguf \
+  --host 0.0.0.0 --port 8080 \
+  -c 32768 --n-gpu-layers 99
+```
+
+### 2. Configure
 
 ```yaml
 providers:
-  local-llm:
-    base_url: http://localhost:8000/v1
-    model: my-model
-    max_tokens: 8192
+  local:
+    provider_type: llama-server   # or just use the default "llama-server"
+    base_url: http://localhost:8080
+    model: llama3.1:70b            # any model name your server knows
+    num_ctx: 32768
+    typical_p: 0.9
+    repeat_last_n: 64
+    mirostat: 2
+    mirostat_tau: 5.0
+    seed: 42
 
 agents:
   local:
-    provider: local-llm
+    provider: local
     local: true
-```
-
-For a hosted service (with API key):
-
-```yaml
-providers:
-  openrouter:
-    base_url: https://openrouter.ai/api/v1
-    model: anthropic/claude-sonnet-4-20250514
-    api_key: ${OPENROUTER_API_KEY}
-    max_tokens: 8192
-
-agents:
-  router:
-    provider: openrouter
 ```
 
 ### Config Options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `base_url` | string | **required** | API endpoint URL (must serve `/chat/completions`) |
-| `model` | string | `default` | Model identifier sent with requests |
-| `api_key` | string | — | API key (if required by the endpoint) |
-| `max_tokens` | number | `4096` | Maximum output tokens |
-| `temperature` | number | `0.6` | Sampling temperature |
-| `top_p` | number | `0.9` | Nucleus sampling threshold |
-| `num_ctx` | number | — | Context window size (for llama-server) |
-| `id` | string | `openai-compat` | Custom provider ID |
-| `name` | string | `OpenAI Compatible` | Custom display name |
-| `first_chunk_timeout_ms` | number | `120000` | Max wait for first SSE chunk (2 min default) |
-| `chunk_timeout_ms` | number | `30000` | Max wait between subsequent chunks |
-| `repeat_penalty` | number | — | Repetition penalty (for llama-server) |
+| `base_url` | string | `http://localhost:8080` | Must point to your `llama-server` (no `/v1`) |
+| `model` | string | `default` | Model alias or path known to the server |
+| `num_ctx` | number | `8192` | Context window (matches server `-c`) |
+| `temperature` | number | `0.7` | Sampling temperature |
+| `top_p` | number | `0.9` | Nucleus sampling |
+| `typical_p` | number | `0.9` | Locally typical sampling (llama.cpp specific) |
+| `repeat_penalty` | number | `1.1` | Repetition penalty |
+| `repeat_last_n` | number | `64` | Last N tokens to consider for repetition |
+| `mirostat` | number | `0` | 0=off, 1=Mirostat v1, 2=v2 |
+| `mirostat_tau` | number | `5.0` | Target surprise value |
+| `mirostat_eta` | number | `0.1` | Learning rate for Mirostat |
+| `seed` | number | `-1` | Random seed (`-1` = random) |
+| `first_chunk_timeout_ms` | number | `120000` | Timeout for first token |
+| `chunk_timeout_ms` | number | `30000` | Timeout between tokens |
 
-### Multiple Instances
-
-You can configure multiple OpenAI-compatible providers with different `id` values:
-
-```yaml
-providers:
-  vllm-70b:
-    base_url: http://gpu-server:8000/v1
-    model: meta-llama/Llama-3.1-70B
-    id: vllm-70b
-    name: "Llama 70B (vLLM)"
-
-  lmstudio:
-    base_url: http://localhost:1234/v1
-    model: loaded-model
-    id: lmstudio
-    name: "LM Studio"
-```
+**Note:** This provider is **llama.cpp-specific**. It talks directly to the native llama-server endpoints (not the OpenAI-compat layer). A future generic `openai` provider is planned for OpenRouter, Together, Fireworks, vLLM, etc.
 
 ---
+
+
 
 ## Fallback Chains
 
