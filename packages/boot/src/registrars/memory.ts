@@ -36,7 +36,11 @@ interface PostgresMemoryInstance extends Memory {
 }
 
 interface MemoryPostgresModule {
-  PostgresMemory: new (opts: { connectionString: string }) => PostgresMemoryInstance
+  PostgresMemory: new (opts: {
+    connectionString: string
+    embedEndpoint?: string
+    embedModel?: string
+  }) => PostgresMemoryInstance
   createMemoryTools: (
     searchEngine: unknown,
     expander: unknown,
@@ -68,7 +72,17 @@ export async function registerMemory(
       memoryPkg
     )) as MemoryPostgresModule
 
-    const memory: PostgresMemoryInstance = new PostgresMemory({ connectionString })
+    // Embedding endpoint for query-time hybrid search
+    const embedEndpoint =
+      (pgConfig.embed_endpoint as string | undefined) ?? process.env.RIVETOS_EMBED_URL ?? ''
+    const embedModel =
+      (pgConfig.embed_model as string | undefined) ?? process.env.RIVETOS_EMBED_MODEL ?? 'nemotron'
+
+    const memory: PostgresMemoryInstance = new PostgresMemory({
+      connectionString,
+      embedEndpoint: embedEndpoint || undefined,
+      embedModel,
+    })
     runtime.registerMemory(memory)
 
     // Use the adapter's internal pool and engines (no duplicate pool)
@@ -196,7 +210,10 @@ export async function registerMemory(
       log.info('Delegation tracker: active')
     }
 
-    log.info('Memory: postgres (ros_* tables + centralized workers on Datahub)')
+    log.info(
+      `Memory: postgres (ros_* tables + centralized workers on Datahub)` +
+        (embedEndpoint ? ` | hybrid search via ${embedEndpoint}` : ' | FTS-only (no embed endpoint)'),
+    )
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     log.error(`Failed to initialize memory: ${message}`)

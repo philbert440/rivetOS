@@ -26,7 +26,7 @@ export { PostgresMemory } from './adapter.js'
 export type { PostgresMemoryConfig } from './adapter.js'
 
 export { SearchEngine } from './search.js'
-export type { SearchOptions, SearchHit } from './search.js'
+export type { SearchOptions, SearchHit, SearchEngineConfig } from './search.js'
 
 export { Expander } from './expand.js'
 export type { SummaryNode, ExpandResult } from './expand.js'
