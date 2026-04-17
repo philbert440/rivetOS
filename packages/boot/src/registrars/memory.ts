@@ -212,7 +212,9 @@ export async function registerMemory(
 
     log.info(
       `Memory: postgres (ros_* tables + centralized workers on Datahub)` +
-        (embedEndpoint ? ` | hybrid search via ${embedEndpoint}` : ' | FTS-only (no embed endpoint)'),
+        (embedEndpoint
+          ? ` | hybrid search via ${embedEndpoint}`
+          : ' | FTS-only (no embed endpoint)'),
     )
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
