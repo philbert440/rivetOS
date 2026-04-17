@@ -402,7 +402,6 @@ rivetOS/
       anthropic/                     ← Claude (native Messages API + OAuth)
         src/
           index.ts                   ← AnthropicProvider with extended thinking
-          oauth.ts                   ← Anthropic OAuth flow
       google/                        ← Gemini (Generative Language API)
         src/
           index.ts                   ← GoogleProvider

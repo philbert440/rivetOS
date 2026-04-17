@@ -2,8 +2,7 @@
  * rivetos <provider> <action>
  *
  * Provider-specific commands:
- *   rivetos anthropic setup      — OAuth login
- *   rivetos anthropic status     — check auth
+ *   rivetos anthropic status     — check connectivity
  *   rivetos xai status           — check connectivity
  *   rivetos google status        — check connectivity
  *   rivetos ollama status        — check connectivity
@@ -54,86 +53,32 @@ export default async function provider(providerName: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Anthropic
+// Anthropic (API key only)
 // ---------------------------------------------------------------------------
 
 async function handleAnthropic(action: string): Promise<void> {
   switch (action) {
-    case 'setup':
-    case 'login': {
-      const { saveTokens, detectAuthMode } = await import('@rivetos/provider-anthropic')
-      const { createInterface } = await import('node:readline')
-
-      console.log('🔐 Anthropic Setup\n')
-      console.log('Paste your Anthropic API key or Claude subscription token.\n')
-      console.log('  API key:    sk-ant-api03-...  (from console.anthropic.com)')
-      console.log('  Sub token:  sk-ant-oat01-...  (from Claude Pro/Max subscription)\n')
-
-      const rl = createInterface({ input: process.stdin, output: process.stdout })
-      const token = await new Promise<string>((resolve) => {
-        rl.question('Paste key or token: ', (answer) => {
-          rl.close()
-          resolve(answer.trim())
-        })
-      })
-
-      if (!token) {
-        console.error('Nothing provided.')
-        process.exit(1)
-      }
-
-      const mode = detectAuthMode(token)
-
-      if (mode === 'oauth') {
-        // Store as OAuth token — provider will use Bearer auth + beta headers
-        await saveTokens({
-          accessToken: token,
-          refreshToken: '', // No refresh for pasted tokens — re-paste when expired
-          expiresAt: 0, // Unknown expiry
-        })
-        console.log('\n✅ Claude subscription token saved')
-        console.log('   Auth mode: OAuth (Bearer + claude-code beta headers)')
-        console.log('   Note: If this token expires, just run setup again with a fresh one.')
-      } else {
-        // Store as API key
-        await saveTokens({
-          accessToken: token,
-          refreshToken: '',
-          expiresAt: Number.MAX_SAFE_INTEGER, // API keys don't expire
-        })
-        console.log('\n✅ Anthropic API key saved')
-        console.log('   Auth mode: API key (x-api-key header)')
-      }
-      break
-    }
-
     case 'status': {
-      const { loadTokens } = await import('@rivetos/provider-anthropic')
-      const tokens = await loadTokens()
-
-      if (!tokens) {
-        console.log('❌ Not authenticated')
-        console.log('   Run: rivetos anthropic setup')
+      const key = process.env.ANTHROPIC_API_KEY
+      if (!key) {
+        console.log('❌ ANTHROPIC_API_KEY not set')
         return
       }
 
-      const expired = Date.now() >= tokens.expiresAt
-      const hasRefresh = !!tokens.refreshToken
+      console.log('Anthropic Status:')
+      console.log(`  API key: ${key.slice(0, 12)}...`)
 
-      console.log('Anthropic Auth Status:')
-      console.log(`  Access token: ${tokens.accessToken.slice(0, 15)}...`)
-      console.log(
-        `  Expires: ${new Date(tokens.expiresAt).toLocaleString()} ${expired ? '(EXPIRED)' : '(valid)'}`,
-      )
-      console.log(
-        `  Refresh token: ${hasRefresh ? '✅ available (auto-refresh enabled)' : '❌ none'}`,
-      )
-
-      if (expired && hasRefresh) {
-        console.log('\n  Token expired but will auto-refresh on next API call.')
-      } else if (expired && !hasRefresh) {
-        console.log('\n  ❌ Token expired with no refresh token.')
-        console.log('  Run: rivetos anthropic setup')
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/models', {
+          headers: {
+            'x-api-key': key,
+            'anthropic-version': '2023-06-01',
+          },
+          signal: AbortSignal.timeout(5000),
+        })
+        console.log(`  Connectivity: ${res.ok ? '✅' : '❌'} (${res.status})`)
+      } catch (err: unknown) {
+        console.log(`  Connectivity: ❌ (${(err as Error).message})`)
       }
       break
     }
@@ -272,7 +217,7 @@ async function handleOllama(action: string): Promise<void> {
           const lines = decoder.decode(value, { stream: true }).split('\n').filter(Boolean)
           for (const line of lines) {
             try {
-              const data = JSON.parse(line) as { status?: string } as { status?: string }
+              const data = JSON.parse(line) as { status?: string }
               if (data.status && data.status !== lastStatus) {
                 console.log(`  ${data.status}`)
                 lastStatus = data.status
@@ -300,10 +245,7 @@ async function handleOllama(action: string): Promise<void> {
 
 function showProviderHelp(name: string): void {
   const commands: Record<string, string[]> = {
-    anthropic: [
-      'rivetos anthropic setup      OAuth login for Claude subscription',
-      'rivetos anthropic status     Check auth status',
-    ],
+    anthropic: ['rivetos anthropic status     Check connectivity'],
     xai: ['rivetos xai status           Check connectivity'],
     google: ['rivetos google status        Check connectivity'],
     ollama: [

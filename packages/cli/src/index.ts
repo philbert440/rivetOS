@@ -10,7 +10,6 @@
  *   rivetos stop                     — stop the running instance
  *   rivetos status                   — show runtime status
  *   rivetos update                   — pull latest, rebuild, re-symlink
- *   rivetos login anthropic          — OAuth login for Anthropic (Claude subscription)
  *   rivetos doctor                   — check config, providers, connectivity
  *   rivetos config init              — generate default config.yaml
  *   rivetos model                    — show providers + current models
@@ -127,13 +126,7 @@ function showHelp(): void {
     rivetos skills list                 Show all discovered skills
     rivetos plugins list                Show configured plugins with status
 
-  Service:
-    rivetos service init                Generate systemd unit file
-    rivetos service start/stop/restart  Manage the systemd service
-    rivetos service status/logs         Service info
-
   Providers:
-    rivetos anthropic setup             OAuth login for Claude subscription
     rivetos <provider> status           Check provider connectivity
     rivetos ollama models               List available Ollama models
 
