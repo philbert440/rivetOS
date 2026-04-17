@@ -17,7 +17,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 - **Tiny core, fat plugins** — The kernel stays under 5,000 lines. Everything else is swappable.
 - **Streaming-first** — `AsyncIterable<StreamEvent>` from every provider. Responses stream in real-time.
-- **5 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, OpenAI-compatible.
+- **5 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, llama-server (native).
 - **4 channel plugins** — Discord, Telegram, Agent (HTTP inter-agent), Voice (xAI Realtime).
 - **13 built-in tools** — Shell, file I/O, search, web, memory, interaction, MCP client, coding pipeline.
 - **Multi-agent mesh** — Delegate tasks across agents. Local or remote. Transparent routing.
@@ -103,7 +103,7 @@ rivetOS/
 │   └── nx-plugin/      # @rivetos/nx — generators, executors, dev tooling
 ├── plugins/
 │   ├── channels/       # discord, telegram, agent, voice-discord
-│   ├── providers/      # anthropic, google, xai, ollama, openai-compat
+│   ├── providers/      # anthropic, google, xai, ollama, llama-server
 │   ├── memory/         # postgres (pgvector + FTS + summary DAG)
 │   └── tools/          # shell, file, search, web, interaction, mcp, coding-pipeline
 ├── infra/              # Containers, Pulumi IaC (Docker, Proxmox providers)
@@ -122,7 +122,7 @@ rivetOS/
 | `provider-google` | Gemini models via Generative Language API |
 | `provider-xai` | Grok models with live search and caching |
 | `provider-ollama` | Local Ollama models (native API) |
-| `provider-openai-compat` | Any OpenAI-compatible endpoint (vLLM, LM Studio, etc.) |
+| `provider-llama-server` | llama.cpp `llama-server` binary (native API, mirostat, typical_p, etc.) |
 
 ### Channels
 

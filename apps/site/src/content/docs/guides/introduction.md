@@ -26,7 +26,7 @@ An agent is a configured AI model with access to specific channels, tools, and m
 How users communicate with agents. Discord, Telegram, Discord Voice, or agent-to-agent HTTP. Each channel is a plugin — swap them freely.
 
 ### Providers
-The AI model backend. Anthropic, OpenAI, xAI, Google, Ollama (local), or any OpenAI-compatible API. Agents can have fallback providers.
+The AI model backend. Anthropic, xAI, Google, Ollama (local), or llama.cpp server (native). Agents can have fallback providers.
 
 ### Tools
 What agents can do beyond conversation. Execute shell commands, read/write files, search the web, call APIs via MCP servers, delegate to other agents.

@@ -737,11 +737,10 @@ async function checkProviderConnectivity(
       return resp.ok
     }
 
-    case 'openai-compat':
     case 'llama-server': {
-      const baseUrl = config.base_url as string
+      const baseUrl = (config.base_url as string | undefined)?.replace(/\/$/, '').replace(/\/v1$/, '')
       if (!baseUrl) return false
-      const resp = await fetch(`${baseUrl}/models`, {
+      const resp = await fetch(`${baseUrl}/health`, {
         signal: AbortSignal.timeout(timeout),
       })
       return resp.ok

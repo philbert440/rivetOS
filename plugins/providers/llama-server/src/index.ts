@@ -1,21 +1,21 @@
 /**
- * @rivetos/provider-openai-compat
+ * @rivetos/provider-llama-server
  *
- * Generic OpenAI-compatible provider. Works with any endpoint that
- * speaks the OpenAI Chat Completions API:
+ * Native llama.cpp server (llama-server) provider.
  *
- * - llama-server (GERTY, Rivet Local)
- * - vLLM
- * - LM Studio
- * - OpenRouter
- * - Together AI
- * - Fireworks
- * - text-generation-webui
- * - LocalAI
+ * Speaks llama-server's chat-completions endpoint (`POST /v1/chat/completions`)
+ * with llama-native sampling knobs and reasoning semantics. Not a generic
+ * OpenAI-compat shim — this is built for one server.
  *
- * Streaming via SSE. Optional auth. Lenient JSON parsing for
- * llama-server's occasional malformed tool call arguments.
- * Configurable stream timeouts to prevent hanging on stalled models.
+ * Features:
+ * - Streaming SSE with `<think>` block parsing and native `reasoning_content`
+ *   (llama-server's `--reasoning-format deepseek`)
+ * - Tool/function calling with lenient JSON parsing for malformed args
+ * - Configurable stream timeouts to prevent hanging on stalled models
+ * - Full llama-native sampling: top_k, min_p, typical_p, repeat_penalty, etc.
+ * - Optional API key (llama-server `--api-key`)
+ *
+ * Docs: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
  */
 
 import type {
@@ -34,52 +34,68 @@ import { ProviderError, MODEL_DEFAULTS } from '@rivetos/types'
 // Config
 // ---------------------------------------------------------------------------
 
-export interface OpenAICompatProviderConfig {
-  baseUrl: string // e.g., 'http://192.168.1.50:8000/v1'
-  apiKey?: string // Optional — local servers often need none
-  model?: string // Default: 'default'
-  maxTokens?: number // Default: 4096 (set higher for local — tokens are free)
-  temperature?: number // Default: 0.6 (lower = more precise for local)
-  topP?: number // Default: 0.9 (tighter = less noise)
-  /** Number of context tokens (llama-server num_ctx) */
-  numCtx?: number
-  /** Custom provider ID (default: 'openai-compat') */
-  id?: string
-  /** Custom display name (default: 'OpenAI Compatible') */
-  name?: string
-  /** Max ms to wait for the first SSE chunk (default: 120000 = 2 min) */
-  firstChunkTimeoutMs?: number
-  /** Max ms to wait between subsequent SSE chunks (default: 30000 = 30s) */
-  chunkTimeoutMs?: number
-  /** Repetition penalty for llama-server (default: undefined — not sent) */
-  repeatPenalty?: number
-  /** Top-k sampling (default: undefined — not sent) */
+export interface LlamaServerProviderConfig {
+  /** Base URL of the llama-server, e.g. 'http://localhost:8080' */
+  baseUrl: string
+  /** Optional API key (llama-server `--api-key`). If unset, no Authorization header is sent. */
+  apiKey?: string
+  /** Model alias (llama-server `--alias`). Default: 'default' */
+  model?: string
+  /** Max tokens to generate (`max_tokens` / `n_predict`). Default: 4096 */
+  maxTokens?: number
+  /** Temperature (0.0–2.0). Default: 0.8 (llama-server default) */
+  temperature?: number
+  /** top-p nucleus sampling. Default: 0.95 (llama-server default) */
+  topP?: number
+  /** top-k sampling. Default: undefined (not sent; server default = 40) */
   topK?: number
-  /** Min-p sampling (default: undefined — not sent) */
+  /** min-p sampling. Default: undefined (not sent; server default = 0.05) */
   minP?: number
-  /** Presence penalty (default: undefined — not sent) */
+  /** Locally typical sampling p. Default: undefined (not sent) */
+  typicalP?: number
+  /** Repetition penalty. Default: undefined (not sent; server default = 1.0) */
+  repeatPenalty?: number
+  /** Number of tokens to penalize for repetition. Default: undefined (not sent) */
+  repeatLastN?: number
+  /** Presence penalty. Default: undefined (not sent) */
   presencePenalty?: number
-  /** Frequency penalty (default: undefined — not sent) */
+  /** Frequency penalty. Default: undefined (not sent) */
   frequencyPenalty?: number
-  /** Context window size in tokens (0 = unknown) */
+  /** Mirostat mode: 0=off, 1=v1, 2=v2. Default: undefined (not sent) */
+  mirostat?: 0 | 1 | 2
+  /** Mirostat tau (target entropy). Default: undefined */
+  mirostatTau?: number
+  /** Mirostat eta (learning rate). Default: undefined */
+  mirostatEta?: number
+  /** RNG seed (-1 = random). Default: undefined */
+  seed?: number
+  /** Custom provider ID. Default: 'llama-server' */
+  id?: string
+  /** Custom display name. Default: 'llama.cpp server' */
+  name?: string
+  /** Max ms to wait for first SSE chunk. Default: 120000 (2 min) */
+  firstChunkTimeoutMs?: number
+  /** Max ms to wait between chunks. Default: 30000 (30s) */
+  chunkTimeoutMs?: number
+  /** Context window size (informational, for runtime budgeting). Default: 0 = unknown */
   contextWindow?: number
-  /** Max output tokens (0 = unknown) */
+  /** Max output tokens (informational). Default: 0 = unknown */
   maxOutputTokens?: number
 }
 
 // ---------------------------------------------------------------------------
-// API types
+// Request/response types (chat-completions shape used by llama-server)
 // ---------------------------------------------------------------------------
 
-interface OpenAIContentBlock {
+interface LlamaContentBlock {
   type: 'text' | 'image_url'
   text?: string
   image_url?: { url: string }
 }
 
-interface OAIMessage {
+interface LlamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | OpenAIContentBlock[] | null
+  content: string | LlamaContentBlock[] | null
   tool_calls?: Array<{
     id: string
     type: 'function'
@@ -88,43 +104,51 @@ interface OAIMessage {
   tool_call_id?: string
 }
 
-interface OAIFunctionTool {
+interface LlamaFunctionTool {
   type: 'function'
   function: { name: string; description: string; parameters: Record<string, unknown> }
 }
 
-interface OAIRequestBody {
+interface LlamaRequestBody {
   model: string
   max_tokens: number
   temperature: number
   top_p: number
-  messages: OAIMessage[]
+  messages: LlamaMessage[]
   stream: boolean
-  tools?: OAIFunctionTool[]
-  repeat_penalty?: number
+  tools?: LlamaFunctionTool[]
+  // llama-native sampling knobs (all optional)
   top_k?: number
   min_p?: number
+  typical_p?: number
+  repeat_penalty?: number
+  repeat_last_n?: number
   presence_penalty?: number
   frequency_penalty?: number
+  mirostat?: number
+  mirostat_tau?: number
+  mirostat_eta?: number
+  seed?: number
+  // llama-server always emits reasoning_content when using deepseek reasoning format
 }
 
-interface ChatCompletionsToolCallDelta {
+interface LlamaToolCallDelta {
   index: number
   id?: string
   function?: { name?: string; arguments?: string }
 }
 
-interface ChatCompletionsChoice {
+interface LlamaStreamChoice {
   delta?: {
     content?: string
     reasoning_content?: string
-    tool_calls?: ChatCompletionsToolCallDelta[]
+    tool_calls?: LlamaToolCallDelta[]
   }
   finish_reason?: string
 }
 
-interface ChatCompletionsEvent {
-  choices?: ChatCompletionsChoice[]
+interface LlamaStreamEvent {
+  choices?: LlamaStreamChoice[]
   usage?: { prompt_tokens?: number; completion_tokens?: number }
 }
 
@@ -139,7 +163,6 @@ class ReadTimeoutError extends Error {
   }
 }
 
-/** Result of ReadableStreamDefaultReader.read() — inlined to avoid DOM lib dependency */
 type StreamReadResult<T> = { done: false; value: T } | { done: true; value: T | undefined }
 
 function readWithTimeout(
@@ -165,7 +188,6 @@ function readWithTimeout(
 // Message conversion
 // ---------------------------------------------------------------------------
 
-/** Extract text from string | ContentPart[] */
 function extractText(content: string | ContentPart[]): string {
   if (typeof content === 'string') return content
   return content
@@ -174,76 +196,65 @@ function extractText(content: string | ContentPart[]): string {
     .join('')
 }
 
-/** Convert ContentPart[] to OpenAI multimodal content blocks */
-function convertContentPartsToOpenAI(parts: ContentPart[]): OpenAIContentBlock[] {
-  const blocks: OpenAIContentBlock[] = []
+function convertContentParts(parts: ContentPart[]): LlamaContentBlock[] {
+  const blocks: LlamaContentBlock[] = []
   for (const part of parts) {
     if (part.type === 'text') {
       blocks.push({ type: 'text', text: part.text })
     } else {
-      // ImagePart
+      // ImagePart — llama-server mmproj via image_url
       if (part.data) {
         blocks.push({
           type: 'image_url',
           image_url: { url: `data:${part.mimeType ?? 'image/jpeg'};base64,${part.data}` },
         })
       } else if (part.url) {
-        blocks.push({
-          type: 'image_url',
-          image_url: { url: part.url },
-        })
+        blocks.push({ type: 'image_url', image_url: { url: part.url } })
       }
     }
   }
   return blocks
 }
 
-function convertMessages(messages: Message[]): OAIMessage[] {
+function convertMessages(messages: Message[]): LlamaMessage[] {
   return messages.map((msg) => {
-    // Handle multimodal user messages
-    if (msg.role === 'user' && typeof msg.content !== 'string' && Array.isArray(msg.content)) {
-      const oai: OAIMessage = { role: 'user', content: convertContentPartsToOpenAI(msg.content) }
-      return oai
+    // Multimodal user messages
+    if (msg.role === 'user' && Array.isArray(msg.content)) {
+      return { role: 'user', content: convertContentParts(msg.content) }
     }
 
-    // Handle multimodal tool results — most local servers only support text in tool results
-    if (msg.role === 'tool' && typeof msg.content !== 'string' && Array.isArray(msg.content)) {
-      let textContent = extractText(msg.content)
-      const imageCount = msg.content.filter((p) => p.type === 'image').length
-      if (imageCount > 0) {
-        textContent += `\n[${imageCount} image(s) returned — saved to disk]`
-      }
-      const oai: OAIMessage = { role: 'tool', content: textContent || null }
-      if (msg.toolCallId) oai.tool_call_id = msg.toolCallId
-      return oai
+    // Tool results — llama-server expects string content for tool role
+    if (msg.role === 'tool' && Array.isArray(msg.content)) {
+      let text = extractText(msg.content)
+      const imgCount = msg.content.filter((p) => p.type === 'image').length
+      if (imgCount > 0) text += `\n[${String(imgCount)} image(s) returned — saved to disk]`
+      const out: LlamaMessage = { role: 'tool', content: text || null }
+      if (msg.toolCallId) out.tool_call_id = msg.toolCallId
+      return out
     }
 
-    const textContent = extractText(msg.content)
-    const oai: OAIMessage = { role: msg.role, content: textContent || null }
+    const text = extractText(msg.content)
+    const out: LlamaMessage = { role: msg.role, content: text || null }
     if (msg.toolCalls?.length) {
-      oai.tool_calls = msg.toolCalls.map((tc) => ({
+      out.tool_calls = msg.toolCalls.map((tc) => ({
         id: tc.id,
         type: 'function' as const,
         function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
       }))
     }
-    if (msg.toolCallId) oai.tool_call_id = msg.toolCallId
-    return oai
+    if (msg.toolCallId) out.tool_call_id = msg.toolCallId
+    return out
   })
 }
 
-function convertTools(tools: ToolDefinition[]): OAIFunctionTool[] {
+function convertTools(tools: ToolDefinition[]): LlamaFunctionTool[] {
   return tools.map((t) => ({
     type: 'function' as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }))
 }
 
-// ---------------------------------------------------------------------------
-// Type guard
-// ---------------------------------------------------------------------------
-
-function isChatCompletionsEvent(value: unknown): value is ChatCompletionsEvent {
+function isStreamEvent(value: unknown): value is LlamaStreamEvent {
   return typeof value === 'object' && value !== null
 }
 
@@ -251,7 +262,7 @@ function isChatCompletionsEvent(value: unknown): value is ChatCompletionsEvent {
 // Provider
 // ---------------------------------------------------------------------------
 
-export class OpenAICompatProvider implements Provider {
+export class LlamaServerProvider implements Provider {
   id: string
   name: string
   private baseUrl: string
@@ -260,32 +271,49 @@ export class OpenAICompatProvider implements Provider {
   private maxTokens: number
   private temperature: number
   private topP: number
-  private firstChunkTimeoutMs: number
-  private chunkTimeoutMs: number
-  private repeatPenalty: number | undefined
   private topK: number | undefined
   private minP: number | undefined
+  private typicalP: number | undefined
+  private repeatPenalty: number | undefined
+  private repeatLastN: number | undefined
   private presencePenalty: number | undefined
   private frequencyPenalty: number | undefined
+  private mirostat: 0 | 1 | 2 | undefined
+  private mirostatTau: number | undefined
+  private mirostatEta: number | undefined
+  private seed: number | undefined
+  private firstChunkTimeoutMs: number
+  private chunkTimeoutMs: number
   private contextWindowSize: number
   private outputTokenLimit: number
 
-  constructor(config: OpenAICompatProviderConfig) {
-    this.id = config.id ?? 'openai-compat'
-    this.name = config.name ?? 'OpenAI Compatible'
-    this.baseUrl = config.baseUrl
+  constructor(config: LlamaServerProviderConfig) {
+    this.id = config.id ?? 'llama-server'
+    this.name = config.name ?? 'llama.cpp server'
+    // Normalize baseUrl — llama-server mounts chat completions at /v1/chat/completions.
+    // Accept both 'http://host:8080' and 'http://host:8080/v1'; strip trailing slash
+    // and trailing '/v1' so we can consistently append '/v1/...'.
+    let base = config.baseUrl.replace(/\/$/, '')
+    if (base.endsWith('/v1')) base = base.slice(0, -3)
+    this.baseUrl = base
     this.apiKey = config.apiKey ?? ''
-    this.model = config.model ?? MODEL_DEFAULTS['openai-compat']
+    this.model = config.model ?? MODEL_DEFAULTS['llama-server']
     this.maxTokens = config.maxTokens ?? 4096
-    this.temperature = config.temperature ?? 0.6
-    this.topP = config.topP ?? 0.9
-    this.firstChunkTimeoutMs = config.firstChunkTimeoutMs ?? 120_000
-    this.chunkTimeoutMs = config.chunkTimeoutMs ?? 30_000
-    this.repeatPenalty = config.repeatPenalty
+    this.temperature = config.temperature ?? 0.8
+    this.topP = config.topP ?? 0.95
     this.topK = config.topK
     this.minP = config.minP
+    this.typicalP = config.typicalP
+    this.repeatPenalty = config.repeatPenalty
+    this.repeatLastN = config.repeatLastN
     this.presencePenalty = config.presencePenalty
     this.frequencyPenalty = config.frequencyPenalty
+    this.mirostat = config.mirostat
+    this.mirostatTau = config.mirostatTau
+    this.mirostatEta = config.mirostatEta
+    this.seed = config.seed
+    this.firstChunkTimeoutMs = config.firstChunkTimeoutMs ?? 120_000
+    this.chunkTimeoutMs = config.chunkTimeoutMs ?? 30_000
     this.contextWindowSize = config.contextWindow ?? 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
   }
@@ -312,7 +340,7 @@ export class OpenAICompatProvider implements Provider {
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     const model = options?.modelOverride ?? this.model
-    const body: OAIRequestBody = {
+    const body: LlamaRequestBody = {
       model,
       max_tokens: this.maxTokens,
       temperature: this.temperature,
@@ -325,32 +353,23 @@ export class OpenAICompatProvider implements Provider {
       body.tools = convertTools(options.tools)
     }
 
-    // llama-server specific sampling params — only sent when configured
-    if (this.repeatPenalty !== undefined) {
-      body.repeat_penalty = this.repeatPenalty
-    }
-    if (this.topK !== undefined) {
-      body.top_k = this.topK
-    }
-    if (this.minP !== undefined) {
-      body.min_p = this.minP
-    }
-    if (this.presencePenalty !== undefined) {
-      body.presence_penalty = this.presencePenalty
-    }
-    if (this.frequencyPenalty !== undefined) {
-      body.frequency_penalty = this.frequencyPenalty
-    }
+    // llama-native sampling knobs — only sent when configured
+    if (this.topK !== undefined) body.top_k = this.topK
+    if (this.minP !== undefined) body.min_p = this.minP
+    if (this.typicalP !== undefined) body.typical_p = this.typicalP
+    if (this.repeatPenalty !== undefined) body.repeat_penalty = this.repeatPenalty
+    if (this.repeatLastN !== undefined) body.repeat_last_n = this.repeatLastN
+    if (this.presencePenalty !== undefined) body.presence_penalty = this.presencePenalty
+    if (this.frequencyPenalty !== undefined) body.frequency_penalty = this.frequencyPenalty
+    if (this.mirostat !== undefined) body.mirostat = this.mirostat
+    if (this.mirostatTau !== undefined) body.mirostat_tau = this.mirostatTau
+    if (this.mirostatEta !== undefined) body.mirostat_eta = this.mirostatEta
+    if (this.seed !== undefined) body.seed = this.seed
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    }
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`
 
-    if (this.apiKey) {
-      headers.Authorization = `Bearer ${this.apiKey}`
-    }
-
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
@@ -380,8 +399,6 @@ export class OpenAICompatProvider implements Provider {
 
     try {
       for (;;) {
-        // Apply timeout: longer for first chunk (model may be thinking),
-        // shorter between subsequent chunks (stream should be flowing)
         const timeoutMs = isFirstChunk ? this.firstChunkTimeoutMs : this.chunkTimeoutMs
         let readResult: StreamReadResult<Uint8Array>
 
@@ -392,7 +409,7 @@ export class OpenAICompatProvider implements Provider {
             const phase = isFirstChunk ? 'first response' : 'next chunk'
             yield {
               type: 'error',
-              error: `Provider timed out waiting for ${phase} (${String(timeoutMs / 1000)}s). The model may be overloaded or the context too large.`,
+              error: `${this.name} timed out waiting for ${phase} (${String(timeoutMs / 1000)}s). The model may be overloaded or the context too large.`,
             }
             try {
               void reader.cancel()
@@ -401,7 +418,7 @@ export class OpenAICompatProvider implements Provider {
             }
             return
           }
-          throw err // Re-throw non-timeout errors (abort, network, etc.)
+          throw err
         }
 
         if (readResult.done) break
@@ -416,10 +433,10 @@ export class OpenAICompatProvider implements Provider {
           const data = line.slice(6).trim()
           if (data === '[DONE]') continue
 
-          let event: ChatCompletionsEvent
+          let event: LlamaStreamEvent
           try {
             const parsed: unknown = JSON.parse(data)
-            if (!isChatCompletionsEvent(parsed)) continue
+            if (!isStreamEvent(parsed)) continue
             event = parsed
           } catch {
             continue
@@ -429,64 +446,63 @@ export class OpenAICompatProvider implements Provider {
           if (!choice) continue
 
           const delta = choice.delta
-          if (!delta) continue
-
-          // Native reasoning_content field (llama-server, OpenAI o-series)
-          if (delta.reasoning_content) {
-            yield { type: 'reasoning', delta: delta.reasoning_content }
-          }
-          // Text content — detect <think> blocks (Qwen via llama-server)
-          if (delta.content) {
-            const text = delta.content
-
-            if (text.includes('<think>')) {
-              inThinking = true
-              const before = text.split('<think>')[0]
-              const after = text.split('<think>')[1] ?? ''
-              if (before) yield { type: 'text', delta: before }
-              if (after) yield { type: 'reasoning', delta: after }
-              continue
+          // llama-server sometimes emits empty delta objects (especially on the
+          // final chunk accompanying finish_reason). Keep going to process
+          // finish_reason/usage on the same event.
+          if (delta) {
+            // Native reasoning field (llama-server --reasoning-format deepseek)
+            if (delta.reasoning_content) {
+              yield { type: 'reasoning', delta: delta.reasoning_content }
             }
-            if (text.includes('</think>')) {
-              inThinking = false
-              const before = text.split('</think>')[0]
-              const after = text.split('</think>')[1] ?? ''
-              if (before) yield { type: 'reasoning', delta: before }
-              if (after) yield { type: 'text', delta: after }
-              continue
-            }
+            // Text content — parse <think> blocks inline (deepseek-legacy format
+            // or models that emit <think> inside content regardless of server flag)
+            if (delta.content) {
+              const text = delta.content
 
-            if (inThinking) {
-              yield { type: 'reasoning', delta: text }
-            } else {
-              yield { type: 'text', delta: text }
-            }
-          }
-
-          // Tool calls
-          if (delta.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              if (tc.function?.name) {
-                startedToolCallIndices.add(tc.index)
-                yield {
-                  type: 'tool_call_start',
-                  toolCall: { index: tc.index, id: tc.id, name: tc.function.name },
-                }
+              if (text.includes('<think>')) {
+                inThinking = true
+                const before = text.split('<think>')[0]
+                const after = text.split('<think>')[1] ?? ''
+                if (before) yield { type: 'text', delta: before }
+                if (after) yield { type: 'reasoning', delta: after }
+              } else if (text.includes('</think>')) {
+                inThinking = false
+                const before = text.split('</think>')[0]
+                const after = text.split('</think>')[1] ?? ''
+                if (before) yield { type: 'reasoning', delta: before }
+                if (after) yield { type: 'text', delta: after }
+              } else if (inThinking) {
+                yield { type: 'reasoning', delta: text }
+              } else {
+                yield { type: 'text', delta: text }
               }
-              if (tc.function?.arguments) {
-                yield {
-                  type: 'tool_call_delta',
-                  delta: tc.function.arguments,
-                  toolCall: { index: tc.index },
+            }
+
+            // Tool calls
+            if (delta.tool_calls) {
+              for (const tc of delta.tool_calls) {
+                if (tc.function?.name) {
+                  startedToolCallIndices.add(tc.index)
+                  yield {
+                    type: 'tool_call_start',
+                    toolCall: { index: tc.index, id: tc.id, name: tc.function.name },
+                  }
+                }
+                if (tc.function?.arguments) {
+                  yield {
+                    type: 'tool_call_delta',
+                    delta: tc.function.arguments,
+                    toolCall: { index: tc.index },
+                  }
                 }
               }
             }
           }
 
           if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop') {
-            // Emit tool_call_done for ALL started tool calls.
-            // Some providers (llama-server + Gemma) send an empty delta
-            // on the final chunk, so we can't rely on delta.tool_calls here.
+            // Emit tool_call_done for all started tool calls — llama-server can
+            // send an empty delta on the final chunk, so we can't rely on
+            // delta.tool_calls being present here.
             for (const idx of startedToolCallIndices) {
               yield { type: 'tool_call_done', toolCall: { index: idx } }
             }
@@ -514,7 +530,7 @@ export class OpenAICompatProvider implements Provider {
     let text = ''
     let reasoning = ''
     const toolCalls: ToolCall[] = []
-    const pendingArgs: Map<number, { id: string; name: string; args: string }> = new Map()
+    const pendingArgs = new Map<number, { id: string; name: string; args: string }>()
     let usage = { promptTokens: 0, completionTokens: 0 }
 
     for await (const chunk of this.chatStream(messages, options)) {
@@ -548,7 +564,7 @@ export class OpenAICompatProvider implements Provider {
             try {
               args = JSON.parse(pending.args) as Record<string, unknown>
             } catch {
-              // llama-server sometimes returns malformed JSON — best effort
+              // llama-server tool-call args can be malformed JSON — best effort
               args = { raw: pending.args }
             }
             toolCalls.push({ id: pending.id, name: pending.name, arguments: args })
@@ -564,8 +580,7 @@ export class OpenAICompatProvider implements Provider {
       }
     }
 
-    // Safety net: flush any pending tool calls that never got a tool_call_done event.
-    // This can happen if a provider sends tool_calls without a proper finish_reason.
+    // Flush any pending tool calls that never got tool_call_done
     for (const [, pending] of pendingArgs) {
       let args: Record<string, unknown>
       try {
@@ -586,14 +601,14 @@ export class OpenAICompatProvider implements Provider {
   }
 
   // -----------------------------------------------------------------------
-  // isAvailable
+  // isAvailable — llama-server exposes /health
   // -----------------------------------------------------------------------
 
   async isAvailable(): Promise<boolean> {
     try {
       const headers: Record<string, string> = {}
       if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`
-      const res = await fetch(`${this.baseUrl}/models`, { headers })
+      const res = await fetch(`${this.baseUrl}/health`, { headers })
       return res.ok
     } catch {
       return false

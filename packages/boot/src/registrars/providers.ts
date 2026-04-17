@@ -49,8 +49,8 @@ function resolveProviderConfig(
       // Ollama doesn't need an API key
       config.apiKey = ''
       break
-    case 'openai-compat':
     case 'llama-server':
+      // Optional — only set on llama-server via --api-key
       config.apiKey = (providerConfig.api_key as string | undefined) ?? ''
       break
     default:
@@ -111,7 +111,6 @@ function buildProviderArgs(
         keepAlive: providerConfig.keep_alive,
         ...contextFields,
       }
-    case 'openai-compat':
     case 'llama-server':
       return {
         baseUrl: providerConfig.base_url,
@@ -122,9 +121,15 @@ function buildProviderArgs(
         topP: providerConfig.top_p,
         topK: providerConfig.top_k,
         minP: providerConfig.min_p,
+        typicalP: providerConfig.typical_p,
         repeatPenalty: providerConfig.repeat_penalty,
+        repeatLastN: providerConfig.repeat_last_n,
         presencePenalty: providerConfig.presence_penalty,
         frequencyPenalty: providerConfig.frequency_penalty,
+        mirostat: providerConfig.mirostat,
+        mirostatTau: providerConfig.mirostat_tau,
+        mirostatEta: providerConfig.mirostat_eta,
+        seed: providerConfig.seed,
         id,
         name: (providerConfig.name as string | undefined) ?? id,
         ...contextFields,
@@ -146,11 +151,7 @@ export async function registerProviders(
 ): Promise<void> {
   for (const [id, providerConfig] of Object.entries(config.providers)) {
     try {
-      // Resolve the provider name for discovery lookup
-      // "openai-compat" and "llama-server" both map to the openai-compat plugin
-      const lookupName = id === 'llama-server' ? 'openai-compat' : id
-
-      const discovered = registry.get('provider', lookupName)
+      const discovered = registry.get('provider', id)
       if (!discovered) {
         log.warn(`Unknown provider: ${id} (not found in plugin registry, skipped)`)
         continue

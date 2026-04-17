@@ -10,7 +10,7 @@ export interface WizardAgent {
   model: string
   thinking: string
   apiKey?: string // Stored in .env, not config
-  baseUrl?: string // For ollama/openai-compat
+  baseUrl?: string // For ollama/llama-server
 }
 
 export interface WizardChannel {

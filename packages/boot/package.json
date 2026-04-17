@@ -20,7 +20,7 @@
     "@rivetos/provider-google": "*",
     "@rivetos/provider-xai": "*",
     "@rivetos/provider-ollama": "*",
-    "@rivetos/provider-openai-compat": "*",
+    "@rivetos/provider-llama-server": "*",
     "@rivetos/channel-telegram": "*",
     "@rivetos/channel-discord": "*",
     "@rivetos/channel-voice-discord": "*",
