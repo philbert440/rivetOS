@@ -41,7 +41,7 @@ const ROOT_MAX_TOKENS = parseInt(process.env.COMPACT_ROOT_TOKENS ?? '8192', 10)
 const LLM_TEMPERATURE = parseFloat(process.env.COMPACT_TEMPERATURE ?? '0.3')
 
 // Batch sizes
-const LEAF_BATCH_SIZE = parseInt(process.env.COMPACT_LEAF_BATCH ?? '25', 10)
+const LEAF_BATCH_SIZE = parseInt(process.env.COMPACT_LEAF_BATCH ?? '10', 10)
 const MIN_BATCH_SIZE = 5
 const MIN_UNSUMMARIZED = parseInt(process.env.COMPACT_MIN_UNSUMMARIZED ?? '10', 10)
 const MIN_LEAFS_FOR_BRANCH = parseInt(process.env.COMPACT_MIN_LEAFS ?? '5', 10)
@@ -98,6 +98,11 @@ const metrics = {
   llmCalls: 0,
   llmFailures: 0,
 }
+
+// Circuit breaker — skip conversations that repeatedly fail LLM summarization
+const CIRCUIT_BREAKER_THRESHOLD = 3
+const CIRCUIT_BREAKER_RESET_MS = 3_600_000 // 1 hour
+const circuitBreaker = new Map() // conversationId → { failures, lastFailAt }
 
 // ---------------------------------------------------------------------------
 // Pool
@@ -321,7 +326,14 @@ async function compactLeafConversation(conversationId) {
 
   const summaryText = await callLlm(LEAF_SYSTEM_PROMPT, formatted, LEAF_MAX_TOKENS)
   if (!summaryText) {
-    console.error(`[CompactWorker] Empty leaf summary for ${conversationId}`)
+    const entry = circuitBreaker.get(conversationId) ?? { failures: 0, lastFailAt: 0 }
+    entry.failures++
+    entry.lastFailAt = Date.now()
+    circuitBreaker.set(conversationId, entry)
+    console.error(
+      `[CompactWorker] Empty leaf summary for ${conversationId.slice(0, 8)}… ` +
+        `(failure ${entry.failures}/${CIRCUIT_BREAKER_THRESHOLD})`,
+    )
     return 0
   }
 
@@ -521,6 +533,21 @@ async function compactRootConversation(conversationId) {
 // ---------------------------------------------------------------------------
 
 async function compactConversation(conversationId) {
+  // Circuit breaker: skip conversations that repeatedly fail
+  const cb = circuitBreaker.get(conversationId)
+  if (cb && cb.failures >= CIRCUIT_BREAKER_THRESHOLD) {
+    if (Date.now() - cb.lastFailAt < CIRCUIT_BREAKER_RESET_MS) {
+      console.log(
+        `[CompactWorker] Circuit breaker: skipping ${conversationId.slice(0, 8)}… ` +
+          `(${cb.failures} consecutive failures, will retry after reset)`,
+      )
+      return 0
+    }
+    // Reset window expired — give it another chance
+    circuitBreaker.delete(conversationId)
+    console.log(`[CompactWorker] Circuit breaker reset for ${conversationId.slice(0, 8)}…`)
+  }
+
   let totalCreated = 0
 
   // Leaf compaction: keep creating leaves until we run out of unsummarized messages
@@ -531,6 +558,11 @@ async function compactConversation(conversationId) {
     if (created === 0) break
     totalCreated += created
     leafRound++
+  }
+
+  // Clear circuit breaker on success
+  if (totalCreated > 0) {
+    circuitBreaker.delete(conversationId)
   }
 
   // Branch compaction: roll up leaves

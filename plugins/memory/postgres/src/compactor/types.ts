@@ -69,7 +69,7 @@ export interface CompactorConfig {
   intervalMs?: number
   /** Minimum unsummarized messages to trigger leaf compaction (default: 50) */
   minUnsummarized?: number
-  /** Messages per leaf compaction batch (default: 25) */
+  /** Messages per leaf compaction batch (default: 10) */
   batchSize?: number
   /** Minimum unparented leaves to trigger branch compaction (default: 5) */
   minLeafsForBranch?: number
