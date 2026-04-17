@@ -26,7 +26,7 @@ import type {
   LLMResponse,
   ThinkingLevel,
 } from '@rivetos/types'
-import { ProviderError } from '@rivetos/types'
+import { ProviderError, MODEL_DEFAULTS } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -181,7 +181,7 @@ export class OllamaProvider implements Provider {
 
   constructor(config: OllamaProviderConfig = {}) {
     this.baseUrl = config.baseUrl ?? 'http://localhost:11434'
-    this.model = config.model ?? 'llama3.1'
+    this.model = config.model ?? MODEL_DEFAULTS.ollama
     this.numCtx = config.numCtx ?? 0
     this.temperature = config.temperature ?? 0.7
     this.topP = config.topP ?? 0.9

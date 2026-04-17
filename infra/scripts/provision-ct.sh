@@ -159,12 +159,12 @@ if [[ "$PROVIDER_NAME" == "llama-server" || "$PROVIDER_NAME" == "openai-compat" 
     fi
 fi
 
-# Auto-set default model per provider if not specified
+# Default models — keep in sync with packages/types/src/defaults.ts
 if [[ -z "$DEFAULT_MODEL" ]]; then
     case "$PROVIDER_NAME" in
-        anthropic)      DEFAULT_MODEL="claude-opus-4-6";;
-        xai)            DEFAULT_MODEL="grok-4.20-0309-reasoning";;
-        google)         DEFAULT_MODEL="gemini-3-flash-preview";;
+        anthropic)      DEFAULT_MODEL="claude-opus-4-7";;
+        xai)            DEFAULT_MODEL="grok-4.20-reasoning";;
+        google)         DEFAULT_MODEL="gemini-2.5-pro";;
         llama-server)   DEFAULT_MODEL="default";;
         openai-compat)  DEFAULT_MODEL="default";;
         *)              DEFAULT_MODEL="default";;

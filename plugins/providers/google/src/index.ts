@@ -18,7 +18,7 @@ import type {
   LLMResponse,
   ThinkingLevel,
 } from '@rivetos/types'
-import { ProviderError } from '@rivetos/types'
+import { ProviderError, MODEL_DEFAULTS } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -239,7 +239,7 @@ export class GoogleProvider implements Provider {
 
   constructor(config: GoogleProviderConfig) {
     this.apiKey = config.apiKey
-    this.model = config.model ?? 'gemini-2.5-pro'
+    this.model = config.model ?? MODEL_DEFAULTS.google
     this.maxTokens = config.maxTokens ?? 8192
     this.baseUrl = config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta'
     this.contextWindowSize = config.contextWindow ?? 0

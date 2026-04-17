@@ -28,7 +28,7 @@ import type {
   LLMChunk,
   LLMResponse,
 } from '@rivetos/types'
-import { ProviderError } from '@rivetos/types'
+import { ProviderError, MODEL_DEFAULTS } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -275,7 +275,7 @@ export class OpenAICompatProvider implements Provider {
     this.name = config.name ?? 'OpenAI Compatible'
     this.baseUrl = config.baseUrl
     this.apiKey = config.apiKey ?? ''
-    this.model = config.model ?? 'default'
+    this.model = config.model ?? MODEL_DEFAULTS['openai-compat']
     this.maxTokens = config.maxTokens ?? 4096
     this.temperature = config.temperature ?? 0.6
     this.topP = config.topP ?? 0.9
