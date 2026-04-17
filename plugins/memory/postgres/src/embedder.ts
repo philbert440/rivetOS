@@ -226,7 +226,7 @@ export class BackgroundEmbedder {
       `SELECT id, content FROM ${table}
        WHERE embedding IS NULL
          AND content IS NOT NULL
-         AND LENGTH(content) > 20
+         AND LENGTH(content) > 0
          AND COALESCE(embed_failures, 0) < $1
        ORDER BY created_at DESC
        LIMIT $2`,
@@ -398,7 +398,7 @@ export class BackgroundEmbedder {
         SELECT
           (SELECT COUNT(*) FROM ros_messages
            WHERE embedding IS NULL AND content IS NOT NULL
-             AND LENGTH(content) > 20 AND COALESCE(embed_failures, 0) < ${String(this.maxFailures)}) AS msg_queue,
+             AND LENGTH(content) > 0 AND COALESCE(embed_failures, 0) < ${String(this.maxFailures)}) AS msg_queue,
           (SELECT COUNT(*) FROM ros_summaries
            WHERE embedding IS NULL AND content IS NOT NULL
              AND COALESCE(embed_failures, 0) < ${String(this.maxFailures)}) AS sum_queue
