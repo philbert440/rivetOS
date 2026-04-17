@@ -97,6 +97,74 @@ export async function ensureEmbedderSchema(pool: pg.Pool): Promise<void> {
 // Transient error detection
 // ---------------------------------------------------------------------------
 
+/**
+ * Split text into approximately equal-sized chunks no larger than maxChars.
+ * Prefers paragraph/line boundaries near the target size to keep chunks
+ * semantically coherent. Falls back to a hard character split when no
+ * boundary is close enough.
+ */
+function splitIntoChunks(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text]
+
+  const chunks: string[] = []
+  let cursor = 0
+
+  while (cursor < text.length) {
+    const remaining = text.length - cursor
+    if (remaining <= maxChars) {
+      chunks.push(text.slice(cursor))
+      break
+    }
+
+    // Search window: last 15% of the chunk. Look for a good break point
+    // (paragraph break > line break > sentence end) working backward.
+    const windowStart = cursor + Math.floor(maxChars * 0.85)
+    const hardEnd = cursor + maxChars
+
+    const candidates = [
+      text.lastIndexOf('\n\n', hardEnd),
+      text.lastIndexOf('\n', hardEnd),
+      text.lastIndexOf('. ', hardEnd),
+    ]
+
+    let breakAt = -1
+    for (const c of candidates) {
+      if (c >= windowStart && c < hardEnd) {
+        breakAt = c
+        break
+      }
+    }
+
+    const end = breakAt === -1 ? hardEnd : breakAt
+    chunks.push(text.slice(cursor, end))
+    cursor = end
+  }
+
+  return chunks
+}
+
+/**
+ * Mean-pool a batch of embedding vectors into a single vector.
+ * Returns null if no vectors succeeded. Nulls in the input are skipped,
+ * so a partial batch failure still produces a usable pooled vector.
+ */
+function meanPool(vectors: (number[] | null)[]): number[] | null {
+  const valid = vectors.filter((v): v is number[] => v !== null)
+  if (valid.length === 0) return null
+
+  const dim = valid[0].length
+  const sum = new Array<number>(dim).fill(0)
+
+  for (const vec of valid) {
+    if (vec.length !== dim) continue // defensive: skip mis-sized
+    for (let i = 0; i < dim; i++) sum[i] += vec[i]
+  }
+
+  const n = valid.length
+  for (let i = 0; i < dim; i++) sum[i] /= n
+  return sum
+}
+
 function isTransientError(error: unknown, status?: number): boolean {
   if (status !== undefined && status >= 500) return true
   if (error instanceof TypeError) return true // network errors
@@ -108,6 +176,18 @@ function isTransientError(error: unknown, status?: number): boolean {
 // ---------------------------------------------------------------------------
 // Embedder
 // ---------------------------------------------------------------------------
+
+/**
+ * Maximum characters per embedding API call.
+ *
+ * Nemotron has an 8K token context window. 20000 chars is ~5-6K tokens for
+ * typical text — a conservative ceiling that leaves headroom for tokenizer
+ * variance (code, non-latin scripts, long-word content).
+ *
+ * Content longer than this is split into chunks, embedded separately, and
+ * mean-pooled into a single vector before storage.
+ */
+const CHARS_PER_CHUNK = 20_000
 
 export class BackgroundEmbedder {
   private pool: pg.Pool
@@ -235,52 +315,97 @@ export class BackgroundEmbedder {
 
     if (result.rows.length === 0) return 0
 
+    // Partition by size: rows that fit in a single API call vs rows that need
+    // chunk + mean-pool. Keeps the fast path fast for the common case.
+    const normalRows: EmbeddableRow[] = []
+    const oversizedRows: EmbeddableRow[] = []
+    for (const row of result.rows) {
+      if (row.content.length <= CHARS_PER_CHUNK) {
+        normalRows.push(row)
+      } else {
+        oversizedRows.push(row)
+      }
+    }
+
     let embedded = 0
 
-    // Process in API-sized batches
-    for (let i = 0; i < result.rows.length; i += this.apiBatchSize) {
-      const chunk = result.rows.slice(i, i + this.apiBatchSize)
-      const texts = chunk.map((row) =>
-        row.content.length > 8000 ? row.content.slice(0, 8000) : row.content,
-      )
+    // Normal path: batch API calls, one vector per row.
+    for (let i = 0; i < normalRows.length; i += this.apiBatchSize) {
+      const chunk = normalRows.slice(i, i + this.apiBatchSize)
+      const texts = chunk.map((row) => row.content)
 
-      const apiStart = Date.now()
-      const vectors = await this.embedBatch(texts)
-      const apiDuration = Date.now() - apiStart
+      const vectors = await this.timedEmbed(texts)
 
-      // Track latency
-      this.latencySum += apiDuration
-      this.latencyCount++
-      this.metrics.avgLatencyMs = Math.round(this.latencySum / this.latencyCount)
-      this.metrics.totalApiCalls++
-
-      // Process results
       for (let j = 0; j < chunk.length; j++) {
         const row = chunk[j]
         const vec = vectors[j]
+        if (await this.storeVector(table, row.id, vec)) embedded++
+      }
+    }
 
-        if (vec) {
-          try {
-            await this.pool.query(`UPDATE ${table} SET embedding = $1 WHERE id = $2`, [
-              `[${vec.join(',')}]`,
-              row.id,
-            ])
-            embedded++
-            this.metrics.totalEmbedded++
-          } catch (error: unknown) {
-            const msg = error instanceof Error ? error.message : String(error)
-            console.error(`[Embedder] Failed to store ${table} ${row.id}: ${msg}`)
-            this.metrics.totalFailed++
-          }
-        } else {
-          // Embedding failed for this row — increment failure count
-          await this.markFailure(table, row.id, 'Embedding returned null after retries')
-          this.metrics.totalFailed++
-        }
+    // Oversized path: split each row into chunks, embed them, mean-pool,
+    // and store one vector per row. Each oversized row is handled in its
+    // own API call (kept simple; oversized rows are rare).
+    for (const row of oversizedRows) {
+      const chunks = splitIntoChunks(row.content, CHARS_PER_CHUNK)
+      const vectors = await this.timedEmbed(chunks)
+
+      const pooled = meanPool(vectors)
+      if (await this.storeVector(table, row.id, pooled)) {
+        embedded++
+        console.log(
+          `[Embedder] Mean-pooled ${String(chunks.length)} chunks for ${table} ${row.id} ` +
+            `(${String(row.content.length)} chars)`,
+        )
       }
     }
 
     return embedded
+  }
+
+  /**
+   * Call embedBatch and update latency metrics. Thin wrapper.
+   */
+  private async timedEmbed(texts: string[]): Promise<(number[] | null)[]> {
+    const start = Date.now()
+    const vectors = await this.embedBatch(texts)
+    const duration = Date.now() - start
+
+    this.latencySum += duration
+    this.latencyCount++
+    this.metrics.avgLatencyMs = Math.round(this.latencySum / this.latencyCount)
+    this.metrics.totalApiCalls++
+
+    return vectors
+  }
+
+  /**
+   * Persist a vector (or mark the row as failed if vec is null).
+   * Returns true on successful store, false on any failure path.
+   */
+  private async storeVector(
+    table: string,
+    id: string,
+    vec: number[] | null,
+  ): Promise<boolean> {
+    if (!vec) {
+      await this.markFailure(table, id, 'Embedding returned null after retries')
+      this.metrics.totalFailed++
+      return false
+    }
+    try {
+      await this.pool.query(`UPDATE ${table} SET embedding = $1 WHERE id = $2`, [
+        `[${vec.join(',')}]`,
+        id,
+      ])
+      this.metrics.totalEmbedded++
+      return true
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error(`[Embedder] Failed to store ${table} ${id}: ${msg}`)
+      this.metrics.totalFailed++
+      return false
+    }
   }
 
   // -----------------------------------------------------------------------
