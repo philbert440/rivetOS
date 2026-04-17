@@ -19,7 +19,7 @@ import type {
   LLMResponse,
   ThinkingLevel,
 } from '@rivetos/types'
-import { ProviderError, MODEL_DEFAULTS } from '@rivetos/types'
+import { ProviderError } from '@rivetos/types'
 import { TokenManager, detectAuthMode } from './oauth.js'
 
 // ---------------------------------------------------------------------------
@@ -49,6 +49,10 @@ const THINKING_BUDGETS: Record<ThinkingLevel, number | null> = {
   high: 50000,
   xhigh: 50000, // xhigh is xAI multi-agent specific — treat as high for other providers
 }
+
+// For Claude 4 family (Opus/Sonnet 4), we use the new adaptive thinking API with output_config.effort.
+// Older models continue to use the legacy { type: 'enabled', budget_tokens } format.
+// See Anthropic's Claude 4 Thinking API announcement for details.
 
 // ---------------------------------------------------------------------------
 // API types
@@ -84,7 +88,10 @@ interface AnthropicRequestBody {
   stream: boolean
   system?: AnthropicContentBlock[] | string
   tools?: AnthropicTool[]
-  thinking?: { type: 'enabled'; budget_tokens: number }
+  thinking?: { type: 'enabled'; budget_tokens: number } | { type: 'adaptive' }
+  output_config?: {
+    effort: 'low' | 'medium' | 'high'
+  }
 }
 
 /** SSE event from Anthropic's streaming API */
@@ -283,6 +290,19 @@ function isAnthropicEvent(value: unknown): value is AnthropicSSEEvent {
   return typeof value === 'object' && value !== null
 }
 
+/** Detect Claude 4 family models that require the new adaptive thinking format */
+function isClaude4Model(model: string): boolean {
+  const lower = model.toLowerCase()
+  return (
+    lower.includes('-4-') ||
+    lower.includes('claude-4') ||
+    lower.includes('opus-4') ||
+    lower.includes('sonnet-4') ||
+    lower.includes('claude-opus-4') ||
+    lower.includes('claude-sonnet-4')
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
@@ -302,7 +322,7 @@ export class AnthropicProvider implements Provider {
 
   constructor(config: AnthropicProviderConfig) {
     this.apiKey = config.apiKey
-    this.model = config.model ?? MODEL_DEFAULTS.anthropic
+    this.model = config.model ?? 'claude-opus-4-6'
     this.maxTokens = config.maxTokens ?? 8192
     this.baseUrl = config.baseUrl ?? 'https://api.anthropic.com'
     this.authMode = detectAuthMode(config.apiKey)
@@ -355,7 +375,6 @@ export class AnthropicProvider implements Provider {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${key}`,
         'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20',
         'anthropic-dangerous-direct-browser-access': 'true',
         'user-agent': 'claude-cli/1.0.17',
         'x-app': 'cli',
@@ -407,9 +426,33 @@ export class AnthropicProvider implements Provider {
     const thinking = options?.thinking ?? 'off'
     const budget = THINKING_BUDGETS[thinking]
     if (budget !== null) {
-      // max_tokens must be > budget_tokens — always ensure full response space
-      body.max_tokens = budget + this.maxTokens
-      body.thinking = { type: 'enabled', budget_tokens: budget }
+      const model = options?.modelOverride ?? this.model
+      const isClaude4 = isClaude4Model(model)
+
+      if (isClaude4) {
+        // Claude 4 family uses the new adaptive thinking API (Claude 4 / Opus 4.7)
+        // Error "thinking.type.enabled is not supported" is resolved by using 'adaptive' + output_config.effort
+        const effortMap: Record<ThinkingLevel, 'low' | 'medium' | 'high'> = {
+          low: 'low',
+          medium: 'medium',
+          high: 'high',
+          xhigh: 'high',
+          off: 'medium', // fallback, should not reach here
+        }
+        const effort = effortMap[thinking]
+
+        body.thinking = { type: 'adaptive' }
+        body.output_config = { effort }
+
+        // For adaptive thinking, max_tokens should still be generous. Claude 4 models support very high limits.
+        // We keep the original buffer for safety.
+        body.max_tokens = Math.max(8192, budget + this.maxTokens)
+      } else {
+        // Legacy behavior for Claude 3 / older models
+        // max_tokens must be > budget_tokens — always ensure full response space
+        body.max_tokens = budget + this.maxTokens
+        body.thinking = { type: 'enabled', budget_tokens: budget }
+      }
     }
 
     const response = await fetch(`${this.baseUrl}/v1/messages`, {
