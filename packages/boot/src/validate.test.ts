@@ -6,6 +6,7 @@
 import { describe, it } from 'vitest';
 import * as assert from 'node:assert/strict';
 import { validateConfig, formatValidationResult, type ValidationResult } from './validate/index.js';
+import { MODEL_DEFAULTS } from '@rivetos/types';
 // Migrated from /src/validate.test.ts → packages/boot/src/validate.test.ts
 
 /** Minimal valid config for baseline tests */
@@ -23,7 +24,7 @@ function validConfig(): Record<string, unknown> {
     },
     providers: {
       anthropic: {
-        model: 'claude-opus-4-6',
+        model: MODEL_DEFAULTS.anthropic,
         max_tokens: 8192,
       },
     },
@@ -559,7 +560,7 @@ describe('Config Validation', () => {
           grok: { provider: 'xai' },
         },
         providers: {
-          anthropic: { model: 'claude-opus-4-6', max_tokens: 8192 },
+          anthropic: { model: MODEL_DEFAULTS.anthropic, max_tokens: 8192 },
           xai: { model: 'grok-4-1-fast-reasoning', max_tokens: 8192 },
         },
         channels: {
@@ -610,7 +611,7 @@ describe('Config Validation', () => {
           local: { provider: 'llama-server', default_thinking: 'off' },
         },
         providers: {
-          anthropic: { model: 'claude-opus-4-6', max_tokens: 8192 },
+          anthropic: { model: MODEL_DEFAULTS.anthropic, max_tokens: 8192 },
           xai: { model: 'grok-4-1-fast-reasoning', max_tokens: 8192 },
           google: { model: 'gemini-2.5-pro', max_tokens: 8192 },
           'llama-server': { base_url: 'http://192.168.1.50:8000/v1', model: 'rivet-v0.1', temperature: 0.4 },
