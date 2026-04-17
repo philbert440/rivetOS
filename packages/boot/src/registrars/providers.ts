@@ -22,36 +22,21 @@ interface ResolvedProviderConfig {
   [key: string]: unknown
 }
 
-async function resolveProviderConfig(
+function resolveProviderConfig(
   id: string,
   providerConfig: Record<string, unknown>,
-): Promise<ResolvedProviderConfig> {
+): ResolvedProviderConfig {
   const config = { ...providerConfig } as ResolvedProviderConfig
 
-  // Resolve API key from config → env var → OAuth (Anthropic-specific)
+  // Resolve API key from config → env var
   switch (id) {
-    case 'anthropic': {
+    case 'anthropic':
       config.apiKey =
         (providerConfig.api_key as string | undefined) ?? process.env.ANTHROPIC_API_KEY ?? ''
       if (!config.apiKey) {
-        try {
-          const anthropicPkg = '@rivetos/provider-anthropic'
-          const { loadTokens } = (await import(anthropicPkg)) as {
-            loadTokens: () => Promise<{ accessToken?: string } | null>
-          }
-          const tokens = await loadTokens()
-          if (tokens?.accessToken) {
-            config.apiKey = tokens.accessToken
-          }
-        } catch {
-          /* no OAuth configured */
-        }
-      }
-      if (!config.apiKey) {
-        log.warn('No Anthropic API key or OAuth token found. Run: rivetos anthropic setup')
+        log.warn('No Anthropic API key found. Set ANTHROPIC_API_KEY or providers.anthropic.api_key')
       }
       break
-    }
     case 'google':
       config.apiKey =
         (providerConfig.api_key as string | undefined) ?? process.env.GOOGLE_API_KEY ?? ''
@@ -174,8 +159,8 @@ export async function registerProviders(
       // Dynamic import from the discovered package
       const mod = (await import(discovered.packageName)) as Record<string, unknown>
 
-      // Resolve config (API keys, env vars, OAuth)
-      const resolvedConfig = await resolveProviderConfig(id, providerConfig)
+      // Resolve config (API keys, env vars)
+      const resolvedConfig = resolveProviderConfig(id, providerConfig)
       const args = buildProviderArgs(id, resolvedConfig, providerConfig)
 
       // Find the provider class — convention: {Name}Provider export

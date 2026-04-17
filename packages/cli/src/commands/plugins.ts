@@ -62,10 +62,10 @@ async function getInstalledPlugins(): Promise<Map<string, Set<string>>> {
 /**
  * Check if the env var or config value for a provider key is set.
  */
-async function checkProviderAuth(
+function checkProviderAuth(
   name: string,
   config: Record<string, unknown>,
-): Promise<{ ok: boolean; detail: string }> {
+): { ok: boolean; detail: string } {
   // Check for API key in config
   if (config.api_key) return { ok: true, detail: 'api_key in config' }
 
@@ -82,18 +82,6 @@ async function checkProviderAuth(
   const envVar = envVarMap[name]
   if (envVar === '') return { ok: true, detail: 'no key required' }
   if (envVar && process.env[envVar]) return { ok: true, detail: `${envVar} set` }
-
-  // Special case: Anthropic OAuth tokens
-  if (name === 'anthropic') {
-    try {
-      const { accessSync } = await import('node:fs')
-      const tokenPath = resolve(process.env.HOME ?? '.', '.rivetos', 'anthropic-tokens.json')
-      accessSync(tokenPath)
-      return { ok: true, detail: 'OAuth tokens stored' }
-    } catch {
-      /* expected */
-    }
-  }
 
   return { ok: false, detail: envVar ? `${envVar} not set` : 'unknown auth' }
 }
@@ -167,7 +155,7 @@ export default async function plugins(): Promise<void> {
 
       for (const [name, provConfig] of Object.entries(providers)) {
         if (!provConfig) continue
-        const auth = await checkProviderAuth(name, provConfig)
+        const auth = checkProviderAuth(name, provConfig)
         const model = provConfig.model as string | undefined
         results.push({
           type: 'provider',

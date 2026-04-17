@@ -37,6 +37,10 @@ export interface LLMUsage {
   reasoningTokens?: number
   /** Tokens served from prompt cache */
   cachedTokens?: number
+  /** Anthropic prompt cache write tokens (additive, optional) */
+  cacheCreationTokens?: number
+  /** Anthropic prompt cache read tokens (additive, optional) */
+  cacheReadTokens?: number
 }
 
 export interface LLMResponse {

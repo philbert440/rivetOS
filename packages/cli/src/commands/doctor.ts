@@ -9,13 +9,12 @@
  *   3. Workspace — required/optional files present
  *   4. Environment — API keys, tokens, secrets
  *   5. Secrets — .env permissions, no secrets in config YAML
- *   6. OAuth — Anthropic token validity
- *   7. Containers — Docker health (if applicable)
- *   8. Memory backend — Postgres connectivity
- *   9. Shared storage — /shared/ mount writable
- *  10. Provider connectivity — API endpoint reachability
- *  11. DNS — can resolve provider hostnames
- *  12. Peer reachability — health check other agents in mesh
+ *   6. Containers — Docker health (if applicable)
+ *   7. Memory backend — Postgres connectivity
+ *   8. Shared storage — /shared/ mount writable
+ *   9. Provider connectivity — API endpoint reachability
+ *  10. DNS — can resolve provider hostnames
+ *  11. Peer reachability — health check other agents in mesh
  *
  * Usage:
  *   rivetos doctor               Run all checks
@@ -362,7 +361,7 @@ async function checkSecrets(): Promise<CheckResult[]> {
   try {
     const content = await readFile(configPath, 'utf-8')
     const secretPatterns = [
-      /sk-ant-[a-zA-Z0-9_-]+/,
+      /sk-ant-api03-[a-zA-Z0-9_-]+/,
       /sk-[a-zA-Z0-9]{48,}/,
       /xai-[a-zA-Z0-9_-]+/,
       /api_key:\s*["']?[a-zA-Z0-9_-]{20,}/,
@@ -378,67 +377,6 @@ async function checkSecrets(): Promise<CheckResult[]> {
     }
   } catch {
     // No config — skip
-  }
-
-  return results
-}
-
-// ---------------------------------------------------------------------------
-// Check: OAuth
-// ---------------------------------------------------------------------------
-
-async function checkOAuth(): Promise<CheckResult[]> {
-  const results: CheckResult[] = []
-  const tokenPath = resolve(process.env.HOME ?? '.', '.rivetos', 'anthropic-tokens.json')
-
-  try {
-    const raw = await readFile(tokenPath, 'utf-8')
-    const tokens = JSON.parse(raw) as {
-      expiresAt: number
-      refreshToken?: string
-      accessToken?: string
-    }
-    const expired = Date.now() >= tokens.expiresAt
-    const hasRefresh = !!tokens.refreshToken
-
-    if (hasRefresh) {
-      results.push(
-        check(
-          'oauth',
-          'anthropic',
-          'pass',
-          `Anthropic OAuth: ${expired ? 'access expired, will auto-refresh' : 'valid'}`,
-        ),
-      )
-    } else if (!expired) {
-      results.push(
-        check(
-          'oauth',
-          'anthropic',
-          'warn',
-          'Anthropic OAuth: access token only (no refresh — will expire)',
-        ),
-      )
-    } else {
-      results.push(
-        check(
-          'oauth',
-          'anthropic',
-          'fail',
-          'Anthropic OAuth: expired, no refresh token',
-          'Run: rivetos login anthropic',
-        ),
-      )
-    }
-  } catch {
-    results.push(
-      check(
-        'oauth',
-        'anthropic',
-        'warn',
-        'Anthropic OAuth: not configured (run: rivetos login anthropic)',
-      ),
-    )
   }
 
   return results
@@ -763,26 +701,7 @@ async function checkProviderConnectivity(
   switch (name) {
     case 'anthropic': {
       const apiKey = (config.api_key as string | undefined) ?? process.env.ANTHROPIC_API_KEY ?? ''
-      if (!apiKey) {
-        try {
-          const tokenPath = resolve(process.env.HOME ?? '.', '.rivetos', 'anthropic-tokens.json')
-          const raw = await readFile(tokenPath, 'utf-8')
-          const tokens = JSON.parse(raw) as { accessToken?: string }
-          if (tokens.accessToken) {
-            const resp = await fetch('https://api.anthropic.com/v1/models', {
-              headers: {
-                'x-api-key': tokens.accessToken,
-                'anthropic-version': '2023-06-01',
-              },
-              signal: AbortSignal.timeout(timeout),
-            })
-            return resp.ok || resp.status === 401
-          }
-        } catch {
-          /* expected */
-        }
-        return false
-      }
+      if (!apiKey) return false
       const resp = await fetch('https://api.anthropic.com/v1/models', {
         headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         signal: AbortSignal.timeout(timeout),
@@ -879,9 +798,6 @@ export default async function doctor(): Promise<void> {
 
   const secretResults = await checkSecrets()
   allResults.push(...secretResults)
-
-  const oauthResults = await checkOAuth()
-  allResults.push(...oauthResults)
 
   const containerResults = checkContainers()
   allResults.push(...containerResults)

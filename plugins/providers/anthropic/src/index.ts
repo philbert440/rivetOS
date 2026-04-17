@@ -2,10 +2,9 @@
  * @rivetos/provider-anthropic
  *
  * Anthropic Claude provider.
- * - API key mode (sk-ant-api03-): uses raw fetch
- * - OAuth mode (sk-ant-oat01-): uses raw fetch (SDK doesn't handle OAuth correctly)
- *
- * The raw fetch approach matches the exact curl command proven to work.
+ * - API key only (OAuth/subscription auth removed)
+ * - Raw fetch for full control over headers, thinking, and prompt caching.
+ * - Claude 4 adaptive thinking support (April 2026 spec).
  */
 
 import type {
@@ -20,7 +19,6 @@ import type {
   ThinkingLevel,
 } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
-import { TokenManager, detectAuthMode } from './oauth.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -28,10 +26,9 @@ import { TokenManager, detectAuthMode } from './oauth.js'
 
 export interface AnthropicProviderConfig {
   apiKey: string
-  model?: string
+  model: string
   maxTokens?: number
   baseUrl?: string
-  tokenPath?: string
   /** Context window size in tokens (0 = unknown) */
   contextWindow?: number
   /** Max output tokens (0 = unknown) */
@@ -39,7 +36,7 @@ export interface AnthropicProviderConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Thinking budgets
+// Thinking budgets (legacy Claude 3.x only)
 // ---------------------------------------------------------------------------
 
 const THINKING_BUDGETS: Record<ThinkingLevel, number | null> = {
@@ -90,7 +87,7 @@ interface AnthropicRequestBody {
   tools?: AnthropicTool[]
   thinking?: { type: 'enabled'; budget_tokens: number } | { type: 'adaptive' }
   output_config?: {
-    effort: 'low' | 'medium' | 'high'
+    effort: 'low' | 'medium' | 'high' | 'xhigh'
   }
 }
 
@@ -98,7 +95,12 @@ interface AnthropicRequestBody {
 interface AnthropicSSEEvent {
   type?: string
   message?: {
-    usage?: { input_tokens?: number; output_tokens?: number }
+    usage?: {
+      input_tokens?: number
+      output_tokens?: number
+      cache_creation_input_tokens?: number
+      cache_read_input_tokens?: number
+    }
   }
   content_block?: {
     type?: string
@@ -111,7 +113,11 @@ interface AnthropicSSEEvent {
     thinking?: string
     partial_json?: string
   }
-  usage?: { output_tokens?: number }
+  usage?: {
+    output_tokens?: number
+    cache_creation_input_tokens?: number
+    cache_read_input_tokens?: number
+  }
   error?: { message?: string; type?: string }
 }
 
@@ -292,15 +298,7 @@ function isAnthropicEvent(value: unknown): value is AnthropicSSEEvent {
 
 /** Detect Claude 4 family models that require the new adaptive thinking format */
 function isClaude4Model(model: string): boolean {
-  const lower = model.toLowerCase()
-  return (
-    lower.includes('-4-') ||
-    lower.includes('claude-4') ||
-    lower.includes('opus-4') ||
-    lower.includes('sonnet-4') ||
-    lower.includes('claude-opus-4') ||
-    lower.includes('claude-sonnet-4')
-  )
+  return /^claude-(opus|sonnet|haiku)-4(-\d+)?/i.test(model)
 }
 
 // ---------------------------------------------------------------------------
@@ -314,25 +312,26 @@ export class AnthropicProvider implements Provider {
   private model: string
   private maxTokens: number
   private baseUrl: string
-  private authMode: 'api_key' | 'oauth'
-  private tokenManager: TokenManager | null = null
   private initialized = false
   private contextWindow: number
   private outputTokenLimit: number
 
   constructor(config: AnthropicProviderConfig) {
+    if (!config.model) {
+      throw new ProviderError(
+        'Model is required. Set config.model to a Claude model name (e.g. "claude-opus-4-7")',
+        400,
+        'anthropic',
+        false,
+      )
+    }
+
     this.apiKey = config.apiKey
-    this.model = config.model ?? 'claude-opus-4-6'
+    this.model = config.model
     this.maxTokens = config.maxTokens ?? 8192
     this.baseUrl = config.baseUrl ?? 'https://api.anthropic.com'
-    this.authMode = detectAuthMode(config.apiKey)
     this.contextWindow = config.contextWindow ?? 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
-
-    if (this.authMode === 'oauth') {
-      this.tokenManager = new TokenManager(config.tokenPath)
-      this.name = 'Anthropic Claude (OAuth)'
-    }
   }
 
   getModel(): string {
@@ -351,50 +350,21 @@ export class AnthropicProvider implements Provider {
     return this.outputTokenLimit
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (this.initialized) return
-    if (this.tokenManager) {
-      await this.tokenManager.initialize(this.apiKey)
-    }
-    this.initialized = true
-  }
-
-  private async getKey(): Promise<string> {
-    await this.ensureInitialized()
-    if (this.tokenManager) {
-      return this.tokenManager.getAccessToken()
-    }
-    return this.apiKey
-  }
-
-  private async buildHeaders(): Promise<Record<string, string>> {
-    const key = await this.getKey()
-
-    if (this.authMode === 'oauth') {
-      return {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-        'user-agent': 'claude-cli/1.0.17',
-        'x-app': 'cli',
-      }
-    }
-
+  private buildHeaders(): Record<string, string> {
     return {
       'Content-Type': 'application/json',
-      'x-api-key': key,
+      'x-api-key': this.apiKey,
       'anthropic-version': '2023-06-01',
     }
   }
 
   // -----------------------------------------------------------------------
-  // chatStream — raw fetch with SSE parsing (works for both auth modes)
+  // chatStream — raw fetch with SSE parsing
   // -----------------------------------------------------------------------
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     const { system, converted } = convertMessages(messages)
-    const headers = await this.buildHeaders()
+    const headers = this.buildHeaders()
     const model = options?.modelOverride ?? this.model
 
     const body: AnthropicRequestBody = {
@@ -405,17 +375,7 @@ export class AnthropicProvider implements Provider {
     }
 
     // System prompt — with ephemeral caching for token savings (~90% cheaper on cache hits)
-    if (this.authMode === 'oauth') {
-      const blocks: AnthropicContentBlock[] = [
-        {
-          type: 'text',
-          text: "You are Claude Code, Anthropic's official CLI for Claude.",
-          cache_control: { type: 'ephemeral' },
-        },
-      ]
-      if (system) blocks.push({ type: 'text', text: system, cache_control: { type: 'ephemeral' } })
-      body.system = blocks
-    } else if (system) {
+    if (system) {
       body.system = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
     }
 
@@ -426,27 +386,26 @@ export class AnthropicProvider implements Provider {
     const thinking = options?.thinking ?? 'off'
     const budget = THINKING_BUDGETS[thinking]
     if (budget !== null) {
-      const model = options?.modelOverride ?? this.model
       const isClaude4 = isClaude4Model(model)
 
       if (isClaude4) {
         // Claude 4 family uses the new adaptive thinking API (Claude 4 / Opus 4.7)
-        // Error "thinking.type.enabled is not supported" is resolved by using 'adaptive' + output_config.effort
-        const effortMap: Record<ThinkingLevel, 'low' | 'medium' | 'high'> = {
+        // No budget_tokens — server-managed. Use output_config.effort instead.
+        // Do not send max_tokens math based on budget for Claude 4.
+        const effortMap: Record<ThinkingLevel, 'low' | 'medium' | 'high' | 'xhigh'> = {
           low: 'low',
           medium: 'medium',
           high: 'high',
-          xhigh: 'high',
-          off: 'medium', // fallback, should not reach here
+          xhigh: 'xhigh',
+          off: 'medium', // should not reach here
         }
         const effort = effortMap[thinking]
 
         body.thinking = { type: 'adaptive' }
         body.output_config = { effort }
 
-        // For adaptive thinking, max_tokens should still be generous. Claude 4 models support very high limits.
-        // We keep the original buffer for safety.
-        body.max_tokens = Math.max(8192, budget + this.maxTokens)
+        // For adaptive thinking on Claude 4, just use configured max_tokens directly.
+        body.max_tokens = this.maxTokens
       } else {
         // Legacy behavior for Claude 3 / older models
         // max_tokens must be > budget_tokens — always ensure full response space
@@ -481,7 +440,12 @@ export class AnthropicProvider implements Provider {
     let buffer = ''
     let toolCallIndex = 0
     let currentBlockType = ''
-    const usage = { promptTokens: 0, completionTokens: 0 }
+    const usage: {
+      promptTokens: number
+      completionTokens: number
+      cacheCreationTokens?: number
+      cacheReadTokens?: number
+    } = { promptTokens: 0, completionTokens: 0 }
 
     try {
       for (;;) {
@@ -522,6 +486,12 @@ export class AnthropicProvider implements Provider {
             case 'message_start':
               if (parsed.message?.usage) {
                 usage.promptTokens = parsed.message.usage.input_tokens ?? 0
+                if (parsed.message.usage.cache_creation_input_tokens !== undefined) {
+                  usage.cacheCreationTokens = parsed.message.usage.cache_creation_input_tokens
+                }
+                if (parsed.message.usage.cache_read_input_tokens !== undefined) {
+                  usage.cacheReadTokens = parsed.message.usage.cache_read_input_tokens
+                }
               }
               break
 
@@ -566,6 +536,12 @@ export class AnthropicProvider implements Provider {
             case 'message_delta':
               if (parsed.usage) {
                 usage.completionTokens = parsed.usage.output_tokens ?? 0
+                if (parsed.usage.cache_creation_input_tokens !== undefined) {
+                  usage.cacheCreationTokens = parsed.usage.cache_creation_input_tokens
+                }
+                if (parsed.usage.cache_read_input_tokens !== undefined) {
+                  usage.cacheReadTokens = parsed.usage.cache_read_input_tokens
+                }
               }
               break
 
@@ -664,20 +640,13 @@ export class AnthropicProvider implements Provider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const headers = await this.buildHeaders()
+      const headers = this.buildHeaders()
       const body: AnthropicRequestBody = {
         model: this.model,
-        max_tokens: 1,
+        max_tokens: 16,
         messages: [{ role: 'user', content: 'ping' }],
         stream: false,
-      }
-      if (this.authMode === 'oauth') {
-        body.system = [
-          {
-            type: 'text',
-            text: "You are Claude Code, Anthropic's official CLI for Claude.",
-          },
-        ]
+        // Explicitly omit thinking to avoid 400 on reasoning models for ping
       }
       const res = await fetch(`${this.baseUrl}/v1/messages`, {
         method: 'POST',
@@ -690,7 +659,3 @@ export class AnthropicProvider implements Provider {
     }
   }
 }
-
-// OAuth utilities
-export { loadTokens, saveTokens, detectAuthMode, generateAuthUrl, exchangeCode } from './oauth.js'
-export type { OAuthTokens, AuthMode } from './oauth.js'
