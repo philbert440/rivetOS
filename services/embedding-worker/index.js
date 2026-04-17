@@ -203,7 +203,7 @@ async function processBatch(queueRows) {
       `SELECT id, content FROM ${table}
        WHERE id = ANY($1::uuid[])
          AND content IS NOT NULL
-         AND LENGTH(content) > 20`,
+         AND LENGTH(content) > 0`,
       [targetIds],
     )
 
