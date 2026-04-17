@@ -19,7 +19,7 @@ import type {
   LLMResponse,
   ThinkingLevel,
 } from '@rivetos/types'
-import { ProviderError } from '@rivetos/types'
+import { ProviderError, MODEL_DEFAULTS } from '@rivetos/types'
 import { TokenManager, detectAuthMode } from './oauth.js'
 
 // ---------------------------------------------------------------------------
@@ -302,7 +302,7 @@ export class AnthropicProvider implements Provider {
 
   constructor(config: AnthropicProviderConfig) {
     this.apiKey = config.apiKey
-    this.model = config.model ?? 'claude-opus-4-6'
+    this.model = config.model ?? MODEL_DEFAULTS.anthropic
     this.maxTokens = config.maxTokens ?? 8192
     this.baseUrl = config.baseUrl ?? 'https://api.anthropic.com'
     this.authMode = detectAuthMode(config.apiKey)

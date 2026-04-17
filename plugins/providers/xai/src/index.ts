@@ -31,8 +31,7 @@ import type {
   LLMUsage,
   ThinkingLevel,
 } from '@rivetos/types'
-import { ProviderError } from '@rivetos/types'
-import { hasImages } from '@rivetos/types'
+import { ProviderError, hasImages, MODEL_DEFAULTS } from '@rivetos/types'
 import { randomUUID } from 'node:crypto'
 
 // ---------------------------------------------------------------------------
@@ -415,7 +414,7 @@ export class XAIProvider implements Provider {
 
   constructor(config: XAIProviderConfig) {
     this.apiKey = config.apiKey
-    this.model = config.model ?? 'grok-4.20-reasoning'
+    this.model = config.model ?? MODEL_DEFAULTS.xai
     this.baseUrl = config.baseUrl ?? 'https://api.x.ai/v1'
     this.temperature = config.temperature
     this.store = config.store ?? true

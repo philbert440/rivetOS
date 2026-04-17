@@ -143,3 +143,5 @@ export {
   getToolResultImages,
   toolResultHasImages,
 } from './utils.js'
+export { MODEL_DEFAULTS } from './defaults.js'
+export type { ProviderName } from './defaults.js'
