@@ -181,7 +181,7 @@ Documentation, developer experience tooling, and launch readiness.
 - Core runtime with agent loop, router, workspace loader, message queue
 - Streaming-first provider interface (`AsyncIterable<StreamEvent>`)
 - Domain-driven design with clean architecture (types → domain → application → plugins)
-- **Providers:** Anthropic (with OAuth subscription auth), Google Gemini, xAI Grok, Ollama, OpenAI-compatible
+- **Providers:** Anthropic (with OAuth subscription auth), Google Gemini, xAI Grok, Ollama, llama-server
 - **Channels:** Telegram (grammY) with typing indicator, inline buttons, reactions
 - **Memory:** PostgreSQL adapter with full transcript archive, summary DAG, hybrid FTS+vector search
 - **Tools:** Shell execution with safety categorization and AbortSignal support

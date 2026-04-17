@@ -1,7 +1,7 @@
 {
-  "name": "@rivetos/provider-openai-compat",
+  "name": "@rivetos/provider-llama-server",
   "version": "0.4.0-beta.1",
-  "description": "OpenAI-compatible provider — llama-server, vLLM, LM Studio, OpenRouter, etc.",
+  "description": "llama.cpp server provider — native llama-server sampling, reasoning, and tool-use semantics",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,7 +18,7 @@
   },
   "rivetos": {
     "type": "provider",
-    "name": "openai-compat"
+    "name": "llama-server"
   },
   "exports": {
     ".": {
@@ -35,7 +35,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/philbert440/rivetOS.git",
-    "directory": "plugins/providers/openai-compat"
+    "directory": "plugins/providers/llama-server"
   },
   "publishConfig": {
     "access": "public"

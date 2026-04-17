@@ -9,7 +9,7 @@ export const MODEL_DEFAULTS = {
   xai: 'grok-4.20-reasoning',
   google: 'gemini-2.5-pro',
   ollama: 'llama3.1',
-  'openai-compat': 'default',
+  'llama-server': 'default',
 } as const
 
 export type ProviderName = keyof typeof MODEL_DEFAULTS

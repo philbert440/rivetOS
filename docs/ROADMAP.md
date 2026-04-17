@@ -294,7 +294,7 @@ Build on M5's cross-instance messaging to create a self-organizing agent network
 ├── plugins/                  # All plugins (existing)
 │   ├── channels/             # discord, telegram, agent, voice
 │   ├── memory/               # postgres
-│   ├── providers/            # anthropic, xai, google, ollama, openai-compat
+│   ├── providers/            # anthropic, xai, google, ollama, llama-server
 │   └── tools/                # file, search, shell, web, interaction, mcp, coding-pipeline
 ├── infra/containers/
 │   ├── agent/
@@ -371,7 +371,7 @@ Build on M5's cross-instance messaging to create a self-organizing agent network
 1. **The container is the product.** Security via isolation. Setup via wizard. Updates via image pull. No bare-metal assumptions.
 2. **Tiny core, fat plugins.** The kernel stays under 5,000 lines. Everything else is a plugin or skill.
 3. **Test before feature.** No new milestone starts until the previous milestone's tests are green.
-4. **Multi-model is the differentiator.** Every design decision works across Anthropic, xAI, Google, Ollama, and OpenAI-compatible providers.
+4. **Multi-model is the differentiator.** Every design decision works across Anthropic, xAI, Google, Ollama, and llama-server providers.
 5. **Phil uses it daily.** If it breaks Phil's workflow, it's a P0 bug regardless of milestone.
 6. **Boring technology.** TypeScript, Node.js, PostgreSQL, systemd, Docker, Pulumi. No experiments in the foundation.
 7. **Ship the README.** If a component doesn't have docs a stranger can follow, it's not done.

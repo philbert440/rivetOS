@@ -314,7 +314,7 @@ rivetos skills list       # Show available skills
 ## Next Steps
 
 - **[Channel Setup](/guides/channels/)** — Connect to Discord, Telegram, voice, and agent-to-agent messaging
-- **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, and OpenAI-compatible providers
+- **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, and llama-server providers
 - **[Configuration Reference](/reference/config/)** — Every config option explained
 - **[Architecture](/reference/architecture/)** — How the system works
 - **[Plugins](/guides/plugins/)** — How to write your own channel, provider, or tool

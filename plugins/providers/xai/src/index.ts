@@ -733,6 +733,7 @@ export class XAIProvider implements Provider {
 
     if (!response.ok) {
       const errBody = await response.text().catch(() => 'unknown')
+      clearTimeout(timeout)
 
       // Log response body + input shape for debugging 400 errors
       if (response.status === 400) {
@@ -753,79 +754,15 @@ export class XAIProvider implements Provider {
             `  input shape: [${inputSummary.join(', ')}], ` +
             `canContinue=${String(canContinue)}, prevResponseId=${this.lastResponseId ?? 'none'}`,
         )
-
-        // --- Continuation fallback (safety net) ---
-        // Primary defense: we skip saving lastResponseId for tool-call-only responses
-        // (see hadTextContent check in response.completed handler), preventing poisoned
-        // continuation chains from forming. This fallback catches any remaining edge
-        // cases where server-side state becomes invalid despite our prevention logic.
-        if (canContinue) {
-          console.warn(
-            `[xAI] Continuation 400 — retrying without previous_response_id (full conversation)`,
-          )
-          this.lastResponseId = null
-
-          // Rebuild with canContinue=false → sends full conversation
-          const fallback = this.buildRequestBody(
-            allMessages,
-            model,
-            storeThisRequest,
-            false,
-            options,
-          )
-
-          let fallbackResponse: Response
-          try {
-            fallbackResponse = await fetch(`${this.baseUrl}/responses`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${this.apiKey}`,
-                'x-grok-conv-id': fallback.promptCacheKey,
-              },
-              body: JSON.stringify(fallback.body),
-              signal: controller.signal,
-            })
-          } catch (retryErr: unknown) {
-            clearTimeout(timeout)
-            if (retryErr instanceof ProviderError) throw retryErr
-            const message = retryErr instanceof Error ? retryErr.message : String(retryErr)
-            throw new ProviderError(`xAI fetch failed (fallback): ${message}`, 0, 'xai', false)
-          }
-
-          if (!fallbackResponse.ok) {
-            clearTimeout(timeout)
-            const fallbackErr = await fallbackResponse.text().catch(() => 'unknown')
-            console.error(`[xAI] Fallback also failed — response: ${fallbackErr.slice(0, 1000)}`)
-            throw new ProviderError(
-              `xAI ${String(fallbackResponse.status)}: ${fallbackErr.slice(0, 500)}`,
-              fallbackResponse.status,
-              'xai',
-            )
-          }
-
-          // Fallback succeeded — use this response for streaming
-          response = fallbackResponse
-        } else {
-          clearTimeout(timeout)
-          // Invalidate continuation state on failure — next turn starts fresh
-          this.lastResponseId = null
-          throw new ProviderError(
-            `xAI ${String(response.status)}: ${errBody.slice(0, 500)}`,
-            response.status,
-            'xai',
-          )
-        }
-      } else {
-        clearTimeout(timeout)
-        // Invalidate continuation state on failure — next turn starts fresh
-        this.lastResponseId = null
-        throw new ProviderError(
-          `xAI ${String(response.status)}: ${errBody.slice(0, 500)}`,
-          response.status,
-          'xai',
-        )
       }
+
+      // Invalidate continuation state on any non-OK response — next turn starts fresh
+      this.lastResponseId = null
+      throw new ProviderError(
+        `xAI ${String(response.status)}: ${errBody.slice(0, 500)}`,
+        response.status,
+        'xai',
+      )
     }
 
     if (!response.body) {

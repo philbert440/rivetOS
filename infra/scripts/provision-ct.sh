@@ -43,7 +43,7 @@ EMBED_HOST=""         # IP of embedding server (defaults to DATAHUB_IP if not se
 AGENT_NAME=""
 PROVIDER_NAME=""
 DEFAULT_MODEL=""      # Model name (auto-set per provider if empty)
-BASE_URL=""           # Base URL for openai-compat/llama-server
+BASE_URL=""           # Base URL for llama-server
 RESTORE_FROM=""       # Path to backup tarball for workspace restoration
 SECRETS_FROM=""       # IP of existing CT to pull shared secrets from
 TELEGRAM_TOKEN=""     # Telegram bot token (written directly to .env)
@@ -106,11 +106,11 @@ Required:
   --node        Proxmox node SSH alias or IP (e.g., pve3)
   --ip          Container IP (e.g., 192.0.2.114)
   --agent       RivetOS agent name (e.g., local, opus, grok, gemini)
-  --provider    AI provider (anthropic, xai, google, llama-server, openai-compat)
+  --provider    AI provider (anthropic, xai, google, llama-server, ollama)
 
 Config Generation:
   --model       Model name (default: auto per provider)
-  --base-url    Base URL for llama-server/openai-compat providers
+  --base-url    Base URL for llama-server provider
   --secrets-from IP  Pull shared secrets (PG, embed, xAI) from existing CT
   --telegram-token   Telegram bot token for this agent
   --discord-token    Discord bot token for this agent
@@ -152,7 +152,7 @@ if [[ "$DEPLOY_METHOD" != "git" && "$DEPLOY_METHOD" != "rsync" ]]; then
 fi
 
 # Validate base-url for local providers
-if [[ "$PROVIDER_NAME" == "llama-server" || "$PROVIDER_NAME" == "openai-compat" ]]; then
+if [[ "$PROVIDER_NAME" == "llama-server" ]]; then
     if [[ -z "$BASE_URL" ]]; then
         echo "ERROR: --base-url is required for provider $PROVIDER_NAME"
         exit 1
@@ -166,7 +166,6 @@ if [[ -z "$DEFAULT_MODEL" ]]; then
         xai)            DEFAULT_MODEL="grok-4.20-reasoning";;
         google)         DEFAULT_MODEL="gemini-2.5-pro";;
         llama-server)   DEFAULT_MODEL="default";;
-        openai-compat)  DEFAULT_MODEL="default";;
         *)              DEFAULT_MODEL="default";;
     esac
 fi
@@ -210,23 +209,14 @@ log "Phase 0: Pre-flight checks..."
 # Verify templates exist
 TEMPLATE_FILE="${TEMPLATES_DIR}/config-${PROVIDER_NAME}.yaml"
 if [[ ! -f "$TEMPLATE_FILE" ]]; then
-    # Fall back to openai-compat for llama-server if no dedicated template
-    if [[ "$PROVIDER_NAME" == "openai-compat" && -f "${TEMPLATES_DIR}/config-llama-server.yaml" ]]; then
-        TEMPLATE_FILE="${TEMPLATES_DIR}/config-llama-server.yaml"
-    else
-        err "No config template found at: $TEMPLATE_FILE"
-        err "Available templates: $(ls "${TEMPLATES_DIR}"/config-*.yaml 2>/dev/null | xargs -n1 basename)"
-        exit 1
-    fi
+    err "No config template found at: $TEMPLATE_FILE"
+    err "Available templates: $(ls "${TEMPLATES_DIR}"/config-*.yaml 2>/dev/null | xargs -n1 basename)"
+    exit 1
 fi
 ENV_TEMPLATE="${TEMPLATES_DIR}/env-${PROVIDER_NAME}.template"
 if [[ ! -f "$ENV_TEMPLATE" ]]; then
-    if [[ "$PROVIDER_NAME" == "openai-compat" && -f "${TEMPLATES_DIR}/env-llama-server.template" ]]; then
-        ENV_TEMPLATE="${TEMPLATES_DIR}/env-llama-server.template"
-    else
-        err "No env template found at: $ENV_TEMPLATE"
-        exit 1
-    fi
+    err "No env template found at: $ENV_TEMPLATE"
+    exit 1
 fi
 log "  Config template: $(basename "$TEMPLATE_FILE")"
 log "  Env template:    $(basename "$ENV_TEMPLATE")"

@@ -400,7 +400,7 @@ export function validateProviders(
     }
 
     if (
-      (name === 'ollama' || name === 'openai-compat' || name === 'llama-server') &&
+      (name === 'ollama' || name === 'llama-server') &&
       !provider.base_url
     ) {
       issues.push({

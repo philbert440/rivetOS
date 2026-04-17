@@ -88,7 +88,7 @@ const MEMORY_BROWSE_DESC =
   "Get recent messages from Phil's conversation history. " +
   'Use when Phil asks what has been happening recently.'
 
-/** Build xAI-format tools (OpenAI-compatible) */
+/** Build xAI-format tools */
 export function buildXAITools(collectionId?: string): XAIToolDef[] {
   const tools: XAIToolDef[] = [
     { type: 'web_search' },

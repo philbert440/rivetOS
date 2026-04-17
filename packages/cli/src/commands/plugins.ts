@@ -75,7 +75,6 @@ function checkProviderAuth(
     xai: 'XAI_API_KEY',
     google: 'GOOGLE_API_KEY',
     ollama: '', // no key needed
-    'openai-compat': 'OPENAI_API_KEY',
     'llama-server': '', // no key needed
   }
 
