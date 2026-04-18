@@ -2,12 +2,12 @@
 
 ## The Shared Folder
 
-All agents (and Phil) share a common folder at `/shared/`. It's the universal collaboration surface — agent to agent, human to agent, agent to human.
+All agents (and Phil) share a common folder at `/rivet-shared/`. It's the universal collaboration surface — agent to agent, human to agent, agent to human.
 
 ### Structure
 
 ```
-/shared/
+/rivet-shared/
 ├── plans/          # Project plans, milestones, roadmaps
 ├── docs/           # Specs, API refs, architecture notes, style guides
 ├── status/         # Each agent drops a status file
@@ -19,7 +19,7 @@ All agents (and Phil) share a common folder at `/shared/`. It's the universal co
 
 ### How to Use It
 
-**Check `/shared/` at the start of each session** for context from other agents. Update your status file when starting or finishing significant work.
+**Check `/rivet-shared/` at the start of each session** for context from other agents. Update your status file when starting or finishing significant work.
 
 **plans/** — Drop project plans, milestone trackers, and roadmaps here. Other agents check these to understand what's in progress and what's next.
 

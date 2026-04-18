@@ -636,7 +636,7 @@ RivetOS ships as container images built from source. The container IS the securi
 **Data persistence:** Containers are stateless. All persistent data lives on the host via bind mounts and named volumes:
 - `./workspace/` → agent workspace files (CORE.md, memory/, skills/)
 - `rivetos-pgdata` → PostgreSQL data
-- `rivetos-shared` → shared storage (/shared/)
+- `rivetos-shared` → shared storage (/rivet-shared/)
 - `.env` → API keys and secrets
 - `rivet.config.yaml` → deployment configuration
 

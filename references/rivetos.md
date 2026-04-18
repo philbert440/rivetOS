@@ -150,12 +150,12 @@ PVE1 (pve1)          PVE2 (pve2)           PVE3 (pve3/GERTY)
 │ 73k+ msgs   │     │ :3101        │      V100 GPUs:
 └──────────────┘     └──────────────┘      GPU0: Nemotron 8B
                                            GPU1: Embeddings
-NFS: /shared/ exported from datahub to all agents
+NFS: /rivet-shared/ exported from datahub to all agents
 ```
 
 ### Container Images
 - **Agent:** Node 24 Alpine, non-root (`rivetos`), tini, runs via tsx
-- **Datahub:** PostgreSQL 16 + pgvector, `/shared/` dirs, init scripts
+- **Datahub:** PostgreSQL 16 + pgvector, `/rivet-shared/` dirs, init scripts
 
 ### Key Ports
 | Port | Service |

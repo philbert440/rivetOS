@@ -363,7 +363,7 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 **Datahub** (`infra/containers/datahub/Dockerfile`):
 - PostgreSQL 16 + pgvector extension
 - Init scripts create database schema + shared directory structure
-- Shared dirs: `/shared/plans`, `/shared/docs`, `/shared/status`, `/shared/whiteboard`
+- Shared dirs: `/rivet-shared/plans`, `/rivet-shared/docs`, `/rivet-shared/status`, `/rivet-shared/whiteboard`
 
 ### Docker Compose
 

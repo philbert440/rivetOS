@@ -103,7 +103,7 @@ On boot, the skill manager scans all directories listed in `runtime.skill_dirs` 
 runtime:
   skill_dirs:
     - ./skills              # Your custom skills
-    - /shared/skills        # Team-shared skills
+    - /rivet-shared/skills        # Team-shared skills
     - ~/.rivetos/skills     # User-global skills
 ```
 

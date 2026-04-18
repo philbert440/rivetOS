@@ -21,7 +21,7 @@ That's it. ONE command. Don't think. Don't improvise. Don't SSH. Run the command
 
 ## What `rivetos update --mesh` Does
 
-1. Reads `/shared/mesh.json` for all nodes
+1. Reads `/rivet-shared/mesh.json` for all nodes
 2. Updates local node (git pull --ff-only, npm install, nx build, systemctl restart)
 3. For each remote node: rsync code → npm install → build → restart → health check
 4. Rolling, one at a time, with error recovery
@@ -62,7 +62,7 @@ rivetos mesh status    # Local mesh status
 
 ## Source Code
 - CLI: `packages/cli/src/commands/update.ts`
-- Mesh file: `/shared/mesh.json`
+- Mesh file: `/rivet-shared/mesh.json`
 - Ping endpoint: `packages/core/src/runtime/agent-channel.ts`
 
 ## Changelog

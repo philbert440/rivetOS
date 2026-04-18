@@ -381,7 +381,7 @@ The doctor command runs 12 categories of checks:
 | OAuth | Token validity | Expired tokens |
 | Containers | Docker health | Container not running |
 | Memory | PostgreSQL connection | Connection refused |
-| Shared Storage | /shared/ writable | Mount not available |
+| Shared Storage | /rivet-shared/ writable | Mount not available |
 | DNS | Name resolution | Network issue |
 | Providers | API connectivity | Bad key, rate limited |
 | Peers | Mesh reachability | Firewall, peer down |

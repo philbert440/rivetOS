@@ -444,7 +444,7 @@ deployment:
   datahub:
     postgres: true
     shared_storage: true
-    shared_mount_path: /shared
+    shared_mount_path: /rivet-shared
   
   image:
     build_from_source: true
@@ -467,7 +467,7 @@ deployment:
 | `postgres` | boolean | `true` | Include PostgreSQL in the datahub container. |
 | `postgres_version` | string | `16` | PostgreSQL major version. |
 | `shared_storage` | boolean | `true` | Create shared storage volume. |
-| `shared_mount_path` | string | `/shared` | Mount path for shared storage inside containers. |
+| `shared_mount_path` | string | `/rivet-shared` | Mount path for shared storage inside containers. |
 
 ### `deployment.image`
 
