@@ -167,7 +167,11 @@ export async function embedText(endpoint: string, text: string): Promise<number[
       data?: Array<{ embedding?: number[] }>
     }
 
-    return data.data?.[0]?.embedding ?? null
+    const vec = data.data?.[0]?.embedding
+    if (!vec) return null
+    // Match stored-vector dim (pgvector halfvec 4000 cap). Nemotron returns 4096.
+    const EMBED_DIMS = 4000
+    return vec.length > EMBED_DIMS ? vec.slice(0, EMBED_DIMS) : vec
   } catch {
     return null
   }
