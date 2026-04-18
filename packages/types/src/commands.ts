@@ -44,6 +44,7 @@ export const COMMAND_REGISTRY = [
   { name: 'reasoning' as const, description: 'Toggle reasoning visibility' },
   { name: 'tools' as const, description: 'Toggle tool call visibility' },
   { name: 'context' as const, description: 'Show context window stats' },
+  { name: 'memory' as const, description: 'Show memory system health & stats' },
   { name: 'clear' as const, description: 'Clear queued messages' },
   { name: 'start' as const, description: 'Show welcome message' },
   { name: 'help' as const, description: 'Show available commands' },
