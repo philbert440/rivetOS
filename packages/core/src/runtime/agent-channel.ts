@@ -58,6 +58,8 @@ interface MessageRequest {
   waitForResponse?: boolean
   timeoutMs?: number
   chainDepth?: number
+  /** Optional per-call model override forwarded from the remote caller. */
+  model?: string
 }
 
 interface MessageResponse {
@@ -178,7 +180,7 @@ export class AgentChannelServer {
       return
     }
 
-    const { fromAgent, message, timeoutMs, chainDepth } = body as unknown as MessageRequest
+    const { fromAgent, message, timeoutMs, chainDepth, model } = body as unknown as MessageRequest
 
     if (!fromAgent || !message) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
@@ -214,6 +216,9 @@ export class AgentChannelServer {
           task: message.replace(/^\[Mesh delegation\]\s*/, ''),
           timeoutMs: timeoutMs ?? 120_000,
           noDelegation: true,
+          // Honor per-call model override from the remote caller so that
+          // mesh-delegated tasks can pick a specific model tier on this node.
+          model,
         },
         chainDepth ?? 0, // propagate chain depth from caller (0 if not provided)
       )
