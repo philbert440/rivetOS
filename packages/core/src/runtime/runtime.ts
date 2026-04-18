@@ -147,6 +147,7 @@ export class Runtime {
       },
       getQueue: (key) => this.queues.get(key),
       handleMessage: (ch, msg) => this.turnHandler.handle(ch, msg),
+      getTools: () => this.tools,
       configPath: config.configPath,
     })
   }
