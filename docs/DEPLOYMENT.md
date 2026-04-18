@@ -78,7 +78,7 @@ This creates separate containers for each agent plus a shared datahub (Postgres 
 │              │   datahub     │              │
 │              │  postgres:16  │              │
 │              │  pgvector     │              │
-│              │  /shared/     │              │
+│              │  /rivet-shared/     │              │
 │              │  :5432        │              │
 │              └───────────────┘              │
 └─────────────────────────────────────────────┘
@@ -186,34 +186,34 @@ npx rivetos infra status
 │  │ CT 106        │ │ CT 101        │ │ CT 100        │ │
 │  │ postgres      │ │ opus          │ │ local         │ │
 │  │ NFS server    │ │ 192.168.1.101 │ │ 192.168.1.100 │ │
-│  │ /shared/      │ ├───────────────┤ └───────────────┘ │
+│  │ /rivet-shared/      │ ├───────────────┤ └───────────────┘ │
 │  │ 192.168.1.106 │ │ CT 102        │                   │
 │  └───────────────┘ │ grok          │                   │
 │                    │ 192.168.1.102 │                   │
 │                    └───────────────┘                   │
 │                                                        │
-│  NFS exports /shared/ to all agents                    │
-│  Agents mount /shared/ via bind mount                  │
+│  NFS exports /rivet-shared/ to all agents                    │
+│  Agents mount /rivet-shared/ via bind mount                  │
 └────────────────────────────────────────────────────────┘
 ```
 
 ### Multi-Node Shared Storage
 
-The datahub node runs NFS to share `/shared/` across all agents:
+The datahub node runs NFS to share `/rivet-shared/` across all agents:
 
 ```bash
 # On the datahub node (automatic with rivetos infra up):
 apt install nfs-kernel-server
-echo "/shared 192.168.1.0/24(rw,sync,no_subtree_check)" >> /etc/exports
+echo "/rivet-shared 192.168.1.0/24(rw,sync,no_subtree_check)" >> /etc/exports
 exportfs -ra
 
 # On each Proxmox host:
-mount -t nfs 192.168.1.106:/shared /shared
+mount -t nfs 192.168.1.106:/rivet-shared /rivet-shared
 # Add to fstab for persistence
-echo "192.168.1.106:/shared /shared nfs defaults 0 0" >> /etc/fstab
+echo "192.168.1.106:/rivet-shared /rivet-shared nfs defaults 0 0" >> /etc/fstab
 ```
 
-Each agent container gets `/shared/` as a bind mount.
+Each agent container gets `/rivet-shared/` as a bind mount.
 
 ### Updating on Proxmox
 
@@ -377,7 +377,7 @@ mDNS auto-discovery is supported for future use but not yet implemented.
 | Secrets | `./.env` | File copy (secure!) |
 | Workspace | `./workspace/` | File copy / rsync |
 | Database | PostgreSQL | `pg_dump` |
-| Shared storage | `/shared/` or volume | File copy / rsync |
+| Shared storage | `/rivet-shared/` or volume | File copy / rsync |
 
 ### Backup Script
 
@@ -397,7 +397,7 @@ rsync -a workspace/ "$BACKUP_DIR/workspace/"
 docker compose exec datahub pg_dump -U rivetos rivetos > "$BACKUP_DIR/database.sql"
 
 # Shared storage
-rsync -a /shared/ "$BACKUP_DIR/shared/"
+rsync -a /rivet-shared/ "$BACKUP_DIR/rivet-shared/"
 
 echo "Backup complete: $BACKUP_DIR"
 ```
@@ -418,7 +418,7 @@ rsync -a "$BACKUP_DIR/workspace/" workspace/
 docker compose exec -T datahub psql -U rivetos rivetos < "$BACKUP_DIR/database.sql"
 
 # Shared storage
-rsync -a "$BACKUP_DIR/shared/" /shared/
+rsync -a "$BACKUP_DIR/rivet-shared/" /rivet-shared/
 
 # Restart
 npx rivetos update
