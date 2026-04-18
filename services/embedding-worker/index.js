@@ -10,6 +10,7 @@
  */
 
 import pg from 'pg'
+import { safeSlice } from './safe-slice.js'
 
 // ---------------------------------------------------------------------------
 // Config from environment
@@ -22,7 +23,10 @@ if (!PG_URL) {
 }
 
 const EMBED_URL = process.env.RIVETOS_EMBED_URL
-if (!EMBED_URL) { console.error('RIVETOS_EMBED_URL is required'); process.exit(1) }
+if (!EMBED_URL) {
+  console.error('RIVETOS_EMBED_URL is required')
+  process.exit(1)
+}
 const EMBED_MODEL = process.env.RIVETOS_EMBED_MODEL ?? 'nemotron'
 const BATCH_SIZE = parseInt(process.env.EMBED_BATCH_SIZE ?? '50', 10)
 const API_BATCH_SIZE = parseInt(process.env.EMBED_API_BATCH_SIZE ?? '8', 10)
@@ -112,9 +116,7 @@ async function startListener() {
 function scheduleReconnect() {
   console.log(`[EmbedWorker] Reconnecting listener in ${reconnectDelay / 1000}s...`)
   setTimeout(() => {
-    startListener().catch((e) =>
-      console.error('[EmbedWorker] Reconnect failed:', e.message),
-    )
+    startListener().catch((e) => console.error('[EmbedWorker] Reconnect failed:', e.message))
   }, reconnectDelay)
   // Exponential backoff capped at MAX_RECONNECT_DELAY
   reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY)
@@ -210,10 +212,7 @@ async function processBatch(queueRows) {
     if (content.rows.length === 0) {
       // Content was deleted or too short — remove from queue
       const queueIds = rows.map((r) => r.id)
-      await pool.query(
-        `DELETE FROM ros_embedding_queue WHERE id = ANY($1::bigint[])`,
-        [queueIds],
-      )
+      await pool.query(`DELETE FROM ros_embedding_queue WHERE id = ANY($1::bigint[])`, [queueIds])
       continue
     }
 
@@ -228,7 +227,7 @@ async function processBatch(queueRows) {
         .map((r) => ({
           queueId: r.id,
           targetId: r.target_id,
-          text: contentMap.get(r.target_id).slice(0, MAX_CONTENT_LENGTH),
+          text: safeSlice(contentMap.get(r.target_id), MAX_CONTENT_LENGTH),
         }))
 
       if (textsAndIds.length === 0) continue
@@ -250,23 +249,17 @@ async function processBatch(queueRows) {
 
         if (vec) {
           try {
-            const truncated =
-              vec.length > TRUNCATE_DIMS ? vec.slice(0, TRUNCATE_DIMS) : vec
-            await pool.query(
-              `UPDATE ${table} SET embedding = $1 WHERE id = $2`,
-              [`[${truncated.join(',')}]`, targetId],
-            )
+            const truncated = vec.length > TRUNCATE_DIMS ? vec.slice(0, TRUNCATE_DIMS) : vec
+            await pool.query(`UPDATE ${table} SET embedding = $1 WHERE id = $2`, [
+              `[${truncated.join(',')}]`,
+              targetId,
+            ])
             // Remove from queue on success
-            await pool.query(
-              `DELETE FROM ros_embedding_queue WHERE id = $1`,
-              [queueId],
-            )
+            await pool.query(`DELETE FROM ros_embedding_queue WHERE id = $1`, [queueId])
             embedded++
             metrics.totalEmbedded++
           } catch (err) {
-            console.error(
-              `[EmbedWorker] Failed to store ${table} ${targetId}: ${err.message}`,
-            )
+            console.error(`[EmbedWorker] Failed to store ${table} ${targetId}: ${err.message}`)
             await markQueueFailure(queueId, err.message)
             metrics.totalFailed++
           }
@@ -284,7 +277,7 @@ async function processBatch(queueRows) {
 }
 
 // ---------------------------------------------------------------------------
-// Batch embed with retry
+// Batch embed with retry + isolation on failure (prevents poisoning)
 // ---------------------------------------------------------------------------
 
 async function embedBatch(texts) {
@@ -318,6 +311,7 @@ async function embedBatch(texts) {
           await sleep(delay)
           continue
         }
+        // After retries exhausted on server error, fall through to isolation
         break
       }
 
@@ -350,10 +344,51 @@ async function embedBatch(texts) {
     }
   }
 
+  // If we reach here, batch failed (after retries or non-retryable). Isolate to
+  // avoid poisoning the entire batch. Only the failing row(s) get null.
   console.error(
-    `[EmbedWorker] Batch embed failed after ${MAX_RETRIES} retries: ${lastError?.message}`,
+    `[EmbedWorker] Batch embed failed after ${MAX_RETRIES} retries: ${lastError?.message}. Isolating to individual requests.`,
   )
-  return texts.map(() => null)
+
+  const results = []
+  for (const text of texts) {
+    let rowResult = null
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const response = await fetch(`${EMBED_URL}/v1/embeddings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: [text], model: EMBED_MODEL }),
+          signal: AbortSignal.timeout(API_TIMEOUT_MS),
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+          if (data.data && data.data[0] && data.data[0].embedding) {
+            rowResult = data.data[0].embedding
+            break
+          }
+        } else if (response.status < 500) {
+          // Non-retryable for this row
+          break
+        } else if (attempt < MAX_RETRIES) {
+          const delay = Math.pow(2, attempt) * 1000
+          await sleep(delay)
+          continue
+        }
+      } catch (err) {
+        if (isTransientError(err) && attempt < MAX_RETRIES) {
+          const delay = Math.pow(2, attempt) * 1000
+          await sleep(delay)
+          continue
+        }
+        break
+      }
+    }
+    results.push(rowResult)
+  }
+
+  return results
 }
 
 // ---------------------------------------------------------------------------
@@ -411,7 +446,9 @@ function sleep(ms) {
 async function main() {
   console.log('[EmbedWorker] Starting...')
   console.log(`[EmbedWorker] Embed endpoint: ${EMBED_URL}`)
-  console.log(`[EmbedWorker] Batch: ${BATCH_SIZE}, API batch: ${API_BATCH_SIZE}, truncate: ${TRUNCATE_DIMS}`)
+  console.log(
+    `[EmbedWorker] Batch: ${BATCH_SIZE}, API batch: ${API_BATCH_SIZE}, truncate: ${TRUNCATE_DIMS}`,
+  )
 
   // Start listener
   await startListener()
@@ -423,11 +460,14 @@ async function main() {
 
   // Periodic safety net: check for stranded queue entries every 5 minutes
   // (in case a NOTIFY was missed during a reconnection)
-  setInterval(() => {
-    if (!processing) {
-      void processQueue()
-    }
-  }, 5 * 60 * 1000)
+  setInterval(
+    () => {
+      if (!processing) {
+        void processQueue()
+      }
+    },
+    5 * 60 * 1000,
+  )
 }
 
 // Graceful shutdown
