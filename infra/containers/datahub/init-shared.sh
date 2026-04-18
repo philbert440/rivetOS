@@ -8,7 +8,7 @@ set -e
 #   status/     — agent status files, health reports
 #   whiteboard/ — free-form scratch space for agent communication
 
-mkdir -p /shared/plans /shared/docs /shared/status /shared/whiteboard
-chmod -R 777 /shared
+mkdir -p /rivet-shared/plans /rivet-shared/docs /rivet-shared/status /rivet-shared/whiteboard
+chmod -R 777 /rivet-shared
 
 echo "[RivetOS] Shared directory structure ready."

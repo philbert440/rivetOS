@@ -158,7 +158,7 @@ function buildDeploymentConfig(state: WizardState): Record<string, unknown> {
     datahub: {
       postgres: true,
       shared_storage: true,
-      shared_mount_path: '/shared',
+      shared_mount_path: '/rivet-shared',
     },
     image: {
       build_from_source: true,

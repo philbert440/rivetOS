@@ -20,7 +20,7 @@ Rebuilding or replacing a container image does **not** destroy user data.
 | Volume | Container Mount | Notes |
 |--------|-----------------|-------|
 | `rivetos-pgdata` | `/var/lib/postgresql/data` | Postgres data (conversations, memory embeddings) |
-| `rivetos-shared` | `/shared` | Multi-agent shared storage (plans, whiteboard, docs) |
+| `rivetos-shared` | `/rivet-shared` | Multi-agent shared storage (plans, whiteboard, docs) |
 
 ### Inside the Container (rebuilt on every update — no user data here)
 
@@ -80,5 +80,5 @@ cp -r ./workspace/ ./config.yaml ./.env /backup/rivetos/
 docker exec rivetos-datahub pg_dump -U rivetos rivetos > /backup/rivetos/db.sql
 
 # Shared storage
-docker cp rivetos-datahub:/shared /backup/rivetos/shared/
+docker cp rivetos-datahub:/rivet-shared /backup/rivetos/shared/
 ```

@@ -114,7 +114,7 @@ export class InfraOrchestrator {
           port: datahub.port,
           database: env.POSTGRES_DB ?? 'rivetos',
         },
-        sharedMountPath: this.config.deployment?.datahub?.shared_mount_path ?? '/shared',
+        sharedMountPath: this.config.deployment?.datahub?.shared_mount_path ?? '/rivet-shared',
         sourceDir: buildFromSource ? this.opts.sourceDir : undefined,
       })
     }
@@ -159,7 +159,7 @@ export class InfraOrchestrator {
           port: datahub.port,
           database: env.POSTGRES_DB ?? 'rivetos',
         },
-        sharedMountPath: this.config.deployment?.datahub?.shared_mount_path ?? '/shared',
+        sharedMountPath: this.config.deployment?.datahub?.shared_mount_path ?? '/rivet-shared',
         sourceDir: buildFromSource ? this.opts.sourceDir : undefined,
       })
     }

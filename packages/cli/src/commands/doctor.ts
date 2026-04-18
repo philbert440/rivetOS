@@ -11,7 +11,7 @@
  *   5. Secrets — .env permissions, no secrets in config YAML
  *   6. Containers — Docker health (if applicable)
  *   7. Memory backend — Postgres connectivity
- *   8. Shared storage — /shared/ mount writable
+ *   8. Shared storage — /rivet-shared/ mount writable
  *   9. Provider connectivity — API endpoint reachability
  *  10. DNS — can resolve provider hostnames
  *  11. Peer reachability — health check other agents in mesh
@@ -486,12 +486,12 @@ async function checkMemoryBackend(): Promise<CheckResult[]> {
 
 async function checkSharedStorage(): Promise<CheckResult[]> {
   const results: CheckResult[] = []
-  const sharedDir = '/shared'
+  const sharedDir = '/rivet-shared'
 
   try {
     await access(sharedDir)
   } catch {
-    // /shared doesn't exist — might not be a multi-agent setup
+    // /rivet-shared doesn't exist — might not be a multi-agent setup
     return results
   }
 
@@ -500,9 +500,9 @@ async function checkSharedStorage(): Promise<CheckResult[]> {
   try {
     await writeFile(testFile, 'doctor')
     await unlink(testFile)
-    results.push(check('shared', 'writable', 'pass', 'Shared storage: /shared/ is writable'))
+    results.push(check('shared', 'writable', 'pass', 'Shared storage: /rivet-shared/ is writable'))
   } catch {
-    results.push(check('shared', 'writable', 'fail', 'Shared storage: /shared/ is not writable'))
+    results.push(check('shared', 'writable', 'fail', 'Shared storage: /rivet-shared/ is not writable'))
   }
 
   // Check subdirectories
@@ -511,7 +511,7 @@ async function checkSharedStorage(): Promise<CheckResult[]> {
     try {
       await access(resolve(sharedDir, dir))
     } catch {
-      results.push(check('shared', dir, 'warn', `Shared storage: /shared/${dir}/ missing`))
+      results.push(check('shared', dir, 'warn', `Shared storage: /rivet-shared/${dir}/ missing`))
     }
   }
 
