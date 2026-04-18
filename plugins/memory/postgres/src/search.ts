@@ -300,7 +300,11 @@ export class SearchEngine {
         return null
       }
 
-      return vec
+      // Truncate to pgvector halfvec max (4000 dims). Nemotron returns 4096
+      // natively; stored rows are sliced to 4000 by the embedding worker.
+      // Must match to avoid "different halfvec dimensions" errors on <=>.
+      const EMBED_DIMS = 4000
+      return vec.length > EMBED_DIMS ? vec.slice(0, EMBED_DIMS) : vec
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       // Don't log abort as an error — it's expected on timeout
