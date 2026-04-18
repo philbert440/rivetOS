@@ -375,7 +375,7 @@ export class DelegationEngine {
             description:
               'Optional model override for the delegate. Use to pick a specific model ' +
               'tier (e.g., "grok-4-1-fast-reasoning" vs "grok-4.20-reasoning") without ' +
-              'creating a separate agent. Defaults to the agent\'s configured model.',
+              "creating a separate agent. Defaults to the agent's configured model.",
           },
         },
         required: ['to_agent', 'task'],
