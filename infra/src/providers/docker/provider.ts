@@ -87,7 +87,7 @@ export class DockerProvider implements InfraProvider {
         POSTGRES_PASSWORD: args.password,
         POSTGRES_DB: args.database,
       },
-      volumes: ['rivetos-pgdata:/var/lib/postgresql/data', 'rivetos-shared:/shared'],
+      volumes: ['rivetos-pgdata:/var/lib/postgresql/data', 'rivetos-shared:/rivet-shared'],
       ports: args.exposePort ? [`${args.exposePort}:5432`] : [],
       networks: Object.keys(this.compose.networks),
       restart: 'unless-stopped',
@@ -132,7 +132,7 @@ export class DockerProvider implements InfraProvider {
         ...args.env,
       },
       volumes: [
-        'rivetos-shared:/shared',
+        'rivetos-shared:/rivet-shared',
         `${args.configPath}:/home/rivetos/.rivetos/config.yaml:ro`,
         `${args.workspacePath}:/home/rivetos/.rivetos/workspace`,
       ],

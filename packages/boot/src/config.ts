@@ -36,7 +36,7 @@ export interface MeshSection {
   secret?: string
   /** Port for the agent channel HTTP server (default: 3000) */
   agent_channel_port?: number
-  /** Shared storage directory for mesh.json (default: /shared) */
+  /** Shared storage directory for mesh.json (default: /rivet-shared) */
   storage_dir?: string
   discovery?: {
     mode: 'seed' | 'mdns' | 'static'

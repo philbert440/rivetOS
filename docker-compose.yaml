@@ -32,7 +32,7 @@ x-agent: &agent-base
     datahub:
       condition: service_healthy
   volumes:
-    - rivetos-shared:/shared
+    - rivetos-shared:/rivet-shared
   networks:
     - rivetos-net
   restart: unless-stopped
@@ -52,7 +52,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-rivetos}
     volumes:
       - rivetos-pgdata:/var/lib/postgresql/data
-      - rivetos-shared:/shared
+      - rivetos-shared:/rivet-shared
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     networks:
@@ -71,7 +71,7 @@ services:
     environment:
       RIVETOS_PG_URL: postgresql://${POSTGRES_USER:-rivetos}:${POSTGRES_PASSWORD:-rivetos}@datahub:5432/${POSTGRES_DB:-rivetos}
     volumes:
-      - rivetos-shared:/shared
+      - rivetos-shared:/rivet-shared
       - ${RIVETOS_CONFIG:-./config.yaml}:/home/rivetos/.rivetos/config.yaml:ro
       - ${RIVETOS_WORKSPACE:-./workspace}:/home/rivetos/.rivetos/workspace
 
@@ -86,7 +86,7 @@ services:
     environment:
       RIVETOS_PG_URL: postgresql://${POSTGRES_USER:-rivetos}:${POSTGRES_PASSWORD:-rivetos}@datahub:5432/${POSTGRES_DB:-rivetos}
     volumes:
-      - rivetos-shared:/shared
+      - rivetos-shared:/rivet-shared
       - ${RIVETOS_CONFIG_2:-./config-agent-2.yaml}:/home/rivetos/.rivetos/config.yaml:ro
       - ${RIVETOS_WORKSPACE_2:-./workspace-2}:/home/rivetos/.rivetos/workspace
 
@@ -97,7 +97,7 @@ services:
     environment:
       RIVETOS_PG_URL: postgresql://${POSTGRES_USER:-rivetos}:${POSTGRES_PASSWORD:-rivetos}@datahub:5432/${POSTGRES_DB:-rivetos}
     volumes:
-      - rivetos-shared:/shared
+      - rivetos-shared:/rivet-shared
       - ${RIVETOS_CONFIG_3:-./config-agent-3.yaml}:/home/rivetos/.rivetos/config.yaml:ro
       - ${RIVETOS_WORKSPACE_3:-./workspace-3}:/home/rivetos/.rivetos/workspace
 

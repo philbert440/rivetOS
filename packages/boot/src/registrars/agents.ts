@@ -73,7 +73,7 @@ export async function registerAgentTools(
     // ------------------------------------------------------------------
 
     const secret = resolveEnv(meshConfig.secret ?? '')
-    const storageDir = meshConfig.storage_dir ?? '/shared'
+    const storageDir = meshConfig.storage_dir ?? '/rivet-shared'
     const agentChannelPort = meshConfig.agent_channel_port ?? 3000
     const localAgents = Object.keys(config.agents)
 
