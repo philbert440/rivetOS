@@ -464,7 +464,14 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     const elapsed = `${String(Math.round(result.elapsedMs / 1000))}s`
 
     if (result.success) {
-      const status = isAgent ? '✅' : '✅ (sync)'
+      let status: string
+      if (isAgent) {
+        status = '✅'
+      } else if (result.workers && result.workers.length > 0) {
+        status = `✅ (sync+${String(result.workers.length)}w)`
+      } else {
+        status = '✅ (sync)'
+      }
       console.log(`  ${name}${status.padEnd(16)}${(result.commit ?? '—').padEnd(10)}${elapsed}`)
       updated++
     } else {
@@ -575,6 +582,24 @@ interface NodeUpdateResult {
   commit?: string
   failedStep?: string
   elapsedMs: number
+  workers?: string[]
+}
+
+/**
+ * Discover rivet-* systemd worker services on a remote host, excluding the
+ * primary rivetos.service. Returns an array of unit names (e.g.
+ * ["rivet-embedder.service", "rivet-compactor.service"]). On failure, returns [].
+ */
+function discoverRivetWorkers(host: string): string[] {
+  const out = sshExecQuiet(
+    host,
+    "systemctl list-unit-files 'rivet-*.service' --no-legend --no-pager 2>/dev/null | awk '{print \\$1}'",
+  )
+  if (!out) return []
+  return out
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s !== 'rivetos.service')
 }
 
 /**
@@ -614,11 +639,74 @@ async function gitUpdateNodeAsync(
     return { success: false, failedStep: 'git', elapsedMs: Date.now() - start }
   }
 
-  // Non-agent nodes only need code sync — no build or restart
+  // Non-agent (infrastructure) nodes: code sync, install deps, and restart any
+  // rivet-* worker services discovered on the host (embedder, compactor, etc.).
+  // No TypeScript build — workers are plain JS.
   if (!isAgent) {
+    // npm install — picks up dep bumps in services/*/package.json
+    try {
+      console.log(`    ${tag} Installing dependencies...`)
+      await sshExec(
+        host,
+        'cd /opt/rivetos && npm install --no-audit --no-fund',
+        `${tag} npm install`,
+        120_000,
+      )
+    } catch (err: unknown) {
+      console.error(`    ${tag} ❌ npm install failed: ${(err as Error).message}`)
+      return { success: false, failedStep: 'npm', elapsedMs: Date.now() - start }
+    }
+
     const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD')
-    console.log(`    ${tag} ✅ Synced (${commit || 'unknown'})`)
-    return { success: true, commit: commit || undefined, elapsedMs: Date.now() - start }
+
+    // Discover and restart worker services
+    const workers = discoverRivetWorkers(host)
+    const restartedWorkers: string[] = []
+    if (workers.length === 0) {
+      console.log(`    ${tag} No rivet-* worker services found`)
+    } else if (!opts.restart) {
+      console.log(`    ${tag} Found workers (skipping restart): ${workers.join(', ')}`)
+    } else {
+      for (const unit of workers) {
+        try {
+          console.log(`    ${tag} Restarting ${unit}...`)
+          await sshExec(host, `systemctl restart ${unit}`, `${tag} restart ${unit}`, 30_000)
+          // Verify it came back active
+          const state = sshExecQuiet(host, `systemctl is-active ${unit}`)
+          if (state === 'active') {
+            restartedWorkers.push(unit)
+          } else {
+            console.error(`    ${tag} ⚠️  ${unit} is not active after restart (state=${state})`)
+            return {
+              success: false,
+              failedStep: `worker:${unit}`,
+              commit: commit || undefined,
+              elapsedMs: Date.now() - start,
+              workers: restartedWorkers,
+            }
+          }
+        } catch (err: unknown) {
+          console.error(`    ${tag} ❌ Restart of ${unit} failed: ${(err as Error).message}`)
+          return {
+            success: false,
+            failedStep: `worker:${unit}`,
+            commit: commit || undefined,
+            elapsedMs: Date.now() - start,
+            workers: restartedWorkers,
+          }
+        }
+      }
+    }
+
+    const workerSummary =
+      restartedWorkers.length > 0 ? ` + ${String(restartedWorkers.length)} worker(s) restarted` : ''
+    console.log(`    ${tag} ✅ Synced (${commit || 'unknown'})${workerSummary}`)
+    return {
+      success: true,
+      commit: commit || undefined,
+      elapsedMs: Date.now() - start,
+      workers: restartedWorkers,
+    }
   }
 
   // Step 3: npm install
