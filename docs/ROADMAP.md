@@ -19,7 +19,7 @@ Milestones 0–5 are complete. The core platform is built, tested, and running i
 | M4: Learning & Self-Improvement | v0.4.0 | Background review loop, skill management, directed context loading |
 | M5: Agent Orchestration | v0.5.0 | Tool filtering, agent-driven routing, shared filesystem, model switching |
 
-**Current state:** 13 coreutil tools, 5 provider plugins, 4 channel plugins, 7 tool plugin packages, hook pipeline with safety/auto-action/session hooks, learning loop, skill system, delegation + sub-agents, cross-instance messaging, MCP client, shared `/shared/` NFS filesystem across all agents.
+**Current state:** 13 coreutil tools, 5 provider plugins, 4 channel plugins, 7 tool plugin packages, hook pipeline with safety/auto-action/session hooks, learning loop, skill system, delegation + sub-agents, cross-instance messaging, MCP client, shared `/rivet-shared/` NFS filesystem across all agents.
 
 ---
 
@@ -39,7 +39,7 @@ The golden container is the deployment unit. `rivetos init` walks you through se
 Build OCI-compliant container images as Nx build artifacts.
 
 - [x] **Agent Dockerfile** (`infra/containers/agent/Dockerfile`) — Node.js, RivetOS runtime, tini init, non-root user, healthcheck
-- [x] **Datahub Dockerfile** (`infra/containers/datahub/Dockerfile`) — PostgreSQL 16 + pgvector, `/shared/` directory structure, init scripts, health checks
+- [x] **Datahub Dockerfile** (`infra/containers/datahub/Dockerfile`) — PostgreSQL 16 + pgvector, `/rivet-shared/` directory structure, init scripts, health checks
 - [x] **Nx build targets** — `project.json` for both containers with proper dependency graph and SHA tagging
 - [x] **Image tagging** — commit SHA on build, semver on release, `latest` on main
 - [x] **Data persistence** — workspace bind mount, named volumes for pgdata + shared, `DATA-PERSISTENCE.md` documented
@@ -84,7 +84,7 @@ deployment: docker              # or "proxmox" or "kubernetes"
 
 datahub:
   postgres: true
-  shared_storage: /shared
+  shared_storage: /rivet-shared
 
 agents:
   - name: opus
