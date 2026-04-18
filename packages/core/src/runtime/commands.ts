@@ -6,7 +6,7 @@
  */
 
 import { readFile, writeFile } from 'node:fs/promises'
-import type { Channel, InboundMessage, ThinkingLevel } from '@rivetos/types'
+import type { Channel, InboundMessage, ThinkingLevel, Tool } from '@rivetos/types'
 import { COMMAND_REGISTRY } from '@rivetos/types'
 import type { Router } from '../domain/router.js'
 import type { WorkspaceLoader } from '../domain/workspace.js'
@@ -30,6 +30,8 @@ export interface CommandDeps {
   deleteActiveLoop: (sessionKey: string) => void
   getQueue: (sessionKey: string) => MessageQueue | undefined
   handleMessage: (channel: Channel, message: InboundMessage) => Promise<void>
+  /** Accessor for the runtime's registered tools (used by /memory) */
+  getTools: () => Tool[]
   /** Path to config.yaml for persistent model changes */
   configPath?: string
 }
@@ -76,6 +78,8 @@ export class CommandHandler {
         return this.tools(channel, message, sessionKey)
       case 'context':
         return this.context(channel, message, sessionKey)
+      case 'memory':
+        return this.memory(channel, message)
       case 'clear':
         return this.clearQueue(channel, message, sessionKey)
       case 'help':
@@ -357,6 +361,46 @@ export class CommandHandler {
       `- Compactions: ${session.compactionCount}`,
     ]
     await channel.send({ channelId: message.channelId, text: lines.join('\n') })
+  }
+
+  // -----------------------------------------------------------------------
+  // /memory — run memory_stats tool and show output
+  // -----------------------------------------------------------------------
+
+  private async memory(channel: Channel, message: InboundMessage): Promise<void> {
+    const tool = this.deps.getTools().find((t) => t.name === 'memory_stats')
+    if (!tool) {
+      await channel.send({
+        channelId: message.channelId,
+        text: '⚠️ memory_stats tool not registered.',
+      })
+      return
+    }
+    try {
+      const result = await tool.execute({}, undefined, {
+        agentId: 'opus',
+      })
+      let text: string
+      if (typeof result === 'string') {
+        text = result
+      } else if (Array.isArray(result)) {
+        text = result
+          .filter((p) => p.type === 'text')
+          .map((p) => (p as { type: 'text'; text: string }).text)
+          .join('\n')
+      } else {
+        text = String(result)
+      }
+      if (text.length > 1900) {
+        text = text.slice(0, 1900) + '\n\n…(truncated)'
+      }
+      await channel.send({ channelId: message.channelId, text })
+    } catch (err) {
+      await channel.send({
+        channelId: message.channelId,
+        text: `❌ memory_stats failed: ${err instanceof Error ? err.message : String(err)}`,
+      })
+    }
   }
 
   // -----------------------------------------------------------------------
