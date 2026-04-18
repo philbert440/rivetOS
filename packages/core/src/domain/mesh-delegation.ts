@@ -149,6 +149,11 @@ export class MeshDelegationEngine {
       if (request.timeoutMs) {
         payload.timeoutMs = request.timeoutMs
       }
+      // Forward per-call model override so the remote node runs with
+      // the requested model tier, not the agent's configured default.
+      if (request.model) {
+        payload.model = request.model
+      }
 
       const res = await fetch(url, {
         method: 'POST',
@@ -222,6 +227,13 @@ export class MeshDelegationEngine {
             type: 'number',
             description: 'Timeout in milliseconds (default: none — runs until done)',
           },
+          model: {
+            type: 'string',
+            description:
+              'Optional model override for the delegate. Use to pick a specific model ' +
+              'tier (e.g., "grok-4-1-fast-reasoning" vs "grok-4.20-reasoning") without ' +
+              'creating a separate agent. Forwarded across the mesh to remote nodes.',
+          },
         },
         required: ['to_agent', 'task'],
       },
@@ -237,6 +249,7 @@ export class MeshDelegationEngine {
             task: args.task as string,
             context: args.context as string[] | undefined,
             timeoutMs: args.timeout_ms as number | undefined,
+            model: args.model as string | undefined,
           },
           chainDepth,
         )

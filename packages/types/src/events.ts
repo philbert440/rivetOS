@@ -69,6 +69,11 @@ export interface DelegationRequest {
    *  Set automatically for mesh-received delegations so agents do the
    *  work instead of re-delegating. */
   noDelegation?: boolean
+  /** Per-call model override. When set, the delegate runs with this model
+   *  instead of the agent's configured default. Useful for picking between
+   *  model tiers (fast vs. reasoning) without creating separate agents.
+   *  Works across the mesh — remote nodes honor this on inbound delegations. */
+  model?: string
 }
 
 export interface DelegationResult {

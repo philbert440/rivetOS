@@ -252,7 +252,10 @@ export class DelegationEngine {
         systemPrompt: enrichedPrompt,
         provider,
         tools: delegationTools,
-        modelOverride: agent.model,
+        // Per-call `model` override wins over agent's configured default.
+        // Lets callers pick between model tiers (fast vs. reasoning) without
+        // registering a separate agent for each model.
+        modelOverride: request.model ?? agent.model,
         agentId: request.toAgent,
         workspaceDir: this.config.workspaceDir,
         hooks: this.config.hooks,
@@ -367,6 +370,13 @@ export class DelegationEngine {
             type: 'number',
             description: 'Timeout in milliseconds (default: none — runs until done)',
           },
+          model: {
+            type: 'string',
+            description:
+              'Optional model override for the delegate. Use to pick a specific model ' +
+              'tier (e.g., "grok-4-1-fast-reasoning" vs "grok-4.20-reasoning") without ' +
+              'creating a separate agent. Defaults to the agent\'s configured model.',
+          },
         },
         required: ['to_agent', 'task'],
       },
@@ -382,6 +392,7 @@ export class DelegationEngine {
             task: args.task as string,
             context: args.context as string[] | undefined,
             timeoutMs: args.timeout_ms as number | undefined,
+            model: args.model as string | undefined,
           },
           chainDepth,
         )
@@ -424,7 +435,8 @@ export class DelegationEngine {
     // Include context in the key so different contexts don't collide.
     // Hash the task+context to avoid unbounded key length.
     const contextStr = request.context?.join('|') ?? ''
-    const payload = `${request.task}|${contextStr}`
+    const modelStr = request.model ?? ''
+    const payload = `${request.task}|${contextStr}|${modelStr}`
     // Simple FNV-1a 32-bit hash — fast, good distribution, no crypto overhead
     let hash = 0x811c9dc5
     for (let i = 0; i < payload.length; i++) {

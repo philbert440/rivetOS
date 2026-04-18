@@ -150,6 +150,59 @@ describe('DelegationEngine', () => {
       expect(result.response).toContain('Provider missing-provider not available');
     });
 
+    it('passes per-call model override to provider, falling back to agent default', async () => {
+      // Custom router where the provider records modelOverride per call
+      const modelsUsed: (string | undefined)[] = [];
+      const provider = {
+        id: 'xai',
+        name: 'xai',
+        chatStream: vi.fn(async function* (_msgs: any, opts?: { modelOverride?: string }) {
+          modelsUsed.push(opts?.modelOverride);
+          yield { type: 'text' as const, delta: 'ok' };
+          yield { type: 'done' as const, usage: { promptTokens: 1, completionTokens: 1 } };
+        }),
+        healthCheck: vi.fn(async () => true),
+        getModel: () => 'grok-default',
+        setModel: vi.fn(),
+        getContextWindow: () => 0,
+        getMaxOutputTokens: () => 0,
+      };
+
+      const router = {
+        getAgents: () => [{ id: 'grok', name: 'grok', provider: 'xai', model: 'grok-configured-default' }],
+        getProviders: () => [provider],
+        registerAgent: vi.fn(),
+        registerProvider: vi.fn(),
+        route: vi.fn(),
+        healthCheck: vi.fn(),
+      } as unknown as Router;
+
+      const engine = new DelegationEngine({
+        router,
+        workspace: createMockWorkspace(),
+        tools: () => [],
+      });
+
+      // Call 1: no override → agent's configured model wins
+      await engine.delegate(createRequest({ task: 'call1' }));
+      // Call 2: explicit override wins over agent default
+      await engine.delegate(createRequest({ task: 'call2', model: 'grok-4-1-fast-reasoning' }));
+
+      expect(modelsUsed).toEqual(['grok-configured-default', 'grok-4-1-fast-reasoning']);
+    });
+
+    it('caches separately for different model overrides', async () => {
+      const config = createBaseConfig();
+      const engine = new DelegationEngine(config);
+
+      await engine.delegate(createRequest({ task: 'same-task' }));
+      await engine.delegate(createRequest({ task: 'same-task', model: 'grok-reasoning' }));
+      await engine.delegate(createRequest({ task: 'same-task', model: 'grok-fast' }));
+
+      // Three distinct cache entries — task is identical but model differs
+      expect(engine.cacheSize).toBe(3);
+    });
+
     it('passes fromAgent context in system prompt', async () => {
       const config = createBaseConfig();
       const engine = new DelegationEngine(config);
