@@ -46,7 +46,7 @@ const CANONICAL_SHARED_PATH = '/rivet-shared'
 // ---------------------------------------------------------------------------
 
 export interface MeshRegistryConfig {
-  /** Directory to store mesh.json (e.g., /shared/ or workspace dir) */
+  /** Directory to store mesh.json (e.g., /rivet-shared/ or workspace dir) */
   storageDir: string
 
   /** Mesh configuration from rivet.config.yaml */

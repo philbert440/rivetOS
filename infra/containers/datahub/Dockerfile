@@ -11,10 +11,10 @@ COPY init-db.sh /docker-entrypoint-initdb.d/01-init-db.sh
 COPY init-shared.sh /docker-entrypoint-initdb.d/02-init-shared.sh
 
 # Shared directory for inter-agent collaboration
-RUN mkdir -p /shared/plans /shared/docs /shared/status /shared/whiteboard \
-    && chmod -R 777 /shared
+RUN mkdir -p /rivet-shared/plans /rivet-shared/docs /rivet-shared/status /rivet-shared/whiteboard \
+    && chmod -R 777 /rivet-shared
 
-VOLUME ["/var/lib/postgresql/data", "/shared"]
+VOLUME ["/var/lib/postgresql/data", "/rivet-shared"]
 
 EXPOSE 5432
 

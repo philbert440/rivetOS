@@ -45,7 +45,7 @@ export interface DatahubConfig {
   /** Enable shared storage volume (default: true) */
   sharedStorage?: boolean
 
-  /** Shared storage mount path inside containers (default: "/shared") */
+  /** Shared storage mount path inside containers (default: "/rivet-shared") */
   sharedMountPath?: string
 }
 

@@ -269,11 +269,11 @@ async function testHealthEndpoint(): Promise<{ pass: boolean; message: string; d
 }
 
 async function testSharedStorage(): Promise<{ pass: boolean; message: string; detail?: string }> {
-  const sharedDir = '/shared'
+  const sharedDir = '/rivet-shared'
   try {
     await access(sharedDir)
   } catch {
-    return { pass: true, message: 'Shared storage: /shared/ not mounted (single-agent mode)' }
+    return { pass: true, message: 'Shared storage: /rivet-shared/ not mounted (single-agent mode)' }
   }
 
   const testFile = resolve(sharedDir, '.smoke-test')

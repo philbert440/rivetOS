@@ -273,9 +273,9 @@ fi
 if ! $PRIVILEGED; then
     # Auto-detect or set up shared mount on Proxmox host (unprivileged path)
     if [[ -z "$SHARED_MOUNT" ]]; then
-        if ssh -o ConnectTimeout=5 "$PVE_NODE" "test -d /mnt/shared && ls /mnt/shared/ &>/dev/null" &>/dev/null; then
-            SHARED_MOUNT="/mnt/shared"
-            log "  Auto-detected shared mount: /mnt/shared on $PVE_NODE"
+        if ssh -o ConnectTimeout=5 "$PVE_NODE" "test -d /mnt/rivet-shared && ls /mnt/rivet-shared/ &>/dev/null" &>/dev/null; then
+            SHARED_MOUNT="/mnt/rivet-shared"
+            log "  Auto-detected shared mount: /mnt/rivet-shared on $PVE_NODE"
         else
             NFS_HOST="$DATAHUB_IP"
 
@@ -283,15 +283,15 @@ if ! $PRIVILEGED; then
                 log "  Setting up NFS mount from $NFS_HOST on $PVE_NODE..."
                 ssh "$PVE_NODE" "bash -c '
                     apt-get install -y -qq nfs-common 2>/dev/null
-                    mkdir -p /mnt/shared
-                    if ! grep -q \"${NFS_HOST}:/shared\" /etc/fstab; then
-                        echo \"${NFS_HOST}:/shared /mnt/shared nfs defaults,_netdev 0 0\" >> /etc/fstab
+                    mkdir -p /mnt/rivet-shared
+                    if ! grep -q \"${NFS_HOST}:/rivet-shared\" /etc/fstab; then
+                        echo \"${NFS_HOST}:/rivet-shared /mnt/rivet-shared nfs defaults,_netdev 0 0\" >> /etc/fstab
                     fi
-                    mount /mnt/shared 2>/dev/null || mount -t nfs ${NFS_HOST}:/shared /mnt/shared
+                    mount /mnt/rivet-shared 2>/dev/null || mount -t nfs ${NFS_HOST}:/rivet-shared /mnt/rivet-shared
                 '" 2>/dev/null
-                if ssh "$PVE_NODE" "test -d /mnt/shared && ls /mnt/shared/ &>/dev/null" &>/dev/null; then
-                    SHARED_MOUNT="/mnt/shared"
-                    log "  NFS mount configured: ${NFS_HOST}:/shared → /mnt/shared on $PVE_NODE"
+                if ssh "$PVE_NODE" "test -d /mnt/rivet-shared && ls /mnt/rivet-shared/ &>/dev/null" &>/dev/null; then
+                    SHARED_MOUNT="/mnt/rivet-shared"
+                    log "  NFS mount configured: ${NFS_HOST}:/rivet-shared → /mnt/rivet-shared on $PVE_NODE"
                 else
                     log "  ⚠ Failed to mount NFS from $NFS_HOST. Continuing without shared storage."
                 fi
@@ -449,7 +449,7 @@ PCT_CREATE_CMD="pct create $CTID local:vztmpl/${TEMPLATE} \
 
 # Unprivileged CTs use bind mount from host; privileged CTs mount NFS directly
 if ! $PRIVILEGED && [[ -n "$SHARED_MOUNT" ]]; then
-    PCT_CREATE_CMD+=" --mp0 ${SHARED_MOUNT},mp=/shared"
+    PCT_CREATE_CMD+=" --mp0 ${SHARED_MOUNT},mp=/rivet-shared"
 fi
 
 run_on_pve "$PCT_CREATE_CMD"
@@ -487,22 +487,22 @@ if $PRIVILEGED && [[ -n "$DATAHUB_IP" ]]; then
     log "Phase 3.5: Setting up direct NFS mount from DataHub ($DATAHUB_IP)..."
 
     run_on_ct "apt-get install -y -qq nfs-common"
-    run_on_ct "mkdir -p /shared"
+    run_on_ct "mkdir -p /rivet-shared"
 
     # Add fstab entry for persistence
-    run_on_ct "if ! grep -q '${DATAHUB_IP}:/shared' /etc/fstab; then
-        echo '${DATAHUB_IP}:/shared /shared nfs defaults,_netdev 0 0' >> /etc/fstab
+    run_on_ct "if ! grep -q '${DATAHUB_IP}:/rivet-shared' /etc/fstab; then
+        echo '${DATAHUB_IP}:/rivet-shared /rivet-shared nfs defaults,_netdev 0 0' >> /etc/fstab
     fi"
 
     # Mount NFS
-    run_on_ct "mount /shared"
+    run_on_ct "mount /rivet-shared"
 
     # Verify
-    if run_on_ct "test -d /shared && ls /shared/ &>/dev/null" 2>/dev/null; then
-        log "  ✅ NFS mounted: ${DATAHUB_IP}:/shared → /shared"
+    if run_on_ct "test -d /rivet-shared && ls /rivet-shared/ &>/dev/null" 2>/dev/null; then
+        log "  ✅ NFS mounted: ${DATAHUB_IP}:/rivet-shared → /rivet-shared"
     else
-        warn "  ⚠ NFS mount failed. Check that CT110 exports /shared to this subnet."
-        warn "  Manual fix: ssh root@${IP} 'mount -t nfs ${DATAHUB_IP}:/shared /shared'"
+        warn "  ⚠ NFS mount failed. Check that CT110 exports /rivet-shared to this subnet."
+        warn "  Manual fix: ssh root@${IP} 'mount -t nfs ${DATAHUB_IP}:/rivet-shared /rivet-shared'"
     fi
 fi
 
