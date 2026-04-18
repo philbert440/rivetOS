@@ -11,6 +11,7 @@
 
 import pg from 'pg'
 import { safeSlice } from './safe-slice.js'
+import { splitIntoChunks, meanPool } from './chunking.js'
 
 // ---------------------------------------------------------------------------
 // Config from environment
@@ -34,7 +35,7 @@ const MAX_RETRIES = parseInt(process.env.EMBED_MAX_RETRIES ?? '3', 10)
 const MAX_FAILURES = parseInt(process.env.EMBED_MAX_FAILURES ?? '3', 10)
 const TRUNCATE_DIMS = parseInt(process.env.EMBED_TRUNCATE_DIMS ?? '4000', 10)
 const API_TIMEOUT_MS = parseInt(process.env.EMBED_API_TIMEOUT_MS ?? '30000', 10)
-const MAX_CONTENT_LENGTH = 8000
+const CHARS_PER_CHUNK = parseInt(process.env.EMBED_CHARS_PER_CHUNK ?? '20000', 10)
 
 // ---------------------------------------------------------------------------
 // State
@@ -219,16 +220,27 @@ async function processBatch(queueRows) {
     // Map content rows by id for lookup
     const contentMap = new Map(content.rows.map((r) => [r.id, r.content]))
 
-    // Process in API-sized batches
-    for (let i = 0; i < rows.length; i += API_BATCH_SIZE) {
-      const chunk = rows.slice(i, i + API_BATCH_SIZE)
-      const textsAndIds = chunk
-        .filter((r) => contentMap.has(r.target_id))
-        .map((r) => ({
-          queueId: r.id,
-          targetId: r.target_id,
-          text: safeSlice(contentMap.get(r.target_id), MAX_CONTENT_LENGTH),
-        }))
+    // Partition rows into normal and oversized
+    const normalRows = []
+    const oversizedRows = []
+    for (const r of rows) {
+      if (!contentMap.has(r.target_id)) continue
+      const content = contentMap.get(r.target_id)
+      if (content.length <= CHARS_PER_CHUNK) {
+        normalRows.push(r)
+      } else {
+        oversizedRows.push(r)
+      }
+    }
+
+    // Normal path: batch API calls, one vector per row. Use safeSlice for defense.
+    for (let i = 0; i < normalRows.length; i += API_BATCH_SIZE) {
+      const chunk = normalRows.slice(i, i + API_BATCH_SIZE)
+      const textsAndIds = chunk.map((r) => ({
+        queueId: r.id,
+        targetId: r.target_id,
+        text: safeSlice(contentMap.get(r.target_id), CHARS_PER_CHUNK),
+      }))
 
       if (textsAndIds.length === 0) continue
 
@@ -269,6 +281,51 @@ async function processBatch(queueRows) {
           await markSourceFailure(table, targetId, 'Embedding returned null after retries')
           metrics.totalFailed++
         }
+      }
+    }
+
+    // Oversized path: split, embed chunks (using embedBatch which handles arbitrary size via isolation), mean-pool
+    for (const row of oversizedRows) {
+      const targetId = row.target_id
+      const queueId = row.id
+      const content = contentMap.get(targetId)
+      const chunks = splitIntoChunks(content, CHARS_PER_CHUNK)
+
+      const apiStart = Date.now()
+      const vectors = await embedBatch(chunks)
+      const apiDuration = Date.now() - apiStart
+
+      // Track metrics
+      metrics._latencySum += apiDuration
+      metrics._latencyCount++
+      metrics.avgLatencyMs = Math.round(metrics._latencySum / metrics._latencyCount)
+      metrics.totalApiCalls++
+
+      const pooled = meanPool(vectors)
+      if (pooled) {
+        try {
+          const truncated = pooled.length > TRUNCATE_DIMS ? pooled.slice(0, TRUNCATE_DIMS) : pooled
+          await pool.query(`UPDATE ${table} SET embedding = $1 WHERE id = $2`, [
+            `[${truncated.join(',')}]`,
+            targetId,
+          ])
+          await pool.query(`DELETE FROM ros_embedding_queue WHERE id = $1`, [queueId])
+          embedded++
+          metrics.totalEmbedded++
+          console.log(
+            `[EmbedWorker] Mean-pooled ${chunks.length} chunks for ${table} ${targetId} (${content.length} chars)`,
+          )
+        } catch (err) {
+          console.error(`[EmbedWorker] Failed to store ${table} ${targetId}: ${err.message}`)
+          await markQueueFailure(queueId, err.message)
+          await markSourceFailure(table, targetId, err.message)
+          metrics.totalFailed++
+        }
+      } else {
+        const errMsg = 'Oversized row: all chunks failed to embed'
+        await markQueueFailure(queueId, errMsg)
+        await markSourceFailure(table, targetId, errMsg)
+        metrics.totalFailed++
       }
     }
   }
@@ -447,7 +504,7 @@ async function main() {
   console.log('[EmbedWorker] Starting...')
   console.log(`[EmbedWorker] Embed endpoint: ${EMBED_URL}`)
   console.log(
-    `[EmbedWorker] Batch: ${BATCH_SIZE}, API batch: ${API_BATCH_SIZE}, truncate: ${TRUNCATE_DIMS}`,
+    `[EmbedWorker] Batch: ${BATCH_SIZE}, API batch: ${API_BATCH_SIZE}, chunk: ${CHARS_PER_CHUNK}, truncate: ${TRUNCATE_DIMS}`,
   )
 
   // Start listener
