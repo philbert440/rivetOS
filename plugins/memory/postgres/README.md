@@ -77,6 +77,33 @@ npx tsx plugins/memory/postgres/src/migrate.ts
 
 Migrates conversations, messages (with tool data from message_parts), summaries (with parent relationships), and summary_sources. Preserves existing embeddings. Prints counts before and after.
 
+## Embedding Backfill (after CHARS_PER_CHUNK fix)
+
+Nemotron-8B has a 2048-token context window. The previous `CHARS_PER_CHUNK = 20_000` was too large for worst-case content (code/JSON ~3.5 chars/token), causing silent `null` responses from the embedding service. It is now `3_500`.
+
+After deploying the fix:
+
+```bash
+# From repo root
+npm run --workspace=@rivetos/memory-postgres backfill-embeddings
+# or with flag:
+npm run --workspace=@rivetos/memory-postgres backfill-embeddings -- --dry-run
+```
+
+The script:
+- Clears stuck entries from `ros_embedding_queue` (`attempts >= 3`)
+- Resets `embed_failures` on rows with `embedding IS NULL`
+- Re-enqueues missing embeddings (batched, idempotent, with delay)
+- Handles `ros_summaries` gracefully if columns are present
+- Prints final counts and monitoring queries
+
+### Monitoring
+```sql
+SELECT count(*) FROM ros_embedding_queue;
+SELECT count(*) FROM ros_messages WHERE embedding IS NULL;
+SELECT count(*) FROM ros_summaries WHERE embedding IS NULL;
+```
+
 ## Writing Your Own Memory Backend
 
 1. Implement the `Memory` interface from `@rivetos/types`

@@ -180,14 +180,14 @@ function isTransientError(error: unknown, status?: number): boolean {
 /**
  * Maximum characters per embedding API call.
  *
- * Nemotron has an 8K token context window. 20000 chars is ~5-6K tokens for
- * typical text — a conservative ceiling that leaves headroom for tokenizer
- * variance (code, non-latin scripts, long-word content).
+ * Nemotron-8B has a 2048-token context; ~3.5 chars/token worst case (code/JSON)
+ * → 3500 chars keeps chunks safely under limit. The old 20_000 value caused
+ * silent null returns from the embedding service.
  *
  * Content longer than this is split into chunks, embedded separately, and
  * mean-pooled into a single vector before storage.
  */
-const CHARS_PER_CHUNK = 20_000
+const CHARS_PER_CHUNK = 3_500
 
 export class BackgroundEmbedder {
   private pool: pg.Pool
@@ -222,7 +222,7 @@ export class BackgroundEmbedder {
     this.apiBatchSize = config.apiBatchSize ?? 8
     this.maxRetries = config.maxRetries ?? 3
     this.maxFailures = config.maxFailures ?? 3
-    this.pool = new pg.Pool({ connectionString: config.connectionString, max: 4 })
+    this.pool = new Pool({ connectionString: config.connectionString, max: 4 })
   }
 
   start(): void {
