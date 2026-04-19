@@ -35,3 +35,4 @@ REFACTOR_PROGRESS.md
 # User data — lives on host, bind-mounted into containers
 # Never commit user workspace files to the source tree
 /workspace/
+tmp/
