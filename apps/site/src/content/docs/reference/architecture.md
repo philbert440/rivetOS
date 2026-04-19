@@ -423,10 +423,11 @@ rivetOS/
           embedder.ts                ← OpenAI embedding generation + queue
           expand.ts                  ← Summary expansion (drill into source messages)
           review-loop.ts             ← Learning loop: reflect → synthesize → store
-          compactor/                 ← Summary DAG (3 files)
+          compactor/                 ← Summary DAG (v5 pipeline)
             index.ts                 ← barrel
-            compactor.ts             ← CompactionEngine — hierarchical summarization
-            types.ts                 ← compaction types
+            compactor.ts             ← CompactionEngine — thinking-model hierarchical summarization
+            types.ts                 ← v5 prompts (leaf/branch/root), types, formatters
+          tool-synth.ts              ← synthesizeToolCallContent — natural-language for tool-call rows
           tools/                     ← Memory-as-tools (4 files)
             index.ts                 ← barrel
             search-tool.ts           ← memory_search tool
@@ -435,6 +436,7 @@ rivetOS/
             helpers.ts               ← shared tool helpers
           migrate.ts                 ← Schema migration (v1)
           migrate-v2.ts              ← Schema migration (v2 — embeddings, summaries)
+          migrate-v3.ts              ← Schema migration (v3 — ros_tool_synth_queue)
           index.ts                   ← barrel exports
     tools/
       shell/                         ← Shell command execution with safety

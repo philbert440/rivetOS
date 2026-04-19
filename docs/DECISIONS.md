@@ -66,3 +66,17 @@ Message splitting, typing indicators, API format differences, and other platform
 
 ## 14. Type safety enforcement → Strict ✅ (added April 2026)
 Every package has a `typecheck` target that runs `tsc --noEmit`. All 21 packages must typecheck clean. This is enforced via `npx nx run-many -t typecheck` in CI. No new type errors are accepted.
+
+## 15. Memory-quality pipeline → v5 (local, thinking, faithful) ✅ (added April 2026)
+
+After a 10-pick side-by-side probe across cloud (Grok, Claude) and local (Gemma-E2B) summarizers, the v5 pipeline replaces v4 with:
+
+- **Local-first summarization on CPU** — Gemma-4-E2B with thinking mode on, 128k context, no truncation, 7k/14k/20k token budgets. Summaries stay on-box (no cloud dependency, no context leakage).
+- **Rich message formatting** — ISO-minute timestamps, agent attribution, conversation preamble (id/channel/title/span). Addresses recency discrimination (same-day iterations look different) and multi-agent attribution.
+- **Exhaustiveness + system-messages-first-class** in the prompts — cloud models were prone to topic-narrowing (picking one theme and dropping others) and collapsing dense system-message state into prose. Explicit rules preserve both.
+- **Async tool-call content synthesis** — new `ros_tool_synth_queue` + compaction-worker drain + CLI backfill. Previously-empty assistant rows (tool_name + tool_args only) now get a natural-language sentence so they can be FTS/vector searched.
+- **Hardened undici client** — no headersTimeout/bodyTimeout (summarization of 60k-token prompts was hitting Node's default 300s header timeout mid-processing). AbortSignal is the only stop condition; 3 retries with 5/10/15s backoff.
+
+**Why CPU, not GPU:** A separate investigation measured systematic quality degradation on V100 via llama.cpp's CUDA kernels (~50% output density reduction vs. CPU, regardless of flash-attn on/off, q8_0/f16 KV cache, or model size). See daily notes 2026-04-18 for the full write-up. End state: summarization + tool-synth stay on CPU; GPUs stay reserved for larger-model inference, embeddings, and training.
+
+**Validation methodology:** pick 10 representative summaries spanning size and model era, regenerate with each prompt variant, spot-check every identifier against source. Ship when zero hallucinations + exhaustiveness holds. Artifacts: `/rivet-shared/summary-refine/results-v4-cpu/`.
