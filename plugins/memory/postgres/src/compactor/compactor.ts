@@ -1,42 +1,32 @@
 /**
- * BackgroundCompactor — summarizes old messages into the summary DAG.
+ * BackgroundCompactor — v5 memory-quality pipeline.
  *
- * M4.1 Phase B: Hierarchical compaction with branch/root levels,
- * level-specific prompts, batch source linking, and metrics.
+ * Features:
+ * - Rich formatter with conversation metadata, ISO-minute timestamps, agent attribution, tool-call fallback.
+ * - v5 battle-tested prompts (verbatim from prompts.mjs).
+ * - 7000/14000/20000 token budgets for leaf/branch/root.
+ * - Hardened undici Agent (no headersTimeout/bodyTimeout — relies on AbortSignal only).
+ * - No content truncation (128k ctx).
+ * - Model tag 'rivet-refined-v5' (or config override).
+ * - loadConversationMeta for preamble.
  *
- * Runs on a timer (default: every 30 minutes):
- *
- * Leaf compaction (Level 0):
- *   1. Finds conversations with ≥ minUnsummarized messages without summaries
- *   2. Takes the oldest batchSize unsummarized messages from each
- *   3. Sends them to the LLM for summarization
- *   4. Stores as ros_summaries (kind='leaf', depth=0)
- *   5. Links source messages via ros_summary_sources
- *
- * Branch compaction (Level 1):
- *   1. Finds conversations with ≥ minLeafsForBranch unparented leaf summaries
- *   2. Takes up to branchBatchSize oldest unparented leaves
- *   3. Summarizes them into a branch summary (kind='branch', depth=1)
- *   4. Sets parent_id on each leaf to point to the new branch
- *
- * Root compaction (Level 2):
- *   1. Finds conversations with ≥ minBranchesForRoot unparented branch summaries
- *   2. Takes up to rootBatchSize oldest unparented branches
- *   3. Summarizes them into a root summary (kind='root', depth=2)
- *   4. Sets parent_id on each branch to point to the new root
- *
- * Embeddings are NULL on creation — BackgroundEmbedder picks them up.
+ * See /rivet-shared/summary-refine/pr-spec.md for exact requirements.
  */
 
 import pg from 'pg'
+import { Agent, fetch as undiciFetch } from 'undici'
 import {
-  fmtDate,
+  fmtIsoMinute,
   sanitizeForJson,
   MIN_BATCH_SIZE,
   MAX_CONVERSATIONS_PER_CYCLE,
+  LEAF_MAX_TOKENS,
+  BRANCH_MAX_TOKENS,
+  ROOT_MAX_TOKENS,
   LLM_TIMEOUT_MS,
-  MAX_MSG_CONTENT_FOR_PROMPT,
-  MAX_SUMMARY_CONTENT_FOR_PROMPT,
+  LLM_TEMPERATURE,
+  LLM_RETRIES,
+  LLM_RETRY_BACKOFF_MS,
   LEAF_SYSTEM_PROMPT,
   BRANCH_SYSTEM_PROMPT,
   ROOT_SYSTEM_PROMPT,
@@ -49,7 +39,17 @@ import {
   type LlmResponse,
   type BranchCandidateRow,
   type RootCandidateRow,
+  type ConversationMeta,
 } from './types.js'
+
+const httpDispatcher = new Agent({
+  headersTimeout: 0, // rely on AbortSignal only
+  bodyTimeout: 0,
+  keepAliveTimeout: 60_000,
+  keepAliveMaxTimeout: 600_000,
+  connect: { timeout: 30_000 },
+  pipelining: 0,
+})
 
 export class BackgroundCompactor {
   private pool: pg.Pool
@@ -87,7 +87,7 @@ export class BackgroundCompactor {
       )
     }
     this.endpoint = config.compactorEndpoint
-    this.model = config.compactorModel ?? 'rivet-v0.1'
+    this.model = config.compactorModel ?? 'rivet-refined-v5'
     this.apiKey = config.compactorApiKey ?? ''
     this.intervalMs = config.intervalMs ?? 1_800_000
     this.minUnsummarized = config.minUnsummarized ?? 50
@@ -102,7 +102,7 @@ export class BackgroundCompactor {
   start(): void {
     if (this.timer) return
     console.log(
-      `[Compactor] Starting (every ${String(this.intervalMs / 60_000)}min, ` +
+      `[Compactor] Starting v5 pipeline (every ${String(this.intervalMs / 60_000)}min, ` +
         `leaf threshold ${String(this.minUnsummarized)} msgs, ` +
         `branch threshold ${String(this.minLeafsForBranch)} leaves, ` +
         `root threshold ${String(this.minBranchesForRoot)} branches)`,
@@ -155,6 +155,22 @@ export class BackgroundCompactor {
     }
   }
 
+  private async loadConversationMeta(
+    client: pg.PoolClient | pg.Pool,
+    conversationId: string,
+  ): Promise<ConversationMeta> {
+    const { rows } = await client.query<ConversationMeta>(
+      `SELECT id::text AS id, agent, channel, channel_id, title
+         FROM ros_conversations
+        WHERE id = $1`,
+      [conversationId],
+    )
+    if (rows.length === 0) {
+      throw new Error(`Conversation not found: ${conversationId}`)
+    }
+    return rows[0]
+  }
+
   // =======================================================================
   // Level 0: Leaf compaction (messages → leaf)
   // =======================================================================
@@ -164,7 +180,11 @@ export class BackgroundCompactor {
       `SELECT m.conversation_id, COUNT(*) AS unsummarized
        FROM ros_messages m
        LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
-       WHERE ss.summary_id IS NULL AND m.content IS NOT NULL AND LENGTH(m.content) > 10
+       WHERE ss.summary_id IS NULL 
+         AND (
+           (m.content IS NOT NULL AND LENGTH(m.content) > 10)
+        OR m.tool_name IS NOT NULL
+         )
        GROUP BY m.conversation_id
        HAVING COUNT(*) >= $1
        ORDER BY COUNT(*) DESC LIMIT $2`,
@@ -177,7 +197,6 @@ export class BackgroundCompactor {
     )
 
     for (const row of candidates.rows) {
-      // Circuit breaker: skip conversations that repeatedly fail
       const cb = this.circuitBreaker.get(row.conversation_id)
       if (cb && cb.failures >= BackgroundCompactor.CIRCUIT_BREAKER_THRESHOLD) {
         if (Date.now() - cb.lastFailAt < BackgroundCompactor.CIRCUIT_BREAKER_RESET_MS) {
@@ -201,23 +220,32 @@ export class BackgroundCompactor {
   }
 
   private async compactLeafConversation(conversationId: string): Promise<void> {
+    const clientForMeta = await this.pool.connect()
+    let convMeta: ConversationMeta
+    try {
+      convMeta = await this.loadConversationMeta(clientForMeta, conversationId)
+    } finally {
+      clientForMeta.release()
+    }
+
     const messages = await this.pool.query<CompactMessageRow>(
-      `SELECT m.id, m.role, m.content, m.agent, m.created_at
+      `SELECT m.id, m.role, m.content, m.agent, m.created_at, m.tool_name, m.tool_args
        FROM ros_messages m
        LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
        WHERE ss.summary_id IS NULL AND m.conversation_id = $1
-         AND m.content IS NOT NULL AND LENGTH(m.content) > 10
+         AND (
+           (m.content IS NOT NULL AND LENGTH(m.content) > 10)
+        OR m.tool_name IS NOT NULL
+         )
        ORDER BY m.created_at ASC LIMIT $2`,
       [conversationId, this.batchSize],
     )
 
     if (messages.rows.length < MIN_BATCH_SIZE) return
 
-    const formatted = messages.rows
-      .map((m) => `[${m.role}] ${sanitizeForJson(m.content.slice(0, MAX_MSG_CONTENT_FOR_PROMPT))}`)
-      .join('\n')
+    const formatted = formatLeafPrompt(convMeta, messages.rows)
 
-    const summaryText = await this.callLlm(LEAF_SYSTEM_PROMPT, formatted, 1000)
+    const summaryText = await this.callLlm(LEAF_SYSTEM_PROMPT, formatted, LEAF_MAX_TOKENS)
     if (!summaryText) {
       const entry = this.circuitBreaker.get(conversationId) ?? { failures: 0, lastFailAt: 0 }
       entry.failures++
@@ -230,7 +258,6 @@ export class BackgroundCompactor {
       return
     }
 
-    // Success — clear circuit breaker
     this.circuitBreaker.delete(conversationId)
 
     const client = await this.pool.connect()
@@ -311,6 +338,14 @@ export class BackgroundCompactor {
   }
 
   private async compactBranchConversation(conversationId: string): Promise<void> {
+    const clientForMeta = await this.pool.connect()
+    let convMeta: ConversationMeta
+    try {
+      convMeta = await this.loadConversationMeta(clientForMeta, conversationId)
+    } finally {
+      clientForMeta.release()
+    }
+
     const leaves = await this.pool.query<SummaryRow>(
       `SELECT id, content, kind, earliest_at, latest_at, message_count, created_at
        FROM ros_summaries
@@ -321,17 +356,9 @@ export class BackgroundCompactor {
 
     if (leaves.rows.length < this.minLeafsForBranch) return
 
-    const formatted = leaves.rows
-      .map((s, i) => {
-        const period =
-          s.earliest_at && s.latest_at
-            ? `${fmtDate(s.earliest_at)} → ${fmtDate(s.latest_at)}`
-            : fmtDate(s.created_at)
-        return `[Leaf ${String(i + 1)}, ${period}, ${String(s.message_count)} msgs]\n${sanitizeForJson(s.content.slice(0, MAX_SUMMARY_CONTENT_FOR_PROMPT))}`
-      })
-      .join('\n\n')
+    const formatted = formatBranchPrompt(convMeta, leaves.rows)
 
-    const summaryText = await this.callLlm(BRANCH_SYSTEM_PROMPT, formatted, 1500)
+    const summaryText = await this.callLlm(BRANCH_SYSTEM_PROMPT, formatted, BRANCH_MAX_TOKENS)
     if (!summaryText) {
       console.error(`[Compactor] Empty branch summary for conversation ${conversationId}`)
       return
@@ -404,6 +431,14 @@ export class BackgroundCompactor {
   }
 
   private async compactRootConversation(conversationId: string): Promise<void> {
+    const clientForMeta = await this.pool.connect()
+    let convMeta: ConversationMeta
+    try {
+      convMeta = await this.loadConversationMeta(clientForMeta, conversationId)
+    } finally {
+      clientForMeta.release()
+    }
+
     const branches = await this.pool.query<SummaryRow>(
       `SELECT id, content, kind, earliest_at, latest_at, message_count, created_at
        FROM ros_summaries
@@ -414,17 +449,9 @@ export class BackgroundCompactor {
 
     if (branches.rows.length < this.minBranchesForRoot) return
 
-    const formatted = branches.rows
-      .map((s, i) => {
-        const period =
-          s.earliest_at && s.latest_at
-            ? `${fmtDate(s.earliest_at)} → ${fmtDate(s.latest_at)}`
-            : fmtDate(s.created_at)
-        return `[Branch ${String(i + 1)}, ${period}, ${String(s.message_count)} msgs]\n${sanitizeForJson(s.content.slice(0, MAX_SUMMARY_CONTENT_FOR_PROMPT))}`
-      })
-      .join('\n\n')
+    const formatted = formatRootPrompt(convMeta, branches.rows)
 
-    const summaryText = await this.callLlm(ROOT_SYSTEM_PROMPT, formatted, 2000)
+    const summaryText = await this.callLlm(ROOT_SYSTEM_PROMPT, formatted, ROOT_MAX_TOKENS)
     if (!summaryText) {
       console.error(`[Compactor] Empty root summary for conversation ${conversationId}`)
       return
@@ -467,7 +494,7 @@ export class BackgroundCompactor {
   }
 
   // -----------------------------------------------------------------------
-  // LLM call (shared across all levels)
+  // Hardened LLM client (undici + retries + thinking mode)
   // -----------------------------------------------------------------------
 
   private async callLlm(
@@ -477,41 +504,185 @@ export class BackgroundCompactor {
   ): Promise<string | null> {
     this.metrics.llmCalls++
 
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (this.apiKey) {
-        headers['Authorization'] = `Bearer ${this.apiKey}`
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS)
+
+    let lastError: Error | null = null
+
+    for (let attempt = 0; attempt <= LLM_RETRIES; attempt++) {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (this.apiKey) {
+          headers['Authorization'] = `Bearer ${this.apiKey}`
+        }
+
+        const response = await undiciFetch(`${this.endpoint}/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: this.model,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userContent },
+            ],
+            max_tokens: maxTokens,
+            temperature: LLM_TEMPERATURE,
+            // Thinking mode always on for v5 (no enable_thinking: false)
+          }),
+          dispatcher: httpDispatcher,
+          signal: controller.signal,
+        })
+
+        clearTimeout(timeoutId)
+
+        if (!response.ok) {
+          this.metrics.llmFailures++
+          const statusErr = new Error(`HTTP ${response.status}: ${response.statusText}`)
+          if (response.status >= 500 || response.status === 0) {
+            lastError = statusErr
+            if (attempt < LLM_RETRIES) {
+              const backoff = (attempt + 1) * LLM_RETRY_BACKOFF_MS
+              console.error(
+                `[Compactor] LLM ${response.status}, retry ${attempt + 1} in ${backoff}ms`,
+              )
+              await new Promise((r) => setTimeout(r, backoff))
+              continue
+            }
+          }
+          console.error(
+            `[Compactor] LLM returned ${String(response.status)}: ${response.statusText}`,
+          )
+          return null
+        }
+
+        const data = (await response.json()) as LlmResponse
+        const message = data.choices?.[0]?.message
+        return message?.content ?? message?.reasoning_content ?? null
+      } catch (error: unknown) {
+        clearTimeout(timeoutId)
+        lastError = error instanceof Error ? error : new Error(String(error))
+
+        if (attempt < LLM_RETRIES) {
+          const backoff = (attempt + 1) * LLM_RETRY_BACKOFF_MS
+          console.error(
+            `[Compactor] LLM error (attempt ${attempt + 1}): ${lastError.message}, retry in ${backoff}ms`,
+          )
+          await new Promise((r) => setTimeout(r, backoff))
+          continue
+        }
+        break
       }
-
-      const response = await fetch(`${this.endpoint}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model: this.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userContent },
-          ],
-          max_tokens: maxTokens,
-          temperature: 0.3,
-        }),
-        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
-      })
-
-      if (!response.ok) {
-        this.metrics.llmFailures++
-        console.error(`[Compactor] LLM returned ${String(response.status)}: ${response.statusText}`)
-        return null
-      }
-
-      const data = (await response.json()) as LlmResponse
-      const message = data.choices?.[0]?.message
-      return message?.content ?? message?.reasoning_content ?? null
-    } catch (error: unknown) {
-      this.metrics.llmFailures++
-      const msg = error instanceof Error ? error.message : String(error)
-      console.error(`[Compactor] LLM call failed: ${msg}`)
-      return null
     }
+
+    this.metrics.llmFailures++
+    console.error(
+      `[Compactor] LLM call failed after ${LLM_RETRIES + 1} attempts: ${lastError?.message}`,
+    )
+    return null
   }
+}
+
+// -----------------------------------------------------------------------
+// Formatters — exact spec from pr-spec.md §1.2 (exported for worker reuse)
+// -----------------------------------------------------------------------
+
+export function formatLeafPrompt(conv: ConversationMeta, msgs: CompactMessageRow[]): string {
+  const span = msgs.length
+    ? `${fmtIsoMinute(msgs[0].created_at)} → ${fmtIsoMinute(msgs[msgs.length - 1].created_at)}`
+    : ''
+  const preamble = [
+    `[conversation]`,
+    `  id:        ${conv.id}`,
+    `  agent:     ${conv.agent ?? 'unknown'}`,
+    `  channel:   ${conv.channel ?? 'unknown'}${conv.channel_id ? ` (${conv.channel_id})` : ''}`,
+    conv.title ? `  title:     ${conv.title}` : null,
+    `  span:      ${span}`,
+    `  messages:  ${msgs.length} in this batch`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const body = msgs
+    .map((m, i) => {
+      const idx = String(i + 1).padStart(2, '0')
+      const when = fmtIsoMinute(m.created_at)
+      const role = m.role || 'unknown'
+      const agent = m.agent ? `${m.agent}/` : ''
+
+      let content = m.content ?? ''
+      if (!content && m.tool_name) {
+        const args = m.tool_args ? JSON.stringify(m.tool_args).slice(0, 2000) : ''
+        content = `(tool call) ${m.tool_name}${args ? ' ' + args : ''}`
+      }
+
+      const sep = i < msgs.length - 1 ? '\n\n---\n\n' : ''
+      return `[#${idx} ${when} ${agent}${role}]\n${sanitizeForJson(content)}${sep}`
+    })
+    .join('')
+
+  return `${preamble}\n\n---\n\n${body}`
+}
+
+export function formatBranchPrompt(conv: ConversationMeta, leaves: SummaryRow[]): string {
+  const span = leaves.length
+    ? `${fmtIsoMinute(leaves[0].earliest_at ?? leaves[0].created_at)} → ${fmtIsoMinute(
+        leaves[leaves.length - 1].latest_at ?? leaves[leaves.length - 1].created_at,
+      )}`
+    : ''
+  const preamble = [
+    `[conversation]`,
+    `  id:        ${conv.id}`,
+    `  agent:     ${conv.agent ?? 'unknown'}`,
+    `  channel:   ${conv.channel ?? 'unknown'}${conv.channel_id ? ` (${conv.channel_id})` : ''}`,
+    conv.title ? `  title:     ${conv.title}` : null,
+    `  leaves:    ${leaves.length} in this branch`,
+    `  span:      ${span}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const body = leaves
+    .map((s, i) => {
+      const idx = String(i + 1).padStart(2, '0')
+      const from = fmtIsoMinute(s.earliest_at ?? s.created_at)
+      const to = fmtIsoMinute(s.latest_at ?? s.created_at)
+      const msgs = s.message_count
+      const sep = i < leaves.length - 1 ? '\n\n---\n\n' : ''
+      return `[Leaf #${idx} ${from} → ${to} | ${msgs} msgs]\n${sanitizeForJson(s.content)}${sep}`
+    })
+    .join('')
+
+  return `${preamble}\n\n---\n\n${body}`
+}
+
+export function formatRootPrompt(conv: ConversationMeta, branches: SummaryRow[]): string {
+  const span = branches.length
+    ? `${fmtIsoMinute(branches[0].earliest_at ?? branches[0].created_at)} → ${fmtIsoMinute(
+        branches[branches.length - 1].latest_at ?? branches[branches.length - 1].created_at,
+      )}`
+    : ''
+  const preamble = [
+    `[conversation]`,
+    `  id:        ${conv.id}`,
+    `  agent:     ${conv.agent ?? 'unknown'}`,
+    `  channel:   ${conv.channel ?? 'unknown'}${conv.channel_id ? ` (${conv.channel_id})` : ''}`,
+    conv.title ? `  title:     ${conv.title}` : null,
+    `  branches:  ${branches.length} in this root`,
+    `  span:      ${span}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const body = branches
+    .map((s, i) => {
+      const idx = String(i + 1).padStart(2, '0')
+      const from = fmtIsoMinute(s.earliest_at ?? s.created_at)
+      const to = fmtIsoMinute(s.latest_at ?? s.created_at)
+      const msgs = s.message_count
+      const sep = i < branches.length - 1 ? '\n\n---\n\n' : ''
+      return `[Branch #${idx} ${from} → ${to} | ${msgs} msgs]\n${sanitizeForJson(s.content)}${sep}`
+    })
+    .join('')
+
+  return `${preamble}\n\n---\n\n${body}`
 }
