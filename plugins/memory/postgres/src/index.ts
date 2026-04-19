@@ -45,6 +45,16 @@ export {
   LEAF_SYSTEM_PROMPT,
   BRANCH_SYSTEM_PROMPT,
   ROOT_SYSTEM_PROMPT,
+  LEAF_MAX_TOKENS,
+  BRANCH_MAX_TOKENS,
+  ROOT_MAX_TOKENS,
+  LLM_TIMEOUT_MS,
+  LLM_TEMPERATURE,
+  LLM_RETRIES,
+  LLM_RETRY_BACKOFF_MS,
+  MIN_BATCH_SIZE,
+  MAX_CONVERSATIONS_PER_CYCLE,
+  TOOL_SYNTH_QUEUE_TABLE,
   fmtIsoMinute,
   sanitizeForJson,
   formatLeafPrompt,
@@ -62,5 +72,4 @@ export { computeRelevance, temporalDecay } from './scoring.js'
 export { ReviewLoop } from './review-loop.js'
 export type { ReviewLoopConfig, TurnCompleteData, ReviewMetrics } from './review-loop.js'
 
-// Migration helpers
-export { default as migrateV3 } from './migrate-v3.js'
+// Migration helpers — migrate-v3.ts is a standalone CLI (run via npx tsx), not a library export
