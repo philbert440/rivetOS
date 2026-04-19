@@ -252,6 +252,16 @@ export const LEAF_MAX_TOKENS = 7000
 export const BRANCH_MAX_TOKENS = 14000
 export const ROOT_MAX_TOKENS = 20000
 
+/**
+ * Pipeline version — stamped on every summary row written by this build.
+ * Readers (e.g. summary-refine backfill) use this to target rows still on
+ * older prompts/budgets: `WHERE pipeline_version < 5`.
+ *
+ * Bump when prompts, formatters, or token budgets change in a way that
+ * justifies a re-summarization pass.
+ */
+export const PIPELINE_VERSION = 5
+
 /** LLM request timeout (60 min for CPU thinking models) */
 export const LLM_TIMEOUT_MS = 60 * 60 * 1000
 

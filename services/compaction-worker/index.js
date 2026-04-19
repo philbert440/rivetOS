@@ -33,6 +33,7 @@ import {
   LEAF_MAX_TOKENS,
   BRANCH_MAX_TOKENS,
   ROOT_MAX_TOKENS,
+  PIPELINE_VERSION,
   LLM_TIMEOUT_MS,
   LLM_TEMPERATURE,
   LLM_RETRIES,
@@ -361,8 +362,8 @@ async function compactLeafConversation(conversationId) {
 
     const sumResult = await client.query(
       `INSERT INTO ros_summaries
-         (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model)
-       VALUES ($1, 0, $2, 'leaf', $3, $4, $5, $6) RETURNING id`,
+         (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
+       VALUES ($1, 0, $2, 'leaf', $3, $4, $5, $6, $7) RETURNING id`,
       [
         conversationId,
         summaryText,
@@ -370,6 +371,7 @@ async function compactLeafConversation(conversationId) {
         messages.rows[0].created_at,
         messages.rows[messages.rows.length - 1].created_at,
         LLM_MODEL,
+        PIPELINE_VERSION,
       ],
     )
     const summaryId = sumResult.rows[0].id
@@ -441,9 +443,17 @@ async function compactBranchConversation(conversationId) {
 
     const sumResult = await client.query(
       `INSERT INTO ros_summaries
-         (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model)
-       VALUES ($1, 1, $2, 'branch', $3, $4, $5, $6) RETURNING id`,
-      [conversationId, summaryText, totalMessages, earliestAt, latestAt, LLM_MODEL],
+         (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
+       VALUES ($1, 1, $2, 'branch', $3, $4, $5, $6, $7) RETURNING id`,
+      [
+        conversationId,
+        summaryText,
+        totalMessages,
+        earliestAt,
+        latestAt,
+        LLM_MODEL,
+        PIPELINE_VERSION,
+      ],
     )
     const branchId = sumResult.rows[0].id
 
@@ -507,9 +517,17 @@ async function compactRootConversation(conversationId) {
 
     const sumResult = await client.query(
       `INSERT INTO ros_summaries
-         (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model)
-       VALUES ($1, 2, $2, 'root', $3, $4, $5, $6) RETURNING id`,
-      [conversationId, summaryText, totalMessages, earliestAt, latestAt, LLM_MODEL],
+         (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
+       VALUES ($1, 2, $2, 'root', $3, $4, $5, $6, $7) RETURNING id`,
+      [
+        conversationId,
+        summaryText,
+        totalMessages,
+        earliestAt,
+        latestAt,
+        LLM_MODEL,
+        PIPELINE_VERSION,
+      ],
     )
     const rootId = sumResult.rows[0].id
 
