@@ -764,10 +764,11 @@ async function drainToolSynthQueue() {
       const update = await pool.connect()
       try {
         await update.query('BEGIN')
-        await update.query(
-          `UPDATE ros_messages SET content = $1, updated_at = NOW() WHERE id = $2`,
-          [synth, row.message_id],
-        )
+        // NOTE: ros_messages has no updated_at column — do not add it here.
+        await update.query(`UPDATE ros_messages SET content = $1 WHERE id = $2`, [
+          synth,
+          row.message_id,
+        ])
         await update.query(
           `DELETE FROM ${TOOL_SYNTH_QUEUE_TABLE} WHERE message_id = $1`,
           [row.message_id],
@@ -798,18 +799,13 @@ async function drainToolSynthQueue() {
         const attempts = attemptRows[0]?.attempts ?? TOOL_SYNTH_MAX_ATTEMPTS
 
         if (attempts >= TOOL_SYNTH_MAX_ATTEMPTS) {
-          const fallback = `Called ${row.tool_name} tool with arguments.`
-          await c.query(
-            `UPDATE ros_messages SET content = $1, updated_at = NOW() WHERE id = $2`,
-            [fallback, row.message_id],
-          )
-          await c.query(
-            `DELETE FROM ${TOOL_SYNTH_QUEUE_TABLE} WHERE message_id = $1`,
-            [row.message_id],
-          )
+          // Max attempts reached. Do NOT write fallback content — low-signal
+          // strings like "Called exec tool with arguments." pollute search.
+          // Leave the queue row in place with attempts=MAX so `memory
+          // queue-status` surfaces it as stuck; an operator can requeue.
           metrics.toolSynthFailed++
           console.log(
-            `[ToolSynth] ✗ ${row.tool_name} (fallback after ${attempts} attempts): ${errMsg}`,
+            `[ToolSynth] ✗ ${row.tool_name} (giving up after ${attempts} attempts; row left stuck): ${errMsg}`,
           )
         } else {
           console.warn(

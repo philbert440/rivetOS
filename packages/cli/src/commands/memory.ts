@@ -439,10 +439,8 @@ async function commitSynth(
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    await client.query(`UPDATE ros_messages SET content = $1, updated_at = NOW() WHERE id = $2`, [
-      synth,
-      messageId,
-    ])
+    // NOTE: ros_messages has no updated_at column — do not add it here.
+    await client.query(`UPDATE ros_messages SET content = $1 WHERE id = $2`, [synth, messageId])
     await client.query(`DELETE FROM ${QUEUE_TABLE} WHERE message_id = $1`, [messageId])
     await client.query('COMMIT')
   } catch (err) {
