@@ -483,12 +483,13 @@ interface Memory {
 
 The PostgreSQL memory plugin (`plugins/memory/postgres/`) is the reference. It implements:
 - Full transcript storage with hybrid FTS + vector search
-- Summary DAG (hierarchical compaction)
+- Summary DAG (hierarchical compaction — v5 pipeline with thinking-model summarizer)
 - Background embedding generation
 - Temporal decay scoring (Ebbinghaus reinforcement)
 - Review loop for pattern extraction
+- Tool-call content synthesis (async queue + CLI backfill)
 
-See [MEMORY-DESIGN.md](MEMORY-DESIGN.md) for the full design.
+See [MEMORY-DESIGN.md](MEMORY-DESIGN.md) for the full design, including the v5 pipeline changes (timestamps, agent attribution, no truncation, 7k/14k/20k budgets, exhaustiveness rules, tool-synth).
 
 ---
 

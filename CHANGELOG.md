@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Memory v5 — memory-quality pipeline
+
+Full overhaul of the compactor and tool-call handling based on a 10-pick side-by-side probe across cloud and local summarizers. Shipped in `refactor/memory-quality-pipeline-v5`.
+
+#### Added
+
+- **v5 compactor prompts** (`plugins/memory/postgres/src/compactor/types.ts`) — three system prompts (leaf/branch/root) with exhaustiveness, no-outside-context, system-messages-first-class, and LaTeX-ban rules. Thinking mode enabled.
+- **Rich message formatting** — ISO-minute timestamps on every message and layer, agent attribution per message (`[#01 2026-04-18T12:00Z opus/user]`), full conversation preamble with id/channel/title/span/message-count.
+- **Tool-call content synthesis** — new `synthesizeToolCallContent` helper (`plugins/memory/postgres/src/tool-synth.ts`) with the same hardened undici client and prompt as the backfill script. Model-agnostic (reads `TOOL_SYNTH_ENDPOINT`/`TOOL_SYNTH_MODEL`).
+- **Async tool-synth queue** — `ros_tool_synth_queue` table + `migrate-v3.ts` + `adapter.ts` enqueue hook on empty-content tool-call writes + compaction-worker drain job. Inserts never fail on synth errors.
+- **`rivetos memory backfill-tool-synth`** CLI subcommand — parallel workers (`--concurrency`, `--urls` for NUMA-pinned llama-server pairs), resumable, dry-run support, JSON output.
+- **`rivetos memory queue-status`** CLI subcommand — `ros_tool_synth_queue` health by attempts, plus count of historical unqueued candidates.
+- **Hardened undici client** — `Agent` with no `headersTimeout`/`bodyTimeout` and 3-attempt retry with 5/10/15s backoff. Replaces raw `fetch` + 60s timeout in compactor and tool-synth paths.
+- **Unit tests** — 15 formatter tests (`compactor/formatters.test.ts`) covering preamble, timestamps, agent attribution, tool-call fallback, span computation. 13 tool-synth tests (`tool-synth.test.ts`) covering validation, retries, auth, request shape.
+
+#### Changed
+
+- **Summary token budgets** raised to 7k (leaf) / 14k (branch) / 20k (root). Thinking mode needs real headroom.
+- **Source-message truncation removed** — 128k context window means no need to chop.
+- **Compactor model tag** → `rivet-refined-v5` (previously `rivet-refined-v4` or `unknown`).
+
+#### Migration
+
+1. `npx tsx plugins/memory/postgres/src/migrate-v3.ts` (idempotent — creates `ros_tool_synth_queue`).
+2. Redeploy `services/compaction-worker/` — picks up v5 prompts via barrel re-exports.
+3. Optional: `rivetos memory backfill-tool-synth` to synthesize content for historical empty rows.
+
+See `docs/MEMORY-DESIGN.md` and `docs/DECISIONS.md` §15 for rationale and probe methodology.
+
 ## [0.4.0] - 2026-04-05
 
 ### First Public Beta
