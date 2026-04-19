@@ -39,6 +39,7 @@ const COMMANDS: Partial<Record<string, () => Promise<void> | void>> = {
   logs: () => import('./commands/logs.js').then((m) => m.default()),
   keys: () => import('./commands/keys.js').then((m) => m.default()),
   mesh: () => import('./commands/mesh.js').then((m) => m.default()),
+  memory: () => import('./commands/memory.js').then((m) => m.default()),
   test: () => import('./commands/test.js').then((m) => m.default()),
   skills: () => import('./commands/skills.js').then((m) => m.default()),
   plugins: () => import('./commands/plugins.js').then((m) => m.default()),
@@ -116,6 +117,10 @@ function showHelp(): void {
     rivetos mesh ping                   Health-check all mesh peers
     rivetos mesh join <host>            Join an existing mesh
     rivetos mesh status                 Show local mesh status
+
+  Memory:
+    rivetos memory backfill-tool-synth  Synthesize content for historical tool calls
+    rivetos memory queue-status         Show ros_tool_synth_queue state
 
   Testing:
     rivetos test                        Run smoke tests (config, provider, memory, tools)
