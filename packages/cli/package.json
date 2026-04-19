@@ -21,9 +21,14 @@
     "@clack/prompts": "^1.2.0",
     "@rivetos/boot": "*",
     "@rivetos/infra": "*",
+    "@rivetos/memory-postgres": "*",
     "@rivetos/provider-anthropic": "*",
     "@rivetos/types": "*",
+    "pg": "^8.20.0",
     "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0"
   },
   "exports": {
     ".": {
