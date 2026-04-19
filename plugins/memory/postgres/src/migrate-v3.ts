@@ -28,7 +28,7 @@ async function printCounts(pool: pg.Pool): Promise<void> {
   try {
     const n = await count(pool, 'ros_tool_synth_queue')
     console.log(`  ros_tool_synth_queue          ${n.toLocaleString()}`)
-  } catch (e) {
+  } catch (_e) {
     console.log('  (table not yet created)')
   }
 }
@@ -79,7 +79,7 @@ async function migrate(): Promise<void> {
   await printCounts(pool)
 }
 
-migrate().catch((err) => {
+migrate().catch((err: unknown) => {
   console.error('❌ Fatal:', err)
   process.exit(1)
 })

@@ -4,7 +4,13 @@
  * Listens for Postgres NOTIFY on 'compaction_work' channel.
  * Picks up queue entries from ros_compaction_queue.
  * Calls Gemma-4-E2B on GERTY CPU (port 8001) for summarization.
- * Full thinking enabled — smart summaries, generous token budget.
+ *
+ * v5 pipeline:
+ *   - prompts, formatters, constants imported from @rivetos/memory-postgres
+ *   - rich message formatter: timestamps, agent, role, tool-call fallback
+ *   - conversation preamble (surface/id/channel/title/span)
+ *   - 7k / 14k / 20k leaf/branch/root token budgets, thinking enabled
+ *   - async tool-call content synthesis (drains ros_tool_synth_queue)
  *
  * Hierarchy: messages → leaf → branch → root (bottom-up compaction).
  *
@@ -13,11 +19,34 @@
  *   - Session idle (15 min idle + 10+ unsummarized)
  *   - Explicit request (agent/API inserts queue entry)
  *
- * Single instance — no timers, no polling, no races.
+ * Single instance — no timers, no polling, no races (except the
+ * tool-synth drain, which shares the processing lock so it never
+ * collides with compaction work).
  */
 
 import pg from 'pg'
-import { BackgroundCompactor, synthesizeToolCallContent, TOOL_SYNTH_QUEUE_TABLE, fmtIsoMinute } from '@rivetos/memory-postgres'
+import { Agent, fetch as undiciFetch } from 'undici'
+import {
+  LEAF_SYSTEM_PROMPT,
+  BRANCH_SYSTEM_PROMPT,
+  ROOT_SYSTEM_PROMPT,
+  LEAF_MAX_TOKENS,
+  BRANCH_MAX_TOKENS,
+  ROOT_MAX_TOKENS,
+  LLM_TIMEOUT_MS,
+  LLM_TEMPERATURE,
+  LLM_RETRIES,
+  LLM_RETRY_BACKOFF_MS,
+  MIN_BATCH_SIZE,
+  MAX_CONVERSATIONS_PER_CYCLE,
+  TOOL_SYNTH_QUEUE_TABLE,
+  fmtIsoMinute,
+  sanitizeForJson,
+  formatLeafPrompt,
+  formatBranchPrompt,
+  formatRootPrompt,
+  synthesizeToolCallContent,
+} from '@rivetos/memory-postgres'
 
 // ---------------------------------------------------------------------------
 // Config from environment
@@ -29,29 +58,32 @@ if (!PG_URL) {
   process.exit(1)
 }
 
-// v5 config — sourced from @rivetos/memory-postgres (no duplication)
 const LLM_URL = process.env.RIVETOS_COMPACTOR_URL
-if (!LLM_URL) { console.error('RIVETOS_COMPACTOR_URL is required'); process.exit(1) }
+if (!LLM_URL) {
+  console.error('[CompactWorker] RIVETOS_COMPACTOR_URL is required')
+  process.exit(1)
+}
 const LLM_MODEL = process.env.RIVETOS_COMPACTOR_MODEL ?? 'rivet-refined-v5'
 const LLM_API_KEY = process.env.RIVETOS_COMPACTOR_API_KEY ?? ''
 
-// Tool synth config (new for v5)
-const TOOL_SYNTH_MODEL = process.env.TOOL_SYNTH_MODEL ?? 'rivet-refined-v5'
-const TOOL_SYNTH_ENDPOINT = process.env.TOOL_SYNTH_ENDPOINT ?? LLM_URL
-const TOOL_SYNTH_BATCH_SIZE = parseInt(process.env.TOOL_SYNTH_BATCH_SIZE ?? '4', 10)
-const TOOL_SYNTH_INTERVAL_MS = parseInt(process.env.TOOL_SYNTH_INTERVAL_MS ?? '30000', 10)
+// Batch sizes (worker-local — library exports only absolute budgets)
+const LEAF_BATCH_SIZE = parseInt(process.env.COMPACT_LEAF_BATCH ?? '10', 10)
+const BRANCH_BATCH_SIZE = parseInt(process.env.COMPACT_BRANCH_BATCH ?? '8', 10)
+const ROOT_BATCH_SIZE = parseInt(process.env.COMPACT_ROOT_BATCH ?? '5', 10)
 
-// v5 constants from plugin (no local duplication)
+// Idle session detection
+const IDLE_CHECK_INTERVAL_MS = parseInt(process.env.COMPACT_IDLE_CHECK_MS ?? '300000', 10)
+const IDLE_MINUTES = parseInt(process.env.COMPACT_IDLE_MINUTES ?? '15', 10)
 const MIN_UNSUMMARIZED = parseInt(process.env.COMPACT_MIN_UNSUMMARIZED ?? '50', 10)
 const MIN_LEAFS_FOR_BRANCH = parseInt(process.env.COMPACT_MIN_LEAFS ?? '5', 10)
 const MIN_BRANCHES_FOR_ROOT = parseInt(process.env.COMPACT_MIN_BRANCHES ?? '3', 10)
-const IDLE_CHECK_INTERVAL_MS = parseInt(process.env.COMPACT_IDLE_CHECK_MS ?? '300000', 10)
-const IDLE_MINUTES = parseInt(process.env.COMPACT_IDLE_MINUTES ?? '15', 10)
 
-// ---------------------------------------------------------------------------
-// v5 prompts, formatters, and constants now imported from @rivetos/memory-postgres
-// (LEAF_SYSTEM_PROMPT, BRANCH_SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT, fmtIsoMinute, etc.)
-// Local copies removed per v5 refactor.
+// Tool-synth drain
+const TOOL_SYNTH_MODEL = process.env.TOOL_SYNTH_MODEL ?? LLM_MODEL
+const TOOL_SYNTH_ENDPOINT = process.env.TOOL_SYNTH_ENDPOINT ?? LLM_URL
+const TOOL_SYNTH_BATCH_SIZE = parseInt(process.env.TOOL_SYNTH_BATCH_SIZE ?? '4', 10)
+const TOOL_SYNTH_INTERVAL_MS = parseInt(process.env.TOOL_SYNTH_INTERVAL_MS ?? '30000', 10)
+const TOOL_SYNTH_MAX_ATTEMPTS = 3
 
 // ---------------------------------------------------------------------------
 // State
@@ -65,6 +97,8 @@ const metrics = {
   rootsCreated: 0,
   llmCalls: 0,
   llmFailures: 0,
+  toolSynthDone: 0,
+  toolSynthFailed: 0,
 }
 
 // Circuit breaker — skip conversations that repeatedly fail LLM summarization
@@ -73,7 +107,7 @@ const CIRCUIT_BREAKER_RESET_MS = 3_600_000 // 1 hour
 const circuitBreaker = new Map() // conversationId → { failures, lastFailAt }
 
 // ---------------------------------------------------------------------------
-// Pool
+// Pool + hardened undici dispatcher
 // ---------------------------------------------------------------------------
 
 const pool = new pg.Pool({ connectionString: PG_URL, max: 4 })
@@ -81,24 +115,18 @@ pool.on('error', (err) => {
   console.error('[CompactWorker] Pool error:', err.message)
 })
 
+const httpDispatcher = new Agent({
+  headersTimeout: 0, // rely on AbortSignal only
+  bodyTimeout: 0,
+  keepAliveTimeout: 60_000,
+  keepAliveMaxTimeout: 600_000,
+  connect: { timeout: 30_000 },
+  pipelining: 0,
+})
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-// fmtDate kept for backward compat in branch/root (v5 uses fmtIsoMinute in leaf)
-function fmtDate(d) {
-  return d?.toISOString?.().split('T')[0] ?? '?'
-}
-
-/**
- * Strip lone surrogates and non-whitespace ASCII control characters.
- */
-function sanitize(text) {
-  return text.replace(
-    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\x00-\x08\x0B\x0C\x0E-\x1F]/g,
-    '',
-  )
-}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -113,7 +141,6 @@ const MAX_RECONNECT_DELAY = 60_000
 let reconnectDelay = 5_000
 
 async function startListener() {
-  // Clean up previous listener if it exists
   if (listenerClient) {
     try {
       listenerClient.removeAllListeners()
@@ -136,7 +163,7 @@ async function startListener() {
     await client.connect()
     await client.query('LISTEN compaction_work')
     console.log('[CompactWorker] Listening on channel: compaction_work')
-    reconnectDelay = 5_000 // reset on success
+    reconnectDelay = 5_000
 
     client.on('notification', (_msg) => {
       if (!processing) {
@@ -165,10 +192,8 @@ function scheduleReconnect() {
 }
 
 // ---------------------------------------------------------------------------
-// LLM call — full thinking enabled
+// LLM call — hardened undici client, thinking enabled
 // ---------------------------------------------------------------------------
-
-const LLM_MAX_RETRIES = parseInt(process.env.COMPACT_LLM_RETRIES ?? '2', 10)
 
 async function callLlm(systemPrompt, userContent, maxTokens) {
   metrics.llmCalls++
@@ -187,18 +212,21 @@ async function callLlm(systemPrompt, userContent, maxTokens) {
     max_tokens: maxTokens,
     temperature: LLM_TEMPERATURE,
     // Full thinking enabled — no enable_thinking: false
-    // The model will reason deeply before producing the summary
   })
 
   let lastError = null
 
-  for (let attempt = 0; attempt <= LLM_MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= LLM_RETRIES; attempt++) {
+    const ctrl = new AbortController()
+    const timeout = setTimeout(() => ctrl.abort(), LLM_TIMEOUT_MS)
+
     try {
-      const response = await fetch(`${LLM_URL}/chat/completions`, {
+      const response = await undiciFetch(`${LLM_URL}/chat/completions`, {
         method: 'POST',
         headers,
         body,
-        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+        signal: ctrl.signal,
+        dispatcher: httpDispatcher,
       })
 
       // Non-retryable error (4xx)
@@ -213,10 +241,10 @@ async function callLlm(systemPrompt, userContent, maxTokens) {
       // Retryable error (5xx, server overloaded, etc.)
       if (!response.ok) {
         lastError = new Error(`HTTP ${response.status}: ${response.statusText}`)
-        if (attempt < LLM_MAX_RETRIES) {
-          const delay = Math.pow(2, attempt) * 5_000 // 5s, 10s — longer for LLM
+        if (attempt < LLM_RETRIES) {
+          const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
           console.error(
-            `[CompactWorker] LLM ${response.status}, retry ${attempt + 1}/${LLM_MAX_RETRIES} in ${delay / 1000}s`,
+            `[CompactWorker] LLM ${response.status}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
           )
           await sleep(delay)
           continue
@@ -230,13 +258,12 @@ async function callLlm(systemPrompt, userContent, maxTokens) {
       // Support both content and reasoning_content (thinking models)
       const content = message?.content ?? message?.reasoning_content ?? null
 
-      // Guard against empty responses — retry if we got nothing useful
       if (!content || content.trim().length < 20) {
         lastError = new Error('Empty or too-short LLM response')
-        if (attempt < LLM_MAX_RETRIES) {
-          const delay = Math.pow(2, attempt) * 5_000
+        if (attempt < LLM_RETRIES) {
+          const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
           console.error(
-            `[CompactWorker] LLM returned empty/short content, retry ${attempt + 1}/${LLM_MAX_RETRIES} in ${delay / 1000}s`,
+            `[CompactWorker] LLM returned empty/short content, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
           )
           await sleep(delay)
           continue
@@ -247,47 +274,67 @@ async function callLlm(systemPrompt, userContent, maxTokens) {
       return content
     } catch (err) {
       lastError = err
-
-      // Timeout or network error — retry
-      if (attempt < LLM_MAX_RETRIES) {
-        const delay = Math.pow(2, attempt) * 5_000
+      if (attempt < LLM_RETRIES) {
+        const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
         console.error(
-          `[CompactWorker] LLM error: ${err.message}, retry ${attempt + 1}/${LLM_MAX_RETRIES} in ${delay / 1000}s`,
+          `[CompactWorker] LLM error: ${err.message}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
         )
         await sleep(delay)
         continue
       }
       break
+    } finally {
+      clearTimeout(timeout)
     }
   }
 
   metrics.llmFailures++
   console.error(
-    `[CompactWorker] LLM call failed after ${LLM_MAX_RETRIES + 1} attempts: ${lastError?.message}`,
+    `[CompactWorker] LLM call failed after ${LLM_RETRIES + 1} attempts: ${lastError?.message}`,
   )
   return null
 }
 
 // ---------------------------------------------------------------------------
-// Leaf compaction (messages → leaf summary)
+// Conversation meta (for preamble)
+// ---------------------------------------------------------------------------
+
+async function loadConversationMeta(conversationId) {
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, agent, channel, channel_id, title
+       FROM ros_conversations
+      WHERE id = $1`,
+    [conversationId],
+  )
+  if (rows.length === 0) {
+    throw new Error(`Conversation not found: ${conversationId}`)
+  }
+  return rows[0]
+}
+
+// ---------------------------------------------------------------------------
+// Leaf compaction (messages → leaf summary) — v5 formatter
 // ---------------------------------------------------------------------------
 
 async function compactLeafConversation(conversationId) {
+  const convMeta = await loadConversationMeta(conversationId)
+
   const messages = await pool.query(
-    `SELECT m.id, m.role, m.content, m.agent, m.created_at
+    `SELECT m.id, m.role, m.content, m.agent, m.created_at, m.tool_name, m.tool_args
      FROM ros_messages m
      LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
      WHERE ss.summary_id IS NULL AND m.conversation_id = $1
-       AND m.content IS NOT NULL AND LENGTH(m.content) > 10
+       AND (
+         (m.content IS NOT NULL AND LENGTH(m.content) > 10)
+      OR m.tool_name IS NOT NULL
+       )
      ORDER BY m.created_at ASC LIMIT $2`,
     [conversationId, LEAF_BATCH_SIZE],
   )
 
   if (messages.rows.length < MIN_BATCH_SIZE) return 0
 
-  const formatted = messages.rows
-    .map((m) => `[${m.role}] ${sanitize(m.content.slice(0, MAX_MSG_CONTENT))}`)
-    .join('\n')
+  const formatted = formatLeafPrompt(convMeta, messages.rows)
 
   console.log(
     `[CompactWorker] Leaf: summarizing ${messages.rows.length} messages for ${conversationId.slice(0, 8)}…`,
@@ -305,6 +352,8 @@ async function compactLeafConversation(conversationId) {
     )
     return 0
   }
+
+  circuitBreaker.delete(conversationId)
 
   const client = await pool.connect()
   try {
@@ -325,7 +374,6 @@ async function compactLeafConversation(conversationId) {
     )
     const summaryId = sumResult.rows[0].id
 
-    // Batch link source messages
     const values = []
     const params = []
     let pi = 1
@@ -354,10 +402,12 @@ async function compactLeafConversation(conversationId) {
 }
 
 // ---------------------------------------------------------------------------
-// Branch compaction (leaves → branch summary)
+// Branch compaction (leaves → branch summary) — v5 formatter
 // ---------------------------------------------------------------------------
 
 async function compactBranchConversation(conversationId) {
+  const convMeta = await loadConversationMeta(conversationId)
+
   const leaves = await pool.query(
     `SELECT id, content, kind, earliest_at, latest_at, message_count, created_at
      FROM ros_summaries
@@ -368,15 +418,7 @@ async function compactBranchConversation(conversationId) {
 
   if (leaves.rows.length < MIN_LEAFS_FOR_BRANCH) return 0
 
-  const formatted = leaves.rows
-    .map((s, i) => {
-      const period =
-        s.earliest_at && s.latest_at
-          ? `${fmtDate(s.earliest_at)} → ${fmtDate(s.latest_at)}`
-          : fmtDate(s.created_at)
-      return `[Leaf ${i + 1}, ${period}, ${s.message_count} msgs]\n${sanitize(s.content.slice(0, MAX_SUMMARY_CONTENT))}`
-    })
-    .join('\n\n')
+  const formatted = formatBranchPrompt(convMeta, leaves.rows)
 
   console.log(
     `[CompactWorker] Branch: summarizing ${leaves.rows.length} leaves for ${conversationId.slice(0, 8)}…`,
@@ -426,10 +468,12 @@ async function compactBranchConversation(conversationId) {
 }
 
 // ---------------------------------------------------------------------------
-// Root compaction (branches → root summary)
+// Root compaction (branches → root summary) — v5 formatter
 // ---------------------------------------------------------------------------
 
 async function compactRootConversation(conversationId) {
+  const convMeta = await loadConversationMeta(conversationId)
+
   const branches = await pool.query(
     `SELECT id, content, kind, earliest_at, latest_at, message_count, created_at
      FROM ros_summaries
@@ -440,15 +484,7 @@ async function compactRootConversation(conversationId) {
 
   if (branches.rows.length < MIN_BRANCHES_FOR_ROOT) return 0
 
-  const formatted = branches.rows
-    .map((s, i) => {
-      const period =
-        s.earliest_at && s.latest_at
-          ? `${fmtDate(s.earliest_at)} → ${fmtDate(s.latest_at)}`
-          : fmtDate(s.created_at)
-      return `[Branch ${i + 1}, ${period}, ${s.message_count} msgs]\n${sanitize(s.content.slice(0, MAX_SUMMARY_CONTENT))}`
-    })
-    .join('\n\n')
+  const formatted = formatRootPrompt(convMeta, branches.rows)
 
   console.log(
     `[CompactWorker] Root: summarizing ${branches.rows.length} branches for ${conversationId.slice(0, 8)}…`,
@@ -502,7 +538,6 @@ async function compactRootConversation(conversationId) {
 // ---------------------------------------------------------------------------
 
 async function compactConversation(conversationId) {
-  // Circuit breaker: skip conversations that repeatedly fail
   const cb = circuitBreaker.get(conversationId)
   if (cb && cb.failures >= CIRCUIT_BREAKER_THRESHOLD) {
     if (Date.now() - cb.lastFailAt < CIRCUIT_BREAKER_RESET_MS) {
@@ -512,33 +547,27 @@ async function compactConversation(conversationId) {
       )
       return 0
     }
-    // Reset window expired — give it another chance
     circuitBreaker.delete(conversationId)
     console.log(`[CompactWorker] Circuit breaker reset for ${conversationId.slice(0, 8)}…`)
   }
 
   let totalCreated = 0
 
-  // Leaf compaction: keep creating leaves until we run out of unsummarized messages
   let leafRound = 0
   while (leafRound < 10) {
-    // safety cap
     const created = await compactLeafConversation(conversationId)
     if (created === 0) break
     totalCreated += created
     leafRound++
   }
 
-  // Clear circuit breaker on success
   if (totalCreated > 0) {
     circuitBreaker.delete(conversationId)
   }
 
-  // Branch compaction: roll up leaves
   const branchCreated = await compactBranchConversation(conversationId)
   totalCreated += branchCreated
 
-  // Root compaction: roll up branches
   const rootCreated = await compactRootConversation(conversationId)
   totalCreated += rootCreated
 
@@ -549,14 +578,13 @@ async function compactConversation(conversationId) {
 // Process queue
 // ---------------------------------------------------------------------------
 
-const STALE_LOCK_MINUTES = 15 // If locked for >15 min, assume the worker crashed
+const STALE_LOCK_MINUTES = 15
 
 async function processQueue() {
   if (processing) return
   processing = true
 
   try {
-    // Recover stale locks — entries stuck in 'processing' from a previous crash
     const recovered = await pool.query(
       `UPDATE ros_compaction_queue
        SET status = 'pending', locked_at = NULL
@@ -573,7 +601,6 @@ async function processQueue() {
     do {
       drainRequested = false
 
-      // Pick up pending queue entries
       const pending = await pool.query(
         `UPDATE ros_compaction_queue
          SET status = 'processing', locked_at = NOW()
@@ -597,7 +624,6 @@ async function processQueue() {
         try {
           const created = await compactConversation(row.conversation_id)
 
-          // Mark done
           await pool.query(
             `UPDATE ros_compaction_queue SET status = 'done' WHERE id = $1`,
             [row.id],
@@ -650,7 +676,7 @@ async function processQueue() {
 // ---------------------------------------------------------------------------
 
 async function checkIdleSessions() {
-  if (processing) return // Don't interfere with active compaction
+  if (processing) return
 
   try {
     const result = await pool.query(
@@ -660,10 +686,142 @@ async function checkIdleSessions() {
     const enqueued = result.rows[0]?.enqueued ?? 0
     if (enqueued > 0) {
       console.log(`[CompactWorker] Idle check: enqueued ${enqueued} conversation(s)`)
-      // NOTIFY was already sent by the function, processQueue will fire from listener
     }
   } catch (err) {
     console.error(`[CompactWorker] Idle check failed: ${err.message}`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool-synth queue drain — async consumer for v5 tool-call content synthesis
+// ---------------------------------------------------------------------------
+
+async function drainToolSynthQueue() {
+  if (processing) return // share lock with main compaction to avoid LLM contention
+
+  // Claim a batch of rows — use SKIP LOCKED so multiple workers would never collide
+  const client = await pool.connect()
+  let claimed = []
+  try {
+    await client.query('BEGIN')
+
+    const rows = await client.query(
+      `SELECT q.message_id, m.tool_name, m.tool_args, m.agent, m.created_at
+       FROM ${TOOL_SYNTH_QUEUE_TABLE} q
+       JOIN ros_messages m ON m.id = q.message_id
+       WHERE q.attempts < $1
+       ORDER BY q.enqueued_at ASC
+       LIMIT $2
+       FOR UPDATE OF q SKIP LOCKED`,
+      [TOOL_SYNTH_MAX_ATTEMPTS, TOOL_SYNTH_BATCH_SIZE],
+    )
+    claimed = rows.rows
+
+    // Mark in-flight rows so other drain ticks do not re-pick them
+    if (claimed.length > 0) {
+      await client.query(
+        `UPDATE ${TOOL_SYNTH_QUEUE_TABLE}
+           SET last_attempt_at = NOW()
+         WHERE message_id = ANY($1::uuid[])`,
+        [claimed.map((r) => r.message_id)],
+      )
+    }
+
+    await client.query('COMMIT')
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {})
+    console.error('[ToolSynth] Claim failed:', err.message)
+    client.release()
+    return
+  } finally {
+    client.release()
+  }
+
+  if (claimed.length === 0) return
+
+  console.log(`[ToolSynth] Draining ${claimed.length} tool-call message(s)`)
+
+  for (const row of claimed) {
+    try {
+      const toolArgs =
+        typeof row.tool_args === 'string'
+          ? JSON.parse(row.tool_args || '{}')
+          : (row.tool_args ?? {})
+
+      const synth = await synthesizeToolCallContent({
+        endpoint: TOOL_SYNTH_ENDPOINT,
+        model: TOOL_SYNTH_MODEL,
+        apiKey: LLM_API_KEY,
+        toolName: row.tool_name,
+        toolArgs,
+      })
+
+      if (!synth || synth.trim().length === 0) {
+        throw new Error('Empty synth response')
+      }
+
+      // Swap content + remove queue entry
+      const update = await pool.connect()
+      try {
+        await update.query('BEGIN')
+        await update.query(
+          `UPDATE ros_messages SET content = $1, updated_at = NOW() WHERE id = $2`,
+          [synth, row.message_id],
+        )
+        await update.query(
+          `DELETE FROM ${TOOL_SYNTH_QUEUE_TABLE} WHERE message_id = $1`,
+          [row.message_id],
+        )
+        await update.query('COMMIT')
+      } catch (writeErr) {
+        await update.query('ROLLBACK').catch(() => {})
+        throw writeErr
+      } finally {
+        update.release()
+      }
+
+      metrics.toolSynthDone++
+      console.log(`[ToolSynth] ✓ ${row.tool_name} → ${synth.slice(0, 80)}`)
+    } catch (err) {
+      const errMsg = err?.message ?? String(err)
+      const c = await pool.connect()
+      try {
+        const { rows: attemptRows } = await c.query(
+          `UPDATE ${TOOL_SYNTH_QUEUE_TABLE}
+             SET attempts = attempts + 1,
+                 last_error = $1,
+                 last_attempt_at = NOW()
+           WHERE message_id = $2
+           RETURNING attempts`,
+          [errMsg, row.message_id],
+        )
+        const attempts = attemptRows[0]?.attempts ?? TOOL_SYNTH_MAX_ATTEMPTS
+
+        if (attempts >= TOOL_SYNTH_MAX_ATTEMPTS) {
+          const fallback = `Called ${row.tool_name} tool with arguments.`
+          await c.query(
+            `UPDATE ros_messages SET content = $1, updated_at = NOW() WHERE id = $2`,
+            [fallback, row.message_id],
+          )
+          await c.query(
+            `DELETE FROM ${TOOL_SYNTH_QUEUE_TABLE} WHERE message_id = $1`,
+            [row.message_id],
+          )
+          metrics.toolSynthFailed++
+          console.log(
+            `[ToolSynth] ✗ ${row.tool_name} (fallback after ${attempts} attempts): ${errMsg}`,
+          )
+        } else {
+          console.warn(
+            `[ToolSynth] Retry ${attempts}/${TOOL_SYNTH_MAX_ATTEMPTS} for ${row.tool_name}: ${errMsg}`,
+          )
+        }
+      } catch (updErr) {
+        console.error('[ToolSynth] Failure-bookkeeping error:', updErr.message)
+      } finally {
+        c.release()
+      }
+    }
   }
 }
 
@@ -681,139 +839,62 @@ async function main() {
     `[CompactWorker] Thresholds — unsummarized: ${MIN_UNSUMMARIZED}, leafs→branch: ${MIN_LEAFS_FOR_BRANCH}, branches→root: ${MIN_BRANCHES_FOR_ROOT}`,
   )
 
-  // Start listener
   await startListener()
 
-  // Process any existing queue entries on startup
   await processQueue()
 
-  // Check for idle sessions initially
   await checkIdleSessions()
 
-  // Periodic idle session check
   setInterval(() => void checkIdleSessions(), IDLE_CHECK_INTERVAL_MS)
 
-  // Periodic cleanup: remove completed queue entries older than 24h
   setInterval(async () => {
     try {
       const result = await pool.query(
         `DELETE FROM ros_compaction_queue
-         WHERE status IN ('done', 'failed')
-           AND created_at < NOW() - interval '24 hours'`,
+         WHERE status = 'done' AND completed_at < NOW() - interval '24 hours'
+         RETURNING id`,
       )
       if (result.rowCount > 0) {
-        console.log(`[CompactWorker] Cleaned ${result.rowCount} old queue entries`)
+        console.log(`[CompactWorker] Cleanup: removed ${result.rowCount} old queue entries`)
       }
     } catch (err) {
       console.error(`[CompactWorker] Cleanup failed: ${err.message}`)
     }
   }, 60 * 60 * 1000) // Every hour
 
-  console.log('[CompactWorker] Ready — waiting for notifications')
-
-  // v5 tool-synth queue drain (separate interval)
+  // v5 tool-synth queue drain
   setInterval(() => void drainToolSynthQueue(), TOOL_SYNTH_INTERVAL_MS)
-  console.log(`[CompactWorker] Tool-synth drain active (every ${TOOL_SYNTH_INTERVAL_MS}ms, batch ${TOOL_SYNTH_BATCH_SIZE})`)
+  console.log(
+    `[CompactWorker] Tool-synth drain active (every ${TOOL_SYNTH_INTERVAL_MS}ms, batch ${TOOL_SYNTH_BATCH_SIZE})`,
+  )
+
+  // Use imported helpers to avoid unused warnings in future simplifications
+  void fmtIsoMinute
+  void sanitizeForJson
+
+  console.log('[CompactWorker] Ready — waiting for notifications')
 }
 
 // ---------------------------------------------------------------------------
- // v5 Tool-Synth Queue Drain (separate from compaction)
- // ---------------------------------------------------------------------------
+// Graceful shutdown
+// ---------------------------------------------------------------------------
 
-async function drainToolSynthQueue() {
-  if (processing) return // share lock with main compaction
-
-  const client = await pool.connect()
+async function shutdown(signal) {
+  console.log(`[CompactWorker] ${signal} — shutting down`)
   try {
-    await client.query('BEGIN')
-
-    const rows = await client.query(`
-      SELECT q.message_id, m.tool_name, m.tool_args, m.tool_result, m.content as preceding_content
-      FROM ${TOOL_SYNTH_QUEUE_TABLE} q
-      JOIN ros_messages m ON m.id = q.message_id
-      WHERE q.attempts < 3
-      ORDER BY q.enqueued_at ASC
-      LIMIT $1
-      FOR UPDATE SKIP LOCKED
-    `, [TOOL_SYNTH_BATCH_SIZE])
-
-    if (rows.rows.length === 0) {
-      await client.query('COMMIT')
-      return
+    if (listenerClient) {
+      await listenerClient.end().catch(() => {})
     }
-
-    console.log(`[ToolSynth] Draining ${rows.rows.length} tool-call messages`)
-
-    for (const row of rows.rows) {
-      try {
-        const synth = await synthesizeToolCallContent({
-          endpoint: TOOL_SYNTH_ENDPOINT,
-          model: TOOL_SYNTH_MODEL,
-          apiKey: LLM_API_KEY,
-          toolName: row.tool_name,
-          toolArgs: row.tool_args ? JSON.parse(row.tool_args) : {},
-          toolResult: row.tool_result,
-          precedingContent: row.preceding_content,
-        })
-
-        if (synth) {
-          await client.query(
-            `UPDATE ros_messages SET content = $1, updated_at = NOW() WHERE id = $2`,
-            [synth, row.message_id]
-          )
-          await client.query(`DELETE FROM ${TOOL_SYNTH_QUEUE_TABLE} WHERE message_id = $1`, [row.message_id])
-          console.log(`[ToolSynth] ✓ ${row.tool_name} → ${synth.slice(0, 80)}`)
-        } else {
-          throw new Error('No content returned from synthesizer')
-        }
-      } catch (err) {
-        const attempts = (await client.query(
-          `UPDATE ${TOOL_SYNTH_QUEUE_TABLE} 
-           SET attempts = attempts + 1, 
-               last_error = $1, 
-               last_attempt_at = NOW() 
-           WHERE message_id = $2 
-           RETURNING attempts`,
-          [String(err), row.message_id]
-        )).rows[0].attempts
-
-        if (attempts >= 3) {
-          const fallback = `Called ${row.tool_name} tool with arguments.`
-          await client.query(
-            `UPDATE ros_messages SET content = $1, updated_at = NOW() WHERE id = $2`,
-            [fallback, row.message_id]
-          )
-          await client.query(`DELETE FROM ${TOOL_SYNTH_QUEUE_TABLE} WHERE message_id = $1`, [row.message_id])
-          console.log(`[ToolSynth] ✗ ${row.tool_name} (fallback after ${attempts} attempts)`)
-        } else {
-          console.warn(`[ToolSynth] Retry ${attempts}/3 for ${row.tool_name}: ${err.message}`)
-        }
-      }
-    }
-
-    await client.query('COMMIT')
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {})
-    console.error('[ToolSynth] Drain failed:', err.message)
+    await pool.end().catch(() => {})
   } finally {
-    client.release()
+    process.exit(0)
   }
 }
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('[CompactWorker] SIGTERM received, shutting down...')
-  await pool.end()
-  process.exit(0)
-})
-
-process.on('SIGINT', async () => {
-  console.log('[CompactWorker] SIGINT received, shutting down...')
-  await pool.end()
-  process.exit(0)
-})
+process.on('SIGTERM', () => void shutdown('SIGTERM'))
+process.on('SIGINT', () => void shutdown('SIGINT'))
 
 main().catch((err) => {
-  console.error('[CompactWorker] Fatal error:', err)
+  console.error('[CompactWorker] Fatal:', err)
   process.exit(1)
 })
