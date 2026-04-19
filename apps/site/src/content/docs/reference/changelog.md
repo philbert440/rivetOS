@@ -11,6 +11,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Memory v5 — memory-quality pipeline
+
+Full overhaul of the compactor and tool-call handling based on a 10-pick side-by-side probe across cloud and local summarizers.
+
+#### Added
+
+- **v5 compactor prompts** with thinking mode on. Leaf/branch/root prompts enforce exhaustiveness, no-outside-context, system-messages-first-class, and a LaTeX ban.
+- **Rich message formatting** — ISO-minute timestamps, agent attribution, conversation preamble (id/channel/title/span/message-count).
+- **Tool-call content synthesis** — async queue drains empty-content tool-call rows into natural-language content that is searchable via FTS + embeddings.
+- **`rivetos memory backfill-tool-synth`** and **`rivetos memory queue-status`** CLI commands.
+- **Hardened undici client** — infinite timeouts with AbortSignal guard, 3-attempt retry with 5/10/15s backoff.
+- **29 unit tests** covering formatter output shape and tool-synth validation/retry behavior.
+
+#### Changed
+
+- **Summary token budgets** raised to 7k / 14k / 20k (leaf/branch/root). Thinking mode needs headroom.
+- **Source-message truncation removed** — 128k context window accommodates full messages.
+- **Compactor model tag** → `rivet-refined-v5`.
+
+#### Migration
+
+Run `npx tsx plugins/memory/postgres/src/migrate-v3.ts` to add `ros_tool_synth_queue`, then redeploy the compaction-worker. See the Memory Design doc for rationale.
+
 ## [1.0.0] - 2026-04-05
 
 ### Milestone 8: Documentation & Launch

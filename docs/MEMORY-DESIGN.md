@@ -179,6 +179,82 @@ Periodically summarize old messages into the summary DAG:
 
 This creates a tree: root → branches → leaves → source messages. The `memory_search` tool auto-expands this tree.
 
+## v5 Memory-Quality Pipeline
+
+The v5 pipeline (April 2026) replaces the original cloud-model-tuned compactor with a local-first, thinking-model architecture optimized for faithfulness and searchability.
+
+### What v5 changed vs v4
+
+| Concern | v4 behavior | v5 behavior |
+|---|---|---|
+| Source message truncation | Hard-capped at 1,000 chars per message | No truncation — 128k context window handles full messages |
+| Summary budget | 1k / 1.5k / 2k tokens (leaf/branch/root) | **7k / 14k / 20k** — thinking mode needs real headroom |
+| Thinking | Disabled | **Enabled** — model reasons before summarizing |
+| Timestamps | Date-only at branch/root, absent at leaf | **ISO-minute timestamps on every message and every layer** — recency discrimination across same-day iterations |
+| Agent attribution | Dropped | **Preserved per message** (`[#01 2026-04-18T12:00Z opus/user]`) |
+| Conversation metadata | Absent | **Preamble header** with conv id, agent, channel, title, span, message count |
+| System messages | Treated as redundant context | **First-class** — extracts PR numbers, commits, skill names, line counts |
+| Tool-call rows (empty content) | Ignored — never embedded, never summarized | **Synthesized** content via async queue (see below) |
+| HTTP client | Raw `fetch`, 60s timeout | **Hardened undici Agent** — no timeouts except AbortSignal, 3 retries with 5/10/15s backoff |
+
+See `docs/DECISIONS.md` for the full rationale and the 10-pick probe methodology used to validate each change.
+
+### Prompt architecture
+
+Three system prompts live in `plugins/memory/postgres/src/compactor/types.ts`:
+
+- `LEAF_SYSTEM_PROMPT` — summarize raw messages
+- `BRANCH_SYSTEM_PROMPT` — summarize leaves
+- `ROOT_SYSTEM_PROMPT` — summarize branches
+
+All three share a common rule set: **exhaustiveness** (cover every distinct topic), **no outside context** (never invent facts not in the source), **system-messages-first-class** (extract identifiers verbatim), and a LaTeX ban (plain Unicode only).
+
+### Tool-call content synthesis
+
+Many assistant messages in the corpus contain only `tool_name` + `tool_args` with empty content. These rows cannot be embedded (empty text) and fall through every search path.
+
+The v5 pipeline synthesizes natural-language content for them — a single past-tense sentence describing what was called — which makes them findable by both FTS and vector search.
+
+**Two synthesis paths:**
+
+1. **Async queue (live path)** — `adapter.ts` enqueues rows into `ros_tool_synth_queue` on insert when content is empty and `tool_name` is set. The compaction-worker's `drainToolSynthQueue` job picks them up, calls the synthesizer, and writes content back. Non-blocking — inserts never fail on synthesis errors.
+
+2. **CLI backfill (historical)** — `rivetos memory backfill-tool-synth` enqueues historical empty rows, then processes them in parallel workers using the same synthesis helper. Resumable, NUMA-pinned friendly (`--urls http://gerty:8001/v1,http://gerty:8002/v1`), and safe to run concurrently with the live queue (`FOR UPDATE SKIP LOCKED`).
+
+The shared helper (`synthesizeToolCallContent` in `plugins/memory/postgres/src/tool-synth.ts`) uses the exact same hardened undici client and prompt as the compactor. Model-agnostic — point `TOOL_SYNTH_ENDPOINT` / `TOOL_SYNTH_MODEL` at any OpenAI-compatible endpoint.
+
+### Schema additions
+
+```sql
+CREATE TABLE ros_tool_synth_queue (
+  message_id      UUID PRIMARY KEY REFERENCES ros_messages(id) ON DELETE CASCADE,
+  enqueued_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  attempts        INT NOT NULL DEFAULT 0,
+  last_error      TEXT,
+  last_attempt_at TIMESTAMPTZ
+);
+CREATE INDEX idx_tool_synth_queue_enqueued ON ros_tool_synth_queue(enqueued_at);
+```
+
+Applied by `plugins/memory/postgres/src/migrate-v3.ts`. Idempotent — safe to run multiple times.
+
+### Operations
+
+```bash
+# Show queue health
+rivetos memory queue-status
+
+# Synthesize all historical candidates
+rivetos memory backfill-tool-synth \
+  --concurrency 8 --batch 8 \
+  --urls http://gerty:8001/v1,http://gerty:8002/v1
+
+# Plan only (count candidates, no writes)
+rivetos memory backfill-tool-synth --dry-run
+```
+
+Rows that fail 3 times are left in the queue (use `queue-status` to surface them) and are not retried automatically. Inspect `last_error`, fix the condition, then run backfill again.
+
 ## What We're NOT Building
 
 - No vector database (pgvector in PostgreSQL is sufficient)
