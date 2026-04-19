@@ -611,6 +611,13 @@ export function formatLeafPrompt(conv: ConversationMeta, msgs: CompactMessageRow
 
       let content = m.content ?? ''
       if (!content && m.tool_name) {
+        // Bounded excerpt of tool_args — fallback only. Tool-call messages
+        // should normally have natural-language `content` written by the
+        // tool-synth pipeline; we only hit this branch when synthesis
+        // hasn't run yet or failed. Cap at 2000 chars because raw JSON
+        // blobs (shell stdout, diff payloads, large embeddings) have low
+        // per-char information density and would otherwise dominate the
+        // leaf-prompt budget.
         const args = m.tool_args ? JSON.stringify(m.tool_args).slice(0, 2000) : ''
         content = `(tool call) ${m.tool_name}${args ? ' ' + args : ''}`
       }
