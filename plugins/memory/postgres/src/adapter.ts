@@ -206,7 +206,10 @@ export class PostgresMemory implements Memory {
           )
         } catch (enqueueErr) {
           // Best-effort only — never fail the main append
-          console.warn(`[PostgresMemory] Failed to enqueue tool-synth for msg ${result.rows[0].id}:`, enqueueErr)
+          console.warn(
+            `[PostgresMemory] Failed to enqueue tool-synth for msg ${result.rows[0].id}:`,
+            enqueueErr,
+          )
         }
       }
 
