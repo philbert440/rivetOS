@@ -731,7 +731,6 @@ async function drainToolSynthQueue() {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     console.error('[ToolSynth] Claim failed:', err.message)
-    client.release()
     return
   } finally {
     client.release()
