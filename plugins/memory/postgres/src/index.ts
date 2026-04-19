@@ -37,8 +37,25 @@ export type { MemoryToolsConfig } from './tools/index.js'
 // Schema migration helpers — still needed by agent CTs to ensure columns exist
 export { ensureEmbedderSchema } from './embedder.js'
 
-// Compactor types/prompts — shared with Datahub compaction-worker
-export type { CompactorConfig, CompactorMetrics } from './compactor/index.js'
+// Compactor types/prompts/formatters — shared with Datahub compaction-worker and CLI
+export {
+  BackgroundCompactor,
+  type CompactorConfig,
+  type CompactorMetrics,
+  LEAF_SYSTEM_PROMPT,
+  BRANCH_SYSTEM_PROMPT,
+  ROOT_SYSTEM_PROMPT,
+  fmtIsoMinute,
+  sanitizeForJson,
+  formatLeafPrompt,
+  formatBranchPrompt,
+  formatRootPrompt,
+  type ConversationMeta,
+  type CompactMessageRow,
+  type SummaryRow,
+} from './compactor/index.js'
+
+export { synthesizeToolCallContent, type ToolSynthOptions } from './tool-synth.js'
 
 export { computeRelevance, temporalDecay } from './scoring.js'
 
