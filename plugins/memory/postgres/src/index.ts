@@ -65,7 +65,11 @@ export {
   type SummaryRow,
 } from './compactor/index.js'
 
-export { synthesizeToolCallContent, type ToolSynthOptions } from './tool-synth.js'
+export {
+  synthesizeToolCallContent,
+  TOOL_SYNTH_TEMPERATURE,
+  type ToolSynthOptions,
+} from './tool-synth.js'
 
 export { computeRelevance, temporalDecay } from './scoring.js'
 

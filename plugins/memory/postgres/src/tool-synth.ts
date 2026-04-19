@@ -53,6 +53,16 @@ Executed, Ran, Called, Invoked, Read, Wrote, Edited, Created, Deleted, Killed, S
 
 Output ONLY the sentence. No JSON, no markdown, no preamble.`
 
+/**
+ * LLM temperature for tool-call synthesis.
+ *
+ * Tighter than compactor summarization (0.3) because this task is more constrained:
+ * a single short, factual sentence with strict formatting rules. Lower temperature
+ * reduces creative rewording that could lose identifiers (paths, PR numbers, URLs)
+ * the search corpus needs to stay retrievable.
+ */
+export const TOOL_SYNTH_TEMPERATURE = 0.2
+
 const httpDispatcher = new Agent({
   headersTimeout: 0,
   bodyTimeout: 0,
@@ -123,7 +133,7 @@ export async function synthesizeToolCallContent(opts: ToolSynthOptions): Promise
             { role: 'user', content: userMsg },
           ],
           max_tokens: 200,
-          temperature: 0.2,
+          temperature: TOOL_SYNTH_TEMPERATURE,
           enable_thinking: false,
         }),
         dispatcher: httpDispatcher,
