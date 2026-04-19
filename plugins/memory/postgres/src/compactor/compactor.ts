@@ -23,6 +23,7 @@ import {
   LEAF_MAX_TOKENS,
   BRANCH_MAX_TOKENS,
   ROOT_MAX_TOKENS,
+  PIPELINE_VERSION,
   LLM_TIMEOUT_MS,
   LLM_TEMPERATURE,
   LLM_RETRIES,
@@ -266,8 +267,8 @@ export class BackgroundCompactor {
 
       const sumResult = await client.query<IdRow>(
         `INSERT INTO ros_summaries
-           (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model)
-         VALUES ($1, 0, $2, 'leaf', $3, $4, $5, $6) RETURNING id`,
+           (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
+         VALUES ($1, 0, $2, 'leaf', $3, $4, $5, $6, $7) RETURNING id`,
         [
           conversationId,
           summaryText,
@@ -275,6 +276,7 @@ export class BackgroundCompactor {
           messages.rows[0].created_at,
           messages.rows[messages.rows.length - 1].created_at,
           this.model,
+          PIPELINE_VERSION,
         ],
       )
       const summaryId = sumResult.rows[0].id
@@ -375,9 +377,17 @@ export class BackgroundCompactor {
 
       const sumResult = await client.query<IdRow>(
         `INSERT INTO ros_summaries
-           (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model)
-         VALUES ($1, 1, $2, 'branch', $3, $4, $5, $6) RETURNING id`,
-        [conversationId, summaryText, totalMessages, earliestAt, latestAt, this.model],
+           (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
+         VALUES ($1, 1, $2, 'branch', $3, $4, $5, $6, $7) RETURNING id`,
+        [
+          conversationId,
+          summaryText,
+          totalMessages,
+          earliestAt,
+          latestAt,
+          this.model,
+          PIPELINE_VERSION,
+        ],
       )
       const branchId = sumResult.rows[0].id
 
@@ -468,9 +478,17 @@ export class BackgroundCompactor {
 
       const sumResult = await client.query<IdRow>(
         `INSERT INTO ros_summaries
-           (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model)
-         VALUES ($1, 2, $2, 'root', $3, $4, $5, $6) RETURNING id`,
-        [conversationId, summaryText, totalMessages, earliestAt, latestAt, this.model],
+           (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
+         VALUES ($1, 2, $2, 'root', $3, $4, $5, $6, $7) RETURNING id`,
+        [
+          conversationId,
+          summaryText,
+          totalMessages,
+          earliestAt,
+          latestAt,
+          this.model,
+          PIPELINE_VERSION,
+        ],
       )
       const rootId = sumResult.rows[0].id
 
