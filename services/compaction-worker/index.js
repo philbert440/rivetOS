@@ -17,6 +17,7 @@
  */
 
 import pg from 'pg'
+import { BackgroundCompactor, synthesizeToolCallContent, TOOL_SYNTH_QUEUE_TABLE, fmtIsoMinute } from '@rivetos/memory-postgres'
 
 // ---------------------------------------------------------------------------
 // Config from environment
@@ -28,62 +29,29 @@ if (!PG_URL) {
   process.exit(1)
 }
 
+// v5 config — sourced from @rivetos/memory-postgres (no duplication)
 const LLM_URL = process.env.RIVETOS_COMPACTOR_URL
 if (!LLM_URL) { console.error('RIVETOS_COMPACTOR_URL is required'); process.exit(1) }
-const LLM_MODEL = process.env.RIVETOS_COMPACTOR_MODEL ?? 'gemma-4-E2B-it-Q4_K_M.gguf'
+const LLM_MODEL = process.env.RIVETOS_COMPACTOR_MODEL ?? 'rivet-refined-v5'
 const LLM_API_KEY = process.env.RIVETOS_COMPACTOR_API_KEY ?? ''
 
-// Timeouts and budgets — generous for thinking model
-const LLM_TIMEOUT_MS = parseInt(process.env.COMPACT_LLM_TIMEOUT_MS ?? '600000', 10) // 10 minutes
-const LEAF_MAX_TOKENS = parseInt(process.env.COMPACT_LEAF_TOKENS ?? '4096', 10)
-const BRANCH_MAX_TOKENS = parseInt(process.env.COMPACT_BRANCH_TOKENS ?? '6144', 10)
-const ROOT_MAX_TOKENS = parseInt(process.env.COMPACT_ROOT_TOKENS ?? '8192', 10)
-const LLM_TEMPERATURE = parseFloat(process.env.COMPACT_TEMPERATURE ?? '0.3')
+// Tool synth config (new for v5)
+const TOOL_SYNTH_MODEL = process.env.TOOL_SYNTH_MODEL ?? 'rivet-refined-v5'
+const TOOL_SYNTH_ENDPOINT = process.env.TOOL_SYNTH_ENDPOINT ?? LLM_URL
+const TOOL_SYNTH_BATCH_SIZE = parseInt(process.env.TOOL_SYNTH_BATCH_SIZE ?? '4', 10)
+const TOOL_SYNTH_INTERVAL_MS = parseInt(process.env.TOOL_SYNTH_INTERVAL_MS ?? '30000', 10)
 
-// Batch sizes
-const LEAF_BATCH_SIZE = parseInt(process.env.COMPACT_LEAF_BATCH ?? '10', 10)
-const MIN_BATCH_SIZE = 5
-const MIN_UNSUMMARIZED = parseInt(process.env.COMPACT_MIN_UNSUMMARIZED ?? '10', 10)
+// v5 constants from plugin (no local duplication)
+const MIN_UNSUMMARIZED = parseInt(process.env.COMPACT_MIN_UNSUMMARIZED ?? '50', 10)
 const MIN_LEAFS_FOR_BRANCH = parseInt(process.env.COMPACT_MIN_LEAFS ?? '5', 10)
-const BRANCH_BATCH_SIZE = parseInt(process.env.COMPACT_BRANCH_BATCH ?? '8', 10)
 const MIN_BRANCHES_FOR_ROOT = parseInt(process.env.COMPACT_MIN_BRANCHES ?? '3', 10)
-const ROOT_BATCH_SIZE = parseInt(process.env.COMPACT_ROOT_BATCH ?? '5', 10)
-const MAX_CONVERSATIONS_PER_CYCLE = 5
-
-// Session idle detection interval
-const IDLE_CHECK_INTERVAL_MS = parseInt(process.env.COMPACT_IDLE_CHECK_MS ?? '300000', 10) // 5 min
+const IDLE_CHECK_INTERVAL_MS = parseInt(process.env.COMPACT_IDLE_CHECK_MS ?? '300000', 10)
 const IDLE_MINUTES = parseInt(process.env.COMPACT_IDLE_MINUTES ?? '15', 10)
 
-// Content limits in prompts
-const MAX_MSG_CONTENT = 1000
-const MAX_SUMMARY_CONTENT = 2000
-
 // ---------------------------------------------------------------------------
-// Prompts — level-specific
-// ---------------------------------------------------------------------------
-
-const LEAF_SYSTEM_PROMPT =
-  'Summarize these conversation messages concisely. Preserve: key decisions, ' +
-  'technical details, configurations, action items, state changes, problems solved, ' +
-  'and any code snippets or commands that were used. ' +
-  'Format as bullet points. Be specific — include names, values, and outcomes.'
-
-const BRANCH_SYSTEM_PROMPT =
-  'You are summarizing a series of conversation summaries into a higher-level overview. ' +
-  'These summaries represent a period of conversation in a single thread. ' +
-  'Identify the main themes, key decisions, and outcomes across all the summaries. ' +
-  'Preserve: project names, architectural decisions, configuration changes, ' +
-  'problems solved, and action items. Drop low-value details. ' +
-  'Format as bullet points organized by theme.'
-
-const ROOT_SYSTEM_PROMPT =
-  'You are creating a top-level summary of an entire conversation thread from branch summaries. ' +
-  'Each branch covers a significant period of discussion. ' +
-  'Distill the most important decisions, outcomes, and state changes. ' +
-  'This summary should give someone full context on what happened in this conversation. ' +
-  'Preserve: final decisions (not deliberation), completed actions, ' +
-  'current state of systems/projects, and any unresolved issues. ' +
-  'Format as bullet points. Be concise but complete.'
+// v5 prompts, formatters, and constants now imported from @rivetos/memory-postgres
+// (LEAF_SYSTEM_PROMPT, BRANCH_SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT, fmtIsoMinute, etc.)
+// Local copies removed per v5 refactor.
 
 // ---------------------------------------------------------------------------
 // State
@@ -117,6 +85,7 @@ pool.on('error', (err) => {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// fmtDate kept for backward compat in branch/root (v5 uses fmtIsoMinute in leaf)
 function fmtDate(d) {
   return d?.toISOString?.().split('T')[0] ?? '?'
 }
@@ -741,6 +710,94 @@ async function main() {
   }, 60 * 60 * 1000) // Every hour
 
   console.log('[CompactWorker] Ready — waiting for notifications')
+
+  // v5 tool-synth queue drain (separate interval)
+  setInterval(() => void drainToolSynthQueue(), TOOL_SYNTH_INTERVAL_MS)
+  console.log(`[CompactWorker] Tool-synth drain active (every ${TOOL_SYNTH_INTERVAL_MS}ms, batch ${TOOL_SYNTH_BATCH_SIZE})`)
+}
+
+// ---------------------------------------------------------------------------
+ // v5 Tool-Synth Queue Drain (separate from compaction)
+ // ---------------------------------------------------------------------------
+
+async function drainToolSynthQueue() {
+  if (processing) return // share lock with main compaction
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    const rows = await client.query(`
+      SELECT q.message_id, m.tool_name, m.tool_args, m.tool_result, m.content as preceding_content
+      FROM ${TOOL_SYNTH_QUEUE_TABLE} q
+      JOIN ros_messages m ON m.id = q.message_id
+      WHERE q.attempts < 3
+      ORDER BY q.enqueued_at ASC
+      LIMIT $1
+      FOR UPDATE SKIP LOCKED
+    `, [TOOL_SYNTH_BATCH_SIZE])
+
+    if (rows.rows.length === 0) {
+      await client.query('COMMIT')
+      return
+    }
+
+    console.log(`[ToolSynth] Draining ${rows.rows.length} tool-call messages`)
+
+    for (const row of rows.rows) {
+      try {
+        const synth = await synthesizeToolCallContent({
+          endpoint: TOOL_SYNTH_ENDPOINT,
+          model: TOOL_SYNTH_MODEL,
+          apiKey: LLM_API_KEY,
+          toolName: row.tool_name,
+          toolArgs: row.tool_args ? JSON.parse(row.tool_args) : {},
+          toolResult: row.tool_result,
+          precedingContent: row.preceding_content,
+        })
+
+        if (synth) {
+          await client.query(
+            `UPDATE ros_messages SET content = $1, updated_at = NOW() WHERE id = $2`,
+            [synth, row.message_id]
+          )
+          await client.query(`DELETE FROM ${TOOL_SYNTH_QUEUE_TABLE} WHERE message_id = $1`, [row.message_id])
+          console.log(`[ToolSynth] ✓ ${row.tool_name} → ${synth.slice(0, 80)}`)
+        } else {
+          throw new Error('No content returned from synthesizer')
+        }
+      } catch (err) {
+        const attempts = (await client.query(
+          `UPDATE ${TOOL_SYNTH_QUEUE_TABLE} 
+           SET attempts = attempts + 1, 
+               last_error = $1, 
+               last_attempt_at = NOW() 
+           WHERE message_id = $2 
+           RETURNING attempts`,
+          [String(err), row.message_id]
+        )).rows[0].attempts
+
+        if (attempts >= 3) {
+          const fallback = `Called ${row.tool_name} tool with arguments.`
+          await client.query(
+            `UPDATE ros_messages SET content = $1, updated_at = NOW() WHERE id = $2`,
+            [fallback, row.message_id]
+          )
+          await client.query(`DELETE FROM ${TOOL_SYNTH_QUEUE_TABLE} WHERE message_id = $1`, [row.message_id])
+          console.log(`[ToolSynth] ✗ ${row.tool_name} (fallback after ${attempts} attempts)`)
+        } else {
+          console.warn(`[ToolSynth] Retry ${attempts}/3 for ${row.tool_name}: ${err.message}`)
+        }
+      }
+    }
+
+    await client.query('COMMIT')
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {})
+    console.error('[ToolSynth] Drain failed:', err.message)
+  } finally {
+    client.release()
+  }
 }
 
 // Graceful shutdown

@@ -20,6 +20,7 @@ export {
   type SummaryRow,
   type CompactorConfig,
   type CompactorMetrics,
+  TOOL_SYNTH_QUEUE_TABLE,
 } from './types.js'
 
 export { BackgroundCompactor } from './compactor.js'

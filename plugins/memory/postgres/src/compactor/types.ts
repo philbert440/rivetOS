@@ -293,3 +293,6 @@ export function sanitizeForJson(text: string): string {
     '',
   )
 }
+
+/** Table name for tool-call synthesis queue (v5 pipeline) */
+export const TOOL_SYNTH_QUEUE_TABLE = 'ros_tool_synth_queue' as const

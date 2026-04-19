@@ -61,3 +61,6 @@ export { computeRelevance, temporalDecay } from './scoring.js'
 
 export { ReviewLoop } from './review-loop.js'
 export type { ReviewLoopConfig, TurnCompleteData, ReviewMetrics } from './review-loop.js'
+
+// Migration helpers
+export { default as migrateV3 } from './migrate-v3.js'
