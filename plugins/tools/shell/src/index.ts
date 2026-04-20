@@ -248,9 +248,15 @@ export class ShellTool implements Tool {
     }
 
     // Handle `cd` — update session cwd
-    const cdMatch = command.match(/^cd\s+(.+)$/)
+    // Robust regex that matches `cd` as the *first* command even when followed by
+    // &&, ;, |, ||, etc. This fixes the very common "Directory not found: /rivet-shared && ls -la" bug.
+    const cdMatch = command.match(/^\s*cd\s+([^;&|]+?)(?:\s*(?:&&|\|\||;|\||&)|$)/i)
     if (cdMatch) {
-      const targetDir = cdMatch[1].trim().replace(/^["']|["']$/g, '')
+      let targetDir = cdMatch[1].trim()
+
+      // Remove surrounding quotes if present
+      targetDir = targetDir.replace(/^["']|["']$/g, '')
+
       // Resolve relative to current session cwd
       const { resolve } = await import('node:path')
       const newCwd = resolve(cwd, targetDir)
