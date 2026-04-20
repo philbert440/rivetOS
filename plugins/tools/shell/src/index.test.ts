@@ -202,6 +202,29 @@ describe('ShellTool session cwd', () => {
     assert.equal(tool.getSessionCwd(), '/home');
   });
 
+  it('should handle cd followed by &&, ;, |, or || (common failure case)', async () => {
+    const tool = new ShellTool({ cwd: '/tmp' });
+
+    const testCases = [
+      'cd /rivet-shared && ls -la',
+      'cd /home/user; echo hello',
+      'cd /tmp || echo failed',
+      'cd "/path with spaces" && ls',
+      '  cd   /opt/rivet   &&   npm run build',
+    ]
+
+    for (const cmd of testCases) {
+      const result = await tool.execute({ command: cmd })
+      // Should either succeed in changing dir or give a clean directory error
+      assert.ok(
+        result.includes('Changed directory') ||
+          result.includes('Directory not found') ||
+          result.includes('is not a directory'),
+        `Failed to parse cd in: ${cmd}\nResult was: ${result}`
+      )
+    }
+  });
+
   it('rejects cd to nonexistent directory', async () => {
     const tool = new ShellTool();
     const result = await tool.execute({ command: 'cd /this/does/not/exist/at/all' });
