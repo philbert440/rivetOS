@@ -71,6 +71,11 @@ try {
       '--disable-blink-features=AutomationControlled',
       '--disable-infobars',
       '--window-size=1920,1080',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--disable-extensions',
+      '--no-zygote',
+      '--single-process',
     ],
   });
 
