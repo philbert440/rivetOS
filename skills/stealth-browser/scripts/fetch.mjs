@@ -28,10 +28,13 @@
  *   node fetch.mjs "https://example.com" --text
  */
 
-import { chromium } from 'playwright-extra';
-import stealth from 'puppeteer-extra-plugin-stealth';
+// Resolve modules from ~/stealth-browser where deps are installed
+import { createRequire } from 'module';
+const require = createRequire(new URL('file:///home/philbot/stealth-browser/package.json'));
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
-chromium.use(stealth());
+chromium.use(StealthPlugin());
 
 const args = process.argv.slice(2);
 const url = args.find(a => a.startsWith('http'));
