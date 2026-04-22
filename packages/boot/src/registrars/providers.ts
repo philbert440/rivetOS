@@ -53,6 +53,12 @@ function resolveProviderConfig(
       // Optional — only set on llama-server via --api-key
       config.apiKey = (providerConfig.api_key as string | undefined) ?? ''
       break
+    case 'openai-compat':
+      // Generic OpenAI-compatible servers (vLLM, TGI, etc.) — api_key
+      // may be required or a placeholder. Supports OPENAI_COMPAT_API_KEY env var.
+      config.apiKey =
+        (providerConfig.api_key as string | undefined) ?? process.env.OPENAI_COMPAT_API_KEY ?? ''
+      break
     default:
       // Unknown provider — try the generic pattern
       config.apiKey =
@@ -130,6 +136,23 @@ function buildProviderArgs(
         mirostatTau: providerConfig.mirostat_tau,
         mirostatEta: providerConfig.mirostat_eta,
         seed: providerConfig.seed,
+        id,
+        name: (providerConfig.name as string | undefined) ?? id,
+        ...contextFields,
+      }
+    case 'openai-compat':
+      return {
+        baseUrl: providerConfig.base_url,
+        apiKey: config.apiKey,
+        model: providerConfig.model,
+        maxTokens: providerConfig.max_tokens,
+        temperature: providerConfig.temperature,
+        topP: providerConfig.top_p,
+        presencePenalty: providerConfig.presence_penalty,
+        frequencyPenalty: providerConfig.frequency_penalty,
+        seed: providerConfig.seed,
+        defaultToolChoice: providerConfig.default_tool_choice,
+        verifyModelOnInit: providerConfig.verify_model_on_init,
         id,
         name: (providerConfig.name as string | undefined) ?? id,
         ...contextFields,

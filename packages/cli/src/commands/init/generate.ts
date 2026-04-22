@@ -212,6 +212,12 @@ function buildEnvFile(state: WizardState): EnvEntry[] {
         entries.push({ key: envKey, value: agent.apiKey, comment: `${agent.provider} provider` })
       } else if (agent.provider === 'llama-server') {
         // llama-server uses no API key (local)
+      } else if (agent.provider === 'openai-compat') {
+        entries.push({
+          key: 'OPENAI_COMPAT_API_KEY',
+          value: agent.apiKey,
+          comment: 'OpenAI-compatible server bearer token',
+        })
       }
     }
   }

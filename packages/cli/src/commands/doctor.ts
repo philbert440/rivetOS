@@ -750,6 +750,21 @@ async function checkProviderConnectivity(
       return resp.ok
     }
 
+    case 'openai-compat': {
+      const baseUrl = (config.base_url as string | undefined)
+        ?.replace(/\/$/, '')
+        .replace(/\/v1$/, '')
+      if (!baseUrl) return false
+      const apiKey = (config.api_key as string | undefined) ?? process.env.OPENAI_COMPAT_API_KEY
+      const headers: Record<string, string> = {}
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+      const resp = await fetch(`${baseUrl}/v1/models`, {
+        headers,
+        signal: AbortSignal.timeout(timeout),
+      })
+      return resp.ok
+    }
+
     default:
       return false
   }
