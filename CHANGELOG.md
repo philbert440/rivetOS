@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — workspace templates & `docs/FILESYSTEM.md` canonical
+
+Workspace file templates now live in `workspace-templates/` at the repo root. This is the source of truth for every new instance's `~/.rivetos/workspace/` layout.
+
+- **`workspace-templates/`** — canonical `CORE.md`, `USER.md`, `WORKSPACE.md`,
+  `MEMORY.md`, `CAPABILITIES.md`, `HEARTBEAT.md`, `FILESYSTEM.md`. All written
+  in the generic "I am Rivet" voice — no per-instance specifics.
+- **`docs/FILESYSTEM.md`** — canonical filesystem layout reference (runtime at
+  `/opt/rivetos/`, config + workspace at `~/.rivetos/`, shared at
+  `/rivet-shared/`). Mirror shipped in `workspace-templates/FILESYSTEM.md` so
+  every instance carries it.
+- **`rivetos init` refactor** — `writeWorkspaceTemplates` now reads from
+  `workspace-templates/` by walking up from the CLI install location. Inline
+  templates retained as a minimal fallback for unusual install layouts (e.g.
+  npm global install without the repo alongside).
+
+### Changed — documentation default workspace path
+
+Every docs reference to `workspace: ./workspace` is now `workspace: ~/.rivetos/workspace`, matching `docs/FILESYSTEM.md`, `config.example.yaml`, and what `rivetos init` already writes. Touched: `README.md`, `docs/CONFIG-REFERENCE.md`, `docs/GETTING-STARTED.md`, `apps/site/src/content/docs/reference/config.md`, `apps/site/src/content/docs/guides/getting-started.md`.
+
 ### Memory v5 — memory-quality pipeline
 
 Full overhaul of the compactor and tool-call handling based on a 10-pick side-by-side probe across cloud and local summarizers. Shipped in `refactor/memory-quality-pipeline-v5`.

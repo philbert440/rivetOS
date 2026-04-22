@@ -57,7 +57,7 @@ Edit `config.yaml` with your settings:
 
 ```yaml
 runtime:
-  workspace: ./workspace
+  workspace: ~/.rivetos/workspace
   default_agent: myagent
 
 agents:

@@ -17,7 +17,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 - **Tiny core, fat plugins** — The kernel stays under 5,000 lines. Everything else is swappable.
 - **Streaming-first** — `AsyncIterable<StreamEvent>` from every provider. Responses stream in real-time.
-- **5 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, llama-server (native).
+- **6 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, llama-server (native), openai-compat (vLLM / TGI / any strict OpenAI-compatible server).
 - **4 channel plugins** — Discord, Telegram, Agent (HTTP inter-agent), Voice (xAI Realtime).
 - **13 built-in tools** — Shell, file I/O, search, web, memory, interaction, MCP client, coding pipeline.
 - **Multi-agent mesh** — Delegate tasks across agents. Local or remote. Transparent routing.
@@ -149,7 +149,7 @@ rivetOS/
 
 ```yaml
 runtime:
-  workspace: ./workspace
+  workspace: ~/.rivetos/workspace
   default_agent: opus
 
 agents:

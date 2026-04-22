@@ -5,7 +5,7 @@
  * The YAML config references them via environment variable names.
  */
 
-import { writeFile, mkdir, access, readFile } from 'node:fs/promises'
+import { writeFile, mkdir, access, readFile, readdir } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import { stringify as toYaml } from 'yaml'
 import type { WizardState, WizardAgent, WizardChannel } from './types.js'
@@ -284,9 +284,46 @@ async function writeEnvFile(envPath: string, entries: EnvEntry[]): Promise<void>
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Workspace templates
+//
+// Canonical template files live in `workspace-templates/` at the repo root.
+// This is the preferred source — versioned, reviewable, shared across
+// instances. The inline `FALLBACK_TEMPLATES` below are used only if the
+// `workspace-templates/` directory cannot be located (e.g. if the CLI is
+// running from an unusual install layout); they are intentionally minimal
+// and should not be relied on.
 // ──────────────────────────────────────────────────────────────────────────────
 
-const TEMPLATES: Record<string, string> = {
+/**
+ * Locate the `workspace-templates/` directory by walking up from this file.
+ * Returns null if not found.
+ *
+ * Layout:
+ *   <repo-root>/
+ *     workspace-templates/          ← target
+ *     packages/cli/
+ *       src/commands/init/          ← src path
+ *       dist/commands/init/         ← built path
+ *
+ * So from import.meta.dirname we walk up 5 levels (commands → src/dist →
+ * cli → packages → repo root) and look for `workspace-templates/`.
+ */
+async function findTemplatesDir(): Promise<string | null> {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- dirname may be undefined in older Node
+  const here = import.meta.dirname ?? '.'
+  // Walk up a few levels, try each candidate
+  for (let up = 3; up <= 6; up++) {
+    const candidate = resolve(here, ...Array<string>(up).fill('..'), 'workspace-templates')
+    try {
+      await access(candidate)
+      return candidate
+    } catch {
+      // try next depth
+    }
+  }
+  return null
+}
+
+const FALLBACK_TEMPLATES: Record<string, string> = {
   'CORE.md': `# CORE.md
 
 Define who you are — identity, personality, and operating values.
@@ -439,11 +476,36 @@ agent can do and how to access external services.
 }
 
 async function writeWorkspaceTemplates(workspacePath: string): Promise<void> {
-  for (const [name, content] of Object.entries(TEMPLATES)) {
+  const templatesDir = await findTemplatesDir()
+
+  if (templatesDir) {
+    // Preferred path — copy every .md file from the canonical templates
+    // directory. Missing files are tolerated (dir contents may evolve).
+    const entries = await readdir(templatesDir)
+    const mdFiles = entries.filter((f) => f.endsWith('.md') && f !== 'README.md')
+
+    for (const name of mdFiles) {
+      const destPath = resolve(workspacePath, name)
+      try {
+        await access(destPath)
+        // File exists — don't overwrite
+        continue
+      } catch {
+        // missing — copy it
+      }
+      const content = await readFile(resolve(templatesDir, name), 'utf-8')
+      await writeFile(destPath, content, 'utf-8')
+    }
+    return
+  }
+
+  // Fallback path — use the minimal inline templates. This should only
+  // trigger if the CLI is installed without the repo's workspace-templates
+  // directory alongside it.
+  for (const [name, content] of Object.entries(FALLBACK_TEMPLATES)) {
     const filePath = resolve(workspacePath, name)
     try {
       await access(filePath)
-      // File exists — don't overwrite
     } catch {
       await writeFile(filePath, content, 'utf-8')
     }

@@ -21,7 +21,7 @@ RivetOS uses a single YAML config file for all settings. API keys and secrets go
 
 ```yaml
 runtime:
-  workspace: ./workspace
+  workspace: ~/.rivetos/workspace
   default_agent: opus
 
 agents:
