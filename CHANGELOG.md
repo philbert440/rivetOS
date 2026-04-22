@@ -27,6 +27,35 @@ Workspace file templates now live in `workspace-templates/` at the repo root. Th
 
 Every docs reference to `workspace: ./workspace` is now `workspace: ~/.rivetos/workspace`, matching `docs/FILESYSTEM.md`, `config.example.yaml`, and what `rivetos init` already writes. Touched: `README.md`, `docs/CONFIG-REFERENCE.md`, `docs/GETTING-STARTED.md`, `apps/site/src/content/docs/reference/config.md`, `apps/site/src/content/docs/guides/getting-started.md`.
 
+### Added — `@rivetos/provider-openai-compat`
+
+New provider tuned for strict OpenAI-compatible servers (vLLM, TGI, LocalAI,
+etc.), parallel to `llama-server`. Key features:
+
+- **Strict message ordering** — folds mid-conversation `role: 'system'`
+  messages into `[SYSTEM NOTICE]` `role: 'user'` messages so vLLM +
+  Qwen/Llama chat templates don't reject them with `System message must
+  be at the beginning.` RivetOS's core loop legitimately injects
+  mid-conversation system messages for context-window warnings, `/steer`
+  events, and turn-timeout notices.
+- **Native `reasoning_content`** consumption for vLLM servers running
+  `--reasoning-parser deepseek_r1` / `qwen3`, with `<think>`-block
+  fallback for inline reasoning.
+- **`tool_choice` passthrough** — forwards `tools` and `tool_choice:
+  auto` by default; server must run with `--enable-auto-tool-choice` and
+  a `--tool-call-parser` (hermes / mistral / llama).
+- **Forgiving `base_url`** — accepts either `http://host:port` or
+  `http://host:port/v1`.
+- **Optional `verify_model_on_init`** — probes `/v1/models` on boot and
+  fails fast if the configured model id is not served.
+- **Standard OpenAI sampling only** — no llama-native knobs
+  (`typical_p`, `min_p`, `mirostat`, `repeat_penalty`, `repeat_last_n`)
+  that strict servers reject.
+
+Wiring: `boot` registrar + validator + CLI init/doctor/plugins.
+`OPENAI_COMPAT_API_KEY` env var fallback. See
+`plugins/providers/openai-compat/README.md` for details.
+
 ### Memory v5 — memory-quality pipeline
 
 Full overhaul of the compactor and tool-call handling based on a 10-pick side-by-side probe across cloud and local summarizers. Shipped in `refactor/memory-quality-pipeline-v5`.

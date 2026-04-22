@@ -19,6 +19,7 @@ const DEFAULT_MODELS: Record<string, string> = {
   google: 'gemini-2.5-pro',
   ollama: 'qwen2.5:32b',
   'llama-server': 'default',
+  'openai-compat': 'default',
 }
 
 /** Environment variable name for each provider's API key */
@@ -68,6 +69,11 @@ export async function configureAgents(): Promise<WizardAgent[]> {
           label: 'llama.cpp server (local)',
           hint: 'llama-server binary',
         },
+        {
+          value: 'openai-compat' as const,
+          label: 'OpenAI-compatible server',
+          hint: 'vLLM, TGI, or other strict OpenAI-compat API',
+        },
       ],
     })
     bail(providerResult)
@@ -93,6 +99,19 @@ export async function configureAgents(): Promise<WizardAgent[]> {
       })
       bail(urlResult)
       baseUrl = urlResult
+    } else if (provider === 'openai-compat') {
+      const urlResult = await p.text({
+        message: 'OpenAI-compatible server base URL',
+        placeholder: 'http://localhost:8000',
+        defaultValue: 'http://localhost:8000',
+      })
+      bail(urlResult)
+      baseUrl = urlResult
+      const keyResult = await p.password({
+        message: 'API key (leave blank for unauthenticated servers)',
+      })
+      bail(keyResult)
+      apiKey = keyResult || undefined
     } else {
       // Standard providers with API keys
       const envKey = PROVIDER_ENV_KEYS[provider]

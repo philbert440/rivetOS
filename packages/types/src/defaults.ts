@@ -10,6 +10,7 @@ export const MODEL_DEFAULTS = {
   google: 'gemini-2.5-pro',
   ollama: 'llama3.1',
   'llama-server': 'default',
+  'openai-compat': 'default',
 } as const
 
 export type ProviderName = keyof typeof MODEL_DEFAULTS

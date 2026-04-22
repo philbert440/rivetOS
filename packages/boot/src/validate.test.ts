@@ -357,6 +357,14 @@ describe('Config Validation', () => {
       assertError(result, 'providers.llama-server.base_url', 'requires "base_url"');
     });
 
+    it('requires base_url for openai-compat', () => {
+      const cfg = validConfig();
+      (cfg.providers as Record<string, unknown>)['openai-compat'] = { model: 'rivet' };
+      (cfg.agents as Record<string, unknown>).local = { provider: 'openai-compat' };
+      const result = validateConfig(cfg);
+      assertError(result, 'providers.openai-compat.base_url', 'requires "base_url"');
+    });
+
     it('warns on hardcoded API key', () => {
       const cfg = validConfig();
       (cfg.providers as Record<string, Record<string, unknown>>).anthropic.api_key = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaa';
