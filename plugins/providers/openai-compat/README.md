@@ -64,7 +64,7 @@ id is actually served by `/v1/models` on boot.
 providers:
   openai-compat:
     name: 'Rivet Local (Qwen3.6-35B-A3B @ vLLM)'
-    base_url: http://10.4.20.12:8003
+    base_url: http://192.168.1.10:8003
     api_key: ${OPENAI_COMPAT_API_KEY}    # or sk-no-key-required
     model: qwen3.6-35b-a3b-awq
     temperature: 0.7
