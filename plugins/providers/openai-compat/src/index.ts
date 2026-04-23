@@ -266,8 +266,16 @@ function convertMessages(messages: Message[]): OAIMessage[] {
 
     if (msg.role === 'system') {
       if (!seenNonSystem) {
-        // Head-of-conversation system message — pass through
-        out.push({ role: 'system', content: text || null })
+        // Head-of-conversation system message — pass through, merging with
+        // any immediately-preceding system message so strict templates
+        // (vLLM) that require exactly one head system block don't reject.
+        const prev = out[out.length - 1]
+        if (prev && prev.role === 'system') {
+          const prevText = typeof prev.content === 'string' ? prev.content : ''
+          prev.content = prevText && text ? `${prevText}\n\n${text}` : prevText || text || null
+        } else {
+          out.push({ role: 'system', content: text || null })
+        }
       } else {
         // Mid-conversation system message — fold into a user message so
         // strict chat templates don't reject the request.
