@@ -33,13 +33,18 @@ This provider folds any `role: 'system'` that arrives after the first
 non-system message into a `role: 'user'` message prefixed with
 `[SYSTEM NOTICE]`. The text still reaches the model; the template is happy.
 
-### 2. Native reasoning via `reasoning_content`
+### 2. Native reasoning field
 
 When vLLM is started with `--reasoning-parser` (e.g. `deepseek_r1`,
-`qwen3`), it emits reasoning as a separate `reasoning_content` field on the
-streaming delta. This provider consumes that field directly. If the server
-emits reasoning inline (e.g. raw `<think>` blocks in `content`), the
-provider still parses them as a fallback.
+`qwen3`), it emits reasoning as a separate field on the streaming delta.
+This provider consumes both field names the wild has shown us:
+
+- `reasoning_content` — spec-standard, older vLLM builds
+- `reasoning` — newer vLLM builds (`>= 0.0.3.dev10`, commit `c1dce8324`)
+  renamed the field
+
+If the server emits reasoning inline instead (raw `<think>` blocks in
+`content`), the provider parses them as a fallback.
 
 ### 3. Tool-call passthrough
 
