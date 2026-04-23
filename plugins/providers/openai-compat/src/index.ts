@@ -21,9 +21,14 @@
  *      field name (vLLM >= 0.0.3.dev10 / commit c1dce8324 renamed it), instead
  *      of regex-stripping `<think>` tags from content. Still falls back to
  *      `<think>` parsing if the server emits reasoning inline.
- *   3. **Standard OpenAI sampling only** — no llama-native knobs
- *      (`typical_p`, `min_p`, `mirostat`, `repeat_penalty`, `repeat_last_n`).
- *      Those are llama.cpp-specific and 400 on strict servers.
+ *   3. **OpenAI sampling + vLLM extensions** — standard OpenAI knobs
+ *      (`temperature`, `top_p`, `presence_penalty`, `frequency_penalty`,
+ *      `seed`) plus `top_k` / `min_p`, which vLLM accepts and the Qwen3.6
+ *      reference config explicitly recommends. They are only sent when the
+ *      caller sets them, so strict OpenAI/Groq servers still see a clean
+ *      request body. True llama-only knobs (`typical_p`, `mirostat`,
+ *      `repeat_penalty`, `repeat_last_n`) remain excluded — those 400 on
+ *      vLLM and friends.
  *   4. **Tool choice passthrough** — `tool_choice` (auto | none | required |
  *      {type, function}) is forwarded when tools are present.
  *   5. **Startup model probe** — `isAvailable()` hits `/v1/models` and (when
@@ -69,6 +74,12 @@ export interface OpenAICompatProviderConfig {
   temperature?: number
   /** top-p nucleus sampling. Default: 0.95 */
   topP?: number
+  /** top-k sampling. vLLM extension — only sent when defined.
+   *  Default: undefined (server default). */
+  topK?: number
+  /** min-p sampling. vLLM extension — only sent when defined.
+   *  Default: undefined (server default). */
+  minP?: number
   /** Presence penalty (-2.0–2.0). Default: undefined */
   presencePenalty?: number
   /** Frequency penalty (-2.0–2.0). Default: undefined */
@@ -135,6 +146,8 @@ interface OAIRequestBody {
   presence_penalty?: number
   frequency_penalty?: number
   seed?: number
+  top_k?: number
+  min_p?: number
 }
 
 interface OAIToolCallDelta {
@@ -332,6 +345,8 @@ export class OpenAICompatProvider implements Provider {
   private maxTokens: number
   private temperature: number
   private topP: number
+  private topK: number | undefined
+  private minP: number | undefined
   private presencePenalty: number | undefined
   private frequencyPenalty: number | undefined
   private seed: number | undefined
@@ -357,6 +372,8 @@ export class OpenAICompatProvider implements Provider {
     this.maxTokens = config.maxTokens ?? 4096
     this.temperature = config.temperature ?? 0.7
     this.topP = config.topP ?? 0.95
+    this.topK = config.topK
+    this.minP = config.minP
     this.presencePenalty = config.presencePenalty
     this.frequencyPenalty = config.frequencyPenalty
     this.seed = config.seed
@@ -414,6 +431,8 @@ export class OpenAICompatProvider implements Provider {
     if (this.presencePenalty !== undefined) body.presence_penalty = this.presencePenalty
     if (this.frequencyPenalty !== undefined) body.frequency_penalty = this.frequencyPenalty
     if (this.seed !== undefined) body.seed = this.seed
+    if (this.topK !== undefined) body.top_k = this.topK
+    if (this.minP !== undefined) body.min_p = this.minP
 
     const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: 'POST',

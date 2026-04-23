@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "@rivetos/types": "*",
-    "grammy": "^1.42.0"
+    "grammy": "^1.42.0",
+    "@grammyjs/auto-retry": "^2.0.2"
   },
   "rivetos": {
     "type": "channel",

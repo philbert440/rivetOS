@@ -147,6 +147,8 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'max_tokens',
     'temperature',
     'top_p',
+    'top_k',
+    'min_p',
     'presence_penalty',
     'frequency_penalty',
     'seed',
@@ -168,6 +170,7 @@ export const KNOWN_CHANNELS: Partial<Record<string, Set<string>>> = {
     'allowed_users',
     'channel_bindings',
     'mention_only',
+    'mention_only_channels',
   ]),
   voice: new Set([
     'bot_token',
@@ -208,6 +211,7 @@ export const KNOWN_PIPELINE_KEYS = new Set([
 
 export const KNOWN_MEMORY_POSTGRES_KEYS = new Set([
   'connection_string',
+  'embed_endpoint',
   'review_endpoint',
   'review_model',
   'review_api_key',
