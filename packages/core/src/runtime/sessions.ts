@@ -107,7 +107,8 @@ export class SessionManager {
 
     // Restore settings
     let thinking: ThinkingLevel = agent.defaultThinking ?? 'medium'
-    let reasoningVisible = false
+    // Local agents default to visible reasoning — free tokens, nothing to hide
+    let reasoningVisible = agent.local === true
     let toolsVisible = false
 
     if (this.memory?.loadSessionSettings) {

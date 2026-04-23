@@ -191,7 +191,19 @@ export class StreamManager {
     if (s.reasoning) {
       // Reasoning as italics, capped to avoid huge messages
       const r = s.reasoning.length > 1200 ? s.reasoning.slice(-1200) : s.reasoning
-      out += `_🧠 ${r}_\n\n`
+      // Discord italics don't span newlines — italicize each non-empty line
+      const italicized = r
+        .split('\n')
+        .map((line, i) => {
+          const trimmed = line.trim()
+          if (!trimmed) return ''
+          // Strip markdown-fragile chars so italic wrapping survives
+          // Telegram's _.._ regex breaks if content has internal underscores
+          const safe = trimmed.replace(/[_*`]/g, '')
+          return i === 0 ? `_🧠 ${safe}_` : `_${safe}_`
+        })
+        .join('\n')
+      out += `${italicized}\n\n`
     }
     out += s.text
     return out.trim()
