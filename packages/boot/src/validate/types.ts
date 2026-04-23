@@ -140,6 +140,22 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'context_window',
     'max_output_tokens',
   ]),
+  'openai-compat': new Set([
+    'model',
+    'base_url',
+    'api_key',
+    'max_tokens',
+    'temperature',
+    'top_p',
+    'presence_penalty',
+    'frequency_penalty',
+    'seed',
+    'default_tool_choice',
+    'verify_model_on_init',
+    'name',
+    'context_window',
+    'max_output_tokens',
+  ]),
 }
 
 export const KNOWN_CHANNELS: Partial<Record<string, Set<string>>> = {

@@ -18,6 +18,26 @@ providers:
     max_tokens: 8192
     # api_key via env: ANTHROPIC_API_KEY
 
+  # --- Local models via strict OpenAI-compatible servers (vLLM, TGI, etc.) ---
+  # openai-compat:
+  #   name: 'Local (vLLM)'
+  #   base_url: http://localhost:8000       # or http://localhost:8000/v1
+  #   api_key: sk-no-key-required           # or ${OPENAI_COMPAT_API_KEY}
+  #   model: qwen3.6-35b-a3b-awq
+  #   temperature: 0.7
+  #   top_p: 0.9
+  #   max_tokens: 8192
+  #   context_window: 65536
+  #   max_output_tokens: 8192
+  #   # default_tool_choice: auto           # auto | none | required
+  #   # verify_model_on_init: true          # probe /v1/models at boot
+
+  # --- Local models via llama.cpp server (native API) ---
+  # llama-server:
+  #   base_url: http://localhost:8080
+  #   model: default
+  #   max_tokens: 4096
+
 channels:
   discord:
     # bot_token via env: DISCORD_BOT_TOKEN
