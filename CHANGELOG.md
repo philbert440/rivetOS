@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `openai-compat` reasoning on newer vLLM builds
+
+The streaming delta parser now accepts both the spec-standard
+`reasoning_content` field and the shorter `reasoning` field. vLLM
+`0.0.3.dev10+gc1dce8324` (and later) renamed the field from
+`reasoning_content` to `reasoning` in streaming deltas, which silently
+dropped reasoning output through this provider. Both field names now
+flow into the `reasoning` chunk type; no configuration change required.
+
 ### Added — workspace templates & `docs/FILESYSTEM.md` canonical
 
 Workspace file templates now live in `workspace-templates/` at the repo root. This is the source of truth for every new instance's `~/.rivetos/workspace/` layout.
