@@ -148,6 +148,8 @@ function buildProviderArgs(
         maxTokens: providerConfig.max_tokens,
         temperature: providerConfig.temperature,
         topP: providerConfig.top_p,
+        topK: providerConfig.top_k,
+        minP: providerConfig.min_p,
         presencePenalty: providerConfig.presence_penalty,
         frequencyPenalty: providerConfig.frequency_penalty,
         seed: providerConfig.seed,

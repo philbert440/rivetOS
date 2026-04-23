@@ -14,6 +14,7 @@
  */
 
 import { Bot, Context, InlineKeyboard } from 'grammy'
+import { autoRetry } from '@grammyjs/auto-retry'
 import type {
   Channel,
   EditResult,
@@ -68,6 +69,15 @@ export class TelegramChannel implements Channel {
     this.config = config
     this.id = `telegram:${config.ownerId}`
     this.bot = new Bot(config.botToken)
+    // Honor Telegram's retry_after on 429s instead of hammering the API.
+    // Also retries transient 5xx / network errors. Caps keep us from stalling
+    // forever if Telegram tells us to wait an hour.
+    this.bot.api.config.use(
+      autoRetry({
+        maxRetryAttempts: 3,
+        maxDelaySeconds: 60,
+      }),
+    )
   }
 
   // -----------------------------------------------------------------------
