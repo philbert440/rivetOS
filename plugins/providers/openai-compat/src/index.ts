@@ -15,11 +15,12 @@
  *      mid-conversation system messages ("System message must be at the
  *      beginning."); RivetOS legitimately injects them for context-window
  *      warnings, steer events, and turn-timeout notices.
- *   2. **`reasoning_content` first** — consumes vLLM's native
- *      `reasoning_content` delta field when a `--reasoning-parser` is
- *      configured server-side, instead of regex-stripping `<think>` tags from
- *      content. Still falls back to `<think>` parsing if the server emits
- *      reasoning inline.
+ *   2. **Native reasoning field first** — consumes vLLM's native reasoning
+ *      delta when a `--reasoning-parser` is configured server-side. Accepts
+ *      both the spec-standard `reasoning_content` and the newer `reasoning`
+ *      field name (vLLM >= 0.0.3.dev10 / commit c1dce8324 renamed it), instead
+ *      of regex-stripping `<think>` tags from content. Still falls back to
+ *      `<think>` parsing if the server emits reasoning inline.
  *   3. **Standard OpenAI sampling only** — no llama-native knobs
  *      (`typical_p`, `min_p`, `mirostat`, `repeat_penalty`, `repeat_last_n`).
  *      Those are llama.cpp-specific and 400 on strict servers.
@@ -146,6 +147,9 @@ interface OAIStreamChoice {
   delta?: {
     content?: string
     reasoning_content?: string
+    // Some vLLM builds (>= 0.0.3.dev10 / c1dce8324) emit reasoning under the
+    // shorter key `reasoning` instead of `reasoning_content`. Accept both.
+    reasoning?: string
     tool_calls?: OAIToolCallDelta[]
   }
   finish_reason?: string
@@ -489,9 +493,12 @@ export class OpenAICompatProvider implements Provider {
           if (choice) {
             const delta = choice.delta
             if (delta) {
-              // Native reasoning field (vLLM --reasoning-parser)
-              if (delta.reasoning_content) {
-                yield { type: 'reasoning', delta: delta.reasoning_content }
+              // Native reasoning field (vLLM --reasoning-parser).
+              // Accept both `reasoning_content` (vLLM <= 0.0.3.dev9, spec)
+              // and `reasoning` (vLLM >= 0.0.3.dev10 / c1dce8324 renamed it).
+              const reasoningDelta = delta.reasoning_content ?? delta.reasoning
+              if (reasoningDelta) {
+                yield { type: 'reasoning', delta: reasoningDelta }
               }
               // Text content — parse inline <think> blocks as fallback for
               // servers that emit reasoning inside content
