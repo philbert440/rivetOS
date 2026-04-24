@@ -46,6 +46,8 @@ export type {
   EmbedData,
 } from './channel.js'
 export type { Tool, ToolDefinition, ToolContext, ToolResult } from './tool.js'
+export type { SessionContext } from './session-context.js'
+export { buildLocalSessionContext, isSessionContext } from './session-context.js'
 export type {
   Plugin,
   PluginConfig,

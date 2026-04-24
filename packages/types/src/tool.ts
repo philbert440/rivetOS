@@ -3,6 +3,7 @@
  */
 
 import type { ContentPart } from './message.js'
+import type { SessionContext } from './session-context.js'
 
 export interface ToolDefinition {
   name: string
@@ -17,6 +18,15 @@ export interface ToolContext {
   signal?: AbortSignal
   /** Working directory for file-based tools */
   workingDir?: string
+  /**
+   * Full session envelope — populated by the tool executor when available.
+   *
+   * Added 2026-04-24 as part of the MCP overhaul (plan §4.3). Optional for
+   * now so the existing `agentId` / `workingDir` shim path keeps working
+   * while call sites are migrated. New tools should read from `session`
+   * when present; fall back to the flat fields when not.
+   */
+  session?: SessionContext
 }
 
 /**

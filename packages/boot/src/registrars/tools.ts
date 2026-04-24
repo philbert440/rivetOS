@@ -65,6 +65,11 @@ export async function registerTools(
         }
 
         case 'coding-pipeline': {
+          console.warn(
+            '[tools] coding-pipeline is deprecated (MCP overhaul plan §9.3). ' +
+              'Post-overhaul rebuild will land as a skill on the unified tool plane. ' +
+              'Remove it from your tools list when convenient.',
+          )
           const pipelineCfg = config.runtime.coding_pipeline
           toolPlugin = createPlugin({
             builderAgent: pipelineCfg?.builder_agent ?? 'grok',
