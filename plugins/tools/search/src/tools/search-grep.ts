@@ -61,8 +61,8 @@ export function createSearchGrepTool(config?: SearchGrepConfig): Tool {
       const searchPath = args.path
         ? isAbsolute(args.path as string)
           ? (args.path as string)
-          : resolve(context?.workingDir ?? process.cwd(), args.path as string)
-        : (context?.workingDir ?? process.cwd())
+          : resolve(context?.session?.workingDir ?? context?.workingDir ?? process.cwd(), args.path as string)
+        : (context?.session?.workingDir ?? context?.workingDir ?? process.cwd())
 
       const fixedStrings = args.fixed_strings === true
       const caseInsensitive = args.case_insensitive === true

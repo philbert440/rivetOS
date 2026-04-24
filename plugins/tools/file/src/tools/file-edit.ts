@@ -70,7 +70,7 @@ export function createFileEditTool(): Tool {
 
       const resolved = isAbsolute(filePath)
         ? filePath
-        : resolve(context?.workingDir ?? process.cwd(), filePath)
+        : resolve(context?.session?.workingDir ?? context?.workingDir ?? process.cwd(), filePath)
 
       try {
         const content = await readFile(resolved, 'utf-8')

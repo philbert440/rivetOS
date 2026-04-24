@@ -60,7 +60,7 @@ export function createFileReadTool(config?: FileReadConfig): Tool {
 
       const resolved = isAbsolute(filePath)
         ? filePath
-        : resolve(context?.workingDir ?? process.cwd(), filePath)
+        : resolve(context?.session?.workingDir ?? context?.workingDir ?? process.cwd(), filePath)
       const showLineNumbers =
         typeof args.line_numbers === 'boolean' ? args.line_numbers : defaultLineNumbers
       const startLine = typeof args.start_line === 'number' ? args.start_line : undefined

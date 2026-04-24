@@ -50,8 +50,8 @@ export function createSearchGlobTool(config?: SearchGlobConfig): Tool {
       const searchDir = args.cwd
         ? isAbsolute(args.cwd as string)
           ? (args.cwd as string)
-          : resolve(context?.workingDir ?? process.cwd(), args.cwd as string)
-        : (context?.workingDir ?? process.cwd())
+          : resolve(context?.session?.workingDir ?? context?.workingDir ?? process.cwd(), args.cwd as string)
+        : (context?.session?.workingDir ?? context?.workingDir ?? process.cwd())
 
       try {
         const results: string[] = []
