@@ -39,7 +39,7 @@ export function createFileWriteTool(): Tool {
 
       const resolved = isAbsolute(filePath)
         ? filePath
-        : resolve(context?.workingDir ?? process.cwd(), filePath)
+        : resolve(context?.session?.workingDir ?? context?.workingDir ?? process.cwd(), filePath)
 
       try {
         // Ensure parent directories exist
