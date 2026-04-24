@@ -100,6 +100,20 @@ export const VALID_THINKING_LEVELS = new Set(['off', 'low', 'medium', 'high'])
 
 export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
   anthropic: new Set(['model', 'max_tokens', 'api_key', 'context_window', 'max_output_tokens']),
+  'claude-cli': new Set([
+    'model',
+    'binary',
+    'tools',
+    'effort',
+    'permission_mode',
+    'exclude_dynamic_sections',
+    'append_system_prompt',
+    'cwd',
+    'timeout_ms',
+    'name',
+    'context_window',
+    'max_output_tokens',
+  ]),
   xai: new Set([
     'model',
     'max_tokens',

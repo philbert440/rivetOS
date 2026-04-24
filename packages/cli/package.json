@@ -23,6 +23,7 @@
     "@rivetos/infra": "*",
     "@rivetos/memory-postgres": "*",
     "@rivetos/provider-anthropic": "*",
+    "@rivetos/provider-claude-cli": "*",
     "@rivetos/types": "*",
     "pg": "^8.20.0",
     "yaml": "^2.8.3"
