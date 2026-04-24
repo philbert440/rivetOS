@@ -44,13 +44,7 @@ export interface ClaudeCliProviderConfig {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /** Permission mode. Default: 'bypassPermissions' (we are a non-interactive
    *  server — no one to click "approve"). */
-  permissionMode?:
-    | 'acceptEdits'
-    | 'auto'
-    | 'bypassPermissions'
-    | 'default'
-    | 'dontAsk'
-    | 'plan'
+  permissionMode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan'
   /** Move cwd/env/git-status out of the default system prompt into the first
    *  user message. Improves prompt-cache reuse. Default: true. */
   excludeDynamicSections?: boolean
@@ -100,7 +94,7 @@ interface CliStreamEvent {
 
 interface CliResult {
   type: 'result'
-  subtype: 'success' | string
+  subtype: string
   is_error: boolean
   result?: string
   stop_reason?: string
@@ -350,12 +344,7 @@ export class ClaudeCliProvider implements Provider {
       })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
-      throw new ProviderError(
-        `Failed to spawn ${this.binary}: ${msg}`,
-        0,
-        this.id,
-        false,
-      )
+      throw new ProviderError(`Failed to spawn ${this.binary}: ${msg}`, 0, this.id, false)
     }
 
     // Wire stdin: one user turn as stream-json input, then close.
@@ -459,11 +448,7 @@ export class ClaudeCliProvider implements Provider {
             }
           }
           if (r.is_error) {
-            throw new ProviderError(
-              `claude-cli error: ${r.result ?? 'unknown'}`,
-              500,
-              this.id,
-            )
+            throw new ProviderError(`claude-cli error: ${r.result ?? 'unknown'}`, 500, this.id)
           }
           // If the delta stream was empty (e.g. provider was invoked without
           // --include-partial-messages, or the run was tool-only), emit the
@@ -518,8 +503,7 @@ export class ClaudeCliProvider implements Provider {
 async function* iterateLines(stream: NodeJS.ReadableStream): AsyncIterable<string> {
   let buffer = ''
   for await (const chunk of stream) {
-    const str: string =
-      typeof chunk === 'string' ? chunk : (chunk as Buffer).toString('utf-8')
+    const str: string = typeof chunk === 'string' ? chunk : chunk.toString('utf-8')
     buffer += str
     let idx = buffer.indexOf('\n')
     while (idx !== -1) {
