@@ -37,6 +37,10 @@ function resolveProviderConfig(
         log.warn('No Anthropic API key found. Set ANTHROPIC_API_KEY or providers.anthropic.api_key')
       }
       break
+    case 'claude-cli':
+      // claude-cli uses the Claude Code CLI's own OAuth keychain — no API key.
+      config.apiKey = ''
+      break
     case 'google':
       config.apiKey =
         (providerConfig.api_key as string | undefined) ?? process.env.GOOGLE_API_KEY ?? ''
@@ -92,6 +96,21 @@ function buildProviderArgs(
         apiKey: config.apiKey,
         model: providerConfig.model,
         maxTokens: providerConfig.max_tokens,
+        ...contextFields,
+      }
+    case 'claude-cli':
+      return {
+        binary: providerConfig.binary,
+        model: providerConfig.model,
+        tools: providerConfig.tools,
+        effort: providerConfig.effort,
+        permissionMode: providerConfig.permission_mode,
+        excludeDynamicSections: providerConfig.exclude_dynamic_sections,
+        appendSystemPrompt: providerConfig.append_system_prompt,
+        cwd: providerConfig.cwd,
+        timeoutMs: providerConfig.timeout_ms,
+        id,
+        name: (providerConfig.name as string | undefined) ?? id,
         ...contextFields,
       }
     case 'google':

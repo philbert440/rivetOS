@@ -17,6 +17,7 @@
     "@rivetos/types": "*",
     "@rivetos/core": "*",
     "@rivetos/provider-anthropic": "*",
+    "@rivetos/provider-claude-cli": "*",
     "@rivetos/provider-google": "*",
     "@rivetos/provider-xai": "*",
     "@rivetos/provider-ollama": "*",
