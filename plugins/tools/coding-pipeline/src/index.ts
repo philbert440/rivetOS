@@ -1,6 +1,12 @@
 /**
  * @rivetos/tool-coding-pipeline
  *
+ * @deprecated (2026-04-24) — scheduled for removal after MCP overhaul (see
+ * `/rivet-shared/plans/mcp-architecture-overhaul.md` §9.3). Post-overhaul
+ * rebuild lands as a skill on top of the unified tool plane + proper
+ * delegation engine. Keep the plugin compiling for now so in-flight callers
+ * do not break; new code should not depend on it.
+ *
  * Autonomous coding pipeline:
  *   1. Opus delegates to Grok with spec + requirements
  *   2. Grok builds code, reads files, runs tests

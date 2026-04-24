@@ -32,6 +32,7 @@ import {
   toolResultHasImages,
   getToolResultImages,
   ProviderError,
+  buildLocalSessionContext,
 } from '@rivetos/types'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -670,9 +671,21 @@ export class AgentLoop {
           rawResult = `Error: Unknown tool "${tc.name}"`
         } else {
           try {
+            // Build a local SessionContext shim. Phase 0 of the MCP overhaul —
+            // tools that want the envelope can read `ctx.session`; older tools
+            // continue to read the flat `agentId`/`workingDir` fields.
+            const session = buildLocalSessionContext({
+              agentId: this.config.agentId ?? 'unknown',
+              nodeId: process.env.RIVETOS_NODE_ID ?? 'local',
+              conversationId: this.config.sessionId ?? 'ad-hoc',
+              userId: process.env.RIVETOS_USER_ID ?? 'phil',
+              workingDir: this.config.workspaceDir,
+              traceId: this.config.sessionId,
+            })
             rawResult = await tool.execute(tc.arguments, signal, {
               agentId: this.config.agentId,
               workingDir: this.config.workspaceDir,
+              session,
             })
           } catch (err: unknown) {
             rawResult = `Error: ${err instanceof Error ? err.message : String(err)}`
