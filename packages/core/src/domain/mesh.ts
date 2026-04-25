@@ -57,6 +57,11 @@ export interface MeshRegistryConfig {
 
   /** Event handler for mesh events */
   onEvent?: (event: MeshNodeEvent) => void
+
+  /** TLS material for outbound HTTPS connections (seed sync).
+   * Required when mesh.tls is configured (i.e., always in production).
+   * If absent, seed sync will fail gracefully with a warning. */
+  tls?: import('../runtime/agent-channel.js').AgentChannelTlsConfig
 }
 
 interface MeshFile {
@@ -257,18 +262,30 @@ export class FileMeshRegistry implements MeshRegistry {
   // -----------------------------------------------------------------------
 
   private async syncFromSeed(seedHost: string, seedPort: number): Promise<void> {
-    const url = `http://${seedHost}:${String(seedPort)}/api/mesh`
-    const secret = this.config.mesh.secret ?? ''
+    const url = `https://${seedHost}:${String(seedPort)}/api/mesh`
 
     try {
-      const res = await fetch(url, {
+      let fetchOptions: RequestInit & { dispatcher?: unknown } = {
         method: 'GET',
-        headers: {
-          Authorization: `Bearer ${secret}`,
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(10_000),
-      })
+      }
+
+      if (this.config.tls) {
+        const { Agent: UndiciAgent } = await import('undici')
+        const tlsDispatcher = new UndiciAgent({
+          connect: {
+            ca: this.config.tls.ca,
+            cert: this.config.tls.cert,
+            key: this.config.tls.key,
+            rejectUnauthorized: true,
+          },
+        })
+        // @ts-expect-error — undici dispatcher not in Node fetch RequestInit types
+        fetchOptions = { ...fetchOptions, dispatcher: tlsDispatcher }
+      }
+
+      const res = await fetch(url, fetchOptions as RequestInit)
 
       if (!res.ok) {
         throw new Error(`Seed responded ${String(res.status)}: ${await res.text()}`)
@@ -280,7 +297,6 @@ export class FileMeshRegistry implements MeshRegistry {
       let merged = 0
       for (const remote of remoteNodes) {
         const local = localData.nodes[remote.id]
-        // Merge if remote is newer or doesn't exist locally
         if (!local || remote.lastSeen > local.lastSeen) {
           localData.nodes[remote.id] = remote
           merged++

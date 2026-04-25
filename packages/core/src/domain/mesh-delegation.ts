@@ -39,8 +39,17 @@ export interface MeshDelegationConfig {
   /** Mesh registry — used to find remote agents */
   meshRegistry: MeshRegistry
 
-  /** Shared secret for authenticating with remote peers */
-  secret: string
+  /**
+   * Shared secret — DEPRECATED for agent-channel auth.
+   * @deprecated No longer used for agent-channel communication. Retained for compat.
+   */
+  secret?: string
+
+  /** TLS material for outbound mTLS connections */
+  tls: import('../runtime/agent-channel.js').AgentChannelTlsConfig
+
+  /** Pre-created undici dispatcher for mTLS (shared across all requests) */
+  httpsDispatcher?: unknown
 
   /** This node's agent IDs */
   localAgents: string[]
@@ -55,6 +64,13 @@ export class MeshDelegationEngine {
 
   constructor(config: MeshDelegationConfig) {
     this.config = config
+
+    // If no dispatcher was provided from boot, create one (fallback for tests)
+    if (!this.config.httpsDispatcher) {
+      this.createDispatcher().catch((err: unknown) =>
+        log.error('Failed to create HTTPS dispatcher for mesh delegation', err),
+      )
+    }
   }
 
   /**
@@ -121,15 +137,33 @@ export class MeshDelegationEngine {
   }
 
   /**
-   * Delegate to a remote agent via HTTP.
+   * Prefer `<nodeName>.mesh` DNS name for mTLS connections — dnsmasq resolves
+   * it everywhere on the mesh and the node cert SANs include it. Fall back to
+   * the IP stored in the registry only if the node name is unavailable.
    */
+  private meshHost(node: import('@rivetos/types').MeshNode): string {
+    return node.name ? `${node.name}.mesh` : node.host
+  }
+
+  private async createDispatcher() {
+    const { Agent: UndiciAgent } = await import('undici')
+    this.config.httpsDispatcher = new UndiciAgent({
+      connect: {
+        ca: this.config.tls.ca,
+        cert: this.config.tls.cert,
+        key: this.config.tls.key,
+        rejectUnauthorized: true,
+      },
+    })
+  }
+
   private async delegateRemote(
     request: DelegationRequest,
     route: MeshDelegationRoute,
     chainDepth = 0,
   ): Promise<DelegationResult> {
     const { node } = route
-    const url = `http://${node.host}:${String(node.port)}/api/message`
+    const url = `https://${this.meshHost(node)}:${String(node.port)}/api/message`
     const startTime = Date.now()
 
     try {
@@ -144,26 +178,25 @@ export class MeshDelegationEngine {
         fromAgent: request.fromAgent,
         message: `[Mesh delegation] ${request.task}`,
         waitForResponse: true,
-        chainDepth: chainDepth + 1, // increment before sending — remote starts one level deeper
+        chainDepth: chainDepth + 1,
       }
       if (request.timeoutMs) {
         payload.timeoutMs = request.timeoutMs
       }
-      // Forward per-call model override so the remote node runs with
-      // the requested model tier, not the agent's configured default.
       if (request.model) {
         payload.model = request.model
       }
 
-      const res = await fetch(url, {
+      // Use shared undici dispatcher for mTLS (created once at construction)
+      const fetchOptions: RequestInit & { dispatcher?: unknown } = {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.config.secret}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
         signal: request.timeoutMs ? controller.signal : undefined,
-      })
+        dispatcher: this.config.httpsDispatcher as never,
+      }
+
+      const res = await fetch(url, fetchOptions)
 
       if (timeout) clearTimeout(timeout)
 

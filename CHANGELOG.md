@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Phase 0.5: Mesh mTLS ⚠️ BREAKING CHANGE
+
+**All mesh nodes must upgrade together.** See [`MIGRATION.md`](MIGRATION.md)
+for the full cutover procedure.
+
+**What changed:**
+
+- **Agent channel is now HTTPS/mTLS.** `http.createServer` replaced with
+  `https.createServer({ requestCert: true, rejectUnauthorized: true })`. No
+  plaintext fallback exists. No bearer-token check. CA-signed cert = trusted.
+- **New `mesh.tls` config field** (`packages/types/src/mesh.ts`,
+  `packages/boot/src/config.ts`). `tls: true` uses default cert paths derived
+  from `node_name`. Object form overrides individual paths. Mesh refuses to
+  start if `mesh.enabled` and `tls` is absent.
+- **`mesh.secret` deprecated for agent-channel auth** — field is retained in
+  the type and may still be used by `update --mesh` orchestration, but the
+  agent channel server ignores it entirely.
+- **mTLS clients** (`mesh-delegation.ts`, `mesh.ts`) — outbound connections use
+  an undici `Agent` with the node's cert/key/ca. `Authorization: Bearer` header
+  removed. URL scheme changed from `http://` to `https://`.
+- **`.mesh` DNS preference** — delegation client uses `<nodeName>.mesh` hostnames
+  (dnsmasq-resolved on every CT) so the cert SAN matches the connection.
+- **`loadTlsConfig`** helper exported from `@rivetos/core` — reads cert files
+  from disk at boot, fails fast with a descriptive error if any path is
+  unreadable.
+- **Peer CN logged on every accepted request** (`peer.cn=<nodeName>`).
+- **`/api/mesh/ping` response** now includes `{ tls: true, cn: <ourNodeName> }`.
+- **Test fixture CA** checked in at
+  `packages/core/src/runtime/__fixtures__/test-ca/` — self-signed test CA +
+  node cert (SAN: `ct110.mesh`, `192.168.10.110`, `127.0.0.1`) + untrusted cert.
+- **New test file** `packages/core/src/runtime/agent-channel.test.ts` — 8 tests
+  covering: accept valid client cert, reject missing cert, reject untrusted CA,
+  refuse untrusted server cert, `loadTlsConfig` path resolution and error cases.
+- **`docs/mesh.md`** — new comprehensive mesh networking reference.
+- **`docs/CONFIG-REFERENCE.md`** — new `## mesh` section, updated Agent (HTTP)
+  section, deprecated `RIVETOS_AGENT_SECRET` note.
+- **`MIGRATION.md`** — cutover procedure, pre-flight checklist, rollback plan.
+
+
+
 ### Fixed — `openai-compat` reasoning on newer vLLM builds
 
 The streaming delta parser now accepts both the spec-standard
