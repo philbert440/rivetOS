@@ -555,7 +555,9 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
             }
           }
           if (!restarted) {
-            console.log('    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos')
+            console.log(
+              '    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
+            )
           }
         }
       }
@@ -698,7 +700,9 @@ async function gitUpdateNodeAsync(
   // Step 1: SSH connectivity check — auto-detect user with fallback
   const sshUser = resolveSshUser(host, opts.sshUser, tag)
   if (!sshUser) {
-    console.error(`    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${opts.sshUser} or root`)
+    console.error(
+      `    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${opts.sshUser} or root`,
+    )
     return { success: false, failedStep: 'ssh', elapsedMs: Date.now() - start }
   }
 
@@ -752,9 +756,7 @@ async function gitUpdateNodeAsync(
           await sshExec(host, restartCmd, `${tag} restart ${unit}`, 30_000, sshUser)
           // Verify it came back active
           const stateCmd =
-            sshUser === 'root'
-              ? `systemctl is-active ${unit}`
-              : `sudo systemctl is-active ${unit}`
+            sshUser === 'root' ? `systemctl is-active ${unit}` : `sudo systemctl is-active ${unit}`
           const state = sshExecQuiet(host, stateCmd, sshUser)
           if (state === 'active') {
             restartedWorkers.push(unit)
@@ -866,7 +868,8 @@ async function waitForHealth(host: string, _port: number, timeoutMs: number): Pr
     // Try rivet@ first, then root@ (handles both migrated and legacy nodes)
     for (const user of ['rivet', 'root']) {
       try {
-        const svcCheck = user === 'root' ? 'systemctl is-active rivetos' : 'sudo systemctl is-active rivetos'
+        const svcCheck =
+          user === 'root' ? 'systemctl is-active rivetos' : 'sudo systemctl is-active rivetos'
         const result = execSync(
           `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no ${user}@${host} "${svcCheck}" 2>/dev/null`,
           { timeout: 5_000 },
