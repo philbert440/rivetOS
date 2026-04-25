@@ -748,6 +748,7 @@ StandardError=journal
 ProtectSystem=strict
 ProtectHome=false
 ReadWritePaths=${RIVET_HOME} /rivet-shared /opt/rivetos
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

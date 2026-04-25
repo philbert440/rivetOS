@@ -220,6 +220,7 @@ CPUQuota=50%
 ProtectSystem=strict
 ProtectHome=false
 ReadWritePaths=${RIVET_HOME} /rivet-shared ${RIVETOS_DIR}
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
@@ -256,6 +257,7 @@ CPUQuota=50%
 ProtectSystem=strict
 ProtectHome=false
 ReadWritePaths=${RIVET_HOME} /rivet-shared ${RIVETOS_DIR}
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
