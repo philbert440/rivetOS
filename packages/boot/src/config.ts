@@ -34,6 +34,16 @@ export interface MeshSection {
   enabled?: boolean
   node_name?: string
   secret?: string
+  /** mTLS configuration for agent-channel.
+   * true = use default paths derived from node_name
+   * object = override paths */
+  tls?:
+    | boolean
+    | {
+        ca_path?: string
+        cert_path?: string
+        key_path?: string
+      }
   /** Port for the agent channel HTTP server (default: 3000) */
   agent_channel_port?: number
   /** Shared storage directory for mesh.json (default: /rivet-shared) */

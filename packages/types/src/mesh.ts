@@ -120,7 +120,24 @@ export interface MeshConfig {
   staleThresholdMs?: number
 
   /** Shared secret for mesh authentication */
+  /**
+   * Shared secret — no longer used for agent-channel authentication.
+   * @deprecated Agent-channel auth is now handled by mTLS (see `tls` field).
+   * Retained for use by update --mesh orchestration; do not remove yet.
+   */
   secret?: string
+
+  /**
+   * TLS configuration for mesh agent-channel.
+   * - `true`  → use default cert paths derived from nodeName
+   * - object  → override individual paths
+   * - absent / false → mesh will refuse to start (no plaintext fallback)
+   *
+   * @deprecated `secret` is no longer used for agent-channel authentication.
+   * It may still be used by other components (e.g., update --mesh orchestration).
+   * Do not remove until those are migrated. Use `tls` for agent-channel auth.
+   */
+  tls?: boolean | MeshTlsConfig
 
   /** Static peer list (used when discovery is 'static') */
   peers?: MeshPeerConfig[]
@@ -149,6 +166,15 @@ export interface MeshPeerConfig {
 
   /** Peer port (default: 3100) */
   port?: number
+}
+
+export interface MeshTlsConfig {
+  /** Path to CA chain PEM for verifying peers (default: /rivet-shared/rivet-ca/intermediate/ca-chain.pem) */
+  caPath?: string
+  /** Path to this node's certificate (default: /rivet-shared/rivet-ca/issued/<nodeName>.crt) */
+  certPath?: string
+  /** Path to this node's private key (default: /rivet-shared/rivet-ca/issued/<nodeName>.key) */
+  keyPath?: string
 }
 
 // ---------------------------------------------------------------------------

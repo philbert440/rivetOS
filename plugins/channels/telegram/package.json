@@ -14,9 +14,9 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@grammyjs/auto-retry": "^2.0.2",
     "@rivetos/types": "*",
-    "grammy": "^1.42.0",
-    "@grammyjs/auto-retry": "^2.0.2"
+    "grammy": "^1.42.0"
   },
   "rivetos": {
     "type": "channel",
