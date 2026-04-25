@@ -7,12 +7,14 @@
 #
 # Usage:
 #   sudo bash infra/scripts/migrate-to-rivet-user.sh
-#   sudo bash infra/scripts/migrate-to-rivet-user.sh --distribute-keys
+#   sudo bash infra/scripts/migrate-to-rivet-user.sh --mesh-distribute
 #
 # Options:
-#   --distribute-keys   After local migration, exchange rivet pubkeys with all
+#   --mesh-distribute   After local migration, exchange rivet pubkeys with all
 #                       mesh peers listed in config.yaml (dual-key window:
 #                       keys land in both /home/rivet and /root authorized_keys).
+#                       Skips peers that have not yet migrated.
+#   --distribute-keys   Alias for --mesh-distribute (kept for back-compat).
 #
 # Requirements: must be run as root on the target node.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -37,9 +39,13 @@ die()  { err "$*"; exit 1; }
 
 for arg in "$@"; do
     case "$arg" in
-        --distribute-keys) DISTRIBUTE_KEYS=true ;;
+        --mesh-distribute|--distribute-keys) DISTRIBUTE_KEYS=true ;;
         --help|-h)
-            echo "Usage: sudo bash migrate-to-rivet-user.sh [--distribute-keys]"
+            echo "Usage: sudo bash migrate-to-rivet-user.sh [--mesh-distribute]"
+            echo ""
+            echo "Options:"
+            echo "  --mesh-distribute   Exchange rivet pubkeys with all mesh peers after migration"
+            echo "  --distribute-keys   Alias for --mesh-distribute"
             exit 0 ;;
         *) die "Unknown option: $arg" ;;
     esac
@@ -197,8 +203,38 @@ log "  authorized_keys: $(wc -l < "$RIVET_AUTH") entries."
 log "Step 8: Rewriting systemd service units..."
 
 # Helper: write the main rivetos.service
+# Preserves the existing ExecStart command, only replacing the --config path
+# so that extra flags (e.g. --agent, --port) in the current unit are kept.
 write_rivetos_service() {
     log "  Writing /etc/systemd/system/rivetos.service..."
+
+    # Extract the existing ExecStart line (if the unit exists).
+    # We want to reuse whatever binary + flags are there, but update:
+    #   1. The --config argument to point to $RIVETOS_DATA/config.yaml
+    # If no existing unit, fall back to the standard npx tsx invocation.
+    EXISTING_EXECSTART=""
+    if systemctl cat rivetos &>/dev/null 2>&1; then
+        EXISTING_EXECSTART=$(systemctl cat rivetos 2>/dev/null \
+            | grep '^ExecStart=' | head -1 | sed 's/^ExecStart=//')
+    fi
+
+    if [[ -n "$EXISTING_EXECSTART" ]]; then
+        # Replace any --config <path> argument with the new path.
+        # Pattern: --config followed by any non-space string, OR end of line.
+        if echo "$EXISTING_EXECSTART" | grep -q -- '--config'; then
+            EXEC_START=$(echo "$EXISTING_EXECSTART" \
+                | sed "s|--config [^ ]*|--config ${RIVETOS_DATA}/config.yaml|g")
+        else
+            # No --config flag present — append it
+            EXEC_START="${EXISTING_EXECSTART} --config ${RIVETOS_DATA}/config.yaml"
+        fi
+        log "  Preserved ExecStart (updated --config path):"
+        log "    ${EXEC_START}"
+    else
+        EXEC_START="/usr/bin/npx tsx packages/cli/src/index.ts start --config ${RIVETOS_DATA}/config.yaml"
+        log "  No existing unit found — using default ExecStart."
+    fi
+
     TMPUNIT=$(mktemp)
     cat > "$TMPUNIT" << SVCEOF
 [Unit]
@@ -210,7 +246,7 @@ Type=simple
 User=rivet
 Group=rivet
 WorkingDirectory=${RIVETOS_DIR}
-ExecStart=/usr/bin/npx tsx packages/cli/src/index.ts start --config ${RIVETOS_DATA}/config.yaml
+ExecStart=${EXEC_START}
 EnvironmentFile=${RIVETOS_DATA}/.env
 Environment=HOME=${RIVET_HOME}
 Environment=RIVETOS_LOG_LEVEL=info

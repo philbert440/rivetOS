@@ -53,16 +53,21 @@ interface DoctorReport {
 
 interface DoctorOptions {
   json: boolean
+  sshUser: string
 }
 
 function parseArgs(): DoctorOptions {
   const args = process.argv.slice(3)
-  const opts: DoctorOptions = { json: false }
+  const opts: DoctorOptions = { json: false, sshUser: 'rivet' }
 
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
     switch (arg) {
       case '--json':
         opts.json = true
+        break
+      case '--ssh-user':
+        if (args[i + 1]) opts.sshUser = args[++i]
         break
       case '--help':
       case '-h':
@@ -632,7 +637,7 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
 // Check: Peer Reachability
 // ---------------------------------------------------------------------------
 
-async function checkPeers(): Promise<CheckResult[]> {
+async function checkPeers(sshUser = 'rivet'): Promise<CheckResult[]> {
   const results: CheckResult[] = []
 
   // Check for mesh.json — try canonical NFS path first, then local paths
@@ -679,29 +684,34 @@ async function checkPeers(): Promise<CheckResult[]> {
 
       if (!isAgent) {
         // Non-agent nodes: SSH reachability check (no HTTP service)
-        // Try rivet@ first, fall back to root@
+        // Try requestedUser first, fall back to root@
         let sshReachable = false
-        let sshUser = 'unknown'
-        for (const user of ['rivet', 'root']) {
+        let successUser = 'unknown'
+        const usersToTry = sshUser !== 'root' ? [sshUser, 'root'] : ['root']
+        for (const user of usersToTry) {
           try {
             execSync(
               `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no ${user}@${peer.host} "echo ok"`,
               { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
             )
             sshReachable = true
-            sshUser = user
+            successUser = user
             break
           } catch {
             // try next user
           }
         }
         if (sshReachable) {
+          const userNote =
+            successUser !== sshUser
+              ? ` (not yet migrated — fell back to root)`
+              : ` (SSH as ${successUser})`
           results.push(
             check(
               'peers',
               peer.name,
-              'pass',
-              `Peer ${peer.name} [${peer.role}]: reachable (SSH as ${sshUser})`,
+              successUser !== sshUser ? 'warn' : 'pass',
+              `Peer ${peer.name} [${peer.role}]: reachable${userNote}`,
             ),
           )
         } else {
@@ -834,12 +844,14 @@ function showHelp(): void {
 Runs comprehensive health checks on your RivetOS installation.
 
 Options:
-  --json        Output results as JSON (for CI/automation)
-  -h, --help    Show this help
+  --json              Output results as JSON (for CI/automation)
+  --ssh-user <user>   SSH user for peer/infra checks (default: rivet)
+                      Falls back to root automatically if rivet auth fails.
+  -h, --help          Show this help
 
-Checks: system, config, workspace, env vars, secrets, OAuth,
-        containers, memory backend, shared storage, DNS,
-        provider connectivity, peer reachability
+Checks: system, config, workspace, env vars, secrets, containers,
+        memory backend, shared storage, DNS, provider connectivity,
+        peer reachability, service user
 `)
 }
 
@@ -889,7 +901,7 @@ export default async function doctor(): Promise<void> {
   const providerResults = await checkProviders(rawConfig)
   allResults.push(...providerResults)
 
-  const peerResults = await checkPeers()
+  const peerResults = await checkPeers(opts.sshUser)
   allResults.push(...peerResults)
 
   // Summary

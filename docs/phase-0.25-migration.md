@@ -61,7 +61,7 @@ If the node is already migrated (marker exists), the script exits cleanly.
 After the local migration completes, optionally run key distribution:
 
 ```bash
-ssh root@<host> "bash /opt/rivetos/infra/scripts/migrate-to-rivet-user.sh --distribute-keys"
+ssh root@<host> "bash /opt/rivetos/infra/scripts/migrate-to-rivet-user.sh --mesh-distribute"
 ```
 
 ---
