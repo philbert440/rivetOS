@@ -311,10 +311,15 @@ function checkEnvVars(rawConfig: string | null): CheckResult[] {
 
   if (rawConfig) {
     try {
-      const parsed = parseYaml(rawConfig) as Record<string, unknown>
-      const providers = (parsed.providers ?? {}) as Partial<Record<string, Record<string, unknown>>>
-      const channels = (parsed.channels ?? {}) as Partial<Record<string, Record<string, unknown>>>
-      const memory = (parsed.memory ?? {}) as Partial<Record<string, Record<string, unknown>>>
+      type Section = Partial<Record<string, Record<string, unknown>>>
+      const parsed = parseYaml(rawConfig) as {
+        providers?: Section
+        channels?: Section
+        memory?: Section
+      }
+      const providers: Section = parsed.providers ?? {}
+      const channels: Section = parsed.channels ?? {}
+      const memory: Section = parsed.memory ?? {}
 
       if (providers.anthropic && !providers.anthropic.api_key) {
         envChecks.push({ name: 'ANTHROPIC_API_KEY', context: 'provider: anthropic' })
@@ -608,8 +613,9 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
   if (!rawConfig) return results
 
   try {
-    const parsed = parseYaml(rawConfig) as Record<string, unknown>
-    const providers = (parsed.providers ?? {}) as Partial<Record<string, Record<string, unknown>>>
+    type Section = Partial<Record<string, Record<string, unknown>>>
+    const parsed = parseYaml(rawConfig) as { providers?: Section }
+    const providers: Section = parsed.providers ?? {}
 
     for (const [name, providerCfg] of Object.entries(providers)) {
       if (!providerCfg) continue

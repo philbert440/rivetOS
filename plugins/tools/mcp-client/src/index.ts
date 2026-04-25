@@ -225,7 +225,7 @@ export class MCPClientPlugin {
         // SSEClientTransport is deprecated but some servers still require it
         // eslint-disable-next-line @typescript-eslint/no-deprecated -- SSE still needed for legacy servers
         const { SSEClientTransport } = await import('@modelcontextprotocol/sdk/client/sse.js')
-        transport = new SSEClientTransport(new URL(config.url)) as unknown as Transport
+        transport = new SSEClientTransport(new URL(config.url))
         break
       }
       default:
@@ -251,7 +251,7 @@ export class MCPClientPlugin {
       mcpName: t.name,
       rivetName: prefix ? `${prefix}${t.name}` : t.name,
       description: t.description ?? `MCP tool from ${id}`,
-      inputSchema: t.inputSchema as Record<string, unknown>,
+      inputSchema: t.inputSchema,
     }))
 
     // Handle disconnection

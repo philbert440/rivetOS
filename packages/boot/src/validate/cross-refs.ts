@@ -8,7 +8,7 @@ export function validateCrossReferences(
   cfg: Record<string, unknown>,
   issues: ValidationIssue[],
 ): void {
-  const agents = (cfg.agents ?? {}) as Partial<Record<string, Record<string, unknown>>>
+  const agents = (cfg.agents ?? {}) as Record<string, { provider?: unknown } | null | undefined>
   const providers = (cfg.providers ?? {}) as Record<string, unknown>
   const runtime = (cfg.runtime ?? {}) as Record<string, unknown>
 
@@ -73,7 +73,10 @@ export function validateCrossReferences(
   }
 
   // Discord channel_bindings agent refs must exist
-  const channels = (cfg.channels ?? {}) as Partial<Record<string, Record<string, unknown>>>
+  const channels = (cfg.channels ?? {}) as Record<
+    string,
+    Record<string, unknown> | null | undefined
+  >
   const discord = channels.discord
   if (discord && typeof discord.channel_bindings === 'object' && discord.channel_bindings) {
     const bindings = discord.channel_bindings as Record<string, string>
