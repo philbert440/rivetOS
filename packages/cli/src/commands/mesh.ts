@@ -488,8 +488,7 @@ function timeSince(epochMs: number): string {
  * Returns true if either succeeds.
  */
 function checkSshReachable(host: string, requestedUser = 'rivet'): boolean {
-  const usersToTry =
-    requestedUser !== 'root' ? [requestedUser, 'root'] : ['root']
+  const usersToTry = requestedUser !== 'root' ? [requestedUser, 'root'] : ['root']
   for (const user of usersToTry) {
     try {
       execSync(
