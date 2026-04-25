@@ -31,11 +31,18 @@ interface UpdateOptions {
   prebuilt: boolean
   mesh: boolean
   bareMetal: boolean
+  sshUser: string
 }
 
 function parseArgs(): UpdateOptions {
   const args = process.argv.slice(3)
-  const opts: UpdateOptions = { restart: true, prebuilt: false, mesh: false, bareMetal: false }
+  const opts: UpdateOptions = {
+    restart: true,
+    prebuilt: false,
+    mesh: false,
+    bareMetal: false,
+    sshUser: 'rivet',
+  }
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
@@ -49,6 +56,8 @@ function parseArgs(): UpdateOptions {
       opts.mesh = true
     } else if (arg === '--bare-metal') {
       opts.bareMetal = true
+    } else if (arg === '--ssh-user' && args[i + 1]) {
+      opts.sshUser = args[++i]
     } else if (arg === '--help' || arg === '-h') {
       showHelp()
       process.exit(0)
@@ -82,6 +91,11 @@ function showHelp(): void {
     3. Rebuild container images (if containerized)
     4. Restart services
     5. Run post-update hooks (migrations, etc.)
+
+  SSH notes:
+    Default SSH user is 'rivet'. Falls back to 'root' automatically if rivet
+    auth fails (warns that the node hasn't been migrated yet).
+    Override with --ssh-user <user>.
   `)
 }
 
@@ -257,11 +271,25 @@ export default async function update(): Promise<void> {
       // Bare-metal: restart via systemd or signal
       console.log('\nRestarting service...')
       try {
-        execSync('systemctl restart rivetos', { stdio: 'inherit', timeout: 30000 })
-        console.log('  ✅ Service restarted')
+        // Try direct systemctl first (running as root), then sudo (running as rivet)
+        let restarted = false
+        for (const cmd of ['systemctl restart rivetos', 'sudo systemctl restart rivetos']) {
+          try {
+            execSync(cmd, { stdio: 'inherit', timeout: 30000 })
+            restarted = true
+            break
+          } catch {
+            // try next
+          }
+        }
+        if (restarted) {
+          console.log('  ✅ Service restarted')
+        } else {
+          throw new Error('both systemctl and sudo systemctl failed')
+        }
       } catch {
         console.log(
-          '  ⚠️  Could not restart via systemd. Restart manually: rivetos stop && rivetos start',
+          '  ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
         )
       }
     }
@@ -512,14 +540,22 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         )
         if (localOpts.restart) {
           console.log('    Restarting service...')
-          try {
-            execSync('systemctl restart rivetos', {
-              encoding: 'utf-8',
-              timeout: 30000,
-              stdio: ['pipe', 'pipe', 'pipe'],
-            })
-          } catch {
-            console.log('    ⚠️  Could not restart via systemd. Restart manually.')
+          let restarted = false
+          for (const cmd of ['systemctl restart rivetos', 'sudo systemctl restart rivetos']) {
+            try {
+              execSync(cmd, {
+                encoding: 'utf-8',
+                timeout: 30000,
+                stdio: ['pipe', 'pipe', 'pipe'],
+              })
+              restarted = true
+              break
+            } catch {
+              // try next
+            }
+          }
+          if (!restarted) {
+            console.log('    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos')
           }
         }
       }
@@ -538,7 +574,13 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
  * Run a command on a remote host via SSH using spawn (non-blocking, streamed output).
  * Resolves on exit code 0, rejects on non-zero exit or timeout.
  */
-function sshExec(host: string, command: string, label: string, timeoutMs: number): Promise<void> {
+function sshExec(
+  host: string,
+  command: string,
+  label: string,
+  timeoutMs: number,
+  sshUser = 'rivet',
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const args = [
       '-o',
@@ -547,7 +589,7 @@ function sshExec(host: string, command: string, label: string, timeoutMs: number
       'ConnectTimeout=5',
       '-o',
       'StrictHostKeyChecking=no',
-      `root@${host}`,
+      `${sshUser}@${host}`,
       command,
     ]
 
@@ -590,16 +632,53 @@ interface NodeUpdateResult {
  * primary rivetos.service. Returns an array of unit names (e.g.
  * ["rivet-embedder.service", "rivet-compactor.service"]). On failure, returns [].
  */
-function discoverRivetWorkers(host: string): string[] {
+function discoverRivetWorkers(host: string, sshUser = 'rivet'): string[] {
   const out = sshExecQuiet(
     host,
     "systemctl list-unit-files 'rivet-*.service' --no-legend --no-pager 2>/dev/null | awk '{print \\$1}'",
+    sshUser,
   )
   if (!out) return []
   return out
     .split('\n')
     .map((s) => s.trim())
     .filter((s) => s.length > 0 && s !== 'rivetos.service')
+}
+
+/**
+ * Resolve the SSH user for a remote host.
+ * Tries the requested user first; if auth fails falls back to 'root' with a warning.
+ * Returns the user that actually worked, or null if both fail.
+ */
+function resolveSshUser(host: string, requestedUser: string, tag: string): string | null {
+  // Try requested user
+  try {
+    execSync(
+      `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no ${requestedUser}@${host} "echo ok"`,
+      { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
+    )
+    return requestedUser
+  } catch {
+    // fall through to fallback
+  }
+
+  if (requestedUser !== 'root') {
+    // Fall back to root with warning (node not yet migrated)
+    try {
+      execSync(
+        `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no root@${host} "echo ok"`,
+        { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+      console.error(
+        `    ${tag} [warn] node not yet migrated to ${requestedUser} user, falling back to root`,
+      )
+      return 'root'
+    } catch {
+      // fall through
+    }
+  }
+
+  return null
 }
 
 /**
@@ -616,14 +695,10 @@ async function gitUpdateNodeAsync(
   const tag = `[${nodeName}]`
   const start = Date.now()
 
-  // Step 1: SSH connectivity check
-  try {
-    execSync(
-      `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no root@${host} "echo ok"`,
-      { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
-    )
-  } catch {
-    console.error(`    ${tag} ❌ SSH connection failed — cannot reach ${host}`)
+  // Step 1: SSH connectivity check — auto-detect user with fallback
+  const sshUser = resolveSshUser(host, opts.sshUser, tag)
+  if (!sshUser) {
+    console.error(`    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${opts.sshUser} or root`)
     return { success: false, failedStep: 'ssh', elapsedMs: Date.now() - start }
   }
 
@@ -633,7 +708,7 @@ async function gitUpdateNodeAsync(
     const gitCmd = opts.version
       ? `cd /opt/rivetos && git fetch --tags && git checkout ${opts.version}`
       : 'cd /opt/rivetos && git fetch origin && git checkout main && git reset --hard origin/main'
-    await sshExec(host, gitCmd, `${tag} git pull`, 30_000)
+    await sshExec(host, gitCmd, `${tag} git pull`, 30_000, sshUser)
   } catch (err: unknown) {
     console.error(`    ${tag} ❌ git pull failed: ${(err as Error).message}`)
     return { success: false, failedStep: 'git', elapsedMs: Date.now() - start }
@@ -651,16 +726,17 @@ async function gitUpdateNodeAsync(
         'cd /opt/rivetos && npm install --no-audit --no-fund',
         `${tag} npm install`,
         120_000,
+        sshUser,
       )
     } catch (err: unknown) {
       console.error(`    ${tag} ❌ npm install failed: ${(err as Error).message}`)
       return { success: false, failedStep: 'npm', elapsedMs: Date.now() - start }
     }
 
-    const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD')
+    const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
 
     // Discover and restart worker services
-    const workers = discoverRivetWorkers(host)
+    const workers = discoverRivetWorkers(host, sshUser)
     const restartedWorkers: string[] = []
     if (workers.length === 0) {
       console.log(`    ${tag} No rivet-* worker services found`)
@@ -670,9 +746,16 @@ async function gitUpdateNodeAsync(
       for (const unit of workers) {
         try {
           console.log(`    ${tag} Restarting ${unit}...`)
-          await sshExec(host, `systemctl restart ${unit}`, `${tag} restart ${unit}`, 30_000)
+          // Workers run as rivet; use sudo for systemctl if not root
+          const restartCmd =
+            sshUser === 'root' ? `systemctl restart ${unit}` : `sudo systemctl restart ${unit}`
+          await sshExec(host, restartCmd, `${tag} restart ${unit}`, 30_000, sshUser)
           // Verify it came back active
-          const state = sshExecQuiet(host, `systemctl is-active ${unit}`)
+          const stateCmd =
+            sshUser === 'root'
+              ? `systemctl is-active ${unit}`
+              : `sudo systemctl is-active ${unit}`
+          const state = sshExecQuiet(host, stateCmd, sshUser)
           if (state === 'active') {
             restartedWorkers.push(unit)
           } else {
@@ -717,6 +800,7 @@ async function gitUpdateNodeAsync(
       'cd /opt/rivetos && npm install --no-audit --no-fund',
       `${tag} npm install`,
       120_000,
+      sshUser,
     )
   } catch (err: unknown) {
     console.error(`    ${tag} ❌ npm install failed: ${(err as Error).message}`)
@@ -731,6 +815,7 @@ async function gitUpdateNodeAsync(
       'cd /opt/rivetos && npx nx reset && npx nx run-many -t build --exclude container-agent,container-datahub,site',
       `${tag} build`,
       180_000,
+      sshUser,
     )
   } catch (err: unknown) {
     console.error(`    ${tag} ❌ Build failed: ${(err as Error).message}`)
@@ -741,7 +826,10 @@ async function gitUpdateNodeAsync(
   if (opts.restart) {
     try {
       console.log(`    ${tag} Restarting service...`)
-      await sshExec(host, 'systemctl restart rivetos', `${tag} restart`, 30_000)
+      // Use sudo when logged in as rivet (non-root)
+      const restartCmd =
+        sshUser === 'root' ? 'systemctl restart rivetos' : 'sudo systemctl restart rivetos'
+      await sshExec(host, restartCmd, `${tag} restart`, 30_000, sshUser)
     } catch (err: unknown) {
       console.error(`    ${tag} ❌ Restart failed: ${(err as Error).message}`)
       return { success: false, failedStep: 'restart', elapsedMs: Date.now() - start }
@@ -749,7 +837,7 @@ async function gitUpdateNodeAsync(
   }
 
   // Get final commit SHA
-  const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD')
+  const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
   console.log(`    ${tag} ✅ Done (${commit || 'unknown'})`)
   return { success: true, commit: commit || undefined, elapsedMs: Date.now() - start }
 }
@@ -758,10 +846,10 @@ async function gitUpdateNodeAsync(
  * Quick SSH command that returns stdout, or empty string on failure.
  * Used for non-critical checks like getting the commit SHA.
  */
-function sshExecQuiet(host: string, command: string): string {
+function sshExecQuiet(host: string, command: string, sshUser = 'rivet'): string {
   try {
     return execSync(
-      `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no root@${host} "${command}"`,
+      `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no ${sshUser}@${host} "${command}"`,
       { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
     ).trim()
   } catch {
@@ -774,15 +862,20 @@ async function waitForHealth(host: string, _port: number, timeoutMs: number): Pr
   const interval = 3_000
 
   while (Date.now() < deadline) {
-    try {
-      // Check if the systemd service is active via SSH (bare-metal/Proxmox deployments)
-      const result = execSync(
-        `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no root@${host} "systemctl is-active rivetos" 2>/dev/null`,
-        { timeout: 5_000 },
-      )
-      if (result.toString().trim() === 'active') return true
-    } catch {
-      // Not ready yet — service still starting or SSH not available
+    // Check if the systemd service is active via SSH (bare-metal/Proxmox deployments)
+    // Try rivet@ first, then root@ (handles both migrated and legacy nodes)
+    for (const user of ['rivet', 'root']) {
+      try {
+        const svcCheck = user === 'root' ? 'systemctl is-active rivetos' : 'sudo systemctl is-active rivetos'
+        const result = execSync(
+          `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no ${user}@${host} "${svcCheck}" 2>/dev/null`,
+          { timeout: 5_000 },
+        )
+        if (result.toString().trim() === 'active') return true
+        break
+      } catch {
+        // Not ready yet — try next user
+      }
     }
 
     // Fallback: try HTTP health endpoint (Docker/containerized deployments)
