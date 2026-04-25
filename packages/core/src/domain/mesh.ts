@@ -285,7 +285,7 @@ export class FileMeshRegistry implements MeshRegistry {
         fetchOptions = { ...fetchOptions, dispatcher: tlsDispatcher }
       }
 
-      const res = await fetch(url, fetchOptions as RequestInit)
+      const res = await fetch(url, fetchOptions)
 
       if (!res.ok) {
         throw new Error(`Seed responded ${String(res.status)}: ${await res.text()}`)

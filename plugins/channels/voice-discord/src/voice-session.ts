@@ -164,7 +164,7 @@ export class VoiceSession {
       frameSize: 960,
     })
 
-    this.opusStreams.set(userId, opusStream as unknown as Readable)
+    this.opusStreams.set(userId, opusStream)
     this.decoders.set(userId, decoder)
 
     opusStream.pipe(decoder)

@@ -218,10 +218,7 @@ async function meshPing(flags: Flags): Promise<void> {
     const start = Date.now()
     try {
       const fetchOpts = await buildMeshFetchOptions(node.host, timeoutMs)
-      const res = await fetch(
-        `https://${node.host}:${String(node.port)}/api/mesh/ping`,
-        fetchOpts as RequestInit,
-      )
+      const res = await fetch(`https://${node.host}:${String(node.port)}/api/mesh/ping`, fetchOpts)
 
       const latency = Date.now() - start
 
@@ -278,10 +275,7 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
   // First, check if seed is reachable
   try {
     const pingOpts = await buildMeshFetchOptions(host, 5000)
-    const pingRes = await fetch(
-      `https://${host}:${String(port)}/api/mesh/ping`,
-      pingOpts as RequestInit,
-    )
+    const pingRes = await fetch(`https://${host}:${String(port)}/api/mesh/ping`, pingOpts)
     if (!pingRes.ok) {
       console.error(`  ❌ Seed node responded with HTTP ${String(pingRes.status)}`)
       process.exit(1)
@@ -327,7 +321,7 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(localNode),
-    } as RequestInit)
+    })
 
     if (!res.ok) {
       const body = await res.text()

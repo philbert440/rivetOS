@@ -386,7 +386,7 @@ export class CommandHandler {
       } else if (Array.isArray(result)) {
         text = result
           .filter((p) => p.type === 'text')
-          .map((p) => (p as { type: 'text'; text: string }).text)
+          .map((p) => p.text)
           .join('\n')
       } else {
         text = String(result)

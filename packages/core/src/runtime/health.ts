@@ -112,7 +112,7 @@ export class HealthServer {
       res.writeHead(404)
       res.end('Not Found')
     } catch (err: unknown) {
-      log.error('Health check failed', err as Error)
+      log.error('Health check failed', err)
       res.writeHead(500)
       res.end(JSON.stringify({ error: 'Internal error' }))
     }

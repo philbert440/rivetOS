@@ -135,11 +135,13 @@ export default async function plugins(): Promise<void> {
   switch (subcommand) {
     case 'list': {
       const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
-      let config: Record<string, unknown> | null = null
+      type Section = Partial<Record<string, Record<string, unknown>>>
+      type ParsedConfig = { providers?: Section; channels?: Section; memory?: Section }
+      let config: ParsedConfig | null = null
 
       try {
         const raw = await readFile(configPath, 'utf-8')
-        config = parseYaml(raw) as Record<string, unknown>
+        config = parseYaml(raw) as ParsedConfig
       } catch {
         console.error(`❌ Cannot read config: ${configPath}`)
         console.error('   Run: rivetos config init')
@@ -150,7 +152,7 @@ export default async function plugins(): Promise<void> {
       const results: PluginInfo[] = []
 
       // Providers
-      const providers = (config.providers ?? {}) as Partial<Record<string, Record<string, unknown>>>
+      const providers: Section = config.providers ?? {}
       const installedProviders = installed.get('providers') ?? new Set()
 
       for (const [name, provConfig] of Object.entries(providers)) {
@@ -178,7 +180,7 @@ export default async function plugins(): Promise<void> {
       }
 
       // Channels
-      const channels = (config.channels ?? {}) as Partial<Record<string, Record<string, unknown>>>
+      const channels: Section = config.channels ?? {}
       const installedChannels = installed.get('channels') ?? new Set()
 
       for (const [name, chanConfig] of Object.entries(channels)) {
@@ -204,7 +206,7 @@ export default async function plugins(): Promise<void> {
       }
 
       // Memory
-      const memory = (config.memory ?? {}) as Partial<Record<string, Record<string, unknown>>>
+      const memory: Section = config.memory ?? {}
       const installedMemory = installed.get('memory') ?? new Set()
 
       for (const [name, memConfig] of Object.entries(memory)) {

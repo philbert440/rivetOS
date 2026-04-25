@@ -25,18 +25,16 @@ function resolveChannelConfig(
   switch (id) {
     case 'telegram':
       return {
-        botToken:
-          (channelConfig.bot_token as string | undefined) ?? process.env.TELEGRAM_BOT_TOKEN ?? '',
-        ownerId: (channelConfig.owner_id as string | undefined) ?? '',
+        botToken: channelConfig.bot_token ?? process.env.TELEGRAM_BOT_TOKEN ?? '',
+        ownerId: channelConfig.owner_id ?? '',
         allowedUsers: channelConfig.allowed_users,
         agent: channelConfig.agent,
       }
 
     case 'discord':
       return {
-        botToken:
-          (channelConfig.bot_token as string | undefined) ?? process.env.DISCORD_BOT_TOKEN ?? '',
-        ownerId: (channelConfig.owner_id as string | undefined) ?? '',
+        botToken: channelConfig.bot_token ?? process.env.DISCORD_BOT_TOKEN ?? '',
+        ownerId: channelConfig.owner_id ?? '',
         allowedGuilds: channelConfig.allowed_guilds,
         allowedChannels: channelConfig.allowed_channels,
         allowedUsers: channelConfig.allowed_users,
@@ -49,21 +47,18 @@ function resolveChannelConfig(
     case 'voice-discord':
       return {
         discordToken:
-          (channelConfig.bot_token as string | undefined) ??
+          channelConfig.bot_token ??
           process.env.VOICE_BOT_TOKEN ??
           process.env.DISCORD_BOT_TOKEN ??
           '',
-        xaiApiKey:
-          (channelConfig.xai_api_key as string | undefined) ?? process.env.XAI_API_KEY ?? '',
-        guildId: (channelConfig.guild_id as string | undefined) ?? '',
-        allowedUsers: (channelConfig.allowed_users as string[] | undefined) ?? [],
+        xaiApiKey: channelConfig.xai_api_key ?? process.env.XAI_API_KEY ?? '',
+        guildId: channelConfig.guild_id ?? '',
+        allowedUsers: channelConfig.allowed_users ?? [],
         voice: channelConfig.voice,
         instructions: channelConfig.instructions,
         transcriptDir: channelConfig.transcript_dir,
         postgresConnectionString:
-          (config.memory?.postgres.connection_string as string | undefined) ??
-          process.env.RIVETOS_PG_URL ??
-          '',
+          config.memory?.postgres.connection_string ?? process.env.RIVETOS_PG_URL ?? '',
       }
 
     case 'agent':

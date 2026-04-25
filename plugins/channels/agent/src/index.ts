@@ -536,7 +536,7 @@ export class AgentChannel implements Channel {
         fetchHeaders['Authorization'] = `Bearer ${String(secret)}`
       }
 
-      const res = await fetch(url, fetchOpts as RequestInit)
+      const res = await fetch(url, fetchOpts)
 
       if (!res.ok) {
         const errBody = await res.text().catch(() => 'unknown error')

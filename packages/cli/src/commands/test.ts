@@ -129,8 +129,9 @@ async function testConfig(): Promise<{ pass: boolean; message: string; detail?: 
 async function testProvider(): Promise<{ pass: boolean; message: string; detail?: string }> {
   const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
   const raw = await readFile(configPath, 'utf-8')
-  const parsed = parseYaml(raw) as Record<string, unknown>
-  const providers = (parsed.providers ?? {}) as Partial<Record<string, Record<string, unknown>>>
+  type Section = Partial<Record<string, Record<string, unknown>>>
+  const parsed = parseYaml(raw) as { providers?: Section }
+  const providers: Section = parsed.providers ?? {}
 
   // Find the first configured provider and test it
   for (const [name, cfg] of Object.entries(providers)) {

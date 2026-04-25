@@ -12,8 +12,8 @@
     "lint": "eslint src/"
   },
   "dependencies": {
-    "@pulumi/pulumi": "^3.162.0",
     "@pulumi/docker": "^4.6.3",
+    "@pulumi/pulumi": "^3.232.0",
     "@rivetos/types": "*",
     "yaml": "^2.8.3"
   }
