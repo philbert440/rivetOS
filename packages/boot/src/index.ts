@@ -8,7 +8,7 @@
 import { resolve, dirname } from 'node:path'
 import { Runtime } from '@rivetos/core'
 import { logger } from '@rivetos/core'
-import type { HeartbeatConfig, ThinkingLevel } from '@rivetos/types'
+import type { ThinkingLevel } from '@rivetos/types'
 
 import { loadConfig } from './config.js'
 import { discoverPlugins } from './discovery.js'
@@ -89,7 +89,7 @@ export async function boot(configPath?: string): Promise<void> {
       local: agent.local ?? false,
       tools: agent.tools,
     })),
-    heartbeats: config.runtime.heartbeats as HeartbeatConfig[],
+    heartbeats: config.runtime.heartbeats,
     skillDirs: config.runtime.skill_dirs,
     hooks: pipeline,
     fallbacks: fallbackConfigs,
