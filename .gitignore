@@ -36,3 +36,6 @@ REFACTOR_PROGRESS.md
 # Never commit user workspace files to the source tree
 /workspace/
 tmp/
+
+# Mesh roster (real IPs, operator-managed)
+scripts/mesh-nodes.conf

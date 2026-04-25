@@ -47,6 +47,7 @@ Live continuity file. Any agent (Opus/Grok/Sonnet/Local) picking this up cold sh
 5. **Deploy** — `cd /opt/rivetos && node packages/cli/dist/index.js update --mesh`
 6. **Sanity check** — `curl https://ct111.mesh:3100/api/mesh/ping --cacert ... --cert ... --key ...` from each node
 7. **Confirm** delegate_task round-trip works opus↔grok↔gemini↔local
+8. **Next delegation goes to `local`** (Qwen on GERTY/CT114) — Phil wants to stretch its legs on real work. Pick something appropriately scoped.
 
 ### Per-node config delta needed before deploy
 Each node's RivetOS config (`~/.rivetos/config.yaml` or wherever per node) needs:
