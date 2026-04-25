@@ -53,6 +53,13 @@ GIT_REPO="https://github.com/philbert440/rivetOS.git"
 DRY_RUN=false
 SKIP_DESTROY=false
 PRIVILEGED=true       # Privileged CT with direct NFS mount (default for agent CTs)
+LEGACY_ROOT_KEYS=true # Mirror SSH writes to /root/.ssh/authorized_keys during cutover (disable with --no-legacy-root-keys)
+
+# rivet user constants
+RIVET_UID=2000
+RIVET_GID=2000
+RIVET_HOME="/home/rivet"
+RIVETOS_DATA="${RIVET_HOME}/.rivetos"
 
 # Derived paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,6 +103,8 @@ while [[ $# -gt 0 ]]; do
         --skip-destroy)  SKIP_DESTROY=true;  shift;;
         --privileged)    PRIVILEGED=true;     shift;;
         --unprivileged)  PRIVILEGED=false;    shift;;
+        --legacy-root-keys)    LEGACY_ROOT_KEYS=true;  shift;;
+        --no-legacy-root-keys) LEGACY_ROOT_KEYS=false; shift;;
         -h|--help)
             cat << 'HELPEOF'
 Usage: provision-ct.sh --ctid ID --hostname NAME --node PVE --ip IP --agent AGENT --provider PROVIDER [options]
@@ -131,6 +140,8 @@ Infrastructure:
   --restore     Path to backup tarball for workspace restoration
   --dry-run     Print commands without executing
   --skip-destroy  Don't destroy existing CT
+  --legacy-root-keys    Mirror SSH keys to /root as well as rivet (default, for cutover window)
+  --no-legacy-root-keys  Only write SSH keys to rivet user (post-migration)
 HELPEOF
             exit 0;;
         *) echo "Unknown option: $1"; exit 1;;
@@ -510,29 +521,50 @@ fi
 # Phase 4: SSH access setup
 # ──────────────────────────────────────────────────────────────────────────────
 
-log "Phase 4: Setting up SSH access..."
+log "Phase 4: Setting up SSH access and creating rivet user..."
 
-# Create .ssh directory
+# ── 4a: Create rivet group + user (uid 2000) ────────────────────────────────
+run_on_ct "
+if ! getent group rivet &>/dev/null; then
+    groupadd --gid ${RIVET_GID} rivet
+fi
+if ! id rivet &>/dev/null; then
+    useradd --uid ${RIVET_UID} --gid rivet --home-dir ${RIVET_HOME} --create-home --shell /bin/bash rivet
+fi
+usermod -aG sudo rivet
+"
+log "  rivet user created (uid ${RIVET_UID}) and added to sudo group"
+
+# ── 4b: SSH directories for both root (legacy) and rivet ───────────────────
 run_on_ct "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
+run_on_ct "mkdir -p ${RIVET_HOME}/.ssh && chmod 700 ${RIVET_HOME}/.ssh"
 
-# Add control plane's SSH public key to authorized_keys
-# This ensures the person who provisioned always has access
-run_on_ct "echo '${CONTROL_PUBKEY}' >> /root/.ssh/authorized_keys && \
-    sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys && \
-    chmod 600 /root/.ssh/authorized_keys"
+# Add control plane pubkey to rivet's authorized_keys (primary)
+run_on_ct "echo '${CONTROL_PUBKEY}' >> ${RIVET_HOME}/.ssh/authorized_keys && \
+    sort -u ${RIVET_HOME}/.ssh/authorized_keys -o ${RIVET_HOME}/.ssh/authorized_keys && \
+    chmod 600 ${RIVET_HOME}/.ssh/authorized_keys && \
+    chown -R rivet:rivet ${RIVET_HOME}/.ssh"
+log "  Control plane SSH key added to rivet@CT authorized_keys"
 
-log "  Control plane SSH key added to CT authorized_keys"
+# Mirror to root authorized_keys during legacy cutover window
+if $LEGACY_ROOT_KEYS; then
+    run_on_ct "echo '${CONTROL_PUBKEY}' >> /root/.ssh/authorized_keys && \
+        sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys && \
+        chmod 600 /root/.ssh/authorized_keys"
+    log "  Control plane SSH key also mirrored to root (--legacy-root-keys)"
+fi
 
-# Generate per-CT mesh key (for CT-to-CT communication)
-run_on_ct "ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519 -N '' -C '${HOSTNAME}-ct${CTID}'"
-CT_PUBKEY=$(run_on_ct "cat /root/.ssh/id_ed25519.pub")
-log "  CT mesh key generated"
+# Generate per-CT mesh key as rivet user
+run_on_ct "sudo -u rivet ssh-keygen -t ed25519 -f ${RIVET_HOME}/.ssh/id_ed25519 -N '' -C '${HOSTNAME}-ct${CTID}'"
+CT_PUBKEY=$(run_on_ct "cat ${RIVET_HOME}/.ssh/id_ed25519.pub")
+log "  CT mesh key generated for rivet user"
 
-# Set fallback password for root
-run_on_ct "echo 'root:${FALLBACK_PASSWORD}' | chpasswd"
-log "  Fallback password set"
+# Set fallback password for both root and rivet
+run_on_ct "echo 'root:${FALLBACK_PASSWORD}' | chpasswd && \
+           echo 'rivet:${FALLBACK_PASSWORD}' | chpasswd"
+log "  Fallback password set for root and rivet"
 
-# Configure SSH: allow both key and password auth (password as fallback)
+# Configure SSH: allow both key and password auth, allow rivet
 run_on_ct "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
     sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
     systemctl restart ssh"
@@ -563,7 +595,7 @@ else
         --exclude='.env.*' \
         --exclude='*.pid' \
         --exclude='.nx/' \
-        "${REPO_ROOT}/" "root@${IP}:/opt/rivetos/"
+        "${REPO_ROOT}/" "rivet@${IP}:/opt/rivetos/"
 
     log "  Code synced to CT"
 
@@ -572,7 +604,9 @@ else
     run_on_ct "cd /opt/rivetos && npx nx run-many -t build --exclude container-agent,container-datahub,site 2>&1 | tail -10"
 fi
 
-log "  Build complete"
+# Ensure rivet owns the repo
+run_on_ct "chown -R rivet:rivet /opt/rivetos"
+log "  Build complete — ownership set to rivet:rivet"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 6: Generate config from templates
@@ -580,8 +614,8 @@ log "  Build complete"
 
 log "Phase 6: Generating config from templates..."
 
-# Create data directory
-run_on_ct "mkdir -p /root/.rivetos/workspace/memory /root/.rivetos/workspace/skills"
+# Create data directory under rivet home
+run_on_ct "mkdir -p ${RIVETOS_DATA}/workspace/memory ${RIVETOS_DATA}/workspace/skills"
 
 # --- Generate config.yaml from template ---
 
@@ -598,8 +632,8 @@ if [[ -n "$REMAINING" ]]; then
     warn "  ⚠ Unresolved template variables in config: $REMAINING"
 fi
 
-# Write config to CT
-echo "$GENERATED_CONFIG" | ssh "$PVE_NODE" "pct exec $CTID -- bash -c 'cat > /root/.rivetos/config.yaml'"
+# Write config to CT (under rivet home)
+echo "$GENERATED_CONFIG" | ssh "$PVE_NODE" "pct exec $CTID -- bash -c 'cat > ${RIVETOS_DATA}/config.yaml'"
 log "  config.yaml generated"
 
 # --- Generate .env from template + secrets ---
@@ -608,7 +642,13 @@ log "  config.yaml generated"
 GENERATED_ENV=$(cat "$ENV_TEMPLATE" | grep -v '^#' | grep -v '^
 if [[ -n "$SECRETS_FROM" ]]; then
     log "  Pulling shared secrets from ${SECRETS_FROM}..."
-    DONOR_ENV=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "root@${SECRETS_FROM}" "cat /root/.rivetos/.env" 2>/dev/null || true)
+    # Try rivet user first, fall back to root
+    DONOR_ENV=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "rivet@${SECRETS_FROM}" \
+        "cat ${RIVETOS_DATA}/.env 2>/dev/null || cat /root/.rivetos/.env 2>/dev/null" 2>/dev/null || true)
+    if [[ -z "$DONOR_ENV" ]]; then
+        DONOR_ENV=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "root@${SECRETS_FROM}" \
+            "cat ${RIVETOS_DATA}/.env 2>/dev/null || cat /root/.rivetos/.env 2>/dev/null" 2>/dev/null || true)
+    fi
 
     if [[ -n "$DONOR_ENV" ]]; then
         # Extract shared secrets from donor
@@ -648,23 +688,23 @@ if [[ -n "$UNFILLED" ]]; then
     done
 fi
 
-# Write .env to CT
-echo "$GENERATED_ENV" | ssh "$PVE_NODE" "pct exec $CTID -- bash -c 'cat > /root/.rivetos/.env'"
-run_on_ct "chmod 600 /root/.rivetos/.env"
+# Write .env to CT (under rivet home)
+echo "$GENERATED_ENV" | ssh "$PVE_NODE" "pct exec $CTID -- bash -c 'cat > ${RIVETOS_DATA}/.env'"
+run_on_ct "chmod 600 ${RIVETOS_DATA}/.env && chown -R rivet:rivet ${RIVETOS_DATA}"
 log "  .env generated"
 
 # Restore workspace from backup if available (overrides template defaults)
 if [[ -n "$RESTORE_FROM" ]] && [[ -f "$RESTORE_FROM" ]]; then
     log "  Restoring workspace from ${RESTORE_FROM}..."
-    scp -o StrictHostKeyChecking=no "$RESTORE_FROM" "root@${IP}:/tmp/rivetos-data.tar.gz"
-    run_on_ct "cd / && tar xzf /tmp/rivetos-data.tar.gz root/.rivetos/workspace/ 2>/dev/null || true"
-    run_on_ct "rm -f /tmp/rivetos-data.tar.gz"
+    scp -o StrictHostKeyChecking=no "$RESTORE_FROM" "rivet@${IP}:/tmp/rivetos-data.tar.gz"
+    run_on_ct "cd / && tar xzf /tmp/rivetos-data.tar.gz --transform 's|root/\\.rivetos|home/rivet/.rivetos|g' 2>/dev/null || true"
+    run_on_ct "rm -f /tmp/rivetos-data.tar.gz && chown -R rivet:rivet ${RIVETOS_DATA}"
     log "  Workspace restored (config.yaml and .env kept from template generation)."
 elif [[ -d "${BACKUP_PATH}" ]] && [[ -f "${BACKUP_PATH}/rivetos-data.tar.gz" ]]; then
     log "  Restoring workspace from backup..."
-    scp -o StrictHostKeyChecking=no "${BACKUP_PATH}/rivetos-data.tar.gz" "root@${IP}:/tmp/rivetos-data.tar.gz"
-    run_on_ct "cd / && tar xzf /tmp/rivetos-data.tar.gz root/.rivetos/workspace/ 2>/dev/null || true"
-    run_on_ct "rm -f /tmp/rivetos-data.tar.gz"
+    scp -o StrictHostKeyChecking=no "${BACKUP_PATH}/rivetos-data.tar.gz" "rivet@${IP}:/tmp/rivetos-data.tar.gz"
+    run_on_ct "cd / && tar xzf /tmp/rivetos-data.tar.gz --transform 's|root/\\.rivetos|home/rivet/.rivetos|g' 2>/dev/null || true"
+    run_on_ct "rm -f /tmp/rivetos-data.tar.gz && chown -R rivet:rivet ${RIVETOS_DATA}"
     log "  Workspace restored."
 fi
 
@@ -681,16 +721,22 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=rivet
+Group=rivet
 WorkingDirectory=/opt/rivetos
-ExecStart=/usr/bin/npx tsx packages/cli/src/index.ts start --config /root/.rivetos/config.yaml
-EnvironmentFile=/root/.rivetos/.env
-Environment=HOME=/root
+ExecStart=/usr/bin/npx tsx packages/cli/src/index.ts start --config ${RIVETOS_DATA}/config.yaml
+EnvironmentFile=${RIVETOS_DATA}/.env
+Environment=HOME=${RIVET_HOME}
 Environment=RIVETOS_LOG_LEVEL=info
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
+
+# Hardening
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=${RIVET_HOME} /rivet-shared /opt/rivetos
 
 [Install]
 WantedBy=multi-user.target
@@ -721,24 +767,52 @@ except: pass
 " 2>/dev/null || true))
 fi
 
+
 for PEER_IP in "${MESH_PEERS[@]}"; do
     # Skip self
     [[ "$PEER_IP" == "$IP" ]] && continue
 
-    # Add new CT's key to peer's authorized_keys
-    if ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no "root@${PEER_IP}" "echo '${CT_PUBKEY}' >> /root/.ssh/authorized_keys && sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys" 2>/dev/null; then
-        log "  Added mesh key to ${PEER_IP}"
+    # Try rivet first, fall back to root (rolling cutover)
+    PEER_SSH_USER="rivet"
+    if ! ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes \
+            "rivet@${PEER_IP}" "echo ok" &>/dev/null; then
+        PEER_SSH_USER="root"
+    fi
 
-        # Get peer's key and add to new CT
-        PEER_KEY=$(ssh -o ConnectTimeout=3 "root@${PEER_IP}" "cat /root/.ssh/id_ed25519.pub 2>/dev/null" 2>/dev/null || true)
+    # Add new CT's rivet pubkey to peer's rivet authorized_keys
+    if ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no \
+            "${PEER_SSH_USER}@${PEER_IP}" \
+            "mkdir -p ${RIVET_HOME}/.ssh && \
+             echo '${CT_PUBKEY}' >> ${RIVET_HOME}/.ssh/authorized_keys && \
+             sort -u ${RIVET_HOME}/.ssh/authorized_keys -o ${RIVET_HOME}/.ssh/authorized_keys && \
+             chmod 600 ${RIVET_HOME}/.ssh/authorized_keys && \
+             chown -R rivet:rivet ${RIVET_HOME}/.ssh" 2>/dev/null; then
+        log "  Added mesh key to ${PEER_IP}:rivet"
+
+        # Mirror to peer root during dual-key window
+        if $LEGACY_ROOT_KEYS; then
+            ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no \
+                "${PEER_SSH_USER}@${PEER_IP}" \
+                "echo '${CT_PUBKEY}' >> /root/.ssh/authorized_keys && \
+                 sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys" 2>/dev/null || true
+        fi
+
+        # Pull peer's rivet pubkey and add to new CT
+        PEER_KEY=$(ssh -o ConnectTimeout=3 \
+            "${PEER_SSH_USER}@${PEER_IP}" \
+            "cat ${RIVET_HOME}/.ssh/id_ed25519.pub 2>/dev/null" 2>/dev/null || true)
         if [[ -n "$PEER_KEY" ]]; then
-            run_on_ct "echo '${PEER_KEY}' >> /root/.ssh/authorized_keys && sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys"
-            log "  Added ${PEER_IP}'s key to CT"
+            run_on_ct "echo '${PEER_KEY}' >> ${RIVET_HOME}/.ssh/authorized_keys && \
+                       sort -u ${RIVET_HOME}/.ssh/authorized_keys \
+                            -o ${RIVET_HOME}/.ssh/authorized_keys && \
+                       chown rivet:rivet ${RIVET_HOME}/.ssh/authorized_keys"
+            log "  Added ${PEER_IP} rivet key to CT"
         fi
     else
         warn "  Could not reach peer at ${PEER_IP} — manual key exchange needed"
     fi
 done
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 9: Update secrets store
@@ -771,12 +845,12 @@ log "  Node registered in ${NODES_FILE}"
 log "Phase 10: Starting RivetOS..."
 
 # Only start if config exists and .env has no unfilled placeholders
-if run_on_ct "test -f /root/.rivetos/config.yaml" 2>/dev/null; then
-    UNFILLED_CHECK=$(run_on_ct "grep -c '__ENTER_\|__PASSWORD__' /root/.rivetos/.env" 2>/dev/null || echo "0")
+if run_on_ct "test -f ${RIVETOS_DATA}/config.yaml" 2>/dev/null; then
+    UNFILLED_CHECK=$(run_on_ct "grep -c '__ENTER_\|__PASSWORD__' ${RIVETOS_DATA}/.env" 2>/dev/null || echo "0")
     if [[ "$UNFILLED_CHECK" -gt 0 ]]; then
         warn "⚠️  .env has $UNFILLED_CHECK unfilled placeholder(s). Service not started."
-        warn "   Fill them in: ssh root@${IP} nano /root/.rivetos/.env"
-        warn "   Then start:   ssh root@${IP} systemctl start rivetos"
+        warn "   Fill them in: ssh rivet@${IP} nano ${RIVETOS_DATA}/.env"
+        warn "   Then start:   ssh rivet@${IP} sudo systemctl start rivetos"
     else
         run_on_ct "systemctl start rivetos"
         sleep 5
@@ -787,7 +861,7 @@ if run_on_ct "test -f /root/.rivetos/config.yaml" 2>/dev/null; then
             log "✅ RivetOS is running on CT $CTID ($HOSTNAME)"
         else
             warn "⚠️  RivetOS service not active. Check logs:"
-            warn "   ssh root@${IP} journalctl -u rivetos -n 50"
+            warn "   ssh rivet@${IP} sudo journalctl -u rivetos -n 50"
         fi
     fi
 else
@@ -814,16 +888,17 @@ log "  Storage:      $STORAGE"
 log "  Privileged:   $PRIVILEGED"
 log ""
 log "  Access:"
-log "    ssh root@${IP}                   Direct SSH"
+log "    ssh rivet@${IP}                  Primary SSH (rivet user)"
+log "    ssh root@${IP}                   Fallback SSH (legacy, cutover window)"
 log "    ssh $PVE_NODE 'pct enter $CTID'  Console via Proxmox"
 log ""
-log "  Manage:"
-log "    ssh root@${IP} systemctl status rivetos"
-log "    ssh root@${IP} journalctl -u rivetos -f"
+log "  Manage (as rivet):"
+log "    ssh rivet@${IP} sudo systemctl status rivetos"
+log "    ssh rivet@${IP} sudo journalctl -u rivetos -f"
 log ""
 if [[ "$DEPLOY_METHOD" == "git" ]]; then
 log "  Update:"
-log "    ssh root@${IP} 'cd /opt/rivetos && git pull && npm ci && npx nx run-many -t build --exclude container-agent,container-datahub,site'"
+log "    node /opt/rivetos/packages/cli/dist/index.js update --mesh"
 fi
 log ""
 if [[ -d "${BACKUP_PATH}" ]]; then
@@ -844,7 +919,13 @@ GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|__NAMESERVER__|${NAMESERVER}|g")
 # If --secrets-from is provided, pull shared secrets from an existing CT
 if [[ -n "$SECRETS_FROM" ]]; then
     log "  Pulling shared secrets from ${SECRETS_FROM}..."
-    DONOR_ENV=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "root@${SECRETS_FROM}" "cat /root/.rivetos/.env" 2>/dev/null || true)
+    # Try rivet user first, fall back to root
+    DONOR_ENV=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "rivet@${SECRETS_FROM}" \
+        "cat ${RIVETOS_DATA}/.env 2>/dev/null || cat /root/.rivetos/.env 2>/dev/null" 2>/dev/null || true)
+    if [[ -z "$DONOR_ENV" ]]; then
+        DONOR_ENV=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "root@${SECRETS_FROM}" \
+            "cat ${RIVETOS_DATA}/.env 2>/dev/null || cat /root/.rivetos/.env 2>/dev/null" 2>/dev/null || true)
+    fi
 
     if [[ -n "$DONOR_ENV" ]]; then
         # Extract shared secrets from donor
@@ -884,23 +965,23 @@ if [[ -n "$UNFILLED" ]]; then
     done
 fi
 
-# Write .env to CT
-echo "$GENERATED_ENV" | ssh "$PVE_NODE" "pct exec $CTID -- bash -c 'cat > /root/.rivetos/.env'"
-run_on_ct "chmod 600 /root/.rivetos/.env"
+# Write .env to CT (under rivet home)
+echo "$GENERATED_ENV" | ssh "$PVE_NODE" "pct exec $CTID -- bash -c 'cat > ${RIVETOS_DATA}/.env'"
+run_on_ct "chmod 600 ${RIVETOS_DATA}/.env && chown -R rivet:rivet ${RIVETOS_DATA}"
 log "  .env generated"
 
 # Restore workspace from backup if available (overrides template defaults)
 if [[ -n "$RESTORE_FROM" ]] && [[ -f "$RESTORE_FROM" ]]; then
     log "  Restoring workspace from ${RESTORE_FROM}..."
-    scp -o StrictHostKeyChecking=no "$RESTORE_FROM" "root@${IP}:/tmp/rivetos-data.tar.gz"
-    run_on_ct "cd / && tar xzf /tmp/rivetos-data.tar.gz root/.rivetos/workspace/ 2>/dev/null || true"
-    run_on_ct "rm -f /tmp/rivetos-data.tar.gz"
+    scp -o StrictHostKeyChecking=no "$RESTORE_FROM" "rivet@${IP}:/tmp/rivetos-data.tar.gz"
+    run_on_ct "cd / && tar xzf /tmp/rivetos-data.tar.gz --transform 's|root/\\.rivetos|home/rivet/.rivetos|g' 2>/dev/null || true"
+    run_on_ct "rm -f /tmp/rivetos-data.tar.gz && chown -R rivet:rivet ${RIVETOS_DATA}"
     log "  Workspace restored (config.yaml and .env kept from template generation)."
 elif [[ -d "${BACKUP_PATH}" ]] && [[ -f "${BACKUP_PATH}/rivetos-data.tar.gz" ]]; then
     log "  Restoring workspace from backup..."
-    scp -o StrictHostKeyChecking=no "${BACKUP_PATH}/rivetos-data.tar.gz" "root@${IP}:/tmp/rivetos-data.tar.gz"
-    run_on_ct "cd / && tar xzf /tmp/rivetos-data.tar.gz root/.rivetos/workspace/ 2>/dev/null || true"
-    run_on_ct "rm -f /tmp/rivetos-data.tar.gz"
+    scp -o StrictHostKeyChecking=no "${BACKUP_PATH}/rivetos-data.tar.gz" "rivet@${IP}:/tmp/rivetos-data.tar.gz"
+    run_on_ct "cd / && tar xzf /tmp/rivetos-data.tar.gz --transform 's|root/\\.rivetos|home/rivet/.rivetos|g' 2>/dev/null || true"
+    run_on_ct "rm -f /tmp/rivetos-data.tar.gz && chown -R rivet:rivet ${RIVETOS_DATA}"
     log "  Workspace restored."
 fi
 
@@ -917,16 +998,22 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=rivet
+Group=rivet
 WorkingDirectory=/opt/rivetos
-ExecStart=/usr/bin/npx tsx packages/cli/src/index.ts start --config /root/.rivetos/config.yaml
-EnvironmentFile=/root/.rivetos/.env
-Environment=HOME=/root
+ExecStart=/usr/bin/npx tsx packages/cli/src/index.ts start --config ${RIVETOS_DATA}/config.yaml
+EnvironmentFile=${RIVETOS_DATA}/.env
+Environment=HOME=${RIVET_HOME}
 Environment=RIVETOS_LOG_LEVEL=info
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
+
+# Hardening
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=${RIVET_HOME} /rivet-shared /opt/rivetos
 
 [Install]
 WantedBy=multi-user.target
@@ -961,15 +1048,41 @@ for PEER_IP in "${MESH_PEERS[@]}"; do
     # Skip self
     [[ "$PEER_IP" == "$IP" ]] && continue
 
-    # Add new CT's key to peer's authorized_keys
-    if ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no "root@${PEER_IP}" "echo '${CT_PUBKEY}' >> /root/.ssh/authorized_keys && sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys" 2>/dev/null; then
-        log "  Added mesh key to ${PEER_IP}"
+    # Try rivet first, fall back to root (rolling cutover)
+    PEER_SSH_USER="rivet"
+    if ! ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes \
+            "rivet@${PEER_IP}" "echo ok" &>/dev/null; then
+        PEER_SSH_USER="root"
+    fi
 
-        # Get peer's key and add to new CT
-        PEER_KEY=$(ssh -o ConnectTimeout=3 "root@${PEER_IP}" "cat /root/.ssh/id_ed25519.pub 2>/dev/null" 2>/dev/null || true)
+    # Add new CT's rivet pubkey to peer's rivet authorized_keys
+    if ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no \
+            "${PEER_SSH_USER}@${PEER_IP}" \
+            "mkdir -p ${RIVET_HOME}/.ssh && \
+             echo '${CT_PUBKEY}' >> ${RIVET_HOME}/.ssh/authorized_keys && \
+             sort -u ${RIVET_HOME}/.ssh/authorized_keys -o ${RIVET_HOME}/.ssh/authorized_keys && \
+             chmod 600 ${RIVET_HOME}/.ssh/authorized_keys && \
+             chown -R rivet:rivet ${RIVET_HOME}/.ssh" 2>/dev/null; then
+        log "  Added mesh key to ${PEER_IP}:rivet"
+
+        # Mirror to peer root during dual-key window
+        if $LEGACY_ROOT_KEYS; then
+            ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no \
+                "${PEER_SSH_USER}@${PEER_IP}" \
+                "echo '${CT_PUBKEY}' >> /root/.ssh/authorized_keys && \
+                 sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys" 2>/dev/null || true
+        fi
+
+        # Pull peer's rivet pubkey and add to new CT
+        PEER_KEY=$(ssh -o ConnectTimeout=3 \
+            "${PEER_SSH_USER}@${PEER_IP}" \
+            "cat ${RIVET_HOME}/.ssh/id_ed25519.pub 2>/dev/null" 2>/dev/null || true)
         if [[ -n "$PEER_KEY" ]]; then
-            run_on_ct "echo '${PEER_KEY}' >> /root/.ssh/authorized_keys && sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys"
-            log "  Added ${PEER_IP}'s key to CT"
+            run_on_ct "echo '${PEER_KEY}' >> ${RIVET_HOME}/.ssh/authorized_keys && \
+                       sort -u ${RIVET_HOME}/.ssh/authorized_keys \
+                            -o ${RIVET_HOME}/.ssh/authorized_keys && \
+                       chown rivet:rivet ${RIVET_HOME}/.ssh/authorized_keys"
+            log "  Added ${PEER_IP} rivet key to CT"
         fi
     else
         warn "  Could not reach peer at ${PEER_IP} — manual key exchange needed"
@@ -1007,12 +1120,12 @@ log "  Node registered in ${NODES_FILE}"
 log "Phase 10: Starting RivetOS..."
 
 # Only start if config exists and .env has no unfilled placeholders
-if run_on_ct "test -f /root/.rivetos/config.yaml" 2>/dev/null; then
-    UNFILLED_CHECK=$(run_on_ct "grep -c '__ENTER_\|__PASSWORD__' /root/.rivetos/.env" 2>/dev/null || echo "0")
+if run_on_ct "test -f ${RIVETOS_DATA}/config.yaml" 2>/dev/null; then
+    UNFILLED_CHECK=$(run_on_ct "grep -c '__ENTER_\|__PASSWORD__' ${RIVETOS_DATA}/.env" 2>/dev/null || echo "0")
     if [[ "$UNFILLED_CHECK" -gt 0 ]]; then
         warn "⚠️  .env has $UNFILLED_CHECK unfilled placeholder(s). Service not started."
-        warn "   Fill them in: ssh root@${IP} nano /root/.rivetos/.env"
-        warn "   Then start:   ssh root@${IP} systemctl start rivetos"
+        warn "   Fill them in: ssh rivet@${IP} nano ${RIVETOS_DATA}/.env"
+        warn "   Then start:   ssh rivet@${IP} sudo systemctl start rivetos"
     else
         run_on_ct "systemctl start rivetos"
         sleep 5
@@ -1023,7 +1136,7 @@ if run_on_ct "test -f /root/.rivetos/config.yaml" 2>/dev/null; then
             log "✅ RivetOS is running on CT $CTID ($HOSTNAME)"
         else
             warn "⚠️  RivetOS service not active. Check logs:"
-            warn "   ssh root@${IP} journalctl -u rivetos -n 50"
+            warn "   ssh rivet@${IP} sudo journalctl -u rivetos -n 50"
         fi
     fi
 else
@@ -1050,16 +1163,17 @@ log "  Storage:      $STORAGE"
 log "  Privileged:   $PRIVILEGED"
 log ""
 log "  Access:"
-log "    ssh root@${IP}                   Direct SSH"
+log "    ssh rivet@${IP}                  Primary SSH (rivet user)"
+log "    ssh root@${IP}                   Fallback SSH (legacy, cutover window)"
 log "    ssh $PVE_NODE 'pct enter $CTID'  Console via Proxmox"
 log ""
-log "  Manage:"
-log "    ssh root@${IP} systemctl status rivetos"
-log "    ssh root@${IP} journalctl -u rivetos -f"
+log "  Manage (as rivet):"
+log "    ssh rivet@${IP} sudo systemctl status rivetos"
+log "    ssh rivet@${IP} sudo journalctl -u rivetos -f"
 log ""
 if [[ "$DEPLOY_METHOD" == "git" ]]; then
 log "  Update:"
-log "    ssh root@${IP} 'cd /opt/rivetos && git pull && npm ci && npx nx run-many -t build --exclude container-agent,container-datahub,site'"
+log "    node /opt/rivetos/packages/cli/dist/index.js update --mesh"
 fi
 log ""
 if [[ -d "${BACKUP_PATH}" ]]; then
