@@ -228,6 +228,43 @@ async function checkConfig(): Promise<{ results: CheckResult[]; rawConfig: strin
 }
 
 // ---------------------------------------------------------------------------
+// Check: Service User
+// ---------------------------------------------------------------------------
+
+function checkServiceUser(): CheckResult[] {
+  const results: CheckResult[] = []
+
+  try {
+    const userOut = execSync('systemctl show rivetos -p User --value 2>/dev/null', {
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim()
+
+    if (userOut === 'rivet') {
+      results.push(check('service', 'user', 'pass', 'Service user: rivet (uid 2000) ✓'))
+    } else if (userOut === 'root') {
+      results.push(
+        check(
+          'service',
+          'user',
+          'warn',
+          'Service user: root — run migrate-to-rivet-user.sh to migrate',
+          'Phase 0.25 migration not yet applied on this node',
+        ),
+      )
+    } else if (userOut) {
+      results.push(check('service', 'user', 'warn', `Service user: ${userOut} (expected rivet)`))
+    }
+    // If empty, rivetos.service may not be installed — skip silently
+  } catch {
+    // systemctl not available or service not installed — skip
+  }
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
 // Check: Workspace
 // ---------------------------------------------------------------------------
 
@@ -642,15 +679,32 @@ async function checkPeers(): Promise<CheckResult[]> {
 
       if (!isAgent) {
         // Non-agent nodes: SSH reachability check (no HTTP service)
-        try {
-          execSync(
-            `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no root@${peer.host} "echo ok"`,
-            { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
-          )
+        // Try rivet@ first, fall back to root@
+        let sshReachable = false
+        let sshUser = 'unknown'
+        for (const user of ['rivet', 'root']) {
+          try {
+            execSync(
+              `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no ${user}@${peer.host} "echo ok"`,
+              { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
+            )
+            sshReachable = true
+            sshUser = user
+            break
+          } catch {
+            // try next user
+          }
+        }
+        if (sshReachable) {
           results.push(
-            check('peers', peer.name, 'pass', `Peer ${peer.name} [${peer.role}]: reachable (SSH)`),
+            check(
+              'peers',
+              peer.name,
+              'pass',
+              `Peer ${peer.name} [${peer.role}]: reachable (SSH as ${sshUser})`,
+            ),
           )
-        } catch {
+        } else {
           results.push(
             check(
               'peers',
@@ -807,6 +861,9 @@ export default async function doctor(): Promise<void> {
 
   const { results: configResults, rawConfig } = await checkConfig()
   allResults.push(...configResults)
+
+  const serviceUserResults = checkServiceUser()
+  allResults.push(...serviceUserResults)
 
   const workspaceResults = await checkWorkspace()
   allResults.push(...workspaceResults)

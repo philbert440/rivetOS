@@ -51,13 +51,21 @@ export default async function keys(): Promise<void> {
   const args = process.argv.slice(3)
   const subcommand = args[0]
 
+  // Parse --ssh-user flag
+  let sshUser = 'rivet'
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === '--ssh-user' && args[i + 1]) {
+      sshUser = args[++i]
+    }
+  }
+
   switch (subcommand) {
     case 'rotate':
-      await keysRotate()
+      await keysRotate(sshUser)
       break
     case 'list':
     case 'status':
-      await keysList()
+      await keysList(sshUser)
       break
     default:
       console.log(HELP)
@@ -103,9 +111,9 @@ function getPublicKey(): string | null {
   return null
 }
 
-async function keysRotate(): Promise<void> {
+async function keysRotate(sshUser = 'rivet'): Promise<void> {
   console.log('')
-  console.log('  🔑 Rotating SSH keys across all nodes')
+  console.log(`  🔑 Rotating SSH keys across all nodes (ssh-user: ${sshUser})`)
   console.log('')
 
   const nodesFile = await loadNodesFile()
@@ -144,34 +152,62 @@ async function keysRotate(): Promise<void> {
   for (const [id, node] of nodes) {
     process.stdout.write(`  ${node.hostname} (${node.ip})... `)
 
-    // Try SSH first (current key might still work)
-    const sshCmd = `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o PasswordAuthentication=no root@${node.ip} "mkdir -p /root/.ssh && echo '${pubkey}' >> /root/.ssh/authorized_keys && sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"`
+    // Build the authorized_keys update command for a given user/home
+    const makeAddKeyCmd = (targetHome: string) =>
+      `mkdir -p ${targetHome}/.ssh && echo '${pubkey}' >> ${targetHome}/.ssh/authorized_keys && sort -u ${targetHome}/.ssh/authorized_keys -o ${targetHome}/.ssh/authorized_keys && chmod 600 ${targetHome}/.ssh/authorized_keys && chown -R $(stat -c '%U' ${targetHome}) ${targetHome}/.ssh`
 
-    try {
-      execSync(sshCmd, { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] })
-      console.log('✅ (via SSH)')
-      success++
-      continue
-    } catch {
-      // SSH failed — try password
+    // Try primary user first (rivet by default), then root fallback
+    const usersToTry: Array<{ user: string; home: string; label: string }> = []
+    if (sshUser !== 'root') {
+      usersToTry.push({ user: sshUser, home: `/home/${sshUser}`, label: sshUser })
+    }
+    usersToTry.push({ user: 'root', home: '/root', label: 'root (fallback)' })
+
+    let nodeSuccess = false
+
+    for (const { user, home, label } of usersToTry) {
+      // Try SSH key auth first
+      const sshCmd = `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o PasswordAuthentication=no ${user}@${node.ip} "${makeAddKeyCmd(home)}"`
+      try {
+        execSync(sshCmd, { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] })
+        console.log(`✅ (${label} via SSH key)`)
+        nodeSuccess = true
+        // Also update the other user's authorized_keys (dual-key window)
+        if (user !== 'root') {
+          try {
+            execSync(
+              `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o PasswordAuthentication=no ${user}@${node.ip} "${makeAddKeyCmd('/root')}"`,
+              { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] },
+            )
+          } catch {
+            // non-fatal — root might not exist yet or have sudo access
+          }
+        }
+        break
+      } catch {
+        // Try password fallback
+      }
+
+      // Fall back to password auth via sshpass
+      try {
+        execSync('which sshpass', { stdio: ['pipe', 'pipe', 'pipe'] })
+        const sshpassCmd = `sshpass -p '${password}' ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${user}@${node.ip} "${makeAddKeyCmd(home)}"`
+        execSync(sshpassCmd, { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] })
+        console.log(`✅ (${label} via password)`)
+        nodeSuccess = true
+        break
+      } catch {
+        // try next user
+      }
     }
 
-    // Fall back to password auth via sshpass
-    try {
-      // Check if sshpass is available
-      execSync('which sshpass', { stdio: ['pipe', 'pipe', 'pipe'] })
-
-      const sshpassCmd = `sshpass -p '${password}' ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no root@${node.ip} "mkdir -p /root/.ssh && echo '${pubkey}' >> /root/.ssh/authorized_keys && sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"`
-
-      execSync(sshpassCmd, { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] })
-      console.log('✅ (via password)')
-      success++
-    } catch {
-      // sshpass not available or password failed
-      console.log('❌ (SSH and password both failed)')
-      console.log(`    Try: ssh root@${node.ip}  (manually add your key)`)
+    if (!nodeSuccess) {
+      console.log('❌ (all auth methods failed)')
+      console.log(`    Try: ssh rivet@${node.ip}  or  ssh root@${node.ip}  (add key manually)`)
       console.log(`    Or:  pct enter ${id.replace('ct', '')}  (from Proxmox host)`)
       failed++
+    } else {
+      success++
     }
   }
 
@@ -188,9 +224,9 @@ async function keysRotate(): Promise<void> {
   console.log('')
 }
 
-async function keysList(): Promise<void> {
+async function keysList(sshUser = 'rivet'): Promise<void> {
   console.log('')
-  console.log('  🔑 Node Key Status')
+  console.log(`  🔑 Node Key Status (ssh-user: ${sshUser})`)
   console.log('  ──────────────────')
   console.log('')
 
@@ -207,23 +243,32 @@ async function keysList(): Promise<void> {
   }
 
   for (const [, node] of nodes) {
-    // Try to SSH and check if we can connect
-    let reachable = false
-    try {
-      execSync(
-        `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no root@${node.ip} "echo ok"`,
-        { encoding: 'utf-8', timeout: 8000, stdio: ['pipe', 'pipe', 'pipe'] },
-      )
-      reachable = true
-    } catch {
-      // Can't reach
+    // Try rivet@ first, then root@ — report which works
+    let reachableAs: string | null = null
+    for (const user of sshUser !== 'root' ? [sshUser, 'root'] : ['root']) {
+      try {
+        execSync(
+          `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no ${user}@${node.ip} "echo ok"`,
+          { encoding: 'utf-8', timeout: 8000, stdio: ['pipe', 'pipe', 'pipe'] },
+        )
+        reachableAs = user
+        break
+      } catch {
+        // try next
+      }
     }
 
-    const icon = reachable ? '🟢' : '🔴'
+    const icon = reachableAs ? '🟢' : '🔴'
+    const sshStatus = reachableAs
+      ? `Key auth works as ${reachableAs}@${node.ip}`
+      : 'Key auth failed — may need rotation'
     console.log(`  ${icon} ${node.hostname} (${node.ip})`)
     console.log(`    Agent: ${node.agent} | Provider: ${node.provider}`)
     console.log(`    Node: ${node.pve_node} | Provisioned: ${node.provisioned_at}`)
-    console.log(`    SSH:  ${reachable ? 'Key auth works' : 'Key auth failed — may need rotation'}`)
+    console.log(`    SSH:  ${sshStatus}`)
+    if (reachableAs === 'root' && sshUser !== 'root') {
+      console.log(`    ⚠️  Reachable only as root — run migrate-to-rivet-user.sh on this node`)
+    }
     console.log('')
   }
 }

@@ -143,17 +143,26 @@ async function meshPing(flags: Flags): Promise<void> {
 
     if (!isAgent) {
       // Non-agent nodes: SSH ping instead of HTTP (no RivetOS service running)
+      // Try rivet@ first, fall back to root@
       const start = Date.now()
-      try {
-        execSync(
-          `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no root@${node.host} "echo ok"`,
-          { encoding: 'utf-8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'] },
-        )
-        const latency = Date.now() - start
+      let sshOk = false
+      for (const user of ['rivet', 'root']) {
+        try {
+          execSync(
+            `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no ${user}@${node.host} "echo ok"`,
+            { encoding: 'utf-8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'] },
+          )
+          sshOk = true
+          break
+        } catch {
+          // try next user
+        }
+      }
+      const latency = Date.now() - start
+      if (sshOk) {
         results.push({ node, status: 'ok', latencyMs: latency })
         console.log(`  ✅ ${node.name} [${node.role}] (${node.host}) — ${String(latency)}ms (SSH)`)
-      } catch {
-        const latency = Date.now() - start
+      } else {
         results.push({ node, status: 'error', latencyMs: latency, error: 'SSH unreachable' })
         console.log(`  ❌ ${node.name} [${node.role}] (${node.host}) — SSH unreachable`)
       }
@@ -460,18 +469,21 @@ function timeSince(epochMs: number): string {
 
 /**
  * Quick SSH reachability check for infrastructure nodes.
- * Returns true if SSH connection succeeds, false otherwise.
+ * Tries rivet@ first, falls back to root@. Returns true if either succeeds.
  */
 function checkSshReachable(host: string): boolean {
-  try {
-    execSync(
-      `ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no root@${host} "echo ok"`,
-      { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
-    )
-    return true
-  } catch {
-    return false
+  for (const user of ['rivet', 'root']) {
+    try {
+      execSync(
+        `ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no ${user}@${host} "echo ok"`,
+        { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+      return true
+    } catch {
+      // try next user
+    }
   }
+  return false
 }
 
 function getLocalIp(): string {
