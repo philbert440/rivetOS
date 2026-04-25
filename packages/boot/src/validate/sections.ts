@@ -543,3 +543,55 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Mesh (mTLS Migration — Phase 0.5)
+// TLS is mandatory when mesh.enabled; fail fast with clear error if tls not set.
+// mesh.secret is deprecated for agent channel (retained for update --mesh only).
+// ---------------------------------------------------------------------------
+
+export function validateMesh(mesh: Record<string, unknown>, issues: ValidationIssue[]): void {
+  const path = 'mesh'
+
+  if (typeof mesh.enabled === 'boolean' && mesh.enabled) {
+    if (mesh.tls === undefined || mesh.tls === false) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.tls`,
+        message:
+          'mesh.enabled requires tls configuration. TLS is mandatory when mesh is enabled — no plaintext fallback is allowed. Set tls: true (uses conventional /rivet-shared/rivet-ca/ paths) or provide a MeshTlsConfig object.',
+      })
+    }
+
+    if (typeof mesh.node_name !== 'string' || mesh.node_name.trim() === '') {
+      issues.push({
+        severity: 'error',
+        path: `${path}.node_name`,
+        message: 'mesh.node_name is required when mesh.enabled is true (used as CN for node cert)',
+      })
+    }
+  }
+
+  if (mesh.tls !== undefined) {
+    if (
+      typeof mesh.tls !== 'boolean' &&
+      (typeof mesh.tls !== 'object' || Array.isArray(mesh.tls) || mesh.tls === null)
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.tls`,
+        message:
+          'mesh.tls must be boolean (true for defaults) or a MeshTlsConfig object { ca_path?, cert_path?, key_path? }',
+      })
+    }
+  }
+
+  if (mesh.secret !== undefined) {
+    issues.push({
+      severity: 'warning',
+      path: `${path}.secret`,
+      message:
+        'mesh.secret is deprecated for agent-channel authentication (mTLS is now used exclusively). It is retained only for update --mesh orchestration. Do not rely on it for new code.',
+    })
+  }
+}

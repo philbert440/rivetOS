@@ -13,6 +13,41 @@
 
 import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
+import { readFileSync } from 'node:fs'
+
+// ---------------------------------------------------------------------------
+// mTLS fetch helper — builds an undici dispatcher with node certs for mesh calls
+// ---------------------------------------------------------------------------
+
+async function buildMeshFetchOptions(
+  host: string,
+  timeoutMs = 5000,
+): Promise<RequestInit & { dispatcher?: unknown }> {
+  const options: RequestInit & { dispatcher?: unknown } = {
+    signal: AbortSignal.timeout(timeoutMs),
+  }
+
+  try {
+    const { Agent: UndiciAgent } = await import('undici')
+    const nodeName = process.env.RIVETOS_NODE_NAME ?? host.split('.')[0]
+    const caPath = '/rivet-shared/rivet-ca/intermediate/ca-chain.pem'
+    const certPath = process.env.RIVETOS_TLS_CERT ?? `/rivet-shared/rivet-ca/issued/${nodeName}.crt`
+    const keyPath = process.env.RIVETOS_TLS_KEY ?? `/rivet-shared/rivet-ca/issued/${nodeName}.key`
+
+    const ca = readFileSync(caPath)
+    const cert = readFileSync(certPath)
+    const key = readFileSync(keyPath)
+
+    // @ts-expect-error — undici Agent vs undici-types Dispatcher type mismatch
+    options.dispatcher = new UndiciAgent({
+      connect: { ca, cert, key, rejectUnauthorized: true },
+    })
+  } catch {
+    // Certs not available — caller will proceed without mTLS dispatcher
+  }
+
+  return options
+}
 
 const HELP = `
   rivetos mesh — Multi-agent mesh management
@@ -182,9 +217,11 @@ async function meshPing(flags: Flags): Promise<void> {
 
     const start = Date.now()
     try {
-      const res = await fetch(`http://${node.host}:${String(node.port)}/api/mesh/ping`, {
-        signal: AbortSignal.timeout(timeoutMs),
-      })
+      const fetchOpts = await buildMeshFetchOptions(node.host, timeoutMs)
+      const res = await fetch(
+        `https://${node.host}:${String(node.port)}/api/mesh/ping`,
+        fetchOpts as RequestInit,
+      )
 
       const latency = Date.now() - start
 
@@ -234,16 +271,17 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
   }
 
   const port = flags.port ?? 3100
-  const secret = flags.secret ?? process.env.RIVETOS_AGENT_SECRET ?? ''
 
   console.log('')
   console.log(`  Joining mesh via seed node ${host}:${String(port)}...`)
 
   // First, check if seed is reachable
   try {
-    const pingRes = await fetch(`http://${host}:${String(port)}/api/mesh/ping`, {
-      signal: AbortSignal.timeout(5000),
-    })
+    const pingOpts = await buildMeshFetchOptions(host, 5000)
+    const pingRes = await fetch(
+      `https://${host}:${String(port)}/api/mesh/ping`,
+      pingOpts as RequestInit,
+    )
     if (!pingRes.ok) {
       console.error(`  ❌ Seed node responded with HTTP ${String(pingRes.status)}`)
       process.exit(1)
@@ -283,15 +321,13 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
 
   // Send join request to seed
   try {
-    const res = await fetch(`http://${host}:${String(port)}/api/mesh/join`, {
+    const joinOpts = await buildMeshFetchOptions(host, 10_000)
+    const res = await fetch(`https://${host}:${String(port)}/api/mesh/join`, {
+      ...joinOpts,
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${secret}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(localNode),
-      signal: AbortSignal.timeout(10_000),
-    })
+    } as RequestInit)
 
     if (!res.ok) {
       const body = await res.text()
@@ -312,7 +348,7 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
     console.log(`        mode: seed`)
     console.log(`        seedHost: "${host}"`)
     console.log(`        seedPort: ${String(port)}`)
-    if (secret) {
+    if (flags.secret) {
       console.log(`      secret: "\${RIVETOS_MESH_SECRET}"`)
     }
     console.log('')

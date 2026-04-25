@@ -23,6 +23,7 @@ import {
   validateProviders,
   validateChannels,
   validateMemory,
+  validateMesh,
 } from './sections.js'
 import { validateDeployment } from './deployment.js'
 import { validateCrossReferences } from './cross-refs.js'
@@ -129,6 +130,15 @@ export function validateConfig(config: unknown): ValidationResult {
       })
     } else {
       validateDeployment(cfg.deployment as Record<string, unknown>, issues)
+    }
+  }
+
+  // === mesh (optional but strict when enabled) ===
+  if (cfg.mesh) {
+    if (typeof cfg.mesh !== 'object' || Array.isArray(cfg.mesh)) {
+      issues.push({ severity: 'error', path: 'mesh', message: '"mesh" must be an object' })
+    } else {
+      validateMesh(cfg.mesh as Record<string, unknown>, issues)
     }
   }
 

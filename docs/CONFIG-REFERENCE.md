@@ -361,17 +361,60 @@ channels:
 
 Inter-agent communication channel. Enables delegation between agents and mesh networking.
 
+> **Note:** `secret` is deprecated for agent-channel auth as of Phase 0.5. The
+> agent channel now uses mutual TLS (`mesh.tls`). Configure `mesh:` instead of
+> relying on the channel secret for cross-node auth.
+
 ```yaml
 channels:
   agent:
     port: 3100
-    secret: ${RIVETOS_AGENT_SECRET}
+    # secret no longer used for authentication — see mesh.tls
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `port` | number | `3100` | HTTP port for agent-to-agent messaging. |
-| `secret` | string | — | Shared secret for authenticating peer agents. |
+| `port` | number | `3100` | HTTPS port for agent-to-agent messaging. |
+| `secret` | string | — | **Deprecated.** Was the bearer token for agent channel auth. No longer checked; mesh auth is now mTLS via `mesh.tls`. |
+
+---
+
+## `mesh`
+
+Multi-node mesh networking. Allows agents on different nodes to delegate tasks
+to each other via mTLS. See [`docs/mesh.md`](mesh.md) for full documentation.
+
+```yaml
+mesh:
+  enabled: true
+  node_name: ct110        # must match the cert CN
+  tls: true               # use default cert paths derived from node_name
+  agent_channel_port: 3000
+  storage_dir: /rivet-shared
+  heartbeat_interval_ms: 30000
+  stale_threshold_ms: 90000
+  discovery:
+    mode: seed
+    seed_host: ct110.mesh   # use .mesh DNS — matches cert SAN
+    seed_port: 3000
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mesh.enabled` | bool | `false` | Enable mesh networking. |
+| `mesh.node_name` | string | hostname | Node name — **must match cert CN**. |
+| `mesh.tls` | bool \| object | — | mTLS config. **Required** when `mesh.enabled: true`. |
+| `mesh.tls.ca_path` | string | `/rivet-shared/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM. |
+| `mesh.tls.cert_path` | string | `/rivet-shared/rivet-ca/issued/<node_name>.crt` | Node cert PEM. |
+| `mesh.tls.key_path` | string | `/rivet-shared/rivet-ca/issued/<node_name>.key` | Node private key PEM. |
+| `mesh.agent_channel_port` | number | `3000` | HTTPS port for the agent channel. |
+| `mesh.storage_dir` | string | `/rivet-shared` | Directory containing `mesh.json`. |
+| `mesh.heartbeat_interval_ms` | number | `30000` | Heartbeat write interval. |
+| `mesh.stale_threshold_ms` | number | `90000` | Age before a node is marked stale. |
+| `mesh.discovery.mode` | string | — | `seed` \| `static` \| `mdns`. |
+| `mesh.discovery.seed_host` | string | — | Seed node hostname (use `<nodeName>.mesh`). |
+| `mesh.discovery.seed_port` | number | `3100` | Seed node port. |
+| `mesh.secret` | string | — | **Deprecated** — retained for `update --mesh` orchestration only. |
 
 ---
 
@@ -529,7 +572,7 @@ These are typically set in `.env`:
 | `DISCORD_BOT_TOKEN` | channel-discord | Discord bot token |
 | `TELEGRAM_BOT_TOKEN` | channel-telegram | Telegram bot token |
 | `RIVETOS_PG_URL` | memory-postgres | PostgreSQL connection string |
-| `RIVETOS_AGENT_SECRET` | channel-agent | Shared secret for agent mesh |
+| `RIVETOS_AGENT_SECRET` | channel-agent | **Deprecated** — was the bearer secret for agent mesh. No longer used for agent-channel auth (replaced by mTLS). |
 | `RIVETOS_LOG_LEVEL` | core | Log level: `error`, `warn`, `info`, `debug` |
 | `RIVETOS_LOG_FORMAT` | core | Log format: `pretty` (default) or `json` |
 | `GOOGLE_CSE_ID` | tool-web-search | Google Custom Search Engine ID |

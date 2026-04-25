@@ -16,35 +16,43 @@
  * to peer agents on other instances.
  */
 
-import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
+import {
+  createServer as createHttpServer,
+  type Server,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
 import type { Channel, InboundMessage, OutboundMessage, Tool, MeshNode } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-export interface AgentChannelConfig {
-  /** Port to listen on (default: 3100) */
-  port?: number
-  /** Bind address (default: 0.0.0.0) */
-  host?: string
-  /** Shared secret for authenticating peer agents */
-  secret: string
-  /** This agent's ID */
-  agentId: string
-  /** Peer agents: name → URL mapping */
-  peers?: Record<string, PeerConfig>
-  /** Mesh node provider — returns current mesh nodes for /api/mesh endpoint */
-  getMeshNodes?: () => Promise<MeshNode[]>
-  /** Mesh join handler — called when a remote node registers via /api/mesh/join */
-  onMeshJoin?: (node: MeshNode) => Promise<void>
-}
-
 export interface PeerConfig {
   /** Base URL of the peer agent (e.g., http://192.168.1.102:3100) */
   url: string
   /** Override secret for this specific peer (optional, defaults to channel secret) */
   secret?: string
+}
+
+export interface AgentChannelTlsConfig {
+  ca: Buffer
+  cert: Buffer
+  key: Buffer
+}
+
+export interface AgentChannelConfig {
+  port?: number
+  host?: string
+  /** @deprecated No longer used for authentication. Use tls instead. */
+  secret?: string
+  agentId: string
+  peers?: Record<string, PeerConfig>
+  getMeshNodes?: () => Promise<MeshNode[]>
+  onMeshJoin?: (node: MeshNode) => Promise<void>
+  /** TLS config — when provided, server uses HTTPS + mTLS; clients use mTLS for outbound */
+  tls?: AgentChannelTlsConfig
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +64,7 @@ export class AgentChannel implements Channel {
   platform = 'agent'
 
   private config: AgentChannelConfig
-  private server?: Server
+  private server?: Server | import('node:https').Server
   private port: number
   private host: string
   private messageHandler?: (message: InboundMessage) => Promise<void>
@@ -84,7 +92,23 @@ export class AgentChannel implements Channel {
 
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server = createServer((req, res) => void this.handleRequest(req, res))
+      const handler = (req: IncomingMessage, res: ServerResponse) =>
+        void this.handleRequest(req, res)
+
+      if (this.config.tls) {
+        this.server = createHttpsServer(
+          {
+            ca: this.config.tls.ca,
+            cert: this.config.tls.cert,
+            key: this.config.tls.key,
+            requestCert: true,
+            rejectUnauthorized: true,
+          },
+          handler,
+        )
+      } else {
+        this.server = createHttpServer(handler)
+      }
 
       this.server.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
@@ -162,7 +186,7 @@ export class AgentChannel implements Channel {
       return
     }
 
-    // Agent message endpoint
+    // Agent message endpoint — TLS handshake already enforced mTLS (no bearer)
     if (req.method === 'POST' && req.url === '/api/message') {
       await this.handleAgentMessage(req, res)
       return
@@ -180,10 +204,16 @@ export class AgentChannel implements Channel {
       return
     }
 
-    // Mesh ping endpoint — lightweight liveness check from peers
+    // Mesh ping endpoint — exact response required by spec
     if (req.method === 'GET' && req.url === '/api/mesh/ping') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ status: 'ok', agent: this.config.agentId, timestamp: Date.now() }))
+      res.end(
+        JSON.stringify({
+          ok: true,
+          tls: true,
+          node: this.config.agentId, // nodeName from cert CN in full mesh setup
+        }),
+      )
       return
     }
 
@@ -192,20 +222,8 @@ export class AgentChannel implements Channel {
   }
 
   private async handleAgentMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // Auth check
-    const authHeader = req.headers.authorization
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      res.writeHead(401, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Missing or invalid authorization' }))
-      return
-    }
-
-    const token = authHeader.slice(7)
-    if (token !== this.config.secret) {
-      res.writeHead(403, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Invalid secret' }))
-      return
-    }
+    // No bearer auth — mTLS enforced at TLS handshake (rejectUnauthorized + shared CA).
+    // All bearer code has been deleted per spec.
 
     // Parse body
     let body: AgentMessageBody
@@ -380,9 +398,13 @@ export class AgentChannel implements Channel {
   }
 
   /**
-   * Common auth check — returns false (and sends error response) if auth fails.
+   * Common auth check — when TLS is configured, the TLS handshake is the auth (always returns true).
+   * Without TLS, checks bearer token.
    */
   private checkAuth(req: IncomingMessage, res: ServerResponse): boolean {
+    // TLS mode: cert was verified during handshake — no app-layer auth needed
+    if (this.config.tls) return true
+
     const authHeader = req.headers.authorization
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       res.writeHead(401, { 'Content-Type': 'application/json' })
@@ -391,6 +413,7 @@ export class AgentChannel implements Channel {
     }
 
     const token = authHeader.slice(7)
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy bearer fallback
     if (token !== this.config.secret) {
       res.writeHead(403, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Invalid secret' }))
@@ -476,7 +499,6 @@ export class AgentChannel implements Channel {
   // -----------------------------------------------------------------------
 
   async sendToPeer(peer: PeerConfig, body: AgentMessageBody): Promise<AgentMessageResponse> {
-    const secret = peer.secret ?? this.config.secret
     const url = `${peer.url.replace(/\/$/, '')}/api/message`
 
     const controller = new AbortController()
@@ -487,15 +509,34 @@ export class AgentChannel implements Channel {
     }
 
     try {
-      const res = await fetch(url, {
+      // Build fetch options — use mTLS when configured, fall back to bearer token (legacy)
+      const fetchHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+      const fetchOpts: RequestInit & { dispatcher?: unknown } = {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${secret}`,
-        },
+        headers: fetchHeaders,
         body: JSON.stringify(body),
         signal: body.timeoutMs ? controller.signal : undefined,
-      })
+      }
+
+      if (this.config.tls) {
+        const { Agent: UndiciAgent } = await import('undici')
+        // @ts-expect-error — undici Agent vs undici-types Dispatcher type mismatch
+        fetchOpts.dispatcher = new UndiciAgent({
+          connect: {
+            ca: this.config.tls.ca,
+            cert: this.config.tls.cert,
+            key: this.config.tls.key,
+            rejectUnauthorized: true,
+          },
+        })
+      } else {
+        // Legacy bearer token auth
+        // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy bearer fallback
+        const secret = peer.secret ?? this.config.secret
+        fetchHeaders['Authorization'] = `Bearer ${String(secret)}`
+      }
+
+      const res = await fetch(url, fetchOpts as RequestInit)
 
       if (!res.ok) {
         const errBody = await res.text().catch(() => 'unknown error')

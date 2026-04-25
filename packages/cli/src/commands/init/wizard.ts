@@ -173,10 +173,27 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     try {
       const port = 3100
 
-      // Ping seed first
-      const pingRes = await fetch(`http://${options.joinHost}:${String(port)}/api/mesh/ping`, {
-        signal: AbortSignal.timeout(5000),
-      })
+      // Ping seed first — try mTLS, fall back to plain HTTPS (certs may not exist yet at init time)
+      let pingRes: Response
+      try {
+        const { readFileSync: rfs } = await import('node:fs')
+        const { Agent: UndiciAgent } = await import('undici')
+        const nodeName = options.joinHost.split('.')[0]
+        const ca = rfs('/rivet-shared/rivet-ca/intermediate/ca-chain.pem')
+        const cert = rfs(`/rivet-shared/rivet-ca/issued/${nodeName}.crt`)
+        const key = rfs(`/rivet-shared/rivet-ca/issued/${nodeName}.key`)
+        const dispatcher = new UndiciAgent({ connect: { ca, cert, key, rejectUnauthorized: true } })
+        pingRes = await fetch(`https://${options.joinHost}:${String(port)}/api/mesh/ping`, {
+          // @ts-expect-error — undici dispatcher not in Node fetch types
+          dispatcher,
+          signal: AbortSignal.timeout(5000),
+        })
+      } catch {
+        // Certs not available yet at init time — try plain HTTPS (server may reject without client cert)
+        pingRes = await fetch(`https://${options.joinHost}:${String(port)}/api/mesh/ping`, {
+          signal: AbortSignal.timeout(5000),
+        })
+      }
 
       if (!pingRes.ok) {
         s2.stop('Mesh join failed.')

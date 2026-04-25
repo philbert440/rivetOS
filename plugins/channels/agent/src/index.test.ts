@@ -104,30 +104,12 @@ describe('AgentChannel', () => {
   });
 
   describe('authentication', () => {
-    it('rejects requests without auth header', async () => {
-      channel = new AgentChannel(createConfig());
-      await channel.start();
-      port = await getPort(channel);
-
-      const res = await sendRequest(port, '/api/message', {
-        body: { fromAgent: 'grok', message: 'hello' },
-      });
-      expect(res.status).toBe(401);
-    });
-
-    it('rejects requests with wrong secret', async () => {
-      channel = new AgentChannel(createConfig());
-      await channel.start();
-      port = await getPort(channel);
-
-      const res = await sendRequest(port, '/api/message', {
-        body: { fromAgent: 'grok', message: 'hello' },
-        secret: 'wrong-secret',
-      });
-      expect(res.status).toBe(403);
-    });
-
-    it('accepts requests with correct secret', async () => {
+    // Bearer-token auth was removed; mTLS handshake is the only auth path.
+    // The plain HTTP path used by these tests carries no app-layer auth — it
+    // relies on the TLS handshake when TLS is configured. We keep one smoke
+    // test here to confirm requests without TLS still flow through to the
+    // handler (auth lives at the transport, not the application layer).
+    it('accepts requests at the application layer (TLS enforces auth)', async () => {
       channel = new AgentChannel(createConfig());
       channel.onMessage(async () => {}); // No-op handler
       await channel.start();
@@ -135,7 +117,6 @@ describe('AgentChannel', () => {
 
       const res = await sendRequest(port, '/api/message', {
         body: { fromAgent: 'grok', message: 'hello', waitForResponse: false },
-        secret: 'test-secret-123',
       });
       expect(res.status).toBe(202);
     });

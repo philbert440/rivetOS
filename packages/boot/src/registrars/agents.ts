@@ -65,25 +65,50 @@ export async function registerAgentTools(
 
   // Determine if mesh is enabled
   const meshConfig = config.mesh
-  const meshEnabled = meshConfig?.enabled === true && meshConfig.secret
+  const meshEnabled = meshConfig?.enabled === true && !!meshConfig.tls
 
   if (meshEnabled) {
     // ------------------------------------------------------------------
     // Mesh mode — MeshDelegationEngine + AgentChannel + FileMeshRegistry
     // ------------------------------------------------------------------
 
-    const secret = resolveEnv(meshConfig.secret ?? '')
     const storageDir = meshConfig.storage_dir ?? '/rivet-shared'
     const agentChannelPort = meshConfig.agent_channel_port ?? 3000
     const localAgents = Object.keys(config.agents)
+    const nodeName = meshConfig.node_name ?? 'unknown'
+
+    // Load TLS material — required for mesh (no plaintext fallback)
+    // Convert YAML snake_case paths to camelCase for loadTlsConfig
+    const { loadTlsConfig } = await import('@rivetos/core')
+    const rawTls = meshConfig.tls!
+    const tlsInput: boolean | { caPath?: string; certPath?: string; keyPath?: string } =
+      rawTls === true
+        ? true
+        : {
+            caPath: (rawTls as { ca_path?: string }).ca_path,
+            certPath: (rawTls as { cert_path?: string }).cert_path,
+            keyPath: (rawTls as { key_path?: string }).key_path,
+          }
+    const tlsConfig = loadTlsConfig(tlsInput, nodeName)
 
     // Convert snake_case YAML config to the MeshConfig interface
     const meshCfg: MeshConfig = {
       enabled: true,
-      nodeName: meshConfig.node_name,
-      secret,
+      nodeName,
+      // secret retained in type but not used for agent-channel auth
+      secret: meshConfig.secret ? resolveEnv(meshConfig.secret) : undefined,
       heartbeatIntervalMs: meshConfig.heartbeat_interval_ms,
       staleThresholdMs: meshConfig.stale_threshold_ms,
+      tls:
+        meshConfig.tls === true
+          ? true
+          : meshConfig.tls
+            ? {
+                caPath: meshConfig.tls.ca_path,
+                certPath: meshConfig.tls.cert_path,
+                keyPath: meshConfig.tls.key_path,
+              }
+            : undefined,
       discovery: meshConfig.discovery
         ? {
             mode: meshConfig.discovery.mode,
@@ -102,12 +127,13 @@ export async function registerAgentTools(
     const meshRegistry = new FileMeshRegistry({
       storageDir,
       mesh: meshCfg,
+      tls: tlsConfig,
     })
 
     // Build and register the local node
     const localNode = buildLocalNode({
-      existingId: meshConfig.node_name ?? 'unknown',
-      name: meshConfig.node_name ?? 'unknown',
+      existingId: nodeName,
+      name: nodeName,
       agents: localAgents,
       host: getLocalHost(),
       port: agentChannelPort,
@@ -122,11 +148,22 @@ export async function registerAgentTools(
     log.info(`Mesh registry started — node "${localNode.name}" registered`)
 
     // Mesh delegation engine
+    const { Agent: UndiciAgent } = await import('undici')
+    const httpsDispatcher = new UndiciAgent({
+      connect: {
+        ca: tlsConfig.ca,
+        cert: tlsConfig.cert,
+        key: tlsConfig.key,
+        rejectUnauthorized: true,
+      },
+    })
+
     const meshDelegation = new MeshDelegationEngine({
       localEngine: localDelegation,
       router: runtime.getRouter(),
       meshRegistry,
-      secret,
+      tls: tlsConfig,
+      httpsDispatcher,
       localAgents,
     })
 
@@ -136,7 +173,7 @@ export async function registerAgentTools(
     // Agent channel server — receives incoming mesh delegations
     const agentChannel = new AgentChannelServer({
       port: agentChannelPort,
-      secret,
+      tls: tlsConfig,
       delegationEngine: localDelegation,
       meshRegistry,
       router: runtime.getRouter(),

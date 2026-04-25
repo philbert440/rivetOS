@@ -17,6 +17,7 @@
  */
 
 import { readFile, access } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execSync, spawn } from 'node:child_process'
@@ -881,12 +882,39 @@ async function waitForHealth(host: string, _port: number, timeoutMs: number): Pr
       }
     }
 
-    // Fallback: try HTTP health endpoint (Docker/containerized deployments)
+    // Fallback: try HTTPS health endpoint with mTLS
     try {
-      const res = await fetch(`http://${host}:${String(_port)}/api/mesh/ping`, {
-        signal: AbortSignal.timeout(2_000),
-      })
-      if (res.ok) return true
+      const { Agent: UndiciAgent } = await import('undici')
+      const nodeName = process.env.RIVETOS_NODE_NAME ?? host.split('.')[0]
+      const caPath = '/rivet-shared/rivet-ca/intermediate/ca-chain.pem'
+      const certPath =
+        process.env.RIVETOS_TLS_CERT ?? `/rivet-shared/rivet-ca/issued/${nodeName}.crt`
+      const keyPath = process.env.RIVETOS_TLS_KEY ?? `/rivet-shared/rivet-ca/issued/${nodeName}.key`
+
+      let dispatcher: unknown
+      try {
+        const ca = readFileSync(caPath)
+        const cert = readFileSync(certPath)
+        const key = readFileSync(keyPath)
+        dispatcher = new UndiciAgent({ connect: { ca, cert, key, rejectUnauthorized: true } })
+      } catch {
+        // TLS certs not available — skip HTTPS check
+      }
+
+      if (dispatcher) {
+        const res = await fetch(`https://${host}:${String(_port)}/api/mesh/ping`, {
+          signal: AbortSignal.timeout(2_000),
+          // @ts-expect-error — undici dispatcher not in Node fetch types
+          dispatcher,
+        })
+        if (res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { tls?: boolean }
+          if (!body.tls) {
+            console.warn(`  ⚠️  Node ${host} ping OK but no tls:true — may be running old build`)
+          }
+          return true
+        }
+      }
     } catch {
       // Not ready yet
     }
