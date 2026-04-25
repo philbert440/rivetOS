@@ -14,13 +14,45 @@
 import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { parse as parseYaml } from 'yaml'
+
+// ---------------------------------------------------------------------------
+// Local node name resolution — required for selecting our own mTLS client cert
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve this node's name (the CN on its mTLS client cert).
+ *
+ * Resolution order:
+ *   1. `RIVETOS_NODE_NAME` env var (explicit override)
+ *   2. `node_name` from `~/.rivetos/config.yaml`
+ *   3. `null` — caller decides what to do (typically: skip mTLS, fall back)
+ *
+ * Note: we deliberately do NOT derive the name from the *target* host —
+ * the cert proves who *we* are, not who we're calling.
+ */
+function resolveLocalNodeName(): string | null {
+  if (process.env.RIVETOS_NODE_NAME) return process.env.RIVETOS_NODE_NAME
+  try {
+    const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
+    const raw = readFileSync(configPath, 'utf-8')
+    const config = parseYaml(raw) as { node_name?: string; mesh?: { node_name?: string } } | null
+    // Canonical location is `mesh.node_name`; accept top-level `node_name` as legacy fallback.
+    if (config?.mesh?.node_name) return config.mesh.node_name
+    if (config?.node_name) return config.node_name
+  } catch {
+    // No config file or unparseable — fall through to null
+  }
+  return null
+}
 
 // ---------------------------------------------------------------------------
 // mTLS fetch helper — builds an undici dispatcher with node certs for mesh calls
 // ---------------------------------------------------------------------------
 
 async function buildMeshFetchOptions(
-  host: string,
+  _host: string,
   timeoutMs = 5000,
 ): Promise<RequestInit & { dispatcher?: unknown }> {
   const options: RequestInit & { dispatcher?: unknown } = {
@@ -29,10 +61,19 @@ async function buildMeshFetchOptions(
 
   try {
     const { Agent: UndiciAgent } = await import('undici')
-    const nodeName = process.env.RIVETOS_NODE_NAME ?? host.split('.')[0]
+    const nodeName = resolveLocalNodeName()
     const caPath = '/rivet-shared/rivet-ca/intermediate/ca-chain.pem'
-    const certPath = process.env.RIVETOS_TLS_CERT ?? `/rivet-shared/rivet-ca/issued/${nodeName}.crt`
-    const keyPath = process.env.RIVETOS_TLS_KEY ?? `/rivet-shared/rivet-ca/issued/${nodeName}.key`
+    const certPath =
+      process.env.RIVETOS_TLS_CERT ??
+      (nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : null)
+    const keyPath =
+      process.env.RIVETOS_TLS_KEY ??
+      (nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.key` : null)
+
+    if (!certPath || !keyPath) {
+      // No way to resolve our local node name — caller proceeds without mTLS
+      return options
+    }
 
     const ca = readFileSync(caPath)
     const cert = readFileSync(certPath)
@@ -218,10 +259,7 @@ async function meshPing(flags: Flags): Promise<void> {
     const start = Date.now()
     try {
       const fetchOpts = await buildMeshFetchOptions(node.host, timeoutMs)
-      const res = await fetch(
-        `https://${node.host}:${String(node.port)}/api/mesh/ping`,
-        fetchOpts as RequestInit,
-      )
+      const res = await fetch(`https://${node.host}:${String(node.port)}/api/mesh/ping`, fetchOpts)
 
       const latency = Date.now() - start
 
@@ -278,10 +316,7 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
   // First, check if seed is reachable
   try {
     const pingOpts = await buildMeshFetchOptions(host, 5000)
-    const pingRes = await fetch(
-      `https://${host}:${String(port)}/api/mesh/ping`,
-      pingOpts as RequestInit,
-    )
+    const pingRes = await fetch(`https://${host}:${String(port)}/api/mesh/ping`, pingOpts)
     if (!pingRes.ok) {
       console.error(`  ❌ Seed node responded with HTTP ${String(pingRes.status)}`)
       process.exit(1)
@@ -327,7 +362,7 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(localNode),
-    } as RequestInit)
+    })
 
     if (!res.ok) {
       const body = await res.text()
