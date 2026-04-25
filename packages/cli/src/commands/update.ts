@@ -22,9 +22,29 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execSync, spawn } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
+import { parse as parseYaml } from 'yaml'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
+
+/**
+ * Resolve this node's name (the CN on its mTLS client cert).
+ * Prefers RIVETOS_NODE_NAME, then `node_name` from `~/.rivetos/config.yaml`.
+ * Returns null if neither is available.
+ */
+function resolveLocalNodeName(): string | null {
+  if (process.env.RIVETOS_NODE_NAME) return process.env.RIVETOS_NODE_NAME
+  try {
+    const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
+    const raw = readFileSync(configPath, 'utf-8')
+    const config = parseYaml(raw) as { node_name?: string; mesh?: { node_name?: string } } | null
+    if (config?.mesh?.node_name) return config.mesh.node_name
+    if (config?.node_name) return config.node_name
+  } catch {
+    // ignore
+  }
+  return null
+}
 
 interface UpdateOptions {
   version?: string
@@ -885,20 +905,25 @@ async function waitForHealth(host: string, _port: number, timeoutMs: number): Pr
     // Fallback: try HTTPS health endpoint with mTLS
     try {
       const { Agent: UndiciAgent } = await import('undici')
-      const nodeName = process.env.RIVETOS_NODE_NAME ?? host.split('.')[0]
+      const nodeName = resolveLocalNodeName()
       const caPath = '/rivet-shared/rivet-ca/intermediate/ca-chain.pem'
       const certPath =
-        process.env.RIVETOS_TLS_CERT ?? `/rivet-shared/rivet-ca/issued/${nodeName}.crt`
-      const keyPath = process.env.RIVETOS_TLS_KEY ?? `/rivet-shared/rivet-ca/issued/${nodeName}.key`
+        process.env.RIVETOS_TLS_CERT ??
+        (nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : null)
+      const keyPath =
+        process.env.RIVETOS_TLS_KEY ??
+        (nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.key` : null)
 
       let dispatcher: unknown
-      try {
-        const ca = readFileSync(caPath)
-        const cert = readFileSync(certPath)
-        const key = readFileSync(keyPath)
-        dispatcher = new UndiciAgent({ connect: { ca, cert, key, rejectUnauthorized: true } })
-      } catch {
-        // TLS certs not available — skip HTTPS check
+      if (certPath && keyPath) {
+        try {
+          const ca = readFileSync(caPath)
+          const cert = readFileSync(certPath)
+          const key = readFileSync(keyPath)
+          dispatcher = new UndiciAgent({ connect: { ca, cert, key, rejectUnauthorized: true } })
+        } catch {
+          // TLS certs not available — skip HTTPS check
+        }
       }
 
       if (dispatcher) {
