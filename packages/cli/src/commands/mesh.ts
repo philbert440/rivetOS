@@ -26,6 +26,8 @@ const HELP = `
   Options:
     --json                         Output as JSON
     --timeout <ms>                 Ping timeout per node (default: 5000)
+    --ssh-user <user>              SSH user for infrastructure checks (default: rivet)
+                                   Falls back to root automatically if rivet auth fails.
 `
 
 export default async function mesh(): Promise<void> {
@@ -81,6 +83,8 @@ async function meshList(flags: Flags): Promise<void> {
   console.log('  ──────────')
   console.log('')
 
+  const sshUser = flags.sshUser ?? 'rivet'
+
   for (const node of nodes) {
     const isAgent = !node.role || node.role === 'agent'
     let displayStatus: string = node.status
@@ -88,7 +92,7 @@ async function meshList(flags: Flags): Promise<void> {
 
     // For infrastructure nodes, check SSH reachability instead of relying on heartbeat status
     if (!isAgent) {
-      const reachable = checkSshReachable(node.host)
+      const reachable = checkSshReachable(node.host, sshUser)
       displayStatus = reachable ? 'available' : 'unreachable'
       statusIcon = reachable ? '🟢' : '🔴'
     }
@@ -132,6 +136,7 @@ async function meshPing(flags: Flags): Promise<void> {
 
   const nodes = Object.values(meshFile.nodes)
   const timeoutMs = flags.timeout ?? 5000
+  const sshUser = flags.sshUser ?? 'rivet'
   const results: PingResult[] = []
 
   console.log('')
@@ -143,15 +148,21 @@ async function meshPing(flags: Flags): Promise<void> {
 
     if (!isAgent) {
       // Non-agent nodes: SSH ping instead of HTTP (no RivetOS service running)
-      // Try rivet@ first, fall back to root@
+      // Try requestedUser first, fall back to root@
       const start = Date.now()
       let sshOk = false
-      for (const user of ['rivet', 'root']) {
+      const usersToTry = sshUser !== 'root' ? [sshUser, 'root'] : ['root']
+      for (const user of usersToTry) {
         try {
           execSync(
             `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no ${user}@${node.host} "echo ok"`,
             { encoding: 'utf-8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'] },
           )
+          if (user !== sshUser) {
+            console.error(
+              `    [warn] ${node.host} not yet migrated to ${sshUser} user, SSH succeeded as root`,
+            )
+          }
           sshOk = true
           break
         } catch {
@@ -330,8 +341,10 @@ async function meshStatus(flags: Flags): Promise<void> {
   const offline = agentNodes.filter((n) => n.status === 'offline')
   const stale = agentNodes.filter((n) => n.status === 'degraded')
 
+  const sshUser = flags.sshUser ?? 'rivet'
+
   // Check SSH reachability for infrastructure nodes
-  const infraReachable = infraNodes.filter((n) => checkSshReachable(n.host))
+  const infraReachable = infraNodes.filter((n) => checkSshReachable(n.host, sshUser))
   const infraUnreachable = infraNodes.length - infraReachable.length
 
   if (flags.json) {
@@ -412,6 +425,7 @@ interface Flags {
   timeout?: number
   port?: number
   secret?: string
+  sshUser?: string
 }
 
 function parseFlags(args: string[]): Flags {
@@ -421,6 +435,7 @@ function parseFlags(args: string[]): Flags {
     if (args[i] === '--timeout' && args[i + 1]) flags.timeout = Number(args[++i])
     if (args[i] === '--port' && args[i + 1]) flags.port = Number(args[++i])
     if (args[i] === '--secret' && args[i + 1]) flags.secret = args[++i]
+    if (args[i] === '--ssh-user' && args[i + 1]) flags.sshUser = args[++i]
   }
   return flags
 }
@@ -469,15 +484,23 @@ function timeSince(epochMs: number): string {
 
 /**
  * Quick SSH reachability check for infrastructure nodes.
- * Tries rivet@ first, falls back to root@. Returns true if either succeeds.
+ * Tries requestedUser first (default: rivet), falls back to root@ with a warning.
+ * Returns true if either succeeds.
  */
-function checkSshReachable(host: string): boolean {
-  for (const user of ['rivet', 'root']) {
+function checkSshReachable(host: string, requestedUser = 'rivet'): boolean {
+  const usersToTry =
+    requestedUser !== 'root' ? [requestedUser, 'root'] : ['root']
+  for (const user of usersToTry) {
     try {
       execSync(
         `ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no ${user}@${host} "echo ok"`,
         { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
       )
+      if (user !== requestedUser) {
+        console.error(
+          `    [warn] ${host} not yet migrated to ${requestedUser} user, SSH succeeded as root`,
+        )
+      }
       return true
     } catch {
       // try next user
