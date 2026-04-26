@@ -11,11 +11,16 @@ RUN apk add --no-cache git tini
 
 WORKDIR /app
 
-# Copy the full source tree
+# Copy the full source tree.
+# All workspace roots declared in the root package.json must be present
+# at `npm ci` time so the workspace graph resolves; otherwise npm errors
+# with "missing workspace" or silently skips workspace deps.
 COPY package.json package-lock.json nx.json tsconfig.base.json config.example.yaml ./
 COPY scripts/ scripts/
 COPY packages/ packages/
 COPY plugins/ plugins/
+COPY apps/ apps/
+COPY services/ services/
 COPY bin/ bin/
 COPY infra/ infra/
 
@@ -34,10 +39,17 @@ RUN addgroup -S rivetos && adduser -S rivetos -G rivetos \
 
 ENV NODE_ENV=production
 ENV RIVETOS_DATA_DIR=/home/rivetos/.rivetos
+ENV RIVETOS_HEALTH_PORT=3100
 
-# Healthcheck — lightweight process check without curl
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD node -e "try { require('child_process').execSync('pgrep -f rivetos', { stdio: 'pipe' }); process.exit(0); } catch { process.exit(1); }"
+EXPOSE 3100
+
+# Healthcheck — hit the runtime's /health/live endpoint.
+# pgrep matching "rivetos" is unreliable because the actual process is
+# `node --import tsx packages/cli/src/index.ts start` — the string "rivetos"
+# only appears as a path fragment and pgrep -f matches against argv which
+# may or may not include the full path depending on tini wrapping.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD node -e "require('http').get('http://127.0.0.1:' + (process.env.RIVETOS_HEALTH_PORT || '3100') + '/health/live', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
 USER rivetos
 
