@@ -1,5 +1,6 @@
 # Dependencies — installed fresh inside the container
 node_modules/
+**/node_modules/
 
 # Build outputs — rebuilt inside the container
 **/dist/
@@ -27,12 +28,10 @@ LICENSE
 # Test files
 **/*.test.ts
 **/*.spec.ts
+**/*.test.js
 **/__tests__/
 **/test/
 **/tests/
-
-# Site (not needed in agent container)
-apps/site/
 
 # Infrastructure as Code (not needed at runtime)
 infra/providers/
