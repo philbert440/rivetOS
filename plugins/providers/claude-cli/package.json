@@ -30,5 +30,16 @@
   "files": [
     "dist",
     "README.md"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git",
+    "directory": "plugins/providers/claude-cli"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
 }
