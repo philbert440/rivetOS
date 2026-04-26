@@ -300,24 +300,29 @@ async function writeEnvFile(envPath: string, entries: EnvEntry[]): Promise<void>
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
- * Locate the `workspace-templates/` directory by walking up from this file.
- * Returns null if not found.
+ * Locate the `workspace-templates/` directory.
  *
- * Layout:
- *   <repo-root>/
- *     workspace-templates/          ← target
- *     packages/cli/
- *       src/commands/init/          ← src path
- *       dist/commands/init/         ← built path
+ * Two layouts to support:
  *
- * So from import.meta.dirname we walk up 5 levels (commands → src/dist →
- * cli → packages → repo root) and look for `workspace-templates/`.
+ *   1. Source checkout (dev):
+ *      <repo-root>/
+ *        workspace-templates/          ← target
+ *        packages/cli/
+ *          src/commands/init/          ← src path
+ *          dist/commands/init/         ← built path
+ *
+ *   2. Global npm install:
+ *      <prefix>/lib/node_modules/@rivetos/cli/
+ *        workspace-templates/          ← target (shipped via prepublish copy)
+ *        dist/commands/init/           ← built path
+ *
+ * Strategy: walk up from this file's dir, try each candidate. The first hit
+ * wins. Source checkout matches at depth 5; npm install matches at depth 3.
  */
 async function findTemplatesDir(): Promise<string | null> {
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- dirname may be undefined in older Node
   const here = import.meta.dirname ?? '.'
-  // Walk up a few levels, try each candidate
-  for (let up = 3; up <= 6; up++) {
+  for (let up = 2; up <= 6; up++) {
     const candidate = resolve(here, ...Array<string>(up).fill('..'), 'workspace-templates')
     try {
       await access(candidate)
