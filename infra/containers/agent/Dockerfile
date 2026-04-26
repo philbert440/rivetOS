@@ -24,9 +24,7 @@ COPY services/ services/
 COPY bin/ bin/
 COPY infra/ infra/
 
-# Install all dependencies (workspaces need full install to resolve correctly)
-# postinstall runs: npm run build && npm run link-cli
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 # Non-root user — the agent should not run as root
 # Workspace dirs are created as mount targets only — all mutable data lives on
