@@ -92,6 +92,12 @@ jobs:
           PUBLISHED=0
           SKIPPED=0
 
+          # Note: counters use pre-increment ((++VAR)) on purpose.
+          # Under `set -e`, post-increment ((VAR++)) returns the *original*
+          # value as the exit code — so the very first ((SKIPPED++)) when
+          # SKIPPED=0 returns exit 1 and aborts the loop. Pre-increment
+          # returns the new (non-zero) value, which is exit 0.
+
           for pkg_dir in "${PACKAGES[@]}"; do
             if [ ! -f "$pkg_dir/package.json" ]; then
               echo "⚠️  $pkg_dir/package.json not found, skipping"
@@ -104,7 +110,7 @@ jobs:
 
             if [ "$IS_PRIVATE" = "true" ]; then
               echo "⏭️  $PKG_NAME is private, skipping"
-              ((SKIPPED++))
+              ((++SKIPPED))
               continue
             fi
 
@@ -112,13 +118,13 @@ jobs:
             EXISTING=$(npm view "$PKG_NAME@$PKG_VERSION" version 2>/dev/null || echo "")
             if [ "$EXISTING" = "$PKG_VERSION" ]; then
               echo "⏭️  $PKG_NAME@$PKG_VERSION already published"
-              ((SKIPPED++))
+              ((++SKIPPED))
               continue
             fi
 
             echo "📦 Publishing $PKG_NAME@$PKG_VERSION (tag: $TAG)..."
             (cd "$pkg_dir" && npm publish --tag "$TAG" --access public --provenance)
-            ((PUBLISHED++))
+            ((++PUBLISHED))
           done
 
           echo ""
