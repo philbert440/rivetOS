@@ -1,0 +1,60 @@
+# RivetOS MCP Server Container
+#
+# Builds the workspace and runs the standalone `rivetos-mcp-server` binary
+# from `@rivetos/mcp-server`. Build context must be the repo root.
+#
+#   docker build -f infra/docker/mcp-stack/Dockerfile -t rivetos-mcp-server .
+#
+# Slice 1.A.5: dev image, single-stage. Mirrors infra/containers/agent/Dockerfile
+# in shape — the workspace graph requires the full source tree at `npm ci`
+# time. Future slices can tighten this to a multi-stage that only ships the
+# compiled `dist/` outputs if image size matters.
+
+FROM node:24-alpine
+
+RUN apk add --no-cache git tini
+
+WORKDIR /app
+
+# Copy the full source tree.
+# All workspace roots declared in the root package.json must be present
+# at `npm ci` time so the workspace graph resolves; otherwise npm errors
+# with "missing workspace" or silently skips workspace deps.
+COPY package.json package-lock.json nx.json tsconfig.base.json config.example.yaml ./
+COPY scripts/ scripts/
+COPY packages/ packages/
+COPY plugins/ plugins/
+COPY apps/ apps/
+COPY services/ services/
+COPY bin/ bin/
+COPY infra/ infra/
+
+# Install all dependencies (workspaces need full install to resolve correctly).
+# postinstall runs `npm run build` which compiles the workspace via project
+# references — this gives us plugins/transports/mcp-server/dist/cli.js
+# ready to run.
+RUN npm ci
+
+# Non-root user
+RUN addgroup -S rivetos && adduser -S rivetos -G rivetos \
+    && chown -R rivetos:rivetos /app
+
+ENV NODE_ENV=production
+ENV MCP_HOST=0.0.0.0
+ENV MCP_PORT=5700
+
+EXPOSE 5700
+
+# Healthcheck — hit the MCP server's /health/live endpoint.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD node -e "require('http').get('http://127.0.0.1:' + (process.env.MCP_PORT || '5700') + '/health/live', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+
+USER rivetos
+
+# tini handles PID 1 and signal forwarding properly in containers.
+ENTRYPOINT ["tini", "--"]
+CMD ["node", "plugins/transports/mcp-server/dist/cli.js"]
+
+LABEL org.opencontainers.image.source="https://github.com/philbert440/rivetOS"
+LABEL org.opencontainers.image.description="RivetOS MCP Server — exposes RivetOS tools over the Model Context Protocol"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
