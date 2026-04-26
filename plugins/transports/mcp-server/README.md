@@ -17,7 +17,7 @@ subsequent slices per
 ```bash
 # from the repo root
 nx run mcp-server:build
-node packages/mcp-server/dist/cli.js
+node plugins/transports/mcp-server/dist/cli.js
 # server now listening on http://127.0.0.1:5700/mcp
 
 # liveness probe

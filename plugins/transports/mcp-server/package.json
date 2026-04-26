@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/mcp-server",
-  "version": "0.4.0-beta.2",
+  "version": "0.4.0-beta.3",
   "description": "RivetOS MCP server — exposes RivetOS tools (memory, skills, runtime, utility) over the Model Context Protocol",
   "license": "Apache-2.0",
   "type": "module",
@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@rivetos/types": "0.4.0-beta.2",
+    "@rivetos/types": "0.4.0-beta.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -41,7 +41,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/philbert440/rivetOS.git",
-    "directory": "packages/mcp-server"
+    "directory": "plugins/transports/mcp-server"
   },
   "publishConfig": {
     "access": "public"

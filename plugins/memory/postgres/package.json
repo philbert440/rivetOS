@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/memory-postgres",
-  "version": "0.4.0-beta.2",
+  "version": "0.4.0-beta.3",
   "description": "RivetOS Memory System — hybrid-scored search, background compaction, summary DAG",
   "license": "MIT",
   "main": "dist/index.js",
@@ -15,7 +15,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/types": "0.4.0-beta.2",
+    "@rivetos/types": "0.4.0-beta.3",
     "pg": "^8.20.0",
     "undici": "^8.1.0"
   },
