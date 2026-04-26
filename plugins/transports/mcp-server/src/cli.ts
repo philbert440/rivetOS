@@ -2,25 +2,31 @@
 /**
  * `rivetos-mcp-server` — standalone entrypoint.
  *
- * Phase 1.A — Slice 2: starts the StreamableHTTP server with the default
- * echo smoke-test tool and (when configured) the `rivetos.memory_search`
- * data-plane tool.
+ * Phase 1.A — Slice 3: starts the StreamableHTTP server with the default
+ * echo smoke-test tool, the full memory data-plane (when `RIVETOS_PG_URL`
+ * is set), and web tools (always enabled).
  *
  * Env:
  *   MCP_HOST                — default 127.0.0.1
  *   MCP_PORT                — default 5700
  *   RIVETOS_PG_URL          — postgres connection string. If set, enables
- *                             `rivetos.memory_search` and (eventually) the
- *                             rest of the memory tool surface.
+ *                             `rivetos.memory_search`, `rivetos.memory_browse`,
+ *                             and `rivetos.memory_stats`.
  *   RIVETOS_EMBED_URL       — optional embedding endpoint for hybrid search
  *   RIVETOS_EMBED_MODEL     — optional embedding model (default: nemotron)
+ *   GOOGLE_CSE_API_KEY      — optional, enables Google search backend for
+ *                             `rivetos.internet_search` (DuckDuckGo fallback
+ *                             always available)
+ *   GOOGLE_CSE_ID           — required alongside GOOGLE_CSE_API_KEY
+ *   RIVETOS_USER_AGENT      — optional override for `rivetos.web_fetch`
  *
  * Real config (cert paths, full tool registrations, runtime-RPC) lands in
  * subsequent slices.
  */
 
 import { createMcpServer, defaultEchoTool, type ToolRegistration } from './server.js'
-import { createMemorySearchTool, type MemorySearchToolHandle } from './tools/memory-search.js'
+import { createMemoryTools, type MemoryToolsHandle } from './tools/memory.js'
+import { createWebTools, type WebToolsHandle } from './tools/web.js'
 
 async function main(): Promise<void> {
   const host = process.env.MCP_HOST ?? '127.0.0.1'
@@ -29,25 +35,47 @@ async function main(): Promise<void> {
   const tools: ToolRegistration[] = [defaultEchoTool()]
   const cleanups: Array<() => Promise<void>> = []
 
+  // --- Memory tools (require Postgres) -------------------------------------
   const pgUrl = process.env.RIVETOS_PG_URL
   if (pgUrl) {
     try {
-      const handle: MemorySearchToolHandle = createMemorySearchTool({
+      const handle: MemoryToolsHandle = createMemoryTools({
         pgUrl,
         embedEndpoint: process.env.RIVETOS_EMBED_URL,
         embedModel: process.env.RIVETOS_EMBED_MODEL,
       })
-      tools.push(handle.tool)
+      tools.push(...handle.tools)
       cleanups.push(() => handle.close())
-      console.log('[rivetos-mcp-server] memory_search tool enabled')
+      console.log(
+        `[rivetos-mcp-server] memory tools enabled (${String(handle.tools.length)}: ${handle.tools.map((t) => t.name).join(', ')})`,
+      )
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`[rivetos-mcp-server] failed to enable memory_search: ${message}`)
+      console.error(`[rivetos-mcp-server] failed to enable memory tools: ${message}`)
     }
   } else {
     console.log(
-      '[rivetos-mcp-server] RIVETOS_PG_URL not set — memory tools disabled (echo-only mode)',
+      '[rivetos-mcp-server] RIVETOS_PG_URL not set — memory tools disabled (echo + web only)',
     )
+  }
+
+  // --- Web tools (always available) ----------------------------------------
+  try {
+    const handle: WebToolsHandle = createWebTools()
+    tools.push(...handle.tools)
+    cleanups.push(() => handle.close())
+    const hasGoogle = Boolean(
+      (process.env.GOOGLE_CSE_API_KEY ?? process.env.GOOGLE_API_KEY) && process.env.GOOGLE_CSE_ID,
+    )
+    console.log(
+      `[rivetos-mcp-server] web tools enabled (${handle.tools.map((t) => t.name).join(', ')})` +
+        (hasGoogle
+          ? ' [search backend: Google CSE → DuckDuckGo fallback]'
+          : ' [search backend: DuckDuckGo only — set GOOGLE_CSE_API_KEY + GOOGLE_CSE_ID for Google]'),
+    )
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[rivetos-mcp-server] failed to enable web tools: ${message}`)
   }
 
   const server = createMcpServer({ host, port, tools })
