@@ -27,6 +27,9 @@ dep-graph.json
 REFACTOR_PROGRESS.md
 .rivetos-init-state.json
 
+# Bundled templates copied at publish time for @rivetos/cli
+packages/cli/workspace-templates/
+
 # Secrets — fallback passwords, node registry, control plane keys
 # Created at runtime by provision-ct.sh — NEVER commit
 .secrets/

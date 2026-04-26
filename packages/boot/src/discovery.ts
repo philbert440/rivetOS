@@ -54,13 +54,20 @@ export interface PluginRegistry {
 /**
  * Scan plugin directories and build a registry.
  *
- * Default scan paths (relative to monorepo root):
- *   - plugins/providers/*
- *   - plugins/channels/*
- *   - plugins/tools/*
- *   - plugins/memory/*
+ * Two layouts are probed (both in one pass, deduped by package name):
  *
- * Also supports additional paths for user plugins.
+ *   1. Monorepo / source checkout:
+ *        ROOT/plugins/CATEGORY/PKG/package.json
+ *      where CATEGORY is one of providers, channels, tools, memory.
+ *
+ *   2. Flat npm install (e.g. npm install -g @rivetos/cli):
+ *        ROOT/node_modules/@rivetos/PKG/package.json
+ *
+ * ROOT is opaque — for (1) it's the monorepo root, for (2) it's the
+ * directory above node_modules/. Discovery doesn't have to know which
+ * layout it is; it tries both and takes whatever is found.
+ *
+ * Also supports additional paths for user plugins via additionalPaths.
  */
 export async function discoverPlugins(
   rootDir: string,
@@ -68,10 +75,10 @@ export async function discoverPlugins(
 ): Promise<PluginRegistry> {
   const discovered: DiscoveredPlugin[] = []
 
-  // Default plugin directories
   const pluginCategories = ['providers', 'channels', 'tools', 'memory']
   const scanDirs: string[] = []
 
+  // (1) Monorepo layout: plugins/<category>/*
   for (const category of pluginCategories) {
     const categoryDir = resolve(rootDir, 'plugins', category)
     try {
@@ -86,6 +93,19 @@ export async function discoverPlugins(
     }
   }
 
+  // (2) Flat npm-install layout: node_modules/@rivetos/*
+  const rivetosScope = resolve(rootDir, 'node_modules', '@rivetos')
+  try {
+    const entries = await readdir(rivetosScope, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith('.')) {
+        scanDirs.push(join(rivetosScope, entry.name))
+      }
+    }
+  } catch {
+    // No node_modules/@rivetos — must be source checkout, that's fine
+  }
+
   // Additional paths (user plugins, etc.)
   if (additionalPaths) {
     for (const p of additionalPaths) {
@@ -93,7 +113,10 @@ export async function discoverPlugins(
     }
   }
 
-  // Scan each directory for package.json with rivetos manifest
+  // Scan each directory for package.json with rivetos manifest.
+  // Dedup by package name — the monorepo and node_modules layouts may both
+  // surface the same plugin (workspace symlinks); first hit wins.
+  const seenPackages = new Set<string>()
   for (const dir of scanDirs) {
     try {
       const pkgPath = join(dir, 'package.json')
@@ -104,6 +127,7 @@ export async function discoverPlugins(
       }
 
       if (!pkg.rivetos || !pkg.name) continue
+      if (seenPackages.has(pkg.name)) continue
 
       const manifest = pkg.rivetos
 
@@ -119,6 +143,7 @@ export async function discoverPlugins(
         continue
       }
 
+      seenPackages.add(pkg.name)
       discovered.push({
         packageName: pkg.name,
         manifest: manifest as PluginManifest,
