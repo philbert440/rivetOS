@@ -1,6 +1,7 @@
 {
   "name": "@rivetos/infra",
   "version": "0.4.0",
+  "private": true,
   "description": "RivetOS infrastructure as code — Pulumi components for Docker, Proxmox, and Kubernetes",
   "license": "Apache-2.0",
   "type": "module",
@@ -14,7 +15,7 @@
   "dependencies": {
     "@pulumi/docker": "^4.6.3",
     "@pulumi/pulumi": "^3.232.0",
-    "@rivetos/types": "*",
+    "@rivetos/types": "0.4.0-beta.2",
     "yaml": "^2.8.3"
   }
 }

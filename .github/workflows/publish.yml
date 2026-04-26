@@ -51,17 +51,17 @@ jobs:
             packages/types
             packages/core
             packages/boot
-            packages/cli
-            packages/nx-plugin
             plugins/channels/agent
             plugins/channels/discord
             plugins/channels/telegram
             plugins/channels/voice-discord
             plugins/memory/postgres
             plugins/providers/anthropic
+            plugins/providers/claude-cli
             plugins/providers/google
-            plugins/providers/ollama
             plugins/providers/llama-server
+            plugins/providers/ollama
+            plugins/providers/openai-compat
             plugins/providers/xai
             plugins/tools/coding-pipeline
             plugins/tools/file
@@ -70,6 +70,8 @@ jobs:
             plugins/tools/search
             plugins/tools/shell
             plugins/tools/web-search
+            packages/cli
+            packages/nx-plugin
           )
 
           TAG="beta"
