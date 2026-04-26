@@ -126,7 +126,12 @@ function buildConfigYaml(state: WizardState): string {
 function buildProviderConfig(agent: WizardAgent): Record<string, unknown> {
   const config: Record<string, unknown> = {
     model: agent.model,
-    max_tokens: 8192,
+  }
+
+  // claude-cli doesn't accept max_tokens — the CLI binary owns generation params.
+  // Every other provider gets the default cap.
+  if (agent.provider !== 'claude-cli') {
+    config.max_tokens = 8192
   }
 
   if (agent.baseUrl) {
