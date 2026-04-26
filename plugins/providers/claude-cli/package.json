@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/provider-claude-cli",
-  "version": "0.4.0-beta.3",
+  "version": "0.4.0-beta.4",
   "description": "Claude Code CLI provider — shells out to the local `claude` binary, using the user's subscription OAuth token. Sanctioned pattern per Anthropic's April 2026 third-party harness policy.",
   "license": "MIT",
   "main": "dist/index.js",
@@ -14,7 +14,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/types": "0.4.0-beta.3"
+    "@rivetos/types": "0.4.0-beta.4"
   },
   "rivetos": {
     "type": "provider",
