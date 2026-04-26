@@ -26,7 +26,7 @@
     "@rivetos/provider-claude-cli": "0.4.0-beta.2",
     "@rivetos/types": "0.4.0-beta.2",
     "pg": "^8.20.0",
-    "undici": "^6.0.0",
+    "undici": "^8.1.0",
     "yaml": "^2.8.3"
   },
   "devDependencies": {

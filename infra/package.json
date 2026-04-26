@@ -13,7 +13,7 @@
     "lint": "eslint src/"
   },
   "dependencies": {
-    "@pulumi/docker": "^4.6.3",
+    "@pulumi/docker": "^5.0.0",
     "@pulumi/pulumi": "^3.232.0",
     "@rivetos/types": "0.4.0-beta.2",
     "yaml": "^2.8.3"
