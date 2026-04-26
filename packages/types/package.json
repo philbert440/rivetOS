@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/types",
-  "version": "0.4.0-beta.1",
+  "version": "0.4.0-beta.2",
   "description": "Shared interfaces for RivetOS — Provider, Channel, Tool, Memory",
   "license": "Apache-2.0",
   "main": "dist/index.js",
