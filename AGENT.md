@@ -36,7 +36,7 @@ Future first-publishes of new package names will need the same one-time bootstra
 - 11 packages still on `0.4.0-beta.1` (CI loop completed cleanly but those didn't get version-bumped this round)
 - 2 net-new names exist via manual bootstrap
 
-Next version bump → push → all 22 land cleanly with OIDC + provenance. No more manual fiddling.
+PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should land the full 22-package set on beta.3 with OIDC + provenance. `@rivetos/mcp-server` is intentionally **not** in `publish.yml` `PACKAGES` yet — first-publish needs the same manual `--otp` bootstrap dance as claude-cli/llama-server, then a follow-up PR to add it to the array.
 
 ---
 
@@ -55,7 +55,7 @@ Next version bump → push → all 22 land cleanly with OIDC + provenance. No mo
 
 | Slice | Scope | Status |
 |---|---|---|
-| 1.A.1 | Scaffold `packages/mcp-server/` (nx project, MCP SDK dep, tsconfig) | ✅ |
+| 1.A.1 | Scaffold `plugins/transports/mcp-server/` (nx project, MCP SDK dep, tsconfig) | ✅ |
 | 1.A.2 | Bare StreamableHTTP server with `/health/live` (no auth, no tools) | ✅ |
 | 1.A.3 | First tool wired end-to-end (`rivetos.echo` smoke test → `memory_search` next) | 🟡 echo only |
 | 1.A.4 | docker compose target (mcp-server + Postgres) | ⏳ |
@@ -65,7 +65,7 @@ Next version bump → push → all 22 land cleanly with OIDC + provenance. No mo
 | 1.C.* | claude-cli MCP bridge + native-vs-MCP allow-list | ⏳ |
 
 ### What's running today (slice 1)
-- `packages/mcp-server/` — bare StreamableHTTP server on `:5700`
+- `plugins/transports/mcp-server/` — bare StreamableHTTP server on `:5700`
 - `GET /health/live` returns `{status:'ok',name,version}` unauthenticated
 - `POST/GET/DELETE /mcp` handles MCP protocol via `StreamableHTTPServerTransport`
 - Stateful sessions, one transport per session, cleaned up on close

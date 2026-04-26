@@ -44,6 +44,7 @@
     "plugins/memory/*",
     "plugins/providers/*",
     "plugins/tools/*",
+    "plugins/transports/*",
     "services/*"
   ],
   "bin": {

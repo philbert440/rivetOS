@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/provider-openai-compat",
-  "version": "0.4.0-beta.2",
+  "version": "0.4.0-beta.3",
   "description": "OpenAI-compatible chat completions provider — tuned for strict servers like vLLM, TGI, and remote OpenAI-compatible APIs",
   "license": "MIT",
   "main": "dist/index.js",
@@ -14,7 +14,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/types": "0.4.0-beta.2"
+    "@rivetos/types": "0.4.0-beta.3"
   },
   "rivetos": {
     "type": "provider",
