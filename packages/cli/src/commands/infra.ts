@@ -31,8 +31,18 @@ export default async function infra(): Promise<void> {
     return
   }
 
-  // Lazy-import to avoid loading Pulumi/infra deps when not needed
-  const { InfraOrchestrator } = await import('@rivetos/infra')
+  // Lazy-import to avoid loading Pulumi/infra deps when not needed.
+  // @rivetos/infra is a private workspace package (Pulumi tooling) — only available
+  // from a dev checkout, not from `npm install -g @rivetos/cli`.
+  let InfraOrchestrator: typeof import('@rivetos/infra').InfraOrchestrator
+  try {
+    ;({ InfraOrchestrator } = await import('@rivetos/infra'))
+  } catch (err: unknown) {
+    console.error('❌ rivetos infra requires the @rivetos/infra workspace package.')
+    console.error('   This command is only available from a RivetOS source checkout.')
+    console.error(`   (${(err as Error).message})`)
+    process.exit(1)
+  }
 
   const dataDir = getDataDir()
   const orchestrator = new InfraOrchestrator({
