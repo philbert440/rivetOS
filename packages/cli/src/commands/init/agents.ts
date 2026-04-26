@@ -15,6 +15,7 @@ function bail<T>(v: T | symbol): asserts v is T {
 /** Default models per provider */
 const DEFAULT_MODELS: Record<string, string> = {
   anthropic: 'claude-sonnet-4-20250514',
+  'claude-cli': 'opus',
   xai: 'grok-4-1-fast-reasoning',
   google: 'gemini-2.5-pro',
   ollama: 'qwen2.5:32b',
@@ -60,7 +61,12 @@ export async function configureAgents(): Promise<WizardAgent[]> {
     const providerResult = await p.select({
       message: 'AI provider',
       options: [
-        { value: 'anthropic' as const, label: 'Anthropic', hint: 'Claude' },
+        { value: 'anthropic' as const, label: 'Anthropic', hint: 'Claude (API key)' },
+        {
+          value: 'claude-cli' as const,
+          label: 'Claude Code CLI',
+          hint: 'Claude via subscription — shells out to local `claude` binary',
+        },
         { value: 'xai' as const, label: 'xAI', hint: 'Grok' },
         { value: 'google' as const, label: 'Google', hint: 'Gemini' },
         { value: 'ollama' as const, label: 'Ollama', hint: 'local models' },
@@ -83,7 +89,12 @@ export async function configureAgents(): Promise<WizardAgent[]> {
     let apiKey: string | undefined
     let baseUrl: string | undefined
 
-    if (provider === 'ollama') {
+    if (provider === 'claude-cli') {
+      // No API key — the local `claude` binary owns auth via its OAuth keychain.
+      // Just remind the user to make sure the CLI is installed and logged in.
+      p.log.info('Claude Code CLI uses your Claude.ai subscription via OAuth — no API key needed.')
+      p.log.info('Make sure the `claude` binary is installed and `claude login` has been run.')
+    } else if (provider === 'ollama') {
       const urlResult = await p.text({
         message: 'Ollama base URL',
         placeholder: 'http://localhost:11434',
