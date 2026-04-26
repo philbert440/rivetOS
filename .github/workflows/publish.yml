@@ -1,9 +1,17 @@
 name: Publish to npm
 
+# Triggers:
+#   - push to main: publishes any package whose version isnt yet on the registry
+#                   under the `beta` dist-tag (idempotent — no-op until a bump)
+#   - push of v* tag: publishes under `latest` for stable tags (vX.Y.Z),
+#                     `beta` for prerelease tags (vX.Y.Z-beta.N)
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+  workflow_dispatch: {}
 
 permissions:
   id-token: write
