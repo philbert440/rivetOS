@@ -12,9 +12,13 @@ export default defineConfig({
         dark: './src/assets/logo-dark.svg',
         replacesTitle: false,
       },
-      social: {
-        github: 'https://github.com/philbert440/rivetos',
-      },
+      social: [
+        {
+          icon: 'github',
+          label: 'GitHub',
+          href: 'https://github.com/philbert440/rivetos',
+        },
+      ],
       editLink: {
         baseUrl: 'https://github.com/philbert440/rivetos/edit/main/apps/site/',
       },
