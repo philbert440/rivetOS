@@ -57,27 +57,43 @@ PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should 
 |---|---|---|
 | 1.A.1 | Scaffold `plugins/transports/mcp-server/` (nx project, MCP SDK dep, tsconfig) | ✅ |
 | 1.A.2 | Bare StreamableHTTP server with `/health/live` (no auth, no tools) | ✅ |
-| 1.A.3 | First tool wired end-to-end (`rivetos.echo` smoke test → `memory_search` next) | 🟡 echo only |
+| 1.A.3 | First tool wired end-to-end (`rivetos.echo` smoke test → `rivetos.memory_search`) | ✅ |
 | 1.A.4 | docker compose target (mcp-server + Postgres) | ⏳ |
 | 1.A.5 | mTLS via `rivet-ca` + `rivetos/session.attach` handshake | ⏳ |
-| 1.A.6 | Wire real data-plane tools: `memory_*`, `skill_*`, `web_fetch`, `internet_search` | ⏳ |
+| 1.A.6 | Wire remaining data-plane tools: `memory_browse`, `memory_stats`, `skill_*`, `web_fetch`, `internet_search` | ⏳ |
 | 1.B.* | runtime-rpc.ts on `:5701`, inverse-registration, runtime/utility proxies | ⏳ |
 | 1.C.* | claude-cli MCP bridge + native-vs-MCP allow-list | ⏳ |
 
-### What's running today (slice 1)
-- `plugins/transports/mcp-server/` — bare StreamableHTTP server on `:5700`
+### What's running today (slice 2)
+- `plugins/transports/mcp-server/` — StreamableHTTP server on `:5700`
 - `GET /health/live` returns `{status:'ok',name,version}` unauthenticated
 - `POST/GET/DELETE /mcp` handles MCP protocol via `StreamableHTTPServerTransport`
 - Stateful sessions, one transport per session, cleaned up on close
-- Default tool: `rivetos.echo` (smoke test, will be replaced)
-- Standalone CLI: `rivetos-mcp-server` binary, `MCP_HOST` / `MCP_PORT` env
-- Integration test: 4 specs round-tripping `initialize → tools/list → tools/call` over real HTTP
+- Tools registered:
+  - `rivetos.echo` — smoke-test tool, stays around as a wire probe
+  - `rivetos.memory_search` — first real data-plane tool, wraps the in-process
+    `memory_search` from `@rivetos/memory-postgres`. Auto-enabled when
+    `RIVETOS_PG_URL` is set (echo-only mode otherwise).
+- Standalone CLI: `rivetos-mcp-server` binary. Env: `MCP_HOST`, `MCP_PORT`,
+  `RIVETOS_PG_URL`, `RIVETOS_EMBED_URL`, `RIVETOS_EMBED_MODEL`.
+- Generic `adaptRivetTool(tool, zodSchema, opts?)` helper — the template every
+  in-process tool follows when crossing the MCP wire. Flattens
+  `string | ContentPart[]` results to text for slice-2 wire compatibility.
+- Tests: 13 specs total. 11 wire/adapter tests run unconditionally; 2 memory
+  integration tests run when `RIVETOS_PG_URL` is set, auto-skipped otherwise.
 
 ### Decisions made in slice 1
 - **Stateful mode** for the StreamableHTTPServerTransport (one session = one transport instance). Stateless would also work but we want session-scoped state when `session.attach` lands.
 - **No auth in slice 1.** Localhost-only by default. mTLS comes in a later slice with the rest of the cert plumbing.
 - **Lean dependency surface.** Just `@modelcontextprotocol/sdk` + `zod`. No express, no fastify — raw `http.createServer` because the SDK transport handles all the protocol work.
 - **`rivetos.echo` as a permanent smoke-test tool.** It stays around as a "is the wire working" probe even after real tools land. Cheap, useful, removable in a one-line PR if it's ever in the way.
+
+### Decisions made in slice 2
+- **Direct workspace dep on `@rivetos/memory-postgres`** rather than a dynamic import. Simpler types, project-reference build chain works out of the box, and the cost is small — anyone installing `@rivetos/mcp-server` already has Postgres on the table conceptually.
+- **Hand-written zod schema for `memory_search`.** The RivetOS `Tool.parameters` is a JSON-Schema-ish `Record<string, unknown>` and the MCP SDK validates inputs via zod at the wire. Auto-translating the JSON schema would be brittle; one hand-mapped schema per tool gives us better descriptions for the MCP audience anyway.
+- **Generic `adaptRivetTool` helper.** Every future data-plane tool follows the same template: build the in-process Tool, write a zod schema, call `adaptRivetTool`. This kills boilerplate before it accretes.
+- **String-only wire result for slice 2.** `ContentPart[]` results from RivetOS tools (e.g., images from `web_fetch` screenshots) get flattened to text with a `[non-text part: image]` placeholder. Slice 3 widens this to native MCP content arrays once any tool actually exercises it.
+- **PG pool ownership.** `createMemorySearchTool` opens its own pool and returns `{tool, close}`. Caller is responsible for `close()` on shutdown — the CLI does this in its SIGTERM/SIGINT handler.
 
 ---
 

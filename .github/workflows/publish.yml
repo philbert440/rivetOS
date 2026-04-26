@@ -79,6 +79,7 @@ jobs:
             plugins/tools/search
             plugins/tools/shell
             plugins/tools/web-search
+            plugins/transports/mcp-server
             packages/cli
             packages/nx-plugin
           )
