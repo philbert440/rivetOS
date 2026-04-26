@@ -58,29 +58,37 @@ PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should 
 | 1.A.1 | Scaffold `plugins/transports/mcp-server/` (nx project, MCP SDK dep, tsconfig) | ✅ |
 | 1.A.2 | Bare StreamableHTTP server with `/health/live` (no auth, no tools) | ✅ |
 | 1.A.3 | First tool wired end-to-end (`rivetos.echo` smoke test → `rivetos.memory_search`) | ✅ |
-| 1.A.4 | docker compose target (mcp-server + Postgres) | ⏳ |
-| 1.A.5 | mTLS via `rivet-ca` + `rivetos/session.attach` handshake | ⏳ |
-| 1.A.6 | Wire remaining data-plane tools: `memory_browse`, `memory_stats`, `skill_*`, `web_fetch`, `internet_search` | ⏳ |
+| 1.A.4 | Memory + web data-plane tools: `memory_browse`, `memory_stats`, `internet_search`, `web_fetch` | ✅ |
+| 1.A.5 | docker compose target (mcp-server + Postgres) | ⏳ |
+| 1.A.6 | Skill tools: `skill_list`, `skill_manage` | ⏳ |
+| 1.A.7 | mTLS via `rivet-ca` + `rivetos/session.attach` handshake | ⏳ |
 | 1.B.* | runtime-rpc.ts on `:5701`, inverse-registration, runtime/utility proxies | ⏳ |
 | 1.C.* | claude-cli MCP bridge + native-vs-MCP allow-list | ⏳ |
 
-### What's running today (slice 2)
+### What's running today (slice 3)
 - `plugins/transports/mcp-server/` — StreamableHTTP server on `:5700`
 - `GET /health/live` returns `{status:'ok',name,version}` unauthenticated
 - `POST/GET/DELETE /mcp` handles MCP protocol via `StreamableHTTPServerTransport`
 - Stateful sessions, one transport per session, cleaned up on close
 - Tools registered:
   - `rivetos.echo` — smoke-test tool, stays around as a wire probe
-  - `rivetos.memory_search` — first real data-plane tool, wraps the in-process
-    `memory_search` from `@rivetos/memory-postgres`. Auto-enabled when
-    `RIVETOS_PG_URL` is set (echo-only mode otherwise).
+  - `rivetos.memory_search`, `rivetos.memory_browse`, `rivetos.memory_stats`
+    — full memory data-plane wrapping `@rivetos/memory-postgres`. Auto-enabled
+    when `RIVETOS_PG_URL` is set (disabled otherwise).
+  - `rivetos.internet_search`, `rivetos.web_fetch` — web data-plane wrapping
+    `@rivetos/tool-web-search`. Always enabled (DuckDuckGo fallback for search,
+    Google CSE used when `GOOGLE_CSE_API_KEY` + `GOOGLE_CSE_ID` are set).
 - Standalone CLI: `rivetos-mcp-server` binary. Env: `MCP_HOST`, `MCP_PORT`,
-  `RIVETOS_PG_URL`, `RIVETOS_EMBED_URL`, `RIVETOS_EMBED_MODEL`.
+  `RIVETOS_PG_URL`, `RIVETOS_EMBED_URL`, `RIVETOS_EMBED_MODEL`,
+  `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_ID`, `RIVETOS_USER_AGENT`.
 - Generic `adaptRivetTool(tool, zodSchema, opts?)` helper — the template every
   in-process tool follows when crossing the MCP wire. Flattens
-  `string | ContentPart[]` results to text for slice-2 wire compatibility.
-- Tests: 13 specs total. 11 wire/adapter tests run unconditionally; 2 memory
-  integration tests run when `RIVETOS_PG_URL` is set, auto-skipped otherwise.
+  `string | ContentPart[]` results to text for the current wire shape.
+- Factories follow `{tools: ToolRegistration[], close: () => Promise<void>}`
+  shape: `createMemoryTools` (3 tools, drains pg pool), `createWebTools`
+  (2 tools, no-op close).
+- Tests: 18 specs total — 11 wire/adapter, 4 memory (PG-gated), 3 web
+  (1 always-on, 1 always-on, 1 network-gated via `RIVETOS_TEST_SKIP_NETWORK=1`).
 
 ### Decisions made in slice 1
 - **Stateful mode** for the StreamableHTTPServerTransport (one session = one transport instance). Stateless would also work but we want session-scoped state when `session.attach` lands.
@@ -94,6 +102,13 @@ PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should 
 - **Generic `adaptRivetTool` helper.** Every future data-plane tool follows the same template: build the in-process Tool, write a zod schema, call `adaptRivetTool`. This kills boilerplate before it accretes.
 - **String-only wire result for slice 2.** `ContentPart[]` results from RivetOS tools (e.g., images from `web_fetch` screenshots) get flattened to text with a `[non-text part: image]` placeholder. Slice 3 widens this to native MCP content arrays once any tool actually exercises it.
 - **PG pool ownership.** `createMemorySearchTool` opens its own pool and returns `{tool, close}`. Caller is responsible for `close()` on shutdown — the CLI does this in its SIGTERM/SIGINT handler.
+
+### Decisions made in slice 3
+- **Refactored `createMemorySearchTool` → `createMemoryTools`.** Single factory now returns all three memory tools (`memory_search`, `memory_browse`, `memory_stats`) sharing one PG pool. `createMemorySearchTool` kept as a deprecated shim for backwards compat — calling code should migrate to the new name. Avoids opening N pools for N tools, and the call site stays a single `tools.push(...handle.tools)`.
+- **Web tools always enabled.** `internet_search` falls back to DuckDuckGo without Google credentials; `web_fetch` needs nothing. No env-gating necessary, so the CLI registers them unconditionally. Cleaner UX than "configure 4 env vars to get any web access."
+- **Hand-mapped zod schemas per tool.** Same call as slice 2 — auto-translating from `Tool.parameters` JSON schema would be brittle, and writing zod by hand lets us tighten descriptions for the MCP audience. Five schemas now live in `tools/memory.ts` + `tools/web.ts`.
+- **Skills deferred to a separate slice.** `skill_list`/`skill_manage` need `SkillManagerImpl` initialization, skill-dir discovery, and a write-surface security model (which dirs should be writable from MCP?). Worth its own slice rather than being shoehorned in.
+- **Network-gated test instead of skipping always.** `web.test.ts` runs `internet_search` against the real network by default, opt-out via `RIVETOS_TEST_SKIP_NETWORK=1`. Better signal in CI than auto-skip.
 
 ---
 
