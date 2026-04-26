@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@rivetos/types": "0.4.0-beta.2",
-    "undici": "^6.0.0"
+    "undici": "^8.1.0"
   },
   "exports": {
     ".": {
