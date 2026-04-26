@@ -23,7 +23,7 @@ node plugins/transports/mcp-server/dist/cli.js
 
 # liveness probe
 curl http://127.0.0.1:5700/health/live
-# → {"status":"ok","name":"rivetos-mcp-server","version":"0.4.0-beta.3"}
+# → {"status":"ok","name":"rivetos-mcp-server","version":"0.4.0-beta.4"}
 ```
 
 Environment:
