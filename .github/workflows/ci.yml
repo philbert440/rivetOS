@@ -111,7 +111,7 @@ jobs:
         run: npx nx affected -t lint --parallel=5
 
       - name: Build
-        run: npx nx affected -t build --parallel=5 --exclude container-agent,container-datahub
+        run: npx nx affected -t build --parallel=5 --exclude container-agent,container-datahub,site
 
       - name: Test
         run: npx nx affected -t test --parallel=5

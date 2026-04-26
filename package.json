@@ -48,7 +48,7 @@
   "scripts": {
     "postinstall": "npm run build && npm run link-cli",
     "link-cli": "node scripts/link-cli.mjs",
-    "build": "nx run-many -t build --exclude container-agent,container-datahub",
+    "build": "nx run-many -t build --exclude container-agent,container-datahub,site",
     "lint": "nx run-many -t lint",
     "test": "nx run-many -t test",
     "typecheck": "nx run-many -t typecheck",
