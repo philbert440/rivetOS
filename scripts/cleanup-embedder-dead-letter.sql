@@ -46,6 +46,10 @@ ALTER TABLE ros_summaries ADD COLUMN IF NOT EXISTS embed_status TEXT;
 -- These mirror classifyUnembeddable() in services/embedding-worker/classify.js.
 -- Keep in sync.
 
+-- NOTE: Postgres regex has a hard cap of 255 on repetition counts ({n,m}).
+-- We chain {200,255} groups to reach the longer thresholds we care about
+-- (200 for PNG header runs, ~500 for JPEG, ~1500 for raw base64 blobs).
+
 -- 1. Media markers (case-insensitive, anchored at start after optional whitespace)
 WITH unembeddable_msgs AS (
     SELECT id FROM ros_messages
@@ -55,8 +59,8 @@ WITH unembeddable_msgs AS (
             content ~* '^\s*\[media attached:'
          OR content ~* '^\s*MEDIA:'
          OR content ~* 'data:image/[a-z]+;base64,'
-         OR content ~  'iVBORw0KGgo[A-Za-z0-9+/=]{200,}'
-         OR content ~  '/9j/[A-Za-z0-9+/=]{500,}'
+         OR content ~  'iVBORw0KGgo[A-Za-z0-9+/=]{200,255}'
+         OR content ~  '/9j/[A-Za-z0-9+/=]{200,255}[A-Za-z0-9+/=]{200,255}[A-Za-z0-9+/=]{100,255}'
       )
 )
 UPDATE ros_messages m
@@ -73,8 +77,8 @@ WITH unembeddable_sums AS (
             content ~* '^\s*\[media attached:'
          OR content ~* '^\s*MEDIA:'
          OR content ~* 'data:image/[a-z]+;base64,'
-         OR content ~  'iVBORw0KGgo[A-Za-z0-9+/=]{200,}'
-         OR content ~  '/9j/[A-Za-z0-9+/=]{500,}'
+         OR content ~  'iVBORw0KGgo[A-Za-z0-9+/=]{200,255}'
+         OR content ~  '/9j/[A-Za-z0-9+/=]{200,255}[A-Za-z0-9+/=]{200,255}[A-Za-z0-9+/=]{100,255}'
       )
 )
 UPDATE ros_summaries s
@@ -83,22 +87,22 @@ SET embed_status = 'unembeddable',
 FROM unembeddable_sums u
 WHERE s.id = u.id;
 
--- 2. Long unbroken base64-ish runs (>1500 chars of base64 alphabet, no whitespace).
---    Postgres regex doesn't have a great way to express ">95% base64 alphabet",
---    so the run-length signal alone is conservative enough.
+-- 2. Long unbroken base64-ish runs (~1500 chars of base64 alphabet, no whitespace).
+--    Six chained {250,255} groups ≈ 1500-1530 chars. Conservative enough that
+--    real prose almost never hits this (no spaces in 1500+ chars).
 UPDATE ros_messages
 SET embed_status = 'unembeddable',
     embed_error  = COALESCE(embed_error, 'unembeddable: cleanup-script base64-blob')
 WHERE embedding IS NULL
   AND embed_status IS DISTINCT FROM 'unembeddable'
-  AND content ~ '[A-Za-z0-9+/]{1500,}';
+  AND content ~ '[A-Za-z0-9+/]{250,255}[A-Za-z0-9+/]{250,255}[A-Za-z0-9+/]{250,255}[A-Za-z0-9+/]{250,255}[A-Za-z0-9+/]{250,255}[A-Za-z0-9+/]{250,255}';
 
 UPDATE ros_summaries
 SET embed_status = 'unembeddable',
     embed_error  = COALESCE(embed_error, 'unembeddable: cleanup-script base64-blob')
 WHERE embedding IS NULL
   AND embed_status IS DISTINCT FROM 'unembeddable'
-  AND content ~ '[A-Za-z0-9+/]{1500,}';
+  AND content ~ '[A-Za-z0-9+/]{250,255}[A-Za-z0-9+/]{250,255}[A-Za-z0-9+/]{250,255}[A-Za-z0-9+/]{250,255}[A-Za-z0-9+/]{250,255}[A-Za-z0-9+/]{250,255}';
 
 -- 3. Anything left that's hit the failure cap → flip to 'failed' so it drops
 --    out of the eligible queue cleanly (instead of relying on a count-based
