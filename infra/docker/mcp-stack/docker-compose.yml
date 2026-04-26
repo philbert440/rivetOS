@@ -1,0 +1,95 @@
+# RivetOS MCP Stack — Phase 1.A slice 5
+#
+# A minimal, self-contained docker-compose for exercising the MCP server
+# end-to-end against a fresh Postgres. No agent runtime, no providers,
+# no channels — just the data plane the MCP server exposes.
+#
+# Quick start (from repo root):
+#
+#   docker compose -f infra/docker/mcp-stack/docker-compose.yml up --build
+#
+# Then in another terminal:
+#
+#   curl http://localhost:5700/health/live
+#   # → {"status":"ok","name":"@rivetos/mcp-server","version":"0.4.0-beta.4"}
+#
+# Or use the MCP inspector:
+#
+#   npx @modelcontextprotocol/inspector http://localhost:5700/mcp
+#
+# Tear down (and wipe the database):
+#
+#   docker compose -f infra/docker/mcp-stack/docker-compose.yml down -v
+
+services:
+  datahub:
+    build:
+      # Reuse the existing datahub image — same Postgres + pgvector + the
+      # init-db.sh that creates the full ros_* schema on first boot.
+      context: ../../containers/datahub
+    image: rivetos-datahub:dev
+    environment:
+      POSTGRES_USER: rivetos
+      POSTGRES_PASSWORD: rivetos
+      POSTGRES_DB: rivetos
+    volumes:
+      - mcp-pgdata:/var/lib/postgresql/data
+    networks:
+      - mcp-net
+    # Expose 5433 on the host so we can introspect the DB without
+    # colliding with a system Postgres on 5432.
+    ports:
+      - '5433:5432'
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rivetos -d rivetos']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  mcp-server:
+    build:
+      # Build context is repo root so the multi-stage Dockerfile can copy
+      # the workspace lockfile, package.json files, and the mcp-server
+      # plugin source. Path is relative to this compose file.
+      context: ../../..
+      dockerfile: infra/docker/mcp-stack/Dockerfile
+    image: rivetos-mcp-server:dev
+    environment:
+      MCP_HOST: '0.0.0.0'
+      MCP_PORT: '5700'
+      RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
+      # Optional: point at a real embedding endpoint to enable hybrid search
+      # RIVETOS_EMBED_URL: http://gpu-host:9401
+      # RIVETOS_EMBED_MODEL: nemotron
+      # Optional: Google Custom Search (DuckDuckGo fallback otherwise)
+      # GOOGLE_CSE_API_KEY: your-key
+      # GOOGLE_CSE_ID: your-cse-id
+    depends_on:
+      datahub:
+        condition: service_healthy
+    networks:
+      - mcp-net
+    ports:
+      - '5700:5700'
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - '-e'
+        - "require('http').get('http://127.0.0.1:5700/health/live', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  mcp-pgdata:
+    name: rivetos-mcp-pgdata
+
+networks:
+  mcp-net:
+    name: rivetos-mcp-net
+    driver: bridge

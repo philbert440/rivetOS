@@ -4,8 +4,12 @@ set -e
 # ===========================================================================
 # RivetOS — Datahub Database Initialization
 #
-# Creates extensions, queue tables, trigger functions, and triggers.
-# Runs only on first database initialization (idempotent — safe to re-run).
+# Creates extensions, core ros_* tables, queue tables, trigger functions,
+# and triggers. Runs on first database initialization (idempotent — safe
+# to re-run; every CREATE uses IF NOT EXISTS).
+#
+# Schema source of truth: docs/MEMORY-DESIGN.md
+# Mirrors the live CT110 schema as of 2026-04-26.
 # ===========================================================================
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-'EOSQL'
@@ -16,6 +20,128 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-'
 
     CREATE EXTENSION IF NOT EXISTS vector;
     CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+    -- -----------------------------------------------------------------------
+    -- ros_conversations — sessions, grouped by channel/agent with settings
+    -- -----------------------------------------------------------------------
+
+    CREATE TABLE IF NOT EXISTS ros_conversations (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_key   TEXT NOT NULL,
+        agent         TEXT NOT NULL,
+        channel       TEXT NOT NULL DEFAULT 'unknown',
+        channel_id    TEXT,
+        bot_identity  TEXT,
+        title         TEXT,
+        settings      JSONB DEFAULT '{}'::jsonb,
+        active        BOOLEAN DEFAULT true,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ros_conversations_session
+        ON ros_conversations (session_key, active, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ros_conversations_agent_channel
+        ON ros_conversations (agent, channel, updated_at DESC);
+
+    -- -----------------------------------------------------------------------
+    -- ros_messages — immutable transcript with tool data, embeddings,
+    -- and access tracking
+    -- -----------------------------------------------------------------------
+
+    CREATE TABLE IF NOT EXISTS ros_messages (
+        id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id   UUID NOT NULL REFERENCES ros_conversations(id) ON DELETE CASCADE,
+        agent             TEXT NOT NULL,
+        channel           TEXT NOT NULL,
+        role              TEXT NOT NULL CHECK (role IN ('system','user','assistant','tool')),
+        content           TEXT NOT NULL DEFAULT '',
+        tool_name         TEXT,
+        tool_args         JSONB,
+        tool_result       TEXT,
+        metadata          JSONB DEFAULT '{}'::jsonb,
+        embedding         halfvec(4000),
+        content_tsv       tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
+        access_count      INTEGER DEFAULT 0,
+        last_accessed_at  TIMESTAMPTZ,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        embed_failures    INTEGER DEFAULT 0,
+        embed_error       TEXT,
+        embed_status      TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ros_messages_conversation
+        ON ros_messages (conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_ros_messages_agent
+        ON ros_messages (agent, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ros_messages_created
+        ON ros_messages (created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ros_messages_fts
+        ON ros_messages USING gin (content_tsv);
+    CREATE INDEX IF NOT EXISTS idx_ros_messages_trgm
+        ON ros_messages USING gin (content gin_trgm_ops);
+
+    -- -----------------------------------------------------------------------
+    -- ros_summaries — compacted summaries forming a DAG (parent_id)
+    -- -----------------------------------------------------------------------
+
+    CREATE TABLE IF NOT EXISTS ros_summaries (
+        id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id    UUID REFERENCES ros_conversations(id),
+        parent_id          UUID REFERENCES ros_summaries(id),
+        depth              INTEGER NOT NULL DEFAULT 0,
+        content            TEXT NOT NULL,
+        kind               TEXT NOT NULL DEFAULT 'leaf',
+        message_count      INTEGER NOT NULL DEFAULT 0,
+        earliest_at        TIMESTAMPTZ,
+        latest_at          TIMESTAMPTZ,
+        embedding          halfvec(4000),
+        content_tsv        tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
+        model              TEXT,
+        access_count       INTEGER DEFAULT 0,
+        last_accessed_at   TIMESTAMPTZ,
+        created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        embed_failures     INTEGER DEFAULT 0,
+        embed_error        TEXT,
+        pipeline_version   INTEGER NOT NULL DEFAULT 1,
+        embed_status       TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ros_summaries_parent
+        ON ros_summaries (parent_id);
+    CREATE INDEX IF NOT EXISTS idx_ros_summaries_time
+        ON ros_summaries (latest_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ros_summaries_fts
+        ON ros_summaries USING gin (content_tsv);
+    CREATE INDEX IF NOT EXISTS idx_ros_summaries_pipeline_version
+        ON ros_summaries (pipeline_version) WHERE pipeline_version < 5;
+
+    -- -----------------------------------------------------------------------
+    -- ros_summary_sources — links summaries to their source messages
+    -- -----------------------------------------------------------------------
+
+    CREATE TABLE IF NOT EXISTS ros_summary_sources (
+        summary_id   UUID NOT NULL REFERENCES ros_summaries(id) ON DELETE CASCADE,
+        message_id   UUID NOT NULL REFERENCES ros_messages(id) ON DELETE RESTRICT,
+        ordinal      INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (summary_id, message_id)
+    );
+
+    -- -----------------------------------------------------------------------
+    -- ros_tool_synth_queue — async queue for synthesizing natural-language
+    -- content for assistant tool-call messages with empty content (v5)
+    -- -----------------------------------------------------------------------
+
+    CREATE TABLE IF NOT EXISTS ros_tool_synth_queue (
+        message_id        UUID PRIMARY KEY REFERENCES ros_messages(id) ON DELETE CASCADE,
+        enqueued_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+        attempts          INTEGER NOT NULL DEFAULT 0,
+        last_error        TEXT,
+        last_attempt_at   TIMESTAMPTZ
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tool_synth_queue_enqueued
+        ON ros_tool_synth_queue (enqueued_at);
 
     -- -----------------------------------------------------------------------
     -- Embedding Queue — event-driven embedding via Nemotron GPU
@@ -201,4 +327,4 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-'
 
 EOSQL
 
-echo "[RivetOS] Database initialized with pgvector, pg_trgm, queue tables, and triggers."
+echo "[RivetOS] Database initialized: pgvector + pg_trgm extensions, core ros_* tables (conversations, messages, summaries, summary_sources, tool_synth_queue), queue tables (embedding, compaction), and triggers."

@@ -59,8 +59,8 @@ PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should 
 | 1.A.2 | Bare StreamableHTTP server with `/health/live` (no auth, no tools) | ✅ |
 | 1.A.3 | First tool wired end-to-end (`rivetos.echo` smoke test → `rivetos.memory_search`) | ✅ |
 | 1.A.4 | Memory + web data-plane tools: `memory_browse`, `memory_stats`, `internet_search`, `web_fetch` | ✅ |
-| 1.A.5 | docker compose target (mcp-server + Postgres) | ⏳ |
-| 1.A.6 | Skill tools: `skill_list`, `skill_manage` | ⏳ |
+| 1.A.5 | docker compose target (mcp-server + Postgres) + schema bootstrap | ✅ |
+| 1.A.6 | Skill tools: `skill_list`, `skill_manage` (workspace + system dirs both writable) | ⏳ |
 | 1.A.7 | mTLS via `rivet-ca` + `rivetos/session.attach` handshake | ⏳ |
 | 1.B.* | runtime-rpc.ts on `:5701`, inverse-registration, runtime/utility proxies | ⏳ |
 | 1.C.* | claude-cli MCP bridge + native-vs-MCP allow-list | ⏳ |
@@ -107,8 +107,15 @@ PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should 
 - **Refactored `createMemorySearchTool` → `createMemoryTools`.** Single factory now returns all three memory tools (`memory_search`, `memory_browse`, `memory_stats`) sharing one PG pool. `createMemorySearchTool` kept as a deprecated shim for backwards compat — calling code should migrate to the new name. Avoids opening N pools for N tools, and the call site stays a single `tools.push(...handle.tools)`.
 - **Web tools always enabled.** `internet_search` falls back to DuckDuckGo without Google credentials; `web_fetch` needs nothing. No env-gating necessary, so the CLI registers them unconditionally. Cleaner UX than "configure 4 env vars to get any web access."
 - **Hand-mapped zod schemas per tool.** Same call as slice 2 — auto-translating from `Tool.parameters` JSON schema would be brittle, and writing zod by hand lets us tighten descriptions for the MCP audience. Five schemas now live in `tools/memory.ts` + `tools/web.ts`.
-- **Skills deferred to a separate slice.** `skill_list`/`skill_manage` need `SkillManagerImpl` initialization, skill-dir discovery, and a write-surface security model (which dirs should be writable from MCP?). Worth its own slice rather than being shoehorned in.
+- **Skills deferred to a separate slice.** `skill_list`/`skill_manage` need `SkillManagerImpl` initialization, skill-dir discovery, and a write-surface security model (which dirs should be writable from MCP?). Worth its own slice rather than being shoehorned in. **Phil's call:** workspace + system dirs both writable from MCP — same surface in-process Opus has.
 - **Network-gated test instead of skipping always.** `web.test.ts` runs `internet_search` against the real network by default, opt-out via `RIVETOS_TEST_SKIP_NETWORK=1`. Better signal in CI than auto-skip.
+
+### Decisions made in slice 5 (docker compose + schema bootstrap)
+- **`infra/containers/datahub/init-db.sh` was missing the core ros_* tables.** Only the queue tables (`ros_embedding_queue`, `ros_compaction_queue`) were ever bootstrapped from the script. The actual schema (`ros_messages`, `ros_conversations`, `ros_summaries`, `ros_summary_sources`, `ros_tool_synth_queue` + their indexes + FKs) had been created by hand on CT110 long ago and never made it into the script. **Latent bug for any fresh datahub deploy** — not just the MCP stack. Fixed in this slice. Verified the script applies cleanly on a fresh DB (7 tables, 23 indexes, 3 functions, 3 triggers).
+- **Separate `infra/docker/mcp-stack/` instead of overloading the root `docker-compose.yaml`.** The root compose stands up the full agent runtime; this stack is just `datahub + mcp-server` for exercising the MCP wire surface in isolation. Different audience (tool consumers, claude-cli devs) than the runtime compose (full RivetOS users). Cheaper to keep them separate.
+- **Single-stage Dockerfile, mirrored from `infra/containers/agent/Dockerfile`.** The workspace graph requires the full source tree at `npm ci` time, so a multi-stage build that tries to ship "just the mcp-server runtime" is more trouble than it's worth at this stage. Image size optimization is a follow-up if it ever matters.
+- **Datahub host port mapped to `5433`** to avoid colliding with a system Postgres on the developer laptop.
+- **Verification path documented** in `infra/docker/mcp-stack/README.md` — `docker compose up`, curl `/health/live`, `npx @modelcontextprotocol/inspector`, or a Node smoke script. Future slices can hang the claude-cli smoke test off this same stack.
 
 ---
 
@@ -142,6 +149,7 @@ Shared CA on CT110, intermediate + chain on NFS. `MeshConfig.tls: boolean` switc
 - **vitest version drift across workspace** breaks CI even when local node_modules looks fine. If you bump root vitest, sweep every plugin's `package.json` for matching version. `npm ls vitest` to verify dedupe.
 - **Dependabot lockfile drift** — same shape as #123 keeps recurring. `@dependabot recreate` first, fall back to manual `npm install` heal if that fails. Don't push without verifying `npm run build`.
 - **OIDC trusted publishing** can't first-publish a brand-new package name. Bootstrap with classic token + OTP, add trusted publisher on npmjs.com, future CI publishes work cleanly.
+- **Datahub `init-db.sh` carried a latent gap pre-slice 1.A.5.** Core `ros_*` tables had to be bootstrapped via the script (was previously hand-rolled on CT110 only). Anyone deploying a fresh datahub now or after this slice gets the full schema automatically. If you ever see "relation ros_messages does not exist" on a brand-new node, this script is what should be running.
 
 ---
 
