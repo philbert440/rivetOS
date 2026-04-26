@@ -12,6 +12,7 @@
 import pg from 'pg'
 import { safeSlice } from './safe-slice.js'
 import { splitIntoChunks, meanPool } from './chunking.js'
+import { classifyUnembeddable } from './classify.js'
 
 // ---------------------------------------------------------------------------
 // Config from environment
@@ -220,11 +221,41 @@ async function processBatch(queueRows) {
     // Map content rows by id for lookup
     const contentMap = new Map(content.rows.map((r) => [r.id, r.content]))
 
+    // Pre-filter: classify any content that should never be embedded
+    // (base64 blobs, media markers). Mark source row + drop queue entry
+    // so retry budget isn't burned forever.
+    let preFiltered = 0
+    const preFilteredQueueIds = []
+    const eligibleRows = []
+    for (const r of rows) {
+      if (!contentMap.has(r.target_id)) {
+        // Content disappeared — drop the queue row
+        preFilteredQueueIds.push(r.id)
+        continue
+      }
+      const text = contentMap.get(r.target_id)
+      const reason = classifyUnembeddable(text)
+      if (reason) {
+        await markSourceUnembeddable(table, r.target_id, reason)
+        preFilteredQueueIds.push(r.id)
+        preFiltered++
+      } else {
+        eligibleRows.push(r)
+      }
+    }
+    if (preFilteredQueueIds.length > 0) {
+      await pool.query(`DELETE FROM ros_embedding_queue WHERE id = ANY($1::bigint[])`, [
+        preFilteredQueueIds,
+      ])
+    }
+    if (preFiltered > 0) {
+      console.log(`[EmbedWorker] Pre-filtered ${preFiltered} unembeddable row(s) from ${table}`)
+    }
+
     // Partition rows into normal and oversized
     const normalRows = []
     const oversizedRows = []
-    for (const r of rows) {
-      if (!contentMap.has(r.target_id)) continue
+    for (const r of eligibleRows) {
       const content = contentMap.get(r.target_id)
       if (content.length <= CHARS_PER_CHUNK) {
         normalRows.push(r)
@@ -467,17 +498,37 @@ async function markQueueFailure(queueId, errorMsg) {
 
 async function markSourceFailure(table, targetId, errorMsg) {
   try {
+    // Flip embed_status to 'failed' once we've hit MAX_FAILURES, so the row
+    // drops out of any future eligibility queries cleanly.
     await pool.query(
       `UPDATE ${table}
        SET embed_failures = COALESCE(embed_failures, 0) + 1,
-           embed_error = $1
-       WHERE id = $2`,
-      [errorMsg, targetId],
+           embed_error = $1,
+           embed_status = CASE
+             WHEN COALESCE(embed_failures, 0) + 1 >= $2 THEN 'failed'
+             ELSE embed_status
+           END
+       WHERE id = $3`,
+      [errorMsg, MAX_FAILURES, targetId],
     )
   } catch (err) {
     console.error(
       `[EmbedWorker] Failed to mark source failure ${table} ${targetId}: ${err.message}`,
     )
+  }
+}
+
+async function markSourceUnembeddable(table, targetId, reason) {
+  try {
+    await pool.query(
+      `UPDATE ${table}
+       SET embed_status = 'unembeddable',
+           embed_error = $1
+       WHERE id = $2`,
+      [`unembeddable: ${reason}`, targetId],
+    )
+  } catch (err) {
+    console.error(`[EmbedWorker] Failed to mark unembeddable ${table} ${targetId}: ${err.message}`)
   }
 }
 
@@ -500,12 +551,22 @@ function sleep(ms) {
 // Startup
 // ---------------------------------------------------------------------------
 
+async function ensureSchema() {
+  // Make sure embed_status exists. Idempotent — safe on every boot.
+  await pool.query(`
+    ALTER TABLE ros_messages ADD COLUMN IF NOT EXISTS embed_status TEXT;
+    ALTER TABLE ros_summaries ADD COLUMN IF NOT EXISTS embed_status TEXT;
+  `)
+}
+
 async function main() {
   console.log('[EmbedWorker] Starting...')
   console.log(`[EmbedWorker] Embed endpoint: ${EMBED_URL}`)
   console.log(
     `[EmbedWorker] Batch: ${BATCH_SIZE}, API batch: ${API_BATCH_SIZE}, chunk: ${CHARS_PER_CHUNK}, truncate: ${TRUNCATE_DIMS}`,
   )
+
+  await ensureSchema()
 
   // Start listener
   await startListener()

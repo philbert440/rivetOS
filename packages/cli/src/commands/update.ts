@@ -559,6 +559,18 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
           'npx nx run-many -t build --exclude container-agent,container-datahub,site',
           'nx build',
         )
+
+        // Heal /etc/hosts mesh block from mesh.json (non-fatal)
+        try {
+          const hostsScript = resolve(ROOT, 'infra/scripts/setup-mesh-hosts.sh')
+          execSync(`sudo ${hostsScript} /rivet-shared/mesh.json --quiet`, {
+            stdio: 'pipe',
+            timeout: 15_000,
+          })
+        } catch {
+          // Silent — drift in /etc/hosts shouldn't block local update
+        }
+
         if (localOpts.restart) {
           console.log('    Restarting service...')
           let restarted = false
@@ -760,6 +772,17 @@ async function gitUpdateNodeAsync(
 
     const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
 
+    // Heal /etc/hosts mesh block on infra nodes too (non-fatal)
+    try {
+      const hostsCmd =
+        sshUser === 'root'
+          ? '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
+          : 'sudo /opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
+      await sshExec(host, hostsCmd, `${tag} mesh-hosts`, 15_000, sshUser)
+    } catch (err: unknown) {
+      console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
+    }
+
     // Discover and restart worker services
     const workers = discoverRivetWorkers(host, sshUser)
     const restartedWorkers: string[] = []
@@ -843,6 +866,18 @@ async function gitUpdateNodeAsync(
   } catch (err: unknown) {
     console.error(`    ${tag} ❌ Build failed: ${(err as Error).message}`)
     return { success: false, failedStep: 'build', elapsedMs: Date.now() - start }
+  }
+
+  // Step 4.5: heal /etc/hosts mesh block from /rivet-shared/mesh.json
+  // Non-fatal — drift in /etc/hosts shouldn't block a deploy.
+  try {
+    const hostsCmd =
+      sshUser === 'root'
+        ? '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
+        : 'sudo /opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
+    await sshExec(host, hostsCmd, `${tag} mesh-hosts`, 15_000, sshUser)
+  } catch (err: unknown) {
+    console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
   }
 
   // Step 5: restart service
