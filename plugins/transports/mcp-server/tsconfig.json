@@ -8,6 +8,7 @@
   "include": ["src/**/*"],
   "references": [
     { "path": "../../../packages/types" },
-    { "path": "../../memory/postgres" }
+    { "path": "../../memory/postgres" },
+    { "path": "../../tools/web-search" }
   ]
 }
