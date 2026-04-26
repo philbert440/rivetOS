@@ -81,16 +81,69 @@ export interface EmbedderConfig {
 // ---------------------------------------------------------------------------
 
 /**
- * Add embed_failures and embed_error columns if they don't exist.
+ * Add embed_failures, embed_error, and embed_status columns if they don't exist.
  * Safe to call multiple times (IF NOT EXISTS).
+ *
+ * embed_status:
+ *   - NULL (default): row is eligible for embedding
+ *   - 'unembeddable': row was classified as never-embeddable (base64 blobs,
+ *     media markers, etc.) — permanently skipped
+ *   - 'failed': row hit maxFailures transient errors and is poisoned
  */
 export async function ensureEmbedderSchema(pool: pg.Pool): Promise<void> {
   await pool.query(`
     ALTER TABLE ros_messages ADD COLUMN IF NOT EXISTS embed_failures INTEGER DEFAULT 0;
     ALTER TABLE ros_messages ADD COLUMN IF NOT EXISTS embed_error TEXT;
+    ALTER TABLE ros_messages ADD COLUMN IF NOT EXISTS embed_status TEXT;
     ALTER TABLE ros_summaries ADD COLUMN IF NOT EXISTS embed_failures INTEGER DEFAULT 0;
     ALTER TABLE ros_summaries ADD COLUMN IF NOT EXISTS embed_error TEXT;
+    ALTER TABLE ros_summaries ADD COLUMN IF NOT EXISTS embed_status TEXT;
   `)
+}
+
+// ---------------------------------------------------------------------------
+// Unembeddable content detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Classify content that should never be sent to the embedding API.
+ *
+ * Returns a short reason string if the content is unembeddable, or null
+ * if it should be embedded normally.
+ *
+ * Rationale: media payloads (base64 PNG dumps, "[media attached: ...]"
+ * markers from WhatsApp/openclaw bridges) produce no semantically useful
+ * embedding and frequently cause the chunker to return all-null vectors,
+ * burning retry budget forever. Pre-filter them so they exit the queue
+ * cleanly rather than poisoning via repeated failure.
+ */
+export function classifyUnembeddable(content: string): string | null {
+  if (!content) return null
+
+  const trimmed = content.trimStart()
+
+  // WhatsApp / openclaw media markers
+  if (/^\[media attached:/i.test(trimmed)) return 'media-marker'
+  if (/^MEDIA:/i.test(trimmed)) return 'media-prefix'
+
+  // Base64 PNG/JPEG payloads — detect the magic-bytes header in base64 form.
+  // PNG: "iVBORw0KGgo" — JPEG: "/9j/" — generic data URLs: "data:image/"
+  if (/data:image\/[a-z]+;base64,/i.test(content)) return 'base64-data-url'
+  if (/iVBORw0KGgo[A-Za-z0-9+/=]{200,}/.test(content)) return 'base64-png'
+  if (/\/9j\/[A-Za-z0-9+/=]{500,}/.test(content)) return 'base64-jpeg'
+
+  // Long unbroken base64-ish runs with no whitespace are almost certainly
+  // a binary blob the embedder can't make sense of. 1500 chars of pure
+  // base64 alphabet with no spaces is a strong signal.
+  const longBase64Run = /[A-Za-z0-9+/]{1500,}={0,2}/
+  if (longBase64Run.test(content)) {
+    // Sanity check: ratio of base64-alphabet chars to total length
+    const sample = content.slice(0, 4000)
+    const b64Chars = (sample.match(/[A-Za-z0-9+/=]/g) ?? []).length
+    if (b64Chars / sample.length > 0.95) return 'base64-blob'
+  }
+
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -301,13 +354,15 @@ export class BackgroundEmbedder {
    * Returns the number of successfully embedded rows.
    */
   private async embedTable(table: string): Promise<number> {
-    // Fetch rows that need embedding, excluding poison rows
+    // Fetch rows that need embedding, excluding poisoned and unembeddable rows
     const result = await this.pool.query<EmbeddableRow>(
       `SELECT id, content FROM ${table}
        WHERE embedding IS NULL
          AND content IS NOT NULL
          AND LENGTH(content) > 0
          AND COALESCE(embed_failures, 0) < $1
+         AND embed_status IS DISTINCT FROM 'unembeddable'
+         AND embed_status IS DISTINCT FROM 'failed'
        ORDER BY created_at DESC
        LIMIT $2`,
       [this.maxFailures, this.batchSize],
@@ -315,11 +370,32 @@ export class BackgroundEmbedder {
 
     if (result.rows.length === 0) return 0
 
+    // Pre-filter: classify any content that should never be embedded
+    // (base64 blobs, media markers). Mark as unembeddable so they exit
+    // the queue immediately instead of burning retry budget.
+    const eligible: EmbeddableRow[] = []
+    let preFiltered = 0
+    for (const row of result.rows) {
+      const reason = classifyUnembeddable(row.content)
+      if (reason) {
+        await this.markUnembeddable(table, row.id, reason)
+        preFiltered++
+      } else {
+        eligible.push(row)
+      }
+    }
+    if (preFiltered > 0) {
+      console.log(
+        `[Embedder] Pre-filtered ${String(preFiltered)} unembeddable row(s) from ${table}`,
+      )
+    }
+    if (eligible.length === 0) return 0
+
     // Partition by size: rows that fit in a single API call vs rows that need
     // chunk + mean-pool. Keeps the fast path fast for the common case.
     const normalRows: EmbeddableRow[] = []
     const oversizedRows: EmbeddableRow[] = []
-    for (const row of result.rows) {
+    for (const row of eligible) {
       if (row.content.length <= CHARS_PER_CHUNK) {
         normalRows.push(row)
       } else {
@@ -491,21 +567,46 @@ export class BackgroundEmbedder {
 
   /**
    * Increment embed_failures and store the error message.
-   * When failures reach maxFailures, the row is effectively poisoned
-   * and will be excluded from future cycles.
+   * When failures reach maxFailures, embed_status is flipped to 'failed'
+   * so the row drops out of the eligible queue cleanly.
    */
   private async markFailure(table: string, id: string, errorMsg: string): Promise<void> {
     try {
       await this.pool.query(
         `UPDATE ${table}
          SET embed_failures = COALESCE(embed_failures, 0) + 1,
-             embed_error = $1
-         WHERE id = $2`,
-        [errorMsg, id],
+             embed_error = $1,
+             embed_status = CASE
+               WHEN COALESCE(embed_failures, 0) + 1 >= $2 THEN 'failed'
+               ELSE embed_status
+             END
+         WHERE id = $3`,
+        [errorMsg, this.maxFailures, id],
       )
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error)
       console.error(`[Embedder] Failed to mark failure for ${table} ${id}: ${msg}`)
+    }
+  }
+
+  /**
+   * Permanently exclude a row from the embedding queue. Used by the
+   * pre-filter for content that we know cannot produce a useful vector
+   * (base64 blobs, media markers).
+   */
+  private async markUnembeddable(table: string, id: string, reason: string): Promise<void> {
+    try {
+      await this.pool.query(
+        `UPDATE ${table}
+         SET embed_status = 'unembeddable',
+             embed_error = $1
+         WHERE id = $2`,
+        [`unembeddable: ${reason}`, id],
+      )
+      this.metrics.totalSkipped++
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error(`[Embedder] Failed to mark unembeddable for ${table} ${id}: ${msg}`)
     }
   }
 
@@ -519,10 +620,15 @@ export class BackgroundEmbedder {
         SELECT
           (SELECT COUNT(*) FROM ros_messages
            WHERE embedding IS NULL AND content IS NOT NULL
-             AND LENGTH(content) > 0 AND COALESCE(embed_failures, 0) < ${String(this.maxFailures)}) AS msg_queue,
+             AND LENGTH(content) > 0
+             AND COALESCE(embed_failures, 0) < ${String(this.maxFailures)}
+             AND embed_status IS DISTINCT FROM 'unembeddable'
+             AND embed_status IS DISTINCT FROM 'failed') AS msg_queue,
           (SELECT COUNT(*) FROM ros_summaries
            WHERE embedding IS NULL AND content IS NOT NULL
-             AND COALESCE(embed_failures, 0) < ${String(this.maxFailures)}) AS sum_queue
+             AND COALESCE(embed_failures, 0) < ${String(this.maxFailures)}
+             AND embed_status IS DISTINCT FROM 'unembeddable'
+             AND embed_status IS DISTINCT FROM 'failed') AS sum_queue
       `)
       this.metrics.queueDepth = {
         messages: Number(result.rows[0].msg_queue),

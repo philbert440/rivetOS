@@ -825,6 +825,27 @@ for PEER_IP in "${MESH_PEERS[@]}"; do
 done
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Phase 8.5: Mesh /etc/hosts block
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Write ctNNN.mesh / ctNNN entries to /etc/hosts using the shared mesh.json.
+# Idempotent — also gets re-run by `update --mesh` so drift heals on every
+# deploy. On a fresh CT, the new node may not be in mesh.json yet (it'll
+# self-register on first start), but populating peers is enough to bootstrap.
+
+log "Phase 8.5: Writing /etc/hosts mesh block..."
+
+if run_on_ct "test -r /rivet-shared/mesh.json && test -x /opt/rivetos/infra/scripts/setup-mesh-hosts.sh" 2>/dev/null; then
+    if run_on_ct "/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json" 2>&1; then
+        log "  /etc/hosts mesh block updated"
+    else
+        warn "  /etc/hosts mesh block update failed — non-fatal, will retry on next update --mesh"
+    fi
+else
+    warn "  Skipping /etc/hosts mesh block: mesh.json or setup-mesh-hosts.sh not present"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Phase 9: Update secrets store
 # ──────────────────────────────────────────────────────────────────────────────
 
