@@ -53,6 +53,10 @@ interface UpdateOptions {
   mesh: boolean
   bareMetal: boolean
   sshUser: string
+  /** Use npm install -g @rivetos/cli@<channel> instead of git pull */
+  npm: boolean
+  /** npm dist-tag or version specifier — defaults to "beta" */
+  channel: string
 }
 
 function parseArgs(): UpdateOptions {
@@ -63,6 +67,8 @@ function parseArgs(): UpdateOptions {
     mesh: false,
     bareMetal: false,
     sshUser: 'rivet',
+    npm: false,
+    channel: 'beta',
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -79,6 +85,11 @@ function parseArgs(): UpdateOptions {
       opts.bareMetal = true
     } else if (arg === '--ssh-user' && args[i + 1]) {
       opts.sshUser = args[++i]
+    } else if (arg === '--npm') {
+      opts.npm = true
+    } else if (arg === '--channel' && args[i + 1]) {
+      opts.channel = args[++i]
+      opts.npm = true
     } else if (arg === '--help' || arg === '-h') {
       showHelp()
       process.exit(0)
@@ -94,29 +105,41 @@ function parseArgs(): UpdateOptions {
 
 function showHelp(): void {
   console.log(`
-  rivetos update — Update RivetOS from source
+  rivetos update — Update RivetOS
 
   Usage:
     rivetos update [options]
 
   Options:
-    --version <tag>    Update to a specific version/tag
-    --no-restart       Pull and rebuild only, don't restart
-    --prebuilt         Pull pre-built images from GHCR instead of building
+    --version <tag>    Update to a specific git tag (git mode only)
+    --no-restart       Pull/install only, don't restart
+    --prebuilt         Pull pre-built images from GHCR instead of building (docker)
     --mesh             Rolling update across all agents
     --bare-metal       Force bare-metal mode (skip all Docker logic)
+    --npm              Use npm install -g @rivetos/cli@<channel> instead of git pull
+    --channel <tag>    npm dist-tag or version (default: beta) — implies --npm
+    --ssh-user <user>  SSH user for remote nodes (default: rivet)
 
-  What it does:
-    1. git pull (or checkout specific version)
-    2. npm install
-    3. Rebuild container images (if containerized)
-    4. Restart services
-    5. Run post-update hooks (migrations, etc.)
+  Modes:
+
+    git (default)      git pull + npm ci + nx build + systemctl restart
+                       Requires source checkout at /opt/rivetos.
+
+    npm                npm install -g @rivetos/cli@<channel> + systemctl restart
+                       No source checkout needed. Picks up published packages
+                       from the npm registry. After cutover this will become
+                       the default.
+
+  Examples:
+
+    rivetos update --mesh                       # git mode, current default
+    rivetos update --mesh --npm                 # npm mode, latest beta
+    rivetos update --mesh --channel latest      # npm mode, stable tag
+    rivetos update --mesh --channel 0.4.0-beta.2  # pin a specific version
 
   SSH notes:
     Default SSH user is 'rivet'. Falls back to 'root' automatically if rivet
     auth fails (warns that the node hasn't been migrated yet).
-    Override with --ssh-user <user>.
   `)
 }
 
@@ -446,10 +469,10 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   console.log('')
 
   const localOpts = { ...opts, mesh: false }
-
-  // Step 0: Pull latest code locally first
   const gitDir = exec('git rev-parse --git-dir', { quiet: true })
-  if (gitDir) {
+
+  // Step 0: Pull latest code locally first (git mode only)
+  if (!opts.npm && gitDir) {
     try {
       console.log('  Pulling latest code locally...')
       ensureMainBranchSafe(localOpts.version)
@@ -462,6 +485,11 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     }
   }
 
+  if (opts.npm) {
+    console.log(`  Mode: npm install -g @rivetos/cli@${opts.channel}`)
+    console.log('')
+  }
+
   // Step 1: Update ALL remote nodes in parallel
   const remoteNodes = nodes.filter((n) => !isLocalAddress(n.host))
   console.log(`  Updating ${String(remoteNodes.length)} remote node(s) in parallel...`)
@@ -470,6 +498,14 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   const results = await Promise.all(
     remoteNodes.map((node) => {
       const isAgent = !node.role || node.role === 'agent'
+      if (opts.npm) {
+        // npm mode: agents take the npm path, infrastructure nodes still use
+        // git pull for now (their workers — embedder, compactor — aren't yet
+        // packaged for npm install). Migrate them in a follow-up.
+        return isAgent
+          ? npmUpdateNodeAsync(node.host, node.name, localOpts, true)
+          : gitUpdateNodeAsync(node.host, node.name, localOpts, false)
+      }
       return gitUpdateNodeAsync(node.host, node.name, localOpts, isAgent)
     }),
   )
@@ -536,6 +572,61 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   // Step 4: Update local node last — restart kills the process
   console.log('  ── Updating local node (this will restart the process) ──')
   console.log('')
+
+  if (opts.npm) {
+    // npm install -g locally + restart
+    try {
+      console.log(`    npm install -g @rivetos/cli@${opts.channel}...`)
+      const installCmd = `npm install -g @rivetos/cli@${opts.channel} --no-audit --no-fund`
+      try {
+        execSync(installCmd, { stdio: 'inherit', timeout: 300_000 })
+      } catch {
+        execSync(`sudo ${installCmd}`, { stdio: 'inherit', timeout: 300_000 })
+      }
+
+      // Rewrite systemd ExecStart (idempotent — only if it still points at npx tsx)
+      try {
+        const rivetosBin = execSync('which rivetos 2>/dev/null || true', {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim()
+        if (rivetosBin) {
+          execSync(
+            `sudo sh -c "if grep -q '^ExecStart=.*npx tsx' /etc/systemd/system/rivetos.service 2>/dev/null; then ` +
+              `sed -i 's|^ExecStart=.*|ExecStart=${rivetosBin} start --config %h/.rivetos/config.yaml|' /etc/systemd/system/rivetos.service && ` +
+              `systemctl daemon-reload; fi"`,
+            { stdio: 'pipe', timeout: 15_000 },
+          )
+        }
+      } catch {
+        // non-fatal
+      }
+
+      if (localOpts.restart) {
+        console.log('    Restarting service...')
+        let restarted = false
+        for (const cmd of ['systemctl restart rivetos', 'sudo systemctl restart rivetos']) {
+          try {
+            execSync(cmd, { encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'] })
+            restarted = true
+            break
+          } catch {
+            // try next
+          }
+        }
+        if (!restarted) {
+          console.log(
+            '    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
+          )
+        }
+      }
+      console.log('  ✅ Local node updated')
+    } catch (err: unknown) {
+      console.error(`  ❌ Local node update failed: ${(err as Error).message}`)
+    }
+    console.log('')
+    return
+  }
 
   if (gitDir) {
     try {
@@ -898,6 +989,105 @@ async function gitUpdateNodeAsync(
   const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
   console.log(`    ${tag} ✅ Done (${commit || 'unknown'})`)
   return { success: true, commit: commit || undefined, elapsedMs: Date.now() - start }
+}
+
+/**
+ * Update a remote node via `npm install -g @rivetos/cli@<channel>` + restart.
+ * No source checkout, no build chain, no git pull. The node consumes whatever
+ * was published to the npm registry.
+ *
+ * Steps:
+ *   1. SSH connectivity check
+ *   2. npm install -g @rivetos/cli@<channel> (with sudo fallback for global prefix)
+ *   3. Restart systemd unit
+ *   4. Capture installed version for the summary
+ */
+async function npmUpdateNodeAsync(
+  host: string,
+  nodeName: string,
+  opts: UpdateOptions,
+  isAgent: boolean = true,
+): Promise<NodeUpdateResult> {
+  const tag = `[${nodeName}]`
+  const start = Date.now()
+
+  // Step 1: SSH connectivity check
+  const sshUser = resolveSshUser(host, opts.sshUser, tag)
+  if (!sshUser) {
+    console.error(
+      `    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${opts.sshUser} or root`,
+    )
+    return { success: false, failedStep: 'ssh', elapsedMs: Date.now() - start }
+  }
+
+  // Step 2: npm install -g @rivetos/cli@<channel>
+  // Try as the SSH user first; if it fails (likely a global prefix owned by
+  // another user), fall back to sudo.
+  const channelSpec = `@rivetos/cli@${opts.channel}`
+  const installCmd = `npm install -g ${channelSpec} --no-audit --no-fund`
+  try {
+    console.log(`    ${tag} npm install -g ${channelSpec}...`)
+    try {
+      await sshExec(host, installCmd, `${tag} npm install -g`, 300_000, sshUser)
+    } catch {
+      // Fall back to sudo
+      const sudoCmd = sshUser === 'root' ? installCmd : `sudo ${installCmd}`
+      await sshExec(host, sudoCmd, `${tag} npm install -g (sudo)`, 300_000, sshUser)
+    }
+  } catch (err: unknown) {
+    console.error(`    ${tag} ❌ npm install -g failed: ${(err as Error).message}`)
+    return { success: false, failedStep: 'npm', elapsedMs: Date.now() - start }
+  }
+
+  // Step 3: rewrite systemd unit ExecStart to call the global `rivetos` bin.
+  // Idempotent — only rewrites if the current ExecStart still references
+  // tsx + /opt/rivetos. Skipped for non-agent (infra-only) nodes.
+  if (isAgent) {
+    try {
+      const sudoPrefix = sshUser === 'root' ? '' : 'sudo '
+      // Find the global rivetos binary location
+      const rivetosBin = sshExecQuiet(host, 'which rivetos 2>/dev/null || true', sshUser).trim()
+      if (rivetosBin) {
+        // Rewrite ExecStart in /etc/systemd/system/rivetos.service if it still
+        // points at the old npx tsx path. Use a simple sed in place.
+        const rewriteCmd =
+          `${sudoPrefix}sh -c "if grep -q '^ExecStart=.*npx tsx' /etc/systemd/system/rivetos.service 2>/dev/null; then ` +
+          `sed -i 's|^ExecStart=.*|ExecStart=${rivetosBin} start --config %h/.rivetos/config.yaml|' /etc/systemd/system/rivetos.service && ` +
+          `systemctl daemon-reload && echo rewrote; ` +
+          `else echo skipped; fi"`
+        const result = sshExecQuiet(host, rewriteCmd, sshUser).trim()
+        if (result.includes('rewrote')) {
+          console.log(`    ${tag} Rewrote systemd ExecStart → ${rivetosBin}`)
+        }
+      } else {
+        console.log(`    ${tag} ⚠️  No rivetos bin found in PATH after install — restart may fail`)
+      }
+    } catch (err: unknown) {
+      console.log(`    ${tag} ⚠️  systemd unit rewrite skipped: ${(err as Error).message}`)
+    }
+  }
+
+  // Step 4: restart systemd unit (skip on non-agent infrastructure nodes —
+  // they don't run rivetos itself, only worker services which keep their
+  // own deploy path until we migrate them too).
+  if (isAgent && opts.restart) {
+    try {
+      console.log(`    ${tag} Restarting service...`)
+      const restartCmd =
+        sshUser === 'root' ? 'systemctl restart rivetos' : 'sudo systemctl restart rivetos'
+      await sshExec(host, restartCmd, `${tag} restart`, 30_000, sshUser)
+    } catch (err: unknown) {
+      console.error(`    ${tag} ❌ Restart failed: ${(err as Error).message}`)
+      return { success: false, failedStep: 'restart', elapsedMs: Date.now() - start }
+    }
+  }
+
+  // Step 5: capture installed version (rivetos version → "RivetOS v0.4.0-beta.2")
+  const versionOutput = sshExecQuiet(host, 'rivetos version 2>/dev/null || echo unknown', sshUser)
+  const versionMatch = versionOutput.match(/v(\S+)/)
+  const installedVersion = versionMatch ? versionMatch[1] : 'unknown'
+  console.log(`    ${tag} ✅ Done (${installedVersion})`)
+  return { success: true, commit: installedVersion, elapsedMs: Date.now() - start }
 }
 
 /**
