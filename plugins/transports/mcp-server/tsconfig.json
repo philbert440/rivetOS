@@ -6,5 +6,8 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../../../packages/types" }]
+  "references": [
+    { "path": "../../../packages/types" },
+    { "path": "../../memory/postgres" }
+  ]
 }

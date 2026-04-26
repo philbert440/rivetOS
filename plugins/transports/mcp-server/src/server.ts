@@ -22,7 +22,7 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 
 const SERVER_NAME = 'rivetos-mcp-server'
-const SERVER_VERSION = '0.4.0-beta.2'
+const SERVER_VERSION = '0.4.0-beta.3'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -267,7 +267,7 @@ function buildMcpServer(tools: ToolRegistration[]): McpServer {
 // Default smoke-test tool — replaced by real tools in slice 3.
 // ---------------------------------------------------------------------------
 
-function defaultEchoTool(): ToolRegistration {
+export function defaultEchoTool(): ToolRegistration {
   return {
     name: 'rivetos.echo',
     description:
