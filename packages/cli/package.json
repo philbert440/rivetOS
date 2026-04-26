@@ -14,8 +14,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/",
     "test": "echo \"no tests yet\"",
-    "clean": "rm -rf dist",
-    "prepublishOnly": "npm run build"
+    "clean": "rm -rf dist workspace-templates",
+    "bundle-templates": "node scripts/bundle-templates.mjs",
+    "prepublishOnly": "npm run build && npm run bundle-templates"
   },
   "dependencies": {
     "@clack/prompts": "^1.2.0",
@@ -40,6 +41,7 @@
   },
   "files": [
     "dist",
+    "workspace-templates",
     "README.md",
     "LICENSE"
   ],
