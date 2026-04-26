@@ -110,7 +110,7 @@ function buildProviderArgs(
         cwd: providerConfig.cwd,
         timeoutMs: providerConfig.timeout_ms,
         id,
-        name: (providerConfig.name as string | undefined) ?? id,
+        name: providerConfig.name ?? id,
         ...contextFields,
       }
     case 'google':
@@ -156,7 +156,7 @@ function buildProviderArgs(
         mirostatEta: providerConfig.mirostat_eta,
         seed: providerConfig.seed,
         id,
-        name: (providerConfig.name as string | undefined) ?? id,
+        name: providerConfig.name ?? id,
         ...contextFields,
       }
     case 'openai-compat':
@@ -175,7 +175,7 @@ function buildProviderArgs(
         defaultToolChoice: providerConfig.default_tool_choice,
         verifyModelOnInit: providerConfig.verify_model_on_init,
         id,
-        name: (providerConfig.name as string | undefined) ?? id,
+        name: providerConfig.name ?? id,
         ...contextFields,
       }
     default:

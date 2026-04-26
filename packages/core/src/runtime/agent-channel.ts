@@ -247,7 +247,7 @@ export class AgentChannelServer {
       res.writeHead(404, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Not found' }))
     } catch (err: unknown) {
-      log.error('Agent channel request failed', err as Error)
+      log.error('Agent channel request failed', err)
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Internal error' }))
     }

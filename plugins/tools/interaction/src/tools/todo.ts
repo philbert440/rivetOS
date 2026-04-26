@@ -85,7 +85,7 @@ export function createTodoTool(): Tool {
             if (newText) task.text = newText
           }
           if ((args.status as string | undefined) !== undefined) {
-            const status = String(args.status as string | undefined) as TaskStatus
+            const status = String(args.status) as TaskStatus
             if (['pending', 'in_progress', 'done'].includes(status)) {
               task.status = status
             } else {
