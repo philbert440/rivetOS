@@ -10,17 +10,18 @@
       "inputs": [
         "{projectRoot}/Dockerfile",
         "{projectRoot}/init-db.sh",
-        "{projectRoot}/init-shared.sh"
+        "{projectRoot}/init-shared.sh",
+        "{workspaceRoot}/deploy/schema/migrations/*.sql"
       ],
       "outputs": [],
       "cache": false,
       "options": {
         "cwd": "{workspaceRoot}",
-        "command": "docker build -t rivetos-datahub:latest -t rivetos-datahub:$(git rev-parse --short HEAD) infra/containers/datahub"
+        "command": "docker build -t rivetos-datahub:latest -t rivetos-datahub:$(git rev-parse --short HEAD) -f infra/containers/datahub/Dockerfile ."
       },
       "configurations": {
         "no-cache": {
-          "command": "docker build --no-cache -t rivetos-datahub:latest -t rivetos-datahub:$(git rev-parse --short HEAD) infra/containers/datahub"
+          "command": "docker build --no-cache -t rivetos-datahub:latest -t rivetos-datahub:$(git rev-parse --short HEAD) -f infra/containers/datahub/Dockerfile ."
         }
       }
     }
