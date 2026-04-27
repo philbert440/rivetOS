@@ -34,3 +34,6 @@ export type { MemorySearchToolOptions, MemorySearchToolHandle } from './tools/me
 
 export { createWebTools, internetSearchInputSchema, webFetchInputSchema } from './tools/web.js'
 export type { WebToolsOptions, WebToolsHandle } from './tools/web.js'
+
+export { createSkillTools, skillListInputSchema, skillManageInputSchema } from './tools/skills.js'
+export type { SkillToolsOptions, SkillToolsHandle } from './tools/skills.js'
