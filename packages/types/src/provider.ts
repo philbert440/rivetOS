@@ -3,7 +3,7 @@
  */
 
 import type { Message, ToolCall } from './message.js'
-import type { ToolDefinition } from './tool.js'
+import type { Tool, ToolDefinition } from './tool.js'
 
 // ---------------------------------------------------------------------------
 // Thinking / Reasoning Control
@@ -23,6 +23,29 @@ export interface ChatOptions {
   /** Stable conversation identifier for prompt caching (xAI prompt_cache_key, etc.).
    *  Providers that support prompt caching use this for consistent cache hits. */
   conversationId?: string
+  /**
+   * Executable RivetOS tools for this turn — same set the agent loop dispatches
+   * locally, including their `execute` callbacks. Optional and intentionally
+   * separate from `tools` (which carries only definitions for the wire).
+   *
+   * Used by providers that host an out-of-process tool runner (claude-cli MCP
+   * bridge): the provider stands up an embedded MCP server, registers these
+   * tools dynamically, and lets the external client (e.g. claude-cli) call
+   * them — the `execute` closure runs in the agent process so runtime context
+   * (DelegationEngine, channel handle, conversation buffer) is automatically
+   * available, no separate adapter required.
+   *
+   * Most providers ignore this field; the LLM-only path (Anthropic/xAI/...)
+   * relies on `tools` (definitions) and the loop's own dispatcher.
+   */
+  executableTools?: Tool[]
+  /**
+   * Logical agent identity for this turn. Used by providers that need to
+   * scope per-spawn auth artifacts or session metadata back to a specific
+   * agent (e.g. claude-cli bridge labels its embedded MCP socket / config).
+   * Mirrors `AgentLoopConfig.agentId`.
+   */
+  agentId?: string
 }
 
 // ---------------------------------------------------------------------------

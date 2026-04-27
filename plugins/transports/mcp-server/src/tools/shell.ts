@@ -1,5 +1,5 @@
 /**
- * Shell utility tool — `rivetos.shell`.
+ * Shell utility tool — `shell`.
  *
  * Wraps the in-process `ShellTool` from `@rivetos/tool-shell` so external MCP
  * clients can execute shell commands through the same surface a local agent
@@ -25,7 +25,7 @@ import type { ToolRegistration } from '../server.js'
 import { adaptRivetTool } from './adapt.js'
 
 export interface ShellToolOptions extends ShellToolConfig {
-  /** Override the wire-name prefix. Default `rivetos.`. */
+  /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */
   prefix?: string
 }
 
@@ -39,11 +39,11 @@ export interface ShellToolHandle {
 }
 
 /**
- * Build the shell tool surface — `rivetos.shell` — wrapping the in-process
+ * Build the shell tool surface — `shell` — wrapping the in-process
  * implementation from `@rivetos/tool-shell`.
  */
 export function createShellTool(options: ShellToolOptions = {}): ShellToolHandle {
-  const { prefix = 'rivetos.', ...shellConfig } = options
+  const { prefix = '', ...shellConfig } = options
   const shellTool = new ShellTool(shellConfig)
 
   const tools: ToolRegistration[] = [

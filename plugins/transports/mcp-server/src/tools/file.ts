@@ -1,6 +1,6 @@
 /**
- * File utility tools — `rivetos.file_read`, `rivetos.file_write`,
- * `rivetos.file_edit`.
+ * File utility tools — `file_read`, `file_write`,
+ * `file_edit`.
  *
  * Wraps the in-process tools from `@rivetos/tool-file` so external MCP clients
  * can read, write, and edit files through the same surface a local agent
@@ -27,7 +27,7 @@ import type { ToolRegistration } from '../server.js'
 import { adaptRivetTool } from './adapt.js'
 
 export interface FileToolsOptions extends FileReadConfig {
-  /** Override the wire-name prefix. Default `rivetos.`. */
+  /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */
   prefix?: string
 }
 
@@ -43,7 +43,7 @@ export interface FileToolsHandle {
  * wrapping the in-process implementations from `@rivetos/tool-file`.
  */
 export function createFileTools(options: FileToolsOptions = {}): FileToolsHandle {
-  const { prefix = 'rivetos.', ...readConfig } = options
+  const { prefix = '', ...readConfig } = options
 
   const tools: ToolRegistration[] = [
     adaptRivetTool(createFileReadTool(readConfig), fileReadInputSchema, {

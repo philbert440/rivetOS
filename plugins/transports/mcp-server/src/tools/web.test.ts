@@ -57,14 +57,14 @@ describe('web data-plane (Phase 1.A slice 3)', () => {
   it('lists both web tools alongside echo', async () => {
     const tools = await client.listTools()
     const names = tools.tools.map((t) => t.name)
-    expect(names).toContain('rivetos.internet_search')
-    expect(names).toContain('rivetos.web_fetch')
-    expect(names).toContain('rivetos.echo')
+    expect(names).toContain('internet_search')
+    expect(names).toContain('web_fetch')
+    expect(names).toContain('echo')
   })
 
   it('web_fetch returns a text envelope for an invalid URL', async () => {
     const result = await client.callTool({
-      name: 'rivetos.web_fetch',
+      name: 'web_fetch',
       arguments: { url: 'http://127.0.0.1:1/nope', max_chars: 1000 },
     })
 
@@ -80,7 +80,7 @@ describe('web data-plane (Phase 1.A slice 3)', () => {
     'internet_search returns a text envelope for a real query',
     async () => {
       const result = await client.callTool({
-        name: 'rivetos.internet_search',
+        name: 'internet_search',
         arguments: { query: 'rivetos github', count: 3 },
       })
 

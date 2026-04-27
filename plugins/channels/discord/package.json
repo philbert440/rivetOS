@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/channel-discord",
-  "version": "0.4.0-beta.5",
+  "version": "0.4.0-beta.6",
   "description": "Discord channel — discord.js v14, channel bindings, threads, embeds",
   "license": "MIT",
   "main": "dist/index.js",
@@ -14,7 +14,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/types": "0.4.0-beta.5",
+    "@rivetos/types": "0.4.0-beta.6",
     "discord.js": "^14.26.2"
   },
   "rivetos": {

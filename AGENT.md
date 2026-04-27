@@ -63,8 +63,9 @@ PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should 
 | 1.A.6 | Skill tools: `skill_list`, `skill_manage` (workspace + system dirs both writable) | ✅ |
 | 1.A.7' | Bearer-token auth (TCP) + unix-socket binding + `rivetos.session.attach` handshake | ✅ |
 | 1.B'.1 | Utility surface: `shell`, `file_read`/`write`/`edit`, `search_glob`/`grep` (opt-in via env, write-surface gating) | ✅ |
-| 1.B'.2 | Runtime-context tools: `delegate_task`, `subagent_*`, `ask_user`, `todo`, `compact_context` (needs in-process embedding of MCP server inside agent runtime) | ⏳ |
-| 1.C | Claude-CLI MCP bridge + native-vs-MCP allow-list, docker-compose validation | ⏳ |
+| **Rescope** | `todo` and `ask_user` dropped (Claude Code natives); `subagent_*` and `compact_context` deferred indefinitely (Claude Code natives `Task` + `/compact`). `delegate_task` rolled into 1.C via dynamic adapter. | ✅ |
+| 1.C | Claude-CLI MCP bridge: per-spawn embedded MCP server, dynamic tool wrapping via `adaptRivetToolDynamic`, ephemeral 127.0.0.1 + bearer, `--mcp-config` synthesis, `delegate_task` + every other runtime tool exposed. | ✅ |
+| 1.D / canary | Live end-to-end: deploy to CT canary `opus-cli-canary`, exercise from Discord, soak ~24h before flipping live `rivet-opus`. | ⏳ |
 
 **Note (Phase 1 rescope):** With Phil's "MCP server just for claude-cli for now"
 direction, mTLS / `rivet-ca` / runtime-RPC / inverse-registration are out of
@@ -183,6 +184,60 @@ direct in-process function calls (no separate process, no mesh wire). See
   startup finds an existing file at the path it removes it only if it's a
   socket (won't blow away an arbitrary file by mistake — non-socket
   presence is treated as an error).
+
+### Decisions made in slice 1.C (claude-cli bridge — embedded MCP)
+- **Per-spawn embedded MCP server.** Each `chatStream()` call brings up a
+  fresh `RivetMcpServer` on `127.0.0.1:0` (ephemeral port, OS-picked), tears
+  it down in `finally`. ~20ms overhead per turn; no shared-server lifecycle,
+  no auth-rotation problem, no orphan sockets. Bridge file lives in
+  `provider-claude-cli/src/mcp-bridge.ts`.
+- **HTTP transport, not unix socket.** claude-cli's MCP config schema only
+  supports `stdio | http | sse`. No native unix-socket transport. So we use
+  loopback HTTP + 32-byte hex bearer token in the `Authorization` header.
+  `127.0.0.1` is the security boundary; bearer is defense-in-depth on a
+  process boundary.
+- **Dynamic tool wrapping via `adaptRivetToolDynamic` + new
+  `jsonSchemaToZodShape` translator.** Instead of hand-mapping a zod schema
+  per tool, the bridge derives schemas from each `Tool.parameters` JSON
+  schema at bring-up time. Covers string / number / integer / boolean /
+  null / array / object / enum / `description`-passthrough; falls back to
+  `z.unknown()` for novel shapes (the in-process tool's own validation
+  catches bad inputs). This means **every tool the host AgentLoop has —
+  including `delegate_task`, `subagent_*`, `compact_context`, the lot — is
+  reachable from claude-cli with zero per-tool wiring.** The standalone CLI
+  keeps its hand-mapped schemas for better wire descriptions; the dynamic
+  path is bridge-only.
+- **`ChatOptions.executableTools: Tool[]` added to `@rivetos/types`.** The
+  AgentLoop now passes its live tool array through `ChatOptions` so
+  out-of-process-runner providers (claude-cli today; SSH-bridged providers
+  in a future slice) can register them on an embedded MCP server. LLM-only
+  providers ignore the field.
+- **`ChatOptions.agentId` added.** Mirror of `AgentLoopConfig.agentId` —
+  lets the bridge label its tempdir (`rivetos-mcp-<agent>-XXXX`) so
+  multi-agent hosts can correlate spawns to agents in logs.
+- **Soft-fail on bridge bring-up.** If `embedMcpServerForTurn` throws, the
+  provider logs to stderr and continues without the bridge — claude-cli
+  still has its native tools (Bash, Read, Edit, Grep, Glob, WebFetch,
+  WebSearch, Task, TodoWrite, Write), so the agent stays usable. Kill
+  switch: `RIVETOS_DISABLE_MCP_BRIDGE=1` skips bridge altogether.
+- **Tool name rename: dropped `rivetos.` prefix; `session.attach` →
+  `session_attach`.** claude-cli prefixes MCP tools as
+  `mcp__<server>__<name>`. With `rivetos` as the server name in the
+  synthesized `.mcp-config.json`, `mcp__rivetos__memory_search` is the
+  canonical form. The dot in `session.attach` would have rendered awkwardly
+  (`mcp__rivetos__session.attach`); underscore is cleaner. Default `prefix`
+  on every tool factory is now `''`; tests + descriptions updated. Pre-1.0,
+  no external consumers, low cost.
+- **`@rivetos/provider-claude-cli` flipped to ESM (`"type": "module"`).**
+  Required to import from `@rivetos/mcp-server` (which is ESM). Also added
+  `composite: true` to its tsconfig and project references for `mcp-server`.
+- **Live e2e canary deferred.** This slice ships the bridge, dynamic
+  adapter, and 8 specs (HTTP smoke, bearer-required, list/call round-trip,
+  enum schema, teardown, idempotency, kill-switch, soft-fail). Wiring
+  to a real `claude` binary on a real CT (Phase 1.D / canary) needs Phil
+  to drive — `claude login`, watch logs, decide when to flip live
+  `rivet-opus`. Tests don't shell out; they hit the embedded server with
+  the same MCP SDK client claude-cli would use.
 
 ### Decisions made in slice 6 (skill tools)
 - **Both workspace and system skill dirs are writable from MCP.** Phil's call:

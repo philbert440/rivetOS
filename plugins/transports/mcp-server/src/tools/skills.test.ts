@@ -79,13 +79,13 @@ describe('skill data-plane (Phase 1.A slice 6)', () => {
   it('lists both skill tools alongside echo', async () => {
     const tools = await client.listTools()
     const names = tools.tools.map((t) => t.name)
-    expect(names).toContain('rivetos.skill_list')
-    expect(names).toContain('rivetos.skill_manage')
-    expect(names).toContain('rivetos.echo')
+    expect(names).toContain('skill_list')
+    expect(names).toContain('skill_manage')
+    expect(names).toContain('echo')
   })
 
   it('skill_list reports the seeded skill', async () => {
-    const result = await client.callTool({ name: 'rivetos.skill_list', arguments: {} })
+    const result = await client.callTool({ name: 'skill_list', arguments: {} })
     expect(result.isError).not.toBe(true)
     const content = result.content as Array<{ type: string; text?: string }>
     expect(content[0]?.type).toBe('text')
@@ -95,7 +95,7 @@ describe('skill data-plane (Phase 1.A slice 6)', () => {
   it('skill_manage create + list round-trip (rediscovery wired)', async () => {
     const newName = 'mcp-test-created'
     const created = await client.callTool({
-      name: 'rivetos.skill_manage',
+      name: 'skill_manage',
       arguments: {
         action: 'create',
         name: newName,
@@ -107,7 +107,7 @@ describe('skill data-plane (Phase 1.A slice 6)', () => {
     expect(created.isError).not.toBe(true)
 
     // List should now include both seeded + created without manual rediscovery.
-    const listed = await client.callTool({ name: 'rivetos.skill_list', arguments: {} })
+    const listed = await client.callTool({ name: 'skill_list', arguments: {} })
     const text = (listed.content as Array<{ text?: string }>)[0]?.text ?? ''
     expect(text).toContain(SEED_SKILL_NAME)
     expect(text).toContain(newName)
@@ -115,7 +115,7 @@ describe('skill data-plane (Phase 1.A slice 6)', () => {
 
   it('skill_manage read returns the SKILL.md content', async () => {
     const result = await client.callTool({
-      name: 'rivetos.skill_manage',
+      name: 'skill_manage',
       arguments: { action: 'read', name: SEED_SKILL_NAME, level: 1 },
     })
     expect(result.isError).not.toBe(true)

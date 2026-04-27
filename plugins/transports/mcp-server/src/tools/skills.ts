@@ -1,5 +1,5 @@
 /**
- * Skill data-plane tools — `rivetos.skill_list`, `rivetos.skill_manage`.
+ * Skill data-plane tools — `skill_list`, `skill_manage`.
  *
  * Wraps the in-process tools exported by `@rivetos/core` so external MCP
  * clients can list and manage skills the same way local agents can. Both
@@ -31,7 +31,7 @@ export interface SkillToolsOptions {
   skillDirs?: string[]
   /** Optional embedding endpoint for dedup checks during `create`. */
   embedEndpoint?: string
-  /** Override the wire-name prefix. Default `rivetos.`. */
+  /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */
   prefix?: string
 }
 
@@ -51,7 +51,7 @@ export interface SkillToolsHandle {
  * fresh state.
  */
 export async function createSkillTools(options: SkillToolsOptions = {}): Promise<SkillToolsHandle> {
-  const prefix = options.prefix ?? 'rivetos.'
+  const prefix = options.prefix ?? ''
   const skillDirs = resolveSkillDirs(options.skillDirs)
 
   const manager = new SkillManagerImpl()

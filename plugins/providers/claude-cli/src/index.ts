@@ -10,9 +10,18 @@
  * The allowed pattern — what this provider does — is letting the CLI own auth,
  * keychain, session caching, and the wire protocol.
  *
- * Phase 1: hybrid tools mode. Claude's built-in tools (Bash/Read/Edit/Grep/…)
- * run inside the CLI process. RivetOS tools are not reachable here yet — that
- * is Phase 2 (MCP bridge).
+ * Phase 1.C: hybrid tools mode + embedded MCP bridge. Claude's built-in
+ * tools (Bash/Read/Edit/Grep/Glob/WebFetch/Task/...) keep their lane. On
+ * top of that, every chatStream() turn brings up a per-spawn MCP server
+ * exposing every executable RivetOS tool (memory_*, skill_*, web_fetch,
+ * delegate_task, ...) directly to claude-cli via `--mcp-config`. Because
+ * the MCP server is *embedded in this provider's process*, tool execute
+ * closures retain runtime context (DelegationEngine, channel handle,
+ * conversation buffer) without a separate adapter layer.
+ *
+ * See `./mcp-bridge.ts` for transport details. Set
+ * `RIVETOS_DISABLE_MCP_BRIDGE=1` to skip the bridge entirely (useful for
+ * smoke testing the bare CLI shellout).
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
@@ -27,6 +36,7 @@ import type {
   ThinkingLevel,
 } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
+import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -280,7 +290,11 @@ export class ClaudeCliProvider implements Provider {
   // Arg builder
   // -----------------------------------------------------------------------
 
-  private buildArgs(options: ChatOptions | undefined, systemText: string): string[] {
+  private buildArgs(
+    options: ChatOptions | undefined,
+    systemText: string,
+    mcpConfigPath?: string,
+  ): string[] {
     const args: string[] = [
       '-p',
       '--input-format',
@@ -310,6 +324,14 @@ export class ClaudeCliProvider implements Provider {
       args.push('--append-system-prompt', systemText)
     }
 
+    // Embedded MCP bridge — wire claude-cli at the per-spawn `.mcp-config.json`
+    // synthesized by `embedMcpServerForTurn`. Tools land in claude-cli's tool
+    // catalog as `mcp__rivetos__<name>` (rivetos = the server label in the
+    // config). Native Claude Code tools keep their lane.
+    if (mcpConfigPath) {
+      args.push('--mcp-config', mcpConfigPath)
+    }
+
     // Disable session persistence when we are not stitching turns together —
     // avoids polluting the user's ~/.claude/projects history with one-shot
     // server calls. We can opt into --session-id later for multi-turn.
@@ -333,7 +355,30 @@ export class ClaudeCliProvider implements Provider {
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     const { systemText, userPrompt } = renderConversationForCli(messages)
-    const args = this.buildArgs(options, systemText)
+
+    // Bring up the embedded MCP server BEFORE spawning claude. If this fails,
+    // we fall through to a no-MCP spawn so the provider stays usable as a
+    // pure shellout (claude still has its native tools). The kill switch
+    // RIVETOS_DISABLE_MCP_BRIDGE=1 also takes this path.
+    let bridge: EmbeddedMcpHandle | undefined
+    const tools = options?.executableTools
+    if (tools && tools.length > 0 && process.env.RIVETOS_DISABLE_MCP_BRIDGE !== '1') {
+      try {
+        bridge = await embedMcpServerForTurn({
+          tools,
+          agentId: options.agentId,
+        })
+      } catch (err: unknown) {
+        // Soft-fail: log and continue without the bridge.
+        // The CLI still works; claude-cli just won't see Rivet tools this turn.
+        const msg = err instanceof Error ? err.message : String(err)
+        process.stderr.write(
+          `[claude-cli] warning: MCP bridge bring-up failed (${msg}); continuing without it\n`,
+        )
+      }
+    }
+
+    const args = this.buildArgs(options, systemText, bridge?.configPath)
 
     let proc: ChildProcessWithoutNullStreams
     try {
@@ -343,6 +388,10 @@ export class ClaudeCliProvider implements Provider {
         stdio: ['pipe', 'pipe', 'pipe'],
       })
     } catch (err: unknown) {
+      // Bridge already up — clean it up before bubbling the error.
+      if (bridge) {
+        await bridge.close().catch(() => undefined)
+      }
       const msg = err instanceof Error ? err.message : String(err)
       throw new ProviderError(`Failed to spawn ${this.binary}: ${msg}`, 0, this.id, false)
     }
@@ -363,6 +412,21 @@ export class ClaudeCliProvider implements Provider {
     const timeout = setTimeout(() => {
       if (!proc.killed) proc.kill('SIGTERM')
     }, this.timeoutMs)
+
+    // Track whether we yielded `done` so the outer finally can avoid
+    // double-close issues. Bridge teardown happens regardless.
+    let bridgeClosed = false
+    const closeBridge = async (): Promise<void> => {
+      if (bridgeClosed) return
+      bridgeClosed = true
+      if (bridge) {
+        await bridge.close().catch((err: unknown) => {
+          process.stderr.write(
+            `[claude-cli] warning: MCP bridge teardown failed (${err instanceof Error ? err.message : String(err)})\n`,
+          )
+        })
+      }
+    }
 
     // --- collect stderr for error reporting ---
     let stderr = ''
@@ -462,6 +526,9 @@ export class ClaudeCliProvider implements Provider {
     } finally {
       clearTimeout(timeout)
       options?.signal?.removeEventListener('abort', onAbort)
+      // Close the embedded MCP server. Idempotent — safe regardless of exit
+      // path (success, error thrown from the loop, abort, timeout).
+      await closeBridge()
     }
 
     // Await process close to surface non-zero exits
