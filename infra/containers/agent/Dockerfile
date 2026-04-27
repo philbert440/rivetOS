@@ -26,17 +26,21 @@ COPY infra/ infra/
 
 # Install all dependencies (workspaces need full install to resolve correctly).
 #
-# We run with --ignore-scripts to suppress the root postinstall, then build
-# the workspace explicitly with --parallel=1.
-#
-# Why serial: the workspace uses TypeScript project references (`composite: true`
-# everywhere). nx's default parallel scheduler honours `dependsOn: ^build` for
-# tasks but interleaves stdout — in a cold container with no dist/ on disk and
-# no nx cache, downstream `tsc -b` invocations can fire before the upstream
-# project has finished writing `dist/index.d.ts` + `.tsbuildinfo`, producing
-# `TS6305: Output file ... has not been built from source file ...`.
-# Forcing serial execution sidesteps the race entirely. Costs ~30s vs. parallel
-# but yields a deterministic build. See PR fix/docker-build-serial.
+# Belt-and-suspenders: nuke any stale TypeScript incremental state that may
+# have leaked into the build context despite .dockerignore. `tsc -b` reads
+# *.tsbuildinfo and short-circuits emit if it thinks dist/ is up to date —
+# but dist/ is excluded from the context, so emit is skipped and downstream
+# builds fail TS6305 ("Output file ... has not been built from source file").
+# Wiping these in-image is cheap insurance against contributor environment drift.
+RUN find packages plugins apps services -name 'tsconfig.tsbuildinfo' -delete 2>/dev/null || true \
+ && find packages plugins apps services -name '.nx' -type d -exec rm -rf {} + 2>/dev/null || true
+
+# Skip the root postinstall (would run a parallel nx build) and build explicitly
+# with --parallel=1. The workspace uses TypeScript project references everywhere
+# (`composite: true`). nx's default parallel scheduler honours `dependsOn: ^build`
+# but interleaves work — in a cold container with no dist/ and no nx cache,
+# downstream `tsc -b` can fire before the upstream project has finished writing
+# `dist/index.d.ts`. Serial build sidesteps the race. Costs ~30s but deterministic.
 RUN npm ci --ignore-scripts \
  && npx nx run-many -t build --exclude container-agent,container-datahub,site --parallel=1 \
  && node scripts/link-cli.mjs

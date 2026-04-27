@@ -22,7 +22,7 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 
 const SERVER_NAME = 'rivetos-mcp-server'
-const SERVER_VERSION = '0.4.0-beta.4'
+const SERVER_VERSION = '0.4.0-beta.5'
 
 // ---------------------------------------------------------------------------
 // Public types

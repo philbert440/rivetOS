@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/channel-voice-discord",
-  "version": "0.4.0-beta.4",
+  "version": "0.4.0-beta.5",
   "description": "Discord voice channel — xAI Realtime API, auto-join, DAVE E2EE",
   "license": "MIT",
   "main": "dist/index.js",
@@ -14,7 +14,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/types": "0.4.0-beta.4",
+    "@rivetos/types": "0.4.0-beta.5",
     "@discordjs/voice": "^0.19.2",
     "mediaplex": "^1.0.0",
     "discord.js": "^14.26.2",

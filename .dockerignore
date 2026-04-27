@@ -4,7 +4,9 @@ node_modules/
 
 # Build outputs — rebuilt inside the container
 **/dist/
+**/*.tsbuildinfo
 .nx/
+**/.nx/
 
 # Git history
 .git/
