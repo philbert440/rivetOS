@@ -10,6 +10,9 @@
     { "path": "../../../packages/types" },
     { "path": "../../../packages/core" },
     { "path": "../../memory/postgres" },
+    { "path": "../../tools/file" },
+    { "path": "../../tools/search" },
+    { "path": "../../tools/shell" },
     { "path": "../../tools/web-search" }
   ]
 }

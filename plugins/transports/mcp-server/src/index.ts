@@ -44,3 +44,17 @@ export type {
   SessionAttachResult,
   CreateSessionAttachToolOptions,
 } from './tools/session-attach.js'
+
+export { createShellTool, shellInputSchema } from './tools/shell.js'
+export type { ShellToolOptions, ShellToolHandle } from './tools/shell.js'
+
+export {
+  createFileTools,
+  fileReadInputSchema,
+  fileWriteInputSchema,
+  fileEditInputSchema,
+} from './tools/file.js'
+export type { FileToolsOptions, FileToolsHandle } from './tools/file.js'
+
+export { createSearchTools, searchGlobInputSchema, searchGrepInputSchema } from './tools/search.js'
+export type { SearchToolsOptions, SearchToolsHandle } from './tools/search.js'
