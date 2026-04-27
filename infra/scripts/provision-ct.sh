@@ -177,6 +177,7 @@ if [[ -z "$DEFAULT_MODEL" ]]; then
         xai)            DEFAULT_MODEL="grok-4.20-reasoning";;
         google)         DEFAULT_MODEL="gemini-2.5-pro";;
         llama-server)   DEFAULT_MODEL="default";;
+        claude-cli)     DEFAULT_MODEL="opus";;
         *)              DEFAULT_MODEL="default";;
     esac
 fi
@@ -486,6 +487,15 @@ run_on_ct "curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && apt-get 
 
 # Verify
 run_on_ct "node -v && npm -v"
+
+# Install claude-cli binary if this is a claude-cli agent
+if [[ "$PROVIDER_NAME" == "claude-cli" ]]; then
+    log "  Installing @anthropic-ai/claude-code globally..."
+    run_on_ct "npm install -g @anthropic-ai/claude-code 2>&1 | tail -3"
+    run_on_ct "command -v claude && claude --version || echo 'claude binary not on PATH yet'"
+    log "  ⚠️  After provisioning completes, you must run:  ssh rivet@${IP} 'claude login'"
+    log "  ⚠️  to authenticate the CLI before the agent will be functional."
+fi
 
 # Enable and start SSH server for rsync/SSH access
 run_on_ct "systemctl enable ssh && systemctl start ssh"
