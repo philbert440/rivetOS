@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/channel-agent",
-  "version": "0.4.0-beta.4",
+  "version": "0.4.0-beta.5",
   "description": "Agent-to-agent channel — HTTP endpoint for cross-instance messaging",
   "license": "MIT",
   "main": "dist/index.js",
@@ -14,7 +14,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/types": "0.4.0-beta.4",
+    "@rivetos/types": "0.4.0-beta.5",
     "undici": "^8.1.0"
   },
   "devDependencies": {
