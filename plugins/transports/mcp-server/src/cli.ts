@@ -19,6 +19,9 @@
  *                             always available)
  *   GOOGLE_CSE_ID           — required alongside GOOGLE_CSE_API_KEY
  *   RIVETOS_USER_AGENT      — optional override for `rivetos.web_fetch`
+ *   RIVETOS_SKILL_DIRS      — colon-separated dirs to scan for skills.
+ *                             Default: ${HOME}/.rivetos/skills. Both workspace
+ *                             and system dirs are writable from MCP.
  *
  * Real config (cert paths, full tool registrations, runtime-RPC) lands in
  * subsequent slices.
@@ -26,6 +29,7 @@
 
 import { createMcpServer, defaultEchoTool, type ToolRegistration } from './server.js'
 import { createMemoryTools, type MemoryToolsHandle } from './tools/memory.js'
+import { createSkillTools, type SkillToolsHandle } from './tools/skills.js'
 import { createWebTools, type WebToolsHandle } from './tools/web.js'
 
 async function main(): Promise<void> {
@@ -57,6 +61,23 @@ async function main(): Promise<void> {
     console.log(
       '[rivetos-mcp-server] RIVETOS_PG_URL not set — memory tools disabled (echo + web only)',
     )
+  }
+
+  // --- Skill tools (always available) --------------------------------------
+  try {
+    const handle: SkillToolsHandle = await createSkillTools({
+      embedEndpoint: process.env.RIVETOS_EMBED_URL,
+    })
+    tools.push(...handle.tools)
+    cleanups.push(() => handle.close())
+    const dirs = handle.manager.getSkillDirs()
+    const count = handle.manager.list().length
+    console.log(
+      `[rivetos-mcp-server] skill tools enabled (${handle.tools.map((t) => t.name).join(', ')}) — ${String(count)} skills discovered from ${String(dirs.length)} dir(s): ${dirs.join(', ')}`,
+    )
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[rivetos-mcp-server] failed to enable skill tools: ${message}`)
   }
 
   // --- Web tools (always available) ----------------------------------------

@@ -60,10 +60,17 @@ PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should 
 | 1.A.3 | First tool wired end-to-end (`rivetos.echo` smoke test → `rivetos.memory_search`) | ✅ |
 | 1.A.4 | Memory + web data-plane tools: `memory_browse`, `memory_stats`, `internet_search`, `web_fetch` | ✅ |
 | 1.A.5 | docker compose target (mcp-server + Postgres) + schema bootstrap | ✅ |
-| 1.A.6 | Skill tools: `skill_list`, `skill_manage` (workspace + system dirs both writable) | ⏳ |
-| 1.A.7 | mTLS via `rivet-ca` + `rivetos/session.attach` handshake | ⏳ |
-| 1.B.* | runtime-rpc.ts on `:5701`, inverse-registration, runtime/utility proxies | ⏳ |
-| 1.C.* | claude-cli MCP bridge + native-vs-MCP allow-list | ⏳ |
+| 1.A.6 | Skill tools: `skill_list`, `skill_manage` (workspace + system dirs both writable) | ✅ |
+| 1.A.7' | Bearer-token auth + `rivetos.session.attach` over unix socket (claude-cli scope) | ⏳ |
+| 1.B' | In-process runtime/utility tools (`delegate_task`, `subagent_*`, `ask_user`, `todo`, `compact_context`, `shell`, `file_*`, `search_*`) | ⏳ |
+| 1.C | Claude-CLI MCP bridge + native-vs-MCP allow-list, docker-compose validation | ⏳ |
+
+**Note (Phase 1 rescope):** With Phil's "MCP server just for claude-cli for now"
+direction, mTLS / `rivet-ca` / runtime-RPC / inverse-registration are out of
+scope. claude-cli is a child process of the runtime on the same host — auth
+collapses to a per-spawn bearer token over unix socket, and tool dispatch is
+direct in-process function calls (no separate process, no mesh wire). See
+"Foundations cleanup" section below for the broader architecture rethink.
 
 ### What's running today (slice 3)
 - `plugins/transports/mcp-server/` — StreamableHTTP server on `:5700`
@@ -110,12 +117,73 @@ PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should 
 - **Skills deferred to a separate slice.** `skill_list`/`skill_manage` need `SkillManagerImpl` initialization, skill-dir discovery, and a write-surface security model (which dirs should be writable from MCP?). Worth its own slice rather than being shoehorned in. **Phil's call:** workspace + system dirs both writable from MCP — same surface in-process Opus has.
 - **Network-gated test instead of skipping always.** `web.test.ts` runs `internet_search` against the real network by default, opt-out via `RIVETOS_TEST_SKIP_NETWORK=1`. Better signal in CI than auto-skip.
 
+### Decisions made in slice 6 (skill tools)
+- **Both workspace and system skill dirs are writable from MCP.** Phil's call:
+  claude-cli through MCP gets the same skill-write surface in-process Opus has,
+  no second-class citizen. Discovery picks up `RIVETOS_SKILL_DIRS`
+  (colon-separated) or falls back to `${HOME}/.rivetos/skills`.
+- **Auto-rediscovery on writes.** Wraps `skill_manage.execute` to call
+  `manager.rediscover(dir)` after any non-`read` action (create/edit/patch/
+  delete/retire/write_file). Keeps `skill_list` consistent with disk without
+  requiring explicit refresh calls. Cost is one readdir/stat sweep per dir,
+  cheap.
+- **`@rivetos/core` is a direct workspace dep on `@rivetos/mcp-server` now.**
+  Same call as memory tools — direct dep, project reference, type-safe imports.
+  Pulls in `SkillManagerImpl + createSkillListTool + createSkillManageTool`
+  cleanly.
+- **No skill_match wrapped.** `skill_match` is not exposed via MCP — it's an
+  internal trigger-matching helper used by the in-process agent loop, not a
+  user-facing tool. If a future use case needs it we can add it.
+
 ### Decisions made in slice 5 (docker compose + schema bootstrap)
 - **`infra/containers/datahub/init-db.sh` was missing the core ros_* tables.** Only the queue tables (`ros_embedding_queue`, `ros_compaction_queue`) were ever bootstrapped from the script. The actual schema (`ros_messages`, `ros_conversations`, `ros_summaries`, `ros_summary_sources`, `ros_tool_synth_queue` + their indexes + FKs) had been created by hand on CT110 long ago and never made it into the script. **Latent bug for any fresh datahub deploy** — not just the MCP stack. Fixed in this slice. Verified the script applies cleanly on a fresh DB (7 tables, 23 indexes, 3 functions, 3 triggers).
 - **Separate `infra/docker/mcp-stack/` instead of overloading the root `docker-compose.yaml`.** The root compose stands up the full agent runtime; this stack is just `datahub + mcp-server` for exercising the MCP wire surface in isolation. Different audience (tool consumers, claude-cli devs) than the runtime compose (full RivetOS users). Cheaper to keep them separate.
 - **Single-stage Dockerfile, mirrored from `infra/containers/agent/Dockerfile`.** The workspace graph requires the full source tree at `npm ci` time, so a multi-stage build that tries to ship "just the mcp-server runtime" is more trouble than it's worth at this stage. Image size optimization is a follow-up if it ever matters.
 - **Datahub host port mapped to `5433`** to avoid colliding with a system Postgres on the developer laptop.
 - **Verification path documented** in `infra/docker/mcp-stack/README.md` — `docker compose up`, curl `/health/live`, `npx @modelcontextprotocol/inspector`, or a Node smoke script. Future slices can hang the claude-cli smoke test off this same stack.
+
+---
+
+## Foundations cleanup (post Phase 1, planning) — DECIDED 2026-04-26
+
+After Phase 1 closes, a focused architectural cleanup pass. **Decided** with
+Phil — single container image, role-selected at startup. Not a rewrite, an
+incremental simplification.
+
+### Decision: one image, two roles minimum
+
+```
+postgres            (upstream image, persistent)
+datahub             (rivetos image, --role=datahub: schema migrator, workers, queue bridge)
+agent-<name> × N    (rivetos image, --role=agent --agent=<name>)
+```
+
+One image. One Dockerfile. One CI build job. One version stream. Roles split
+at process start, not at image level — same pattern Kubernetes uses.
+
+### Cleanup ordering (the spine)
+
+1. **One image, role-selected** — collapse `infra/containers/{agent,datahub}` into
+   one Dockerfile + `--role` switch. Forces decisions on schema (one migrator)
+   and CI (one build job).
+2. **Drizzle as schema source of truth** — datahub role runs migrations on boot.
+   `init-db.sh` becomes a generated artifact or goes away entirely.
+3. **Build simplification** — drop project references / `composite: true` /
+   tsbuildinfo. Bundle with esbuild for the container; tsc for typecheck only.
+   Kills the entire class of build bugs from the recent past (the tsbuildinfo
+   leak, the parallel race, the cold-cache TS6305 cascade).
+4. **Single npm publish** — only `@rivetos/cli` is publicly distributable.
+   Internal packages flip to `private: true`. ~90% less version-bump churn.
+5. **Retire `provision-ct.sh`** — replace with Pulumi templates that consume
+   the unified compose file. 938 lines of imperative bash → declarative IaC.
+6. **Plugin self-registration** — `definePlugin({ type, name, init, lifecycle })`
+   exported from each plugin file; boot scans `src/plugins/**`. Retires the
+   registrar switch statements and lifecycle monkey-patches.
+7. **Typed provider configs** — discriminated unions instead of
+   `Record<string, unknown>`. Compile-time safety, kills wizard regressions
+   like the `max_tokens` issue caught in #138.
+
+Top two (#1 + #2) get ~70% of the value for ~3 days. Full pass is ~2 weeks.
 
 ---
 
