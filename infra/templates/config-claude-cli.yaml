@@ -1,0 +1,63 @@
+runtime:
+  workspace: /root/.rivetos/workspace
+  default_agent: %%AGENT_NAME%%
+  turn_timeout: 900
+  skill_dirs:
+    - /opt/rivetos/skills
+  heartbeats:
+    - agent: %%AGENT_NAME%%
+      schedule: '0 8,20 * * *'
+      timezone: America/New_York
+      prompt: >-
+        Heartbeat check. Read HEARTBEAT.md if it exists and follow it strictly.
+        Check email, calendar, weather, and anything notable. Summarize findings.
+        If nothing needs attention, reply HEARTBEAT_OK.
+agents:
+  %%AGENT_NAME%%:
+    provider: claude-cli
+    default_thinking: medium
+  grok:
+    provider: xai
+    default_thinking: medium
+  gemini:
+    provider: google
+    default_thinking: medium
+providers:
+  claude-cli:
+    model: %%DEFAULT_MODEL%%
+    effort: medium
+    permission_mode: bypassPermissions
+    exclude_dynamic_sections: true
+    append_system_prompt: true
+  xai:
+    model: grok-4.20-reasoning
+    max_tokens: 8192
+  google:
+    model: gemini-2.5-pro
+    max_tokens: 8192
+channels:
+  telegram:
+    owner_id: '8093148723'
+    allowed_users:
+      - '8093148723'
+  discord:
+    owner_id: '254134661196939264'
+    allowed_guilds:
+      - '1090284486945681430'
+    channel_bindings:
+      '1474965430371225703': opus
+      '1474965558851145793': grok
+      '1474965544942960764': gemini
+      '1476988677392699432': opus
+      '1474965445214867638': opus
+      '1474965459609845760': opus
+      '1474965472825835550': opus
+      '1474965487514550415': opus
+      '1475532518982942782': opus
+memory:
+  postgres:
+    connection_string: ${RIVETOS_PG_URL}
+    embed_endpoint: ${RIVETOS_EMBED_URL}
+    compactor_endpoint: https://api.x.ai/v1
+    compactor_model: grok-4-1-fast-reasoning
+    compactor_api_key: ${XAI_API_KEY}
