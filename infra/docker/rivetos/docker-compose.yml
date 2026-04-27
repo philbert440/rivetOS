@@ -1,0 +1,117 @@
+# RivetOS Unified Stack — single-host deployment.
+#
+# One image, role-selected at startup. Datahub stays Postgres-only (upstream
+# pgvector image with our migrations baked in). Workers + agent run from the
+# same `rivetos:latest` image, just with different RIVETOS_ROLE.
+#
+# Quick start (from repo root):
+#
+#   docker compose -f infra/docker/rivetos/docker-compose.yml up --build
+#
+# Modes:
+#   - datahub:  Postgres + pgvector + first-init schema (rivetos-datahub image)
+#   - migrate:  applies any pending migrations on each container start
+#   - workers:  embedding + compaction LISTEN/NOTIFY pumps
+#   - agent:    the runtime that drives channels + providers (needs config)
+#
+# The `agent` service expects ~/.rivetos to exist on the host with config.yaml
+# and .env. Run `rivetos init` first to generate them.
+#
+# Tear down (preserve DB):
+#   docker compose -f infra/docker/rivetos/docker-compose.yml down
+# Tear down + wipe DB:
+#   docker compose -f infra/docker/rivetos/docker-compose.yml down -v
+
+services:
+  datahub:
+    build:
+      # Repo-root context so the Dockerfile can pull deploy/schema/migrations.
+      context: ../../..
+      dockerfile: infra/containers/datahub/Dockerfile
+    image: rivetos-datahub:dev
+    environment:
+      POSTGRES_USER: rivetos
+      POSTGRES_PASSWORD: rivetos
+      POSTGRES_DB: rivetos
+    volumes:
+      - rivetos-pgdata:/var/lib/postgresql/data
+    networks:
+      - rivetos-net
+    ports:
+      - '5433:5432'
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rivetos -d rivetos']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  migrate:
+    build:
+      context: ../../..
+      dockerfile: infra/containers/rivetos/Dockerfile
+    image: rivetos:dev
+    command: ['node', 'dist/rivetos.js', 'start', '--role', 'migrate']
+    environment:
+      RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
+    depends_on:
+      datahub:
+        condition: service_healthy
+    networks:
+      - rivetos-net
+    restart: 'no'
+
+  workers:
+    build:
+      context: ../../..
+      dockerfile: infra/containers/rivetos/Dockerfile
+    image: rivetos:dev
+    command: ['node', 'dist/rivetos.js', 'start', '--role', 'worker']
+    environment:
+      RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
+      # RIVETOS_EMBED_URL is required for the embedding worker; without it
+      # the worker exits on boot. Comment-in to enable.
+      # RIVETOS_EMBED_URL: http://gpu-host:9401
+      # RIVETOS_EMBED_MODEL: nemotron
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - rivetos-net
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: ../../..
+      dockerfile: infra/containers/rivetos/Dockerfile
+    image: rivetos:dev
+    command: ['node', 'dist/rivetos.js', 'start', '--role', 'agent']
+    environment:
+      RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
+      RIVETOS_HEALTH_PORT: '3100'
+    volumes:
+      # Bring in the user's config + secrets. Read-only by default; the
+      # runtime writes only to /home/rivetos/.rivetos/workspace inside the
+      # container, which is unmounted (ephemeral).
+      - ${HOME}/.rivetos/config.yaml:/home/rivetos/.rivetos/config.yaml:ro
+      - ${HOME}/.rivetos/.env:/home/rivetos/.rivetos/.env:ro
+      # Optional: mount a host skill dir to share skills.
+      # - ${HOME}/.rivetos/skills:/home/rivetos/.rivetos/workspace/skills:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - rivetos-net
+    ports:
+      - '3100:3100'
+    restart: unless-stopped
+
+volumes:
+  rivetos-pgdata:
+    name: rivetos-pgdata
+
+networks:
+  rivetos-net:
+    name: rivetos-net
+    driver: bridge

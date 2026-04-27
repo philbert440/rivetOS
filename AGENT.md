@@ -266,11 +266,28 @@ direct in-process function calls (no separate process, no mesh wire). See
 
 ---
 
-## Foundations cleanup (post Phase 1, planning) — DECIDED 2026-04-26
+## Foundations cleanup — IN PROGRESS (spine PR open)
 
 After Phase 1 closes, a focused architectural cleanup pass. **Decided** with
 Phil — single container image, role-selected at startup. Not a rewrite, an
 incremental simplification.
+
+### Spine PR (3 commits on `feat/spine`) — opened 2026-04-27
+
+| Commit | Slice | State |
+|---|---|---|
+| 1 | Drop project refs / composite / tsbuildinfo + add esbuild bundle | ✅ committed |
+| 2 | Versioned schema migrations (`deploy/schema/migrations/*.sql`) + `rivetos db migrate` + `--baseline` adoption flag | ✅ committed |
+| 3 | Single unified Dockerfile + `--role` flag (`agent`/`worker`/`monolith`/`migrate`) + `infra/docker/rivetos/docker-compose.yml` + CI matrix entry | ✅ committed |
+
+Verified locally on each commit before pushing:
+- `nx run-many -t build,test,lint` → 26/26 green at every step
+- `npm run bundle` → 2.0 MB / ~250 ms
+- `rivetos db migrate --baseline` against CT 110 production DB → 0001 marked applied
+- `rivetos start --role migrate` (via bundle) → applies migrations + exits clean
+- `rivetos start --role worker` (via bundle) → spawns embedding + compaction workers, SIGTERM forwards correctly
+
+**Legacy paths preserved.** `infra/containers/{agent,datahub}/Dockerfile` still build and ship via the existing CI matrix. The unified `infra/containers/rivetos/Dockerfile` is a third matrix entry shipping `ghcr.io/.../rivetos:<version>`. Once the unified image is validated end-to-end, a follow-up PR can deprecate the legacy paths.
 
 ### Decision: one image, two roles minimum
 

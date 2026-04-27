@@ -7,6 +7,9 @@ on:
       - 'infra/containers/**'
       - 'packages/**'
       - 'plugins/**'
+      - 'services/**'
+      - 'deploy/**'
+      - 'scripts/bundle.mjs'
       - 'package.json'
       - 'package-lock.json'
   release:
@@ -27,6 +30,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   AGENT_IMAGE: ghcr.io/${{ github.repository_owner }}/rivetos-agent
   DATAHUB_IMAGE: ghcr.io/${{ github.repository_owner }}/rivetos-datahub
+  RIVETOS_IMAGE: ghcr.io/${{ github.repository_owner }}/rivetos
 
 jobs:
   build:
@@ -37,7 +41,7 @@ jobs:
 
     strategy:
       matrix:
-        target: [agent, datahub]
+        target: [agent, datahub, rivetos]
 
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +61,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ matrix.target == 'agent' && env.AGENT_IMAGE || env.DATAHUB_IMAGE }}
+          images: ${{ matrix.target == 'agent' && env.AGENT_IMAGE || matrix.target == 'datahub' && env.DATAHUB_IMAGE || env.RIVETOS_IMAGE }}
           tags: |
             type=sha,format=short
             type=ref,event=branch
@@ -85,10 +89,26 @@ jobs:
         if: matrix.target == 'datahub'
         uses: docker/build-push-action@v6
         with:
-          context: infra/containers/datahub
+          # Repo-root context — Dockerfile copies deploy/schema/migrations.
+          context: .
           file: infra/containers/datahub/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build rivetos unified image
+        if: matrix.target == 'rivetos'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/containers/rivetos/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ github.event_name == 'release' && github.event.release.tag_name || '0.0.0-dev' }}
+            GIT_SHA=${{ github.sha }}

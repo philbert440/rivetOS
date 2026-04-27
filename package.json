@@ -53,7 +53,7 @@
   "scripts": {
     "postinstall": "npm run build && npm run link-cli",
     "link-cli": "node scripts/link-cli.mjs",
-    "build": "nx run-many -t build --exclude container-agent,container-datahub,site",
+    "build": "nx run-many -t build --exclude container-agent,container-datahub,container-rivetos,site",
     "bundle": "node scripts/bundle.mjs",
     "lint": "nx run-many -t lint",
     "test": "nx run-many -t test",
