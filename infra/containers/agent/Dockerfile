@@ -24,9 +24,22 @@ COPY services/ services/
 COPY bin/ bin/
 COPY infra/ infra/
 
-# Install all dependencies (workspaces need full install to resolve correctly)
-# postinstall runs: npm run build && npm run link-cli
-RUN npm ci
+# Install all dependencies (workspaces need full install to resolve correctly).
+#
+# We run with --ignore-scripts to suppress the root postinstall, then build
+# the workspace explicitly with --parallel=1.
+#
+# Why serial: the workspace uses TypeScript project references (`composite: true`
+# everywhere). nx's default parallel scheduler honours `dependsOn: ^build` for
+# tasks but interleaves stdout — in a cold container with no dist/ on disk and
+# no nx cache, downstream `tsc -b` invocations can fire before the upstream
+# project has finished writing `dist/index.d.ts` + `.tsbuildinfo`, producing
+# `TS6305: Output file ... has not been built from source file ...`.
+# Forcing serial execution sidesteps the race entirely. Costs ~30s vs. parallel
+# but yields a deterministic build. See PR fix/docker-build-serial.
+RUN npm ci --ignore-scripts \
+ && npx nx run-many -t build --exclude container-agent,container-datahub,site --parallel=1 \
+ && node scripts/link-cli.mjs
 
 # Non-root user — the agent should not run as root
 # Workspace dirs are created as mount targets only — all mutable data lives on
