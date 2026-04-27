@@ -37,6 +37,7 @@ import type {
 } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
+import { createLogger } from './log.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -354,6 +355,8 @@ export class ClaudeCliProvider implements Provider {
   // -----------------------------------------------------------------------
 
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
+    const startedAt = Date.now()
+    const log = createLogger('claude-cli')
     const { systemText, userPrompt } = renderConversationForCli(messages)
 
     // Bring up the embedded MCP server BEFORE spawning claude. If this fails,
@@ -367,16 +370,22 @@ export class ClaudeCliProvider implements Provider {
         bridge = await embedMcpServerForTurn({
           tools,
           agentId: options.agentId,
+          log,
         })
       } catch (err: unknown) {
         // Soft-fail: log and continue without the bridge.
         // The CLI still works; claude-cli just won't see Rivet tools this turn.
         const msg = err instanceof Error ? err.message : String(err)
-        process.stderr.write(
-          `[claude-cli] warning: MCP bridge bring-up failed (${msg}); continuing without it\n`,
-        )
+        log.warn('mcp.bridge.bringup.failed', { error: msg })
       }
     }
+
+    log.info('chatStream.start', {
+      agentId: options?.agentId,
+      toolsCount: tools?.length ?? 0,
+      model: options?.modelOverride ?? this.model,
+      mcpEnabled: !!bridge,
+    })
 
     const args = this.buildArgs(options, systemText, bridge?.configPath)
 
@@ -395,6 +404,12 @@ export class ClaudeCliProvider implements Provider {
       const msg = err instanceof Error ? err.message : String(err)
       throw new ProviderError(`Failed to spawn ${this.binary}: ${msg}`, 0, this.id, false)
     }
+
+    log.info('claude.spawn', {
+      pid: proc.pid,
+      model: options?.modelOverride ?? this.model,
+      hasMcp: !!bridge,
+    })
 
     // Wire stdin: one user turn as stream-json input, then close.
     const inputLine =
@@ -455,6 +470,7 @@ export class ClaudeCliProvider implements Provider {
 
         if (event.type === 'system' && (event as CliSystemInit).subtype === 'init') {
           lastApiKeySource = (event as CliSystemInit).apiKeySource
+          log.debug('system.init', { apiKeySource: lastApiKeySource })
           // Hard-fail if we somehow ended up on API key auth — that is not the
           // point of this provider and would silently bill the console.
           if (lastApiKeySource && lastApiKeySource !== 'none') {
@@ -538,12 +554,23 @@ export class ClaudeCliProvider implements Provider {
     })
 
     if (exitCode !== 0 && !sawResult) {
+      log.warn('claude.nonzero_exit', { exitCode, stderr: stderr.slice(0, 200) })
       throw new ProviderError(
         `claude CLI exited ${String(exitCode)}: ${stderr.slice(0, 500)}`,
         exitCode ?? 500,
         this.id,
       )
     }
+
+    const durationMs = Date.now() - startedAt
+    log.info('claude.exit', {
+      pid: proc.pid,
+      exitCode,
+      durationMs,
+      sawResult,
+      streamedAnyText,
+      usage,
+    })
 
     yield { type: 'done', usage }
   }

@@ -43,6 +43,7 @@ import {
   type ToolRegistration,
 } from '@rivetos/mcp-server'
 import type { Tool } from '@rivetos/types'
+import type { BridgeLogger } from './log.js'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -54,8 +55,8 @@ export interface BridgeConfig {
   /** Logical agent id — labels the temp socket / config so multi-agent
    *  hosts can correlate spawns to agents in logs. Default `claude-cli`. */
   agentId?: string
-  /** Logger override — defaults to `console.error`-on-error, silent otherwise. */
-  log?: (msg: string, meta?: Record<string, unknown>) => void
+  /** Logger (new BridgeLogger shape with level methods). Falls back to no-op. */
+  log?: BridgeLogger
   /** MCP server name as advertised to the client. Default `rivetos`. */
   serverNameForClient?: string
 }
@@ -103,7 +104,7 @@ export async function embedMcpServerForTurn(config: BridgeConfig): Promise<Embed
       // whole bridge — skip it, log it, keep going. The remaining tools
       // are still callable; the LLM just won't see this one.
       skipped.push(tool.name)
-      log('mcp.bridge.tool.skip', {
+      log.warn('mcp.bridge.tool.skip', {
         toolName: tool.name,
         error: err instanceof Error ? err.message : String(err),
       })
@@ -119,8 +120,8 @@ export async function embedMcpServerForTurn(config: BridgeConfig): Promise<Embed
     tools: registrations,
     log: (msg, meta) => {
       // Keep the server's own logging quiet in the bridge use case;
-      // the agent process already has a logger.
-      log(`mcp.bridge.server.${msg}`, meta)
+      // the agent process already has a logger. Forward at debug.
+      log.debug(`mcp.bridge.server.${msg}`, meta)
     },
   })
 
@@ -152,7 +153,7 @@ export async function embedMcpServerForTurn(config: BridgeConfig): Promise<Embed
   }
   await fs.writeFile(configPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 })
 
-  log('mcp.bridge.up', {
+  log.info('mcp.bridge.up', {
     agentId,
     url,
     configPath,
@@ -167,23 +168,26 @@ export async function embedMcpServerForTurn(config: BridgeConfig): Promise<Embed
     try {
       await server.stop()
     } catch (err: unknown) {
-      log('mcp.bridge.server.stop.error', {
+      log.warn('mcp.bridge.server.stop.error', {
         error: err instanceof Error ? err.message : String(err),
       })
     }
     try {
       await fs.rm(tmpDir, { recursive: true, force: true })
     } catch (err: unknown) {
-      log('mcp.bridge.tmpdir.cleanup.error', {
+      log.warn('mcp.bridge.tmpdir.cleanup.error', {
         error: err instanceof Error ? err.message : String(err),
       })
     }
-    log('mcp.bridge.down', { agentId })
+    log.info('mcp.bridge.down', { agentId })
   }
 
   return { configPath, url, token, close }
 }
 
-function noopLog(_msg: string, _meta?: Record<string, unknown>): void {
-  // Silent by default — the embedding agent owns logging.
+const noopLog: BridgeLogger = {
+  error() {},
+  warn() {},
+  info() {},
+  debug() {},
 }

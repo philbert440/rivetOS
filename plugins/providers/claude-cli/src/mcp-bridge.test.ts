@@ -16,6 +16,7 @@ import fs from 'node:fs/promises'
 import type { Tool, ToolContext } from '@rivetos/types'
 
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
+import { type BridgeLogger } from './log.js'
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -222,15 +223,23 @@ describe('embedMcpServerForTurn', () => {
       parameters: { type: 'object', properties: { weird: { type: 'something-novel' } } },
       execute: () => Promise.resolve('ok'),
     }
-    const log = vi.fn()
-    handle = await embedMcpServerForTurn({ tools: [makeEchoTool(), badTool], log })
+    const logStub: BridgeLogger = {
+      error: vi.fn(),
+      warn: vi.fn(),
+      info: vi.fn(),
+      debug: vi.fn(),
+    }
+    handle = await embedMcpServerForTurn({ tools: [makeEchoTool(), badTool], log: logStub })
     const client = await buildClient(handle)
     try {
       const list = await client.listTools()
       const names = list.tools.map((t) => t.name)
       // Both tools land — `bad` falls back to z.unknown() for the weird type.
+      // (The skip log is best-effort — current impl doesn't throw on unknown
+      // types so no warn is emitted; we keep the stub to document the contract.)
       expect(names).toContain('echo_test')
       expect(names).toContain('bad')
+      expect(logStub.warn).not.toHaveBeenCalled()
     } finally {
       await client.close()
     }
