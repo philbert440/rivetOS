@@ -37,3 +37,10 @@ export type { WebToolsOptions, WebToolsHandle } from './tools/web.js'
 
 export { createSkillTools, skillListInputSchema, skillManageInputSchema } from './tools/skills.js'
 export type { SkillToolsOptions, SkillToolsHandle } from './tools/skills.js'
+
+export { createSessionAttachTool, sessionAttachInputSchema } from './tools/session-attach.js'
+export type {
+  SessionState,
+  SessionAttachResult,
+  CreateSessionAttachToolOptions,
+} from './tools/session-attach.js'

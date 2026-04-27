@@ -61,7 +61,7 @@ PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should 
 | 1.A.4 | Memory + web data-plane tools: `memory_browse`, `memory_stats`, `internet_search`, `web_fetch` | ✅ |
 | 1.A.5 | docker compose target (mcp-server + Postgres) + schema bootstrap | ✅ |
 | 1.A.6 | Skill tools: `skill_list`, `skill_manage` (workspace + system dirs both writable) | ✅ |
-| 1.A.7' | Bearer-token auth + `rivetos.session.attach` over unix socket (claude-cli scope) | ⏳ |
+| 1.A.7' | Bearer-token auth (TCP) + unix-socket binding + `rivetos.session.attach` handshake | ✅ |
 | 1.B' | In-process runtime/utility tools (`delegate_task`, `subagent_*`, `ask_user`, `todo`, `compact_context`, `shell`, `file_*`, `search_*`) | ⏳ |
 | 1.C | Claude-CLI MCP bridge + native-vs-MCP allow-list, docker-compose validation | ⏳ |
 
@@ -116,6 +116,31 @@ direct in-process function calls (no separate process, no mesh wire). See
 - **Hand-mapped zod schemas per tool.** Same call as slice 2 — auto-translating from `Tool.parameters` JSON schema would be brittle, and writing zod by hand lets us tighten descriptions for the MCP audience. Five schemas now live in `tools/memory.ts` + `tools/web.ts`.
 - **Skills deferred to a separate slice.** `skill_list`/`skill_manage` need `SkillManagerImpl` initialization, skill-dir discovery, and a write-surface security model (which dirs should be writable from MCP?). Worth its own slice rather than being shoehorned in. **Phil's call:** workspace + system dirs both writable from MCP — same surface in-process Opus has.
 - **Network-gated test instead of skipping always.** `web.test.ts` runs `internet_search` against the real network by default, opt-out via `RIVETOS_TEST_SKIP_NETWORK=1`. Better signal in CI than auto-skip.
+
+### Decisions made in slice 7' (auth + unix socket + session.attach)
+- **Two transports, two auth models.** TCP requires `RIVETOS_MCP_TOKEN`
+  bearer (constant-time compare). Unix socket (`RIVETOS_MCP_SOCKET`) gets
+  filesystem perms (mode 0600) as the auth boundary — bearer skipped unless
+  `RIVETOS_MCP_REQUIRE_BEARER=1`. claude-cli child-process scope means the
+  unix-socket path is the realistic deploy mode; TCP+bearer stays for dev /
+  future remote use.
+- **Liveness probe always open.** `/health/live` never gates on auth — it's
+  for orchestrators (docker-compose healthcheck, k8s probes) and exists to
+  answer "is the process up", not "do I have access."
+- **`rivetos.session.attach` registered per-session.** New tool factory
+  binds a closure over the live session id at session-init time, so the call
+  site doesn't have to thread the id through. Agent / pid / clientName are
+  all optional — every field is descriptive metadata for observability,
+  not a gate. Server records `SessionState` in a `Map<sessionId, state>` and
+  exposes it as `server.sessions` (read-only) for tests + future quotas.
+- **Session id generated eagerly.** The SDK calls `sessionIdGenerator()`
+  inside `transport.handleRequest` — too late for a closure over it. We
+  generate the UUID up front, hand it to both the transport and the
+  per-session tool list, then let `onsessioninitialized` confirm.
+- **Stale socket cleanup.** Server `unlink`s the socket file on stop; if
+  startup finds an existing file at the path it removes it only if it's a
+  socket (won't blow away an arbitrary file by mistake — non-socket
+  presence is treated as an error).
 
 ### Decisions made in slice 6 (skill tools)
 - **Both workspace and system skill dirs are writable from MCP.** Phil's call:

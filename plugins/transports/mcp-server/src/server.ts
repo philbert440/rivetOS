@@ -7,19 +7,35 @@
  *   - `GET  /mcp`          — MCP server-to-client notifications (SSE)
  *   - `DELETE /mcp`        — terminate MCP session
  *
- * Slice 1 is intentionally stateless and unauthenticated — the goal is
- * "it boots, it answers a tool call." Auth (mTLS), session.attach, and
- * the real tool surface land in subsequent slices.
+ * Phase 1.A — Slice 7' adds:
+ *   - **Bearer-token auth** when bound to TCP. Liveness probe stays open;
+ *     every other route requires `Authorization: Bearer <token>`.
+ *   - **Unix-socket binding** (alternative to TCP). On a unix socket the
+ *     filesystem permissions ARE the auth boundary — the socket is created
+ *     mode 0600 and owned by the spawning process, so any peer that can
+ *     connect is already trusted by the OS. Bearer is skipped on the socket
+ *     unless explicitly configured.
+ *   - **`rivetos.session.attach` handshake tool**, registered per-session
+ *     with a closure over the live session id. Records
+ *     `{agent, runtimePid, clientName}` for observability.
+ *
+ * The simplifications match the "MCP server just for claude-cli for now"
+ * scope: claude-cli is a child process of the runtime on the same host, so
+ * we don't need mTLS or runtime-RPC — bearer-or-unix is enough.
  */
 
 import http from 'node:http'
-import { randomUUID } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
+
+import { createSessionAttachTool, type SessionState } from './tools/session-attach.js'
 
 const SERVER_NAME = 'rivetos-mcp-server'
 const SERVER_VERSION = '0.4.0-beta.5'
@@ -43,10 +59,25 @@ export interface ToolRegistration {
 }
 
 export interface RivetMcpServerOptions {
-  /** TCP host to bind. Default: `127.0.0.1`. */
+  /** TCP host to bind. Default: `127.0.0.1`. Ignored if `socketPath` is set. */
   host?: string
-  /** TCP port to bind. Default: `5700`. */
+  /** TCP port to bind. Default: `5700`. Ignored if `socketPath` is set. */
   port?: number
+  /**
+   * Bind to a unix socket at this path instead of TCP. When set, `host` and
+   * `port` are ignored. Filesystem perms (0600) are the auth boundary; the
+   * bearer token is skipped unless `requireBearerOnSocket: true`.
+   */
+  socketPath?: string
+  /** Force bearer-token auth even when bound to a unix socket. Default: false. */
+  requireBearerOnSocket?: boolean
+  /**
+   * Bearer token. When set on TCP, every request other than `/health/live`
+   * must present `Authorization: Bearer <token>`. Compared in constant time.
+   * When unset on TCP, the server logs a warning at startup — fine for
+   * localhost dev, never deploy this way.
+   */
+  authToken?: string
   /** Tools to expose. Slice 1 ships an `rivetos.echo` smoke-test tool by default. */
   tools?: ToolRegistration[]
   /**
@@ -56,8 +87,13 @@ export interface RivetMcpServerOptions {
 }
 
 export interface RivetMcpServer {
-  /** The bound address (resolved after `start()`). */
-  readonly address: { host: string; port: number }
+  /**
+   * Resolved bind address. For TCP: `{host, port}`. For unix sockets:
+   * `{socketPath}`. Tests use this to know what to dial.
+   */
+  readonly address: { host?: string; port?: number; socketPath?: string }
+  /** Snapshot of currently-attached sessions (read-only). */
+  readonly sessions: ReadonlyMap<string, SessionState>
   /** Start listening. Resolves once the socket is bound. */
   start: () => Promise<void>
   /** Close all sessions and stop listening. */
@@ -69,18 +105,39 @@ export interface RivetMcpServer {
 // ---------------------------------------------------------------------------
 
 export function createMcpServer(options: RivetMcpServerOptions = {}): RivetMcpServer {
-  const host = options.host ?? '127.0.0.1'
-  const port = options.port ?? 5700
   const log = options.log ?? defaultLog
   const tools = options.tools ?? [defaultEchoTool()]
+  const socketPath = options.socketPath
+  const useSocket = typeof socketPath === 'string' && socketPath.length > 0
+  const host = options.host ?? '127.0.0.1'
+  const port = options.port ?? 5700
+
+  const requireBearer = useSocket
+    ? Boolean(options.requireBearerOnSocket && options.authToken)
+    : Boolean(options.authToken)
+  const expectedTokenBuf = options.authToken ? Buffer.from(options.authToken, 'utf8') : undefined
+
+  if (!useSocket && !requireBearer) {
+    log('mcp.server.auth.unauthenticated', {
+      reason: 'no RIVETOS_MCP_TOKEN — TCP bind is unauthenticated; localhost-only OK for dev',
+    })
+  }
 
   // One transport per session. Stateful mode: SDK validates session IDs and
   // routes follow-up requests to the right transport. Stateless would also
   // work, but we want session-scoped state once `session.attach` lands.
   const transports = new Map<string, StreamableHTTPServerTransport>()
+  const sessions = new Map<string, SessionState>()
 
   const httpServer = http.createServer((req, res) => {
-    handleRequest(req, res, { transports, tools, log }).catch((err: unknown) => {
+    handleRequest(req, res, {
+      transports,
+      sessions,
+      tools,
+      log,
+      requireBearer,
+      expectedTokenBuf,
+    }).catch((err: unknown) => {
       log('http.handler.error', { error: errorToObject(err) })
       if (!res.headersSent) {
         res.statusCode = 500
@@ -90,15 +147,34 @@ export function createMcpServer(options: RivetMcpServerOptions = {}): RivetMcpSe
     })
   })
 
-  // We resolve the bound address after `listen` because the OS may choose
-  // an ephemeral port (port: 0) — useful for tests.
-  const boundAddress = { host, port }
+  // Address resolved after `listen`. For TCP the OS may pick an ephemeral
+  // port (port: 0). For unix sockets the path is the address.
+  const boundAddress: { host?: string; port?: number; socketPath?: string } = useSocket
+    ? { socketPath }
+    : { host, port }
 
   return {
     get address() {
       return boundAddress
     },
+    get sessions() {
+      return sessions
+    },
     async start() {
+      if (useSocket) {
+        // Best-effort cleanup of a stale socket from a previous run.
+        try {
+          const stat = fs.statSync(socketPath)
+          if (stat.isSocket()) fs.unlinkSync(socketPath)
+        } catch (err: unknown) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw err
+          }
+        }
+        // Make sure the parent directory exists.
+        fs.mkdirSync(path.dirname(socketPath), { recursive: true })
+      }
+
       await new Promise<void>((resolve, reject) => {
         const onError = (err: Error) => {
           httpServer.removeListener('listening', onListening)
@@ -106,17 +182,31 @@ export function createMcpServer(options: RivetMcpServerOptions = {}): RivetMcpSe
         }
         const onListening = () => {
           httpServer.removeListener('error', onError)
-          const addr = httpServer.address()
-          if (addr && typeof addr === 'object') {
-            boundAddress.host = addr.address
-            boundAddress.port = addr.port
+          if (useSocket) {
+            // Lock the socket down — only the owning user can connect.
+            try {
+              fs.chmodSync(socketPath, 0o600)
+            } catch (err: unknown) {
+              log('mcp.server.socket.chmod.error', { error: errorToObject(err) })
+            }
+            log('mcp.server.listening', { socketPath })
+          } else {
+            const addr = httpServer.address()
+            if (addr && typeof addr === 'object') {
+              boundAddress.host = addr.address
+              boundAddress.port = addr.port
+            }
+            log('mcp.server.listening', { host: boundAddress.host, port: boundAddress.port })
           }
-          log('mcp.server.listening', boundAddress)
           resolve()
         }
         httpServer.once('error', onError)
         httpServer.once('listening', onListening)
-        httpServer.listen(port, host)
+        if (useSocket) {
+          httpServer.listen(socketPath)
+        } else {
+          httpServer.listen(port, host)
+        }
       })
     },
     async stop() {
@@ -129,6 +219,7 @@ export function createMcpServer(options: RivetMcpServerOptions = {}): RivetMcpSe
         }
       }
       transports.clear()
+      sessions.clear()
 
       await new Promise<void>((resolve, reject) => {
         httpServer.close((err) => {
@@ -136,6 +227,17 @@ export function createMcpServer(options: RivetMcpServerOptions = {}): RivetMcpSe
           else resolve()
         })
       })
+
+      // Remove the unix socket file we created.
+      if (useSocket) {
+        try {
+          fs.unlinkSync(socketPath)
+        } catch (err: unknown) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            log('mcp.server.socket.unlink.error', { error: errorToObject(err) })
+          }
+        }
+      }
       log('mcp.server.stopped')
     },
   }
@@ -147,8 +249,11 @@ export function createMcpServer(options: RivetMcpServerOptions = {}): RivetMcpSe
 
 interface HandlerCtx {
   transports: Map<string, StreamableHTTPServerTransport>
+  sessions: Map<string, SessionState>
   tools: ToolRegistration[]
   log: (msg: string, meta?: Record<string, unknown>) => void
+  requireBearer: boolean
+  expectedTokenBuf: Buffer | undefined
 }
 
 async function handleRequest(
@@ -164,6 +269,17 @@ async function handleRequest(
     res.setHeader('content-type', 'application/json')
     res.end(JSON.stringify({ status: 'ok', name: SERVER_NAME, version: SERVER_VERSION }))
     return
+  }
+
+  // Bearer auth gate for everything below the liveness probe.
+  if (ctx.requireBearer) {
+    if (!checkBearer(req, ctx.expectedTokenBuf)) {
+      res.statusCode = 401
+      res.setHeader('content-type', 'application/json')
+      res.setHeader('www-authenticate', 'Bearer realm="rivetos-mcp"')
+      res.end(JSON.stringify({ error: 'unauthorized' }))
+      return
+    }
   }
 
   // MCP endpoint.
@@ -215,8 +331,16 @@ async function handleMcp(
     return
   }
 
+  // We need the session id BEFORE building the McpServer so the per-session
+  // `rivetos.session.attach` tool can close over it. The SDK calls
+  // `sessionIdGenerator()` exactly once during initialize, then reports it
+  // via `onsessioninitialized`. Generate eagerly here so we can wire the
+  // closure first.
+  const sessionId = randomUUID()
+  ctx.sessions.set(sessionId, { sessionId })
+
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
+    sessionIdGenerator: () => sessionId,
     onsessioninitialized: (sid: string) => {
       ctx.transports.set(sid, transport)
       ctx.log('mcp.session.initialized', { sessionId: sid })
@@ -227,11 +351,33 @@ async function handleMcp(
     const sid = transport.sessionId
     if (sid !== undefined) {
       ctx.transports.delete(sid)
+      ctx.sessions.delete(sid)
       ctx.log('mcp.session.closed', { sessionId: sid })
     }
   }
 
-  const mcp = buildMcpServer(ctx.tools)
+  // Build per-session tool list: shared tools + a session.attach bound to
+  // this session id.
+  const sessionTools: ToolRegistration[] = [
+    ...ctx.tools,
+    createSessionAttachTool({
+      sessionId,
+      serverName: SERVER_NAME,
+      serverVersion: SERVER_VERSION,
+      toolNames: () => [...ctx.tools.map((t) => t.name), 'rivetos.session.attach'],
+      onAttach: (state) => {
+        ctx.sessions.set(state.sessionId, state)
+        ctx.log('mcp.session.attached', {
+          sessionId: state.sessionId,
+          agent: state.agent,
+          runtimePid: state.runtimePid,
+          clientName: state.clientName,
+        })
+      },
+    }),
+  ]
+
+  const mcp = buildMcpServer(sessionTools)
   await mcp.connect(transport)
   await transport.handleRequest(req, res, body)
 }
@@ -302,6 +448,23 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
 function headerValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0]
   return value
+}
+
+function checkBearer(req: http.IncomingMessage, expected: Buffer | undefined): boolean {
+  if (expected === undefined) return false
+  const header = headerValue(req.headers.authorization)
+  if (!header) return false
+  const match = /^Bearer\s+(.+)$/i.exec(header)
+  if (!match) return false
+  const presented = Buffer.from(match[1], 'utf8')
+  if (presented.length !== expected.length) {
+    // timingSafeEqual requires equal lengths — do a constant-time dummy
+    // compare to avoid leaking length info via timing.
+    const filler = Buffer.alloc(expected.length)
+    timingSafeEqual(filler, expected)
+    return false
+  }
+  return timingSafeEqual(presented, expected)
 }
 
 function sendError(res: http.ServerResponse, status: number, code: string): void {

@@ -6,11 +6,12 @@ over the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 ## Status
 
-**Phase 1.A — Slice 6.** StreamableHTTP server with `/health/live`, the
+**Phase 1.A — Slice 7'.** StreamableHTTP server with `/health/live`, the
 `rivetos.echo` smoke-test tool, the full memory data-plane (`memory_search`,
 `memory_browse`, `memory_stats`), web tools (`internet_search`, `web_fetch`),
-and skill tools (`skill_list`, `skill_manage`). Auth (`session.attach` over
-unix socket), runtime/utility tools, and the claude-cli bridge follow in
+skill tools (`skill_list`, `skill_manage`), bearer-token auth on TCP +
+optional unix-socket binding, and the per-session `rivetos.session.attach`
+handshake tool. Runtime/utility tools and the claude-cli bridge follow in
 subsequent slices per
 [`/rivet-shared/plans/mcp-architecture-overhaul.md`](../../).
 
@@ -29,17 +30,20 @@ curl http://127.0.0.1:5700/health/live
 
 Environment:
 
-| Var                   | Default       | Notes                                                                   |
-|-----------------------|---------------|-------------------------------------------------------------------------|
-| `MCP_HOST`            | `127.0.0.1`   | Bind host                                                               |
-| `MCP_PORT`            | `5700`        | Bind port                                                               |
-| `RIVETOS_PG_URL`      | _(unset)_     | Postgres connection string. Enables all three `memory_*` tools.         |
-| `RIVETOS_EMBED_URL`   | _(unset)_     | Embedding endpoint for hybrid (FTS + semantic) ranking.                 |
-| `RIVETOS_EMBED_MODEL` | `nemotron`    | Embedding model name.                                                   |
-| `GOOGLE_CSE_API_KEY`  | _(unset)_     | Optional Google Custom Search key for `internet_search`.                |
-| `GOOGLE_CSE_ID`       | _(unset)_     | Required alongside `GOOGLE_CSE_API_KEY`. DuckDuckGo is used otherwise.  |
-| `RIVETOS_USER_AGENT`  | _(default)_   | Override for `web_fetch`.                                               |
-| `RIVETOS_SKILL_DIRS`  | `~/.rivetos/skills` | Colon-separated dirs to scan for skills. Both workspace + system dirs are writable from MCP. |
+| Var                          | Default       | Notes                                                                   |
+|------------------------------|---------------|-------------------------------------------------------------------------|
+| `MCP_HOST`                   | `127.0.0.1`   | Bind host (ignored when `RIVETOS_MCP_SOCKET` is set)                    |
+| `MCP_PORT`                   | `5700`        | Bind port (ignored when `RIVETOS_MCP_SOCKET` is set)                    |
+| `RIVETOS_MCP_SOCKET`         | _(unset)_     | Bind to a unix socket at this path INSTEAD of TCP. Created mode 0600 — filesystem perms ARE the auth boundary, bearer token is skipped. |
+| `RIVETOS_MCP_TOKEN`          | _(unset)_     | Bearer token. Required for TCP binds in any non-dev setup. Compared in constant time against `Authorization: Bearer <token>`. |
+| `RIVETOS_MCP_REQUIRE_BEARER` | `0`           | Set to `1` to require bearer even on a unix socket (defense-in-depth).  |
+| `RIVETOS_PG_URL`             | _(unset)_     | Postgres connection string. Enables all three `memory_*` tools.         |
+| `RIVETOS_EMBED_URL`          | _(unset)_     | Embedding endpoint for hybrid (FTS + semantic) ranking.                 |
+| `RIVETOS_EMBED_MODEL`        | `nemotron`    | Embedding model name.                                                   |
+| `GOOGLE_CSE_API_KEY`         | _(unset)_     | Optional Google Custom Search key for `internet_search`.                |
+| `GOOGLE_CSE_ID`              | _(unset)_     | Required alongside `GOOGLE_CSE_API_KEY`. DuckDuckGo is used otherwise.  |
+| `RIVETOS_USER_AGENT`         | _(default)_   | Override for `web_fetch`.                                               |
+| `RIVETOS_SKILL_DIRS`         | `~/.rivetos/skills` | Colon-separated dirs to scan for skills. Both workspace + system dirs are writable from MCP. |
 
 When `RIVETOS_PG_URL` is unset, the memory tools are disabled but the server
 still serves `rivetos.echo` and the web tools — useful for smoke-testing the
@@ -50,6 +54,7 @@ wire without a database.
 | Tool                       | When                  | What it does |
 |----------------------------|-----------------------|--------------|
 | `rivetos.echo`             | Always                | Echoes input back, prefixed with `echo:`. Smoke test for the wire. |
+| `rivetos.session.attach`   | Always (per-session)  | Handshake — records `{agent, runtimePid, clientName}` and returns canonical `{sessionId, serverVersion, capabilities}`. Optional but recommended as the first call. |
 | `rivetos.memory_search`    | `RIVETOS_PG_URL` set  | Search RivetOS persistent memory (conversations + summaries). Hybrid FTS + semantic + temporal scoring with auto-expansion. |
 | `rivetos.memory_browse`    | `RIVETOS_PG_URL` set  | Browse messages chronologically by conversation, agent, or time window. |
 | `rivetos.memory_stats`     | `RIVETOS_PG_URL` set  | Memory system health: counts, embedding queue, unsummarized backlog, freshness. |
@@ -57,6 +62,13 @@ wire without a database.
 | `rivetos.web_fetch`        | Always                | Fetch and extract readable content from a URL (HTML → markdown). |
 | `rivetos.skill_list`       | Always                | List discovered skills with names, descriptions, version, file count. |
 | `rivetos.skill_manage`     | Always                | Create / edit / patch / delete / retire / read / write_file skills. Workspace and system dirs both writable. |
+
+## Auth model
+
+- **TCP** (default): bearer token via `RIVETOS_MCP_TOKEN`. `Authorization: Bearer <token>` required for `/mcp`; constant-time compare. `/health/live` always open. If the token is unset, the server logs a warning at startup — fine for localhost dev, never for any other deployment.
+- **Unix socket** (`RIVETOS_MCP_SOCKET=/path`): the socket file is created mode `0600` and owned by the spawning process. Anyone who can `connect()` already passed the OS auth check, so the bearer is skipped. Set `RIVETOS_MCP_REQUIRE_BEARER=1` for defense-in-depth.
+
+This is the simplified Phase 1.A.7' auth — it matches the "MCP server just for claude-cli for now" scope (claude-cli is a child process on the same host). mTLS / per-agent client certs are a later concern if the server ever needs to be network-accessible.
 
 ## Programmatic use
 
@@ -116,7 +128,6 @@ client. `memory.test.ts` is auto-skipped when `RIVETOS_PG_URL` is unset.
 
 ## Roadmap
 
-- **1.A.7'** Bearer-token auth + `rivetos.session.attach` over unix socket
 - **1.B'** In-process runtime/utility tools (`delegate_task`, `subagent_*`,
   `ask_user`, `todo`, `compact_context`, `shell`, `file_*`, `search_*`)
 - **1.C** Claude-CLI bridge — synthesize `--mcp-config`, mint per-spawn token,
