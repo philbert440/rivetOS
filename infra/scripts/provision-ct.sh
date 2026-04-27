@@ -205,10 +205,14 @@ run_on_pve() {
 }
 
 run_on_ct() {
+    # Base64-encode the command body so embedded single/double quotes in the
+    # caller's string can never break shell quoting on the way to `pct exec`.
+    local cmd_b64
+    cmd_b64=$(printf '%s' "$*" | base64 -w0)
     if $DRY_RUN; then
-        echo "[DRY RUN] ssh $PVE_NODE \"pct exec $CTID -- bash -c '$*'\""
+        echo "[DRY RUN] ssh $PVE_NODE \"pct exec $CTID -- bash -c 'echo $cmd_b64 | base64 -d | bash'\""
     else
-        ssh "$PVE_NODE" "pct exec $CTID -- bash -c '$*'"
+        ssh "$PVE_NODE" "pct exec $CTID -- bash -c 'echo $cmd_b64 | base64 -d | bash'"
     fi
 }
 
