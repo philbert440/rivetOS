@@ -30,10 +30,15 @@ COPY bin/ bin/
 COPY infra/ infra/
 
 # Install all dependencies (workspaces need full install to resolve correctly).
-# postinstall runs `npm run build` which compiles the workspace via project
-# references — this gives us plugins/transports/mcp-server/dist/cli.js
-# ready to run.
-RUN npm ci
+#
+# Skip the root postinstall (which would run a parallel nx build) and run the
+# build explicitly with --parallel=1. The workspace uses TypeScript project
+# references everywhere; in a cold container nx's parallel scheduler can fire
+# downstream `tsc -b` before upstream `dist/` is written, producing TS6305.
+# Serial build sidesteps the race. See PR fix/docker-build-serial.
+RUN npm ci --ignore-scripts \
+ && npx nx run-many -t build --exclude container-agent,container-datahub,site --parallel=1 \
+ && node scripts/link-cli.mjs
 
 # Non-root user
 RUN addgroup -S rivetos && adduser -S rivetos -G rivetos \
