@@ -33,12 +33,25 @@
  *   RIVETOS_SKILL_DIRS      — colon-separated dirs to scan for skills.
  *                             Default: ${HOME}/.rivetos/skills. Both workspace
  *                             and system dirs are writable from MCP.
+ *   RIVETOS_MCP_ENABLE_SHELL=1     — enables `rivetos.shell` (write surface,
+ *                                    off by default). Maintains a session
+ *                                    cwd across calls.
+ *   RIVETOS_MCP_ENABLE_FILE=1      — enables `rivetos.file_read`,
+ *                                    `rivetos.file_write`, `rivetos.file_edit`
+ *                                    (write surface, off by default).
+ *   RIVETOS_MCP_ENABLE_SEARCH=1    — enables `rivetos.search_glob`,
+ *                                    `rivetos.search_grep` (read-only, off
+ *                                    by default for symmetry; safe to enable).
  *
- * Runtime-plane tools and the claude-cli MCP bridge land in later slices.
+ * Runtime-plane tools (delegate_task, subagent_*, ask_user, todo,
+ * compact_context) and the claude-cli MCP bridge land in later slices.
  */
 
 import { createMcpServer, defaultEchoTool, type ToolRegistration } from './server.js'
+import { createFileTools, type FileToolsHandle } from './tools/file.js'
 import { createMemoryTools, type MemoryToolsHandle } from './tools/memory.js'
+import { createSearchTools, type SearchToolsHandle } from './tools/search.js'
+import { createShellTool, type ShellToolHandle } from './tools/shell.js'
 import { createSkillTools, type SkillToolsHandle } from './tools/skills.js'
 import { createWebTools, type WebToolsHandle } from './tools/web.js'
 
@@ -91,6 +104,53 @@ async function main(): Promise<void> {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[rivetos-mcp-server] failed to enable skill tools: ${message}`)
+  }
+
+  // --- Utility tools (opt-in — write surfaces) -----------------------------
+  // Enable shell + file_write/edit + search by setting the env vars below.
+  // These are gated because they expose the MCP server process's filesystem
+  // and shell to any authenticated client. Bearer token / unix-socket perms
+  // are the access boundary — make sure those are configured before enabling.
+  if (process.env.RIVETOS_MCP_ENABLE_SHELL === '1') {
+    try {
+      const handle: ShellToolHandle = createShellTool()
+      tools.push(...handle.tools)
+      cleanups.push(() => handle.close())
+      console.log(
+        `[rivetos-mcp-server] shell tool enabled (${handle.tools.map((t) => t.name).join(', ')}) [WRITE SURFACE]`,
+      )
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[rivetos-mcp-server] failed to enable shell tool: ${message}`)
+    }
+  }
+
+  if (process.env.RIVETOS_MCP_ENABLE_FILE === '1') {
+    try {
+      const handle: FileToolsHandle = createFileTools()
+      tools.push(...handle.tools)
+      cleanups.push(() => handle.close())
+      console.log(
+        `[rivetos-mcp-server] file tools enabled (${handle.tools.map((t) => t.name).join(', ')}) [WRITE SURFACE]`,
+      )
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[rivetos-mcp-server] failed to enable file tools: ${message}`)
+    }
+  }
+
+  if (process.env.RIVETOS_MCP_ENABLE_SEARCH === '1') {
+    try {
+      const handle: SearchToolsHandle = createSearchTools()
+      tools.push(...handle.tools)
+      cleanups.push(() => handle.close())
+      console.log(
+        `[rivetos-mcp-server] search tools enabled (${handle.tools.map((t) => t.name).join(', ')})`,
+      )
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[rivetos-mcp-server] failed to enable search tools: ${message}`)
+    }
   }
 
   // --- Web tools (always available) ----------------------------------------

@@ -62,7 +62,8 @@ PR #135 bumps every workspace package to `0.4.0-beta.3`. After merge, CI should 
 | 1.A.5 | docker compose target (mcp-server + Postgres) + schema bootstrap | ✅ |
 | 1.A.6 | Skill tools: `skill_list`, `skill_manage` (workspace + system dirs both writable) | ✅ |
 | 1.A.7' | Bearer-token auth (TCP) + unix-socket binding + `rivetos.session.attach` handshake | ✅ |
-| 1.B' | In-process runtime/utility tools (`delegate_task`, `subagent_*`, `ask_user`, `todo`, `compact_context`, `shell`, `file_*`, `search_*`) | ⏳ |
+| 1.B'.1 | Utility surface: `shell`, `file_read`/`write`/`edit`, `search_glob`/`grep` (opt-in via env, write-surface gating) | ✅ |
+| 1.B'.2 | Runtime-context tools: `delegate_task`, `subagent_*`, `ask_user`, `todo`, `compact_context` (needs in-process embedding of MCP server inside agent runtime) | ⏳ |
 | 1.C | Claude-CLI MCP bridge + native-vs-MCP allow-list, docker-compose validation | ⏳ |
 
 **Note (Phase 1 rescope):** With Phil's "MCP server just for claude-cli for now"
@@ -116,6 +117,47 @@ direct in-process function calls (no separate process, no mesh wire). See
 - **Hand-mapped zod schemas per tool.** Same call as slice 2 — auto-translating from `Tool.parameters` JSON schema would be brittle, and writing zod by hand lets us tighten descriptions for the MCP audience. Five schemas now live in `tools/memory.ts` + `tools/web.ts`.
 - **Skills deferred to a separate slice.** `skill_list`/`skill_manage` need `SkillManagerImpl` initialization, skill-dir discovery, and a write-surface security model (which dirs should be writable from MCP?). Worth its own slice rather than being shoehorned in. **Phil's call:** workspace + system dirs both writable from MCP — same surface in-process Opus has.
 - **Network-gated test instead of skipping always.** `web.test.ts` runs `internet_search` against the real network by default, opt-out via `RIVETOS_TEST_SKIP_NETWORK=1`. Better signal in CI than auto-skip.
+
+### Decisions made in slice 1.B'.1 (utility tools — shell, file, search)
+- **Phase 1.B' split into 1.B'.1 (utility, this slice) + 1.B'.2 (runtime-context, next).**
+  Utility tools (`shell`, `file_*`, `search_*`) are pure in-process — no
+  runtime context needed. Runtime-context tools (`delegate_task`, `subagent_*`,
+  `ask_user`, `todo`, `compact_context`) require the MCP server to be hosted
+  *inside* the agent runtime so they can reach `DelegationEngine`,
+  `SubagentManager`, the channel handle, and the conversation buffer. That's
+  a separate architectural lift (in-process embedding story, lifecycle hook,
+  one MCP server per agent vs. per node). Splitting keeps slice sizes
+  reasonable.
+- **Opt-in via env, not enabled by default.** `RIVETOS_MCP_ENABLE_SHELL=1`,
+  `RIVETOS_MCP_ENABLE_FILE=1`, `RIVETOS_MCP_ENABLE_SEARCH=1`. Three of the
+  six tools (`shell`, `file_write`, `file_edit`) are write surfaces — anyone
+  who can call them can run arbitrary commands or write arbitrary files as
+  the MCP server process. Bearer/unix-socket auth is the access boundary,
+  but on top of that we keep the surface dark by default. `search_*` is
+  read-only; gated for symmetry, safe to enable freely.
+- **Reused `adaptRivetTool` template verbatim.** Same wrap-and-register
+  pattern as memory/web/skills. Three new files (`tools/shell.ts`,
+  `tools/file.ts`, `tools/search.ts`) with hand-written zod schemas, factory
+  functions returning `{tools, close}` handles. CLI gates each behind its
+  own env var. No new infrastructure needed in the server core.
+- **`composite: true` added to `plugins/tools/{shell,file,search}/tsconfig.json`.**
+  Required for project references to work — those packages were previously
+  built standalone but didn't have `composite` set, so referencing them
+  from `mcp-server`'s tsconfig.json would have produced TS6306 errors at
+  build time. Single-line addition each.
+- **`shell` session cwd is per-`createShellTool`-instance.** The MCP wrapper
+  holds one `ShellTool` for the lifetime of the server, so `cd` in one MCP
+  call persists to the next. This matches how the in-process tool behaves
+  for an agent. Tests verify: `cd src` then `pwd` shows the new dir.
+- **No `cwd` plumbing for file/search tools.** The in-process tools resolve
+  relative paths against `ToolContext.session.workingDir` when called by an
+  agent; over MCP we have no such context, so we fall back to
+  `process.cwd()` (the MCP server's cwd at start). Absolute paths work
+  unchanged. README + tool descriptions call this out.
+- **Test playground in temp dir.** `utility.test.ts` mkdtemps a playground,
+  seeds it with `src/index.ts`, `src/helper.ts`, `README.md`, exercises all
+  six tools end-to-end via real MCP client → real HTTP. 8 specs added,
+  43 total now passing.
 
 ### Decisions made in slice 7' (auth + unix socket + session.attach)
 - **Two transports, two auth models.** TCP requires `RIVETOS_MCP_TOKEN`

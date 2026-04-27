@@ -6,13 +6,15 @@ over the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 ## Status
 
-**Phase 1.A — Slice 7'.** StreamableHTTP server with `/health/live`, the
+**Phase 1.A — Slice 1.B'.1.** StreamableHTTP server with `/health/live`, the
 `rivetos.echo` smoke-test tool, the full memory data-plane (`memory_search`,
 `memory_browse`, `memory_stats`), web tools (`internet_search`, `web_fetch`),
 skill tools (`skill_list`, `skill_manage`), bearer-token auth on TCP +
-optional unix-socket binding, and the per-session `rivetos.session.attach`
-handshake tool. Runtime/utility tools and the claude-cli bridge follow in
-subsequent slices per
+optional unix-socket binding, the per-session `rivetos.session.attach`
+handshake tool, and the **utility surface** — `shell`, `file_read`/`write`/
+`edit`, `search_glob`/`grep` (opt-in via env). Runtime-context tools
+(`delegate_task`, `subagent_*`, `ask_user`, `todo`, `compact_context`) and
+the claude-cli bridge follow in subsequent slices per
 [`/rivet-shared/plans/mcp-architecture-overhaul.md`](../../).
 
 ## Quick start
@@ -44,6 +46,9 @@ Environment:
 | `GOOGLE_CSE_ID`              | _(unset)_     | Required alongside `GOOGLE_CSE_API_KEY`. DuckDuckGo is used otherwise.  |
 | `RIVETOS_USER_AGENT`         | _(default)_   | Override for `web_fetch`.                                               |
 | `RIVETOS_SKILL_DIRS`         | `~/.rivetos/skills` | Colon-separated dirs to scan for skills. Both workspace + system dirs are writable from MCP. |
+| `RIVETOS_MCP_ENABLE_SHELL`   | `0`           | Set to `1` to enable `rivetos.shell`. **Write surface** — runs arbitrary shell as the server process. |
+| `RIVETOS_MCP_ENABLE_FILE`    | `0`           | Set to `1` to enable `rivetos.file_read`, `rivetos.file_write`, `rivetos.file_edit`. **Write surface.**       |
+| `RIVETOS_MCP_ENABLE_SEARCH`  | `0`           | Set to `1` to enable `rivetos.search_glob`, `rivetos.search_grep` (read-only — gated for symmetry, safe to enable). |
 
 When `RIVETOS_PG_URL` is unset, the memory tools are disabled but the server
 still serves `rivetos.echo` and the web tools — useful for smoke-testing the
@@ -62,6 +67,12 @@ wire without a database.
 | `rivetos.web_fetch`        | Always                | Fetch and extract readable content from a URL (HTML → markdown). |
 | `rivetos.skill_list`       | Always                | List discovered skills with names, descriptions, version, file count. |
 | `rivetos.skill_manage`     | Always                | Create / edit / patch / delete / retire / read / write_file skills. Workspace and system dirs both writable. |
+| `rivetos.shell`            | `RIVETOS_MCP_ENABLE_SHELL=1` | Execute a shell command. Maintains a session cwd across calls (`cd` persists). |
+| `rivetos.file_read`        | `RIVETOS_MCP_ENABLE_FILE=1`  | Read file contents with optional line range and line numbers. Binary files refused. |
+| `rivetos.file_write`       | `RIVETOS_MCP_ENABLE_FILE=1`  | Write content to a file. Creates parent dirs. Optional `.bak` backup. |
+| `rivetos.file_edit`        | `RIVETOS_MCP_ENABLE_FILE=1`  | Replace an exact string in a file. Fails if not unique. |
+| `rivetos.search_glob`      | `RIVETOS_MCP_ENABLE_SEARCH=1` | Find files matching a glob (excludes `node_modules`, `.git`, build dirs). |
+| `rivetos.search_grep`      | `RIVETOS_MCP_ENABLE_SEARCH=1` | Search file contents by regex/literal. Returns `file:line:match`. |
 
 ## Auth model
 
