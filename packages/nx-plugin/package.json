@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/nx",
-  "version": "0.4.0-beta.4",
+  "version": "0.4.0-beta.5",
   "description": "Nx plugin for RivetOS — generators and executors for the agent runtime monorepo",
   "license": "Apache-2.0",
   "main": "dist/index.js",

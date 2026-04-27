@@ -24,7 +24,7 @@ Liveness probe:
 
 ```bash
 curl http://localhost:5700/health/live
-# → {"status":"ok","name":"@rivetos/mcp-server","version":"0.4.0-beta.4"}
+# → {"status":"ok","name":"@rivetos/mcp-server","version":"0.4.0-beta.5"}
 ```
 
 Talk to the MCP server with the official inspector:

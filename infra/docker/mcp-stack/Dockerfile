@@ -29,13 +29,14 @@ COPY services/ services/
 COPY bin/ bin/
 COPY infra/ infra/
 
+# Belt-and-suspenders: wipe any TypeScript incremental state that leaked in.
+# `tsc -b` reads *.tsbuildinfo and may skip emit if it thinks dist/ is current,
+# but dist/ is excluded from the context — TS6305 results. See agent Dockerfile.
+RUN find packages plugins apps services -name 'tsconfig.tsbuildinfo' -delete 2>/dev/null || true \
+ && find packages plugins apps services -name '.nx' -type d -exec rm -rf {} + 2>/dev/null || true
+
 # Install all dependencies (workspaces need full install to resolve correctly).
-#
-# Skip the root postinstall (which would run a parallel nx build) and run the
-# build explicitly with --parallel=1. The workspace uses TypeScript project
-# references everywhere; in a cold container nx's parallel scheduler can fire
-# downstream `tsc -b` before upstream `dist/` is written, producing TS6305.
-# Serial build sidesteps the race. See PR fix/docker-build-serial.
+# Skip postinstall, build serially. See agent Dockerfile for the rationale.
 RUN npm ci --ignore-scripts \
  && npx nx run-many -t build --exclude container-agent,container-datahub,site --parallel=1 \
  && node scripts/link-cli.mjs

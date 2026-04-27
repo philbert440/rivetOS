@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/core",
-  "version": "0.4.0-beta.4",
+  "version": "0.4.0-beta.5",
   "description": "RivetOS agent runtime — the loop, the router, the lifecycle",
   "license": "Apache-2.0",
   "main": "dist/index.js",
@@ -15,7 +15,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/types": "0.4.0-beta.4",
+    "@rivetos/types": "0.4.0-beta.5",
     "undici": "^8.1.0"
   },
   "exports": {
