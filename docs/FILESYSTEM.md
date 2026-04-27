@@ -9,7 +9,7 @@ RivetOS separates its files across three root directories by concern:
 | Path | Purpose | Who writes it |
 |---|---|---|
 | `/opt/rivetos/` | System runtime (binaries, core, built-in plugins) | Install / update only |
-| `~/.rivetos/` (or `/root/.rivetos/`) | Personal config + workspace for this instance | The agent + its human |
+| `~/.rivetos/` (typically `/home/rivet/.rivetos/`) | Personal config + workspace for this instance | The agent + its human |
 | `/rivet-shared/` (or equivalent NFS mount) | Shared dev + multi-agent collaboration | Any agent, shared |
 
 Agents should treat these boundaries as hard contracts. Never assume or hallucinate paths — if unsure, consult this file.
@@ -48,7 +48,7 @@ rivetos plugins list
 
 ## 2. Config & Workspace — `~/.rivetos/`
 
-The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos` plus a persistent workspace. On root-run systemd services this resolves to `/root/.rivetos/`.
+The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos` plus a persistent workspace. The systemd service runs as the `rivet` user, so this resolves to `/home/rivet/.rivetos/`.
 
 **What belongs:**
 
