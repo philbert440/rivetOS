@@ -24,41 +24,41 @@ No additional dependencies — uses Node.js built-in `fetch`.
 
 ## Usage
 
-All commands use the script at `/root/.rivetos/skills/websearch/scripts/search.mjs`.
+All commands use the script at `~/.rivetos/skills/websearch/scripts/search.mjs`.
 
 ### Basic search (uses Google by default)
 ```bash
-node /root/.rivetos/skills/websearch/scripts/search.mjs "What is the latest news about AI?"
+node ~/.rivetos/skills/websearch/scripts/search.mjs "What is the latest news about AI?"
 ```
 
 ### Search with more results
 ```bash
-node /root/.rivetos/skills/websearch/scripts/search.mjs "TypeScript 5.8 features" --num 10
+node ~/.rivetos/skills/websearch/scripts/search.mjs "TypeScript 5.8 features" --num 10
 ```
 
 ### Restrict to a specific site
 ```bash
-node /root/.rivetos/skills/websearch/scripts/search.mjs "web search API" --site docs.x.ai
+node ~/.rivetos/skills/websearch/scripts/search.mjs "web search API" --site docs.x.ai
 ```
 
 ### Use xAI native search (richer results with citations)
 ```bash
-node /root/.rivetos/skills/websearch/scripts/search.mjs "xAI API documentation" --provider xai
+node ~/.rivetos/skills/websearch/scripts/search.mjs "xAI API documentation" --provider xai
 ```
 
 ### xAI with domain filters
 ```bash
-node /root/.rivetos/skills/websearch/scripts/search.mjs "release notes" --provider xai --allowed-domains docs.x.ai
+node ~/.rivetos/skills/websearch/scripts/search.mjs "release notes" --provider xai --allowed-domains docs.x.ai
 ```
 
 ### xAI with excluded domains
 ```bash
-node /root/.rivetos/skills/websearch/scripts/search.mjs "Python tutorials" --provider xai --excluded-domains w3schools.com,geeksforgeeks.org
+node ~/.rivetos/skills/websearch/scripts/search.mjs "Python tutorials" --provider xai --excluded-domains w3schools.com,geeksforgeeks.org
 ```
 
 ### Get raw JSON response
 ```bash
-node /root/.rivetos/skills/websearch/scripts/search.mjs "SpaceX launch schedule" --json
+node ~/.rivetos/skills/websearch/scripts/search.mjs "SpaceX launch schedule" --json
 ```
 
 ## Options
