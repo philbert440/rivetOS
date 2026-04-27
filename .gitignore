@@ -26,6 +26,7 @@ plugins/**/src/**/*.d.ts.map
 dep-graph.json
 REFACTOR_PROGRESS.md
 .rivetos-init-state.json
+scratch/
 
 # Bundled templates copied at publish time for @rivetos/cli
 packages/cli/workspace-templates/

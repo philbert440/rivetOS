@@ -5,10 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["dist", "**/*.test.ts"],
-  "references": [
-    { "path": "../types" },
-    { "path": "../core" },
-    { "path": "../boot" }
-  ]
+  "exclude": ["dist", "**/*.test.ts"]
 }

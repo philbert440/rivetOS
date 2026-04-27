@@ -14,15 +14,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "dist",
-    "rootDir": "src",
-    "composite": true,
-    "paths": {
-      "@rivetos/types": ["./packages/types/src/index.ts"],
-      "@rivetos/core": ["./packages/core/src/index.ts"],
-      "@rivetos/boot": ["./packages/boot/src/index.ts"],
-      "@rivetos/cli": ["./packages/cli/src/index.ts"],
-      "@rivetos/nx": ["./packages/nx-plugin/src/index.ts"]
-    }
+    "rootDir": "src"
   },
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
