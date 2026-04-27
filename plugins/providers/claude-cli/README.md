@@ -82,7 +82,7 @@ providers:
     permission_mode: bypassPermissions
     exclude_dynamic_sections: true
     append_system_prompt: true     # fold system messages into --append-system-prompt
-    cwd: /root/.rivetos/workspace  # cwd for the spawned process
+    cwd: ~/.rivetos/workspace      # cwd for the spawned process
     context_window: 200000
     max_output_tokens: 32000
 ```
