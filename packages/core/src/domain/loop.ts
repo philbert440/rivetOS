@@ -335,6 +335,11 @@ export class AgentLoop {
         thinking: this.config.thinking,
         modelOverride: activeModelOverride,
         freshConversation: this.config.freshConversation,
+        // Pass live executable tools through so providers that host an
+        // out-of-process tool runner (claude-cli MCP bridge) can register
+        // them on the embedded MCP server. LLM-only providers ignore this.
+        executableTools: this.config.tools.length > 0 ? this.config.tools : undefined,
+        agentId: this.config.agentId,
       }
 
       // --- Hook: provider:before ---

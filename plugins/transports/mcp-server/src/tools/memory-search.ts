@@ -20,7 +20,7 @@ export interface MemorySearchToolOptions {
   embedEndpoint?: string
   /** Embedding model name. Default `nemotron`. */
   embedModel?: string
-  /** Override the wire name. Default `rivetos.memory_search`. */
+  /** Override the wire name. Default `memory_search`. */
   name?: string
 }
 
@@ -37,9 +37,9 @@ export function createMemorySearchTool(options: MemorySearchToolOptions): Memory
     embedModel: options.embedModel,
   }
   const handle = createMemoryTools(passthrough)
-  const search = handle.tools.find((t) => t.name === 'rivetos.memory_search')
+  const search = handle.tools.find((t) => t.name === 'memory_search')
   if (!search) {
-    throw new Error('createMemorySearchTool: rivetos.memory_search not found (internal)')
+    throw new Error('createMemorySearchTool: memory_search not found (internal)')
   }
   // Optional rename — preserves the old `name` override.
   const tool: ToolRegistration = options.name ? { ...search, name: options.name } : search

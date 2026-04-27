@@ -1,5 +1,5 @@
 /**
- * Web data-plane tools — `rivetos.internet_search`, `rivetos.web_fetch`.
+ * Web data-plane tools — `internet_search`, `web_fetch`.
  *
  * Wraps the in-process tools from `@rivetos/tool-web-search` so external MCP
  * clients can search the web and fetch URLs through the same surface a local
@@ -28,7 +28,7 @@ export interface WebToolsOptions {
   userAgent?: string
   /** Default truncation cap for `web_fetch` (default: 5000). */
   defaultMaxChars?: number
-  /** Override the wire-name prefix. Default `rivetos.`. */
+  /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */
   prefix?: string
 }
 
@@ -44,7 +44,7 @@ export interface WebToolsHandle {
  * wrapping the in-process implementations from `@rivetos/tool-web-search`.
  */
 export function createWebTools(options: WebToolsOptions = {}): WebToolsHandle {
-  const prefix = options.prefix ?? 'rivetos.'
+  const prefix = options.prefix ?? ''
 
   const search = new WebSearchTool({
     googleApiKey: options.googleApiKey,

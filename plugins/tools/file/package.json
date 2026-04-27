@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/tool-file",
-  "version": "0.4.0-beta.5",
+  "version": "0.4.0-beta.6",
   "description": "File read, write, and edit tools for RivetOS agents",
   "license": "MIT",
   "main": "dist/index.js",
@@ -14,7 +14,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/types": "0.4.0-beta.5"
+    "@rivetos/types": "0.4.0-beta.6"
   },
   "rivetos": {
     "type": "tool",

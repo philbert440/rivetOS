@@ -1,5 +1,5 @@
 /**
- * Search utility tools — `rivetos.search_glob`, `rivetos.search_grep`.
+ * Search utility tools — `search_glob`, `search_grep`.
  *
  * Wraps the in-process tools from `@rivetos/tool-search` so external MCP
  * clients can find files (glob) and search file contents (grep) through the
@@ -25,7 +25,7 @@ import type { ToolRegistration } from '../server.js'
 import { adaptRivetTool } from './adapt.js'
 
 export interface SearchToolsOptions extends SearchGlobConfig, SearchGrepConfig {
-  /** Override the wire-name prefix. Default `rivetos.`. */
+  /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */
   prefix?: string
 }
 
@@ -41,7 +41,7 @@ export interface SearchToolsHandle {
  * wrapping the in-process implementations from `@rivetos/tool-search`.
  */
 export function createSearchTools(options: SearchToolsOptions = {}): SearchToolsHandle {
-  const { prefix = 'rivetos.', ...searchConfig } = options
+  const { prefix = '', ...searchConfig } = options
 
   const tools: ToolRegistration[] = [
     adaptRivetTool(createSearchGlobTool(searchConfig), searchGlobInputSchema, {

@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/cli",
-  "version": "0.4.0-beta.5",
+  "version": "0.4.0-beta.6",
   "description": "RivetOS command-line interface",
   "license": "Apache-2.0",
   "type": "module",
@@ -20,11 +20,11 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.2.0",
-    "@rivetos/boot": "0.4.0-beta.5",
-    "@rivetos/memory-postgres": "0.4.0-beta.5",
-    "@rivetos/provider-anthropic": "0.4.0-beta.5",
-    "@rivetos/provider-claude-cli": "0.4.0-beta.5",
-    "@rivetos/types": "0.4.0-beta.5",
+    "@rivetos/boot": "0.4.0-beta.6",
+    "@rivetos/memory-postgres": "0.4.0-beta.6",
+    "@rivetos/provider-anthropic": "0.4.0-beta.6",
+    "@rivetos/provider-claude-cli": "0.4.0-beta.6",
+    "@rivetos/types": "0.4.0-beta.6",
     "pg": "^8.20.0",
     "undici": "^8.1.0",
     "yaml": "^2.8.3"

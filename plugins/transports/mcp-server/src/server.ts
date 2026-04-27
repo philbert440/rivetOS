@@ -15,7 +15,7 @@
  *     mode 0600 and owned by the spawning process, so any peer that can
  *     connect is already trusted by the OS. Bearer is skipped on the socket
  *     unless explicitly configured.
- *   - **`rivetos.session.attach` handshake tool**, registered per-session
+ *   - **`session_attach` handshake tool**, registered per-session
  *     with a closure over the live session id. Records
  *     `{agent, runtimePid, clientName}` for observability.
  *
@@ -37,8 +37,12 @@ import { z } from 'zod'
 
 import { createSessionAttachTool, type SessionState } from './tools/session-attach.js'
 
-const SERVER_NAME = 'rivetos-mcp-server'
-const SERVER_VERSION = '0.4.0-beta.5'
+export const RIVETOS_MCP_SERVER_NAME = 'rivetos-mcp-server'
+export const RIVETOS_MCP_SERVER_VERSION = '0.4.0-beta.6'
+
+// Internal aliases — keep short names for the rest of the file.
+const SERVER_NAME = RIVETOS_MCP_SERVER_NAME
+const SERVER_VERSION = RIVETOS_MCP_SERVER_VERSION
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -78,7 +82,7 @@ export interface RivetMcpServerOptions {
    * localhost dev, never deploy this way.
    */
   authToken?: string
-  /** Tools to expose. Slice 1 ships an `rivetos.echo` smoke-test tool by default. */
+  /** Tools to expose. Slice 1 ships an `echo` smoke-test tool by default. */
   tools?: ToolRegistration[]
   /**
    * Optional logger. Defaults to `console.log`. Tests pass a no-op.
@@ -332,7 +336,7 @@ async function handleMcp(
   }
 
   // We need the session id BEFORE building the McpServer so the per-session
-  // `rivetos.session.attach` tool can close over it. The SDK calls
+  // `session_attach` tool can close over it. The SDK calls
   // `sessionIdGenerator()` exactly once during initialize, then reports it
   // via `onsessioninitialized`. Generate eagerly here so we can wire the
   // closure first.
@@ -364,7 +368,7 @@ async function handleMcp(
       sessionId,
       serverName: SERVER_NAME,
       serverVersion: SERVER_VERSION,
-      toolNames: () => [...ctx.tools.map((t) => t.name), 'rivetos.session.attach'],
+      toolNames: () => [...ctx.tools.map((t) => t.name), 'session_attach'],
       onAttach: (state) => {
         ctx.sessions.set(state.sessionId, state)
         ctx.log('mcp.session.attached', {
@@ -415,7 +419,7 @@ function buildMcpServer(tools: ToolRegistration[]): McpServer {
 
 export function defaultEchoTool(): ToolRegistration {
   return {
-    name: 'rivetos.echo',
+    name: 'echo',
     description:
       'Smoke-test tool. Echoes its input back, prefixed with "echo:". ' +
       'Used by the Phase 1.A scaffold to verify end-to-end tool wiring; ' +

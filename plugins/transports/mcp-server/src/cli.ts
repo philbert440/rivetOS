@@ -4,7 +4,7 @@
  *
  * Phase 1.A — slice 7' adds bearer-token auth on TCP and an alternative
  * unix-socket binding (filesystem perms as auth boundary), plus the
- * `rivetos.session.attach` handshake tool. Other slices ship the data-plane
+ * `session_attach` handshake tool. Other slices ship the data-plane
  * (memory, skills, web) and runtime-plane (delegate / subagent / shell / ...)
  * tools.
  *
@@ -21,26 +21,26 @@
  *                             non-dev setup. Compared in constant time
  *                             against `Authorization: Bearer <token>`.
  *   RIVETOS_PG_URL          — postgres connection string. If set, enables
- *                             `rivetos.memory_search`, `rivetos.memory_browse`,
- *                             and `rivetos.memory_stats`.
+ *                             `memory_search`, `memory_browse`,
+ *                             and `memory_stats`.
  *   RIVETOS_EMBED_URL       — optional embedding endpoint for hybrid search
  *   RIVETOS_EMBED_MODEL     — optional embedding model (default: nemotron)
  *   GOOGLE_CSE_API_KEY      — optional, enables Google search backend for
- *                             `rivetos.internet_search` (DuckDuckGo fallback
+ *                             `internet_search` (DuckDuckGo fallback
  *                             always available)
  *   GOOGLE_CSE_ID           — required alongside GOOGLE_CSE_API_KEY
- *   RIVETOS_USER_AGENT      — optional override for `rivetos.web_fetch`
+ *   RIVETOS_USER_AGENT      — optional override for `web_fetch`
  *   RIVETOS_SKILL_DIRS      — colon-separated dirs to scan for skills.
  *                             Default: ${HOME}/.rivetos/skills. Both workspace
  *                             and system dirs are writable from MCP.
- *   RIVETOS_MCP_ENABLE_SHELL=1     — enables `rivetos.shell` (write surface,
+ *   RIVETOS_MCP_ENABLE_SHELL=1     — enables `shell` (write surface,
  *                                    off by default). Maintains a session
  *                                    cwd across calls.
- *   RIVETOS_MCP_ENABLE_FILE=1      — enables `rivetos.file_read`,
- *                                    `rivetos.file_write`, `rivetos.file_edit`
+ *   RIVETOS_MCP_ENABLE_FILE=1      — enables `file_read`,
+ *                                    `file_write`, `file_edit`
  *                                    (write surface, off by default).
- *   RIVETOS_MCP_ENABLE_SEARCH=1    — enables `rivetos.search_glob`,
- *                                    `rivetos.search_grep` (read-only, off
+ *   RIVETOS_MCP_ENABLE_SEARCH=1    — enables `search_glob`,
+ *                                    `search_grep` (read-only, off
  *                                    by default for symmetry; safe to enable).
  *
  * Runtime-plane tools (delegate_task, subagent_*, ask_user, todo,
