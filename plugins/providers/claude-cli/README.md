@@ -26,6 +26,7 @@ claude -p \
   --exclude-dynamic-system-prompt-sections \
   [--model opus|sonnet] \
   [--append-system-prompt <persona>] \
+  [--mcp-config <ephemeral-tempfile>] \
   [--session-id <uuid>] \
   [--permission-mode bypassPermissions]
 ```
@@ -36,15 +37,38 @@ claude -p \
   stdin — the CLI handles the conversation from there.
 - `stream_event` JSON lines on stdout are translated into `LLMChunk`s.
 
-## Tool handling (Phase 1 — hybrid mode)
+## Tool handling (Phase 1.C — embedded MCP bridge)
 
-Claude runs its **built-in** tools (Bash/Read/Edit/etc.) locally on whatever
-host the provider is spawned on. RivetOS-specific tools (`memory_search`,
-`delegate_task`, `coding_pipeline`, …) are **not** reachable from this provider
-yet — that is planned as a Phase 2 MCP bridge.
+Two surfaces, two lanes:
 
-If you need RivetOS tools, either use the `anthropic` API-key provider for
-that turn or route to a different agent.
+1. **Native Claude Code tools** (Bash/Read/Edit/Grep/Glob/WebFetch/WebSearch/Task/
+   TodoWrite/Write) run inside the CLI process exactly as before. We don't shadow
+   what works.
+2. **RivetOS tools** (`memory_search`, `delegate_task`, `skill_list`, `web_fetch`,
+   the lot — every tool the host AgentLoop has) are exposed via a per-spawn
+   embedded MCP server. Claude sees them as `mcp__rivetos__<name>`.
+
+Mechanics for each `chatStream()` turn:
+
+1. `embedMcpServerForTurn({ tools, agentId })` brings up a fresh
+   `RivetMcpServer` on `127.0.0.1:0` (ephemeral OS-picked port) protected by
+   a 32-byte hex bearer.
+2. Each executable tool is wrapped via `adaptRivetToolDynamic` — its zod
+   schema is derived from the `Tool.parameters` JSON-Schema-ish object. Live
+   `execute` closures retain the host runtime context (DelegationEngine,
+   channel handle, conversation buffer) — that is the whole point of doing
+   this in-process instead of via runtime-RPC.
+3. A `.mcp-config.json` tempfile is written (mode 0600) pointing
+   claude-cli at the server with the bearer in the `headers` block.
+4. `claude -p ... --mcp-config <tempfile> ...` is spawned.
+5. On every exit path (success / error / timeout / abort), `bridge.close()`
+   stops the server and unlinks the tempfile.
+
+Soft-fail: if bridge bring-up throws, the provider logs to stderr and continues
+without it — the CLI still has its native tools, so the agent stays usable.
+
+Kill switch: set `RIVETOS_DISABLE_MCP_BRIDGE=1` to skip the bridge (e.g. for
+smoke testing the bare shellout).
 
 ## Config
 

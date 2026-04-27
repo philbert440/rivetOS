@@ -1,6 +1,6 @@
 /**
- * Memory data-plane tools — `rivetos.memory_search`, `rivetos.memory_browse`,
- * `rivetos.memory_stats`.
+ * Memory data-plane tools — `memory_search`, `memory_browse`,
+ * `memory_stats`.
  *
  * Wraps the in-process tools exported by `@rivetos/memory-postgres` so external
  * MCP clients (claude-cli, MCP Inspector, etc.) can hit the same surface a
@@ -27,7 +27,7 @@ export interface MemoryToolsOptions {
   embedEndpoint?: string
   /** Embedding model name. Default `nemotron`. */
   embedModel?: string
-  /** Override the wire-name prefix. Default `rivetos.`. */
+  /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */
   prefix?: string
 }
 
@@ -48,7 +48,7 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
     throw new Error('createMemoryTools: pgUrl is required')
   }
 
-  const prefix = options.prefix ?? 'rivetos.'
+  const prefix = options.prefix ?? ''
 
   const memory = new PostgresMemory({
     connectionString: options.pgUrl,

@@ -1,5 +1,5 @@
 /**
- * `rivetos.session.attach` — handshake tool every MCP client calls first.
+ * `session_attach` — handshake tool every MCP client calls first.
  *
  * Phase 1.A.7' — claude-cli scope. The MCP server runs alongside (or
  * in-process with) the RivetOS runtime; clients are local processes
@@ -73,7 +73,7 @@ export interface CreateSessionAttachToolOptions {
 
 export function createSessionAttachTool(opts: CreateSessionAttachToolOptions): ToolRegistration {
   return {
-    name: 'rivetos.session.attach',
+    name: 'session_attach',
     description:
       'Handshake tool every MCP client should call first. Records the calling agent / pid / client name for the lifetime of the session and returns the canonical session id, server version, and tool catalog. Optional but recommended.',
     inputSchema: sessionAttachInputSchema,

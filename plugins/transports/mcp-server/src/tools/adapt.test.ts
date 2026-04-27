@@ -59,10 +59,10 @@ describe('adaptRivetTool', () => {
 
   it('respects name and description overrides', () => {
     const reg = adaptRivetTool(fakeTool, inputSchema, {
-      name: 'rivetos.fake',
+      name: 'fake',
       description: 'Wired through MCP',
     })
-    expect(reg.name).toBe('rivetos.fake')
+    expect(reg.name).toBe('fake')
     expect(reg.description).toBe('Wired through MCP')
   })
 

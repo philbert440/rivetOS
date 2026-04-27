@@ -62,13 +62,13 @@ describe('RivetMcpServer (Phase 1.A slice 1)', () => {
     h = await setup()
     const tools = await h.client.listTools()
     const names = tools.tools.map((t) => t.name)
-    expect(names).toContain('rivetos.echo')
+    expect(names).toContain('echo')
   })
 
   it('round-trips a tool call via the echo tool', async () => {
     h = await setup()
     const result = await h.client.callTool({
-      name: 'rivetos.echo',
+      name: 'echo',
       arguments: { message: 'hello world' },
     })
 
@@ -80,7 +80,7 @@ describe('RivetMcpServer (Phase 1.A slice 1)', () => {
 
   it('runs a custom tool registration end-to-end', async () => {
     const adder: ToolRegistration = {
-      name: 'rivetos.test.adder',
+      name: 'test_adder',
       description: 'Adds two numbers — used in the integration test only.',
       inputSchema: {
         a: z.number(),
@@ -96,7 +96,7 @@ describe('RivetMcpServer (Phase 1.A slice 1)', () => {
     h = await setup([adder])
 
     const result = await h.client.callTool({
-      name: 'rivetos.test.adder',
+      name: 'test_adder',
       arguments: { a: 2, b: 3 },
     })
 

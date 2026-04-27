@@ -1,7 +1,7 @@
 /**
  * Integration test for the utility tool surface (Phase 1.A slice 1.B'.1) —
- * `rivetos.shell`, `rivetos.file_read`, `rivetos.file_write`,
- * `rivetos.file_edit`, `rivetos.search_glob`, `rivetos.search_grep`.
+ * `shell`, `file_read`, `file_write`,
+ * `file_edit`, `search_glob`, `search_grep`.
  *
  * Uses a temp directory as the playground so we don't pollute workspace
  * state. Verifies:
@@ -93,19 +93,19 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
   it('lists all six utility tools alongside echo', async () => {
     const tools = await client.listTools()
     const names = tools.tools.map((t) => t.name)
-    expect(names).toContain('rivetos.shell')
-    expect(names).toContain('rivetos.file_read')
-    expect(names).toContain('rivetos.file_write')
-    expect(names).toContain('rivetos.file_edit')
-    expect(names).toContain('rivetos.search_glob')
-    expect(names).toContain('rivetos.search_grep')
-    expect(names).toContain('rivetos.echo')
+    expect(names).toContain('shell')
+    expect(names).toContain('file_read')
+    expect(names).toContain('file_write')
+    expect(names).toContain('file_edit')
+    expect(names).toContain('search_glob')
+    expect(names).toContain('search_grep')
+    expect(names).toContain('echo')
   })
 
-  describe('rivetos.shell', () => {
+  describe('shell', () => {
     it('runs echo and returns stdout', async () => {
       const result = await client.callTool({
-        name: 'rivetos.shell',
+        name: 'shell',
         arguments: { command: 'echo hello-from-mcp' },
       })
       expect(result.isError).not.toBe(true)
@@ -114,13 +114,13 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
 
     it('cd persists across calls (session cwd)', async () => {
       const cd = await client.callTool({
-        name: 'rivetos.shell',
+        name: 'shell',
         arguments: { command: 'cd src' },
       })
       expect(firstText(cd.content)).toContain('Changed directory to')
 
       const pwd = await client.callTool({
-        name: 'rivetos.shell',
+        name: 'shell',
         arguments: { command: 'pwd' },
       })
       expect(firstText(pwd.content)).toContain('/src')
@@ -130,17 +130,17 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
     })
   })
 
-  describe('rivetos.file_*', () => {
+  describe('file_*', () => {
     it('write → read round-trip', async () => {
       const target = join(tempDir, 'roundtrip.txt')
       const written = await client.callTool({
-        name: 'rivetos.file_write',
+        name: 'file_write',
         arguments: { path: target, content: 'line one\nline two\nline three\n' },
       })
       expect(written.isError).not.toBe(true)
 
       const read = await client.callTool({
-        name: 'rivetos.file_read',
+        name: 'file_read',
         arguments: { path: target, line_numbers: false },
       })
       expect(read.isError).not.toBe(true)
@@ -153,7 +153,7 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
       await writeFile(target, 'before-marker\npersistent\n', 'utf-8')
 
       const edited = await client.callTool({
-        name: 'rivetos.file_edit',
+        name: 'file_edit',
         arguments: { path: target, old_string: 'before-marker', new_string: 'after-marker' },
       })
       expect(edited.isError).not.toBe(true)
@@ -169,7 +169,7 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
       await writeFile(target, 'dup\ndup\n', 'utf-8')
 
       const result = await client.callTool({
-        name: 'rivetos.file_edit',
+        name: 'file_edit',
         arguments: { path: target, old_string: 'dup', new_string: 'unique' },
       })
       // The Rivet tool returns the error as the result string (not throws).
@@ -178,10 +178,10 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
     })
   })
 
-  describe('rivetos.search_*', () => {
+  describe('search_*', () => {
     it('search_glob finds the seeded ts files', async () => {
       const result = await client.callTool({
-        name: 'rivetos.search_glob',
+        name: 'search_glob',
         arguments: { pattern: '**/*.ts', cwd: tempDir },
       })
       expect(result.isError).not.toBe(true)
@@ -192,7 +192,7 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
 
     it('search_grep finds the seeded token', async () => {
       const result = await client.callTool({
-        name: 'rivetos.search_grep',
+        name: 'search_grep',
         arguments: { pattern: 'SEEDED_TOKEN', path: tempDir },
       })
       expect(result.isError).not.toBe(true)

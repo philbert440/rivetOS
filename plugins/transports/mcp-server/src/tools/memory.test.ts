@@ -60,15 +60,15 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
   it('lists all three memory tools alongside echo', async () => {
     const tools = await client.listTools()
     const names = tools.tools.map((t) => t.name)
-    expect(names).toContain('rivetos.memory_search')
-    expect(names).toContain('rivetos.memory_browse')
-    expect(names).toContain('rivetos.memory_stats')
-    expect(names).toContain('rivetos.echo')
+    expect(names).toContain('memory_search')
+    expect(names).toContain('memory_browse')
+    expect(names).toContain('memory_stats')
+    expect(names).toContain('echo')
   })
 
   it('memory_search returns a text response for a real query', async () => {
     const result = await client.callTool({
-      name: 'rivetos.memory_search',
+      name: 'memory_search',
       arguments: { query: 'rivetos', limit: 3 },
     })
 
@@ -81,7 +81,7 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
 
   it('memory_browse returns a text response with chronological messages', async () => {
     const result = await client.callTool({
-      name: 'rivetos.memory_browse',
+      name: 'memory_browse',
       arguments: { limit: 5, order: 'desc' },
     })
 
@@ -94,7 +94,7 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
 
   it('memory_stats returns a health report', async () => {
     const result = await client.callTool({
-      name: 'rivetos.memory_stats',
+      name: 'memory_stats',
       arguments: {},
     })
 

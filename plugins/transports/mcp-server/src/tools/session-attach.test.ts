@@ -1,12 +1,12 @@
 /**
- * Integration tests for the per-session `rivetos.session.attach` tool.
+ * Integration tests for the per-session `session_attach` tool.
  *
  * Covers:
  *   - tool is auto-registered on every session
  *   - calling it returns the canonical `{sessionId, serverName, serverVersion,
  *     capabilities, attachedAt}` payload
  *   - the server's session map records the attach payload for observability
- *   - capabilities.tools includes both shared tools and `rivetos.session.attach`
+ *   - capabilities.tools includes both shared tools and `session_attach`
  */
 
 import { describe, it, expect, afterEach } from 'vitest'
@@ -50,19 +50,19 @@ async function setup(): Promise<Harness> {
   return { server, client }
 }
 
-describe('rivetos.session.attach', () => {
+describe('session_attach', () => {
   it('appears in the tool list of every session', async () => {
     const { client } = await setup()
     const list = await client.listTools()
     const names = list.tools.map((t) => t.name)
-    expect(names).toContain('rivetos.session.attach')
-    expect(names).toContain('rivetos.echo')
+    expect(names).toContain('session_attach')
+    expect(names).toContain('echo')
   })
 
   it('returns a canonical attach payload', async () => {
     const { client } = await setup()
     const result = await client.callTool({
-      name: 'rivetos.session.attach',
+      name: 'session_attach',
       arguments: {
         agent: 'claude-cli',
         runtimePid: 4242,
@@ -81,15 +81,15 @@ describe('rivetos.session.attach', () => {
     }
     expect(payload.serverName).toBe('rivetos-mcp-server')
     expect(payload.sessionId).toMatch(/^[0-9a-f-]{36}$/)
-    expect(payload.capabilities.tools).toContain('rivetos.echo')
-    expect(payload.capabilities.tools).toContain('rivetos.session.attach')
+    expect(payload.capabilities.tools).toContain('echo')
+    expect(payload.capabilities.tools).toContain('session_attach')
     expect(payload.attachedAt).toBeGreaterThan(0)
   })
 
   it('records the attach state on the server', async () => {
     const { server, client } = await setup()
     await client.callTool({
-      name: 'rivetos.session.attach',
+      name: 'session_attach',
       arguments: {
         agent: 'opus',
         runtimePid: 7777,
@@ -111,7 +111,7 @@ describe('rivetos.session.attach', () => {
   it('runs without arguments (all fields optional)', async () => {
     const { client } = await setup()
     const result = await client.callTool({
-      name: 'rivetos.session.attach',
+      name: 'session_attach',
       arguments: {},
     })
     expect(result.isError).not.toBe(true)
