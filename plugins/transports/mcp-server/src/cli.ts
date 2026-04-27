@@ -2,13 +2,24 @@
 /**
  * `rivetos-mcp-server` — standalone entrypoint.
  *
- * Phase 1.A — Slice 3: starts the StreamableHTTP server with the default
- * echo smoke-test tool, the full memory data-plane (when `RIVETOS_PG_URL`
- * is set), and web tools (always enabled).
+ * Phase 1.A — slice 7' adds bearer-token auth on TCP and an alternative
+ * unix-socket binding (filesystem perms as auth boundary), plus the
+ * `rivetos.session.attach` handshake tool. Other slices ship the data-plane
+ * (memory, skills, web) and runtime-plane (delegate / subagent / shell / ...)
+ * tools.
  *
  * Env:
  *   MCP_HOST                — default 127.0.0.1
  *   MCP_PORT                — default 5700
+ *   RIVETOS_MCP_SOCKET      — bind to this unix socket path INSTEAD of TCP.
+ *                             When set, MCP_HOST/PORT are ignored; the socket
+ *                             is created mode 0600 and the bearer token is
+ *                             skipped (filesystem perms ARE the auth
+ *                             boundary). Set RIVETOS_MCP_REQUIRE_BEARER=1 to
+ *                             demand bearer even on the socket.
+ *   RIVETOS_MCP_TOKEN       — bearer token. Required for TCP binds in any
+ *                             non-dev setup. Compared in constant time
+ *                             against `Authorization: Bearer <token>`.
  *   RIVETOS_PG_URL          — postgres connection string. If set, enables
  *                             `rivetos.memory_search`, `rivetos.memory_browse`,
  *                             and `rivetos.memory_stats`.
@@ -23,8 +34,7 @@
  *                             Default: ${HOME}/.rivetos/skills. Both workspace
  *                             and system dirs are writable from MCP.
  *
- * Real config (cert paths, full tool registrations, runtime-RPC) lands in
- * subsequent slices.
+ * Runtime-plane tools and the claude-cli MCP bridge land in later slices.
  */
 
 import { createMcpServer, defaultEchoTool, type ToolRegistration } from './server.js'
@@ -35,6 +45,9 @@ import { createWebTools, type WebToolsHandle } from './tools/web.js'
 async function main(): Promise<void> {
   const host = process.env.MCP_HOST ?? '127.0.0.1'
   const port = Number.parseInt(process.env.MCP_PORT ?? '5700', 10)
+  const socketPath = process.env.RIVETOS_MCP_SOCKET
+  const authToken = process.env.RIVETOS_MCP_TOKEN
+  const requireBearerOnSocket = process.env.RIVETOS_MCP_REQUIRE_BEARER === '1'
 
   const tools: ToolRegistration[] = [defaultEchoTool()]
   const cleanups: Array<() => Promise<void>> = []
@@ -99,8 +112,31 @@ async function main(): Promise<void> {
     console.error(`[rivetos-mcp-server] failed to enable web tools: ${message}`)
   }
 
-  const server = createMcpServer({ host, port, tools })
+  const server = createMcpServer({
+    host,
+    port,
+    socketPath,
+    authToken,
+    requireBearerOnSocket,
+    tools,
+  })
   await server.start()
+
+  if (socketPath) {
+    console.log(
+      `[rivetos-mcp-server] bound to unix socket ${socketPath} (mode 0600)` +
+        (authToken && requireBearerOnSocket
+          ? ' [bearer required]'
+          : ' [bearer skipped — fs perms are the auth boundary]'),
+    )
+  } else {
+    console.log(
+      `[rivetos-mcp-server] bound to ${host}:${String(port)}` +
+        (authToken
+          ? ' [bearer required]'
+          : ' [WARNING: no RIVETOS_MCP_TOKEN — bind is unauthenticated, localhost-only OK for dev]'),
+    )
+  }
 
   const shutdown = (signal: string) => {
     console.log(`[rivetos-mcp-server] received ${signal}, shutting down`)
