@@ -54,5 +54,9 @@
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "rivetos": {
+    "type": "transport",
+    "name": "mcp"
   }
 }

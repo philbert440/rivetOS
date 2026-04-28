@@ -120,6 +120,17 @@ export function validateConfig(config: unknown): ValidationResult {
     }
   }
 
+  // === transports (optional) ===
+  if (cfg.transports) {
+    if (typeof cfg.transports !== 'object' || Array.isArray(cfg.transports)) {
+      issues.push({
+        severity: 'error',
+        path: 'transports',
+        message: '"transports" must be an object mapping transport names to their config',
+      })
+    }
+  }
+
   // === deployment (optional) ===
   if (cfg.deployment) {
     if (typeof cfg.deployment !== 'object' || Array.isArray(cfg.deployment)) {
