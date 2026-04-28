@@ -34,6 +34,7 @@ import type {
   LLMResponse,
   LLMUsage,
   ThinkingLevel,
+  PluginManifest,
 } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
@@ -608,4 +609,33 @@ async function* iterateLines(stream: NodeJS.ReadableStream): AsyncIterable<strin
     }
   }
   if (buffer.length > 0) yield buffer
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'provider',
+  name: 'claude-cli',
+  register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    ctx.registerProvider(
+      new ClaudeCliProvider({
+        binary: cfg.binary as string | undefined,
+        model: cfg.model as string | undefined,
+        tools: cfg.tools as string | undefined,
+        effort: cfg.effort as ClaudeCliProviderConfig['effort'],
+        permissionMode: cfg.permission_mode as ClaudeCliProviderConfig['permissionMode'],
+        excludeDynamicSections: cfg.exclude_dynamic_sections as boolean | undefined,
+        appendSystemPrompt: cfg.append_system_prompt as boolean | undefined,
+        cwd: cfg.cwd as string | undefined,
+        timeoutMs: cfg.timeout_ms as number | undefined,
+        id: 'claude-cli',
+        name: (cfg.name as string | undefined) ?? 'claude-cli',
+        contextWindow: cfg.context_window as number | undefined,
+        maxOutputTokens: cfg.max_output_tokens as number | undefined,
+      }),
+    )
+  },
 }
