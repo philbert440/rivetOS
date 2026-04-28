@@ -25,6 +25,7 @@ import type {
   LLMChunk,
   LLMResponse,
   ThinkingLevel,
+  PluginManifest,
 } from '@rivetos/types'
 import { ProviderError, MODEL_DEFAULTS } from '@rivetos/types'
 
@@ -459,4 +460,27 @@ export class OllamaProvider implements Provider {
   switchModel(model: string): void {
     this.model = model
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'provider',
+  name: 'ollama',
+  register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    ctx.registerProvider(
+      new OllamaProvider({
+        baseUrl: cfg.base_url as string | undefined,
+        model: cfg.model as string | undefined,
+        numCtx: cfg.num_ctx as number | undefined,
+        temperature: cfg.temperature as number | undefined,
+        keepAlive: cfg.keep_alive as string | undefined,
+        contextWindow: cfg.context_window as number | undefined,
+        maxOutputTokens: cfg.max_output_tokens as number | undefined,
+      }),
+    )
+  },
 }

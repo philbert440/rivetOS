@@ -30,6 +30,7 @@ import type {
   LLMResponse,
   LLMUsage,
   ThinkingLevel,
+  PluginManifest,
 } from '@rivetos/types'
 import { ProviderError, hasImages, MODEL_DEFAULTS } from '@rivetos/types'
 import { randomUUID } from 'node:crypto'
@@ -1079,4 +1080,25 @@ export class XAIProvider implements Provider {
       return false
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'provider',
+  name: 'xai',
+  register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    ctx.registerProvider(
+      new XAIProvider({
+        apiKey: (cfg.api_key as string | undefined) ?? ctx.env.XAI_API_KEY ?? '',
+        model: cfg.model as string | undefined,
+        temperature: cfg.temperature as number | undefined,
+        contextWindow: cfg.context_window as number | undefined,
+        maxOutputTokens: cfg.max_output_tokens as number | undefined,
+      }),
+    )
+  },
 }

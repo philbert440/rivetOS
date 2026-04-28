@@ -17,6 +17,7 @@ import type {
   LLMChunk,
   LLMResponse,
   ThinkingLevel,
+  PluginManifest,
 } from '@rivetos/types'
 import { ProviderError, MODEL_DEFAULTS } from '@rivetos/types'
 
@@ -474,4 +475,25 @@ export class GoogleProvider implements Provider {
       return false
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'provider',
+  name: 'google',
+  register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    ctx.registerProvider(
+      new GoogleProvider({
+        apiKey: (cfg.api_key as string | undefined) ?? ctx.env.GOOGLE_API_KEY ?? '',
+        model: cfg.model as string | undefined,
+        maxTokens: cfg.max_tokens as number | undefined,
+        contextWindow: cfg.context_window as number | undefined,
+        maxOutputTokens: cfg.max_output_tokens as number | undefined,
+      }),
+    )
+  },
 }

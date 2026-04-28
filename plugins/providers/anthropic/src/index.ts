@@ -17,6 +17,7 @@ import type {
   LLMChunk,
   LLMResponse,
   ThinkingLevel,
+  PluginManifest,
 } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
 
@@ -658,4 +659,31 @@ export class AnthropicProvider implements Provider {
       return false
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'provider',
+  name: 'anthropic',
+  register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    const apiKey = (cfg.api_key as string | undefined) ?? ctx.env.ANTHROPIC_API_KEY ?? ''
+    if (!apiKey) {
+      ctx.logger.warn(
+        'No Anthropic API key found. Set ANTHROPIC_API_KEY or providers.anthropic.api_key',
+      )
+    }
+    ctx.registerProvider(
+      new AnthropicProvider({
+        apiKey,
+        model: cfg.model as string,
+        maxTokens: cfg.max_tokens as number | undefined,
+        contextWindow: cfg.context_window as number | undefined,
+        maxOutputTokens: cfg.max_output_tokens as number | undefined,
+      }),
+    )
+  },
 }

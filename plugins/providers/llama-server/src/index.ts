@@ -27,6 +27,7 @@ import type {
   ChatOptions,
   LLMChunk,
   LLMResponse,
+  PluginManifest,
 } from '@rivetos/types'
 import { ProviderError, MODEL_DEFAULTS } from '@rivetos/types'
 
@@ -614,4 +615,41 @@ export class LlamaServerProvider implements Provider {
       return false
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'provider',
+  name: 'llama-server',
+  register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    ctx.registerProvider(
+      new LlamaServerProvider({
+        baseUrl: cfg.base_url as string,
+        apiKey: cfg.api_key as string | undefined,
+        model: cfg.model as string | undefined,
+        maxTokens: cfg.max_tokens as number | undefined,
+        temperature: cfg.temperature as number | undefined,
+        topP: cfg.top_p as number | undefined,
+        topK: cfg.top_k as number | undefined,
+        minP: cfg.min_p as number | undefined,
+        typicalP: cfg.typical_p as number | undefined,
+        repeatPenalty: cfg.repeat_penalty as number | undefined,
+        repeatLastN: cfg.repeat_last_n as number | undefined,
+        presencePenalty: cfg.presence_penalty as number | undefined,
+        frequencyPenalty: cfg.frequency_penalty as number | undefined,
+        mirostat: cfg.mirostat as 0 | 1 | 2 | undefined,
+        mirostatTau: cfg.mirostat_tau as number | undefined,
+        mirostatEta: cfg.mirostat_eta as number | undefined,
+        seed: cfg.seed as number | undefined,
+        id: 'llama-server',
+        name: (cfg.name as string | undefined) ?? 'llama-server',
+        contextWindow: cfg.context_window as number | undefined,
+        maxOutputTokens: cfg.max_output_tokens as number | undefined,
+      }),
+    )
+  },
 }
