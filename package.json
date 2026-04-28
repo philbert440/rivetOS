@@ -53,7 +53,8 @@
   "scripts": {
     "postinstall": "npm run build && npm run link-cli",
     "link-cli": "node scripts/link-cli.mjs",
-    "build": "nx run-many -t build --exclude container-agent,container-datahub,site",
+    "build": "nx run-many -t build --exclude container-agent,container-datahub,container-rivetos,site",
+    "bundle": "node scripts/bundle.mjs",
     "lint": "nx run-many -t lint",
     "test": "nx run-many -t test",
     "typecheck": "nx run-many -t typecheck",
@@ -75,6 +76,7 @@
     "@eslint/js": "^10.0.1",
     "@nx/js": "22.7.0",
     "@types/node": "^25.6.0",
+    "esbuild": "^0.28.0",
     "eslint": "^10.2.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.5",
