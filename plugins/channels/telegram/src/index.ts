@@ -22,6 +22,7 @@ import type {
   OutboundMessage,
   Attachment,
   ResolvedAttachment,
+  PluginManifest,
 } from '@rivetos/types'
 import { splitMessage, COMMAND_REGISTRY } from '@rivetos/types'
 import { markdownToTelegramHtml } from './format.js'
@@ -576,4 +577,24 @@ export class TelegramChannel implements Channel {
     }
     await this.bot.stop()
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'channel',
+  name: 'telegram',
+  register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    ctx.registerChannel(
+      new TelegramChannel({
+        botToken: (cfg.bot_token as string | undefined) ?? ctx.env.TELEGRAM_BOT_TOKEN ?? '',
+        ownerId: (cfg.owner_id as string | undefined) ?? '',
+        allowedUsers: cfg.allowed_users as string[] | undefined,
+        agent: cfg.agent as string | undefined,
+      }),
+    )
+  },
 }
