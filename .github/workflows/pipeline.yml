@@ -82,7 +82,8 @@ jobs:
           echo "✅ No API key leaks found"
 
   ci:
-    name: Lint / Test / Build
+    # Check name is `ci` (default from job id) to satisfy the
+    # `ci` required status check in branch protection on main.
     runs-on: ubuntu-latest
     needs: secrets-scan
 
