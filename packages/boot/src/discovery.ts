@@ -18,7 +18,7 @@
 
 import { readdir, readFile } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
-import type { PluginType, PluginManifest } from '@rivetos/types'
+import type { PluginType, PluginDescriptor } from '@rivetos/types'
 import { logger } from '@rivetos/core'
 
 const log = logger('Boot:Discovery')
@@ -30,8 +30,8 @@ const log = logger('Boot:Discovery')
 export interface DiscoveredPlugin {
   /** npm package name (e.g. @rivetos/provider-anthropic) */
   packageName: string
-  /** Plugin manifest from package.json */
-  manifest: PluginManifest
+  /** Static descriptor read from `package.json#rivetos` */
+  descriptor: PluginDescriptor
   /** Absolute path to the plugin directory */
   path: string
 }
@@ -123,34 +123,33 @@ export async function discoverPlugins(
       const raw = await readFile(pkgPath, 'utf-8')
       const pkg = JSON.parse(raw) as {
         name?: string
-        rivetos?: Partial<PluginManifest>
+        rivetos?: Partial<PluginDescriptor>
       }
 
       if (!pkg.rivetos || !pkg.name) continue
       if (seenPackages.has(pkg.name)) continue
 
-      const manifest = pkg.rivetos
+      const descriptor = pkg.rivetos
 
-      // Validate manifest
-      if (!manifest.type || !manifest.name) {
-        log.warn(`Invalid rivetos manifest in ${pkgPath} — missing type or name`)
+      if (!descriptor.type || !descriptor.name) {
+        log.warn(`Invalid rivetos descriptor in ${pkgPath} — missing type or name`)
         continue
       }
 
-      const validTypes: PluginType[] = ['provider', 'channel', 'tool', 'memory']
-      if (!validTypes.includes(manifest.type)) {
-        log.warn(`Invalid plugin type "${manifest.type}" in ${pkgPath}`)
+      const validTypes: PluginType[] = ['provider', 'channel', 'tool', 'memory', 'transport']
+      if (!validTypes.includes(descriptor.type)) {
+        log.warn(`Invalid plugin type "${descriptor.type}" in ${pkgPath}`)
         continue
       }
 
       seenPackages.add(pkg.name)
       discovered.push({
         packageName: pkg.name,
-        manifest: manifest as PluginManifest,
+        descriptor: descriptor as PluginDescriptor,
         path: dir,
       })
 
-      log.debug(`Discovered: ${manifest.type}/${manifest.name} → ${pkg.name}`)
+      log.debug(`Discovered: ${descriptor.type}/${descriptor.name} → ${pkg.name}`)
     } catch {
       // No package.json or invalid JSON — skip
     }
@@ -158,10 +157,11 @@ export async function discoverPlugins(
 
   log.info(
     `Discovered ${discovered.length} plugin(s): ` +
-      `${discovered.filter((p) => p.manifest.type === 'provider').length} providers, ` +
-      `${discovered.filter((p) => p.manifest.type === 'channel').length} channels, ` +
-      `${discovered.filter((p) => p.manifest.type === 'tool').length} tools, ` +
-      `${discovered.filter((p) => p.manifest.type === 'memory').length} memory`,
+      `${discovered.filter((p) => p.descriptor.type === 'provider').length} providers, ` +
+      `${discovered.filter((p) => p.descriptor.type === 'channel').length} channels, ` +
+      `${discovered.filter((p) => p.descriptor.type === 'tool').length} tools, ` +
+      `${discovered.filter((p) => p.descriptor.type === 'memory').length} memory, ` +
+      `${discovered.filter((p) => p.descriptor.type === 'transport').length} transport`,
   )
 
   return createRegistry(discovered)
@@ -175,7 +175,7 @@ function createRegistry(plugins: DiscoveredPlugin[]): PluginRegistry {
   const byTypeAndName = new Map<string, DiscoveredPlugin>()
 
   for (const plugin of plugins) {
-    const key = `${plugin.manifest.type}:${plugin.manifest.name}`
+    const key = `${plugin.descriptor.type}:${plugin.descriptor.name}`
     if (byTypeAndName.has(key)) {
       log.warn(
         `Duplicate plugin ${key}: ${plugin.packageName} conflicts with ${byTypeAndName.get(key)!.packageName}`,
@@ -192,7 +192,7 @@ function createRegistry(plugins: DiscoveredPlugin[]): PluginRegistry {
     },
 
     getByType(type: PluginType): DiscoveredPlugin[] {
-      return plugins.filter((p) => p.manifest.type === type)
+      return plugins.filter((p) => p.descriptor.type === type)
     },
 
     has(type: PluginType, name: string): boolean {
