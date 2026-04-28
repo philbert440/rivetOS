@@ -42,7 +42,7 @@ RUN find packages plugins apps services -name 'tsconfig.tsbuildinfo' -delete 2>/
 # downstream `tsc -b` can fire before the upstream project has finished writing
 # `dist/index.d.ts`. Serial build sidesteps the race. Costs ~30s but deterministic.
 RUN npm ci --ignore-scripts \
- && npx nx run-many -t build --exclude container-agent,container-datahub,site --parallel=1 \
+ && npx nx run-many -t build --exclude container-agent,container-datahub,container-rivetos,site --parallel=1 \
  && node scripts/link-cli.mjs
 
 # Non-root user — the agent should not run as root
