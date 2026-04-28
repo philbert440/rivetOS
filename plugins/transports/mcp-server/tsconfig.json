@@ -1,18 +1,5 @@
 {
   "extends": "../../../tsconfig.base.json",
-  "compilerOptions": {
-    "composite": true,
-    "outDir": "dist",
-    "rootDir": "src"
-  },
-  "include": ["src/**/*"],
-  "references": [
-    { "path": "../../../packages/types" },
-    { "path": "../../../packages/core" },
-    { "path": "../../memory/postgres" },
-    { "path": "../../tools/file" },
-    { "path": "../../tools/search" },
-    { "path": "../../tools/shell" },
-    { "path": "../../tools/web-search" }
-  ]
+  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "include": ["src/**/*"]
 }
