@@ -23,7 +23,14 @@ import {
   type ServerResponse,
 } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
-import type { Channel, InboundMessage, OutboundMessage, Tool, MeshNode } from '@rivetos/types'
+import type {
+  Channel,
+  InboundMessage,
+  OutboundMessage,
+  Tool,
+  MeshNode,
+  PluginManifest,
+} from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -582,4 +589,29 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')))
     req.on('error', reject)
   })
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'channel',
+  name: 'agent',
+  register(ctx) {
+    const cfg = (ctx.pluginConfig ?? {}) as Record<string, unknown> & {
+      agentId?: string
+      agent_id?: string
+    }
+    ctx.registerChannel(
+      new AgentChannel({
+        port: cfg.port as number | undefined,
+        host: cfg.host as string | undefined,
+        secret: cfg.secret as string | undefined,
+        agentId: cfg.agentId ?? cfg.agent_id ?? '',
+        peers: cfg.peers as Record<string, PeerConfig> | undefined,
+        tls: cfg.tls as AgentChannelTlsConfig | undefined,
+      }),
+    )
+  },
 }

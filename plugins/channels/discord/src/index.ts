@@ -44,6 +44,7 @@ import type {
   OutboundMessage,
   Attachment,
   ResolvedAttachment,
+  PluginManifest,
 } from '@rivetos/types'
 import { splitMessage, COMMAND_NAMES } from '@rivetos/types'
 
@@ -602,4 +603,28 @@ export class DiscordChannel implements Channel {
     }
     await this.client.destroy()
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'channel',
+  name: 'discord',
+  register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    ctx.registerChannel(
+      new DiscordChannel({
+        botToken: (cfg.bot_token as string | undefined) ?? ctx.env.DISCORD_BOT_TOKEN ?? '',
+        ownerId: (cfg.owner_id as string | undefined) ?? '',
+        allowedGuilds: cfg.allowed_guilds as string[] | undefined,
+        allowedChannels: cfg.allowed_channels as string[] | undefined,
+        allowedUsers: cfg.allowed_users as string[] | undefined,
+        channelBindings: cfg.channel_bindings as Record<string, string> | undefined,
+        mentionOnlyChannels: cfg.mention_only_channels as string[] | undefined,
+        mentionOnly: cfg.mention_only as boolean | undefined,
+      }),
+    )
+  },
 }
