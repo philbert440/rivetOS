@@ -14,11 +14,8 @@ import type { ThinkingLevel } from '@rivetos/types'
 import { loadConfig } from './config.js'
 import { discoverPlugins } from './discovery.js'
 import { registerHooks } from './registrars/hooks.js'
-import { registerProviders } from './registrars/providers.js'
-import { registerChannels } from './registrars/channels.js'
-import { registerTools } from './registrars/tools.js'
+import { registerPlugins } from './registrars/plugins.js'
 import { registerAgentTools } from './registrars/agents.js'
-import { registerMemory } from './registrars/memory.js'
 import { writePidFile, registerShutdownHandlers } from './lifecycle.js'
 
 // Re-export config types for consumers
@@ -138,13 +135,11 @@ export async function boot(configPath?: string): Promise<void> {
     configPath,
   })
 
-  // 3. Providers, channels, memory, tools (order doesn't matter between these)
-  await registerProviders(runtime, config, registry)
-  await registerChannels(runtime, config, registry)
-  await registerMemory(runtime, config, pipeline)
-  await registerTools(runtime, config, workspaceDir, registry)
+  // 3. All discovered plugins (providers, channels, memory, tools) — each
+  //    plugin owns its config resolution and lifecycle via its `manifest`.
+  await registerPlugins(runtime, config, registry, pipeline, workspaceDir)
 
-  // 4. Agent tools (delegation, sub-agents, skills) — after tools so they can reference them
+  // 4. Agent tools (delegation, sub-agents, skills) — after plugins so they can reference them
   await registerAgentTools(runtime, config, workspaceDir)
 
   // 5. Lifecycle

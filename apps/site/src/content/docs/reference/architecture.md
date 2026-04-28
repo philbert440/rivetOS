@@ -163,11 +163,10 @@ FileMeshRegistry — owns mesh node registration, heartbeat, pruning.
 │  │                                                      │    │
 │  │  Config loader → Registrars → Lifecycle              │    │
 │  │                                                      │    │
-│  │  registrars/providers.ts  — instantiate providers     │    │
-│  │  registrars/channels.ts   — instantiate channels      │    │
+│  │  registrars/plugins.ts    — manifest-driven: all      │    │
+│  │                             discovered providers,     │    │
+│  │                             channels, tools, memory   │    │
 │  │  registrars/hooks.ts      — wire safety/fallback/etc  │    │
-│  │  registrars/tools.ts      — register all tools        │    │
-│  │  registrars/memory.ts     — wire memory backend       │    │
 │  │  registrars/agents.ts     — delegation/subagent/skills│    │
 │  └──────────────────────────────────────────────────────┘    │
 │                                                               │
