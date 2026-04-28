@@ -46,6 +46,7 @@ import type {
   ChatOptions,
   LLMChunk,
   LLMResponse,
+  PluginManifest,
 } from '@rivetos/types'
 import { ProviderError, MODEL_DEFAULTS } from '@rivetos/types'
 
@@ -678,4 +679,37 @@ export class OpenAICompatProvider implements Provider {
       return false
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'provider',
+  name: 'openai-compat',
+  register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    ctx.registerProvider(
+      new OpenAICompatProvider({
+        baseUrl: cfg.base_url as string,
+        apiKey: (cfg.api_key as string | undefined) ?? ctx.env.OPENAI_COMPAT_API_KEY ?? '',
+        model: cfg.model as string | undefined,
+        maxTokens: cfg.max_tokens as number | undefined,
+        temperature: cfg.temperature as number | undefined,
+        topP: cfg.top_p as number | undefined,
+        topK: cfg.top_k as number | undefined,
+        minP: cfg.min_p as number | undefined,
+        presencePenalty: cfg.presence_penalty as number | undefined,
+        frequencyPenalty: cfg.frequency_penalty as number | undefined,
+        seed: cfg.seed as number | undefined,
+        defaultToolChoice: cfg.default_tool_choice as ToolChoice | undefined,
+        verifyModelOnInit: cfg.verify_model_on_init as boolean | undefined,
+        id: 'openai-compat',
+        name: (cfg.name as string | undefined) ?? 'openai-compat',
+        contextWindow: cfg.context_window as number | undefined,
+        maxOutputTokens: cfg.max_output_tokens as number | undefined,
+      }),
+    )
+  },
 }
