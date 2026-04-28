@@ -88,7 +88,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │       │   └── proxmox/         # Proxmox LXC provider
 │       └── orchestrator.ts      # Reads config, picks provider, deploys
 │
-├── .github/workflows/ci.yml    # GitHub Actions (lint, build, test — affected only)
+├── .github/workflows/pipeline.yml  # GitHub Actions: lint/test/build → publish npm + containers → notify-ops
 ├── docker-compose.yaml          # Multi-agent Docker Compose with profiles
 ├── .env.example                 # Template for secrets
 ├── nx.json                      # Nx configuration
@@ -674,7 +674,7 @@ deployment:             # Optional — drives containerized deployment
 
 ### Infrastructure
 
-8. **CI doesn't build containers** — The `ci.yml` workflow only does lint/build/test on packages. Container image builds are a separate concern (documented in roadmap but not yet wired).
+8. **CI builds packages and containers in one pipeline** — `pipeline.yml` runs lint/build/test, then fans out to `publish-npm` and `containers` (matrix: agent + datahub) in parallel, with `notify-ops` gated on both.
 
 9. **Infra providers are untested** — Docker and Proxmox providers have implementations but no tests and haven't been run end-to-end.
 

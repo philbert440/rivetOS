@@ -252,8 +252,7 @@ rivetOS/
     tsconfig.json
   .github/
     workflows/
-      ci.yml                         ← PR: lint+test, merge: build, release: publish
-      containers.yml                 ← container image builds
+      pipeline.yml                   ← single orchestrator: secrets-scan → ci → (publish-npm, containers) → notify-ops
   packages/
     types/                           ← interfaces only, zero deps
       src/
