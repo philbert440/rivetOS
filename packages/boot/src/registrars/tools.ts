@@ -30,7 +30,7 @@ export async function registerTools(
   const discovered = registry.getByType('tool')
 
   for (const plugin of discovered) {
-    const name = plugin.manifest.name
+    const name = plugin.descriptor.name
 
     try {
       const mod = (await import(plugin.packageName)) as Record<string, unknown>

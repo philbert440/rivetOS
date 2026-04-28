@@ -1,35 +1,89 @@
 /**
  * Plugin interface — a loadable extension that provides tools, channels, providers, or memory.
  *
- * All plugin types extend the base Plugin interface. Each adds a factory method
- * for its specific concern:
- *   - ToolPlugin.getTools()       → Tool[]
- *   - ProviderPlugin.createProvider() → Provider
- *   - ChannelPlugin.createChannel()   → Channel
- *   - MemoryPlugin.createMemory()     → Memory
+ * Self-registration model:
+ *   Each plugin package's index.ts exports a `manifest: PluginManifest` const.
+ *   Boot discovers plugins via `package.json#rivetos`, dynamic-imports the
+ *   package, and calls `manifest.register(ctx)`. The plugin owns its own
+ *   config resolution, constructor args, env-var lookup, and shutdown wiring.
+ *   Boot has no per-plugin knowledge.
  *
- * Convention: every plugin package exports a `createPlugin(config)` function
- * that returns the appropriate plugin type.
+ * The package.json#rivetos descriptor (kind + name) is duplicated in the
+ * exported manifest so discovery can find packages without importing them
+ * and runtime registration has a typed contract.
  */
 
 import type { Tool } from './tool.js'
 import type { Provider } from './provider.js'
 import type { Channel } from './channel.js'
 import type { Memory } from './memory.js'
+import type { HookRegistration } from './hooks.js'
 
 // ---------------------------------------------------------------------------
-// Plugin manifest — declared in package.json under "rivetos" field
+// Plugin descriptor (package.json#rivetos field — used by discovery)
 // ---------------------------------------------------------------------------
 
-export type PluginType = 'provider' | 'channel' | 'tool' | 'memory'
+export type PluginType = 'provider' | 'channel' | 'tool' | 'memory' | 'transport'
 
-export interface PluginManifest {
-  /** Plugin type */
+/**
+ * Static descriptor — what discovery reads out of `package.json#rivetos`.
+ * Identifies the plugin without requiring a dynamic import.
+ */
+export interface PluginDescriptor {
   type: PluginType
-  /** Plugin name (used in config to reference this plugin) */
   name: string
-  /** Export name of the createPlugin function (default: 'createPlugin') */
-  factory?: string
+}
+
+// ---------------------------------------------------------------------------
+// Registration context — passed to manifest.register() at boot time.
+// Plugins use this to read config, resolve env vars, and register themselves
+// with the runtime. Kept minimal and runtime-agnostic so the types package
+// stays a leaf.
+// ---------------------------------------------------------------------------
+
+export interface PluginLogger {
+  debug(msg: string): void
+  info(msg: string): void
+  warn(msg: string): void
+  error(msg: string): void
+}
+
+export interface RegistrationContext {
+  /** Full validated runtime config (cast to RivetConfig in boot consumers) */
+  readonly config: unknown
+  /**
+   * Per-plugin config slice. For providers/channels: `config.<kind>s[name]`.
+   * For tools/memory/transports: undefined (the plugin reads from `config`
+   * directly since its config lives elsewhere — e.g., config.mcp.servers).
+   */
+  readonly pluginConfig: Record<string, unknown> | undefined
+  readonly env: Record<string, string | undefined>
+  readonly workspaceDir: string
+  readonly logger: PluginLogger
+
+  registerProvider(provider: Provider): void
+  registerChannel(channel: Channel): void
+  registerTool(tool: Tool): void
+  registerMemory(memory: Memory): void
+  registerHook(hook: HookRegistration): void
+  registerShutdown(fn: () => Promise<void> | void): void
+
+  /**
+   * Returns a closure that, when invoked at tool-execution time, looks up
+   * `toolName` in the runtime and invokes it. Used by composite tools like
+   * coding-pipeline that orchestrate other tools whose registration order
+   * is not guaranteed.
+   */
+  lateBindTool(toolName: string): (args: Record<string, unknown>) => Promise<string>
+}
+
+export interface PluginManifest extends PluginDescriptor {
+  /**
+   * Self-registration entrypoint. Boot calls this once per discovered plugin.
+   * The plugin reads its config slice, instantiates whatever it provides,
+   * and registers it with the runtime via the context's register* methods.
+   */
+  register(ctx: RegistrationContext): Promise<void> | void
 }
 
 // ---------------------------------------------------------------------------
