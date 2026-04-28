@@ -368,7 +368,7 @@ function formatOutput(warnings: string[], output: string): string {
 // Plugin factory
 // ---------------------------------------------------------------------------
 
-import type { ToolPlugin, PluginConfig } from '@rivetos/types'
+import type { ToolPlugin, PluginConfig, PluginManifest } from '@rivetos/types'
 
 export function createPlugin(config?: ShellToolConfig): ToolPlugin {
   return {
@@ -381,6 +381,19 @@ export function createPlugin(config?: ShellToolConfig): ToolPlugin {
     },
     async shutdown() {},
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'tool',
+  name: 'shell',
+  register(ctx) {
+    const plugin = createPlugin({ cwd: ctx.workspaceDir })
+    for (const tool of plugin.getTools()) ctx.registerTool(tool)
+  },
 }
 
 // ---------------------------------------------------------------------------

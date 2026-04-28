@@ -538,7 +538,7 @@ export function createWebTools(config?: WebSearchConfig & WebFetchConfig): Tool[
 // Plugin factory
 // ---------------------------------------------------------------------------
 
-import type { ToolPlugin, PluginConfig } from '@rivetos/types'
+import type { ToolPlugin, PluginConfig, PluginManifest } from '@rivetos/types'
 
 export function createPlugin(config?: WebSearchConfig & WebFetchConfig): ToolPlugin {
   return {
@@ -551,4 +551,20 @@ export function createPlugin(config?: WebSearchConfig & WebFetchConfig): ToolPlu
     },
     async shutdown() {},
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'tool',
+  name: 'web-search',
+  register(ctx) {
+    const plugin = createPlugin({
+      googleApiKey: ctx.env.GOOGLE_CSE_API_KEY ?? ctx.env.GOOGLE_API_KEY,
+      googleCseId: ctx.env.GOOGLE_CSE_ID,
+    })
+    for (const tool of plugin.getTools()) ctx.registerTool(tool)
+  },
 }

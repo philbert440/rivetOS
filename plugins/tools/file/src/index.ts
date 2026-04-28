@@ -8,7 +8,7 @@ export { createFileReadTool, type FileReadConfig } from './tools/file-read.js'
 export { createFileWriteTool } from './tools/file-write.js'
 export { createFileEditTool } from './tools/file-edit.js'
 
-import type { ToolPlugin, PluginConfig } from '@rivetos/types'
+import type { ToolPlugin, PluginConfig, PluginManifest } from '@rivetos/types'
 import { createFileReadTool, type FileReadConfig } from './tools/file-read.js'
 import { createFileWriteTool } from './tools/file-write.js'
 import { createFileEditTool } from './tools/file-edit.js'
@@ -30,3 +30,12 @@ export function createPlugin(config?: FileToolsConfig): ToolPlugin {
 
 /** @deprecated Use createPlugin() instead */
 export const createFileToolsPlugin = createPlugin
+
+export const manifest: PluginManifest = {
+  type: 'tool',
+  name: 'file',
+  register(ctx) {
+    const plugin = createPlugin()
+    for (const tool of plugin.getTools()) ctx.registerTool(tool)
+  },
+}
