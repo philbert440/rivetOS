@@ -7,7 +7,7 @@
 export { createSearchGlobTool, type SearchGlobConfig } from './tools/search-glob.js'
 export { createSearchGrepTool, type SearchGrepConfig } from './tools/search-grep.js'
 
-import type { ToolPlugin, PluginConfig } from '@rivetos/types'
+import type { ToolPlugin, PluginConfig, PluginManifest } from '@rivetos/types'
 import { createSearchGlobTool, type SearchGlobConfig } from './tools/search-glob.js'
 import { createSearchGrepTool, type SearchGrepConfig } from './tools/search-grep.js'
 
@@ -28,3 +28,12 @@ export function createPlugin(config?: SearchToolsConfig): ToolPlugin {
 
 /** @deprecated Use createPlugin() instead */
 export const createSearchToolsPlugin = createPlugin
+
+export const manifest: PluginManifest = {
+  type: 'tool',
+  name: 'search',
+  register(ctx) {
+    const plugin = createPlugin()
+    for (const tool of plugin.getTools()) ctx.registerTool(tool)
+  },
+}

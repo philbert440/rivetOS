@@ -7,7 +7,7 @@
 export { createTodoTool } from './tools/todo.js'
 export { createAskUserTool } from './tools/ask-user.js'
 
-import type { ToolPlugin, PluginConfig } from '@rivetos/types'
+import type { ToolPlugin, PluginConfig, PluginManifest } from '@rivetos/types'
 import { createTodoTool } from './tools/todo.js'
 import { createAskUserTool } from './tools/ask-user.js'
 
@@ -26,3 +26,12 @@ export function createPlugin(): ToolPlugin {
 
 /** @deprecated Use createPlugin() instead */
 export const createInteractionToolsPlugin = createPlugin
+
+export const manifest: PluginManifest = {
+  type: 'tool',
+  name: 'interaction',
+  register(ctx) {
+    const plugin = createPlugin()
+    for (const tool of plugin.getTools()) ctx.registerTool(tool)
+  },
+}
