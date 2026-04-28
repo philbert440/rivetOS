@@ -68,3 +68,5 @@ export type { FileToolsOptions, FileToolsHandle } from './tools/file.js'
 
 export { createSearchTools, searchGlobInputSchema, searchGrepInputSchema } from './tools/search.js'
 export type { SearchToolsOptions, SearchToolsHandle } from './tools/search.js'
+
+export { manifest } from './manifest.js'

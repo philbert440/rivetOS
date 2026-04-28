@@ -33,6 +33,7 @@
     "@rivetos/tool-mcp-client": "0.4.0-beta.6",
     "@rivetos/tool-coding-pipeline": "0.4.0-beta.6",
     "@rivetos/memory-postgres": "0.4.0-beta.6",
+    "@rivetos/mcp-server": "0.4.0-beta.6",
     "undici": "^8.1.0",
     "yaml": "^2.8.3"
   },

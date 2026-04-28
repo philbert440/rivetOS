@@ -13,6 +13,7 @@ import type { Runtime } from '@rivetos/core'
 import type {
   PluginManifest,
   RegistrationContext,
+  RegistrationCompleteSnapshot,
   HookPipeline,
   HookContext,
   HookRegistration,
@@ -58,8 +59,10 @@ function pluginConfigFor(
     }
     case 'tool':
       return { register: true, slice: undefined }
-    case 'transport':
-      return { register: false, slice: undefined }
+    case 'transport': {
+      const slice = config.transports?.[name]
+      return { register: slice !== undefined, slice }
+    }
     default:
       return { register: false, slice: undefined }
   }
@@ -73,6 +76,8 @@ export async function registerPlugins(
   workspaceDir: string,
 ): Promise<void> {
   const shutdowns: Array<() => Promise<void> | void> = []
+  const completeCallbacks: Array<(snapshot: RegistrationCompleteSnapshot) => Promise<void> | void> =
+    []
 
   for (const plugin of registry.plugins) {
     const { register, slice } = pluginConfigFor(plugin, config)
@@ -115,6 +120,7 @@ export async function registerPlugins(
             const result = await tool.execute(args)
             return typeof result === 'string' ? result : JSON.stringify(result)
           },
+        onRegistrationComplete: (fn) => completeCallbacks.push(fn),
       }
 
       await manifest.register(ctx)
@@ -122,6 +128,21 @@ export async function registerPlugins(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
       log.error(`Failed to register plugin ${plugin.packageName}: ${message}`)
+    }
+  }
+
+  // Fire onRegistrationComplete callbacks now that every plugin has had a
+  // chance to register. Transports use this to enumerate the finalized tool
+  // set before opening their listening sockets.
+  if (completeCallbacks.length > 0) {
+    const snapshot: RegistrationCompleteSnapshot = { tools: runtime.getTools() }
+    for (const fn of completeCallbacks) {
+      try {
+        await fn(snapshot)
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        log.error(`onRegistrationComplete callback failed: ${message}`)
+      }
     }
   }
 

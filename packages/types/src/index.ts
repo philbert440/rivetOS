@@ -56,6 +56,7 @@ export type {
   PluginManifest,
   PluginLogger,
   RegistrationContext,
+  RegistrationCompleteSnapshot,
   ToolPlugin,
   ProviderPlugin,
   ChannelPlugin,

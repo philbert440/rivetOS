@@ -75,6 +75,24 @@ export interface RegistrationContext {
    * is not guaranteed.
    */
   lateBindTool(toolName: string): (args: Record<string, unknown>) => Promise<string>
+
+  /**
+   * Register a callback that fires once after every plugin's `register()`
+   * has completed. Used by transports that need to enumerate the finalized
+   * tool set (or providers/channels/memories, in future) — at register-time
+   * those collections aren't yet built. The callback receives a snapshot
+   * of registered objects taken at fire-time.
+   */
+  onRegistrationComplete(fn: (snapshot: RegistrationCompleteSnapshot) => Promise<void> | void): void
+}
+
+/**
+ * Read-only view of what the runtime has registered, passed to
+ * `onRegistrationComplete` callbacks. Currently only `tools` is exposed —
+ * other collections can be added when a use case lands.
+ */
+export interface RegistrationCompleteSnapshot {
+  readonly tools: ReadonlyArray<Tool>
 }
 
 export interface PluginManifest extends PluginDescriptor {

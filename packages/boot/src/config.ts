@@ -20,6 +20,12 @@ export interface RivetConfig {
   channels: Record<string, Record<string, unknown>>
   memory?: Record<string, Record<string, unknown>>
   mcp?: McpSection
+  /**
+   * Transport plugins — inbound surfaces that expose runtime tools to
+   * external clients. Each key matches a discovered transport plugin name
+   * (e.g. `mcp` → @rivetos/mcp-server). Presence enables the transport.
+   */
+  transports?: Record<string, Record<string, unknown>>
   /** Deployment configuration — optional. When present, drives containerized deployment. */
   deployment?: DeploymentSection
   /** Multi-agent mesh configuration — cross-instance delegation */
