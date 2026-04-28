@@ -75,7 +75,7 @@ export async function discoverPlugins(
 ): Promise<PluginRegistry> {
   const discovered: DiscoveredPlugin[] = []
 
-  const pluginCategories = ['providers', 'channels', 'tools', 'memory']
+  const pluginCategories = ['providers', 'channels', 'tools', 'memory', 'transports']
   const scanDirs: string[] = []
 
   // (1) Monorepo layout: plugins/<category>/*
