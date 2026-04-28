@@ -155,13 +155,12 @@ The composition root. Loads config, validates, wires everything together, starts
 | `lifecycle.ts` | PID file management, SIGINT/SIGTERM handlers |
 | `validate/` | Config schema validation (sections, cross-refs, deployment) |
 | `registrars/agents.ts` | Wires delegation, sub-agents, skills |
-| `registrars/channels.ts` | Instantiates channel plugins from config |
 | `registrars/hooks.ts` | Wires fallback, safety, auto-action, session hooks |
-| `registrars/memory.ts` | Wires Postgres memory, embedder, compactor, review loop |
-| `registrars/providers.ts` | Instantiates provider plugins from config |
-| `registrars/tools.ts` | Registers shell, file, search, web, MCP, coding pipeline |
+| `registrars/plugins.ts` | Generic manifest-driven loader for all discovered providers, channels, tools, and memory plugins |
 
-**Boot flow:** `loadConfig()` → `validateConfig()` → `registerHooks()` → `new Runtime()` → `registerProviders()` → `registerChannels()` → `registerMemory()` → `registerTools()` → `registerAgentTools()` → `writePidFile()` → `runtime.start()`
+**Boot flow:** `loadConfig()` → `validateConfig()` → `discoverPlugins()` → `registerHooks()` → `new Runtime()` → `registerPlugins()` → `registerAgentTools()` → `writePidFile()` → `runtime.start()`
+
+Each plugin package exports `manifest: PluginManifest` from its `index.ts`. `registerPlugins()` calls `manifest.register(ctx)` once per discovered plugin; the plugin owns its config resolution, env-var lookup, and shutdown wiring via the `RegistrationContext`.
 
 **Config shape:** YAML with sections `runtime`, `agents`, `providers`, `channels`, `memory`, `mcp`, `deployment`. See `config.ts` for the full RivetConfig interface.
 
@@ -266,10 +265,10 @@ All plugins follow the same pattern: a class implementing an interface from `@ri
 
 | Category | Interface | Registration |
 |----------|-----------|-------------|
-| Provider | `Provider` | `boot/registrars/providers.ts` |
-| Channel | `Channel` | `boot/registrars/channels.ts` |
-| Tool | `Tool` | `boot/registrars/tools.ts` |
-| Memory | `Memory` | `boot/registrars/memory.ts` |
+| Provider | `Provider` | `boot/registrars/plugins.ts` (via `manifest.register`) |
+| Channel | `Channel` | `boot/registrars/plugins.ts` (via `manifest.register`) |
+| Tool | `Tool` | `boot/registrars/plugins.ts` (via `manifest.register`) |
+| Memory | `Memory` | `boot/registrars/plugins.ts` (via `manifest.register`) |
 
 ### Provider Plugin Pattern
 
@@ -461,10 +460,7 @@ rivetos start
        ├── validateConfig(config)     # Schema + cross-ref validation
        ├── registerHooks()            # Fallback, safety, auto-action, session hooks
        ├── new Runtime(config)        # Creates Router, Workspace, SessionManager, etc.
-       ├── registerProviders()        # Dynamic import of provider plugins
-       ├── registerChannels()         # Dynamic import of channel plugins
-       ├── registerMemory()           # Postgres + embedder + compactor + review loop
-       ├── registerTools()            # Shell, file, search, web, MCP, coding pipeline
+       ├── registerPlugins()          # Manifest-driven: providers, channels, memory, tools
        ├── registerAgentTools()       # Delegation, sub-agents, skills
        ├── writePidFile()             # ~/.rivetos/rivetos.pid
        ├── registerShutdownHandlers() # SIGINT/SIGTERM → graceful stop

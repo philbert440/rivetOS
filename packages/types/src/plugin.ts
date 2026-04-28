@@ -17,7 +17,7 @@ import type { Tool } from './tool.js'
 import type { Provider } from './provider.js'
 import type { Channel } from './channel.js'
 import type { Memory } from './memory.js'
-import type { HookRegistration } from './hooks.js'
+import type { HookContext, HookRegistration } from './hooks.js'
 
 // ---------------------------------------------------------------------------
 // Plugin descriptor (package.json#rivetos field — used by discovery)
@@ -65,7 +65,7 @@ export interface RegistrationContext {
   registerChannel(channel: Channel): void
   registerTool(tool: Tool): void
   registerMemory(memory: Memory): void
-  registerHook(hook: HookRegistration): void
+  registerHook<T extends HookContext>(hook: HookRegistration<T>): void
   registerShutdown(fn: () => Promise<void> | void): void
 
   /**

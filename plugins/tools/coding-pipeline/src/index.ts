@@ -440,7 +440,7 @@ export function createCodingPipelineTool(pipeline: CodingPipeline): Tool {
 // Plugin factory
 // ---------------------------------------------------------------------------
 
-import type { ToolPlugin, PluginConfig } from '@rivetos/types'
+import type { ToolPlugin, PluginConfig, PluginManifest } from '@rivetos/types'
 
 export function createPlugin(config?: CodingPipelineConfig): ToolPlugin {
   const pipeline = new CodingPipeline(config)
@@ -459,4 +459,46 @@ export function createPlugin(config?: CodingPipelineConfig): ToolPlugin {
       return pipeline
     },
   } as ToolPlugin & { pipeline: CodingPipeline }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+interface RivetosConfigShape {
+  runtime?: {
+    coding_pipeline?: {
+      builder_agent?: string
+      validator_agent?: string
+      max_build_loops?: number
+      max_validation_loops?: number
+      auto_commit?: boolean
+    }
+  }
+}
+
+export const manifest: PluginManifest = {
+  type: 'tool',
+  name: 'coding-pipeline',
+  register(ctx) {
+    console.warn(
+      '[tools] coding-pipeline is deprecated (MCP overhaul plan §9.3). ' +
+        'Post-overhaul rebuild will land as a skill on the unified tool plane. ' +
+        'Remove it from your tools list when convenient.',
+    )
+    const cfg = (ctx.config as RivetosConfigShape).runtime?.coding_pipeline
+    const pipeline = new CodingPipeline({
+      builderAgent: cfg?.builder_agent ?? 'grok',
+      validatorAgent: cfg?.validator_agent ?? 'opus',
+      maxBuildLoops: cfg?.max_build_loops ?? 3,
+      maxValidationLoops: cfg?.max_validation_loops ?? 2,
+      workingDir: ctx.workspaceDir,
+      autoCommit: cfg?.auto_commit ?? true,
+    })
+    pipeline.setToolExecutors({
+      delegateTask: ctx.lateBindTool('delegate_task'),
+      shellExec: ctx.lateBindTool('shell'),
+    })
+    ctx.registerTool(createCodingPipelineTool(pipeline))
+  },
 }

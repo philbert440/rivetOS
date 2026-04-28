@@ -411,7 +411,7 @@ export function createMCPClientPlugin(config: MCPClientConfig): MCPClientPlugin 
 // Plugin factory
 // ---------------------------------------------------------------------------
 
-import type { ToolPlugin, PluginConfig } from '@rivetos/types'
+import type { ToolPlugin, PluginConfig, PluginManifest } from '@rivetos/types'
 
 export function createPlugin(config?: MCPClientConfig): ToolPlugin {
   const mcpPlugin = new MCPClientPlugin(config ?? { servers: {} })
@@ -431,4 +431,26 @@ export function createPlugin(config?: MCPClientConfig): ToolPlugin {
       await mcpPlugin.disconnect()
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+interface RivetosConfigShape {
+  mcp?: { servers?: Record<string, MCPServerConfig> }
+}
+
+export const manifest: PluginManifest = {
+  type: 'tool',
+  name: 'mcp-client',
+  async register(ctx) {
+    const servers = (ctx.config as RivetosConfigShape).mcp?.servers
+    if (!servers || Object.keys(servers).length === 0) return
+
+    const mcpPlugin = new MCPClientPlugin({ servers })
+    const tools = await mcpPlugin.connect()
+    for (const tool of tools) ctx.registerTool(tool)
+    ctx.registerShutdown(() => mcpPlugin.disconnect())
+  },
 }
