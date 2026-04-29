@@ -36,10 +36,10 @@ LICENSE
 **/tests/
 
 # Infrastructure as Code (not needed at runtime)
-infra/providers/
-infra/components/
-infra/orchestrator.ts
-infra/index.ts
+apps/infra/src/providers/
+apps/infra/src/components/
+apps/infra/src/orchestrator.ts
+apps/infra/src/index.ts
 Pulumi*.yaml
 
 # Development config (mounted at runtime, not baked in)

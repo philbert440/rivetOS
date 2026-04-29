@@ -3,14 +3,14 @@
 # Serves as the central data store for all agents.
 #
 # Build context = repo root (so we can pull deploy/schema/ into the image).
-#   docker build -f infra/containers/datahub/Dockerfile -t rivetos-datahub .
+#   docker build -f apps/infra/containers/datahub/Dockerfile -t rivetos-datahub .
 
 FROM pgvector/pgvector:pg16
 
 # Init scripts — postgres runs these on first start, in alphabetical order.
 # 01-init-db.sh applies migrations from /migrations/*.sql.
-COPY infra/containers/datahub/init-db.sh /docker-entrypoint-initdb.d/01-init-db.sh
-COPY infra/containers/datahub/init-shared.sh /docker-entrypoint-initdb.d/02-init-shared.sh
+COPY apps/infra/containers/datahub/init-db.sh /docker-entrypoint-initdb.d/01-init-db.sh
+COPY apps/infra/containers/datahub/init-shared.sh /docker-entrypoint-initdb.d/02-init-shared.sh
 
 # Schema migrations — single source of truth lives in deploy/schema/migrations.
 # The init script reads from /migrations/ on first start; for subsequent

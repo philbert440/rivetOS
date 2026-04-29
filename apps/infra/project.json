@@ -1,13 +1,13 @@
 {
   "name": "infra",
-  "sourceRoot": "infra/src",
+  "sourceRoot": "apps/infra/src",
   "projectType": "library",
   "tags": ["scope:tooling", "type:lib"],
   "targets": {
     "build": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "tsc -p infra/tsconfig.json"
+        "command": "tsc -p apps/infra/tsconfig.json"
       },
       "inputs": ["default", "^default"],
       "outputs": ["{projectRoot}/dist"]
@@ -15,14 +15,14 @@
     "typecheck": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "tsc --noEmit -p infra/tsconfig.json"
+        "command": "tsc --noEmit -p apps/infra/tsconfig.json"
       },
       "inputs": ["default", "^default"]
     },
     "lint": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "eslint infra/src/"
+        "command": "eslint apps/infra/src/"
       }
     }
   }

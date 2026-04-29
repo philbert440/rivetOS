@@ -39,7 +39,6 @@
   "workspaces": [
     "packages/*",
     "apps/*",
-    "infra",
     "plugins/channels/*",
     "plugins/memory/*",
     "plugins/providers/*",
