@@ -144,6 +144,38 @@ export function validateConfig(config: unknown): ValidationResult {
     }
   }
 
+  // === plugins (optional, authoritative in production) ===
+  if (cfg.plugins !== undefined) {
+    if (!Array.isArray(cfg.plugins)) {
+      issues.push({
+        severity: 'error',
+        path: 'plugins',
+        message: '"plugins" must be an array of npm package names',
+      })
+    } else {
+      const list = cfg.plugins as unknown[]
+      const seen = new Set<string>()
+      for (let i = 0; i < list.length; i++) {
+        const entry: unknown = list[i]
+        if (typeof entry !== 'string' || entry.trim() === '') {
+          issues.push({
+            severity: 'error',
+            path: `plugins[${i}]`,
+            message: 'Each plugins entry must be a non-empty package name string',
+          })
+        } else if (seen.has(entry)) {
+          issues.push({
+            severity: 'error',
+            path: `plugins[${i}]`,
+            message: `Duplicate plugin entry "${entry}"`,
+          })
+        } else {
+          seen.add(entry)
+        }
+      }
+    }
+  }
+
   // === mesh (optional but strict when enabled) ===
   if (cfg.mesh) {
     if (typeof cfg.mesh !== 'object' || Array.isArray(cfg.mesh)) {
