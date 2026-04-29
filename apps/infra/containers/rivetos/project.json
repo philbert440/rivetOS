@@ -1,8 +1,8 @@
 {
-  "name": "container-agent",
-  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "name": "container-rivetos",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",
-  "sourceRoot": "infra/containers/agent",
+  "sourceRoot": "apps/infra/containers/rivetos",
   "tags": ["scope:app", "type:app"],
   "targets": {
     "build": {
@@ -10,10 +10,15 @@
       "dependsOn": [],
       "inputs": [
         "{projectRoot}/Dockerfile",
+        "{workspaceRoot}/scripts/bundle.mjs",
         "{workspaceRoot}/packages/*/package.json",
         "{workspaceRoot}/packages/*/src/**/*",
         "{workspaceRoot}/plugins/**/package.json",
         "{workspaceRoot}/plugins/**/src/**/*",
+        "{workspaceRoot}/services/*/package.json",
+        "{workspaceRoot}/services/*/**/*.js",
+        "{workspaceRoot}/deploy/schema/migrate.mjs",
+        "{workspaceRoot}/deploy/schema/migrations/*.sql",
         "{workspaceRoot}/package.json",
         "{workspaceRoot}/package-lock.json",
         "{workspaceRoot}/tsconfig.base.json"
@@ -22,11 +27,11 @@
       "cache": false,
       "options": {
         "cwd": "{workspaceRoot}",
-        "command": "docker build -f infra/containers/agent/Dockerfile -t rivetos-agent:latest -t rivetos-agent:$(git rev-parse --short HEAD) ."
+        "command": "docker build -f apps/infra/containers/rivetos/Dockerfile -t rivetos:latest -t rivetos:$(git rev-parse --short HEAD) ."
       },
       "configurations": {
         "no-cache": {
-          "command": "docker build --no-cache -f infra/containers/agent/Dockerfile -t rivetos-agent:latest -t rivetos-agent:$(git rev-parse --short HEAD) ."
+          "command": "docker build --no-cache -f apps/infra/containers/rivetos/Dockerfile -t rivetos:latest -t rivetos:$(git rev-parse --short HEAD) ."
         }
       }
     }

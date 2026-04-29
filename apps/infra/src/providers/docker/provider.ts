@@ -146,7 +146,7 @@ export class DockerProvider implements InfraProvider {
     if (args.sourceDir) {
       service.build = {
         context: this.sourceDir,
-        dockerfile: 'infra/containers/agent/Dockerfile',
+        dockerfile: 'apps/infra/containers/agent/Dockerfile',
       }
     } else {
       service.image = args.image ?? 'rivetos-agent:latest'

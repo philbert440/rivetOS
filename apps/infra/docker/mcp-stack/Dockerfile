@@ -3,9 +3,9 @@
 # Builds the workspace and runs the standalone `rivetos-mcp-server` binary
 # from `@rivetos/mcp-server`. Build context must be the repo root.
 #
-#   docker build -f infra/docker/mcp-stack/Dockerfile -t rivetos-mcp-server .
+#   docker build -f apps/infra/docker/mcp-stack/Dockerfile -t rivetos-mcp-server .
 #
-# Slice 1.A.5: dev image, single-stage. Mirrors infra/containers/agent/Dockerfile
+# Slice 1.A.5: dev image, single-stage. Mirrors apps/infra/containers/agent/Dockerfile
 # in shape — the workspace graph requires the full source tree at `npm ci`
 # time. Future slices can tighten this to a multi-stage that only ships the
 # compiled `dist/` outputs if image size matters.
@@ -27,7 +27,6 @@ COPY plugins/ plugins/
 COPY apps/ apps/
 COPY services/ services/
 COPY bin/ bin/
-COPY infra/ infra/
 
 # Belt-and-suspenders: wipe any TypeScript incremental state that leaked in.
 # `tsc -b` reads *.tsbuildinfo and may skip emit if it thinks dist/ is current,

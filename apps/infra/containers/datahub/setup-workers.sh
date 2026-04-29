@@ -15,7 +15,7 @@ set -e
 #   - rivet user (uid 2000) exists, or will be created by this script
 #
 # Usage:
-#   sudo bash /opt/rivetos/infra/containers/datahub/setup-workers.sh
+#   sudo bash /opt/rivetos/apps/infra/containers/datahub/setup-workers.sh
 #
 # Environment variables (set before running or edit .env files after):
 #   RIVETOS_PG_URL         — Postgres connection string
