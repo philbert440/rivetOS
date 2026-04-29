@@ -27,7 +27,13 @@ export {
   type ValidationIssue,
   type Severity,
 } from './validate/index.js'
-export { discoverPlugins, type PluginRegistry, type DiscoveredPlugin } from './discovery.js'
+export {
+  discoverPlugins,
+  type PluginRegistry,
+  type DiscoveredPlugin,
+  type DiscoveryMode,
+  type DiscoverOptions,
+} from './discovery.js'
 
 const log = logger('Boot')
 
@@ -56,31 +62,31 @@ const log = logger('Boot')
  * The discovered path is opaque — the discovery layer probes both layouts
  * regardless. This function just gives discovery a sensible starting point.
  */
-async function findPluginRoot(): Promise<string> {
+async function findPluginRoot(): Promise<{ rootDir: string; mode: 'workspace' | 'production' }> {
   const { existsSync } = await import('node:fs')
   const fsRoot = resolve('/')
 
-  // (1) Dev: walk up from cwd for nx.json
+  // (1) Workspace: walk up from cwd for nx.json
   let dir = process.cwd()
   while (dir !== fsRoot) {
     if (existsSync(resolve(dir, 'nx.json'))) {
-      return dir
+      return { rootDir: dir, mode: 'workspace' }
     }
     dir = dirname(dir)
   }
 
-  // (2) Install: resolve from process.argv[1] (the entry script that started
-  // us). For a global install via `npm install -g @rivetos/cli`, that path
-  // is something like /usr/local/bin/rivetos → realpath →
+  // (2) Production: resolve from process.argv[1] (the entry script that
+  // started us). For a global install via `npm install -g @rivetos/cli`,
+  // that path is something like /usr/local/bin/rivetos → realpath →
   // /usr/lib/node_modules/@rivetos/cli/dist/index.js. The directory above
-  // node_modules/ is the install root we want to scan.
+  // node_modules/ is the install root.
   try {
     const entry = process.argv[1]
     if (entry) {
       let probe = dirname(realpathSync(entry))
       while (probe !== fsRoot) {
-        if (probe.endsWith('/node_modules') && existsSync(resolve(probe, '@rivetos'))) {
-          return dirname(probe)
+        if (probe.endsWith('/node_modules') && existsSync(probe)) {
+          return { rootDir: dirname(probe), mode: 'production' }
         }
         probe = dirname(probe)
       }
@@ -89,8 +95,8 @@ async function findPluginRoot(): Promise<string> {
     // ignore — argv[1] missing or unreadable
   }
 
-  log.warn('Could not find plugin root (no nx.json, no node_modules/@rivetos) — using cwd')
-  return process.cwd()
+  log.warn('Could not find plugin root (no nx.json, no node_modules) — using cwd in workspace mode')
+  return { rootDir: process.cwd(), mode: 'workspace' }
 }
 
 export async function boot(configPath?: string): Promise<void> {
@@ -101,9 +107,24 @@ export async function boot(configPath?: string): Promise<void> {
   const workspaceDir = config.runtime.workspace.replace('~', process.env.HOME ?? '.')
 
   // 0. Discover plugins
-  // Resolve plugin root: RIVETOS_ROOT env var → nx.json (dev) → node_modules/@rivetos (install) → cwd
-  const pluginRoot = process.env.RIVETOS_ROOT ?? (await findPluginRoot())
-  const registry = await discoverPlugins(pluginRoot, config.runtime.plugin_dirs)
+  // Resolve plugin root + mode:
+  //   RIVETOS_ROOT env (treated as production unless RIVETOS_MODE=workspace)
+  //   → nx.json walk-up (workspace)
+  //   → node_modules walk-up from argv[1] (production)
+  //   → cwd (workspace fallback)
+  let rootDir: string
+  let mode: 'workspace' | 'production'
+  if (process.env.RIVETOS_ROOT) {
+    rootDir = process.env.RIVETOS_ROOT
+    mode = process.env.RIVETOS_MODE === 'workspace' ? 'workspace' : 'production'
+  } else {
+    ;({ rootDir, mode } = await findPluginRoot())
+  }
+  const registry = await discoverPlugins(rootDir, {
+    mode,
+    explicitPlugins: config.plugins,
+    additionalPaths: config.runtime.plugin_dirs,
+  })
 
   // 1. Hooks (must come before runtime — runtime receives the pipeline)
   const { pipeline, fallbackConfigs } = await registerHooks(config, workspaceDir)

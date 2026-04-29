@@ -486,6 +486,42 @@ describe('Config Validation', () => {
   });
 
   // =========================================================================
+  // Plugins (explicit list)
+  // =========================================================================
+
+  describe('plugins', () => {
+    it('accepts a list of package names', () => {
+      const cfg = validConfig();
+      cfg.plugins = ['@rivetos/provider-anthropic', '@rivetos/tool-shell'];
+      assertValid(validateConfig(cfg));
+    });
+
+    it('rejects non-array plugins', () => {
+      const cfg = validConfig();
+      cfg.plugins = 'not-an-array';
+      assertError(validateConfig(cfg), 'plugins', 'must be an array');
+    });
+
+    it('rejects non-string entries', () => {
+      const cfg = validConfig();
+      cfg.plugins = ['@rivetos/provider-anthropic', 42];
+      assertError(validateConfig(cfg), 'plugins[1]', 'non-empty package name string');
+    });
+
+    it('rejects empty-string entries', () => {
+      const cfg = validConfig();
+      cfg.plugins = ['  '];
+      assertError(validateConfig(cfg), 'plugins[0]', 'non-empty package name string');
+    });
+
+    it('rejects duplicate entries', () => {
+      const cfg = validConfig();
+      cfg.plugins = ['@rivetos/provider-anthropic', '@rivetos/provider-anthropic'];
+      assertError(validateConfig(cfg), 'plugins[1]', 'Duplicate plugin entry');
+    });
+  });
+
+  // =========================================================================
   // Cross-reference validation
   // =========================================================================
 
