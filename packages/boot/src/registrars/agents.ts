@@ -11,6 +11,7 @@
  */
 
 import type { Runtime } from '@rivetos/core'
+import { loadTlsConfig } from '@rivetos/core'
 import {
   DelegationEngine,
   MeshDelegationEngine,
@@ -79,7 +80,6 @@ export async function registerAgentTools(
 
     // Load TLS material — required for mesh (no plaintext fallback)
     // Convert YAML snake_case paths to camelCase for loadTlsConfig
-    const { loadTlsConfig } = await import('@rivetos/core')
     const rawTls = meshConfig.tls!
     const tlsInput: boolean | { caPath?: string; certPath?: string; keyPath?: string } =
       rawTls === true
