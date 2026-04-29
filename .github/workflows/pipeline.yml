@@ -293,7 +293,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: infra/containers/agent/Dockerfile
+          file: apps/infra/containers/agent/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -309,7 +309,7 @@ jobs:
         with:
           # Repo-root context — Dockerfile copies deploy/schema/migrations.
           context: .
-          file: infra/containers/datahub/Dockerfile
+          file: apps/infra/containers/datahub/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -321,7 +321,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: infra/containers/rivetos/Dockerfile
+          file: apps/infra/containers/rivetos/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -1,7 +1,7 @@
 # RivetOS Unified Image — single image, role selected at startup.
 #
 # Build context = repo root.
-#   docker build -f infra/containers/rivetos/Dockerfile -t rivetos:latest .
+#   docker build -f apps/infra/containers/rivetos/Dockerfile -t rivetos:latest .
 #
 # Run modes:
 #   docker run rivetos:latest                          # role=agent (default)
@@ -30,7 +30,6 @@ COPY plugins/ plugins/
 COPY apps/ apps/
 COPY services/ services/
 COPY bin/ bin/
-COPY infra/ infra/
 COPY deploy/ deploy/
 
 # Install workspace deps (skip postinstall — we'll run only what we need).

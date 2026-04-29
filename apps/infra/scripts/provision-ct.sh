@@ -849,8 +849,8 @@ done
 
 log "Phase 8.5: Writing /etc/hosts mesh block..."
 
-if run_on_ct "test -r /rivet-shared/mesh.json && test -x /opt/rivetos/infra/scripts/setup-mesh-hosts.sh" 2>/dev/null; then
-    if run_on_ct "/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json" 2>&1; then
+if run_on_ct "test -r /rivet-shared/mesh.json && test -x /opt/rivetos/apps/infra/scripts/setup-mesh-hosts.sh" 2>/dev/null; then
+    if run_on_ct "/opt/rivetos/apps/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json" 2>&1; then
         log "  /etc/hosts mesh block updated"
     else
         warn "  /etc/hosts mesh block update failed — non-fatal, will retry on next update --mesh"

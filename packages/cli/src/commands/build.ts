@@ -128,9 +128,9 @@ export default async function build(): Promise<void> {
     const shaTag = `${registry}/${imageName}:${sha}`
     const dockerfile =
       target === 'agent'
-        ? 'infra/containers/agent/Dockerfile'
-        : 'infra/containers/datahub/Dockerfile'
-    const context = target === 'agent' ? '.' : 'infra/containers/datahub'
+        ? 'apps/infra/containers/agent/Dockerfile'
+        : 'apps/infra/containers/datahub/Dockerfile'
+    const context = target === 'agent' ? '.' : 'apps/infra/containers/datahub'
 
     console.log(`Building ${target}...`)
 

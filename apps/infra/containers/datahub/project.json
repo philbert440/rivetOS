@@ -1,8 +1,8 @@
 {
   "name": "container-datahub",
-  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",
-  "sourceRoot": "infra/containers/datahub",
+  "sourceRoot": "apps/infra/containers/datahub",
   "tags": ["scope:app", "type:app"],
   "targets": {
     "build": {
@@ -18,11 +18,11 @@
       "cache": false,
       "options": {
         "cwd": "{workspaceRoot}",
-        "command": "docker build -t rivetos-datahub:latest -t rivetos-datahub:$(git rev-parse --short HEAD) -f infra/containers/datahub/Dockerfile ."
+        "command": "docker build -t rivetos-datahub:latest -t rivetos-datahub:$(git rev-parse --short HEAD) -f apps/infra/containers/datahub/Dockerfile ."
       },
       "configurations": {
         "no-cache": {
-          "command": "docker build --no-cache -t rivetos-datahub:latest -t rivetos-datahub:$(git rev-parse --short HEAD) -f infra/containers/datahub/Dockerfile ."
+          "command": "docker build --no-cache -t rivetos-datahub:latest -t rivetos-datahub:$(git rev-parse --short HEAD) -f apps/infra/containers/datahub/Dockerfile ."
         }
       }
     }

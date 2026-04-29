@@ -106,7 +106,10 @@ rivetOS/
 │   ├── providers/      # anthropic, google, xai, ollama, llama-server
 │   ├── memory/         # postgres (pgvector + FTS + summary DAG)
 │   └── tools/          # shell, file, search, web, interaction, mcp, coding-pipeline
-├── infra/              # Containers, Pulumi IaC (Docker, Proxmox providers)
+├── apps/
+│   ├── infra/          # Containers, Pulumi IaC (Docker, Proxmox providers)
+│   └── site/           # Astro docs site
+
 ├── examples/           # Example configs (single, multi, local, homelab)
 ├── docs/               # Full documentation
 └── skills/             # Optional skill libraries
