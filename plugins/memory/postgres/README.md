@@ -19,7 +19,7 @@ RivetOS Memory System — persistent transcript storage with hybrid-scored searc
 │  embedder.ts      →   Background: Nemotron embeddings   │
 │  compactor.ts     →   Background: Rivet Local summaries │
 ├─────────────────────────────────────────────────────────┤
-│  migrate.ts       →   One-shot: LCM → ros_* migration   │
+│  schema/          →   Baseline SQL + migration runner   │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -69,13 +69,21 @@ memory:
     compactor_model: rivet-v0.1
 ```
 
-## Migration from LCM
+## Schema Migrations
+
+Baseline SQL and the migration runner live under `src/schema/`. Apply pending migrations with:
 
 ```bash
-npx tsx plugins/memory/postgres/src/migrate.ts
+node plugins/memory/postgres/dist/schema/migrate.js --url "$RIVETOS_PG_URL"
 ```
 
-Migrates conversations, messages (with tool data from message_parts), summaries (with parent relationships), and summary_sources. Preserves existing embeddings. Prints counts before and after.
+Or, in a checked-out workspace:
+
+```bash
+nx run @rivetos/cli:start -- db migrate
+```
+
+Use `--baseline` to record the current migrations as applied without running them — for adopting an existing database whose schema already matches.
 
 ## Writing Your Own Memory Backend
 
