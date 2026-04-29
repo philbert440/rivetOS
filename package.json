@@ -74,6 +74,7 @@
   "homepage": "https://rivetos.dev",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@nx/eslint-plugin": "^22.7.0",
     "@nx/js": "22.7.0",
     "@types/node": "^25.6.0",
     "esbuild": "^0.28.0",

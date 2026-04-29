@@ -14,5 +14,11 @@
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "nx": {
+    "tags": [
+      "scope:app",
+      "type:app"
+    ]
   }
 }

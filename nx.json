@@ -3,6 +3,17 @@
   "defaultBase": "main",
   "namedInputs": {
     "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "production": [
+      "default",
+      "!{projectRoot}/**/*.spec.ts",
+      "!{projectRoot}/**/*.test.ts",
+      "!{projectRoot}/test/**/*",
+      "!{projectRoot}/tests/**/*",
+      "!{projectRoot}/**/__tests__/**/*",
+      "!{projectRoot}/**/*.md",
+      "!{projectRoot}/tsconfig.spec.json",
+      "!{projectRoot}/eslint.config.mjs"
+    ],
     "sharedGlobals": [
       "{workspaceRoot}/tsconfig.base.json",
       "{workspaceRoot}/eslint.config.mjs"
@@ -11,7 +22,7 @@
   "targetDefaults": {
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["default", "^default"],
+      "inputs": ["production", "^production"],
       "cache": true
     },
     "lint": {
@@ -19,12 +30,12 @@
       "cache": true
     },
     "test": {
-      "inputs": ["default", "^default"],
+      "inputs": ["default", "^production"],
       "cache": true
     },
     "typecheck": {
       "dependsOn": ["^typecheck"],
-      "inputs": ["default", "^default"],
+      "inputs": ["default", "^production"],
       "cache": true
     }
   }

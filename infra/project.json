@@ -2,6 +2,7 @@
   "name": "infra",
   "sourceRoot": "infra/src",
   "projectType": "library",
+  "tags": ["scope:tooling", "type:lib"],
   "targets": {
     "build": {
       "executor": "nx:run-commands",

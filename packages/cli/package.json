@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint src/",
+    "lint": "eslint src/ package.json",
     "test": "echo \"no tests yet\"",
     "clean": "rm -rf dist workspace-templates",
     "bundle-templates": "node scripts/bundle-templates.mjs",
@@ -22,12 +22,12 @@
     "@clack/prompts": "^1.2.0",
     "@rivetos/boot": "0.4.0-beta.6",
     "@rivetos/memory-postgres": "0.4.0-beta.6",
-    "@rivetos/provider-anthropic": "0.4.0-beta.6",
-    "@rivetos/provider-claude-cli": "0.4.0-beta.6",
-    "@rivetos/types": "0.4.0-beta.6",
     "pg": "^8.20.0",
     "undici": "^8.1.0",
     "yaml": "^2.8.3"
+  },
+  "optionalDependencies": {
+    "@rivetos/infra": "0.4.0"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0"
@@ -55,5 +55,11 @@
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "nx": {
+    "tags": [
+      "scope:composition",
+      "type:app"
+    ]
   }
 }

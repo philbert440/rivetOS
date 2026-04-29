@@ -12,5 +12,11 @@
     "@astrojs/starlight": "^0.38.0",
     "astro": "^6.1.0",
     "sharp": "^0.34.0"
+  },
+  "nx": {
+    "tags": [
+      "scope:app",
+      "type:app"
+    ]
   }
 }

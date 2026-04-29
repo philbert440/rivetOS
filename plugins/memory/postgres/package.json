@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint src/",
+    "lint": "eslint src/ package.json",
     "test": "vitest run",
     "migrate": "npx tsx src/migrate.ts",
     "clean": "rm -rf dist",
@@ -49,5 +49,11 @@
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "nx": {
+    "tags": [
+      "scope:adapter",
+      "type:plugin"
+    ]
   }
 }
