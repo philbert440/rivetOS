@@ -43,7 +43,7 @@ ALTER TABLE ros_summaries ADD COLUMN IF NOT EXISTS embed_status TEXT;
 
 -- ─── Pattern definitions ────────────────────────────────────────────────────
 --
--- These mirror classifyUnembeddable() in services/embedding-worker/classify.js.
+-- These mirror classifyUnembeddable() in plugins/memory/postgres/workers/embedding/classify.js.
 -- Keep in sync.
 
 -- NOTE: Postgres regex has a hard cap of 255 on repetition counts ({n,m}).

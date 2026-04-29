@@ -24,7 +24,7 @@ set -e
 # ===========================================================================
 
 RIVETOS_DIR="/opt/rivetos"
-SERVICES_DIR="${RIVETOS_DIR}/services"
+WORKERS_DIR="${RIVETOS_DIR}/plugins/memory/postgres/workers"
 CONFIG_DIR="/etc/rivetos"
 RIVET_HOME="/home/rivet"
 RIVET_UID=2000
@@ -92,14 +92,14 @@ fi
 echo ""
 echo "[2/6] Installing worker dependencies..."
 
-cd "${SERVICES_DIR}/embedding-worker"
+cd "${WORKERS_DIR}/embedding"
 npm install --omit=dev
 
-cd "${SERVICES_DIR}/compaction-worker"
+cd "${WORKERS_DIR}/compaction"
 npm install --omit=dev
 
 # Fix ownership after npm install
-chown -R rivet:rivet "${SERVICES_DIR}"
+chown -R rivet:rivet "${WORKERS_DIR}"
 
 # -----------------------------------------------------------------------
 # 3. Create config directory and env file templates
@@ -200,8 +200,8 @@ Wants=postgresql.service
 Type=simple
 User=rivet
 Group=rivet
-WorkingDirectory=${SERVICES_DIR}/embedding-worker
-ExecStart=/usr/bin/node ${SERVICES_DIR}/embedding-worker/index.js
+WorkingDirectory=${WORKERS_DIR}/embedding
+ExecStart=/usr/bin/node ${WORKERS_DIR}/embedding/index.js
 Restart=always
 RestartSec=5
 EnvironmentFile=${CONFIG_DIR}/embedder.env
@@ -237,8 +237,8 @@ Wants=postgresql.service
 Type=simple
 User=rivet
 Group=rivet
-WorkingDirectory=${SERVICES_DIR}/compaction-worker
-ExecStart=/usr/bin/node ${SERVICES_DIR}/compaction-worker/index.js
+WorkingDirectory=${WORKERS_DIR}/compaction
+ExecStart=/usr/bin/node ${WORKERS_DIR}/compaction/index.js
 Restart=always
 RestartSec=10
 EnvironmentFile=${CONFIG_DIR}/compactor.env

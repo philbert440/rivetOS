@@ -41,10 +41,10 @@
     "apps/*",
     "plugins/channels/*",
     "plugins/memory/*",
+    "plugins/memory/postgres/workers/*",
     "plugins/providers/*",
     "plugins/tools/*",
-    "plugins/transports/*",
-    "services/*"
+    "plugins/transports/*"
   ],
   "bin": {
     "rivetos": "./packages/cli/dist/index.js"

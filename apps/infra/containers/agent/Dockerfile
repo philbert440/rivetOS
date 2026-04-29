@@ -20,7 +20,6 @@ COPY scripts/ scripts/
 COPY packages/ packages/
 COPY plugins/ plugins/
 COPY apps/ apps/
-COPY services/ services/
 COPY bin/ bin/
 
 # Install all dependencies (workspaces need full install to resolve correctly).
@@ -31,8 +30,8 @@ COPY bin/ bin/
 # but dist/ is excluded from the context, so emit is skipped and downstream
 # builds fail TS6305 ("Output file ... has not been built from source file").
 # Wiping these in-image is cheap insurance against contributor environment drift.
-RUN find packages plugins apps services -name 'tsconfig.tsbuildinfo' -delete 2>/dev/null || true \
- && find packages plugins apps services -name '.nx' -type d -exec rm -rf {} + 2>/dev/null || true
+RUN find packages plugins apps -name 'tsconfig.tsbuildinfo' -delete 2>/dev/null || true \
+ && find packages plugins apps -name '.nx' -type d -exec rm -rf {} + 2>/dev/null || true
 
 # Skip the root postinstall (would run a parallel nx build) and build explicitly
 # with --parallel=1. The workspace uses TypeScript project references everywhere

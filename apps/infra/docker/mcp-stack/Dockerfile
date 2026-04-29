@@ -25,14 +25,13 @@ COPY scripts/ scripts/
 COPY packages/ packages/
 COPY plugins/ plugins/
 COPY apps/ apps/
-COPY services/ services/
 COPY bin/ bin/
 
 # Belt-and-suspenders: wipe any TypeScript incremental state that leaked in.
 # `tsc -b` reads *.tsbuildinfo and may skip emit if it thinks dist/ is current,
 # but dist/ is excluded from the context — TS6305 results. See agent Dockerfile.
-RUN find packages plugins apps services -name 'tsconfig.tsbuildinfo' -delete 2>/dev/null || true \
- && find packages plugins apps services -name '.nx' -type d -exec rm -rf {} + 2>/dev/null || true
+RUN find packages plugins apps -name 'tsconfig.tsbuildinfo' -delete 2>/dev/null || true \
+ && find packages plugins apps -name '.nx' -type d -exec rm -rf {} + 2>/dev/null || true
 
 # Install all dependencies (workspaces need full install to resolve correctly).
 # Skip postinstall, build serially. See agent Dockerfile for the rationale.

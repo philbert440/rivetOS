@@ -270,7 +270,7 @@ SVCEOF
 
 # Helper: write rivet-embedder.service (DataHub only)
 write_embedder_service() {
-    local services_dir="${RIVETOS_DIR}/services"
+    local workers_dir="${RIVETOS_DIR}/plugins/memory/postgres/workers"
     local config_dir="/etc/rivetos"
     log "  Writing /etc/systemd/system/rivet-embedder.service..."
     TMPUNIT=$(mktemp)
@@ -284,8 +284,8 @@ Wants=postgresql.service
 Type=simple
 User=rivet
 Group=rivet
-WorkingDirectory=${services_dir}/embedding-worker
-ExecStart=/usr/bin/node ${services_dir}/embedding-worker/index.js
+WorkingDirectory=${workers_dir}/embedding
+ExecStart=/usr/bin/node ${workers_dir}/embedding/index.js
 Restart=always
 RestartSec=5
 EnvironmentFile=${config_dir}/embedder.env
@@ -315,7 +315,7 @@ SVCEOF
 
 # Helper: write rivet-compactor.service (DataHub only)
 write_compactor_service() {
-    local services_dir="${RIVETOS_DIR}/services"
+    local workers_dir="${RIVETOS_DIR}/plugins/memory/postgres/workers"
     local config_dir="/etc/rivetos"
     log "  Writing /etc/systemd/system/rivet-compactor.service..."
     TMPUNIT=$(mktemp)
@@ -329,8 +329,8 @@ Wants=postgresql.service
 Type=simple
 User=rivet
 Group=rivet
-WorkingDirectory=${services_dir}/compaction-worker
-ExecStart=/usr/bin/node ${services_dir}/compaction-worker/index.js
+WorkingDirectory=${workers_dir}/compaction
+ExecStart=/usr/bin/node ${workers_dir}/compaction/index.js
 Restart=always
 RestartSec=10
 EnvironmentFile=${config_dir}/compactor.env

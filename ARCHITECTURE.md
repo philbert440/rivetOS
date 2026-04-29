@@ -70,11 +70,10 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │
 │   └── memory/                  # 5,088 lines — Persistence backends
 │       └── postgres/            # PostgreSQL (conversations, messages, search,
-│                                #   embeddings, compaction, summaries, review loop)
-│
-├── services/                    # Event-driven workers (run on Datahub, not agents)
-│   ├── embedding-worker/        # Postgres LISTEN → Nemotron GPU embeddings
-│   └── compaction-worker/       # Postgres LISTEN → Gemma-4-E2B CPU summarization
+│           │                    #   embeddings, compaction, summaries, review loop)
+│           └── workers/         # Event-driven workers (run on Datahub, not agents)
+│               ├── embedding/   # Postgres LISTEN → Nemotron GPU embeddings
+│               └── compaction/  # Postgres LISTEN → Gemma-4-E2B CPU summarization
 │
 ├── infra/                       # 956 lines — Infrastructure as Code (Pulumi)
 │   ├── containers/
@@ -430,7 +429,7 @@ Embedding and compaction run as **event-driven workers on Datahub**, co-located 
 
 Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled on Gemma-4-E2B with generous token budgets (4096/6144/8192) and 10-minute timeout.
 
-**Source:** `services/embedding-worker/` and `services/compaction-worker/`
+**Source:** `plugins/memory/postgres/workers/embedding/` and `plugins/memory/postgres/workers/compaction/`
 **Setup:** `infra/containers/datahub/init-db.sh` (schema) + `infra/containers/datahub/setup-workers.sh` (Node.js, systemd)
 
 ### Data Persistence
@@ -658,7 +657,7 @@ deployment:             # Optional — drives containerized deployment
 
 3. **Voice plugin lifecycle hack** — `voice-discord` isn't a Channel, it manages its own lifecycle. The registrar monkey-patches `runtime.stop()` to include voice cleanup. Same pattern used for MCP client.
 
-4. **Memory registrar still references old background jobs** — `registrars/memory.ts` previously wired up BackgroundEmbedder and BackgroundCompactor as in-process polling loops. These are now replaced by event-driven Datahub workers (`services/embedding-worker/`, `services/compaction-worker/`). The registrar should be cleaned up to remove dead code paths.
+4. **Memory registrar still references old background jobs** — `registrars/memory.ts` previously wired up BackgroundEmbedder and BackgroundCompactor as in-process polling loops. These are now replaced by event-driven Datahub workers (`plugins/memory/postgres/workers/embedding/`, `plugins/memory/postgres/workers/compaction/`). The registrar should be cleaned up to remove dead code paths.
 
 5. **Old `init.ts` still runs** — The original `commands/init.ts` (20 lines) just calls the wizard. The wizard modules exist in `commands/init/` but the full flow (detect → deploy → agents → channels → review → generate) needs end-to-end testing.
 

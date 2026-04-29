@@ -173,6 +173,6 @@ absolutely certain nothing on the system references it. Worker services
 
 1. Flip `--npm` to be the default in `update --mesh`; rename `--git` to be
   the explicit-opt-in for emergencies.
-2. Migrate `services/embedding-worker` and `services/compaction-worker` to
-  publishable npm packages so datahub can use the same deploy path.
+2. Migrate `plugins/memory/postgres/workers/embedding` and `plugins/memory/postgres/workers/compaction`
+  to publishable npm packages so datahub can use the same deploy path.
 3. Delete `/opt/rivetos` from all CTs after one stable cycle.
