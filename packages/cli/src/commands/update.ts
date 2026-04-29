@@ -846,7 +846,7 @@ async function gitUpdateNodeAsync(
   // rivet-* worker services discovered on the host (embedder, compactor, etc.).
   // No TypeScript build — workers are plain JS.
   if (!isAgent) {
-    // npm install — picks up dep bumps in services/*/package.json
+    // npm install — picks up dep bumps in plugins/memory/postgres/workers/*/package.json
     try {
       console.log(`    ${tag} Installing dependencies...`)
       await sshExec(

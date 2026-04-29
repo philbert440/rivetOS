@@ -17,9 +17,9 @@
  *   review-loop.ts  — turn-based background review (runs on agent CTs)
  *   scoring.ts      — pure domain: relevance scoring functions (no I/O)
  *
- * Embedding and compaction jobs run on the Datahub as dedicated services:
- *   services/embedding-worker/   — event-driven via Postgres LISTEN/NOTIFY → Nemotron GPU
- *   services/compaction-worker/  — event-driven via Postgres LISTEN/NOTIFY → E2B CPU
+ * Embedding and compaction jobs run on the Datahub as dedicated workers:
+ *   workers/embedding/   — event-driven via Postgres LISTEN/NOTIFY → Nemotron GPU
+ *   workers/compaction/  — event-driven via Postgres LISTEN/NOTIFY → E2B CPU
  */
 
 export { PostgresMemory } from './adapter.js'
