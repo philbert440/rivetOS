@@ -35,7 +35,7 @@ RUN npm ci --ignore-scripts
 
 # Per-package tsc build (for cross-package type resolution + service deps).
 # Then esbuild bundle for the runtime entrypoint.
-RUN npx nx run-many -t build --exclude container-agent,container-datahub,container-rivetos,site --parallel=1 \
+RUN npx nx run-many -t build --exclude container-agent,container-datahub,container-rivetos,infra,site --parallel=1 \
  && npm run bundle
 
 # ---------------------------------------------------------------------------
