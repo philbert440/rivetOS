@@ -44,6 +44,39 @@ channels:
     owner_id: ""
     channel_bindings: {}
 
+# ---------------------------------------------------------------------------
+# Plugins — npm package names of rivetos plugins to load.
+#
+# Required in production deployments (flat install): boot will fail-fast if
+# any listed plugin is not resolvable.
+#
+# Optional in workspace mode (running from a source checkout): when omitted,
+# boot scans `plugins/<category>/*` and `node_modules/*` for any package
+# whose `package.json` declares a `rivetos` block. When present, the explicit
+# list is union'd with workspace scans — useful for testing prod-shape config
+# from a checkout.
+# ---------------------------------------------------------------------------
+# plugins:
+#   - "@rivetos/provider-anthropic"
+#   - "@rivetos/provider-claude-cli"
+#   - "@rivetos/provider-google"
+#   - "@rivetos/provider-xai"
+#   - "@rivetos/provider-ollama"
+#   - "@rivetos/provider-llama-server"
+#   - "@rivetos/provider-openai-compat"
+#   - "@rivetos/channel-telegram"
+#   - "@rivetos/channel-discord"
+#   - "@rivetos/channel-voice-discord"
+#   - "@rivetos/tool-shell"
+#   - "@rivetos/tool-file"
+#   - "@rivetos/tool-search"
+#   - "@rivetos/tool-interaction"
+#   - "@rivetos/tool-web-search"
+#   - "@rivetos/tool-mcp-client"
+#   - "@rivetos/tool-coding-pipeline"
+#   - "@rivetos/memory-postgres"
+#   - "@rivetos/mcp-server"
+
 memory:
   postgres:
     # connection_string via env: RIVETOS_PG_URL

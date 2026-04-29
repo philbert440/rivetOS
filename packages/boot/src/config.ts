@@ -30,6 +30,13 @@ export interface RivetConfig {
   deployment?: DeploymentSection
   /** Multi-agent mesh configuration — cross-instance delegation */
   mesh?: MeshSection
+  /**
+   * Explicit plugin list — npm package names of rivetos plugins to load.
+   * Authoritative in production (flat install): missing entries fail-fast.
+   * Additive in workspace mode: union'd with workspace `plugins/<category>/*`
+   * and `node_modules/*` scans, deduped by package name.
+   */
+  plugins?: string[]
 }
 
 // ---------------------------------------------------------------------------

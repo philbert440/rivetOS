@@ -1,23 +1,31 @@
 /**
- * Plugin Discovery — scans plugin directories for package.json files
- * with a `rivetos` manifest field. Builds a registry of available plugins
- * that boot can use instead of hardcoded switch statements.
+ * Plugin Discovery — finds plugins by reading their `package.json#rivetos`
+ * manifest. Two modes:
+ *
+ *   workspace mode  — running from a source checkout. Scans
+ *     `<root>/plugins/<category>/*` and `<root>/node_modules/**` for any
+ *     package whose `package.json` declares a `rivetos` block. Honors an
+ *     explicit `config.plugins` list additively (union, deduped by package
+ *     name). Drop a plugin in, it works.
+ *
+ *   production mode — flat npm install, no workspace. `config.plugins` is
+ *     authoritative: each entry is resolved via npm resolution from rootDir,
+ *     its `package.json#rivetos` manifest is read, and missing/invalid
+ *     entries fail-fast with a clear error.
  *
  * Each plugin declares itself in package.json:
  *   {
  *     "name": "@rivetos/provider-anthropic",
- *     "rivetos": {
- *       "type": "provider",
- *       "name": "anthropic"
- *     }
+ *     "rivetos": { "type": "provider", "name": "anthropic" }
  *   }
  *
- * Discovery finds these, validates the manifest, and provides a registry
- * that maps (type, name) → package name for dynamic import.
+ * No package-name scope is hardcoded — `acme-rivetos-thing` works the same
+ * as `@rivetos/provider-anthropic` so long as the manifest is present.
  */
 
 import { readdir, readFile } from 'node:fs/promises'
-import { resolve, join } from 'node:path'
+import { resolve, join, dirname } from 'node:path'
+import { createRequire } from 'node:module'
 import type { PluginType, PluginDescriptor } from '@rivetos/types'
 import { logger } from '@rivetos/core'
 
@@ -47,116 +55,242 @@ export interface PluginRegistry {
   has(type: PluginType, name: string): boolean
 }
 
+export type DiscoveryMode = 'workspace' | 'production'
+
+export interface DiscoverOptions {
+  /**
+   * 'workspace' = source checkout (scan-based, additive with explicit list).
+   * 'production' = flat install (explicit list authoritative, fail-fast on missing).
+   */
+  mode: DiscoveryMode
+  /**
+   * Explicit plugin package names from `config.plugins`. In production this
+   * is authoritative. In workspace mode it's additive on top of scans.
+   */
+  explicitPlugins?: string[]
+  /**
+   * Extra directories to scan in workspace mode (legacy `runtime.plugin_dirs`).
+   * Resolved relative to `rootDir`. Ignored in production.
+   */
+  additionalPaths?: string[]
+}
+
 // ---------------------------------------------------------------------------
-// Discovery
+// Helpers
 // ---------------------------------------------------------------------------
+
+const VALID_PLUGIN_TYPES: ReadonlySet<PluginType> = new Set([
+  'provider',
+  'channel',
+  'tool',
+  'memory',
+  'transport',
+])
 
 /**
- * Scan plugin directories and build a registry.
- *
- * Two layouts are probed (both in one pass, deduped by package name):
- *
- *   1. Monorepo / source checkout:
- *        ROOT/plugins/CATEGORY/PKG/package.json
- *      where CATEGORY is one of providers, channels, tools, memory.
- *
- *   2. Flat npm install (e.g. npm install -g @rivetos/cli):
- *        ROOT/node_modules/@rivetos/PKG/package.json
- *
- * ROOT is opaque — for (1) it's the monorepo root, for (2) it's the
- * directory above node_modules/. Discovery doesn't have to know which
- * layout it is; it tries both and takes whatever is found.
- *
- * Also supports additional paths for user plugins via additionalPaths.
+ * Read a package.json and extract its rivetos manifest if present.
+ * Returns null when the file is missing, unparseable, or has no manifest.
  */
-export async function discoverPlugins(
-  rootDir: string,
-  additionalPaths?: string[],
-): Promise<PluginRegistry> {
-  const discovered: DiscoveredPlugin[] = []
+async function readManifest(
+  pkgDir: string,
+): Promise<{ packageName: string; descriptor: PluginDescriptor; path: string } | null> {
+  try {
+    const raw = await readFile(join(pkgDir, 'package.json'), 'utf-8')
+    const pkg = JSON.parse(raw) as {
+      name?: string
+      rivetos?: Partial<PluginDescriptor>
+    }
 
-  const pluginCategories = ['providers', 'channels', 'tools', 'memory', 'transports']
-  const scanDirs: string[] = []
+    if (!pkg.rivetos || !pkg.name) return null
 
-  // (1) Monorepo layout: plugins/<category>/*
-  for (const category of pluginCategories) {
+    const descriptor = pkg.rivetos
+    if (!descriptor.type || !descriptor.name) {
+      log.warn(`Invalid rivetos descriptor in ${pkgDir}/package.json — missing type or name`)
+      return null
+    }
+    if (!VALID_PLUGIN_TYPES.has(descriptor.type)) {
+      log.warn(`Invalid plugin type "${descriptor.type}" in ${pkgDir}/package.json`)
+      return null
+    }
+
+    return {
+      packageName: pkg.name,
+      descriptor: descriptor as PluginDescriptor,
+      path: pkgDir,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Enumerate plugin directories under `<rootDir>/plugins/<category>/*`.
+ * Used in workspace mode only.
+ */
+async function listWorkspacePluginDirs(rootDir: string): Promise<string[]> {
+  const categories = ['providers', 'channels', 'tools', 'memory', 'transports']
+  const out: string[] = []
+  for (const category of categories) {
     const categoryDir = resolve(rootDir, 'plugins', category)
     try {
       const entries = await readdir(categoryDir, { withFileTypes: true })
       for (const entry of entries) {
         if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
-          scanDirs.push(join(categoryDir, entry.name))
+          out.push(join(categoryDir, entry.name))
         }
       }
     } catch {
-      // Category directory doesn't exist — skip
+      // category absent — fine
     }
   }
+  return out
+}
 
-  // (2) Flat npm-install layout: node_modules/@rivetos/*
-  const rivetosScope = resolve(rootDir, 'node_modules', '@rivetos')
+/**
+ * Enumerate every package directory inside `<rootDir>/node_modules/`,
+ * including scoped packages (`@scope/pkg`). No scope is hardcoded.
+ */
+async function listNodeModulesPkgDirs(rootDir: string): Promise<string[]> {
+  const nm = resolve(rootDir, 'node_modules')
+  const out: string[] = []
+  let entries: import('node:fs').Dirent[]
   try {
-    const entries = await readdir(rivetosScope, { withFileTypes: true })
-    for (const entry of entries) {
-      if (entry.isDirectory() && !entry.name.startsWith('.')) {
-        scanDirs.push(join(rivetosScope, entry.name))
-      }
-    }
+    entries = await readdir(nm, { withFileTypes: true })
   } catch {
-    // No node_modules/@rivetos — must be source checkout, that's fine
+    return out
   }
-
-  // Additional paths (user plugins, etc.)
-  if (additionalPaths) {
-    for (const p of additionalPaths) {
-      scanDirs.push(resolve(rootDir, p))
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+    if (entry.name.startsWith('@')) {
+      try {
+        const scoped = await readdir(join(nm, entry.name), { withFileTypes: true })
+        for (const inner of scoped) {
+          if (inner.isDirectory() && !inner.name.startsWith('.')) {
+            out.push(join(nm, entry.name, inner.name))
+          }
+        }
+      } catch {
+        // unreadable scope — skip
+      }
+    } else {
+      out.push(join(nm, entry.name))
     }
   }
+  return out
+}
 
-  // Scan each directory for package.json with rivetos manifest.
-  // Dedup by package name — the monorepo and node_modules layouts may both
-  // surface the same plugin (workspace symlinks); first hit wins.
-  const seenPackages = new Set<string>()
-  for (const dir of scanDirs) {
-    try {
-      const pkgPath = join(dir, 'package.json')
-      const raw = await readFile(pkgPath, 'utf-8')
-      const pkg = JSON.parse(raw) as {
-        name?: string
-        rivetos?: Partial<PluginDescriptor>
-      }
+/**
+ * Resolve an installed package's directory by name, anchored at rootDir.
+ * Uses node module resolution, so symlinked workspace packages work too.
+ */
+function resolvePackageDir(packageName: string, rootDir: string): string | null {
+  try {
+    const req = createRequire(join(rootDir, 'package.json'))
+    const pkgJsonPath = req.resolve(`${packageName}/package.json`)
+    return dirname(pkgJsonPath)
+  } catch {
+    return null
+  }
+}
 
-      if (!pkg.rivetos || !pkg.name) continue
-      if (seenPackages.has(pkg.name)) continue
+// ---------------------------------------------------------------------------
+// Discovery
+// ---------------------------------------------------------------------------
 
-      const descriptor = pkg.rivetos
+/**
+ * Discover plugins. See module doc for mode semantics.
+ *
+ * In production mode, throws if any explicit plugin can't be resolved or
+ * lacks a valid rivetos manifest — boot must not silently miss what config
+ * says it needs.
+ */
+export async function discoverPlugins(
+  rootDir: string,
+  options: DiscoverOptions,
+): Promise<PluginRegistry> {
+  const { mode, explicitPlugins = [], additionalPaths = [] } = options
 
-      if (!descriptor.type || !descriptor.name) {
-        log.warn(`Invalid rivetos descriptor in ${pkgPath} — missing type or name`)
+  const seen = new Set<string>()
+  const discovered: DiscoveredPlugin[] = []
+
+  const recordDir = async (dir: string): Promise<DiscoveredPlugin | null> => {
+    const m = await readManifest(dir)
+    if (!m) return null
+    if (seen.has(m.packageName)) return null
+    seen.add(m.packageName)
+    discovered.push(m)
+    log.debug(`Discovered: ${m.descriptor.type}/${m.descriptor.name} → ${m.packageName}`)
+    return m
+  }
+
+  if (mode === 'production') {
+    if (explicitPlugins.length === 0) {
+      throw new Error(
+        'No plugins configured. Production deployments require an explicit ' +
+          '`plugins:` list in config (no workspace scan available).',
+      )
+    }
+    const missing: string[] = []
+    const invalid: string[] = []
+    for (const name of explicitPlugins) {
+      const pkgDir = resolvePackageDir(name, rootDir)
+      if (!pkgDir) {
+        missing.push(name)
         continue
       }
-
-      const validTypes: PluginType[] = ['provider', 'channel', 'tool', 'memory', 'transport']
-      if (!validTypes.includes(descriptor.type)) {
-        log.warn(`Invalid plugin type "${descriptor.type}" in ${pkgPath}`)
+      const got = await recordDir(pkgDir)
+      if (!got) invalid.push(name)
+    }
+    if (missing.length > 0 || invalid.length > 0) {
+      const parts: string[] = []
+      if (missing.length > 0) {
+        parts.push(
+          `cannot resolve: ${missing.map((m) => `"${m}"`).join(', ')} ` +
+            `(not installed under ${resolve(rootDir, 'node_modules')})`,
+        )
+      }
+      if (invalid.length > 0) {
+        parts.push(
+          `missing rivetos manifest: ${invalid.map((m) => `"${m}"`).join(', ')} ` +
+            `(package.json must declare a "rivetos" block with type and name)`,
+        )
+      }
+      throw new Error(`Plugin resolution failed — ${parts.join('; ')}`)
+    }
+  } else {
+    // Workspace mode: union of monorepo, node_modules (any scope), additional
+    // paths, and the explicit list.
+    for (const dir of await listWorkspacePluginDirs(rootDir)) {
+      await recordDir(dir)
+    }
+    for (const dir of await listNodeModulesPkgDirs(rootDir)) {
+      await recordDir(dir)
+    }
+    for (const p of additionalPaths) {
+      await recordDir(resolve(rootDir, p))
+    }
+    for (const name of explicitPlugins) {
+      if (seen.has(name)) continue
+      const pkgDir = resolvePackageDir(name, rootDir)
+      if (!pkgDir) {
+        log.warn(
+          `config.plugins entry "${name}" not resolvable from ${rootDir} ` +
+            `— skipping in workspace mode`,
+        )
         continue
       }
-
-      seenPackages.add(pkg.name)
-      discovered.push({
-        packageName: pkg.name,
-        descriptor: descriptor as PluginDescriptor,
-        path: dir,
-      })
-
-      log.debug(`Discovered: ${descriptor.type}/${descriptor.name} → ${pkg.name}`)
-    } catch {
-      // No package.json or invalid JSON — skip
+      const got = await recordDir(pkgDir)
+      if (!got) {
+        log.warn(
+          `config.plugins entry "${name}" resolved to ${pkgDir} but has no ` +
+            `rivetos manifest — skipping`,
+        )
+      }
     }
   }
 
   log.info(
-    `Discovered ${discovered.length} plugin(s): ` +
+    `Discovered ${discovered.length} plugin(s) [${mode} mode]: ` +
       `${discovered.filter((p) => p.descriptor.type === 'provider').length} providers, ` +
       `${discovered.filter((p) => p.descriptor.type === 'channel').length} channels, ` +
       `${discovered.filter((p) => p.descriptor.type === 'tool').length} tools, ` +

@@ -195,56 +195,6 @@ export default tseslint.config(
   },
 
   // Per-project dep-check escapes for runtime-only deps (not statically imported).
-  // boot: dynamically imports plugins by package name in discovery.ts. The full
-  // dep list is the deployment surface — splitting deployment from composition
-  // is tracked as PR-E.
-  {
-    files: ['packages/boot/package.json'],
-    languageOptions: { parser: jsoncParser },
-    plugins: { '@nx': nxPlugin },
-    rules: {
-      '@nx/dependency-checks': [
-        'error',
-        {
-          buildTargets: ['build'],
-          checkMissingDependencies: true,
-          checkObsoleteDependencies: true,
-          checkVersionMismatches: true,
-          includeTransitiveDependencies: false,
-          ignoredFiles: [
-            '**/*.test.ts',
-            '**/*.spec.ts',
-            '**/test/**',
-            '**/__tests__/**',
-          ],
-          ignoredDependencies: [
-            'typescript',
-            '@rivetos/provider-anthropic',
-            '@rivetos/provider-claude-cli',
-            '@rivetos/provider-google',
-            '@rivetos/provider-xai',
-            '@rivetos/provider-ollama',
-            '@rivetos/provider-llama-server',
-            '@rivetos/provider-openai-compat',
-            '@rivetos/channel-agent',
-            '@rivetos/channel-telegram',
-            '@rivetos/channel-discord',
-            '@rivetos/channel-voice-discord',
-            '@rivetos/tool-shell',
-            '@rivetos/tool-file',
-            '@rivetos/tool-search',
-            '@rivetos/tool-interaction',
-            '@rivetos/tool-web-search',
-            '@rivetos/tool-mcp-client',
-            '@rivetos/tool-coding-pipeline',
-            '@rivetos/memory-postgres',
-            '@rivetos/mcp-server',
-          ],
-        },
-      ],
-    },
-  },
-
   // nx-plugin: enquirer + nx are runtime peers of nx generators (called via
   // string-based API by the nx executor, not directly imported).
   {
