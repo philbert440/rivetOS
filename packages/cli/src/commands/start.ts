@@ -8,11 +8,10 @@
  *   migrate    Apply pending DB migrations and exit (CI / startup hook use).
  */
 
-import { resolve, dirname } from 'node:path'
+import { resolve } from 'node:path'
 import { existsSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { resolveMemoryMigrateScript } from '../paths.js'
+import { resolveMemoryMigrateScript, resolveMemoryWorkerScript } from '../paths.js'
 
 type Role = 'agent' | 'worker' | 'monolith' | 'migrate'
 
@@ -56,40 +55,25 @@ async function startAgent(configPath: string): Promise<void> {
   await boot(configPath)
 }
 
-function findRepoRoot(start: string): string | null {
-  let dir = start
-  for (let i = 0; i < 12; i++) {
-    if (existsSync(resolve(dir, 'services/embedding-worker/index.js'))) {
-      return dir
-    }
-    const next = dirname(dir)
-    if (next === dir) break
-    dir = next
-  }
-  return null
-}
-
-function spawnWorker(name: string, scriptRelPath: string): ChildProcess {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const repoRoot = findRepoRoot(here)
-  if (!repoRoot) {
-    console.error(`[${name}] cannot locate ${scriptRelPath} — repo checkout missing?`)
+function spawnWorker(name: 'embedding' | 'compaction'): ChildProcess {
+  const script = resolveMemoryWorkerScript(name)
+  if (!script) {
+    console.error(`[${name}-worker] cannot locate worker entry — install layout missing?`)
     process.exit(1)
   }
-  const script = resolve(repoRoot, scriptRelPath)
   const child = spawn(process.execPath, [script], {
     stdio: 'inherit',
     env: process.env,
   })
   child.on('exit', (code, signal) => {
-    console.log(`[${name}] exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`)
+    console.log(`[${name}-worker] exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`)
   })
   return child
 }
 
 async function startWorkers(): Promise<void> {
-  const embed = spawnWorker('embedding-worker', 'services/embedding-worker/index.js')
-  const compact = spawnWorker('compaction-worker', 'services/compaction-worker/index.js')
+  const embed = spawnWorker('embedding')
+  const compact = spawnWorker('compaction')
 
   const shutdown = (sig: NodeJS.Signals) => {
     console.log(`[start] received ${sig}, stopping workers`)

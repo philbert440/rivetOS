@@ -28,7 +28,6 @@ COPY scripts/ scripts/
 COPY packages/ packages/
 COPY plugins/ plugins/
 COPY apps/ apps/
-COPY services/ services/
 COPY bin/ bin/
 
 # Install workspace deps (skip postinstall — we'll run only what we need).
@@ -57,8 +56,8 @@ COPY --from=build /build/dist/ ./dist/
 COPY --from=build /build/node_modules/ ./node_modules/
 
 # Workers are .js files, not bundled. Copy them so role=worker / monolith
-# can spawn them.
-COPY --from=build /build/services/ ./services/
+# can spawn them. They live alongside @rivetos/memory-postgres.
+COPY --from=build /build/plugins/memory/postgres/workers/ ./plugins/memory/postgres/workers/
 
 # Migration runner + SQL files (compiled by @rivetos/memory-postgres build).
 COPY --from=build /build/plugins/memory/postgres/dist/schema/ ./plugins/memory/postgres/dist/schema/

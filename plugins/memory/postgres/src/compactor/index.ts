@@ -2,7 +2,7 @@
  * Compactor — barrel re-exports for v5 pipeline.
  *
  * Exports v5 prompts, formatters, helpers, and types so the standalone
- * compaction-worker (services/compaction-worker/index.js) and CLI can reuse them.
+ * compaction worker (../../workers/compaction/index.js) and CLI can reuse them.
  */
 
 export {
