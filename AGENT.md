@@ -277,7 +277,7 @@ incremental simplification.
 | Commit | Slice | State |
 |---|---|---|
 | 1 | Drop project refs / composite / tsbuildinfo + add esbuild bundle | ✅ committed |
-| 2 | Versioned schema migrations (`deploy/schema/migrations/*.sql`) + `rivetos db migrate` + `--baseline` adoption flag | ✅ committed |
+| 2 | Versioned schema migrations (`plugins/memory/postgres/src/schema/migrations/*.sql`) + `rivetos db migrate` + `--baseline` adoption flag | ✅ committed |
 | 3 | Single unified Dockerfile + `--role` flag (`agent`/`worker`/`monolith`/`migrate`) + `infra/docker/rivetos/docker-compose.yml` + CI matrix entry | ✅ committed |
 
 Verified locally on each commit before pushing:

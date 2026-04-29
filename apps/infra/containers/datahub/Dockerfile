@@ -2,7 +2,7 @@
 # Postgres 16 + pgvector + shared directory structure.
 # Serves as the central data store for all agents.
 #
-# Build context = repo root (so we can pull deploy/schema/ into the image).
+# Build context = repo root (so we can pull plugins/memory/postgres/ into the image).
 #   docker build -f apps/infra/containers/datahub/Dockerfile -t rivetos-datahub .
 
 FROM pgvector/pgvector:pg16
@@ -12,10 +12,10 @@ FROM pgvector/pgvector:pg16
 COPY apps/infra/containers/datahub/init-db.sh /docker-entrypoint-initdb.d/01-init-db.sh
 COPY apps/infra/containers/datahub/init-shared.sh /docker-entrypoint-initdb.d/02-init-shared.sh
 
-# Schema migrations — single source of truth lives in deploy/schema/migrations.
+# Schema migrations — single source of truth lives in @rivetos/memory-postgres.
 # The init script reads from /migrations/ on first start; for subsequent
 # schema changes use the unified RivetOS image's `db migrate` command.
-COPY deploy/schema/migrations/ /migrations/
+COPY plugins/memory/postgres/src/schema/migrations/ /migrations/
 
 # Shared directory for inter-agent collaboration
 RUN mkdir -p /rivet-shared/plans /rivet-shared/docs /rivet-shared/status /rivet-shared/whiteboard \

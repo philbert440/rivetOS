@@ -77,8 +77,6 @@ export { computeRelevance, temporalDecay } from './scoring.js'
 export { ReviewLoop } from './review-loop.js'
 export type { ReviewLoopConfig, TurnCompleteData, ReviewMetrics } from './review-loop.js'
 
-// Migration helpers — migrate-v3.ts is a standalone CLI (run via npx tsx), not a library export
-
 // ---------------------------------------------------------------------------
 // Plugin manifest
 // ---------------------------------------------------------------------------

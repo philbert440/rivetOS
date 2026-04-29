@@ -2,41 +2,24 @@
  * `rivetos db ...` — schema migration and inspection commands.
  *
  * Sub-commands:
- *   db migrate        Apply pending migrations from deploy/schema/migrations/
+ *   db migrate        Apply pending migrations from @rivetos/memory-postgres
  *   db status         Show applied migrations on the configured Postgres
  *
  * Reads RIVETOS_PG_URL from env (or `--url <pg>` arg).
  */
 
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
-import { existsSync } from 'node:fs'
-
-function findRepoRoot(start: string): string | null {
-  let dir = start
-  for (let i = 0; i < 12; i++) {
-    if (existsSync(resolve(dir, 'deploy/schema/migrate.mjs'))) {
-      return dir
-    }
-    const next = dirname(dir)
-    if (next === dir) break
-    dir = next
-  }
-  return null
-}
+import { resolveMemoryMigrateScript } from '../paths.js'
 
 async function migrate(args: string[]): Promise<void> {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const repoRoot = findRepoRoot(here)
-  if (!repoRoot) {
+  const script = resolveMemoryMigrateScript()
+  if (!script) {
     console.error(
-      '[db migrate] cannot locate deploy/schema/migrate.mjs — is the repo checkout intact?',
+      '[db migrate] cannot locate @rivetos/memory-postgres migrate runner — is the package installed and built?',
     )
     process.exit(1)
   }
 
-  const script = resolve(repoRoot, 'deploy/schema/migrate.mjs')
   const child = spawn(process.execPath, [script, ...args], {
     stdio: 'inherit',
     env: process.env,

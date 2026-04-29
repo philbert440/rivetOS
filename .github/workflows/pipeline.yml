@@ -307,7 +307,7 @@ jobs:
         if: matrix.target == 'datahub'
         uses: docker/build-push-action@v6
         with:
-          # Repo-root context — Dockerfile copies deploy/schema/migrations.
+          # Repo-root context — Dockerfile copies plugins/memory/postgres/src/schema/migrations.
           context: .
           file: apps/infra/containers/datahub/Dockerfile
           push: true

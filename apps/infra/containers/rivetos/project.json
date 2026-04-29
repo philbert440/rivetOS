@@ -17,8 +17,7 @@
         "{workspaceRoot}/plugins/**/src/**/*",
         "{workspaceRoot}/services/*/package.json",
         "{workspaceRoot}/services/*/**/*.js",
-        "{workspaceRoot}/deploy/schema/migrate.mjs",
-        "{workspaceRoot}/deploy/schema/migrations/*.sql",
+        "{workspaceRoot}/plugins/memory/postgres/src/schema/migrations/*.sql",
         "{workspaceRoot}/package.json",
         "{workspaceRoot}/package-lock.json",
         "{workspaceRoot}/tsconfig.base.json"
