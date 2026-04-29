@@ -3,6 +3,7 @@
   "root": "apps/site",
   "sourceRoot": "apps/site/src",
   "projectType": "application",
+  "tags": ["scope:app", "type:app"],
   "targets": {
     "dev": {
       "command": "npm run dev",
