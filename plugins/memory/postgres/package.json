@@ -5,12 +5,14 @@
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "rivetos-memory-migrate": "dist/schema/migrate.js"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').cpSync('src/schema/migrations','dist/schema/migrations',{recursive:true})\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ package.json",
     "test": "vitest run",
-    "migrate": "npx tsx src/migrate.ts",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
   },

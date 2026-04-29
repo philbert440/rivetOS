@@ -5,21 +5,22 @@ set -e
 # RivetOS — Datahub Database Initialization
 #
 # Runs once on first Postgres data-dir init. Applies the same migrations the
-# unified runner would apply (deploy/schema/migrations/0001_baseline.sql, ...).
+# unified runner would apply (0001_baseline.sql, ...) from the
+# @rivetos/memory-postgres package.
 #
 # This script is the legacy entrypoint for the standalone `pgvector/pgvector`
-# image. The unified RivetOS image (commit 3 of the spine) calls
-# `node deploy/schema/migrate.mjs` directly from its datahub-role startup,
-# which works for both first-init and every subsequent container start.
+# image. The unified RivetOS image calls the migrate runner from its
+# datahub-role startup, which works for both first-init and every subsequent
+# container start.
 #
-# Schema source of truth: deploy/schema/migrations/*.sql
+# Schema source of truth: plugins/memory/postgres/src/schema/migrations/*.sql
 # ===========================================================================
 
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-/migrations}"
 
 if [ ! -d "$MIGRATIONS_DIR" ]; then
   echo "[RivetOS] migrations dir $MIGRATIONS_DIR not found — schema setup skipped"
-  echo "[RivetOS] (mount deploy/schema/migrations at $MIGRATIONS_DIR to enable)"
+  echo "[RivetOS] (mount plugins/memory/postgres/src/schema/migrations at $MIGRATIONS_DIR to enable)"
   exit 0
 fi
 

@@ -1,8 +1,7 @@
 /**
  * Expander — DAG traversal over the ros_summaries table.
  *
- * Simpler than LCM's expander: parent_id lives directly on ros_summaries
- * (no separate summary_parents join table). Children are found by
+ * parent_id lives directly on ros_summaries; children are found by
  * querying WHERE parent_id = <this>. Source messages are linked via
  * ros_summary_sources.
  *

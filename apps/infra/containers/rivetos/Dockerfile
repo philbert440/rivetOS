@@ -30,7 +30,6 @@ COPY plugins/ plugins/
 COPY apps/ apps/
 COPY services/ services/
 COPY bin/ bin/
-COPY deploy/ deploy/
 
 # Install workspace deps (skip postinstall — we'll run only what we need).
 RUN npm ci --ignore-scripts
@@ -61,8 +60,8 @@ COPY --from=build /build/node_modules/ ./node_modules/
 # can spawn them.
 COPY --from=build /build/services/ ./services/
 
-# Migration runner + SQL files.
-COPY --from=build /build/deploy/ ./deploy/
+# Migration runner + SQL files (compiled by @rivetos/memory-postgres build).
+COPY --from=build /build/plugins/memory/postgres/dist/schema/ ./plugins/memory/postgres/dist/schema/
 
 # Source-tree files referenced by the runtime (e.g. workspace templates).
 # Created as a directory in the build stage to ensure COPY succeeds.

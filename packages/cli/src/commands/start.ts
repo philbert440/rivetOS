@@ -12,6 +12,7 @@ import { resolve, dirname } from 'node:path'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { resolveMemoryMigrateScript } from '../paths.js'
 
 type Role = 'agent' | 'worker' | 'monolith' | 'migrate'
 
@@ -106,13 +107,11 @@ async function startWorkers(): Promise<void> {
 }
 
 async function runMigrate(): Promise<void> {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const repoRoot = findRepoRoot(here)
-  if (!repoRoot) {
-    console.error('[migrate] cannot locate deploy/schema/migrate.mjs')
+  const script = resolveMemoryMigrateScript()
+  if (!script) {
+    console.error('[migrate] cannot locate @rivetos/memory-postgres migrate runner')
     process.exit(1)
   }
-  const script = resolve(repoRoot, 'deploy/schema/migrate.mjs')
   await new Promise<void>((res, rej) => {
     const child = spawn(process.execPath, [script], {
       stdio: 'inherit',

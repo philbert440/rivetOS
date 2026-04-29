@@ -25,7 +25,7 @@
 services:
   datahub:
     build:
-      # Repo-root context so the Dockerfile can pull deploy/schema/migrations.
+      # Repo-root context so the Dockerfile can pull plugins/memory/postgres/.
       context: ../../../..
       dockerfile: apps/infra/containers/datahub/Dockerfile
     image: rivetos-datahub:dev

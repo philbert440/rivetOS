@@ -12,7 +12,7 @@
         "{projectRoot}/Dockerfile",
         "{projectRoot}/init-db.sh",
         "{projectRoot}/init-shared.sh",
-        "{workspaceRoot}/deploy/schema/migrations/*.sql"
+        "{workspaceRoot}/plugins/memory/postgres/src/schema/migrations/*.sql"
       ],
       "outputs": [],
       "cache": false,
