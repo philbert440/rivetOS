@@ -23,17 +23,18 @@
 
 services:
   datahub:
-    build:
-      # Reuse the existing datahub image — same Postgres + pgvector + the
-      # init-db.sh that creates the full ros_* schema on first boot.
-      context: ../../containers/datahub
-    image: rivetos-datahub:dev
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: rivetos
       POSTGRES_PASSWORD: rivetos
       POSTGRES_DB: rivetos
     volumes:
       - mcp-pgdata:/var/lib/postgresql/data
+      # Schema is applied on first volume init only — Postgres' standard
+      # /docker-entrypoint-initdb.d/ runs *.sql files alphabetically.
+      # For schema upgrades, drop the volume and re-up, or run the
+      # rivetos --role migrate runner from the unified stack.
+      - ../../../plugins/memory/postgres/src/schema/migrations:/docker-entrypoint-initdb.d:ro
     networks:
       - mcp-net
     # Expose 5433 on the host so we can introspect the DB without

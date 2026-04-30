@@ -9,7 +9,7 @@ the wire surface claude-cli will eventually reach into.
 
 | Service | Image | Port | Purpose |
 |---|---|---|---|
-| `datahub` | `rivetos-datahub:dev` | `5433 → 5432` | Postgres 16 + pgvector + pg_trgm, with the full `ros_*` schema bootstrapped on first boot via `infra/containers/datahub/init-db.sh`. |
+| `datahub` | `pgvector/pgvector:pg16` | `5433 → 5432` | Upstream Postgres 16 + pgvector + pg_trgm. The full `ros_*` schema is bootstrapped on first volume init by mounting `plugins/memory/postgres/src/schema/migrations/` into `/docker-entrypoint-initdb.d/`. |
 | `mcp-server` | `rivetos-mcp-server:dev` | `5700` | StreamableHTTP MCP server (`@rivetos/mcp-server`) wired with `rivetos.echo`, `rivetos.memory_search`, `rivetos.memory_browse`, `rivetos.memory_stats`, `rivetos.internet_search`, `rivetos.web_fetch`. |
 
 ## Quick start
@@ -87,7 +87,9 @@ psql 'postgres://rivetos:rivetos@localhost:5433/rivetos'
 
 ## Schema
 
-The `init-db.sh` entrypoint runs once on first volume init and creates:
+The migrations under `plugins/memory/postgres/src/schema/migrations/` run
+once on first volume init via Postgres' `/docker-entrypoint-initdb.d/`
+hook, and create:
 
 - Extensions: `vector`, `pg_trgm`
 - Tables: `ros_conversations`, `ros_messages`, `ros_summaries`,
@@ -98,8 +100,10 @@ The `init-db.sh` entrypoint runs once on first volume init and creates:
   `enqueue_idle_sessions`
 - Triggers: embedding + compaction enqueue on insert
 
-All `CREATE` statements are `IF NOT EXISTS`, so re-running the init script
-on an existing database is a no-op.
+All `CREATE` statements are `IF NOT EXISTS`, so re-running the migrations
+on an existing database is a no-op. For schema upgrades on an existing
+volume, drop the volume (`down -v`) and re-up, or run the unified stack's
+`rivetos --role migrate` runner.
 
 ## What's next
 

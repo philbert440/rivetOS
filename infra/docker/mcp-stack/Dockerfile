@@ -36,7 +36,7 @@ RUN find packages plugins apps -name 'tsconfig.tsbuildinfo' -delete 2>/dev/null 
 # Install all dependencies (workspaces need full install to resolve correctly).
 # Skip postinstall, build serially.
 RUN npm ci --ignore-scripts \
- && npx nx run-many -t build --exclude container-datahub,container-rivetos,site --parallel=1 \
+ && npx nx run-many -t build --exclude container-rivetos,site --parallel=1 \
  && node scripts/link-cli.mjs
 
 # Non-root user
