@@ -8,38 +8,19 @@ dist/
 *-tokens.json
 .credentials.json
 *.pid
-/memory/
 
-# Build artifacts in source directories (tsc output alongside .ts files)
-src/**/*.js
-src/**/*.js.map
-src/**/*.d.ts
-src/**/*.d.ts.map
-packages/*/src/**/*.js
-packages/*/src/**/*.js.map
-packages/*/src/**/*.d.ts
-packages/*/src/**/*.d.ts.map
-plugins/**/src/**/*.js
-plugins/**/src/**/*.js.map
-plugins/**/src/**/*.d.ts
-plugins/**/src/**/*.d.ts.map
+# Build artifacts
+**/*.js
+**/*.js.map
+**/*.d.ts
+**/*.d.ts.map
 dep-graph.json
-REFACTOR_PROGRESS.md
+
 .rivetos-init-state.json
-scratch/
 
-# Bundled templates copied at publish time for @rivetos/cli
-packages/cli/workspace-templates/
-
-# Secrets — fallback passwords, node registry, control plane keys
-# Created at runtime by provision-ct.sh — NEVER commit
+# Secrets & runtime-generated
 .secrets/
 .npmrc
 
-# User data — lives on host, bind-mounted into containers
-# Never commit user workspace files to the source tree
-/workspace/
-tmp/
-
-# Mesh roster (real IPs, operator-managed)
+# Mesh roster (IPs managed outside git)
 scripts/mesh-nodes.conf
