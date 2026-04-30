@@ -2,20 +2,22 @@
 title: Provider Setup
 sidebar:
   order: 6
-description: How to configure LLM providers — Anthropic, xAI, Google, Ollama, and llama.cpp server
+description: How to configure LLM providers — Anthropic, xAI, Google, Ollama, llama-server, openai-compat, and claude-cli
 ---
 
 Providers connect your agents to large language models. Each provider plugin handles API authentication, streaming, tool calling format differences, and thinking/reasoning support so your agent config stays clean.
 
-RivetOS ships with five provider plugins:
+RivetOS ships with seven provider plugins:
 
 | Provider | Models | Thinking Support | Notes |
 |----------|--------|:---:|-------|
-| **Anthropic** | Claude Opus, Sonnet, Haiku | ✅ | Extended thinking, OAuth login |
-| **xAI** | Grok 3, Grok 4 | ✅ | Responses API, conversation caching |
+| **Anthropic** | Claude Opus, Sonnet, Haiku | ✅ | Adaptive thinking, prompt caching |
+| **xAI** | Grok 3, Grok 4 | ✅ | Responses API, conversation caching, live search |
 | **Google** | Gemini 2.5 Pro, Flash | ✅ | Thought signatures for function calling |
 | **Ollama** | Any local model | — | Local inference, no API key needed |
-| **llama.cpp server** | Any model served by llama-server | — | Local `llama-server` binary (native sampling, <think> tags, lenient tool calling) |
+| **llama.cpp server** | Any model served by `llama-server` | — | Native sampling (mirostat, typical_p), `<think>` tags, lenient tools |
+| **OpenAI-compat** | vLLM / TGI / Groq / Together / Fireworks / LocalAI | ✅ (when `--reasoning-parser` set) | Folds mid-conversation system messages, consumes native `reasoning_content` |
+| **Claude CLI** | Anything `claude` supports | ✅ | Drives the local `claude` binary using your subscription OAuth — no API key |
 
 ---
 

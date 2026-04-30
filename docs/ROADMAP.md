@@ -19,7 +19,7 @@ Milestones 0–5 are complete. The core platform is built, tested, and running i
 | M4: Learning & Self-Improvement | v0.4.0 | Background review loop, skill management, directed context loading |
 | M5: Agent Orchestration | v0.5.0 | Tool filtering, agent-driven routing, shared filesystem, model switching |
 
-**Current state:** 13 coreutil tools, 5 provider plugins, 4 channel plugins, 7 tool plugin packages, hook pipeline with safety/auto-action/session hooks, learning loop, skill system, delegation + sub-agents, cross-instance messaging, MCP client, shared `/rivet-shared/` NFS filesystem across all agents.
+**Current state:** 13 coreutil tools, 7 provider plugins (anthropic, xai, google, ollama, llama-server, openai-compat, claude-cli), 4 channel plugins, 7 tool plugin packages, 1 transport plugin (`@rivetos/mcp-server`), hook pipeline with safety/auto-action/session hooks, learning loop, skill system, delegation + sub-agents, cross-instance messaging via mTLS mesh, MCP client + server, shared `/rivet-shared/` NFS filesystem across all agents.
 
 ---
 
@@ -32,7 +32,7 @@ The remaining work is organized around one insight: **the container is the produ
 **Theme:** The install experience IS the product.  
 **Status:** Complete. All 6 sub-milestones shipped. A few deferred items remain (multi-arch builds, Nx caching, K8s provider, mesh updates) — none block launch.
 
-The golden container is the deployment unit. `rivetos init` walks you through setup interactively. The Nx monorepo builds the images. Pulumi (or Docker Compose) manages the infrastructure. Updates rebuild from source.
+The golden container is the deployment unit. `rivetos init` walks you through setup interactively. The Nx monorepo builds the images. Docker Compose and the scripts under `apps/infra/scripts/` manage the infrastructure. Updates rebuild from source.
 
 #### 6.1 — Container Images (Nx Build Targets) ✅
 
@@ -76,7 +76,7 @@ The CLI walks the user through everything. Detect environment, ask questions, co
 
 #### 6.4 — User-Facing Configuration (`rivet.config.yaml`) ✅
 
-One simple config file that drives everything. No Pulumi knowledge needed.
+One simple config file that drives everything.
 
 ```yaml
 # rivet.config.yaml
@@ -116,36 +116,15 @@ proxmox:
 - [x] **Config modification** — `rivetos config` reopens wizard with current values pre-filled
 - [x] **Agent management** — `rivetos agent add` / `rivetos agent remove` jump to agent config phase
 
-#### 6.5 — Infrastructure as Code (Pulumi) ✅
+#### 6.5 — Infrastructure as Code (Pulumi) — removed
 
-Abstract infrastructure layer — same components, multiple providers.
-
-```
-infra/
-├── components/           # Abstract resource definitions
-│   ├── agent.ts          # RivetAgent component
-│   ├── datahub.ts        # RivetDatahub component
-│   └── network.ts        # RivetNetwork component
-├── providers/            # Implementation per deployment target
-│   ├── proxmox/          # LXC containers on Proxmox
-│   ├── docker/           # Docker Desktop / Compose
-│   └── kubernetes/       # K8s deployments (future)
-├── stacks/               # Per-environment configs
-│   ├── Pulumi.homelab.yaml
-│   └── Pulumi.docker.yaml
-├── index.ts              # Reads rivet.config.yaml, picks provider, builds stack
-└── Pulumi.yaml
-```
-
-- [x] **Abstract components** — `RivetAgent`, `RivetDatahub`, `RivetNetwork` interfaces that providers implement
-- [x] **Docker provider** — Docker Compose under the hood
-- [x] **Proxmox provider** — LXC containers, networking, bind mounts, NFS
-- [x] **Orchestrator** — reads `rivet.config.yaml`, picks provider, builds stack
-- [x] **`rivetos infra up`** — creates/updates infrastructure from config
-- [x] **`rivetos infra preview`** — dry run, shows what would change
-- [x] **`rivetos infra destroy`** — tear down (with confirmation)
-- [ ] **Idempotent reconciliation** — full diff-based reconciliation (currently recreates)
-- [ ] **Kubernetes provider** — future, post-launch
+The original v0.4 plan introduced a Pulumi-based IaC layer (`@rivetos/infra`)
+with abstract `RivetAgent`/`RivetDatahub`/`RivetNetwork` components and Docker
++ Proxmox providers, exposed as `rivetos infra up/preview/destroy`. It was
+removed before v0.4 GA — in practice nothing depended on it (real deploys
+used the `apps/infra/scripts/` shell provisioning + Compose), and carrying
+Pulumi as a runtime dependency made every container image larger and slower
+to build. Provisioning is now fully script-and-Compose driven.
 
 #### 6.6 — Update Flow ✅
 
@@ -301,11 +280,10 @@ Build on M5's cross-instance messaging to create a self-organizing agent network
 │   │   └── Dockerfile        # Agent container image
 │   └── datahub/
 │       └── Dockerfile        # Postgres + NFS + shared dirs
-├── infra/
-│   ├── components/           # Abstract: RivetAgent, RivetDatahub, RivetNetwork
-│   ├── providers/            # proxmox/, docker/, kubernetes/
-│   ├── stacks/               # Per-environment Pulumi configs
-│   └── Pulumi.yaml
+├── apps/infra/
+│   ├── containers/           # Per-image Dockerfiles (agent, datahub, rivetos)
+│   ├── docker/               # Compose stacks (mcp-stack, rivetos)
+│   └── scripts/              # provision-ct.sh, setup-mesh-hosts.sh, …
 ├── skills/                   # Bundled + user skills (existing)
 ├── docs/                     # Documentation (existing, expanded)
 ├── config.example.yaml       # Example config (existing)
@@ -373,7 +351,7 @@ Build on M5's cross-instance messaging to create a self-organizing agent network
 3. **Test before feature.** No new milestone starts until the previous milestone's tests are green.
 4. **Multi-model is the differentiator.** Every design decision works across Anthropic, xAI, Google, Ollama, and llama-server providers.
 5. **Phil uses it daily.** If it breaks Phil's workflow, it's a P0 bug regardless of milestone.
-6. **Boring technology.** TypeScript, Node.js, PostgreSQL, systemd, Docker, Pulumi. No experiments in the foundation.
+6. **Boring technology.** TypeScript, Node.js, PostgreSQL, systemd, Docker. No experiments in the foundation.
 7. **Ship the README.** If a component doesn't have docs a stranger can follow, it's not done.
 8. **Learn from doing.** The system should get smarter with use, not just with code changes.
 9. **Write docs last.** Document the finished product, not the moving target.

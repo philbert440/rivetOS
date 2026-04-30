@@ -159,7 +159,6 @@ WARN [AgentChannel] TLS handshake failed from 192.168.10.112: peer did not retur
 
 ---
 
-## Cutover — see `MIGRATION.md`
+## Cutover
 
-For the Phase 0.5 cutover procedure (all nodes must upgrade together), see
-[`MIGRATION.md`](../MIGRATION.md).
+The Phase 0.5 cutover (all nodes upgraded together for shared-CA mTLS) is complete on the supported releases. The historical procedure was documented in `MIGRATION.md`, which has since been removed; see CHANGELOG.md (Phase 0.5 entry) for the original steps and rationale.
