@@ -197,8 +197,6 @@ The v5 pipeline (April 2026) replaces the original cloud-model-tuned compactor w
 | Tool-call rows (empty content) | Ignored — never embedded, never summarized | **Synthesized** content via async queue (see below) |
 | HTTP client | Raw `fetch`, 60s timeout | **Hardened undici Agent** — no timeouts except AbortSignal, 3 retries with 5/10/15s backoff |
 
-See `docs/DECISIONS.md` for the full rationale and the 10-pick probe methodology used to validate each change.
-
 ### Prompt architecture
 
 Three system prompts live in `plugins/memory/postgres/src/compactor/types.ts`:
