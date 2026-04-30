@@ -39,89 +39,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0] - 2026-04-05
 
-### First Public Beta
+First public beta. Containerized distribution, reliability hardening, and launch documentation across three internal milestones (M6 containers, M7 reliability, M8 docs).
 
-**The first public release.** Containerized distribution, reliability hardening, and full launch documentation. v1.0.0 will be the first LTS release.
+### Added
+- Containerized distribution: agent + datahub Dockerfiles, root `docker-compose.yaml`, Nx container build targets, `DATA-PERSISTENCE.md` model, CI pipeline.
+- `rivetos build`, `rivetos init` interactive wizard, `rivetos config`, `rivetos agent add/remove/list`, `rivetos update` source-based update flow.
+- Pulumi infrastructure components and `rivetos infra up/preview/destroy` (later removed in 0.4.x).
+- Reliability primitives: `RivetError` hierarchy, channel `ReconnectionManager`, provider circuit breaker, memory connection pooling, structured logging, audit log rotation.
+- Observability: `rivetos logs`, runtime metrics, `/health`, `/health/live`, `/metrics` endpoints, enhanced `rivetos status` and `rivetos doctor`, `rivetos test` smoke suite.
+- Secret management: `redactSecrets()`, `.env` permission enforcement, config secret validation, 1Password `op://` resolution.
+- Multi-agent mesh: `FileMeshRegistry`, `MeshDelegationEngine`, mesh HTTP endpoints, `rivetos mesh` CLI, `rivetos init --join`, `rivetos update --mesh`.
+- Launch docs: `GETTING-STARTED`, `CONFIG-REFERENCE`, `PLUGINS`, `SKILLS`, `DEPLOYMENT`, `TROUBLESHOOTING`, example configs, `rivetos plugin init`, `rivetos skill init`, `rivetos skill validate`.
 
-#### Changed (release-wide)
-- **Node.js requirement** bumped from 22 to 24
-- **All package versions** set to 0.4.0 (previously unreleased 1.0.0 placeholders)
-- **Containers moved** from `containers/` to `infra/containers/`
-- **Plugin registration** standardized — all plugins export `createPlugin()` factory
-- **Plugin discovery** — convention-based via `package.json` `rivetos` field (replaces hardcoded switch statements)
+### Changed
+- Node.js requirement: 22 → 24.
+- All package versions normalized to 0.4.0 (was unreleased 1.0.0 placeholders).
+- Containers moved from `containers/` to `infra/containers/`.
+- Plugin discovery is convention-based via `package.json` `rivetos` field; all plugins export `createPlugin()` factory.
+- Root `package.json` no longer leaks plugin dependencies (only `yaml` remains).
 
-### Milestone 8: Documentation & Launch
+### Removed
+- Backward-compat runtime shim `core/src/runtime.ts`.
+- Architecture violation: `memory-postgres/review-loop.ts` no longer imports from `@rivetos/core`.
 
-Documentation, developer experience tooling, and launch readiness.
-
-#### Added
-- **docs/GETTING-STARTED.md** — Zero to running in 5 minutes. Docker, bare-metal, and interactive wizard paths.
-- **docs/CONFIG-REFERENCE.md** — Every config option documented with types, defaults, and examples.
-- **docs/PLUGINS.md** — Complete guide to writing provider, channel, tool, and memory plugins.
-- **docs/SKILLS.md** — Guide to writing, testing, and distributing skills.
-- **docs/DEPLOYMENT.md** — Docker, Proxmox, multi-agent mesh, networking, backup/restore.
-- **docs/TROUBLESHOOTING.md** — Common issues, `rivetos doctor` output guide, FAQ.
-- **`rivetos plugin init`** — CLI command to scaffold new plugins (wraps `@rivetos/nx:plugin`).
-- **`rivetos skill init`** — CLI command to scaffold new skills with SKILL.md template.
-- **`rivetos skill validate`** — Validates skill frontmatter, triggers, file references.
-- **Example configs** — `examples/single-agent.yaml`, `multi-agent.yaml`, `local-only.yaml`, `homelab.yaml`.
-
-#### Changed
-- **README.md** — Complete rewrite for v1.0. Fixed stale workspace file references (SOUL.md → CORE.md), updated architecture diagram, added container deployment docs, expanded CLI reference.
-- **CONTRIBUTING.md** — Added plugin discovery, container workflow, and skill development sections.
-- **docs/ARCHITECTURE.md** — Updated to reflect M6-M8 additions (mesh, observability, security, infra).
-
-### Milestone 7: Reliability & Polish
-
-**Production-grade reliability.** Structured errors, observability, diagnostics, security essentials, and multi-agent mesh.
-
-#### Added
-- **Structured error types** — `RivetError` hierarchy with codes, severity, retryable flags. Subclasses: `ChannelError`, `MemoryError`, `ConfigError`, `ToolError`, `DelegationError`, `RuntimeError`.
-- **Channel reconnection** — `ReconnectionManager` with exponential backoff, jitter, configurable retries.
-- **Provider circuit breaker** — Closed/open/half-open states, windowed failure tracking, auto-recovery.
-- **Memory backend resilience** — Connection pooling, health checks, graceful degradation.
-- **Structured logging** — JSON mode for production, pretty-print for dev. Component-scoped loggers.
-- **`rivetos logs`** — Tail agent logs from CLI. Docker, systemd, and bare-metal backends. Filter by agent, level, pattern, time range.
-- **Runtime metrics** — Turns/min, tool calls, token usage per agent, latency percentiles, error tracking.
-- **Health endpoints** — `GET /health` (full status), `GET /health/live` (liveness), `GET /metrics` (raw metrics).
-- **Enhanced `rivetos status`** — Rich display from health endpoint with agents, providers, channels, memory, metrics.
-- **Enhanced `rivetos doctor`** — 12 check categories: system, config, workspace, env vars, secrets, OAuth, containers, memory, shared storage, DNS, providers, peers. `--json` flag.
-- **`rivetos test`** — Smoke test suite: config validation, provider ping, pg connectivity, tool registry, health endpoint, shared storage. `--quick`, `--verbose`, `--json`.
-- **Secret management** — `redactSecrets()` for safe logging, `.env` permissions enforcement, `validateNoSecretsInConfig()`, 1Password `op://` resolution.
-- **Audit log rotation** — Configurable retention (default 90 days), gzip compression after 7 days, size warnings.
-- **Multi-agent mesh** — `FileMeshRegistry` with heartbeat, pruning, seed sync. Full test suite.
-- **Mesh-aware delegation** — `MeshDelegationEngine` routes `delegate_task` to remote agents via HTTP.
-- **Mesh endpoints** — `/api/mesh` (GET nodes), `/api/mesh/join` (POST register), `/api/mesh/ping` (GET liveness).
-- **`rivetos mesh`** — CLI commands: `list`, `ping`, `status`, `join`.
-- **`rivetos init --join`** — Wizard supports mesh discovery during setup.
-- **`rivetos update --mesh`** — Rolling fleet update with health checks between nodes.
-
-### Milestone 6: Containerized Distribution
-
-**The container is the product.** Interactive setup, container images, infrastructure as code, source-based updates.
-
-#### Added
-- **Agent Dockerfile** — Multi-stage, non-root, tini init, healthcheck.
-- **Datahub Dockerfile** — PostgreSQL 16 + pgvector, shared directory structure, init scripts.
-- **Nx build targets** — `project.json` for both containers with dependency graph and SHA tagging.
-- **Docker Compose** — Full `docker-compose.yaml` with datahub, agent template, multi-agent profiles, networking.
-- **Data persistence model** — Workspace bind mount, named volumes for pgdata + shared. `DATA-PERSISTENCE.md` documented.
-- **CI pipeline** — `.github/workflows/ci.yml`: PR lint+test, merge build+push, release publish.
-- **`rivetos build`** — CLI command for local container builds.
-- **Interactive setup wizard** (`rivetos init`) — 6 phases: detect → deployment → agents → channels → review → generate. Uses @clack/prompts.
-- **Deployment config schema** — Full TypeScript types (`DeploymentConfig`, Docker, Proxmox, Kubernetes) in `@rivetos/types`. Validator in `@rivetos/boot`.
-- **`rivetos agent add/remove/list`** — Agent management commands.
-- **`rivetos config`** — Reopens wizard with current values pre-filled.
-- **Pulumi infrastructure** — Abstract components (`RivetAgent`, `RivetDatahub`, `RivetNetwork`). Docker and Proxmox providers. _(Subsequently removed in 0.4.x — see [Unreleased].)_
-- **`rivetos infra up/preview/destroy`** — CLI commands for infrastructure management. _(Subsequently removed.)_
-- **Source-based update flow** — `rivetos update` pulls source → rebuilds containers → restarts. `--version`, `--prebuilt`, `--mesh`, `--no-restart` flags. Data persistence verification before rebuild.
-
-#### Changed
-- **Convention-based plugin discovery** — All 17 plugins declare `rivetos` manifest in `package.json`. New `discovery.ts` scans plugin dirs. Registrars use dynamic import instead of switch statements.
-- **Standardized tool plugin interface** — All tool plugins export `createPlugin()` → `ToolPlugin` with `getTools()`.
-- **Cleaned root `package.json`** — Removed leaked plugin dependencies (discord.js, grammy, pg). Only `yaml` remains.
-- **Deleted dead code** — Backward-compat shim `core/src/runtime.ts`, stale TODO references.
-- **Fixed architecture violation** — `memory-postgres/review-loop.ts` no longer imports from `@rivetos/core`.
+> Long-form release narrative archived outside the repo: `0.4.0-milestone-6-containerized-distribution.md`, `0.4.0-milestone-7-reliability-polish.md`, `0.4.0-milestone-8-documentation-launch.md`.
 
 ## [0.0.8] - 2026-04-03
 
