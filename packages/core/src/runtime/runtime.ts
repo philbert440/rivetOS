@@ -53,7 +53,7 @@ export interface RuntimeConfig {
   /** Context management config */
   contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
   heartbeats?: import('@rivetos/types').HeartbeatConfig[]
-  /** Directories to scan for skills (default: ~/.rivetos/skills/) */
+  /** Directories to scan for skills (default: ~/.rivetos/workspace/skills/) */
   skillDirs?: string[]
   /** Hook pipeline instance (created by boot, shared across runtime) */
   hooks?: HookPipeline

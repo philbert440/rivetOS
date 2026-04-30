@@ -7,7 +7,7 @@
  *   rivetos skills list       Show all discovered skills with descriptions and trigger counts
  */
 
-import { readFile, readdir, stat, access } from 'node:fs/promises'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 
@@ -282,15 +282,6 @@ async function getSkillDirs(): Promise<string[]> {
     if (dirs && dirs.length > 0) {
       return dirs.map((d) => d.replace('~', process.env.HOME ?? '.'))
     }
-  } catch {
-    /* expected */
-  }
-
-  // Also check if skills exist in the repo root (for development)
-  const repoSkills = resolve(process.cwd(), 'skills')
-  try {
-    await access(repoSkills)
-    defaults.push(repoSkills)
   } catch {
     /* expected */
   }

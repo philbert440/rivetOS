@@ -7,7 +7,7 @@
  * 2. Turn active → queue the message, process after current turn
  * 3. Idle → process immediately
  *
- * This is the thing that broke OpenClaw. Keep it simple.
+ * Keep it simple.
  */
 
 import type { InboundMessage, QueuedMessage, RuntimeCommand } from '@rivetos/types'
