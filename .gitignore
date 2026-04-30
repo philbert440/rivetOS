@@ -24,3 +24,9 @@ dep-graph.json
 
 # Mesh roster (IPs managed outside git)
 scripts/mesh-nodes.conf
+
+# Agent-context files — bootstrap briefings loaded via /context add,
+# not source. Kept locally, never committed.
+/AGENT.md
+/MEMORY.md
+/references/

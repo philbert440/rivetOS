@@ -59,7 +59,7 @@ export async function reviewConfig(state: WizardState): Promise<boolean> {
     )
   } else if (state.deployment === 'proxmox') {
     lines.push('Infrastructure:')
-    lines.push('  Managed via Pulumi → Proxmox LXC containers')
+    lines.push('  Provisioned via apps/infra/scripts/provision-ct.sh on each Proxmox node')
   } else {
     lines.push('Infrastructure:  manual (you handle deployment)')
   }

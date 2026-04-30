@@ -8,7 +8,7 @@
  *   4. Channel configuration (Discord, Telegram, terminal)
  *   5. Review & confirm
  *   6. Generate config.yaml + .env + workspace templates
- *   7. Optional deploy (docker compose up / pulumi up)
+ *   7. Optional deploy (docker compose up)
  *   8. Mesh join (if --join was specified)
  */
 
