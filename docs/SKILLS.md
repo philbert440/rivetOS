@@ -89,16 +89,15 @@ If you skip the `---` delimiters, the skill system falls back to:
 
 ## How Skills Are Discovered
 
-On boot, the skill manager scans all directories listed in `runtime.skill_dirs` (plus the built-in `skills/` directory). For each subdirectory containing a `SKILL.md`, it parses the frontmatter and registers the skill.
+On boot, the skill manager scans every directory listed in `runtime.skill_dirs` (defaults to `~/.rivetos/workspace/skills/` if unset). For each subdirectory containing a `SKILL.md`, it parses the frontmatter and registers the skill.
 
 ### Configuration
 
 ```yaml
 runtime:
   skill_dirs:
-    - ./skills              # Your custom skills
-    - /rivet-shared/skills        # Team-shared skills
-    - ~/.rivetos/skills     # User-global skills
+    - ~/.rivetos/workspace/skills   # User-global skills (default if unset)
+    - /rivet-shared/skills          # Team-shared skills (optional)
 ```
 
 ### Discovery Flow

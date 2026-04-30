@@ -72,7 +72,7 @@ Top-level runtime configuration.
 | `workspace` | string | **required** | Path to workspace directory containing CORE.md, USER.md, etc. |
 | `default_agent` | string | **required** | Agent to use when no channel binding matches. Must match a key in `agents`. |
 | `max_tool_iterations` | number | `100` | Maximum tool call iterations per turn. Safety cap to prevent runaway loops. |
-| `skill_dirs` | string[] | `[]` | Directories to scan for skills (in addition to built-in `skills/`). |
+| `skill_dirs` | string[] | `[~/.rivetos/workspace/skills]` | Directories to scan for skills. |
 | `plugin_dirs` | string[] | `[]` | Additional directories to scan for plugins beyond the default `plugins/`. |
 
 ### `runtime.heartbeats`

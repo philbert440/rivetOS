@@ -112,17 +112,17 @@ export async function ensureEmbedderSchema(pool: pg.Pool): Promise<void> {
  * if it should be embedded normally.
  *
  * Rationale: media payloads (base64 PNG dumps, "[media attached: ...]"
- * markers from WhatsApp/openclaw bridges) produce no semantically useful
- * embedding and frequently cause the chunker to return all-null vectors,
- * burning retry budget forever. Pre-filter them so they exit the queue
- * cleanly rather than poisoning via repeated failure.
+ * markers from chat bridges) produce no semantically useful embedding and
+ * frequently cause the chunker to return all-null vectors, burning retry
+ * budget forever. Pre-filter them so they exit the queue cleanly rather
+ * than poisoning via repeated failure.
  */
 export function classifyUnembeddable(content: string): string | null {
   if (!content) return null
 
   const trimmed = content.trimStart()
 
-  // WhatsApp / openclaw media markers
+  // Chat-bridge media markers
   if (/^\[media attached:/i.test(trimmed)) return 'media-marker'
   if (/^MEDIA:/i.test(trimmed)) return 'media-prefix'
 

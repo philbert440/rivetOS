@@ -206,7 +206,7 @@ export async function registerAgentTools(
 
   // Skills — discover, list, and manage
   const skillManager = new SkillManagerImpl()
-  const defaultSkillDirs = [`${process.env.HOME ?? '~'}/.rivetos/skills`]
+  const defaultSkillDirs = [`${process.env.HOME ?? '~'}/.rivetos/workspace/skills`]
   const skillDirs = config.runtime.skill_dirs ?? defaultSkillDirs
   await skillManager.discover(skillDirs)
   runtime.registerTool(createSkillListTool(skillManager))

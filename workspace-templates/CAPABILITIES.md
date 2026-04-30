@@ -20,7 +20,7 @@ The RivetOS runtime provides these tools by default:
 
 ## Skills
 
-Skills are reusable workflows and knowledge loaded on demand. See `skill_list` for what's currently available; they live under `skills/` in this workspace or in `/opt/rivetos/skills/`.
+Skills are reusable workflows and knowledge loaded on demand. See `skill_list` for what's currently available; they live under `skills/` in this workspace.
 
 To use a skill, check its `SKILL.md` for instructions. Skills are matched to your tasks automatically by keyword.
 
