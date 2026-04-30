@@ -17,14 +17,14 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 - **Tiny core, fat plugins** — The kernel stays under 5,000 lines. Everything else is swappable.
 - **Streaming-first** — `AsyncIterable<StreamEvent>` from every provider. Responses stream in real-time.
-- **6 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, llama-server (native), openai-compat (vLLM / TGI / any strict OpenAI-compatible server).
+- **7 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, llama-server (native llama.cpp), openai-compat (vLLM / TGI / any strict OpenAI-compatible server), claude-cli (Claude Code subscription).
 - **4 channel plugins** — Discord, Telegram, Agent (HTTP inter-agent), Voice (xAI Realtime).
-- **13 built-in tools** — Shell, file I/O, search, web, memory, interaction, MCP client, coding pipeline.
+- **MCP transport plugin** — Expose RivetOS tools (memory, web, skills) to external MCP clients over StreamableHTTP.
+- **20+ built-in tools** — Shell, file I/O, search, web, memory, skills, interaction, MCP client, coding pipeline, delegation, sub-agents.
 - **Multi-agent mesh** — Delegate tasks across agents. Local or remote. Transparent routing.
 - **Hook system** — Composable pipeline for safety, fallback chains, auto-actions, session lifecycle.
 - **Interactive setup** — `rivetos init` walks you through everything step by step.
 - **Container deployment** — Docker Compose or Proxmox LXC. Images built from source, plugins included.
-- **Infrastructure as Code** — Pulumi with abstract components. Docker, Proxmox, or Kubernetes.
 - **Source-based updates** — `rivetos update` pulls, rebuilds, restarts. Forks and custom plugins are first-class.
 - **Full control surface** — `/stop`, `/steer`, `/new`, `/status`, `/model`, `/think`, `/context`.
 - **Interrupt that works** — `AbortController` propagated to every API call and tool.
@@ -103,13 +103,13 @@ rivetOS/
 │   └── nx-plugin/      # @rivetos/nx — generators, executors, dev tooling
 ├── plugins/
 │   ├── channels/       # discord, telegram, agent, voice-discord
-│   ├── providers/      # anthropic, google, xai, ollama, llama-server
-│   ├── memory/         # postgres (pgvector + FTS + summary DAG)
-│   └── tools/          # shell, file, search, web, interaction, mcp, coding-pipeline
+│   ├── providers/      # anthropic, google, xai, ollama, llama-server, openai-compat, claude-cli
+│   ├── memory/         # postgres (pgvector + FTS + summary DAG + workers)
+│   ├── tools/          # shell, file, search, web-search, interaction, mcp-client, coding-pipeline
+│   └── transports/     # mcp-server (expose RivetOS tools over MCP StreamableHTTP)
 ├── apps/
-│   ├── infra/          # Containers, Pulumi IaC (Docker, Proxmox providers)
+│   ├── infra/          # Container Dockerfiles, Compose files, provisioning scripts
 │   └── site/           # Astro docs site
-
 ├── examples/           # Example configs (single, multi, local, homelab)
 ├── docs/               # Full documentation
 └── skills/             # Optional skill libraries
@@ -121,11 +121,13 @@ rivetOS/
 
 | Plugin | Description |
 |--------|-------------|
-| `provider-anthropic` | Claude models with streaming, extended thinking, OAuth support |
-| `provider-google` | Gemini models via Generative Language API |
+| `provider-anthropic` | Claude models — streaming, adaptive thinking, prompt caching |
+| `provider-google` | Gemini models via Generative Language API (thought signatures) |
 | `provider-xai` | Grok models with live search and caching |
 | `provider-ollama` | Local Ollama models (native API) |
 | `provider-llama-server` | llama.cpp `llama-server` binary (native API, mirostat, typical_p, etc.) |
+| `provider-openai-compat` | Strict OpenAI-compatible servers (vLLM, TGI, Groq, Together, Fireworks, LocalAI) |
+| `provider-claude-cli` | Drives the local `claude` binary (Claude Code) using the user's subscription OAuth token |
 
 ### Channels
 
@@ -147,6 +149,14 @@ rivetOS/
 | `tool-interaction` | `ask_user` (structured questions) and `todo` (task list) |
 | `tool-mcp-client` | MCP protocol client (stdio + HTTP transports) |
 | `tool-coding-pipeline` | Multi-agent build → review → validate loop |
+
+The memory plugin (`@rivetos/memory-postgres`) additionally registers `memory_search`, `memory_browse`, and `memory_stats`. Delegation, sub-agents, and skill management add `delegate_task`, `subagent_*`, and `skill_*` tools at runtime.
+
+### Transports
+
+| Plugin | Description |
+|--------|-------------|
+| `transport-mcp` (`@rivetos/mcp-server`) | Exposes RivetOS tools (memory, web, skills, runtime) to external MCP clients over StreamableHTTP |
 
 ## Configuration
 
@@ -206,17 +216,23 @@ Runtime:
   rivetos logs [options]          Tail logs (--follow, --level, --since)
 
 Configuration:
-  rivetos config show|validate    View or validate config
+  rivetos config show|validate|edit|path   View or validate config
   rivetos agent add|remove|list   Manage agents
   rivetos model [provider] [mod]  Show or switch models
+  rivetos keys rotate|list        Rotate / list mesh SSH keys
 
-Infrastructure:
+Containers & Service:
   rivetos build                   Build container images from source
-  rivetos infra up|preview|destroy  Deploy or tear down containers
+  rivetos service install         Install systemd unit
 
 Mesh:
   rivetos mesh list|ping|status   Mesh management
   rivetos mesh join <host>        Join an existing mesh
+
+Memory:
+  rivetos memory backfill-tool-synth   Synthesize content for historical tool calls
+  rivetos memory queue-status     Show ros_tool_synth_queue state
+  rivetos db ...                  Low-level DB inspection helpers
 
 Development:
   rivetos plugin init             Scaffold a new plugin

@@ -317,9 +317,58 @@ providers:
 | `seed` | number | `-1` | Random seed (`-1` = random). |
 | `api_key` | string | — | Optional (for `--api-key` on server). |
 
+### openai-compat
+
+Provider for strict OpenAI-compatible servers — vLLM, Text Generation Inference (TGI), LocalAI, Together, Fireworks, Groq, etc. Sibling to `llama-server` but tuned for stricter chat-template behavior:
+
+- Folds any post-first `system` message into a `user` message with a `[SYSTEM NOTICE]` prefix (vLLM/Qwen/Llama templates reject mid-conversation system messages)
+- Consumes vLLM's native `reasoning_content` / `reasoning` field when a `--reasoning-parser` is configured server-side, with `<think>` regex as fallback
+- Supports OpenAI sampling knobs plus vLLM extensions (`top_k`, `min_p`); excludes llama-only knobs (`typical_p`, `mirostat`, `repeat_penalty`)
+
+```yaml
+providers:
+  openai-compat:
+    base_url: http://vllm.local:8000/v1
+    model: Qwen/Qwen2.5-72B-Instruct
+    api_key: ${VLLM_API_KEY}
+    top_k: 40
+    min_p: 0.05
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `base_url` | string | **required** | Server URL (must include `/v1` for OpenAI-compatible endpoints). |
+| `model` | string | **required** | Model identifier known to the server. |
+| `api_key` | string | — | API key (sent as `Authorization: Bearer`). |
+| `max_tokens` | number | — | Maximum output tokens. |
+| `temperature` | number | — | Sampling temperature. |
+| `top_p` | number | — | Nucleus sampling. |
+| `top_k` | number | — | vLLM extension; ignored by strict OpenAI servers. |
+| `min_p` | number | — | vLLM extension. |
+| `presence_penalty` | number | — | Standard OpenAI penalty. |
+| `frequency_penalty` | number | — | Standard OpenAI penalty. |
+| `seed` | number | — | Reproducible sampling seed. |
+
+### claude-cli
+
+Drives the local `claude` binary (Claude Code CLI) using the user's subscription OAuth token — the sanctioned third-party-harness pattern per Anthropic's April 2026 policy. The CLI owns auth, session caching, and the wire protocol; this provider drives it via `stream-json` and brings up a per-spawn embedded MCP server that exposes every executable RivetOS tool to claude-cli through `--mcp-config`.
+
+```yaml
+providers:
+  claude-cli:
+    binary: claude            # path or name on PATH
+    model: claude-opus-4-7    # optional — defaults to whatever the CLI picks
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `binary` | string | `claude` | Path to the `claude` binary. |
+| `model` | string | — | Model alias to pass to the CLI. |
+| `extra_args` | string[] | `[]` | Additional CLI flags (advanced). |
+
+**Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow — the CLI does.
+
 ---
-
-
 
 ## `channels`
 
@@ -440,9 +489,28 @@ The memory plugin handles schema creation and migration automatically on first b
 
 ---
 
+## `transports`
+
+Inbound surfaces that expose RivetOS tools to external clients. Currently: the MCP server transport (`@rivetos/mcp-server`) — a StreamableHTTP MCP server that exposes `memory_*`, `web_*`, `skill_*`, and runtime tools to any MCP-speaking client (Claude Code, Cursor, etc.).
+
+```yaml
+transports:
+  mcp:
+    port: 4321
+    bind: 127.0.0.1           # default localhost
+    tls:                      # optional mTLS
+      ca_path: /rivet-shared/rivet-ca/intermediate/ca-chain.pem
+      cert_path: /rivet-shared/rivet-ca/issued/<node>.crt
+      key_path: /rivet-shared/rivet-ca/issued/<node>.key
+```
+
+The transport is only activated when the matching `transports.<name>` slice is present. The MCP server can also run standalone via the `rivetos-mcp-server` bin shipped by `@rivetos/mcp-server`.
+
+---
+
 ## `mcp`
 
-Model Context Protocol server connections. RivetOS can connect to MCP servers and expose their tools to agents.
+**Outbound** Model Context Protocol — RivetOS *connects to* external MCP servers and exposes their tools to agents (the inverse of the `transports.mcp` plugin above).
 
 ```yaml
 mcp:
@@ -478,7 +546,10 @@ mcp:
 
 ## `deployment`
 
-Optional. When present, drives containerized deployment via `rivetos infra up`.
+Optional. Captures the desired runtime topology (datahub host, agent placement,
+networking) for documentation and tooling. Provisioning is currently driven by
+the Compose files under `apps/infra/docker/` and the scripts under
+`apps/infra/scripts/`.
 
 ```yaml
 deployment:

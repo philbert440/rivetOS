@@ -164,16 +164,10 @@ deployment:
 
 ### Deployment
 
-```bash
-# Preview what will be created
-npx rivetos infra preview
-
-# Deploy
-npx rivetos infra up
-
-# Check status
-npx rivetos infra status
-```
+Use the provisioning scripts under `apps/infra/scripts/` and the Compose files under
+`apps/infra/docker/` to stand up containers on each node. There is no
+unified `rivetos infra` command — provisioning is intentionally script-driven so
+you keep full control over Proxmox/Docker semantics.
 
 ### Proxmox Architecture
 
@@ -202,7 +196,7 @@ npx rivetos infra status
 The datahub node runs NFS to share `/rivet-shared/` across all agents:
 
 ```bash
-# On the datahub node (automatic with rivetos infra up):
+# On the datahub node:
 apt install nfs-kernel-server
 echo "/rivet-shared 192.168.1.0/24(rw,sync,no_subtree_check)" >> /etc/exports
 exportfs -ra

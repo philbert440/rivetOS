@@ -7,7 +7,7 @@
 # Prerequisites:
 #   - Proxmox VE 8.x on each node
 #   - Network bridge (vmbr1) configured
-#   - API access from the machine running rivetos infra
+#   - SSH access from the machine running provision-ct.sh
 
 runtime:
   workspace: ./workspace

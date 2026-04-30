@@ -2,37 +2,36 @@
 title: Plugin Development
 sidebar:
   order: 4
-description: How to write channels, providers, tools, and memory plugins
+description: How to write channels, providers, tools, memory backends, and transports for RivetOS
 ---
 
 
-RivetOS is built on four plugin types: **Providers** (talk to LLMs), **Channels** (send/receive messages), **Tools** (agent capabilities), and **Memory** (persistent storage). This guide shows you how to build each one.
+RivetOS supports five plugin types: **Providers** (talk to LLMs), **Channels** (send/receive messages), **Tools** (agent capabilities), **Memory** (persistent storage), and **Transports** (expose RivetOS to external clients). Every plugin uses the same self-registration contract.
 
 ---
 
 ## Quick Start: Scaffold a Plugin
 
 ```bash
+npx rivetos plugin init
+# or directly:
 npx nx g @rivetos/nx:plugin
 # ? What type of plugin? › channel
 # ? What is the plugin name? › slack
-# ? Short description: › Slack workspace channel integration
 ```
 
-This creates a complete plugin skeleton at `plugins/channels/slack/` with package.json, types, and a test file.
+This creates `plugins/{category}/{name}/` with `package.json`, `tsconfig.json`, `src/index.ts`, and a test file.
 
 ---
 
 ## Architecture Rules
 
-1. **Depend on `@rivetos/types` only.** Plugins never import from `@rivetos/core`, `@rivetos/boot`, or other plugins.
-2. **Export a `createPlugin()` factory.** This is the standard entry point that boot uses to load your plugin.
-3. **Declare a `rivetos` manifest in `package.json`.** This enables auto-discovery.
-4. **Handle platform concerns internally.** Message splitting, rate limits, API format differences — all inside the plugin.
+1. **Depend on `@rivetos/types` only.** Plugins do not import from `@rivetos/core` or `@rivetos/boot`. (The memory plugin's workers and the MCP server transport are exceptions because they ship binaries that run outside the runtime.)
+2. **Export a `manifest: PluginManifest` const.** This is the entry point boot uses.
+3. **Declare `package.json#rivetos`.** This is what discovery reads — without importing the package.
+4. **Handle platform concerns internally.** Message splitting, rate limits, API quirks — all inside the plugin.
 
-### Plugin Manifest
-
-Every plugin declares itself in `package.json`:
+### `package.json#rivetos`
 
 ```json
 {
@@ -44,561 +43,261 @@ Every plugin declares itself in `package.json`:
 }
 ```
 
-Boot scans `plugins/*/package.json` for the `rivetos` field. Config determines which plugins actually load. Discovery is automatic, activation is explicit.
+Boot scans every `plugins/*/*/package.json` (and any `plugin_dirs` from config). The descriptor's `type` and `name` must match the exported `manifest`.
+
+---
+
+## The Manifest Contract
+
+```typescript
+import type { PluginManifest, RegistrationContext } from '@rivetos/types'
+
+export const manifest: PluginManifest = {
+  type: 'provider',           // 'provider' | 'channel' | 'tool' | 'memory' | 'transport'
+  name: 'mistral',
+  async register(ctx: RegistrationContext) {
+    // 1. Read your config slice
+    const cfg = ctx.pluginConfig as { model?: string; api_key?: string } | undefined
+    const apiKey = cfg?.api_key ?? ctx.env.MISTRAL_API_KEY ?? ''
+
+    // 2. Construct your plugin
+    const provider = new MistralProvider({ model: cfg?.model ?? 'mistral-large-latest', apiKey })
+
+    // 3. Register with the runtime
+    ctx.registerProvider(provider)
+
+    // 4. (Optional) Register cleanup
+    ctx.registerShutdown(() => provider.close())
+  },
+}
+```
+
+`RegistrationContext` exposes:
+
+| Member | Purpose |
+|---|---|
+| `config` | Full validated `RivetConfig` (cast in your plugin if you need it) |
+| `pluginConfig` | The slice for this plugin — `config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`. `undefined` for tool plugins (tools read from `config` directly when needed). |
+| `env` | `process.env` snapshot |
+| `workspaceDir` | Resolved workspace path |
+| `logger` | Scoped logger (`debug` / `info` / `warn` / `error`) |
+| `registerProvider` / `registerChannel` / `registerTool` / `registerMemory` | Hand instances to the runtime |
+| `registerHook(hook)` | Subscribe to lifecycle events |
+| `registerShutdown(fn)` | Called during graceful shutdown |
+| `lateBindTool(name)` | Returns a closure that resolves a tool at execution time — used by composite tools (e.g. coding-pipeline) when registration order isn't guaranteed |
+| `onRegistrationComplete(fn)` | Fires once after every plugin has registered. Receives `{ tools }`. Used by transports to enumerate the finalized tool set before opening their listening socket. |
+
+Boot has **no per-plugin knowledge.** Every kind of plugin goes through the same loader (`packages/boot/src/registrars/plugins.ts`).
+
+### Activation
+
+A plugin is *discovered* by `package.json#rivetos`, but only *activated* when:
+
+- **Provider / channel / memory / transport** — its name appears in the matching config section (`config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`). Channels also accept a legacy alias: `voice-discord` matches `config.channels.voice`.
+- **Tool** — always activated (tools decide internally whether their config is sufficient — e.g. `mcp-client` skips itself when no servers are configured).
 
 ---
 
 ## Provider Plugin
 
-A provider connects to an LLM and streams responses.
-
-### Interface
-
 ```typescript
 interface Provider {
-  id: string;
-  name: string;
-  chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk>;
-  chat?(messages: Message[], options?: ChatOptions): Promise<LLMResponse>;
-  isAvailable(): Promise<boolean>;
-  getModel(): string;
-  setModel(model: string): void;
+  id: string
+  name: string
+  chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk>
+  chat?(messages: Message[], options?: ChatOptions): Promise<LLMResponse>
+  isAvailable(): Promise<boolean>
+  getModel(): string
+  setModel(model: string): void
 }
 ```
 
-### Key Methods
+The AgentLoop always calls `chatStream()`. `chat()` is optional. `getModel()` / `setModel()` enable runtime model switching via `/model`.
 
-- **`chatStream()`** — The primary method. Returns an async iterable of chunks. The AgentLoop always calls this, never `chat()`.
-- **`isAvailable()`** — Called on boot to verify the provider is reachable. Return `false` if the API key is missing or the endpoint is down.
-- **`getModel()` / `setModel()`** — Runtime model switching (via `/model` command).
-- **`chat()`** — Optional synchronous mode. Used by some internal tools. If not implemented, the runtime buffers `chatStream()`.
-
-### LLMChunk Types
+### `LLMChunk`
 
 ```typescript
 interface LLMChunk {
-  type: 'text' | 'tool_call' | 'thinking' | 'done' | 'error';
-  text?: string;           // For 'text' and 'thinking'
-  toolCall?: ToolCall;     // For 'tool_call'
-  usage?: TokenUsage;      // For 'done'
-  error?: string;          // For 'error'
+  type: 'text' | 'tool_call' | 'thinking' | 'done' | 'error'
+  text?: string
+  toolCall?: ToolCall
+  usage?: TokenUsage
+  error?: string
 }
 ```
 
-### Complete Example: Mistral Provider
+### Reference implementations
 
-```typescript
-// plugins/providers/mistral/src/index.ts
-
-import type { Provider, Message, LLMChunk, ChatOptions } from '@rivetos/types';
-
-export class MistralProvider implements Provider {
-  id = 'mistral';
-  name = 'Mistral AI';
-  private model: string;
-  private apiKey: string;
-
-  constructor(config: { model?: string; api_key?: string }) {
-    this.model = config.model ?? 'mistral-large-latest';
-    this.apiKey = config.api_key ?? process.env.MISTRAL_API_KEY ?? '';
-  }
-
-  async *chatStream(
-    messages: Message[],
-    options?: ChatOptions,
-  ): AsyncIterable<LLMChunk> {
-    const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: messages.map(m => ({ role: m.role, content: m.content })),
-        max_tokens: options?.maxTokens ?? 4096,
-        stream: true,
-      }),
-      signal: options?.signal,  // AbortSignal for /stop support
-    });
-
-    const reader = response.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6);
-        if (data === '[DONE]') {
-          yield { type: 'done' };
-          return;
-        }
-
-        const chunk = JSON.parse(data);
-        const delta = chunk.choices?.[0]?.delta;
-
-        if (delta?.content) {
-          yield { type: 'text', text: delta.content };
-        }
-
-        if (delta?.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            yield {
-              type: 'tool_call',
-              toolCall: {
-                id: tc.id,
-                name: tc.function.name,
-                arguments: tc.function.arguments,
-              },
-            };
-          }
-        }
-      }
-    }
-  }
-
-  async isAvailable(): Promise<boolean> {
-    if (!this.apiKey) return false;
-    try {
-      const res = await fetch('https://api.mistral.ai/v1/models', {
-        headers: { 'Authorization': `Bearer ${this.apiKey}` },
-      });
-      return res.ok;
-    } catch {
-      return false;
-    }
-  }
-
-  getModel(): string { return this.model; }
-  setModel(model: string): void { this.model = model; }
-}
-
-// Standard factory export
-export function createPlugin() {
-  return {
-    name: 'mistral',
-    version: '0.1.0',
-    description: 'Mistral AI provider',
-    async init() {},
-    createProvider(config: Record<string, unknown>) {
-      return new MistralProvider(config as { model?: string; api_key?: string });
-    },
-  };
-}
-```
-
-### Reference Implementations
-
-| Provider | File | Notable Features |
+| Provider | Path | Notable |
 |---|---|---|
-| Anthropic | `plugins/providers/anthropic/` | Extended thinking, OAuth, streaming |
+| Anthropic | `plugins/providers/anthropic/` | Adaptive thinking, prompt caching |
 | xAI | `plugins/providers/xai/` | Live search, conversation caching |
 | Google | `plugins/providers/google/` | Thought signatures for function calling |
-| Ollama | `plugins/providers/ollama/` | Native API, model management |
-| llama-server | `plugins/providers/llama-server/` | Native llama.cpp server API (sampling knobs, <think> tags) |
+| Ollama | `plugins/providers/ollama/` | Native API |
+| llama-server | `plugins/providers/llama-server/` | Native llama.cpp (mirostat, typical_p, `<think>`) |
+| openai-compat | `plugins/providers/openai-compat/` | Strict OpenAI servers (vLLM/TGI/Groq); folds mid-conversation system messages, consumes native `reasoning_content` |
+| claude-cli | `plugins/providers/claude-cli/` | Drives the `claude` binary via stream-json; embedded MCP bridge for hybrid tools |
 
 ---
 
 ## Channel Plugin
 
-A channel connects to a messaging platform and routes messages to/from the runtime.
-
-### Interface
-
 ```typescript
 interface Channel {
-  id: string;
-  platform: string;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  send(message: OutboundMessage): Promise<string | null>;
-  edit?(channelId: string, messageId: string, text: string, overflowIds?: string[]): Promise<EditResult | null>;
-  react?(messageId: string, emoji: string, channelId: string): Promise<void>;
-  startTyping?(channelId: string): void;
-  stopTyping?(channelId: string): void;
-  resolveAttachment?(attachment: unknown): Promise<ResolvedAttachment | null>;
-  onMessage(handler: MessageHandler): void;
-  onCommand(handler: CommandHandler): void;
+  id: string
+  platform: string
+  start(): Promise<void>
+  stop(): Promise<void>
+  send(message: OutboundMessage): Promise<string | null>
+  edit?(channelId, messageId, text, overflowIds?): Promise<EditResult | null>
+  react?(messageId, emoji, channelId): Promise<void>
+  startTyping?(channelId): void
+  stopTyping?(channelId): void
+  resolveAttachment?(attachment): Promise<ResolvedAttachment | null>
+  onMessage(handler: MessageHandler): void
+  onCommand(handler: CommandHandler): void
 }
 ```
 
-### Key Methods
+The runtime calls `edit()` repeatedly while streaming. Channels handle:
 
-- **`start()` / `stop()`** — Lifecycle. Connect to the platform on start, disconnect on stop.
-- **`send()`** — Send a message. Returns the platform message ID (for later edits). Handle message splitting internally if the text exceeds platform limits.
-- **`edit()`** — Edit a previously sent message. The `overflowIds` parameter handles overflow — when edited text is longer than the platform limit, split into continuation messages. Return `EditResult` with primary + overflow IDs.
-- **`react()`** — Add an emoji reaction to a message.
-- **`onMessage()`** — Register the callback that the runtime calls when a message arrives.
-- **`onCommand()`** — Register the callback for slash commands (/stop, /new, etc.).
+- **Throttling** — don't hit the platform on every token
+- **Splitting** — when text exceeds the platform limit, split into overflow messages and report the IDs back via `EditResult`
+- **Typing** — show while the agent is working
 
-### Streaming Behavior
+### Reference implementations
 
-The runtime calls `edit()` repeatedly as the LLM streams tokens. Your channel must handle:
-- **Throttling** — Don't call the platform API on every token. Discord has rate limits.
-- **Message splitting** — If the text grows beyond the platform limit during streaming, split into overflow messages.
-- **Typing indicators** — Show typing while the agent is working, stop when done.
-
-### Complete Example: Slack Channel
-
-```typescript
-// plugins/channels/slack/src/index.ts
-
-import type {
-  Channel, OutboundMessage, EditResult,
-  InboundMessage, MessageHandler, CommandHandler
-} from '@rivetos/types';
-
-export class SlackChannel implements Channel {
-  id = 'slack';
-  platform = 'slack';
-  private messageHandler?: MessageHandler;
-  private commandHandler?: CommandHandler;
-  private client: any;  // Slack SDK client
-
-  constructor(private config: { bot_token: string; channel_bindings: Record<string, string> }) {}
-
-  async start(): Promise<void> {
-    // Connect to Slack via Socket Mode or Events API
-    // Register event handlers
-    // Call messageHandler when messages arrive
-  }
-
-  async stop(): Promise<void> {
-    // Disconnect cleanly
-  }
-
-  async send(message: OutboundMessage): Promise<string | null> {
-    const result = await this.client.chat.postMessage({
-      channel: message.channelId,
-      text: message.text,
-    });
-    return result.ts;  // Slack uses timestamps as message IDs
-  }
-
-  async edit(
-    channelId: string,
-    messageId: string,
-    text: string,
-    overflowIds?: string[],
-  ): Promise<EditResult | null> {
-    // Slack messages can be up to 40,000 chars — plenty of room
-    await this.client.chat.update({
-      channel: channelId,
-      ts: messageId,
-      text,
-    });
-    return { primary: messageId, overflow: overflowIds ?? [] };
-  }
-
-  async react(messageId: string, emoji: string, channelId: string): Promise<void> {
-    await this.client.reactions.add({
-      channel: channelId,
-      timestamp: messageId,
-      name: emoji,
-    });
-  }
-
-  startTyping(channelId: string): void {
-    // Slack doesn't have a typing indicator API
-  }
-
-  stopTyping(channelId: string): void {}
-
-  onMessage(handler: MessageHandler): void {
-    this.messageHandler = handler;
-  }
-
-  onCommand(handler: CommandHandler): void {
-    this.commandHandler = handler;
-  }
-}
-
-export function createPlugin() {
-  return {
-    name: 'slack',
-    version: '0.1.0',
-    description: 'Slack channel plugin',
-    async init() {},
-    createChannel(config: Record<string, unknown>) {
-      return new SlackChannel(config as { bot_token: string; channel_bindings: Record<string, string> });
-    },
-  };
-}
-```
-
-### Reference Implementations
-
-| Channel | File | Notable Features |
+| Channel | Path | Notable |
 |---|---|---|
-| Discord | `plugins/channels/discord/` | Streaming edits, overflow handling, reactions, embeds |
+| Discord | `plugins/channels/discord/` | Streaming edits, overflow, reactions, embeds |
 | Telegram | `plugins/channels/telegram/` | Owner gate, inline keyboards, 4096-char splitting |
-| Agent | `plugins/channels/agent/` | HTTP inter-agent messaging, mesh endpoints |
+| Agent | `plugins/channels/agent/` | HTTPS/mTLS inter-agent + mesh endpoints |
+| Voice (Discord) | `plugins/channels/voice-discord/` | xAI Realtime API + Opus codec |
 
 ---
 
 ## Tool Plugin
 
-A tool gives the agent a capability — file access, shell commands, web searches, etc.
-
-### Interface
-
 ```typescript
 interface Tool extends ToolDefinition {
-  execute(
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-    context?: ToolContext,
-  ): Promise<ToolResult>;
+  execute(args, signal?, context?): Promise<ToolResult>
 }
 
 interface ToolDefinition {
-  name: string;
-  description: string;
-  parameters: object;  // JSON Schema
+  name: string
+  description: string
+  parameters: object  // JSON Schema
 }
 ```
 
-### Key Details
+- `signal` — `AbortSignal` from the turn. Honor it.
+- `context` — workspace path, agent name, config, etc.
+- `ToolResult` — `string` for text, `ContentPart[]` for multimodal (text + images).
 
-- **`parameters`** — JSON Schema defining what arguments the tool accepts. The LLM uses this to generate valid calls.
-- **`signal`** — `AbortSignal` from the turn's `AbortController`. Respect this for long-running operations — when the user sends `/stop`, the signal fires.
-- **`context`** — Runtime context: workspace path, agent name, config, etc.
-- **Return type** — `string` for text results, or `ContentPart[]` for multimodal results (text + images).
+### Reference implementations
 
-### Complete Example: Database Query Tool
-
-```typescript
-// plugins/tools/database/src/index.ts
-
-import type { Tool, ToolResult, ToolContext, ToolPlugin } from '@rivetos/types';
-
-class DatabaseQueryTool implements Tool {
-  name = 'database_query';
-  description = 'Execute a read-only SQL query against the configured database.';
-  parameters = {
-    type: 'object',
-    properties: {
-      query: {
-        type: 'string',
-        description: 'SQL SELECT query to execute',
-      },
-      limit: {
-        type: 'number',
-        description: 'Max rows to return (default: 100)',
-      },
-    },
-    required: ['query'],
-  };
-
-  private connectionString: string;
-
-  constructor(config: { connection_string: string }) {
-    this.connectionString = config.connection_string;
-  }
-
-  async execute(
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-    context?: ToolContext,
-  ): Promise<ToolResult> {
-    const query = args.query as string;
-    const limit = (args.limit as number) ?? 100;
-
-    // Safety: only allow SELECT queries
-    if (!query.trim().toUpperCase().startsWith('SELECT')) {
-      return 'Error: Only SELECT queries are allowed.';
-    }
-
-    try {
-      // Your database query logic here
-      const results = await runQuery(this.connectionString, `${query} LIMIT ${limit}`, signal);
-      return JSON.stringify(results, null, 2);
-    } catch (error) {
-      return `Error: ${(error as Error).message}`;
-    }
-  }
-}
-
-// Standard factory export
-export function createPlugin(): ToolPlugin {
-  return {
-    name: 'database',
-    version: '0.1.0',
-    description: 'Database query tool',
-    async init() {},
-    getTools() {
-      return [new DatabaseQueryTool({ connection_string: process.env.DATABASE_URL ?? '' })];
-    },
-  };
-}
-```
-
-### Reference Implementations
-
-| Tool | File | Notable Features |
+| Tool plugin | Tools registered | Notable |
 |---|---|---|
-| Shell | `plugins/tools/shell/` | Safety categorization, cwd tracking, timeout |
-| File | `plugins/tools/file/` | Read with line numbers, surgical edits, backups |
-| Search | `plugins/tools/search/` | Glob and grep with file pattern filtering |
-| Web | `plugins/tools/web-search/` | Google CSE + DuckDuckGo fallback, HTML → markdown |
-| Interaction | `plugins/tools/interaction/` | ask_user (structured questions), todo (task list) |
-| MCP Client | `plugins/tools/mcp-client/` | stdio + HTTP transports, dynamic tool discovery |
+| `tool-shell` | `shell` | Safety categorization, cwd tracking, timeout |
+| `tool-file` | `file_read`, `file_write`, `file_edit` | Surgical edits, line numbers, optional backups |
+| `tool-search` | `search_glob`, `search_grep` | Glob and grep with file pattern filtering |
+| `tool-web-search` | `internet_search`, `web_fetch` | Google CSE + DuckDuckGo fallback, HTML → markdown |
+| `tool-interaction` | `ask_user`, `todo` | Structured questions, session-scoped task list |
+| `tool-mcp-client` | dynamic | Connects to MCP servers (stdio + HTTP), exposes their tools |
+| `tool-coding-pipeline` | `coding_pipeline` | Build → review → validate loop. Uses `lateBindTool` to call delegation/sub-agent tools without hard-coding registration order. |
+
+The memory plugin (`@rivetos/memory-postgres`) additionally registers `memory_search`, `memory_browse`, `memory_stats`. Delegation, sub-agents, and skill management add `delegate_task`, `subagent_*`, and `skill_*` tools at runtime.
 
 ---
 
 ## Memory Plugin
 
-A memory plugin handles persistent storage and retrieval of conversation history.
-
-### Interface
-
 ```typescript
 interface Memory {
-  append(entry: MemoryEntry): Promise<string>;
-  search(query: string, options?: SearchOptions): Promise<MemorySearchResult[]>;
-  getContextForTurn(query: string, agent: string, options?: ContextOptions): Promise<string>;
-  getSessionHistory(sessionId: string, options?: HistoryOptions): Promise<Message[]>;
-  saveSessionSettings?(sessionId: string, settings: Record<string, unknown>): Promise<void>;
-  loadSessionSettings?(sessionId: string): Promise<Record<string, unknown> | null>;
+  append(entry: MemoryEntry): Promise<string>
+  search(query, options?): Promise<MemorySearchResult[]>
+  getContextForTurn(query, agent, options?): Promise<string>
+  getSessionHistory(sessionId, options?): Promise<Message[]>
+  saveSessionSettings?(sessionId, settings): Promise<void>
+  loadSessionSettings?(sessionId): Promise<Record<string, unknown> | null>
 }
 ```
 
-### Key Methods
+The PostgreSQL memory plugin (`plugins/memory/postgres/`) is the reference. It implements full transcript storage, hybrid FTS + vector search, summary DAG (hierarchical compaction), event-driven embedding/compaction workers (running as Datahub services on Postgres `LISTEN`/`NOTIFY`), temporal decay scoring, and a review loop for pattern extraction. SQL DDL lives co-located in `plugins/memory/postgres/schema/`.
 
-- **`append()`** — Store a message (user, assistant, tool call, or tool result). Called after every turn.
-- **`search()`** — Hybrid search across messages and summaries. Used by `memory_search` tool.
-- **`getContextForTurn()`** — Build a context window from recent messages + relevant search results, within a token budget. Called automatically at the start of each turn.
-- **`getSessionHistory()`** — Restore conversation history from persistent storage on reconnect.
-- **`saveSessionSettings()` / `loadSessionSettings()`** — Optional. Persist per-session settings (model, thinking level, etc.).
-
-### Reference Implementation
-
-The PostgreSQL memory plugin (`plugins/memory/postgres/`) is the reference. It implements:
-- Full transcript storage with hybrid FTS + vector search
-- Summary DAG (hierarchical compaction — v5 pipeline with thinking-model summarizer)
-- Background embedding generation
-- Temporal decay scoring (Ebbinghaus reinforcement)
-- Review loop for pattern extraction
-- Tool-call content synthesis (async queue + CLI backfill)
-
-See [MEMORY-DESIGN.md](MEMORY-DESIGN.md) for the full design, including the v5 pipeline changes (timestamps, agent attribution, no truncation, 7k/14k/20k budgets, exhaustiveness rules, tool-synth).
+See [MEMORY-DESIGN.md](MEMORY-DESIGN.md) for the full design.
 
 ---
 
-## Registration
+## Transport Plugin
 
-Plugins are loaded by boot registrars. The convention-based discovery system finds plugins automatically via the `rivetos` manifest in `package.json`. Config determines which plugins are activated.
+Transports expose RivetOS to external clients. They have no `core` interface — the plugin opens its own listening surface (HTTP, stdio, gRPC, …) inside `manifest.register()`.
 
-### Auto-Discovery Flow
+```typescript
+export const manifest: PluginManifest = {
+  type: 'transport',
+  name: 'mcp',
+  async register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    const server = createMcpServer(cfg)
 
-1. Boot scans `plugins/*/package.json` (and any `plugin_dirs` from config)
-2. Reads the `rivetos` manifest field from each
-3. Builds a registry of available plugins by type and name
-4. Config references (e.g., `provider: anthropic`) activate the matching plugin
-5. Boot dynamically imports the plugin and calls its factory
+    // Defer binding until every other plugin has registered, so the
+    // transport sees the full tool set.
+    ctx.onRegistrationComplete(async ({ tools }) => {
+      server.registerTools(tools)
+      await server.listen()
+    })
 
-### Adding Your Plugin to Config
+    ctx.registerShutdown(() => server.close())
+  },
+}
+```
 
-After creating a plugin, reference it in `config.yaml`:
+Activate via `config.transports.<name>`:
 
 ```yaml
-# For a provider plugin named "mistral"
-providers:
-  mistral:
-    model: mistral-large-latest
-
-agents:
-  myagent:
-    provider: mistral
-
-# For a channel plugin named "slack"
-channels:
-  slack:
-    bot_token: ${SLACK_BOT_TOKEN}
-    channel_bindings:
-      "C12345": myagent
+transports:
+  mcp:
+    port: 4321
+    tls: true
 ```
+
+Reference: `plugins/transports/mcp-server/` — a StreamableHTTP MCP server exposing `memory_*`, `web_*`, `skill_*`, and runtime tools to external MCP clients.
 
 ---
 
 ## Testing
 
-Every plugin should have co-located tests:
-
 ```bash
-# Run your plugin's tests
-npx nx run provider-mistral:test
-
-# Run with watch mode during development
-npx nx run provider-mistral:test --watch
-
-# Run only affected plugins
-npx nx affected -t test
+npx nx run provider-mistral:test       # one plugin
+npx nx affected -t test                # only what changed
 ```
 
-### Test Pattern
-
-```typescript
-// plugins/providers/mistral/src/index.test.ts
-import { describe, it, expect } from 'vitest';
-import { MistralProvider } from './index.js';
-
-describe('MistralProvider', () => {
-  it('should report unavailable without API key', async () => {
-    const provider = new MistralProvider({ model: 'test' });
-    expect(await provider.isAvailable()).toBe(false);
-  });
-
-  it('should return correct model name', () => {
-    const provider = new MistralProvider({ model: 'mistral-large-latest' });
-    expect(provider.getModel()).toBe('mistral-large-latest');
-  });
-
-  it('should support model switching', () => {
-    const provider = new MistralProvider({ model: 'mistral-small' });
-    provider.setModel('mistral-large-latest');
-    expect(provider.getModel()).toBe('mistral-large-latest');
-  });
-});
-```
+Co-locate tests next to source: `src/index.ts` → `src/index.test.ts`. The framework is Vitest.
 
 ---
 
 ## Package Structure
 
-Every plugin follows this layout:
-
 ```
 plugins/{category}/{name}/
-├── package.json          # @rivetos/{category}-{name}
-├── tsconfig.json         # Extends root tsconfig.base.json
-├── eslint.config.mjs     # Inherits shared config
+├── package.json          # @rivetos/{category}-{name} (or @rivetos/{name} for transports)
+├── tsconfig.json         # extends ../../../tsconfig.base.json
+├── eslint.config.mjs     # inherits shared config
 └── src/
-    ├── index.ts          # Main implementation + createPlugin()
-    ├── index.test.ts     # Tests
-    └── ...               # Additional files as needed
+    ├── index.ts          # exports `manifest` + your impl
+    ├── index.test.ts
+    └── ...
 ```
 
-The `package.json` must include:
+`package.json` must include the `rivetos` descriptor:
+
 ```json
 {
   "name": "@rivetos/provider-mistral",
-  "version": "0.1.0",
+  "version": "0.4.0-beta.x",
   "private": true,
-  "rivetos": {
-    "type": "provider",
-    "name": "mistral"
-  },
-  "dependencies": {
-    "@rivetos/types": "workspace:*"
-  }
+  "rivetos": { "type": "provider", "name": "mistral" },
+  "dependencies": { "@rivetos/types": "workspace:*" }
 }
 ```

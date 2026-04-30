@@ -1,7 +1,7 @@
 # ARCHITECTURE.md — RivetOS Codebase Reference
 
 > Living document. Updated as the codebase evolves. Read this before building anything.
-> Last updated: 2025-04-05 (M6 complete, M7 complete, pre-M8 docs phase)
+> Last updated: 2026-04-30 (post pulumi removal, schema relocation, transport plugins)
 
 ---
 
@@ -23,12 +23,12 @@
 
 ## Overview
 
-RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic, xAI, Google, Ollama, llama-server) to messaging channels (Discord, Telegram, voice) with a tool execution loop, persistent memory, and multi-agent orchestration.
+RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic, xAI, Google, Ollama, llama-server, openai-compat, claude-cli) to messaging channels (Discord, Telegram, voice) with a tool execution loop, persistent memory, multi-agent orchestration, and an MCP transport that exposes the agent to external clients.
 
 **Key Numbers:**
-- ~49k lines of source code (excluding tests)
-- ~8.5k lines of tests across 28 test files
-- 5 core packages, 15+ plugins, 2 container images
+- ~25k lines of source code in `packages/` + `plugins/` (excluding tests)
+- 5 core packages, 19 plugins across 5 categories (provider, channel, tool, memory, transport)
+- One unified `rivetos` container image with `--role` (agent / datahub / mcp), plus the legacy split agent + datahub Dockerfiles
 - Node.js 24+, TypeScript 5.8, ES2023 target
 - Nx monorepo with npm workspaces
 
@@ -45,21 +45,23 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   ├── cli/                     # 6,080 lines — All CLI commands (rivetos <command>)
 │   └── nx-plugin/               # 724 lines   — Nx generators for scaffolding plugins
 │
-├── plugins/                     # Extensions (15 plugins across 4 categories)
-│   ├── providers/               # 3,212 lines — LLM provider adapters
-│   │   ├── anthropic/           # Claude (streaming, OAuth, thinking levels)
+├── plugins/                     # Extensions (19 plugins across 5 categories)
+│   ├── providers/               # ~5,700 lines — LLM provider adapters
+│   │   ├── anthropic/           # Claude (streaming, adaptive thinking, prompt caching)
 │   │   ├── google/              # Gemini (thought signatures for function calling)
 │   │   ├── xai/                 # Grok (streaming, live search)
 │   │   ├── ollama/              # Local Ollama models
-│   │   └── llama-server/        # Native llama.cpp server (sampling, <think>, tools)
+│   │   ├── llama-server/        # Native llama.cpp server (sampling, <think>, tools)
+│   │   ├── openai-compat/       # Strict OpenAI servers (vLLM/TGI/Groq/Together/LocalAI)
+│   │   └── claude-cli/          # Drives `claude` CLI via stream-json + embedded MCP bridge
 │   │
-│   ├── channels/                # 17,734 lines — Messaging surface adapters
+│   ├── channels/                # ~4,300 lines — Messaging surface adapters
 │   │   ├── discord/             # Discord (edit, react, embed, overflow, bindings)
 │   │   ├── telegram/            # Telegram (owner gate, inline queries)
-│   │   ├── agent/               # Agent-to-agent HTTP channel (delegation target)
+│   │   ├── agent/               # Agent-to-agent HTTPS/mTLS channel (delegation target)
 │   │   └── voice-discord/       # Discord voice (xAI Realtime API, STT/TTS)
 │   │
-│   ├── tools/                   # 3,012 lines — Agent capabilities
+│   ├── tools/                   # ~3,300 lines — Agent capabilities
 │   │   ├── shell/               # Shell execution (cwd, timeout, danger detection)
 │   │   ├── file/                # file_read, file_write, file_edit
 │   │   ├── search/              # search_glob, search_grep
@@ -68,24 +70,26 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   ├── mcp-client/          # MCP protocol client (stdio + HTTP transports)
 │   │   └── coding-pipeline/     # Multi-agent build-review-fix loop
 │   │
-│   └── memory/                  # 5,088 lines — Persistence backends
-│       └── postgres/            # PostgreSQL (conversations, messages, search,
-│           │                    #   embeddings, compaction, summaries, review loop)
-│           └── workers/         # Event-driven workers (run on Datahub, not agents)
-│               ├── embedding/   # Postgres LISTEN → Nemotron GPU embeddings
-│               └── compaction/  # Postgres LISTEN → Gemma-4-E2B CPU summarization
+│   ├── memory/                  # ~5,700 lines — Persistence backends
+│   │   └── postgres/            # PostgreSQL (conversations, messages, search,
+│   │       │                    #   embeddings, compaction, summaries, review loop)
+│   │       ├── schema/          # Co-located SQL migrations & DDL
+│   │       └── workers/         # Event-driven workers (embedding + compaction)
+│   │
+│   └── transports/              # ~2,600 lines — Inbound MCP / RPC surfaces
+│       └── mcp-server/          # @rivetos/mcp-server — exposes RivetOS tools
+│                                #   (memory_*, web_*, skill_*, runtime) over MCP
+│                                #   StreamableHTTP. Has its own `rivetos-mcp-server` bin.
 │
-├── infra/                       # 956 lines — Infrastructure as Code (Pulumi)
+├── apps/infra/                  # Container Dockerfiles + Compose + provisioning scripts
 │   ├── containers/
-│   │   ├── agent/               # Agent Dockerfile (multi-stage, non-root, tini)
-│   │   ├── datahub/             # Datahub Dockerfile (postgres + pgvector + shared dirs)
+│   │   ├── agent/               # Legacy split agent Dockerfile
+│   │   ├── datahub/             # Legacy split datahub Dockerfile (postgres + pgvector)
+│   │   ├── rivetos/             # Unified image — built once, dispatched via `--role`
 │   │   └── DATA-PERSISTENCE.md  # What survives container rebuilds
-│   └── src/
-│       ├── components/          # Abstract component interfaces
-│       ├── providers/
-│       │   ├── docker/          # Docker Compose provider
-│       │   └── proxmox/         # Proxmox LXC provider
-│       └── orchestrator.ts      # Reads config, picks provider, deploys
+│   ├── docker/                  # Compose stacks (mcp-stack, rivetos)
+│   ├── scripts/                 # provision-ct.sh, setup-mesh-hosts.sh, …
+│   └── templates/               # Workspace + config skeletons used by `init`
 │
 ├── .github/workflows/pipeline.yml  # GitHub Actions: lint/test/build → publish npm + containers → notify-ops
 ├── docker-compose.yaml          # Multi-agent Docker Compose with profiles
@@ -110,7 +114,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
     
 plugins/*               ← Each depends on: types (some on core for logger)
 
-infra/                  ← Depends on: types (for DeploymentConfig)
+apps/infra/             ← Build artifacts only — no @rivetos/* runtime deps
 ```
 
 **Rule: `@rivetos/types` is interfaces only. Zero runtime deps. If you need a class or function, it goes in `core`.**
@@ -235,7 +239,6 @@ Every `rivetos <command>` lives here. Lazy-loaded via dynamic import.
 | `agent` | `commands/agent.ts` | 207 | Add/remove/list agents |
 | `model` | `commands/model.ts` | 128 | Show/switch models |
 | `build` | `commands/build.ts` | 157 | Build container images |
-| `infra` | `commands/infra.ts` | 116 | Pulumi infrastructure commands |
 | `mesh` | `commands/mesh.ts` | 403 | Mesh management (list, ping, join, status) |
 | `service` | `commands/service.ts` | 154 | Systemd service management |
 | `skills` | `commands/skills.ts` | 368 | Skill management |
@@ -262,12 +265,13 @@ Generates: `plugins/{type}/{name}/` with `package.json`, `tsconfig.json`, `src/i
 
 All plugins follow the same pattern: a class implementing an interface from `@rivetos/types`, dynamically imported by a registrar in `@rivetos/boot`.
 
-| Category | Interface | Registration |
-|----------|-----------|-------------|
-| Provider | `Provider` | `boot/registrars/plugins.ts` (via `manifest.register`) |
-| Channel | `Channel` | `boot/registrars/plugins.ts` (via `manifest.register`) |
-| Tool | `Tool` | `boot/registrars/plugins.ts` (via `manifest.register`) |
-| Memory | `Memory` | `boot/registrars/plugins.ts` (via `manifest.register`) |
+| Category   | Interface  | Registration |
+|------------|------------|-------------|
+| Provider   | `Provider` | `boot/registrars/plugins.ts` (via `manifest.register`) |
+| Channel    | `Channel`  | `boot/registrars/plugins.ts` (via `manifest.register`) |
+| Tool       | `Tool`     | `boot/registrars/plugins.ts` (via `manifest.register`) |
+| Memory     | `Memory`   | `boot/registrars/plugins.ts` (via `manifest.register`) |
+| Transport  | (no core interface — plugin opens its own listening surface) | `boot/registrars/plugins.ts` — registers shutdown + `onRegistrationComplete` to enumerate the finalized tool set |
 
 ### Provider Plugin Pattern
 
@@ -351,16 +355,16 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 
 ### Container Images
 
-**Agent** (`infra/containers/agent/Dockerfile`):
-- Multi-stage build (deps → build → production)
-- Node 24 Alpine, non-root user (`rivetos`), tini init
-- Copies full source + node_modules (runs via tsx, not compiled dist)
-- Healthcheck: `wget -qO- http://localhost:3100/health/live`
+**Unified `rivetos` image** (`apps/infra/containers/rivetos/Dockerfile`):
+- Single Node 24 Alpine image, non-root user (`rivetos`), tini init
+- Built once with `npm run build` (esbuild bundle in `dist/`)
+- Dispatched at runtime via `--role agent | datahub | mcp` (entrypoint reads the role and starts the right surface)
+- Healthcheck: `wget -qO- http://localhost:3100/health/live` (agent role)
 - Workspace and config mounted as volumes
 
-**Datahub** (`infra/containers/datahub/Dockerfile`):
-- PostgreSQL 16 + pgvector extension
-- Init scripts create database schema + shared directory structure
+**Legacy split images** (`apps/infra/containers/agent/`, `apps/infra/containers/datahub/`):
+- Kept for environments that pin to the old role-specific images
+- Datahub image still bundles PostgreSQL 16 + pgvector + shared-dir init scripts
 - Shared dirs: `/rivet-shared/plans`, `/rivet-shared/docs`, `/rivet-shared/status`, `/rivet-shared/whiteboard`
 
 ### Docker Compose
@@ -369,20 +373,6 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 - Named volumes: `rivetos-pgdata`, `rivetos-shared`
 - Profiles: default (1 agent), `multi` (3 agents)
 - Health check dependency: agents wait for datahub to be healthy
-
-### Pulumi Infrastructure
-
-Abstract component pattern with pluggable providers:
-
-```
-infra/src/
-├── components/types.ts     # RivetAgentArgs, RivetDatahubArgs, InfraProvider interface
-├── providers/docker/       # Implements InfraProvider using Docker Compose
-├── providers/proxmox/      # Implements InfraProvider using Proxmox API
-└── orchestrator.ts         # Reads config, picks provider, orchestrates deploy
-```
-
-`InfraProvider` interface: `up()`, `preview()`, `destroy()`, `status()`, `logs()`
 
 ### Memory Workers (Datahub Services)
 
@@ -430,7 +420,7 @@ Embedding and compaction run as **event-driven workers on Datahub**, co-located 
 Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled on Gemma-4-E2B with generous token budgets (4096/6144/8192) and 10-minute timeout.
 
 **Source:** `plugins/memory/postgres/workers/embedding/` and `plugins/memory/postgres/workers/compaction/`
-**Setup:** `infra/containers/datahub/init-db.sh` (schema) + `infra/containers/datahub/setup-workers.sh` (Node.js, systemd)
+**Setup:** `apps/infra/containers/datahub/init-db.sh` (schema) + `apps/infra/containers/datahub/setup-workers.sh` (Node.js, systemd). Schema DDL itself lives co-located under `plugins/memory/postgres/schema/` (PR-G).
 
 ### Data Persistence
 
@@ -651,15 +641,15 @@ deployment:             # Optional — drives containerized deployment
 
 ### Architecture
 
-1. **No compiled dist** — runs via `tsx` directly from source. Works for dev, but the agent Dockerfile copies source + runs tsx. A proper build step would reduce image size and startup time.
+1. **Compiled bundle now standard** — `npm run build` produces an esbuild bundle in `dist/`. The unified `rivetos` image runs the bundle, not source via `tsx`. Some legacy paths still allow running from source for dev.
 
 2. **Root `package.json` has runtime deps** — `discord.js`, `grammy`, `pg`, `yaml` are in root deps. Should be plugin-scoped only. Currently works because npm workspaces hoist.
 
-3. **Voice plugin lifecycle hack** — `voice-discord` isn't a Channel, it manages its own lifecycle. The registrar monkey-patches `runtime.stop()` to include voice cleanup. Same pattern used for MCP client.
+3. **Voice plugin lifecycle quirk** — `voice-discord` isn't a Channel, it manages its own lifecycle. With the manifest contract this is now a clean `registerShutdown` call, but the plugin still owns its session lifecycle internally rather than going through the runtime's channel registry.
 
-4. **Memory registrar still references old background jobs** — `registrars/memory.ts` previously wired up BackgroundEmbedder and BackgroundCompactor as in-process polling loops. These are now replaced by event-driven Datahub workers (`plugins/memory/postgres/workers/embedding/`, `plugins/memory/postgres/workers/compaction/`). The registrar should be cleaned up to remove dead code paths.
+4. **Per-kind registrars deleted** — `boot/registrars/{providers,channels,tools,memory}.ts` were collapsed into a single manifest-driven `plugins.ts` (PR-B). Any references in user code or external docs to the old per-kind registrars are stale.
 
-5. **Old `init.ts` still runs** — The original `commands/init.ts` (20 lines) just calls the wizard. The wizard modules exist in `commands/init/` but the full flow (detect → deploy → agents → channels → review → generate) needs end-to-end testing.
+5. **Schema lives next to the plugin** — `plugins/memory/postgres/schema/` is the source of truth for SQL DDL (PR-G). Datahub container scripts apply it; nothing under `apps/infra/containers/datahub/` owns schema anymore.
 
 ### Config
 
@@ -671,9 +661,9 @@ deployment:             # Optional — drives containerized deployment
 
 8. **CI builds packages and containers in one pipeline** — `pipeline.yml` runs lint/build/test, then fans out to `publish-npm` and `containers` (matrix: agent + datahub) in parallel, with `notify-ops` gated on both.
 
-9. **Infra providers are untested** — Docker and Proxmox providers have implementations but no tests and haven't been run end-to-end.
+9. **Multi-arch container builds not implemented** — Dockerfiles are amd64 only. Buildx for arm64 is planned but not done.
 
-10. **Multi-arch container builds not implemented** — Dockerfiles are amd64 only. Buildx for arm64 is planned but not done.
+10. **No code-driven IaC layer** — provisioning is fully script-and-Compose driven (`apps/infra/scripts/` + `apps/infra/docker/`). The Pulumi-based `@rivetos/infra` was removed in PR-H; nothing replaces it.
 
 ---
 
