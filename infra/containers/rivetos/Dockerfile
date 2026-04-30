@@ -1,7 +1,7 @@
 # RivetOS Unified Image — single image, role selected at startup.
 #
 # Build context = repo root.
-#   docker build -f apps/infra/containers/rivetos/Dockerfile -t rivetos:latest .
+#   docker build -f infra/containers/rivetos/Dockerfile -t rivetos:latest .
 #
 # Run modes:
 #   docker run rivetos:latest                          # role=agent (default)

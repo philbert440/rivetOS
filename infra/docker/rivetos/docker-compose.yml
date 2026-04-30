@@ -6,7 +6,7 @@
 #
 # Quick start (from repo root):
 #
-#   docker compose -f apps/infra/docker/rivetos/docker-compose.yml up --build
+#   docker compose -f infra/docker/rivetos/docker-compose.yml up --build
 #
 # Modes:
 #   - datahub:  Postgres + pgvector + first-init schema (rivetos-datahub image)
@@ -18,16 +18,16 @@
 # and .env. Run `rivetos init` first to generate them.
 #
 # Tear down (preserve DB):
-#   docker compose -f apps/infra/docker/rivetos/docker-compose.yml down
+#   docker compose -f infra/docker/rivetos/docker-compose.yml down
 # Tear down + wipe DB:
-#   docker compose -f apps/infra/docker/rivetos/docker-compose.yml down -v
+#   docker compose -f infra/docker/rivetos/docker-compose.yml down -v
 
 services:
   datahub:
     build:
       # Repo-root context so the Dockerfile can pull plugins/memory/postgres/.
-      context: ../../../..
-      dockerfile: apps/infra/containers/datahub/Dockerfile
+      context: ../../..
+      dockerfile: infra/containers/datahub/Dockerfile
     image: rivetos-datahub:dev
     environment:
       POSTGRES_USER: rivetos
@@ -49,8 +49,8 @@ services:
 
   migrate:
     build:
-      context: ../../../..
-      dockerfile: apps/infra/containers/rivetos/Dockerfile
+      context: ../../..
+      dockerfile: infra/containers/rivetos/Dockerfile
     image: rivetos:dev
     command: ['node', 'dist/rivetos.js', 'start', '--role', 'migrate']
     environment:
@@ -64,8 +64,8 @@ services:
 
   workers:
     build:
-      context: ../../../..
-      dockerfile: apps/infra/containers/rivetos/Dockerfile
+      context: ../../..
+      dockerfile: infra/containers/rivetos/Dockerfile
     image: rivetos:dev
     command: ['node', 'dist/rivetos.js', 'start', '--role', 'worker']
     environment:
@@ -83,8 +83,8 @@ services:
 
   agent:
     build:
-      context: ../../../..
-      dockerfile: apps/infra/containers/rivetos/Dockerfile
+      context: ../../..
+      dockerfile: infra/containers/rivetos/Dockerfile
     image: rivetos:dev
     command: ['node', 'dist/rivetos.js', 'start', '--role', 'agent']
     environment:
