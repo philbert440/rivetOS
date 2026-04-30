@@ -15,7 +15,7 @@
 #   - Secrets → .env file on host (never baked into images)
 #
 #   Rebuilding containers (rivetos update) preserves ALL user data.
-#   See apps/infra/containers/DATA-PERSISTENCE.md for full details.
+#   See infra/containers/DATA-PERSISTENCE.md for full details.
 #
 # The agent service is a template (x-agent) that can be instantiated
 # multiple times with different configs for multi-agent setups.
@@ -26,7 +26,7 @@
 x-agent: &agent-base
   build:
     context: .
-    dockerfile: apps/infra/containers/agent/Dockerfile
+    dockerfile: infra/containers/agent/Dockerfile
   env_file: ${RIVETOS_ENV_FILE:-.env}
   depends_on:
     datahub:
@@ -45,7 +45,7 @@ services:
   # --- Datahub: Postgres + shared storage ---
   datahub:
     build:
-      context: apps/infra/containers/datahub
+      context: infra/containers/datahub
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-rivetos}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rivetos}

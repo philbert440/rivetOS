@@ -115,11 +115,11 @@ Required:
   --node        Proxmox node SSH alias or IP (e.g., pve3)
   --ip          Container IP (e.g., 192.0.2.114)
   --agent       RivetOS agent name (e.g., local, opus, grok, gemini)
-  --provider    AI provider (anthropic, xai, google, llama-server, ollama)
+  --provider    AI provider (anthropic, xai, google, claude-cli, llama-server, ollama, openai-compat)
 
 Config Generation:
   --model       Model name (default: auto per provider)
-  --base-url    Base URL for llama-server provider
+  --base-url    Base URL for llama-server / ollama / openai-compat providers
   --secrets-from IP  Pull shared secrets (PG, embed, xAI) from existing CT
   --telegram-token   Telegram bot token for this agent
   --discord-token    Discord bot token for this agent
@@ -162,13 +162,15 @@ if [[ "$DEPLOY_METHOD" != "git" && "$DEPLOY_METHOD" != "rsync" ]]; then
     exit 1
 fi
 
-# Validate base-url for local providers
-if [[ "$PROVIDER_NAME" == "llama-server" ]]; then
-    if [[ -z "$BASE_URL" ]]; then
-        echo "ERROR: --base-url is required for provider $PROVIDER_NAME"
-        exit 1
-    fi
-fi
+# Validate base-url for providers that need a server endpoint
+case "$PROVIDER_NAME" in
+    llama-server|ollama|openai-compat)
+        if [[ -z "$BASE_URL" ]]; then
+            echo "ERROR: --base-url is required for provider $PROVIDER_NAME"
+            exit 1
+        fi
+        ;;
+esac
 
 # Default models — keep in sync with packages/types/src/defaults.ts
 if [[ -z "$DEFAULT_MODEL" ]]; then
@@ -176,7 +178,9 @@ if [[ -z "$DEFAULT_MODEL" ]]; then
         anthropic)      DEFAULT_MODEL="claude-opus-4-7";;
         xai)            DEFAULT_MODEL="grok-4.20-reasoning";;
         google)         DEFAULT_MODEL="gemini-2.5-pro";;
+        ollama)         DEFAULT_MODEL="llama3.1";;
         llama-server)   DEFAULT_MODEL="default";;
+        openai-compat)  DEFAULT_MODEL="default";;
         claude-cli)     DEFAULT_MODEL="opus";;
         *)              DEFAULT_MODEL="default";;
     esac
@@ -849,8 +853,8 @@ done
 
 log "Phase 8.5: Writing /etc/hosts mesh block..."
 
-if run_on_ct "test -r /rivet-shared/mesh.json && test -x /opt/rivetos/apps/infra/scripts/setup-mesh-hosts.sh" 2>/dev/null; then
-    if run_on_ct "/opt/rivetos/apps/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json" 2>&1; then
+if run_on_ct "test -r /rivet-shared/mesh.json && test -x /opt/rivetos/infra/scripts/setup-mesh-hosts.sh" 2>/dev/null; then
+    if run_on_ct "/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json" 2>&1; then
         log "  /etc/hosts mesh block updated"
     else
         warn "  /etc/hosts mesh block update failed — non-fatal, will retry on next update --mesh"

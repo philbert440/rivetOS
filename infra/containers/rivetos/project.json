@@ -1,8 +1,8 @@
 {
   "name": "container-rivetos",
-  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",
-  "sourceRoot": "apps/infra/containers/rivetos",
+  "sourceRoot": "infra/containers/rivetos",
   "tags": ["scope:app", "type:app"],
   "targets": {
     "build": {
@@ -26,11 +26,11 @@
       "cache": false,
       "options": {
         "cwd": "{workspaceRoot}",
-        "command": "docker build -f apps/infra/containers/rivetos/Dockerfile -t rivetos:latest -t rivetos:$(git rev-parse --short HEAD) ."
+        "command": "docker build -f infra/containers/rivetos/Dockerfile -t rivetos:latest -t rivetos:$(git rev-parse --short HEAD) ."
       },
       "configurations": {
         "no-cache": {
-          "command": "docker build --no-cache -f apps/infra/containers/rivetos/Dockerfile -t rivetos:latest -t rivetos:$(git rev-parse --short HEAD) ."
+          "command": "docker build --no-cache -f infra/containers/rivetos/Dockerfile -t rivetos:latest -t rivetos:$(git rev-parse --short HEAD) ."
         }
       }
     }

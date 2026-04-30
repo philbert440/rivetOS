@@ -2,7 +2,7 @@
 # Single-stage build — runs from source via tsx.
 # Build context must be the repo root.
 #
-#   docker build -f apps/infra/containers/agent/Dockerfile -t rivetos-agent .
+#   docker build -f infra/containers/agent/Dockerfile -t rivetos-agent .
 
 FROM node:24-alpine
 

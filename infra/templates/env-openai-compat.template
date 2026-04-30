@@ -1,0 +1,10 @@
+# RivetOS — OpenAI-compatible agent environment
+# For any server speaking OpenAI's chat-completions API (vLLM, LM Studio,
+# llama.cpp's compat endpoint, third-party proxies, etc.)
+TELEGRAM_BOT_TOKEN=__ENTER_TOKEN__
+DISCORD_BOT_TOKEN=__ENTER_TOKEN__
+RIVETOS_PG_URL=postgres://rivet_phil:__PASSWORD__@__DATAHUB_IP__:5432/phil_memory
+RIVETOS_EMBED_URL=http://__EMBED_HOST__:9401
+OPENAI_COMPAT_API_KEY=__ENTER_KEY__
+XAI_API_KEY=__ENTER_KEY__
+RIVETOS_LOG_LEVEL=info

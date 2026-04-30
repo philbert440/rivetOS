@@ -81,7 +81,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │                                #   (memory_*, web_*, skill_*, runtime) over MCP
 │                                #   StreamableHTTP. Has its own `rivetos-mcp-server` bin.
 │
-├── apps/infra/                  # Container Dockerfiles + Compose + provisioning scripts
+├── infra/                       # Container Dockerfiles + Compose + provisioning scripts
 │   ├── containers/
 │   │   ├── agent/               # Legacy split agent Dockerfile
 │   │   ├── datahub/             # Legacy split datahub Dockerfile (postgres + pgvector)
@@ -114,7 +114,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
     
 plugins/*               ← Each depends on: types (some on core for logger)
 
-apps/infra/             ← Build artifacts only — no @rivetos/* runtime deps
+infra/                  ← Build artifacts only — no @rivetos/* runtime deps
 ```
 
 **Rule: `@rivetos/types` is interfaces only. Zero runtime deps. If you need a class or function, it goes in `core`.**
@@ -355,14 +355,14 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 
 ### Container Images
 
-**Unified `rivetos` image** (`apps/infra/containers/rivetos/Dockerfile`):
+**Unified `rivetos` image** (`infra/containers/rivetos/Dockerfile`):
 - Single Node 24 Alpine image, non-root user (`rivetos`), tini init
 - Built once with `npm run build` (esbuild bundle in `dist/`)
 - Dispatched at runtime via `--role agent | datahub | mcp` (entrypoint reads the role and starts the right surface)
 - Healthcheck: `wget -qO- http://localhost:3100/health/live` (agent role)
 - Workspace and config mounted as volumes
 
-**Legacy split images** (`apps/infra/containers/agent/`, `apps/infra/containers/datahub/`):
+**Legacy split images** (`infra/containers/agent/`, `infra/containers/datahub/`):
 - Kept for environments that pin to the old role-specific images
 - Datahub image still bundles PostgreSQL 16 + pgvector + shared-dir init scripts
 - Shared dirs: `/rivet-shared/plans`, `/rivet-shared/docs`, `/rivet-shared/status`, `/rivet-shared/whiteboard`
@@ -420,7 +420,7 @@ Embedding and compaction run as **event-driven workers on Datahub**, co-located 
 Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled on Gemma-4-E2B with generous token budgets (4096/6144/8192) and 10-minute timeout.
 
 **Source:** `plugins/memory/postgres/workers/embedding/` and `plugins/memory/postgres/workers/compaction/`
-**Setup:** `apps/infra/containers/datahub/init-db.sh` (schema) + `apps/infra/containers/datahub/setup-workers.sh` (Node.js, systemd). Schema DDL itself lives co-located under `plugins/memory/postgres/schema/` (PR-G).
+**Setup:** `infra/containers/datahub/init-db.sh` (schema) + `infra/containers/datahub/setup-workers.sh` (Node.js, systemd). Schema DDL itself lives co-located under `plugins/memory/postgres/schema/` (PR-G).
 
 ### Data Persistence
 
@@ -649,7 +649,7 @@ deployment:             # Optional — drives containerized deployment
 
 4. **Per-kind registrars deleted** — `boot/registrars/{providers,channels,tools,memory}.ts` were collapsed into a single manifest-driven `plugins.ts` (PR-B). Any references in user code or external docs to the old per-kind registrars are stale.
 
-5. **Schema lives next to the plugin** — `plugins/memory/postgres/schema/` is the source of truth for SQL DDL (PR-G). Datahub container scripts apply it; nothing under `apps/infra/containers/datahub/` owns schema anymore.
+5. **Schema lives next to the plugin** — `plugins/memory/postgres/schema/` is the source of truth for SQL DDL (PR-G). Datahub container scripts apply it; nothing under `infra/containers/datahub/` owns schema anymore.
 
 ### Config
 
@@ -663,7 +663,7 @@ deployment:             # Optional — drives containerized deployment
 
 9. **Multi-arch container builds not implemented** — Dockerfiles are amd64 only. Buildx for arm64 is planned but not done.
 
-10. **No code-driven IaC layer** — provisioning is fully script-and-Compose driven (`apps/infra/scripts/` + `apps/infra/docker/`). The Pulumi-based `@rivetos/infra` was removed in PR-H; nothing replaces it.
+10. **No code-driven IaC layer** — provisioning is fully script-and-Compose driven (`infra/scripts/` + `infra/docker/`). The Pulumi-based `@rivetos/infra` was removed in PR-H; nothing replaces it.
 
 ---
 

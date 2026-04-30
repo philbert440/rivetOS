@@ -1,0 +1,38 @@
+runtime:
+  workspace: ~/.rivetos/workspace
+  default_agent: %%AGENT_NAME%%
+  turn_timeout: 900
+  skill_dirs:
+    - /opt/rivetos/skills
+  heartbeats:
+    - agent: %%AGENT_NAME%%
+      schedule: '0 */4 * * *'
+      timezone: America/New_York
+      prompt: Read HEARTBEAT.md if it exists. Follow it. If nothing needs attention, reply HEARTBEAT_OK.
+agents:
+  %%AGENT_NAME%%:
+    provider: ollama
+    default_thinking: off
+    local: true
+providers:
+  ollama:
+    model: %%DEFAULT_MODEL%%
+    base_url: %%BASE_URL%%
+    max_tokens: 4096
+    temperature: 0.6
+    # Context window size for /context stats and compaction thresholds.
+    # Match what your Ollama daemon advertises for the chosen model.
+    context_window: 32000
+channels:
+  telegram:
+    owner_id: '8093148723'
+    bot_token: ${%%TELEGRAM_TOKEN_VAR%%}
+    allowed_users:
+      - '8093148723'
+memory:
+  postgres:
+    connection_string: ${RIVETOS_PG_URL}
+    embed_endpoint: ${RIVETOS_EMBED_URL}
+    compactor_endpoint: https://api.x.ai/v1
+    compactor_model: grok-4-1-fast-reasoning
+    compactor_api_key: ${XAI_API_KEY}

@@ -6,7 +6,7 @@
 #
 # Quick start (from repo root):
 #
-#   docker compose -f apps/infra/docker/mcp-stack/docker-compose.yml up --build
+#   docker compose -f infra/docker/mcp-stack/docker-compose.yml up --build
 #
 # Then in another terminal:
 #
@@ -19,7 +19,7 @@
 #
 # Tear down (and wipe the database):
 #
-#   docker compose -f apps/infra/docker/mcp-stack/docker-compose.yml down -v
+#   docker compose -f infra/docker/mcp-stack/docker-compose.yml down -v
 
 services:
   datahub:
@@ -53,8 +53,8 @@ services:
       # Build context is repo root so the multi-stage Dockerfile can copy
       # the workspace lockfile, package.json files, and the mcp-server
       # plugin source. Path is relative to this compose file.
-      context: ../../../..
-      dockerfile: apps/infra/docker/mcp-stack/Dockerfile
+      context: ../../..
+      dockerfile: infra/docker/mcp-stack/Dockerfile
     image: rivetos-mcp-server:dev
     environment:
       MCP_HOST: '0.0.0.0'
