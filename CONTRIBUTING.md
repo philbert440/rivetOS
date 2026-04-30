@@ -359,25 +359,25 @@ RivetOS ships as container images built from source.
 ```bash
 npx rivetos build
 # or
-npx nx build agent-container
-npx nx build datahub-container
+npx nx build container-rivetos
+npx nx build container-datahub
 ```
 
 ### Run the stack
 
 ```bash
-docker compose up -d          # Single agent
-docker compose --profile multi up -d   # Multi-agent
+# From the repo root:
+docker compose -f infra/docker/rivetos/docker-compose.yml up -d
 ```
+
+Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh — see `docs/mesh.md` — rather than as N agent services in one Compose file.
 
 ### Data persistence
 
-Containers are stateless. All data lives on volumes:
-- `./workspace/` — agent files (bind mount)
-- `./config.yaml` — configuration (bind mount)
-- `./.env` — secrets (bind mount)
+Containers are stateless. All data lives on the host:
+- `~/.rivetos/config.yaml` — configuration (bind mount, read-only)
+- `~/.rivetos/.env` — secrets (bind mount, read-only)
 - `rivetos-pgdata` — PostgreSQL (named volume)
-- `rivetos-shared` — shared storage (named volume)
 
 See [infra/containers/DATA-PERSISTENCE.md](infra/containers/DATA-PERSISTENCE.md) for details.
 

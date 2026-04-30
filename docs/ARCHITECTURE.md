@@ -220,23 +220,20 @@ rivetOS/
   README.md                          ← project overview
   CHANGELOG.md                       ← release history
   CONTRIBUTING.md                    ← contributor guide
-  docker-compose.yaml                ← full stack: datahub + agent containers
   .env.example                       ← secret template
   docs/
     ARCHITECTURE.md                  ← this file (design-oriented, for contributors)
     CODEBASE-REFERENCE.md            ← engineering reference (file-by-file)
-    COLLABORATION.md                 ← multi-agent collaboration design
     DECISIONS.md                     ← key design decisions log
-    DELEGATION.md                    ← delegation system design
     MEMORY-DESIGN.md                 ← memory system design
-    RELEASES.md                      ← release history
   infra/                             ← Container Dockerfiles + Compose + provisioning
     containers/
-      agent/                         ← Legacy split agent Dockerfile
-      datahub/                       ← Legacy split datahub Dockerfile (postgres + pgvector)
-      rivetos/                       ← Unified image — built once, dispatched via `--role`
+      datahub/                       ← Postgres + pgvector image
+      rivetos/                       ← Unified runtime image — built once, dispatched via `--role`
       DATA-PERSISTENCE.md            ← data persistence model documentation
-    docker/                          ← Compose stacks (mcp-stack, rivetos)
+    docker/                          ← Compose stacks
+      rivetos/                       ← canonical stack (datahub + migrate + workers + agent)
+      mcp-stack/                     ← standalone MCP server stack
     scripts/                         ← provision-ct.sh, setup-mesh-hosts.sh, …
     templates/                       ← workspace + config skeletons used by `init`
   .github/

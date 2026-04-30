@@ -1,5 +1,3 @@
-// TODO: Add integration tests for Discord channel
-
 /**
  * @rivetos/channel-discord
  *

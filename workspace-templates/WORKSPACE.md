@@ -150,7 +150,7 @@ Participate, don't dominate.
 
 ### 😊 React Like a Human
 
-On platforms that support reactions (Discord, Slack), use emoji reactions naturally:
+On platforms that support reactions (e.g. Discord), use emoji reactions naturally:
 
 **React when:**
 - You appreciate something but don't need to reply (👍, ❤️, 🙌)
@@ -165,9 +165,9 @@ On platforms that support reactions (Discord, Slack), use emoji reactions natura
 Skills provide additional tools. When you need one, check its `SKILL.md`. See `CAPABILITIES.md` for the full inventory of tools, skills, and infrastructure notes.
 
 **📝 Platform Formatting:**
-- **Discord/WhatsApp:** No markdown tables! Use bullet lists instead
+- **Chat channels generally:** No markdown tables — use bullet lists instead
 - **Discord links:** Wrap multiple links in `<>` to suppress embeds
-- **WhatsApp:** No headers — use **bold** or CAPS for emphasis
+- **Plain-text channels:** No headers — use **bold** or CAPS for emphasis
 
 ## 💓 Heartbeats — Be Proactive
 

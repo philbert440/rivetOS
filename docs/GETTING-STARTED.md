@@ -30,7 +30,7 @@ The wizard will:
 1. **Detect your environment** — Docker available? Proxmox? How much memory?
 2. **Choose deployment target** — Docker (recommended), Proxmox, or manual
 3. **Configure agents** — pick a provider, enter your API key, choose a model
-4. **Configure channels** — Discord, Slack, WhatsApp, terminal, or API-only
+4. **Configure channels** — Discord, Telegram, voice (Discord voice), terminal, or API-only
 5. **Review and deploy** — summary of your choices, then one-click deploy
 
 After the wizard completes, your agent is running.
@@ -97,12 +97,19 @@ RIVETOS_PG_URL=postgresql://rivetos:rivetos@localhost:5432/rivetos
 
 ### 4. Build and run with Docker
 
+The unified Compose stack lives at `infra/docker/rivetos/docker-compose.yml`. You can either pass `-f` every time, or set `COMPOSE_FILE` once:
+
+```bash
+# (optional) so plain `docker compose ...` finds the unified stack
+export COMPOSE_FILE=infra/docker/rivetos/docker-compose.yml
+```
+
 ```bash
 # Build container images from source
 npx rivetos build
 
 # Start everything (datahub + agent)
-docker compose up -d
+docker compose -f infra/docker/rivetos/docker-compose.yml up -d
 
 # Check status
 npx rivetos status
@@ -164,18 +171,18 @@ Edit both files as described in Option B, steps 2-3.
 ### 4. Create workspace
 
 ```bash
-mkdir -p workspace/memory
+mkdir -p ~/.rivetos/workspace/memory
 ```
 
-Add your workspace files:
+Add your workspace files (templates ship under `workspace-templates/` in the repo — `rivetos init` copies them in for you):
 
 | File | Purpose | Required? |
 |---|---|---|
-| `workspace/CORE.md` | Agent identity and personality | Yes |
-| `workspace/USER.md` | Who the agent is helping | Yes |
-| `workspace/WORKSPACE.md` | Operating rules and conventions | Yes |
-| `workspace/MEMORY.md` | Context index for the memory system | Optional |
-| `workspace/CAPABILITIES.md` | Extended tool/skill reference | Optional |
+| `~/.rivetos/workspace/CORE.md` | Agent identity and personality | Yes |
+| `~/.rivetos/workspace/USER.md` | Who the agent is helping | Yes |
+| `~/.rivetos/workspace/WORKSPACE.md` | Operating rules and conventions | Yes |
+| `~/.rivetos/workspace/MEMORY.md` | Context index for the memory system | Optional |
+| `~/.rivetos/workspace/CAPABILITIES.md` | Extended tool/skill reference | Optional |
 
 See the [Workspace Files](#workspace-files) section below for details.
 
@@ -320,7 +327,7 @@ rivetos skills list       # Show available skills
 - Verify your API key is set in `.env`
 
 **Docker containers won't start?**
-- Run `docker compose logs datahub` to check PostgreSQL
+- Run `docker compose -f infra/docker/rivetos/docker-compose.yml logs datahub` to check PostgreSQL
 - Ensure port 5432 isn't already in use
 - Try `npx rivetos build` to rebuild images
 

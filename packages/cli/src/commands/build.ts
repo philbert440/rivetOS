@@ -3,9 +3,9 @@
  *
  * Build container images from source.
  *
- *   rivetos build              — build all images (agent + datahub)
- *   rivetos build agent        — build agent image only
- *   rivetos build datahub      — build datahub image only
+ *   rivetos build              — build all images (rivetos + datahub)
+ *   rivetos build rivetos      — build the unified rivetos image only
+ *   rivetos build datahub      — build the datahub image only
  *   rivetos build --tag v1.0   — tag with a specific version
  *   rivetos build --push       — push to registry after build
  */
@@ -18,23 +18,38 @@ import { readFile } from 'node:fs/promises'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
 
+type Target = 'rivetos' | 'datahub'
+
 interface BuildOptions {
-  targets: ('agent' | 'datahub')[]
+  targets: Target[]
   tag: string
   push: boolean
   platform?: string
 }
 
+const TARGETS: Record<Target, { image: string; dockerfile: string; context: string }> = {
+  rivetos: {
+    image: 'rivetos',
+    dockerfile: 'infra/containers/rivetos/Dockerfile',
+    context: '.',
+  },
+  datahub: {
+    image: 'rivetos-datahub',
+    dockerfile: 'infra/containers/datahub/Dockerfile',
+    context: '.',
+  },
+}
+
 function parseArgs(): BuildOptions {
   const args = process.argv.slice(3)
-  const targets: ('agent' | 'datahub')[] = []
+  const targets: Target[] = []
   let tag = 'latest'
   let push = false
   let platform: string | undefined
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
-    if (arg === 'agent' || arg === 'datahub') {
+    if (arg === 'rivetos' || arg === 'datahub') {
       targets.push(arg)
     } else if (arg === '--tag' || arg === '-t') {
       tag = args[++i] ?? 'latest'
@@ -48,9 +63,8 @@ function parseArgs(): BuildOptions {
     }
   }
 
-  // Default: build both
   if (targets.length === 0) {
-    targets.push('agent', 'datahub')
+    targets.push('rivetos', 'datahub')
   }
 
   return { targets, tag, push, platform }
@@ -64,8 +78,8 @@ function showHelp(): void {
     rivetos build [target...] [options]
 
   Targets:
-    agent       Build the agent runtime image
-    datahub     Build the datahub (Postgres + shared storage) image
+    rivetos     Build the unified rivetos runtime image (agent | worker | migrate roles)
+    datahub     Build the datahub (Postgres + pgvector) image
     (default)   Build both
 
   Options:
@@ -81,7 +95,7 @@ function exec(cmd: string, label: string): void {
     execSync(cmd, {
       cwd: ROOT,
       stdio: 'inherit',
-      timeout: 600000, // 10 min per build
+      timeout: 600000,
       env: { ...process.env, DOCKER_BUILDKIT: '1' },
     })
   } catch {
@@ -93,7 +107,6 @@ function exec(cmd: string, label: string): void {
 export default async function build(): Promise<void> {
   const opts = parseArgs()
 
-  // Get git SHA for labeling
   let sha = 'unknown'
   try {
     sha = execSync('git rev-parse --short HEAD', { cwd: ROOT, encoding: 'utf-8' }).trim()
@@ -101,7 +114,6 @@ export default async function build(): Promise<void> {
     /* not in a git repo */
   }
 
-  // Get version from package.json
   let version = '0.0.0'
   try {
     const pkg = JSON.parse(await readFile(resolve(ROOT, 'package.json'), 'utf-8')) as {
@@ -112,7 +124,6 @@ export default async function build(): Promise<void> {
     /* ignore */
   }
 
-  // Registry prefix from environment or default
   const registry = process.env.RIVETOS_REGISTRY ?? 'ghcr.io/philbert440'
 
   console.log(`RivetOS Build`)
@@ -123,29 +134,21 @@ export default async function build(): Promise<void> {
   console.log('')
 
   for (const target of opts.targets) {
-    const imageName = target === 'agent' ? 'rivetos-agent' : 'rivetos-datahub'
-    const fullTag = `${registry}/${imageName}:${opts.tag}`
-    const shaTag = `${registry}/${imageName}:${sha}`
-    const dockerfile =
-      target === 'agent'
-        ? 'infra/containers/agent/Dockerfile'
-        : 'infra/containers/datahub/Dockerfile'
-    const context = target === 'agent' ? '.' : 'infra/containers/datahub'
+    const t = TARGETS[target]
+    const fullTag = `${registry}/${t.image}:${opts.tag}`
+    const shaTag = `${registry}/${t.image}:${sha}`
 
     console.log(`Building ${target}...`)
 
-    let buildCmd = `docker build -f ${dockerfile} -t ${fullTag} -t ${shaTag}`
-
-    // Add build args
+    let buildCmd = `docker build -f ${t.dockerfile} -t ${fullTag} -t ${shaTag}`
     buildCmd += ` --build-arg VERSION=${version}`
     buildCmd += ` --build-arg GIT_SHA=${sha}`
 
-    // Multi-platform support
     if (opts.platform) {
       buildCmd += ` --platform ${opts.platform}`
     }
 
-    buildCmd += ` ${context}`
+    buildCmd += ` ${t.context}`
 
     exec(buildCmd, `${target} build`)
     console.log(`  ✅ ${fullTag}`)
