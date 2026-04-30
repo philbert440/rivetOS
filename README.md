@@ -265,7 +265,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 - [Skills](docs/SKILLS.md) — How to write and share skills
 - [Deployment](docs/DEPLOYMENT.md) — Docker, Proxmox, multi-agent, backup
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — Common issues and fixes
-- [Examples](examples/) — Ready-to-use config files
+- [Examples](docs/examples/) — Ready-to-use config files
 
 ## License
 
