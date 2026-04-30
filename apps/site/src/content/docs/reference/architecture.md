@@ -230,7 +230,6 @@ rivetOS/
   docs/
     ARCHITECTURE.md                  ← this file (design-oriented, for contributors)
     CODEBASE-REFERENCE.md            ← engineering reference (file-by-file)
-    DECISIONS.md                     ← key design decisions log
     MEMORY-DESIGN.md                 ← memory system design
   infra/                             ← Container Dockerfiles + Compose + provisioning
     containers/
