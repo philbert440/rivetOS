@@ -110,9 +110,10 @@ rivetOS/
 ├── apps/
 │   └── site/           # Astro docs site
 ├── infra/              # Container Dockerfiles, Compose files, provisioning scripts
-├── docs/               # Full documentation (incl. example configs under docs/examples/)
-└── skills/             # Optional skill libraries
+└── docs/               # Full documentation (incl. example configs under docs/examples/)
 ```
+
+Skills are user-managed and live outside the source tree (default: `~/.rivetos/workspace/skills/`). See [docs/SKILLS.md](docs/SKILLS.md).
 
 ## Plugins
 
