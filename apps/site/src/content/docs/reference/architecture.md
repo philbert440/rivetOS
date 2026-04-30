@@ -20,71 +20,73 @@ description: How RivetOS works internally
 ## Clean Architecture Layers
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Plugins (Adapters)                │
-│                                                     │
-│  Channels    Providers    Memory    Tools            │
-│  Telegram    Anthropic    Postgres  Shell            │
-│  Discord     Google                 File I/O         │
-│  Agent       xAI                    Search (glob/grep)│
-│  Voice       Ollama                 Web Search/Fetch  │
+┌────────────────────────────────────────────────────────┐
+│                    Plugins (Adapters)                  │
+│                                                        │
+│  Channels    Providers    Memory    Tools              │
+│  Telegram    Anthropic    Postgres  Shell              │
+│  Discord     Google                 File I/O           │
+│  Agent       xAI                    Search (glob/grep) │
+│  Voice       Ollama                 Web Search/Fetch   │
 │              llama-server           Interaction        │
 │                                     MCP Client         │
 │                                     Coding Pipeline    │
-│                                                     │
-│  All plugins implement core interfaces.             │
-│  All plugins are replaceable.                       │
-│  None are imported by core.                         │
-├─────────────────────────────────────────────────────┤
-│                  Application Layer                   │
-│                                                     │
-│  Boot         — composition root, reads YAML config, │
-│                  wires plugins via registrars         │
-│  Runtime      — thin compositor, registration,       │
-│                  routing, lifecycle                   │
-│  TurnHandler  — single message turn processing       │
-│  CLI          — rivetos start/stop/status/doctor/     │
-│                  init/config/mesh/infra/logs/etc.     │
-│                                                     │
-│  This layer composes domain + plugins.              │
-│  It is the only layer that knows concrete types.    │
-├─────────────────────────────────────────────────────┤
-│                    Domain Layer                       │
-│                                                     │
-│  Agent Loop   — message → LLM → tools → response    │
-│  Router       — inbound message → agent → provider   │
-│  Workspace    — load/inject workspace files          │
-│  Queue        — message ordering, command intercept  │
-│  Hooks        — composable pipeline (before/after)   │
-│  Delegation   — intra-instance agent-to-agent        │
-│  Mesh Deleg.  — cross-instance delegation via HTTP   │
-│  Subagent     — child session management             │
-│  Skills       — skill discovery and matching         │
-│  Heartbeat    — periodic scheduling                  │
-│  Safety       — shell danger, workspace fence, audit │
-│  Fallback     — provider fallback chains             │
-│  Circuit Break— provider failure tracking, open/close│
-│  Reconnect    — exponential backoff for channels     │
-│  Auto-Actions — post-tool automation (format, lint)  │
-│  Sessions     — session lifecycle and history        │
-│  Mesh         — multi-agent mesh registry + discovery│
-│                                                     │
-│  Pure logic. No I/O. Depends only on interfaces     │
-│  defined in @rivetos/types.                         │
-├─────────────────────────────────────────────────────┤
-│                     Types Layer                      │
-│                                                     │
-│  Provider, Channel, Tool, Memory, Workspace          │
-│  Message, ToolCall, InboundMessage, OutboundMessage  │
-│  AgentConfig, RuntimeConfig, StreamEvent, HookConfig │
-│  DeploymentConfig, MeshNode, MeshRegistry            │
-│  RivetError, ChannelError, MemoryError, ToolError    │
-│  SubagentSession, Skill, SkillManager                │
-│                                                     │
-│  Interfaces + error classes. Zero dependencies.     │
-│  Leaf package. Every other package depends on this. │
-│  Nothing else.                                      │
-└─────────────────────────────────────────────────────┘
+│                                                        │
+│  All plugins implement core interfaces.                │
+│  All plugins are replaceable.                          │
+│  None are imported by core.                            │
+├────────────────────────────────────────────────────────┤
+│                  Application Layer                     │
+│                                                        │
+│  Boot         — composition root, reads YAML config,   │
+│                  invokes manifest.register(ctx) per    │
+│                  discovered plugin                     │
+│  Runtime      — thin compositor, registration,         │
+│                  routing, lifecycle                    │
+│  TurnHandler  — single message turn processing         │
+│  CLI          — rivetos start/stop/status/doctor/      │
+│                  init/config/mesh/keys/memory/db/      │
+│                  plugin/skill/service/logs/etc.        │
+│                                                        │
+│  This layer composes domain + plugins.                 │
+│  It is the only layer that knows concrete types.       │
+├────────────────────────────────────────────────────────┤
+│                    Domain Layer                        │
+│                                                        │
+│  Agent Loop   — message → LLM → tools → response       │
+│  Router       — inbound message → agent → provider     │
+│  Workspace    — load/inject workspace files            │
+│  Queue        — message ordering, command intercept    │
+│  Hooks        — composable pipeline (before/after)     │
+│  Delegation   — intra-instance agent-to-agent          │
+│  Mesh Deleg.  — cross-instance delegation via HTTP     │
+│  Subagent     — child session management               │
+│  Skills       — skill discovery and matching           │
+│  Heartbeat    — periodic scheduling                    │
+│  Safety       — shell danger, workspace fence, audit   │
+│  Fallback     — provider fallback chains               │
+│  Circuit Break— provider failure tracking, open/close  │
+│  Reconnect    — exponential backoff for channels       │
+│  Auto-Actions — post-tool automation (format, lint)    │
+│  Sessions     — session lifecycle and history          │
+│  Mesh         — multi-agent mesh registry + discovery  │
+│                                                        │
+│  Pure logic. No I/O. Depends only on interfaces        │
+│  defined in @rivetos/types.                            │
+├────────────────────────────────────────────────────────┤
+│                     Types Layer                        │
+│                                                        │
+│  Provider, Channel, Tool, Memory, Workspace            │
+│  Message, ToolCall, InboundMessage, OutboundMessage    │
+│  AgentConfig, RuntimeConfig, StreamEvent, HookConfig   │
+│  DeploymentConfig, MeshNode, MeshRegistry              │
+│  RivetError, ChannelError, MemoryError, ToolError      │
+│  SubagentSession, Skill, SkillManager                  │
+│                                                        │
+│  Interfaces + error classes. Zero dependencies.        │
+│  Leaf package. Every other package depends on this.    │
+│  Nothing else.                                         │
+└────────────────────────────────────────────────────────┘
 ```
 
 **Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types. Nothing depends on plugins.
@@ -135,58 +137,59 @@ FileMeshRegistry — owns mesh node registration, heartbeat, pruning.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                       RivetOS Runtime                         │
-│                                                               │
+│                       RivetOS Runtime                        │
+│                                                              │
 │  ┌──────────┐    ┌──────────┐    ┌────────────────────────┐  │
-│  │ Channels │───▶│  Router  │───▶│     Turn Handler       │  │
+│  │ Channels │───>│  Router  │───>│     Turn Handler       │  │
 │  │ (plugin) │    │ (domain) │    │     (application)      │  │
-│  │          │    │          │    │                         │  │
+│  │          │    │          │    │                        │  │
 │  │ Telegram │    │ message  │    │ hooks → media → loop   │  │
 │  │ Discord  │    │  → agent │    │  → stream → respond    │  │
 │  │ Agent    │    │  → prov  │    │  → memory append       │  │
-│  │ Voice    │    │          │    │                         │  │
+│  │ Voice    │    │          │    │                        │  │
 │  └──────────┘    └──────────┘    └───────────┬────────────┘  │
-│       ▲                                       │               │
-│       │              ┌────────────────────────┘               │
-│       │              ▼                                        │
+│       ▲                                      │               │
+│       │              ┌───────────────────────┘               │
+│       │              ▼                                       │
 │  ┌──────────┐    ┌──────────┐    ┌──────────────────────┐    │
-│  │ Response │◀───│Workspace │    │     Memory            │    │
-│  │ sent to  │    │ (domain) │    │    (plugin)           │    │
-│  │ channel  │    │          │    │                       │    │
-│  │          │    │ CORE.md  │    │ append transcript      │    │
-│  │          │    │ USER.md  │    │ search context         │    │
-│  │          │    │ MEMORY.md│    │ hybrid FTS+vector      │    │
+│  │ Response │<───│Workspace │    │     Memory           │    │
+│  │ sent to  │    │ (domain) │    │    (plugin)          │    │
+│  │ channel  │    │          │    │                      │    │
+│  │          │    │ CORE.md  │    │ append transcript    │    │
+│  │          │    │ USER.md  │    │ search context       │    │
+│  │          │    │ MEMORY.md│    │ hybrid FTS+vector    │    │
 │  └──────────┘    └──────────┘    └──────────────────────┘    │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │                    Boot Layer                         │    │
-│  │                                                      │    │
-│  │  Config loader → Registrars → Lifecycle              │    │
-│  │                                                      │    │
-│  │  registrars/plugins.ts    — manifest-driven: all      │    │
-│  │                             discovered providers,     │    │
-│  │                             channels, tools, memory   │    │
-│  │  registrars/hooks.ts      — wire safety/fallback/etc  │    │
-│  │  registrars/agents.ts     — delegation/subagent/skills│    │
-│  └──────────────────────────────────────────────────────┘    │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │                Observability Layer                     │    │
-│  │                                                      │    │
-│  │  Metrics    — turns/min, latency, tokens, errors      │    │
-│  │  Health     — GET /health endpoint, full runtime status│   │
-│  │  Logger     — structured JSON or pretty-print modes   │    │
-│  │  Audit      — append-only log with rotation/retention │    │
-│  └──────────────────────────────────────────────────────┘    │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │                    Mesh Layer                         │    │
-│  │                                                      │    │
-│  │  Registry   — mesh.json, heartbeat, pruning           │    │
-│  │  Discovery  — seed nodes or mDNS                      │    │
-│  │  Delegation — route to remote agents via HTTP          │    │
-│  │  Agent Chan — /api/mesh/* endpoints for peer comms    │    │
-│  └──────────────────────────────────────────────────────┘    │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │                    Boot Layer                          │  │
+│  │                                                        │  │
+│  │  Config loader → Registrars → Lifecycle                │  │
+│  │                                                        │  │
+│  │  registrars/plugins.ts    — manifest-driven: every    │  │
+│  │                             discovered provider,     │  │
+│  │                             channel, tool, memory,   │  │
+│  │                             and transport plugin      │  │
+│  │  registrars/hooks.ts      — wire safety/fallback/etc  │  │
+│  │  registrars/agents.ts     — delegation/subagent/skills │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │                Observability Layer                      │ │
+│  │                                                         │ │
+│  │  Metrics    — turns/min, latency, tokens, errors        │ │
+│  │  Health     — GET /health endpoint, full runtime status │ │
+│  │  Logger     — structured JSON or pretty-print modes     │ │
+│  │  Audit      — append-only log with rotation/retention   │ │
+│  └─────────────────────────────────────────────────────────┘ │
+│                                                              │
+│  ┌───────────────────────────────────────────────────────┐   │
+│  │                    Mesh Layer                         │   │
+│  │                                                       │   │
+│  │  Registry   — mesh.json, heartbeat, pruning           │   │
+│  │  Discovery  — seed nodes or mDNS                      │   │
+│  │  Delegation — route to remote agents via HTTP         │   │
+│  │  Agent Chan — /api/mesh/* endpoints for peer comms    │   │
+│  └───────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -232,29 +235,15 @@ rivetOS/
     MEMORY-DESIGN.md                 ← memory system design
     RELEASES.md                      ← release history
     ROADMAP.md                       ← milestone history (M0–M5)
-  infra/containers/
-    agent/
-      Dockerfile                     ← multi-stage, non-root, tini, healthcheck
-      project.json                   ← Nx build target
-    datahub/
-      Dockerfile                     ← postgres + pgvector + shared dirs
-      init-db.sh                     ← database initialization
-      init-shared.sh                 ← shared directory setup
-      project.json                   ← Nx build target
-    DATA-PERSISTENCE.md              ← data persistence model documentation
-  infra/
-    src/
-      index.ts                       ← entry point, reads config, picks provider
-      orchestrator.ts                ← deploy/preview/destroy orchestration
-      components/
-        index.ts                     ← abstract component interfaces
-        types.ts                     ← infrastructure types
-      providers/
-        docker/                      ← Docker Compose deployment
-        proxmox/                     ← Proxmox LXC deployment
-    package.json
-    project.json
-    tsconfig.json
+  apps/infra/                        ← Container Dockerfiles + Compose + provisioning
+    containers/
+      agent/                         ← Legacy split agent Dockerfile
+      datahub/                       ← Legacy split datahub Dockerfile (postgres + pgvector)
+      rivetos/                       ← Unified image — built once, dispatched via `--role`
+      DATA-PERSISTENCE.md            ← data persistence model documentation
+    docker/                          ← Compose stacks (mcp-stack, rivetos)
+    scripts/                         ← provision-ct.sh, setup-mesh-hosts.sh, …
+    templates/                       ← workspace + config skeletons used by `init`
   .github/
     workflows/
       pipeline.yml                   ← single orchestrator: secrets-scan → ci → (publish-npm, containers) → notify-ops
@@ -327,19 +316,18 @@ rivetOS/
       src/
         index.ts                     ← boot() — load config, call registrars, start
         config.ts                    ← Config loader (YAML → typed config, env var resolution)
+        discovery.ts                 ← Walks plugin dirs, reads `package.json#rivetos`
         lifecycle.ts                 ← PID file, signals, shutdown
+        validate.ts                  ← validateConfig() entry point
         validate/
-          index.ts                   ← validateConfig() entry point
           sections.ts                ← Per-section validators
           cross-refs.ts              ← Cross-reference validation (agent→provider, bindings)
           deployment.ts              ← Deployment config validation
           types.ts                   ← Validation result types
         registrars/
-          providers.ts               ← Instantiate and register providers
-          channels.ts                ← Instantiate and register channels
+          plugins.ts                 ← Generic manifest-driven loader (providers,
+                                     ←   channels, tools, memory, transports)
           hooks.ts                   ← Wire safety, fallback, auto-actions, sessions, learning
-          tools.ts                   ← Register all tool plugins
-          memory.ts                  ← Wire memory backend
           agents.ts                  ← Delegation, subagent, skills registration
     cli/                             ← command-line interface
       src/
@@ -347,34 +335,28 @@ rivetOS/
         commands/
           init.ts                    ← Legacy init (directory + default config)
           init/                      ← Interactive wizard (6 phases)
-            index.ts                 ← wizard entry point
-            wizard.ts                ← phase orchestrator
-            types.ts                 ← WizardState, AgentConfig, ChannelConfig
-            detect.ts                ← environment detection
-            deployment.ts            ← deployment target selection
-            agents.ts                ← agent configuration
-            channels.ts              ← channel configuration
-            review.ts                ← review & confirm
-            generate.ts              ← write config + .env
-          start.ts                   ← rivetos start
-          stop.ts                    ← rivetos stop
-          status.ts                  ← rivetos status (enhanced with metrics)
-          doctor.ts                  ← rivetos doctor (12 check categories)
-          test.ts                    ← rivetos test (smoke test suite)
+            index.ts, wizard.ts, types.ts, detect.ts,
+            deployment.ts, agents.ts, channels.ts,
+            review.ts, generate.ts
+          start.ts, stop.ts, status.ts, doctor.ts, test.ts
           update.ts                  ← rivetos update (source-based container rebuild)
           build.ts                   ← rivetos build (container image build)
-          config.ts                  ← rivetos config (reopen wizard)
+          config.ts                  ← rivetos config show/validate/edit/path
           agent.ts                   ← rivetos agent add/remove/list
           logs.ts                    ← rivetos logs (tail agent output)
           mesh.ts                    ← rivetos mesh list/ping/status/join
-          infra.ts                   ← rivetos infra up/preview/destroy
-          login.ts                   ← rivetos login (Anthropic OAuth)
+          keys.ts                    ← rivetos keys rotate/list (mesh SSH keys)
+          memory.ts                  ← rivetos memory backfill-tool-synth/queue-status
+          db.ts                      ← rivetos db (low-level pg helpers)
           model.ts                   ← rivetos model (switch models)
-          provider.ts                ← rivetos provider (manage providers)
+          provider.ts                ← rivetos <provider> status/setup/...
           plugins.ts                 ← rivetos plugins (list/info)
+          plugin-init.ts             ← rivetos plugin init (wraps Nx generator)
           service.ts                 ← rivetos service install/uninstall (systemd)
           skills.ts                  ← rivetos skills list
-          version.ts                 ← rivetos version
+          skill-init.ts              ← rivetos skill init (scaffolds SKILL.md)
+          skill-validate.ts          ← rivetos skill validate
+          version.ts
     nx-plugin/                       ← custom Nx generators/executors (if needed)
   plugins/
     channels/
@@ -397,45 +379,35 @@ rivetOS/
           audio-player.ts            ← Opus audio encoding/decoding
           transcript.ts              ← Speech-to-text transcript handling
     providers/
-      anthropic/                     ← Claude (native Messages API + OAuth)
-        src/
-          index.ts                   ← AnthropicProvider with extended thinking
-      google/                        ← Gemini (Generative Language API)
-        src/
-          index.ts                   ← GoogleProvider
-      xai/                           ← Grok
-        src/
-          index.ts                   ← XAIProvider
+      anthropic/                     ← Claude (Messages API, adaptive thinking, prompt caching)
+      google/                        ← Gemini (Generative Language API, thought signatures)
+      xai/                           ← Grok (live search, conversation caching)
       ollama/                        ← Ollama (native API)
-        src/
-          index.ts                   ← OllamaProvider
-      llama-server/                  ← llama.cpp server (native API)
-        src/
-          index.ts                   ← OpenAICompatProvider
+      llama-server/                  ← llama.cpp server (native API, mirostat, typical_p)
+      openai-compat/                 ← Strict OpenAI servers (vLLM/TGI/Groq/Together/LocalAI)
+      claude-cli/                    ← Drives `claude` CLI via stream-json; embedded MCP bridge
     memory/
       postgres/                      ← Full transcript + hybrid search + summary DAG
+        schema/                      ← Co-located SQL DDL + migrations (PR-G)
+        workers/                     ← Event-driven embedding + compaction workers
+          embedding/                 ← Postgres LISTEN → embedding model (GPU)
+          compaction/                ← Postgres LISTEN → summarization model (CPU)
         src/
           adapter.ts                 ← PostgresMemory — implements Memory interface
           search.ts                  ← Hybrid FTS + vector search with scoring
           scoring.ts                 ← Search result relevance scoring
-          embedder.ts                ← OpenAI embedding generation + queue
           expand.ts                  ← Summary expansion (drill into source messages)
           review-loop.ts             ← Learning loop: reflect → synthesize → store
           compactor/                 ← Summary DAG (v5 pipeline)
-            index.ts                 ← barrel
-            compactor.ts             ← CompactionEngine — thinking-model hierarchical summarization
+            compactor.ts             ← CompactionEngine — hierarchical summarization
             types.ts                 ← v5 prompts (leaf/branch/root), types, formatters
-          tool-synth.ts              ← synthesizeToolCallContent — natural-language for tool-call rows
-          tools/                     ← Memory-as-tools (4 files)
-            index.ts                 ← barrel
+          tool-synth.ts              ← synthesizeToolCallContent — natural-language tool-call rows
+          tools/                     ← Memory-as-tools
             search-tool.ts           ← memory_search tool
             browse-tool.ts           ← memory_browse tool
             stats-tool.ts            ← memory_stats tool
             helpers.ts               ← shared tool helpers
-          migrate.ts                 ← Schema migration (v1)
-          migrate-v2.ts              ← Schema migration (v2 — embeddings, summaries)
-          migrate-v3.ts              ← Schema migration (v3 — ros_tool_synth_queue)
-          index.ts                   ← barrel exports
+          index.ts                   ← barrel exports + manifest
     tools/
       shell/                         ← Shell command execution with safety
       file/                          ← file_read, file_write, file_edit (3 tool files)
@@ -444,6 +416,10 @@ rivetOS/
       interaction/                   ← ask_user, todo (2 tool files)
       mcp-client/                    ← MCP server connection + tool discovery
       coding-pipeline/               ← Build → review → validate loop
+    transports/
+      mcp-server/                    ← @rivetos/mcp-server — exposes RivetOS tools
+                                     ←   (memory_*, web_*, skill_*, runtime) over MCP
+                                     ←   StreamableHTTP. Has its own `rivetos-mcp-server` bin.
   skills/                            ← Optional per-instance skills
 ```
 
@@ -527,6 +503,38 @@ interface Memory {
 `getContextForTurn()` builds a context window from recent messages + relevant search results, within a token budget. `getSessionHistory()` restores conversation history from persistent storage on reconnect. Session settings persistence is optional.
 
 Reference implementation: `plugins/memory/postgres/`
+
+### Transport — exposes RivetOS over an inbound protocol
+
+Transports have no `core` interface — each transport opens its own listening surface (HTTP, stdio, gRPC, …). The plugin's `manifest.register(ctx)` is responsible for binding the surface and registering a shutdown via `ctx.registerShutdown()`. To enumerate the finalized tool set after every other plugin has registered, transports use `ctx.onRegistrationComplete()`.
+
+Reference implementation: `plugins/transports/mcp-server/` (StreamableHTTP MCP server exposing `memory_*`, `web_*`, `skill_*` tools).
+
+### Plugin Manifest Contract
+
+Every plugin's `index.ts` exports a `manifest: PluginManifest`:
+
+```typescript
+export const manifest: PluginManifest = {
+  type: 'provider',           // 'provider' | 'channel' | 'tool' | 'memory' | 'transport'
+  name: 'anthropic',          // must match `package.json#rivetos.name`
+  async register(ctx) {
+    // ctx.config         — full validated runtime config (RivetConfig)
+    // ctx.pluginConfig   — slice for this plugin (config.providers.<name>, etc.)
+    // ctx.env            — process.env snapshot
+    // ctx.workspaceDir   — resolved workspace path
+    // ctx.logger         — scoped logger
+    //
+    // Register what you provide:
+    //   ctx.registerProvider(p) | registerChannel(c) | registerTool(t) | registerMemory(m)
+    //   ctx.registerHook(h) | ctx.registerShutdown(fn)
+    //   ctx.lateBindTool(name) → closure that resolves the tool at execution time
+    //   ctx.onRegistrationComplete(snapshot => ...) — fires once after all plugins register
+  },
+}
+```
+
+Boot's `registrars/plugins.ts` walks every discovered `package.json#rivetos` descriptor, dynamic-imports the package, validates that `manifest.type/name` matches the descriptor, and calls `manifest.register(ctx)`. There are no per-kind registrars anymore — one manifest-driven loader handles every plugin type.
 
 ## Routing Model
 
@@ -652,24 +660,14 @@ RivetOS ships as container images built from source. The container IS the securi
 
 | Target | Implementation | Use Case |
 |--------|---------------|----------|
-| Docker | Docker Compose | Desktop, single-server, getting started |
-| Proxmox | Pulumi + LXC | Homelab, multi-node |
-| Kubernetes | Pulumi + K8s (future) | Cloud, production scale |
-| Manual | No infra management | User handles their own setup |
+| Docker | Docker Compose (`apps/infra/docker/`) | Desktop, single-server, getting started |
+| Proxmox | LXC + `apps/infra/scripts/provision-ct.sh` | Homelab, multi-node |
+| Manual | systemd + `npm install` | Bare-metal, custom setups |
 
-### Infrastructure Abstraction
-
-```typescript
-// Abstract components — providers implement these
-interface RivetAgentComponent { ... }
-interface RivetDatahubComponent { ... }
-
-// Docker provider: generates docker-compose, runs it
-// Proxmox provider: creates LXC containers via API
-// K8s provider: creates Deployments + Services + PVCs
-```
-
-The `infra/` package reads `rivet.config.yaml`, selects the appropriate provider, and orchestrates deployment. CLI commands: `rivetos infra up/preview/destroy`.
+Provisioning is intentionally script-and-Compose-driven — there is no
+single-command IaC orchestrator. The container Dockerfiles live under
+`apps/infra/containers/`; the Compose files under `apps/infra/docker/`; the
+shell scripts under `apps/infra/scripts/`.
 
 ## Multi-Agent Mesh
 

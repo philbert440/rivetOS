@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Phase 0.6 (PRs B–H): Manifest contract, monorepo cleanup, pulumi removal
+
+- **Self-registering plugin manifest (PR-B).** Every plugin's `index.ts` now
+  exports `manifest: PluginManifest` with `register(ctx)`. The four per-kind
+  registrars (`registrars/{providers,channels,tools,memory}.ts`) were
+  collapsed into one manifest-driven loader at
+  `packages/boot/src/registrars/plugins.ts`. Boot has no per-plugin knowledge.
+- **New plugin category: `transport` (PR-C).** Transports open their own
+  listening surface inside `manifest.register()`. The first transport,
+  `@rivetos/mcp-server` at `plugins/transports/mcp-server/`, exposes
+  `memory_*`, `web_*`, `skill_*`, and runtime tools to external MCP clients
+  over StreamableHTTP. Activated via `transports.<name>` in config.
+- **New providers (PR-A, PR-D).**
+  - `@rivetos/provider-openai-compat` — strict OpenAI servers (vLLM, TGI,
+    Groq, Together, Fireworks, LocalAI). Folds post-first `system` messages,
+    consumes native `reasoning_content`, supports vLLM `top_k`/`min_p`.
+  - `@rivetos/provider-claude-cli` — drives the local `claude` binary via
+    stream-json with an embedded MCP bridge (sanctioned third-party-harness
+    pattern per Anthropic's April 2026 policy).
+- **Mode-aware plugin discovery (PR-E).** Discovery walks the configured
+  plugin dirs and honest peer dependencies; CLI-only modes don't pull in
+  runtime-only plugins.
+- **Infra moved under `apps/infra/` (PR-F).** All Dockerfiles, Compose
+  stacks, provisioning scripts, and templates now live at `apps/infra/...`.
+  Top-level `infra/` is gone.
+- **Memory schema relocated under the plugin (PR-G).** SQL DDL and the
+  embedding/compaction workers now live next to the plugin at
+  `plugins/memory/postgres/{schema,workers}/`. The legacy LCM cruft was
+  purged.
+- **Pulumi-based IaC removed (PR-H).** The `@rivetos/infra` package and the
+  `rivetos infra up/preview/destroy` CLI subcommand were removed before
+  v0.4 GA. Provisioning is fully script-and-Compose driven now. See the
+  `docs/ROADMAP.md` 6.5 entry for rationale.
+- **Unified `rivetos` container image** at
+  `apps/infra/containers/rivetos/Dockerfile`. Built once with esbuild,
+  dispatched at runtime via `--role agent | datahub | mcp`. Legacy split
+  agent/datahub Dockerfiles remain for environments pinned to them.
+
 ### Added — Phase 0.5: Mesh mTLS ⚠️ BREAKING CHANGE
 
 **All mesh nodes must upgrade together.** See [`MIGRATION.md`](MIGRATION.md)

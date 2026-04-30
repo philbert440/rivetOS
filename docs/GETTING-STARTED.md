@@ -294,9 +294,6 @@ rivetos agent list        # List configured agents
 rivetos mesh list         # Show mesh peers (multi-instance)
 rivetos mesh ping         # Health check all peers
 rivetos build             # Build container images from source
-rivetos infra up          # Deploy infrastructure from config
-rivetos infra preview     # Preview infrastructure changes
-rivetos infra destroy     # Tear down infrastructure
 rivetos service install   # Install as systemd service
 rivetos plugins list      # Show loaded plugins
 rivetos skills list       # Show available skills
