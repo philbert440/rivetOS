@@ -223,8 +223,8 @@ rivetOS/
   docker-compose.yaml                ← full stack: datahub + agent containers
   .env.example                       ← secret template
   docs/
-    architecture.md                  ← engineering reference (file-by-file)
     ARCHITECTURE.md                  ← this file (design-oriented, for contributors)
+    CODEBASE-REFERENCE.md            ← engineering reference (file-by-file)
     COLLABORATION.md                 ← multi-agent collaboration design
     DECISIONS.md                     ← key design decisions log
     DELEGATION.md                    ← delegation system design

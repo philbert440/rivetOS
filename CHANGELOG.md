@@ -65,8 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added — Phase 0.5: Mesh mTLS ⚠️ BREAKING CHANGE
 
-**All mesh nodes must upgrade together.** See [`MIGRATION.md`](MIGRATION.md)
-for the full cutover procedure.
+**All mesh nodes must upgrade together.** Cutover procedure, pre-flight
+checklist, and rollback plan were captured in `MIGRATION.md` at the time
+of the cut (since archived).
 
 **What changed:**
 
@@ -99,7 +100,8 @@ for the full cutover procedure.
 - **`docs/mesh.md`** — new comprehensive mesh networking reference.
 - **`docs/CONFIG-REFERENCE.md`** — new `## mesh` section, updated Agent (HTTP)
   section, deprecated `RIVETOS_AGENT_SECRET` note.
-- **`MIGRATION.md`** — cutover procedure, pre-flight checklist, rollback plan.
+- **`MIGRATION.md`** (archived) — captured cutover procedure, pre-flight
+  checklist, and rollback plan at the time of the cut.
 
 
 
