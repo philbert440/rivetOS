@@ -653,7 +653,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
 
         // Heal /etc/hosts mesh block from mesh.json (non-fatal)
         try {
-          const hostsScript = resolve(ROOT, 'apps/infra/scripts/setup-mesh-hosts.sh')
+          const hostsScript = resolve(ROOT, 'infra/scripts/setup-mesh-hosts.sh')
           execSync(`sudo ${hostsScript} /rivet-shared/mesh.json --quiet`, {
             stdio: 'pipe',
             timeout: 15_000,
@@ -867,8 +867,8 @@ async function gitUpdateNodeAsync(
     try {
       const hostsCmd =
         sshUser === 'root'
-          ? '/opt/rivetos/apps/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
-          : 'sudo /opt/rivetos/apps/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
+          ? '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
+          : 'sudo /opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
       await sshExec(host, hostsCmd, `${tag} mesh-hosts`, 15_000, sshUser)
     } catch (err: unknown) {
       console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
@@ -964,8 +964,8 @@ async function gitUpdateNodeAsync(
   try {
     const hostsCmd =
       sshUser === 'root'
-        ? '/opt/rivetos/apps/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
-        : 'sudo /opt/rivetos/apps/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
+        ? '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
+        : 'sudo /opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
     await sshExec(host, hostsCmd, `${tag} mesh-hosts`, 15_000, sshUser)
   } catch (err: unknown) {
     console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)

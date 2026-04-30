@@ -6,8 +6,8 @@
 # Idempotent: a marker file at /home/rivet/.rivetos/.migrated prevents re-runs.
 #
 # Usage:
-#   sudo bash apps/infra/scripts/migrate-to-rivet-user.sh
-#   sudo bash apps/infra/scripts/migrate-to-rivet-user.sh --mesh-distribute
+#   sudo bash infra/scripts/migrate-to-rivet-user.sh
+#   sudo bash infra/scripts/migrate-to-rivet-user.sh --mesh-distribute
 #
 # Options:
 #   --mesh-distribute   After local migration, exchange rivet pubkeys with all

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Repo cleanup pass
+
+- **Infra moved to top-level `infra/`.** `apps/infra/` had nothing left
+  to make it an "app" after the pulumi removal — no `package.json`, no
+  nx project, no source. It's now `infra/` (containers, docker, scripts,
+  templates). All build paths, Compose contexts, and docs updated.
+- **Backfilled provisioning templates for `ollama` and `openai-compat`.**
+  `infra/scripts/provision-ct.sh` already advertised these providers but
+  was missing the template files; CT provisioning failed for them. Both
+  config + env templates added; the script's `--base-url` validation now
+  also covers ollama and openai-compat.
+- **Removed `packages/cli/workspace-templates/` from git.** The directory
+  is regenerated from the canonical `workspace-templates/` at the repo
+  root by `npm run prepublishOnly`. Keeping it in git let the two copies
+  drift.
+- **Deleted `docs/ROADMAP.md`.** Superseded by CHANGELOG + RELEASES.md.
+- **Skill examples updated.** `docs/SKILLS.md` and the site mirror no
+  longer suggest `pulumi up` in deploy-process examples.
+
 ### Changed — Phase 0.6 (PRs B–H): Manifest contract, monorepo cleanup, pulumi removal
 
 - **Self-registering plugin manifest (PR-B).** Every plugin's `index.ts` now
@@ -38,10 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   purged.
 - **Pulumi-based IaC removed (PR-H).** The `@rivetos/infra` package and the
   `rivetos infra up/preview/destroy` CLI subcommand were removed before
-  v0.4 GA. Provisioning is fully script-and-Compose driven now. See the
-  `docs/ROADMAP.md` 6.5 entry for rationale.
+  v0.4 GA. Provisioning is fully script-and-Compose driven now.
 - **Unified `rivetos` container image** at
-  `apps/infra/containers/rivetos/Dockerfile`. Built once with esbuild,
+  `infra/containers/rivetos/Dockerfile`. Built once with esbuild,
   dispatched at runtime via `--role agent | datahub | mcp`. Legacy split
   agent/datahub Dockerfiles remain for environments pinned to them.
 

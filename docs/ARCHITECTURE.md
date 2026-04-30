@@ -217,19 +217,20 @@ Notice: the domain layer (steps 3, 4d) never touches I/O. It works with interfac
 
 ```
 rivetOS/
-  ARCHITECTURE.md                    ← engineering reference (file-by-file, tech debt)
-  ROADMAP.md                         ← release roadmap with build order
+  README.md                          ← project overview
+  CHANGELOG.md                       ← release history
+  CONTRIBUTING.md                    ← contributor guide
   docker-compose.yaml                ← full stack: datahub + agent containers
   .env.example                       ← secret template
   docs/
+    architecture.md                  ← engineering reference (file-by-file)
     ARCHITECTURE.md                  ← this file (design-oriented, for contributors)
     COLLABORATION.md                 ← multi-agent collaboration design
     DECISIONS.md                     ← key design decisions log
     DELEGATION.md                    ← delegation system design
     MEMORY-DESIGN.md                 ← memory system design
     RELEASES.md                      ← release history
-    ROADMAP.md                       ← milestone history (M0–M5)
-  apps/infra/                        ← Container Dockerfiles + Compose + provisioning
+  infra/                             ← Container Dockerfiles + Compose + provisioning
     containers/
       agent/                         ← Legacy split agent Dockerfile
       datahub/                       ← Legacy split datahub Dockerfile (postgres + pgvector)
@@ -654,14 +655,14 @@ RivetOS ships as container images built from source. The container IS the securi
 
 | Target | Implementation | Use Case |
 |--------|---------------|----------|
-| Docker | Docker Compose (`apps/infra/docker/`) | Desktop, single-server, getting started |
-| Proxmox | LXC + `apps/infra/scripts/provision-ct.sh` | Homelab, multi-node |
+| Docker | Docker Compose (`infra/docker/`) | Desktop, single-server, getting started |
+| Proxmox | LXC + `infra/scripts/provision-ct.sh` | Homelab, multi-node |
 | Manual | systemd + `npm install` | Bare-metal, custom setups |
 
 Provisioning is intentionally script-and-Compose-driven — there is no
 single-command IaC orchestrator. The container Dockerfiles live under
-`apps/infra/containers/`; the Compose files under `apps/infra/docker/`; the
-shell scripts under `apps/infra/scripts/`.
+`infra/containers/`; the Compose files under `infra/docker/`; the
+shell scripts under `infra/scripts/`.
 
 ## Multi-Agent Mesh
 

@@ -82,7 +82,7 @@ memory:
     # connection_string via env: RIVETOS_PG_URL
     #
     # Embedding and compaction are handled by dedicated workers on the Datahub.
-    # See: apps/infra/containers/datahub/setup-workers.sh
+    # See: infra/containers/datahub/setup-workers.sh
     #
     # Optional: review loop endpoint for background memory consolidation
     # review_endpoint: http://your-llm-host:8001/v1

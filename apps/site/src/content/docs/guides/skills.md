@@ -176,7 +176,7 @@ Agent uses skill_manage:
     2. Build: `npm run build`
     3. Tag: `git tag v$(date +%Y%m%d)`
     4. Push: `git push --tags`
-    5. Deploy: `pulumi up --stack prod`
+    5. Deploy: `docker compose -f compose.prod.yml up -d`
     6. Verify: `curl https://app.example.com/health`
 ```
 

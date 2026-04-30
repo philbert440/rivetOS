@@ -161,7 +161,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   if (target === 'docker') {
     deploySuccess = await offerDockerDeploy(result.envPath)
   } else if (target === 'proxmox') {
-    p.log.info('To provision a Proxmox container, run apps/infra/scripts/provision-ct.sh')
+    p.log.info('To provision a Proxmox container, run infra/scripts/provision-ct.sh')
   }
 
   // Phase 8: Mesh join (if --join was specified)

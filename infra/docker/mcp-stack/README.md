@@ -9,7 +9,7 @@ the wire surface claude-cli will eventually reach into.
 
 | Service | Image | Port | Purpose |
 |---|---|---|---|
-| `datahub` | `rivetos-datahub:dev` | `5433 → 5432` | Postgres 16 + pgvector + pg_trgm, with the full `ros_*` schema bootstrapped on first boot via `apps/infra/containers/datahub/init-db.sh`. |
+| `datahub` | `rivetos-datahub:dev` | `5433 → 5432` | Postgres 16 + pgvector + pg_trgm, with the full `ros_*` schema bootstrapped on first boot via `infra/containers/datahub/init-db.sh`. |
 | `mcp-server` | `rivetos-mcp-server:dev` | `5700` | StreamableHTTP MCP server (`@rivetos/mcp-server`) wired with `rivetos.echo`, `rivetos.memory_search`, `rivetos.memory_browse`, `rivetos.memory_stats`, `rivetos.internet_search`, `rivetos.web_fetch`. |
 
 ## Quick start
@@ -17,7 +17,7 @@ the wire surface claude-cli will eventually reach into.
 From the repo root:
 
 ```bash
-docker compose -f apps/infra/docker/mcp-stack/docker-compose.yml up --build
+docker compose -f infra/docker/mcp-stack/docker-compose.yml up --build
 ```
 
 Liveness probe:
@@ -56,13 +56,13 @@ rather than crashing on a missing relation.
 ## Tear down
 
 ```bash
-docker compose -f apps/infra/docker/mcp-stack/docker-compose.yml down
+docker compose -f infra/docker/mcp-stack/docker-compose.yml down
 ```
 
 To wipe the database volume too:
 
 ```bash
-docker compose -f apps/infra/docker/mcp-stack/docker-compose.yml down -v
+docker compose -f infra/docker/mcp-stack/docker-compose.yml down -v
 ```
 
 ## Optional configuration

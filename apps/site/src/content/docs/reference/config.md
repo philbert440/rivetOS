@@ -554,8 +554,8 @@ mcp:
 
 Optional. Captures the desired runtime topology (datahub host, agent placement,
 networking) for documentation and tooling. Provisioning is currently driven by
-the Compose files under `apps/infra/docker/` and the scripts under
-`apps/infra/scripts/`.
+the Compose files under `infra/docker/` and the scripts under
+`infra/scripts/`.
 
 ```yaml
 deployment:

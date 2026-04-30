@@ -293,7 +293,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: apps/infra/containers/agent/Dockerfile
+          file: infra/containers/agent/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -309,7 +309,7 @@ jobs:
         with:
           # Repo-root context — Dockerfile copies plugins/memory/postgres/src/schema/migrations.
           context: .
-          file: apps/infra/containers/datahub/Dockerfile
+          file: infra/containers/datahub/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -321,7 +321,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: apps/infra/containers/rivetos/Dockerfile
+          file: infra/containers/rivetos/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

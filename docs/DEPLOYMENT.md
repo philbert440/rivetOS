@@ -164,8 +164,8 @@ deployment:
 
 ### Deployment
 
-Use the provisioning scripts under `apps/infra/scripts/` and the Compose files under
-`apps/infra/docker/` to stand up containers on each node. There is no
+Use the provisioning scripts under `infra/scripts/` and the Compose files under
+`infra/docker/` to stand up containers on each node. There is no
 unified `rivetos infra` command — provisioning is intentionally script-driven so
 you keep full control over Proxmox/Docker semantics.
 
