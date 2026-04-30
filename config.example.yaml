@@ -81,8 +81,8 @@ memory:
   postgres:
     # connection_string via env: RIVETOS_PG_URL
     #
-    # Embedding and compaction are handled by dedicated workers on the Datahub.
-    # See: infra/containers/datahub/setup-workers.sh
+    # Embedding and compaction are handled by the unified rivetos image
+    # running with --role worker (see infra/docker/rivetos/docker-compose.yml).
     #
     # Optional: review loop endpoint for background memory consolidation
     # review_endpoint: http://your-llm-host:8001/v1

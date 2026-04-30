@@ -1,15 +1,15 @@
 # RivetOS Unified Stack — single-host deployment.
 #
-# One image, role-selected at startup. Datahub stays Postgres-only (upstream
-# pgvector image with our migrations baked in). Workers + agent run from the
-# same `rivetos:latest` image, just with different RIVETOS_ROLE.
+# One image: `rivetos:latest`. Datahub uses upstream `pgvector/pgvector:pg16`
+# directly — schema is applied by the `migrate` service (--role migrate) on
+# every stack start.
 #
 # Quick start (from repo root):
 #
 #   docker compose -f infra/docker/rivetos/docker-compose.yml up --build
 #
 # Modes:
-#   - datahub:  Postgres + pgvector + first-init schema (rivetos-datahub image)
+#   - datahub:  upstream Postgres 16 + pgvector (no custom image)
 #   - migrate:  applies any pending migrations on each container start
 #   - workers:  embedding + compaction LISTEN/NOTIFY pumps
 #   - agent:    the runtime that drives channels + providers (needs config)
@@ -24,11 +24,7 @@
 
 services:
   datahub:
-    build:
-      # Repo-root context so the Dockerfile can pull plugins/memory/postgres/.
-      context: ../../..
-      dockerfile: infra/containers/datahub/Dockerfile
-    image: rivetos-datahub:dev
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: rivetos
       POSTGRES_PASSWORD: rivetos

@@ -362,15 +362,15 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 - Healthcheck: hits `/health/live` on the agent role; workers/migrate skip the check
 - Workspace and config mounted as volumes
 
-**Datahub image** (`infra/containers/datahub/Dockerfile`):
-- PostgreSQL 16 + pgvector with first-init schema baked in
-- Migrations are applied at boot by the `migrate` role of the unified image, so the datahub image stays narrowly scoped to the database
+**Datahub** (no custom image):
+- Uses upstream `pgvector/pgvector:pg16` directly
+- Schema is applied by the `migrate` role of the unified image at stack startup; the database container has no rivetos-specific code or scripts
 
 ### Docker Compose
 
 The canonical stack lives at `infra/docker/rivetos/docker-compose.yml` and runs four services:
 
-- `datahub` — Postgres + pgvector (image: `rivetos-datahub`)
+- `datahub` — Postgres + pgvector (image: `pgvector/pgvector:pg16`, upstream)
 - `migrate` — one-shot, applies pending migrations and exits (image: `rivetos`, role: `migrate`)
 - `workers` — embedding + compaction LISTEN/NOTIFY pumps (image: `rivetos`, role: `worker`)
 - `agent` — runtime that drives channels + providers (image: `rivetos`, role: `agent`)
@@ -423,7 +423,7 @@ Embedding and compaction run as **event-driven workers on Datahub**, co-located 
 Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled on Gemma-4-E2B with generous token budgets (4096/6144/8192) and 10-minute timeout.
 
 **Source:** `plugins/memory/postgres/workers/embedding/` and `plugins/memory/postgres/workers/compaction/`
-**Setup:** `infra/containers/datahub/init-db.sh` (schema) + `infra/containers/datahub/setup-workers.sh` (Node.js, systemd). Schema DDL itself lives co-located under `plugins/memory/postgres/schema/` (PR-G).
+**Setup:** Schema DDL lives at `plugins/memory/postgres/src/schema/migrations/` and is applied by the `migrate` role at stack startup. Workers run from the unified `rivetos` image with `--role worker`.
 
 ### Data Persistence
 
@@ -652,7 +652,7 @@ deployment:             # Optional — drives containerized deployment
 
 4. **Per-kind registrars deleted** — `boot/registrars/{providers,channels,tools,memory}.ts` were collapsed into a single manifest-driven `plugins.ts` (PR-B). Any references in user code or external docs to the old per-kind registrars are stale.
 
-5. **Schema lives next to the plugin** — `plugins/memory/postgres/schema/` is the source of truth for SQL DDL (PR-G). Datahub container scripts apply it; nothing under `infra/containers/datahub/` owns schema anymore.
+5. **Schema lives next to the plugin** — `plugins/memory/postgres/src/schema/migrations/` is the source of truth for SQL DDL. The unified image's `migrate` role applies it at stack startup.
 
 ### Config
 

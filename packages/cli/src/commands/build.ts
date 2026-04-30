@@ -1,11 +1,9 @@
 /**
  * rivetos build
  *
- * Build container images from source.
+ * Build the unified rivetos container image from source.
  *
- *   rivetos build              — build all images (rivetos + datahub)
- *   rivetos build rivetos      — build the unified rivetos image only
- *   rivetos build datahub      — build the datahub image only
+ *   rivetos build              — build the rivetos image
  *   rivetos build --tag v1.0   — tag with a specific version
  *   rivetos build --push       — push to registry after build
  */
@@ -18,7 +16,7 @@ import { readFile } from 'node:fs/promises'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
 
-type Target = 'rivetos' | 'datahub'
+type Target = 'rivetos'
 
 interface BuildOptions {
   targets: Target[]
@@ -33,11 +31,6 @@ const TARGETS: Record<Target, { image: string; dockerfile: string; context: stri
     dockerfile: 'infra/containers/rivetos/Dockerfile',
     context: '.',
   },
-  datahub: {
-    image: 'rivetos-datahub',
-    dockerfile: 'infra/containers/datahub/Dockerfile',
-    context: '.',
-  },
 }
 
 function parseArgs(): BuildOptions {
@@ -49,7 +42,7 @@ function parseArgs(): BuildOptions {
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
-    if (arg === 'rivetos' || arg === 'datahub') {
+    if (arg === 'rivetos') {
       targets.push(arg)
     } else if (arg === '--tag' || arg === '-t') {
       tag = args[++i] ?? 'latest'
@@ -64,7 +57,7 @@ function parseArgs(): BuildOptions {
   }
 
   if (targets.length === 0) {
-    targets.push('rivetos', 'datahub')
+    targets.push('rivetos')
   }
 
   return { targets, tag, push, platform }
@@ -72,20 +65,19 @@ function parseArgs(): BuildOptions {
 
 function showHelp(): void {
   console.log(`
-  rivetos build — Build container images from source
+  rivetos build — Build the unified rivetos container image from source
 
   Usage:
-    rivetos build [target...] [options]
-
-  Targets:
-    rivetos     Build the unified rivetos runtime image (agent | worker | migrate roles)
-    datahub     Build the datahub (Postgres + pgvector) image
-    (default)   Build both
+    rivetos build [options]
 
   Options:
     --tag, -t <tag>     Image tag (default: "latest")
     --push              Push to registry after build
     --platform <arch>   Build for specific platform (e.g., "linux/amd64,linux/arm64")
+
+  The Postgres datahub uses upstream pgvector/pgvector:pg16 directly — no
+  custom image build is needed. Schema is applied by the migrate role at
+  stack startup.
   `)
 }
 

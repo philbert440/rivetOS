@@ -298,10 +298,7 @@ export default async function update(): Promise<void> {
   } else if (deployment === 'bare-metal') {
     // Build TypeScript for bare-metal deployments
     console.log('\nBuilding...')
-    execOrFail(
-      'npx nx run-many -t build --exclude container-rivetos,container-datahub,site',
-      'nx build',
-    )
+    execOrFail('npx nx run-many -t build --exclude container-rivetos,site', 'nx build')
     console.log('  ✅ Build complete')
   }
 
@@ -647,10 +644,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         }
       } else if (deployment === 'bare-metal') {
         console.log('    Building...')
-        execOrThrow(
-          'npx nx run-many -t build --exclude container-rivetos,container-datahub,site',
-          'nx build',
-        )
+        execOrThrow('npx nx run-many -t build --exclude container-rivetos,site', 'nx build')
 
         // Heal /etc/hosts mesh block from mesh.json (non-fatal)
         try {
@@ -950,7 +944,7 @@ async function gitUpdateNodeAsync(
     console.log(`    ${tag} Building...`)
     await sshExec(
       host,
-      'cd /opt/rivetos && npx nx reset && npx nx run-many -t build --exclude container-datahub,container-rivetos,site',
+      'cd /opt/rivetos && npx nx reset && npx nx run-many -t build --exclude container-rivetos,site',
       `${tag} build`,
       180_000,
       sshUser,

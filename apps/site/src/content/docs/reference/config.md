@@ -596,7 +596,6 @@ deployment:
 | `build_from_source` | boolean | `true` | Build container images from local source tree. |
 | `registry` | string | — | Container registry for pre-built images (e.g., `ghcr.io/philbert440`). |
 | `agent_image` | string | `rivetos-agent` | Agent image name. |
-| `datahub_image` | string | `rivetos-datahub` | Datahub image name. |
 | `tag` | string | `latest` | Image tag. |
 
 ### `deployment.docker`

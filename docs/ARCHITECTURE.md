@@ -227,7 +227,6 @@ rivetOS/
     MEMORY-DESIGN.md                 ← memory system design
   infra/                             ← Container Dockerfiles + Compose + provisioning
     containers/
-      datahub/                       ← Postgres + pgvector image
       rivetos/                       ← Unified runtime image — built once, dispatched via `--role`
       DATA-PERSISTENCE.md            ← data persistence model documentation
     docker/                          ← Compose stacks

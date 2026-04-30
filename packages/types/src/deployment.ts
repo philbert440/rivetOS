@@ -60,9 +60,6 @@ export interface ImageConfig {
   /** Agent image name (default: "rivetos-agent") */
   agentImage?: string
 
-  /** Datahub image name (default: "rivetos-datahub") */
-  datahubImage?: string
-
   /** Image tag (default: "latest") */
   tag?: string
 
