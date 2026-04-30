@@ -1,5 +1,3 @@
-// TODO: Add integration tests for voice channel lifecycle
-
 /**
  * @rivetos/channel-voice-discord
  *

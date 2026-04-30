@@ -1,5 +1,3 @@
-// TODO: Add integration tests for Telegram channel
-
 /**
  * @rivetos/channel-telegram
  *

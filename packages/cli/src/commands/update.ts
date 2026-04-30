@@ -288,18 +288,18 @@ export default async function update(): Promise<void> {
 
     if (!opts.prebuilt) {
       console.log('\nRebuilding containers from source...')
-      exec('docker compose build', { quiet: false })
+      exec('docker compose -f infra/docker/rivetos/docker-compose.yml build', { quiet: false })
       console.log('  ✅ Containers rebuilt')
     } else {
       console.log('\nPulling pre-built images...')
-      exec('docker compose pull', { quiet: false })
+      exec('docker compose -f infra/docker/rivetos/docker-compose.yml pull', { quiet: false })
       console.log('  ✅ Images pulled')
     }
   } else if (deployment === 'bare-metal') {
     // Build TypeScript for bare-metal deployments
     console.log('\nBuilding...')
     execOrFail(
-      'npx nx run-many -t build --exclude container-agent,container-datahub,site',
+      'npx nx run-many -t build --exclude container-rivetos,container-datahub,site',
       'nx build',
     )
     console.log('  ✅ Build complete')
@@ -309,7 +309,7 @@ export default async function update(): Promise<void> {
   if (opts.restart) {
     if (deployment === 'docker') {
       console.log('\nRestarting containers (data volumes preserved)...')
-      exec('docker compose up -d', { quiet: false })
+      exec('docker compose -f infra/docker/rivetos/docker-compose.yml up -d', { quiet: false })
       console.log('  ✅ Containers restarted — workspace & database untouched')
     } else if (deployment === 'manual' || deployment === 'bare-metal') {
       // Bare-metal: restart via systemd or signal
@@ -637,17 +637,18 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
       exec('npx nx reset', { quiet: true })
 
       if (deployment === 'docker') {
+        const composeFlags = '-f infra/docker/rivetos/docker-compose.yml'
         if (!localOpts.prebuilt) {
           await verifyDataPersistence()
-          exec('docker compose build', { quiet: false })
+          exec(`docker compose ${composeFlags} build`, { quiet: false })
         }
         if (localOpts.restart) {
-          exec('docker compose up -d', { quiet: false })
+          exec(`docker compose ${composeFlags} up -d`, { quiet: false })
         }
       } else if (deployment === 'bare-metal') {
         console.log('    Building...')
         execOrThrow(
-          'npx nx run-many -t build --exclude container-agent,container-datahub,site',
+          'npx nx run-many -t build --exclude container-rivetos,container-datahub,site',
           'nx build',
         )
 
@@ -949,7 +950,7 @@ async function gitUpdateNodeAsync(
     console.log(`    ${tag} Building...`)
     await sshExec(
       host,
-      'cd /opt/rivetos && npx nx reset && npx nx run-many -t build --exclude container-agent,container-datahub,site',
+      'cd /opt/rivetos && npx nx reset && npx nx run-many -t build --exclude container-datahub,container-rivetos,site',
       `${tag} build`,
       180_000,
       sshUser,
@@ -1277,9 +1278,9 @@ async function detectDeployment(forceBareMetal = false): Promise<string> {
     // No config or parse error
   }
 
-  // Check for systemd service (bare-metal/Proxmox/VM deployment)
-  // This takes priority over docker-compose.yaml which exists in the repo
-  // for Docker users but is present on bare-metal installs too.
+  // Check for systemd service (bare-metal/Proxmox/VM deployment).
+  // Takes priority over the in-repo Compose file, which is present on
+  // bare-metal installs too.
   try {
     await access('/etc/systemd/system/rivetos.service')
     return 'bare-metal'
@@ -1287,9 +1288,9 @@ async function detectDeployment(forceBareMetal = false): Promise<string> {
     // No systemd service
   }
 
-  // Check for docker-compose.yml in project dir
+  // Check for the unified Compose stack in the repo
   try {
-    await access(resolve(ROOT, 'docker-compose.yaml'))
+    await access(resolve(ROOT, 'infra/docker/rivetos/docker-compose.yml'))
     return 'docker'
   } catch {
     // No compose file

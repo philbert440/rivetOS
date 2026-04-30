@@ -27,7 +27,7 @@ The immutable RivetOS installation. The CLI binary, compiled core, built-in plug
 - `plugins/` (built-in plugins — channels, providers, tools, memory)
 - `node_modules/` (runtime dependencies)
 - `package.json`, `package-lock.json`
-- Container files (`docker-compose.yaml`, `infra/containers/...`)
+- Container files (`infra/docker/rivetos/docker-compose.yml`, `infra/containers/...`)
 
 **Agent rules:**
 

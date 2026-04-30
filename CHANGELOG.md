@@ -7,196 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — Repo cleanup pass
+### Added
+- Self-registering plugin manifest (`PluginManifest` + `register(ctx)`); single manifest-driven loader replaces the four per-kind registrars.
+- New plugin category `transport`. First transport: `@rivetos/mcp-server` (StreamableHTTP, exposes `memory_*`, `web_*`, `skill_*`, runtime tools).
+- Provider `@rivetos/provider-openai-compat` (vLLM, TGI, Groq, Together, Fireworks, LocalAI; strict message ordering, native `reasoning_content`, `tool_choice` passthrough, `verify_model_on_init`).
+- Provider `@rivetos/provider-claude-cli` (drives local `claude` via stream-json with embedded MCP bridge).
+- Mesh mTLS — agent channel is HTTPS with `requestCert: true, rejectUnauthorized: true`. New `mesh.tls` config field, `loadTlsConfig` helper, `.mesh` DNS preference, peer CN logging, test-CA fixtures, `agent-channel.test.ts` (8 tests). **Breaking: all mesh nodes must upgrade together.**
+- `docs/mesh.md`, `docs/CONFIG-REFERENCE.md` `## mesh` section.
+- Workspace templates at repo-root `workspace-templates/` (canonical `CORE.md`, `USER.md`, `WORKSPACE.md`, `MEMORY.md`, `CAPABILITIES.md`, `HEARTBEAT.md`, `FILESYSTEM.md`).
+- `docs/FILESYSTEM.md` — canonical filesystem layout reference.
+- Memory v5 pipeline — three new compactor prompts (leaf/branch/root) with thinking mode, rich message formatting (ISO timestamps + agent attribution), tool-call content synthesis (`synthesizeToolCallContent`), async `ros_tool_synth_queue` + drain job, `rivetos memory backfill-tool-synth` and `queue-status` CLI subcommands, hardened undici client, 28 new unit tests.
 
-- **Infra moved to top-level `infra/`.** `apps/infra/` had nothing left
-  to make it an "app" after the pulumi removal — no `package.json`, no
-  nx project, no source. It's now `infra/` (containers, docker, scripts,
-  templates). All build paths, Compose contexts, and docs updated.
-- **Backfilled provisioning templates for `ollama` and `openai-compat`.**
-  `infra/scripts/provision-ct.sh` already advertised these providers but
-  was missing the template files; CT provisioning failed for them. Both
-  config + env templates added; the script's `--base-url` validation now
-  also covers ollama and openai-compat.
-- **Removed `packages/cli/workspace-templates/` from git.** The directory
-  is regenerated from the canonical `workspace-templates/` at the repo
-  root by `npm run prepublishOnly`. Keeping it in git let the two copies
-  drift.
-- **Deleted `docs/ROADMAP.md`.** Superseded by CHANGELOG + RELEASES.md.
-- **Skill examples updated.** `docs/SKILLS.md` and the site mirror no
-  longer suggest `pulumi up` in deploy-process examples.
+### Changed
+- Infra moved to top-level `infra/{containers,docker,scripts,templates}/`.
+- Memory schema relocated under the plugin (`plugins/memory/postgres/{schema,workers}/`).
+- Unified `rivetos` container image at `infra/containers/rivetos/Dockerfile` (`--role agent | datahub | mcp`). Canonical Compose stack: `infra/docker/rivetos/docker-compose.yml`.
+- Mode-aware plugin discovery — CLI-only modes no longer pull runtime-only plugins.
+- `rivetos init` reads templates from canonical `workspace-templates/` (inline fallback retained).
+- Doc default workspace path → `~/.rivetos/workspace` (was `./workspace`).
+- Memory v5 token budgets raised to 7k/14k/20k (leaf/branch/root); source-message truncation removed; compactor model tag → `rivet-refined-v5`.
+- `mesh.secret` deprecated for agent-channel auth (still honored by `update --mesh` orchestration).
 
-### Changed — Phase 0.6 (PRs B–H): Manifest contract, monorepo cleanup, pulumi removal
+### Fixed
+- `openai-compat` streaming delta parser now accepts both `reasoning_content` and the shorter `reasoning` field (vLLM `0.0.3.dev10+` rename).
 
-- **Self-registering plugin manifest (PR-B).** Every plugin's `index.ts` now
-  exports `manifest: PluginManifest` with `register(ctx)`. The four per-kind
-  registrars (`registrars/{providers,channels,tools,memory}.ts`) were
-  collapsed into one manifest-driven loader at
-  `packages/boot/src/registrars/plugins.ts`. Boot has no per-plugin knowledge.
-- **New plugin category: `transport` (PR-C).** Transports open their own
-  listening surface inside `manifest.register()`. The first transport,
-  `@rivetos/mcp-server` at `plugins/transports/mcp-server/`, exposes
-  `memory_*`, `web_*`, `skill_*`, and runtime tools to external MCP clients
-  over StreamableHTTP. Activated via `transports.<name>` in config.
-- **New providers (PR-A, PR-D).**
-  - `@rivetos/provider-openai-compat` — strict OpenAI servers (vLLM, TGI,
-    Groq, Together, Fireworks, LocalAI). Folds post-first `system` messages,
-    consumes native `reasoning_content`, supports vLLM `top_k`/`min_p`.
-  - `@rivetos/provider-claude-cli` — drives the local `claude` binary via
-    stream-json with an embedded MCP bridge (sanctioned third-party-harness
-    pattern per Anthropic's April 2026 policy).
-- **Mode-aware plugin discovery (PR-E).** Discovery walks the configured
-  plugin dirs and honest peer dependencies; CLI-only modes don't pull in
-  runtime-only plugins.
-- **Infra moved under `apps/infra/` (PR-F).** All Dockerfiles, Compose
-  stacks, provisioning scripts, and templates now live at `apps/infra/...`.
-  Top-level `infra/` is gone.
-- **Memory schema relocated under the plugin (PR-G).** SQL DDL and the
-  embedding/compaction workers now live next to the plugin at
-  `plugins/memory/postgres/{schema,workers}/`. The legacy LCM cruft was
-  purged.
-- **Pulumi-based IaC removed (PR-H).** The `@rivetos/infra` package and the
-  `rivetos infra up/preview/destroy` CLI subcommand were removed before
-  v0.4 GA. Provisioning is fully script-and-Compose driven now.
-- **Unified `rivetos` container image** at
-  `infra/containers/rivetos/Dockerfile`. Built once with esbuild,
-  dispatched at runtime via `--role agent | datahub | mcp`. Legacy split
-  agent/datahub Dockerfiles remain for environments pinned to them.
-
-### Added — Phase 0.5: Mesh mTLS ⚠️ BREAKING CHANGE
-
-**All mesh nodes must upgrade together.** Cutover procedure, pre-flight
-checklist, and rollback plan were captured in `MIGRATION.md` at the time
-of the cut (since archived).
-
-**What changed:**
-
-- **Agent channel is now HTTPS/mTLS.** `http.createServer` replaced with
-  `https.createServer({ requestCert: true, rejectUnauthorized: true })`. No
-  plaintext fallback exists. No bearer-token check. CA-signed cert = trusted.
-- **New `mesh.tls` config field** (`packages/types/src/mesh.ts`,
-  `packages/boot/src/config.ts`). `tls: true` uses default cert paths derived
-  from `node_name`. Object form overrides individual paths. Mesh refuses to
-  start if `mesh.enabled` and `tls` is absent.
-- **`mesh.secret` deprecated for agent-channel auth** — field is retained in
-  the type and may still be used by `update --mesh` orchestration, but the
-  agent channel server ignores it entirely.
-- **mTLS clients** (`mesh-delegation.ts`, `mesh.ts`) — outbound connections use
-  an undici `Agent` with the node's cert/key/ca. `Authorization: Bearer` header
-  removed. URL scheme changed from `http://` to `https://`.
-- **`.mesh` DNS preference** — delegation client uses `<nodeName>.mesh` hostnames
-  (dnsmasq-resolved on every CT) so the cert SAN matches the connection.
-- **`loadTlsConfig`** helper exported from `@rivetos/core` — reads cert files
-  from disk at boot, fails fast with a descriptive error if any path is
-  unreadable.
-- **Peer CN logged on every accepted request** (`peer.cn=<nodeName>`).
-- **`/api/mesh/ping` response** now includes `{ tls: true, cn: <ourNodeName> }`.
-- **Test fixture CA** checked in at
-  `packages/core/src/runtime/__fixtures__/test-ca/` — self-signed test CA +
-  node cert (SAN: `ct110.mesh`, `192.168.10.110`, `127.0.0.1`) + untrusted cert.
-- **New test file** `packages/core/src/runtime/agent-channel.test.ts` — 8 tests
-  covering: accept valid client cert, reject missing cert, reject untrusted CA,
-  refuse untrusted server cert, `loadTlsConfig` path resolution and error cases.
-- **`docs/mesh.md`** — new comprehensive mesh networking reference.
-- **`docs/CONFIG-REFERENCE.md`** — new `## mesh` section, updated Agent (HTTP)
-  section, deprecated `RIVETOS_AGENT_SECRET` note.
-- **`MIGRATION.md`** (archived) — captured cutover procedure, pre-flight
-  checklist, and rollback plan at the time of the cut.
-
-
-
-### Fixed — `openai-compat` reasoning on newer vLLM builds
-
-The streaming delta parser now accepts both the spec-standard
-`reasoning_content` field and the shorter `reasoning` field. vLLM
-`0.0.3.dev10+gc1dce8324` (and later) renamed the field from
-`reasoning_content` to `reasoning` in streaming deltas, which silently
-dropped reasoning output through this provider. Both field names now
-flow into the `reasoning` chunk type; no configuration change required.
-
-### Added — workspace templates & `docs/FILESYSTEM.md` canonical
-
-Workspace file templates now live in `workspace-templates/` at the repo root. This is the source of truth for every new instance's `~/.rivetos/workspace/` layout.
-
-- **`workspace-templates/`** — canonical `CORE.md`, `USER.md`, `WORKSPACE.md`,
-  `MEMORY.md`, `CAPABILITIES.md`, `HEARTBEAT.md`, `FILESYSTEM.md`. All written
-  in the generic "I am Rivet" voice — no per-instance specifics.
-- **`docs/FILESYSTEM.md`** — canonical filesystem layout reference (runtime at
-  `/opt/rivetos/`, config + workspace at `~/.rivetos/`, shared at
-  `/rivet-shared/`). Mirror shipped in `workspace-templates/FILESYSTEM.md` so
-  every instance carries it.
-- **`rivetos init` refactor** — `writeWorkspaceTemplates` now reads from
-  `workspace-templates/` by walking up from the CLI install location. Inline
-  templates retained as a minimal fallback for unusual install layouts (e.g.
-  npm global install without the repo alongside).
-
-### Changed — documentation default workspace path
-
-Every docs reference to `workspace: ./workspace` is now `workspace: ~/.rivetos/workspace`, matching `docs/FILESYSTEM.md`, `config.example.yaml`, and what `rivetos init` already writes. Touched: `README.md`, `docs/CONFIG-REFERENCE.md`, `docs/GETTING-STARTED.md`, `apps/site/src/content/docs/reference/config.md`, `apps/site/src/content/docs/guides/getting-started.md`.
-
-### Added — `@rivetos/provider-openai-compat`
-
-New provider tuned for strict OpenAI-compatible servers (vLLM, TGI, LocalAI,
-etc.), parallel to `llama-server`. Key features:
-
-- **Strict message ordering** — folds mid-conversation `role: 'system'`
-  messages into `[SYSTEM NOTICE]` `role: 'user'` messages so vLLM +
-  Qwen/Llama chat templates don't reject them with `System message must
-  be at the beginning.` RivetOS's core loop legitimately injects
-  mid-conversation system messages for context-window warnings, `/steer`
-  events, and turn-timeout notices.
-- **Native `reasoning_content`** consumption for vLLM servers running
-  `--reasoning-parser deepseek_r1` / `qwen3`, with `<think>`-block
-  fallback for inline reasoning.
-- **`tool_choice` passthrough** — forwards `tools` and `tool_choice:
-  auto` by default; server must run with `--enable-auto-tool-choice` and
-  a `--tool-call-parser` (hermes / mistral / llama).
-- **Forgiving `base_url`** — accepts either `http://host:port` or
-  `http://host:port/v1`.
-- **Optional `verify_model_on_init`** — probes `/v1/models` on boot and
-  fails fast if the configured model id is not served.
-- **Standard OpenAI sampling only** — no llama-native knobs
-  (`typical_p`, `min_p`, `mirostat`, `repeat_penalty`, `repeat_last_n`)
-  that strict servers reject.
-
-Wiring: `boot` registrar + validator + CLI init/doctor/plugins.
-`OPENAI_COMPAT_API_KEY` env var fallback. See
-`plugins/providers/openai-compat/README.md` for details.
-
-### Memory v5 — memory-quality pipeline
-
-Full overhaul of the compactor and tool-call handling based on a 10-pick side-by-side probe across cloud and local summarizers. Shipped in `refactor/memory-quality-pipeline-v5`.
-
-#### Added
-
-- **v5 compactor prompts** (`plugins/memory/postgres/src/compactor/types.ts`) — three system prompts (leaf/branch/root) with exhaustiveness, no-outside-context, system-messages-first-class, and LaTeX-ban rules. Thinking mode enabled.
-- **Rich message formatting** — ISO-minute timestamps on every message and layer, agent attribution per message (`[#01 2026-04-18T12:00Z opus/user]`), full conversation preamble with id/channel/title/span/message-count.
-- **Tool-call content synthesis** — new `synthesizeToolCallContent` helper (`plugins/memory/postgres/src/tool-synth.ts`) with the same hardened undici client and prompt as the backfill script. Model-agnostic (reads `TOOL_SYNTH_ENDPOINT`/`TOOL_SYNTH_MODEL`).
-- **Async tool-synth queue** — `ros_tool_synth_queue` table + `migrate-v3.ts` + `adapter.ts` enqueue hook on empty-content tool-call writes + compaction-worker drain job. Inserts never fail on synth errors.
-- **`rivetos memory backfill-tool-synth`** CLI subcommand — parallel workers (`--concurrency`, `--urls` for NUMA-pinned llama-server pairs), resumable, dry-run support, JSON output.
-- **`rivetos memory queue-status`** CLI subcommand — `ros_tool_synth_queue` health by attempts, plus count of historical unqueued candidates.
-- **Hardened undici client** — `Agent` with no `headersTimeout`/`bodyTimeout` and 3-attempt retry with 5/10/15s backoff. Replaces raw `fetch` + 60s timeout in compactor and tool-synth paths.
-- **Unit tests** — 15 formatter tests (`compactor/formatters.test.ts`) covering preamble, timestamps, agent attribution, tool-call fallback, span computation. 13 tool-synth tests (`tool-synth.test.ts`) covering validation, retries, auth, request shape.
-
-#### Changed
-
-- **Summary token budgets** raised to 7k (leaf) / 14k (branch) / 20k (root). Thinking mode needs real headroom.
-- **Source-message truncation removed** — 128k context window means no need to chop.
-- **Compactor model tag** → `rivet-refined-v5` (previously `rivet-refined-v4` or `unknown`).
-
-#### Migration
-
-1. `npx tsx plugins/memory/postgres/src/migrate-v3.ts` (idempotent — creates `ros_tool_synth_queue`).
-2. Redeploy `services/compaction-worker/` — picks up v5 prompts via barrel re-exports.
-3. Optional: `rivetos memory backfill-tool-synth` to synthesize content for historical empty rows.
-
-See `docs/MEMORY-DESIGN.md` and `docs/DECISIONS.md` §15 for rationale and probe methodology.
+### Removed
+- Pulumi-based IaC: `@rivetos/infra` package and `rivetos infra up/preview/destroy` subcommand. Provisioning is script-and-Compose driven.
+- Legacy split-image setup: `infra/containers/agent/Dockerfile` and root `docker-compose.yaml`.
+- `packages/cli/workspace-templates/` from git (regenerated by `npm run prepublishOnly`).
+- `docs/ROADMAP.md`.
 
 ## [0.4.0] - 2026-04-05
 
 ### First Public Beta
 
-**The first public release.** Full documentation, developer experience tooling, containerized distribution, and launch readiness. v1.0.0 will be the first LTS release.
+**The first public release.** Containerized distribution, reliability hardening, and full launch documentation. v1.0.0 will be the first LTS release.
 
 #### Changed (release-wide)
 - **Node.js requirement** bumped from 22 to 24
@@ -226,8 +71,6 @@ Documentation, developer experience tooling, and launch readiness.
 - **CONTRIBUTING.md** — Added plugin discovery, container workflow, and skill development sections.
 - **docs/ARCHITECTURE.md** — Updated to reflect M6-M8 additions (mesh, observability, security, infra).
 
-## [0.9.0] - 2026-04-05
-
 ### Milestone 7: Reliability & Polish
 
 **Production-grade reliability.** Structured errors, observability, diagnostics, security essentials, and multi-agent mesh.
@@ -253,8 +96,6 @@ Documentation, developer experience tooling, and launch readiness.
 - **`rivetos init --join`** — Wizard supports mesh discovery during setup.
 - **`rivetos update --mesh`** — Rolling fleet update with health checks between nodes.
 
-## [0.8.0] - 2026-04-05
-
 ### Milestone 6: Containerized Distribution
 
 **The container is the product.** Interactive setup, container images, infrastructure as code, source-based updates.
@@ -271,8 +112,8 @@ Documentation, developer experience tooling, and launch readiness.
 - **Deployment config schema** — Full TypeScript types (`DeploymentConfig`, Docker, Proxmox, Kubernetes) in `@rivetos/types`. Validator in `@rivetos/boot`.
 - **`rivetos agent add/remove/list`** — Agent management commands.
 - **`rivetos config`** — Reopens wizard with current values pre-filled.
-- **Pulumi infrastructure** — Abstract components (`RivetAgent`, `RivetDatahub`, `RivetNetwork`). Docker and Proxmox providers.
-- **`rivetos infra up/preview/destroy`** — CLI commands for infrastructure management.
+- **Pulumi infrastructure** — Abstract components (`RivetAgent`, `RivetDatahub`, `RivetNetwork`). Docker and Proxmox providers. _(Subsequently removed in 0.4.x — see [Unreleased].)_
+- **`rivetos infra up/preview/destroy`** — CLI commands for infrastructure management. _(Subsequently removed.)_
 - **Source-based update flow** — `rivetos update` pulls source → rebuilds containers → restarts. `--version`, `--prebuilt`, `--mesh`, `--no-restart` flags. Data persistence verification before rebuild.
 
 #### Changed

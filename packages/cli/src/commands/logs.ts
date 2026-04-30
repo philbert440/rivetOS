@@ -103,15 +103,14 @@ function detectDeployment(): DeploymentType {
   if (process.env.RIVETOS_BARE_METAL === '1' || process.argv.includes('--bare-metal')) {
     // Fall through to systemd/bare detection
   } else {
-    // Check for docker compose
-    const composePath = resolve(process.cwd(), 'docker-compose.yaml')
-    const composeAltPath = resolve(process.cwd(), 'docker-compose.yml')
-    if (existsSync(composePath) || existsSync(composeAltPath)) {
+    // Check for the unified compose stack at infra/docker/rivetos/.
+    const composePath = resolve(process.cwd(), 'infra/docker/rivetos/docker-compose.yml')
+    if (existsSync(composePath)) {
       try {
-        execSync('docker compose ps --quiet 2>/dev/null', { timeout: 5000 })
+        execSync(`docker compose -f ${composePath} ps --quiet 2>/dev/null`, { timeout: 5000 })
         return 'docker'
       } catch {
-        // Docker compose file exists but containers not running
+        // Compose file exists but containers not running
       }
     }
   }
@@ -139,7 +138,8 @@ function detectDeployment(): DeploymentType {
 // ---------------------------------------------------------------------------
 
 function dockerLogs(opts: LogOptions): void {
-  const args: string[] = ['compose', 'logs']
+  const composePath = resolve(process.cwd(), 'infra/docker/rivetos/docker-compose.yml')
+  const args: string[] = ['compose', '-f', composePath, 'logs']
 
   if (opts.follow) args.push('-f')
   if (!opts.follow) args.push('-n', String(opts.lines))

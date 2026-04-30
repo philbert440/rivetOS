@@ -10,17 +10,14 @@ Rebuilding or replacing a container image does **not** destroy user data.
 
 | Data | Default Host Path | Container Mount | Notes |
 |------|-------------------|-----------------|-------|
-| Workspace files | `./workspace/` | `/home/rivetos/.rivetos/workspace` | CORE.md, USER.md, MEMORY.md, memory/*.md, skills/ |
-| Agent config | `./config.yaml` | `/home/rivetos/.rivetos/config.yaml` | Read-only mount |
-| Environment/secrets | `./.env` | (env_file) | API keys, DB passwords |
-| SSH keys | `~/.ssh/` | `/home/rivetos/.ssh` | Optional, for git/remote access |
+| Agent config | `~/.rivetos/config.yaml` | `/home/rivetos/.rivetos/config.yaml` | Read-only mount |
+| Environment/secrets | `~/.rivetos/.env` | `/home/rivetos/.rivetos/.env` | API keys, DB passwords (read-only) |
 
 ### Docker Named Volumes (survive container rebuilds)
 
 | Volume | Container Mount | Notes |
 |--------|-----------------|-------|
 | `rivetos-pgdata` | `/var/lib/postgresql/data` | Postgres data (conversations, memory embeddings) |
-| `rivetos-shared` | `/rivet-shared` | Multi-agent shared storage (plans, whiteboard, docs) |
 
 ### Inside the Container (rebuilt on every update — no user data here)
 

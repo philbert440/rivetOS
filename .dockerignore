@@ -20,7 +20,7 @@ node_modules/
 Thumbs.db
 
 # Docker files (avoid recursive context)
-docker-compose.yaml
+infra/docker/
 .dockerignore
 
 # Documentation (not needed at runtime)

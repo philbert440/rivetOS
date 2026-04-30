@@ -5,10 +5,10 @@
 #
 #   docker build -f infra/docker/mcp-stack/Dockerfile -t rivetos-mcp-server .
 #
-# Slice 1.A.5: dev image, single-stage. Mirrors infra/containers/agent/Dockerfile
+# Dev image, single-stage. Mirrors infra/containers/rivetos/Dockerfile
 # in shape — the workspace graph requires the full source tree at `npm ci`
-# time. Future slices can tighten this to a multi-stage that only ships the
-# compiled `dist/` outputs if image size matters.
+# time. Future iterations can tighten this to a multi-stage that only ships
+# the compiled `dist/` outputs if image size matters.
 
 FROM node:24-alpine
 
@@ -29,14 +29,14 @@ COPY bin/ bin/
 
 # Belt-and-suspenders: wipe any TypeScript incremental state that leaked in.
 # `tsc -b` reads *.tsbuildinfo and may skip emit if it thinks dist/ is current,
-# but dist/ is excluded from the context — TS6305 results. See agent Dockerfile.
+# but dist/ is excluded from the context — TS6305 results.
 RUN find packages plugins apps -name 'tsconfig.tsbuildinfo' -delete 2>/dev/null || true \
  && find packages plugins apps -name '.nx' -type d -exec rm -rf {} + 2>/dev/null || true
 
 # Install all dependencies (workspaces need full install to resolve correctly).
-# Skip postinstall, build serially. See agent Dockerfile for the rationale.
+# Skip postinstall, build serially.
 RUN npm ci --ignore-scripts \
- && npx nx run-many -t build --exclude container-agent,container-datahub,site --parallel=1 \
+ && npx nx run-many -t build --exclude container-datahub,container-rivetos,site --parallel=1 \
  && node scripts/link-cli.mjs
 
 # Non-root user
