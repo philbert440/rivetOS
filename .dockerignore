@@ -35,13 +35,6 @@ LICENSE
 **/test/
 **/tests/
 
-# Infrastructure as Code (not needed at runtime)
-apps/infra/src/providers/
-apps/infra/src/components/
-apps/infra/src/orchestrator.ts
-apps/infra/src/index.ts
-Pulumi*.yaml
-
 # Development config (mounted at runtime, not baked in)
 .env
 .env.*

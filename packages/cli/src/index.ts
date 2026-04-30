@@ -32,7 +32,6 @@ const COMMANDS: Partial<Record<string, () => Promise<void> | void>> = {
   config: () => import('./commands/config.js').then((m) => m.default()),
   agent: () => import('./commands/agent.js').then((m) => m.default()),
   build: () => import('./commands/build.js').then((m) => m.default()),
-  infra: () => import('./commands/infra.js').then((m) => m.default()),
   version: () => import('./commands/version.js').then((m) => m.default()),
   model: () => import('./commands/model.js').then((m) => m.default()),
   service: () => import('./commands/service.js').then((m) => m.default()),
@@ -103,10 +102,7 @@ function showHelp(): void {
     rivetos model <provider>            Show current model for a provider
     rivetos model <provider> <model>    Switch default model (persistent)
 
-  Infrastructure:
-    rivetos infra up                    Deploy containers
-    rivetos infra preview               Preview infrastructure changes
-    rivetos infra destroy               Tear down containers
+  Containers:
     rivetos build                       Build container images from source
 
   Keys:
