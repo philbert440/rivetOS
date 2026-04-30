@@ -79,7 +79,9 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
       if (deploySuccess) {
         p.outro('🔩 RivetOS is running!')
       } else {
-        p.outro('🔩 Deploy when ready with `docker compose -f infra/docker/rivetos/docker-compose.yml up -d` or your preferred runner.')
+        p.outro(
+          '🔩 Deploy when ready with `docker compose -f infra/docker/rivetos/docker-compose.yml up -d` or your preferred runner.',
+        )
       }
       process.exit(0)
     }
@@ -216,7 +218,9 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   const nextSteps: string[] = []
 
   if (target === 'docker' && !deploySuccess) {
-    nextSteps.push('docker compose -f infra/docker/rivetos/docker-compose.yml up -d   Deploy containers')
+    nextSteps.push(
+      'docker compose -f infra/docker/rivetos/docker-compose.yml up -d   Deploy containers',
+    )
   } else if (target === 'manual') {
     nextSteps.push('npx rivetos start                 Start the runtime')
   }
