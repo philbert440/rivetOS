@@ -79,7 +79,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
       if (deploySuccess) {
         p.outro('🔩 RivetOS is running!')
       } else {
-        p.outro('🔩 Deploy when ready: npx rivetos infra up')
+        p.outro('🔩 Deploy when ready with docker compose or your preferred runner.')
       }
       process.exit(0)
     }
@@ -161,7 +161,9 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   if (target === 'docker') {
     deploySuccess = await offerDockerDeploy(result.envPath)
   } else if (target === 'proxmox') {
-    p.log.info('To deploy to Proxmox, run: npx rivetos infra up')
+    p.log.info(
+      'To provision a Proxmox container, run apps/infra/scripts/provision-ct.sh',
+    )
   }
 
   // Phase 8: Mesh join (if --join was specified)
@@ -216,7 +218,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   const nextSteps: string[] = []
 
   if (target === 'docker' && !deploySuccess) {
-    nextSteps.push('npx rivetos infra up              Deploy containers')
+    nextSteps.push('docker compose up -d              Deploy containers')
   } else if (target === 'manual') {
     nextSteps.push('npx rivetos start                 Start the runtime')
   }
@@ -249,7 +251,7 @@ async function offerDockerDeploy(envPath: string): Promise<boolean> {
   bail(deploy)
 
   if (!deploy) {
-    p.log.info('To deploy later, run: npx rivetos infra up')
+    p.log.info('To deploy later, run: docker compose up -d')
     return false
   }
 
