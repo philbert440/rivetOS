@@ -2,6 +2,8 @@
 
 RivetOS supports three deployment targets: **Docker** (recommended for most users), **Proxmox** (homelab), and **bare-metal** (manual). This guide covers each approach, multi-agent setups, networking, and backup/restore.
 
+> The unified Compose stack lives at `infra/docker/rivetos/docker-compose.yml`. Throughout this guide, `docker compose ...` examples assume you've either passed `-f infra/docker/rivetos/docker-compose.yml` or exported `COMPOSE_FILE=infra/docker/rivetos/docker-compose.yml` from the repo root.
+
 ---
 
 ## Docker Deployment
@@ -27,68 +29,42 @@ cp config.example.yaml config.yaml
 cp .env.example .env
 # Edit both files, then:
 npx rivetos build
-docker compose up -d
+docker compose -f infra/docker/rivetos/docker-compose.yml up -d
 ```
 
 ### Multi-Agent
 
-Run multiple agents in the same Docker Compose stack:
-
-```yaml
-# config.yaml
-agents:
-  opus:
-    provider: anthropic
-  grok:
-    provider: xai
-  local:
-    provider: ollama
-    local: true
-
-channels:
-  discord:
-    channel_bindings:
-      "111111111": opus
-      "222222222": grok
-      "333333333": local
-```
-
-```bash
-# Start with multi-agent profile
-docker compose --profile multi up -d
-```
-
-This creates separate containers for each agent plus a shared datahub (Postgres + shared storage).
+The unified Compose stack ships a single `agent` service. Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh — see [Mesh Networking](mesh.md) — rather than as N agent services in one Compose file. The CLI's `rivetos agent add` and `rivetos init --join` walk you through this.
 
 ### Docker Compose Architecture
+
+The unified stack runs four services off two images: a Postgres image (`rivetos-datahub`) and a single role-dispatched runtime image (`rivetos`).
 
 ```
 ┌─────────────────────────────────────────────┐
 │  Docker Network: rivetos-net                │
 │                                             │
-│  ┌───────────┐  ┌──────────┐  ┌──────────┐  │
-│  │  opus     │  │  grok    │  │  local   │  │
-│  │  :3100    │  │  :3101   │  │  :3102   │  │
-│  │ agent img │  │ agent img│  │ agent img│  │
-│  └────┬──────┘  └────┬─────┘  └────┬─────┘  │
-│       │              │             │        │
-│       └──────────────┼─────────────┘        │
-│                      │                      │
-│              ┌───────┴───────┐              │
-│              │   datahub     │              │
-│              │  postgres:16  │              │
-│              │  pgvector     │              │
-│              │  /rivet-shared/     │              │
-│              │  :5432        │              │
-│              └───────────────┘              │
+│  ┌─────────┐  ┌──────────┐  ┌────────────┐  │
+│  │ migrate │  │ workers  │  │  agent     │  │
+│  │ (rivetos│  │ (rivetos │  │ (rivetos   │  │
+│  │  one-   │  │  --role  │  │  --role    │  │
+│  │  shot)  │  │  worker) │  │  agent)    │  │
+│  └────┬────┘  └────┬─────┘  └────┬───────┘  │
+│       │            │             │          │
+│       └────────────┼─────────────┘          │
+│                    │                        │
+│            ┌───────┴────────┐               │
+│            │   datahub      │               │
+│            │   postgres:16  │               │
+│            │   + pgvector   │               │
+│            │   :5432        │               │
+│            └────────────────┘               │
 └─────────────────────────────────────────────┘
 
 Volumes:
-  rivetos-pgdata  → Postgres data (survives rebuilds)
-  rivetos-shared  → Shared storage (agent collaboration)
-  ./workspace/    → Agent workspace files (bind mount)
-  ./config.yaml   → Configuration (bind mount)
-  ./.env          → Secrets (bind mount)
+  rivetos-pgdata           → Postgres data (survives rebuilds)
+  ~/.rivetos/config.yaml   → Configuration (bind mount, read-only)
+  ~/.rivetos/.env          → Secrets (bind mount, read-only)
 ```
 
 ### Data Persistence
@@ -97,11 +73,9 @@ Containers are stateless. All persistent data lives on the host:
 
 | Data | Storage | Survives Update |
 |------|---------|-----------------|
-| Workspace files (CORE.md, memory/, skills/) | Bind mount `./workspace/` | ✅ |
-| Configuration | Bind mount `./config.yaml` | ✅ |
-| Secrets | `.env` on host | ✅ |
+| Configuration | Bind mount `~/.rivetos/config.yaml` | ✅ |
+| Secrets | Bind mount `~/.rivetos/.env` | ✅ |
 | PostgreSQL data | Named volume `rivetos-pgdata` | ✅ |
-| Shared storage | Named volume `rivetos-shared` | ✅ |
 | Plugins | In source tree | ✅ |
 | Runtime code | Rebuilt from source | 🔄 |
 
@@ -388,7 +362,7 @@ cp .env "$BACKUP_DIR/"
 rsync -a workspace/ "$BACKUP_DIR/workspace/"
 
 # Database
-docker compose exec datahub pg_dump -U rivetos rivetos > "$BACKUP_DIR/database.sql"
+docker compose -f infra/docker/rivetos/docker-compose.yml exec datahub pg_dump -U rivetos rivetos > "$BACKUP_DIR/database.sql"
 
 # Shared storage
 rsync -a /rivet-shared/ "$BACKUP_DIR/rivet-shared/"
@@ -409,7 +383,7 @@ cp "$BACKUP_DIR/.env" ./
 rsync -a "$BACKUP_DIR/workspace/" workspace/
 
 # Database
-docker compose exec -T datahub psql -U rivetos rivetos < "$BACKUP_DIR/database.sql"
+docker compose -f infra/docker/rivetos/docker-compose.yml exec -T datahub psql -U rivetos rivetos < "$BACKUP_DIR/database.sql"
 
 # Shared storage
 rsync -a "$BACKUP_DIR/rivet-shared/" /rivet-shared/

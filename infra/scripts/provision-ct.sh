@@ -600,7 +600,7 @@ if [[ "$DEPLOY_METHOD" == "git" ]]; then
 
     # Install dependencies and build
     run_on_ct "cd /opt/rivetos && npm ci 2>&1 | tail -5"
-    run_on_ct "cd /opt/rivetos && npx nx run-many -t build --exclude container-agent,container-datahub,site 2>&1 | tail -10"
+    run_on_ct "cd /opt/rivetos && npx nx run-many -t build --exclude container-datahub,container-rivetos,site 2>&1 | tail -10"
 else
     # rsync from control plane (no .git, but works without GitHub access)
     rsync -az --delete \
@@ -619,7 +619,7 @@ else
 
     # Install dependencies and build
     run_on_ct "cd /opt/rivetos && npm ci 2>&1 | tail -5"
-    run_on_ct "cd /opt/rivetos && npx nx run-many -t build --exclude container-agent,container-datahub,site 2>&1 | tail -10"
+    run_on_ct "cd /opt/rivetos && npx nx run-many -t build --exclude container-datahub,container-rivetos,site 2>&1 | tail -10"
 fi
 
 # Ensure rivet owns the repo

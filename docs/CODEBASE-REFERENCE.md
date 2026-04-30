@@ -83,16 +83,16 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │
 ├── infra/                       # Container Dockerfiles + Compose + provisioning scripts
 │   ├── containers/
-│   │   ├── agent/               # Legacy split agent Dockerfile
-│   │   ├── datahub/             # Legacy split datahub Dockerfile (postgres + pgvector)
-│   │   ├── rivetos/             # Unified image — built once, dispatched via `--role`
+│   │   ├── datahub/             # Postgres + pgvector image
+│   │   ├── rivetos/             # Unified runtime image — built once, dispatched via `--role`
 │   │   └── DATA-PERSISTENCE.md  # What survives container rebuilds
-│   ├── docker/                  # Compose stacks (mcp-stack, rivetos)
+│   ├── docker/                  # Compose stacks
+│   │   ├── rivetos/             # canonical stack (datahub + migrate + workers + agent)
+│   │   └── mcp-stack/           # standalone MCP server stack
 │   ├── scripts/                 # provision-ct.sh, setup-mesh-hosts.sh, …
 │   └── templates/               # Workspace + config skeletons used by `init`
 │
 ├── .github/workflows/pipeline.yml  # GitHub Actions: lint/test/build → publish npm + containers → notify-ops
-├── docker-compose.yaml          # Multi-agent Docker Compose with profiles
 ├── .env.example                 # Template for secrets
 ├── nx.json                      # Nx configuration
 ├── tsconfig.base.json           # Shared TS config (ES2023, Node16 modules, strict)
@@ -358,21 +358,24 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 **Unified `rivetos` image** (`infra/containers/rivetos/Dockerfile`):
 - Single Node 24 Alpine image, non-root user (`rivetos`), tini init
 - Built once with `npm run build` (esbuild bundle in `dist/`)
-- Dispatched at runtime via `--role agent | datahub | mcp` (entrypoint reads the role and starts the right surface)
-- Healthcheck: `wget -qO- http://localhost:3100/health/live` (agent role)
+- Dispatched at runtime via `--role agent | worker | migrate | monolith` (entrypoint reads the role and starts the right surface)
+- Healthcheck: hits `/health/live` on the agent role; workers/migrate skip the check
 - Workspace and config mounted as volumes
 
-**Legacy split images** (`infra/containers/agent/`, `infra/containers/datahub/`):
-- Kept for environments that pin to the old role-specific images
-- Datahub image still bundles PostgreSQL 16 + pgvector + shared-dir init scripts
-- Shared dirs: `/rivet-shared/plans`, `/rivet-shared/docs`, `/rivet-shared/status`, `/rivet-shared/whiteboard`
+**Datahub image** (`infra/containers/datahub/Dockerfile`):
+- PostgreSQL 16 + pgvector with first-init schema baked in
+- Migrations are applied at boot by the `migrate` role of the unified image, so the datahub image stays narrowly scoped to the database
 
 ### Docker Compose
 
-- `x-agent` YAML anchor for DRY agent service definition
-- Named volumes: `rivetos-pgdata`, `rivetos-shared`
-- Profiles: default (1 agent), `multi` (3 agents)
-- Health check dependency: agents wait for datahub to be healthy
+The canonical stack lives at `infra/docker/rivetos/docker-compose.yml` and runs four services:
+
+- `datahub` — Postgres + pgvector (image: `rivetos-datahub`)
+- `migrate` — one-shot, applies pending migrations and exits (image: `rivetos`, role: `migrate`)
+- `workers` — embedding + compaction LISTEN/NOTIFY pumps (image: `rivetos`, role: `worker`)
+- `agent` — runtime that drives channels + providers (image: `rivetos`, role: `agent`)
+
+Named volume: `rivetos-pgdata`. Health check dependencies: `migrate` and `workers` wait for `datahub` to be healthy; `workers` and `agent` wait for `migrate` to complete successfully.
 
 ### Memory Workers (Datahub Services)
 

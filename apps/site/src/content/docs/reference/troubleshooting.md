@@ -8,6 +8,8 @@ description: Common issues and how to fix them
 
 Common issues and fixes. Start with `rivetos doctor` — it checks everything.
 
+> The unified Compose stack lives at `infra/docker/rivetos/docker-compose.yml`. Throughout this doc, bare `docker compose ...` examples assume you've either passed `-f infra/docker/rivetos/docker-compose.yml` or exported `COMPOSE_FILE=infra/docker/rivetos/docker-compose.yml` from the repo root.
+
 ---
 
 ## Quick Diagnostics
@@ -222,7 +224,7 @@ Common cause: network configuration mismatch. Ensure all containers are on the s
 
 ### Workspace files not visible in container
 
-The workspace directory must be bind-mounted. Check `docker-compose.yaml`:
+The workspace directory must be bind-mounted. Check `infra/docker/rivetos/docker-compose.yml`:
 
 ```yaml
 volumes:
@@ -337,7 +339,7 @@ This should not happen — workspace files are on bind mounts. Check:
 docker compose exec opus ls /app/workspace/
 ```
 
-If workspace files are missing, they may not have been bind-mounted. Check `docker-compose.yaml` for the volume configuration.
+If workspace files are missing, they may not have been bind-mounted. Check `infra/docker/rivetos/docker-compose.yml` for the volume configuration.
 
 ---
 

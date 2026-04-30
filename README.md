@@ -108,10 +108,9 @@ rivetOS/
 │   ├── tools/          # shell, file, search, web-search, interaction, mcp-client, coding-pipeline
 │   └── transports/     # mcp-server (expose RivetOS tools over MCP StreamableHTTP)
 ├── apps/
-│   ├── infra/          # Container Dockerfiles, Compose files, provisioning scripts
 │   └── site/           # Astro docs site
-├── examples/           # Example configs (single, multi, local, homelab)
-├── docs/               # Full documentation
+├── infra/              # Container Dockerfiles, Compose files, provisioning scripts
+├── docs/               # Full documentation (incl. example configs under docs/examples/)
 └── skills/             # Optional skill libraries
 ```
 

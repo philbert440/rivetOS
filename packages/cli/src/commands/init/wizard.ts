@@ -79,7 +79,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
       if (deploySuccess) {
         p.outro('🔩 RivetOS is running!')
       } else {
-        p.outro('🔩 Deploy when ready with docker compose or your preferred runner.')
+        p.outro('🔩 Deploy when ready with `docker compose -f infra/docker/rivetos/docker-compose.yml up -d` or your preferred runner.')
       }
       process.exit(0)
     }
@@ -216,7 +216,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   const nextSteps: string[] = []
 
   if (target === 'docker' && !deploySuccess) {
-    nextSteps.push('docker compose up -d              Deploy containers')
+    nextSteps.push('docker compose -f infra/docker/rivetos/docker-compose.yml up -d   Deploy containers')
   } else if (target === 'manual') {
     nextSteps.push('npx rivetos start                 Start the runtime')
   }
@@ -248,8 +248,10 @@ async function offerDockerDeploy(envPath: string): Promise<boolean> {
   })
   bail(deploy)
 
+  const composeFlags = '-f infra/docker/rivetos/docker-compose.yml'
+
   if (!deploy) {
-    p.log.info('To deploy later, run: docker compose up -d')
+    p.log.info(`To deploy later, run: docker compose ${composeFlags} up -d`)
     return false
   }
 
@@ -261,7 +263,7 @@ async function offerDockerDeploy(envPath: string): Promise<boolean> {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- dirname may be undefined in older Node
     const root = resolve(import.meta.dirname ?? '.', '..', '..', '..', '..')
 
-    execSync('docker compose up -d', {
+    execSync(`docker compose ${composeFlags} up -d`, {
       cwd: root,
       encoding: 'utf-8',
       timeout: 120000,
@@ -274,9 +276,8 @@ async function offerDockerDeploy(envPath: string): Promise<boolean> {
 
     s.stop('Containers are running!')
 
-    // Quick health check
     try {
-      execSync('docker compose ps --format json', {
+      execSync(`docker compose ${composeFlags} ps --format json`, {
         cwd: root,
         encoding: 'utf-8',
         timeout: 10000,
@@ -291,7 +292,7 @@ async function offerDockerDeploy(envPath: string): Promise<boolean> {
   } catch (err: unknown) {
     s.stop('Deployment failed.')
     p.log.error(`Docker Compose error: ${(err as Error).message}`)
-    p.log.info('Try running manually: docker compose up -d')
+    p.log.info(`Try running manually: docker compose ${composeFlags} up -d`)
     return false
   }
 }
