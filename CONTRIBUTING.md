@@ -360,8 +360,9 @@ RivetOS ships as container images built from source.
 npx rivetos build
 # or
 npx nx build container-rivetos
-npx nx build container-datahub
 ```
+
+The Postgres datahub uses upstream `pgvector/pgvector:pg16` directly — schema is applied by the `migrate` role at stack startup, so there is no custom datahub image to build.
 
 ### Run the stack
 

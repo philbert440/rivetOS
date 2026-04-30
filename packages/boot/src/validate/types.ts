@@ -58,7 +58,6 @@ export const KNOWN_DEPLOYMENT_DATAHUB_KEYS = new Set([
 export const KNOWN_DEPLOYMENT_IMAGE_KEYS = new Set([
   'registry',
   'agent_image',
-  'datahub_image',
   'tag',
   'build_from_source',
 ])

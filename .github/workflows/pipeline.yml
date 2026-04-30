@@ -130,9 +130,9 @@ jobs:
       - name: Build
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            npx nx affected -t build --parallel=5 --exclude container-datahub,container-rivetos,site
+            npx nx affected -t build --parallel=5 --exclude container-rivetos,site
           else
-            npx nx run-many -t build --all --parallel=5 --exclude container-datahub,container-rivetos,site
+            npx nx run-many -t build --all --parallel=5 --exclude container-rivetos,site
           fi
 
   publish-npm:
@@ -166,7 +166,7 @@ jobs:
         run: npm ci
 
       - name: Build all packages
-        run: npx nx run-many -t build --all --parallel=5 --exclude container-datahub,container-rivetos,site
+        run: npx nx run-many -t build --all --parallel=5 --exclude container-rivetos,site
 
       - name: Publish changed packages
         run: |
@@ -252,13 +252,8 @@ jobs:
       contents: read
       packages: write
 
-    strategy:
-      matrix:
-        target: [datahub, rivetos]
-
     env:
       REGISTRY: ghcr.io
-      DATAHUB_IMAGE: ghcr.io/${{ github.repository_owner }}/rivetos-datahub
       RIVETOS_IMAGE: ghcr.io/${{ github.repository_owner }}/rivetos
 
     steps:
@@ -278,7 +273,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ matrix.target == 'datahub' && env.DATAHUB_IMAGE || env.RIVETOS_IMAGE }}
+          images: ${{ env.RIVETOS_IMAGE }}
           tags: |
             type=sha,format=short
             type=ref,event=branch
@@ -287,21 +282,7 @@ jobs:
             type=raw,value=main,enable={{is_default_branch}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build datahub image
-        if: matrix.target == 'datahub'
-        uses: docker/build-push-action@v6
-        with:
-          # Repo-root context — Dockerfile copies plugins/memory/postgres/src/schema/migrations.
-          context: .
-          file: infra/containers/datahub/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
       - name: Build rivetos unified image
-        if: matrix.target == 'rivetos'
         uses: docker/build-push-action@v6
         with:
           context: .

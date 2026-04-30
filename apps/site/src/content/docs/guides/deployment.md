@@ -44,7 +44,7 @@ The unified Compose stack ships a single `agent` service. Multi-agent fleets are
 
 ### Docker Compose Architecture
 
-The unified stack runs four services off two images: a Postgres image (`rivetos-datahub`) and a single role-dispatched runtime image (`rivetos`).
+The unified stack runs four services off two images: upstream `pgvector/pgvector:pg16` for the database and a single role-dispatched runtime image (`rivetos`). Schema is applied by the `migrate` role at stack startup — there is no custom datahub image to build or push.
 
 ```
 ┌─────────────────────────────────────────────┐

@@ -73,9 +73,10 @@ Back up these paths and you can restore a full RivetOS install:
 # Workspace + config
 cp -r ./workspace/ ./config.yaml ./.env /backup/rivetos/
 
-# Database
-docker exec rivetos-datahub pg_dump -U rivetos rivetos > /backup/rivetos/db.sql
+# Database (container name comes from the compose project — typically rivetos-datahub-1)
+docker compose -f infra/docker/rivetos/docker-compose.yml exec datahub \
+  pg_dump -U rivetos rivetos > /backup/rivetos/db.sql
 
-# Shared storage
-docker cp rivetos-datahub:/rivet-shared /backup/rivetos/shared/
+# Shared storage (host path; not stored in any container)
+cp -r /rivet-shared /backup/rivetos/shared/
 ```

@@ -90,7 +90,6 @@ export interface DeploymentSection {
   image?: {
     registry?: string
     agent_image?: string
-    datahub_image?: string
     tag?: string
     build_from_source?: boolean
   }
