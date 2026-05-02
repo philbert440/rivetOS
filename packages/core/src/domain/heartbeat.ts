@@ -10,6 +10,7 @@
 
 import type { HeartbeatConfig } from '@rivetos/types'
 import { logger } from '../logger.js'
+import { parseCron, nextCronFiring, type CronSchedule } from './cron.js'
 
 const log = logger('Heartbeat')
 
@@ -22,40 +23,43 @@ export interface HeartbeatHandler {
   (config: HeartbeatConfig): Promise<void>
 }
 
+type ParsedSchedule =
+  | { kind: 'interval'; ms: number }
+  | { kind: 'cron'; cron: CronSchedule; expr: string }
+
 /**
- * Parse a cron-like schedule into an interval in ms.
+ * Parse a schedule into either an interval (ms) or a cron specification.
  * Supports:
- *   - Number: interval in minutes (e.g., 30 → every 30 min)
- *   - String with unit: "30m", "1h", "6h"
- *   - Simple cron not supported yet — use interval
+ *   - Number: interval in minutes
+ *   - "30s" / "30m" / "1h": interval with unit
+ *   - "0 8,20 * * *": standard 5-field cron
  */
-function parseSchedule(schedule: string | number): number {
+export function parseSchedule(schedule: string | number): ParsedSchedule {
   if (typeof schedule === 'number') {
-    return schedule * 60 * 1000 // minutes → ms
+    return { kind: 'interval', ms: schedule * 60_000 }
   }
 
-  const match = schedule.match(/^(\d+)(m|min|h|hr|s|sec)?$/i)
-  if (!match) {
-    log.warn(`Unknown schedule format: "${schedule}", defaulting to 30 min`)
-    return 30 * 60 * 1000
+  const intervalMatch = /^(\d+)(s|sec|m|min|h|hr)?$/i.exec(schedule)
+  if (intervalMatch) {
+    const value = parseInt(intervalMatch[1], 10)
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- optional regex group
+    const unit = (intervalMatch[2] ?? 'm').toLowerCase()
+    const ms =
+      unit === 's' || unit === 'sec'
+        ? value * 1000
+        : unit === 'h' || unit === 'hr'
+          ? value * 3_600_000
+          : value * 60_000
+    return { kind: 'interval', ms }
   }
 
-  const value = parseInt(match[1])
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- match[2] is undefined for unmatched optional regex group
-  const unit = (match[2] ?? 'm').toLowerCase()
-
-  switch (unit) {
-    case 's':
-    case 'sec':
-      return value * 1000
-    case 'm':
-    case 'min':
-      return value * 60 * 1000
-    case 'h':
-    case 'hr':
-      return value * 60 * 60 * 1000
-    default:
-      return value * 60 * 1000
+  try {
+    return { kind: 'cron', cron: parseCron(schedule), expr: schedule }
+  } catch (err: unknown) {
+    log.warn(
+      `Unknown schedule format: "${schedule}" (${(err as Error).message}), defaulting to 30 min`,
+    )
+    return { kind: 'interval', ms: 30 * 60_000 }
   }
 }
 
@@ -68,62 +72,68 @@ function isQuietHours(quiet?: { start: number; end: number }): boolean {
   const hour = new Date().getHours()
 
   if (quiet.start < quiet.end) {
-    // Normal range: e.g., 9-17
     return hour >= quiet.start && hour < quiet.end
   } else {
-    // Wraps midnight: e.g., 23-7
     return hour >= quiet.start || hour < quiet.end
   }
 }
 
-/**
- * Create a heartbeat runner for a set of heartbeat configs.
- */
 export function createHeartbeatRunner(
   configs: HeartbeatConfig[],
   handler: HeartbeatHandler,
 ): HeartbeatRunner {
-  const timers: ReturnType<typeof setInterval>[] = []
+  const timers = new Set<ReturnType<typeof setTimeout>>()
+  let stopped = false
 
   return {
     start() {
+      stopped = false
       for (const config of configs) {
-        const intervalMs = parseSchedule(config.schedule)
+        const schedule = parseSchedule(config.schedule)
         const name = `${config.agent}/${config.outputChannel ?? 'silent'}`
 
-        log.info(`Scheduling "${name}" every ${Math.round(intervalMs / 60000)} min`)
+        if (schedule.kind === 'interval') {
+          log.info(`Scheduling "${name}" every ${Math.round(schedule.ms / 60000)} min`)
 
-        // Run first heartbeat after a short delay (not immediately on startup)
-        // eslint-disable-next-line @typescript-eslint/no-misused-promises
-        const initialDelay = setTimeout(async () => {
-          await runHeartbeat(config, handler)
-        }, 10000) // 10 sec delay on first run
+          const initialDelay = setTimeout(() => {
+            void runHeartbeat(config, handler)
+          }, 10_000)
+          timers.add(initialDelay)
 
-        // Then on interval
-        // eslint-disable-next-line @typescript-eslint/no-misused-promises
-        const timer = setInterval(async () => {
-          await runHeartbeat(config, handler)
-        }, intervalMs)
-
-        timers.push(timer)
-        // Store the initial delay timer too for cleanup
-        timers.push(initialDelay)
+          const timer = setInterval(() => {
+            void runHeartbeat(config, handler)
+          }, schedule.ms)
+          timers.add(timer as unknown as ReturnType<typeof setTimeout>)
+        } else {
+          log.info(`Scheduling "${name}" on cron "${schedule.expr}"`)
+          const scheduleNext = (): void => {
+            if (stopped) return
+            const next = nextCronFiring(schedule.cron, new Date())
+            const delay = Math.max(1000, next.getTime() - Date.now())
+            const t = setTimeout(() => {
+              timers.delete(t)
+              void runHeartbeat(config, handler).finally(scheduleNext)
+            }, delay)
+            timers.add(t)
+          }
+          scheduleNext()
+        }
       }
     },
 
     stop() {
+      stopped = true
       for (const timer of timers) {
         clearInterval(timer)
         clearTimeout(timer)
       }
-      timers.length = 0
+      timers.clear()
       log.info('Stopped')
     },
   }
 }
 
 async function runHeartbeat(config: HeartbeatConfig, handler: HeartbeatHandler): Promise<void> {
-  // Check quiet hours
   if (isQuietHours(config.quietHours)) {
     return
   }
