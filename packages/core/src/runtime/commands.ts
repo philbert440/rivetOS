@@ -174,6 +174,15 @@ export class CommandHandler {
     this.deps.sessionManager.delete(sessionKey)
     this.deps.getQueue(sessionKey)?.clear()
     this.deps.workspace.clearCache()
+
+    // Flush any provider-side session state (e.g. xAI previous_response_id).
+    // Providers without native sessions are no-ops.
+    for (const provider of this.deps.router.getProviders()) {
+      if (provider.resetSession) {
+        await provider.resetSession()
+      }
+    }
+
     await channel.send({
       channelId: message.channelId,
       text: '🔄 Fresh session. Workspace reloaded.',

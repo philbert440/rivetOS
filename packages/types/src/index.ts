@@ -14,6 +14,8 @@ export type {
   ChatOptions,
   ThinkingLevel,
   ProviderErrorCode,
+  ProviderSessionCapability,
+  PreparedTurn,
 } from './provider.js'
 export { ProviderError } from './provider.js'
 export type {
