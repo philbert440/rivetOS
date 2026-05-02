@@ -26,10 +26,6 @@ providers:
   google:
     model: %%DEFAULT_MODEL%%
     max_tokens: 8192
-    available_models:
-      - %%DEFAULT_MODEL%%
-      - gemini-3.1-pro-preview-customtools
-      - gemini-2.5-flash
 channels:
   telegram:
     owner_id: '8093148723'

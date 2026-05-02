@@ -84,7 +84,7 @@ export class BackgroundCompactor {
   constructor(config: CompactorConfig) {
     if (!config.compactorEndpoint) {
       throw new Error(
-        '[Compactor] compactor_endpoint is required — set it in config.yaml under memory.postgres.compactor_endpoint',
+        '[Compactor] compactor endpoint is required — set RIVETOS_COMPACTOR_URL in the environment',
       )
     }
     this.endpoint = config.compactorEndpoint
