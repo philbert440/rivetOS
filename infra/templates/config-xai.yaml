@@ -26,9 +26,6 @@ providers:
   xai:
     model: %%DEFAULT_MODEL%%
     max_tokens: 8192
-    available_models:
-      - %%DEFAULT_MODEL%%
-      - grok-4-1-fast-reasoning
 channels:
   telegram:
     owner_id: '8093148723'
