@@ -126,6 +126,16 @@ export async function boot(configPath?: string): Promise<void> {
     additionalPaths: config.runtime.plugin_dirs,
   })
 
+  // After plugin discovery, anchor process.cwd() to the workspace so tool
+  // fallbacks (file/shell/search) operate in the agent's workspace rather
+  // than wherever the service was launched from.
+  try {
+    process.chdir(workspaceDir)
+    log.info(`Working directory: ${workspaceDir}`)
+  } catch (err) {
+    log.warn(`Could not chdir to workspace ${workspaceDir}: ${(err as Error).message}`)
+  }
+
   // 1. Hooks (must come before runtime — runtime receives the pipeline)
   const { pipeline, fallbackConfigs } = await registerHooks(config, workspaceDir)
 
