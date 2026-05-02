@@ -59,18 +59,8 @@ export default async function service(): Promise<void> {
       const servicePath = getServicePath()
       const workingDir = process.cwd()
       const envFile = resolve(process.env.HOME ?? '.', '.rivetos', '.env')
-      const configFile = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
-      const tsxPath = resolve(workingDir, 'node_modules', '.bin', 'tsx')
-      const bootPath = resolve(workingDir, 'src', 'boot.ts')
-
-      // Check if npx tsx or direct tsx
-      let execStart = `npx tsx ${bootPath} ${configFile}`
-      try {
-        await access(tsxPath)
-        execStart = `${tsxPath} ${bootPath} ${configFile}`
-      } catch {
-        /* expected */
-      }
+      const cliEntry = resolve(workingDir, 'packages', 'cli', 'dist', 'index.js')
+      const execStart = `${process.execPath} ${cliEntry} start --role monolith`
 
       const unit = `[Unit]
 Description=RivetOS Agent Runtime
