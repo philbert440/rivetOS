@@ -121,14 +121,14 @@ export default async function start(): Promise<void> {
     case 'monolith': {
       const configPath = findConfig(explicit)
       // Workers run as children; agent runs in this process.
-      // If agent throws, the children get cleaned up by SIGTERM.
+      // boot() resolves on "Runtime Ready" — runtime handles (channels,
+      // intervals) keep the event loop alive. We then wait on the worker
+      // promise, which only resolves once the children exit. External
+      // SIGTERM/SIGINT triggers boot's shutdown handler (process.exit),
+      // tearing down both halves together.
       const workerProm = startWorkers()
-      try {
-        await startAgent(configPath)
-      } finally {
-        process.kill(process.pid, 'SIGTERM')
-        await workerProm.catch(() => undefined)
-      }
+      await startAgent(configPath)
+      await workerProm
       break
     }
     case 'agent':
