@@ -103,7 +103,7 @@ export function createHeartbeatRunner(
           const timer = setInterval(() => {
             void runHeartbeat(config, handler)
           }, schedule.ms)
-          timers.add(timer as unknown as ReturnType<typeof setTimeout>)
+          timers.add(timer)
         } else {
           log.info(`Scheduling "${name}" on cron "${schedule.expr}"`)
           const scheduleNext = (): void => {
