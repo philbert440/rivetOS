@@ -31,6 +31,8 @@ import type {
   LLMUsage,
   ThinkingLevel,
   PluginManifest,
+  PreparedTurn,
+  ProviderSessionCapability,
 } from '@rivetos/types'
 import { ProviderError, hasImages, MODEL_DEFAULTS } from '@rivetos/types'
 import { randomUUID } from 'node:crypto'
@@ -413,6 +415,20 @@ export class XAIProvider implements Provider {
   /** Stable prompt cache key for xAI prompt caching (persists per conversation) */
   private promptCacheKey: string | null = null
 
+  /**
+   * Set by `prepareTurn` immediately before `chatStream`. Tells chatStream
+   * the loop has already trimmed the message array — don't re-slice in
+   * buildRequestBody. Cleared as soon as chatStream consumes it.
+   */
+  private pendingPrepared: { isContinuation: boolean } | null = null
+
+  /** Native session capability — exposed to the agent loop. */
+  readonly sessionCapability: ProviderSessionCapability = {
+    native: true,
+    prepareTurn: (messages: Message[], options?: ChatOptions) =>
+      this.prepareTurn(messages, options),
+  }
+
   constructor(config: XAIProviderConfig) {
     this.apiKey = config.apiKey
     this.model = config.model ?? MODEL_DEFAULTS.xai
@@ -453,11 +469,72 @@ export class XAIProvider implements Provider {
     return this.outputTokenLimit
   }
 
-  /** Reset conversation state (called by /new) */
-  resetConversation(): void {
+  /** Reset conversation state (called by /new and context-clear flows). */
+  resetSession(): void {
     this.lastResponseId = null
     this.lastResponseModel = null
     this.promptCacheKey = null
+    this.pendingPrepared = null
+  }
+
+  /** @deprecated Use {@link resetSession}. Kept for backward compatibility. */
+  resetConversation(): void {
+    this.resetSession()
+  }
+
+  // -----------------------------------------------------------------------
+  // prepareTurn — native-session hook called by the agent loop
+  // -----------------------------------------------------------------------
+
+  /**
+   * Decide whether this turn can continue from prior server-side state, and
+   * trim the message array to just what the server doesn't already have.
+   *
+   * Returns the (possibly sliced) Message[] the loop should pass to
+   * `chatStream`, plus an `isContinuation` flag. Stashes the decision on the
+   * instance so the upcoming `chatStream` call knows not to re-slice.
+   */
+  prepareTurn(messages: Message[], options?: ChatOptions): PreparedTurn {
+    const model = options?.modelOverride ?? this.model
+    const containsImages = messages.some((m) => hasImages(m.content))
+    const storeThisRequest = containsImages ? false : this.store
+
+    const canContinue = !!(
+      storeThisRequest &&
+      this.lastResponseId &&
+      !options?.freshConversation &&
+      this.lastResponseModel === model
+    )
+
+    if (!canContinue) {
+      this.pendingPrepared = { isContinuation: false }
+      return { messages, isContinuation: false }
+    }
+
+    // Server has up to and including the last completed text response. Find
+    // what's genuinely new since then.
+    //
+    // Tool-call continuations: server's last response output included
+    // `function_call` items (encoded on `assistant` messages with `toolCalls`).
+    // Everything *after* that assistant message is new (tool results + any
+    // subsequent steer/system/user messages).
+    //
+    // New user turns (no recent tool calls): trim from the last user message
+    // onward — the server already has everything before it.
+    const lastAssistantWithTools = messages.findLastIndex(
+      (m) => m.role === 'assistant' && !!m.toolCalls && m.toolCalls.length > 0,
+    )
+
+    let trimmed: Message[]
+    if (lastAssistantWithTools >= 0) {
+      trimmed = messages.slice(lastAssistantWithTools + 1)
+    } else {
+      const lastUserIdx = messages.findLastIndex((m) => m.role === 'user')
+      trimmed = lastUserIdx >= 0 ? messages.slice(lastUserIdx) : messages
+    }
+
+    this.pendingPrepared = { isContinuation: true }
+    return { messages: trimmed, isContinuation: true }
   }
 
   // -----------------------------------------------------------------------
@@ -550,10 +627,11 @@ export class XAIProvider implements Provider {
     model: string,
     storeThisRequest: boolean,
     canContinue: boolean,
+    skipInternalSlicing: boolean,
     options?: ChatOptions,
   ): { input: ResponsesInput[]; body: Record<string, unknown>; promptCacheKey: string } {
     let input: ResponsesInput[]
-    if (canContinue) {
+    if (canContinue && !skipInternalSlicing) {
       // Server has everything up to + including its last response.
       // Find what's genuinely NEW since that response.
       //
@@ -674,23 +752,33 @@ export class XAIProvider implements Provider {
     // Determine store for this request — force false when images present
     const storeThisRequest = containsImages ? false : this.store
 
-    // Check if we can continue from a previous response:
-    // - Must have a stored response ID
-    // - Must not be a fresh conversation (delegation/subagent)
-    // - Must not have images (store: false)
-    // - Model must match the stored conversation's model
-    const canContinue =
-      storeThisRequest &&
-      this.lastResponseId &&
-      !options?.freshConversation &&
-      this.lastResponseModel === model
+    // If the agent loop called `prepareTurn` first, trust its decision and
+    // do NOT re-slice in buildRequestBody (the messages were already trimmed
+    // at the Message[] layer). Otherwise — legacy callers — fall back to the
+    // existing internal slicing logic.
+    let canContinue: boolean
+    let skipInternalSlicing: boolean
+    if (this.pendingPrepared) {
+      canContinue = this.pendingPrepared.isContinuation
+      skipInternalSlicing = true
+      this.pendingPrepared = null
+    } else {
+      canContinue = !!(
+        storeThisRequest &&
+        this.lastResponseId &&
+        !options?.freshConversation &&
+        this.lastResponseModel === model
+      )
+      skipInternalSlicing = false
+    }
 
     // --- Build input & request body ---
     const { input, body, promptCacheKey } = this.buildRequestBody(
       allMessages,
       model,
       storeThisRequest,
-      !!canContinue,
+      canContinue,
+      skipInternalSlicing,
       options,
     )
 

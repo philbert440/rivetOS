@@ -92,6 +92,38 @@ export interface LLMChunk {
 }
 
 // ---------------------------------------------------------------------------
+// Provider session capability
+// ---------------------------------------------------------------------------
+
+/**
+ * Result returned by `prepareTurn` — what the provider actually wants on the
+ * wire for this call.
+ */
+export interface PreparedTurn {
+  /** Messages the provider wants to receive (may be a slice of the full history). */
+  messages: Message[]
+  /** True when the provider is continuing from prior server-side state
+   *  (e.g. xAI previous_response_id). False = full replay. */
+  isContinuation: boolean
+}
+
+/**
+ * Capability descriptor for providers that own their own session/continuation
+ * state on the server side. Absent capability = stateless replay (default).
+ */
+export interface ProviderSessionCapability {
+  /** Provider manages its own server-side session continuity. */
+  native: true
+  /**
+   * Called by the agent loop before each `chatStream` invocation. Lets the
+   * provider decide whether it can continue from prior state (and trim the
+   * messages array) or needs a full replay. Return `null` to fall back to
+   * full-history replay.
+   */
+  prepareTurn?(messages: Message[], options?: ChatOptions): PreparedTurn | null
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -109,6 +141,18 @@ export interface Provider {
   getContextWindow(): number
   /** Max output tokens (0 = unknown/unlimited) */
   getMaxOutputTokens(): number
+  /**
+   * Optional. When set, the agent loop will call `prepareTurn` (if provided)
+   * to let the provider trim messages to what it actually needs on the wire.
+   * Providers without this field receive full history every turn (current
+   * stateless behavior).
+   */
+  sessionCapability?: ProviderSessionCapability
+  /**
+   * Optional. Reset provider-side session state (called by /new and any
+   * context-clear flow). Sync or async. No-op if absent.
+   */
+  resetSession?(): void | Promise<void>
 }
 
 // ---------------------------------------------------------------------------
