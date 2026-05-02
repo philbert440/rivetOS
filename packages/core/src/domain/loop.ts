@@ -377,8 +377,22 @@ export class AgentLoop {
       let hasToolCalls = false
       const streamStartTime = Date.now()
 
+      // --- Native-session hook ---
+      // If the provider manages its own server-side session continuity, give
+      // it a chance to trim the message array down to "what's new since the
+      // last call" instead of replaying full history. Providers without this
+      // capability receive the full conversation (current default behavior).
+      let wireMessages: Message[] = messages
+      const cap = activeProvider.sessionCapability
+      if (cap?.native && cap.prepareTurn) {
+        const prepared = cap.prepareTurn(messages, options)
+        if (prepared) {
+          wireMessages = prepared.messages
+        }
+      }
+
       try {
-        for await (const chunk of activeProvider.chatStream(messages, options)) {
+        for await (const chunk of activeProvider.chatStream(wireMessages, options)) {
           // Capture usage from ANY chunk (not just 'done') — prevents lost tracking on abort
           if (chunk.usage) {
             totalUsage.promptTokens = Math.max(totalUsage.promptTokens, chunk.usage.promptTokens)
