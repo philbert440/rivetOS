@@ -65,8 +65,13 @@ memory:
   postgres:
     connection_string: ${RIVETOS_PG_URL}
     embed_endpoint: http://192.168.1.50:9401       # Nemotron embedding service
-    compactor_endpoint: http://192.168.1.50:8000/v1 # Rivet Local for summarization
-    compactor_model: rivet-v0.1
+```
+
+The compaction worker reads its LLM endpoint and model from the environment:
+
+```bash
+RIVETOS_COMPACTOR_URL=http://192.168.1.50:8000/v1
+RIVETOS_COMPACTOR_MODEL=rivet-v0.1
 ```
 
 ## Schema Migrations
