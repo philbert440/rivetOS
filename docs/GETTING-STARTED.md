@@ -202,8 +202,6 @@ npx rivetos service init
 npx rivetos service start
 ```
 
-For non-root installs, `service init` writes a user-mode unit (`~/.config/systemd/user/rivetos.service`) and attempts to enable user linger via `sudo loginctl enable-linger $USER`. **Linger is required** — without it, the systemd user manager (and your service) is torn down whenever you log out. If the auto-enable fails (no passwordless sudo), the command prints the manual command to run.
-
 ---
 
 ## Workspace Files
