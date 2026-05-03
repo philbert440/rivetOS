@@ -28,6 +28,47 @@ function isRoot(): boolean {
   return process.getuid?.() === 0
 }
 
+function ensureLinger(): void {
+  const user = process.env.USER ?? ''
+  if (!user) {
+    console.log('')
+    console.log('⚠️  $USER is unset — cannot check linger state.')
+    console.log('    Without linger, the user-mode service stops when you log out.')
+    console.log('    Enable it manually: sudo loginctl enable-linger <username>')
+    return
+  }
+
+  let lingerState: string
+  try {
+    lingerState = execSync(`loginctl show-user ${user} -p Linger --value`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    })
+      .trim()
+      .toLowerCase()
+  } catch {
+    console.log('')
+    console.log('⚠️  Could not check linger state. To ensure the service survives logout:')
+    console.log(`    sudo loginctl enable-linger ${user}`)
+    return
+  }
+
+  if (lingerState === 'yes') {
+    console.log('✅ Linger already enabled — service will survive logout.')
+    return
+  }
+
+  try {
+    execSync(`sudo -n loginctl enable-linger ${user}`, { stdio: 'pipe', timeout: 5000 })
+    console.log('✅ Linger enabled — service will survive logout.')
+  } catch {
+    console.log('')
+    console.log('⚠️  Linger is NOT enabled for this user.')
+    console.log('    Without linger, the user-mode service stops when you log out.')
+    console.log(`    Enable it with: sudo loginctl enable-linger ${user}`)
+  }
+}
+
 function systemctl(cmd: string): string {
   const userFlag = isRoot() ? '' : '--user'
   try {
@@ -96,6 +137,11 @@ WantedBy=${isRoot() ? 'multi-user.target' : 'default.target'}
       await writeFile(servicePath, unit)
 
       console.log(`✅ Service file created: ${servicePath}`)
+
+      if (!isRoot()) {
+        ensureLinger()
+      }
+
       console.log('')
       console.log('Enable and start:')
       const userFlag = isRoot() ? '' : '--user '

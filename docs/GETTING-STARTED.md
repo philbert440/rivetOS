@@ -195,12 +195,14 @@ npx rivetos start
 ### 6. Install as a system service (optional)
 
 ```bash
-# Install as a systemd service
-npx rivetos service install
+# Generate a systemd unit
+npx rivetos service init
 
-# Now it starts on boot
-sudo systemctl status rivetos
+# Start it
+npx rivetos service start
 ```
+
+For non-root installs, `service init` writes a user-mode unit (`~/.config/systemd/user/rivetos.service`) and attempts to enable user linger via `sudo loginctl enable-linger $USER`. **Linger is required** — without it, the systemd user manager (and your service) is torn down whenever you log out. If the auto-enable fails (no passwordless sudo), the command prints the manual command to run.
 
 ---
 
