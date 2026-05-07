@@ -19,7 +19,7 @@
  *
  * Embedding and compaction jobs run on the Datahub as dedicated workers:
  *   workers/embedding/   — event-driven via Postgres LISTEN/NOTIFY → Nemotron GPU
- *   workers/compaction/  — event-driven via Postgres LISTEN/NOTIFY → E2B CPU
+ *   workers/compaction/  — event-driven via Postgres LISTEN/NOTIFY → OpenAI-compatible LLM
  */
 
 export { PostgresMemory } from './adapter.js'

@@ -3,7 +3,8 @@
  *
  * Listens for Postgres NOTIFY on 'compaction_work' channel.
  * Picks up queue entries from ros_compaction_queue.
- * Calls Gemma-4-E2B on GERTY CPU (port 8001) for summarization.
+ * Calls an OpenAI-compatible LLM endpoint (RIVETOS_COMPACTOR_URL +
+ * RIVETOS_COMPACTOR_MODEL) for summarization.
  *
  * v5 pipeline:
  *   - prompts, formatters, constants imported from @rivetos/memory-postgres

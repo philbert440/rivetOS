@@ -420,7 +420,7 @@ Embedding and compaction run as **event-driven workers on Datahub**, co-located 
 2. **Session idle** — 5-minute periodic check finds conversations with no activity for 15 min + 10+ unsummarized messages
 3. **Explicit request** — Agent or API inserts directly into `ros_compaction_queue`
 
-Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled on Gemma-4-E2B with generous token budgets (4096/6144/8192) and 10-minute timeout.
+Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled, with token budgets `LEAF_MAX_TOKENS` / `BRANCH_MAX_TOKENS` / `ROOT_MAX_TOKENS` (7000 / 14000 / 20000 — see `plugins/memory/postgres/src/compactor/types.ts`) and a 10-minute timeout. The summarization model is configured per-deployment via `RIVETOS_COMPACTOR_URL` and `RIVETOS_COMPACTOR_MODEL` (any OpenAI-compatible endpoint).
 
 **Source:** `plugins/memory/postgres/workers/embedding/` and `plugins/memory/postgres/workers/compaction/`
 **Setup:** Schema DDL lives at `plugins/memory/postgres/src/schema/migrations/` and is applied by the `migrate` role at stack startup. Workers run from the unified `rivetos` image with `--role worker`.
