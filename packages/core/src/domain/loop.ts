@@ -38,6 +38,7 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { estimateTokens } from './tokens.js'
+import { collectLlmStream } from './aisdk-stream.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -369,9 +370,7 @@ export class AgentLoop {
       }
 
       let textContent = ''
-      let _reasoningContent = ''
-      const pendingToolCalls: Map<number, ToolCall> = new Map()
-      const argsDelta: Map<number, string> = new Map()
+      let toolCalls: ToolCall[] = []
       let hasToolCalls = false
       const streamStartTime = Date.now()
 
@@ -390,118 +389,47 @@ export class AgentLoop {
       }
 
       try {
-        for await (const chunk of activeProvider.chatStream(wireMessages, options)) {
-          // Capture usage from ANY chunk (not just 'done') — prevents lost tracking on abort
-          if (chunk.usage) {
-            totalUsage.promptTokens = Math.max(totalUsage.promptTokens, chunk.usage.promptTokens)
-            totalUsage.completionTokens = Math.max(
-              totalUsage.completionTokens,
-              chunk.usage.completionTokens,
-            )
-            // Track provider-reported prompt tokens for accurate context window checks
-            if (chunk.usage.promptTokens > 0) {
-              lastKnownPromptTokens = chunk.usage.promptTokens
-            }
-          }
+        const collected = await collectLlmStream(
+          activeProvider.chatStream(wireMessages, options),
+          (event) => this.emit(event),
+          signal,
+        )
 
-          if (signal?.aborted) {
-            return {
-              response: '',
-              toolsUsed,
-              iterations,
-              aborted: true,
-              partialResponse: textContent || partialResponse,
-              usage: totalUsage,
-              hadSteer,
-            }
-          }
+        textContent = collected.textContent
+        toolCalls = collected.toolCalls
+        hasToolCalls = collected.hasToolCalls
 
-          switch (chunk.type) {
-            case 'text':
-              if (chunk.delta) {
-                textContent += chunk.delta
-                this.emit({ type: 'text', content: chunk.delta })
-              }
-              break
+        // Max-merge usage into the turn-spanning accumulator
+        totalUsage.promptTokens = Math.max(
+          totalUsage.promptTokens,
+          collected.totalUsage.promptTokens,
+        )
+        totalUsage.completionTokens = Math.max(
+          totalUsage.completionTokens,
+          collected.totalUsage.completionTokens,
+        )
+        if (collected.totalUsage.reasoningTokens) {
+          totalUsage.reasoningTokens = collected.totalUsage.reasoningTokens
+        }
+        if (collected.totalUsage.cachedTokens) {
+          totalUsage.cachedTokens = collected.totalUsage.cachedTokens
+        }
+        if (collected.lastKnownPromptTokens > 0) {
+          lastKnownPromptTokens = collected.lastKnownPromptTokens
+        }
+        if (collected.lastError) {
+          lastError = collected.lastError
+        }
 
-            case 'reasoning':
-              if (chunk.delta) {
-                _reasoningContent += chunk.delta
-                this.emit({ type: 'reasoning', content: chunk.delta })
-              }
-              break
-
-            case 'tool_call_start':
-              if (chunk.toolCall?.index !== undefined) {
-                hasToolCalls = true
-                pendingToolCalls.set(chunk.toolCall.index, {
-                  id: chunk.toolCall.id ?? `tc-${Date.now()}-${chunk.toolCall.index}`,
-                  name: chunk.toolCall.name ?? '',
-                  arguments: {},
-                  thoughtSignature: chunk.toolCall.thoughtSignature,
-                })
-              }
-              break
-
-            case 'tool_call_delta':
-              // Arguments stream as JSON string deltas — accumulate
-              if (chunk.toolCall?.index !== undefined && chunk.delta) {
-                const tc = pendingToolCalls.get(chunk.toolCall.index)
-                if (tc) {
-                  // Store raw delta, parse when done
-                  argsDelta.set(
-                    chunk.toolCall.index,
-                    (argsDelta.get(chunk.toolCall.index) ?? '') + chunk.delta,
-                  )
-                }
-              }
-              break
-
-            case 'tool_call_done':
-              if (chunk.toolCall?.index !== undefined) {
-                const tc = pendingToolCalls.get(chunk.toolCall.index)
-                const rawArgs = argsDelta.get(chunk.toolCall.index)
-                if (tc && rawArgs) {
-                  try {
-                    tc.arguments = JSON.parse(rawArgs) as Record<string, unknown>
-                  } catch {
-                    tc.arguments = { raw: rawArgs }
-                  }
-                  argsDelta.delete(chunk.toolCall.index)
-                }
-              }
-              break
-
-            case 'status':
-              // Server-side tool activity from provider (e.g., xAI web_search, x_search)
-              if (chunk.delta) {
-                this.emit({ type: 'status', content: `🔍 ${chunk.delta}` })
-              }
-              break
-
-            case 'done':
-              if (chunk.usage) {
-                totalUsage.promptTokens = Math.max(
-                  totalUsage.promptTokens,
-                  chunk.usage.promptTokens,
-                )
-                totalUsage.completionTokens = Math.max(
-                  totalUsage.completionTokens,
-                  chunk.usage.completionTokens,
-                )
-                if (chunk.usage.reasoningTokens) {
-                  totalUsage.reasoningTokens = chunk.usage.reasoningTokens
-                }
-                if (chunk.usage.cachedTokens) {
-                  totalUsage.cachedTokens = chunk.usage.cachedTokens
-                }
-              }
-              break
-
-            case 'error':
-              lastError = chunk.error ?? 'Unknown provider error'
-              this.emit({ type: 'error', content: lastError })
-              break
+        if (collected.aborted) {
+          return {
+            response: '',
+            toolsUsed,
+            iterations,
+            aborted: true,
+            partialResponse: textContent || partialResponse,
+            usage: totalUsage,
+            hadSteer,
           }
         }
       } catch (err: unknown) {
@@ -577,8 +505,6 @@ export class AgentLoop {
       }
 
       // Tool calls — execute and loop
-      const toolCalls = [...pendingToolCalls.values()]
-
       messages.push({
         role: 'assistant',
         content: textContent,
