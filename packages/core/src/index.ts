@@ -46,6 +46,17 @@ export {
 } from './domain/session-hooks.js'
 export type { SessionHooksConfig, SessionHooksContext } from './domain/session-hooks.js'
 
+// AI SDK adapters — shared across providers and the new loop
+export {
+  partsToAiSdkUserContent,
+  convertMessagesToAiSdk,
+  extractText,
+  createLlmChunkAccumulator,
+  translateAiSdkPart,
+  buildDoneChunk,
+} from './domain/aisdk-stream.js'
+export type { AiSdkChunkAccumulator } from './domain/aisdk-stream.js'
+
 export { Router } from './domain/router.js'
 export type { RouteResult } from './domain/router.js'
 export { WorkspaceLoader } from './domain/workspace.js'

@@ -1,20 +1,15 @@
 /**
  * AI SDK-backed implementation of xAI `chatStream`.
  *
- * Lives alongside the legacy hand-rolled implementation in `index.ts`. Step 2c
- * (next commit) wires a feature flag on the provider to pick between paths.
- * Until then this module is dead code — kept compiling so the migration is
- * incremental and reviewable.
+ * Delegates to shared adapters in `@rivetos/core` for message conversion and
+ * fullStream-part → LLMChunk translation. This file owns only the xAI-specific
+ * pieces: provider construction (with `x-grok-conv-id` header), prepareTurn
+ * integration, server-side tool wiring (web_search / x_search / code_execution),
+ * reasoning effort mapping, and response-id persistence semantics.
  *
- * Maps:
- * - `prepareTurn` → `providerOptions.xai.previousResponseId`
- * - thinking effort → `providerOptions.xai.reasoningEffort`
- * - server-side tools (web_search / x_search / code_execution) → `xaiTools.*`
- * - `result.fullStream` → RivetOS `LLMChunk` events
- *
- * Known gaps vs. the legacy path (deliberately not wired in 2b):
+ * Known gaps vs. the legacy path (deliberately not wired):
  * - `xhigh` reasoning effort: `@ai-sdk/xai` schema only accepts low/medium/high.
- *   Multi-agent xhigh requests will degrade to `high` with a console warning.
+ *   Multi-agent xhigh requests degrade to `high` with a warning.
  * - `prompt_cache_key` body field: not exposed; the `x-grok-conv-id` header
  *   still carries the cache key, which is sufficient for cache hits.
  * - `max_turns`, `tool_choice`, `parallel_tool_calls`, `truncation`,
@@ -25,13 +20,17 @@
  */
 
 import { createXai, xaiTools } from '@ai-sdk/xai'
-import { streamText, stepCountIs, jsonSchema, APICallError, type ModelMessage, type ToolSet } from 'ai'
+import {
+  buildDoneChunk,
+  convertMessagesToAiSdk,
+  createLlmChunkAccumulator,
+  translateAiSdkPart,
+} from '@rivetos/core'
+import { streamText, stepCountIs, jsonSchema, APICallError, type ToolSet } from 'ai'
 import type { JSONObject, JSONValue } from '@ai-sdk/provider'
 import type {
   ChatOptions,
-  ContentPart,
   LLMChunk,
-  LLMUsage,
   Message,
   ThinkingLevel,
   ToolDefinition,
@@ -91,135 +90,6 @@ export interface XAIAiSdkContext {
    * Mirrors the legacy `pendingPrepared` field (one-shot, cleared after read).
    */
   consumePendingPrepared: () => { isContinuation: boolean } | null
-}
-
-// ---------------------------------------------------------------------------
-// Message conversion: RivetOS Message[] → AI SDK ModelMessage[]
-// ---------------------------------------------------------------------------
-
-function partsToAiSdkUserContent(
-  parts: ContentPart[],
-): Array<{ type: 'text'; text: string } | { type: 'image'; image: string | URL; mediaType?: string }> {
-  const out: Array<
-    { type: 'text'; text: string } | { type: 'image'; image: string | URL; mediaType?: string }
-  > = []
-  for (const part of parts) {
-    if (part.type === 'text') {
-      if (part.text) out.push({ type: 'text', text: part.text })
-    } else {
-      if (part.data) {
-        out.push({
-          type: 'image',
-          image: `data:${part.mimeType ?? 'image/jpeg'};base64,${part.data}`,
-          mediaType: part.mimeType,
-        })
-      } else if (part.url) {
-        out.push({ type: 'image', image: new URL(part.url), mediaType: part.mimeType })
-      }
-    }
-  }
-  return out
-}
-
-function extractText(content: string | ContentPart[]): string {
-  if (typeof content === 'string') return content
-  return content
-    .filter((p): p is ContentPart & { type: 'text' } => p.type === 'text')
-    .map((p) => p.text)
-    .join('')
-}
-
-function convertMessagesToAiSdk(messages: Message[]): ModelMessage[] {
-  const result: ModelMessage[] = []
-
-  // Map tool-call-id → tool name from prior assistant messages so tool result
-  // messages can satisfy AI SDK's `toolName` requirement.
-  const toolNameByCallId = new Map<string, string>()
-  for (const m of messages) {
-    if (m.role === 'assistant' && m.toolCalls) {
-      for (const tc of m.toolCalls) toolNameByCallId.set(tc.id, tc.name)
-    }
-  }
-
-  for (const msg of messages) {
-    if (msg.role === 'tool') {
-      let value = extractText(msg.content) || ''
-      if (typeof msg.content !== 'string' && Array.isArray(msg.content)) {
-        const imageCount = msg.content.filter((p) => p.type === 'image').length
-        if (imageCount > 0) {
-          value += `\n[${String(imageCount)} image(s) returned — see image content in context]`
-        }
-      }
-      const callId = msg.toolCallId ?? ''
-      result.push({
-        role: 'tool',
-        content: [
-          {
-            type: 'tool-result',
-            toolCallId: callId,
-            toolName: toolNameByCallId.get(callId) ?? '',
-            output: { type: 'text', value },
-          },
-        ],
-      })
-    } else if (msg.role === 'assistant') {
-      const text = extractText(msg.content) || ''
-      const hasToolCalls = !!msg.toolCalls && msg.toolCalls.length > 0
-
-      if (hasToolCalls) {
-        const content: Array<
-          | { type: 'text'; text: string }
-          | {
-              type: 'tool-call'
-              toolCallId: string
-              toolName: string
-              input: unknown
-            }
-        > = []
-        if (text) content.push({ type: 'text', text })
-        for (const tc of msg.toolCalls!) {
-          let input: unknown
-          if (typeof tc.arguments === 'string') {
-            try {
-              input = JSON.parse(tc.arguments)
-            } catch {
-              input = { raw: tc.arguments }
-            }
-          } else {
-            input = tc.arguments
-          }
-          content.push({
-            type: 'tool-call',
-            toolCallId: tc.id,
-            toolName: tc.name,
-            input,
-          })
-        }
-        result.push({ role: 'assistant', content })
-      } else if (text) {
-        result.push({ role: 'assistant', content: text })
-      }
-    } else if (msg.role === 'user') {
-      if (typeof msg.content !== 'string' && Array.isArray(msg.content)) {
-        const userContent = partsToAiSdkUserContent(msg.content)
-        if (userContent.length > 0) {
-          result.push({ role: 'user', content: userContent })
-        } else {
-          const text = extractText(msg.content)
-          if (text) result.push({ role: 'user', content: text })
-        }
-      } else {
-        const text = extractText(msg.content)
-        if (text) result.push({ role: 'user', content: text })
-      }
-    } else {
-      // system
-      const text = extractText(msg.content)
-      if (text) result.push({ role: 'system', content: text })
-    }
-  }
-
-  return result
 }
 
 // ---------------------------------------------------------------------------
@@ -359,12 +229,7 @@ export async function* chatStreamAiSdk(
   }
   const timeout = setTimeout(() => controller.abort(), ctx.timeoutMs)
 
-  const usage: LLMUsage = { promptTokens: 0, completionTokens: 0 }
-  const citations: string[] = []
-  let hadTextContent = false
-  let savedResponseId: string | null = null
-  const pendingToolCallIndex = new Map<string, number>()
-  let nextToolCallIndex = 0
+  const acc = createLlmChunkAccumulator()
 
   try {
     const xaiProviderOptions: JSONObject = {
@@ -388,80 +253,20 @@ export async function* chatStreamAiSdk(
     })
 
     for await (const part of result.fullStream) {
-      switch (part.type) {
-        case 'text-delta': {
-          if (part.text) {
-            hadTextContent = true
-            yield { type: 'text', delta: part.text }
-          }
-          break
-        }
-        case 'reasoning-delta': {
-          if (part.text) yield { type: 'reasoning', delta: part.text }
-          break
-        }
-        case 'tool-input-start': {
-          const idx = nextToolCallIndex++
-          pendingToolCallIndex.set(part.id, idx)
-          yield {
-            type: 'tool_call_start',
-            toolCall: { index: idx, id: part.id, name: part.toolName },
-          }
-          break
-        }
-        case 'tool-input-delta': {
-          const idx = pendingToolCallIndex.get(part.id) ?? 0
-          yield {
-            type: 'tool_call_delta',
-            delta: part.delta,
-            toolCall: { index: idx },
-          }
-          break
-        }
-        case 'tool-input-end': {
-          const idx = pendingToolCallIndex.get(part.id) ?? 0
-          yield { type: 'tool_call_done', toolCall: { index: idx } }
-          break
-        }
-        case 'source': {
-          if (part.sourceType === 'url' && part.url) citations.push(part.url)
-          break
-        }
-        case 'finish-step': {
-          if (part.usage) {
-            usage.promptTokens = part.usage.inputTokens ?? 0
-            usage.completionTokens = part.usage.outputTokens ?? 0
-            const reasoningTokens = part.usage.outputTokenDetails?.reasoningTokens
-            if (reasoningTokens) usage.reasoningTokens = reasoningTokens
-            const cacheReadTokens = part.usage.inputTokenDetails?.cacheReadTokens
-            if (cacheReadTokens) usage.cachedTokens = cacheReadTokens
-          }
-          if (part.response.id) savedResponseId = part.response.id
-          break
-        }
-        case 'error': {
-          const errMsg = part.error instanceof Error ? part.error.message : String(part.error)
-          yield { type: 'error', error: errMsg }
-          break
-        }
-        // Ignore: text-start/end, reasoning-start/end, tool-call (we already
-        // emitted equivalent events from the input stream), tool-result,
-        // tool-error, file, start, finish, abort, start-step
-      }
+      const chunks = translateAiSdkPart(part as never, acc)
+      for (const chunk of chunks) yield chunk
     }
 
     // Mirror legacy save semantics: only persist response ID when text was
     // emitted. Tool-call-only responses can poison server-side state.
-    if (savedResponseId && storeThisRequest && hadTextContent) {
-      ctx.setLastResponseId(savedResponseId)
+    if (acc.responseId && storeThisRequest && acc.hadTextContent) {
+      ctx.setLastResponseId(acc.responseId)
       ctx.setLastResponseModel(model)
-    } else if (savedResponseId && storeThisRequest && !hadTextContent) {
+    } else if (acc.responseId && storeThisRequest && !acc.hadTextContent) {
       ctx.setLastResponseId(null)
     }
 
-    const doneChunk: LLMChunk = { type: 'done', usage }
-    if (citations.length > 0) doneChunk.citations = citations
-    yield doneChunk
+    yield buildDoneChunk(acc)
   } catch (err) {
     // Invalidate continuation state on any failure — matches legacy behavior.
     ctx.setLastResponseId(null)
