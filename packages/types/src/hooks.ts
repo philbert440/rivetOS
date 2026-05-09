@@ -89,16 +89,22 @@ export interface HookContextBase {
   metadata: Record<string, unknown>
 }
 
-/** Context for provider:before — inspect/modify the request before it goes out */
+/** Context for provider:before — inspect/modify the request before it goes out.
+ *
+ *  Mutation contract (pinned for AI SDK middleware compat):
+ *  Treat `messages` and `tools` as read-only references. To modify either,
+ *  reassign with a new array (e.g. `ctx.messages = [...ctx.messages, msg]`).
+ *  Do NOT call `.push`/`.splice`/`.sort` etc. on them — those mutations may
+ *  not propagate through the AI SDK middleware that wraps the loop. */
 export interface ProviderBeforeContext extends HookContextBase {
   event: 'provider:before'
   /** Provider being called */
   providerId: string
   /** Model being used */
   model: string
-  /** Message array (mutable — hooks can modify) */
+  /** Message array — reassign to replace, do not mutate in place */
   messages: unknown[]
-  /** Tool definitions (mutable) */
+  /** Tool definitions — reassign to replace, do not mutate in place */
   tools?: unknown[]
   /** If set to true by a hook, skip the provider call and abort the turn */
   skip?: boolean
