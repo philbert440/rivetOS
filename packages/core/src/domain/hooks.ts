@@ -5,10 +5,18 @@
  *
  * Design:
  * - Hooks are sorted by priority (lower = first, default 50)
- * - Each hook receives the context object and can mutate it
+ * - Each hook receives the context object and can read/write its fields
  * - Hooks can return 'abort' (hard stop) or 'skip' (soft stop)
  * - Error handling per-hook: continue (log & proceed), abort, or retry
  * - Agent/tool filters narrow which hooks fire
+ *
+ * Mutation contract (pinned for AI SDK middleware compat — see
+ * `packages/types/src/hooks.ts` `ProviderBeforeContext`):
+ * Hooks may freely set scalar fields (`skip`, `blocked`, `metadata.*`, etc.)
+ * but must treat array fields like `messages` and `tools` as read-only
+ * references. To modify either, reassign with a fresh array. In-place
+ * mutations may not propagate through the AI SDK middleware that wraps the
+ * loop after the migration in `loop-aisdk.ts`.
  *
  * The pipeline is the single mechanism powering safety gates, auto-actions,
  * session hooks, and eventually dynamic routing.
