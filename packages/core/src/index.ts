@@ -54,8 +54,9 @@ export {
   createLlmChunkAccumulator,
   translateAiSdkPart,
   buildDoneChunk,
+  collectLlmStream,
 } from './domain/aisdk-stream.js'
-export type { AiSdkChunkAccumulator } from './domain/aisdk-stream.js'
+export type { AiSdkChunkAccumulator, StreamCollectorResult } from './domain/aisdk-stream.js'
 
 export { Router } from './domain/router.js'
 export type { RouteResult } from './domain/router.js'
