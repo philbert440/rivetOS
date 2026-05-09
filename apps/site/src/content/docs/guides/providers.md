@@ -142,7 +142,7 @@ When `store: true` (default), xAI stores the conversation server-side. Each turn
 | Model | Type | Notes |
 |-------|------|-------|
 | `grok-4.20-reasoning` | Flagship | 2M context, fast + agentic, $2.00/$6.00 per M tokens |
-| `grok-4-1-fast-reasoning` | Fast | 10x cheaper ($0.20/$0.50), good for compaction/fallback |
+| `grok-4-1-fast-reasoning` | Fast | 10x cheaper ($0.20/$0.50), good for compaction and cheap throughput |
 
 > **Docs:** [xAI API Documentation](https://docs.x.ai/docs)
 
@@ -336,36 +336,6 @@ agents:
 ---
 
 
-
-## Fallback Chains
-
-When a provider fails (429 rate limit, 503 overloaded, timeout), RivetOS can automatically try the next provider in a fallback chain.
-
-Configure at the agent level:
-
-```yaml
-agents:
-  opus:
-    provider: anthropic
-    fallbacks:
-      - "google:gemini-2.5-pro"
-      - "xai:grok-4-1-fast-reasoning"
-```
-
-Or globally:
-
-```yaml
-runtime:
-  fallbacks:
-    - providerId: anthropic
-      fallbacks:
-        - "google:gemini-2.5-pro"
-        - "xai:grok-4-1-fast-reasoning"
-```
-
-Format: `provider_id` uses the provider's default model, `provider_id:model` overrides the model.
-
----
 
 ## Checking Provider Health
 

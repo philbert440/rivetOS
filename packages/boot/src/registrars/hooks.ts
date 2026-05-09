@@ -1,15 +1,14 @@
 /**
- * Hook Registrar — wires up fallback, safety, auto-action, and session hooks.
+ * Hook Registrar — wires up safety, auto-action, and session hooks.
  * Learning hooks moved to memory plugin (M4.2 — background review loop).
+ * Provider fallback was removed in the AI SDK migration.
  */
 
 import { resolve } from 'node:path'
-import type { FallbackConfig } from '@rivetos/types'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
 import {
   HookPipelineImpl,
-  createFallbackHook,
   createSafetyHooks,
   createAutoActionHooks,
   createSessionHooks,
@@ -21,39 +20,11 @@ import type { AuditWriter, AuditEntry, ShellExecutor } from '@rivetos/core'
 
 const log = logger('Boot:Hooks')
 
-export interface HookRegistrationResult {
-  pipeline: HookPipelineImpl
-  fallbackConfigs: FallbackConfig[]
-}
-
 export async function registerHooks(
   config: RivetConfig,
   workspaceDir: string,
-): Promise<HookRegistrationResult> {
+): Promise<HookPipelineImpl> {
   const pipeline = new HookPipelineImpl(log)
-  const fallbackConfigs: FallbackConfig[] = []
-
-  // --- Fallback chains ---
-  if (config.runtime.fallbacks) {
-    for (const fb of config.runtime.fallbacks) {
-      fallbackConfigs.push({ providerId: fb.providerId, fallbacks: fb.fallbacks })
-    }
-  }
-
-  // Per-agent fallbacks
-  for (const [, agent] of Object.entries(config.agents)) {
-    if (agent.fallbacks?.length) {
-      fallbackConfigs.push({
-        providerId: agent.provider,
-        fallbacks: agent.fallbacks,
-      })
-    }
-  }
-
-  if (fallbackConfigs.length > 0) {
-    pipeline.register(createFallbackHook(fallbackConfigs))
-    log.info(`Hooks: ${fallbackConfigs.length} fallback chain(s) registered`)
-  }
 
   // --- Safety hooks ---
   const safety = config.runtime.safety
@@ -163,5 +134,5 @@ export async function registerHooks(
     log.info(`Hooks: ${sessionHooks.length} session hook(s) registered`)
   }
 
-  return { pipeline, fallbackConfigs }
+  return pipeline
 }

@@ -10,8 +10,8 @@
  * - Error handling per-hook: continue (log & proceed), abort, or retry
  * - Agent/tool filters narrow which hooks fire
  *
- * The pipeline is the single mechanism powering fallbacks, safety gates,
- * auto-actions, session hooks, and eventually dynamic routing.
+ * The pipeline is the single mechanism powering safety gates, auto-actions,
+ * session hooks, and eventually dynamic routing.
  */
 
 import type {

@@ -5,7 +5,7 @@ These examples cover common RivetOS setups. Copy one to `config.yaml` and custom
 | Example | Description | Providers | Channels |
 |---------|-------------|-----------|----------|
 | [`single-agent.yaml`](single-agent.yaml) | Simplest setup — one agent, one channel | Anthropic | Discord |
-| [`multi-agent.yaml`](multi-agent.yaml) | Three agents with delegation and fallbacks | Anthropic, xAI, Ollama | Discord + Agent |
+| [`multi-agent.yaml`](multi-agent.yaml) | Three agents with delegation across providers | Anthropic, xAI, Ollama | Discord + Agent |
 | [`local-only.yaml`](local-only.yaml) | Fully self-hosted, no cloud APIs | Ollama | Telegram |
 | [`homelab.yaml`](homelab.yaml) | Multi-node Proxmox deployment | Anthropic, xAI, Ollama | Discord + Agent |
 

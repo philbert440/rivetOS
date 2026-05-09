@@ -9,7 +9,7 @@
  * - Error modes: continue (log & proceed), abort (stop pipeline), retry
  *
  * Usage pattern:
- *   Router uses hooks internally for fallbacks, rate limiting, cost tracking.
+ *   Router uses hooks internally for rate limiting, cost tracking, observability.
  *   Users register hooks via config or code for custom behavior.
  */
 
@@ -23,7 +23,7 @@
  * Provider lifecycle:
  *   provider:before  — before calling a provider (rate limit checks, request shaping)
  *   provider:after   — after successful response (token logging, cost tracking)
- *   provider:error   — after provider failure (fallback triggers re-route)
+ *   provider:error   — after provider failure (logging, classification — observational only)
  *
  * Tool lifecycle:
  *   tool:before      — before tool execution (safety checks, approval gates)
@@ -100,7 +100,7 @@ export interface ProviderBeforeContext extends HookContextBase {
   messages: unknown[]
   /** Tool definitions (mutable) */
   tools?: unknown[]
-  /** If set to true by a hook, skip this provider and try next fallback */
+  /** If set to true by a hook, skip the provider call and abort the turn */
   skip?: boolean
 }
 
@@ -117,7 +117,9 @@ export interface ProviderAfterContext extends HookContextBase {
   hasToolCalls: boolean
 }
 
-/** Context for provider:error — decide what to do after failure */
+/** Context for provider:error — observability only (logging, metrics, classification).
+ *  Provider fallback was removed in the AI SDK migration; the loop no longer
+ *  reads any retry signal from this context. */
 export interface ProviderErrorContext extends HookContextBase {
   event: 'provider:error'
   providerId: string
@@ -126,11 +128,6 @@ export interface ProviderErrorContext extends HookContextBase {
   error: Error
   /** HTTP status code if available */
   statusCode?: number
-  /** Whether to retry with a different provider/model. Set by fallback hooks. */
-  retry?: {
-    providerId: string
-    model: string
-  }
 }
 
 /** Context for tool:before — inspect/block tool execution */
@@ -271,8 +268,6 @@ export interface TurnReflectContext extends HookContextBase {
     toolCallCount: number
     /** Whether error recovery occurred (tool errored, then succeeded) */
     hadErrorRecovery: boolean
-    /** Whether a provider fallback was triggered */
-    hadFallback: boolean
     /** Whether the user corrected the agent during this turn (steer) */
     hadUserCorrection: boolean
     /** Unique tool names used */
@@ -450,20 +445,4 @@ export interface HookConfig {
   description?: string
   /** Enabled (default true) */
   enabled?: boolean
-}
-
-/**
- * Fallback chain config — per provider.
- */
-export interface FallbackConfig {
-  /** Provider ID this fallback chain belongs to */
-  providerId: string
-  /** Ordered list of fallback models: provider:model or just model (same provider) */
-  fallbacks: string[]
-  /** Error codes that trigger fallback (default: [429, 503]) */
-  triggerCodes?: number[]
-  /** Also trigger on timeout (default: true) */
-  triggerOnTimeout?: boolean
-  /** Also trigger on auth failure (default: false) */
-  triggerOnAuthFailure?: boolean
 }

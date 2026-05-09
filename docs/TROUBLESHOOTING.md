@@ -81,17 +81,7 @@ npx rivetos start
 
 The provider is rate limiting you or overloaded.
 
-**Fix:** RivetOS handles this automatically with fallback chains if configured:
-
-```yaml
-runtime:
-  fallbacks:
-    - providerId: anthropic
-      fallbacks:
-        - "google:gemini-2.5-pro"
-```
-
-The circuit breaker will also prevent hammering a failing provider. It opens after 5 failures in 60 seconds and recovers automatically.
+**Fix:** The circuit breaker prevents hammering a failing provider — it opens after 5 failures in 60 seconds and recovers automatically. Provider fallback chains were removed in the AI SDK migration; if a provider is down, switch the agent's `provider:` setting until it recovers.
 
 ### "Maximum tool iterations reached"
 

@@ -567,7 +567,7 @@ export class AnthropicProvider implements Provider {
       }
     } catch (err: unknown) {
       if (options?.signal?.aborted) return
-      // Re-throw ProviderErrors so the loop's fallback chain can catch them
+      // Re-throw ProviderErrors so the loop surfaces the structured failure
       if (err instanceof ProviderError) throw err
       const message = err instanceof Error ? err.message : String(err)
       console.error('[Anthropic] Stream error:', message)

@@ -22,7 +22,6 @@ import type {
   AgentConfig,
   StreamHandler,
   HookPipeline,
-  FallbackConfig,
 } from '@rivetos/types'
 import { SILENT_RESPONSES } from '../domain/constants.js'
 import { AgentLoop } from '../domain/loop.js'
@@ -57,8 +56,6 @@ export interface RuntimeConfig {
   skillDirs?: string[]
   /** Hook pipeline instance (created by boot, shared across runtime) */
   hooks?: HookPipeline
-  /** Provider fallback chains */
-  fallbacks?: FallbackConfig[]
   /** Path to config.yaml (for persistent /model changes) */
   configPath?: string
 }
@@ -121,7 +118,6 @@ export class Runtime {
       tools: this.tools,
       memory: this.memory,
       hooks: config.hooks,
-      fallbacks: config.fallbacks,
       workspaceDir: config.workspaceDir,
       turnTimeout: config.turnTimeout,
       contextConfig: config.contextConfig,

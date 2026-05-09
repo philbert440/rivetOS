@@ -14,13 +14,6 @@ runtime:
     validator_agent: opus
     auto_commit: true
 
-  # Provider fallback chains
-  fallbacks:
-    - providerId: anthropic
-      fallbacks:
-        - "google:gemini-2.5-pro"
-        - "xai:grok-4-1-fast-reasoning"
-
   # Heartbeat — periodic background tasks
   heartbeats:
     - agent: opus

@@ -640,23 +640,19 @@ describe('HookPipeline', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Provider:error with fallback context
+  // Provider:error — observational only (no retry/fallback semantics)
   // -----------------------------------------------------------------------
 
-  it('should allow provider:error hooks to set retry info', async () => {
+  it('should run provider:error hooks for observability without retry semantics', async () => {
     const pipeline = new HookPipelineImpl();
+    const seen: { providerId: string; statusCode?: number }[] = [];
 
     pipeline.register({
-      id: 'fallback',
+      id: 'error-logger',
       event: 'provider:error',
       handler: async (ctx) => {
         const errCtx = ctx as ProviderErrorContext;
-        if (errCtx.statusCode === 429) {
-          errCtx.retry = {
-            providerId: 'google',
-            model: 'gemini-2.0-flash',
-          };
-        }
+        seen.push({ providerId: errCtx.providerId, statusCode: errCtx.statusCode });
       },
     });
 
@@ -671,8 +667,10 @@ describe('HookPipeline', () => {
     };
 
     const result = await pipeline.run(ctx);
-    assert.equal(result.context.retry?.providerId, 'google');
-    assert.equal(result.context.retry?.model, 'gemini-2.0-flash');
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].providerId, 'google');
+    assert.equal(seen[0].statusCode, 429);
+    assert.equal(result.aborted, false);
   });
 
   // -----------------------------------------------------------------------
