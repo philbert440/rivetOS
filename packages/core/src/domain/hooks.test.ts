@@ -213,22 +213,24 @@ describe('HookPipeline', () => {
     assert.equal((result.context as ProviderBeforeContext).skip, true);
   });
 
-  it('should allow hooks to modify messages array', async () => {
+  it('should allow hooks to replace messages array (reassign, do not mutate)', async () => {
     const pipeline = new HookPipelineImpl();
 
     pipeline.register({
       id: 'inject-system-msg',
       event: 'provider:before',
       handler: async (ctx) => {
-        (ctx as ProviderBeforeContext).messages.push({ role: 'system', content: 'injected' });
+        const pctx = ctx as ProviderBeforeContext;
+        pctx.messages = [...pctx.messages, { role: 'system', content: 'injected' }];
       },
     });
 
     const ctx = makeProviderBeforeCtx({ messages: [{ role: 'user', content: 'hi' }] });
-    await pipeline.run(ctx);
+    const result = await pipeline.run(ctx);
+    const finalMessages = (result.context as ProviderBeforeContext).messages;
 
-    assert.equal(ctx.messages.length, 2);
-    assert.deepEqual(ctx.messages[1], { role: 'system', content: 'injected' });
+    assert.equal(finalMessages.length, 2);
+    assert.deepEqual(finalMessages[1], { role: 'system', content: 'injected' });
   });
 
   // -----------------------------------------------------------------------
