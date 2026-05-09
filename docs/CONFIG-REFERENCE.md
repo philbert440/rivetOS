@@ -118,24 +118,6 @@ runtime:
 | `max_validation_loops` | number | `2` | Max validation rounds per build. |
 | `auto_commit` | boolean | `true` | Auto-commit on successful validation. |
 
-### `runtime.fallbacks`
-
-Provider fallback chains. When a provider fails (429, 503, timeout), try the next one.
-
-```yaml
-runtime:
-  fallbacks:
-    - providerId: anthropic
-      fallbacks:
-        - "google:gemini-2.5-pro"
-        - "xai:grok-4-1-fast-reasoning"
-```
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `providerId` | string | Primary provider ID. |
-| `fallbacks` | string[] | Ordered list of fallback providers. Format: `provider_id` or `provider_id:model`. |
-
 ### `runtime.safety`
 
 Safety hooks configuration.
@@ -197,8 +179,6 @@ agents:
   opus:
     provider: anthropic
     default_thinking: medium
-    fallbacks:
-      - "google:gemini-2.5-pro"
     tools:
       exclude:
         - shell
@@ -213,7 +193,6 @@ agents:
 |-----|------|---------|-------------|
 | `provider` | string | **required** | Provider ID. Must match a key in `providers`. |
 | `default_thinking` | string | `off` | Default thinking level: `off`, `low`, `medium`, `high`. |
-| `fallbacks` | string[] | `[]` | Provider fallback chain for this agent specifically. |
 | `local` | boolean | `false` | If true, uses extended workspace context (includes CAPABILITIES.md, daily notes). Use for local models where tokens are free. |
 | `tools.exclude` | string[] | `[]` | Tool names to block for this agent. |
 | `tools.include` | string[] | all | If set, only these tools are available to this agent. |

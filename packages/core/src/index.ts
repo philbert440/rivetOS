@@ -10,7 +10,6 @@ export { AgentLoop } from './domain/loop.js'
 export type { AgentLoopConfig, TurnResult } from './domain/loop.js'
 export { HookPipelineImpl } from './domain/hooks.js'
 export type { HookLogger } from './domain/hooks.js'
-export { createFallbackHook, createFallbackHookWithState } from './domain/fallback.js'
 export {
   createSafetyHooks,
   createShellDangerHook,

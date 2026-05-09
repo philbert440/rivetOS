@@ -62,8 +62,6 @@ export interface AgentLoopConfig {
   hooks?: HookPipeline
   /** Session ID for hook context */
   sessionId?: string
-  /** Resolve a provider by ID (for fallback chains) */
-  resolveProvider?: (providerId: string) => Provider | undefined
   /** Turn wall-clock timeout in ms (default: 900_000 = 15 min) */
   turnTimeout?: number
   /** Graceful degradation warning offset in ms before timeout (default: 180_000 = 3 min before timeout) */
@@ -357,7 +355,7 @@ export class AgentLoop {
         }
         const beforeResult = await this.config.hooks.run(beforeCtx)
         if (beforeResult.aborted || beforeCtx.skip) {
-          // Hook said skip this provider — return empty (fallback will handle via provider:error)
+          // Hook said skip this provider — abort the turn cleanly
           return {
             response: '',
             toolsUsed,
@@ -519,7 +517,7 @@ export class AgentLoop {
           }
         }
 
-        // --- Hook: provider:error (fallback chain) ---
+        // --- Hook: provider:error (observational only) ---
         if (this.config.hooks) {
           const isProviderError = err instanceof ProviderError
           const statusCode = isProviderError ? err.statusCode : undefined
@@ -535,22 +533,7 @@ export class AgentLoop {
             timestamp: Date.now(),
             metadata: {},
           }
-          const _errorResult = await this.config.hooks.run(errorCtx)
-
-          // If a fallback hook set retry info, switch provider and retry this iteration
-          if (errorCtx.retry) {
-            const fallbackProvider = this.config.resolveProvider?.(errorCtx.retry.providerId)
-            if (fallbackProvider) {
-              const statusLabel = statusCode ? ` (${statusCode})` : ''
-              this.emit({
-                type: 'status',
-                content: `⚠️ ${errorProviderId}${statusLabel} — falling back to ${errorCtx.retry.providerId}/${errorCtx.retry.model}`,
-              })
-              activeProvider = fallbackProvider
-              activeModelOverride = errorCtx.retry.model
-              continue // Retry the while loop with the new provider/model
-            }
-          }
+          await this.config.hooks.run(errorCtx)
         }
 
         throw err

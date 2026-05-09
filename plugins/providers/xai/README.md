@@ -16,7 +16,6 @@ Connects a RivetOS agent to xAI's Grok models using the Responses API (`/v1/resp
 - **Tool calling** — full function calling support
 - **Encrypted reasoning** — passthrough for Grok's encrypted reasoning tokens
 - **Long timeouts** — 1-hour default timeout for reasoning models
-- **Chat Completions fallback** — automatically falls back for non-reasoning models
 
 ## Installation
 

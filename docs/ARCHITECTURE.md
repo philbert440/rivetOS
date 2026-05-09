@@ -58,7 +58,6 @@
 │  Skills       — skill discovery and matching           │
 │  Heartbeat    — periodic scheduling                    │
 │  Safety       — shell danger, workspace fence, audit   │
-│  Fallback     — provider fallback chains               │
 │  Circuit Break— provider failure tracking, open/close  │
 │  Reconnect    — exponential backoff for channels       │
 │  Auto-Actions — post-tool automation (format, lint)    │
@@ -163,7 +162,7 @@ FileMeshRegistry — owns mesh node registration, heartbeat, pruning.
 │  │                             discovered provider,     │  │
 │  │                             channel, tool, memory,   │  │
 │  │                             and transport plugin      │  │
-│  │  registrars/hooks.ts      — wire safety/fallback/etc  │  │
+│  │  registrars/hooks.ts      — wire safety/auto-actions  │  │
 │  │  registrars/agents.ts     — delegation/subagent/skills │  │
 │  └────────────────────────────────────────────────────────┘  │
 │                                                              │
@@ -280,7 +279,6 @@ rivetOS/
             security.ts              ← skill content validation
           heartbeat.ts               ← HeartbeatRunner — periodic scheduling
           safety-hooks.ts            ← Shell danger, workspace fence, audit, custom rules
-          fallback.ts                ← Provider fallback chains
           circuit-breaker.ts         ← Provider failure tracking, open/half-open/closed
           reconnect.ts               ← ReconnectionManager — exponential backoff
           auto-actions.ts            ← Post-tool automation (format, lint, test, git check)
@@ -317,7 +315,7 @@ rivetOS/
         registrars/
           plugins.ts                 ← Generic manifest-driven loader (providers,
                                      ←   channels, tools, memory, transports)
-          hooks.ts                   ← Wire safety, fallback, auto-actions, sessions, learning
+          hooks.ts                   ← Wire safety, auto-actions, sessions, learning
           agents.ts                  ← Delegation, subagent, skills registration
     cli/                             ← command-line interface
       src/
@@ -580,7 +578,6 @@ Composable async pipeline with priority ordering (0-99):
 
 **Built-in hooks (wired via boot registrars):**
 - **Safety hooks** — Shell danger blocker (P10), workspace fence (P15), custom rules (P20), audit logger (P90)
-- **Fallback chains** — Cross-provider failover on 429/503/timeout with circuit breaker integration
 - **Auto-actions** — Post-tool format/lint/test/git-check (opt-in)
 - **Session hooks** — Daily context loading, session summaries, auto-commit, pre/post-compact
 
@@ -598,7 +595,6 @@ agents:
   opus:
     provider: anthropic
     default_thinking: medium
-    fallbacks: ['google:gemini-2.5-pro']
   grok:
     provider: xai
 

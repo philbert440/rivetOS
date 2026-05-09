@@ -22,7 +22,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **MCP transport plugin** — Expose RivetOS tools (memory, web, skills) to external MCP clients over StreamableHTTP.
 - **20+ built-in tools** — Shell, file I/O, search, web, memory, skills, interaction, MCP client, coding pipeline, delegation, sub-agents.
 - **Multi-agent mesh** — Delegate tasks across agents. Local or remote. Transparent routing.
-- **Hook system** — Composable pipeline for safety, fallback chains, auto-actions, session lifecycle.
+- **Hook system** — Composable pipeline for safety, auto-actions, session lifecycle.
 - **Interactive setup** — `rivetos init` walks you through everything step by step.
 - **Container deployment** — Docker Compose or Proxmox LXC. Images built from source, plugins included.
 - **Source-based updates** — `rivetos update` pulls, rebuilds, restarts. Forks and custom plugins are first-class.
@@ -169,7 +169,6 @@ agents:
   opus:
     provider: anthropic
     default_thinking: medium
-    fallbacks: ['google:gemini-2.5-pro']
 
 providers:
   anthropic:

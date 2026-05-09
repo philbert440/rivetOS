@@ -3,7 +3,7 @@
  */
 
 import type { ThinkingLevel } from './provider.js'
-import type { HookConfig, FallbackConfig } from './hooks.js'
+import type { HookConfig } from './hooks.js'
 import type { MeshConfig } from './mesh.js'
 
 export interface ContextConfig {
@@ -24,8 +24,6 @@ export interface RuntimeConfig {
   heartbeats?: HeartbeatConfig[]
   /** Declarative hook definitions (loaded from config) */
   hooks?: HookConfig[]
-  /** Provider fallback chains */
-  fallbacks?: FallbackConfig[]
   /** Learning loop configuration (M4.2) */
   learning?: LearningLoopConfig
   /** Multi-agent mesh configuration (M7.5) */
@@ -37,8 +35,6 @@ export interface LearningLoopConfig {
   reflectToolThreshold?: number
   /** Whether to reflect on error recovery turns (default: true) */
   reflectOnErrorRecovery?: boolean
-  /** Whether to reflect on fallback triggers (default: true) */
-  reflectOnFallback?: boolean
   /** Whether to reflect on user corrections/steers (default: true) */
   reflectOnCorrection?: boolean
   /** Periodic nudge interval in ms (default: 1800000 = 30min, 0 to disable) */
@@ -67,8 +63,6 @@ export interface AgentConfig {
   defaultThinking?: ThinkingLevel
   /** Per-agent hook overrides */
   hooks?: HookConfig[]
-  /** Per-agent fallback chain (overrides global fallback for this agent's provider) */
-  fallbacks?: string[]
   /** Whether this agent uses a local/self-hosted provider (free tokens → extended context) */
   local?: boolean
   /** Tool filtering for when this agent runs as a delegate or sub-agent */

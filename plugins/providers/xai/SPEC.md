@@ -467,7 +467,7 @@ Three models are supported. Everything else (grok-4, grok-3, grok-3-mini) is dep
 | Model | Context | reasoning.effort | Pricing (in/out per M) | Notes |
 |-------|---------|-----------------|----------------------|-------|
 | `grok-4.20-0309-reasoning` | 2M | ✅ | $2.00 / $6.00 | Flagship. Fast + agentic. Alias: `grok-4.20-reasoning`. |
-| `grok-4-1-fast-reasoning` | — | ✅ | $0.20 / $0.50 | Fast + cheap. 10x cheaper than 4.20. Good for compaction/fallback. |
+| `grok-4-1-fast-reasoning` | — | ✅ | $0.20 / $0.50 | Fast + cheap. 10x cheaper than 4.20. Good for compaction and cheap throughput. |
 | `grok-4.20-multi-agent-0309` | 2M | ✅ (controls agent count) | $2.00 / $6.00 | Multi-agent deep research. Same base price but higher token usage. |
 
 Non-reasoning variants also exist (`grok-4.20-0309-non-reasoning`, `grok-4-1-fast-non-reasoning`) at the same price points, but we always want reasoning enabled.
