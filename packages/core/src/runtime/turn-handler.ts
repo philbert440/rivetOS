@@ -14,7 +14,6 @@ import type {
   HookPipeline,
   TurnBeforeContext,
   TurnAfterContext,
-  FallbackConfig,
   AgentConfig,
 } from '@rivetos/types'
 import { join } from 'node:path'
@@ -43,7 +42,6 @@ export interface TurnHandlerDeps {
   tools: Tool[]
   memory?: Memory
   hooks?: HookPipeline
-  fallbacks?: FallbackConfig[]
   workspaceDir: string
   /** Turn wall-clock timeout in seconds (default: 900) */
   turnTimeout?: number
@@ -146,10 +144,6 @@ export class TurnHandler {
         imageDir,
         hooks: this.deps.hooks,
         sessionId: sessionKey,
-        resolveProvider: (id: string) => {
-          const providerId = id.includes(':') ? id.split(':')[0] : id
-          return router.getProviders().find((p) => p.id === providerId)
-        },
         turnTimeout: this.deps.turnTimeout ? this.deps.turnTimeout * 1000 : undefined,
         contextWindow: provider.getContextWindow(),
         contextConfig: this.deps.contextConfig

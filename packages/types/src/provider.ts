@@ -15,7 +15,7 @@ export interface ChatOptions {
   tools?: ToolDefinition[]
   signal?: AbortSignal
   thinking?: ThinkingLevel
-  /** Override the provider's default model for this request (used by fallback chains) */
+  /** Override the provider's default model for this request */
   modelOverride?: string
   /** Start a fresh conversation — don't reuse stateful conversation context (e.g. xAI previous_response_id).
    *  Used by delegation and subagent engines to prevent conversation state bleed. */
@@ -168,16 +168,14 @@ export type ProviderErrorCode =
   | 'PROVIDER_REQUEST_FAILED'
 
 // ---------------------------------------------------------------------------
-// ProviderError — thrown by providers for retryable failures
+// ProviderError — thrown by providers for HTTP failures
 // ---------------------------------------------------------------------------
 
 const RETRYABLE_STATUS_CODES = new Set([429, 503, 529])
 
 /**
- * Error thrown by providers for HTTP failures. Retryable errors trigger fallback chains.
- *
- * Backward compatible — original (message, statusCode, providerId, retryable) constructor
- * still works. New code can use the richer options form.
+ * Error thrown by providers for HTTP failures. The `retryable` flag is
+ * informational (used by observability hooks); the loop itself does not retry.
  */
 export class ProviderError extends Error {
   readonly statusCode: number

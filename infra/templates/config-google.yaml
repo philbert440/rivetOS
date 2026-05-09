@@ -4,13 +4,6 @@ runtime:
   turn_timeout: 900
   skill_dirs:
     - /opt/rivetos/skills
-  fallbacks:
-    - providerId: google
-      fallbacks:
-        - "google:gemini-3.1-pro-preview-customtools"
-        - "google:gemini-2.5-flash"
-      triggerCodes: [429, 503]
-      triggerOnTimeout: true
   heartbeats:
     - agent: %%AGENT_NAME%%
       schedule: '0 * * * *'

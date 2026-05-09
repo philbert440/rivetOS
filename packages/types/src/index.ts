@@ -131,7 +131,6 @@ export type {
   HookPipelineResult,
   HookPipeline,
   HookConfig,
-  FallbackConfig,
 } from './hooks.js'
 export type {
   MeshNode,

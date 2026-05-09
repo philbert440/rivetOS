@@ -83,7 +83,6 @@ export const KNOWN_RUNTIME_KEYS = new Set([
   'plugin_dirs',
   'heartbeats',
   'coding_pipeline',
-  'fallbacks',
   'safety',
   'auto_actions',
 ])
@@ -92,9 +91,26 @@ export const KNOWN_AGENT_KEYS = new Set([
   'provider',
   'model',
   'default_thinking',
-  'fallbacks',
   'local',
   'tools',
+])
+
+/**
+ * Keys removed in the AI SDK migration — config validator emits a hard error
+ * with a clear message when these are present so stale config fails loudly.
+ */
+export const REMOVED_RUNTIME_KEYS = new Map<string, string>([
+  [
+    'fallbacks',
+    'Provider fallback was removed in the AI SDK migration. Remove "runtime.fallbacks" from your config.',
+  ],
+])
+
+export const REMOVED_AGENT_KEYS = new Map<string, string>([
+  [
+    'fallbacks',
+    'Per-agent fallback chains were removed in the AI SDK migration. Remove "fallbacks" from this agent.',
+  ],
 ])
 
 export const VALID_THINKING_LEVELS = new Set(['off', 'low', 'medium', 'high'])

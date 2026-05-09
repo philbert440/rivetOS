@@ -137,7 +137,7 @@ export async function boot(configPath?: string): Promise<void> {
   }
 
   // 1. Hooks (must come before runtime — runtime receives the pipeline)
-  const { pipeline, fallbackConfigs } = await registerHooks(config, workspaceDir)
+  const pipeline = await registerHooks(config, workspaceDir)
 
   // 2. Runtime
   const runtime = new Runtime({
@@ -162,7 +162,6 @@ export async function boot(configPath?: string): Promise<void> {
     heartbeats: config.runtime.heartbeats,
     skillDirs: config.runtime.skill_dirs,
     hooks: pipeline,
-    fallbacks: fallbackConfigs,
     configPath,
   })
 

@@ -5,6 +5,8 @@
 import {
   KNOWN_RUNTIME_KEYS,
   KNOWN_AGENT_KEYS,
+  REMOVED_RUNTIME_KEYS,
+  REMOVED_AGENT_KEYS,
   VALID_THINKING_LEVELS,
   KNOWN_PROVIDERS,
   KNOWN_CHANNELS,
@@ -21,6 +23,15 @@ import {
 
 export function validateRuntime(runtime: Record<string, unknown>, issues: ValidationIssue[]): void {
   for (const key of Object.keys(runtime)) {
+    const removedMsg = REMOVED_RUNTIME_KEYS.get(key)
+    if (removedMsg) {
+      issues.push({
+        severity: 'error',
+        path: `runtime.${key}`,
+        message: removedMsg,
+      })
+      continue
+    }
     if (!KNOWN_RUNTIME_KEYS.has(key)) {
       issues.push({
         severity: 'warning',
@@ -258,6 +269,15 @@ export function validateAgents(
     const agent = agentCfg as Record<string, unknown>
 
     for (const key of Object.keys(agent)) {
+      const removedMsg = REMOVED_AGENT_KEYS.get(key)
+      if (removedMsg) {
+        issues.push({
+          severity: 'error',
+          path: `${path}.${key}`,
+          message: removedMsg,
+        })
+        continue
+      }
       if (!KNOWN_AGENT_KEYS.has(key)) {
         issues.push({
           severity: 'warning',

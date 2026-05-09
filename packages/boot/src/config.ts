@@ -137,7 +137,6 @@ export interface RuntimeSection {
   plugin_dirs?: string[]
   heartbeats?: HeartbeatSection[]
   coding_pipeline?: CodingPipelineSection
-  fallbacks?: FallbackSection[]
   safety?: SafetySection
   auto_actions?: AutoActionsSection
 }
@@ -148,7 +147,6 @@ export interface AgentSection {
    *  Enables multiple agents to share one provider with different models. */
   model?: string
   default_thinking?: string
-  fallbacks?: string[]
   /** Whether this agent uses a local/self-hosted provider (free tokens → extended context) */
   local?: boolean
   /** Tool filtering for when this agent runs as a delegate or sub-agent */
@@ -173,11 +171,6 @@ export interface CodingPipelineSection {
   max_build_loops?: number
   max_validation_loops?: number
   auto_commit?: boolean
-}
-
-export interface FallbackSection {
-  providerId: string
-  fallbacks: string[]
 }
 
 export interface SafetySection {

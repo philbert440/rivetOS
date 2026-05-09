@@ -158,7 +158,7 @@ The composition root. Loads config, validates, wires everything together, starts
 | `lifecycle.ts` | PID file management, SIGINT/SIGTERM handlers |
 | `validate/` | Config schema validation (sections, cross-refs, deployment) |
 | `registrars/agents.ts` | Wires delegation, sub-agents, skills |
-| `registrars/hooks.ts` | Wires fallback, safety, auto-action, session hooks |
+| `registrars/hooks.ts` | Wires safety, auto-action, session hooks |
 | `registrars/plugins.ts` | Generic manifest-driven loader for all discovered providers, channels, tools, and memory plugins |
 
 **Boot flow:** `loadConfig()` → `validateConfig()` → `discoverPlugins()` → `registerHooks()` → `new Runtime()` → `registerPlugins()` → `registerAgentTools()` → `writePidFile()` → `runtime.start()`
@@ -182,7 +182,6 @@ The runtime engine. Split into two layers:
 | `subagent.ts` | 515 | Persistent interactive child sessions (spawn/send/kill) |
 | `workspace.ts` | 212 | Loads workspace files, builds system prompts |
 | `hooks.ts` | 215 | HookPipelineImpl — priority-ordered async middleware |
-| `fallback.ts` | 263 | Provider fallback chains (triggered by provider:error hook) |
 | `safety-hooks.ts` | 393 | Shell danger detection, workspace fencing, audit logging |
 | `auto-actions.ts` | 330 | Auto-format, auto-lint, auto-test, auto-git-check |
 | `session-hooks.ts` | 313 | Session start/end, auto-summary, pre/post compaction |
@@ -450,7 +449,7 @@ rivetos start
   └── boot()
        ├── loadConfig(path)           # YAML → typed config
        ├── validateConfig(config)     # Schema + cross-ref validation
-       ├── registerHooks()            # Fallback, safety, auto-action, session hooks
+       ├── registerHooks()            # Safety, auto-action, session hooks
        ├── new Runtime(config)        # Creates Router, Workspace, SessionManager, etc.
        ├── registerPlugins()          # Manifest-driven: providers, channels, memory, tools
        ├── registerAgentTools()       # Delegation, sub-agents, skills
@@ -511,7 +510,7 @@ Channel receives message
 |-------|------|---------|
 | `provider:before` | Before LLM call | Rate limit checks |
 | `provider:after` | After LLM response | Token logging |
-| `provider:error` | LLM failure | **Fallback chains** |
+| `provider:error` | LLM failure | Logging, classification (observational only) |
 | `tool:before` | Before tool execution | **Safety gates**, audit |
 | `tool:after` | After tool execution | Auto-format, auto-lint |
 | `session:start` | New session | Context loading |
@@ -561,12 +560,12 @@ Channel receives message
 7. **Secrets in `.env`** — never in config YAML, never in container images
 8. **Containers are stateless** — all data on volumes/bind mounts
 9. **One message queue per session** — no shared queues, no race conditions
-10. **Hooks are the extension point** — fallbacks, safety, auto-actions all use hooks
+10. **Hooks are the extension point** — safety, auto-actions, observability all use hooks
 
 ### Error Handling
 
 - **RivetError hierarchy** — typed errors with codes, severity, retryable flag
-- **ProviderError** — HTTP-aware, triggers fallback chains
+- **ProviderError** — HTTP-aware, observed by `provider:error` hooks
 - **Circuit breaker** — per-provider, closed → open → half-open
 - **Reconnection manager** — exponential backoff for channel disconnects
 - **Hook error modes** — `continue` (log & proceed), `abort` (stop pipeline), `retry`
@@ -581,7 +580,6 @@ runtime:
   skill_dirs: [~/.rivetos/skills]
   heartbeats: [...]
   coding_pipeline: { builder_agent, validator_agent, ... }
-  fallbacks: [...]
   safety: { shellDanger, workspaceFence, audit }
   auto_actions: { format, lint, test, gitCheck }
 
@@ -688,7 +686,6 @@ deployment:             # Optional — drives containerized deployment
 | What | Where |
 |------|-------|
 | Hook pipeline impl | `packages/core/src/domain/hooks.ts` |
-| Fallback chains | `packages/core/src/domain/fallback.ts` |
 | Safety hooks (shell, fence, audit) | `packages/core/src/domain/safety-hooks.ts` |
 | Auto-actions (format, lint, test) | `packages/core/src/domain/auto-actions.ts` |
 | Session hooks (start, summary) | `packages/core/src/domain/session-hooks.ts` |
