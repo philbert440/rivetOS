@@ -89,7 +89,7 @@ function extractText(content: string | ContentPart[]): string {
  * Returns { system, rest } — the converter uses `system` for AI SDK's `system`
  * option and `rest` for the messages array.
  */
-function splitAndFoldSystem(messages: Message[]): { system: string; rest: Message[] } {
+export function splitAndFoldSystem(messages: Message[]): { system: string; rest: Message[] } {
   let system = ''
   let seenNonSystem = false
   const rest: Message[] = []

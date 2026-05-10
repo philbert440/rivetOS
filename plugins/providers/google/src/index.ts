@@ -13,10 +13,27 @@ import type {
   ChatOptions,
   LLMChunk,
   PluginManifest,
+  ThinkingLevel,
 } from '@rivetos/types'
 import { MODEL_DEFAULTS } from '@rivetos/types'
+import type { ProviderAiSdkBridge } from '@rivetos/core'
+import type { JSONObject } from '@ai-sdk/provider'
+import type { LanguageModel } from 'ai'
+import { createGoogleGenerativeAI } from '@ai-sdk/google'
 
 import { chatStreamAiSdk, type GoogleAiSdkContext } from './chat-stream-aisdk.js'
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const GOOGLE_THINKING_BUDGETS: Record<ThinkingLevel, number | null> = {
+  off: 0,
+  low: 1024,
+  medium: 8192,
+  high: 32768,
+  xhigh: 32768,
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -83,6 +100,36 @@ export class GoogleProvider implements Provider {
 
   chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     return chatStreamAiSdk(this.buildAiSdkContext(), messages, options)
+  }
+
+  // -----------------------------------------------------------------------
+  // aiSdkBridge — AI SDK loop adapter (consumed by step 8b's loop)
+  // -----------------------------------------------------------------------
+
+  aiSdkBridge(): ProviderAiSdkBridge {
+    return {
+      getModel: ({ modelOverride }): LanguageModel => {
+        const provider = createGoogleGenerativeAI({
+          apiKey: this.apiKey,
+          baseURL: this.baseUrl,
+        })
+        return provider(modelOverride ?? this.model)
+      },
+
+      buildProviderOptions: (_messages, options): JSONObject | undefined => {
+        const thinking = options?.thinking ?? 'off'
+        const budget = GOOGLE_THINKING_BUDGETS[thinking]
+        if (budget === null || budget === 0) return undefined
+        return {
+          google: {
+            thinkingConfig: {
+              thinkingBudget: budget,
+              includeThoughts: true,
+            },
+          },
+        }
+      },
+    }
   }
 
   async isAvailable(): Promise<boolean> {
