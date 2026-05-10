@@ -16,8 +16,8 @@ const log = logger('Config')
 export interface RivetConfig {
   runtime: RuntimeSection
   agents: Record<string, AgentSection>
-  providers: Record<string, Record<string, unknown>>
-  channels: Record<string, Record<string, unknown>>
+  providers?: Record<string, Record<string, unknown>>
+  channels?: Record<string, Record<string, unknown>>
   memory?: Record<string, Record<string, unknown>>
   mcp?: McpSection
   /**
