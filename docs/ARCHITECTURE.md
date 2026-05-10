@@ -22,7 +22,7 @@
 │  Discord     Google                 File I/O           │
 │  Agent       xAI                    Search (glob/grep) │
 │  Voice       Ollama                 Web Search/Fetch   │
-│              llama-server           Interaction        │
+│              openai-compat          Interaction        │
 │                                     MCP Client         │
 │                                     Coding Pipeline    │
 │                                                        │
@@ -371,8 +371,7 @@ rivetOS/
       google/                        ← Gemini (Generative Language API, thought signatures)
       xai/                           ← Grok (live search, conversation caching)
       ollama/                        ← Ollama (native API)
-      llama-server/                  ← llama.cpp server (native API, mirostat, typical_p)
-      openai-compat/                 ← Strict OpenAI servers (vLLM/TGI/Groq/Together/LocalAI)
+      openai-compat/                 ← OpenAI-compatible servers (vLLM/TGI/llama.cpp llama-server/Groq/Together/LocalAI)
       claude-cli/                    ← Drives `claude` CLI via stream-json; embedded MCP bridge
     memory/
       postgres/                      ← Full transcript + hybrid search + summary DAG

@@ -23,7 +23,7 @@
 
 ## Overview
 
-RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic, xAI, Google, Ollama, llama-server, openai-compat, claude-cli) to messaging channels (Discord, Telegram, voice) with a tool execution loop, persistent memory, multi-agent orchestration, and an MCP transport that exposes the agent to external clients.
+RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic, xAI, Google, Ollama, openai-compat, claude-cli) to messaging channels (Discord, Telegram, voice) with a tool execution loop, persistent memory, multi-agent orchestration, and an MCP transport that exposes the agent to external clients.
 
 **Key Numbers:**
 - ~25k lines of source code in `packages/` + `plugins/` (excluding tests)
@@ -51,8 +51,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   ├── google/              # Gemini (thought signatures for function calling)
 │   │   ├── xai/                 # Grok (streaming, live search)
 │   │   ├── ollama/              # Local Ollama models
-│   │   ├── llama-server/        # Native llama.cpp server (sampling, <think>, tools)
-│   │   ├── openai-compat/       # Strict OpenAI servers (vLLM/TGI/Groq/Together/LocalAI)
+│   │   ├── openai-compat/       # OpenAI-compatible servers (vLLM/TGI/llama.cpp llama-server/Groq/Together/LocalAI)
 │   │   └── claude-cli/          # Drives `claude` CLI via stream-json + embedded MCP bridge
 │   │
 │   ├── channels/                # ~4,300 lines — Messaging surface adapters

@@ -1,21 +1,17 @@
 # @rivetos/provider-openai-compat
 
-OpenAI-compatible chat-completions provider for RivetOS, tuned for **strict servers**.
+OpenAI-compatible chat-completions provider for RivetOS — covers vLLM,
+Text Generation Inference (TGI), LocalAI, Together, Fireworks, Groq, Azure
+OpenAI, llama.cpp's `llama-server`, and anything else that speaks the OpenAI
+`/v1/chat/completions` wire format.
 
-Target: vLLM, Text Generation Inference (TGI), LocalAI, Together, Fireworks,
-Groq, Azure OpenAI — anything that speaks the OpenAI `/v1/chat/completions`
-wire format but enforces the spec more tightly than `llama-server` does.
+This is the single OpenAI-compat plugin. The previous separate
+`@rivetos/provider-llama-server` plugin was removed in the AI SDK migration —
+point this provider at your `llama-server` instance (e.g.
+`base_url: http://localhost:8080`) and it just works.
 
-## Why not just use `llama-server`?
-
-`@rivetos/provider-llama-server` is llama.cpp-specific: it sends llama-native
-sampling knobs (`typical_p`, `min_p`, `mirostat`, `repeat_penalty`,
-`repeat_last_n`) and pings `/health` (a llama.cpp-only endpoint). Strict
-OpenAI-compatible servers reject those extra keys with 400, and don't expose
-`/health`.
-
-This provider sends only standard OpenAI sampling, pings `/v1/models`, and
-includes vLLM-specific fixes (see below).
+For llama.cpp-native sampling extensions (`top_k`, `min_p`, etc.), see the
+"vLLM/llama.cpp extensions" section below.
 
 ## Key behaviors
 
