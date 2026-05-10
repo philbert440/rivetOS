@@ -42,6 +42,11 @@ export interface MockProviderOptions {
   maxOutputTokens?: number
   /** Optional override of `isAvailable` (default: returns true). */
   isAvailable?: () => Promise<boolean>
+  /**
+   * Optional artificial delay (in ms) before each call's stream is returned.
+   * Useful for timeout / abort tests that need timers to fire between calls.
+   */
+  stepDelayMs?: number
 }
 
 /**
@@ -84,6 +89,25 @@ export function makeMockProvider(input: MockProviderOptions | LLMChunk[]): Provi
             doStream: async (options: LanguageModelV3CallOptions) => {
               const idx = callIndex++
               opts.onCall?.({ callIndex: idx, prompt: options.prompt })
+              if (opts.stepDelayMs && opts.stepDelayMs > 0) {
+                // Allow any pending timers (turnTimeout, gracefulWarning) to fire.
+                // Honor the abort signal so timeouts can short-circuit cleanly.
+                await new Promise<void>((resolve, reject) => {
+                  const t = setTimeout(resolve, opts.stepDelayMs)
+                  if (options.abortSignal) {
+                    options.abortSignal.addEventListener(
+                      'abort',
+                      () => {
+                        clearTimeout(t)
+                        reject(
+                          new DOMException('Aborted', 'AbortError'),
+                        )
+                      },
+                      { once: true },
+                    )
+                  }
+                })
+              }
               const chunks = pickChunks(opts.chunks, idx)
               const parts = translateLlmChunksToV3(chunks)
               return {
