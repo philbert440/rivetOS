@@ -13,10 +13,31 @@ import type {
   ChatOptions,
   LLMChunk,
   PluginManifest,
+  ThinkingLevel,
 } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
+import type { ProviderAiSdkBridge } from '@rivetos/core'
+import type { JSONObject } from '@ai-sdk/provider'
+import type { LanguageModel } from 'ai'
+import { createAnthropic } from '@ai-sdk/anthropic'
 
 import { chatStreamAiSdk, type AnthropicAiSdkContext } from './chat-stream-aisdk.js'
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function isClaude4Model(model: string): boolean {
+  return /^claude-(opus|sonnet|haiku)-4(-\d+)?/i.test(model)
+}
+
+const CLAUDE3_BUDGET_TOKENS: Record<ThinkingLevel, number | null> = {
+  off: null,
+  low: 2000,
+  medium: 10000,
+  high: 50000,
+  xhigh: 50000,
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -92,6 +113,47 @@ export class AnthropicProvider implements Provider {
 
   chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     return chatStreamAiSdk(this.buildAiSdkContext(), messages, options)
+  }
+
+  // -----------------------------------------------------------------------
+  // aiSdkBridge — AI SDK loop adapter (consumed by step 8b's loop)
+  // -----------------------------------------------------------------------
+
+  aiSdkBridge(): ProviderAiSdkBridge {
+    return {
+      getModel: ({ modelOverride }): LanguageModel => {
+        const provider = createAnthropic({
+          apiKey: this.apiKey,
+          baseURL: `${this.baseUrl}/v1`,
+        })
+        return provider(modelOverride ?? this.model)
+      },
+
+      buildProviderOptions: (_messages, options): JSONObject | undefined => {
+        const model = options?.modelOverride ?? this.model
+        const thinking = options?.thinking ?? 'off'
+        const opts: JSONObject = {
+          // Preserve ephemeral system-block caching for ~90% savings on hits.
+          cacheControl: { type: 'ephemeral' },
+          // Surface reasoning back to the application layer.
+          sendReasoning: true,
+        }
+
+        if (thinking !== 'off') {
+          if (isClaude4Model(model)) {
+            opts.thinking = { type: 'adaptive' }
+            opts.effort = thinking
+          } else {
+            const budget = CLAUDE3_BUDGET_TOKENS[thinking]
+            if (budget !== null) {
+              opts.thinking = { type: 'enabled', budgetTokens: budget }
+            }
+          }
+        }
+
+        return { anthropic: opts }
+      },
+    }
   }
 
   async isAvailable(): Promise<boolean> {

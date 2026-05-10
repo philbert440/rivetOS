@@ -19,6 +19,10 @@ import type {
   PluginManifest,
 } from '@rivetos/types'
 import { MODEL_DEFAULTS } from '@rivetos/types'
+import type { ProviderAiSdkBridge } from '@rivetos/core'
+import type { JSONObject } from '@ai-sdk/provider'
+import type { LanguageModel } from 'ai'
+import { createOllama } from 'ollama-ai-provider-v2'
 
 import { chatStreamAiSdk, type OllamaAiSdkContext } from './chat-stream-aisdk.js'
 
@@ -105,6 +109,35 @@ export class OllamaProvider implements Provider {
 
   chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     return chatStreamAiSdk(this.buildAiSdkContext(), messages, options)
+  }
+
+  // -----------------------------------------------------------------------
+  // aiSdkBridge — AI SDK loop adapter (consumed by step 8b's loop)
+  // -----------------------------------------------------------------------
+
+  aiSdkBridge(): ProviderAiSdkBridge {
+    return {
+      getModel: ({ modelOverride }): LanguageModel => {
+        const provider = createOllama({ baseURL: `${this.baseUrl}/api` })
+        return provider.chat(modelOverride ?? this.model)
+      },
+
+      buildProviderOptions: (_messages, options): JSONObject | undefined => {
+        const ollamaOpts: JSONObject = {}
+        if (this.numCtx > 0) ollamaOpts.num_ctx = this.numCtx
+
+        const ollamaProviderOptions: JSONObject = {}
+        if (Object.keys(ollamaOpts).length > 0) ollamaProviderOptions.options = ollamaOpts
+
+        const thinking = options?.thinking
+        if (thinking !== undefined) {
+          ollamaProviderOptions.think = thinking !== 'off'
+        }
+
+        if (Object.keys(ollamaProviderOptions).length === 0) return undefined
+        return { ollama: ollamaProviderOptions }
+      },
+    }
   }
 
   async isAvailable(): Promise<boolean> {

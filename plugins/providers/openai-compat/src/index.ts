@@ -31,9 +31,14 @@ import type {
   PluginManifest,
 } from '@rivetos/types'
 import { MODEL_DEFAULTS } from '@rivetos/types'
+import type { ProviderAiSdkBridge } from '@rivetos/core'
+import type { JSONObject } from '@ai-sdk/provider'
+import type { LanguageModel } from 'ai'
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 
 import {
   chatStreamAiSdk,
+  splitAndFoldSystem,
   type OpenAICompatAiSdkContext,
   type ToolChoice,
 } from './chat-stream-aisdk.js'
@@ -183,6 +188,47 @@ export class OpenAICompatProvider implements Provider {
 
   chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     return chatStreamAiSdk(this.buildAiSdkContext(), messages, options)
+  }
+
+  // -----------------------------------------------------------------------
+  // aiSdkBridge — AI SDK loop adapter (consumed by step 8b's loop)
+  // -----------------------------------------------------------------------
+
+  aiSdkBridge(): ProviderAiSdkBridge {
+    return {
+      getModel: ({ modelOverride }): LanguageModel => {
+        const provider = createOpenAICompatible({
+          baseURL: `${this.baseUrl}/v1`,
+          name: this.name,
+          apiKey: this.apiKey || undefined,
+          includeUsage: true,
+          // vLLM extensions — top_k / min_p flow via the request-body transform.
+          // tool_choice is owned by the loop (passed via streamText options).
+          transformRequestBody: (body) => {
+            const out = { ...body } as Record<string, unknown>
+            if (this.topK !== undefined) out.top_k = this.topK
+            if (this.minP !== undefined) out.min_p = this.minP
+            return out
+          },
+        })
+        return provider.chatModel(modelOverride ?? this.model)
+      },
+
+      buildProviderOptions: (): JSONObject | undefined => {
+        // Standard OpenAI knobs (temperature, topP, presencePenalty, etc.) are
+        // owned by the loop via `streamText({ ... })`. vLLM extensions live in
+        // `transformRequestBody` above. No provider-keyed options for this one.
+        return undefined
+      },
+
+      // vLLM + Qwen/Llama chat templates reject mid-conversation `system`
+      // messages. Fold them into user `[SYSTEM NOTICE]` content and extract
+      // any leading system run as a single string for `streamText({ system })`.
+      prepareMessages: (messages: Message[]) => {
+        const { system, rest } = splitAndFoldSystem(messages)
+        return system ? { system, messages: rest } : { messages: rest }
+      },
+    }
   }
 
   async isAvailable(): Promise<boolean> {

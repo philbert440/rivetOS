@@ -30,8 +30,13 @@ import type {
   PluginManifest,
   PreparedTurn,
   ProviderSessionCapability,
+  ThinkingLevel,
 } from '@rivetos/types'
 import { hasImages, MODEL_DEFAULTS } from '@rivetos/types'
+import type { ProviderAiSdkBridge } from '@rivetos/core'
+import type { JSONObject, JSONValue } from '@ai-sdk/provider'
+import type { LanguageModel, ToolSet } from 'ai'
+import { createXai, xaiTools } from '@ai-sdk/xai'
 import { randomUUID } from 'node:crypto'
 
 import { chatStreamAiSdk, type XAIAiSdkContext } from './chat-stream-aisdk.js'
@@ -107,6 +112,22 @@ export interface XAIProviderConfig {
   truncation?: 'auto' | 'disabled'
   /** Developer instructions (separate from system prompt, persisted server-side) */
   instructions?: string
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function mapXaiReasoningEffort(
+  model: string,
+  thinking: ThinkingLevel | undefined,
+  configured: 'low' | 'medium' | 'high' | 'xhigh' | undefined,
+): 'low' | 'medium' | 'high' | undefined {
+  const level = thinking ?? configured
+  if (!level || level === 'off') return undefined
+  if (!model.includes('multi-agent')) return undefined
+  if (level === 'xhigh') return 'high' // AI SDK schema rejects xhigh
+  return level
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +307,115 @@ export class XAIProvider implements Provider {
 
   chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     return chatStreamAiSdk(this.buildAiSdkContext(), messages, options)
+  }
+
+  // -----------------------------------------------------------------------
+  // aiSdkBridge — AI SDK loop adapter (consumed by step 8b's loop)
+  // -----------------------------------------------------------------------
+
+  aiSdkBridge(): ProviderAiSdkBridge {
+    return {
+      getModel: ({ modelOverride, conversationId }): LanguageModel => {
+        const cacheKey = this.getPromptCacheKey(conversationId)
+        const provider = createXai({
+          apiKey: this.apiKey,
+          baseURL: this.baseUrl,
+          headers: { 'x-grok-conv-id': cacheKey },
+        })
+        return provider.responses(modelOverride ?? this.model)
+      },
+
+      buildProviderOptions: (messages, options): JSONObject | undefined => {
+        const model = options?.modelOverride ?? this.model
+        const containsImages = messages.some((m) => hasImages(m.content))
+        const storeThisRequest = containsImages ? false : this.store
+
+        // prepareTurn (called by the loop) latches a one-shot decision;
+        // consume it here so the next chatStream/bridge call sees fresh state.
+        const pending = this.pendingPrepared
+        this.pendingPrepared = null
+
+        const canContinue = pending
+          ? pending.isContinuation
+          : !!(
+              storeThisRequest &&
+              this.lastResponseId &&
+              !options?.freshConversation &&
+              this.lastResponseModel === model
+            )
+
+        const xaiOptions: JSONObject = { store: storeThisRequest }
+        if (canContinue && this.lastResponseId) {
+          xaiOptions.previousResponseId = this.lastResponseId as JSONValue
+        }
+        const effort = mapXaiReasoningEffort(model, options?.thinking, this.reasoningEffort)
+        if (effort) xaiOptions.reasoningEffort = effort
+
+        return { xai: xaiOptions }
+      },
+
+      captureStepResult: (stepResult, options): void => {
+        const model = options?.modelOverride ?? this.model
+        const containsImages =
+          stepResult.request?.body && JSON.stringify(stepResult.request.body).includes('"image')
+        const storeThisRequest = containsImages ? false : this.store
+
+        const xaiMeta = stepResult.providerMetadata?.xai as
+          | { responseId?: unknown }
+          | undefined
+        const responseId = typeof xaiMeta?.responseId === 'string' ? xaiMeta.responseId : null
+
+        // Mirror legacy chat-stream save semantics: only persist response ID
+        // when text was emitted; tool-call-only responses can poison state.
+        const hadTextContent = stepResult.text != null && stepResult.text.length > 0
+
+        if (responseId && storeThisRequest && hadTextContent) {
+          this.lastResponseId = responseId
+          this.lastResponseModel = model
+        } else if (responseId && storeThisRequest && !hadTextContent) {
+          this.lastResponseId = null
+        }
+      },
+
+      getServerSideTools: (): ToolSet => {
+        const set: ToolSet = {}
+        if (this.webSearch) {
+          if (typeof this.webSearch === 'object') {
+            const cfg = this.webSearch
+            const args: Record<string, unknown> = {}
+            if (cfg.allowedDomains?.length || cfg.excludedDomains?.length) {
+              const filters: Record<string, unknown> = {}
+              if (cfg.allowedDomains?.length) filters.allowed_domains = cfg.allowedDomains
+              if (cfg.excludedDomains?.length) filters.excluded_domains = cfg.excludedDomains
+              args.searchParameters = { filters }
+            }
+            if (cfg.enableImageUnderstanding) args.enableImageUnderstanding = true
+            set.web_search = xaiTools.webSearch(args as never)
+          } else {
+            set.web_search = xaiTools.webSearch()
+          }
+        }
+        if (this.xSearch) {
+          if (typeof this.xSearch === 'object') {
+            const cfg = this.xSearch
+            const args: Record<string, unknown> = {}
+            if (cfg.allowedXHandles?.length) args.allowedXHandles = cfg.allowedXHandles
+            if (cfg.excludedXHandles?.length) args.excludedXHandles = cfg.excludedXHandles
+            if (cfg.fromDate) args.fromDate = cfg.fromDate
+            if (cfg.toDate) args.toDate = cfg.toDate
+            if (cfg.enableImageUnderstanding) args.enableImageUnderstanding = true
+            if (cfg.enableVideoUnderstanding) args.enableVideoUnderstanding = true
+            set.x_search = xaiTools.xSearch(args as never)
+          } else {
+            set.x_search = xaiTools.xSearch()
+          }
+        }
+        if (this.codeExecution) {
+          set.code_execution = xaiTools.codeExecution()
+        }
+        return set
+      },
+    }
   }
 
   // -----------------------------------------------------------------------
