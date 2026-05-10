@@ -18,6 +18,8 @@
 -- =============================================================================
 
 DO $$
+DECLARE
+    fn_signature text;
 BEGIN
     -- -----------------------------------------------------------------------
     -- Sanity check — graphile_worker.add_job must exist
@@ -29,6 +31,32 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'graphile_worker.add_job() not found — start the worker services before applying migration 0002';
     END IF;
+
+    -- -----------------------------------------------------------------------
+    -- Ownership reassignment — handle prod-shape dumps
+    --
+    -- When restoring a pg_dump produced under a different role (typically
+    -- dumps loaded by `postgres` superuser end up with `postgres` as the
+    -- function owner), CREATE OR REPLACE FUNCTION below will fail with
+    -- "must be owner of function". Try to take ownership; warn on failure
+    -- so the operator can run the equivalent REASSIGN as a superuser.
+    -- -----------------------------------------------------------------------
+    FOR fn_signature IN
+        SELECT format('%I.%I(%s)', n.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid))
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        JOIN pg_authid a ON a.oid = p.proowner
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'graphile_worker')
+          AND p.proname IN ('notify_embedding_queue', 'check_compaction_threshold', 'enqueue_idle_sessions')
+          AND a.rolname IS DISTINCT FROM CURRENT_USER
+    LOOP
+        BEGIN
+            EXECUTE format('ALTER FUNCTION %s OWNER TO CURRENT_USER', fn_signature);
+            RAISE NOTICE 'Reassigned ownership of % to %', fn_signature, CURRENT_USER;
+        EXCEPTION WHEN insufficient_privilege THEN
+            RAISE WARNING 'Cannot reassign ownership of % to %. Run as a superuser: REASSIGN OWNED BY <prior_owner> TO %;', fn_signature, CURRENT_USER, CURRENT_USER;
+        END;
+    END LOOP;
 
     -- -----------------------------------------------------------------------
     -- Trigger Function: notify_embedding_queue

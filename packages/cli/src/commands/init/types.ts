@@ -41,6 +41,8 @@ export interface WizardState {
   channels: WizardChannel[]
   proxmox?: ProxmoxSetup
   postgresPassword: string
+  /** Full postgres connection string. For manual deployments the wizard prompts the user; for docker/proxmox it is generated against the bundled datahub. */
+  postgresUrl?: string
 }
 
 export interface EnvDetection {
