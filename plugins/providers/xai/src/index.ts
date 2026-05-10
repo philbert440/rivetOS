@@ -33,8 +33,8 @@ import type {
   ThinkingLevel,
 } from '@rivetos/types'
 import { hasImages, MODEL_DEFAULTS } from '@rivetos/types'
-import type { ProviderAiSdkBridge } from '@rivetos/core'
-import type { JSONObject, JSONValue } from '@ai-sdk/provider'
+import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
+import type { JSONObject } from '@ai-sdk/provider'
 import type { LanguageModel, ToolSet } from 'ai'
 import { createXai, xaiTools } from '@ai-sdk/xai'
 import { randomUUID } from 'node:crypto'
@@ -346,7 +346,7 @@ export class XAIProvider implements Provider {
 
         const xaiOptions: JSONObject = { store: storeThisRequest }
         if (canContinue && this.lastResponseId) {
-          xaiOptions.previousResponseId = this.lastResponseId as JSONValue
+          xaiOptions.previousResponseId = this.lastResponseId
         }
         const effort = mapXaiReasoningEffort(model, options?.thinking, this.reasoningEffort)
         if (effort) xaiOptions.reasoningEffort = effort
@@ -357,17 +357,15 @@ export class XAIProvider implements Provider {
       captureStepResult: (stepResult, options): void => {
         const model = options?.modelOverride ?? this.model
         const containsImages =
-          stepResult.request?.body && JSON.stringify(stepResult.request.body).includes('"image')
+          stepResult.request.body && JSON.stringify(stepResult.request.body).includes('"image')
         const storeThisRequest = containsImages ? false : this.store
 
-        const xaiMeta = stepResult.providerMetadata?.xai as
-          | { responseId?: unknown }
-          | undefined
+        const xaiMeta = stepResult.providerMetadata?.xai as { responseId?: unknown } | undefined
         const responseId = typeof xaiMeta?.responseId === 'string' ? xaiMeta.responseId : null
 
         // Mirror legacy chat-stream save semantics: only persist response ID
         // when text was emitted; tool-call-only responses can poison state.
-        const hadTextContent = stepResult.text != null && stepResult.text.length > 0
+        const hadTextContent = stepResult.text.length > 0
 
         if (responseId && storeThisRequest && hadTextContent) {
           this.lastResponseId = responseId
@@ -390,7 +388,7 @@ export class XAIProvider implements Provider {
               args.searchParameters = { filters }
             }
             if (cfg.enableImageUnderstanding) args.enableImageUnderstanding = true
-            set.web_search = xaiTools.webSearch(args as never)
+            set.web_search = xaiTools.webSearch(args)
           } else {
             set.web_search = xaiTools.webSearch()
           }
@@ -405,7 +403,7 @@ export class XAIProvider implements Provider {
             if (cfg.toDate) args.toDate = cfg.toDate
             if (cfg.enableImageUnderstanding) args.enableImageUnderstanding = true
             if (cfg.enableVideoUnderstanding) args.enableVideoUnderstanding = true
-            set.x_search = xaiTools.xSearch(args as never)
+            set.x_search = xaiTools.xSearch(args)
           } else {
             set.x_search = xaiTools.xSearch()
           }

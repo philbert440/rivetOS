@@ -1,13 +1,11 @@
 /**
- * Provider AI SDK bridge — the contract a provider exposes for the AI SDK loop
- * (step 8b). Lets the loop call `streamText({ model, providerOptions, ... })`
- * directly without knowing about provider-specific construction (xAI conv-id
- * headers, response_id capture, etc.).
+ * Provider AI SDK bridge — the contract a provider exposes for the AI SDK loop.
+ * Lets the loop call `streamText({ model, providerOptions, ... })` directly
+ * without knowing about provider-specific construction (xAI conv-id headers,
+ * response_id capture, etc.).
  *
  * Provider plugins implement this via the optional `aiSdkBridge` factory on
- * the `Provider` interface. Today (8a) this is purely additive — the legacy
- * `chatStream` path still drives the loop. Step 8b will swap the loop body to
- * consume the bridge directly.
+ * the `Provider` interface.
  */
 
 import type { JSONObject } from '@ai-sdk/provider'

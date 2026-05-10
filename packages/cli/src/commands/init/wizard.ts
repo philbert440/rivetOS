@@ -233,7 +233,9 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   } else if (target === 'manual') {
     nextSteps.push('npx rivetos start                 Start the runtime')
     nextSteps.push('')
-    nextSteps.push('To run as a systemd service, drop this unit at /etc/systemd/system/rivetos.service:')
+    nextSteps.push(
+      'To run as a systemd service, drop this unit at /etc/systemd/system/rivetos.service:',
+    )
     nextSteps.push('')
     nextSteps.push('  [Unit]')
     nextSteps.push('  Description=RivetOS Agent Runtime')

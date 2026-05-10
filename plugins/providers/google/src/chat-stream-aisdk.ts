@@ -1,7 +1,7 @@
 /**
  * AI SDK-backed implementation of Google `chatStream`.
  *
- * Delegates to shared adapters in `@rivetos/core` for fullStream-part →
+ * Delegates to shared adapters in `@rivetos/aisdk` for fullStream-part →
  * LLMChunk translation. This file owns Google-specific concerns:
  * - System message extraction (Gemini takes systemInstruction separately).
  * - Thinking budget mapping (low/medium/high → token budgets).
@@ -18,8 +18,15 @@ import {
   convertMessagesToAiSdk,
   createLlmChunkAccumulator,
   translateAiSdkPart,
-} from '@rivetos/core'
-import { streamText, stepCountIs, jsonSchema, APICallError, type ModelMessage, type ToolSet } from 'ai'
+} from '@rivetos/aisdk'
+import {
+  streamText,
+  stepCountIs,
+  jsonSchema,
+  APICallError,
+  type ModelMessage,
+  type ToolSet,
+} from 'ai'
 import type { JSONObject } from '@ai-sdk/provider'
 import type {
   ChatOptions,
@@ -80,10 +87,7 @@ function splitSystem(messages: Message[]): { system: string; rest: Message[] } {
  * providerOptions.google.thoughtSignature to tool-call parts whose source
  * ToolCall in `original` had one. Mutates in place; returns same array.
  */
-function attachThoughtSignatures(
-  converted: ModelMessage[],
-  original: Message[],
-): ModelMessage[] {
+function attachThoughtSignatures(converted: ModelMessage[], original: Message[]): ModelMessage[] {
   const sigByCallId = new Map<string, string>()
   for (const m of original) {
     if (m.role === 'assistant' && m.toolCalls) {
@@ -117,7 +121,7 @@ function buildToolSet(toolDefs: ToolDefinition[] | undefined): ToolSet {
   for (const def of toolDefs) {
     set[def.name] = {
       description: def.description,
-      inputSchema: jsonSchema(def.parameters as Record<string, unknown>),
+      inputSchema: jsonSchema(def.parameters),
     }
   }
   return set
@@ -175,7 +179,7 @@ export async function* chatStreamAiSdk(
     })
 
     for await (const part of result.fullStream) {
-      const chunks = translateAiSdkPart(part as never, acc)
+      const chunks = translateAiSdkPart(part, acc)
       for (const chunk of chunks) yield chunk
     }
 

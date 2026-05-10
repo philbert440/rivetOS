@@ -14,10 +14,11 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/core": "0.4.0-beta.6",
+    "@rivetos/aisdk": "0.4.0-beta.6",
     "@rivetos/types": "0.4.0-beta.6",
     "ai": "^6.0.177",
-    "ollama-ai-provider-v2": "^3.5.0"
+    "ollama-ai-provider-v2": "^3.5.0",
+    "@ai-sdk/provider": "3.0.10"
   },
   "rivetos": {
     "type": "provider",
