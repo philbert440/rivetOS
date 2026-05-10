@@ -130,7 +130,13 @@ export interface ProviderSessionCapability {
 export interface Provider {
   id: string
   name: string
-  chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk>
+  /**
+   * Legacy streaming entrypoint. Optional as of step 8b — providers that
+   * implement `aiSdkBridge` are driven by the AI SDK loop directly via
+   * `streamText` and do not need to implement `chatStream`. Queued for
+   * removal in step 8c once all in-tree providers expose `aiSdkBridge`.
+   */
+  chatStream?(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk>
   chat?(messages: Message[], options?: ChatOptions): Promise<LLMResponse>
   isAvailable(): Promise<boolean>
   /** Get the current default model ID */
