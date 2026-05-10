@@ -340,6 +340,18 @@ export class AgentLoop {
       // the tools-aisdk wrapper itself (tool_start/tool_result), so here we
       // only handle text/reasoning/error/status.
       for await (const part of result.fullStream as AsyncIterable<unknown>) {
+        // AI SDK 6 emits an `abort` stream part when the abortSignal fires
+        // mid-stream (rather than throwing). Detect timeout vs caller abort
+        // by inspecting `turnAbort.signal.reason`.
+        const partType = (part as { type?: string }).type
+        if (partType === 'abort') {
+          const isTimeout =
+            turnAbort.signal.reason instanceof Error &&
+            turnAbort.signal.reason.message === 'turn-timeout'
+          if (isTimeout) timedOut = true
+          else aborted = true
+          break
+        }
         const chunks = translateAiSdkPart(part as never, acc)
         for (const c of chunks) {
           switch (c.type) {
@@ -486,22 +498,28 @@ export class AgentLoop {
       mutated = true
     }
 
-    // 2. Steer queue — drain into system messages.
-    while (this.steerQueue.length > 0) {
-      const steerMsg = this.steerQueue.shift()!
-      state.hadSteer = true
-      messages = [
-        ...messages,
-        {
-          role: 'system',
-          content: `[STEER — New message from user during execution]: ${steerMsg}`,
-        },
-      ]
-      this.emit({
-        type: 'interrupt',
-        content: `📨 Steer: ${steerMsg.slice(0, 100)}`,
-      })
-      mutated = true
+    // 2. Steer queue — drain into system messages. Only fires between
+    // iterations (stepNumber > 0). Steers queued before run() starts are
+    // applied on the next model call after the first step completes — this
+    // matches legacy behavior and the user-intent semantic of "steer
+    // mid-turn".
+    if (opts.stepNumber > 0) {
+      while (this.steerQueue.length > 0) {
+        const steerMsg = this.steerQueue.shift()!
+        state.hadSteer = true
+        messages = [
+          ...messages,
+          {
+            role: 'system',
+            content: `[STEER — New message from user during execution]: ${steerMsg}`,
+          },
+        ]
+        this.emit({
+          type: 'interrupt',
+          content: `📨 Steer: ${steerMsg.slice(0, 100)}`,
+        })
+        mutated = true
+      }
     }
 
     // 3. Graceful warning before timeout.
