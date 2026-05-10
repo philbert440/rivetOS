@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Runtime } from './runtime.js';
 import { SILENT_RESPONSES } from '../domain/constants.js';
+import { makeMockProvider, makeMockProviderSequence } from '../test-utils/mock-aisdk-provider.js';
 import type {
   Provider,
   Channel,
@@ -33,76 +34,34 @@ import type {
 // Mock Provider
 // ---------------------------------------------------------------------------
 
-type ChunkFactory = (messages: Message[]) => LLMChunk[];
-
-function makeProvider(id: string, chunksOrFactory: LLMChunk[] | ChunkFactory): Provider {
-  return {
+function makeProvider(id: string, chunks: LLMChunk[]): Provider {
+  return makeMockProvider({
     id,
     name: `Mock ${id}`,
-    async *chatStream(messages: Message[], _options?: ChatOptions): AsyncIterable<LLMChunk> {
-      const chunks = typeof chunksOrFactory === 'function'
-        ? chunksOrFactory(messages)
-        : chunksOrFactory;
-      for (const chunk of chunks) {
-        yield chunk;
-      }
-    },
-    async isAvailable() {
-      return true;
-    },
-    getModel() { return 'test-model'; },
-    setModel(_model: string) {},
-    getContextWindow() { return 0; },
-    getMaxOutputTokens() { return 0; },
-  };
+    modelId: 'test-model',
+    chunks,
+  });
 }
 
 // Provider that does tool call on first invocation, text on second
 function makeToolThenTextProvider(id: string): Provider {
-  let callCount = 0;
-  return {
+  return makeMockProvider({
     id,
     name: `Mock ${id}`,
-    async *chatStream(_messages: Message[], _options?: ChatOptions): AsyncIterable<LLMChunk> {
-      callCount++;
-      if (callCount === 1) {
-        yield { type: 'tool_call_start', toolCall: { index: 0, id: 'tc-1', name: 'test_tool' } };
-        yield { type: 'tool_call_delta', delta: '{"value":"hello"}', toolCall: { index: 0 } };
-        yield { type: 'tool_call_done', toolCall: { index: 0 } };
-        yield { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } };
-      } else {
-        yield { type: 'text', delta: 'Tool returned: hello' };
-        yield { type: 'done', usage: { promptTokens: 20, completionTokens: 10 } };
-      }
-    },
-    async isAvailable() {
-      return true;
-    },
-    getModel() { return 'test-model'; },
-    setModel(_model: string) {},
-    getContextWindow() { return 0; },
-    getMaxOutputTokens() { return 0; },
-  };
-}
-
-// Slow provider for testing queue ordering
-function makeSlowProvider(id: string, delayMs: number, response: string): Provider {
-  return {
-    id,
-    name: `Mock ${id}`,
-    async *chatStream(_messages: Message[], _options?: ChatOptions): AsyncIterable<LLMChunk> {
-      await new Promise((r) => setTimeout(r, delayMs));
-      yield { type: 'text', delta: response };
-      yield { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } };
-    },
-    async isAvailable() {
-      return true;
-    },
-    getModel() { return 'test-model'; },
-    setModel(_model: string) {},
-    getContextWindow() { return 0; },
-    getMaxOutputTokens() { return 0; },
-  };
+    modelId: 'test-model',
+    chunks: [
+      [
+        { type: 'tool_call_start', toolCall: { index: 0, id: 'tc-1', name: 'test_tool' } },
+        { type: 'tool_call_delta', delta: '{"value":"hello"}', toolCall: { index: 0 } },
+        { type: 'tool_call_done', toolCall: { index: 0 } },
+        { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
+      ],
+      [
+        { type: 'text', delta: 'Tool returned: hello' },
+        { type: 'done', usage: { promptTokens: 20, completionTokens: 10 } },
+      ],
+    ],
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -426,28 +385,28 @@ describe('Runtime Integration', () => {
 
   it('queue behavior — messages processed sequentially', async () => {
     const responses: string[] = [];
-    let callCount = 0;
 
-    // Provider that takes 200ms to respond, returns different text each time
-    const provider: Provider = {
+    // Provider that takes 200ms to respond, returns different text per call.
+    // Use a per-call sequence: chunks[0] for call 0, chunks[1] for call 1.
+    const provider = makeMockProvider({
       id: 'slow-provider',
       name: 'Slow Provider',
-      async *chatStream(_messages: Message[], _options?: ChatOptions): AsyncIterable<LLMChunk> {
-        callCount++;
-        const myCount = callCount;
-        await new Promise((r) => setTimeout(r, 200));
-        responses.push(`response-${myCount}`);
-        yield { type: 'text', delta: `response-${myCount}` };
-        yield { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } };
+      modelId: 'test-model',
+      stepDelayMs: 200,
+      onCall: ({ callIndex }) => {
+        responses.push(`response-${callIndex + 1}`);
       },
-      async isAvailable() {
-        return true;
-      },
-      getModel() { return 'test-model'; },
-      setModel(_model: string) {},
-      getContextWindow() { return 0; },
-      getMaxOutputTokens() { return 0; },
-    };
+      chunks: [
+        [
+          { type: 'text', delta: 'response-1' },
+          { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
+        ],
+        [
+          { type: 'text', delta: 'response-2' },
+          { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
+        ],
+      ],
+    });
 
     const channel = makeChannel('test-channel');
 
