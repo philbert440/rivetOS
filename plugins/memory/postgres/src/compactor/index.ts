@@ -24,12 +24,8 @@ export {
   type ConversationMeta,
   type CompactMessageRow,
   type SummaryRow,
-  type CompactorConfig,
-  type CompactorMetrics,
   TOOL_SYNTH_QUEUE_TABLE,
 } from './types.js'
 
-export { BackgroundCompactor } from './compactor.js'
-
-// Re-export formatters for worker reuse (exact match to library implementation)
+// Formatters for worker reuse (exact match to v5 spec)
 export { formatLeafPrompt, formatBranchPrompt, formatRootPrompt } from './compactor.js'

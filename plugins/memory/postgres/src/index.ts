@@ -39,9 +39,6 @@ export { ensureEmbedderSchema } from './embedder.js'
 
 // Compactor types/prompts/formatters — shared with Datahub compaction-worker and CLI
 export {
-  BackgroundCompactor,
-  type CompactorConfig,
-  type CompactorMetrics,
   LEAF_SYSTEM_PROMPT,
   BRANCH_SYSTEM_PROMPT,
   ROOT_SYSTEM_PROMPT,
