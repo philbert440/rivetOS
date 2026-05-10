@@ -267,42 +267,15 @@ providers:
 | `temperature` | number | — | Sampling temperature. |
 | `num_ctx` | number | — | Context window size. |
 
-### llama-server
-
-Native provider for `llama-server` binary from llama.cpp. Exposes full sampling controls (mirostat, typical_p, repeat_last_n, seed, etc.).
-
-```yaml
-providers:
-  llama-server:
-    base_url: http://localhost:8080
-    model: default
-    typical_p: 0.9
-    mirostat: 2
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `base_url` | string | `http://localhost:8080` | Must point to your `llama-server` (no trailing `/v1`). |
-| `model` | string | `default` | Model alias or path known to the server. |
-| `num_ctx` | number | `8192` | Context window (matches server `-c`). |
-| `temperature` | number | `0.7` | Sampling temperature. |
-| `top_p` | number | `0.9` | Nucleus sampling. |
-| `typical_p` | number | `0.9` | Locally typical sampling (llama.cpp specific). |
-| `repeat_penalty` | number | `1.1` | Repetition penalty. |
-| `repeat_last_n` | number | `64` | Last N tokens for repetition. |
-| `mirostat` | number | `0` | 0=off, 1=v1, 2=v2. |
-| `mirostat_tau` | number | `5.0` | Target surprise for Mirostat. |
-| `mirostat_eta` | number | `0.1` | Learning rate for Mirostat. |
-| `seed` | number | `-1` | Random seed (`-1` = random). |
-| `api_key` | string | — | Optional (for `--api-key` on server). |
-
 ### openai-compat
 
-Provider for strict OpenAI-compatible servers — vLLM, Text Generation Inference (TGI), LocalAI, Together, Fireworks, Groq, etc. Sibling to `llama-server` but tuned for stricter chat-template behavior:
+Provider for any OpenAI-compatible server — vLLM, Text Generation Inference (TGI), LocalAI, Together, Fireworks, Groq, llama.cpp's `llama-server`, etc.
 
 - Folds any post-first `system` message into a `user` message with a `[SYSTEM NOTICE]` prefix (vLLM/Qwen/Llama templates reject mid-conversation system messages)
-- Consumes vLLM's native `reasoning_content` / `reasoning` field when a `--reasoning-parser` is configured server-side, with `<think>` regex as fallback
-- Supports OpenAI sampling knobs plus vLLM extensions (`top_k`, `min_p`); excludes llama-only knobs (`typical_p`, `mirostat`, `repeat_penalty`)
+- Consumes vLLM's native `reasoning_content` field when a `--reasoning-parser` is configured server-side
+- Supports OpenAI sampling knobs plus vLLM/llama.cpp extensions (`top_k`, `min_p`)
+
+For llama.cpp's `llama-server`, point `base_url` at the server (e.g. `http://localhost:8080`) — there is no longer a separate `llama-server` provider.
 
 ```yaml
 providers:

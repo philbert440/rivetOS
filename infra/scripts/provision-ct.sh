@@ -9,7 +9,7 @@
 #
 # Usage:
 #   ./provision-ct.sh --ctid 114 --hostname rivet-local --node pve3 \
-#       --ip 192.0.2.114 --agent local --provider llama-server \
+#       --ip 192.0.2.114 --agent local --provider openai-compat \
 #       --model qwen2.5-coder-32b --base-url http://192.0.2.12:8000/v1 \
 #       --secrets-from 192.0.2.111
 #
@@ -43,7 +43,7 @@ EMBED_HOST=""         # IP of embedding server (defaults to DATAHUB_IP if not se
 AGENT_NAME=""
 PROVIDER_NAME=""
 DEFAULT_MODEL=""      # Model name (auto-set per provider if empty)
-BASE_URL=""           # Base URL for llama-server
+BASE_URL=""           # Base URL for ollama / openai-compat
 RESTORE_FROM=""       # Path to backup tarball for workspace restoration
 SECRETS_FROM=""       # IP of existing CT to pull shared secrets from
 TELEGRAM_TOKEN=""     # Telegram bot token (written directly to .env)
@@ -115,11 +115,11 @@ Required:
   --node        Proxmox node SSH alias or IP (e.g., pve3)
   --ip          Container IP (e.g., 192.0.2.114)
   --agent       RivetOS agent name (e.g., local, opus, grok, gemini)
-  --provider    AI provider (anthropic, xai, google, claude-cli, llama-server, ollama, openai-compat)
+  --provider    AI provider (anthropic, xai, google, claude-cli, ollama, openai-compat)
 
 Config Generation:
   --model       Model name (default: auto per provider)
-  --base-url    Base URL for llama-server / ollama / openai-compat providers
+  --base-url    Base URL for ollama / openai-compat providers
   --secrets-from IP  Pull shared secrets (PG, embed, xAI) from existing CT
   --telegram-token   Telegram bot token for this agent
   --discord-token    Discord bot token for this agent
@@ -164,7 +164,7 @@ fi
 
 # Validate base-url for providers that need a server endpoint
 case "$PROVIDER_NAME" in
-    llama-server|ollama|openai-compat)
+    ollama|openai-compat)
         if [[ -z "$BASE_URL" ]]; then
             echo "ERROR: --base-url is required for provider $PROVIDER_NAME"
             exit 1
@@ -179,7 +179,6 @@ if [[ -z "$DEFAULT_MODEL" ]]; then
         xai)            DEFAULT_MODEL="grok-4.20-reasoning";;
         google)         DEFAULT_MODEL="gemini-2.5-pro";;
         ollama)         DEFAULT_MODEL="llama3.1";;
-        llama-server)   DEFAULT_MODEL="default";;
         openai-compat)  DEFAULT_MODEL="default";;
         claude-cli)     DEFAULT_MODEL="opus";;
         *)              DEFAULT_MODEL="default";;

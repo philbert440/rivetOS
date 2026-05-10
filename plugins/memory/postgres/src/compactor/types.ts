@@ -290,7 +290,7 @@ export function fmtDate(d: Date | null): string {
 
 /**
  * Strip lone surrogates and non-whitespace ASCII control characters
- * so the string is safe for strict JSON parsers (e.g., llama-server).
+ * so the string is safe for strict JSON parsers (e.g., vLLM, llama.cpp).
  *
  * - Removes high surrogates (U+D800..U+DBFF) not followed by a low surrogate
  * - Removes lone low surrogates (U+DC00..U+DFFF) not preceded by a high surrogate

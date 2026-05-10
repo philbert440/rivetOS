@@ -6,8 +6,9 @@
  * The class itself owns config and exposes the standard Provider surface plus
  * Ollama-specific model-management helpers (list/show/pull/unload).
  *
- * For GERTY: can also point at llama-server via the OpenAI-compat provider.
- * This plugin is specifically for Ollama instances.
+ * This plugin is specifically for Ollama instances. Other local servers
+ * (vLLM, llama.cpp llama-server, TGI, etc.) should use the openai-compat
+ * provider instead.
  */
 
 import type {

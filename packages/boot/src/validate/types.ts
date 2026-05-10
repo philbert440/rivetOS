@@ -113,6 +113,17 @@ export const REMOVED_AGENT_KEYS = new Map<string, string>([
   ],
 ])
 
+/**
+ * Provider names removed in the AI SDK migration. Validator emits a hard error
+ * pointing operators at the replacement.
+ */
+export const REMOVED_PROVIDERS = new Map<string, string>([
+  [
+    'llama-server',
+    'The "llama-server" provider was removed. Use "openai-compat" with base_url pointing at your llama.cpp server (e.g. http://localhost:8080).',
+  ],
+])
+
 export const VALID_THINKING_LEVELS = new Set(['off', 'low', 'medium', 'high'])
 
 export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
@@ -146,28 +157,6 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'num_ctx',
     'temperature',
     'keep_alive',
-    'context_window',
-    'max_output_tokens',
-  ]),
-  'llama-server': new Set([
-    'model',
-    'base_url',
-    'api_key',
-    'max_tokens',
-    'temperature',
-    'top_p',
-    'top_k',
-    'min_p',
-    'typical_p',
-    'repeat_penalty',
-    'repeat_last_n',
-    'presence_penalty',
-    'frequency_penalty',
-    'mirostat',
-    'mirostat_tau',
-    'mirostat_eta',
-    'seed',
-    'name',
     'context_window',
     'max_output_tokens',
   ]),

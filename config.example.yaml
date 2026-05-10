@@ -32,12 +32,6 @@ providers:
   #   # default_tool_choice: auto           # auto | none | required
   #   # verify_model_on_init: true          # probe /v1/models at boot
 
-  # --- Local models via llama.cpp server (native API) ---
-  # llama-server:
-  #   base_url: http://localhost:8080
-  #   model: default
-  #   max_tokens: 4096
-
 channels:
   discord:
     # bot_token via env: DISCORD_BOT_TOKEN
@@ -62,7 +56,6 @@ channels:
 #   - "@rivetos/provider-google"
 #   - "@rivetos/provider-xai"
 #   - "@rivetos/provider-ollama"
-#   - "@rivetos/provider-llama-server"
 #   - "@rivetos/provider-openai-compat"
 #   - "@rivetos/channel-telegram"
 #   - "@rivetos/channel-discord"

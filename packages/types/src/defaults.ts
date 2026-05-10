@@ -9,7 +9,6 @@ export const MODEL_DEFAULTS = {
   xai: 'grok-4.20-reasoning',
   google: 'gemini-2.5-pro',
   ollama: 'llama3.1',
-  'llama-server': 'default',
   'openai-compat': 'default',
 } as const
 

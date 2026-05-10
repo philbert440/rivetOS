@@ -19,7 +19,6 @@ const DEFAULT_MODELS: Record<string, string> = {
   xai: 'grok-4-1-fast-reasoning',
   google: 'gemini-2.5-pro',
   ollama: 'qwen2.5:32b',
-  'llama-server': 'default',
   'openai-compat': 'default',
 }
 
@@ -71,14 +70,9 @@ export async function configureAgents(): Promise<WizardAgent[]> {
         { value: 'google' as const, label: 'Google', hint: 'Gemini' },
         { value: 'ollama' as const, label: 'Ollama', hint: 'local models' },
         {
-          value: 'llama-server' as const,
-          label: 'llama.cpp server (local)',
-          hint: 'llama-server binary',
-        },
-        {
           value: 'openai-compat' as const,
           label: 'OpenAI-compatible server',
-          hint: 'vLLM, TGI, or other strict OpenAI-compat API',
+          hint: 'vLLM, TGI, llama.cpp llama-server, or any strict OpenAI-compat API',
         },
       ],
     })
@@ -99,14 +93,6 @@ export async function configureAgents(): Promise<WizardAgent[]> {
         message: 'Ollama base URL',
         placeholder: 'http://localhost:11434',
         defaultValue: 'http://localhost:11434',
-      })
-      bail(urlResult)
-      baseUrl = urlResult
-    } else if (provider === 'llama-server') {
-      const urlResult = await p.text({
-        message: 'llama-server base URL',
-        placeholder: 'http://localhost:8080',
-        defaultValue: 'http://localhost:8080',
       })
       bail(urlResult)
       baseUrl = urlResult

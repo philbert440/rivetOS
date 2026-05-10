@@ -17,7 +17,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 - **Tiny core, fat plugins** — The kernel stays under 5,000 lines. Everything else is swappable.
 - **Streaming-first** — `AsyncIterable<StreamEvent>` from every provider. Responses stream in real-time.
-- **7 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, llama-server (native llama.cpp), openai-compat (vLLM / TGI / any strict OpenAI-compatible server), claude-cli (Claude Code subscription).
+- **6 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, openai-compat (vLLM / TGI / llama.cpp llama-server / any OpenAI-compatible server), claude-cli (Claude Code subscription).
 - **4 channel plugins** — Discord, Telegram, Agent (HTTP inter-agent), Voice (xAI Realtime).
 - **MCP transport plugin** — Expose RivetOS tools (memory, web, skills) to external MCP clients over StreamableHTTP.
 - **20+ built-in tools** — Shell, file I/O, search, web, memory, skills, interaction, MCP client, coding pipeline, delegation, sub-agents.
@@ -103,7 +103,7 @@ rivetOS/
 │   └── nx-plugin/      # @rivetos/nx — generators, executors, dev tooling
 ├── plugins/
 │   ├── channels/       # discord, telegram, agent, voice-discord
-│   ├── providers/      # anthropic, google, xai, ollama, llama-server, openai-compat, claude-cli
+│   ├── providers/      # anthropic, google, xai, ollama, openai-compat, claude-cli
 │   ├── memory/         # postgres (pgvector + FTS + summary DAG + workers)
 │   ├── tools/          # shell, file, search, web-search, interaction, mcp-client, coding-pipeline
 │   └── transports/     # mcp-server (expose RivetOS tools over MCP StreamableHTTP)
@@ -125,8 +125,7 @@ Skills are user-managed and live outside the source tree (default: `~/.rivetos/w
 | `provider-google` | Gemini models via Generative Language API (thought signatures) |
 | `provider-xai` | Grok models with live search and caching |
 | `provider-ollama` | Local Ollama models (native API) |
-| `provider-llama-server` | llama.cpp `llama-server` binary (native API, mirostat, typical_p, etc.) |
-| `provider-openai-compat` | Strict OpenAI-compatible servers (vLLM, TGI, Groq, Together, Fireworks, LocalAI) |
+| `provider-openai-compat` | OpenAI-compatible servers (vLLM, TGI, llama.cpp llama-server, Groq, Together, Fireworks, LocalAI) |
 | `provider-claude-cli` | Drives the local `claude` binary (Claude Code) using the user's subscription OAuth token |
 
 ### Channels

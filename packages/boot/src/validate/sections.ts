@@ -7,6 +7,7 @@ import {
   KNOWN_AGENT_KEYS,
   REMOVED_RUNTIME_KEYS,
   REMOVED_AGENT_KEYS,
+  REMOVED_PROVIDERS,
   VALID_THINKING_LEVELS,
   KNOWN_PROVIDERS,
   KNOWN_CHANNELS,
@@ -386,6 +387,12 @@ export function validateProviders(
 
     const provider = providerCfg as Record<string, unknown>
 
+    const removedMsg = REMOVED_PROVIDERS.get(name)
+    if (removedMsg) {
+      issues.push({ severity: 'error', path, message: removedMsg })
+      continue
+    }
+
     if (!KNOWN_PROVIDERS[name]) {
       issues.push({
         severity: 'warning',
@@ -420,7 +427,7 @@ export function validateProviders(
     }
 
     if (
-      (name === 'ollama' || name === 'llama-server' || name === 'openai-compat') &&
+      (name === 'ollama' || name === 'openai-compat') &&
       !provider.base_url
     ) {
       issues.push({

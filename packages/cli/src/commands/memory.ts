@@ -13,7 +13,7 @@
  *
  * Options (backfill-tool-synth):
  *   --concurrency N         Parallel workers. Default: 4. Set to match
- *                           --parallel slots on the llama-server endpoints.
+ *                           --parallel slots on the inference endpoints.
  *   --urls <list>           Comma-separated endpoints to round-robin across.
  *                           Default: $TOOL_SYNTH_ENDPOINT or $RIVETOS_COMPACTOR_URL
  *                           Example: http://gerty:8001/v1,http://gerty:8002/v1
@@ -132,7 +132,7 @@ async function backfillToolSynth(args: string[]): Promise<void> {
 
   Options:
     --concurrency N         Parallel workers (default: 4)
-    --urls <list>           Comma-separated llama-server endpoints
+    --urls <list>           Comma-separated inference endpoints
                             (default: $TOOL_SYNTH_ENDPOINT or $RIVETOS_COMPACTOR_URL)
     --model <name>          Model name in request body
                             (default: $TOOL_SYNTH_MODEL or $RIVETOS_COMPACTOR_MODEL)
