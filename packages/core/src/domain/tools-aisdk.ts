@@ -31,6 +31,7 @@
 
 import type {
   HookPipeline,
+  StreamHandler,
   Tool as RivetosTool,
   ToolAfterContext,
   ToolBeforeContext,
@@ -62,6 +63,10 @@ export interface ToolMiddlewareBinding {
   userId?: string
   /** Optional pipeline — if absent, hooks are skipped entirely. */
   hooks?: HookPipeline
+  /** Optional stream-event emitter. When set, each tool's execute fires
+   *  `tool_start` before invocation and `tool_result` after, mirroring the
+   *  legacy loop's stream-event surface. */
+  onStreamEvent?: StreamHandler
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +123,15 @@ function buildAiSdkTool(
         effectiveArgs = before.args
       }
 
+      // ---- tool:start stream event (matches legacy loop surface) -----
+      if (binding.onStreamEvent) {
+        binding.onStreamEvent({
+          type: 'tool_start',
+          content: `🔧 ${def.name}`,
+          metadata: { args: summarizeArgs(effectiveArgs) },
+        })
+      }
+
       // ---- tool execution --------------------------------------------
       const session = buildLocalSessionContext({
         agentId: binding.agentId ?? 'unknown',
@@ -139,6 +153,16 @@ function buildAiSdkTool(
         })
       } catch (err) {
         raw = `Error: ${err instanceof Error ? err.message : String(err)}`
+      }
+
+      // ---- tool:result stream event (matches legacy loop surface) ----
+      if (binding.onStreamEvent) {
+        const text = getToolResultText(raw)
+        const isError = text.startsWith('Error')
+        binding.onStreamEvent({
+          type: 'tool_result',
+          content: `${isError ? '❌' : '✅'} ${def.name}: ${text.slice(0, 200)}`,
+        })
       }
 
       // ---- tool:after ------------------------------------------------
@@ -164,6 +188,22 @@ function buildAiSdkTool(
       return toToolResultOutput(args.output as ToolResult)
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function summarizeArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const summary: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === 'string' && value.length > 200) {
+      summary[key] = value.slice(0, 200) + '…'
+    } else {
+      summary[key] = value
+    }
+  }
+  return summary
 }
 
 // ---------------------------------------------------------------------------

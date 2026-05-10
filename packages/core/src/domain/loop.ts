@@ -1,11 +1,21 @@
 /**
- * Agent Loop — the core execution cycle.
+ * Agent Loop — AI SDK implementation.
  *
- * Consumes a streaming provider (AsyncIterable<LLMChunk>).
- * Supports: abort (/stop, /interrupt), steer, thinking levels,
- * tool iteration limits, and stream events.
+ * Drives one turn of the conversation using `streamText` from the Vercel AI SDK
+ * as the inner kernel. Provider-specific construction (auth, headers, response_id
+ * persistence, server-side tools) lives behind `Provider.aiSdkBridge`. The loop
+ * itself owns:
  *
- * Pure domain logic. No I/O. Works with interfaces only.
+ *   - Steer queue injection between steps
+ *   - Turn-timeout abort + graceful-warning system message
+ *   - Context-window nudges (40/70/90% by default)
+ *   - `compact_context` as a built-in tool with deferred application via
+ *     `prepareStep` (no out-of-band mutation of messages)
+ *   - Hook pipeline wired as language-model middleware
+ *   - Image-handling for tool results (disk archive, fire-and-forget)
+ *   - StreamEvent emission via `fullStream` part translation
+ *
+ * Pure domain logic. No I/O except the optional image-archival side effect.
  */
 
 import type {
@@ -13,32 +23,41 @@ import type {
   ContentPart,
   Provider,
   Tool,
-  ToolDefinition,
   ToolCall,
-  ToolResult,
   StreamEvent,
   StreamHandler,
   ChatOptions,
   ThinkingLevel,
   HookPipeline,
-  ProviderBeforeContext,
-  ProviderAfterContext,
-  ProviderErrorContext,
-  ToolBeforeContext,
-  ToolAfterContext,
 } from '@rivetos/types'
 import {
-  getToolResultText,
-  toolResultHasImages,
   getToolResultImages,
-  ProviderError,
-  buildLocalSessionContext,
+  toolResultHasImages,
 } from '@rivetos/types'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import {
+  streamText,
+  stepCountIs,
+  tool,
+  wrapLanguageModel,
+  jsonSchema,
+  type LanguageModel,
+  type ModelMessage,
+  type StepResult,
+  type ToolSet,
+} from 'ai'
 import { estimateTokens } from './tokens.js'
-import { collectLlmStream } from './aisdk-stream.js'
+import {
+  convertMessagesToAiSdk,
+  createLlmChunkAccumulator,
+  translateAiSdkPart,
+  type AiSdkChunkAccumulator,
+} from './aisdk-stream.js'
+import { toAiSdkTools } from './tools-aisdk.js'
+import { hookPipelineToMiddleware, HookSkipError } from './hooks-aisdk.js'
+import type { ProviderAiSdkBridge } from './aisdk-bridge.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -63,7 +82,7 @@ export interface AgentLoopConfig {
   hooks?: HookPipeline
   /** Session ID for hook context */
   sessionId?: string
-  /** Turn wall-clock timeout in ms (default: 900_000 = 15 min) */
+  /** Turn wall-clock timeout in ms (default: 1_800_000 = 30 min) */
   turnTimeout?: number
   /** Graceful degradation warning offset in ms before timeout (default: 180_000 = 3 min before timeout) */
   gracefulWarningMs?: number
@@ -76,6 +95,8 @@ export interface AgentLoopConfig {
   /** Start a fresh conversation — prevents reuse of stateful provider context (e.g. xAI previous_response_id).
    *  Set by delegation/subagent engines to isolate conversations. */
   freshConversation?: boolean
+  /** Hard cap on tool-execution steps before stopWhen fires (default: 50). */
+  maxSteps?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +118,45 @@ export interface TurnResult {
   usage?: { promptTokens: number; completionTokens: number }
   /** Whether the user injected a steer message during this turn */
   hadSteer?: boolean
+}
+
+// ---------------------------------------------------------------------------
+// Internal turn state
+// ---------------------------------------------------------------------------
+
+interface CompactionRequest {
+  start_index: number
+  end_index: number
+  summary: string
+}
+
+interface TurnState {
+  /** Tool names used (in order, with duplicates). */
+  toolsUsed: string[]
+  /** Steps that involved tool calls. Iterations == legacy "tool iterations". */
+  iterations: number
+  /** Pending compaction stashed by the most recent compact_context call. */
+  pendingCompaction: CompactionRequest[] | null
+  /** Soft+hard nudge pcts already fired this turn. */
+  nudgesFired: number[]
+  /** True after the [SYSTEM — Turn Timeout Warning] message has been injected. */
+  gracefulWarningFired: boolean
+  /** True if the user steered during this turn. */
+  hadSteer: boolean
+  /** Last per-step `inputTokens` reading — used for context-window % calculations. */
+  lastKnownPromptTokens: number
+  /** Heartbeat tracking. */
+  lastProgressEmit: number
+  heartbeatCount: number
+  /** Turn start timestamp for elapsed/timeout calculations. */
+  turnStart: number
+  /** Accumulated usage across all steps (max-merged). */
+  totalUsage: {
+    promptTokens: number
+    completionTokens: number
+    reasoningTokens?: number
+    cachedTokens?: number
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -125,27 +185,482 @@ export class AgentLoop {
     history: Message[],
     signal?: AbortSignal,
   ): Promise<TurnResult> {
-    const messages: Message[] = [
-      { role: 'system', content: this.config.systemPrompt },
+    // ---- Early abort -----------------------------------------------------
+    if (signal?.aborted) {
+      return {
+        response: '',
+        toolsUsed: [],
+        iterations: 0,
+        aborted: true,
+        partialResponse: '',
+        usage: { promptTokens: 0, completionTokens: 0 },
+        hadSteer: false,
+      }
+    }
+
+    // ---- Provider bridge -------------------------------------------------
+    const bridge = (this.config.provider.aiSdkBridge?.() as
+      | ProviderAiSdkBridge
+      | undefined)
+    if (!bridge) {
+      throw new Error(
+        `Provider "${this.config.provider.id}" does not expose an aiSdkBridge — ` +
+          `it must implement aiSdkBridge() to be used with the AI SDK loop.`,
+      )
+    }
+
+    // ---- Prepare messages (prov-specific massaging if any) ---------------
+    const rawHistory: Message[] = [
       ...history,
       { role: 'user', content: userMessage },
     ]
+    const prep = bridge.prepareMessages?.(rawHistory)
+    const wireMessages: Message[] = prep?.messages ?? rawHistory
+    // System prompt: provider may want to merge in extra (vLLM/Qwen folding),
+    // but typically just config.systemPrompt.
+    const systemPrompt = prep?.system
+      ? `${this.config.systemPrompt}\n\n${prep.system}`
+      : this.config.systemPrompt
 
-    const toolDefs: ToolDefinition[] = this.config.tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      parameters: t.parameters,
-    }))
+    let aiSdkMessages: ModelMessage[] = convertMessagesToAiSdk(wireMessages)
 
-    // Add compact_context as a built-in tool (always available)
-    toolDefs.push({
-      name: 'compact_context',
+    // ---- Turn state ------------------------------------------------------
+    const state: TurnState = {
+      toolsUsed: [],
+      iterations: 0,
+      pendingCompaction: null,
+      nudgesFired: [],
+      gracefulWarningFired: false,
+      hadSteer: false,
+      lastKnownPromptTokens: 0,
+      lastProgressEmit: Date.now(),
+      heartbeatCount: 0,
+      turnStart: Date.now(),
+      totalUsage: { promptTokens: 0, completionTokens: 0 },
+    }
+
+    // ---- Turn timeout ----------------------------------------------------
+    const turnTimeout = this.config.turnTimeout ?? 1_800_000
+    const gracefulWarningMs = this.config.gracefulWarningMs ?? 180_000
+
+    // Compose abort signal: caller signal + turn-timeout
+    const turnAbort = new AbortController()
+    const timeoutId = setTimeout(() => {
+      turnAbort.abort(new Error('turn-timeout'))
+    }, turnTimeout)
+    const onCallerAbort = () => turnAbort.abort(signal?.reason)
+    if (signal) {
+      if (signal.aborted) turnAbort.abort(signal.reason)
+      else signal.addEventListener('abort', onCallerAbort, { once: true })
+    }
+
+    // ---- Build tool set --------------------------------------------------
+    const userTools = toAiSdkTools(this.config.tools, {
+      agentId: this.config.agentId,
+      sessionId: this.config.sessionId,
+      workingDir: this.config.workspaceDir,
+      hooks: this.config.hooks,
+      onStreamEvent: (e) => this.emit(e),
+    })
+    const tools: ToolSet = {
+      ...this.wrapToolsForImages(userTools, this.config.tools),
+      compact_context: this.buildCompactContextTool(state),
+      ...(bridge.getServerSideTools?.() ?? {}),
+    }
+
+    // ---- Build language model + middleware -------------------------------
+    //
+    // The middleware infrastructure (hookPipelineToMiddleware, step 3c) is
+    // typed against `LanguageModelV2` from `@ai-sdk/provider`. AI SDK 6's
+    // `streamText` / `wrapLanguageModel` expect `LanguageModelV3` at the type
+    // layer but accept V2 models at runtime via internal compat shims.
+    // Migrating the middleware infra to V3 is queued as its own concern; for
+    // now we cast at the boundary.
+    const baseModel = bridge.getModel({
+      modelOverride: this.config.modelOverride,
+      conversationId: this.config.sessionId,
+    })
+    const model: LanguageModel = this.config.hooks
+      ? (wrapLanguageModel({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          model: baseModel as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          middleware: hookPipelineToMiddleware(this.config.hooks, {
+            providerId: this.config.provider.id,
+            model: this.config.modelOverride ?? this.config.provider.getModel(),
+            agentId: this.config.agentId,
+            sessionId: this.config.sessionId,
+          }) as any,
+        }) as LanguageModel)
+      : baseModel
+
+    // ---- Build providerOptions ------------------------------------------
+    const chatOptions: ChatOptions = {
+      thinking: this.config.thinking,
+      modelOverride: this.config.modelOverride,
+      freshConversation: this.config.freshConversation,
+      agentId: this.config.agentId,
+      executableTools:
+        this.config.tools.length > 0 ? this.config.tools : undefined,
+    }
+    const rawProviderOptions = bridge.buildProviderOptions(
+      wireMessages,
+      chatOptions,
+    )
+    // AI SDK's ProviderOptions is `SharedV3ProviderOptions` (Record<string,
+    // Record<string, JSONValue>>); bridge returns `JSONObject`. Structurally
+    // compatible at runtime, but TS narrows JSONValue strictly.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const providerOptions = rawProviderOptions as any
+
+    // ---- Stream! ---------------------------------------------------------
+    const acc = createLlmChunkAccumulator()
+    let textContent = ''
+    let lastError: string | null = null
+    let timedOut = false
+    let aborted = false
+
+    try {
+      const result = streamText({
+        model,
+        system: systemPrompt,
+        messages: aiSdkMessages,
+        tools,
+        stopWhen: stepCountIs(this.config.maxSteps ?? 50),
+        abortSignal: turnAbort.signal,
+        providerOptions,
+        prepareStep: (opts) => this.handlePrepareStep(opts, state),
+        onStepFinish: (stepResult) => {
+          this.handleStepFinish(stepResult, state, bridge, chatOptions)
+        },
+      })
+
+      // Drive the fullStream — translate parts to LLMChunks, then emit the
+      // shape the channel layer expects. Tool-related events are emitted by
+      // the tools-aisdk wrapper itself (tool_start/tool_result), so here we
+      // only handle text/reasoning/error/status.
+      for await (const part of result.fullStream as AsyncIterable<unknown>) {
+        const chunks = translateAiSdkPart(part as never, acc)
+        for (const c of chunks) {
+          switch (c.type) {
+            case 'text':
+              if (c.delta) {
+                textContent += c.delta
+                this.emit({ type: 'text', content: c.delta })
+              }
+              break
+            case 'reasoning':
+              if (c.delta) this.emit({ type: 'reasoning', content: c.delta })
+              break
+            case 'error':
+              if (c.error) {
+                lastError = c.error
+                this.emit({ type: 'error', content: c.error })
+              }
+              break
+            case 'status':
+              if (c.delta) this.emit({ type: 'status', content: `🔍 ${c.delta}` })
+              break
+            // tool_call_* chunks: ignored here — tools-aisdk emits tool_start /
+            // tool_result events from the wrapped execute, matching legacy.
+            // 'done' is terminal-only, captured via mergeUsageFromAcc.
+            default:
+              break
+          }
+        }
+      }
+
+      // After stream completes, ensure accumulator usage is merged.
+      this.mergeUsageFromAcc(acc, state)
+    } catch (err: unknown) {
+      // Distinguish abort/timeout from real errors.
+      if (err instanceof HookSkipError) {
+        // Hook said skip — finish cleanly as aborted.
+        clearTimeout(timeoutId)
+        if (signal) signal.removeEventListener('abort', onCallerAbort)
+        return {
+          response: '',
+          toolsUsed: state.toolsUsed,
+          iterations: state.iterations,
+          aborted: true,
+          partialResponse: textContent,
+          usage: state.totalUsage,
+          hadSteer: state.hadSteer,
+        }
+      }
+
+      if (turnAbort.signal.aborted) {
+        // Either caller aborted or turn timeout fired.
+        const isTimeout =
+          turnAbort.signal.reason instanceof Error &&
+          turnAbort.signal.reason.message === 'turn-timeout'
+        if (isTimeout) {
+          timedOut = true
+        } else {
+          aborted = true
+        }
+      } else {
+        // Real error — propagate after cleanup.
+        clearTimeout(timeoutId)
+        if (signal) signal.removeEventListener('abort', onCallerAbort)
+        throw err
+      }
+    } finally {
+      clearTimeout(timeoutId)
+      if (signal) signal.removeEventListener('abort', onCallerAbort)
+    }
+
+    // ---- Apply any leftover compaction + sync session -------------------
+    if (state.pendingCompaction) {
+      aiSdkMessages = this.applyCompaction(
+        aiSdkMessages,
+        state.pendingCompaction,
+      )
+      this.syncCompactedSession(aiSdkMessages)
+      state.pendingCompaction = null
+    }
+
+    // ---- Build TurnResult ------------------------------------------------
+    if (aborted) {
+      return {
+        response: '',
+        toolsUsed: state.toolsUsed,
+        iterations: state.iterations,
+        aborted: true,
+        partialResponse: textContent,
+        usage: state.totalUsage,
+        hadSteer: state.hadSteer,
+      }
+    }
+
+    if (timedOut) {
+      const elapsedSec = Math.floor((Date.now() - state.turnStart) / 1000)
+      this.emit({
+        type: 'status',
+        content: `⚠️ Turn timeout (${elapsedSec}s)`,
+      })
+      const capNotice =
+        '\n\n⚠️ _Turn timed out. Let me know if you want me to continue._'
+      return {
+        response: textContent
+          ? textContent.trim() + capNotice
+          : capNotice.trim(),
+        toolsUsed: state.toolsUsed,
+        iterations: state.iterations,
+        aborted: false,
+        usage: state.totalUsage,
+        hadSteer: state.hadSteer,
+      }
+    }
+
+    // Normal finish: prefer text, fall back to lastError, then empty.
+    const finalResponse =
+      textContent.trim() || (lastError ? `⚠️ ${lastError}` : '')
+    return {
+      response: finalResponse,
+      toolsUsed: state.toolsUsed,
+      iterations: state.iterations,
+      aborted: false,
+      usage: state.totalUsage,
+      hadSteer: state.hadSteer,
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // prepareStep — runs before each LLM call
+  // -----------------------------------------------------------------------
+
+  private handlePrepareStep(
+    opts: { messages: ModelMessage[]; stepNumber: number },
+    state: TurnState,
+  ): { messages: ModelMessage[] } | undefined {
+    let messages = opts.messages
+    let mutated = false
+
+    // 1. Apply pending compaction (set by compact_context tool last step).
+    if (state.pendingCompaction) {
+      messages = this.applyCompaction(messages, state.pendingCompaction)
+      this.syncCompactedSession(messages)
+      state.pendingCompaction = null
+      state.nudgesFired.length = 0 // reset nudges for fresh window
+      mutated = true
+    }
+
+    // 2. Steer queue — drain into system messages.
+    while (this.steerQueue.length > 0) {
+      const steerMsg = this.steerQueue.shift()!
+      state.hadSteer = true
+      messages = [
+        ...messages,
+        {
+          role: 'system',
+          content: `[STEER — New message from user during execution]: ${steerMsg}`,
+        },
+      ]
+      this.emit({
+        type: 'interrupt',
+        content: `📨 Steer: ${steerMsg.slice(0, 100)}`,
+      })
+      mutated = true
+    }
+
+    // 3. Graceful warning before timeout.
+    const turnTimeout = this.config.turnTimeout ?? 1_800_000
+    const gracefulWarningMs = this.config.gracefulWarningMs ?? 180_000
+    const gracefulThreshold = turnTimeout - gracefulWarningMs
+    const elapsed = Date.now() - state.turnStart
+    if (!state.gracefulWarningFired && elapsed > gracefulThreshold) {
+      state.gracefulWarningFired = true
+      const remainingSec = Math.floor((turnTimeout - elapsed) / 1000)
+      this.emit({
+        type: 'status',
+        content: `⏳ Approaching turn timeout — ${remainingSec}s remaining`,
+      })
+      messages = [
+        ...messages,
+        {
+          role: 'system',
+          content:
+            `[SYSTEM — Turn Timeout Warning]\n` +
+            `You have approximately ${remainingSec} seconds before this turn times out.\n\n` +
+            `Wrap up your current work now:\n` +
+            `1. Finish or checkpoint your current task\n` +
+            `2. Write a summary of what you accomplished and what remains to the appropriate file ` +
+            `(AGENT.md, memory notes, or daily log)\n` +
+            `3. List clear next steps so you (or another agent) can pick up exactly where you left off\n\n` +
+            `Do NOT start new long-running operations. Focus on saving state.`,
+        },
+      ]
+      mutated = true
+    }
+
+    // 4. Context-window nudges.
+    const contextWindow = this.config.contextWindow ?? 0
+    if (contextWindow > 0) {
+      const softNudgePcts = this.config.contextConfig?.softNudgePct ?? [40, 70]
+      const hardNudgePct = this.config.contextConfig?.hardNudgePct ?? 90
+
+      // Token estimate: provider-reported when available, else chars/4.
+      const currentTokens =
+        state.lastKnownPromptTokens > 0
+          ? state.lastKnownPromptTokens
+          : estimateTokens(this.aiSdkToRivetosMessages(messages))
+      const tokenSource = state.lastKnownPromptTokens > 0 ? 'provider' : 'estimate'
+      const pct = Math.floor((currentTokens / contextWindow) * 100)
+
+      if (pct >= hardNudgePct && !state.nudgesFired.includes(hardNudgePct)) {
+        state.nudgesFired.push(hardNudgePct)
+        messages = [
+          ...messages,
+          {
+            role: 'system',
+            content:
+              `[SYSTEM — Context Management — REQUIRED]\n` +
+              `Your context is at ${pct}% capacity (~${currentTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens, ${tokenSource}). ` +
+              `You must free up space before continuing.\n\n` +
+              `Use \`compact_context\` to summarize or remove the least critical material. Focus on:\n` +
+              `- Completed tasks and their verbose tool output\n` +
+              `- Resolved discussion threads\n` +
+              `- Exploratory paths that were abandoned\n\n` +
+              `Preserve: active work context, recent decisions, anything referenced in the current task.`,
+          },
+        ]
+        mutated = true
+      } else {
+        for (const nudgePct of softNudgePcts) {
+          if (pct >= nudgePct && !state.nudgesFired.includes(nudgePct)) {
+            state.nudgesFired.push(nudgePct)
+            const urgency =
+              nudgePct >= 70
+                ? 'You should review your conversation history and use `compact_context` to replace resolved topics with brief summaries. If everything is genuinely still needed, carry on.'
+                : 'If there are completed tasks or stale tool output you no longer need, consider using `compact_context` to summarize them. Otherwise, carry on.'
+            messages = [
+              ...messages,
+              {
+                role: 'system',
+                content:
+                  `[SYSTEM — Context Management]\n` +
+                  `Your session context is at ${pct}% (~${currentTokens.toLocaleString()} tokens of ${contextWindow.toLocaleString()} window, ${tokenSource}).\n\n` +
+                  urgency,
+              },
+            ]
+            mutated = true
+          }
+        }
+      }
+    }
+
+    return mutated ? { messages } : undefined
+  }
+
+  // -----------------------------------------------------------------------
+  // onStepFinish — runs after each LLM call
+  // -----------------------------------------------------------------------
+
+  private handleStepFinish(
+    stepResult: StepResult<ToolSet>,
+    state: TurnState,
+    bridge: ProviderAiSdkBridge,
+    options: ChatOptions,
+  ): void {
+    // 1. Iteration count + tool tracking.
+    if (stepResult.toolCalls && stepResult.toolCalls.length > 0) {
+      state.iterations++
+      for (const tc of stepResult.toolCalls) {
+        state.toolsUsed.push(tc.toolName)
+      }
+    }
+
+    // 2. Usage accumulation (max-merge to mirror legacy semantics).
+    const u = stepResult.usage
+    if (u) {
+      const promptTokens = u.inputTokens ?? 0
+      const completionTokens = u.outputTokens ?? 0
+      state.totalUsage.promptTokens = Math.max(
+        state.totalUsage.promptTokens,
+        promptTokens,
+      )
+      state.totalUsage.completionTokens = Math.max(
+        state.totalUsage.completionTokens,
+        completionTokens,
+      )
+      if (u.reasoningTokens) {
+        state.totalUsage.reasoningTokens = u.reasoningTokens
+      }
+      if (u.cachedInputTokens) {
+        state.totalUsage.cachedTokens = u.cachedInputTokens
+      }
+      if (promptTokens > 0) state.lastKnownPromptTokens = promptTokens
+    }
+
+    // 3. Bridge per-step capture (e.g. xAI previousResponseId).
+    bridge.captureStepResult?.(stepResult, options)
+
+    // 4. Heartbeat (every 147s).
+    if (Date.now() - state.lastProgressEmit > 147_000) {
+      state.heartbeatCount++
+      const elapsedSec = Math.floor((Date.now() - state.turnStart) / 1000)
+      this.emit({
+        type: 'status',
+        content: `⏳ Still working... (${state.iterations} tool calls, ${elapsedSec}s, heartbeat #${state.heartbeatCount})`,
+      })
+      state.lastProgressEmit = Date.now()
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // compact_context tool
+  // -----------------------------------------------------------------------
+
+  private buildCompactContextTool(state: TurnState): ToolSet[string] {
+    const validate = this.validateCompaction.bind(this)
+    return tool({
       description:
         'Summarize and compact conversation history to free context window space. ' +
         'Provide ranges of messages to replace with summaries. ' +
         'Message indices are 0-based positions in the conversation history ' +
         '(index 0 = first user or assistant message; system messages are excluded from indexing).',
-      parameters: {
+      inputSchema: jsonSchema({
         type: 'object',
         properties: {
           replacements: {
@@ -174,584 +689,45 @@ export class AgentLoop {
           },
         },
         required: ['replacements'],
-      },
-    })
-
-    const toolsUsed: string[] = []
-    let iterations = 0
-    const totalUsage: {
-      promptTokens: number
-      completionTokens: number
-      reasoningTokens?: number
-      cachedTokens?: number
-    } = { promptTokens: 0, completionTokens: 0 }
-    let partialResponse = ''
-    let lastError = ''
-    let hadSteer = false
-
-    // Turn timeout replaces maxIterations hard cap
-    const turnStart = Date.now()
-    const turnTimeout = this.config.turnTimeout ?? 1_800_000
-    const gracefulWarningMs = this.config.gracefulWarningMs ?? 180_000
-    const gracefulThreshold = turnTimeout - gracefulWarningMs
-    let gracefulWarningFired = false
-    let lastProgressEmit = Date.now()
-    let heartbeatCount = 0
-
-    // Context window management
-    const contextWindow = this.config.contextWindow ?? 0
-    const softNudgePcts = this.config.contextConfig?.softNudgePct ?? [40, 70]
-    const hardNudgePct = this.config.contextConfig?.hardNudgePct ?? 90
-    const nudgesFired: number[] = []
-    // Provider-reported token count — used instead of chars/4 estimate after first response
-    let lastKnownPromptTokens = 0
-
-    // Deferred compaction — validated during the turn, applied after the loop exits.
-    // This avoids mutating the live messages array mid-tool-execution.
-    let pendingCompaction: Array<{
-      start_index: number
-      end_index: number
-      summary: string
-    }> | null = null
-
-    let activeModelOverride: string | undefined = this.config.modelOverride
-    let activeProvider = this.config.provider
-
-    for (;;) {
-      if (signal?.aborted) {
-        return {
-          response: '',
-          toolsUsed,
-          iterations,
-          aborted: true,
-          partialResponse,
-          usage: totalUsage,
-          hadSteer,
-        }
-      }
-
-      // Graceful degradation warning — nudge agent to wrap up before hard timeout
-      const elapsed = Date.now() - turnStart
-      if (!gracefulWarningFired && elapsed > gracefulThreshold) {
-        gracefulWarningFired = true
-        const remainingSec = Math.floor((turnTimeout - elapsed) / 1000)
-        this.emit({
-          type: 'status',
-          content: `⏳ Approaching turn timeout — ${remainingSec}s remaining`,
-        })
-        messages.push({
-          role: 'system',
-          content:
-            `[SYSTEM — Turn Timeout Warning]\n` +
-            `You have approximately ${remainingSec} seconds before this turn times out.\n\n` +
-            `Wrap up your current work now:\n` +
-            `1. Finish or checkpoint your current task\n` +
-            `2. Write a summary of what you accomplished and what remains to the appropriate file ` +
-            `(AGENT.md, memory notes, or daily log)\n` +
-            `3. List clear next steps so you (or another agent) can pick up exactly where you left off\n\n` +
-            `Do NOT start new long-running operations. Focus on saving state.`,
-        })
-      }
-
-      // Turn timeout — wall-clock safety cap
-      if (elapsed > turnTimeout) {
-        // Apply deferred compaction before exiting
-        if (pendingCompaction) {
-          this.applyCompaction(pendingCompaction, messages, nudgesFired)
-        }
-        this.emit({
-          type: 'status',
-          content: `⚠️ Turn timeout (${Math.floor(turnTimeout / 1000)}s)`,
-        })
-        const capNotice = '\n\n⚠️ _Turn timed out. Let me know if you want me to continue._'
-        return {
-          response: partialResponse ? partialResponse.trim() + capNotice : capNotice.trim(),
-          toolsUsed,
-          iterations,
-          aborted: false,
-          usage: totalUsage,
-          hadSteer,
-        }
-      }
-
-      // Check steer queue
-      const steerMsg = this.steerQueue.shift()
-      if (steerMsg) {
-        hadSteer = true
-        messages.push({
-          role: 'system',
-          content: `[STEER — New message from user during execution]: ${steerMsg}`,
-        })
-        this.emit({ type: 'interrupt', content: `📨 Steer: ${steerMsg.slice(0, 100)}` })
-      }
-
-      // --- Context window nudges (token-percentage based) ---
-      if (contextWindow > 0) {
-        // Use provider-reported token count when available, fall back to chars/4 estimate
-        const currentTokens =
-          lastKnownPromptTokens > 0 ? lastKnownPromptTokens : estimateTokens(messages)
-        const tokenSource = lastKnownPromptTokens > 0 ? 'provider' : 'estimate'
-        const pct = Math.floor((currentTokens / contextWindow) * 100)
-
-        if (pct >= hardNudgePct && !nudgesFired.includes(hardNudgePct)) {
-          nudgesFired.push(hardNudgePct)
-          messages.push({
-            role: 'system',
-            content:
-              `[SYSTEM — Context Management — REQUIRED]\n` +
-              `Your context is at ${pct}% capacity (~${currentTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens, ${tokenSource}). ` +
-              `You must free up space before continuing.\n\n` +
-              `Use \`compact_context\` to summarize or remove the least critical material. Focus on:\n` +
-              `- Completed tasks and their verbose tool output\n` +
-              `- Resolved discussion threads\n` +
-              `- Exploratory paths that were abandoned\n\n` +
-              `Preserve: active work context, recent decisions, anything referenced in the current task.`,
-          })
-        } else {
-          for (const nudgePct of softNudgePcts) {
-            if (pct >= nudgePct && !nudgesFired.includes(nudgePct)) {
-              nudgesFired.push(nudgePct)
-              const urgency =
-                nudgePct >= 70
-                  ? 'You should review your conversation history and use `compact_context` to replace resolved topics with brief summaries. If everything is genuinely still needed, carry on.'
-                  : 'If there are completed tasks or stale tool output you no longer need, consider using `compact_context` to summarize them. Otherwise, carry on.'
-              messages.push({
-                role: 'system',
-                content:
-                  `[SYSTEM — Context Management]\n` +
-                  `Your session context is at ${pct}% (~${currentTokens.toLocaleString()} tokens of ${contextWindow.toLocaleString()} window, ${tokenSource}).\n\n` +
-                  urgency,
-              })
-            }
-          }
-        }
-      }
-
-      // Stream from provider
-      const options: ChatOptions = {
-        tools: toolDefs.length > 0 ? toolDefs : undefined,
-        signal,
-        thinking: this.config.thinking,
-        modelOverride: activeModelOverride,
-        freshConversation: this.config.freshConversation,
-        // Pass live executable tools through so providers that host an
-        // out-of-process tool runner (claude-cli MCP bridge) can register
-        // them on the embedded MCP server. LLM-only providers ignore this.
-        executableTools: this.config.tools.length > 0 ? this.config.tools : undefined,
-        agentId: this.config.agentId,
-      }
-
-      // --- Hook: provider:before ---
-      if (this.config.hooks) {
-        const beforeCtx: ProviderBeforeContext = {
-          event: 'provider:before',
-          providerId: activeProvider.id,
-          model: activeProvider.getModel(),
-          messages: messages,
-          tools: toolDefs,
-          agentId: this.config.agentId,
-          sessionId: this.config.sessionId,
-          timestamp: Date.now(),
-          metadata: {},
-        }
-        const beforeResult = await this.config.hooks.run(beforeCtx)
-        if (beforeResult.aborted || beforeCtx.skip) {
-          // Hook said skip this provider — abort the turn cleanly
-          return {
-            response: '',
-            toolsUsed,
-            iterations,
-            aborted: true,
-            partialResponse,
-            usage: totalUsage,
-            hadSteer,
-          }
-        }
-      }
-
-      let textContent = ''
-      let toolCalls: ToolCall[] = []
-      let hasToolCalls = false
-      const streamStartTime = Date.now()
-
-      // --- Native-session hook ---
-      // If the provider manages its own server-side session continuity, give
-      // it a chance to trim the message array down to "what's new since the
-      // last call" instead of replaying full history. Providers without this
-      // capability receive the full conversation (current default behavior).
-      let wireMessages: Message[] = messages
-      const cap = activeProvider.sessionCapability
-      if (cap?.native && cap.prepareTurn) {
-        const prepared = cap.prepareTurn(messages, options)
-        if (prepared) {
-          wireMessages = prepared.messages
-        }
-      }
-
-      try {
-        const collected = await collectLlmStream(
-          activeProvider.chatStream(wireMessages, options),
-          (event) => this.emit(event),
-          signal,
-        )
-
-        textContent = collected.textContent
-        toolCalls = collected.toolCalls
-        hasToolCalls = collected.hasToolCalls
-
-        // Max-merge usage into the turn-spanning accumulator
-        totalUsage.promptTokens = Math.max(
-          totalUsage.promptTokens,
-          collected.totalUsage.promptTokens,
-        )
-        totalUsage.completionTokens = Math.max(
-          totalUsage.completionTokens,
-          collected.totalUsage.completionTokens,
-        )
-        if (collected.totalUsage.reasoningTokens) {
-          totalUsage.reasoningTokens = collected.totalUsage.reasoningTokens
-        }
-        if (collected.totalUsage.cachedTokens) {
-          totalUsage.cachedTokens = collected.totalUsage.cachedTokens
-        }
-        if (collected.lastKnownPromptTokens > 0) {
-          lastKnownPromptTokens = collected.lastKnownPromptTokens
-        }
-        if (collected.lastError) {
-          lastError = collected.lastError
-        }
-
-        if (collected.aborted) {
-          return {
-            response: '',
-            toolsUsed,
-            iterations,
-            aborted: true,
-            partialResponse: textContent || partialResponse,
-            usage: totalUsage,
-            hadSteer,
-          }
-        }
-      } catch (err: unknown) {
-        if (signal?.aborted) {
-          return {
-            response: '',
-            toolsUsed,
-            iterations,
-            aborted: true,
-            partialResponse: textContent || partialResponse,
-            usage: totalUsage,
-            hadSteer,
-          }
-        }
-
-        // --- Hook: provider:error (observational only) ---
-        if (this.config.hooks) {
-          const isProviderError = err instanceof ProviderError
-          const statusCode = isProviderError ? err.statusCode : undefined
-          const errorProviderId = isProviderError ? err.providerId : activeProvider.id
-          const errorCtx: ProviderErrorContext = {
-            event: 'provider:error',
-            providerId: errorProviderId,
-            model: activeModelOverride ?? activeProvider.getModel(),
-            error: err instanceof Error ? err : new Error(String(err)),
-            statusCode,
-            agentId: this.config.agentId,
-            sessionId: this.config.sessionId,
-            timestamp: Date.now(),
-            metadata: {},
-          }
-          await this.config.hooks.run(errorCtx)
-        }
-
-        throw err
-      }
-
-      // --- Hook: provider:after ---
-      if (this.config.hooks) {
-        const afterCtx: ProviderAfterContext = {
-          event: 'provider:after',
-          providerId: activeProvider.id,
-          model: activeProvider.getModel(),
-          usage: { ...totalUsage },
-          latencyMs: Date.now() - streamStartTime,
-          hasToolCalls,
-          agentId: this.config.agentId,
-          sessionId: this.config.sessionId,
-          timestamp: Date.now(),
-          metadata: {},
-        }
-        await this.config.hooks.run(afterCtx)
-      }
-
-      // Text response — done
-      if (!hasToolCalls) {
-        // Apply deferred compaction now that the turn is complete
-        if (pendingCompaction) {
-          this.applyCompaction(pendingCompaction, messages, nudgesFired)
-        }
-
-        // If no text was produced but an error occurred, surface the error
-        // so the user doesn't get a blank message
-        const finalResponse = textContent.trim() || (lastError ? `⚠️ ${lastError}` : '')
-        return {
-          response: finalResponse,
-          toolsUsed,
-          iterations,
-          aborted: false,
-          usage: totalUsage,
-          hadSteer,
-        }
-      }
-
-      // Tool calls — execute and loop
-      messages.push({
-        role: 'assistant',
-        content: textContent,
-        toolCalls,
-      })
-
-      for (const tc of toolCalls) {
-        if (signal?.aborted) {
-          return {
-            response: '',
-            toolsUsed,
-            iterations,
-            aborted: true,
-            partialResponse: textContent,
-            usage: totalUsage,
-            hadSteer,
-          }
-        }
-
-        // --- Built-in: compact_context (deferred — validated now, applied after turn) ---
-        if (tc.name === 'compact_context') {
-          toolsUsed.push(tc.name)
+      }),
+      execute: async (input, options) => {
+        const args = (input ?? {}) as Record<string, unknown>
+        const validation = validate(args, options.messages as ModelMessage[])
+        if (typeof validation === 'string') {
           this.emit({
-            type: 'tool_start',
-            content: `🔧 compact_context`,
-            metadata: { args: this.summarizeArgs(tc.arguments) },
+            type: 'tool_result',
+            content: `❌ compact_context: ${validation.slice(0, 200)}`,
           })
-          const validation = this.validateCompaction(tc.arguments, messages)
-          if (typeof validation === 'string') {
-            // Validation error
-            this.emit({
-              type: 'tool_result',
-              content: `❌ compact_context: ${validation.slice(0, 200)}`,
-            })
-            messages.push({ role: 'tool', content: validation, toolCallId: tc.id })
-          } else {
-            // Valid — stash for deferred application (latest call wins)
-            pendingCompaction = validation
-            const totalToRemove = validation.reduce(
-              (sum, r) => sum + (r.end_index - r.start_index + 1),
-              0,
-            )
-            const result =
-              `Compaction queued: ${totalToRemove} messages will be compacted into ` +
-              `${validation.length} summar${validation.length === 1 ? 'y' : 'ies'} at end of turn.`
-            this.emit({
-              type: 'tool_result',
-              content: `✅ compact_context: ${result}`,
-            })
-            messages.push({ role: 'tool', content: result, toolCallId: tc.id })
-          }
-          continue
+          return validation
         }
-
-        const tool = this.config.tools.find((t) => t.name === tc.name)
-        toolsUsed.push(tc.name)
-
-        // --- Hook: tool:before ---
-        if (this.config.hooks) {
-          const toolBeforeCtx: ToolBeforeContext = {
-            event: 'tool:before',
-            toolName: tc.name,
-            args: { ...tc.arguments },
-            agentId: this.config.agentId,
-            sessionId: this.config.sessionId,
-            timestamp: Date.now(),
-            metadata: {},
-          }
-          const _toolBeforeResult = await this.config.hooks.run(toolBeforeCtx)
-
-          if (toolBeforeCtx.blocked) {
-            // Tool was blocked by a safety hook
-            const blockMsg = toolBeforeCtx.blockReason ?? 'Blocked by safety hook'
-            this.emit({ type: 'tool_result', content: `🚫 ${tc.name}: ${blockMsg}` })
-            messages.push({ role: 'tool', content: `Blocked: ${blockMsg}`, toolCallId: tc.id })
-            continue
-          }
-
-          // Hooks may have modified args
-          tc.arguments = toolBeforeCtx.args
-        }
-
-        this.emit({
-          type: 'tool_start',
-          content: `🔧 ${tc.name}`,
-          metadata: { args: this.summarizeArgs(tc.arguments) },
-        })
-
-        const toolStartTime = Date.now()
-        let rawResult: ToolResult
-        if (!tool) {
-          rawResult = `Error: Unknown tool "${tc.name}"`
-        } else {
-          try {
-            // Build a local SessionContext shim. Phase 0 of the MCP overhaul —
-            // tools that want the envelope can read `ctx.session`; older tools
-            // continue to read the flat `agentId`/`workingDir` fields.
-            const session = buildLocalSessionContext({
-              agentId: this.config.agentId ?? 'unknown',
-              nodeId: process.env.RIVETOS_NODE_ID ?? 'local',
-              conversationId: this.config.sessionId ?? 'ad-hoc',
-              userId: process.env.RIVETOS_USER_ID ?? 'phil',
-              workingDir: this.config.workspaceDir,
-              traceId: this.config.sessionId,
-            })
-            rawResult = await tool.execute(tc.arguments, signal, {
-              agentId: this.config.agentId,
-              workingDir: this.config.workspaceDir,
-              session,
-            })
-          } catch (err: unknown) {
-            rawResult = `Error: ${err instanceof Error ? err.message : String(err)}`
-          }
-        }
-
-        // --- Hook: tool:after ---
-        if (this.config.hooks) {
-          const resultText = getToolResultText(rawResult)
-          const toolAfterCtx: ToolAfterContext = {
-            event: 'tool:after',
-            toolName: tc.name,
-            args: tc.arguments,
-            result: rawResult,
-            durationMs: Date.now() - toolStartTime,
-            isError: resultText.startsWith('Error'),
-            agentId: this.config.agentId,
-            sessionId: this.config.sessionId,
-            timestamp: Date.now(),
-            metadata: {},
-          }
-          await this.config.hooks.run(toolAfterCtx)
-        }
-
-        // Process tool result — handle multimodal (images)
-        const resultText = getToolResultText(rawResult)
-        const isError = resultText.startsWith('Error')
-
+        // Stash for deferred application — most recent call wins.
+        state.pendingCompaction = validation
+        const totalToRemove = validation.reduce(
+          (sum, r) => sum + (r.end_index - r.start_index + 1),
+          0,
+        )
+        const result =
+          `Compaction queued: ${totalToRemove} messages will be compacted into ` +
+          `${validation.length} summar${validation.length === 1 ? 'y' : 'ies'} at end of step.`
         this.emit({
           type: 'tool_result',
-          content: `${isError ? '❌' : '✅'} ${tc.name}: ${resultText.slice(0, 200)}`,
+          content: `✅ compact_context: ${result}`,
         })
-
-        // If tool returned images, save them to disk and build multimodal message
-        if (toolResultHasImages(rawResult)) {
-          const images = getToolResultImages(rawResult)
-          const contentParts: ContentPart[] = []
-          const savedPaths: string[] = []
-
-          // Add text part if present
-          if (resultText) {
-            contentParts.push({ type: 'text', text: resultText })
-          }
-
-          // Save each image and add to content
-          for (const img of images) {
-            const imageDir = this.config.imageDir ?? join(process.cwd(), '.data', 'images')
-            await mkdir(imageDir, { recursive: true })
-            const ext = (img.mimeType?.split('/')[1] ?? 'jpg').replace('jpeg', 'jpg')
-            const fileName = `tool-${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`
-            const filePath = join(imageDir, fileName)
-
-            if (img.data) {
-              await writeFile(filePath, Buffer.from(img.data, 'base64'))
-              savedPaths.push(filePath)
-              contentParts.push({
-                type: 'image',
-                data: img.data,
-                mimeType: img.mimeType ?? 'image/jpeg',
-              })
-            } else if (img.url) {
-              // Download and save
-              try {
-                const imgRes = await fetch(img.url)
-                if (imgRes.ok) {
-                  const buf = Buffer.from(await imgRes.arrayBuffer())
-                  await writeFile(filePath, buf)
-                  savedPaths.push(filePath)
-                  const b64 = buf.toString('base64')
-                  contentParts.push({
-                    type: 'image',
-                    data: b64,
-                    mimeType: img.mimeType ?? 'image/jpeg',
-                  })
-                }
-              } catch {
-                // Skip failed image downloads
-              }
-            }
-          }
-
-          // Send multimodal content to provider for this turn,
-          // but store [image:path] references in the message for history
-          messages.push({ role: 'tool', content: contentParts, toolCallId: tc.id })
-        } else {
-          // Plain text result
-          messages.push({
-            role: 'tool',
-            content: typeof rawResult === 'string' ? rawResult : resultText,
-            toolCallId: tc.id,
-          })
-        }
-      }
-
-      partialResponse = textContent
-      iterations++
-
-      // Time-based progress heartbeat (every 147s)
-      if (Date.now() - lastProgressEmit > 147_000) {
-        heartbeatCount++
-        this.emit({
-          type: 'status',
-          content: `⏳ Still working... (${iterations} tool calls, ${Math.floor((Date.now() - turnStart) / 1000)}s, heartbeat #${heartbeatCount})`,
-        })
-        lastProgressEmit = Date.now()
-      }
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // Helpers
-  // -----------------------------------------------------------------------
-
-  private emit(event: StreamEvent): void {
-    this.config.onStream?.(event)
-  }
-
-  private summarizeArgs(args: Record<string, unknown>): Record<string, unknown> {
-    const summary: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(args)) {
-      if (typeof value === 'string' && value.length > 200) {
-        summary[key] = value.slice(0, 200) + '…'
-      } else {
-        summary[key] = value
-      }
-    }
-    return summary
+        return result
+      },
+    })
   }
 
   /**
-   * Validate compact_context arguments without mutating messages.
-   * Returns validated replacements array on success, or an error string on failure.
-   * User-facing indices are 0-based starting from the first non-system message.
+   * Validate compact_context arguments. Indices are 0-based over the inline
+   * messages array (system prompt lives in streamText's `system` param, not in
+   * messages, so the user's mental "message 0" matches messages[0] cleanly).
+   * Leading injected system messages (steer/nudges) are still indexable.
    */
   private validateCompaction(
     args: Record<string, unknown>,
-    messages: Message[],
-  ): Array<{ start_index: number; end_index: number; summary: string }> | string {
+    messages: ModelMessage[],
+  ): CompactionRequest[] | string {
     const replacements = args.replacements as
       | Array<{ start_index: number; end_index: number; summary: string }>
       | undefined
@@ -760,10 +736,7 @@ export class AgentLoop {
       return 'Error: replacements array is required and must not be empty'
     }
 
-    // Find the boundary between system messages and user-addressable conversation.
-    const systemOffset = messages.findIndex((m, i) => i > 0 && m.role !== 'system')
-    const offsetIdx = systemOffset > 0 ? systemOffset : 1
-    const maxIndex = messages.length - offsetIdx - 1
+    const maxIndex = messages.length - 1
 
     for (const r of replacements) {
       if (
@@ -789,33 +762,195 @@ export class AgentLoop {
   }
 
   /**
-   * Apply deferred compaction to the messages array and sync to session.
-   * Called after the turn loop exits — never mid-tool-execution.
+   * Apply pending compaction to a ModelMessage[] array. Returns a NEW array;
+   * does not mutate input. Indices are descending so splice doesn't shift.
    */
   private applyCompaction(
-    replacements: Array<{ start_index: number; end_index: number; summary: string }>,
-    messages: Message[],
-    nudgesFired: number[],
-  ): void {
-    const systemOffset = messages.findIndex((m, i) => i > 0 && m.role !== 'system')
-    const offsetIdx = systemOffset > 0 ? systemOffset : 1
-
+    messages: ModelMessage[],
+    replacements: CompactionRequest[],
+  ): ModelMessage[] {
+    const out = [...messages]
     const sorted = [...replacements].sort((a, b) => a.start_index - b.start_index)
     const descending = [...sorted].reverse()
     for (const r of descending) {
-      const startIdx = r.start_index + offsetIdx
-      const endIdx = r.end_index + offsetIdx
-      const removeCount = endIdx - startIdx + 1
-      messages.splice(startIdx, removeCount, {
+      const removeCount = r.end_index - r.start_index + 1
+      out.splice(r.start_index, removeCount, {
         role: 'system',
         content: `[Compacted Context] ${r.summary}`,
       })
     }
+    return out
+  }
 
-    // Reset nudges for next compaction cycle
-    nudgesFired.length = 0
+  /**
+   * Sync compacted message state back to the session via onCompact callback.
+   * Translates AI SDK ModelMessage[] → RivetOS Message[] for the session store.
+   */
+  private syncCompactedSession(messages: ModelMessage[]): void {
+    if (!this.config.onCompact) return
+    this.config.onCompact(this.aiSdkToRivetosMessages(messages))
+  }
 
-    // Sync compacted history back to the session (excludes system prompt)
-    this.config.onCompact?.(messages.slice(1))
+  /**
+   * Convert AI SDK ModelMessage[] → RivetOS Message[] (lossy in spots, but
+   * sufficient for session persistence). Used by the onCompact callback and
+   * by the chars/4 token estimator.
+   */
+  private aiSdkToRivetosMessages(messages: ModelMessage[]): Message[] {
+    const out: Message[] = []
+    for (const m of messages) {
+      if (m.role === 'system' || m.role === 'user') {
+        const content =
+          typeof m.content === 'string'
+            ? m.content
+            : (m.content as Array<{ type: string; text?: string }>)
+                .filter((p) => p.type === 'text')
+                .map((p) => p.text ?? '')
+                .join('')
+        out.push({ role: m.role, content })
+      } else if (m.role === 'assistant') {
+        if (typeof m.content === 'string') {
+          out.push({ role: 'assistant', content: m.content })
+        } else {
+          let text = ''
+          const toolCalls: ToolCall[] = []
+          for (const part of m.content as Array<Record<string, unknown>>) {
+            if (part.type === 'text' && typeof part.text === 'string') {
+              text += part.text
+            } else if (part.type === 'tool-call') {
+              toolCalls.push({
+                id: String(part.toolCallId ?? ''),
+                name: String(part.toolName ?? ''),
+                arguments: (part.input ?? {}) as Record<string, unknown>,
+              })
+            }
+          }
+          out.push({
+            role: 'assistant',
+            content: text,
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          })
+        }
+      } else if (m.role === 'tool') {
+        // Each ToolResultPart becomes one tool message.
+        const parts = m.content as Array<Record<string, unknown>>
+        for (const p of parts) {
+          const callId = String(p.toolCallId ?? '')
+          const output = p.output as { type?: string; value?: unknown } | undefined
+          let content: string = ''
+          if (output && typeof output === 'object') {
+            if (output.type === 'text' && typeof output.value === 'string') {
+              content = output.value
+            } else {
+              content = JSON.stringify(output.value ?? '')
+            }
+          }
+          out.push({ role: 'tool', content, toolCallId: callId })
+        }
+      }
+    }
+    return out
+  }
+
+  // -----------------------------------------------------------------------
+  // Image archival — fire-and-forget wrapper around tool execute
+  // -----------------------------------------------------------------------
+
+  private wrapToolsForImages(
+    set: ToolSet,
+    defs: Tool[],
+  ): ToolSet {
+    if (!this.hasImageProducingTools(defs)) return set
+    const wrapped: ToolSet = {}
+    for (const [name, t] of Object.entries(set)) {
+      const original = t.execute
+      if (typeof original !== 'function') {
+        wrapped[name] = t
+        continue
+      }
+      wrapped[name] = {
+        ...t,
+        execute: async (input: unknown, opts: never) => {
+          const result = await original(input as never, opts)
+          // Fire-and-forget archival — never block the loop.
+          this.archiveImagesIfAny(result).catch(() => {
+            /* archival failures are non-fatal */
+          })
+          return result
+        },
+      } as ToolSet[string]
+    }
+    return wrapped
+  }
+
+  private hasImageProducingTools(_defs: Tool[]): boolean {
+    // We can't statically know which tools return images. Always wrap; the
+    // wrapper short-circuits on string results so the cost is negligible.
+    return true
+  }
+
+  private async archiveImagesIfAny(result: unknown): Promise<void> {
+    if (!result || typeof result === 'string') return
+    if (!toolResultHasImages(result as never)) return
+    const images = getToolResultImages(result as never)
+    if (images.length === 0) return
+
+    const imageDir =
+      this.config.imageDir ?? join(process.cwd(), '.data', 'images')
+    await mkdir(imageDir, { recursive: true })
+
+    for (const img of images) {
+      const ext = (img.mimeType?.split('/')[1] ?? 'jpg').replace('jpeg', 'jpg')
+      const fileName = `tool-${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`
+      const filePath = join(imageDir, fileName)
+
+      if (img.data) {
+        await writeFile(filePath, Buffer.from(img.data, 'base64'))
+      } else if (img.url) {
+        try {
+          const res = await fetch(img.url)
+          if (res.ok) {
+            await writeFile(
+              filePath,
+              Buffer.from(await res.arrayBuffer()),
+            )
+          }
+        } catch {
+          // skip
+        }
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // StreamEvent emission helpers
+  // -----------------------------------------------------------------------
+
+  private emit(event: StreamEvent): void {
+    this.config.onStream?.(event)
+  }
+
+  private mergeUsageFromAcc(
+    acc: AiSdkChunkAccumulator,
+    state: TurnState,
+  ): void {
+    state.totalUsage.promptTokens = Math.max(
+      state.totalUsage.promptTokens,
+      acc.usage.promptTokens,
+    )
+    state.totalUsage.completionTokens = Math.max(
+      state.totalUsage.completionTokens,
+      acc.usage.completionTokens,
+    )
+    if (acc.usage.reasoningTokens) {
+      state.totalUsage.reasoningTokens = acc.usage.reasoningTokens
+    }
+    if (acc.usage.cachedTokens) {
+      state.totalUsage.cachedTokens = acc.usage.cachedTokens
+    }
+    if (acc.usage.promptTokens > 0) {
+      state.lastKnownPromptTokens = acc.usage.promptTokens
+    }
   }
 }
+
