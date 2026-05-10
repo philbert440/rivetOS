@@ -6,11 +6,6 @@
  * /rivet-shared/summary-refine/prompts.mjs copied verbatim.
  */
 
-export interface CandidateRow {
-  conversation_id: string
-  unsummarized: string
-}
-
 export interface CompactMessageRow {
   id: string
   role: string
@@ -31,71 +26,12 @@ export interface SummaryRow {
   created_at: Date
 }
 
-export interface IdRow {
-  id: string
-}
-
-export interface LlmResponse {
-  choices?: Array<{
-    message?: {
-      content?: string | null
-      reasoning_content?: string | null
-    }
-  }>
-}
-
-export interface BranchCandidateRow {
-  conversation_id: string
-  leaf_count: string
-}
-
-export interface RootCandidateRow {
-  conversation_id: string
-  branch_count: string
-}
-
 export interface ConversationMeta {
   id: string
   agent: string | null
   channel: string | null
   channel_id: string | null
   title: string | null
-}
-
-export interface CompactorConfig {
-  /** PostgreSQL connection string */
-  connectionString: string
-  /** LLM endpoint for summarization (default: http://192.168.1.50:8000/v1) */
-  compactorEndpoint?: string
-  /** Model name (default: rivet-refined-v5; can be overridden by env) */
-  compactorModel?: string
-  /** API key for authenticated endpoints (e.g., xAI, Google) */
-  compactorApiKey?: string
-  /** Milliseconds between cycles (default: 1800000 = 30 min) */
-  intervalMs?: number
-  /** Minimum unsummarized messages to trigger leaf compaction (default: 50) */
-  minUnsummarized?: number
-  /** Messages per leaf compaction batch (default: 10) */
-  batchSize?: number
-  /** Minimum unparented leaves to trigger branch compaction (default: 5) */
-  minLeafsForBranch?: number
-  /** Max leaves per branch (default: 8) */
-  branchBatchSize?: number
-  /** Minimum unparented branches to trigger root compaction (default: 3) */
-  minBranchesForRoot?: number
-  /** Max branches per root (default: 5) */
-  rootBatchSize?: number
-}
-
-export interface CompactorMetrics {
-  cyclesCompleted: number
-  leafsCreated: number
-  branchesCreated: number
-  rootsCreated: number
-  llmCalls: number
-  llmFailures: number
-  lastCycleAt: Date | null
-  lastCycleDurationMs: number
 }
 
 // ---------------------------------------------------------------------------
