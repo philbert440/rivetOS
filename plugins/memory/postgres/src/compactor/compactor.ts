@@ -1,9 +1,9 @@
 /**
  * Compactor formatters — exact spec from pr-spec.md §1.2.
  *
- * The actual compaction worker lives at `workers/compaction/index.js` and
- * runs on the datahub. This file only retains the prompt-formatting
- * functions that the worker imports from `@rivetos/memory-postgres`.
+ * The actual compaction worker lives at `services/compaction-worker/` (graphile-worker
+ * service). This file only retains the prompt-formatting functions that the worker
+ * imports from `@rivetos/memory-postgres`.
  */
 
 import {

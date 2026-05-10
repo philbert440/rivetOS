@@ -4,8 +4,11 @@
  * RivetOS Memory System — hybrid-scored search, summary DAG,
  * access-frequency tracking, and background review loop.
  *
- * Tables: ros_messages, ros_conversations, ros_summaries, ros_summary_sources,
- *         ros_embedding_queue, ros_compaction_queue
+ * Tables: ros_messages, ros_conversations, ros_summaries, ros_summary_sources
+ *
+ * Background work (compaction, embedding, tool-call synthesis) runs on
+ * graphile-worker. Triggers on ros_messages/ros_summaries call graphile_worker.add_job
+ * directly; the compaction-worker and embedding-worker services consume those jobs.
  *
  * Architecture:
  *   adapter.ts      — implements Memory interface from @rivetos/types
@@ -17,9 +20,9 @@
  *   review-loop.ts  — turn-based background review (runs on agent CTs)
  *   scoring.ts      — pure domain: relevance scoring functions (no I/O)
  *
- * Embedding and compaction jobs run on the Datahub as dedicated workers:
- *   workers/embedding/   — event-driven via Postgres LISTEN/NOTIFY → Nemotron GPU
- *   workers/compaction/  — event-driven via Postgres LISTEN/NOTIFY → E2B CPU
+ * Embedding and compaction jobs run as graphile-worker services:
+ *   services/embedding-worker/   — graphile-worker → Nemotron GPU
+ *   services/compaction-worker/  — graphile-worker → CPU LLM (compactor)
  */
 
 export { PostgresMemory } from './adapter.js'
@@ -52,7 +55,6 @@ export {
   LLM_RETRY_BACKOFF_MS,
   MIN_BATCH_SIZE,
   MAX_CONVERSATIONS_PER_CYCLE,
-  TOOL_SYNTH_QUEUE_TABLE,
   fmtIsoMinute,
   sanitizeForJson,
   formatLeafPrompt,

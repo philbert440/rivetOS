@@ -408,20 +408,19 @@ Embedding and compaction run as **event-driven workers on Datahub**, co-located 
 ```
 
 **Embedding flow:**
-1. Message INSERT → Postgres trigger → `ros_embedding_queue` row + `NOTIFY embedding_work`
-2. Worker wakes → fetches batch → calls Nemotron on GERTY GPU
-3. Writes vector back to source row → deletes queue entry
-4. Retries with exponential backoff on transient errors; max 3 attempts per item
+1. Message INSERT → Postgres trigger → `graphile_worker.add_job('embed-target', …)`
+2. graphile-worker wakes the embedding-worker → calls Nemotron on GERTY GPU
+3. Writes vector back to source row
+4. graphile-worker handles retry/backoff/dedup; `max_attempts=3` per row
 
-**Compaction flow (three trigger paths):**
-1. **Message threshold** — Postgres trigger counts unsummarized messages per conversation, enqueues at 50+
-2. **Session idle** — 5-minute periodic check finds conversations with no activity for 15 min + 10+ unsummarized messages
-3. **Explicit request** — Agent or API inserts directly into `ros_compaction_queue`
+**Compaction flow (two trigger paths):**
+1. **Message threshold** — Postgres trigger counts unsummarized messages per conversation, calls `graphile_worker.add_job('compact-conversation', …)` at 50+
+2. **Session idle** — graphile-worker cron task (every 5 min) finds idle conversations and enqueues compact-conversation jobs (in `services/compaction-worker/src/tasks/enqueue-idle.ts`)
 
-Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled on Gemma-4-E2B with generous token budgets (4096/6144/8192) and 10-minute timeout.
+Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled with generous token budgets and a 60-minute timeout.
 
-**Source:** `plugins/memory/postgres/workers/embedding/` and `plugins/memory/postgres/workers/compaction/`
-**Setup:** Schema DDL lives at `plugins/memory/postgres/src/schema/migrations/` and is applied by the `migrate` role at stack startup. Workers run from the unified `rivetos` image with `--role worker`.
+**Source:** `services/embedding-worker/` and `services/compaction-worker/` (TS, graphile-worker tasks)
+**Setup:** Schema DDL lives at `plugins/memory/postgres/src/schema/migrations/` and is applied at boot. Worker services run as their own systemd units; graphile-worker installs its own schema lazily on first connection.
 
 ### Data Persistence
 
