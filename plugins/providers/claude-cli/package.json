@@ -15,6 +15,8 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@ai-sdk/provider": "^3.0.10",
+    "@rivetos/core": "0.4.0-beta.6",
     "@rivetos/mcp-server": "0.4.0-beta.6",
     "@rivetos/types": "0.4.0-beta.6"
   },
