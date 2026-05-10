@@ -279,6 +279,8 @@ export class AgentLoop {
     const baseModel = bridge.getModel({
       modelOverride: this.config.modelOverride,
       conversationId: this.config.sessionId,
+      tools: this.config.tools.length > 0 ? this.config.tools : undefined,
+      agentId: this.config.agentId,
     })
     const model: LanguageModel = this.config.hooks
       ? (wrapLanguageModel({
