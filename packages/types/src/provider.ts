@@ -153,6 +153,17 @@ export interface Provider {
    * context-clear flow). Sync or async. No-op if absent.
    */
   resetSession?(): void | Promise<void>
+  /**
+   * Optional. AI SDK bridge factory. When set, the new loop (step 8b) drives
+   * this provider via `streamText` directly, bypassing `chatStream`. Each
+   * factory call returns a fresh bridge so per-call config (conversationId,
+   * headers) can be baked into the returned `LanguageModelV2`.
+   *
+   * Typed as `unknown` here to keep `@rivetos/types` free of `@ai-sdk/*` deps;
+   * the real contract lives in `@rivetos/core` as `ProviderAiSdkBridge`. The
+   * loop and provider plugins (which depend on core) cast at the call site.
+   */
+  aiSdkBridge?: () => unknown
 }
 
 // ---------------------------------------------------------------------------

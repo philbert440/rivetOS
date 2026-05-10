@@ -58,6 +58,9 @@ export {
 } from './domain/aisdk-stream.js'
 export type { AiSdkChunkAccumulator, StreamCollectorResult } from './domain/aisdk-stream.js'
 
+// AI SDK provider bridge — provider contract the new loop consumes (step 8b)
+export type { ProviderAiSdkBridge, GetModelInput } from './domain/aisdk-bridge.js'
+
 export { Router } from './domain/router.js'
 export type { RouteResult } from './domain/router.js'
 export { WorkspaceLoader } from './domain/workspace.js'
