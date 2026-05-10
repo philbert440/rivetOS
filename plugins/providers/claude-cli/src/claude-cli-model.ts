@@ -137,8 +137,7 @@ function userTextFromMessage(msg: LanguageModelV3Message): string | null {
   return msg.content
     .map((p) => {
       if (p.type === 'text') return p.text
-      if (p.type === 'file') return `[file: ${p.mediaType}]`
-      return ''
+      return `[file: ${p.mediaType}]`
     })
     .filter((s) => s.length > 0)
     .join('\n')
@@ -174,9 +173,7 @@ function toolResultsFromMessage(msg: LanguageModelV3Message): string | null {
     else if (out.type === 'error-text') text = out.value
     else if (out.type === 'error-json') text = JSON.stringify(out.value)
     else if (out.type === 'content') {
-      text = out.value
-        .map((c) => (c.type === 'text' ? c.text : `[${c.type}]`))
-        .join('\n')
+      text = out.value.map((c) => (c.type === 'text' ? c.text : `[${c.type}]`)).join('\n')
     }
     lines.push(`TOOL RESULT (${part.toolCallId}):\n${text}`)
   }
@@ -250,9 +247,7 @@ function mapEffortFromProviderOptions(
   providerOptions: LanguageModelV3CallOptions['providerOptions'],
   fallback: ClaudeCliEffort,
 ): ClaudeCliEffort {
-  const claudeCli = providerOptions?.['claude-cli'] as
-    | { effort?: unknown }
-    | undefined
+  const claudeCli = providerOptions?.['claude-cli'] as { effort?: unknown } | undefined
   const raw = claudeCli?.effort
   if (raw === 'low' || raw === 'medium' || raw === 'high' || raw === 'xhigh' || raw === 'max') {
     return raw
@@ -327,7 +322,12 @@ async function* iterateLines(stream: NodeJS.ReadableStream): AsyncIterable<strin
 
 function emptyUsage(): LanguageModelV3Usage {
   return {
-    inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    inputTokens: {
+      total: undefined,
+      noCache: undefined,
+      cacheRead: undefined,
+      cacheWrite: undefined,
+    },
     outputTokens: { total: undefined, text: undefined, reasoning: undefined },
   }
 }
@@ -378,9 +378,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
    * uses streamText (→ doStream) exclusively; this exists only to satisfy
    * the LanguageModelV3 contract.
    */
-  async doGenerate(
-    options: LanguageModelV3CallOptions,
-  ): Promise<LanguageModelV3GenerateResult> {
+  async doGenerate(options: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> {
     const result = await this.doStream(options)
     let text = ''
     let usage: LanguageModelV3Usage | undefined
@@ -390,7 +388,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
     }
     const reader = result.stream.getReader()
     try {
-      while (true) {
+      for (;;) {
         const { done, value } = await reader.read()
         if (done) break
         if (value.type === 'text-delta') text += value.delta
@@ -418,9 +416,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
    * Streaming generate: spawn claude, wire MCP bridge, stream results back
    * as LanguageModelV3StreamParts.
    */
-  async doStream(
-    options: LanguageModelV3CallOptions,
-  ): Promise<LanguageModelV3StreamResult> {
+  async doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult> {
     const { systemText, userPrompt } = renderPromptForCli(options.prompt)
     const effort = mapEffortFromProviderOptions(options.providerOptions, this.config.effort)
 
@@ -544,7 +540,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
               continue
             }
 
-            if (event.type === 'system' && (event as CliSystemInit).subtype === 'init') {
+            if (event.type === 'system') {
               lastApiKeySource = (event as CliSystemInit).apiKeySource
               log.debug('system.init', { apiKeySource: lastApiKeySource })
               if (lastApiKeySource && lastApiKeySource !== 'none') {

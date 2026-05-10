@@ -1,7 +1,7 @@
 /**
  * AI SDK-backed implementation of Anthropic `chatStream`.
  *
- * Delegates to shared adapters in `@rivetos/core` for fullStream-part →
+ * Delegates to shared adapters in `@rivetos/aisdk` for fullStream-part →
  * LLMChunk translation. This file owns Anthropic-specific concerns:
  * - System message extraction (Anthropic puts system separately, with optional
  *   ephemeral cache_control on the system block).
@@ -25,7 +25,7 @@ import {
   convertMessagesToAiSdk,
   createLlmChunkAccumulator,
   translateAiSdkPart,
-} from '@rivetos/core'
+} from '@rivetos/aisdk'
 import { streamText, stepCountIs, jsonSchema, APICallError, type ToolSet } from 'ai'
 import type { JSONObject } from '@ai-sdk/provider'
 import type {
@@ -81,8 +81,7 @@ function splitSystem(messages: Message[]): { system: string; rest: Message[] } {
   const rest: Message[] = []
   for (const msg of messages) {
     if (msg.role === 'system') {
-      const text =
-        typeof msg.content === 'string' ? msg.content : extractTextFromParts(msg.content)
+      const text = typeof msg.content === 'string' ? msg.content : extractTextFromParts(msg.content)
       system += (system ? '\n\n' : '') + text
       continue
     }
@@ -124,7 +123,7 @@ function buildToolSet(toolDefs: ToolDefinition[] | undefined): ToolSet {
   for (const def of toolDefs) {
     set[def.name] = {
       description: def.description,
-      inputSchema: jsonSchema(def.parameters as Record<string, unknown>),
+      inputSchema: jsonSchema(def.parameters),
     }
   }
   return set
@@ -202,7 +201,7 @@ export async function* chatStreamAiSdk(
     })
 
     for await (const part of result.fullStream) {
-      const chunks = translateAiSdkPart(part as never, acc)
+      const chunks = translateAiSdkPart(part, acc)
       for (const chunk of chunks) yield chunk
     }
 

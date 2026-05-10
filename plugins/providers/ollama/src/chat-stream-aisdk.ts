@@ -1,7 +1,7 @@
 /**
  * AI SDK-backed implementation of Ollama `chatStream`.
  *
- * Delegates to shared adapters in `@rivetos/core` for fullStream-part →
+ * Delegates to shared adapters in `@rivetos/aisdk` for fullStream-part →
  * LLMChunk translation. This file owns Ollama-specific concerns:
  *
  * - **Native thinking** — `providerOptions.ollama.think` toggles the Ollama
@@ -21,17 +21,11 @@ import {
   convertMessagesToAiSdk,
   createLlmChunkAccumulator,
   translateAiSdkPart,
-} from '@rivetos/core'
+} from '@rivetos/aisdk'
 import { streamText, stepCountIs, jsonSchema, APICallError, type ToolSet } from 'ai'
 import type { JSONObject } from '@ai-sdk/provider'
 import { createOllama } from 'ollama-ai-provider-v2'
-import type {
-  ChatOptions,
-  LLMChunk,
-  Message,
-  ThinkingLevel,
-  ToolDefinition,
-} from '@rivetos/types'
+import type { ChatOptions, LLMChunk, Message, ThinkingLevel, ToolDefinition } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
@@ -57,7 +51,7 @@ function buildToolSet(toolDefs: ToolDefinition[] | undefined): ToolSet {
   for (const def of toolDefs) {
     set[def.name] = {
       description: def.description,
-      inputSchema: jsonSchema(def.parameters as Record<string, unknown>),
+      inputSchema: jsonSchema(def.parameters),
     }
   }
   return set
@@ -120,7 +114,7 @@ export async function* chatStreamAiSdk(
     })
 
     for await (const part of result.fullStream) {
-      const chunks = translateAiSdkPart(part as never, acc)
+      const chunks = translateAiSdkPart(part, acc)
       for (const chunk of chunks) yield chunk
     }
 

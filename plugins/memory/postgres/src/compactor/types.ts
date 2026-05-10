@@ -239,4 +239,3 @@ export function sanitizeForJson(text: string): string {
     '',
   )
 }
-

@@ -23,15 +23,9 @@
  *     handles cancellation.
  */
 
-import type {
-  Provider,
-  Message,
-  ChatOptions,
-  LLMChunk,
-  PluginManifest,
-} from '@rivetos/types'
+import type { Provider, Message, ChatOptions, LLMChunk, PluginManifest } from '@rivetos/types'
 import { MODEL_DEFAULTS } from '@rivetos/types'
-import type { ProviderAiSdkBridge } from '@rivetos/core'
+import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
 import type { JSONObject } from '@ai-sdk/provider'
 import type { LanguageModel } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'

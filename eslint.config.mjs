@@ -217,6 +217,31 @@ export default tseslint.config(
     },
   },
 
+  // aisdk: @ai-sdk/provider + ai are used only via type imports (the package
+  // exposes the ProviderAiSdkBridge contract + helper types). Stripped from
+  // build output, so dependency-checks can't see the usage. They're declared
+  // as deps so consumers (core + provider plugins) get them transitively
+  // resolved via the workspace symlinks.
+  {
+    files: ['packages/aisdk/package.json'],
+    languageOptions: { parser: jsoncParser },
+    plugins: { '@nx': nxPlugin },
+    rules: {
+      '@nx/dependency-checks': [
+        'error',
+        {
+          buildTargets: ['build'],
+          checkMissingDependencies: true,
+          checkObsoleteDependencies: true,
+          checkVersionMismatches: true,
+          includeTransitiveDependencies: false,
+          ignoredFiles: ['**/*.test.ts', '**/*.spec.ts'],
+          ignoredDependencies: ['typescript', '@ai-sdk/provider', 'ai'],
+        },
+      ],
+    },
+  },
+
   // voice-discord: mediaplex + sodium-native are native runtime peers of
   // @discordjs/voice — required for opus encoding and encryption, never
   // statically imported by us.

@@ -60,7 +60,7 @@ export function makeMockProvider(input: MockProviderOptions | LLMChunk[]): Provi
   const modelId = opts.modelId ?? 'mock-model'
   const contextWindow = opts.contextWindow ?? 0
   const maxOutputTokens = opts.maxOutputTokens ?? 0
-  const isAvailable = opts.isAvailable ?? (async () => true)
+  const isAvailable = opts.isAvailable ?? (() => Promise.resolve(true))
 
   let callIndex = 0
 
@@ -99,9 +99,7 @@ export function makeMockProvider(input: MockProviderOptions | LLMChunk[]): Provi
                       'abort',
                       () => {
                         clearTimeout(t)
-                        reject(
-                          new DOMException('Aborted', 'AbortError'),
-                        )
+                        reject(new DOMException('Aborted', 'AbortError'))
                       },
                       { once: true },
                     )
@@ -138,10 +136,7 @@ export function makeMockProviderSequence(sequences: LLMChunk[][]): Provider {
 // Internal: chunk picker
 // ---------------------------------------------------------------------------
 
-function pickChunks(
-  input: LLMChunk[] | LLMChunk[][],
-  callIndex: number,
-): LLMChunk[] {
+function pickChunks(input: LLMChunk[] | LLMChunk[][], callIndex: number): LLMChunk[] {
   if (input.length === 0) return []
   if (!Array.isArray(input[0])) {
     return input as LLMChunk[]
@@ -314,9 +309,7 @@ export function translateLlmChunksToV3(chunks: LLMChunk[]): LanguageModelV3Strea
         reasoning: undefined,
       },
     },
-    finishReason: (hadToolCalls
-      ? 'tool-calls'
-      : 'stop') as unknown as LanguageModelV3FinishReason,
+    finishReason: (hadToolCalls ? 'tool-calls' : 'stop') as unknown as LanguageModelV3FinishReason,
   })
 
   return parts

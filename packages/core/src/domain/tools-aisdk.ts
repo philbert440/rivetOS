@@ -73,10 +73,7 @@ export interface ToolMiddlewareBinding {
 // Public factory
 // ---------------------------------------------------------------------------
 
-export function toAiSdkTools(
-  tools: RivetosTool[],
-  binding: ToolMiddlewareBinding = {},
-): ToolSet {
+export function toAiSdkTools(tools: RivetosTool[], binding: ToolMiddlewareBinding = {}): ToolSet {
   const set: ToolSet = {}
   for (const def of tools) {
     set[def.name] = buildAiSdkTool(def, binding)
@@ -88,13 +85,10 @@ export function toAiSdkTools(
 // Per-tool builder
 // ---------------------------------------------------------------------------
 
-function buildAiSdkTool(
-  def: RivetosTool,
-  binding: ToolMiddlewareBinding,
-): ToolSet[string] {
+function buildAiSdkTool(def: RivetosTool, binding: ToolMiddlewareBinding): ToolSet[string] {
   return {
     description: def.description,
-    inputSchema: jsonSchema(def.parameters as Record<string, unknown>),
+    inputSchema: jsonSchema(def.parameters),
     async execute(input, options) {
       const args =
         input && typeof input === 'object' && !Array.isArray(input)

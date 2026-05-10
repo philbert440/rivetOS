@@ -97,9 +97,9 @@ export interface HookMiddlewareBinding {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function mapUsage(usage: LanguageModelV2Usage | undefined):
-  | { promptTokens: number; completionTokens: number }
-  | undefined {
+function mapUsage(
+  usage: LanguageModelV2Usage | undefined,
+): { promptTokens: number; completionTokens: number } | undefined {
   if (!usage) return undefined
   const promptTokens = usage.inputTokens ?? 0
   const completionTokens = usage.outputTokens ?? 0
@@ -156,10 +156,7 @@ export function hookPipelineToMiddleware(
       // Soft stop: hook set ctx.skip or returned 'skip'.
       if (result.context.skip || result.skipped) {
         const lastHook = result.ran[result.ran.length - 1]
-        throw new HookSkipError(
-          result.context.skip ? 'skip-flag' : 'skipped',
-          lastHook,
-        )
+        throw new HookSkipError(result.context.skip ? 'skip-flag' : 'skipped', lastHook)
       }
 
       // Carry hook reassignments back into params. Hooks that didn't touch
@@ -258,10 +255,7 @@ interface AfterArgs {
   usage?: { promptTokens: number; completionTokens: number }
 }
 
-async function runAfterHook(
-  pipeline: HookPipeline,
-  args: AfterArgs,
-): Promise<void> {
+async function runAfterHook(pipeline: HookPipeline, args: AfterArgs): Promise<void> {
   const ctx: ProviderAfterContext = {
     event: 'provider:after',
     providerId: args.providerId,
@@ -284,11 +278,7 @@ interface ErrorArgs {
   sessionId?: string
 }
 
-async function runErrorHook(
-  pipeline: HookPipeline,
-  err: unknown,
-  args: ErrorArgs,
-): Promise<void> {
+async function runErrorHook(pipeline: HookPipeline, err: unknown, args: ErrorArgs): Promise<void> {
   const errorObj = err instanceof Error ? err : new Error(String(err))
   const ctx: ProviderErrorContext = {
     event: 'provider:error',

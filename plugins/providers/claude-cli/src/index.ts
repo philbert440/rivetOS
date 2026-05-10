@@ -34,7 +34,7 @@
 
 import { spawn } from 'node:child_process'
 import type { Provider, PluginManifest } from '@rivetos/types'
-import type { ProviderAiSdkBridge, GetModelInput } from '@rivetos/core'
+import type { ProviderAiSdkBridge, GetModelInput } from '@rivetos/aisdk'
 import { ClaudeCliModel, type ClaudeCliEffort } from './claude-cli-model.js'
 
 // ---------------------------------------------------------------------------
@@ -169,19 +169,18 @@ export class ClaudeCliProvider implements Provider {
   // -----------------------------------------------------------------------
 
   aiSdkBridge(): ProviderAiSdkBridge {
-    const provider = this
     return {
       getModel: ({ modelOverride, tools, agentId }: GetModelInput) => {
         return new ClaudeCliModel({
-          providerId: provider.id,
-          modelId: modelOverride ?? provider.model,
-          binary: provider.binary,
-          toolsArg: provider.toolsArg,
-          effort: provider.effort,
-          permissionMode: provider.permissionMode,
-          excludeDynamicSections: provider.excludeDynamicSections,
-          appendSystemPrompt: provider.appendSystemPromptFlag,
-          cwd: provider.cwd,
+          providerId: this.id,
+          modelId: modelOverride ?? this.model,
+          binary: this.binary,
+          toolsArg: this.toolsArg,
+          effort: this.effort,
+          permissionMode: this.permissionMode,
+          excludeDynamicSections: this.excludeDynamicSections,
+          appendSystemPrompt: this.appendSystemPromptFlag,
+          cwd: this.cwd,
           tools,
           agentId,
         })
@@ -194,15 +193,7 @@ export class ClaudeCliProvider implements Provider {
       buildProviderOptions: (_messages, options) => {
         const thinking = options?.thinking
         if (!thinking || thinking === 'off') return undefined
-        const map: Record<string, ClaudeCliEffort> = {
-          low: 'low',
-          medium: 'medium',
-          high: 'high',
-          xhigh: 'xhigh',
-        }
-        const effort = map[thinking]
-        if (!effort) return undefined
-        return { 'claude-cli': { effort } }
+        return { 'claude-cli': { effort: thinking satisfies ClaudeCliEffort } }
       },
     }
   }

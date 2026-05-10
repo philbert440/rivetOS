@@ -122,9 +122,7 @@ async function backfillToolSynth(args: string[]): Promise<void> {
         )
         enqueued++
       } catch (err) {
-        console.error(
-          `Failed to enqueue ${row.id}: ${(err as Error).message}`,
-        )
+        console.error(`Failed to enqueue ${row.id}: ${(err as Error).message}`)
       }
     }
 
@@ -137,7 +135,9 @@ async function backfillToolSynth(args: string[]): Promise<void> {
     if (flags.json) {
       console.log(JSON.stringify(summary, null, 2))
     } else {
-      console.log(`\nEnqueued ${summary.enqueued.toLocaleString()} job(s) in ${(summary.durationMs / 1000).toFixed(1)}s.`)
+      console.log(
+        `\nEnqueued ${summary.enqueued.toLocaleString()} job(s) in ${(summary.durationMs / 1000).toFixed(1)}s.`,
+      )
     }
   } finally {
     await pool.end()
@@ -251,7 +251,9 @@ async function queueStatus(args: string[]): Promise<void> {
     }
   } catch (err) {
     if ((err as { code?: string }).code === '42P01') {
-      console.error('Error: graphile_worker schema not installed yet — start the worker services first.')
+      console.error(
+        'Error: graphile_worker schema not installed yet — start the worker services first.',
+      )
       process.exit(1)
     }
     throw err

@@ -87,13 +87,7 @@ export const KNOWN_RUNTIME_KEYS = new Set([
   'auto_actions',
 ])
 
-export const KNOWN_AGENT_KEYS = new Set([
-  'provider',
-  'model',
-  'default_thinking',
-  'local',
-  'tools',
-])
+export const KNOWN_AGENT_KEYS = new Set(['provider', 'model', 'default_thinking', 'local', 'tools'])
 
 /**
  * Keys removed in the AI SDK migration — config validator emits a hard error

@@ -1,7 +1,7 @@
 /**
  * AI SDK-backed implementation of xAI `chatStream`.
  *
- * Delegates to shared adapters in `@rivetos/core` for message conversion and
+ * Delegates to shared adapters in `@rivetos/aisdk` for message conversion and
  * fullStream-part → LLMChunk translation. This file owns only the xAI-specific
  * pieces: provider construction (with `x-grok-conv-id` header), prepareTurn
  * integration, server-side tool wiring (web_search / x_search / code_execution),
@@ -25,16 +25,10 @@ import {
   convertMessagesToAiSdk,
   createLlmChunkAccumulator,
   translateAiSdkPart,
-} from '@rivetos/core'
+} from '@rivetos/aisdk'
 import { streamText, stepCountIs, jsonSchema, APICallError, type ToolSet } from 'ai'
-import type { JSONObject, JSONValue } from '@ai-sdk/provider'
-import type {
-  ChatOptions,
-  LLMChunk,
-  Message,
-  ThinkingLevel,
-  ToolDefinition,
-} from '@rivetos/types'
+import type { JSONObject } from '@ai-sdk/provider'
+import type { ChatOptions, LLMChunk, Message, ThinkingLevel, ToolDefinition } from '@rivetos/types'
 import { hasImages, ProviderError } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
@@ -102,7 +96,7 @@ function buildClientToolSet(toolDefs: ToolDefinition[] | undefined): ToolSet {
   for (const def of toolDefs) {
     set[def.name] = {
       description: def.description,
-      inputSchema: jsonSchema(def.parameters as Record<string, unknown>),
+      inputSchema: jsonSchema(def.parameters),
       // No `execute` — RivetOS dispatches client-side tools itself. AI SDK
       // will emit `tool-call` parts that the loop translates back to LLMChunk.
     }
@@ -124,7 +118,7 @@ function buildServerToolSet(ctx: XAIAiSdkContext): ToolSet {
         args.searchParameters = { filters }
       }
       if (cfg.enableImageUnderstanding) args.enableImageUnderstanding = true
-      set.web_search = xaiTools.webSearch(args as never)
+      set.web_search = xaiTools.webSearch(args)
     } else {
       set.web_search = xaiTools.webSearch()
     }
@@ -140,7 +134,7 @@ function buildServerToolSet(ctx: XAIAiSdkContext): ToolSet {
       if (cfg.toDate) args.toDate = cfg.toDate
       if (cfg.enableImageUnderstanding) args.enableImageUnderstanding = true
       if (cfg.enableVideoUnderstanding) args.enableVideoUnderstanding = true
-      set.x_search = xaiTools.xSearch(args as never)
+      set.x_search = xaiTools.xSearch(args)
     } else {
       set.x_search = xaiTools.xSearch()
     }
@@ -168,7 +162,9 @@ function mapReasoningEffort(
   if (!model.includes('multi-agent')) return undefined
   // AI SDK's typed schema currently rejects 'xhigh' — degrade with warning.
   if (level === 'xhigh') {
-    console.warn('[xai-aisdk] xhigh reasoning effort not supported by @ai-sdk/xai schema — degrading to high')
+    console.warn(
+      '[xai-aisdk] xhigh reasoning effort not supported by @ai-sdk/xai schema — degrading to high',
+    )
     return 'high'
   }
   return level
@@ -236,7 +232,7 @@ export async function* chatStreamAiSdk(
       store: storeThisRequest,
     }
     if (canContinue && ctx.getLastResponseId()) {
-      xaiProviderOptions.previousResponseId = ctx.getLastResponseId() as JSONValue
+      xaiProviderOptions.previousResponseId = ctx.getLastResponseId()
     }
     if (reasoningEffort) {
       xaiProviderOptions.reasoningEffort = reasoningEffort
@@ -253,7 +249,7 @@ export async function* chatStreamAiSdk(
     })
 
     for await (const part of result.fullStream) {
-      const chunks = translateAiSdkPart(part as never, acc)
+      const chunks = translateAiSdkPart(part, acc)
       for (const chunk of chunks) yield chunk
     }
 
