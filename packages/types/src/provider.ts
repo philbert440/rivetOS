@@ -166,8 +166,8 @@ export interface Provider {
    * headers) can be baked into the returned `LanguageModelV2`.
    *
    * Typed as `unknown` here to keep `@rivetos/types` free of `@ai-sdk/*` deps;
-   * the real contract lives in `@rivetos/core` as `ProviderAiSdkBridge`. The
-   * loop and provider plugins (which depend on core) cast at the call site.
+   * the real contract lives in `@rivetos/aisdk` as `ProviderAiSdkBridge`. The
+   * loop and provider plugins (which depend on it) cast at the call site.
    */
   aiSdkBridge?: () => unknown
 }

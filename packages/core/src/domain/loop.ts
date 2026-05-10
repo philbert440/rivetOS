@@ -30,10 +30,7 @@ import type {
   ThinkingLevel,
   HookPipeline,
 } from '@rivetos/types'
-import {
-  getToolResultImages,
-  toolResultHasImages,
-} from '@rivetos/types'
+import { getToolResultImages, toolResultHasImages } from '@rivetos/types'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -54,10 +51,10 @@ import {
   createLlmChunkAccumulator,
   translateAiSdkPart,
   type AiSdkChunkAccumulator,
-} from './aisdk-stream.js'
+  type ProviderAiSdkBridge,
+} from '@rivetos/aisdk'
 import { toAiSdkTools } from './tools-aisdk.js'
 import { hookPipelineToMiddleware, HookSkipError } from './hooks-aisdk.js'
-import type { ProviderAiSdkBridge } from './aisdk-bridge.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -199,9 +196,7 @@ export class AgentLoop {
     }
 
     // ---- Provider bridge -------------------------------------------------
-    const bridge = (this.config.provider.aiSdkBridge?.() as
-      | ProviderAiSdkBridge
-      | undefined)
+    const bridge = this.config.provider.aiSdkBridge?.() as ProviderAiSdkBridge | undefined
     if (!bridge) {
       throw new Error(
         `Provider "${this.config.provider.id}" does not expose an aiSdkBridge — ` +
@@ -210,10 +205,7 @@ export class AgentLoop {
     }
 
     // ---- Prepare messages (prov-specific massaging if any) ---------------
-    const rawHistory: Message[] = [
-      ...history,
-      { role: 'user', content: userMessage },
-    ]
+    const rawHistory: Message[] = [...history, { role: 'user', content: userMessage }]
     const prep = bridge.prepareMessages?.(rawHistory)
     const wireMessages: Message[] = prep?.messages ?? rawHistory
     // System prompt: provider may want to merge in extra (vLLM/Qwen folding),
@@ -241,7 +233,6 @@ export class AgentLoop {
 
     // ---- Turn timeout ----------------------------------------------------
     const turnTimeout = this.config.turnTimeout ?? 1_800_000
-    const gracefulWarningMs = this.config.gracefulWarningMs ?? 180_000
 
     // Compose abort signal: caller signal + turn-timeout
     const turnAbort = new AbortController()
@@ -283,17 +274,17 @@ export class AgentLoop {
       agentId: this.config.agentId,
     })
     const model: LanguageModel = this.config.hooks
-      ? (wrapLanguageModel({
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ? wrapLanguageModel({
+          /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment */
           model: baseModel as any,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           middleware: hookPipelineToMiddleware(this.config.hooks, {
             providerId: this.config.provider.id,
             model: this.config.modelOverride ?? this.config.provider.getModel(),
             agentId: this.config.agentId,
             sessionId: this.config.sessionId,
           }) as any,
-        }) as LanguageModel)
+          /* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment */
+        })
       : baseModel
 
     // ---- Build providerOptions ------------------------------------------
@@ -302,18 +293,15 @@ export class AgentLoop {
       modelOverride: this.config.modelOverride,
       freshConversation: this.config.freshConversation,
       agentId: this.config.agentId,
-      executableTools:
-        this.config.tools.length > 0 ? this.config.tools : undefined,
+      executableTools: this.config.tools.length > 0 ? this.config.tools : undefined,
     }
-    const rawProviderOptions = bridge.buildProviderOptions(
-      wireMessages,
-      chatOptions,
-    )
+    const rawProviderOptions = bridge.buildProviderOptions(wireMessages, chatOptions)
     // AI SDK's ProviderOptions is `SharedV3ProviderOptions` (Record<string,
     // Record<string, JSONValue>>); bridge returns `JSONObject`. Structurally
     // compatible at runtime, but TS narrows JSONValue strictly.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const providerOptions = rawProviderOptions as any
+    const providerOptions = rawProviderOptions as Parameters<
+      typeof streamText
+    >[0]['providerOptions']
 
     // ---- Stream! ---------------------------------------------------------
     const acc = createLlmChunkAccumulator()
@@ -426,10 +414,7 @@ export class AgentLoop {
 
     // ---- Apply any leftover compaction + sync session -------------------
     if (state.pendingCompaction) {
-      aiSdkMessages = this.applyCompaction(
-        aiSdkMessages,
-        state.pendingCompaction,
-      )
+      aiSdkMessages = this.applyCompaction(aiSdkMessages, state.pendingCompaction)
       this.syncCompactedSession(aiSdkMessages)
       state.pendingCompaction = null
     }
@@ -453,12 +438,9 @@ export class AgentLoop {
         type: 'status',
         content: `⚠️ Turn timeout (${elapsedSec}s)`,
       })
-      const capNotice =
-        '\n\n⚠️ _Turn timed out. Let me know if you want me to continue._'
+      const capNotice = '\n\n⚠️ _Turn timed out. Let me know if you want me to continue._'
       return {
-        response: textContent
-          ? textContent.trim() + capNotice
-          : capNotice.trim(),
+        response: textContent ? textContent.trim() + capNotice : capNotice.trim(),
         toolsUsed: state.toolsUsed,
         iterations: state.iterations,
         aborted: false,
@@ -468,8 +450,7 @@ export class AgentLoop {
     }
 
     // Normal finish: prefer text, fall back to lastError, then empty.
-    const finalResponse =
-      textContent.trim() || (lastError ? `⚠️ ${lastError}` : '')
+    const finalResponse = textContent.trim() || (lastError ? `⚠️ ${lastError}` : '')
     return {
       response: finalResponse,
       toolsUsed: state.toolsUsed,
@@ -624,7 +605,7 @@ export class AgentLoop {
     options: ChatOptions,
   ): void {
     // 1. Iteration count + tool tracking.
-    if (stepResult.toolCalls && stepResult.toolCalls.length > 0) {
+    if (stepResult.toolCalls.length > 0) {
       state.iterations++
       for (const tc of stepResult.toolCalls) {
         state.toolsUsed.push(tc.toolName)
@@ -633,25 +614,22 @@ export class AgentLoop {
 
     // 2. Usage accumulation (max-merge to mirror legacy semantics).
     const u = stepResult.usage
-    if (u) {
-      const promptTokens = u.inputTokens ?? 0
-      const completionTokens = u.outputTokens ?? 0
-      state.totalUsage.promptTokens = Math.max(
-        state.totalUsage.promptTokens,
-        promptTokens,
-      )
-      state.totalUsage.completionTokens = Math.max(
-        state.totalUsage.completionTokens,
-        completionTokens,
-      )
-      if (u.reasoningTokens) {
-        state.totalUsage.reasoningTokens = u.reasoningTokens
-      }
-      if (u.cachedInputTokens) {
-        state.totalUsage.cachedTokens = u.cachedInputTokens
-      }
-      if (promptTokens > 0) state.lastKnownPromptTokens = promptTokens
+    const promptTokens = u.inputTokens ?? 0
+    const completionTokens = u.outputTokens ?? 0
+    state.totalUsage.promptTokens = Math.max(state.totalUsage.promptTokens, promptTokens)
+    state.totalUsage.completionTokens = Math.max(
+      state.totalUsage.completionTokens,
+      completionTokens,
+    )
+    const reasoningTokens = u.outputTokenDetails.reasoningTokens
+    if (reasoningTokens) {
+      state.totalUsage.reasoningTokens = reasoningTokens
     }
+    const cacheReadTokens = u.inputTokenDetails.cacheReadTokens
+    if (cacheReadTokens) {
+      state.totalUsage.cachedTokens = cacheReadTokens
+    }
+    if (promptTokens > 0) state.lastKnownPromptTokens = promptTokens
 
     // 3. Bridge per-step capture (e.g. xAI previousResponseId).
     bridge.captureStepResult?.(stepResult, options)
@@ -710,9 +688,9 @@ export class AgentLoop {
         },
         required: ['replacements'],
       }),
-      execute: async (input, options) => {
+      execute: (input, options) => {
         const args = (input ?? {}) as Record<string, unknown>
-        const validation = validate(args, options.messages as ModelMessage[])
+        const validation = validate(args, options.messages)
         if (typeof validation === 'string') {
           this.emit({
             type: 'tool_result',
@@ -839,8 +817,8 @@ export class AgentLoop {
               text += part.text
             } else if (part.type === 'tool-call') {
               toolCalls.push({
-                id: String(part.toolCallId ?? ''),
-                name: String(part.toolName ?? ''),
+                id: typeof part.toolCallId === 'string' ? part.toolCallId : '',
+                name: typeof part.toolName === 'string' ? part.toolName : '',
                 arguments: (part.input ?? {}) as Record<string, unknown>,
               })
             }
@@ -851,11 +829,11 @@ export class AgentLoop {
             toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           })
         }
-      } else if (m.role === 'tool') {
-        // Each ToolResultPart becomes one tool message.
+      } else {
+        // role === 'tool' — each ToolResultPart becomes one tool message.
         const parts = m.content as Array<Record<string, unknown>>
         for (const p of parts) {
-          const callId = String(p.toolCallId ?? '')
+          const callId = typeof p.toolCallId === 'string' ? p.toolCallId : ''
           const output = p.output as { type?: string; value?: unknown } | undefined
           let content: string = ''
           if (output && typeof output === 'object') {
@@ -876,10 +854,7 @@ export class AgentLoop {
   // Image archival — fire-and-forget wrapper around tool execute
   // -----------------------------------------------------------------------
 
-  private wrapToolsForImages(
-    set: ToolSet,
-    defs: Tool[],
-  ): ToolSet {
+  private wrapToolsForImages(set: ToolSet, defs: Tool[]): ToolSet {
     if (!this.hasImageProducingTools(defs)) return set
     const wrapped: ToolSet = {}
     for (const [name, t] of Object.entries(set)) {
@@ -891,11 +866,13 @@ export class AgentLoop {
       wrapped[name] = {
         ...t,
         execute: async (input: unknown, opts: never) => {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           const result = await original(input as never, opts)
           // Fire-and-forget archival — never block the loop.
           this.archiveImagesIfAny(result).catch(() => {
             /* archival failures are non-fatal */
           })
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-return
           return result
         },
       } as ToolSet[string]
@@ -915,8 +892,7 @@ export class AgentLoop {
     const images = getToolResultImages(result as never)
     if (images.length === 0) return
 
-    const imageDir =
-      this.config.imageDir ?? join(process.cwd(), '.data', 'images')
+    const imageDir = this.config.imageDir ?? join(process.cwd(), '.data', 'images')
     await mkdir(imageDir, { recursive: true })
 
     for (const img of images) {
@@ -930,10 +906,7 @@ export class AgentLoop {
         try {
           const res = await fetch(img.url)
           if (res.ok) {
-            await writeFile(
-              filePath,
-              Buffer.from(await res.arrayBuffer()),
-            )
+            await writeFile(filePath, Buffer.from(await res.arrayBuffer()))
           }
         } catch {
           // skip
@@ -950,14 +923,8 @@ export class AgentLoop {
     this.config.onStream?.(event)
   }
 
-  private mergeUsageFromAcc(
-    acc: AiSdkChunkAccumulator,
-    state: TurnState,
-  ): void {
-    state.totalUsage.promptTokens = Math.max(
-      state.totalUsage.promptTokens,
-      acc.usage.promptTokens,
-    )
+  private mergeUsageFromAcc(acc: AiSdkChunkAccumulator, state: TurnState): void {
+    state.totalUsage.promptTokens = Math.max(state.totalUsage.promptTokens, acc.usage.promptTokens)
     state.totalUsage.completionTokens = Math.max(
       state.totalUsage.completionTokens,
       acc.usage.completionTokens,
@@ -973,4 +940,3 @@ export class AgentLoop {
     }
   }
 }
-

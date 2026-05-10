@@ -46,20 +46,9 @@ export {
 } from './domain/session-hooks.js'
 export type { SessionHooksConfig, SessionHooksContext } from './domain/session-hooks.js'
 
-// AI SDK adapters — shared across providers and the new loop
-export {
-  partsToAiSdkUserContent,
-  convertMessagesToAiSdk,
-  extractText,
-  createLlmChunkAccumulator,
-  translateAiSdkPart,
-  buildDoneChunk,
-  collectLlmStream,
-} from './domain/aisdk-stream.js'
-export type { AiSdkChunkAccumulator, StreamCollectorResult } from './domain/aisdk-stream.js'
-
-// AI SDK provider bridge — provider contract the new loop consumes (step 8b)
-export type { ProviderAiSdkBridge, GetModelInput } from './domain/aisdk-bridge.js'
+// Stream collection (AsyncIterable<LLMChunk> → StreamEvents)
+export { collectLlmStream } from './domain/aisdk-stream.js'
+export type { StreamCollectorResult } from './domain/aisdk-stream.js'
 
 export { Router } from './domain/router.js'
 export type { RouteResult } from './domain/router.js'

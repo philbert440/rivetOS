@@ -45,11 +45,13 @@ export class AgentLoopAiSdk {
    * Run one turn.
    * userMessage can be a plain string or multimodal ContentPart[] (text + images).
    */
-  async run(
+  run(
     _userMessage: string | ContentPart[],
     _history: Message[],
     _signal?: AbortSignal,
   ): Promise<TurnResult> {
-    throw new Error('AgentLoopAiSdk.run() not implemented — filled in by migration steps 2–6')
+    return Promise.reject(
+      new Error('AgentLoopAiSdk.run() not implemented — filled in by migration steps 2–6'),
+    )
   }
 }

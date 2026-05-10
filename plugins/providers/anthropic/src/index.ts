@@ -16,7 +16,7 @@ import type {
   ThinkingLevel,
 } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
-import type { ProviderAiSdkBridge } from '@rivetos/core'
+import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
 import type { JSONObject } from '@ai-sdk/provider'
 import type { LanguageModel } from 'ai'
 import { createAnthropic } from '@ai-sdk/anthropic'
