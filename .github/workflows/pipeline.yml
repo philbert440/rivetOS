@@ -185,7 +185,6 @@ jobs:
             plugins/providers/anthropic
             plugins/providers/claude-cli
             plugins/providers/google
-            plugins/providers/llama-server
             plugins/providers/ollama
             plugins/providers/openai-compat
             plugins/providers/xai

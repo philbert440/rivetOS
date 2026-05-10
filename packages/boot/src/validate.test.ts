@@ -349,12 +349,15 @@ describe('Config Validation', () => {
       assertError(result, 'providers.ollama.base_url', 'requires "base_url"');
     });
 
-    it('requires base_url for llama-server', () => {
+    it('rejects removed "llama-server" provider with migration hint', () => {
       const cfg = validConfig();
-      (cfg.providers as Record<string, unknown>)['llama-server'] = { model: 'rivet' };
+      (cfg.providers as Record<string, unknown>)['llama-server'] = {
+        model: 'rivet',
+        base_url: 'http://localhost:8080',
+      };
       (cfg.agents as Record<string, unknown>).local = { provider: 'llama-server' };
       const result = validateConfig(cfg);
-      assertError(result, 'providers.llama-server.base_url', 'requires "base_url"');
+      assertError(result, 'providers.llama-server', 'openai-compat');
     });
 
     it('requires base_url for openai-compat', () => {
@@ -652,13 +655,13 @@ describe('Config Validation', () => {
           opus: { provider: 'anthropic', default_thinking: 'medium' },
           grok: { provider: 'xai', default_thinking: 'low' },
           gemini: { provider: 'google', default_thinking: 'medium' },
-          local: { provider: 'llama-server', default_thinking: 'off' },
+          local: { provider: 'openai-compat', default_thinking: 'off' },
         },
         providers: {
           anthropic: { model: MODEL_DEFAULTS.anthropic, max_tokens: 8192 },
           xai: { model: 'grok-4-1-fast-reasoning', max_tokens: 8192 },
           google: { model: 'gemini-2.5-pro', max_tokens: 8192 },
-          'llama-server': { base_url: 'http://192.168.1.50:8000/v1', model: 'rivet-v0.1', temperature: 0.4 },
+          'openai-compat': { base_url: 'http://192.168.1.50:8000/v1', model: 'rivet-v0.1', temperature: 0.4 },
         },
         channels: {
           telegram: { owner_id: '123456', allowed_users: ['123456'] },

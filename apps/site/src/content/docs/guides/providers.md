@@ -2,12 +2,12 @@
 title: Provider Setup
 sidebar:
   order: 6
-description: How to configure LLM providers — Anthropic, xAI, Google, Ollama, llama-server, openai-compat, and claude-cli
+description: How to configure LLM providers — Anthropic, xAI, Google, Ollama, openai-compat, and claude-cli
 ---
 
 Providers connect your agents to large language models. Each provider plugin handles API authentication, streaming, tool calling format differences, and thinking/reasoning support so your agent config stays clean.
 
-RivetOS ships with seven provider plugins:
+RivetOS ships with six provider plugins:
 
 | Provider | Models | Thinking Support | Notes |
 |----------|--------|:---:|-------|
@@ -15,8 +15,7 @@ RivetOS ships with seven provider plugins:
 | **xAI** | Grok 3, Grok 4 | ✅ | Responses API, conversation caching, live search |
 | **Google** | Gemini 2.5 Pro, Flash | ✅ | Thought signatures for function calling |
 | **Ollama** | Any local model | — | Local inference, no API key needed |
-| **llama.cpp server** | Any model served by `llama-server` | — | Native sampling (mirostat, typical_p), `<think>` tags, lenient tools |
-| **OpenAI-compat** | vLLM / TGI / Groq / Together / Fireworks / LocalAI | ✅ (when `--reasoning-parser` set) | Folds mid-conversation system messages, consumes native `reasoning_content` |
+| **OpenAI-compat** | vLLM / TGI / llama.cpp `llama-server` / Groq / Together / Fireworks / LocalAI | ✅ (when `--reasoning-parser` set) | Folds mid-conversation system messages, consumes native `reasoning_content` |
 | **Claude CLI** | Anything `claude` supports | ✅ | Drives the local `claude` binary using your subscription OAuth — no API key |
 
 ---
@@ -271,40 +270,16 @@ agents:
 
 ## llama.cpp server (Local)
 
-The native provider for [`llama-server`](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) — the built-in HTTP server from the llama.cpp project.
-
-It uses the native `/completion` and `/infill` endpoints (not the OpenAI compat layer). This gives full access to llama.cpp sampling parameters (`typical_p`, `mirostat`, `repeat_last_n`, `seed`, etc.), native `<think>` / `<thinking>` tag support, and lenient JSON tool-call parsing.
-
-### 1. Install & Run llama-server
-
-```bash
-# Build from source (recommended for latest features)
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp
-make -j server
-
-# Or use prebuilt binaries from https://github.com/ggerganov/llama.cpp/releases
-
-# Run with a model (adjust -m, --host, --port)
-./llama-server -m models/Meta-Llama-3.1-70B-Instruct-Q4_K_M.gguf \
-  --host 0.0.0.0 --port 8080 \
-  -c 32768 --n-gpu-layers 99
-```
-
-### 2. Configure
+llama.cpp's `llama-server` is supported via the **openai-compat** provider — point it at your `llama-server` instance:
 
 ```yaml
 providers:
   local:
-    provider_type: llama-server   # or just use the default "llama-server"
+    provider_type: openai-compat
     base_url: http://localhost:8080
-    model: llama3.1:70b            # any model name your server knows
-    num_ctx: 32768
-    typical_p: 0.9
-    repeat_last_n: 64
-    mirostat: 2
-    mirostat_tau: 5.0
-    seed: 42
+    model: default
+    top_k: 40
+    min_p: 0.05
 
 agents:
   local:
@@ -312,26 +287,9 @@ agents:
     local: true
 ```
 
-### Config Options
+llama.cpp-specific sampling extensions (`top_k`, `min_p`) flow through to the server. Standard OpenAI knobs (`temperature`, `top_p`, etc.) work as expected. For native `<think>` reasoning, start `llama-server` with `--reasoning-format deepseek`.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `base_url` | string | `http://localhost:8080` | Must point to your `llama-server` (no `/v1`) |
-| `model` | string | `default` | Model alias or path known to the server |
-| `num_ctx` | number | `8192` | Context window (matches server `-c`) |
-| `temperature` | number | `0.7` | Sampling temperature |
-| `top_p` | number | `0.9` | Nucleus sampling |
-| `typical_p` | number | `0.9` | Locally typical sampling (llama.cpp specific) |
-| `repeat_penalty` | number | `1.1` | Repetition penalty |
-| `repeat_last_n` | number | `64` | Last N tokens to consider for repetition |
-| `mirostat` | number | `0` | 0=off, 1=Mirostat v1, 2=v2 |
-| `mirostat_tau` | number | `5.0` | Target surprise value |
-| `mirostat_eta` | number | `0.1` | Learning rate for Mirostat |
-| `seed` | number | `-1` | Random seed (`-1` = random) |
-| `first_chunk_timeout_ms` | number | `120000` | Timeout for first token |
-| `chunk_timeout_ms` | number | `30000` | Timeout between tokens |
-
-**Note:** This provider is **llama.cpp-specific**. It talks directly to the native llama-server endpoints (not the OpenAI-compat layer). A future generic `openai` provider is planned for OpenRouter, Together, Fireworks, vLLM, etc.
+There is no longer a separate `llama-server` provider — it was removed in the AI SDK migration. The `openai-compat` plugin covers vLLM, TGI, llama.cpp, Groq, Together, Fireworks, LocalAI, and any other OpenAI-compatible server.
 
 ---
 

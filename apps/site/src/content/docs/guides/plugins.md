@@ -134,8 +134,7 @@ interface LLMChunk {
 | xAI | `plugins/providers/xai/` | Live search, conversation caching |
 | Google | `plugins/providers/google/` | Thought signatures for function calling |
 | Ollama | `plugins/providers/ollama/` | Native API |
-| llama-server | `plugins/providers/llama-server/` | Native llama.cpp (mirostat, typical_p, `<think>`) |
-| openai-compat | `plugins/providers/openai-compat/` | Strict OpenAI servers (vLLM/TGI/Groq); folds mid-conversation system messages, consumes native `reasoning_content` |
+| openai-compat | `plugins/providers/openai-compat/` | OpenAI-compatible servers (vLLM/TGI/llama.cpp llama-server/Groq); folds mid-conversation system messages, consumes native `reasoning_content` |
 | claude-cli | `plugins/providers/claude-cli/` | Drives the `claude` binary via stream-json; embedded MCP bridge for hybrid tools |
 
 ---
