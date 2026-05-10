@@ -3,17 +3,18 @@
  *
  * Roles:
  *   agent      Default. Starts the agent runtime (boot pipeline).
- *   worker     Starts the embedding + compaction workers (no agent).
- *   monolith   Starts both — agent + workers in one process tree.
  *   migrate    Apply pending DB migrations and exit (CI / startup hook use).
+ *
+ * The embedding and compaction workers run as their own systemd services
+ * (services/embedding-worker, services/compaction-worker) — not via this CLI.
  */
 
 import { resolve } from 'node:path'
 import { existsSync } from 'node:fs'
-import { spawn, type ChildProcess } from 'node:child_process'
-import { resolveMemoryMigrateScript, resolveMemoryWorkerScript } from '../paths.js'
+import { spawn } from 'node:child_process'
+import { resolveMemoryMigrateScript } from '../paths.js'
 
-type Role = 'agent' | 'worker' | 'monolith' | 'migrate'
+type Role = 'agent' | 'migrate'
 
 function parseArgs(): { configPath?: string; role: Role } {
   const args = process.argv.slice(3)
@@ -25,7 +26,7 @@ function parseArgs(): { configPath?: string; role: Role } {
       configPath = args[++i]
     } else if (args[i] === '--role' && args[i + 1]) {
       const next = args[++i]
-      if (next === 'agent' || next === 'worker' || next === 'monolith' || next === 'migrate') {
+      if (next === 'agent' || next === 'migrate') {
         role = next
       } else {
         console.error(`unknown role: ${next}`)
@@ -55,41 +56,6 @@ async function startAgent(configPath: string): Promise<void> {
   await boot(configPath)
 }
 
-function spawnWorker(name: 'embedding' | 'compaction'): ChildProcess {
-  const script = resolveMemoryWorkerScript(name)
-  if (!script) {
-    console.error(`[${name}-worker] cannot locate worker entry — install layout missing?`)
-    process.exit(1)
-  }
-  const child = spawn(process.execPath, [script], {
-    stdio: 'inherit',
-    env: process.env,
-  })
-  child.on('exit', (code, signal) => {
-    console.log(`[${name}-worker] exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`)
-  })
-  return child
-}
-
-async function startWorkers(): Promise<void> {
-  const embed = spawnWorker('embedding')
-  const compact = spawnWorker('compaction')
-
-  const shutdown = (sig: NodeJS.Signals) => {
-    console.log(`[start] received ${sig}, stopping workers`)
-    embed.kill(sig)
-    compact.kill(sig)
-  }
-  process.on('SIGTERM', shutdown)
-  process.on('SIGINT', shutdown)
-
-  // Stay alive until both children exit.
-  await Promise.all([
-    new Promise<void>((res) => embed.once('exit', () => res())),
-    new Promise<void>((res) => compact.once('exit', () => res())),
-  ])
-}
-
 async function runMigrate(): Promise<void> {
   const script = resolveMemoryMigrateScript()
   if (!script) {
@@ -115,22 +81,6 @@ export default async function start(): Promise<void> {
     case 'migrate':
       await runMigrate()
       break
-    case 'worker':
-      await startWorkers()
-      break
-    case 'monolith': {
-      const configPath = findConfig(explicit)
-      // Workers run as children; agent runs in this process.
-      // boot() resolves on "Runtime Ready" — runtime handles (channels,
-      // intervals) keep the event loop alive. We then wait on the worker
-      // promise, which only resolves once the children exit. External
-      // SIGTERM/SIGINT triggers boot's shutdown handler (process.exit),
-      // tearing down both halves together.
-      const workerProm = startWorkers()
-      await startAgent(configPath)
-      await workerProm
-      break
-    }
     case 'agent':
     default: {
       const configPath = findConfig(explicit)

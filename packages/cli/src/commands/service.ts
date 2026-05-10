@@ -101,7 +101,7 @@ export default async function service(): Promise<void> {
       const workingDir = process.cwd()
       const envFile = resolve(process.env.HOME ?? '.', '.rivetos', '.env')
       const cliEntry = resolve(workingDir, 'packages', 'cli', 'dist', 'index.js')
-      const execStart = `${process.execPath} ${cliEntry} start --role monolith`
+      const execStart = `${process.execPath} ${cliEntry} start`
 
       const unit = `[Unit]
 Description=RivetOS Agent Runtime

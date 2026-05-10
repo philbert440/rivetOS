@@ -215,43 +215,26 @@ The v5 pipeline synthesizes natural-language content for them — a single past-
 
 **Two synthesis paths:**
 
-1. **Async queue (live path)** — `adapter.ts` enqueues rows into `ros_tool_synth_queue` on insert when content is empty and `tool_name` is set. The compaction-worker's `drainToolSynthQueue` job picks them up, calls the synthesizer, and writes content back. Non-blocking — inserts never fail on synthesis errors.
+1. **Async (live path)** — `adapter.ts` calls `graphile_worker.add_job('synthesize-tool-call', …)` on insert when content is empty and `tool_name` is set. The compaction-worker service consumes the job and writes content back. Non-blocking — inserts never fail on synthesis errors. Dedup via `job_key` so duplicate enqueues coalesce.
 
-2. **CLI backfill (historical)** — `rivetos memory backfill-tool-synth` enqueues historical empty rows, then processes them in parallel workers using the same synthesis helper. Resumable, NUMA-pinned friendly (`--urls http://gerty:8001/v1,http://gerty:8002/v1`), and safe to run concurrently with the live queue (`FOR UPDATE SKIP LOCKED`).
+2. **CLI backfill (historical)** — `rivetos memory backfill-tool-synth` enqueues a `synthesize-tool-call` job for each historical empty row. Idempotent — already-enqueued messages dedupe via `job_key`. Concurrency, retries, and rate limiting are handled by graphile-worker on the compaction-worker side.
 
-The shared helper (`synthesizeToolCallContent` in `plugins/memory/postgres/src/tool-synth.ts`) uses the exact same hardened undici client and prompt as the compactor. Model-agnostic — point `TOOL_SYNTH_ENDPOINT` / `TOOL_SYNTH_MODEL` at any OpenAI-compatible endpoint.
-
-### Schema additions
-
-```sql
-CREATE TABLE ros_tool_synth_queue (
-  message_id      UUID PRIMARY KEY REFERENCES ros_messages(id) ON DELETE CASCADE,
-  enqueued_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-  attempts        INT NOT NULL DEFAULT 0,
-  last_error      TEXT,
-  last_attempt_at TIMESTAMPTZ
-);
-CREATE INDEX idx_tool_synth_queue_enqueued ON ros_tool_synth_queue(enqueued_at);
-```
-
-Applied by `plugins/memory/postgres/src/migrate-v3.ts`. Idempotent — safe to run multiple times.
+The shared helper (`synthesizeToolCallContent` in `plugins/memory/postgres/src/tool-synth.ts`) uses a hardened undici client and the same prompt as the compactor. Model-agnostic — point `TOOL_SYNTH_ENDPOINT` / `TOOL_SYNTH_MODEL` at any OpenAI-compatible endpoint.
 
 ### Operations
 
 ```bash
-# Show queue health
+# Show graphile-worker queue state for all RivetOS tasks
 rivetos memory queue-status
 
-# Synthesize all historical candidates
-rivetos memory backfill-tool-synth \
-  --concurrency 8 --batch 8 \
-  --urls http://gerty:8001/v1,http://gerty:8002/v1
+# Enqueue all historical empty-content tool-call rows
+rivetos memory backfill-tool-synth
 
-# Plan only (count candidates, no writes)
+# Plan only (count candidates, no enqueue)
 rivetos memory backfill-tool-synth --dry-run
 ```
 
-Rows that fail 3 times are left in the queue (use `queue-status` to surface them) and are not retried automatically. Inspect `last_error`, fix the condition, then run backfill again.
+Failed jobs (after `max_attempts=3`) remain in graphile-worker's `_private_jobs` table with `attempts=max_attempts`. Use `queue-status` to surface them; operators can re-enqueue manually if needed.
 
 ## What We're NOT Building
 
