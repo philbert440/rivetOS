@@ -116,8 +116,8 @@ function showHelp(): void {
     rivetos mesh status                 Show local mesh status
 
   Memory:
-    rivetos memory backfill-tool-synth  Synthesize content for historical tool calls
-    rivetos memory queue-status         Show ros_tool_synth_queue state
+    rivetos memory backfill-tool-synth  Enqueue historical tool calls for synthesis
+    rivetos memory queue-status         Show graphile-worker job queue state
 
   Testing:
     rivetos test                        Run smoke tests (config, provider, memory, tools)

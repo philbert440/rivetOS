@@ -1,9 +1,9 @@
 /**
  * Embedder schema migration.
  *
- * The actual embedding worker lives at `workers/embedding/index.js` and runs
- * on the datahub. This file only retains the schema-migration helper that
- * agent CTs call at startup to ensure the columns the worker expects exist.
+ * The actual embedding worker lives at `services/embedding-worker/` (graphile-worker
+ * service). This file only retains the schema-migration helper that agent CTs call
+ * at startup to ensure the columns the worker expects exist.
  */
 
 import pg from 'pg'

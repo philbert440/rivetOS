@@ -20,7 +20,6 @@ import { MemoryError } from '@rivetos/types'
 import { SearchEngine } from './search.js'
 import type { SearchEngineConfig } from './search.js'
 import { Expander } from './expand.js'
-import { TOOL_SYNTH_QUEUE_TABLE } from './compactor/types.js' // for queue table name (v5)
 
 const { Pool } = pg
 const MS_PER_DAY = 86_400_000
@@ -192,7 +191,8 @@ export class PostgresMemory implements Memory {
 
       await client.query('UPDATE ros_conversations SET updated_at = NOW() WHERE id = $1', [convId])
 
-      // v5: enqueue empty-content assistant tool-call messages for async synthesis (non-blocking)
+      // Enqueue empty-content assistant tool-call messages for async synthesis
+      // via graphile-worker. Best-effort: never fail the main append.
       if (
         entry.role === 'assistant' &&
         (!entry.content || entry.content.trim() === '') &&
@@ -200,12 +200,16 @@ export class PostgresMemory implements Memory {
       ) {
         try {
           await client.query(
-            `INSERT INTO ${TOOL_SYNTH_QUEUE_TABLE} (message_id) 
-             VALUES ($1) ON CONFLICT (message_id) DO NOTHING`,
+            `SELECT graphile_worker.add_job(
+               'synthesize-tool-call',
+               json_build_object('messageId', $1::text),
+               job_key := 'tool-synth-' || $1::text,
+               job_key_mode := 'preserve_run_at',
+               max_attempts := 3
+             )`,
             [result.rows[0].id],
           )
         } catch (enqueueErr) {
-          // Best-effort only — never fail the main append
           console.warn(
             `[PostgresMemory] Failed to enqueue tool-synth for msg ${result.rows[0].id}:`,
             enqueueErr,

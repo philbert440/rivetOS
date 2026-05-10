@@ -1,8 +1,8 @@
 /**
  * Compactor — barrel re-exports for v5 pipeline.
  *
- * Exports v5 prompts, formatters, helpers, and types so the standalone
- * compaction worker (../../workers/compaction/index.js) and CLI can reuse them.
+ * Exports v5 prompts, formatters, helpers, and types so the compaction-worker
+ * service (services/compaction-worker/) and CLI can reuse them.
  */
 
 export {
@@ -24,7 +24,6 @@ export {
   type ConversationMeta,
   type CompactMessageRow,
   type SummaryRow,
-  TOOL_SYNTH_QUEUE_TABLE,
 } from './types.js'
 
 // Formatters for worker reuse (exact match to v5 spec)
