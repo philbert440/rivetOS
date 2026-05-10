@@ -16,13 +16,29 @@ import { resolveMemoryMigrateScript } from '../paths.js'
 
 type Role = 'agent' | 'migrate'
 
+const HELP_TEXT = `Usage: rivetos start [options]
+
+Start the RivetOS agent runtime (boot pipeline) or apply pending DB migrations.
+
+Options:
+  -c, --config <path>   Path to config.yaml (default: ~/.rivetos/config.yaml)
+      --role <role>     'agent' (default) or 'migrate'
+  -h, --help            Show this help and exit
+
+Environment:
+  RIVETOS_ROLE          Overrides --role when set
+`
+
 function parseArgs(): { configPath?: string; role: Role } {
   const args = process.argv.slice(3)
   let configPath: string | undefined
   let role: Role = (process.env.RIVETOS_ROLE as Role | undefined) ?? 'agent'
 
   for (let i = 0; i < args.length; i++) {
-    if ((args[i] === '--config' || args[i] === '-c') && args[i + 1]) {
+    if (args[i] === '--help' || args[i] === '-h') {
+      process.stdout.write(HELP_TEXT)
+      process.exit(0)
+    } else if ((args[i] === '--config' || args[i] === '-c') && args[i + 1]) {
       configPath = args[++i]
     } else if (args[i] === '--role' && args[i + 1]) {
       const next = args[++i]

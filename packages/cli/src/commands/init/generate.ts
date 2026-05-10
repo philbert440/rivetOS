@@ -236,16 +236,29 @@ function buildEnvFile(state: WizardState): EnvEntry[] {
 
   // Postgres
   const pgPass = state.postgresPassword
-  entries.push({
-    key: 'POSTGRES_PASSWORD',
-    value: pgPass,
-    comment: 'Datahub postgres password',
-  })
-  entries.push({
-    key: 'RIVETOS_PG_URL',
-    value: `postgresql://rivetos:${pgPass}@datahub:5432/rivetos`,
-    comment: 'Postgres connection (agents use this)',
-  })
+  if (state.deployment === 'manual') {
+    // BYO postgres — the user supplied the connection string directly.
+    if (state.postgresUrl) {
+      entries.push({
+        key: 'RIVETOS_PG_URL',
+        value: state.postgresUrl,
+        comment: 'Postgres connection (agents use this)',
+      })
+    }
+  } else {
+    // Docker / Proxmox deployments ship a bundled datahub container. The
+    // hostname `datahub` is resolved on the deployment-managed network.
+    entries.push({
+      key: 'POSTGRES_PASSWORD',
+      value: pgPass,
+      comment: 'Datahub postgres password',
+    })
+    entries.push({
+      key: 'RIVETOS_PG_URL',
+      value: `postgresql://rivetos:${pgPass}@datahub:5432/rivetos`,
+      comment: 'Postgres connection (agents use this)',
+    })
+  }
 
   return entries
 }

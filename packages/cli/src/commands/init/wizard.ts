@@ -10,6 +10,7 @@ import { detectEnvironment } from './detect.js'
 import { configureDeployment } from './deployment.js'
 import { configureAgents } from './agents.js'
 import { configureChannels } from './channels.js'
+import { configurePostgres } from './postgres.js'
 import { reviewConfig } from './review.js'
 import { generateConfig, loadWizardState, clearWizardState } from './generate.js'
 import type { WizardState } from './types.js'
@@ -126,8 +127,15 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   p.log.step('Channel Configuration')
   const channels = await configureChannels()
 
-  // Generate a random postgres password
+  // Generate a random postgres password (used for the bundled datahub on
+  // docker/proxmox deployments; ignored on manual where the user supplies a URL)
   const postgresPassword = randomBytes(16).toString('hex')
+
+  // Phase 4b: Postgres connection — manual deployments BYO postgres
+  let postgresUrl: string | undefined
+  if (target === 'manual') {
+    postgresUrl = await configurePostgres()
+  }
 
   // Build full state
   const state: WizardState = {
@@ -136,6 +144,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     channels,
     proxmox,
     postgresPassword,
+    postgresUrl,
   }
 
   // Phase 5: Review
@@ -223,6 +232,25 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     )
   } else if (target === 'manual') {
     nextSteps.push('npx rivetos start                 Start the runtime')
+    nextSteps.push('')
+    nextSteps.push('To run as a systemd service, drop this unit at /etc/systemd/system/rivetos.service:')
+    nextSteps.push('')
+    nextSteps.push('  [Unit]')
+    nextSteps.push('  Description=RivetOS Agent Runtime')
+    nextSteps.push('  After=network-online.target')
+    nextSteps.push('  Wants=network-online.target')
+    nextSteps.push('')
+    nextSteps.push('  [Service]')
+    nextSteps.push(`  User=${process.env.USER ?? 'rivet'}`)
+    nextSteps.push(`  EnvironmentFile=${result.envPath}`)
+    nextSteps.push('  ExecStart=/usr/bin/env npx rivetos start')
+    nextSteps.push('  Restart=on-failure')
+    nextSteps.push('  RestartSec=5')
+    nextSteps.push('')
+    nextSteps.push('  [Install]')
+    nextSteps.push('  WantedBy=multi-user.target')
+    nextSteps.push('')
+    nextSteps.push('Then: systemctl daemon-reload && systemctl enable --now rivetos')
   }
 
   nextSteps.push(
