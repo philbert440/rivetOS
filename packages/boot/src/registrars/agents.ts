@@ -137,7 +137,7 @@ export async function registerAgentTools(
       agents: localAgents,
       host: getLocalHost(),
       port: agentChannelPort,
-      providers: Object.keys(config.providers),
+      providers: Object.keys(config.providers ?? {}),
       models: Object.values(config.agents)
         .map((a) => a.model)
         .filter((m): m is string => !!m),

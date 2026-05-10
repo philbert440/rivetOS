@@ -41,14 +41,14 @@ function pluginConfigFor(
 
   switch (type) {
     case 'provider': {
-      const slice = config.providers[name] as Record<string, unknown> | undefined
+      const slice = config.providers?.[name] as Record<string, unknown> | undefined
       return { register: slice !== undefined, slice }
     }
     case 'channel': {
       // Legacy alias: voice-discord plugin matches a config key of either
       // `voice-discord` or `voice`.
-      const slice = (config.channels[name] ??
-        (name === 'voice-discord' ? config.channels.voice : undefined)) as
+      const slice = (config.channels?.[name] ??
+        (name === 'voice-discord' ? config.channels?.voice : undefined)) as
         | Record<string, unknown>
         | undefined
       return { register: slice !== undefined, slice }
