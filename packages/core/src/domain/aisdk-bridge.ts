@@ -12,7 +12,7 @@
 
 import type { JSONObject } from '@ai-sdk/provider'
 import type { LanguageModel, StepResult, ToolSet } from 'ai'
-import type { ChatOptions, Message } from '@rivetos/types'
+import type { ChatOptions, Message, Tool } from '@rivetos/types'
 
 /** Input to `getModel` — caller-supplied per-call config. */
 export interface GetModelInput {
@@ -20,6 +20,17 @@ export interface GetModelInput {
   modelOverride?: string
   /** Stable conversation identifier (used by xAI for x-grok-conv-id header). */
   conversationId?: string
+  /**
+   * Original RivetOS Tool[] with live `execute` closures. Populated by the
+   * loop for providers that need direct access (e.g. claude-cli, which spins
+   * up an embedded MCP server exposing each tool to the CLI subprocess).
+   *
+   * HTTP-API providers ignore this — the loop hands tools to `streamText`
+   * directly via the `tools` arg, which they receive in `doStream(options)`.
+   */
+  tools?: Tool[]
+  /** Logical agent id — labels per-spawn artifacts in claude-cli's MCP bridge. */
+  agentId?: string
 }
 
 /**
