@@ -26,6 +26,7 @@ import type {
 import { AgentLoop } from './loop.js'
 import type { Router } from './router.js'
 import type { WorkspaceLoader } from './workspace.js'
+import { noopDelegationRecorder, type DelegationRunsRecorder } from './delegation-recorder.js'
 
 // ---------------------------------------------------------------------------
 // Tool filtering
@@ -84,6 +85,8 @@ export interface DelegationConfig {
   turnTimeout?: number
   /** Context management thresholds */
   contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
+  /** Optional recorder for delegation observability (no-op by default) */
+  recorder?: DelegationRunsRecorder
 }
 
 // ---------------------------------------------------------------------------
@@ -104,11 +107,13 @@ export class DelegationEngine {
   private maxChainDepth: number
   private cacheTtlMs: number
   private cache: Map<string, CacheEntry> = new Map()
+  private recorder: DelegationRunsRecorder
 
   constructor(config: DelegationConfig) {
     this.config = config
     this.maxChainDepth = config.maxChainDepth ?? 3
     this.cacheTtlMs = config.cacheTtlMs ?? 300_000
+    this.recorder = config.recorder ?? noopDelegationRecorder
   }
 
   /**
@@ -475,6 +480,9 @@ export class DelegationEngine {
     chainDepth: number,
     cached: boolean,
   ): Promise<void> {
+    // Observability — best-effort; recorder swallows its own errors.
+    await this.recorder.record(request, result, { chainDepth, cached, startedAt: startTime })
+
     if (!this.config.hooks) return
 
     const afterCtx: DelegationAfterContext = {
