@@ -20,10 +20,18 @@ import {
   AgentChannelServer,
   SubagentManagerImpl,
   createSubagentTools,
+  InMemorySubagentStore,
+  PgSubagentStore,
+  createSubagentExecutor,
+  createSubagentWorker,
+  createPgDelegationRecorder,
   SkillManagerImpl,
   createSkillListTool,
   createSkillManageTool,
+  type SubagentStore,
 } from '@rivetos/core'
+import type { DelegationRunsRecorder, SubagentWorker } from '@rivetos/core'
+import pg from 'pg'
 import type { MeshConfig } from '@rivetos/types'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
@@ -52,6 +60,28 @@ export async function registerAgentTools(
       }
     : undefined
 
+  // ------------------------------------------------------------------
+  // Durability — Postgres-backed if pgUrl is configured, in-memory otherwise.
+  //
+  // Substrate touches three things: subagent sessions, the delegation runs
+  // audit log, and the graphile-worker job queue for run-subagent-turn.
+  // All three share the same Postgres connection pool.
+  // ------------------------------------------------------------------
+  const pgUrl = runtime.getPgUrl()
+  let pool: pg.Pool | undefined
+  let subagentStore: SubagentStore
+  let delegationRecorder: DelegationRunsRecorder | undefined
+  let subagentWorker: SubagentWorker | undefined
+
+  if (pgUrl) {
+    pool = new pg.Pool({ connectionString: pgUrl, max: 4 })
+    subagentStore = new PgSubagentStore(pool)
+    delegationRecorder = createPgDelegationRecorder(pool)
+  } else {
+    subagentStore = new InMemorySubagentStore()
+    log.info('No pgUrl — subagent sessions + delegation runs are process-local (in-memory)')
+  }
+
   // Build the local delegation engine (always needed — mesh wraps it)
   const localDelegation = new DelegationEngine({
     router: runtime.getRouter(),
@@ -62,6 +92,7 @@ export async function registerAgentTools(
     workspaceDir,
     turnTimeout: config.runtime.turn_timeout,
     contextConfig,
+    recorder: delegationRecorder,
   })
 
   // Determine if mesh is enabled
@@ -189,16 +220,51 @@ export async function registerAgentTools(
     runtime.registerTool(localDelegation.createDelegationTool())
   }
 
-  // Sub-agents — spawn/send/kill child sessions (late-bound tools + filtering)
-  const subagentManager = new SubagentManagerImpl({
+  // ------------------------------------------------------------------
+  // Sub-agents — graphile-worker driven (Postgres) or in-process executor.
+  //
+  // On startup the worker sweeps any stale 'running' rows from a prior
+  // crash and flips them to 'failed' with error='worker_restarted'
+  // (turn-level resume is out of scope — session state is durable, but
+  // a mid-flight turn does not resume).
+  // ------------------------------------------------------------------
+  const executorCfg = {
     router: runtime.getRouter(),
     workspace: runtime.getWorkspace(),
+    store: subagentStore,
     tools: () => runtime.getTools(),
     hooks: runtime.getHooks(),
     toolFilter: hasFilters ? toolFilter : undefined,
     workspaceDir,
     turnTimeout: config.runtime.turn_timeout,
     contextConfig,
+  }
+
+  let enqueueTurn: (sessionId: string) => Promise<void>
+  if (pgUrl) {
+    subagentWorker = createSubagentWorker({ ...executorCfg, pgUrl })
+    await subagentWorker.start()
+    enqueueTurn = (sessionId) => subagentWorker!.enqueue(sessionId)
+    runtime.addShutdownHook(async () => {
+      await subagentWorker?.stop()
+      await pool?.end()
+    })
+  } else {
+    const executor = createSubagentExecutor(executorCfg)
+    // In-memory mode: fire the turn in the background so spawn/send return
+    // immediately (matches the prior void-runInBackground semantics).
+    enqueueTurn = (sessionId) => {
+      void executor.executeTurn(sessionId).catch((err: unknown) => {
+        log.error(`In-memory subagent turn failed: ${(err as Error).message}`)
+      })
+      return Promise.resolve()
+    }
+  }
+
+  const subagentManager = new SubagentManagerImpl({
+    router: runtime.getRouter(),
+    store: subagentStore,
+    enqueueTurn,
   })
   for (const tool of createSubagentTools(subagentManager)) {
     runtime.registerTool(tool)
