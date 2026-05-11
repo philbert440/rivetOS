@@ -78,6 +78,7 @@ export class Runtime {
   private heartbeatScheduler?: HeartbeatScheduler
   private healthServer?: HealthServer
   private reconnectionManager: ReconnectionManager
+  private shutdownHooks: Array<() => Promise<void>> = []
 
   // Composed modules
   private commandHandler!: CommandHandler
@@ -165,6 +166,18 @@ export class Runtime {
   }
   getTools(): Tool[] {
     return this.tools
+  }
+  /** Postgres connection string if configured (or RIVETOS_PG_URL env var). */
+  getPgUrl(): string | undefined {
+    return this.config.pgUrl ?? process.env.RIVETOS_PG_URL
+  }
+  /**
+   * Register an async shutdown hook. Called in registration order during
+   * stop(). Used by boot registrars (subagent worker, agent channel, mesh
+   * registry, …) to drain resources without coupling them to Runtime.
+   */
+  addShutdownHook(hook: () => Promise<void>): void {
+    this.shutdownHooks.push(hook)
   }
 
   // -----------------------------------------------------------------------
@@ -339,6 +352,14 @@ export class Runtime {
     log.info('Stopping...')
 
     await this.heartbeatScheduler?.stop()
+    for (const hook of this.shutdownHooks) {
+      try {
+        await hook()
+      } catch (err: unknown) {
+        log.error(`Shutdown hook failed: ${(err as Error).message}`)
+      }
+    }
+    this.shutdownHooks = []
     this.reconnectionManager.cancelAll()
     await this.healthServer?.stop()
 

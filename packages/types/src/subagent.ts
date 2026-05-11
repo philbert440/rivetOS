@@ -87,27 +87,27 @@ export interface SubagentStatusResponse {
 
 export interface SubagentManager {
   /**
-   * Spawn a new sub-agent. Returns immediately with the session.
-   * The agent runs asynchronously in the background.
+   * Spawn a new sub-agent. Returns immediately with the session row.
+   * Execution is queued and runs asynchronously in a graphile-worker job.
    */
-  spawn(request: SubagentSpawnRequest): SubagentSession
+  spawn(request: SubagentSpawnRequest): Promise<SubagentSession>
 
   /**
    * Get detailed status of a sub-agent session.
    * Returns rich progress info including partial results.
    */
-  status(sessionId: string): SubagentStatusResponse
+  status(sessionId: string): Promise<SubagentStatusResponse>
 
   /**
    * Send a follow-up message to a sub-agent session.
-   * Only works when the session is completed (starts a new turn).
+   * Only works when the session is in a terminal state (queues a new turn).
    * Returns immediately — poll with status() for the result.
    */
-  send(sessionId: string, message: string): void
+  send(sessionId: string, message: string): Promise<void>
 
   /** List all sub-agent sessions (all statuses). */
-  list(): SubagentSession[]
+  list(): Promise<SubagentSession[]>
 
   /** Kill (abort) a running sub-agent session. */
-  kill(sessionId: string): void
+  kill(sessionId: string): Promise<void>
 }
