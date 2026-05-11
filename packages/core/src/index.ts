@@ -56,7 +56,7 @@ export { WorkspaceLoader } from './domain/workspace.js'
 export { MessageQueue, isCommand, parseCommand } from './domain/queue.js'
 export { SILENT_RESPONSES } from './domain/constants.js'
 export { DelegationEngine, filterToolsForAgent, deduplicateTools } from './domain/delegation.js'
-export { createHeartbeatRunner } from './domain/heartbeat.js'
+export { createHeartbeatScheduler, scheduleToCronMatch } from './domain/heartbeat-scheduler.js'
 export { SubagentManagerImpl, createSubagentTools } from './domain/subagent.js'
 export {
   SkillManagerImpl,

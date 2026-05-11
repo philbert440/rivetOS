@@ -160,6 +160,9 @@ export async function boot(configPath?: string): Promise<void> {
       tools: agent.tools,
     })),
     heartbeats: config.runtime.heartbeats,
+    pgUrl:
+      (config.memory?.postgres.connection_string as string | undefined) ??
+      process.env.RIVETOS_PG_URL,
     skillDirs: config.runtime.skill_dirs,
     hooks: pipeline,
     configPath,
