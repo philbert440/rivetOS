@@ -28,7 +28,7 @@ import { AgentLoop } from '../domain/loop.js'
 import { Router } from '../domain/router.js'
 import { WorkspaceLoader } from '../domain/workspace.js'
 import { MessageQueue, isCommand, parseCommand } from '../domain/queue.js'
-import { createHeartbeatRunner, type HeartbeatRunner } from '../domain/heartbeat.js'
+import { createHeartbeatScheduler, type HeartbeatScheduler } from '../domain/heartbeat-scheduler.js'
 import { CommandHandler } from './commands.js'
 import { StreamManager } from './streaming.js'
 import { SessionManager } from './sessions.js'
@@ -52,6 +52,8 @@ export interface RuntimeConfig {
   /** Context management config */
   contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
   heartbeats?: import('@rivetos/types').HeartbeatConfig[]
+  /** Postgres connection string — required when heartbeats are configured (graphile-worker crontab substrate) */
+  pgUrl?: string
   /** Directories to scan for skills (default: ~/.rivetos/workspace/skills/) */
   skillDirs?: string[]
   /** Hook pipeline instance (created by boot, shared across runtime) */
@@ -73,7 +75,7 @@ export class Runtime {
   private memory?: Memory
   private memoryConnected = false
   private config: RuntimeConfig
-  private heartbeatRunner?: HeartbeatRunner
+  private heartbeatScheduler?: HeartbeatScheduler
   private healthServer?: HealthServer
   private reconnectionManager: ReconnectionManager
 
@@ -269,55 +271,65 @@ export class Runtime {
 
     // Start heartbeats
     if (this.config.heartbeats?.length) {
-      this.heartbeatRunner = createHeartbeatRunner(this.config.heartbeats, async (hbConfig) => {
-        const agentConfig = this.router.getAgents().find((a) => a.id === hbConfig.agent)
-        if (!agentConfig) {
-          log.warn(`Heartbeat agent "${hbConfig.agent}" not found`)
-          return
-        }
+      const pgUrl = this.config.pgUrl ?? process.env.RIVETOS_PG_URL
+      if (!pgUrl) {
+        throw new Error(
+          'Heartbeats are configured but RIVETOS_PG_URL is not set — heartbeat scheduling is graphile-worker driven and requires Postgres',
+        )
+      }
+      this.heartbeatScheduler = createHeartbeatScheduler({
+        pgUrl,
+        configs: this.config.heartbeats,
+        handler: async (hbConfig) => {
+          const agentConfig = this.router.getAgents().find((a) => a.id === hbConfig.agent)
+          if (!agentConfig) {
+            log.warn(`Heartbeat agent "${hbConfig.agent}" not found`)
+            return
+          }
 
-        const { provider } = this.router.route({
-          id: 'heartbeat',
-          userId: 'system:heartbeat',
-          channelId: 'heartbeat',
-          chatType: 'system',
-          text: hbConfig.prompt,
-          platform: 'heartbeat',
-          agent: hbConfig.agent,
-          timestamp: Math.floor(Date.now() / 1000),
-        })
+          const { provider } = this.router.route({
+            id: 'heartbeat',
+            userId: 'system:heartbeat',
+            channelId: 'heartbeat',
+            chatType: 'system',
+            text: hbConfig.prompt,
+            platform: 'heartbeat',
+            agent: hbConfig.agent,
+            timestamp: Math.floor(Date.now() / 1000),
+          })
 
-        const systemPrompt = await this.workspace.buildHeartbeatPrompt(hbConfig.agent)
-        const loop = new AgentLoop({
-          systemPrompt,
-          provider,
-          tools: this.tools,
-          agentId: hbConfig.agent,
-          workspaceDir: this.config.workspaceDir,
-          freshConversation: true,
-          turnTimeout: this.config.turnTimeout ? this.config.turnTimeout * 1000 : undefined,
-          contextWindow: provider.getContextWindow(),
-          contextConfig: this.config.contextConfig,
-        })
+          const systemPrompt = await this.workspace.buildHeartbeatPrompt(hbConfig.agent)
+          const loop = new AgentLoop({
+            systemPrompt,
+            provider,
+            tools: this.tools,
+            agentId: hbConfig.agent,
+            workspaceDir: this.config.workspaceDir,
+            freshConversation: true,
+            turnTimeout: this.config.turnTimeout ? this.config.turnTimeout * 1000 : undefined,
+            contextWindow: provider.getContextWindow(),
+            contextConfig: this.config.contextConfig,
+          })
 
-        const result = await loop.run(hbConfig.prompt, [])
+          const result = await loop.run(hbConfig.prompt, [])
 
-        if (result.response && hbConfig.outputChannel) {
-          const isSilent = SILENT_RESPONSES.some((s) => result.response.trim() === s)
-          if (!isSilent) {
-            for (const [, ch] of this.channels) {
-              await ch
-                .send({ channelId: hbConfig.outputChannel, text: result.response })
-                .catch(() => {}) // fire-and-forget — heartbeat delivery is best-effort
+          if (result.response && hbConfig.outputChannel) {
+            const isSilent = SILENT_RESPONSES.some((s) => result.response.trim() === s)
+            if (!isSilent) {
+              for (const [, ch] of this.channels) {
+                await ch
+                  .send({ channelId: hbConfig.outputChannel, text: result.response })
+                  .catch(() => {}) // fire-and-forget — heartbeat delivery is best-effort
+              }
             }
           }
-        }
 
-        // Heartbeat responses are deliberately not persisted. They were polluting
-        // getContextForTurn() "Recent" section and causing agents to believe they
-        // were still in heartbeat mode during real user conversations.
+          // Heartbeat responses are deliberately not persisted. They were polluting
+          // getContextForTurn() "Recent" section and causing agents to believe they
+          // were still in heartbeat mode during real user conversations.
+        },
       })
-      this.heartbeatRunner.start()
+      await this.heartbeatScheduler.start()
     }
 
     log.info('Ready.')
@@ -326,7 +338,7 @@ export class Runtime {
   async stop(): Promise<void> {
     log.info('Stopping...')
 
-    this.heartbeatRunner?.stop()
+    await this.heartbeatScheduler?.stop()
     this.reconnectionManager.cancelAll()
     await this.healthServer?.stop()
 
