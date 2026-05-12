@@ -1,18 +1,28 @@
 /**
  * @rivetos/channel-telegram
  *
- * Reference channel implementation. Telegram Bot API via grammY.
- * Supports: text, photos, voice, documents, inline buttons, reactions,
- * reply threading, slash commands, message editing (for streaming).
- * Sends typing indicator while the agent is processing.
+ * Telegram channel backed by `@chat-adapter/telegram` (Chat SDK).
  *
- * 409 Conflict handling: if another bot instance is polling the same
- * token, retries with backoff instead of crashing. Gives up after 5
- * consecutive conflicts within 60 seconds.
+ * Replaces the previous direct-grammY implementation. We map the
+ * RivetOS `Channel` interface onto the Chat SDK adapter:
+ *   - `start()`  → `chat.initialize()` + `adapter.startPolling()`
+ *   - `stop()`   → `chat.shutdown()`
+ *   - `send()`   → `adapter.postMessage(threadId, { markdown })`
+ *   - `edit()`   → `adapter.editMessage(threadId, messageId, { markdown })`
+ *   - `react()`  → `adapter.addReaction(threadId, messageId, emoji)`
+ *
+ * The Chat SDK handles MarkdownV2 escaping, entity rendering, message
+ * dedup, and per-thread locking. We retain RivetOS-side overflow
+ * splitting (Telegram 4096 char limit) since the adapter does not split.
  */
 
-import { Bot, Context, InlineKeyboard } from 'grammy'
-import { autoRetry } from '@grammyjs/auto-retry'
+import { Chat, type Attachment as ChatAttachment, type Message as ChatMessage } from 'chat'
+import {
+  TelegramAdapter,
+  createTelegramAdapter,
+  type TelegramRawMessage,
+} from '@chat-adapter/telegram'
+import { createMemoryState } from '@chat-adapter/state-memory'
 import type {
   Channel,
   EditResult,
@@ -22,8 +32,18 @@ import type {
   ResolvedAttachment,
   PluginManifest,
 } from '@rivetos/types'
-import { splitMessage, COMMAND_REGISTRY } from '@rivetos/types'
-import { markdownToTelegramHtml } from './format.js'
+import { splitMessage, COMMAND_NAMES } from '@rivetos/types'
+
+/**
+ * Telegram raw-message shape, widened to expose fields the adapter's
+ * exported types omit (notably `reply_to_message`). The runtime payload
+ * follows the public Bot API.
+ *
+ * @see https://core.telegram.org/bots/api#message
+ */
+type TelegramRawMessageExt = TelegramRawMessage & {
+  reply_to_message?: { message_id: number }
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -31,10 +51,12 @@ import { markdownToTelegramHtml } from './format.js'
 
 export interface TelegramChannelConfig {
   botToken: string
-  allowedUsers?: string[]
   ownerId: string
+  allowedUsers?: string[]
   /** Agent to route messages to (for channel binding) */
   agent?: string
+  /** Bot @username (optional — adapter auto-detects via getMe) */
+  userName?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -46,414 +68,37 @@ export class TelegramChannel implements Channel {
   platform = 'telegram'
   maxMessageLength = 4096
 
-  private bot: Bot
   private config: TelegramChannelConfig
+  private adapter: TelegramAdapter
+  private chat: Chat<{ telegram: TelegramAdapter }>
+  private started = false
+
   private messageHandler?: (message: InboundMessage) => Promise<void>
   private commandHandler?: (command: string, args: string, message: InboundMessage) => Promise<void>
 
-  /** Active typing intervals per chat — cleared when a turn ends */
-  private typingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map()
-
-  /** 409 conflict tracking — retry with backoff, give up after threshold */
-  private conflict409Count = 0
-  private conflict409FirstTime = 0
-  /** Flag to ensure handlers and catch are registered only once (prevents listener leaks on reconnect) */
-  private handlersRegistered = false
-
-  private static readonly MAX_409_RETRIES = 5
-  private static readonly CONFLICT_WINDOW_MS = 60_000
-  private static readonly RETRY_DELAY_MS = 5_000
+  /** fetchData closures keyed by stable attachment id (telegram fileId). */
+  private attachmentFetchers = new Map<string, () => Promise<Buffer>>()
 
   constructor(config: TelegramChannelConfig) {
     this.config = config
     this.id = `telegram:${config.ownerId}`
-    this.bot = new Bot(config.botToken)
-    // Honor Telegram's retry_after on 429s instead of hammering the API.
-    // Also retries transient 5xx / network errors. Caps keep us from stalling
-    // forever if Telegram tells us to wait an hour.
-    this.bot.api.config.use(
-      autoRetry({
-        maxRetryAttempts: 3,
-        maxDelaySeconds: 60,
-      }),
-    )
-  }
 
-  // -----------------------------------------------------------------------
-  // Setup
-  // -----------------------------------------------------------------------
-
-  private setupHandlers(): void {
-    // Global middleware — catches EVERY update for debugging + resets conflict counter
-    this.bot.use(async (ctx, next) => {
-      const updateType = ctx.message
-        ? 'message'
-        : ctx.callbackQuery
-          ? 'callback_query'
-          : ctx.editedMessage
-            ? 'edited_message'
-            : 'other'
-      console.log(
-        `[Telegram] Update type=${updateType} text="${ctx.message?.text?.slice(0, 30) ?? ''}" from=${ctx.from?.id}`,
-      )
-      // Successful update received — reset conflict counter
-      this.conflict409Count = 0
-      await next()
+    this.adapter = createTelegramAdapter({
+      botToken: config.botToken,
+      mode: 'polling',
+      userName: config.userName,
     })
 
-    const commands = COMMAND_REGISTRY.map((c) => c.name)
-
-    for (const cmd of commands) {
-      this.bot.command(cmd, (ctx) => this.handleCommand(ctx, cmd))
-    }
-
-    // Callback queries (button presses)
-    this.bot.on('callback_query:data', async (ctx) => {
-      if (!this.isAllowed(String(ctx.from.id))) {
-        await ctx.answerCallbackQuery({ text: 'Unauthorized' })
-        return
-      }
-      // Route callback data as a command if it starts with /
-      const data = ctx.callbackQuery.data
-      if (data.startsWith('/')) {
-        const [cmd, ...rest] = data.slice(1).split(/\s+/)
-        const msg = this.buildInbound(ctx)
-        if (msg && this.commandHandler) {
-          await this.commandHandler(cmd, rest.join(' '), msg)
-        }
-      }
-      await ctx.answerCallbackQuery()
+    this.chat = new Chat({
+      userName: config.userName ?? 'rivetos',
+      adapters: { telegram: this.adapter },
+      state: createMemoryState(),
+      // Telegram defaults to channel-scoped locking, which is what we want.
+      logger: 'warn',
+      // Keep a small in-memory history for the adapter's own caches; RivetOS
+      // owns its session history independently.
+      threadHistory: { maxMessages: 50 },
     })
-
-    // All non-command messages
-    this.bot.on('message', (ctx) => {
-      // Skip if it's a command (already handled by bot.command above)
-      if (ctx.message.text?.startsWith('/')) return
-      void this.handleMessage(ctx)
-    })
-  }
-
-  private async handleMessage(ctx: Context): Promise<void> {
-    console.log(
-      `[Telegram] Received: from=${ctx.from?.id} text="${ctx.message?.text?.slice(0, 50) ?? '(no text)'}"`,
-    )
-
-    if (!this.isAllowed(String(ctx.from?.id))) {
-      console.log(`[Telegram] User ${ctx.from?.id} not in allowlist, ignoring`)
-      return
-    }
-    const msg = this.buildInbound(ctx)
-    if (msg && this.messageHandler) {
-      const chatId = String(ctx.chat!.id)
-      this.startTyping(chatId)
-      try {
-        await this.messageHandler(msg)
-      } catch (err: unknown) {
-        console.error(`[Telegram] Handler error:`, err)
-        try {
-          await ctx.reply(`⚠️ Error: ${(err as Error).message}`)
-        } catch {
-          /* non-critical */
-        }
-      } finally {
-        this.stopTyping(chatId)
-      }
-    } else {
-      console.log(`[Telegram] No handler registered: handler=${!!this.messageHandler} msg=${!!msg}`)
-    }
-  }
-
-  private async handleCommand(ctx: Context, command: string): Promise<void> {
-    if (!this.isAllowed(String(ctx.from?.id))) return
-    const msg = this.buildInbound(ctx)
-    if (!msg) return
-    const args = ctx.message?.text?.replace(`/${command}`, '').trim() ?? ''
-    if (this.commandHandler) {
-      await this.commandHandler(command, args, msg)
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // Typing Indicator
-  // -----------------------------------------------------------------------
-
-  /**
-   * Start sending "typing" action every 4 seconds.
-   * Telegram's typing indicator expires after ~5 seconds, so 4s keeps it alive.
-   */
-  private startTyping(chatId: string): void {
-    // Clear any existing interval for this chat
-    this.stopTyping(chatId)
-
-    // Send immediately, then repeat
-    this.sendTypingAction(chatId)
-    const interval = setInterval(() => this.sendTypingAction(chatId), 4000)
-    this.typingIntervals.set(chatId, interval)
-  }
-
-  private stopTyping(chatId: string): void {
-    const interval = this.typingIntervals.get(chatId)
-    if (interval) {
-      clearInterval(interval)
-      this.typingIntervals.delete(chatId)
-    }
-  }
-
-  private sendTypingAction(chatId: string): void {
-    this.bot.api.sendChatAction(chatId, 'typing').catch(() => {
-      // Silently ignore typing failures — non-critical
-    })
-  }
-
-  // -----------------------------------------------------------------------
-  // Access Control
-  // -----------------------------------------------------------------------
-
-  private isAllowed(userId: string): boolean {
-    if (!this.config.allowedUsers?.length) return true
-    return this.config.allowedUsers.includes(userId) || userId === this.config.ownerId
-  }
-
-  // -----------------------------------------------------------------------
-  // Inbound Message
-  // -----------------------------------------------------------------------
-
-  private buildInbound(ctx: Context): InboundMessage | null {
-    const from = ctx.from
-    const chat = ctx.chat
-    const msg = ctx.message
-    if (!from || !chat) return null
-
-    const inbound: InboundMessage = {
-      id: String(msg?.message_id ?? ctx.callbackQuery?.message?.message_id ?? Date.now()),
-      userId: String(from.id),
-      username: from.username,
-      displayName: [from.first_name, from.last_name].filter(Boolean).join(' '),
-      channelId: String(chat.id),
-      chatType: chat.type,
-      text: msg?.text ?? msg?.caption ?? '',
-      platform: 'telegram',
-      agent: this.config.agent,
-      timestamp: msg?.date ?? Math.floor(Date.now() / 1000),
-    }
-
-    if (msg?.reply_to_message) {
-      inbound.replyToMessageId = String(msg.reply_to_message.message_id)
-    }
-
-    // Attachments
-    if (msg?.photo?.length) {
-      const largest = msg.photo[msg.photo.length - 1]
-      inbound.attachments = [
-        { type: 'photo', fileId: largest.file_id, width: largest.width, height: largest.height },
-      ]
-    }
-    if (msg?.voice) {
-      inbound.attachments = [
-        { type: 'voice', fileId: msg.voice.file_id, duration: msg.voice.duration },
-      ]
-    }
-    if (msg?.document) {
-      inbound.attachments = [
-        {
-          type: 'document',
-          fileId: msg.document.file_id,
-          fileName: msg.document.file_name,
-          mimeType: msg.document.mime_type,
-        },
-      ]
-    }
-
-    return inbound
-  }
-
-  // -----------------------------------------------------------------------
-  // Outbound
-  // -----------------------------------------------------------------------
-
-  async send(msg: OutboundMessage): Promise<string | null> {
-    const raw = msg.text ?? ''
-    if (!raw) return null
-
-    const html = markdownToTelegramHtml(raw)
-    const keyboard = msg.buttons ? this.buildKeyboard(msg.buttons) : undefined
-
-    // Split long messages (Telegram limit: 4096 chars)
-    const chunks = splitMessage(html, 4096)
-    let lastId: string | null = null
-
-    for (let i = 0; i < chunks.length; i++) {
-      lastId = await this.sendHtml(msg.channelId, chunks[i], {
-        replyToMessageId: i === 0 ? msg.replyToMessageId : undefined,
-        keyboard: i === chunks.length - 1 ? keyboard : undefined,
-        silent: msg.silent,
-      })
-    }
-
-    return lastId
-  }
-
-  /** Send HTML with fallback to plain text */
-  private async sendHtml(
-    chatId: string,
-    html: string,
-    options?: { replyToMessageId?: string; keyboard?: InlineKeyboard; silent?: boolean },
-  ): Promise<string | null> {
-    try {
-      const sent = await this.bot.api.sendMessage(chatId, html, {
-        parse_mode: 'HTML',
-        reply_parameters: options?.replyToMessageId
-          ? { message_id: Number(options.replyToMessageId) }
-          : undefined,
-        reply_markup: options?.keyboard,
-        disable_notification: options?.silent,
-      })
-      return String(sent.message_id)
-    } catch {
-      // HTML formatting failed — retry as plain text (strip tags)
-      try {
-        const sent = await this.bot.api.sendMessage(chatId, html.replace(/<[^>]+>/g, ''), {
-          reply_parameters: options?.replyToMessageId
-            ? { message_id: Number(options.replyToMessageId) }
-            : undefined,
-          reply_markup: options?.keyboard,
-          disable_notification: options?.silent,
-        })
-        return String(sent.message_id)
-      } catch (err: unknown) {
-        console.error('[Telegram] Send failed:', (err as Error).message)
-        return null
-      }
-    }
-  }
-
-  async edit(
-    channelId: string,
-    messageId: string,
-    text: string,
-    overflowIds: string[] = [],
-  ): Promise<EditResult | null> {
-    try {
-      const html = markdownToTelegramHtml(text)
-      const chunks = splitMessage(html, this.maxMessageLength)
-      const resultIds: string[] = [messageId]
-
-      // Edit primary message with first chunk
-      await this.editHtml(channelId, messageId, chunks[0])
-
-      // Handle overflow chunks — re-edit existing overflow messages when possible
-      for (let i = 1; i < chunks.length; i++) {
-        const existingId = overflowIds[i - 1]
-        if (existingId) {
-          // Re-edit previously-created overflow message
-          await this.editHtml(channelId, existingId, chunks[i])
-          resultIds.push(existingId)
-        } else {
-          // No existing overflow message — send a new one
-          const sentId = await this.sendHtml(channelId, chunks[i])
-          resultIds.push(sentId ?? messageId)
-        }
-      }
-
-      // Clean up stale overflow messages (text got shorter, fewer chunks needed)
-      for (let i = chunks.length - 1; i < overflowIds.length; i++) {
-        try {
-          await this.bot.api.deleteMessage(channelId, Number(overflowIds[i]))
-        } catch {
-          /* non-critical — message may already be gone */
-        }
-      }
-
-      return { messageIds: resultIds }
-    } catch {
-      return null
-    }
-  }
-
-  /**
-   * Edit a single message with HTML, falling back to plain text.
-   * NOTE: `html` parameter is ALREADY converted — do NOT re-convert.
-   */
-  private async editHtml(channelId: string, messageId: string, html: string): Promise<void> {
-    try {
-      await this.bot.api.editMessageText(channelId, Number(messageId), html, {
-        parse_mode: 'HTML',
-      })
-    } catch {
-      // Retry without formatting — strip tags to get plain text
-      await this.bot.api.editMessageText(channelId, Number(messageId), html.replace(/<[^>]+>/g, ''))
-    }
-  }
-
-  async react(channelId: string, messageId: string, emoji: string): Promise<void> {
-    try {
-      await this.bot.api.setMessageReaction(channelId, Number(messageId), [
-        { type: 'emoji' as const, emoji: emoji as '👍' },
-      ])
-    } catch {
-      // Reaction failures are non-critical
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // Attachment Resolution
-  // -----------------------------------------------------------------------
-
-  async resolveAttachment(attachment: Attachment): Promise<ResolvedAttachment | null> {
-    if (!attachment.fileId) return null
-
-    try {
-      // Get file info from Telegram
-      const file = await this.bot.api.getFile(attachment.fileId)
-      if (!file.file_path) return null
-
-      // Download the file
-      const fileUrl = `https://api.telegram.org/file/bot${this.config.botToken}/${file.file_path}`
-      const response = await fetch(fileUrl)
-      if (!response.ok) return null
-
-      const buffer = await response.arrayBuffer()
-      const base64 = Buffer.from(buffer).toString('base64')
-
-      // Infer MIME type from file path
-      const ext = file.file_path.split('.').pop()?.toLowerCase()
-      const mimeMap: Record<string, string> = {
-        jpg: 'image/jpeg',
-        jpeg: 'image/jpeg',
-        png: 'image/png',
-        gif: 'image/gif',
-        webp: 'image/webp',
-        mp4: 'video/mp4',
-        ogg: 'audio/ogg',
-        oga: 'audio/ogg',
-        pdf: 'application/pdf',
-      }
-
-      return {
-        type: attachment.type,
-        data: base64,
-        mimeType: attachment.mimeType || mimeMap[ext ?? ''] || 'application/octet-stream',
-        fileName: attachment.fileName ?? file.file_path.split('/').pop(),
-      }
-    } catch (err: unknown) {
-      console.error(`[Telegram] Failed to resolve attachment: ${(err as Error).message}`)
-      return null
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // Helpers
-  // -----------------------------------------------------------------------
-
-  private buildKeyboard(buttons: import('@rivetos/types').Button[][]): InlineKeyboard {
-    const kb = new InlineKeyboard()
-    for (const row of buttons) {
-      for (const btn of row) {
-        kb.text(btn.text, btn.callbackData)
-      }
-      kb.row()
-    }
-    return kb
   }
 
   // -----------------------------------------------------------------------
@@ -471,110 +116,341 @@ export class TelegramChannel implements Channel {
   }
 
   async start(): Promise<void> {
-    // Stop any previous polling loop before restarting (idempotent start).
-    // Without this, calling start() while already polling causes a self-409.
-    try {
-      await this.bot.stop()
-    } catch {
-      /* non-critical — bot may not be running */
-    }
+    if (this.started) return
 
-    // Reset conflict counter on fresh start (reconnection manager handles retries)
-    this.conflict409Count = 0
-    this.conflict409FirstTime = 0
+    // Register handlers BEFORE initialize so adapter.initialize sees them.
+    this.registerHandlers()
 
-    // Bind event handlers right before start — after registration has wired
-    // up messageHandler/commandHandler, so there's no timing gap where events
-    // arrive before handlers are set.
-    if (!this.handlersRegistered) {
-      this.setupHandlers()
+    await this.chat.initialize()
+    // initialize() doesn't start polling automatically when adapters were
+    // pre-registered; call explicitly. resetWebhook handled internally.
+    await this.adapter.startPolling()
 
-      // Simplified catch: no internal retry/start logic (conflicts with ReconnectionManager).
-      // Logs errors, stops polling on fatal 409/401 so reconnection can trigger.
-      this.bot.catch(async (err: unknown) => {
-        const errObj = err as { error?: { description?: string }; message?: string }
-        const errMsg = String(errObj.error?.description ?? errObj.message ?? err)
-
-        if (
-          errMsg.includes('409') ||
-          errMsg.includes('Conflict') ||
-          errMsg.includes('terminated by other')
-        ) {
-          this.conflict409Count++
-          if (this.conflict409Count === 1) {
-            this.conflict409FirstTime = Date.now()
-          }
-
-          console.error(
-            `[Telegram] 409 Conflict — another instance is polling this bot token (${this.conflict409Count} consecutive)`,
-          )
-
-          const elapsed = Date.now() - this.conflict409FirstTime
-          if (
-            this.conflict409Count >= TelegramChannel.MAX_409_RETRIES &&
-            elapsed < TelegramChannel.CONFLICT_WINDOW_MS
-          ) {
-            console.error(
-              `[Telegram] Too many 409 conflicts (${this.conflict409Count} in ${Math.round(
-                elapsed / 1000,
-              )}s) — another bot instance is likely running. Stopping.`,
-            )
-            try {
-              await this.bot.stop()
-            } catch {
-              /* non-critical */
-            }
-            throw new Error('Telegram 409 threshold exceeded')
-          }
-          return
-        }
-
-        if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
-          console.error('[Telegram] 401 Unauthorized — bot token is invalid. Stopping.')
-          try {
-            await this.bot.stop()
-          } catch {
-            /* non-critical */
-          }
-          throw err
-        }
-
-        console.error('[Telegram] Bot error:', err)
-      })
-
-      this.handlersRegistered = true
-    }
-
-    // Grammy's bot.start() never resolves — it runs long-polling forever.
-    // Wrap to resolve on onStart for the runtime.
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Telegram bot.start() timed out after 30s'))
-      }, 30_000)
-
-      this.bot
-        .start({
-          drop_pending_updates: true,
-          onStart: (info) => {
-            clearTimeout(timeout)
-            console.log(`[Telegram] Bot started: @${info.username}`)
-            resolve()
-          },
-        })
-        .catch((err: unknown) => {
-          clearTimeout(timeout)
-          reject(err instanceof Error ? err : new Error(String(err)))
-        })
-    })
+    console.log(`[Telegram] Bot started: @${this.adapter.userName}`)
+    this.started = true
   }
 
   async stop(): Promise<void> {
-    // Clear all typing intervals
-    for (const [chatId] of this.typingIntervals) {
-      this.stopTyping(chatId)
+    if (!this.started) return
+    try {
+      await this.adapter.stopPolling()
+    } catch (err) {
+      console.error('[Telegram] stopPolling failed:', err)
     }
-    await this.bot.stop()
+    try {
+      await this.chat.shutdown()
+    } catch (err) {
+      console.error('[Telegram] chat.shutdown failed:', err)
+    }
+    this.attachmentFetchers.clear()
+    this.started = false
   }
+
+  // -----------------------------------------------------------------------
+  // Handler registration
+  // -----------------------------------------------------------------------
+
+  private registerHandlers(): void {
+    // DMs — fire on every direct message.
+    this.chat.onDirectMessage((_thread, message) => this.dispatch(message))
+
+    // Group mentions — first @-mention triggers subscribe so follow-ups
+    // route to onSubscribedMessage.
+    this.chat.onNewMention(async (thread, message) => {
+      try {
+        await thread.subscribe()
+      } catch {
+        /* non-critical — subscribe may fail in DMs / already-subscribed */
+      }
+      await this.dispatch(message)
+    })
+
+    // Subscribed threads — once we've subscribed, all follow-up messages
+    // come here.
+    this.chat.onSubscribedMessage((_thread, message) => this.dispatch(message))
+  }
+
+  private async dispatch(message: ChatMessage): Promise<void> {
+    const userId = message.author.userId
+    if (!this.isAllowed(userId)) {
+      console.log(`[Telegram] User ${userId} not in allowlist, ignoring`)
+      return
+    }
+
+    const inbound = this.buildInbound(message)
+
+    // Detect /command and route to commandHandler.
+    const text = message.text.trim()
+    if (text.startsWith('/')) {
+      const [head, ...rest] = text.slice(1).split(/\s+/)
+      const cmd = head.split('@')[0] // strip "@botname" suffix some clients add
+      if (COMMAND_NAMES.has(cmd) && this.commandHandler) {
+        try {
+          await this.commandHandler(cmd, rest.join(' '), inbound)
+        } catch (err) {
+          console.error('[Telegram] Command handler error:', err)
+        }
+        return
+      }
+    }
+
+    if (!this.messageHandler) {
+      console.log('[Telegram] No message handler registered')
+      return
+    }
+
+    try {
+      await this.messageHandler(inbound)
+    } catch (err) {
+      console.error('[Telegram] Message handler error:', err)
+      const chatId = this.chatIdFromThreadId(message.threadId)
+      try {
+        await this.adapter.postMessage(this.threadIdForChatId(chatId), {
+          markdown: `⚠️ Error: ${(err as Error).message}`,
+        })
+      } catch {
+        /* non-critical */
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Access control
+  // -----------------------------------------------------------------------
+
+  private isAllowed(userId: string): boolean {
+    if (!this.config.allowedUsers?.length) return true
+    return this.config.allowedUsers.includes(userId) || userId === this.config.ownerId
+  }
+
+  // -----------------------------------------------------------------------
+  // Inbound message construction
+  // -----------------------------------------------------------------------
+
+  private buildInbound(message: ChatMessage): InboundMessage {
+    const raw = message.raw as TelegramRawMessageExt
+    const author = message.author
+    const chatId = String(raw.chat.id)
+
+    const inbound: InboundMessage = {
+      id: String(raw.message_id),
+      userId: author.userId,
+      username: author.userName || undefined,
+      displayName: author.fullName || undefined,
+      channelId: chatId,
+      chatType: raw.chat.type,
+      text: raw.text ?? raw.caption ?? '',
+      platform: 'telegram',
+      agent: this.config.agent,
+      timestamp: raw.date,
+    }
+
+    if (raw.reply_to_message) {
+      inbound.replyToMessageId = String(raw.reply_to_message.message_id)
+    }
+
+    const attachments = this.translateAttachments(message.attachments, raw)
+    if (attachments.length) {
+      inbound.attachments = attachments
+    }
+
+    return inbound
+  }
+
+  private translateAttachments(
+    chatAttachments: ChatAttachment[],
+    raw: TelegramRawMessageExt,
+  ): Attachment[] {
+    const out: Attachment[] = []
+
+    for (const att of chatAttachments) {
+      const fileId = att.fetchMetadata?.fileId ?? att.fetchMetadata?.file_id ?? att.name
+      if (!fileId) continue
+
+      // Cache the fetch closure so resolveAttachment() can use it later.
+      if (att.fetchData) {
+        this.attachmentFetchers.set(fileId, att.fetchData)
+      }
+
+      const ours: Attachment = {
+        type: mapAttachmentType(att.type, raw),
+        fileId,
+        fileName: att.name,
+        mimeType: att.mimeType,
+        width: att.width,
+        height: att.height,
+      }
+
+      if (raw.voice?.file_id === fileId && raw.voice.duration) {
+        ours.duration = raw.voice.duration
+      } else if (raw.audio?.file_id === fileId && raw.audio.duration) {
+        ours.duration = raw.audio.duration
+      }
+
+      out.push(ours)
+    }
+
+    return out
+  }
+
+  // -----------------------------------------------------------------------
+  // Outbound — send
+  // -----------------------------------------------------------------------
+
+  async send(msg: OutboundMessage): Promise<string | null> {
+    const raw = msg.text ?? ''
+    if (!raw) return null
+
+    const threadId = this.threadIdForChatId(msg.channelId)
+    const chunks = splitMessage(raw, this.maxMessageLength)
+    let lastId: string | null = null
+
+    for (let i = 0; i < chunks.length; i++) {
+      const sent = await this.postMarkdown(threadId, chunks[i])
+      if (sent) lastId = sent
+    }
+
+    return lastId
+  }
+
+  private async postMarkdown(threadId: string, text: string): Promise<string | null> {
+    try {
+      const result = await this.adapter.postMessage(threadId, { markdown: text })
+      return result.id
+    } catch {
+      // Fall back to raw text if MarkdownV2 rendering rejects.
+      try {
+        const result = await this.adapter.postMessage(threadId, { raw: text })
+        return result.id
+      } catch (fallbackErr) {
+        console.error('[Telegram] postMessage failed:', (fallbackErr as Error).message)
+        return null
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Outbound — edit (with overflow handling)
+  // -----------------------------------------------------------------------
+
+  async edit(
+    channelId: string,
+    messageId: string,
+    text: string,
+    overflowIds: string[] = [],
+  ): Promise<EditResult | null> {
+    try {
+      const threadId = this.threadIdForChatId(channelId)
+      const chunks = splitMessage(text, this.maxMessageLength)
+      const resultIds: string[] = [messageId]
+
+      await this.editMarkdown(threadId, messageId, chunks[0])
+
+      for (let i = 1; i < chunks.length; i++) {
+        const existingId = overflowIds[i - 1]
+        if (existingId) {
+          await this.editMarkdown(threadId, existingId, chunks[i])
+          resultIds.push(existingId)
+        } else {
+          const sentId = await this.postMarkdown(threadId, chunks[i])
+          resultIds.push(sentId ?? messageId)
+        }
+      }
+
+      // Delete stale overflow messages (text shrunk).
+      for (let i = chunks.length - 1; i < overflowIds.length; i++) {
+        try {
+          await this.adapter.deleteMessage(threadId, overflowIds[i])
+        } catch {
+          /* non-critical — message may already be gone */
+        }
+      }
+
+      return { messageIds: resultIds }
+    } catch (err) {
+      console.error('[Telegram] edit failed:', (err as Error).message)
+      return null
+    }
+  }
+
+  private async editMarkdown(threadId: string, messageId: string, text: string): Promise<void> {
+    try {
+      await this.adapter.editMessage(threadId, messageId, { markdown: text })
+    } catch {
+      // Retry with raw text if MarkdownV2 parsing fails.
+      await this.adapter.editMessage(threadId, messageId, { raw: text })
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // React
+  // -----------------------------------------------------------------------
+
+  async react(channelId: string, messageId: string, emoji: string): Promise<void> {
+    try {
+      const threadId = this.threadIdForChatId(channelId)
+      await this.adapter.addReaction(threadId, messageId, emoji)
+    } catch {
+      // Reactions are non-critical.
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Attachment resolution
+  // -----------------------------------------------------------------------
+
+  async resolveAttachment(attachment: Attachment): Promise<ResolvedAttachment | null> {
+    if (!attachment.fileId) return null
+
+    const fetcher = this.attachmentFetchers.get(attachment.fileId)
+    if (!fetcher) {
+      console.warn(`[Telegram] No fetcher cached for attachment ${attachment.fileId}`)
+      return null
+    }
+
+    try {
+      const buf = await fetcher()
+      return {
+        type: attachment.type,
+        data: buf.toString('base64'),
+        mimeType: attachment.mimeType,
+        fileName: attachment.fileName,
+      }
+    } catch (err) {
+      console.error('[Telegram] Failed to resolve attachment:', (err as Error).message)
+      return null
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Helpers
+  // -----------------------------------------------------------------------
+
+  /** Build a chat-sdk threadId from a raw Telegram chat ID. */
+  private threadIdForChatId(chatId: string): string {
+    return this.adapter.encodeThreadId({ chatId })
+  }
+
+  private chatIdFromThreadId(threadId: string): string {
+    return this.adapter.decodeThreadId(threadId).chatId
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Attachment type mapping
+// ---------------------------------------------------------------------------
+
+function mapAttachmentType(
+  chatType: ChatAttachment['type'],
+  raw: TelegramRawMessageExt,
+): Attachment['type'] {
+  if (chatType === 'image') return 'photo'
+  if (chatType === 'video') return 'video'
+  if (chatType === 'audio') {
+    // Telegram distinguishes voice notes from audio files.
+    return raw.voice ? 'voice' : 'document'
+  }
+  return 'document'
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +468,7 @@ export const manifest: PluginManifest = {
         ownerId: (cfg.owner_id as string | undefined) ?? '',
         allowedUsers: cfg.allowed_users as string[] | undefined,
         agent: cfg.agent as string | undefined,
+        userName: (cfg.user_name as string | undefined) ?? ctx.env.TELEGRAM_BOT_USERNAME,
       }),
     )
   },
