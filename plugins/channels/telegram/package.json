@@ -1,8 +1,9 @@
 {
   "name": "@rivetos/channel-telegram",
   "version": "0.4.0-beta.6",
-  "description": "Telegram channel — grammY, Bot API, streaming message edits",
+  "description": "Telegram channel — Chat SDK adapter, streaming message edits",
   "license": "MIT",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -14,9 +15,10 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@grammyjs/auto-retry": "^2.0.2",
+    "@chat-adapter/state-memory": "^4.28.1",
+    "@chat-adapter/telegram": "^4.28.1",
     "@rivetos/types": "0.4.0-beta.6",
-    "grammy": "^1.42.0"
+    "chat": "^4.28.1"
   },
   "rivetos": {
     "type": "channel",
