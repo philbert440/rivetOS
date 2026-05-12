@@ -5,9 +5,11 @@
 #
 # Run modes:
 #   docker run rivetos:latest                          # role=agent (default)
-#   docker run -e RIVETOS_ROLE=worker rivetos:latest   # workers
 #   docker run -e RIVETOS_ROLE=migrate rivetos:latest  # apply migrations + exit
-#   docker run -e RIVETOS_ROLE=monolith rivetos:latest # agent + workers
+#
+# The compaction and embedding workers run as their own services
+# (services/compaction-worker, services/embedding-worker) on graphile-worker
+# and are packaged independently — they are not bundled into this image.
 #
 # Postgres remains a separate service (use upstream pgvector/pgvector:pg16
 # image; this image does not bundle a database).
@@ -55,10 +57,6 @@ COPY --from=build /build/dist/ ./dist/
 # we can prune later once we know the precise runtime closure.
 COPY --from=build /build/node_modules/ ./node_modules/
 
-# Workers are .js files, not bundled. Copy them so role=worker / monolith
-# can spawn them. They live alongside @rivetos/memory-postgres.
-COPY --from=build /build/plugins/memory/postgres/workers/ ./plugins/memory/postgres/workers/
-
 # Migration runner + SQL files (compiled by @rivetos/memory-postgres build).
 COPY --from=build /build/plugins/memory/postgres/dist/schema/ ./plugins/memory/postgres/dist/schema/
 
@@ -79,11 +77,11 @@ ENV RIVETOS_ROLE=agent
 
 EXPOSE 3100
 
-# Healthcheck: hit the runtime's /health/live endpoint. Workers / migrate
-# roles don't expose this — disable healthcheck for those by setting
-# HEALTHCHECK_DISABLE=1 at run time, or override with --no-healthcheck.
+# Healthcheck: hit the runtime's /health/live endpoint. The migrate role
+# doesn't expose this — the inline check skips healthcheck for any role
+# other than `agent`.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD node -e "if (process.env.RIVETOS_ROLE !== 'agent' && process.env.RIVETOS_ROLE !== 'monolith') process.exit(0); require('http').get('http://127.0.0.1:' + (process.env.RIVETOS_HEALTH_PORT || '3100') + '/health/live', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+    CMD node -e "if (process.env.RIVETOS_ROLE !== 'agent') process.exit(0); require('http').get('http://127.0.0.1:' + (process.env.RIVETOS_HEALTH_PORT || '3100') + '/health/live', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
 USER rivetos
 
@@ -93,5 +91,5 @@ ENTRYPOINT ["tini", "--"]
 CMD ["node", "dist/rivetos.js", "start"]
 
 LABEL org.opencontainers.image.source="https://github.com/philbert440/rivetOS"
-LABEL org.opencontainers.image.description="RivetOS unified runtime image (agent / worker / monolith)"
+LABEL org.opencontainers.image.description="RivetOS unified runtime image (agent / migrate)"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
