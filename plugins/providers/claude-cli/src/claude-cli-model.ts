@@ -124,23 +124,81 @@ type CliEvent =
   | { type: string; [key: string]: unknown }
 
 // ---------------------------------------------------------------------------
-// Helpers — render AI SDK prompt back to CLI-friendly text
+// Helpers — render AI SDK prompt back to CLI-friendly content blocks
 // ---------------------------------------------------------------------------
+
+/**
+ * Anthropic Messages API content-block shape, which Claude Code's
+ * `--input-format stream-json` accepts on the user-turn `content` field.
+ * We only emit `text` and `image` blocks (the only shapes the CLI needs
+ * from us for now).
+ */
+export type CliImageSource =
+  | { type: 'base64'; media_type: string; data: string }
+  | { type: 'url'; url: string }
+
+export type CliContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: CliImageSource }
 
 function systemFromMessage(msg: LanguageModelV3Message): string | null {
   if (msg.role !== 'system') return null
   return msg.content
 }
 
-function userTextFromMessage(msg: LanguageModelV3Message): string | null {
-  if (msg.role !== 'user') return null
-  return msg.content
-    .map((p) => {
-      if (p.type === 'text') return p.text
-      return `[file: ${p.mediaType}]`
-    })
-    .filter((s) => s.length > 0)
-    .join('\n')
+/**
+ * Convert an AI SDK `file` part with an `image/*` mediaType into an
+ * Anthropic image block. Returns `null` for non-image media types so the
+ * caller can fall back to a text placeholder (Claude only accepts images
+ * via this channel — PDFs etc. would be rejected).
+ */
+function fileToImageBlock(p: {
+  data: Uint8Array | string | URL
+  mediaType: string
+}): CliContentBlock | null {
+  if (!p.mediaType.startsWith('image/')) return null
+  if (p.data instanceof URL) {
+    return { type: 'image', source: { type: 'url', url: p.data.toString() } }
+  }
+  const data = typeof p.data === 'string' ? p.data : Buffer.from(p.data).toString('base64')
+  return {
+    type: 'image',
+    source: { type: 'base64', media_type: p.mediaType, data },
+  }
+}
+
+/**
+ * Render the user-message parts into an array of content blocks.
+ * Text parts are joined into the lead text block; image file parts become
+ * image blocks; non-image file parts degrade to a `[file: <mediaType>]`
+ * text placeholder (same shape as the pre-image-support behavior).
+ */
+function userMessageToBlocks(msg: LanguageModelV3Message): CliContentBlock[] {
+  if (msg.role !== 'user') return []
+  const blocks: CliContentBlock[] = []
+  let buffer = ''
+  const flush = (): void => {
+    if (buffer.length > 0) {
+      blocks.push({ type: 'text', text: buffer })
+      buffer = ''
+    }
+  }
+  for (const p of msg.content) {
+    if (p.type === 'text') {
+      buffer += (buffer.length > 0 ? '\n' : '') + p.text
+      continue
+    }
+    // file part
+    const img = fileToImageBlock(p)
+    if (img) {
+      flush()
+      blocks.push(img)
+    } else {
+      buffer += (buffer.length > 0 ? '\n' : '') + `[file: ${p.mediaType}]`
+    }
+  }
+  flush()
+  return blocks
 }
 
 function assistantTextFromMessage(msg: LanguageModelV3Message): {
@@ -181,15 +239,35 @@ function toolResultsFromMessage(msg: LanguageModelV3Message): string | null {
 }
 
 /**
- * Render an AI SDK prompt into the single user-turn string the CLI accepts
+ * Render an AI SDK prompt into the single user-turn content the CLI accepts
  * via stream-json, plus a separate system-text block for --append-system-prompt.
+ *
+ * Returns a content-block array: text turns (USER / ASSISTANT / TOOL RESULT
+ * sections) are folded into text blocks with `\n\n---\n\n` separators between
+ * them, and image file parts from user messages are interleaved as Anthropic
+ * image blocks at the position they appear.
  */
-function renderPromptForCli(prompt: LanguageModelV3Prompt): {
+export function renderPromptForCli(prompt: LanguageModelV3Prompt): {
   systemText: string
-  userPrompt: string
+  userContent: CliContentBlock[]
 } {
   const systemChunks: string[] = []
-  const turnChunks: string[] = []
+  const blocks: CliContentBlock[] = []
+
+  // Buffer text between image-block emissions so consecutive text turns
+  // get joined with the `---` separator inside one text block.
+  let buffer = ''
+  const SEP = '\n\n---\n\n'
+  const pushText = (s: string): void => {
+    if (!s) return
+    buffer += (buffer.length > 0 ? SEP : '') + s
+  }
+  const flushText = (): void => {
+    if (buffer.length > 0) {
+      blocks.push({ type: 'text', text: buffer })
+      buffer = ''
+    }
+  }
 
   for (const msg of prompt) {
     const sys = systemFromMessage(msg)
@@ -197,33 +275,69 @@ function renderPromptForCli(prompt: LanguageModelV3Prompt): {
       systemChunks.push(sys)
       continue
     }
-    const userText = userTextFromMessage(msg)
-    if (userText !== null) {
-      turnChunks.push(`USER:\n${userText}`)
+    if (msg.role === 'user') {
+      const userBlocks = userMessageToBlocks(msg)
+      // Prepend the USER: header to the first text block (or as its own
+      // text block if the user message leads with an image).
+      let headerEmitted = false
+      for (const b of userBlocks) {
+        if (b.type === 'text') {
+          pushText(headerEmitted ? b.text : `USER:\n${b.text}`)
+          headerEmitted = true
+        } else {
+          if (!headerEmitted) {
+            pushText('USER:')
+            headerEmitted = true
+          }
+          flushText()
+          blocks.push(b)
+        }
+      }
       continue
     }
     const asst = assistantTextFromMessage(msg)
     if (asst !== null) {
-      if (asst.text) turnChunks.push(`ASSISTANT:\n${asst.text}`)
+      if (asst.text) pushText(`ASSISTANT:\n${asst.text}`)
       if (asst.toolCalls.length > 0) {
         const calls = asst.toolCalls
           .map((tc) => `  - ${tc.name}(${JSON.stringify(tc.input)})`)
           .join('\n')
-        turnChunks.push(`ASSISTANT TOOL CALLS:\n${calls}`)
+        pushText(`ASSISTANT TOOL CALLS:\n${calls}`)
       }
       continue
     }
     const tr = toolResultsFromMessage(msg)
     if (tr !== null) {
-      turnChunks.push(tr)
+      pushText(tr)
       continue
     }
   }
 
+  flushText()
+
   return {
     systemText: systemChunks.join('\n\n'),
-    userPrompt: turnChunks.join('\n\n---\n\n'),
+    userContent: blocks,
   }
+}
+
+/**
+ * Redact base64 image payloads for logging. Image blocks may carry
+ * megabytes of data — keep the shape, drop the bytes.
+ */
+function redactContentForLog(blocks: CliContentBlock[]): unknown[] {
+  return blocks.map((b) => {
+    if (b.type === 'text') return b
+    if (b.source.type === 'url') return b
+    return {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: b.source.media_type,
+        data: `[base64 len=${b.source.data.length}]`,
+      },
+    }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +531,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
    * as LanguageModelV3StreamParts.
    */
   async doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult> {
-    const { systemText, userPrompt } = renderPromptForCli(options.prompt)
+    const { systemText, userContent } = renderPromptForCli(options.prompt)
     const effort = mapEffortFromProviderOptions(options.providerOptions, this.config.effort)
 
     // Bring up the embedded MCP server BEFORE spawning. Soft-fail: if it
@@ -473,8 +587,12 @@ export class ClaudeCliModel implements LanguageModelV3 {
     })
 
     // Wire stdin: one user turn as stream-json input, then close.
+    // `content` is an Anthropic content-block array — text + image blocks
+    // (see renderPromptForCli). Falls back to an empty string if the prompt
+    // had no user-side parts at all, matching the CLI's accepted shape.
+    const cliContent: string | CliContentBlock[] = userContent.length === 0 ? '' : userContent
     const inputLine =
-      JSON.stringify({ type: 'user', message: { role: 'user', content: userPrompt } }) + '\n'
+      JSON.stringify({ type: 'user', message: { role: 'user', content: cliContent } }) + '\n'
     proc.stdin.write(inputLine)
     proc.stdin.end()
 
@@ -722,7 +840,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
 
     return {
       stream,
-      request: { body: { args, userPrompt } },
+      request: { body: { args, userContent: redactContentForLog(userContent) } },
     }
   }
 }
