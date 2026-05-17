@@ -9,6 +9,14 @@
  * tools.
  *
  * Env:
+ *   RIVETOS_MCP_STDIO=1     — speak MCP over stdin/stdout instead of binding a
+ *                             socket. This is the transport Claude Code and
+ *                             other MCP clients use to spawn a local server.
+ *                             Also enabled by passing `--stdio` on argv. When
+ *                             set, MCP_HOST/PORT and RIVETOS_MCP_SOCKET are
+ *                             ignored, no auth applies (the parent owns the
+ *                             pipe), and all diagnostics are routed to stderr
+ *                             to keep stdout clean for the protocol.
  *   MCP_HOST                — default 127.0.0.1
  *   MCP_PORT                — default 5700
  *   RIVETOS_MCP_SOCKET      — bind to this unix socket path INSTEAD of TCP.
@@ -47,7 +55,12 @@
  * compact_context) and the claude-cli MCP bridge land in later slices.
  */
 
-import { createMcpServer, defaultEchoTool, type ToolRegistration } from './server.js'
+import {
+  createMcpServer,
+  createStdioMcpServer,
+  defaultEchoTool,
+  type ToolRegistration,
+} from './server.js'
 import { createFileTools, type FileToolsHandle } from './tools/file.js'
 import { createMemoryTools, type MemoryToolsHandle } from './tools/memory.js'
 import { createSearchTools, type SearchToolsHandle } from './tools/search.js'
@@ -56,6 +69,19 @@ import { createSkillTools, type SkillToolsHandle } from './tools/skills.js'
 import { createWebTools, type WebToolsHandle } from './tools/web.js'
 
 async function main(): Promise<void> {
+  const stdioMode = process.env.RIVETOS_MCP_STDIO === '1' || process.argv.includes('--stdio')
+
+  // In stdio mode stdout IS the JSON-RPC channel — a single stray line of
+  // log output corrupts the protocol. Redirect `console.log` to stderr before
+  // anything else runs so the tool-setup diagnostics below stay off stdout.
+  // (The MCP SDK's StdioServerTransport writes to `process.stdout` directly,
+  // not via `console`, so it is unaffected.)
+  if (stdioMode) {
+    console.log = (...args: unknown[]) => {
+      console.error(...args)
+    }
+  }
+
   const host = process.env.MCP_HOST ?? '127.0.0.1'
   const port = Number.parseInt(process.env.MCP_PORT ?? '5700', 10)
   const socketPath = process.env.RIVETOS_MCP_SOCKET
@@ -172,33 +198,51 @@ async function main(): Promise<void> {
     console.error(`[rivetos-mcp-server] failed to enable web tools: ${message}`)
   }
 
-  const server = createMcpServer({
-    host,
-    port,
-    socketPath,
-    authToken,
-    requireBearerOnSocket,
-    tools,
-  })
-  await server.start()
+  // `server` exposes a `stop()` either way — that is all the shutdown path
+  // below needs.
+  let server: { stop: () => Promise<void> }
 
-  if (socketPath) {
+  if (stdioMode) {
+    const stdioServer = createStdioMcpServer({ tools })
+    await stdioServer.start()
+    server = stdioServer
+    // Diagnostic only — `console.log` is already redirected to stderr above.
     console.log(
-      `[rivetos-mcp-server] bound to unix socket ${socketPath} (mode 0600)` +
-        (authToken && requireBearerOnSocket
-          ? ' [bearer required]'
-          : ' [bearer skipped — fs perms are the auth boundary]'),
+      `[rivetos-mcp-server] speaking MCP over stdio (session ${stdioServer.sessionId}) — ${String(tools.length)} tool(s)`,
     )
   } else {
-    console.log(
-      `[rivetos-mcp-server] bound to ${host}:${String(port)}` +
-        (authToken
-          ? ' [bearer required]'
-          : ' [WARNING: no RIVETOS_MCP_TOKEN — bind is unauthenticated, localhost-only OK for dev]'),
-    )
+    const httpServer = createMcpServer({
+      host,
+      port,
+      socketPath,
+      authToken,
+      requireBearerOnSocket,
+      tools,
+    })
+    await httpServer.start()
+    server = httpServer
+
+    if (socketPath) {
+      console.log(
+        `[rivetos-mcp-server] bound to unix socket ${socketPath} (mode 0600)` +
+          (authToken && requireBearerOnSocket
+            ? ' [bearer required]'
+            : ' [bearer skipped — fs perms are the auth boundary]'),
+      )
+    } else {
+      console.log(
+        `[rivetos-mcp-server] bound to ${host}:${String(port)}` +
+          (authToken
+            ? ' [bearer required]'
+            : ' [WARNING: no RIVETOS_MCP_TOKEN — bind is unauthenticated, localhost-only OK for dev]'),
+      )
+    }
   }
 
+  let shuttingDown = false
   const shutdown = (signal: string) => {
+    if (shuttingDown) return
+    shuttingDown = true
     console.log(`[rivetos-mcp-server] received ${signal}, shutting down`)
     Promise.allSettled(cleanups.map((fn) => fn()))
       .then(() => server.stop())
@@ -217,6 +261,17 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => {
     shutdown('SIGTERM')
   })
+
+  // In stdio mode the client closing the pipe is the disconnect signal —
+  // tear down and exit rather than lingering with no transport.
+  if (stdioMode) {
+    process.stdin.once('end', () => {
+      shutdown('stdin-end')
+    })
+    process.stdin.once('close', () => {
+      shutdown('stdin-close')
+    })
+  }
 }
 
 main().catch((err: unknown) => {
