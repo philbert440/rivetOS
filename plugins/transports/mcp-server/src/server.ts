@@ -31,6 +31,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto'
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
@@ -242,6 +243,104 @@ export function createMcpServer(options: RivetMcpServerOptions = {}): RivetMcpSe
           }
         }
       }
+      log('mcp.server.stopped')
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stdio transport
+// ---------------------------------------------------------------------------
+
+export interface RivetMcpStdioServerOptions {
+  /** Tools to expose. Defaults to the `echo` smoke-test tool. */
+  tools?: ToolRegistration[]
+  /** Optional logger. Defaults to `console.log`. */
+  log?: (msg: string, meta?: Record<string, unknown>) => void
+}
+
+export interface RivetMcpStdioServer {
+  /** The single session id for this stdio connection. */
+  readonly sessionId: string
+  /** Snapshot of session state (one entry — stdio is single-session). */
+  readonly sessions: ReadonlyMap<string, SessionState>
+  /** Connect the MCP server to stdin/stdout. Resolves once connected. */
+  start: () => Promise<void>
+  /** Close the transport and the MCP server. */
+  stop: () => Promise<void>
+}
+
+/**
+ * Build an MCP server bound to a stdio transport.
+ *
+ * Unlike {@link createMcpServer}, this speaks the Model Context Protocol over
+ * the process's stdin/stdout — the standard way Claude Code (and other MCP
+ * clients) spawn a local server. There is exactly one session for the life of
+ * the process; no auth is involved because the parent process owns both ends
+ * of the pipe.
+ *
+ * IMPORTANT: in stdio mode stdout is the protocol channel. Any diagnostic
+ * output (the `log` callback, `console.log`, library noise) MUST go to stderr,
+ * or it will corrupt the JSON-RPC stream. The standalone `cli.ts` entrypoint
+ * redirects `console.log` to stderr before building tools for exactly this
+ * reason.
+ */
+export function createStdioMcpServer(
+  options: RivetMcpStdioServerOptions = {},
+): RivetMcpStdioServer {
+  const log = options.log ?? defaultLog
+  const tools = options.tools ?? [defaultEchoTool()]
+
+  const sessions = new Map<string, SessionState>()
+  const sessionId = randomUUID()
+  sessions.set(sessionId, { sessionId })
+
+  // Shared tools + a session.attach bound to this connection's session id.
+  const sessionTools: ToolRegistration[] = [
+    ...tools,
+    createSessionAttachTool({
+      sessionId,
+      serverName: SERVER_NAME,
+      serverVersion: SERVER_VERSION,
+      toolNames: () => [...tools.map((t) => t.name), 'session_attach'],
+      onAttach: (state) => {
+        sessions.set(state.sessionId, state)
+        log('mcp.session.attached', {
+          sessionId: state.sessionId,
+          agent: state.agent,
+          runtimePid: state.runtimePid,
+          clientName: state.clientName,
+        })
+      },
+    }),
+  ]
+
+  const mcp = buildMcpServer(sessionTools)
+  const transport = new StdioServerTransport()
+
+  return {
+    get sessionId() {
+      return sessionId
+    },
+    get sessions() {
+      return sessions
+    },
+    async start() {
+      await mcp.connect(transport)
+      log('mcp.server.listening', { transport: 'stdio', sessionId })
+    },
+    async stop() {
+      try {
+        await transport.close()
+      } catch (err: unknown) {
+        log('mcp.transport.close.error', { error: errorToObject(err) })
+      }
+      try {
+        await mcp.close()
+      } catch (err: unknown) {
+        log('mcp.server.close.error', { error: errorToObject(err) })
+      }
+      sessions.clear()
       log('mcp.server.stopped')
     },
   }

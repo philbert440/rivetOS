@@ -1,0 +1,9 @@
+{
+  "name": "rivet-memory",
+  "version": "0.1.0",
+  "description": "Persistent memory for Claude Code — RivetOS MCP recall tools plus lifecycle capture of prompts and tool calls into the RivetOS memory DB.",
+  "keywords": ["memory", "mcp", "capture", "recall", "rivetos"],
+  "author": {
+    "name": "RivetOS"
+  }
+}
