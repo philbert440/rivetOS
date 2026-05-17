@@ -440,9 +440,7 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
         WHERE conversation_id = $1 AND role = 'assistant' AND metadata ? 'uuid'`,
       [conv.id],
     )
-    const seen = new Set(
-      stored.rows.map((r) => r.uuid).filter((u): u is string => u !== null),
-    )
+    const seen = new Set(stored.rows.map((r) => r.uuid).filter((u): u is string => u !== null))
 
     const fresh = assistantMsgs.filter((m) => !m.uuid || !seen.has(m.uuid))
     for (const m of fresh) {
@@ -456,8 +454,7 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
 
     // Refresh conversation metadata: bump updated_at, upgrade a fallback
     // title once Claude Code has generated one, and flip active on end.
-    const nextTitle =
-      parsed.aiTitle && parsed.aiTitle !== conv.title ? parsed.aiTitle : conv.title
+    const nextTitle = parsed.aiTitle && parsed.aiTitle !== conv.title ? parsed.aiTitle : conv.title
     await client.query(
       `UPDATE ros_conversations
          SET updated_at = COALESCE($2, now()),
@@ -542,7 +539,13 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
   const event = payload.hook_event_name ?? 'unknown'
   const sessionId = payload.session_id
   if (!sessionId) {
-    return { sessionKey: '', conversationId: '', created: false, inserted: 0, skipped: 'no session_id' }
+    return {
+      sessionKey: '',
+      conversationId: '',
+      created: false,
+      inserted: 0,
+      skipped: 'no session_id',
+    }
   }
   const sessionKey = sessionKeyFromId(sessionId)
 
@@ -559,7 +562,13 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
   if (event === 'UserPromptSubmit') {
     const prompt = typeof payload.prompt === 'string' ? payload.prompt : ''
     if (prompt.trim() === '') {
-      return { sessionKey, conversationId: '', created: false, inserted: 0, skipped: 'empty prompt' }
+      return {
+        sessionKey,
+        conversationId: '',
+        created: false,
+        inserted: 0,
+        skipped: 'empty prompt',
+      }
     }
     row = { role: 'user', content: trunc(prompt) ?? '' }
     title = prompt
@@ -574,7 +583,13 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
       toolResult: trunc(result),
     }
   } else {
-    return { sessionKey, conversationId: '', created: false, inserted: 0, skipped: `unhandled event ${event}` }
+    return {
+      sessionKey,
+      conversationId: '',
+      created: false,
+      inserted: 0,
+      skipped: `unhandled event ${event}`,
+    }
   }
 
   const pool = new Pool({ connectionString: opts.pgUrl ?? resolvePgUrl(), max: 1 })
