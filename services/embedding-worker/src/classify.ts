@@ -18,7 +18,9 @@ export function classifyUnembeddable(content: string | null | undefined): string
   if (/^\[media attached:/i.test(trimmed)) return 'media-marker'
   if (/^MEDIA:/i.test(trimmed)) return 'media-prefix'
 
-  if (/data:image\/[a-z]+;base64,/i.test(content)) return 'base64-data-url'
+  // Require a substantial base64 payload after the marker — otherwise a bare
+  // `data:image/png;base64,` mentioned in quoted code/discussion false-positives.
+  if (/data:image\/[a-z]+;base64,[A-Za-z0-9+/]{200,}={0,2}/i.test(content)) return 'base64-data-url'
   if (/iVBORw0KGgo[A-Za-z0-9+/=]{200,}/.test(content)) return 'base64-png'
   if (/\/9j\/[A-Za-z0-9+/=]{500,}/.test(content)) return 'base64-jpeg'
 
