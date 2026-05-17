@@ -37,6 +37,28 @@ import type { Provider, PluginManifest } from '@rivetos/types'
 import type { ProviderAiSdkBridge, GetModelInput } from '@rivetos/aisdk'
 import { ClaudeCliModel, type ClaudeCliEffort } from './claude-cli-model.js'
 
+// Real-time Claude Code session capture — hooks ingest interactive
+// transcripts into the memory DB. See transcript-capture.ts / hooks.ts.
+export {
+  ingestTranscript,
+  ingestHookEvent,
+  parseTranscript,
+  deriveSessionKey,
+  sessionKeyFromId,
+  resolvePgUrl,
+  CAPTURE_AGENT,
+  CAPTURE_CHANNEL,
+} from './transcript-capture.js'
+export type {
+  IngestOptions,
+  IngestResult,
+  HookEventOptions,
+  HookEventResult,
+  HookEventPayload,
+  ParsedMessage,
+  ParsedTranscript,
+} from './transcript-capture.js'
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------

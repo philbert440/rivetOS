@@ -15,11 +15,18 @@
 
 export {
   createMcpServer,
+  createStdioMcpServer,
   defaultEchoTool,
   RIVETOS_MCP_SERVER_NAME,
   RIVETOS_MCP_SERVER_VERSION,
 } from './server.js'
-export type { RivetMcpServer, RivetMcpServerOptions, ToolRegistration } from './server.js'
+export type {
+  RivetMcpServer,
+  RivetMcpServerOptions,
+  RivetMcpStdioServer,
+  RivetMcpStdioServerOptions,
+  ToolRegistration,
+} from './server.js'
 
 export {
   adaptRivetTool,

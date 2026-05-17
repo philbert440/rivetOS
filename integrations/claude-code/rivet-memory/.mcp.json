@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "rivetos": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh"
+    }
+  }
+}
