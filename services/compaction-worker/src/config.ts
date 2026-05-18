@@ -34,11 +34,11 @@ export const config = {
 
   // Idle session detection
   idleMinutes: intEnv('COMPACT_IDLE_MINUTES', 15),
-  minUnsummarized: intEnv('COMPACT_MIN_UNSUMMARIZED', 50),
   minLeavesForBranch: intEnv('COMPACT_MIN_LEAFS', 5),
   minBranchesForRoot: intEnv('COMPACT_MIN_BRANCHES', 3),
 
   // Tool-synth
   toolSynthEndpoint: process.env.TOOL_SYNTH_ENDPOINT ?? requireEnv('RIVETOS_COMPACTOR_URL'),
-  toolSynthModel: process.env.TOOL_SYNTH_MODEL ?? process.env.RIVETOS_COMPACTOR_MODEL ?? 'rivet-refined-v5',
+  toolSynthModel:
+    process.env.TOOL_SYNTH_MODEL ?? process.env.RIVETOS_COMPACTOR_MODEL ?? 'rivet-refined-v5',
 } as const
