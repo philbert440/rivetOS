@@ -17,7 +17,7 @@
  *   COMPACT_CONCURRENCY         default: 1 (compaction is CPU-heavy on the LLM, single-flight per worker)
  *   TOOL_SYNTH_CONCURRENCY      default: 2
  *   COMPACT_IDLE_MINUTES        default: 15
- *   COMPACT_MIN_UNSUMMARIZED    default: 50
+ *   COMPACT_LEAF_BATCH          default: 10  (also the full-window enqueue threshold)
  */
 
 import { parseCronItems, run } from 'graphile-worker'
@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   console.log('[CompactWorker] Starting...')
   console.log(`[CompactWorker] LLM endpoint: ${config.llmUrl} (model: ${config.llmModel})`)
   console.log(
-    `[CompactWorker] Idle threshold: ${config.idleMinutes} min, min-unsummarized: ${config.minUnsummarized}`,
+    `[CompactWorker] Idle threshold: ${config.idleMinutes} min, leaf window: ${config.leafBatchSize}`,
   )
 
   const runner = await run({
