@@ -105,10 +105,17 @@ export const embedTargetTask: Task = async (payload, helpers) => {
     const truncatedVec =
       pooled.length > config.truncateDims ? pooled.slice(0, config.truncateDims) : pooled
 
-    await client.query(`UPDATE ${targetTable} SET embedding = $1 WHERE id = $2`, [
-      `[${truncatedVec.join(',')}]`,
-      targetId,
-    ])
+    // Clear any prior failure state on success — a row that failed transiently
+    // and later embedded must not stay flagged 'failed' forever.
+    await client.query(
+      `UPDATE ${targetTable}
+          SET embedding = $1,
+              embed_status = NULL,
+              embed_error = NULL,
+              embed_failures = 0
+        WHERE id = $2`,
+      [`[${truncatedVec.join(',')}]`, targetId],
+    )
 
     helpers.logger.info(
       `[embed-target] embedded ${targetTable} ${targetId.slice(0, 8)} (${truncatedVec.length} dims)`,
