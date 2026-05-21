@@ -4,6 +4,7 @@
 
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
+import { MIN_BATCH_SIZE } from '../compactor/types.js'
 import {
   fmtDate,
   timeSince,
@@ -15,10 +16,18 @@ import {
   type EmbedQueueRow,
   type EmbedCoverageRow,
   type UnsummarizedRow,
-  type CompactionRow,
+  type UnsummarizedBucketRow,
+  type EligibleConvRow,
+  type StuckJobRow,
   type TreeDepthRow,
   type FreshnessRow,
 } from './helpers.js'
+
+// Mirrors compaction-worker's COMPACT_LEAF_BATCH default. Used for bucketing
+// only — if the deployed worker overrides it, the eligibility buckets will be
+// slightly off but the rank order still holds.
+const FULL_WINDOW = 10
+const IDLE_MINUTES = 15
 
 export function createStatsTool(pool: pg.Pool): Tool {
   return {
@@ -152,40 +161,133 @@ export function createStatsTool(pool: pg.Pool): Tool {
             `\n  Summaries: ${Number(se.embedded).toLocaleString()}/${Number(se.total).toLocaleString()} (${sumPct}%)`,
         )
 
-        // Unsummarized messages
-        const unsummarized = await pool.query<UnsummarizedRow>(`
-          SELECT COUNT(*) AS count FROM ros_messages m
-          LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
-          WHERE ss.summary_id IS NULL AND m.content IS NOT NULL AND LENGTH(m.content) > 10
-        `)
-        const unsumCount = Number(unsummarized.rows[0].count)
-        const unsumStatus = unsumCount < 50 ? '✅' : unsumCount < 200 ? '⏳' : '⚠️'
+        // Unsummarized messages — bucketed by compactor eligibility.
+        //   eligible:    will be picked by the next enqueue-idle pass
+        //                (full window: >= FULL_WINDOW unsummarized, OR
+        //                 idle floor:  >= MIN_BATCH_SIZE AND idle >= IDLE_MINUTES)
+        //   active_tail: still-active conversation with MIN_BATCH_SIZE..FULL_WINDOW-1
+        //                unsummarized — will flush once it goes idle or fills the window
+        //   below_floor: < MIN_BATCH_SIZE qualifying messages — compactLeaf can't
+        //                form a leaf summary, so these never compact by design
+        // The filter (LENGTH > 10 OR tool_name IS NOT NULL) matches enqueue-idle.ts.
+        const buckets = await pool.query<UnsummarizedBucketRow>(
+          `WITH per_conv AS (
+             SELECT c.id AS conversation_id, c.updated_at,
+                    COUNT(m.id) AS qualifying
+             FROM ros_conversations c
+             JOIN ros_messages m ON m.conversation_id = c.id
+             LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
+             WHERE ss.summary_id IS NULL
+               AND ((m.content IS NOT NULL AND LENGTH(m.content) > 10)
+                    OR m.tool_name IS NOT NULL)
+             GROUP BY c.id
+           )
+           SELECT
+             COALESCE(SUM(qualifying) FILTER (
+               WHERE qualifying >= $1
+                  OR (qualifying >= $2 AND updated_at < NOW() - ($3 || ' minutes')::interval)
+             ), 0) AS eligible_msgs,
+             COUNT(*) FILTER (
+               WHERE qualifying >= $1
+                  OR (qualifying >= $2 AND updated_at < NOW() - ($3 || ' minutes')::interval)
+             ) AS eligible_convs,
+             COALESCE(SUM(qualifying) FILTER (
+               WHERE qualifying >= $2 AND qualifying < $1
+                 AND updated_at >= NOW() - ($3 || ' minutes')::interval
+             ), 0) AS active_tail_msgs,
+             COUNT(*) FILTER (
+               WHERE qualifying >= $2 AND qualifying < $1
+                 AND updated_at >= NOW() - ($3 || ' minutes')::interval
+             ) AS active_tail_convs,
+             COALESCE(SUM(qualifying) FILTER (WHERE qualifying < $2), 0) AS below_floor_msgs,
+             COUNT(*) FILTER (WHERE qualifying < $2) AS below_floor_convs
+           FROM per_conv`,
+          [FULL_WINDOW, MIN_BATCH_SIZE, IDLE_MINUTES],
+        )
+        const b = buckets.rows[0]
+        const eligibleMsgs = Number(b.eligible_msgs)
+        const eligibleConvs = Number(b.eligible_convs)
+        const activeTailMsgs = Number(b.active_tail_msgs)
+        const activeTailConvs = Number(b.active_tail_convs)
+        const belowFloorMsgs = Number(b.below_floor_msgs)
+        const belowFloorConvs = Number(b.below_floor_convs)
+        const totalUnsum = eligibleMsgs + activeTailMsgs + belowFloorMsgs
+        // Warn only when the actionable bucket (eligible) is large — the global
+        // total is dominated by below-floor tails which the compactor will never
+        // touch by design.
+        const eligibleStatus =
+          eligibleConvs === 0 ? '✅' : eligibleMsgs < 100 ? '⏳' : '⚠️'
         sections.push(
-          `\n**Unsummarized messages:** ${unsumCount.toLocaleString()} ${unsumStatus}` +
-            (unsumCount >= 50 ? `\n  (compactor triggers at 50, batches of 25)` : ''),
+          `\n**Unsummarized messages:** ${totalUnsum.toLocaleString()} total` +
+            `\n  Eligible for compaction: ${eligibleMsgs.toLocaleString()} msgs in ${eligibleConvs.toLocaleString()} convs ${eligibleStatus}` +
+            `\n    (≥${String(FULL_WINDOW)} unsummarized, OR ≥${String(MIN_BATCH_SIZE)} + idle ≥${String(IDLE_MINUTES)}m)` +
+            `\n  Active tail: ${activeTailMsgs.toLocaleString()} msgs in ${activeTailConvs.toLocaleString()} convs (will flush when idle)` +
+            `\n  Below floor: ${belowFloorMsgs.toLocaleString()} msgs in ${belowFloorConvs.toLocaleString()} convs (<${String(MIN_BATCH_SIZE)} qualifying — won't compact by design)`,
         )
 
-        // Conversations needing compaction
-        const needsCompaction = await pool.query<CompactionRow>(`
-          SELECT m.conversation_id, c.agent, COUNT(*) AS unsummarized
-          FROM ros_messages m
-          LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
-          JOIN ros_conversations c ON c.id = m.conversation_id
-          WHERE ss.summary_id IS NULL AND m.content IS NOT NULL AND LENGTH(m.content) > 10
-          GROUP BY m.conversation_id, c.agent
-          HAVING COUNT(*) >= 50
-          ORDER BY COUNT(*) DESC LIMIT 5
-        `)
-        if (needsCompaction.rows.length > 0) {
+        // Top conversations the next enqueue-idle pass will pick (matches the
+        // worker's own SELECT in enqueue-idle.ts, sorted oldest-first).
+        const eligible = await pool.query<EligibleConvRow>(
+          `SELECT c.id::text AS conversation_id, c.agent,
+                  COUNT(m.id)::text AS unsummarized,
+                  CASE WHEN COUNT(m.id) >= $1 THEN 'full_window' ELSE 'idle_floor' END AS trigger
+             FROM ros_conversations c
+             JOIN ros_messages m ON m.conversation_id = c.id
+             LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
+            WHERE ss.summary_id IS NULL
+              AND ((m.content IS NOT NULL AND LENGTH(m.content) > 10)
+                   OR m.tool_name IS NOT NULL)
+            GROUP BY c.id, c.agent, c.updated_at
+           HAVING COUNT(m.id) >= $2
+              AND (COUNT(m.id) >= $1
+                   OR c.updated_at < NOW() - ($3 || ' minutes')::interval)
+            ORDER BY c.updated_at ASC LIMIT 5`,
+          [FULL_WINDOW, MIN_BATCH_SIZE, IDLE_MINUTES],
+        )
+        if (eligible.rows.length > 0) {
           sections.push(
-            `\n**Conversations needing compaction (≥50 unsummarized):**\n` +
-              needsCompaction.rows
+            `\n**Top conversations eligible for compaction:**\n` +
+              eligible.rows
                 .map(
                   (r) =>
-                    `  ${r.agent}: ${Number(r.unsummarized).toLocaleString()} unsummarized (conv: ${r.conversation_id.slice(0, 8)}…)`,
+                    `  ${r.agent}: ${Number(r.unsummarized).toLocaleString()} unsummarized [${r.trigger}] (conv: ${r.conversation_id.slice(0, 8)}…)`,
                 )
                 .join('\n'),
           )
+        }
+
+        // Stuck graphile-worker jobs — silent rot. Skip gracefully if the
+        // schema isn't present (e.g., test fixtures without the worker).
+        const hasGraphileWorker = await pool.query<{ present: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM information_schema.tables
+             WHERE table_schema='graphile_worker' AND table_name='_private_jobs'
+           ) AS present`,
+        )
+        if (hasGraphileWorker.rows[0]?.present) {
+          const stuck = await pool.query<StuckJobRow>(
+            `SELECT t.identifier AS task,
+                    COUNT(*)::text AS count,
+                    MIN(j.run_at) AS oldest_run_at,
+                    LEFT(MAX(j.last_error), 120) AS sample_error
+               FROM graphile_worker._private_jobs j
+               JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+              WHERE j.attempts >= j.max_attempts
+              GROUP BY t.identifier
+              ORDER BY COUNT(*) DESC`,
+          )
+          if (stuck.rows.length > 0) {
+            sections.push(
+              `\n**⚠️ Stuck queue jobs (at max attempts, won't retry):**\n` +
+                stuck.rows
+                  .map(
+                    (r) =>
+                      `  ${r.task}: ${Number(r.count).toLocaleString()} dead since ${fmtDate(r.oldest_run_at)}` +
+                      (r.sample_error ? ` — ${r.sample_error}` : ''),
+                  )
+                  .join('\n'),
+            )
+          }
         }
 
         // Orphan summaries

@@ -67,6 +67,29 @@ export interface CompactionRow {
   unsummarized: string
 }
 
+export interface UnsummarizedBucketRow {
+  eligible_msgs: string
+  eligible_convs: string
+  active_tail_msgs: string
+  active_tail_convs: string
+  below_floor_msgs: string
+  below_floor_convs: string
+}
+
+export interface EligibleConvRow {
+  conversation_id: string
+  agent: string
+  unsummarized: string
+  trigger: string
+}
+
+export interface StuckJobRow {
+  task: string
+  count: string
+  oldest_run_at: Date | null
+  sample_error: string | null
+}
+
 export interface TreeDepthRow {
   max_depth: number | null
   root_count: string
