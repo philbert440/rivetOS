@@ -215,8 +215,7 @@ export function createStatsTool(pool: pg.Pool): Tool {
         // Warn only when the actionable bucket (eligible) is large — the global
         // total is dominated by below-floor tails which the compactor will never
         // touch by design.
-        const eligibleStatus =
-          eligibleConvs === 0 ? '✅' : eligibleMsgs < 100 ? '⏳' : '⚠️'
+        const eligibleStatus = eligibleConvs === 0 ? '✅' : eligibleMsgs < 100 ? '⏳' : '⚠️'
         sections.push(
           `\n**Unsummarized messages:** ${totalUnsum.toLocaleString()} total` +
             `\n  Eligible for compaction: ${eligibleMsgs.toLocaleString()} msgs in ${eligibleConvs.toLocaleString()} convs ${eligibleStatus}` +
