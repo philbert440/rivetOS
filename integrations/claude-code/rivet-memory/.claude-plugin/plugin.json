@@ -1,8 +1,11 @@
 {
   "name": "rivet-memory",
-  "version": "0.1.0",
-  "description": "Persistent memory for Claude Code — RivetOS MCP recall tools plus lifecycle capture of prompts and tool calls into the RivetOS memory DB.",
-  "keywords": ["memory", "mcp", "capture", "recall", "rivetos"],
+  "version": "0.2.0",
+  "description": "Persistent memory for Claude Code — RivetOS MCP recall tools plus lifecycle capture of prompts and tool calls into the RivetOS memory DB. Ships a recall-discipline skill, slash command shortcuts, and a memory-researcher subagent.",
+  "keywords": ["memory", "mcp", "capture", "recall", "rivetos", "skill", "agent", "discipline"],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "license": "MIT",
   "author": {
     "name": "RivetOS"
   }
