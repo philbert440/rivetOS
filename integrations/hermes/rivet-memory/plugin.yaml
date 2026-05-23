@@ -1,0 +1,20 @@
+name: rivet_memory
+version: 0.3.0
+description: >
+  RivetOS shared memory for Hermes — captures Hermes turns, memory-tool writes,
+  delegations, and pre-compression messages into the cross-agent RivetOS memory
+  DB. Provides FTS + vector recall across every Rivet agent (rivet-claude,
+  rivet-hermes, opus, grok, etc.). Direct Postgres, no SSH bridge.
+pip_dependencies:
+  - psycopg[binary]>=3.2
+  - psycopg_pool>=3.2
+  - PyYAML>=6
+hooks:
+  - sync_turn
+  - prefetch
+  - queue_prefetch
+  - on_memory_write
+  - on_delegation
+  - on_pre_compress
+  - on_session_switch
+  - on_session_end
