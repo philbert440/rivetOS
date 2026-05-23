@@ -95,16 +95,28 @@ SEARCH_SCHEMA = {
             "since": {
                 "type": "string",
                 "description": (
-                    "ISO timestamp lower bound (e.g. 2026-05-23 or "
-                    "2026-05-23T08:00:00Z). ANDed with the topic query — for "
-                    "date-window browsing without a topic, use rivet_memory_browse."
+                    "ISO timestamp lower bound. WARNING: a bare date "
+                    "(`2026-05-23`) is interpreted as UTC midnight, NOT local "
+                    "midnight — for users in EDT/PDT that's the previous "
+                    "evening. Either pass an explicit UTC datetime "
+                    "(`2026-05-23T04:00:00Z`) or use `window` and skip the TZ math."
                 ),
             },
             "before": {
                 "type": "string",
                 "description": (
-                    "ISO timestamp upper bound. ANDed with the topic query — "
-                    "for date-window browsing without a topic, use rivet_memory_browse."
+                    "ISO timestamp upper bound. Same UTC-midnight gotcha as "
+                    "`since`. Prefer `window` for time-bounded queries."
+                ),
+            },
+            "window": {
+                "type": "string",
+                "enum": ["today", "yesterday", "this_morning", "this_week", "last_24h"],
+                "description": (
+                    "Shortcut for time-bounded queries — resolves to a "
+                    "(since, before) range in the SERVER'S LOCAL TIMEZONE, "
+                    "no TZ math required. Overrides explicit since/before "
+                    "only when neither is provided."
                 ),
             },
             "expand": {
@@ -121,26 +133,54 @@ BROWSE_SCHEMA = {
     "description": (
         "Browse RivetOS conversation messages chronologically. Unlike "
         "rivet_memory_search (ranks by relevance), this returns messages in "
-        "time order. Use to review what happened in a session or catch up on "
-        "recent cross-agent activity."
+        "time order. Use for any time-bounded question (\"what did we do "
+        "today / this morning / yesterday\") — pair with `window=...` for the "
+        "right local-TZ-to-UTC math. If the response is truncated at `limit`, "
+        "flip `order` to see the other end, raise `limit` (max 200), or "
+        "narrow the window."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "conversation_id": {"type": "string", "description": "Browse a specific conversation."},
-            "since": {"type": "string", "description": "ISO timestamp lower bound."},
-            "before": {"type": "string", "description": "ISO timestamp upper bound."},
+            "since": {
+                "type": "string",
+                "description": (
+                    "ISO timestamp lower bound. WARNING: bare-date `2026-05-23` "
+                    "is UTC midnight, not local midnight — for EDT/PDT users "
+                    "that's the previous evening. Use `window` to avoid the TZ math."
+                ),
+            },
+            "before": {
+                "type": "string",
+                "description": "ISO timestamp upper bound. Same UTC gotcha as `since`.",
+            },
+            "window": {
+                "type": "string",
+                "enum": ["today", "yesterday", "this_morning", "this_week", "last_24h"],
+                "description": (
+                    "Shortcut for time-bounded windows — resolves to (since, "
+                    "before) in the SERVER'S LOCAL TIMEZONE, no TZ math "
+                    "required. Overrides explicit since/before only when "
+                    "neither is provided. Prefer this for \"today\" / "
+                    "\"yesterday\" / \"this morning\" / \"this week\" / \"last 24h\"."
+                ),
+            },
             "agent": {"type": "string", "description": "Filter by agent."},
             "limit": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 200,
-                "description": "Max messages to return (default: 50).",
+                "description": "Max messages to return (default: 50, max 200).",
             },
             "order": {
                 "type": "string",
                 "enum": ["asc", "desc"],
-                "description": "Chronological order (default: desc — newest first).",
+                "description": (
+                    "Chronological order (default: desc — newest first). "
+                    "For \"what did we do today?\" desc is usually right — "
+                    "you'll see the most recent activity first."
+                ),
             },
         },
         "required": [],
@@ -182,22 +222,41 @@ DEFAULT_EMBED_MODEL = "nemotron"
 # the window (the system_prompt_block + memory-recall skill point it there).
 # Match as whole-word, case-insensitive.
 _TIME_BOUNDED_PATTERN = re.compile(
-    r"\b("
+    r"(?:^|\W)("
     r"this\s+(?:morning|afternoon|evening|week|month|year)"
-    r"|today|yesterday|tomorrow"
+    # today / todays / today's / yesterday / yesterdays / yesterday's / tomorrow(...)
+    r"|today(?:['’]?s)?|yesterday(?:['’]?s)?|tomorrow(?:['’]?s)?"
     r"|earlier|recently|lately"
     r"|last\s+(?:night|week|month|year)"
     r"|the\s+other\s+day"
     r"|a?\s*(?:couple|few)\s+(?:of\s+)?(?:days|weeks|months|hours|minutes)\s+ago"
     r"|\d+\s+(?:days|weeks|months|hours|minutes)\s+ago"
     r"|since\s+(?:yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
-    r")\b",
+    r")(?=\W|$)",
     re.IGNORECASE,
 )
 
 
 def _is_time_bounded(query: str) -> bool:
     return bool(query and _TIME_BOUNDED_PATTERN.search(query))
+
+
+# Map a query's time cue to the best `window` enum value. Falls back to
+# "today" when we matched a cue but can't pin it more precisely — the agent
+# can always switch windows once it sees what's there.
+_WINDOW_HINTS = (
+    (re.compile(r"\bthis\s+morning\b", re.I), "this_morning"),
+    (re.compile(r"(?:^|\W)yesterday(?:['’]?s)?(?=\W|$)", re.I), "yesterday"),
+    (re.compile(r"\bthis\s+week\b|since\s+monday\b", re.I), "this_week"),
+    (re.compile(r"\blast\s+(?:24\s*h|24\s*hours|day)\b", re.I), "last_24h"),
+)
+
+
+def _hint_window(query: str) -> str:
+    for pat, win in _WINDOW_HINTS:
+        if pat.search(query):
+            return win
+    return "today"
 
 
 class RivetMemoryProvider(MemoryProvider):
@@ -447,17 +506,17 @@ class RivetMemoryProvider(MemoryProvider):
         yet (first turn, or background thread hasn't completed), run inline.
 
         Time-bounded queries ("today", "yesterday", "this morning", ...) skip
-        prefetch entirely — relevance-ranked FTS returns stale hits ranked by
-        topic match, not recency, which competes with the agent's own browse.
-        The system prompt + memory-recall skill already point at
-        ``rivet_memory_browse`` for those cases.
+        the FTS prefetch and instead inject a one-line hint pointing at
+        ``rivet_memory_browse(window=...)``. Relevance-ranked FTS returns
+        stale hits for these queries; the hint gets the agent to the right
+        tool without burning a turn.
         """
         if not self._recall_enabled or self._recall is None:
             return ""
         if _is_time_bounded(query):
             with self._prefetch_lock:
                 self._prefetch_result = ""
-            return ""
+            return self._time_bounded_hint(query)
         with self._prefetch_lock:
             cached = self._prefetch_result
             self._prefetch_result = ""
@@ -471,12 +530,26 @@ class RivetMemoryProvider(MemoryProvider):
             logger.debug("rivet_memory: inline prefetch failed: %s", e)
             return ""
 
+    def _time_bounded_hint(self, query: str) -> str:
+        """Tiny <rivet-memory-context> block telling the agent which browse
+        call to make. Cheaper than a real prefetch and aligned with the
+        discipline skill."""
+        win = _hint_window(query)
+        return (
+            f'<rivet-memory-context query="{query[:80]}">\n'
+            f"This question looks time-bounded. Skip search — call "
+            f"`rivet_memory_browse(window=\"{win}\")` to scan the window in "
+            f"the server's local timezone (no manual UTC math). If the "
+            f"response is truncated, flip `order=\"asc\"` to see the other "
+            f"end or raise `limit`.\n"
+            f"</rivet-memory-context>"
+        )
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if not self._recall_enabled or self._recall is None:
             return
         if _is_time_bounded(query):
-            # Don't waste a thread + DB hit; the agent will browse the
-            # window itself per the discipline.
+            # Skip the background DB hit; the hint is emitted from prefetch().
             with self._prefetch_lock:
                 self._prefetch_result = ""
             return

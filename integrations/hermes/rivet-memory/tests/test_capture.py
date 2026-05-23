@@ -202,8 +202,11 @@ def test_is_time_bounded_recognizes_common_cues():
 
     positives = [
         "what did we do today?",
+        "todays activity",                  # no apostrophe
+        "today's standup",                  # with apostrophe
         "anything from this morning?",
         "yesterday's standup",
+        "yesterdays standup",               # no apostrophe — bare plural-looking form
         "did we touch the router last week",
         "the other day phil mentioned X",
         "a couple days ago we tried Y",
@@ -227,3 +230,33 @@ def test_is_time_bounded_ignores_topic_queries():
     ]
     for q in negatives:
         assert not _is_time_bounded(q), f"should NOT be time-bounded: {q!r}"
+
+
+def test_hint_window_picks_specific_window_when_possible():
+    from rivet_memory import _hint_window
+
+    assert _hint_window("what happened this morning") == "this_morning"
+    assert _hint_window("yesterday's standup") == "yesterday"
+    assert _hint_window("anything this week") == "this_week"
+    assert _hint_window("last 24 hours of turns") == "last_24h"
+    # Generic time cue falls back to today.
+    assert _hint_window("what did we do today") == "today"
+    assert _hint_window("recently we discussed") == "today"
+
+
+def test_resolve_window_returns_utc_iso_bounds():
+    from rivet_memory.tools import resolve_window
+
+    since, before = resolve_window("today")
+    assert since is not None and since.endswith("+00:00") or since.endswith("Z")
+    assert before is None  # today is open-ended
+
+    since, before = resolve_window("yesterday")
+    assert since is not None and before is not None
+    assert since < before  # yesterday is bounded
+
+    since, before = resolve_window("last_24h")
+    assert since is not None and before is None
+
+    since, before = resolve_window("not_a_real_window")
+    assert since is None and before is None
