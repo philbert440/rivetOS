@@ -8,6 +8,13 @@ gap with one install — and, because headless `claude -p` sessions load enabled
 user plugins too, it doubles as the **single capture source for every session
 type**, headless RivetOS agents included.
 
+The sibling plugin for Hermes lives at
+[`integrations/hermes/rivet-memory/`](../../hermes/rivet-memory/) — same shared
+RivetOS memory backend, different agent host (Python provider hooks into
+Hermes; this one is markdown + MCP for Claude Code). Together they give every
+Rivet agent (`rivet-claude`, `rivet-hermes`, future siblings) one cross-agent
+memory store.
+
 ## What it ships
 
 | Component | File | Effect |
