@@ -78,7 +78,7 @@ def _msg_row(id_="m1", content="hello world", role="user", agent="rivet-hermes")
 
 def test_fts_message_search_with_agent_filter_param_order():
     """Agent filter is appended AFTER the SELECT-clause %s, so the query
-    string lands in plainto_tsquery — not in m.agent."""
+    string lands in websearch_to_tsquery — not in m.agent."""
     from rivet_memory.recall import SearchEngine
 
     fake = _FakeClient([_msg_row()])
@@ -96,11 +96,11 @@ def test_fts_message_search_with_agent_filter_param_order():
     sql, params = fake.cursor.executed[0]
     # The FTS WHERE condition is appended first (mode block), then agent.
     # So SQL placeholder order is: ts_rank_cd(%s) [SELECT] →
-    # plainto_tsquery(%s) [WHERE] → m.agent = %s [WHERE] → LIMIT %s.
+    # websearch_to_tsquery(%s) [WHERE] → m.agent = %s [WHERE] → LIMIT %s.
     assert params == ["deckard tuning", "deckard tuning", "rivet-hermes", 10]
     # Sanity-check the SQL placeholder positions to lock the contract.
-    rank_pos = sql.index("ts_rank_cd(m.content_tsv, plainto_tsquery('english', %s))")
-    query_pos = sql.index("m.content_tsv @@ plainto_tsquery('english', %s)")
+    rank_pos = sql.index("ts_rank_cd(m.content_tsv, websearch_to_tsquery('english', %s))")
+    query_pos = sql.index("m.content_tsv @@ websearch_to_tsquery('english', %s)")
     agent_pos = sql.index("m.agent = %s")
     assert rank_pos < query_pos < agent_pos
 
@@ -139,7 +139,7 @@ def test_trigram_messages_skip_embedding_clause():
     sql, params = fake.cursor.executed[0]
     assert params == ["phildez", "phildez", 3]
     assert "similarity(m.content, %s) > 0.3" in sql
-    assert "plainto_tsquery" not in sql
+    assert "websearch_to_tsquery" not in sql
 
 
 def test_regex_mode_omits_score_param():

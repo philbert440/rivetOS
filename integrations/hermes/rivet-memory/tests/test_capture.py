@@ -187,3 +187,43 @@ def test_invalid_role_raises_in_append_message():
     from rivet_memory import schema as S
 
     assert S.VALID_ROLES == {"system", "user", "assistant", "tool"}
+
+
+# ---------------------------------------------------------------------------
+# Time-bounded prefetch skip — regression guard for the noisy-prefetch issue
+# that grok-4.3 surfaced in the first phildesk Hermes session against this
+# plugin: prefetch ran FTS for "what did we do today?" and injected March
+# hits that competed with the agent's own browse.
+# ---------------------------------------------------------------------------
+
+
+def test_is_time_bounded_recognizes_common_cues():
+    from rivet_memory import _is_time_bounded
+
+    positives = [
+        "what did we do today?",
+        "anything from this morning?",
+        "yesterday's standup",
+        "did we touch the router last week",
+        "the other day phil mentioned X",
+        "a couple days ago we tried Y",
+        "3 hours ago I saw an error",
+        "recently we discussed compaction",
+        "since monday how many turns",
+    ]
+    for q in positives:
+        assert _is_time_bounded(q), f"should be time-bounded: {q!r}"
+
+
+def test_is_time_bounded_ignores_topic_queries():
+    from rivet_memory import _is_time_bounded
+
+    negatives = [
+        "what's the frigate IP?",
+        "where does deckard live",
+        "have we set up nginx anywhere",
+        "the dnsmasq error from the WAP",
+        "memory plugin install",
+    ]
+    for q in negatives:
+        assert not _is_time_bounded(q), f"should NOT be time-bounded: {q!r}"

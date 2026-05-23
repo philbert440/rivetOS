@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -68,9 +69,12 @@ SEARCH_SCHEMA = {
                 "type": "string",
                 "enum": ["fts", "trigram", "regex"],
                 "description": (
-                    "fts (default, semantic+FTS blend), trigram (fuzzy / "
-                    "literal tokens like IPs / MACs / error strings), or "
-                    "regex (pattern)."
+                    "fts (default) — websearch-syntax: ``foo bar`` is AND, "
+                    "``foo OR bar`` is OR, ``\"exact phrase\"`` matches that "
+                    "phrase, ``-noise`` excludes; blended with semantic when "
+                    "an embedding endpoint is configured. trigram — fuzzy "
+                    "/ literal tokens (IPs, MACs, error strings). regex — "
+                    "PostgreSQL ``~*`` pattern."
                 ),
             },
             "scope": {
@@ -171,6 +175,29 @@ DEFAULT_CHANNEL_PREFIX = "hermes"
 DEFAULT_RECALL_LIMIT = 10
 DEFAULT_RECALL_MODE = "fts"
 DEFAULT_EMBED_MODEL = "nemotron"
+
+# Phrases that pin a time window. FTS-on-the-query for these returns
+# relevance-ranked (not chronological) hits and is almost always stale noise
+# — better to skip prefetch entirely and let the agent's own browse handle
+# the window (the system_prompt_block + memory-recall skill point it there).
+# Match as whole-word, case-insensitive.
+_TIME_BOUNDED_PATTERN = re.compile(
+    r"\b("
+    r"this\s+(?:morning|afternoon|evening|week|month|year)"
+    r"|today|yesterday|tomorrow"
+    r"|earlier|recently|lately"
+    r"|last\s+(?:night|week|month|year)"
+    r"|the\s+other\s+day"
+    r"|a?\s*(?:couple|few)\s+(?:of\s+)?(?:days|weeks|months|hours|minutes)\s+ago"
+    r"|\d+\s+(?:days|weeks|months|hours|minutes)\s+ago"
+    r"|since\s+(?:yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_time_bounded(query: str) -> bool:
+    return bool(query and _TIME_BOUNDED_PATTERN.search(query))
 
 
 class RivetMemoryProvider(MemoryProvider):
@@ -417,8 +444,19 @@ class RivetMemoryProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Return any cached prefetch result. If no queue_prefetch has fired
-        yet (first turn, or background thread hasn't completed), run inline."""
+        yet (first turn, or background thread hasn't completed), run inline.
+
+        Time-bounded queries ("today", "yesterday", "this morning", ...) skip
+        prefetch entirely — relevance-ranked FTS returns stale hits ranked by
+        topic match, not recency, which competes with the agent's own browse.
+        The system prompt + memory-recall skill already point at
+        ``rivet_memory_browse`` for those cases.
+        """
         if not self._recall_enabled or self._recall is None:
+            return ""
+        if _is_time_bounded(query):
+            with self._prefetch_lock:
+                self._prefetch_result = ""
             return ""
         with self._prefetch_lock:
             cached = self._prefetch_result
@@ -435,6 +473,12 @@ class RivetMemoryProvider(MemoryProvider):
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if not self._recall_enabled or self._recall is None:
+            return
+        if _is_time_bounded(query):
+            # Don't waste a thread + DB hit; the agent will browse the
+            # window itself per the discipline.
+            with self._prefetch_lock:
+                self._prefetch_result = ""
             return
 
         def _run() -> None:

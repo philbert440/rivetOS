@@ -2,9 +2,15 @@
 
 Direct port of ``plugins/memory/postgres/src/search.ts``. Three modes:
 
-- ``fts``     — ``plainto_tsquery`` + ``ts_rank_cd``; if an embedding endpoint
+- ``fts``     — ``websearch_to_tsquery`` + ``ts_rank_cd``; if an embedding endpoint
                 is configured, the query is embedded at search time and blended
                 with the FTS score via real cosine similarity on ``halfvec``.
+                ``websearch_to_tsquery`` honors ``OR`` (case-insensitive),
+                phrase quoting, and ``-NOT``, so natural-language queries
+                like ``today OR daily OR session`` behave as the caller
+                expects instead of silently AND-ing every token (the
+                ``plainto_tsquery`` behavior that caused PR #192's
+                first real-session miss).
 - ``trigram`` — ``pg_trgm`` similarity (fuzzy / typo-tolerant)
 - ``regex``   — PostgreSQL ``~*``
 
@@ -296,9 +302,9 @@ class SearchEngine:
         condition_params: list = []
 
         if mode == "fts":
-            fts_expr = "ts_rank_cd(m.content_tsv, plainto_tsquery('english', %s))"
+            fts_expr = "ts_rank_cd(m.content_tsv, websearch_to_tsquery('english', %s))"
             select_params.append(query)
-            conditions.append("m.content_tsv @@ plainto_tsquery('english', %s)")
+            conditions.append("m.content_tsv @@ websearch_to_tsquery('english', %s)")
             condition_params.append(query)
         elif mode == "trigram":
             fts_expr = "similarity(m.content, %s)"
@@ -385,9 +391,9 @@ class SearchEngine:
         condition_params: list = []
 
         if mode == "fts":
-            fts_expr = "ts_rank_cd(s.content_tsv, plainto_tsquery('english', %s))"
+            fts_expr = "ts_rank_cd(s.content_tsv, websearch_to_tsquery('english', %s))"
             select_params.append(query)
-            conditions.append("s.content_tsv @@ plainto_tsquery('english', %s)")
+            conditions.append("s.content_tsv @@ websearch_to_tsquery('english', %s)")
             condition_params.append(query)
         elif mode == "trigram":
             fts_expr = "similarity(s.content, %s)"
