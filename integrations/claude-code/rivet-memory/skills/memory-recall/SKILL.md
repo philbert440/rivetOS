@@ -24,12 +24,23 @@ Any phrasing that pins a window — "this morning", "yesterday", "today",
 means the user already knows *when* the relevant conversation happened. They
 don't need relevance ranking. They need everything in that window.
 
-**Recipes** (replace dates with today's):
+**Timezone — read this once and don't get it wrong.** The DB stores
+`created_at` in UTC. The user's "this morning" is in **their local
+timezone**, not UTC. Naively passing `<today>T00:00:00Z` cuts off the wrong
+slice — for PT/MT/ET users, UTC-midnight is the previous afternoon/evening
+local, so a "this morning" query at 9am ET (= 13:00 UTC same day) silently
+includes yesterday-evening's conversations and may miss late-morning ones
+depending on which day's UTC midnight you picked. Convert the local window
+to UTC (subtract the local offset, accounting for DST). If you don't know
+the user's timezone, assume system local; never silently treat `currentDate`
+as if it were UTC. `currentDate` is a date string, not a timestamp.
 
-- "this morning" → `memory_browse(since="<today>T00:00:00Z", before="<now>")`
-- "yesterday" → `memory_browse(since="<yesterday>T00:00:00Z", before="<today>T00:00:00Z")`
-- "today" / "earlier today" → `memory_browse(since="<today>T00:00:00Z")`
-- "this week" → `memory_browse(since="<monday>T00:00:00Z")`
+**Recipes** (replace dates with today's; ranges are local-then-converted-to-UTC):
+
+- "this morning" → `memory_browse(since="<local-today-00:00 → UTC>", before="<now → UTC>")`
+- "yesterday" → `memory_browse(since="<local-yesterday-00:00 → UTC>", before="<local-today-00:00 → UTC>")`
+- "today" / "earlier today" → `memory_browse(since="<local-today-00:00 → UTC>")`
+- "this week" → `memory_browse(since="<local-monday-00:00 → UTC>")`
 - "the X days" / "recently" → start with `since="<now - 3d>"`, widen if thin
 
 Pair with a topic filter only if browse returns more than ~30 entries — never
@@ -103,9 +114,12 @@ don't externally probe yet.
 ## Worked examples
 
 **"What were we doing this morning?"**
-→ `memory_browse(since="<today>T00:00:00Z")`. Not `memory_search("what did
-we do this morning")` — that returns empty because no past message contains
-those words verbatim.
+→ Compute local-today 00:00 in the user's TZ, convert to UTC.
+`memory_browse(since="<that UTC>", before="<now UTC>")`. Do NOT use
+`memory_search("what did we do this morning")` — that returns empty because
+no past message contains those words verbatim. And do NOT pass
+`<today>T00:00:00Z` raw — that's UTC midnight, which is yesterday afternoon
+or evening for any US local timezone.
 
 **"What's the frigate IP?"**
 → Topic question, no timeframe. Run three searches:
@@ -114,10 +128,10 @@ those words verbatim.
 3. `memory_search("10.4.20")` — by subnet, with `mode: "trigram"` if semantic is thin
 
 **"Did we touch the router today?"**
-→ Time-bounded ("today"). `memory_browse(since="<today>T00:00:00Z")` first,
-then scan results for router-related entries. Don't search by keyword first —
-the conversation might be tagged "openwrt", "192.168.1.1", "WAP", "DHCP", any
-of which a single semantic query could miss.
+→ Time-bounded ("today"). Compute local-today 00:00 → UTC, browse from
+there. Then scan results for router-related entries. Don't search by
+keyword first — the conversation might be tagged "openwrt", "192.168.1.1",
+"WAP", "DHCP", any of which a single semantic query could miss.
 
 **"Have we seen this error before?"**
 → Topic question with no timeframe. `memory_search` with the exact error
