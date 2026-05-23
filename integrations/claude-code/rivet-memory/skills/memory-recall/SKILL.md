@@ -116,7 +116,7 @@ those words verbatim.
 **"Did we touch the router today?"**
 → Time-bounded ("today"). `memory_browse(since="<today>T00:00:00Z")` first,
 then scan results for router-related entries. Don't search by keyword first —
-the conversation might be tagged "openwrt", "10.4.20.1", "WAP", "DHCP", any
+the conversation might be tagged "openwrt", "192.168.1.1", "WAP", "DHCP", any
 of which a single semantic query could miss.
 
 **"Have we seen this error before?"**
@@ -127,7 +127,7 @@ semantic concepts.
 ## Case study: 2026-05-23 WAP-DHCP incident
 
 Phil reported a new WAP wasn't giving DHCP. I ran `memory_search` for
-`"tp-link omada EAP setup"`, `"added wireless AP today"`, `"10.4.20.3"`,
+`"tp-link omada EAP setup"`, `"added wireless AP today"`, `"192.168.1.3"`,
 `"daughter tablet wifi DHCP"` — **all returned zero hits**. I started
 recommending external probes (nmap, ssh-by-hand) instead.
 
