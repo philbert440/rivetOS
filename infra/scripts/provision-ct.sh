@@ -542,15 +542,31 @@ log "Phase 4: Setting up SSH access and creating rivet user..."
 
 # ── 4a: Create rivet group + user (uid 2000) ────────────────────────────────
 run_on_ct "
+# Group: create at correct GID, or remediate if it exists with wrong GID.
+# (Some Debian templates ship with a pre-baked 'rivet' user at uid/gid 1000.)
 if ! getent group rivet &>/dev/null; then
     groupadd --gid ${RIVET_GID} rivet
+elif [ \"\$(getent group rivet | cut -d: -f3)\" != \"${RIVET_GID}\" ]; then
+    echo \"  Remediating rivet GID: \$(getent group rivet | cut -d: -f3) -> ${RIVET_GID}\"
+    groupmod -g ${RIVET_GID} rivet
 fi
+
+# User: create at correct UID, or remediate if it exists with wrong UID.
 if ! id rivet &>/dev/null; then
     useradd --uid ${RIVET_UID} --gid rivet --home-dir ${RIVET_HOME} --create-home --shell /bin/bash rivet
+elif [ \"\$(id -u rivet)\" != \"${RIVET_UID}\" ]; then
+    echo \"  Remediating rivet UID: \$(id -u rivet) -> ${RIVET_UID}\"
+    # Kill any rivet processes/sessions before usermod (safety; fresh provision shouldn't have any)
+    loginctl terminate-user rivet 2>/dev/null || true
+    pkill -KILL -u rivet 2>/dev/null || true
+    sleep 1
+    usermod -u ${RIVET_UID} -g ${RIVET_GID} rivet
+    chown -R ${RIVET_UID}:${RIVET_GID} ${RIVET_HOME}
 fi
+
 usermod -aG sudo rivet
 "
-log "  rivet user created (uid ${RIVET_UID}) and added to sudo group"
+log "  rivet user ensured (uid ${RIVET_UID}, gid ${RIVET_GID}) and added to sudo group"
 
 # ── 4b: SSH directories for both root (legacy) and rivet ───────────────────
 run_on_ct "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
