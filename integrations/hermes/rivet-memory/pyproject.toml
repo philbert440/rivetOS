@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rivet-memory-hermes"
-version = "0.1.0"
+version = "0.2.0"
 description = "RivetOS shared-memory provider plugin for Hermes."
 readme = "README.md"
 requires-python = ">=3.11"

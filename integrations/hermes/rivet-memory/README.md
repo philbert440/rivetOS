@@ -9,6 +9,31 @@ bridge, no MCP indirection.
 The sibling plugin for Claude Code lives at
 [`integrations/claude-code/rivet-memory/`](../../claude-code/rivet-memory/).
 
+## What's new in 0.2 — discipline layer
+
+v0.1 shipped the capture and recall plumbing; v0.2 adds the **rules** that
+make a fresh Hermes session reach for the right tool on the first try.
+
+- **`integrations/hermes/memory-recall/SKILL.md`** — auto-loads on
+  time-bounded recall cues. Encodes the four rules: `rivet_memory_browse`
+  with `since`/`before` FIRST for time-bounded questions; multi-angle
+  `rivet_memory_search` (service + host + subnet + role) for topic
+  questions; `mode: "trigram"` fallback when semantic returns thin; user
+  pushback as a search-quality signal. **Install separately** to
+  `~/.hermes/skills/memory-recall/` — see [Install](#install).
+- **Expanded `system_prompt_block()`** — the always-on reflex line now
+  spells out the three tools, the time-bounded vs topic split, the trigram
+  fallback, and the cross-agent caveat. Mirrors the CLAUDE.md addition the
+  Claude Code plugin shipped in [#191](https://github.com/philbert440/rivetOS/pull/191).
+- **Timezone hardening** — the skill is explicit that the user's "this
+  morning" is local time, not UTC; recipes convert local windows to UTC for
+  the query so PT/MT/ET users don't accidentally browse the previous
+  evening's slice.
+
+Hermes has no named-subagent-profile system (delegation is per-call), so the
+fourth piece of the Claude Code v0.2 PR — the `memory-researcher` subagent —
+isn't replicated. The discipline lives in the skill + system prompt block.
+
 ## What it does
 
 | Hermes hook | What the plugin writes |
@@ -42,6 +67,9 @@ $HERMES_VENV/bin/pip install -r requirements.txt
 
 # Drop the plugin into place
 cp -r integrations/hermes/rivet-memory $HOME/.hermes/plugins/rivet_memory
+
+# Drop the discipline skill into place (v0.2)
+cp -r integrations/hermes/memory-recall $HOME/.hermes/skills/memory-recall
 ```
 
 Then run `hermes memory setup` to populate `RIVETOS_PG_URL` and activate:
