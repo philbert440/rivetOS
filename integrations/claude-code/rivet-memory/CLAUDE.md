@@ -54,6 +54,12 @@ You have persistent memory of every past conversation with your human, searchabl
 server). When you lack context, **query memory first** — it is faster than asking
 (~50ms vs minutes of back-and-forth) and the answer is usually already there.
 
+**For time-bounded questions** ("what did we do this morning", "check memory from
+yesterday", "have we touched this recently"), use `memory_browse` with a date range
+FIRST, not `memory_search` — search is keyword-relevance ranked and can return empty
+across a whole conversation whose vocabulary doesn't match your query. The
+`memory-recall` skill has the full discipline; this is just the reflex.
+
 ## Project Continuity — `AGENT.md`
 
 When working on a project, keep a live `AGENT.md` at its root so any agent (future you,

@@ -14,9 +14,40 @@ type**, headless RivetOS agents included.
 |---|---|---|
 | MCP server | `.mcp.json` → `bin/rivet-memory-mcp.sh` | Adds `memory_search`, `memory_browse`, `memory_stats`, `skill_*`, `internet_search`, `web_fetch`. Recall past decisions and commands without asking. |
 | Capture hooks | `hooks/hooks.json` → `bin/rivet-memory-hook.sh` | `UserPromptSubmit` + `PostToolUse` capture every prompt and tool call (name, args, result) straight from the hook payload. `Stop`/`SubagentStop`/`SessionEnd` capture assistant text from the transcript. |
+| Recall skill | `skills/memory-recall/SKILL.md` | Auto-loads on time-bounded recall prompts ("what did we do this morning", "check memory from yesterday"). Encodes the browse-with-date-range-FIRST discipline so memory is the first reflex, not the recovery move. |
+| Slash commands | `commands/memory-*.md` | `/memory-recall <query>`, `/memory-today [topic]`, `/memory-yesterday [topic]`, `/memory-stats` — user-invoked shortcuts to the same discipline. |
+| Subagent | `agents/memory-researcher.md` | Read-only memory specialist the main agent can delegate to via the Agent tool. Runs the full multi-angle / browse-first discipline and returns synthesized findings under 200 words, without burning main-context tokens on a search loop. |
 
 The `PostToolUse` row — tool name + full args + full result, one row per call —
 is the "which command fixed it 2.5 days ago" record.
+
+## What's new in 0.2
+
+`0.1` shipped the recall and capture tooling. `0.2` adds the **discipline
+layer** — the rules that make a fresh Claude Code session actually *use* the
+tools correctly on the first try, not after two user nudges.
+
+- **`memory-recall` skill** — auto-loads on prompts like "what did we do this
+  morning" or "do you remember that thing we tried last week". Tells the agent
+  to reach for `memory_browse` with a date range *first* for any time-bounded
+  question, and to run multi-angle `memory_search` (service + host + subnet +
+  role) with a `mode: "trigram"` fallback for topic lookups. Encodes the
+  failure mode from the 2026-05-23 WAP-DHCP incident so future sessions don't
+  repeat it.
+- **Slash commands** — `/memory-recall`, `/memory-today`, `/memory-yesterday`,
+  `/memory-stats` — the high-frequency moves as one-keystroke shortcuts.
+- **`memory-researcher` subagent** — when the main agent needs context but a
+  multi-step memory search would burn tokens, it can delegate via the Agent
+  tool. The subagent is restricted to read-only memory tools and returns a
+  synthesized finding under 200 words.
+- **`CLAUDE.md` reflex line** — one sentence in "Memory Has the Answers"
+  primes the right first move; full discipline lives in the skill.
+
+Upgrade in place:
+
+```sh
+claude plugin update rivet-memory@rivetos
+```
 
 ## Install
 
