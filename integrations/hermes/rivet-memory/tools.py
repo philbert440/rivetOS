@@ -186,7 +186,30 @@ def search_tool(
         before=before,
     )
     if not results:
-        return "No results found."
+        # If filters narrowed the query but it still returned empty, the
+        # caller is usually trying to "browse a window" via search. Point
+        # them at the right tool so they don't burn a second turn guessing.
+        if since or before:
+            window = []
+            if since:
+                window.append(f'since="{since}"')
+            if before:
+                window.append(f'before="{before}"')
+            window_str = ", ".join(window)
+            return (
+                f'No results found for query "{query}" with {window_str}.\n\n'
+                f"For chronological browsing of a date window without a topic "
+                f"filter, call `rivet_memory_browse({window_str})` instead — "
+                f"that returns every message in the window, no FTS match required."
+            )
+        # No date filter — likely a missed FTS match. Hint at trigram / angle variation.
+        return (
+            f'No results found for query "{query}".\n\n'
+            f"If you expected a hit: retry with `mode=\"trigram\"` for literal "
+            f"tokens (IPs, hostnames, error strings), or vary the angle "
+            f"(service / host / subnet / role) and try two more queries before "
+            f"trusting the empty result."
+        )
 
     summary_hits = [h for h in results if h.type == "summary"]
     message_hits = [h for h in results if h.type == "message"]

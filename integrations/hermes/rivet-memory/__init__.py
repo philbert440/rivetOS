@@ -44,23 +44,34 @@ logger = logging.getLogger(__name__)
 SEARCH_SCHEMA = {
     "name": "rivet_memory_search",
     "description": (
-        "Search RivetOS shared memory across every Rivet agent (rivet-claude, "
-        "rivet-hermes, opus, grok). Hybrid FTS + semantic + temporal scoring "
-        "with auto-expansion of summary hits to source messages. Use this to "
-        "recall past decisions, prior context, or 'what did we say about X' "
-        "before asking the user."
+        "Topic search over RivetOS shared memory across every Rivet agent "
+        "(rivet-claude, rivet-hermes, opus, grok). Hybrid FTS + semantic + "
+        "temporal scoring with auto-expansion of summary hits to source "
+        "messages. **Requires a topic query** that maps to FTS-matchable "
+        "tokens — empty/stopword queries return nothing even if rows exist in "
+        "the window. For pure chronological browsing of a date window (\"what "
+        "did we do this morning / yesterday / today\") use `rivet_memory_browse` "
+        "instead — that's keyword-free and exhaustive."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Search query — natural language question or keywords.",
+                "description": (
+                    "Topic to match against message/summary content (FTS "
+                    "tokens). Required — `since`/`before` narrow this query, "
+                    "they do not replace it."
+                ),
             },
             "mode": {
                 "type": "string",
                 "enum": ["fts", "trigram", "regex"],
-                "description": "fts (default), trigram (fuzzy), or regex (pattern).",
+                "description": (
+                    "fts (default, semantic+FTS blend), trigram (fuzzy / "
+                    "literal tokens like IPs / MACs / error strings), or "
+                    "regex (pattern)."
+                ),
             },
             "scope": {
                 "type": "string",
@@ -77,8 +88,21 @@ SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "Filter by agent (e.g. rivet-hermes, rivet-claude, opus, grok).",
             },
-            "since": {"type": "string", "description": "ISO timestamp lower bound."},
-            "before": {"type": "string", "description": "ISO timestamp upper bound."},
+            "since": {
+                "type": "string",
+                "description": (
+                    "ISO timestamp lower bound (e.g. 2026-05-23 or "
+                    "2026-05-23T08:00:00Z). ANDed with the topic query — for "
+                    "date-window browsing without a topic, use rivet_memory_browse."
+                ),
+            },
+            "before": {
+                "type": "string",
+                "description": (
+                    "ISO timestamp upper bound. ANDed with the topic query — "
+                    "for date-window browsing without a topic, use rivet_memory_browse."
+                ),
+            },
             "expand": {
                 "type": "boolean",
                 "description": "Auto-expand top summary hits to source messages (default: true).",
