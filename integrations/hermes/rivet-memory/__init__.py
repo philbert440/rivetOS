@@ -375,8 +375,18 @@ class RivetMemoryProvider(MemoryProvider):
             return ""
         return (
             "You have access to RivetOS shared memory across every Rivet agent "
-            "(rivet-claude, rivet-hermes, opus, grok). Use `rivet_memory_search` "
-            "to recall past decisions, commands, and context before asking the user."
+            "(rivet-claude, rivet-hermes, opus, grok). Three tools:\n"
+            "  - `rivet_memory_browse` — chronological; use FIRST for any "
+            "time-bounded question (\"this morning\", \"yesterday\", \"last week\").\n"
+            "  - `rivet_memory_search` — relevance-ranked FTS + semantic; use for "
+            "topic questions, run THREE queries from different angles "
+            "(service / host / subnet / role) before trusting an empty result. "
+            "Fall back to `mode: \"trigram\"` for literal tokens (IPs, MACs, "
+            "exact error strings).\n"
+            "  - `rivet_memory_stats` — system health.\n"
+            "Full discipline lives in the `memory-recall` skill; auto-loads on "
+            "recall cues. Hits may carry any Rivet agent's tag — treat them as "
+            "first-class unless the user explicitly means \"this Hermes session.\""
         )
 
     # -- Recall --------------------------------------------------------------
