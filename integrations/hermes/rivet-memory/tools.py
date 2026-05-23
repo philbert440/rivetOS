@@ -26,8 +26,50 @@ if _top.startswith("_") and _top not in _sys.modules:
     _sys.modules[_top] = _types.ModuleType(_top)
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+# Supported `window` enum values for browse + search shortcuts. The values
+# compute a (since, before) UTC range from the server's local timezone so the
+# caller doesn't have to do TZ math. "today" / "yesterday" / "this_morning"
+# anchor to local midnight; "this_week" to local Monday; "last_24h" is a
+# rolling 24h window from now.
+WINDOW_CHOICES = ("today", "yesterday", "this_morning", "this_week", "last_24h")
+
+
+def resolve_window(window: str) -> Tuple[Optional[str], Optional[str]]:
+    """Convert a window name to a (since_iso_utc, before_iso_utc) pair.
+
+    All anchoring is done in the server's local timezone (the system TZ the
+    Hermes process is running in), then converted to UTC. Returns ISO strings
+    Postgres will parse via the usual timestamp coercion.
+
+    Returns (None, None) for an unrecognized window so the caller can fall
+    back to other filters without erroring.
+    """
+    now_local = datetime.now().astimezone()
+    today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if window == "today":
+        return (today_local.astimezone(timezone.utc).isoformat(), None)
+    if window == "yesterday":
+        yest = today_local - timedelta(days=1)
+        return (
+            yest.astimezone(timezone.utc).isoformat(),
+            today_local.astimezone(timezone.utc).isoformat(),
+        )
+    if window == "this_morning":
+        # Same lower bound as today — "this morning" is just the morning
+        # subset of today, but the agent will usually narrow the result set
+        # itself; we don't try to define when morning ends.
+        return (today_local.astimezone(timezone.utc).isoformat(), None)
+    if window == "this_week":
+        # ISO week — Monday is 0. weekday() returns 0=Mon..6=Sun.
+        monday = today_local - timedelta(days=today_local.weekday())
+        return (monday.astimezone(timezone.utc).isoformat(), None)
+    if window == "last_24h":
+        return ((now_local - timedelta(hours=24)).astimezone(timezone.utc).isoformat(), None)
+    return (None, None)
 
 from .client import RivetMemoryClient
 from .expand import Expander, SourceMessage, SummaryNode
@@ -174,6 +216,10 @@ def search_tool(
     agent = args.get("agent")
     since = args.get("since")
     before = args.get("before")
+    # window= takes precedence when the caller hasn't supplied explicit
+    # ISO bounds; the agent doesn't have to do local-TZ → UTC math.
+    if args.get("window") and not (since or before):
+        since, before = resolve_window(args["window"])
     should_expand = args.get("expand") is not False  # default True
 
     results = engine.search(
@@ -251,18 +297,22 @@ def search_tool(
 def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
     conditions: List[str] = []
     params: list = []
+    since = args.get("since")
+    before = args.get("before")
+    if args.get("window") and not (since or before):
+        since, before = resolve_window(args["window"])
     if args.get("conversation_id"):
         conditions.append("m.conversation_id = %s")
         params.append(args["conversation_id"])
     if args.get("agent"):
         conditions.append("m.agent = %s")
         params.append(args["agent"])
-    if args.get("since"):
+    if since:
         conditions.append("m.created_at >= %s")
-        params.append(args["since"])
-    if args.get("before"):
+        params.append(since)
+    if before:
         conditions.append("m.created_at < %s")
-        params.append(args["before"])
+        params.append(before)
 
     limit = max(1, min(int(args.get("limit") or 50), 200))
     order_sql = "ASC" if args.get("order") == "asc" else "DESC"
@@ -290,16 +340,30 @@ def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
 
     lines: List[str] = []
     for r in rows:
-        ts = _ensure_aware(r[4]).strftime("%Y-%m-%d %H:%M:%S")
+        # Render timestamps in the server's local timezone with a TZ suffix
+        # so readers can't mis-read UTC as local — that misread is exactly
+        # what made a previous Hermes session report 00:10 UTC turns as
+        # "early morning" when they were really 20:10 EDT yesterday.
+        ts_local = _ensure_aware(r[4]).astimezone()
+        ts = ts_local.strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
         tool = f" [tool: {r[6]}]" if r[6] else ""
         content = _truncate(r[3] or "", 500)
         lines.append(f"[{ts}] {r[2]}/{r[1]}{tool}\n{content}")
 
     direction = "newest" if order_sql == "DESC" else "oldest"
-    return (
-        f"## Messages ({len(rows)} returned, {direction} first)\n\n"
-        + "\n\n---\n\n".join(lines)
-    )
+    header = f"## Messages ({len(rows)} returned, {direction} first)"
+    if len(rows) >= limit:
+        # Hit the cap — more rows may exist beyond this slice. Tell the agent
+        # how to find them rather than silently truncating; for "what did we
+        # do today?" the off-end chunk is usually what the user wants next.
+        flip_order = "asc" if order_sql == "DESC" else "desc"
+        hint = (
+            f"\n_limit={limit} reached; more rows may exist beyond this slice. "
+            f"Re-call with `order=\"{flip_order}\"` to see the other end, "
+            f"raise `limit` (max 200), or narrow `since`/`before`/`window`._"
+        )
+        header += hint
+    return header + "\n\n" + "\n\n---\n\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
