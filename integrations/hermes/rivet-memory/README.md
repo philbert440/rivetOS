@@ -9,6 +9,38 @@ bridge, no MCP indirection.
 The sibling plugin for Claude Code lives at
 [`integrations/claude-code/rivet-memory/`](../../claude-code/rivet-memory/).
 
+## What's new in 0.3 — time-aware tooling
+
+v0.2 shipped the discipline rules; v0.3 makes the tools easy to use correctly
+on the first try, after a real grok-4.3 Hermes session surfaced three failure
+modes the rules alone didn't cover.
+
+- **`window=` enum on browse + search** — `today` / `yesterday` /
+  `this_morning` / `this_week` / `last_24h`. Resolves to UTC bounds anchored
+  at the server's *local* midnight, so the agent doesn't have to do
+  TZ math. `window=` overrides explicit `since`/`before` only when neither is
+  provided. Sidesteps the "`since=\"2026-05-23\"` is actually UTC midnight =
+  8pm EDT yesterday" trap.
+- **Local-TZ timestamps in browse output.** Rows render as
+  `[2026-05-23 13:34:38 EDT]` instead of bare UTC numbers, so the agent
+  can't mis-read a UTC-morning row as "early local morning."
+- **Truncation hint when browse hits `limit`** — tells the agent to flip
+  `order`, raise `limit` (max 200), or narrow the window instead of
+  silently capping at 50.
+- **Prefetch hint instead of silent skip on time cues.** When the user's
+  message looks time-bounded ("today", "yesterday", "this morning", "last
+  week", "yesterdays standup", ...), prefetch returns a one-line
+  `<rivet-memory-context>` pointing at the exact
+  `rivet_memory_browse(window=...)` call rather than injecting stale
+  relevance-ranked hits.
+- **Real OR/phrase/NOT in `rivet_memory_search`** — switched from
+  `plainto_tsquery` to `websearch_to_tsquery`. `foo OR bar` is OR (not AND
+  of `foo`, `or`, `bar`), `"exact phrase"` matches that phrase, `-noise`
+  excludes. The agent can do a multi-angle synonym sweep in one call.
+- **Sharper tool descriptions** — search is now framed as topic-required
+  (date-only browsing → use browse), and the empty-result message names
+  the exact alternate call to try.
+
 ## What's new in 0.2 — discipline layer
 
 v0.1 shipped the capture and recall plumbing; v0.2 adds the **rules** that

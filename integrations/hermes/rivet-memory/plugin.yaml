@@ -1,5 +1,5 @@
 name: rivet_memory
-version: 0.2.0
+version: 0.3.0
 description: >
   RivetOS shared memory for Hermes — captures Hermes turns, memory-tool writes,
   delegations, and pre-compression messages into the cross-agent RivetOS memory
