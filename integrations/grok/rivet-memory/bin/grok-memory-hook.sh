@@ -9,6 +9,10 @@
 # `npm run build` in the @rivetos/grok-rivet-memory-capture workspace). Falls
 # back to running the .ts source via `npx --yes tsx` for ergonomics on
 # unbuilt checkouts — the .js path is the supported production path.
+#
+# NOTE: The same dist/-vs-src/ decision exists in the capture's enqueue()
+# function for the in-process worker re-exec. If you move dist/ or src/,
+# update both this file and capture/src/grok-memory-capture.ts.
 
 set -euo pipefail
 
