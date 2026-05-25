@@ -111,6 +111,53 @@ session id (resolved from `$GROK_SESSION_ID` env, which Grok always injects).
 Each emitted row carries the original `_meta.eventId` and `agentTimestampMs`
 in its metadata for traceability.
 
+### Tool result readability
+
+`tool_call_update.rawOutput` is type-tagged; raw stringification would leak
+byte arrays (Bash stdout is serialised as `Vec<u8>` over JSON, i.e. a list of
+decimal ints). `formatToolResult()` switches on the type:
+
+| `rawOutput.type` | Stored as |
+|---|---|
+| `Bash`       | `output_for_prompt + "\n[exit_code=N …]"` |
+| `GrepSearch` | `output_for_prompt` (falls back to UTF-8 decode of `stdout` bytes) |
+| `ReadFile`   | `FileContent.content` |
+| `SearchTool` | `"[result_count=N]\n" + content` |
+| `MCP`        | `"[mcp <server>/<tool>]\n" + output.OkayOutput` (or `.ErrorOutput`) |
+| `ListDir`    | `Content.content` |
+| `Todo`       | `TodosUpdated.summary_for_prompt` |
+| unknown      | `JSON.stringify(out)` with all byte-array fields decoded to UTF-8 strings |
+
+### Logical ordering: `metadata.ordinal`
+
+Grok occasionally appends `user_message_chunk` to `updates.jsonl` *after*
+agent_thought / tool_call events for the same prompt have already been
+written. Slice-by-count preserves file order, so re-reading the database
+sorted by `created_at` shows the agent reasoning *before* the prompt it
+was reasoning about. To make logical order recoverable without breaking
+slice-by-count, every row gets a stable `metadata.ordinal`:
+
+```
+ordinal = turn * 1_000_000 + sub_order
+  turn          = promptIndex for user_message_chunk
+                  = position of outer._meta.promptId in file-order list of distinct promptIds (otherwise)
+  sub_order     = 0 for user_message_chunk
+                  = 10_000 + line_index for anything else
+```
+
+The Nth distinct `promptId` in file order corresponds to the
+`user_message_chunk` with `promptIndex = N` (Grok writes them strictly
+in order, even when one chunk lands late within its own turn). So a
+single-pass scan over the file yields a stable promptId→turn map across
+re-parses; new lines only assign higher turn indices, never reshuffle
+existing ones — slice-by-count is preserved exactly.
+
+The capture itself inserts in file order. **A follow-up `plugins/memory/postgres`
+PR will teach `memory_browse` to `ORDER BY (metadata->>'ordinal')::bigint`
+when the column is populated**, which is when logical order becomes visible to
+recall queries. Until then, the value is sitting on every row, harmless and
+available.
+
 ### Idempotency: slice-by-count
 
 Identical to Claude's transcript-capture model.
