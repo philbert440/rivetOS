@@ -108,10 +108,23 @@ doesn't require any code edits here.
 
 ## Current Supported Events
 
-- `PostToolUse` / tool-related events → Captures tool name + input + result
-- `TurnAfter` / turn completion → Captures user + assistant content
-- `CompactBefore` → Captures messages about to be discarded during compaction (highest value for long sessions)
-- `SessionEnd` → Marks the conversation as inactive
+The hook launcher accepts any Grok lifecycle event name; the capture script
+classifies it into one of four internal "kinds" by substring match on the name:
+
+| Grok event              | Internal kind     | Captures                                       |
+|-------------------------|-------------------|------------------------------------------------|
+| `PostToolUse`           | `tool`            | tool name + input + result                     |
+| `PostToolUseFailure`    | `tool`            | tool name + input + result (failure)           |
+| `Stop`                  | `turn`            | user + assistant content                       |
+| `UserPromptSubmit`      | `turn`            | user prompt (assistant fields empty)           |
+| `PreCompact`            | `pre_compact`     | messages about to be discarded by the compactor (highest value for long sessions) |
+| `SessionStart`          | `turn`            | no-op insert; ensures the conversation row exists |
+| `SessionEnd`            | `session_end`     | marks the conversation inactive                |
+
+Classification is by substring (e.g. anything with `"Tool"` → `tool`,
+`"Compact"` → `pre_compact`, `"End"` → `session_end`, else `turn`). Future Grok
+event names should slot in without code changes as long as they contain a
+matching substring.
 
 ## Wiring into Grok
 

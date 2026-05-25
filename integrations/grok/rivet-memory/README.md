@@ -108,19 +108,28 @@ It is designed to be:
 
 ### Enabling Capture
 
-1. Use the provided launcher in your Grok hooks configuration (example in `hooks/hooks.json`):
-   ```json
-   {
-     "PostToolUse": [{ "hooks": [{ "type": "command", "command": ".../bin/grok-memory-hook.sh PostToolUse" }] }],
-     "TurnAfter": [...],
-     "CompactBefore": [...],
-     "SessionEnd": [...]
-   }
+Grok loads hooks from JSON files in `~/.grok/hooks/` (global) or
+`<project>/.grok/hooks/` (project, requires trust). They are **not** loaded
+from `~/.grok/config.toml` — that's MCP servers only.
+
+1. Drop the shipped example into your hooks dir:
+   ```bash
+   mkdir -p ~/.grok/hooks
+   cp /opt/rivetos/integrations/grok/rivet-memory/hooks/hooks.json ~/.grok/hooks/rivet-memory.json
    ```
 
-2. The launcher handles environment loading and hands off to the capture worker.
+2. The file wires 7 Grok lifecycle events:
+   ```
+   SessionStart, SessionEnd, UserPromptSubmit,
+   PostToolUse, PostToolUseFailure, Stop, PreCompact
+   ```
+   Each fires the launcher, which spools the payload and detaches a worker —
+   single-digit ms on the hot path. Edit the JSON to remove any event you
+   don't want.
 
-Pre-compaction capture (`CompactBefore`) is particularly valuable for long Grok sessions.
+3. The launcher handles environment loading and hands off to the capture worker.
+
+Pre-compaction capture (`PreCompact`) is the highest-value event for long Grok sessions — it preserves messages about to be discarded by the compactor.
 
 ## Architecture
 
