@@ -91,6 +91,10 @@ interface PendingMessage {
    * ordinal is recovered at query time.
    */
   ordinal?: number
+  /** Line number (0-indexed) of the source event in updates.jsonl. Stored as
+   *  metadata.session_jsonl_line so the full raw payload is recoverable from
+   *  disk when the row's content / tool_result has been truncated. */
+  lineIndex?: number
   /** Extra fields persisted into metadata. */
   extra?: Record<string, unknown>
 }
@@ -130,11 +134,6 @@ function resolvePgUrl(): string {
     }
   } catch {}
   throw new Error('RIVETOS_PG_URL not set and not found in ~/.rivetos/.env')
-}
-
-function trunc(s: string | null | undefined): string | null {
-  if (!s) return null
-  return s.length > MAX_CONTENT ? s.slice(0, MAX_CONTENT) + '\n…[truncated]' : s
 }
 
 function deriveSessionKey(sessionId: string): string {
@@ -276,6 +275,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
           eventId,
           eventTs,
           ordinal,
+          lineIndex: i,
           extra: { sessionUpdate: type, modelId: update._meta?.modelId, promptIndex: update._meta?.promptIndex },
         })
       }
@@ -288,6 +288,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
           eventId,
           eventTs,
           ordinal,
+          lineIndex: i,
           extra: { sessionUpdate: type },
         })
       }
@@ -300,6 +301,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
           eventId,
           eventTs,
           ordinal,
+          lineIndex: i,
           extra: { sessionUpdate: type },
         })
       }
@@ -332,6 +334,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
           eventId,
           eventTs,
           ordinal,
+          lineIndex: i,
           extra: {
             sessionUpdate: type,
             toolCallId: id,
@@ -348,6 +351,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
         eventId,
         eventTs,
         ordinal,
+        lineIndex: i,
         extra: { sessionUpdate: type },
       })
     }
@@ -374,44 +378,45 @@ function extractText(content: unknown): string | null {
  * byte arrays decoded/elided defensively.
  */
 function formatToolResult(update: any): string | null {
+  // Returns the full (un-truncated) human-readable result; truncation happens
+  // at the insertion layer so we can record the original length + a disk
+  // pointer in metadata when truncation occurs.
   const out = update?.rawOutput
   if (out && typeof out === 'object') {
     const t = out.type
     if (t === 'Bash') {
       if (typeof out.output_for_prompt === 'string') {
         const tail = `exit_code=${out.exit_code ?? '?'}${out.timed_out ? ' timed_out=true' : ''}${out.truncated ? ' truncated=true' : ''}`
-        return trunc(`${out.output_for_prompt}\n[${tail}]`)
+        return `${out.output_for_prompt}\n[${tail}]`
       }
     } else if (t === 'GrepSearch') {
-      if (typeof out.output_for_prompt === 'string') return trunc(out.output_for_prompt)
-      if (Array.isArray(out.stdout)) return trunc(bytesToString(out.stdout))
+      if (typeof out.output_for_prompt === 'string') return out.output_for_prompt
+      if (Array.isArray(out.stdout)) return bytesToString(out.stdout)
     } else if (t === 'ReadFile') {
-      if (typeof out.FileContent?.content === 'string') return trunc(out.FileContent.content)
+      if (typeof out.FileContent?.content === 'string') return out.FileContent.content
     } else if (t === 'SearchTool') {
       if (typeof out.content === 'string') {
         const prefix = typeof out.result_count === 'number' ? `[result_count=${out.result_count}]\n` : ''
-        return trunc(prefix + out.content)
+        return prefix + out.content
       }
     } else if (t === 'MCP') {
       const header = `[mcp ${out.server_name ?? '?'}/${out.tool_name ?? '?'}]`
       const o = out.output
-      if (typeof o === 'string') return trunc(`${header}\n${o}`)
-      if (typeof o?.OkayOutput === 'string') return trunc(`${header}\n${o.OkayOutput}`)
-      if (typeof o?.ErrorOutput === 'string') return trunc(`${header} ERROR\n${o.ErrorOutput}`)
+      if (typeof o === 'string') return `${header}\n${o}`
+      if (typeof o?.OkayOutput === 'string') return `${header}\n${o.OkayOutput}`
+      if (typeof o?.ErrorOutput === 'string') return `${header} ERROR\n${o.ErrorOutput}`
       // Unknown MCP envelope — JSON-stringify after stripping byte arrays.
-      try { return trunc(`${header}\n${JSON.stringify(stripByteArrays(o))}`) } catch {}
+      try { return `${header}\n${JSON.stringify(stripByteArrays(o))}` } catch {}
     } else if (t === 'ListDir') {
-      if (typeof out.Content?.content === 'string') return trunc(out.Content.content)
+      if (typeof out.Content?.content === 'string') return out.Content.content
     } else if (t === 'Todo') {
       if (typeof out.TodosUpdated?.summary_for_prompt === 'string') {
-        return trunc(out.TodosUpdated.summary_for_prompt)
+        return out.TodosUpdated.summary_for_prompt
       }
     }
     // Unknown rawOutput.type — JSON.stringify but with byte arrays decoded so
     // the row stays human-readable.
-    try {
-      return trunc(JSON.stringify(stripByteArrays(out)))
-    } catch {}
+    try { return JSON.stringify(stripByteArrays(out)) } catch {}
   }
   // Final fallback: textual content payload (rare; some tool_call_updates
   // carry a content[] array instead of rawOutput).
@@ -422,7 +427,7 @@ function formatToolResult(update: any): string | null {
       const t = extractText(inner)
       if (t) parts.push(t)
     }
-    if (parts.length) return trunc(parts.join('\n'))
+    if (parts.length) return parts.join('\n')
   }
   return null
 }
@@ -519,8 +524,31 @@ async function countExisting(client: PoolClient, conversationId: string): Promis
 async function insertMessage(
   client: PoolClient,
   conversationId: string,
-  m: PendingMessage
+  m: PendingMessage,
+  sessionJsonlPath: string | null
 ): Promise<void> {
+  // PendingMessage now carries un-truncated content + toolResult; trunc runs
+  // here so we can record the original length and a disk-pointer back to the
+  // source line in updates.jsonl when content was elided. Recall queries that
+  // hit a truncated row can read the full payload from disk via that pointer.
+  const contentFull = m.content ?? ''
+  const contentStored = contentFull.length > MAX_CONTENT
+    ? contentFull.slice(0, MAX_CONTENT) + '\n…[truncated]'
+    : contentFull
+  const contentTruncated = contentStored.length !== contentFull.length
+
+  const toolResultFull = m.toolResult ?? null
+  let toolResultStored: string | null = null
+  let toolResultTruncated = false
+  if (typeof toolResultFull === 'string') {
+    if (toolResultFull.length > MAX_CONTENT) {
+      toolResultStored = toolResultFull.slice(0, MAX_CONTENT) + '\n…[truncated]'
+      toolResultTruncated = true
+    } else {
+      toolResultStored = toolResultFull
+    }
+  }
+
   const meta: Record<string, unknown> = {
     source: 'grok-jsonl',
     ...(m.extra ?? {}),
@@ -528,6 +556,15 @@ async function insertMessage(
   if (m.eventId) meta.event_id = m.eventId
   if (m.eventTs) meta.event_ts = m.eventTs
   if (typeof m.ordinal === 'number') meta.ordinal = m.ordinal
+  if (sessionJsonlPath) meta.session_jsonl_path = sessionJsonlPath
+  if (typeof m.lineIndex === 'number') meta.session_jsonl_line = m.lineIndex
+  // Record original lengths whenever truncation occurred — recall consumers
+  // use full_content_length / full_tool_result_length to decide whether to
+  // re-read the source line from disk.
+  if (contentTruncated) meta.full_content_length = contentFull.length
+  if (toolResultTruncated && toolResultFull) meta.full_tool_result_length = toolResultFull.length
+  if (contentTruncated || toolResultTruncated) meta.truncated = true
+
   await client.query(
     `INSERT INTO ros_messages
        (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
@@ -537,10 +574,10 @@ async function insertMessage(
       CAPTURE_AGENT,
       CAPTURE_CHANNEL,
       m.role,
-      trunc(m.content) ?? '',
+      contentStored,
       m.toolName ?? null,
       m.toolArgs != null ? JSON.stringify(m.toolArgs) : null,
-      m.toolResult ?? null,
+      toolResultStored,
       JSON.stringify(meta),
     ]
   )
@@ -630,8 +667,9 @@ async function ingestSession(op: CaptureOp): Promise<void> {
 
     const stored = await countExisting(client, conv.id)
     const toInsert = parsed.slice(stored)
+    const sessionJsonlPath = path.join(sessionDir, 'updates.jsonl')
     for (const m of toInsert) {
-      await insertMessage(client, conv.id, m)
+      await insertMessage(client, conv.id, m, sessionJsonlPath)
     }
 
     if (op.finalize) {

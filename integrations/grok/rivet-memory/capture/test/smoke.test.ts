@@ -156,6 +156,38 @@ console.log('— parser tests against fixtures/session-updates.jsonl —')
   }
   check('sorting by ordinal puts user prompts ahead of their turn\'s agent events',
     outOfOrder === 0, `outOfOrder=${outOfOrder}`)
+
+  // Disk-pointer metadata (so truncated rows stay recoverable from
+  // updates.jsonl on disk): every parsed row carries a lineIndex pointing
+  // back to its source line in the JSONL.
+  const allHaveLineIndex = parsed.every(m => typeof m.lineIndex === 'number')
+  check('every parsed row carries a lineIndex', allHaveLineIndex)
+  // lineIndex must monotonically non-decrease across the parsed list
+  // (different rows from the same line — e.g. tool_call followed by tool_call_update —
+  //  can share an index, but later events never go backwards).
+  let lastLine = -1
+  let backwards = 0
+  for (const m of parsed) {
+    if (typeof m.lineIndex !== 'number') continue
+    if (m.lineIndex < lastLine) backwards++
+    lastLine = m.lineIndex
+  }
+  check('lineIndex is monotonic non-decreasing across parsed rows',
+    backwards === 0, `backwards=${backwards}`)
+
+  // The full (un-truncated) content/toolResult is carried on PendingMessage;
+  // insertMessage applies the MAX_CONTENT cap at DB write time. Verify the
+  // raw text is at least as long as what would be stored — i.e. parseUpdates
+  // does NOT itself truncate (regression guard for the trunc-moved refactor).
+  const longestToolResult = parsed
+    .filter(m => typeof m.toolResult === 'string')
+    .reduce((max, m) => Math.max(max, (m.toolResult as string).length), 0)
+  check('parser preserves full tool_result length (no premature truncation)',
+    !parsed.some(m =>
+      typeof m.toolResult === 'string' &&
+      m.toolResult.endsWith('\n…[truncated]')
+    ),
+    `longestToolResult=${longestToolResult}`)
 }
 
 // =============================================================================

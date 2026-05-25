@@ -111,6 +111,27 @@ session id (resolved from `$GROK_SESSION_ID` env, which Grok always injects).
 Each emitted row carries the original `_meta.eventId` and `agentTimestampMs`
 in its metadata for traceability.
 
+### Truncation + disk pointer
+
+Large tool outputs (e.g. a 50KB `memory_browse` MCP dump) would balloon row
+size, embedder cost, and search noise if stored in full. The capture caps
+each row's `content` and `tool_result` at `MAX_CONTENT` (16K chars) and writes
+the elided content as `…[truncated]`. To keep the full payload recoverable on
+demand without bloating the searchable store, every row records a pointer
+back to its source line in `updates.jsonl`:
+
+| metadata field | meaning |
+|---|---|
+| `session_jsonl_path`     | absolute path to the session's `updates.jsonl` |
+| `session_jsonl_line`     | 0-indexed line number of the source event |
+| `truncated`              | `true` iff `content` or `tool_result` was elided |
+| `full_content_length`    | original length of `content`, set when truncated |
+| `full_tool_result_length`| original length of `tool_result`, set when truncated |
+
+A future MCP tool can read line `session_jsonl_line` from `session_jsonl_path`
+to surface the full payload when recall needs it. The default search/browse
+path stays focused on conversational substance.
+
 ### Tool result readability
 
 `tool_call_update.rawOutput` is type-tagged; raw stringification would leak
