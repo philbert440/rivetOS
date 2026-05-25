@@ -99,12 +99,17 @@ See the **Capture** section below.
 
 ## Capture (Automatic History Writing)
 
-The capture system writes user prompts, assistant responses, tool calls, and pre-compaction messages into the shared memory store under `agent = "rivet-grok"`.
+The capture system writes the full Grok session — user prompts, assistant
+responses, agent thoughts, tool calls *and their actual outputs*, and
+memory-flush markers — into the shared memory store under `agent = "rivet-grok"`.
 
 It is designed to be:
 - Extremely fast on the hot path (spool + detached worker)
 - Best-effort (never blocks your Grok session)
-- Rich (especially pre-compaction)
+- **Complete** — reads Grok's own session transcript at `~/.grok/sessions/.../updates.jsonl`
+  rather than trying to reconstruct content from hook payloads (which carry
+  only signals; the response text, agent thoughts, and tool outputs are *not*
+  in any hook payload — they only exist in `updates.jsonl`).
 
 ### Enabling Capture
 
@@ -123,20 +128,31 @@ from `~/.grok/config.toml` — that's MCP servers only.
    SessionStart, SessionEnd, UserPromptSubmit,
    PostToolUse, PostToolUseFailure, Stop, PreCompact
    ```
-   Each fires the launcher, which spools the payload and detaches a worker —
-   single-digit ms on the hot path. Edit the JSON to remove any event you
-   don't want.
+   Each fires the launcher, which spools an *ingest* job and detaches a
+   worker — single-digit ms on the hot path. The worker then reads the
+   session's `updates.jsonl` from disk and inserts only the messages it
+   hasn't already stored (slice-by-count idempotency). Edit the JSON to
+   remove any event you don't want — the worker is fully re-entrant, so
+   fewer triggers just means less-frequent refresh.
 
 3. The launcher handles environment loading and hands off to the capture worker.
 
-Pre-compaction capture (`PreCompact`) is the highest-value event for long Grok sessions — it preserves messages about to be discarded by the compactor.
+Pre-compaction capture (`PreCompact`) is the highest-value trigger — it
+guarantees we ingest before Grok rewrites the session log.
 
 ## Architecture
 
-This integration follows a **Grok-native hybrid** approach, deliberately chosen after comparing the Claude and Hermes implementations:
+This integration adopts the proven **JSONL-ingest** pattern from
+`plugins/providers/claude-cli/src/transcript-capture.ts`:
 
 - **Tools** — Exposed via MCP (idiomatic to Grok's `search_tool` / `use_tool` model)
-- **Capture** — Uses Grok's hook system + background spooling/worker (combines the best non-blocking patterns from both other implementations). Per-session advisory lock + content-hash `event_id` dedup makes the hot path idempotent across hook retries without a schema migration (see [`capture/README.md`](./capture/README.md#dedup-model)).
+- **Capture** — Hooks are pure **triggers**; the worker reads Grok's authoritative
+  session log (`updates.jsonl`) directly. This is the same file the Grok TUI
+  uses for `/load` and session restore, so it carries everything Grok itself
+  knows about the session: user prompts, assistant responses, agent thoughts,
+  full structured tool I/O. Idempotency comes from slice-by-count over a
+  deterministic parser of an append-only file. See
+  [`capture/README.md`](./capture/README.md#architecture-jsonl-ingestion).
 - **Discipline** — The strongest version of the memory-recall rules, with explicit `window=` awareness and pre-compaction sensitivity
 
 This makes Grok sessions first-class citizens in the shared RivetOS memory store.

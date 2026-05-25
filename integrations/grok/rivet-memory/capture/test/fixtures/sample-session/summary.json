@@ -1,0 +1,19 @@
+{
+  "info": {
+    "id": "019e5f82-f0e5-7d41-a38c-4eefced7e570",
+    "cwd": "/home/rivet"
+  },
+  "session_summary": "Reviewing Yesterday's Software Engineering Codebase Activities",
+  "created_at": "2026-05-25T14:21:17.423609472Z",
+  "updated_at": "2026-05-25T14:26:22.018062778Z",
+  "num_messages": 76,
+  "num_chat_messages": 26,
+  "current_model_id": "grok-build",
+  "next_trace_turn": 3,
+  "chat_format_version": 1,
+  "request_id": "0055724d-17ef-47fb-9cb0-78cc0eea1bca",
+  "grok_home": "/home/rivet/.grok",
+  "last_active_at": "2026-05-25T14:26:22.018062375Z",
+  "generated_title": "Reviewing Yesterday's Software Engineering Codebase Activities",
+  "agent_name": "grok-build-plan"
+}
