@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# grok-memory-hook — forward a Grok Build lifecycle hook payload to RivetOS capture.
+# grok-memory-hook — fire a RivetOS capture ingest pass for a Grok session.
 #
-# This script is meant to be referenced from Grok's hooks configuration.
-# It is extremely fast and best-effort: it always exits 0.
+# This script is meant to be referenced from Grok's hooks configuration. It
+# is a pure trigger: every lifecycle event (SessionStart, UserPromptSubmit,
+# PostToolUse, Stop, PreCompact, SessionEnd, …) shells in here, and the
+# capture worker reads the session's updates.jsonl from disk to figure out
+# what actually changed (slice-by-count idempotency). It is extremely fast
+# and best-effort: it always exits 0.
 #
 # Path discovery: respects $RIVETOS_ROOT (default /opt/rivetos). Prefers the
 # built artifact at .../capture/dist/grok-memory-capture.js (produced by
