@@ -2,20 +2,16 @@
 /**
  * Grok Memory Capture — production-ready capture for RivetOS memory from Grok Build.
  *
- * This module is designed to be invoked from Grok's hook system.
+ * See capture/README.md for architecture and wiring details.
  *
  * Usage patterns:
- *   - From Grok hooks: node .../grok-memory-capture.ts --hook <event-name>
- *     (hook payload is read from stdin, like Claude Code hooks)
+ *   - From Grok hooks: the hook script runs this via `npx tsx` (see bin/grok-memory-hook.sh)
+ *   - Direct: npx tsx grok-memory-capture.ts --hook <event>
+ *   - Worker: npx tsx grok-memory-capture.ts --worker [spool-file]
  *
- *   - Worker mode (internal): node .../grok-memory-capture.ts --worker <spool-file>
- *
- * Design:
- * - Extremely fast on the hot path: spool + detach worker, exit immediately.
- * - Worker does the actual DB work out of band.
- * - Supports rich events: turns, tool calls, pre-compaction bulk, delegations, session end.
- * - Reuses the same insert patterns and idempotency as the Claude capture.
- * - Best effort: never throws to the calling Grok session.
+ * This is intentionally modeled on the proven patterns from both:
+ * - Claude Code capture (spool + detached worker for non-blocking)
+ * - Hermes capture (rich events including pre-compaction)
  */
 
 import fs from 'node:fs'
@@ -35,8 +31,8 @@ export const CAPTURE_CHANNEL = 'grok-build'
 
 const LOG_FILE = path.join(os.homedir(), '.rivetos', 'grok-memory-capture.log')
 const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-grok-capture')
-const MAX_CONTENT = 16000
-const STATEMENT_TIMEOUT_MS = 15000
+const MAX_CONTENT = 16000               // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts
+const STATEMENT_TIMEOUT_MS = 15000      // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts
 
 // ---------------------------------------------------------------------------
 // Types
@@ -169,7 +165,7 @@ export function enqueue(op: CaptureOp): void {
     fs.writeFileSync(spoolFile, JSON.stringify(op))
 
     const self = process.argv[1] ?? import.meta.url.replace('file://', '')
-    const child = spawn(process.execPath, [self, '--worker'], {
+    const child = spawn(process.execPath, [self, '--worker', spoolFile], {
       detached: true,
       stdio: 'ignore',
     })
@@ -261,6 +257,7 @@ async function processOp(op: CaptureOp): Promise<void> {
 }
 
 async function runWorker(spoolFile?: string) {
+  fs.mkdirSync(SPOOL_DIR, { recursive: true })
   const files = spoolFile
     ? [spoolFile]
     : fs.readdirSync(SPOOL_DIR).filter(f => f.endsWith('.json')).map(f => path.join(SPOOL_DIR, f))
@@ -308,11 +305,11 @@ async function main() {
     if (event.includes('Compact') || event.includes('compact')) kind = 'pre_compact'
     if (event.includes('End') || event.includes('end')) kind = 'session_end'
 
-    enqueue({ kind, sessionKey, payload: { ...payload, hook_event_name: event } as any })
+    enqueue({ kind, sessionKey, payload: { ...payload, hook_event_name: event } })
     process.exit(0) // always succeed fast
   }
 
-  console.log('Usage: node grok-memory-capture.ts --hook <event>  |  --worker [file]')
+  console.log('Usage: npx tsx grok-memory-capture.ts --hook <event>  |  --worker [file]')
 }
 
 main().catch(err => {
