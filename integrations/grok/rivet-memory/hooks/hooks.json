@@ -30,7 +30,7 @@
           {
             "type": "command",
             "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-memory/bin/grok-memory-hook.sh CompactBefore",
-            "timeout": 15
+            "timeout": 8
           }
         ]
       }
