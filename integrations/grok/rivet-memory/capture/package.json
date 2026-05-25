@@ -1,0 +1,25 @@
+{
+  "name": "@rivetos/grok-rivet-memory-capture",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Capture worker for the Grok Build rivet-memory integration. Spools hook payloads and writes them into the shared RivetOS memory store under agent='rivet-grok'.",
+  "license": "Apache-2.0",
+  "main": "dist/grok-memory-capture.js",
+  "bin": {
+    "grok-rivet-memory-capture": "dist/grok-memory-capture.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx test/smoke.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/pg": "^8.20.0"
+  }
+}

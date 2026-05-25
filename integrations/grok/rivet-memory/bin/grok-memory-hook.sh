@@ -3,11 +3,19 @@
 #
 # This script is meant to be referenced from Grok's hooks configuration.
 # It is extremely fast and best-effort: it always exits 0.
+#
+# Path discovery: respects $RIVETOS_ROOT (default /opt/rivetos). Prefers the
+# built artifact at .../capture/dist/grok-memory-capture.js (produced by
+# `npm run build` in the @rivetos/grok-rivet-memory-capture workspace). Falls
+# back to running the .ts source via `npx --yes tsx` for ergonomics on
+# unbuilt checkouts — the .js path is the supported production path.
 
 set -euo pipefail
 
 RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
-CAPTURE_SCRIPT="$RIVETOS_ROOT/integrations/grok/rivet-memory/capture/grok-memory-capture.ts"
+CAPTURE_DIR="$RIVETOS_ROOT/integrations/grok/rivet-memory/capture"
+CAPTURE_BUILT="$CAPTURE_DIR/dist/grok-memory-capture.js"
+CAPTURE_SRC="$CAPTURE_DIR/src/grok-memory-capture.ts"
 
 # Source env for DB credentials if present
 RIVETOS_ENV="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
@@ -18,17 +26,12 @@ if [ -f "$RIVETOS_ENV" ]; then
   set +a
 fi
 
-if [ ! -f "$CAPTURE_SCRIPT" ]; then
-  echo "grok-memory-hook: capture script not found at $CAPTURE_SCRIPT" >&2
-  exit 0
-fi
-
-# Prefer a pre-built JS if it exists (matches Claude sibling pattern), otherwise fall back to tsx.
-CAPTURE_JS="${CAPTURE_SCRIPT%.ts}.js"
-if [ -f "$CAPTURE_JS" ]; then
-  node "$CAPTURE_JS" --hook "${1:-unknown}" || true
+if [ -f "$CAPTURE_BUILT" ]; then
+  node "$CAPTURE_BUILT" --hook "${1:-unknown}" || true
+elif [ -f "$CAPTURE_SRC" ]; then
+  npx --yes tsx "$CAPTURE_SRC" --hook "${1:-unknown}" || true
 else
-  npx --yes tsx "$CAPTURE_SCRIPT" --hook "${1:-unknown}" || true
+  echo "grok-memory-hook: capture not found at $CAPTURE_BUILT or $CAPTURE_SRC" >&2
 fi
 
 exit 0
