@@ -109,22 +109,30 @@ doesn't require any code edits here.
 ## Current Supported Events
 
 The hook launcher accepts any Grok lifecycle event name; the capture script
-classifies it into one of four internal "kinds" by substring match on the name:
+classifies it into one of four internal "kinds" by substring match on the
+name. **Classifier precedence is last-match-wins** — see the comment in
+`main()` for the rule order. Concretely:
 
-| Grok event              | Internal kind     | Captures                                       |
+| Grok event              | Internal kind     | What gets stored (under `agent='rivet-grok'`) |
 |-------------------------|-------------------|------------------------------------------------|
-| `PostToolUse`           | `tool`            | tool name + input + result                     |
-| `PostToolUseFailure`    | `tool`            | tool name + input + result (failure)           |
-| `Stop`                  | `turn`            | user + assistant content                       |
-| `UserPromptSubmit`      | `turn`            | user prompt (assistant fields empty)           |
-| `PreCompact`            | `pre_compact`     | messages about to be discarded by the compactor (highest value for long sessions) |
-| `SessionStart`          | `turn`            | no-op insert; ensures the conversation row exists |
-| `SessionEnd`            | `session_end`     | marks the conversation inactive                |
+| `PostToolUse`           | `tool`            | One tool message: `toolName` + `toolInput` + `toolResult` from the payload |
+| `PostToolUseFailure`    | `tool`            | Same as PostToolUse, but `toolResult` may carry an `error` / `toolError` field instead |
+| `UserPromptSubmit`      | `turn`            | One user message; reads `prompt` / `userPrompt` / `user` (first defined) |
+| `Stop`                  | `turn`            | One assistant message; reads `response` / `finalResponse` / `assistant` (first defined). Field name not in Grok docs — verify before relying on. |
+| `PreCompact`            | `pre_compact`     | Each item in payload `messages[]` as a separate row, dedup-keyed by position+role+content. Highest value event for long sessions. |
+| `SessionStart`          | `turn`            | No message rows; the call still upserts the conversation row so downstream events have a parent |
+| `SessionEnd`            | `session_end`     | Flips `ros_conversations.active = false`. No message rows. |
 
-Classification is by substring (e.g. anything with `"Tool"` → `tool`,
-`"Compact"` → `pre_compact`, `"End"` → `session_end`, else `turn`). Future Grok
-event names should slot in without code changes as long as they contain a
-matching substring.
+### Payload field-name handling
+
+Grok emits **camelCase** keys per `~/.grok/docs/user-guide/10-hooks.md`
+(`sessionId`, `toolName`, `toolInput`, `toolResult`, `hookEventName`, etc.).
+Test fixtures and Claude-compat callers historically used snake_case. All
+field access in the worker goes through a `pickField(payload, ...names)`
+helper that tries multiple plausible names in order, so both styles work.
+The session id additionally falls back to the `GROK_SESSION_ID` env var
+(which Grok always injects into the hook process), so even a payload missing
+the JSON field still groups correctly.
 
 ## Wiring into Grok
 

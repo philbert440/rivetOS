@@ -1,5 +1,5 @@
 {
-  "description": "Example hooks configuration for Grok Build to capture into RivetOS memory. Drop this (or its contents) into ~/.grok/hooks/rivet-memory.json — NOT into ~/.grok/config.toml. Hook event names match Grok's actual lifecycle events (see ~/.grok/docs/user-guide/10-hooks.md).",
+  "description": "RivetOS rivet-memory capture. Install at ~/.grok/hooks/rivet-memory.json (NOT config.toml). Event names per ~/.grok/docs/user-guide/10-hooks.md.",
   "hooks": {
     "SessionStart": [
       {
@@ -36,6 +36,7 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
@@ -47,6 +48,7 @@
     ],
     "PostToolUseFailure": [
       {
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",

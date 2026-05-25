@@ -73,19 +73,22 @@ console.log('Running Grok Memory Capture smoke tests...\n')
   )
 }
 
-// 2. --hook with a tool payload spools exactly one CaptureOp file with the expected shape.
+// 2. --hook with a Grok-shaped camelCase tool payload spools exactly one
+//    CaptureOp file with the expected shape. This mirrors what real Grok
+//    emits per ~/.grok/docs/user-guide/10-hooks.md (camelCase keys).
 {
   const sessionId = 'smoke-test-' + Date.now()
   const before = new Set(listSpool())
   const payload = JSON.stringify({
-    session_id: sessionId,
-    tool_name: 'echo',
-    tool_input: { x: 1 },
-    tool_result: 'ok',
+    hookEventName: 'post_tool_use',
+    sessionId,
+    toolName: 'run_terminal_cmd',
+    toolInput: { command: 'echo hi' },
+    toolResult: 'hi',
   })
   const r = run(['--hook', 'PostToolUse'], payload)
   check(
-    '--hook with payload exits 0',
+    '--hook with camelCase Grok payload exits 0',
     r.status === 0,
     `status=${r.status} stderr=${(r.stderr || '').trim()}`,
   )
@@ -106,18 +109,82 @@ console.log('Running Grok Memory Capture smoke tests...\n')
     check('spool file is valid JSON', parsed !== null)
     check('spool op.kind === "tool" for PostToolUse', parsed?.kind === 'tool')
     check(
-      `spool op.sessionKey === "grok-build:${sessionId}"`,
+      `spool op.sessionKey === "grok-build:${sessionId}" (resolved from camelCase sessionId)`,
       parsed?.sessionKey === `grok-build:${sessionId}`,
     )
     check(
-      'spool op.payload.tool_name preserved',
-      parsed?.payload?.tool_name === 'echo',
+      'spool op.payload.toolName preserved through the spool',
+      parsed?.payload?.toolName === 'run_terminal_cmd',
     )
     try { fs.unlinkSync(spoolPath) } catch { /* best effort */ }
   }
 }
 
-// 3. --worker on a missing spool file does not throw and exits 0.
+// 3. --hook with snake_case payload (legacy/fixtures) still works.
+{
+  const sessionId = 'smoke-test-snake-' + Date.now()
+  const before = new Set(listSpool())
+  const payload = JSON.stringify({
+    session_id: sessionId,
+    tool_name: 'echo',
+    tool_input: { x: 1 },
+    tool_result: 'ok',
+  })
+  const r = run(['--hook', 'PostToolUse'], payload)
+  check(
+    '--hook with snake_case payload exits 0',
+    r.status === 0,
+    `status=${r.status} stderr=${(r.stderr || '').trim()}`,
+  )
+  const newFiles = listSpool().filter(f => !before.has(f))
+  if (newFiles.length === 1) {
+    const spoolPath = path.join(SPOOL_DIR, newFiles[0])
+    let parsed: { sessionKey?: string } | null = null
+    try { parsed = JSON.parse(fs.readFileSync(spoolPath, 'utf8')) } catch { /* */ }
+    check(
+      'snake_case session_id resolves the same sessionKey as camelCase',
+      parsed?.sessionKey === `grok-build:${sessionId}`,
+    )
+    try { fs.unlinkSync(spoolPath) } catch { /* */ }
+  } else {
+    check('snake_case payload writes exactly one spool file', false, `newFiles=${JSON.stringify(newFiles)}`)
+  }
+}
+
+// 4. --hook with UserPromptSubmit (turn kind) — the prompt field becomes
+//    the user message via the pickField fallback chain. Smoke verifies the
+//    spooled payload preserves the prompt for the worker to read.
+{
+  const sessionId = 'smoke-prompt-' + Date.now()
+  const before = new Set(listSpool())
+  const payload = JSON.stringify({
+    hookEventName: 'user_prompt_submit',
+    sessionId,
+    prompt: 'hello rivet',
+  })
+  const r = run(['--hook', 'UserPromptSubmit'], payload)
+  check(
+    '--hook UserPromptSubmit exits 0',
+    r.status === 0,
+    `status=${r.status} stderr=${(r.stderr || '').trim()}`,
+  )
+  const newFiles = listSpool().filter(f => !before.has(f))
+  if (newFiles.length === 1) {
+    const spoolPath = path.join(SPOOL_DIR, newFiles[0])
+    let parsed: { kind?: string; payload?: Record<string, unknown> } | null = null
+    try { parsed = JSON.parse(fs.readFileSync(spoolPath, 'utf8')) } catch { /* */ }
+    check('UserPromptSubmit classifies as kind=turn', parsed?.kind === 'turn')
+    check(
+      'spooled payload.prompt is preserved for the worker',
+      parsed?.payload?.prompt === 'hello rivet',
+    )
+    try { fs.unlinkSync(spoolPath) } catch { /* */ }
+  } else {
+    check('UserPromptSubmit writes exactly one spool file', false, `newFiles=${JSON.stringify(newFiles)}`)
+  }
+}
+
+// 5. --worker on a missing spool file does not throw and exits 0.
 {
   const missing = path.join(os.tmpdir(), `nonexistent-spool-${Date.now()}.json`)
   const r = run(['--worker', missing])
