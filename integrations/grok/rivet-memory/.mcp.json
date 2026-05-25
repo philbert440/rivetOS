@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rivetos": {
+      "command": "${RIVETOS_ROOT:-/opt/rivetos}/plugins/transports/mcp-server/dist/cli.js",
+      "args": ["--stdio"],
+      "env": {
+        "RIVETOS_ENV_FILE": "${HOME}/.rivetos/.env"
+      }
+    }
+  }
+}

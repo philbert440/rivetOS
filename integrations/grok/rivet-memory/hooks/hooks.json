@@ -1,0 +1,50 @@
+{
+  "description": "Example hooks configuration for Grok Build to capture into RivetOS memory.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-memory/bin/grok-memory-hook.sh PostToolUse",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "TurnAfter": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-memory/bin/grok-memory-hook.sh TurnAfter",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "CompactBefore": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-memory/bin/grok-memory-hook.sh CompactBefore",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-memory/bin/grok-memory-hook.sh SessionEnd",
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  }
+}
