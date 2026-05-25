@@ -1,39 +1,127 @@
 /**
- * Basic smoke test for grok-memory-capture.ts
+ * Smoke test for grok-memory-capture.ts
  *
- * Run with: npx tsx capture/test/smoke.test.ts   (or ts-node / vitest)
+ * Run with: npx tsx capture/test/smoke.test.ts
+ *
+ * Verifies the hot-path behavior end-to-end without needing a Postgres:
+ *   - `--hook` exits 0 on empty stdin (the hook contract — never block Grok).
+ *   - `--hook` with a tool-event payload writes a single spool file whose
+ *     contents decode back to the expected CaptureOp shape.
+ *   - `--worker` on a missing spool file does not throw.
+ *
+ * The detached worker spawn is left to fail (we deliberately unset
+ * RIVETOS_PG_URL and point RIVETOS_ENV_FILE at /dev/null) so the spool file
+ * is not consumed before the test can inspect it.
  */
-import { spawnSync } from 'child_process';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import fs from 'node:fs'
+import os from 'node:os'
 
-const CAPTURE_SCRIPT = path.join(__dirname, '..', 'grok-memory-capture.ts');
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const CAPTURE_SCRIPT = path.join(__dirname, '..', 'grok-memory-capture.ts')
+const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-grok-capture')
 
-function runCapture(args: string[], input?: string) {
-  const result = spawnSync('node', ['--loader', 'ts-node/esm', CAPTURE_SCRIPT, ...args], {
-    input: input || '',
+const childEnv: NodeJS.ProcessEnv = { ...process.env, RIVETOS_ENV_FILE: '/dev/null' }
+delete childEnv.RIVETOS_PG_URL
+
+function run(args: string[], stdin = ''): SpawnSyncReturns<string> {
+  return spawnSync('npx', ['--yes', 'tsx', CAPTURE_SCRIPT, ...args], {
+    input: stdin,
     encoding: 'utf8',
-    timeout: 5000,
-  });
-  return result;
+    env: childEnv,
+    timeout: 30000,
+  })
 }
 
-console.log('Running Grok Memory Capture smoke tests...');
-
-// Test 1: --help / usage doesn't crash
-const help = runCapture(['--hook', 'PostToolUse']);
-if (help.status !== 0) {
-  console.error('FAIL: --hook mode should exit 0 even on bad input');
-  process.exit(1);
+function listSpool(): string[] {
+  try {
+    return fs.readdirSync(SPOOL_DIR).filter(f => f.endsWith('.json'))
+  } catch {
+    return []
+  }
 }
-console.log('✓ --hook mode exits cleanly');
 
-// Test 2: Worker mode with non-existent file is handled
-const worker = runCapture(['--worker', '/tmp/nonexistent-spool-file-123.json']);
-console.log('✓ --worker mode handles missing files without crashing');
+let failed = 0
+function check(name: string, cond: boolean, detail = ''): void {
+  if (cond) {
+    console.log(`✓ ${name}`)
+  } else {
+    console.error(`✗ ${name}${detail ? ': ' + detail : ''}`)
+    failed++
+  }
+}
 
-// Test 3: Basic enqueue doesn't throw (we can't easily test the full path without DB)
-console.log('✓ Basic module loads and functions are available');
+console.log('Running Grok Memory Capture smoke tests...\n')
 
-console.log('\nAll smoke tests passed!');
+// 1. --hook returns 0 even with empty stdin (the never-block-Grok contract).
+{
+  const r = run(['--hook', 'PostToolUse'])
+  check(
+    '--hook exits 0 on empty input',
+    r.status === 0,
+    `status=${r.status} stderr=${(r.stderr || '').trim()}`,
+  )
+}
+
+// 2. --hook with a tool payload spools exactly one CaptureOp file with the expected shape.
+{
+  const sessionId = 'smoke-test-' + Date.now()
+  const before = new Set(listSpool())
+  const payload = JSON.stringify({
+    session_id: sessionId,
+    tool_name: 'echo',
+    tool_input: { x: 1 },
+    tool_result: 'ok',
+  })
+  const r = run(['--hook', 'PostToolUse'], payload)
+  check(
+    '--hook with payload exits 0',
+    r.status === 0,
+    `status=${r.status} stderr=${(r.stderr || '').trim()}`,
+  )
+  const newFiles = listSpool().filter(f => !before.has(f))
+  check(
+    '--hook with payload writes exactly one spool file',
+    newFiles.length === 1,
+    `newFiles=${JSON.stringify(newFiles)}`,
+  )
+  if (newFiles.length === 1) {
+    const spoolPath = path.join(SPOOL_DIR, newFiles[0])
+    let parsed: { kind?: string; sessionKey?: string; payload?: Record<string, unknown> } | null = null
+    try {
+      parsed = JSON.parse(fs.readFileSync(spoolPath, 'utf8'))
+    } catch {
+      /* parsed stays null */
+    }
+    check('spool file is valid JSON', parsed !== null)
+    check('spool op.kind === "tool" for PostToolUse', parsed?.kind === 'tool')
+    check(
+      `spool op.sessionKey === "grok-build:${sessionId}"`,
+      parsed?.sessionKey === `grok-build:${sessionId}`,
+    )
+    check(
+      'spool op.payload.tool_name preserved',
+      parsed?.payload?.tool_name === 'echo',
+    )
+    try { fs.unlinkSync(spoolPath) } catch { /* best effort */ }
+  }
+}
+
+// 3. --worker on a missing spool file does not throw and exits 0.
+{
+  const missing = path.join(os.tmpdir(), `nonexistent-spool-${Date.now()}.json`)
+  const r = run(['--worker', missing])
+  check(
+    '--worker handles missing file',
+    r.status === 0,
+    `status=${r.status} stderr=${(r.stderr || '').trim()}`,
+  )
+}
+
+if (failed > 0) {
+  console.error(`\n${failed} check(s) failed.`)
+  process.exit(1)
+}
+console.log('\nAll smoke tests passed.')

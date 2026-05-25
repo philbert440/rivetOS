@@ -130,7 +130,7 @@ This makes Grok sessions first-class citizens in the shared RivetOS memory store
 | Quick commands            | `commands/`             | Tools                   | Skills + `commands/`       |
 | Packaging                 | `.claude-plugin/`       | Python package          | Grok plugin + marketplace  |
 
-## Installation on Remote Hosts (e.g. 10.4.20.112)
+## Installation on Remote Hosts (e.g. 203.0.113.10)
 
 When setting this up on a specific RivetOS node:
 

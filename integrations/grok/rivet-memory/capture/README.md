@@ -43,8 +43,21 @@ Writes to the standard RivetOS tables:
 
 The same tables used by `rivet-claude` and `rivet-hermes`.
 
+## Smoke Test
+
+From the repo root (after `npm install`):
+
+```bash
+npx tsx integrations/grok/rivet-memory/capture/test/smoke.test.ts
+```
+
+The test verifies the `--hook` path spools a well-formed `CaptureOp` JSON
+without needing a live Postgres (it points `RIVETOS_ENV_FILE` at `/dev/null`
+so the detached worker fails fast and the spool file persists for
+inspection). Exits non-zero on failure.
+
 ## Future Improvements
 
-- Better structured typing for Grok hook payloads
 - Shared capture client library with the Claude implementation
 - Optional direct (non-spool) path when running inside certain Grok contexts
+- Wire the smoke test into the project's `vitest` runner

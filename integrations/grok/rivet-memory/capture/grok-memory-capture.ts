@@ -18,6 +18,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import pg from 'pg'
 import type { PoolClient } from 'pg'
 
@@ -54,6 +55,11 @@ interface CaptureOp {
   sessionKey: string
   payload: Record<string, unknown>
 }
+
+// Per-kind payload shapes (typed views over CaptureOp.payload).
+interface TurnPayload { user?: string; assistant?: string; title?: string }
+interface ToolPayload { tool_name?: string; tool_input?: unknown; tool_result?: unknown }
+interface PreCompactPayload { messages?: Array<{ role?: string; content?: string }> }
 
 // ---------------------------------------------------------------------------
 // Logging (never throws)
@@ -164,8 +170,17 @@ export function enqueue(op: CaptureOp): void {
     const spoolFile = path.join(SPOOL_DIR, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
     fs.writeFileSync(spoolFile, JSON.stringify(op))
 
-    const self = process.argv[1] ?? import.meta.url.replace('file://', '')
-    const child = spawn(process.execPath, [self, '--worker', spoolFile], {
+    // Pick a worker invocation that can actually load this file. If we're running
+    // a .ts source, plain `node` can't re-exec it — prefer a pre-built .js sibling
+    // (matches bin/grok-memory-hook.sh), and fall back to `npx tsx` otherwise.
+    const self = process.argv[1] ?? fileURLToPath(import.meta.url)
+    const builtJs = self.endsWith('.ts') ? self.replace(/\.ts$/, '.js') : null
+    const spawnPlan = builtJs && fs.existsSync(builtJs)
+      ? { cmd: process.execPath, args: [builtJs, '--worker', spoolFile] }
+      : self.endsWith('.ts')
+        ? { cmd: 'npx', args: ['--yes', 'tsx', self, '--worker', spoolFile] }
+        : { cmd: process.execPath, args: [self, '--worker', spoolFile] }
+    const child = spawn(spawnPlan.cmd, spawnPlan.args, {
       detached: true,
       stdio: 'ignore',
     })
@@ -193,7 +208,7 @@ async function processOp(op: CaptureOp): Promise<void> {
     const settings = { source: 'grok-hook', event: op.kind, ...op.payload }
 
     if (op.kind === 'turn') {
-      const { user, assistant, title } = op.payload as any
+      const { user, assistant, title } = op.payload as TurnPayload
       const conv = await findOrCreateConversation(client, sessionKey, {
         title: title || 'Grok Build session',
         settings,
@@ -207,7 +222,7 @@ async function processOp(op: CaptureOp): Promise<void> {
         await insertMessage(client, conv.id, { role: 'assistant', content: trunc(assistant) ?? '', metadata: { source: 'grok-hook' } })
       }
     } else if (op.kind === 'tool') {
-      const { tool_name, tool_input, tool_result } = op.payload as any
+      const { tool_name, tool_input, tool_result } = op.payload as ToolPayload
       const conv = await findOrCreateConversation(client, sessionKey, {
         title: `Grok tool: ${tool_name}`,
         settings,
@@ -218,11 +233,11 @@ async function processOp(op: CaptureOp): Promise<void> {
         content: `[tool] ${tool_name}`,
         toolName: tool_name,
         toolArgs: tool_input,
-        toolResult: trunc(tool_result),
+        toolResult: trunc(typeof tool_result === 'string' ? tool_result : tool_result == null ? null : JSON.stringify(tool_result)),
         metadata: { source: 'grok-hook' },
       })
     } else if (op.kind === 'pre_compact') {
-      const messages = (op.payload.messages as any[]) || []
+      const messages = (op.payload as PreCompactPayload).messages ?? []
       const conv = await findOrCreateConversation(client, sessionKey, {
         title: 'Grok session (pre-compact)',
         settings,

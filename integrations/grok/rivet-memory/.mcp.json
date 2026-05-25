@@ -1,11 +1,7 @@
 {
   "mcpServers": {
     "rivetos": {
-      "command": "${RIVETOS_ROOT:-/opt/rivetos}/plugins/transports/mcp-server/dist/cli.js",
-      "args": ["--stdio"],
-      "env": {
-        "RIVETOS_ENV_FILE": "${HOME}/.rivetos/.env"
-      }
+      "command": "/opt/rivetos/integrations/grok/rivet-memory/bin/rivet-memory-mcp.sh"
     }
   }
 }
