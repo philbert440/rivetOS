@@ -1,0 +1,13 @@
+{
+  "name": "rivet-memory",
+  "version": "0.2.0",
+  "description": "RivetOS persistent cross-agent memory + recall discipline for Grok Build. Includes battle-tested memory-recall skill, quick command skills, memory-researcher subagent, and foundation for automatic capture via Grok hooks.",
+  "keywords": ["memory", "recall", "discipline", "rivetos", "mcp", "cross-agent", "grok-build"],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "license": "MIT",
+  "grok": {
+    "minVersion": "0.1.0",
+    "provides": ["skills", "mcp", "hooks", "agents"]
+  }
+}
