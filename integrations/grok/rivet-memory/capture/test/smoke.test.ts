@@ -9,9 +9,9 @@
  *     contents decode back to the expected CaptureOp shape.
  *   - `--worker` on a missing spool file does not throw.
  *
- * The detached worker spawn is left to fail (we deliberately unset
- * RIVETOS_PG_URL and point RIVETOS_ENV_FILE at /dev/null) so the spool file
- * is not consumed before the test can inspect it.
+ * Sets GROK_CAPTURE_NO_WORKER=1 so enqueue() writes the spool file but skips
+ * spawning the detached worker — the spool persists deterministically for
+ * inspection, no race against background processes, no PG involvement.
  */
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -27,8 +27,7 @@ const SRC = path.join(__dirname, '..', 'src', 'grok-memory-capture.ts')
 const DIST = path.join(__dirname, '..', 'dist', 'grok-memory-capture.js')
 const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-grok-capture')
 
-const childEnv: NodeJS.ProcessEnv = { ...process.env, RIVETOS_ENV_FILE: '/dev/null' }
-delete childEnv.RIVETOS_PG_URL
+const childEnv: NodeJS.ProcessEnv = { ...process.env, GROK_CAPTURE_NO_WORKER: '1' }
 
 function run(args: string[], stdin = ''): SpawnSyncReturns<string> {
   const useBuilt = fs.existsSync(DIST)
