@@ -44,7 +44,8 @@
     "plugins/providers/*",
     "plugins/tools/*",
     "plugins/transports/*",
-    "services/*"
+    "services/*",
+    "integrations/grok/rivet-memory/capture"
   ],
   "bin": {
     "rivetos": "./packages/cli/dist/index.js"

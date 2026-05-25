@@ -2,14 +2,19 @@
 /**
  * Grok Memory Capture — production-ready capture for RivetOS memory from Grok Build.
  *
- * See capture/README.md for architecture and wiring details.
+ * Workspace: @rivetos/grok-rivet-memory-capture
+ * Source:    integrations/grok/rivet-memory/capture/src/grok-memory-capture.ts
+ * Built to:  integrations/grok/rivet-memory/capture/dist/grok-memory-capture.js
+ *
+ * See ../README.md for architecture, wiring, and dedup model.
  *
  * Usage patterns:
- *   - From Grok hooks: the hook script runs this via `npx tsx` (see bin/grok-memory-hook.sh)
- *   - Direct: npx tsx grok-memory-capture.ts --hook <event>
- *   - Worker: npx tsx grok-memory-capture.ts --worker [spool-file]
+ *   - From Grok hooks: bin/grok-memory-hook.sh shells in here (prefers the built .js,
+ *     falls back to `npx tsx` against the .ts source if dist/ is missing).
+ *   - Direct: node dist/grok-memory-capture.js --hook <event>
+ *   - Worker: node dist/grok-memory-capture.js --worker [spool-file]
  *
- * This is intentionally modeled on the proven patterns from both:
+ * Modeled on the proven patterns from both:
  * - Claude Code capture (spool + detached worker for non-blocking)
  * - Hermes capture (rich events including pre-compaction)
  */
@@ -19,6 +24,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 import pg from 'pg'
 import type { PoolClient } from 'pg'
 
@@ -61,6 +67,17 @@ interface TurnPayload { user?: string; assistant?: string; title?: string }
 interface ToolPayload { tool_name?: string; tool_input?: unknown; tool_result?: unknown }
 interface PreCompactPayload { messages?: Array<{ role?: string; content?: string }> }
 
+// Candidate row pre-dedup. The event_id is what dedup keys on.
+interface PendingMessage {
+  role: string
+  content: string
+  toolName?: string | null
+  toolArgs?: unknown
+  toolResult?: string | null
+  metadata: Record<string, unknown>
+  eventId: string
+}
+
 // ---------------------------------------------------------------------------
 // Logging (never throws)
 // ---------------------------------------------------------------------------
@@ -99,6 +116,19 @@ function deriveSessionKey(sessionId: string): string {
   return `grok-build:${sessionId}`
 }
 
+// Stable hash over the fields that define a logically-unique capture row.
+// Two hook deliveries with identical content+role+tool produce the same id,
+// so retries collapse. Two genuinely-distinct events (different content,
+// different tool args, or different timestamp salt) produce different ids.
+function computeEventId(parts: ReadonlyArray<string | null | undefined>): string {
+  const h = createHash('sha256')
+  for (const p of parts) {
+    h.update(p ?? '')
+    h.update('\0')
+  }
+  return h.digest('hex').slice(0, 32)
+}
+
 // ---------------------------------------------------------------------------
 // DB primitives (adapted from transcript-capture.ts)
 // ---------------------------------------------------------------------------
@@ -131,34 +161,53 @@ async function findOrCreateConversation(
   return { id: conv.rows[0].id, created: true }
 }
 
-async function insertMessage(
+// Insert a batch of candidate rows after dropping any whose event_id is already
+// present in the conversation. The advisory lock around the whole transaction
+// prevents racing inserts from another worker for the same session_key, so the
+// SELECT-then-INSERT pattern is safe without a unique index.
+async function insertMessagesDeduped(
   client: PoolClient,
   conversationId: string,
-  m: {
-    role: string
-    content: string
-    toolName?: string | null
-    toolArgs?: unknown
-    toolResult?: string | null
-    metadata?: Record<string, unknown>
-  }
-): Promise<void> {
-  await client.query(
-    `INSERT INTO ros_messages
-       (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())`,
-    [
-      conversationId,
-      CAPTURE_AGENT,
-      CAPTURE_CHANNEL,
-      m.role,
-      m.content,
-      m.toolName ?? null,
-      m.toolArgs != null ? JSON.stringify(m.toolArgs) : null,
-      m.toolResult ?? null,
-      JSON.stringify(m.metadata ?? {}),
-    ]
+  candidates: ReadonlyArray<PendingMessage>
+): Promise<{ inserted: number; skipped: number }> {
+  if (candidates.length === 0) return { inserted: 0, skipped: 0 }
+
+  const eventIds = candidates.map(c => c.eventId)
+  const existing = await client.query<{ event_id: string }>(
+    `SELECT metadata->>'event_id' AS event_id
+       FROM ros_messages
+      WHERE conversation_id = $1
+        AND metadata->>'event_id' = ANY($2::text[])`,
+    [conversationId, eventIds]
   )
+  const seen = new Set(existing.rows.map(r => r.event_id))
+
+  let inserted = 0
+  let skipped = 0
+  for (const c of candidates) {
+    if (seen.has(c.eventId)) {
+      skipped++
+      continue
+    }
+    await client.query(
+      `INSERT INTO ros_messages
+         (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())`,
+      [
+        conversationId,
+        CAPTURE_AGENT,
+        CAPTURE_CHANNEL,
+        c.role,
+        c.content,
+        c.toolName ?? null,
+        c.toolArgs != null ? JSON.stringify(c.toolArgs) : null,
+        c.toolResult ?? null,
+        JSON.stringify({ ...c.metadata, event_id: c.eventId }),
+      ]
+    )
+    inserted++
+  }
+  return { inserted, skipped }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,16 +219,22 @@ export function enqueue(op: CaptureOp): void {
     const spoolFile = path.join(SPOOL_DIR, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
     fs.writeFileSync(spoolFile, JSON.stringify(op))
 
-    // Pick a worker invocation that can actually load this file. If we're running
-    // a .ts source, plain `node` can't re-exec it — prefer a pre-built .js sibling
-    // (matches bin/grok-memory-hook.sh), and fall back to `npx tsx` otherwise.
+    // Pick a worker invocation that can actually re-exec the worker. Layout:
+    //   capture/src/grok-memory-capture.ts   (source — needs tsx)
+    //   capture/dist/grok-memory-capture.js  (built — runs under bare node)
+    // When invoked from the .ts source, look for the built .js next door in dist/.
     const self = process.argv[1] ?? fileURLToPath(import.meta.url)
-    const builtJs = self.endsWith('.ts') ? self.replace(/\.ts$/, '.js') : null
-    const spawnPlan = builtJs && fs.existsSync(builtJs)
-      ? { cmd: process.execPath, args: [builtJs, '--worker', spoolFile] }
-      : self.endsWith('.ts')
-        ? { cmd: 'npx', args: ['--yes', 'tsx', self, '--worker', spoolFile] }
-        : { cmd: process.execPath, args: [self, '--worker', spoolFile] }
+    const selfDir = path.dirname(self)
+    const selfBase = path.basename(self)
+    let spawnPlan: { cmd: string; args: string[] }
+    if (selfBase.endsWith('.ts')) {
+      const builtJs = path.join(selfDir, '..', 'dist', selfBase.replace(/\.ts$/, '.js'))
+      spawnPlan = fs.existsSync(builtJs)
+        ? { cmd: process.execPath, args: [builtJs, '--worker', spoolFile] }
+        : { cmd: 'npx', args: ['--yes', 'tsx', self, '--worker', spoolFile] }
+    } else {
+      spawnPlan = { cmd: process.execPath, args: [self, '--worker', spoolFile] }
+    }
     const child = spawn(spawnPlan.cmd, spawnPlan.args, {
       detached: true,
       stdio: 'ignore',
@@ -206,6 +261,8 @@ async function processOp(op: CaptureOp): Promise<void> {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
 
     const settings = { source: 'grok-hook', event: op.kind, ...op.payload }
+    let inserted = 0
+    let skipped = 0
 
     if (op.kind === 'turn') {
       const { user, assistant, title } = op.payload as TurnPayload
@@ -214,13 +271,27 @@ async function processOp(op: CaptureOp): Promise<void> {
         settings,
         active: true,
       })
-
+      const candidates: PendingMessage[] = []
       if (user) {
-        await insertMessage(client, conv.id, { role: 'user', content: trunc(user) ?? '', metadata: { source: 'grok-hook' } })
+        const content = trunc(user) ?? ''
+        candidates.push({
+          role: 'user',
+          content,
+          metadata: { source: 'grok-hook' },
+          eventId: computeEventId([sessionKey, 'turn', 'user', content]),
+        })
       }
       if (assistant) {
-        await insertMessage(client, conv.id, { role: 'assistant', content: trunc(assistant) ?? '', metadata: { source: 'grok-hook' } })
+        const content = trunc(assistant) ?? ''
+        candidates.push({
+          role: 'assistant',
+          content,
+          metadata: { source: 'grok-hook' },
+          eventId: computeEventId([sessionKey, 'turn', 'assistant', content]),
+        })
       }
+      const r = await insertMessagesDeduped(client, conv.id, candidates)
+      inserted = r.inserted; skipped = r.skipped
     } else if (op.kind === 'tool') {
       const { tool_name, tool_input, tool_result } = op.payload as ToolPayload
       const conv = await findOrCreateConversation(client, sessionKey, {
@@ -228,14 +299,20 @@ async function processOp(op: CaptureOp): Promise<void> {
         settings,
         active: true,
       })
-      await insertMessage(client, conv.id, {
+      const toolArgsStr = tool_input != null ? JSON.stringify(tool_input) : null
+      const toolResultStr = trunc(
+        typeof tool_result === 'string' ? tool_result : tool_result == null ? null : JSON.stringify(tool_result)
+      )
+      const r = await insertMessagesDeduped(client, conv.id, [{
         role: 'tool',
-        content: `[tool] ${tool_name}`,
-        toolName: tool_name,
+        content: `[tool] ${tool_name ?? '?'}`,
+        toolName: tool_name ?? null,
         toolArgs: tool_input,
-        toolResult: trunc(typeof tool_result === 'string' ? tool_result : tool_result == null ? null : JSON.stringify(tool_result)),
+        toolResult: toolResultStr,
         metadata: { source: 'grok-hook' },
-      })
+        eventId: computeEventId([sessionKey, 'tool', tool_name ?? '', toolArgsStr, toolResultStr]),
+      }])
+      inserted = r.inserted; skipped = r.skipped
     } else if (op.kind === 'pre_compact') {
       const messages = (op.payload as PreCompactPayload).messages ?? []
       const conv = await findOrCreateConversation(client, sessionKey, {
@@ -243,17 +320,26 @@ async function processOp(op: CaptureOp): Promise<void> {
         settings,
         active: true,
       })
-      for (const m of messages) {
-        if (m.content) {
-          await insertMessage(client, conv.id, {
-            role: m.role || 'system',
-            content: trunc(m.content) ?? '',
-            metadata: { source: 'grok-pre-compact' },
-          })
-        }
+      const candidates: PendingMessage[] = []
+      for (let i = 0; i < messages.length; i++) {
+        const m = messages[i]
+        if (!m.content) continue
+        const role = m.role || 'system'
+        const content = trunc(m.content) ?? ''
+        // Pre-compact dumps are positional — include index so two adjacent
+        // duplicate-content rows from the same compaction aren't collapsed,
+        // while a re-fire of the same CompactBefore event is.
+        candidates.push({
+          role,
+          content,
+          metadata: { source: 'grok-pre-compact' },
+          eventId: computeEventId([sessionKey, 'pre_compact', String(i), role, content]),
+        })
       }
+      const r = await insertMessagesDeduped(client, conv.id, candidates)
+      inserted = r.inserted; skipped = r.skipped
     } else if (op.kind === 'session_end') {
-      // Mark conversation inactive
+      // Mark conversation inactive (idempotent on its own — only flips true→false).
       await client.query(
         `UPDATE ros_conversations SET active = false, updated_at = now() WHERE session_key = $1 AND agent = $2 AND active = true`,
         [sessionKey, CAPTURE_AGENT]
@@ -261,7 +347,7 @@ async function processOp(op: CaptureOp): Promise<void> {
     }
 
     await client.query('COMMIT')
-    log(`${op.kind} ${sessionKey}: captured`)
+    log(`${op.kind} ${sessionKey}: captured inserted=${inserted} skipped=${skipped}`)
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     log(`processOp ${op.kind} failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -324,7 +410,7 @@ async function main() {
     process.exit(0) // always succeed fast
   }
 
-  console.log('Usage: npx tsx grok-memory-capture.ts --hook <event>  |  --worker [file]')
+  console.log('Usage: grok-memory-capture --hook <event>  |  --worker [file]')
 }
 
 main().catch(err => {

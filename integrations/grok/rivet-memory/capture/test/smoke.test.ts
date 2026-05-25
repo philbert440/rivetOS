@@ -20,14 +20,23 @@ import fs from 'node:fs'
 import os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const CAPTURE_SCRIPT = path.join(__dirname, '..', 'grok-memory-capture.ts')
+// Source is at capture/src/; the built artifact (when present) is at capture/dist/.
+// Prefer the built version if it exists so the test mirrors the production hot path,
+// otherwise fall back to tsx against the .ts source.
+const SRC = path.join(__dirname, '..', 'src', 'grok-memory-capture.ts')
+const DIST = path.join(__dirname, '..', 'dist', 'grok-memory-capture.js')
 const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-grok-capture')
 
 const childEnv: NodeJS.ProcessEnv = { ...process.env, RIVETOS_ENV_FILE: '/dev/null' }
 delete childEnv.RIVETOS_PG_URL
 
 function run(args: string[], stdin = ''): SpawnSyncReturns<string> {
-  return spawnSync('npx', ['--yes', 'tsx', CAPTURE_SCRIPT, ...args], {
+  const useBuilt = fs.existsSync(DIST)
+  const cmd = useBuilt ? process.execPath : 'npx'
+  const argv = useBuilt
+    ? [DIST, ...args]
+    : ['--yes', 'tsx', SRC, ...args]
+  return spawnSync(cmd, argv, {
     input: stdin,
     encoding: 'utf8',
     env: childEnv,
