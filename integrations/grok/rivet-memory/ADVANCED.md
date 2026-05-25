@@ -18,7 +18,7 @@ The `memory-recall` skill is written to take advantage of this when the server s
 
 ## Pre-Compaction Capture
 
-Long Grok sessions eventually hit context limits and compact. The `CompactBefore` hook (when wired) captures the messages that are about to be summarized or dropped.
+Long Grok sessions eventually hit context limits and compact. The `PreCompact` hook (when wired) captures the messages that are about to be summarized or dropped.
 
 This is one of the highest-value capture events and is a major advantage of enabling hooks.
 
