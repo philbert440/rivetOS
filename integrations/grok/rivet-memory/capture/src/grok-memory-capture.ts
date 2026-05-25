@@ -337,7 +337,7 @@ async function processOp(op: CaptureOp): Promise<void> {
         const content = trunc(m.content) ?? ''
         // Pre-compact dumps are positional — include index so two adjacent
         // duplicate-content rows from the same compaction aren't collapsed,
-        // while a re-fire of the same CompactBefore event is.
+        // while a re-fire of the same PreCompact event is.
         candidates.push({
           role,
           content,

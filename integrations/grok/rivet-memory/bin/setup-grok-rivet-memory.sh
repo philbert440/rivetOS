@@ -89,35 +89,21 @@ EOF
 # 5. Capture (optional but recommended)
 echo
 echo "=== 4. Automatic Capture (Optional but High Value) ==="
-echo "To automatically save Grok turns, tool calls, and pre-compaction into memory:"
+echo "To automatically save Grok turns, tool calls, and pre-compaction into memory,"
+echo "drop the example hook file into Grok's hooks directory (~/.grok/hooks/, NOT"
+echo "~/.grok/config.toml — hooks are loaded from JSON files in the hooks dir):"
 echo
 cat <<EOF
-# Add to your Grok hooks configuration (see hooks/hooks.json for full example):
-
-"PostToolUse": [
-  {
-    "hooks": [
-      {
-        "type": "command",
-        "command": "$PLUGIN_PATH/bin/grok-memory-hook.sh PostToolUse",
-        "timeout": 8
-      }
-    ]
-  }
-]
-
-"CompactBefore": [
-  {
-    "hooks": [
-      {
-        "type": "command",
-        "command": "$PLUGIN_PATH/bin/grok-memory-hook.sh CompactBefore",
-        "timeout": 8
-      }
-    ]
-  }
-]
+mkdir -p ~/.grok/hooks
+cp $PLUGIN_PATH/hooks/hooks.json ~/.grok/hooks/rivet-memory.json
 EOF
+echo
+echo "The shipped hooks.json wires 7 events (SessionStart, SessionEnd, UserPromptSubmit,"
+echo "PostToolUse, PostToolUseFailure, Stop, PreCompact). The most important for capture"
+echo "richness is PreCompact — it preserves messages about to be summarized away."
+echo
+echo "For a minimal install, only PreCompact + Stop are needed. Edit the JSON to"
+echo "remove events you don't want before copying."
 
 echo
 echo "The capture writes under agent='rivet-grok' and is best-effort (never blocks Grok)."
