@@ -112,6 +112,50 @@ console.log('— parser tests against fixtures/session-updates.jsonl —')
     half.length > 0 && half.length <= parsed.length &&
     JSON.stringify(parsed.slice(0, half.length)) === JSON.stringify(half),
     `half=${half.length} full=${parsed.length}`)
+
+  // Tool result readability (fix 1): byte arrays must not leak through as
+  // decimal numbers; Bash/MCP/etc. should surface their human-readable fields.
+  const bashTool = parsed.find(m => m.toolResult?.includes('exit_code='))
+  check('a Bash-type tool row was found and uses output_for_prompt',
+    !!bashTool && !/^\[\d+,\d+/.test(bashTool.toolResult!),
+    `bashTool.toolResult=${bashTool?.toolResult?.slice(0, 80)}`)
+  const mcpTool = parsed.find(m => m.toolResult?.startsWith('[mcp '))
+  check('an MCP-type tool row carries a readable [mcp server/tool] header',
+    !!mcpTool, `mcpTool=${mcpTool?.toolResult?.slice(0, 80)}`)
+  // Defence-in-depth: no raw decimal byte array should leak even in unknown types.
+  const leaked = parsed.find(m =>
+    m.toolResult && /\[\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,/.test(m.toolResult)
+  )
+  check('no decimal byte array leaked into any tool_result', !leaked,
+    leaked ? `leaked=${leaked.toolResult?.slice(0, 80)}` : '')
+
+  // Ordinal (fix 2): every emitted row has an ordinal, ordinals are stable
+  // across re-parses, and when sorted by ordinal the user prompt for a turn
+  // precedes the agent thoughts/tools for that same turn.
+  const allHaveOrdinal = parsed.every(m => typeof m.ordinal === 'number')
+  check('every parsed row carries an ordinal', allHaveOrdinal)
+  check('ordinals are stable across re-parses',
+    JSON.stringify(parsed.map(m => m.ordinal)) === JSON.stringify(reparsed.map(m => m.ordinal)))
+
+  // Logical turn ordering: within each turn (ordinal / 1_000_000), the user
+  // prompt must precede any other event for that turn.
+  const TURN_STRIDE = 1_000_000
+  const turnSeen = new Map<number, { sawUser: boolean; firstNonUserOrdinal: number | null }>()
+  let outOfOrder = 0
+  for (const m of [...parsed].sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0))) {
+    if (typeof m.ordinal !== 'number') continue
+    const turn = Math.floor(m.ordinal / TURN_STRIDE)
+    const state = turnSeen.get(turn) ?? { sawUser: false, firstNonUserOrdinal: null }
+    if (m.role === 'user' && m.extra && (m.extra as any).sessionUpdate === 'user_message_chunk') {
+      if (state.firstNonUserOrdinal !== null) outOfOrder++
+      state.sawUser = true
+    } else if (!state.sawUser && state.firstNonUserOrdinal === null) {
+      state.firstNonUserOrdinal = m.ordinal
+    }
+    turnSeen.set(turn, state)
+  }
+  check('sorting by ordinal puts user prompts ahead of their turn\'s agent events',
+    outOfOrder === 0, `outOfOrder=${outOfOrder}`)
 }
 
 // =============================================================================
