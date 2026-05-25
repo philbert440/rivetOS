@@ -44,28 +44,27 @@ const STATEMENT_TIMEOUT_MS = 15000      // keep in sync with plugins/providers/c
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-interface HookPayload {
-  hook_event_name?: string
-  session_id?: string
-  prompt?: string
-  tool_name?: string
-  tool_input?: unknown
-  tool_response?: unknown
-  tool_result?: unknown
-  messages?: Array<{ role: string; content: string }>
-  // Grok-specific fields can be added here
-}
-
+// Hook payloads are read as opaque key/value bags. Grok itself emits camelCase
+// keys (per ~/.grok/docs/user-guide/10-hooks.md): hookEventName, sessionId,
+// toolName, toolInput, etc. Test fixtures and Claude-compat callers may emit
+// snake_case (tool_name, session_id, …). All field access goes through pick()
+// which tries multiple plausible names, so both styles work transparently.
 interface CaptureOp {
   kind: 'turn' | 'tool' | 'pre_compact' | 'session_end'
   sessionKey: string
   payload: Record<string, unknown>
 }
 
-// Per-kind payload shapes (typed views over CaptureOp.payload).
-interface TurnPayload { user?: string; assistant?: string; title?: string }
-interface ToolPayload { tool_name?: string; tool_input?: unknown; tool_result?: unknown }
-interface PreCompactPayload { messages?: Array<{ role?: string; content?: string }> }
+// pickField walks a payload trying each candidate key in order, returning the
+// first defined value. Used to bridge camelCase (Grok's actual payload) vs
+// snake_case (older fixtures + the originally-shipped HookPayload interface).
+function pickField<T = unknown>(payload: Record<string, unknown>, ...names: string[]): T | undefined {
+  for (const n of names) {
+    const v = payload[n]
+    if (v !== undefined) return v as T
+  }
+  return undefined
+}
 
 // Candidate row pre-dedup. The event_id is what dedup keys on.
 interface PendingMessage {
@@ -274,7 +273,14 @@ async function processOp(op: CaptureOp): Promise<void> {
     let skipped = 0
 
     if (op.kind === 'turn') {
-      const { user, assistant, title } = op.payload as TurnPayload
+      // Grok-emitted fields per event:
+      //   UserPromptSubmit → prompt (the user's message)
+      //   Stop             → response/finalResponse (the agent's reply) — schema not in docs, accept several
+      //   SessionStart     → no content fields; we just upsert the conversation row
+      // Plus snake_case (user, assistant, title) for legacy/fixtures.
+      const user = pickField<string>(op.payload, 'prompt', 'userPrompt', 'user_prompt', 'user')
+      const assistant = pickField<string>(op.payload, 'response', 'finalResponse', 'final_response', 'assistantResponse', 'assistant')
+      const title = pickField<string>(op.payload, 'title')
       const conv = await findOrCreateConversation(client, sessionKey, {
         title: title || 'Grok Build session',
         settings,
@@ -302,28 +308,31 @@ async function processOp(op: CaptureOp): Promise<void> {
       const r = await insertMessagesDeduped(client, conv.id, candidates)
       inserted = r.inserted; skipped = r.skipped
     } else if (op.kind === 'tool') {
-      const { tool_name, tool_input, tool_result } = op.payload as ToolPayload
+      const toolName = pickField<string>(op.payload, 'toolName', 'tool_name')
+      const toolInput = pickField(op.payload, 'toolInput', 'tool_input')
+      // PostToolUse uses toolResult; PostToolUseFailure may use error/toolError.
+      const toolResultRaw = pickField(op.payload, 'toolResult', 'tool_result', 'toolResponse', 'tool_response', 'toolOutput', 'error', 'toolError')
       const conv = await findOrCreateConversation(client, sessionKey, {
-        title: `Grok tool: ${tool_name}`,
+        title: `Grok tool: ${toolName ?? '?'}`,
         settings,
         active: true,
       })
-      const toolArgsStr = tool_input != null ? JSON.stringify(tool_input) : null
+      const toolArgsStr = toolInput != null ? JSON.stringify(toolInput) : null
       const toolResultStr = trunc(
-        typeof tool_result === 'string' ? tool_result : tool_result == null ? null : JSON.stringify(tool_result)
+        typeof toolResultRaw === 'string' ? toolResultRaw : toolResultRaw == null ? null : JSON.stringify(toolResultRaw)
       )
       const r = await insertMessagesDeduped(client, conv.id, [{
         role: 'tool',
-        content: `[tool] ${tool_name ?? '?'}`,
-        toolName: tool_name ?? null,
-        toolArgs: tool_input,
+        content: `[tool] ${toolName ?? '?'}`,
+        toolName: toolName ?? null,
+        toolArgs: toolInput,
         toolResult: toolResultStr,
         metadata: { source: 'grok-hook' },
-        eventId: computeEventId([sessionKey, 'tool', tool_name ?? '', toolArgsStr, toolResultStr]),
+        eventId: computeEventId([sessionKey, 'tool', toolName ?? '', toolArgsStr, toolResultStr]),
       }])
       inserted = r.inserted; skipped = r.skipped
     } else if (op.kind === 'pre_compact') {
-      const messages = (op.payload as PreCompactPayload).messages ?? []
+      const messages = pickField<Array<{ role?: string; content?: string }>>(op.payload, 'messages') ?? []
       const conv = await findOrCreateConversation(client, sessionKey, {
         title: 'Grok session (pre-compact)',
         settings,
@@ -397,7 +406,7 @@ async function main() {
   // Hook mode — read payload from stdin (Grok hook contract)
   if (args[0] === '--hook') {
     const event = args[1] || 'unknown'
-    let payload: HookPayload = {}
+    let payload: Record<string, unknown> = {}
     try {
       const input = await new Promise<string>((resolve) => {
         let data = ''
@@ -407,15 +416,34 @@ async function main() {
       if (input.trim()) payload = JSON.parse(input)
     } catch {}
 
-    const sessionId = payload.session_id || 'unknown-' + Date.now()
+    // sessionId resolution order: payload (camelCase Grok emits) → payload
+    // (snake_case for fixtures/Claude-compat) → GROK_SESSION_ID env (Grok
+    // always injects this) → time-based fallback. The env var is the most
+    // reliable source for real Grok hooks; the payload path is the
+    // documented contract.
+    const sessionId =
+      pickField<string>(payload, 'sessionId', 'session_id') ||
+      process.env.GROK_SESSION_ID ||
+      ('unknown-' + Date.now())
     const sessionKey = deriveSessionKey(sessionId)
 
+    // Classifier is substring-based with last-match-wins precedence. The
+    // checks run top-to-bottom and each overwrites the previous if it
+    // matches, so for an event name that hits more than one rule the later
+    // one wins:
+    //   default                     → 'turn'
+    //   contains 'Tool' / 'tool'    → 'tool'
+    //   contains 'Compact'/'compact'→ 'pre_compact'
+    //   contains 'End' / 'end'      → 'session_end'
+    // Concretely: PostToolUse → 'tool', PreCompact → 'pre_compact',
+    // SessionEnd → 'session_end', a hypothetical 'PostToolUseEnd' would
+    // become 'session_end' (End rule beats Tool rule).
     let kind: CaptureOp['kind'] = 'turn'
     if (event.includes('Tool') || event.includes('tool')) kind = 'tool'
     if (event.includes('Compact') || event.includes('compact')) kind = 'pre_compact'
     if (event.includes('End') || event.includes('end')) kind = 'session_end'
 
-    enqueue({ kind, sessionKey, payload: { ...payload, hook_event_name: event } })
+    enqueue({ kind, sessionKey, payload: { ...payload, hookEventName: event } })
     process.exit(0) // always succeed fast
   }
 
