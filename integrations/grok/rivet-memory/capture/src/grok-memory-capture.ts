@@ -82,6 +82,15 @@ interface PendingMessage {
   eventId?: string | null
   /** Wall-clock from the ACP event (agentTimestampMs). Stored as metadata.event_ts. */
   eventTs?: string | null
+  /**
+   * Stable logical sort key (turn * 1_000_000 + sub_order). Stored as
+   * metadata.ordinal so the memory plugin can ORDER BY it instead of created_at,
+   * correcting the case where Grok appends user_message_chunk to updates.jsonl
+   * after the agent has already started responding to that prompt. The capture
+   * itself stays in file order so slice-by-count idempotency is preserved; the
+   * ordinal is recovered at query time.
+   */
+  ordinal?: number
   /** Extra fields persisted into metadata. */
   extra?: Record<string, unknown>
 }
@@ -181,17 +190,49 @@ export function findSessionDir(sessionId: string, workspaceRootHint?: string): s
  *   tool_call_update with status != completed (in-progress chatter)
  */
 export function parseUpdates(jsonlText: string): PendingMessage[] {
+  // Split once; re-use across both passes so they see identical line numbering.
+  const lines = jsonlText.split('\n')
+
+  // ---------- Pass 1: number distinct promptIds in file order. ---------------
+  // Grok writes agent_thought / tool_call / tool_call_update / agent_message
+  // events with outer params._meta.promptId. user_message_chunk events carry an
+  // integer promptIndex instead (no promptId). The nth distinct promptId in the
+  // file corresponds to the user_message_chunk with promptIndex = n, so we can
+  // recover the turn association without a direct field linkage.
+  //
+  // This pass is the reason we can compute a stable logical ordinal even when
+  // Grok appends the user_message_chunk to the file AFTER the agent has already
+  // started responding to it (observed live on rivet-grok 2026-05-25).
+  const promptIdToTurn = new Map<string, number>()
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line) continue
+    let evt: any
+    try { evt = JSON.parse(line) } catch { continue }
+    const promptId = evt?.params?._meta?.promptId
+    if (typeof promptId === 'string' && !promptIdToTurn.has(promptId)) {
+      promptIdToTurn.set(promptId, promptIdToTurn.size)
+    }
+  }
+
+  // ---------- Pass 2: emit normalized PendingMessages with ordinals. ----------
+  const SUB_USER = 0
+  const SUB_OTHER_BASE = 10_000
+  const TURN_STRIDE = 1_000_000
   const out: PendingMessage[] = []
-  // Tool calls accrue input data when first seen and emit on completion.
   const pendingTools = new Map<string, {
     name: string | null
     rawInput: unknown
     eventId: string | null
     eventTs: string | null
   }>()
+  /** Last known turn for events that lack their own promptId/promptIndex
+   *  (memory_flush, the rare orphan tool_call_update). Starts at -1 ("no
+   *  turn yet seen"); falls forward as we see scoped events. */
+  let currentTurn = -1
 
-  for (const rawLine of jsonlText.split('\n')) {
-    const line = rawLine.trim()
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
     if (!line) continue
     let evt: any
     try { evt = JSON.parse(line) } catch { continue }
@@ -205,6 +246,27 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
       ? new Date(params._meta.agentTimestampMs).toISOString()
       : null
 
+    // Resolve turn + sub_order. user_message_chunk uses promptIndex directly;
+    // everything else looks up the outer promptId in the map from Pass 1.
+    let turn: number
+    let subOrder: number
+    if (type === 'user_message_chunk') {
+      const pi = update?._meta?.promptIndex
+      turn = typeof pi === 'number' ? pi : (currentTurn < 0 ? 0 : currentTurn)
+      subOrder = SUB_USER
+      currentTurn = turn
+    } else {
+      const promptId = params?._meta?.promptId
+      if (typeof promptId === 'string' && promptIdToTurn.has(promptId)) {
+        turn = promptIdToTurn.get(promptId)!
+        currentTurn = turn
+      } else {
+        turn = currentTurn  // -1 for events before any turn is known
+      }
+      subOrder = SUB_OTHER_BASE + i
+    }
+    const ordinal = turn * TURN_STRIDE + subOrder
+
     if (type === 'user_message_chunk') {
       const text = extractText(update.content)
       if (text) {
@@ -213,6 +275,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
           content: text,
           eventId,
           eventTs,
+          ordinal,
           extra: { sessionUpdate: type, modelId: update._meta?.modelId, promptIndex: update._meta?.promptIndex },
         })
       }
@@ -224,6 +287,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
           content: text,
           eventId,
           eventTs,
+          ordinal,
           extra: { sessionUpdate: type },
         })
       }
@@ -235,6 +299,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
           content: `[thinking] ${text}`,
           eventId,
           eventTs,
+          ordinal,
           extra: { sessionUpdate: type },
         })
       }
@@ -264,8 +329,9 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
           toolName,
           toolArgs: rawInput,
           toolResult,
-          eventId,  // dedup on the completion event so re-emits don't double
+          eventId,
           eventTs,
+          ordinal,
           extra: {
             sessionUpdate: type,
             toolCallId: id,
@@ -281,6 +347,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
         content: `[grok.${type}]`,
         eventId,
         eventTs,
+        ordinal,
         extra: { sessionUpdate: type },
       })
     }
@@ -297,16 +364,58 @@ function extractText(content: unknown): string | null {
   return null
 }
 
+/**
+ * Pull a human-readable string out of the rawOutput envelope, switching on the
+ * structured type. Grok's rawOutput for Bash and similar tools stores stdout
+ * twice: as a byte-array under `output` (or `stdout`) AND as a UTF-8 string
+ * under `output_for_prompt`. Stringifying the raw object leaks the byte arrays
+ * as decimal numbers and is unreadable, so prefer the prompt-friendly text
+ * field per known type. For unknown types we still fall back to JSON, but with
+ * byte arrays decoded/elided defensively.
+ */
 function formatToolResult(update: any): string | null {
-  // Prefer the structured rawOutput when present (carries exit_code, command,
-  // output_for_prompt for Bash; tool_name+server_name+output for MCP).
-  if (update.rawOutput !== undefined) {
+  const out = update?.rawOutput
+  if (out && typeof out === 'object') {
+    const t = out.type
+    if (t === 'Bash') {
+      if (typeof out.output_for_prompt === 'string') {
+        const tail = `exit_code=${out.exit_code ?? '?'}${out.timed_out ? ' timed_out=true' : ''}${out.truncated ? ' truncated=true' : ''}`
+        return trunc(`${out.output_for_prompt}\n[${tail}]`)
+      }
+    } else if (t === 'GrepSearch') {
+      if (typeof out.output_for_prompt === 'string') return trunc(out.output_for_prompt)
+      if (Array.isArray(out.stdout)) return trunc(bytesToString(out.stdout))
+    } else if (t === 'ReadFile') {
+      if (typeof out.FileContent?.content === 'string') return trunc(out.FileContent.content)
+    } else if (t === 'SearchTool') {
+      if (typeof out.content === 'string') {
+        const prefix = typeof out.result_count === 'number' ? `[result_count=${out.result_count}]\n` : ''
+        return trunc(prefix + out.content)
+      }
+    } else if (t === 'MCP') {
+      const header = `[mcp ${out.server_name ?? '?'}/${out.tool_name ?? '?'}]`
+      const o = out.output
+      if (typeof o === 'string') return trunc(`${header}\n${o}`)
+      if (typeof o?.OkayOutput === 'string') return trunc(`${header}\n${o.OkayOutput}`)
+      if (typeof o?.ErrorOutput === 'string') return trunc(`${header} ERROR\n${o.ErrorOutput}`)
+      // Unknown MCP envelope — JSON-stringify after stripping byte arrays.
+      try { return trunc(`${header}\n${JSON.stringify(stripByteArrays(o))}`) } catch {}
+    } else if (t === 'ListDir') {
+      if (typeof out.Content?.content === 'string') return trunc(out.Content.content)
+    } else if (t === 'Todo') {
+      if (typeof out.TodosUpdated?.summary_for_prompt === 'string') {
+        return trunc(out.TodosUpdated.summary_for_prompt)
+      }
+    }
+    // Unknown rawOutput.type — JSON.stringify but with byte arrays decoded so
+    // the row stays human-readable.
     try {
-      return trunc(JSON.stringify(update.rawOutput))
+      return trunc(JSON.stringify(stripByteArrays(out)))
     } catch {}
   }
-  // Fall back to the textual content payload.
-  if (Array.isArray(update.content)) {
+  // Final fallback: textual content payload (rare; some tool_call_updates
+  // carry a content[] array instead of rawOutput).
+  if (Array.isArray(update?.content)) {
     const parts: string[] = []
     for (const item of update.content) {
       const inner = item?.content
@@ -316,6 +425,37 @@ function formatToolResult(update: any): string | null {
     if (parts.length) return trunc(parts.join('\n'))
   }
   return null
+}
+
+/** Decode a numeric byte array as UTF-8, used by Bash/GrepSearch outputs. */
+function bytesToString(arr: number[]): string {
+  try { return Buffer.from(arr).toString('utf8') }
+  catch { return `[${arr.length} bytes]` }
+}
+
+/**
+ * Walk an object and replace numeric byte arrays (Vec<u8> serialised as JSON
+ * array of small ints) with their UTF-8 decoded text. Used when stringifying
+ * unknown rawOutput types so the row stays readable instead of dumping
+ * thousands of decimal digits.
+ */
+function stripByteArrays(obj: unknown, depth = 0): unknown {
+  if (depth > 6 || obj == null) return obj
+  if (Array.isArray(obj)) {
+    const looksLikeBytes =
+      obj.length >= 16 &&
+      obj.every(v => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 255)
+    if (looksLikeBytes) return bytesToString(obj as number[])
+    return obj.map(v => stripByteArrays(v, depth + 1))
+  }
+  if (typeof obj === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      out[k] = stripByteArrays(v, depth + 1)
+    }
+    return out
+  }
+  return obj
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +527,7 @@ async function insertMessage(
   }
   if (m.eventId) meta.event_id = m.eventId
   if (m.eventTs) meta.event_ts = m.eventTs
+  if (typeof m.ordinal === 'number') meta.ordinal = m.ordinal
   await client.query(
     `INSERT INTO ros_messages
        (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
