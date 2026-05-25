@@ -3,7 +3,7 @@
 # setup-grok-rivet-memory.sh
 #
 # One-stop helper to set up the rivet-memory integration for Grok Build
-# on a RivetOS host (e.g. 10.4.20.112 or your local machine).
+# on a RivetOS host (e.g. 203.0.113.10 or your local machine).
 #
 # Usage:
 #   ./integrations/grok/rivet-memory/bin/setup-grok-rivet-memory.sh
@@ -11,7 +11,8 @@
 # It will:
 #   1. Verify RivetOS is built
 #   2. Print exact config snippets for MCP, skills, capture hooks, and GROK.md
-#   3. Optionally create symlinks for the bin scripts into /usr/local/bin (if run with --link)
+#   3. Optionally create symlinks for the bin scripts into /usr/local/bin (if run with --link;
+#      this step calls `sudo` and will prompt for your password).
 #
 set -euo pipefail
 
@@ -65,7 +66,9 @@ EOF
 # 4. Reflex
 echo
 echo "=== 3. Memory Discipline Reflex (GROK.md) ==="
-echo "Copy GROK.md into your rules so the discipline is always active:"
+echo "Copy GROK.md into your rules so the discipline is always active."
+echo "Grok Build reads ~/.grok/AGENTS.md as the always-on rules file (per the"
+echo "vendor-neutral AGENTS.md convention), so we copy GROK.md to that path:"
 cat << 'EOF'
 
 cp /opt/rivetos/integrations/grok/rivet-memory/GROK.md ~/.grok/AGENTS.md
@@ -99,7 +102,7 @@ cat << 'EOF'
       {
         "type": "command",
         "command": "/opt/rivetos/integrations/grok/rivet-memory/bin/grok-memory-hook.sh CompactBefore",
-        "timeout": 15
+        "timeout": 8
       }
     ]
   }
@@ -118,14 +121,15 @@ echo "These are available as skills. You can also reference them explicitly."
 # 7. Optional symlinks
 if [[ "${1:-}" == "--link" ]]; then
   echo
-  echo "=== Creating symlinks (optional) ==="
+  echo "=== Creating symlinks (requires sudo) ==="
+  echo "You will be prompted for your password to write to /usr/local/bin."
   sudo ln -sf "$PLUGIN_DIR/bin/rivet-memory-mcp.sh" /usr/local/bin/rivet-memory-mcp || true
   sudo ln -sf "$PLUGIN_DIR/bin/grok-memory-hook.sh" /usr/local/bin/grok-memory-hook || true
   echo "Symlinks created in /usr/local/bin"
 fi
 
 echo
-echo "=== Next Steps on this host (10.4.20.112 or similar) ==="
+echo "=== Next Steps on this host (203.0.113.10 or similar) ==="
 echo "1. Configure the MCP server in your Grok config"
 echo "2. Copy the skills"
 echo "3. Add GROK.md to your rules"
