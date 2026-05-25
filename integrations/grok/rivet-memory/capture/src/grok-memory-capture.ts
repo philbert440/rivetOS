@@ -213,13 +213,22 @@ async function insertMessagesDeduped(
 // ---------------------------------------------------------------------------
 // Hot path: Enqueue (very fast, non-blocking)
 // ---------------------------------------------------------------------------
+// Hint: when set, enqueue() writes the spool file but skips the detached worker
+// spawn. Used by the smoke test so it can deterministically read the spool file
+// without racing the worker. Production never sets this.
+const NO_WORKER_ENV = 'GROK_CAPTURE_NO_WORKER'
+
 export function enqueue(op: CaptureOp): void {
   try {
     fs.mkdirSync(SPOOL_DIR, { recursive: true })
     const spoolFile = path.join(SPOOL_DIR, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
     fs.writeFileSync(spoolFile, JSON.stringify(op))
 
-    // Pick a worker invocation that can actually re-exec the worker. Layout:
+    if (process.env[NO_WORKER_ENV]) return
+
+    // Pick a worker invocation that can actually re-exec the worker. Layout
+    // (kept in sync with bin/grok-memory-hook.sh — if you move dist/ or src/,
+    // update both):
     //   capture/src/grok-memory-capture.ts   (source — needs tsx)
     //   capture/dist/grok-memory-capture.js  (built — runs under bare node)
     // When invoked from the .ts source, look for the built .js next door in dist/.

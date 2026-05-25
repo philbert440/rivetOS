@@ -17,6 +17,14 @@ capture/
     └── grok-memory-capture.js
 ```
 
+> **Workspace placement.** This is the only npm workspace currently living
+> under `integrations/` — the others all sit at `packages/*` or `plugins/*/*`.
+> The trade-off is intentional: keeping the capture next to the rest of the
+> Grok integration (skills, hook scripts, MCP launcher, GROK.md) lets a reader
+> grok (sorry) the entire plugin from one directory. If a future integration
+> grows TS code of its own, a dedicated `integrations/*/.../<pkg>` convention
+> may want generalizing.
+
 ## Build
 
 Run from the repo root:
@@ -76,9 +84,27 @@ delivery) deduplicates cleanly. Two genuinely-distinct events with identical
 text in the same session still produce distinct ids because the index / role /
 tool_args differ — or, for adjacent pre_compact rows, the positional index.
 
-No schema migration is required. For high-volume sessions, a partial index on
-`(conversation_id, (metadata->>'event_id'))` would make the existence check
-O(1); that can be added later without code changes here.
+### Why SELECT-then-INSERT rather than `ON CONFLICT`?
+
+This is a deliberate choice, not a placeholder. The advisory lock
+(`pg_advisory_xact_lock(hashtext(sessionKey))`) is held for the full
+transaction, so no second worker for the same session can interleave between
+the SELECT and the INSERT. There is no race window for a unique constraint to
+catch — the lock *is* the contract. Adding a `(conversation_id,
+metadata->>'event_id')` unique partial index would let the code switch to
+`ON CONFLICT DO NOTHING` (one query instead of two) but would not improve
+correctness.
+
+It would also couple the core memory schema to a convention currently used
+only by this integration: `rivet-claude` uses transcript-uuid + slice-by-count
+idempotency, not `metadata.event_id`. If a second integration adopts the same
+convention, promoting the index into `plugins/memory/postgres/src/schema/
+migrations/` becomes well-motivated and the code change here is one line.
+Until then, the partial index isn't worth pre-coupling for.
+
+For very high-volume sessions where the SELECT cost shows up, an *operational*
+(out-of-tree) index over the same expression is a safe pure-perf change that
+doesn't require any code edits here.
 
 ## Current Supported Events
 
