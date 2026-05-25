@@ -23,8 +23,12 @@ if [ ! -f "$CAPTURE_SCRIPT" ]; then
   exit 0
 fi
 
-# Read the hook payload from stdin and pass it to the capture module
-# The module will spool it and detach a worker.
-node "$CAPTURE_SCRIPT" --hook "${1:-unknown}" || true
+# Prefer a pre-built JS if it exists (matches Claude sibling pattern), otherwise fall back to tsx.
+CAPTURE_JS="${CAPTURE_SCRIPT%.ts}.js"
+if [ -f "$CAPTURE_JS" ]; then
+  node "$CAPTURE_JS" --hook "${1:-unknown}" || true
+else
+  npx --yes tsx "$CAPTURE_SCRIPT" --hook "${1:-unknown}" || true
+fi
 
 exit 0
