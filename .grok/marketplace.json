@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "rivet-memory",
-      "description": "Persistent memory + recall discipline skill for Grok Build. Brings the same memory store used by rivet-claude and rivet-hermes, plus the battle-tested rules that make agents actually use it correctly on the first try.",
+      "description": "Persistent memory + elite recall discipline for Grok Build. Brings the same memory store used by rivet-claude and rivet-hermes, plus the battle-tested rules that make agents actually use memory correctly on the first try. Includes automatic capture support.",
       "source": "./integrations/grok/rivet-memory",
       "category": "productivity",
       "homepage": "https://github.com/philbert440/rivetOS"
