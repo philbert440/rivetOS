@@ -1,7 +1,8 @@
 # Grok Memory Capture
 
 This directory is a workspace package (`@rivetos/grok-rivet-memory-capture`) that
-writes Grok Build sessions into the shared RivetOS memory store.
+writes Grok Build sessions into the shared RivetOS memory store under
+`agent = 'rivet-grok'`.
 
 ## Layout
 
@@ -12,7 +13,11 @@ capture/
 ├── src/
 │   └── grok-memory-capture.ts
 ├── test/
-│   └── smoke.test.ts
+│   ├── smoke.test.ts
+│   └── fixtures/
+│       └── sample-session/      # mirrors a real ~/.grok/sessions/.../<sid>/
+│           ├── updates.jsonl
+│           └── summary.json
 └── dist/                 # built by `npm run build` — gitignored
     └── grok-memory-capture.js
 ```
@@ -27,8 +32,6 @@ capture/
 
 ## Build
 
-Run from the repo root:
-
 ```bash
 npm install        # picks up this workspace, installs pg + @types/pg + tsx
 npm run build      # nx run-many -t build — produces dist/grok-memory-capture.js
@@ -41,143 +44,132 @@ checkouts.
 
 ## Design Goals
 
-- **Never block Grok**: All hook handlers must return extremely fast.
-- **Rich capture**: Turns, tool calls (with full input + result), and especially pre-compaction messages.
-- **Best effort**: Failures are logged but must never impact the user's Grok session.
-- **Dedup-safe**: Per-session advisory lock + content-hash `event_id` skip lets
-  hook retries collapse without a schema migration. See below.
+- **Never block Grok**: hook scripts return in single-digit milliseconds.
+- **Capture everything**: assistant responses, agent thoughts, full tool I/O,
+  memory-flush markers — not just what hooks happen to carry.
+- **Best effort**: failures are logged but never impact the user's Grok session.
+- **Idempotent**: re-running an ingest does not duplicate rows.
 
-## Architecture
+## Architecture (JSONL ingestion)
 
-We use the proven "spool + detached worker" pattern (inspired by the Claude Code
-implementation) combined with rich event support from the Hermes design.
+The capture worker reads Grok's **own session transcript** rather than trying to
+reconstruct content from hook payloads. This mirrors
+`plugins/providers/claude-cli/src/transcript-capture.ts` and was adopted after
+discovering that Grok's hook payloads are signals-only — the actual response
+text, agent thoughts, and tool outputs are *not* in any hook payload.
 
-1. Grok hook fires → `bin/grok-memory-hook.sh` is called with the event name.
-2. The script pipes the payload to `grok-memory-capture --hook <event>`
-   (built `.js` preferred, tsx fallback otherwise).
-3. The capture process writes a small JSON file to a temp spool directory and
-   immediately spawns a detached worker bound to that one spool file, then exits.
-4. The worker (`--worker <spool>`) reads the file and performs the actual database
-   writes using the same insert patterns as the Claude capture, plus dedup.
+The authoritative log lives at:
 
-## Dedup model
+```
+~/.grok/sessions/<urlencoded-cwd>/<sessionId>/updates.jsonl
+```
 
-Each candidate row is keyed by a stable `event_id`: a sha256 prefix over fields
-that define what makes the row logically unique.
+Grok itself uses this file for `/load` and session restore, so reading it
+directly is the supported way to recover full session content. Per `~/.grok/docs/user-guide/17-sessions.md`:
 
-| Kind          | Hashed parts                                            |
-|---------------|----------------------------------------------------------|
-| `turn`        | sessionKey, `turn`, role, content                        |
-| `tool`        | sessionKey, `tool`, tool_name, JSON(tool_input), tool_result |
-| `pre_compact` | sessionKey, `pre_compact`, index, role, content          |
+> `updates.jsonl` is the **authoritative conversation log** that drives
+> `/load` and session restore. Sessions are stored as newline-delimited JSON,
+> append-only during a session.
 
-For each batch (`insertMessagesDeduped`):
+### Pipeline
 
-1. Compute event_ids for all candidates.
-2. Under the per-session `pg_advisory_xact_lock`, `SELECT metadata->>'event_id'`
-   for existing rows in the conversation matching any candidate id.
-3. Insert only the rows whose event_id isn't already present, storing the id
-   in `ros_messages.metadata.event_id`.
+```
+Grok hook fires (Stop / SessionEnd / PreCompact / UserPromptSubmit / …)
+  └── bin/grok-memory-hook.sh
+      └── grok-memory-capture --hook <event>
+          └── spools a CaptureOp { kind: 'ingest', sessionId, finalize?, sourceEvent }
+              └── detached worker (--worker <spoolFile>)
+                  └── ingestSession(op)
+                      1. locate ~/.grok/sessions/.../<sessionId>/   (env hint + scan fallback)
+                      2. read updates.jsonl, parse to a normalized PendingMessage[]
+                      3. read summary.json (best-effort) for title/model/agent_name
+                      4. acquire pg_advisory_xact_lock(hashtext(sessionKey))
+                      5. find-or-create ros_conversations row
+                      6. count existing ros_messages → slice → insert parsed[count:]
+                      7. (finalize) flip ros_conversations.active = false
+                      8. COMMIT
+```
 
-This means a hook that fires twice for the same payload (timeout retry, dual
-delivery) deduplicates cleanly. Two genuinely-distinct events with identical
-text in the same session still produce distinct ids because the index / role /
-tool_args differ — or, for adjacent pre_compact rows, the positional index.
+Hooks are pure **triggers** — they don't need to parse anything beyond the
+session id (resolved from `$GROK_SESSION_ID` env, which Grok always injects).
 
-### Why SELECT-then-INSERT rather than `ON CONFLICT`?
+### ACP event-type mapping
 
-This is a deliberate choice, not a placeholder. The advisory lock
-(`pg_advisory_xact_lock(hashtext(sessionKey))`) is held for the full
-transaction, so no second worker for the same session can interleave between
-the SELECT and the INSERT. There is no race window for a unique constraint to
-catch — the lock *is* the contract. Adding a `(conversation_id,
-metadata->>'event_id')` unique partial index would let the code switch to
-`ON CONFLICT DO NOTHING` (one query instead of two) but would not improve
-correctness.
+| `sessionUpdate`                | Internal row                                                                 |
+|--------------------------------|------------------------------------------------------------------------------|
+| `user_message_chunk`           | `role=user`, content = text                                                  |
+| `agent_message_chunk`          | `role=assistant`, content = text                                             |
+| `agent_thought_chunk`          | `role=assistant`, content = `"[thinking] " + text` (rivet-claude convention) |
+| `tool_call` (collected)        | (no immediate row; waits for the matching completion)                        |
+| `tool_call_update(completed)`  | `role=tool`, `tool_name = title`, `tool_args = rawInput`, `tool_result = stringified rawOutput` (preferred) or merged text content |
+| `memory_flush_started`         | `role=system`, content = `"[grok.memory_flush_started]"`                     |
+| `memory_flush_completed`       | `role=system`, content = `"[grok.memory_flush_completed]"`                   |
+| `hook_execution`               | skipped (meta about our own hooks)                                           |
+| `available_commands_update`    | skipped (slash-command catalog dumps)                                        |
+| `tool_call_update(in_progress)`| skipped (only the final completed event becomes a row)                       |
 
-It would also couple the core memory schema to a convention currently used
-only by this integration: `rivet-claude` uses transcript-uuid + slice-by-count
-idempotency, not `metadata.event_id`. If a second integration adopts the same
-convention, promoting the index into `plugins/memory/postgres/src/schema/
-migrations/` becomes well-motivated and the code change here is one line.
-Until then, the partial index isn't worth pre-coupling for.
+Each emitted row carries the original `_meta.eventId` and `agentTimestampMs`
+in its metadata for traceability.
 
-For very high-volume sessions where the SELECT cost shows up, an *operational*
-(out-of-tree) index over the same expression is a safe pure-perf change that
-doesn't require any code edits here.
+### Idempotency: slice-by-count
 
-## Current Supported Events
+Identical to Claude's transcript-capture model.
 
-The hook launcher accepts any Grok lifecycle event name; the capture script
-classifies it into one of four internal "kinds" by substring match on the
-name. **Classifier precedence is last-match-wins** — see the comment in
-`main()` for the rule order. Concretely:
+- The parser is **deterministic**: parsed message *k* always maps to the same
+  row for the same input.
+- `updates.jsonl` is **append-only**: any prefix is a stable prefix of the
+  full file.
+- A per-session `pg_advisory_xact_lock(hashtext(sessionKey))` serialises
+  concurrent worker fires (Grok can burst many events).
+- On each ingest the worker counts existing rows in
+  `ros_messages WHERE conversation_id = X`, then inserts only
+  `parsed.slice(count)`. Re-fires are no-ops.
 
-| Grok event              | Internal kind     | What gets stored (under `agent='rivet-grok'`) |
-|-------------------------|-------------------|------------------------------------------------|
-| `PostToolUse`           | `tool`            | One tool message: `toolName` + `toolInput` + `toolResult` from the payload |
-| `PostToolUseFailure`    | `tool`            | Same as PostToolUse, but `toolResult` may carry an `error` / `toolError` field instead |
-| `UserPromptSubmit`      | `turn`            | One user message; reads `prompt` / `userPrompt` / `user` (first defined) |
-| `Stop`                  | `turn`            | One assistant message; reads `response` / `finalResponse` / `assistant` (first defined). Field name not in Grok docs — verify before relying on. |
-| `PreCompact`            | `pre_compact`     | Each item in payload `messages[]` as a separate row, dedup-keyed by position+role+content. Highest value event for long sessions. |
-| `SessionStart`          | `turn`            | No message rows; the call still upserts the conversation row so downstream events have a parent |
-| `SessionEnd`            | `session_end`     | Flips `ros_conversations.active = false`. No message rows. |
+The smoke test asserts both invariants directly (parser determinism and
+prefix-stability) against a real captured `updates.jsonl` fixture.
 
-### Payload field-name handling
-
-Grok emits **camelCase** keys per `~/.grok/docs/user-guide/10-hooks.md`
-(`sessionId`, `toolName`, `toolInput`, `toolResult`, `hookEventName`, etc.).
-Test fixtures and Claude-compat callers historically used snake_case. All
-field access in the worker goes through a `pickField(payload, ...names)`
-helper that tries multiple plausible names in order, so both styles work.
-The session id additionally falls back to the `GROK_SESSION_ID` env var
-(which Grok always injects into the hook process), so even a payload missing
-the JSON field still groups correctly.
-
-## Wiring into Grok
-
-See the example in `../hooks/hooks.json`.
-
-You will likely need to adjust event names as Grok's hook system evolves. The
-important ones for memory are anything that gives you:
-- User prompts
-- Assistant responses
-- Tool calls + results
-- Pre-compaction / compaction events
+A future migration adding a partial unique index on
+`(conversation_id, (metadata->>'event_id'))` would let the worker switch to
+`ON CONFLICT DO NOTHING` as a defence-in-depth layer, but slice-by-count is
+the correctness contract and does not require it.
 
 ## Database Schema
 
 Writes to the standard RivetOS tables:
 - `ros_conversations` (with `agent = 'rivet-grok'`)
-- `ros_messages` (with `metadata.event_id` for dedup)
+- `ros_messages` (with `metadata.event_id`, `metadata.event_ts`,
+  `metadata.sessionUpdate`, `metadata.toolCallId` populated for traceability)
 
 The same tables used by `rivet-claude` and `rivet-hermes`.
 
-## Smoke Test
-
-From the workspace dir:
+## Tests
 
 ```bash
 npm test
 ```
 
-Or from the repo root:
+The test suite has four layers:
 
-```bash
-npx tsx integrations/grok/rivet-memory/capture/test/smoke.test.ts
-```
-
-The test prefers the built `dist/` artifact if present (mirroring production),
-otherwise runs the .ts source under tsx. It points `RIVETOS_ENV_FILE` at
-`/dev/null` so the detached worker fails fast and the spool file persists for
-inspection — then asserts the spooled `CaptureOp` shape (kind, sessionKey,
-payload field). Exits non-zero on failure.
+1. **Parser tests** (no DB, no subprocess) against `fixtures/sample-session/updates.jsonl`
+   — a real 76-event session captured from rivet-grok on 2026-05-25. Asserts
+   the exact role/count breakdown, that tool results are populated (not just
+   `{"status":"completed"}`), and the slice-by-count idempotency invariants
+   (parser determinism, prefix-stability).
+2. **summary.json reader** — verifies generated_title / current_model_id /
+   agent_name are extracted.
+3. **Session-dir resolver** — verifies `findSessionDir` returns null for
+   unknown ids.
+4. **`--hook` spool e2e** — runs the script via tsx (or built `dist/`),
+   confirms it spools an `ingest` CaptureOp with the right
+   sessionId/sourceEvent/finalize flag without spawning the detached worker
+   (controlled by `GROK_CAPTURE_NO_WORKER=1`).
 
 ## Future Improvements
 
 - Add a partial unique index on `(conversation_id, (metadata->>'event_id'))`
-  via a memory-pipeline migration; lets dedup use `ON CONFLICT DO NOTHING`
-  instead of SELECT-then-INSERT.
-- Shared capture client library with the Claude implementation.
-- Optional direct (non-spool) path when running inside certain Grok contexts.
+  via a memory-pipeline migration; lets the worker layer in
+  `ON CONFLICT DO NOTHING` as belt-and-suspenders.
+- Shared capture client library between this and `plugins/providers/claude-cli`.
+- Surface `chat_history.jsonl` / `signals.json` content (token usage, raw
+  model messages) as conversation-level settings.
 - Wire the smoke test into the project's `vitest` runner.

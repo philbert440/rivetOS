@@ -1,17 +1,13 @@
 /**
- * Smoke test for grok-memory-capture.ts
+ * Smoke + unit tests for grok-memory-capture.
  *
- * Run with: npx tsx capture/test/smoke.test.ts
- *
- * Verifies the hot-path behavior end-to-end without needing a Postgres:
- *   - `--hook` exits 0 on empty stdin (the hook contract — never block Grok).
- *   - `--hook` with a tool-event payload writes a single spool file whose
- *     contents decode back to the expected CaptureOp shape.
- *   - `--worker` on a missing spool file does not throw.
- *
- * Sets GROK_CAPTURE_NO_WORKER=1 so enqueue() writes the spool file but skips
- * spawning the detached worker — the spool persists deterministically for
- * inspection, no race against background processes, no PG involvement.
+ * Two layers:
+ *   1. Pure parser tests against a real captured updates.jsonl fixture
+ *      (fixtures/session-updates.jsonl, 76 ACP events from rivet-grok on
+ *      2026-05-25). No DB required — verifies parseUpdates() mapping logic.
+ *   2. End-to-end --hook spool test — runs the script via tsx (or the built
+ *      dist/ artifact when present), confirms it spools an ingest CaptureOp
+ *      without spawning the detached worker (GROK_CAPTURE_NO_WORKER=1).
  */
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -19,12 +15,13 @@ import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 
+import { parseUpdates, readSessionSummary, findSessionDir } from '../src/grok-memory-capture.ts'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-// Source is at capture/src/; the built artifact (when present) is at capture/dist/.
-// Prefer the built version if it exists so the test mirrors the production hot path,
-// otherwise fall back to tsx against the .ts source.
 const SRC = path.join(__dirname, '..', 'src', 'grok-memory-capture.ts')
 const DIST = path.join(__dirname, '..', 'dist', 'grok-memory-capture.js')
+const FIXTURE_DIR = path.join(__dirname, 'fixtures')
+const SAMPLE_SESSION_DIR = path.join(FIXTURE_DIR, 'sample-session')
 const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-grok-capture')
 
 const childEnv: NodeJS.ProcessEnv = { ...process.env, GROK_CAPTURE_NO_WORKER: '1' }
@@ -32,171 +29,165 @@ const childEnv: NodeJS.ProcessEnv = { ...process.env, GROK_CAPTURE_NO_WORKER: '1
 function run(args: string[], stdin = ''): SpawnSyncReturns<string> {
   const useBuilt = fs.existsSync(DIST)
   const cmd = useBuilt ? process.execPath : 'npx'
-  const argv = useBuilt
-    ? [DIST, ...args]
-    : ['--yes', 'tsx', SRC, ...args]
-  return spawnSync(cmd, argv, {
-    input: stdin,
-    encoding: 'utf8',
-    env: childEnv,
-    timeout: 30000,
-  })
+  const argv = useBuilt ? [DIST, ...args] : ['--yes', 'tsx', SRC, ...args]
+  return spawnSync(cmd, argv, { input: stdin, encoding: 'utf8', env: childEnv, timeout: 30000 })
 }
 
 function listSpool(): string[] {
-  try {
-    return fs.readdirSync(SPOOL_DIR).filter(f => f.endsWith('.json'))
-  } catch {
-    return []
-  }
+  try { return fs.readdirSync(SPOOL_DIR).filter(f => f.endsWith('.json')) }
+  catch { return [] }
 }
 
 let failed = 0
 function check(name: string, cond: boolean, detail = ''): void {
-  if (cond) {
-    console.log(`✓ ${name}`)
-  } else {
-    console.error(`✗ ${name}${detail ? ': ' + detail : ''}`)
-    failed++
+  if (cond) console.log(`✓ ${name}`)
+  else { console.error(`✗ ${name}${detail ? ': ' + detail : ''}`); failed++ }
+}
+
+console.log('Running Grok Memory Capture tests...\n')
+
+// =============================================================================
+// Layer 1: pure parser tests (no DB, no subprocess)
+// =============================================================================
+console.log('— parser tests against fixtures/session-updates.jsonl —')
+{
+  const jsonl = fs.readFileSync(path.join(SAMPLE_SESSION_DIR, 'updates.jsonl'), 'utf8')
+  const parsed = parseUpdates(jsonl)
+
+  // Expected from the real session: 3 user prompts, 3 assistant replies,
+  // 8 thoughts, 10 tool calls completed, 2 memory_flush markers. The hook
+  // chatter (hook_execution, available_commands_update, in-progress
+  // tool_call_update) should be filtered out.
+  const byRole: Record<string, number> = {}
+  let thoughts = 0
+  let memoryMarkers = 0
+  for (const m of parsed) {
+    byRole[m.role] = (byRole[m.role] ?? 0) + 1
+    if (m.content.startsWith('[thinking] ')) thoughts++
+    if (m.content.startsWith('[grok.memory_flush')) memoryMarkers++
   }
+
+  check('parsed >= 26 messages from 76-line file', parsed.length >= 26, `got ${parsed.length}`)
+  check('3 user prompts captured', byRole.user === 3, `got ${byRole.user}`)
+  check('3 assistant replies captured (the bug that motivated this PR)', byRole.assistant !== undefined && byRole.assistant >= 3,
+    `got ${byRole.assistant}`)
+  check('agent_thought_chunk captured as [thinking] prefix', thoughts >= 1, `got ${thoughts}`)
+  check('10 tool rows captured', byRole.tool === 10, `got ${byRole.tool}`)
+  check('memory_flush markers captured as system rows', memoryMarkers === 2, `got ${memoryMarkers}`)
+  check('no hook_execution leaked through', !parsed.some(m => JSON.stringify(m.extra ?? {}).includes('hook_execution')))
+  check('no available_commands leaked through', !parsed.some(m => JSON.stringify(m.extra ?? {}).includes('available_commands')))
+
+  // Ordering: the first user prompt must precede the first assistant reply.
+  const firstUser = parsed.findIndex(m => m.role === 'user')
+  const firstAssistant = parsed.findIndex(m => m.role === 'assistant' && !m.content.startsWith('[thinking] '))
+  check('user precedes assistant in parsed order', firstUser >= 0 && firstAssistant > firstUser,
+    `user@${firstUser}, assistant@${firstAssistant}`)
+
+  // Tool rows must carry both toolName and toolResult populated from rawOutput.
+  const firstTool = parsed.find(m => m.role === 'tool')
+  check('tool row has toolName populated', !!firstTool?.toolName, `firstTool=${JSON.stringify(firstTool)}`)
+  check('tool row has toolResult populated (not just {"status":"completed"})',
+    !!firstTool?.toolResult && !/^{?"status":\s*"completed"}?$/.test(firstTool.toolResult),
+    `toolResult=${firstTool?.toolResult?.slice(0, 80)}`)
+
+  // EventId is best-effort — Grok includes _meta.eventId on most session/update
+  // events but not all (e.g. memory_flush, hook_execution, and some early
+  // SessionStart fixtures lack it). We assert "most messages carry an eventId,"
+  // not "every," because the eventId is decorative metadata for traceability
+  // and dedup; slice-by-count idempotency does not depend on it.
+  const withEventId = parsed.filter(m => m.eventId)
+  check('most parsed messages carry an eventId (>=80%)',
+    withEventId.length >= Math.floor(parsed.length * 0.8),
+    `${withEventId.length}/${parsed.length} have eventId`)
+
+  // Idempotency invariant: re-parsing produces the same list.
+  const reparsed = parseUpdates(jsonl)
+  check('parser is deterministic across runs (idempotency precondition)',
+    JSON.stringify(reparsed) === JSON.stringify(parsed))
+
+  // Append-safety: parsing a prefix and then the whole file shows monotonic growth.
+  const halfText = jsonl.split('\n').slice(0, 40).join('\n') + '\n'
+  const half = parseUpdates(halfText)
+  check('parsing a prefix yields a non-empty proper prefix (slice-by-count is safe)',
+    half.length > 0 && half.length <= parsed.length &&
+    JSON.stringify(parsed.slice(0, half.length)) === JSON.stringify(half),
+    `half=${half.length} full=${parsed.length}`)
 }
 
-console.log('Running Grok Memory Capture smoke tests...\n')
-
-// 1. --hook returns 0 even with empty stdin (the never-block-Grok contract).
+// =============================================================================
+// Layer 2: summary.json reader
+// =============================================================================
+console.log('\n— summary.json reader —')
 {
-  const r = run(['--hook', 'PostToolUse'])
-  check(
-    '--hook exits 0 on empty input',
-    r.status === 0,
-    `status=${r.status} stderr=${(r.stderr || '').trim()}`,
-  )
+  const summary = readSessionSummary(SAMPLE_SESSION_DIR)
+  check('reads generated_title from summary.json', !!summary.title)
+  check('reads current_model_id', summary.modelId === 'grok-build')
+  check('reads agent_name', summary.agentName === 'grok-build-plan')
 }
 
-// 2. --hook with a Grok-shaped camelCase tool payload spools exactly one
-//    CaptureOp file with the expected shape. This mirrors what real Grok
-//    emits per ~/.grok/docs/user-guide/10-hooks.md (camelCase keys).
+// =============================================================================
+// Layer 3: session dir resolver
+// =============================================================================
+console.log('\n— findSessionDir resolver —')
 {
-  const sessionId = 'smoke-test-' + Date.now()
+  // Made-up id should not resolve to anything real.
+  const phantom = findSessionDir('00000000-0000-0000-0000-000000000000')
+  check('returns null for unknown session id', phantom === null)
+}
+
+// =============================================================================
+// Layer 4: --hook spool path (subprocess, no DB)
+// =============================================================================
+console.log('\n— --hook spool e2e —')
+{
+  const r = run(['--hook', 'SessionStart'])
+  check('--hook exits 0 on empty input', r.status === 0,
+    `status=${r.status} stderr=${(r.stderr || '').trim()}`)
+}
+{
+  const sessionId = 'smoke-session-' + Date.now()
   const before = new Set(listSpool())
-  const payload = JSON.stringify({
-    hookEventName: 'post_tool_use',
-    sessionId,
-    toolName: 'run_terminal_cmd',
-    toolInput: { command: 'echo hi' },
-    toolResult: 'hi',
-  })
-  const r = run(['--hook', 'PostToolUse'], payload)
-  check(
-    '--hook with camelCase Grok payload exits 0',
-    r.status === 0,
-    `status=${r.status} stderr=${(r.stderr || '').trim()}`,
-  )
+  const payload = JSON.stringify({ hookEventName: 'stop', sessionId, reason: 'end_turn' })
+  const r = run(['--hook', 'Stop'], payload)
+  check('--hook Stop exits 0', r.status === 0, `status=${r.status}`)
   const newFiles = listSpool().filter(f => !before.has(f))
-  check(
-    '--hook with payload writes exactly one spool file',
-    newFiles.length === 1,
-    `newFiles=${JSON.stringify(newFiles)}`,
-  )
+  check('writes exactly one spool file', newFiles.length === 1, `newFiles=${JSON.stringify(newFiles)}`)
   if (newFiles.length === 1) {
     const spoolPath = path.join(SPOOL_DIR, newFiles[0])
-    let parsed: { kind?: string; sessionKey?: string; payload?: Record<string, unknown> } | null = null
-    try {
-      parsed = JSON.parse(fs.readFileSync(spoolPath, 'utf8'))
-    } catch {
-      /* parsed stays null */
-    }
-    check('spool file is valid JSON', parsed !== null)
-    check('spool op.kind === "tool" for PostToolUse', parsed?.kind === 'tool')
-    check(
-      `spool op.sessionKey === "grok-build:${sessionId}" (resolved from camelCase sessionId)`,
-      parsed?.sessionKey === `grok-build:${sessionId}`,
-    )
-    check(
-      'spool op.payload.toolName preserved through the spool',
-      parsed?.payload?.toolName === 'run_terminal_cmd',
-    )
-    try { fs.unlinkSync(spoolPath) } catch { /* best effort */ }
+    let parsed: any = null
+    try { parsed = JSON.parse(fs.readFileSync(spoolPath, 'utf8')) } catch {}
+    check('spool op.kind === "ingest"', parsed?.kind === 'ingest')
+    check('spool op.sessionId === payload.sessionId', parsed?.sessionId === sessionId)
+    check('spool op.sourceEvent === "Stop"', parsed?.sourceEvent === 'Stop')
+    check('spool op.finalize is falsy for Stop', !parsed?.finalize)
+    try { fs.unlinkSync(spoolPath) } catch {}
   }
 }
-
-// 3. --hook with snake_case payload (legacy/fixtures) still works.
 {
-  const sessionId = 'smoke-test-snake-' + Date.now()
+  const sessionId = 'smoke-end-' + Date.now()
   const before = new Set(listSpool())
-  const payload = JSON.stringify({
-    session_id: sessionId,
-    tool_name: 'echo',
-    tool_input: { x: 1 },
-    tool_result: 'ok',
-  })
-  const r = run(['--hook', 'PostToolUse'], payload)
-  check(
-    '--hook with snake_case payload exits 0',
-    r.status === 0,
-    `status=${r.status} stderr=${(r.stderr || '').trim()}`,
-  )
+  const payload = JSON.stringify({ hookEventName: 'session_end', sessionId })
+  const r = run(['--hook', 'SessionEnd'], payload)
+  check('--hook SessionEnd exits 0', r.status === 0)
   const newFiles = listSpool().filter(f => !before.has(f))
   if (newFiles.length === 1) {
     const spoolPath = path.join(SPOOL_DIR, newFiles[0])
-    let parsed: { sessionKey?: string } | null = null
-    try { parsed = JSON.parse(fs.readFileSync(spoolPath, 'utf8')) } catch { /* */ }
-    check(
-      'snake_case session_id resolves the same sessionKey as camelCase',
-      parsed?.sessionKey === `grok-build:${sessionId}`,
-    )
-    try { fs.unlinkSync(spoolPath) } catch { /* */ }
+    let parsed: any = null
+    try { parsed = JSON.parse(fs.readFileSync(spoolPath, 'utf8')) } catch {}
+    check('SessionEnd sets finalize=true', parsed?.finalize === true)
+    try { fs.unlinkSync(spoolPath) } catch {}
   } else {
-    check('snake_case payload writes exactly one spool file', false, `newFiles=${JSON.stringify(newFiles)}`)
+    check('SessionEnd writes a spool file', false, `newFiles=${JSON.stringify(newFiles)}`)
   }
 }
-
-// 4. --hook with UserPromptSubmit (turn kind) — the prompt field becomes
-//    the user message via the pickField fallback chain. Smoke verifies the
-//    spooled payload preserves the prompt for the worker to read.
-{
-  const sessionId = 'smoke-prompt-' + Date.now()
-  const before = new Set(listSpool())
-  const payload = JSON.stringify({
-    hookEventName: 'user_prompt_submit',
-    sessionId,
-    prompt: 'hello rivet',
-  })
-  const r = run(['--hook', 'UserPromptSubmit'], payload)
-  check(
-    '--hook UserPromptSubmit exits 0',
-    r.status === 0,
-    `status=${r.status} stderr=${(r.stderr || '').trim()}`,
-  )
-  const newFiles = listSpool().filter(f => !before.has(f))
-  if (newFiles.length === 1) {
-    const spoolPath = path.join(SPOOL_DIR, newFiles[0])
-    let parsed: { kind?: string; payload?: Record<string, unknown> } | null = null
-    try { parsed = JSON.parse(fs.readFileSync(spoolPath, 'utf8')) } catch { /* */ }
-    check('UserPromptSubmit classifies as kind=turn', parsed?.kind === 'turn')
-    check(
-      'spooled payload.prompt is preserved for the worker',
-      parsed?.payload?.prompt === 'hello rivet',
-    )
-    try { fs.unlinkSync(spoolPath) } catch { /* */ }
-  } else {
-    check('UserPromptSubmit writes exactly one spool file', false, `newFiles=${JSON.stringify(newFiles)}`)
-  }
-}
-
-// 5. --worker on a missing spool file does not throw and exits 0.
 {
   const missing = path.join(os.tmpdir(), `nonexistent-spool-${Date.now()}.json`)
   const r = run(['--worker', missing])
-  check(
-    '--worker handles missing file',
-    r.status === 0,
-    `status=${r.status} stderr=${(r.stderr || '').trim()}`,
-  )
+  check('--worker handles missing file', r.status === 0, `status=${r.status}`)
 }
 
 if (failed > 0) {
   console.error(`\n${failed} check(s) failed.`)
   process.exit(1)
 }
-console.log('\nAll smoke tests passed.')
+console.log('\nAll tests passed.')
