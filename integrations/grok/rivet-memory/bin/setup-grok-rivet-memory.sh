@@ -3,13 +3,14 @@
 # setup-grok-rivet-memory.sh
 #
 # One-stop helper to set up the rivet-memory integration for Grok Build
-# on a RivetOS host (e.g. 203.0.113.10 or your local machine).
+# on a RivetOS host. All paths it prints are derived from $RIVETOS_ROOT so the
+# snippets are copy-pasteable on hosts where RivetOS lives outside /opt/rivetos.
 #
-# Usage:
-#   ./integrations/grok/rivet-memory/bin/setup-grok-rivet-memory.sh
+# Override with:
+#   RIVETOS_ROOT=/my/install ./setup-grok-rivet-memory.sh
 #
 # It will:
-#   1. Verify RivetOS is built
+#   1. Verify RivetOS is built (and that the capture workspace is built)
 #   2. Print exact config snippets for MCP, skills, capture hooks, and GROK.md
 #   3. Optionally create symlinks for the bin scripts into /usr/local/bin (if run with --link;
 #      this step calls `sudo` and will prompt for your password).
@@ -19,6 +20,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
+PLUGIN_PATH="$RIVETOS_ROOT/integrations/grok/rivet-memory"
 
 echo "=== RivetOS + Grok rivet-memory Setup ==="
 echo "Plugin directory: $PLUGIN_DIR"
@@ -29,38 +31,47 @@ echo
 CLI="$RIVETOS_ROOT/plugins/transports/mcp-server/dist/cli.js"
 if [ ! -f "$CLI" ]; then
   echo "❌ RivetOS MCP server not built."
-  echo "   Please run: cd $RIVETOS_ROOT && npm run build"
+  echo "   Please run: cd $RIVETOS_ROOT && npm install && npm run build"
   exit 1
 fi
-echo "✅ RivetOS MCP server found."
+echo "✅ RivetOS MCP server found at $CLI"
+
+CAPTURE_BUILT="$PLUGIN_PATH/capture/dist/grok-memory-capture.js"
+if [ -f "$CAPTURE_BUILT" ]; then
+  echo "✅ Capture worker built at $CAPTURE_BUILT"
+else
+  echo "⚠️  Capture worker not built. Hook will fall back to npx tsx on each fire (slow cold path)."
+  echo "   To build: cd $RIVETOS_ROOT && npm install && npm run build"
+fi
 
 # 2. MCP Server recommendation
 echo
 echo "=== 1. MCP Server Configuration ==="
 echo "Add this to your ~/.grok/config.toml (recommended) or project .mcp.json:"
-cat << 'EOF'
+cat <<EOF
 
 [mcp_servers.rivetos]
-command = "/path/to/rivetos/integrations/grok/rivet-memory/bin/rivet-memory-mcp.sh"
+command = "$PLUGIN_PATH/bin/rivet-memory-mcp.sh"
 
-# Or use the direct path:
-# command = "/opt/rivetos/plugins/transports/mcp-server/dist/cli.js"
+# Or invoke the MCP server directly:
+# command = "$CLI"
 # args = ["--stdio"]
 EOF
 
+echo
 echo "Then restart Grok or run: /mcps reload"
 
 # 3. Skills
 echo
 echo "=== 2. Skills Installation ==="
 echo "Copy the skills into your Grok skills directory:"
-cat << 'EOF'
+cat <<EOF
 
-# Project scope (recommended for this host)
-cp -r /opt/rivetos/integrations/grok/rivet-memory/skills/* ~/.grok/skills/
+# Project scope (recommended)
+cp -r $PLUGIN_PATH/skills/* .grok/skills/
 
 # Or global
-# cp -r /opt/rivetos/integrations/grok/rivet-memory/skills/* ~/.grok/skills/
+cp -r $PLUGIN_PATH/skills/* ~/.grok/skills/
 EOF
 
 # 4. Reflex
@@ -69,9 +80,9 @@ echo "=== 3. Memory Discipline Reflex (GROK.md) ==="
 echo "Copy GROK.md into your rules so the discipline is always active."
 echo "Grok Build reads ~/.grok/AGENTS.md as the always-on rules file (per the"
 echo "vendor-neutral AGENTS.md convention), so we copy GROK.md to that path:"
-cat << 'EOF'
+cat <<EOF
 
-cp /opt/rivetos/integrations/grok/rivet-memory/GROK.md ~/.grok/AGENTS.md
+cp $PLUGIN_PATH/GROK.md ~/.grok/AGENTS.md
 # or include its content in your main project rules / global config
 EOF
 
@@ -80,16 +91,15 @@ echo
 echo "=== 4. Automatic Capture (Optional but High Value) ==="
 echo "To automatically save Grok turns, tool calls, and pre-compaction into memory:"
 echo
-cat << 'EOF'
+cat <<EOF
 # Add to your Grok hooks configuration (see hooks/hooks.json for full example):
 
-# Example entries:
 "PostToolUse": [
   {
     "hooks": [
       {
         "type": "command",
-        "command": "/opt/rivetos/integrations/grok/rivet-memory/bin/grok-memory-hook.sh PostToolUse",
+        "command": "$PLUGIN_PATH/bin/grok-memory-hook.sh PostToolUse",
         "timeout": 8
       }
     ]
@@ -101,7 +111,7 @@ cat << 'EOF'
     "hooks": [
       {
         "type": "command",
-        "command": "/opt/rivetos/integrations/grok/rivet-memory/bin/grok-memory-hook.sh CompactBefore",
+        "command": "$PLUGIN_PATH/bin/grok-memory-hook.sh CompactBefore",
         "timeout": 8
       }
     ]
@@ -129,7 +139,7 @@ if [[ "${1:-}" == "--link" ]]; then
 fi
 
 echo
-echo "=== Next Steps on this host (203.0.113.10 or similar) ==="
+echo "=== Next Steps ==="
 echo "1. Configure the MCP server in your Grok config"
 echo "2. Copy the skills"
 echo "3. Add GROK.md to your rules"

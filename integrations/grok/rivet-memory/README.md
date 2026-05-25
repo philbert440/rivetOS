@@ -30,7 +30,7 @@ This integration gives Grok Build sessions first-class access to the same persis
 | Core discipline skill       | `skills/memory-recall/SKILL.md`                       | The heart of the integration. Encodes optimal `memory_browse` first + multi-angle search + trigram fallback. |
 | Quick commands              | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/` | High-frequency shortcuts. |
 | Memory researcher subagent  | `agents/memory-researcher.md`                         | Delegate heavy or multi-step recall work. |
-| Capture system              | `capture/grok-memory-capture.ts` + `bin/grok-memory-hook.sh` | Non-blocking capture of turns, tool calls, and pre-compaction messages. |
+| Capture system              | `capture/` (workspace `@rivetos/grok-rivet-memory-capture`) + `bin/grok-memory-hook.sh` | Non-blocking capture of turns, tool calls, and pre-compaction messages. Built via root `npm run build`. |
 | MCP launcher                | `bin/rivet-memory-mcp.sh`                             | Clean, consistent way to expose RivetOS memory tools to Grok. |
 | Project reflex              | `GROK.md`                                             | Always-on memory discipline rules (install into your rules). |
 | Hook examples               | `hooks/hooks.json`                                    | How to wire automatic capture into Grok's hook system. |
@@ -38,27 +38,40 @@ This integration gives Grok Build sessions first-class access to the same persis
 
 ## Installation
 
-### 1. Build RivetOS (required for MCP server)
+> Throughout, `$RIVETOS_ROOT` is your RivetOS checkout. Default: `/opt/rivetos`.
+> All scripts in `bin/` honor `RIVETOS_ROOT` if it's set in the environment
+> (or sourced from `~/.rivetos/.env`), so non-default install layouts are
+> fully supported — you do not need to edit any tracked file.
+
+### 1. Build RivetOS (required for both the MCP server and the capture worker)
 
 ```bash
-cd /path/to/rivetos
-npm run build
+cd $RIVETOS_ROOT
+npm install        # picks up the capture workspace, installs pg + tsx
+npm run build      # produces dist/ for the MCP server and the capture worker
 ```
+
+This produces:
+- `$RIVETOS_ROOT/plugins/transports/mcp-server/dist/cli.js` (memory MCP server)
+- `$RIVETOS_ROOT/integrations/grok/rivet-memory/capture/dist/grok-memory-capture.js` (capture worker)
 
 ### 2. Configure the RivetOS MCP Server (Recommended)
 
-Use the dedicated launcher for consistency with the Claude integration:
+Use the dedicated launcher for consistency with the Claude integration. It
+reads `$RIVETOS_ROOT` at run time:
 
 ```toml
 # ~/.grok/config.toml or project .mcp.json
 [mcp_servers.rivetos]
-command = "/path/to/rivetos/integrations/grok/rivet-memory/bin/rivet-memory-mcp.sh"
+command = "/opt/rivetos/integrations/grok/rivet-memory/bin/rivet-memory-mcp.sh"
+# If your install lives elsewhere, set RIVETOS_ROOT in ~/.rivetos/.env and
+# point `command` at that path instead.
 ```
 
 Alternative (direct):
 ```toml
 [mcp_servers.rivetos]
-command = "/path/to/rivetos/plugins/transports/mcp-server/dist/cli.js"
+command = "/opt/rivetos/plugins/transports/mcp-server/dist/cli.js"
 args = ["--stdio"]
 ```
 
@@ -114,7 +127,7 @@ Pre-compaction capture (`CompactBefore`) is particularly valuable for long Grok 
 This integration follows a **Grok-native hybrid** approach, deliberately chosen after comparing the Claude and Hermes implementations:
 
 - **Tools** — Exposed via MCP (idiomatic to Grok's `search_tool` / `use_tool` model)
-- **Capture** — Uses Grok's hook system + background spooling/worker (combines the best non-blocking patterns from both other implementations). Uses per-session advisory locks for safety against concurrent hook deliveries; simple INSERTs mean occasional duplicate rows are possible on retries (rare in practice).
+- **Capture** — Uses Grok's hook system + background spooling/worker (combines the best non-blocking patterns from both other implementations). Per-session advisory lock + content-hash `event_id` dedup makes the hot path idempotent across hook retries without a schema migration (see [`capture/README.md`](./capture/README.md#dedup-model)).
 - **Discipline** — The strongest version of the memory-recall rules, with explicit `window=` awareness and pre-compaction sensitivity
 
 This makes Grok sessions first-class citizens in the shared RivetOS memory store.
@@ -130,19 +143,19 @@ This makes Grok sessions first-class citizens in the shared RivetOS memory store
 | Quick commands            | `commands/`             | Tools                   | Skills + `commands/`       |
 | Packaging                 | `.claude-plugin/`       | Python package          | Grok plugin + marketplace  |
 
-## Installation on Remote Hosts (e.g. 203.0.113.10)
+## Installation on a Specific Host
 
 When setting this up on a specific RivetOS node:
 
 1. Ensure the RivetOS repo is checked out and built on that host.
-2. Run the helper script:
+2. Run the helper script (honors `RIVETOS_ROOT`, defaults to `/opt/rivetos`):
    ```bash
-   /opt/rivetos/integrations/grok/rivet-memory/bin/setup-grok-rivet-memory.sh
+   $RIVETOS_ROOT/integrations/grok/rivet-memory/bin/setup-grok-rivet-memory.sh
    ```
 3. Follow the printed instructions for MCP, skills, `GROK.md`, and capture hooks.
 4. If you want the bin scripts in PATH:
    ```bash
-   /opt/rivetos/integrations/grok/rivet-memory/bin/setup-grok-rivet-memory.sh --link
+   $RIVETOS_ROOT/integrations/grok/rivet-memory/bin/setup-grok-rivet-memory.sh --link
    ```
 
 This makes the full rivet-memory experience (including capture) available for any Grok sessions that touch that host.
@@ -153,7 +166,8 @@ This makes the full rivet-memory experience (including capture) available for an
 - Deeper integration with Grok's exact hook surface as it matures
 - Shared capture library between Claude and Grok implementations
 - More specialized skills (host inventory, decision audit, etc.)
-- Tests for the capture module
+- Partial unique index on `(conversation_id, (metadata->>'event_id'))` to convert
+  capture dedup from SELECT-then-INSERT to `ON CONFLICT DO NOTHING`
 
 ## Related
 
