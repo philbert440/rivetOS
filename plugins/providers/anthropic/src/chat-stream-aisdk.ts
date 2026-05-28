@@ -60,7 +60,7 @@ function extractTextFromParts(parts: ContentPart[]): string {
     .join('')
 }
 
-function isClaude4Model(model: string): boolean {
+export function isClaude4Model(model: string): boolean {
   return /^claude-(opus|sonnet|haiku)-4(-\d+)?/i.test(model)
 }
 
@@ -76,7 +76,7 @@ const CLAUDE3_BUDGET_TOKENS: Record<ThinkingLevel, number | null> = {
  * Pull leading system messages out into a single concatenated string.
  * Returns the remaining (non-system) Message[] for AI SDK conversion.
  */
-function splitSystem(messages: Message[]): { system: string; rest: Message[] } {
+export function splitSystem(messages: Message[]): { system: string; rest: Message[] } {
   let system = ''
   const rest: Message[] = []
   for (const msg of messages) {
@@ -95,7 +95,7 @@ function splitSystem(messages: Message[]): { system: string; rest: Message[] } {
  * tool_use in any prior assistant message. Compaction can leave orphans that
  * trigger 400 from Anthropic's API.
  */
-function stripOrphanedToolResults(messages: Message[]): Message[] {
+export function stripOrphanedToolResults(messages: Message[]): Message[] {
   const validIds = new Set<string>()
   for (const msg of messages) {
     if (msg.role === 'assistant' && msg.toolCalls?.length) {
@@ -117,7 +117,7 @@ function stripOrphanedToolResults(messages: Message[]): Message[] {
   return out
 }
 
-function buildToolSet(toolDefs: ToolDefinition[] | undefined): ToolSet {
+export function buildToolSet(toolDefs: ToolDefinition[] | undefined): ToolSet {
   const set: ToolSet = {}
   if (!toolDefs?.length) return set
   for (const def of toolDefs) {
