@@ -53,7 +53,7 @@ describe('gitUpdateNodeAsync — datahub worker restart resilience', () => {
     sshExecMock.mockResolvedValue(undefined)
     stubQuiet({ 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' })
 
-    const res = await gitUpdateNodeAsync('10.4.20.110', 'datahub', OPTS, false)
+    const res = await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false)
 
     expect(res.success).toBe(true)
     expect(res.workers).toEqual(['rivet-compactor.service', 'rivet-embedder.service'])
@@ -69,7 +69,7 @@ describe('gitUpdateNodeAsync — datahub worker restart resilience', () => {
     })
     stubQuiet({ 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' })
 
-    const res = await gitUpdateNodeAsync('10.4.20.110', 'datahub', OPTS, false)
+    const res = await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false)
 
     // The embedder restart must have been attempted despite the compactor "failure".
     const restartedUnits = sshExecMock.mock.calls
@@ -85,7 +85,7 @@ describe('gitUpdateNodeAsync — datahub worker restart resilience', () => {
     sshExecMock.mockResolvedValue(undefined)
     stubQuiet({ 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'failed' })
 
-    const res = await gitUpdateNodeAsync('10.4.20.110', 'datahub', OPTS, false)
+    const res = await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false)
 
     expect(res.success).toBe(false)
     expect(res.failedStep).toBe('worker:rivet-embedder.service')
