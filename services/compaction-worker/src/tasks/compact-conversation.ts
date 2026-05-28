@@ -63,7 +63,7 @@ async function loadConversationMeta(
 }
 
 /** Run `fn` inside a BEGIN/COMMIT, rolling back (best-effort) on any throw. */
-async function withTransaction<T>(client: PgClient, fn: () => Promise<T>): Promise<T> {
+export async function withTransaction<T>(client: PgClient, fn: () => Promise<T>): Promise<T> {
   await client.query('BEGIN')
   try {
     const result = await fn()
@@ -86,7 +86,7 @@ interface SummaryInsert {
 }
 
 /** Insert one ros_summaries row and return its id. Caller owns the transaction. */
-async function insertSummary(client: PgClient, s: SummaryInsert): Promise<string> {
+export async function insertSummary(client: PgClient, s: SummaryInsert): Promise<string> {
   const res = await client.query<{ id: string }>(
     `INSERT INTO ros_summaries
        (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
