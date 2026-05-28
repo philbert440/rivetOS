@@ -46,6 +46,12 @@ import { createLogger } from './log.js'
 // Config
 // ---------------------------------------------------------------------------
 
+/** Grace period between SIGTERM and SIGKILL when terminating the child. */
+const KILL_GRACE_MS = 2_000
+
+/** Max bytes of child stderr we retain (only the first 500 chars are surfaced). */
+const STDERR_CAP = 64 * 1024
+
 export type ClaudeCliEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export interface ClaudeCliModelConfig {
@@ -596,11 +602,29 @@ export class ClaudeCliModel implements LanguageModelV3 {
     proc.stdin.write(inputLine)
     proc.stdin.end()
 
-    // Forward AI SDK's abortSignal — kills the spawn if the loop stops the turn.
-    // No internal timeout: Claude Code owns max-output-tokens and runtime
-    // limits; configure via `claude config` or env on the box.
-    const onAbort = () => {
+    // Terminate the child idempotently: SIGTERM, then SIGKILL if it ignores us.
+    // No internal *runtime* timeout — Claude Code owns max-output-tokens and
+    // runtime limits — this only bounds how long a *kill* can hang. A single
+    // killProc() in `finally` guarantees the child is reaped on every exit path
+    // (normal, error, abort, cancel), closing the zombie-on-error gap.
+    let killTimer: ReturnType<typeof setTimeout> | undefined
+    const killProc = (): void => {
+      if (proc.exitCode !== null) return // already exited — nothing to do
       if (!proc.killed) proc.kill('SIGTERM')
+      if (!killTimer) {
+        killTimer = setTimeout(() => {
+          if (proc.exitCode === null) proc.kill('SIGKILL')
+        }, KILL_GRACE_MS)
+        killTimer.unref()
+      }
+    }
+    proc.once('exit', () => {
+      if (killTimer) clearTimeout(killTimer)
+    })
+
+    // Forward AI SDK's abortSignal — kills the spawn if the loop stops the turn.
+    const onAbort = () => {
+      killProc()
     }
     options.abortSignal?.addEventListener('abort', onAbort, { once: true })
 
@@ -617,9 +641,12 @@ export class ClaudeCliModel implements LanguageModelV3 {
       }
     }
 
+    // Cap stderr accumulation — we only ever surface the first 500 chars, so an
+    // unbounded child writing to stderr for the whole run can't grow this string
+    // without limit.
     let stderr = ''
     proc.stderr.on('data', (d: Buffer) => {
-      stderr += d.toString()
+      if (stderr.length < STDERR_CAP) stderr += d.toString()
     })
 
     const log = this.log
@@ -662,7 +689,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
               lastApiKeySource = (event as CliSystemInit).apiKeySource
               log.debug('system.init', { apiKeySource: lastApiKeySource })
               if (lastApiKeySource && lastApiKeySource !== 'none') {
-                if (!proc.killed) proc.kill('SIGTERM')
+                killProc()
                 throw new APICallError({
                   message:
                     `claude-cli: unexpected apiKeySource="${lastApiKeySource}". ` +
@@ -829,11 +856,14 @@ export class ClaudeCliModel implements LanguageModelV3 {
           controller.error(apiError)
         } finally {
           options.abortSignal?.removeEventListener('abort', onAbort)
+          // Guarantee the child is reaped on every exit path. No-op if it
+          // already exited cleanly (the success path awaits `close` above).
+          killProc()
           await closeBridge()
         }
       },
       cancel: async () => {
-        if (!proc.killed) proc.kill('SIGTERM')
+        killProc()
         await closeBridge()
       },
     })
