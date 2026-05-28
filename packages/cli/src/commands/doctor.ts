@@ -27,6 +27,7 @@ import { resolve } from 'node:path'
 import { execSync } from 'node:child_process'
 import { parse as parseYaml } from 'yaml'
 import { validateConfig } from '@rivetos/boot'
+import { loadMeshFile } from '../lib/mesh-file.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -646,44 +647,12 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
 async function checkPeers(sshUser = 'rivet'): Promise<CheckResult[]> {
   const results: CheckResult[] = []
 
-  // Check for mesh.json — try canonical NFS path first, then local paths
-  const meshPaths = [
-    '/rivet-shared/mesh.json',
-    resolve(process.cwd(), 'mesh.json'),
-    resolve(process.env.HOME ?? '.', '.rivetos', 'mesh.json'),
-  ]
-
-  let meshRaw: string | null = null
-  for (const p of meshPaths) {
-    try {
-      meshRaw = await readFile(p, 'utf-8')
-      break
-    } catch {
-      // try next
-    }
-  }
-
-  if (!meshRaw) return results
+  // Check for mesh.json (canonical NFS path, with legacy fallbacks + normalization)
+  const meshFile = await loadMeshFile(process.cwd())
+  if (!meshFile) return results
 
   try {
-    const parsed = JSON.parse(meshRaw) as {
-      nodes:
-        | Record<string, { name: string; host: string; port: number; role?: string }>
-        | Array<{ name: string; ip?: string; host?: string; port?: number; role?: string }>
-    }
-
-    // Normalize legacy array format to Record
-    let peers: Array<{ name: string; host: string; port: number; role?: string }>
-    if (Array.isArray(parsed.nodes)) {
-      peers = parsed.nodes.map((n) => ({
-        name: n.name,
-        host: n.ip ?? n.host ?? '',
-        port: n.port ?? 3100,
-        role: n.role === 'primary' ? 'agent' : n.role,
-      }))
-    } else {
-      peers = Object.values(parsed.nodes)
-    }
+    const peers = Object.values(meshFile.nodes)
 
     for (const peer of peers) {
       const isAgent = !peer.role || peer.role === 'agent'

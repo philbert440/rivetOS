@@ -13,82 +13,9 @@
 
 import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
-import { parse as parseYaml } from 'yaml'
-
-// ---------------------------------------------------------------------------
-// Local node name resolution — required for selecting our own mTLS client cert
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve this node's name (the CN on its mTLS client cert).
- *
- * Resolution order:
- *   1. `RIVETOS_NODE_NAME` env var (explicit override)
- *   2. `node_name` from `~/.rivetos/config.yaml`
- *   3. `null` — caller decides what to do (typically: skip mTLS, fall back)
- *
- * Note: we deliberately do NOT derive the name from the *target* host —
- * the cert proves who *we* are, not who we're calling.
- */
-function resolveLocalNodeName(): string | null {
-  if (process.env.RIVETOS_NODE_NAME) return process.env.RIVETOS_NODE_NAME
-  try {
-    const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
-    const raw = readFileSync(configPath, 'utf-8')
-    const config = parseYaml(raw) as { node_name?: string; mesh?: { node_name?: string } } | null
-    // Canonical location is `mesh.node_name`; accept top-level `node_name` as legacy fallback.
-    if (config?.mesh?.node_name) return config.mesh.node_name
-    if (config?.node_name) return config.node_name
-  } catch {
-    // No config file or unparseable — fall through to null
-  }
-  return null
-}
-
-// ---------------------------------------------------------------------------
-// mTLS fetch helper — builds an undici dispatcher with node certs for mesh calls
-// ---------------------------------------------------------------------------
-
-async function buildMeshFetchOptions(
-  _host: string,
-  timeoutMs = 5000,
-): Promise<RequestInit & { dispatcher?: unknown }> {
-  const options: RequestInit & { dispatcher?: unknown } = {
-    signal: AbortSignal.timeout(timeoutMs),
-  }
-
-  try {
-    const { Agent: UndiciAgent } = await import('undici')
-    const nodeName = resolveLocalNodeName()
-    const caPath = '/rivet-shared/rivet-ca/intermediate/ca-chain.pem'
-    const certPath =
-      process.env.RIVETOS_TLS_CERT ??
-      (nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : null)
-    const keyPath =
-      process.env.RIVETOS_TLS_KEY ??
-      (nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.key` : null)
-
-    if (!certPath || !keyPath) {
-      // No way to resolve our local node name — caller proceeds without mTLS
-      return options
-    }
-
-    const ca = readFileSync(caPath)
-    const cert = readFileSync(certPath)
-    const key = readFileSync(keyPath)
-
-    // @ts-expect-error — undici Agent vs undici-types Dispatcher type mismatch
-    options.dispatcher = new UndiciAgent({
-      connect: { ca, cert, key, rejectUnauthorized: true },
-    })
-  } catch {
-    // Certs not available — caller will proceed without mTLS dispatcher
-  }
-
-  return options
-}
+import { buildMeshFetchOptions } from '../lib/mtls.js'
+import { loadMeshFile, type MeshNode } from '../lib/mesh-file.js'
+import { checkSshReachable } from '../lib/ssh.js'
 
 const HELP = `
   rivetos mesh — Multi-agent mesh management
@@ -258,7 +185,7 @@ async function meshPing(flags: Flags): Promise<void> {
 
     const start = Date.now()
     try {
-      const fetchOpts = await buildMeshFetchOptions(node.host, timeoutMs)
+      const fetchOpts = await buildMeshFetchOptions(timeoutMs)
       const res = await fetch(`https://${node.host}:${String(node.port)}/api/mesh/ping`, fetchOpts)
 
       const latency = Date.now() - start
@@ -315,7 +242,7 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
 
   // First, check if seed is reachable
   try {
-    const pingOpts = await buildMeshFetchOptions(host, 5000)
+    const pingOpts = await buildMeshFetchOptions(5000)
     const pingRes = await fetch(`https://${host}:${String(port)}/api/mesh/ping`, pingOpts)
     if (!pingRes.ok) {
       console.error(`  ❌ Seed node responded with HTTP ${String(pingRes.status)}`)
@@ -356,7 +283,7 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
 
   // Send join request to seed
   try {
-    const joinOpts = await buildMeshFetchOptions(host, 10_000)
+    const joinOpts = await buildMeshFetchOptions(10_000)
     const res = await fetch(`https://${host}:${String(port)}/api/mesh/join`, {
       ...joinOpts,
       method: 'POST',
@@ -462,28 +389,6 @@ async function meshStatus(flags: Flags): Promise<void> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-interface MeshFile {
-  version: number
-  nodes: Record<string, MeshNode>
-  updatedAt: number
-}
-
-interface MeshNode {
-  id: string
-  name: string
-  role?: string // 'agent' (default), 'datahub', etc. Non-agent nodes are sync-only.
-  agents?: string[]
-  host: string
-  port: number
-  providers?: string[]
-  models?: string[]
-  capabilities?: string[]
-  status: 'online' | 'offline' | 'degraded' | 'updating'
-  lastSeen?: number
-  registeredAt?: number
-  version?: string
-}
-
 interface PingResult {
   node: MeshNode
   status: 'ok' | 'timeout' | 'error'
@@ -511,25 +416,6 @@ function parseFlags(args: string[]): Flags {
   return flags
 }
 
-async function loadMeshFile(): Promise<MeshFile | null> {
-  const { readFile } = await import('node:fs/promises')
-
-  // All nodes now use the single canonical file at /rivet-shared/mesh.json
-  // (the NFS mount from the datahub). This ensures one source of truth.
-  const paths = ['/rivet-shared/mesh.json']
-
-  for (const p of paths) {
-    try {
-      const raw = await readFile(p, 'utf-8')
-      return JSON.parse(raw) as MeshFile
-    } catch {
-      // try next
-    }
-  }
-
-  return null
-}
-
 function statusEmoji(status: string): string {
   switch (status) {
     case 'online':
@@ -551,32 +437,6 @@ function timeSince(epochMs: number): string {
   if (seconds < 3600) return `${String(Math.floor(seconds / 60))}m ago`
   if (seconds < 86400) return `${String(Math.floor(seconds / 3600))}h ago`
   return `${String(Math.floor(seconds / 86400))}d ago`
-}
-
-/**
- * Quick SSH reachability check for infrastructure nodes.
- * Tries requestedUser first (default: rivet), falls back to root@ with a warning.
- * Returns true if either succeeds.
- */
-function checkSshReachable(host: string, requestedUser = 'rivet'): boolean {
-  const usersToTry = requestedUser !== 'root' ? [requestedUser, 'root'] : ['root']
-  for (const user of usersToTry) {
-    try {
-      execSync(
-        `ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no ${user}@${host} "echo ok"`,
-        { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
-      )
-      if (user !== requestedUser) {
-        console.error(
-          `    [warn] ${host} not yet migrated to ${requestedUser} user, SSH succeeded as root`,
-        )
-      }
-      return true
-    } catch {
-      // try next user
-    }
-  }
-  return false
 }
 
 function getLocalIp(): string {
