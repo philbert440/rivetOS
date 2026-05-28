@@ -86,8 +86,14 @@ export interface OpenAICompatProviderConfig {
   verifyModelOnInit?: boolean
 }
 
+interface OAIModel {
+  id?: string
+  /** vLLM reports the served context length here; used to auto-fill contextWindow. */
+  max_model_len?: number
+}
+
 interface OAIModelsResponse {
-  data?: Array<{ id?: string }>
+  data?: OAIModel[]
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +118,12 @@ export class OpenAICompatProvider implements Provider {
   private contextWindowSize: number
   private outputTokenLimit: number
   private verifyModelOnInit: boolean
+  /** True when the caller pinned a real model id (not the 'default' placeholder). */
+  private modelPinned: boolean
+  /** True when the caller supplied a context window — suppresses auto-fill. */
+  private contextPinned: boolean
+  /** Discovery runs once; cached so repeated isAvailable() calls don't re-probe. */
+  private discovered = false
 
   constructor(config: OpenAICompatProviderConfig) {
     this.id = config.id ?? 'openai-compat'
@@ -125,6 +137,8 @@ export class OpenAICompatProvider implements Provider {
 
     this.apiKey = config.apiKey ?? ''
     this.model = config.model ?? MODEL_DEFAULTS['openai-compat']
+    // 'default' is the placeholder we ship — treat it as "discover from server".
+    this.modelPinned = !!config.model && config.model !== MODEL_DEFAULTS['openai-compat']
     this.maxTokens = config.maxTokens ?? 4096
     this.temperature = config.temperature ?? 0.7
     this.topP = config.topP ?? 0.95
@@ -135,6 +149,7 @@ export class OpenAICompatProvider implements Provider {
     this.seed = config.seed
     this.defaultToolChoice = config.defaultToolChoice ?? 'auto'
     this.contextWindowSize = config.contextWindow ?? 0
+    this.contextPinned = (config.contextWindow ?? 0) > 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
     this.verifyModelOnInit = config.verifyModelOnInit ?? false
   }
@@ -226,17 +241,88 @@ export class OpenAICompatProvider implements Provider {
   }
 
   async isAvailable(): Promise<boolean> {
+    let res: Response
     try {
-      const res = await fetch(`${this.baseUrl}/v1/models`, { headers: this.authHeaders() })
-      if (!res.ok) return false
-
-      if (!this.verifyModelOnInit) return true
-
-      const body = (await res.json()) as OAIModelsResponse
-      const ids = (body.data ?? []).map((m) => m.id).filter((id): id is string => !!id)
-      return ids.includes(this.model)
-    } catch {
+      res = await fetch(`${this.baseUrl}/v1/models`, { headers: this.authHeaders() })
+    } catch (err: unknown) {
+      // Connection-level failure — almost always "server not running" locally.
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(
+        `[${this.id}] cannot reach ${this.baseUrl}/v1/models (${msg}). ` +
+          `Is the server running? For local vLLM: vllm serve <model> --port <port>.`,
+      )
       return false
+    }
+
+    if (!res.ok) {
+      const hint =
+        res.status === 401 || res.status === 403
+          ? ' — set api_key (vLLM: pass --api-key and match it here).'
+          : ''
+      console.warn(
+        `[${this.id}] ${this.baseUrl}/v1/models returned HTTP ${String(res.status)}${hint}`,
+      )
+      return false
+    }
+
+    const body = (await res.json().catch(() => ({}))) as OAIModelsResponse
+    const models = body.data ?? []
+    this.applyDiscovery(models)
+
+    // Only fail availability on a model mismatch when the caller pinned a model
+    // AND asked us to verify it. Auto-discovered models are already valid.
+    if (this.verifyModelOnInit && this.modelPinned) {
+      const ids = models.map((m) => m.id).filter((id): id is string => !!id)
+      if (!ids.includes(this.model)) {
+        console.warn(
+          `[${this.id}] configured model "${this.model}" not in /v1/models ` +
+            `(served: ${ids.join(', ') || 'none'}).`,
+        )
+        return false
+      }
+    }
+    return true
+  }
+
+  /**
+   * Fill in model id and context window from the server's /v1/models listing
+   * when the caller didn't pin them. Lets a local config that only knows the
+   * base URL "just work": no need to hardcode the exact served model name, and
+   * runtime budgeting gets a real context window instead of 0/unknown.
+   *
+   * Explicit config always wins; runs at most once.
+   */
+  private applyDiscovery(models: OAIModel[]): void {
+    if (this.discovered || models.length === 0) return
+    this.discovered = true
+
+    // Pick the served model when the caller left it as the 'default' placeholder.
+    if (!this.modelPinned) {
+      const picked = models[0].id
+      if (picked) {
+        this.model = picked
+        if (models.length > 1) {
+          const others = models
+            .slice(1)
+            .map((m) => m.id)
+            .filter(Boolean)
+            .join(', ')
+          console.warn(
+            `[${this.id}] auto-selected model "${picked}" (also available: ${others}). ` +
+              `Set "model" in config to choose another.`,
+          )
+        } else {
+          console.warn(`[${this.id}] auto-selected served model "${picked}".`)
+        }
+      }
+    }
+
+    // Adopt the server's context length for the chosen model when unset.
+    if (!this.contextPinned) {
+      const chosen = models.find((m) => m.id === this.model) ?? models[0]
+      if (chosen?.max_model_len && chosen.max_model_len > 0) {
+        this.contextWindowSize = chosen.max_model_len
+      }
     }
   }
 }
