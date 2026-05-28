@@ -14,6 +14,15 @@ import { sshExec, sshExecQuiet, resolveSshUser, isSafeArg } from '../../lib/ssh.
 import type { UpdateOptions, NodeUpdateResult } from './types.js'
 
 /**
+ * Timeout for a `systemctl restart`. Generous because some units (notably
+ * datahub's rivet-compactor) take well over 30s to come back up — and
+ * `systemctl restart` blocks until the unit is active, so a too-short timeout
+ * kills our SSH client mid-restart and reports a false failure even though the
+ * restart completes server-side.
+ */
+const RESTART_TIMEOUT_MS = 90_000
+
+/**
  * Discover rivet-* systemd worker services on a remote host, excluding the
  * primary rivetos.service. Returns an array of unit names (e.g.
  * ["rivet-embedder.service", "rivet-compactor.service"]). On failure, returns [].
@@ -110,38 +119,50 @@ export async function gitUpdateNodeAsync(
     } else if (!opts.restart) {
       console.log(`    ${tag} Found workers (skipping restart): ${workers.join(', ')}`)
     } else {
+      // Restart every worker, THEN verify — don't abort the loop on the first
+      // unit's restart hiccup. A restart that exceeds the SSH timeout usually
+      // means the unit is slow to come up, not that it failed (the server-side
+      // `systemctl restart` keeps running after our client is killed), so the
+      // post-restart `is-active` probe is the source of truth. The old code
+      // returned on the first timeout and left later workers (e.g. datahub's
+      // rivet-embedder) on stale code.
       for (const unit of workers) {
+        console.log(`    ${tag} Restarting ${unit}...`)
+        // Workers run as rivet; use sudo for systemctl if not root
+        const restartCmd =
+          sshUser === 'root' ? `systemctl restart ${unit}` : `sudo systemctl restart ${unit}`
         try {
-          console.log(`    ${tag} Restarting ${unit}...`)
-          // Workers run as rivet; use sudo for systemctl if not root
-          const restartCmd =
-            sshUser === 'root' ? `systemctl restart ${unit}` : `sudo systemctl restart ${unit}`
-          await sshExec(host, restartCmd, `${tag} restart ${unit}`, 30_000, sshUser)
-          // Verify it came back active
-          const stateCmd =
-            sshUser === 'root' ? `systemctl is-active ${unit}` : `sudo systemctl is-active ${unit}`
-          const state = sshExecQuiet(host, stateCmd, sshUser)
-          if (state === 'active') {
-            restartedWorkers.push(unit)
-          } else {
-            console.error(`    ${tag} ⚠️  ${unit} is not active after restart (state=${state})`)
-            return {
-              success: false,
-              failedStep: `worker:${unit}`,
-              commit: commit || undefined,
-              elapsedMs: Date.now() - start,
-              workers: restartedWorkers,
-            }
-          }
+          await sshExec(host, restartCmd, `${tag} restart ${unit}`, RESTART_TIMEOUT_MS, sshUser)
         } catch (err: unknown) {
-          console.error(`    ${tag} ❌ Restart of ${unit} failed: ${(err as Error).message}`)
-          return {
-            success: false,
-            failedStep: `worker:${unit}`,
-            commit: commit || undefined,
-            elapsedMs: Date.now() - start,
-            workers: restartedWorkers,
-          }
+          console.warn(
+            `    ${tag} ⚠️  restart of ${unit} did not confirm in time (${(err as Error).message}) — will verify is-active`,
+          )
+        }
+      }
+
+      // Verify final state of every worker (source of truth).
+      const failedWorkers: string[] = []
+      for (const unit of workers) {
+        const stateCmd =
+          sshUser === 'root' ? `systemctl is-active ${unit}` : `sudo systemctl is-active ${unit}`
+        const state = sshExecQuiet(host, stateCmd, sshUser)
+        if (state === 'active') {
+          restartedWorkers.push(unit)
+        } else {
+          console.error(
+            `    ${tag} ❌ ${unit} not active after restart (state=${state || 'unknown'})`,
+          )
+          failedWorkers.push(unit)
+        }
+      }
+
+      if (failedWorkers.length > 0) {
+        return {
+          success: false,
+          failedStep: `worker:${failedWorkers.join(',')}`,
+          commit: commit || undefined,
+          elapsedMs: Date.now() - start,
+          workers: restartedWorkers,
         }
       }
     }
@@ -206,7 +227,7 @@ export async function gitUpdateNodeAsync(
       // Use sudo when logged in as rivet (non-root)
       const restartCmd =
         sshUser === 'root' ? 'systemctl restart rivetos' : 'sudo systemctl restart rivetos'
-      await sshExec(host, restartCmd, `${tag} restart`, 30_000, sshUser)
+      await sshExec(host, restartCmd, `${tag} restart`, RESTART_TIMEOUT_MS, sshUser)
     } catch (err: unknown) {
       console.error(`    ${tag} ❌ Restart failed: ${(err as Error).message}`)
       return { success: false, failedStep: 'restart', elapsedMs: Date.now() - start }
@@ -303,7 +324,7 @@ export async function npmUpdateNodeAsync(
       console.log(`    ${tag} Restarting service...`)
       const restartCmd =
         sshUser === 'root' ? 'systemctl restart rivetos' : 'sudo systemctl restart rivetos'
-      await sshExec(host, restartCmd, `${tag} restart`, 30_000, sshUser)
+      await sshExec(host, restartCmd, `${tag} restart`, RESTART_TIMEOUT_MS, sshUser)
     } catch (err: unknown) {
       console.error(`    ${tag} ❌ Restart failed: ${(err as Error).message}`)
       return { success: false, failedStep: 'restart', elapsedMs: Date.now() - start }
