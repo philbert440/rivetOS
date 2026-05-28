@@ -332,35 +332,52 @@ export class SearchEngine {
   }
 
   // -----------------------------------------------------------------------
-  // Internal: message search
+  // Internal: shared text-search scaffolding
   // -----------------------------------------------------------------------
 
-  private async searchMessages(
+  /**
+   * Build the WHERE clause, match/FTS expressions, semantic expression and the
+   * bound parameter list shared by message and summary search. Everything that
+   * differs between the two (SELECT columns, importance term, row mapping) stays
+   * in the callers; only the param bookkeeping and mode switch live here.
+   *
+   * Parameter order: [optional agent], [optional since], [optional before],
+   * query, [optional query-vector], limit.
+   */
+  private buildTextQuery(
+    alias: 'm' | 's',
     query: string,
     mode: string,
     limit: number,
-    options?: SearchOptions,
-    queryEmbedding?: number[] | null,
-  ): Promise<SearchHit[]> {
+    options: SearchOptions | undefined,
+    queryEmbedding: number[] | null | undefined,
+    opts: { agentFilter: boolean },
+  ): {
+    whereClause: string
+    ftsScoreExpr: string
+    semanticExpr: string
+    params: unknown[]
+    limitIdx: number
+  } {
     const conditions: string[] = []
     const params: unknown[] = []
     let pi = 1 // parameter index
 
-    // Agent filter
-    if (options?.agent) {
-      conditions.push(`m.agent = $${String(pi)}`)
+    // Agent filter (messages only — summaries are cross-agent)
+    if (opts.agentFilter && options?.agent) {
+      conditions.push(`${alias}.agent = $${String(pi)}`)
       params.push(options.agent)
       pi++
     }
 
     // Date filters
     if (options?.since) {
-      conditions.push(`m.created_at >= $${String(pi)}`)
+      conditions.push(`${alias}.created_at >= $${String(pi)}`)
       params.push(options.since)
       pi++
     }
     if (options?.before) {
-      conditions.push(`m.created_at < $${String(pi)}`)
+      conditions.push(`${alias}.created_at < $${String(pi)}`)
       params.push(options.before)
       pi++
     }
@@ -372,28 +389,23 @@ export class SearchEngine {
 
     let matchCondition: string
     let ftsScoreExpr: string
-
     switch (mode) {
       case 'fts':
-        matchCondition = `m.content_tsv @@ plainto_tsquery('english', $${String(queryParamIdx)})`
-        ftsScoreExpr = `ts_rank_cd(m.content_tsv, plainto_tsquery('english', $${String(queryParamIdx)}))`
+        matchCondition = `${alias}.content_tsv @@ plainto_tsquery('english', $${String(queryParamIdx)})`
+        ftsScoreExpr = `ts_rank_cd(${alias}.content_tsv, plainto_tsquery('english', $${String(queryParamIdx)}))`
         break
       case 'trigram':
-        matchCondition = `similarity(m.content, $${String(queryParamIdx)}) > 0.3`
-        ftsScoreExpr = `similarity(m.content, $${String(queryParamIdx)})`
+        matchCondition = `similarity(${alias}.content, $${String(queryParamIdx)}) > 0.3`
+        ftsScoreExpr = `similarity(${alias}.content, $${String(queryParamIdx)})`
         break
       case 'regex':
-        matchCondition = `m.content ~* $${String(queryParamIdx)}`
+        matchCondition = `${alias}.content ~* $${String(queryParamIdx)}`
         ftsScoreExpr = '1.0'
         break
       default:
         throw new Error(`Unknown search mode: ${mode}`)
     }
-
     conditions.push(matchCondition)
-
-    const temporal = temporalDecaySql('m')
-    const importance = importanceSql('m')
 
     // Semantic scoring: real cosine similarity when we have a query embedding,
     // otherwise fall back to length-based proxy. The vector is bound as a
@@ -401,16 +413,42 @@ export class SearchEngine {
     let semanticExpr: string
     if (mode === 'fts' && queryEmbedding) {
       params.push(toVectorLiteral(queryEmbedding))
-      // COALESCE: use real cosine sim when row has embedding, fall back to length proxy
-      semanticExpr = `COALESCE(1 - (m.embedding <=> $${String(pi)}::halfvec), ${SEMANTIC_PROXY('m')})`
+      semanticExpr = `COALESCE(1 - (${alias}.embedding <=> $${String(pi)}::halfvec), ${SEMANTIC_PROXY(alias)})`
       pi++
     } else {
-      semanticExpr = SEMANTIC_PROXY('m')
+      semanticExpr = SEMANTIC_PROXY(alias)
     }
 
     // Limit param (always last)
     params.push(limit)
     const limitIdx = pi
+
+    return { whereClause: conditions.join(' AND '), ftsScoreExpr, semanticExpr, params, limitIdx }
+  }
+
+  // -----------------------------------------------------------------------
+  // Internal: message search
+  // -----------------------------------------------------------------------
+
+  private async searchMessages(
+    query: string,
+    mode: string,
+    limit: number,
+    options?: SearchOptions,
+    queryEmbedding?: number[] | null,
+  ): Promise<SearchHit[]> {
+    const { whereClause, ftsScoreExpr, semanticExpr, params, limitIdx } = this.buildTextQuery(
+      'm',
+      query,
+      mode,
+      limit,
+      options,
+      queryEmbedding,
+      { agentFilter: true },
+    )
+
+    const temporal = temporalDecaySql('m')
+    const importance = importanceSql('m')
 
     const sql = `
       SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
@@ -421,7 +459,7 @@ export class SearchEngine {
                + (${importance}) * ${W_IMPORTANCE}
              ) AS score
       FROM ros_messages m
-      WHERE ${conditions.join(' AND ')}
+      WHERE ${whereClause}
       ORDER BY score DESC
       LIMIT $${String(limitIdx)}
     `
@@ -451,64 +489,17 @@ export class SearchEngine {
     options?: SearchOptions,
     queryEmbedding?: number[] | null,
   ): Promise<SearchHit[]> {
-    const conditions: string[] = []
-    const params: unknown[] = []
-    let pi = 1
-
-    // Date filters (agent filter doesn't apply to summaries — they're cross-agent)
-    if (options?.since) {
-      conditions.push(`s.created_at >= $${String(pi)}`)
-      params.push(options.since)
-      pi++
-    }
-    if (options?.before) {
-      conditions.push(`s.created_at < $${String(pi)}`)
-      params.push(options.before)
-      pi++
-    }
-
-    const queryParamIdx = pi
-    params.push(query)
-    pi++
-
-    let matchCondition: string
-    let ftsScoreExpr: string
-
-    switch (mode) {
-      case 'fts':
-        matchCondition = `s.content_tsv @@ plainto_tsquery('english', $${String(queryParamIdx)})`
-        ftsScoreExpr = `ts_rank_cd(s.content_tsv, plainto_tsquery('english', $${String(queryParamIdx)}))`
-        break
-      case 'trigram':
-        matchCondition = `similarity(s.content, $${String(queryParamIdx)}) > 0.3`
-        ftsScoreExpr = `similarity(s.content, $${String(queryParamIdx)})`
-        break
-      case 'regex':
-        matchCondition = `s.content ~* $${String(queryParamIdx)}`
-        ftsScoreExpr = '1.0'
-        break
-      default:
-        throw new Error(`Unknown search mode: ${mode}`)
-    }
-
-    conditions.push(matchCondition)
+    const { whereClause, ftsScoreExpr, semanticExpr, params, limitIdx } = this.buildTextQuery(
+      's',
+      query,
+      mode,
+      limit,
+      options,
+      queryEmbedding,
+      { agentFilter: false },
+    )
 
     const temporal = temporalDecaySql('s')
-
-    // Semantic scoring: real cosine similarity when we have a query embedding.
-    // The vector is bound as a parameter ($pi::halfvec), not interpolated.
-    let semanticExpr: string
-    if (mode === 'fts' && queryEmbedding) {
-      params.push(toVectorLiteral(queryEmbedding))
-      semanticExpr = `COALESCE(1 - (s.embedding <=> $${String(pi)}::halfvec), ${SEMANTIC_PROXY('s')})`
-      pi++
-    } else {
-      semanticExpr = SEMANTIC_PROXY('s')
-    }
-
-    // Limit param (always last)
-    params.push(limit)
-    const limitIdx = pi
 
     const sql = `
       SELECT s.id, s.content, s.kind AS role, 'summary' AS agent,
@@ -521,7 +512,7 @@ export class SearchEngine {
                + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE}
              ) AS score
       FROM ros_summaries s
-      WHERE ${conditions.join(' AND ')}
+      WHERE ${whereClause}
       ORDER BY score DESC
       LIMIT $${String(limitIdx)}
     `
