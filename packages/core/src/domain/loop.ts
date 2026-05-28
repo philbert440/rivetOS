@@ -97,6 +97,28 @@ export interface AgentLoopConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Turn timeout sentinel
+// ---------------------------------------------------------------------------
+
+/**
+ * Abort reason used when the per-turn timeout fires. Detected by identity
+ * (`instanceof`) rather than by string-matching an Error message, so it can
+ * never be confused with a caller-supplied abort reason that happens to carry
+ * the same text.
+ */
+class TurnTimeoutError extends Error {
+  constructor() {
+    super('turn-timeout')
+    this.name = 'TurnTimeoutError'
+  }
+}
+
+/** True if an AbortSignal reason is our turn-timeout sentinel. */
+function isTurnTimeout(reason: unknown): boolean {
+  return reason instanceof TurnTimeoutError
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 
@@ -237,7 +259,7 @@ export class AgentLoop {
     // Compose abort signal: caller signal + turn-timeout
     const turnAbort = new AbortController()
     const timeoutId = setTimeout(() => {
-      turnAbort.abort(new Error('turn-timeout'))
+      turnAbort.abort(new TurnTimeoutError())
     }, turnTimeout)
     const onCallerAbort = () => turnAbort.abort(signal?.reason)
     if (signal) {
@@ -310,6 +332,23 @@ export class AgentLoop {
     let timedOut = false
     let aborted = false
 
+    // Build a TurnResult, filling the per-turn fields (toolsUsed/iterations/
+    // usage/hadSteer) from `state` so the four post-init exit paths can't drift
+    // apart. `partialResponse` is included only when provided.
+    const makeTurnResult = (over: {
+      response: string
+      aborted: boolean
+      partialResponse?: string
+    }): TurnResult => ({
+      response: over.response,
+      toolsUsed: state.toolsUsed,
+      iterations: state.iterations,
+      aborted: over.aborted,
+      ...(over.partialResponse !== undefined ? { partialResponse: over.partialResponse } : {}),
+      usage: state.totalUsage,
+      hadSteer: state.hadSteer,
+    })
+
     try {
       const result = streamText({
         model,
@@ -335,10 +374,7 @@ export class AgentLoop {
         // by inspecting `turnAbort.signal.reason`.
         const partType = (part as { type?: string }).type
         if (partType === 'abort') {
-          const isTimeout =
-            turnAbort.signal.reason instanceof Error &&
-            turnAbort.signal.reason.message === 'turn-timeout'
-          if (isTimeout) timedOut = true
+          if (isTurnTimeout(turnAbort.signal.reason)) timedOut = true
           else aborted = true
           break
         }
@@ -380,23 +416,12 @@ export class AgentLoop {
         // Hook said skip — finish cleanly as aborted.
         clearTimeout(timeoutId)
         if (signal) signal.removeEventListener('abort', onCallerAbort)
-        return {
-          response: '',
-          toolsUsed: state.toolsUsed,
-          iterations: state.iterations,
-          aborted: true,
-          partialResponse: textContent,
-          usage: state.totalUsage,
-          hadSteer: state.hadSteer,
-        }
+        return makeTurnResult({ response: '', aborted: true, partialResponse: textContent })
       }
 
       if (turnAbort.signal.aborted) {
         // Either caller aborted or turn timeout fired.
-        const isTimeout =
-          turnAbort.signal.reason instanceof Error &&
-          turnAbort.signal.reason.message === 'turn-timeout'
-        if (isTimeout) {
+        if (isTurnTimeout(turnAbort.signal.reason)) {
           timedOut = true
         } else {
           aborted = true
@@ -421,15 +446,7 @@ export class AgentLoop {
 
     // ---- Build TurnResult ------------------------------------------------
     if (aborted) {
-      return {
-        response: '',
-        toolsUsed: state.toolsUsed,
-        iterations: state.iterations,
-        aborted: true,
-        partialResponse: textContent,
-        usage: state.totalUsage,
-        hadSteer: state.hadSteer,
-      }
+      return makeTurnResult({ response: '', aborted: true, partialResponse: textContent })
     }
 
     if (timedOut) {
@@ -439,26 +456,15 @@ export class AgentLoop {
         content: `⚠️ Turn timeout (${elapsedSec}s)`,
       })
       const capNotice = '\n\n⚠️ _Turn timed out. Let me know if you want me to continue._'
-      return {
+      return makeTurnResult({
         response: textContent ? textContent.trim() + capNotice : capNotice.trim(),
-        toolsUsed: state.toolsUsed,
-        iterations: state.iterations,
         aborted: false,
-        usage: state.totalUsage,
-        hadSteer: state.hadSteer,
-      }
+      })
     }
 
     // Normal finish: prefer text, fall back to lastError, then empty.
     const finalResponse = textContent.trim() || (lastError ? `⚠️ ${lastError}` : '')
-    return {
-      response: finalResponse,
-      toolsUsed: state.toolsUsed,
-      iterations: state.iterations,
-      aborted: false,
-      usage: state.totalUsage,
-      hadSteer: state.hadSteer,
-    }
+    return makeTurnResult({ response: finalResponse, aborted: false })
   }
 
   // -----------------------------------------------------------------------
