@@ -8,6 +8,8 @@ export default defineConfig({
       'packages/*/src/**/*.test.ts',
       'plugins/*/src/**/*.test.ts',
       'plugins/*/*/src/**/*.test.ts',
+      'services/*/src/**/*.test.ts',
+      'services/*/*/src/**/*.test.ts',
     ],
     testTimeout: 30000,
   },
