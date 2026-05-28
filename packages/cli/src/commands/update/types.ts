@@ -11,6 +11,8 @@ export interface UpdateOptions {
   npm: boolean
   /** npm dist-tag or version specifier — defaults to "beta" */
   channel: string
+  /** Also attempt nodes the roster marks offline (recovery deploys). Default false. */
+  includeOffline: boolean
 }
 
 export interface NodeUpdateResult {
