@@ -15,7 +15,7 @@ import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
 import { buildMeshFetchOptions } from '../lib/mtls.js'
 import { loadMeshFile, type MeshNode } from '../lib/mesh-file.js'
-import { checkSshReachable } from '../lib/ssh.js'
+import { checkSshReachable, isSafeArg } from '../lib/ssh.js'
 
 const HELP = `
   rivetos mesh — Multi-agent mesh management
@@ -412,6 +412,11 @@ function parseFlags(args: string[]): Flags {
     if (args[i] === '--port' && args[i + 1]) flags.port = Number(args[++i])
     if (args[i] === '--secret' && args[i + 1]) flags.secret = args[++i]
     if (args[i] === '--ssh-user' && args[i + 1]) flags.sshUser = args[++i]
+  }
+  // --ssh-user flows into `<user>@<host>` ssh strings — reject shell metachars.
+  if (flags.sshUser !== undefined && !isSafeArg(flags.sshUser)) {
+    console.error(`❌ Refusing unsafe --ssh-user "${flags.sshUser}"`)
+    process.exit(1)
   }
   return flags
 }
