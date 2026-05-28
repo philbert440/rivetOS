@@ -23,7 +23,14 @@ import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
 import { buildMeshDispatcher } from '../lib/mtls.js'
 import { loadMeshFile } from '../lib/mesh-file.js'
-import { sshExec, sshExecQuiet, resolveSshUser, restartViaSystemd } from '../lib/ssh.js'
+import {
+  sshExec,
+  sshExecQuiet,
+  resolveSshUser,
+  restartViaSystemd,
+  assertSafeArg,
+  isSafeArg,
+} from '../lib/ssh.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
@@ -80,6 +87,25 @@ function parseArgs(): UpdateOptions {
 
   if (process.env.RIVETOS_BARE_METAL === '1') {
     opts.bareMetal = true
+  }
+
+  // Validate values that get interpolated into git/npm/ssh commands. These flow
+  // straight into shell strings (`git checkout <version>`, `npm install -g
+  // @rivetos/cli@<channel>`, `<user>@<host>`), so reject anything carrying shell
+  // metacharacters before it can break out.
+  for (const [label, value] of [
+    ['--version', opts.version],
+    ['--channel', opts.channel],
+    ['--ssh-user', opts.sshUser],
+  ] as const) {
+    if (value !== undefined) {
+      try {
+        assertSafeArg(value, label)
+      } catch (err: unknown) {
+        console.error(`❌ ${(err as Error).message}`)
+        process.exit(1)
+      }
+    }
   }
 
   return opts
@@ -651,10 +677,14 @@ function discoverRivetWorkers(host: string, sshUser = 'rivet'): string[] {
     sshUser,
   )
   if (!out) return []
-  return out
-    .split('\n')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && s !== 'rivetos.service')
+  return (
+    out
+      .split('\n')
+      .map((s) => s.trim())
+      // isSafeArg guards against a compromised/garbled `systemctl` listing
+      // injecting metacharacters into the later `systemctl restart <unit>`.
+      .filter((s) => s.length > 0 && s !== 'rivetos.service' && isSafeArg(s))
+  )
 }
 
 /**
