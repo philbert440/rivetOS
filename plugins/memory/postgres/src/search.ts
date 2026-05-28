@@ -111,6 +111,12 @@ const EMBED_TIMEOUT_MS = 5_000
 /** Fallback semantic proxy when embedding is unavailable */
 const SEMANTIC_PROXY = (alias: string): string => `LEAST(LENGTH(${alias}.content) / 1000.0, 1.0)`
 
+/**
+ * Render an embedding as a pgvector text literal (`[1,2,3]`). Always passed to
+ * the driver as a bound parameter (`$n::halfvec`), never interpolated into SQL.
+ */
+const toVectorLiteral = (embedding: number[]): string => `[${embedding.join(',')}]`
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
@@ -179,30 +185,38 @@ export class SearchEngine {
   ): Promise<SearchHit[]> {
     const scope = options?.scope ?? 'both'
     const limit = options?.limit ?? 10
-    const vecLiteral = `[${embedding.join(',')}]`
+    const vecLiteral = toVectorLiteral(embedding)
     const results: SearchHit[] = []
 
     if (scope === 'messages' || scope === 'both') {
-      const agentFilter = options?.agent ? `AND m.agent = ${this.literal(options.agent)}` : ''
+      // $1 = vector, optional $2 = agent, last = limit
+      const params: unknown[] = [vecLiteral]
+      let agentFilter = ''
+      if (options?.agent) {
+        params.push(options.agent)
+        agentFilter = `AND m.agent = $${String(params.length)}`
+      }
+      params.push(limit)
+      const limitIdx = params.length
       const temporal = temporalDecaySql('m')
       const importance = importanceSql('m')
 
       const sql = `
         SELECT m.id, m.content, m.role, m.agent,
                m.conversation_id, m.created_at,
-               (1 - (m.embedding <=> '${vecLiteral}'::halfvec)) AS semantic_sim,
+               (1 - (m.embedding <=> $1::halfvec)) AS semantic_sim,
                (
-                 (1 - (m.embedding <=> '${vecLiteral}'::halfvec)) * ${W_SEMANTIC}
+                 (1 - (m.embedding <=> $1::halfvec)) * ${W_SEMANTIC}
                  + (${temporal}) * ${W_TEMPORAL}
                  + (${importance}) * ${W_IMPORTANCE}
                ) AS score
         FROM ros_messages m
         WHERE m.embedding IS NOT NULL ${agentFilter}
-        ORDER BY m.embedding <=> '${vecLiteral}'::halfvec
-        LIMIT $1
+        ORDER BY m.embedding <=> $1::halfvec
+        LIMIT $${String(limitIdx)}
       `
 
-      const res = await this.pool.query<MessageSearchRow>(sql, [limit])
+      const res = await this.pool.query<MessageSearchRow>(sql, params)
       results.push(
         ...res.rows.map((r) => ({
           id: r.id,
@@ -224,19 +238,19 @@ export class SearchEngine {
         SELECT s.id, s.content, s.kind AS role, 'summary' AS agent,
                s.conversation_id, s.created_at,
                s.kind, s.earliest_at, s.latest_at,
-               (1 - (s.embedding <=> '${vecLiteral}'::halfvec)) AS semantic_sim,
+               (1 - (s.embedding <=> $1::halfvec)) AS semantic_sim,
                (
-                 (1 - (s.embedding <=> '${vecLiteral}'::halfvec)) * ${W_SEMANTIC}
+                 (1 - (s.embedding <=> $1::halfvec)) * ${W_SEMANTIC}
                  + (${temporal}) * ${W_TEMPORAL}
                  + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE}
                ) AS score
         FROM ros_summaries s
         WHERE s.embedding IS NOT NULL
-        ORDER BY s.embedding <=> '${vecLiteral}'::halfvec
-        LIMIT $1
+        ORDER BY s.embedding <=> $1::halfvec
+        LIMIT $2
       `
 
-      const res = await this.pool.query<SummarySearchRow>(sql, [limit])
+      const res = await this.pool.query<SummarySearchRow>(sql, [vecLiteral, limit])
       results.push(
         ...res.rows.map((r) => ({
           id: r.id,
@@ -378,23 +392,25 @@ export class SearchEngine {
 
     conditions.push(matchCondition)
 
-    // Limit param
-    params.push(limit)
-    const limitIdx = pi
-
     const temporal = temporalDecaySql('m')
     const importance = importanceSql('m')
 
     // Semantic scoring: real cosine similarity when we have a query embedding,
-    // otherwise fall back to length-based proxy
+    // otherwise fall back to length-based proxy. The vector is bound as a
+    // parameter ($pi::halfvec), not interpolated.
     let semanticExpr: string
     if (mode === 'fts' && queryEmbedding) {
-      const vecLiteral = `[${queryEmbedding.join(',')}]`
+      params.push(toVectorLiteral(queryEmbedding))
       // COALESCE: use real cosine sim when row has embedding, fall back to length proxy
-      semanticExpr = `COALESCE(1 - (m.embedding <=> '${vecLiteral}'::halfvec), ${SEMANTIC_PROXY('m')})`
+      semanticExpr = `COALESCE(1 - (m.embedding <=> $${String(pi)}::halfvec), ${SEMANTIC_PROXY('m')})`
+      pi++
     } else {
       semanticExpr = SEMANTIC_PROXY('m')
     }
+
+    // Limit param (always last)
+    params.push(limit)
+    const limitIdx = pi
 
     const sql = `
       SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
@@ -477,19 +493,22 @@ export class SearchEngine {
 
     conditions.push(matchCondition)
 
-    params.push(limit)
-    const limitIdx = pi
-
     const temporal = temporalDecaySql('s')
 
-    // Semantic scoring: real cosine similarity when we have a query embedding
+    // Semantic scoring: real cosine similarity when we have a query embedding.
+    // The vector is bound as a parameter ($pi::halfvec), not interpolated.
     let semanticExpr: string
     if (mode === 'fts' && queryEmbedding) {
-      const vecLiteral = `[${queryEmbedding.join(',')}]`
-      semanticExpr = `COALESCE(1 - (s.embedding <=> '${vecLiteral}'::halfvec), ${SEMANTIC_PROXY('s')})`
+      params.push(toVectorLiteral(queryEmbedding))
+      semanticExpr = `COALESCE(1 - (s.embedding <=> $${String(pi)}::halfvec), ${SEMANTIC_PROXY('s')})`
+      pi++
     } else {
       semanticExpr = SEMANTIC_PROXY('s')
     }
+
+    // Limit param (always last)
+    params.push(limit)
+    const limitIdx = pi
 
     const sql = `
       SELECT s.id, s.content, s.kind AS role, 'summary' AS agent,
@@ -549,14 +568,5 @@ export class SearchEngine {
         [sumIds],
       )
     }
-  }
-
-  // -----------------------------------------------------------------------
-  // Helpers
-  // -----------------------------------------------------------------------
-
-  /** Escape a string literal for SQL injection-safe inclusion in template strings */
-  private literal(value: string): string {
-    return `'${value.replace(/'/g, "''")}'`
   }
 }
