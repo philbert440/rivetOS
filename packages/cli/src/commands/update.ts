@@ -17,47 +17,17 @@
  */
 
 import { readFile, access } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { execSync, spawn } from 'node:child_process'
+import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
-import { parse as parseYaml } from 'yaml'
+import { loadMeshFile } from '../lib/mesh-file.js'
+import { restartViaSystemd, assertSafeArg } from '../lib/ssh.js'
+import type { UpdateOptions } from './update/types.js'
+import { gitUpdateNodeAsync, npmUpdateNodeAsync, waitForHealth } from './update/remote-nodes.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
-
-/**
- * Resolve this node's name (the CN on its mTLS client cert).
- * Prefers RIVETOS_NODE_NAME, then `node_name` from `~/.rivetos/config.yaml`.
- * Returns null if neither is available.
- */
-function resolveLocalNodeName(): string | null {
-  if (process.env.RIVETOS_NODE_NAME) return process.env.RIVETOS_NODE_NAME
-  try {
-    const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
-    const raw = readFileSync(configPath, 'utf-8')
-    const config = parseYaml(raw) as { node_name?: string; mesh?: { node_name?: string } } | null
-    if (config?.mesh?.node_name) return config.mesh.node_name
-    if (config?.node_name) return config.node_name
-  } catch {
-    // ignore
-  }
-  return null
-}
-
-interface UpdateOptions {
-  version?: string
-  restart: boolean
-  prebuilt: boolean
-  mesh: boolean
-  bareMetal: boolean
-  sshUser: string
-  /** Use npm install -g @rivetos/cli@<channel> instead of git pull */
-  npm: boolean
-  /** npm dist-tag or version specifier — defaults to "beta" */
-  channel: string
-}
 
 function parseArgs(): UpdateOptions {
   const args = process.argv.slice(3)
@@ -98,6 +68,25 @@ function parseArgs(): UpdateOptions {
 
   if (process.env.RIVETOS_BARE_METAL === '1') {
     opts.bareMetal = true
+  }
+
+  // Validate values that get interpolated into git/npm/ssh commands. These flow
+  // straight into shell strings (`git checkout <version>`, `npm install -g
+  // @rivetos/cli@<channel>`, `<user>@<host>`), so reject anything carrying shell
+  // metacharacters before it can break out.
+  for (const [label, value] of [
+    ['--version', opts.version],
+    ['--channel', opts.channel],
+    ['--ssh-user', opts.sshUser],
+  ] as const) {
+    if (value !== undefined) {
+      try {
+        assertSafeArg(value, label)
+      } catch (err: unknown) {
+        console.error(`❌ ${(err as Error).message}`)
+        process.exit(1)
+      }
+    }
   }
 
   return opts
@@ -311,24 +300,9 @@ export default async function update(): Promise<void> {
     } else if (deployment === 'manual' || deployment === 'bare-metal') {
       // Bare-metal: restart via systemd or signal
       console.log('\nRestarting service...')
-      try {
-        // Try direct systemctl first (running as root), then sudo (running as rivet)
-        let restarted = false
-        for (const cmd of ['systemctl restart rivetos', 'sudo systemctl restart rivetos']) {
-          try {
-            execSync(cmd, { stdio: 'inherit', timeout: 30000 })
-            restarted = true
-            break
-          } catch {
-            // try next
-          }
-        }
-        if (restarted) {
-          console.log('  ✅ Service restarted')
-        } else {
-          throw new Error('both systemctl and sudo systemctl failed')
-        }
-      } catch {
+      if (restartViaSystemd()) {
+        console.log('  ✅ Service restarted')
+      } else {
         console.log(
           '  ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
         )
@@ -436,7 +410,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   console.log('')
 
   // Load mesh.json
-  const meshFile = await loadMeshFileForUpdate()
+  const meshFile = await loadMeshFile(ROOT)
   if (!meshFile) {
     console.error('  No mesh.json found. Run `rivetos mesh join` first or enable mesh in config.')
     process.exit(1)
@@ -599,23 +573,10 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         // non-fatal
       }
 
-      if (localOpts.restart) {
-        console.log('    Restarting service...')
-        let restarted = false
-        for (const cmd of ['systemctl restart rivetos', 'sudo systemctl restart rivetos']) {
-          try {
-            execSync(cmd, { encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'] })
-            restarted = true
-            break
-          } catch {
-            // try next
-          }
-        }
-        if (!restarted) {
-          console.log(
-            '    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
-          )
-        }
+      if (localOpts.restart && !restartViaSystemd()) {
+        console.log(
+          '    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
+        )
       }
       console.log('  ✅ Local node updated')
     } catch (err: unknown) {
@@ -659,21 +620,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
 
         if (localOpts.restart) {
           console.log('    Restarting service...')
-          let restarted = false
-          for (const cmd of ['systemctl restart rivetos', 'sudo systemctl restart rivetos']) {
-            try {
-              execSync(cmd, {
-                encoding: 'utf-8',
-                timeout: 30000,
-                stdio: ['pipe', 'pipe', 'pipe'],
-              })
-              restarted = true
-              break
-            } catch {
-              // try next
-            }
-          }
-          if (!restarted) {
+          if (!restartViaSystemd()) {
             console.log(
               '    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
             )
@@ -689,485 +636,6 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     console.log('  ⚠️  No git repo found locally — skipping local update')
   }
   console.log('')
-}
-
-/**
- * Run a command on a remote host via SSH using spawn (non-blocking, streamed output).
- * Resolves on exit code 0, rejects on non-zero exit or timeout.
- */
-function sshExec(
-  host: string,
-  command: string,
-  label: string,
-  timeoutMs: number,
-  sshUser = 'rivet',
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      '-o',
-      'BatchMode=yes',
-      '-o',
-      'ConnectTimeout=5',
-      '-o',
-      'StrictHostKeyChecking=no',
-      `${sshUser}@${host}`,
-      command,
-    ]
-
-    const proc = spawn('ssh', args, {
-      stdio: 'inherit',
-      env: { ...process.env, HOME: process.env.HOME ?? '/root' },
-    })
-
-    const timer = setTimeout(() => {
-      proc.kill('SIGKILL')
-      reject(new Error(`${label} timed out after ${String(Math.round(timeoutMs / 1000))}s`))
-    }, timeoutMs)
-
-    proc.on('error', (err) => {
-      clearTimeout(timer)
-      reject(new Error(`${label} spawn error: ${err.message}`))
-    })
-
-    proc.on('close', (code) => {
-      clearTimeout(timer)
-      if (code === 0) {
-        resolve()
-      } else {
-        reject(new Error(`${label} exited with code ${String(code)}`))
-      }
-    })
-  })
-}
-
-interface NodeUpdateResult {
-  success: boolean
-  commit?: string
-  failedStep?: string
-  elapsedMs: number
-  workers?: string[]
-}
-
-/**
- * Discover rivet-* systemd worker services on a remote host, excluding the
- * primary rivetos.service. Returns an array of unit names (e.g.
- * ["rivet-embedder.service", "rivet-compactor.service"]). On failure, returns [].
- */
-function discoverRivetWorkers(host: string, sshUser = 'rivet'): string[] {
-  const out = sshExecQuiet(
-    host,
-    "systemctl list-unit-files 'rivet-*.service' --no-legend --no-pager 2>/dev/null | awk '{print \\$1}'",
-    sshUser,
-  )
-  if (!out) return []
-  return out
-    .split('\n')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && s !== 'rivetos.service')
-}
-
-/**
- * Resolve the SSH user for a remote host.
- * Tries the requested user first; if auth fails falls back to 'root' with a warning.
- * Returns the user that actually worked, or null if both fail.
- */
-function resolveSshUser(host: string, requestedUser: string, tag: string): string | null {
-  // Try requested user
-  try {
-    execSync(
-      `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no ${requestedUser}@${host} "echo ok"`,
-      { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
-    )
-    return requestedUser
-  } catch {
-    // fall through to fallback
-  }
-
-  if (requestedUser !== 'root') {
-    // Fall back to root with warning (node not yet migrated)
-    try {
-      execSync(
-        `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no root@${host} "echo ok"`,
-        { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
-      )
-      console.error(
-        `    ${tag} [warn] node not yet migrated to ${requestedUser} user, falling back to root`,
-      )
-      return 'root'
-    } catch {
-      // fall through
-    }
-  }
-
-  return null
-}
-
-/**
- * Update a remote node via git pull + SSH.
- * Each step logs progress with [nodeName] prefix and has its own timeout.
- * Returns a result object with success/failure details for the summary table.
- */
-async function gitUpdateNodeAsync(
-  host: string,
-  nodeName: string,
-  opts: UpdateOptions,
-  isAgent: boolean = true,
-): Promise<NodeUpdateResult> {
-  const tag = `[${nodeName}]`
-  const start = Date.now()
-
-  // Step 1: SSH connectivity check — auto-detect user with fallback
-  const sshUser = resolveSshUser(host, opts.sshUser, tag)
-  if (!sshUser) {
-    console.error(
-      `    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${opts.sshUser} or root`,
-    )
-    return { success: false, failedStep: 'ssh', elapsedMs: Date.now() - start }
-  }
-
-  // Step 2: git pull
-  try {
-    console.log(`    ${tag} Pulling latest code...`)
-    const gitCmd = opts.version
-      ? `cd /opt/rivetos && git fetch --tags && git checkout ${opts.version}`
-      : 'cd /opt/rivetos && git fetch origin && git checkout main && git reset --hard origin/main'
-    await sshExec(host, gitCmd, `${tag} git pull`, 30_000, sshUser)
-  } catch (err: unknown) {
-    console.error(`    ${tag} ❌ git pull failed: ${(err as Error).message}`)
-    return { success: false, failedStep: 'git', elapsedMs: Date.now() - start }
-  }
-
-  // Non-agent (infrastructure) nodes: code sync, install deps, and restart any
-  // rivet-* worker services discovered on the host (embedder, compactor, etc.).
-  // No TypeScript build — workers are plain JS.
-  if (!isAgent) {
-    // npm install — picks up dep bumps in plugins/memory/postgres/workers/*/package.json
-    try {
-      console.log(`    ${tag} Installing dependencies...`)
-      await sshExec(
-        host,
-        'cd /opt/rivetos && npm install --no-audit --no-fund',
-        `${tag} npm install`,
-        120_000,
-        sshUser,
-      )
-    } catch (err: unknown) {
-      console.error(`    ${tag} ❌ npm install failed: ${(err as Error).message}`)
-      return { success: false, failedStep: 'npm', elapsedMs: Date.now() - start }
-    }
-
-    const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
-
-    // Heal /etc/hosts mesh block on infra nodes too (non-fatal)
-    try {
-      const hostsCmd =
-        sshUser === 'root'
-          ? '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
-          : 'sudo /opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
-      await sshExec(host, hostsCmd, `${tag} mesh-hosts`, 15_000, sshUser)
-    } catch (err: unknown) {
-      console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
-    }
-
-    // Discover and restart worker services
-    const workers = discoverRivetWorkers(host, sshUser)
-    const restartedWorkers: string[] = []
-    if (workers.length === 0) {
-      console.log(`    ${tag} No rivet-* worker services found`)
-    } else if (!opts.restart) {
-      console.log(`    ${tag} Found workers (skipping restart): ${workers.join(', ')}`)
-    } else {
-      for (const unit of workers) {
-        try {
-          console.log(`    ${tag} Restarting ${unit}...`)
-          // Workers run as rivet; use sudo for systemctl if not root
-          const restartCmd =
-            sshUser === 'root' ? `systemctl restart ${unit}` : `sudo systemctl restart ${unit}`
-          await sshExec(host, restartCmd, `${tag} restart ${unit}`, 30_000, sshUser)
-          // Verify it came back active
-          const stateCmd =
-            sshUser === 'root' ? `systemctl is-active ${unit}` : `sudo systemctl is-active ${unit}`
-          const state = sshExecQuiet(host, stateCmd, sshUser)
-          if (state === 'active') {
-            restartedWorkers.push(unit)
-          } else {
-            console.error(`    ${tag} ⚠️  ${unit} is not active after restart (state=${state})`)
-            return {
-              success: false,
-              failedStep: `worker:${unit}`,
-              commit: commit || undefined,
-              elapsedMs: Date.now() - start,
-              workers: restartedWorkers,
-            }
-          }
-        } catch (err: unknown) {
-          console.error(`    ${tag} ❌ Restart of ${unit} failed: ${(err as Error).message}`)
-          return {
-            success: false,
-            failedStep: `worker:${unit}`,
-            commit: commit || undefined,
-            elapsedMs: Date.now() - start,
-            workers: restartedWorkers,
-          }
-        }
-      }
-    }
-
-    const workerSummary =
-      restartedWorkers.length > 0 ? ` + ${String(restartedWorkers.length)} worker(s) restarted` : ''
-    console.log(`    ${tag} ✅ Synced (${commit || 'unknown'})${workerSummary}`)
-    return {
-      success: true,
-      commit: commit || undefined,
-      elapsedMs: Date.now() - start,
-      workers: restartedWorkers,
-    }
-  }
-
-  // Step 3: npm install
-  try {
-    console.log(`    ${tag} Installing dependencies...`)
-    await sshExec(
-      host,
-      'cd /opt/rivetos && npm install --no-audit --no-fund',
-      `${tag} npm install`,
-      120_000,
-      sshUser,
-    )
-  } catch (err: unknown) {
-    console.error(`    ${tag} ❌ npm install failed: ${(err as Error).message}`)
-    return { success: false, failedStep: 'npm', elapsedMs: Date.now() - start }
-  }
-
-  // Step 4: nx reset + build
-  try {
-    console.log(`    ${tag} Building...`)
-    await sshExec(
-      host,
-      'cd /opt/rivetos && npx nx reset && npx nx run-many -t build --exclude container-rivetos,site',
-      `${tag} build`,
-      180_000,
-      sshUser,
-    )
-  } catch (err: unknown) {
-    console.error(`    ${tag} ❌ Build failed: ${(err as Error).message}`)
-    return { success: false, failedStep: 'build', elapsedMs: Date.now() - start }
-  }
-
-  // Step 4.5: heal /etc/hosts mesh block from /rivet-shared/mesh.json
-  // Non-fatal — drift in /etc/hosts shouldn't block a deploy.
-  try {
-    const hostsCmd =
-      sshUser === 'root'
-        ? '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
-        : 'sudo /opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
-    await sshExec(host, hostsCmd, `${tag} mesh-hosts`, 15_000, sshUser)
-  } catch (err: unknown) {
-    console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
-  }
-
-  // Step 5: restart service
-  if (opts.restart) {
-    try {
-      console.log(`    ${tag} Restarting service...`)
-      // Use sudo when logged in as rivet (non-root)
-      const restartCmd =
-        sshUser === 'root' ? 'systemctl restart rivetos' : 'sudo systemctl restart rivetos'
-      await sshExec(host, restartCmd, `${tag} restart`, 30_000, sshUser)
-    } catch (err: unknown) {
-      console.error(`    ${tag} ❌ Restart failed: ${(err as Error).message}`)
-      return { success: false, failedStep: 'restart', elapsedMs: Date.now() - start }
-    }
-  }
-
-  // Get final commit SHA
-  const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
-  console.log(`    ${tag} ✅ Done (${commit || 'unknown'})`)
-  return { success: true, commit: commit || undefined, elapsedMs: Date.now() - start }
-}
-
-/**
- * Update a remote node via `npm install -g @rivetos/cli@<channel>` + restart.
- * No source checkout, no build chain, no git pull. The node consumes whatever
- * was published to the npm registry.
- *
- * Steps:
- *   1. SSH connectivity check
- *   2. npm install -g @rivetos/cli@<channel> (with sudo fallback for global prefix)
- *   3. Restart systemd unit
- *   4. Capture installed version for the summary
- */
-async function npmUpdateNodeAsync(
-  host: string,
-  nodeName: string,
-  opts: UpdateOptions,
-  isAgent: boolean = true,
-): Promise<NodeUpdateResult> {
-  const tag = `[${nodeName}]`
-  const start = Date.now()
-
-  // Step 1: SSH connectivity check
-  const sshUser = resolveSshUser(host, opts.sshUser, tag)
-  if (!sshUser) {
-    console.error(
-      `    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${opts.sshUser} or root`,
-    )
-    return { success: false, failedStep: 'ssh', elapsedMs: Date.now() - start }
-  }
-
-  // Step 2: npm install -g @rivetos/cli@<channel>
-  // Try as the SSH user first; if it fails (likely a global prefix owned by
-  // another user), fall back to sudo.
-  const channelSpec = `@rivetos/cli@${opts.channel}`
-  const installCmd = `npm install -g ${channelSpec} --no-audit --no-fund`
-  try {
-    console.log(`    ${tag} npm install -g ${channelSpec}...`)
-    try {
-      await sshExec(host, installCmd, `${tag} npm install -g`, 300_000, sshUser)
-    } catch {
-      // Fall back to sudo
-      const sudoCmd = sshUser === 'root' ? installCmd : `sudo ${installCmd}`
-      await sshExec(host, sudoCmd, `${tag} npm install -g (sudo)`, 300_000, sshUser)
-    }
-  } catch (err: unknown) {
-    console.error(`    ${tag} ❌ npm install -g failed: ${(err as Error).message}`)
-    return { success: false, failedStep: 'npm', elapsedMs: Date.now() - start }
-  }
-
-  // Step 3: rewrite systemd unit ExecStart to call the global `rivetos` bin.
-  // Idempotent — only rewrites if the current ExecStart still references
-  // tsx + /opt/rivetos. Skipped for non-agent (infra-only) nodes.
-  if (isAgent) {
-    try {
-      const sudoPrefix = sshUser === 'root' ? '' : 'sudo '
-      // Find the global rivetos binary location
-      const rivetosBin = sshExecQuiet(host, 'which rivetos 2>/dev/null || true', sshUser).trim()
-      if (rivetosBin) {
-        // Rewrite ExecStart in /etc/systemd/system/rivetos.service if it still
-        // points at the old npx tsx path. Use a simple sed in place.
-        const rewriteCmd =
-          `${sudoPrefix}sh -c "if grep -q '^ExecStart=.*npx tsx' /etc/systemd/system/rivetos.service 2>/dev/null; then ` +
-          `sed -i 's|^ExecStart=.*|ExecStart=${rivetosBin} start --config %h/.rivetos/config.yaml|' /etc/systemd/system/rivetos.service && ` +
-          `systemctl daemon-reload && echo rewrote; ` +
-          `else echo skipped; fi"`
-        const result = sshExecQuiet(host, rewriteCmd, sshUser).trim()
-        if (result.includes('rewrote')) {
-          console.log(`    ${tag} Rewrote systemd ExecStart → ${rivetosBin}`)
-        }
-      } else {
-        console.log(`    ${tag} ⚠️  No rivetos bin found in PATH after install — restart may fail`)
-      }
-    } catch (err: unknown) {
-      console.log(`    ${tag} ⚠️  systemd unit rewrite skipped: ${(err as Error).message}`)
-    }
-  }
-
-  // Step 4: restart systemd unit (skip on non-agent infrastructure nodes —
-  // they don't run rivetos itself, only worker services which keep their
-  // own deploy path until we migrate them too).
-  if (isAgent && opts.restart) {
-    try {
-      console.log(`    ${tag} Restarting service...`)
-      const restartCmd =
-        sshUser === 'root' ? 'systemctl restart rivetos' : 'sudo systemctl restart rivetos'
-      await sshExec(host, restartCmd, `${tag} restart`, 30_000, sshUser)
-    } catch (err: unknown) {
-      console.error(`    ${tag} ❌ Restart failed: ${(err as Error).message}`)
-      return { success: false, failedStep: 'restart', elapsedMs: Date.now() - start }
-    }
-  }
-
-  // Step 5: capture installed version (rivetos version → "RivetOS v0.4.0-beta.2")
-  const versionOutput = sshExecQuiet(host, 'rivetos version 2>/dev/null || echo unknown', sshUser)
-  const versionMatch = versionOutput.match(/v(\S+)/)
-  const installedVersion = versionMatch ? versionMatch[1] : 'unknown'
-  console.log(`    ${tag} ✅ Done (${installedVersion})`)
-  return { success: true, commit: installedVersion, elapsedMs: Date.now() - start }
-}
-
-/**
- * Quick SSH command that returns stdout, or empty string on failure.
- * Used for non-critical checks like getting the commit SHA.
- */
-function sshExecQuiet(host: string, command: string, sshUser = 'rivet'): string {
-  try {
-    return execSync(
-      `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no ${sshUser}@${host} "${command}"`,
-      { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
-    ).trim()
-  } catch {
-    return ''
-  }
-}
-
-async function waitForHealth(host: string, _port: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  const interval = 3_000
-
-  while (Date.now() < deadline) {
-    // Check if the systemd service is active via SSH (bare-metal/Proxmox deployments)
-    // Try rivet@ first, then root@ (handles both migrated and legacy nodes)
-    for (const user of ['rivet', 'root']) {
-      try {
-        const svcCheck =
-          user === 'root' ? 'systemctl is-active rivetos' : 'sudo systemctl is-active rivetos'
-        const result = execSync(
-          `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no ${user}@${host} "${svcCheck}" 2>/dev/null`,
-          { timeout: 5_000 },
-        )
-        if (result.toString().trim() === 'active') return true
-        break
-      } catch {
-        // Not ready yet — try next user
-      }
-    }
-
-    // Fallback: try HTTPS health endpoint with mTLS
-    try {
-      const { Agent: UndiciAgent } = await import('undici')
-      const nodeName = resolveLocalNodeName()
-      const caPath = '/rivet-shared/rivet-ca/intermediate/ca-chain.pem'
-      const certPath =
-        process.env.RIVETOS_TLS_CERT ??
-        (nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : null)
-      const keyPath =
-        process.env.RIVETOS_TLS_KEY ??
-        (nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.key` : null)
-
-      let dispatcher: unknown
-      if (certPath && keyPath) {
-        try {
-          const ca = readFileSync(caPath)
-          const cert = readFileSync(certPath)
-          const key = readFileSync(keyPath)
-          dispatcher = new UndiciAgent({ connect: { ca, cert, key, rejectUnauthorized: true } })
-        } catch {
-          // TLS certs not available — skip HTTPS check
-        }
-      }
-
-      if (dispatcher) {
-        const res = await fetch(`https://${host}:${String(_port)}/api/mesh/ping`, {
-          signal: AbortSignal.timeout(2_000),
-          // @ts-expect-error — undici dispatcher not in Node fetch types
-          dispatcher,
-        })
-        if (res.ok) {
-          const body = (await res.json().catch(() => ({}))) as { tls?: boolean }
-          if (!body.tls) {
-            console.warn(`  ⚠️  Node ${host} ping OK but no tls:true — may be running old build`)
-          }
-          return true
-        }
-      }
-    } catch {
-      // Not ready yet
-    }
-
-    await new Promise((r) => setTimeout(r, interval))
-  }
-
-  return false
 }
 
 function isLocalAddress(host: string): boolean {
@@ -1186,72 +654,6 @@ function isLocalAddress(host: string): boolean {
   }
 
   return false
-}
-
-interface MeshFileForUpdate {
-  version: number
-  nodes: Record<
-    string,
-    { id: string; name: string; host: string; port: number; status: string; role?: string }
-  >
-  updatedAt: number
-}
-
-async function loadMeshFileForUpdate(): Promise<MeshFileForUpdate | null> {
-  const { join } = await import('node:path')
-  const paths = [
-    '/rivet-shared/mesh.json',
-    join(ROOT, 'mesh.json'),
-    join(process.env.HOME ?? '~', '.rivetos', 'mesh.json'),
-  ]
-
-  for (const p of paths) {
-    try {
-      const raw = await readFile(p, 'utf-8')
-      const parsed = JSON.parse(raw) as MeshFileForUpdate | LegacyMeshFile
-      return normalizeMeshFile(parsed)
-    } catch {
-      // try next
-    }
-  }
-
-  return null
-}
-
-/** Legacy mesh.json format — flat array with `ip` instead of `host` */
-interface LegacyMeshFile {
-  nodes: Array<{ name: string; ip: string; role?: string }>
-  updatedAt?: number
-}
-
-/** Normalize legacy array-based mesh.json to the Record-based format */
-function normalizeMeshFile(parsed: MeshFileForUpdate | LegacyMeshFile): MeshFileForUpdate {
-  // Already in the correct format (nodes is a Record, not an Array)
-  if (!Array.isArray(parsed.nodes)) {
-    return parsed as MeshFileForUpdate
-  }
-
-  // Migrate legacy array format
-  const nodes: MeshFileForUpdate['nodes'] = {}
-  for (const entry of parsed.nodes) {
-    const host =
-      'ip' in entry ? (entry as { ip: string }).ip : ((entry as { host?: string }).host ?? '')
-    const id = entry.name
-    nodes[id] = {
-      id,
-      name: entry.name,
-      host,
-      port: 3100,
-      status: 'offline',
-      role: entry.role === 'primary' ? 'agent' : entry.role,
-    }
-  }
-
-  return {
-    version: 1,
-    nodes,
-    updatedAt: parsed.updatedAt ?? Date.now(),
-  }
 }
 
 async function detectDeployment(forceBareMetal = false): Promise<string> {

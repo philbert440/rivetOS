@@ -62,6 +62,50 @@ async function loadConversationMeta(
   return rows[0]
 }
 
+/** Run `fn` inside a BEGIN/COMMIT, rolling back (best-effort) on any throw. */
+export async function withTransaction<T>(client: PgClient, fn: () => Promise<T>): Promise<T> {
+  await client.query('BEGIN')
+  try {
+    const result = await fn()
+    await client.query('COMMIT')
+    return result
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw err
+  }
+}
+
+interface SummaryInsert {
+  conversationId: string
+  depth: number
+  kind: 'leaf' | 'branch' | 'root'
+  content: string
+  messageCount: number
+  earliestAt: unknown
+  latestAt: unknown
+}
+
+/** Insert one ros_summaries row and return its id. Caller owns the transaction. */
+export async function insertSummary(client: PgClient, s: SummaryInsert): Promise<string> {
+  const res = await client.query<{ id: string }>(
+    `INSERT INTO ros_summaries
+       (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+    [
+      s.conversationId,
+      s.depth,
+      s.content,
+      s.kind,
+      s.messageCount,
+      s.earliestAt,
+      s.latestAt,
+      config.llmModel,
+      PIPELINE_VERSION,
+    ],
+  )
+  return res.rows[0].id
+}
+
 async function compactLeaf(
   client: PgClient,
   convMeta: ConversationMeta,
@@ -96,23 +140,16 @@ async function compactLeaf(
 
   recordSuccess(conversationId)
 
-  await client.query('BEGIN')
-  try {
-    const sumResult = await client.query<{ id: string }>(
-      `INSERT INTO ros_summaries
-         (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
-       VALUES ($1, 0, $2, 'leaf', $3, $4, $5, $6, $7) RETURNING id`,
-      [
-        conversationId,
-        summaryText,
-        messages.rows.length,
-        messages.rows[0].created_at,
-        messages.rows[messages.rows.length - 1].created_at,
-        config.llmModel,
-        PIPELINE_VERSION,
-      ],
-    )
-    const summaryId = sumResult.rows[0].id
+  return withTransaction(client, async () => {
+    const summaryId = await insertSummary(client, {
+      conversationId,
+      depth: 0,
+      kind: 'leaf',
+      content: summaryText,
+      messageCount: messages.rows.length,
+      earliestAt: messages.rows[0].created_at,
+      latestAt: messages.rows[messages.rows.length - 1].created_at,
+    })
 
     const valueClauses: string[] = []
     const params: unknown[] = []
@@ -127,149 +164,88 @@ async function compactLeaf(
       params,
     )
 
-    await client.query('COMMIT')
     console.log(
       `[CompactWorker] Leaf ${summaryId} (${messages.rows.length} msgs, conv ${conversationId.slice(0, 8)})`,
     )
     return 1
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {})
-    throw err
-  }
+  })
 }
 
-async function compactBranch(
+interface ParentLevelConfig {
+  /** kind of the child summaries this level rolls up */
+  childKind: 'leaf' | 'branch'
+  /** depth/kind of the summary this level produces */
+  depth: number
+  kind: 'branch' | 'root'
+  batchSize: number
+  minChildren: number
+  systemPrompt: string
+  maxTokens: number
+  formatPrompt: (meta: ConversationMeta, rows: SummaryRow[]) => string
+  /** Display label, e.g. 'Branch' / 'Root' */
+  label: string
+}
+
+/**
+ * Roll a batch of child summaries (leaves→branch, branches→root) up into one
+ * parent summary and re-parent the children. Branch and root differ only by the
+ * config passed in.
+ */
+async function compactParentLevel(
   client: PgClient,
   convMeta: ConversationMeta,
   conversationId: string,
+  cfg: ParentLevelConfig,
 ): Promise<number> {
-  const leaves = await client.query<SummaryRow>(
+  const children = await client.query<SummaryRow>(
     `SELECT id, content, kind, earliest_at, latest_at, message_count, created_at
      FROM ros_summaries
-     WHERE conversation_id = $1 AND kind = 'leaf' AND parent_id IS NULL
-     ORDER BY created_at ASC LIMIT $2`,
-    [conversationId, config.branchBatchSize],
+     WHERE conversation_id = $1 AND kind = $2 AND parent_id IS NULL
+     ORDER BY created_at ASC LIMIT $3`,
+    [conversationId, cfg.childKind, cfg.batchSize],
   )
 
-  if (leaves.rows.length < config.minLeavesForBranch) return 0
+  if (children.rows.length < cfg.minChildren) return 0
 
-  const formatted = formatBranchPrompt(convMeta, leaves.rows)
+  const formatted = cfg.formatPrompt(convMeta, children.rows)
 
   console.log(
-    `[CompactWorker] Branch: ${leaves.rows.length} leaves for ${conversationId.slice(0, 8)}`,
+    `[CompactWorker] ${cfg.label}: ${children.rows.length} ${cfg.childKind}s for ${conversationId.slice(0, 8)}`,
   )
 
-  const summaryText = await callLlm(BRANCH_SYSTEM_PROMPT, formatted, BRANCH_MAX_TOKENS)
+  const summaryText = await callLlm(cfg.systemPrompt, formatted, cfg.maxTokens)
   if (!summaryText) {
-    console.error(`[CompactWorker] Empty branch summary for ${conversationId}`)
+    console.error(`[CompactWorker] Empty ${cfg.kind} summary for ${conversationId}`)
     return 0
   }
 
-  const totalMessages = leaves.rows.reduce((sum, r) => sum + Number(r.message_count ?? 0), 0)
-  const earliestAt = leaves.rows[0].earliest_at ?? leaves.rows[0].created_at
-  const lastLeaf = leaves.rows[leaves.rows.length - 1]
-  const latestAt = lastLeaf.latest_at ?? lastLeaf.created_at
+  const totalMessages = children.rows.reduce((sum, r) => sum + Number(r.message_count ?? 0), 0)
+  const earliestAt = children.rows[0].earliest_at ?? children.rows[0].created_at
+  const lastChild = children.rows[children.rows.length - 1]
+  const latestAt = lastChild.latest_at ?? lastChild.created_at
 
-  await client.query('BEGIN')
-  try {
-    const sumResult = await client.query<{ id: string }>(
-      `INSERT INTO ros_summaries
-         (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
-       VALUES ($1, 1, $2, 'branch', $3, $4, $5, $6, $7) RETURNING id`,
-      [
-        conversationId,
-        summaryText,
-        totalMessages,
-        earliestAt,
-        latestAt,
-        config.llmModel,
-        PIPELINE_VERSION,
-      ],
-    )
-    const branchId = sumResult.rows[0].id
+  return withTransaction(client, async () => {
+    const parentId = await insertSummary(client, {
+      conversationId,
+      depth: cfg.depth,
+      kind: cfg.kind,
+      content: summaryText,
+      messageCount: totalMessages,
+      earliestAt,
+      latestAt,
+    })
 
-    const leafIds = leaves.rows.map((r) => r.id)
-    await client.query(
-      `UPDATE ros_summaries SET parent_id = $1 WHERE id = ANY($2::uuid[])`,
-      [branchId, leafIds],
-    )
+    const childIds = children.rows.map((r) => r.id)
+    await client.query(`UPDATE ros_summaries SET parent_id = $1 WHERE id = ANY($2::uuid[])`, [
+      parentId,
+      childIds,
+    ])
 
-    await client.query('COMMIT')
     console.log(
-      `[CompactWorker] Branch ${branchId} (${leaves.rows.length} leaves, ${totalMessages} msgs, conv ${conversationId.slice(0, 8)})`,
+      `[CompactWorker] ${cfg.kind} ${parentId} (${children.rows.length} ${cfg.childKind}s, ${totalMessages} msgs, conv ${conversationId.slice(0, 8)})`,
     )
     return 1
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {})
-    throw err
-  }
-}
-
-async function compactRoot(
-  client: PgClient,
-  convMeta: ConversationMeta,
-  conversationId: string,
-): Promise<number> {
-  const branches = await client.query<SummaryRow>(
-    `SELECT id, content, kind, earliest_at, latest_at, message_count, created_at
-     FROM ros_summaries
-     WHERE conversation_id = $1 AND kind = 'branch' AND parent_id IS NULL
-     ORDER BY created_at ASC LIMIT $2`,
-    [conversationId, config.rootBatchSize],
-  )
-
-  if (branches.rows.length < config.minBranchesForRoot) return 0
-
-  const formatted = formatRootPrompt(convMeta, branches.rows)
-
-  console.log(
-    `[CompactWorker] Root: ${branches.rows.length} branches for ${conversationId.slice(0, 8)}`,
-  )
-
-  const summaryText = await callLlm(ROOT_SYSTEM_PROMPT, formatted, ROOT_MAX_TOKENS)
-  if (!summaryText) {
-    console.error(`[CompactWorker] Empty root summary for ${conversationId}`)
-    return 0
-  }
-
-  const totalMessages = branches.rows.reduce((sum, r) => sum + Number(r.message_count ?? 0), 0)
-  const earliestAt = branches.rows[0].earliest_at ?? branches.rows[0].created_at
-  const lastBranch = branches.rows[branches.rows.length - 1]
-  const latestAt = lastBranch.latest_at ?? lastBranch.created_at
-
-  await client.query('BEGIN')
-  try {
-    const sumResult = await client.query<{ id: string }>(
-      `INSERT INTO ros_summaries
-         (conversation_id, depth, content, kind, message_count, earliest_at, latest_at, model, pipeline_version)
-       VALUES ($1, 2, $2, 'root', $3, $4, $5, $6, $7) RETURNING id`,
-      [
-        conversationId,
-        summaryText,
-        totalMessages,
-        earliestAt,
-        latestAt,
-        config.llmModel,
-        PIPELINE_VERSION,
-      ],
-    )
-    const rootId = sumResult.rows[0].id
-
-    const branchIds = branches.rows.map((r) => r.id)
-    await client.query(
-      `UPDATE ros_summaries SET parent_id = $1 WHERE id = ANY($2::uuid[])`,
-      [rootId, branchIds],
-    )
-
-    await client.query('COMMIT')
-    console.log(
-      `[CompactWorker] Root ${rootId} (${branches.rows.length} branches, ${totalMessages} msgs, conv ${conversationId.slice(0, 8)})`,
-    )
-    return 1
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {})
-    throw err
-  }
+  })
 }
 
 export const compactConversationTask: Task = async (payload, helpers) => {
@@ -294,8 +270,28 @@ export const compactConversationTask: Task = async (payload, helpers) => {
       leafRound += 1
     }
 
-    totalCreated += await compactBranch(client, convMeta, conversationId)
-    totalCreated += await compactRoot(client, convMeta, conversationId)
+    totalCreated += await compactParentLevel(client, convMeta, conversationId, {
+      childKind: 'leaf',
+      depth: 1,
+      kind: 'branch',
+      batchSize: config.branchBatchSize,
+      minChildren: config.minLeavesForBranch,
+      systemPrompt: BRANCH_SYSTEM_PROMPT,
+      maxTokens: BRANCH_MAX_TOKENS,
+      formatPrompt: formatBranchPrompt,
+      label: 'Branch',
+    })
+    totalCreated += await compactParentLevel(client, convMeta, conversationId, {
+      childKind: 'branch',
+      depth: 2,
+      kind: 'root',
+      batchSize: config.rootBatchSize,
+      minChildren: config.minBranchesForRoot,
+      systemPrompt: ROOT_SYSTEM_PROMPT,
+      maxTokens: ROOT_MAX_TOKENS,
+      formatPrompt: formatRootPrompt,
+      label: 'Root',
+    })
 
     if (totalCreated > 0) {
       helpers.logger.info(

@@ -111,6 +111,12 @@ const EMBED_TIMEOUT_MS = 5_000
 /** Fallback semantic proxy when embedding is unavailable */
 const SEMANTIC_PROXY = (alias: string): string => `LEAST(LENGTH(${alias}.content) / 1000.0, 1.0)`
 
+/**
+ * Render an embedding as a pgvector text literal (`[1,2,3]`). Always passed to
+ * the driver as a bound parameter (`$n::halfvec`), never interpolated into SQL.
+ */
+const toVectorLiteral = (embedding: number[]): string => `[${embedding.join(',')}]`
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
@@ -179,30 +185,38 @@ export class SearchEngine {
   ): Promise<SearchHit[]> {
     const scope = options?.scope ?? 'both'
     const limit = options?.limit ?? 10
-    const vecLiteral = `[${embedding.join(',')}]`
+    const vecLiteral = toVectorLiteral(embedding)
     const results: SearchHit[] = []
 
     if (scope === 'messages' || scope === 'both') {
-      const agentFilter = options?.agent ? `AND m.agent = ${this.literal(options.agent)}` : ''
+      // $1 = vector, optional $2 = agent, last = limit
+      const params: unknown[] = [vecLiteral]
+      let agentFilter = ''
+      if (options?.agent) {
+        params.push(options.agent)
+        agentFilter = `AND m.agent = $${String(params.length)}`
+      }
+      params.push(limit)
+      const limitIdx = params.length
       const temporal = temporalDecaySql('m')
       const importance = importanceSql('m')
 
       const sql = `
         SELECT m.id, m.content, m.role, m.agent,
                m.conversation_id, m.created_at,
-               (1 - (m.embedding <=> '${vecLiteral}'::halfvec)) AS semantic_sim,
+               (1 - (m.embedding <=> $1::halfvec)) AS semantic_sim,
                (
-                 (1 - (m.embedding <=> '${vecLiteral}'::halfvec)) * ${W_SEMANTIC}
+                 (1 - (m.embedding <=> $1::halfvec)) * ${W_SEMANTIC}
                  + (${temporal}) * ${W_TEMPORAL}
                  + (${importance}) * ${W_IMPORTANCE}
                ) AS score
         FROM ros_messages m
         WHERE m.embedding IS NOT NULL ${agentFilter}
-        ORDER BY m.embedding <=> '${vecLiteral}'::halfvec
-        LIMIT $1
+        ORDER BY m.embedding <=> $1::halfvec
+        LIMIT $${String(limitIdx)}
       `
 
-      const res = await this.pool.query<MessageSearchRow>(sql, [limit])
+      const res = await this.pool.query<MessageSearchRow>(sql, params)
       results.push(
         ...res.rows.map((r) => ({
           id: r.id,
@@ -224,19 +238,19 @@ export class SearchEngine {
         SELECT s.id, s.content, s.kind AS role, 'summary' AS agent,
                s.conversation_id, s.created_at,
                s.kind, s.earliest_at, s.latest_at,
-               (1 - (s.embedding <=> '${vecLiteral}'::halfvec)) AS semantic_sim,
+               (1 - (s.embedding <=> $1::halfvec)) AS semantic_sim,
                (
-                 (1 - (s.embedding <=> '${vecLiteral}'::halfvec)) * ${W_SEMANTIC}
+                 (1 - (s.embedding <=> $1::halfvec)) * ${W_SEMANTIC}
                  + (${temporal}) * ${W_TEMPORAL}
                  + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE}
                ) AS score
         FROM ros_summaries s
         WHERE s.embedding IS NOT NULL
-        ORDER BY s.embedding <=> '${vecLiteral}'::halfvec
-        LIMIT $1
+        ORDER BY s.embedding <=> $1::halfvec
+        LIMIT $2
       `
 
-      const res = await this.pool.query<SummarySearchRow>(sql, [limit])
+      const res = await this.pool.query<SummarySearchRow>(sql, [vecLiteral, limit])
       results.push(
         ...res.rows.map((r) => ({
           id: r.id,
@@ -318,35 +332,52 @@ export class SearchEngine {
   }
 
   // -----------------------------------------------------------------------
-  // Internal: message search
+  // Internal: shared text-search scaffolding
   // -----------------------------------------------------------------------
 
-  private async searchMessages(
+  /**
+   * Build the WHERE clause, match/FTS expressions, semantic expression and the
+   * bound parameter list shared by message and summary search. Everything that
+   * differs between the two (SELECT columns, importance term, row mapping) stays
+   * in the callers; only the param bookkeeping and mode switch live here.
+   *
+   * Parameter order: [optional agent], [optional since], [optional before],
+   * query, [optional query-vector], limit.
+   */
+  private buildTextQuery(
+    alias: 'm' | 's',
     query: string,
     mode: string,
     limit: number,
-    options?: SearchOptions,
-    queryEmbedding?: number[] | null,
-  ): Promise<SearchHit[]> {
+    options: SearchOptions | undefined,
+    queryEmbedding: number[] | null | undefined,
+    opts: { agentFilter: boolean },
+  ): {
+    whereClause: string
+    ftsScoreExpr: string
+    semanticExpr: string
+    params: unknown[]
+    limitIdx: number
+  } {
     const conditions: string[] = []
     const params: unknown[] = []
     let pi = 1 // parameter index
 
-    // Agent filter
-    if (options?.agent) {
-      conditions.push(`m.agent = $${String(pi)}`)
+    // Agent filter (messages only — summaries are cross-agent)
+    if (opts.agentFilter && options?.agent) {
+      conditions.push(`${alias}.agent = $${String(pi)}`)
       params.push(options.agent)
       pi++
     }
 
     // Date filters
     if (options?.since) {
-      conditions.push(`m.created_at >= $${String(pi)}`)
+      conditions.push(`${alias}.created_at >= $${String(pi)}`)
       params.push(options.since)
       pi++
     }
     if (options?.before) {
-      conditions.push(`m.created_at < $${String(pi)}`)
+      conditions.push(`${alias}.created_at < $${String(pi)}`)
       params.push(options.before)
       pi++
     }
@@ -358,43 +389,66 @@ export class SearchEngine {
 
     let matchCondition: string
     let ftsScoreExpr: string
-
     switch (mode) {
       case 'fts':
-        matchCondition = `m.content_tsv @@ plainto_tsquery('english', $${String(queryParamIdx)})`
-        ftsScoreExpr = `ts_rank_cd(m.content_tsv, plainto_tsquery('english', $${String(queryParamIdx)}))`
+        matchCondition = `${alias}.content_tsv @@ plainto_tsquery('english', $${String(queryParamIdx)})`
+        ftsScoreExpr = `ts_rank_cd(${alias}.content_tsv, plainto_tsquery('english', $${String(queryParamIdx)}))`
         break
       case 'trigram':
-        matchCondition = `similarity(m.content, $${String(queryParamIdx)}) > 0.3`
-        ftsScoreExpr = `similarity(m.content, $${String(queryParamIdx)})`
+        matchCondition = `similarity(${alias}.content, $${String(queryParamIdx)}) > 0.3`
+        ftsScoreExpr = `similarity(${alias}.content, $${String(queryParamIdx)})`
         break
       case 'regex':
-        matchCondition = `m.content ~* $${String(queryParamIdx)}`
+        matchCondition = `${alias}.content ~* $${String(queryParamIdx)}`
         ftsScoreExpr = '1.0'
         break
       default:
         throw new Error(`Unknown search mode: ${mode}`)
     }
-
     conditions.push(matchCondition)
 
-    // Limit param
+    // Semantic scoring: real cosine similarity when we have a query embedding,
+    // otherwise fall back to length-based proxy. The vector is bound as a
+    // parameter ($pi::halfvec), not interpolated.
+    let semanticExpr: string
+    if (mode === 'fts' && queryEmbedding) {
+      params.push(toVectorLiteral(queryEmbedding))
+      semanticExpr = `COALESCE(1 - (${alias}.embedding <=> $${String(pi)}::halfvec), ${SEMANTIC_PROXY(alias)})`
+      pi++
+    } else {
+      semanticExpr = SEMANTIC_PROXY(alias)
+    }
+
+    // Limit param (always last)
     params.push(limit)
     const limitIdx = pi
 
+    return { whereClause: conditions.join(' AND '), ftsScoreExpr, semanticExpr, params, limitIdx }
+  }
+
+  // -----------------------------------------------------------------------
+  // Internal: message search
+  // -----------------------------------------------------------------------
+
+  private async searchMessages(
+    query: string,
+    mode: string,
+    limit: number,
+    options?: SearchOptions,
+    queryEmbedding?: number[] | null,
+  ): Promise<SearchHit[]> {
+    const { whereClause, ftsScoreExpr, semanticExpr, params, limitIdx } = this.buildTextQuery(
+      'm',
+      query,
+      mode,
+      limit,
+      options,
+      queryEmbedding,
+      { agentFilter: true },
+    )
+
     const temporal = temporalDecaySql('m')
     const importance = importanceSql('m')
-
-    // Semantic scoring: real cosine similarity when we have a query embedding,
-    // otherwise fall back to length-based proxy
-    let semanticExpr: string
-    if (mode === 'fts' && queryEmbedding) {
-      const vecLiteral = `[${queryEmbedding.join(',')}]`
-      // COALESCE: use real cosine sim when row has embedding, fall back to length proxy
-      semanticExpr = `COALESCE(1 - (m.embedding <=> '${vecLiteral}'::halfvec), ${SEMANTIC_PROXY('m')})`
-    } else {
-      semanticExpr = SEMANTIC_PROXY('m')
-    }
 
     const sql = `
       SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
@@ -405,7 +459,7 @@ export class SearchEngine {
                + (${importance}) * ${W_IMPORTANCE}
              ) AS score
       FROM ros_messages m
-      WHERE ${conditions.join(' AND ')}
+      WHERE ${whereClause}
       ORDER BY score DESC
       LIMIT $${String(limitIdx)}
     `
@@ -435,61 +489,17 @@ export class SearchEngine {
     options?: SearchOptions,
     queryEmbedding?: number[] | null,
   ): Promise<SearchHit[]> {
-    const conditions: string[] = []
-    const params: unknown[] = []
-    let pi = 1
-
-    // Date filters (agent filter doesn't apply to summaries — they're cross-agent)
-    if (options?.since) {
-      conditions.push(`s.created_at >= $${String(pi)}`)
-      params.push(options.since)
-      pi++
-    }
-    if (options?.before) {
-      conditions.push(`s.created_at < $${String(pi)}`)
-      params.push(options.before)
-      pi++
-    }
-
-    const queryParamIdx = pi
-    params.push(query)
-    pi++
-
-    let matchCondition: string
-    let ftsScoreExpr: string
-
-    switch (mode) {
-      case 'fts':
-        matchCondition = `s.content_tsv @@ plainto_tsquery('english', $${String(queryParamIdx)})`
-        ftsScoreExpr = `ts_rank_cd(s.content_tsv, plainto_tsquery('english', $${String(queryParamIdx)}))`
-        break
-      case 'trigram':
-        matchCondition = `similarity(s.content, $${String(queryParamIdx)}) > 0.3`
-        ftsScoreExpr = `similarity(s.content, $${String(queryParamIdx)})`
-        break
-      case 'regex':
-        matchCondition = `s.content ~* $${String(queryParamIdx)}`
-        ftsScoreExpr = '1.0'
-        break
-      default:
-        throw new Error(`Unknown search mode: ${mode}`)
-    }
-
-    conditions.push(matchCondition)
-
-    params.push(limit)
-    const limitIdx = pi
+    const { whereClause, ftsScoreExpr, semanticExpr, params, limitIdx } = this.buildTextQuery(
+      's',
+      query,
+      mode,
+      limit,
+      options,
+      queryEmbedding,
+      { agentFilter: false },
+    )
 
     const temporal = temporalDecaySql('s')
-
-    // Semantic scoring: real cosine similarity when we have a query embedding
-    let semanticExpr: string
-    if (mode === 'fts' && queryEmbedding) {
-      const vecLiteral = `[${queryEmbedding.join(',')}]`
-      semanticExpr = `COALESCE(1 - (s.embedding <=> '${vecLiteral}'::halfvec), ${SEMANTIC_PROXY('s')})`
-    } else {
-      semanticExpr = SEMANTIC_PROXY('s')
-    }
 
     const sql = `
       SELECT s.id, s.content, s.kind AS role, 'summary' AS agent,
@@ -502,7 +512,7 @@ export class SearchEngine {
                + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE}
              ) AS score
       FROM ros_summaries s
-      WHERE ${conditions.join(' AND ')}
+      WHERE ${whereClause}
       ORDER BY score DESC
       LIMIT $${String(limitIdx)}
     `
@@ -549,14 +559,5 @@ export class SearchEngine {
         [sumIds],
       )
     }
-  }
-
-  // -----------------------------------------------------------------------
-  // Helpers
-  // -----------------------------------------------------------------------
-
-  /** Escape a string literal for SQL injection-safe inclusion in template strings */
-  private literal(value: string): string {
-    return `'${value.replace(/'/g, "''")}'`
   }
 }
