@@ -39,6 +39,7 @@ function parseArgs(): UpdateOptions {
     sshUser: 'rivet',
     npm: false,
     channel: 'beta',
+    includeOffline: false,
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -60,6 +61,8 @@ function parseArgs(): UpdateOptions {
     } else if (arg === '--channel' && args[i + 1]) {
       opts.channel = args[++i]
       opts.npm = true
+    } else if (arg === '--include-offline') {
+      opts.includeOffline = true
     } else if (arg === '--help' || arg === '-h') {
       showHelp()
       process.exit(0)
@@ -108,6 +111,7 @@ function showHelp(): void {
     --npm              Use npm install -g @rivetos/cli@<channel> instead of git pull
     --channel <tag>    npm dist-tag or version (default: beta) — implies --npm
     --ssh-user <user>  SSH user for remote nodes (default: rivet)
+    --include-offline  Also attempt nodes the roster marks offline (recovery)
 
   Modes:
 
@@ -417,13 +421,31 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   }
 
   // Include online agent nodes + all infrastructure nodes (they don't heartbeat,
-  // so their status is always 'offline' — but we still want to sync code to them)
-  const nodes = Object.values(meshFile.nodes).filter(
-    (n) => n.status === 'online' || (n.role && n.role !== 'agent'),
-  )
+  // so their status is always 'offline' — but we still want to sync code to them).
+  const allNodes = Object.values(meshFile.nodes)
+  const eligible = allNodes.filter((n) => n.status === 'online' || (n.role && n.role !== 'agent'))
+  // Offline agent nodes — normally skipped, but a reachable-but-down node is
+  // exactly what you want to push code to during recovery, so --include-offline
+  // opts them in (the per-node SSH check still drops genuinely unreachable ones).
+  const offlineAgents = allNodes.filter((n) => !eligible.includes(n))
+  const nodes = opts.includeOffline ? [...eligible, ...offlineAgents] : eligible
+
+  // Never skip silently — surface what's being left out and how to include it.
+  if (offlineAgents.length > 0) {
+    const names = offlineAgents.map((n) => n.name).join(', ')
+    if (opts.includeOffline) {
+      console.log(`  Including ${String(offlineAgents.length)} offline node(s): ${names}`)
+    } else {
+      console.log(
+        `  ⚠️  Skipping ${String(offlineAgents.length)} offline node(s): ${names} ` +
+          `— re-run with --include-offline to attempt them.`,
+      )
+    }
+    console.log('')
+  }
 
   if (nodes.length === 0) {
-    console.error('  No online nodes in the mesh.')
+    console.error('  No reachable nodes in the mesh.')
     process.exit(1)
   }
 
