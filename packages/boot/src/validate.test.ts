@@ -830,3 +830,35 @@ describe('Config Validation', () => {
     });
   });
 });
+
+describe('mesh.advertise_host', () => {
+  it('accepts a routable IP', () => {
+    const cfg = validConfig();
+    cfg.mesh = { advertise_host: '192.0.2.4' };
+    assertValid(validateConfig(cfg));
+  });
+
+  it('accepts a DNS name', () => {
+    const cfg = validConfig();
+    cfg.mesh = { advertise_host: 'phildesk.mesh' };
+    assertValid(validateConfig(cfg));
+  });
+
+  it('rejects a non-string advertise_host', () => {
+    const cfg = validConfig();
+    cfg.mesh = { advertise_host: 1234 };
+    assertError(validateConfig(cfg), 'mesh.advertise_host', /non-empty string/);
+  });
+
+  it('rejects an empty advertise_host', () => {
+    const cfg = validConfig();
+    cfg.mesh = { advertise_host: '   ' };
+    assertError(validateConfig(cfg), 'mesh.advertise_host', /non-empty string/);
+  });
+
+  it('rejects shell metacharacters (it lands in ssh <user>@<host>)', () => {
+    const cfg = validConfig();
+    cfg.mesh = { advertise_host: '192.0.2.4; rm -rf /' };
+    assertError(validateConfig(cfg), 'mesh.advertise_host', /shell-unsafe/);
+  });
+});

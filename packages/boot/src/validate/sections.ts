@@ -610,6 +610,24 @@ export function validateMesh(mesh: Record<string, unknown>, issues: ValidationIs
     }
   }
 
+  if (mesh.advertise_host !== undefined) {
+    if (typeof mesh.advertise_host !== 'string' || mesh.advertise_host.trim() === '') {
+      issues.push({
+        severity: 'error',
+        path: `${path}.advertise_host`,
+        message: 'mesh.advertise_host must be a non-empty string (IP or DNS name)',
+      })
+    } else if (/[\s;&|`$<>()'"\\]/.test(mesh.advertise_host)) {
+      // It flows into mesh.json `host`, which `rivetos update --mesh`
+      // interpolates into `ssh <user>@<host>` — reject shell metacharacters.
+      issues.push({
+        severity: 'error',
+        path: `${path}.advertise_host`,
+        message: 'mesh.advertise_host contains shell-unsafe characters',
+      })
+    }
+  }
+
   if (mesh.secret !== undefined) {
     issues.push({
       severity: 'warning',

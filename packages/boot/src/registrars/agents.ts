@@ -166,7 +166,7 @@ export async function registerAgentTools(
       existingId: nodeName,
       name: nodeName,
       agents: localAgents,
-      host: getLocalHost(),
+      host: resolveAdvertiseHost(meshConfig),
       port: agentChannelPort,
       providers: Object.keys(config.providers ?? {}),
       models: Object.values(config.agents)
@@ -308,4 +308,14 @@ function resolveEnv(value: string): string {
 /** Get the local IP — reads from environment or falls back to hostname */
 function getLocalHost(): string {
   return process.env.RIVETOS_HOST ?? process.env.HOSTNAME ?? '127.0.0.1'
+}
+
+/**
+ * Resolve the host this node advertises to the mesh. An explicit
+ * `mesh.advertise_host` wins (for nodes whose hostname isn't resolvable
+ * mesh-wide); otherwise fall back to the auto-detected local host.
+ */
+export function resolveAdvertiseHost(mesh: { advertise_host?: string } | undefined): string {
+  const advertised = mesh?.advertise_host?.trim()
+  return advertised && advertised.length > 0 ? advertised : getLocalHost()
 }
