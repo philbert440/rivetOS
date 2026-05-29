@@ -46,6 +46,13 @@ export interface RivetConfig {
 export interface MeshSection {
   enabled?: boolean
   node_name?: string
+  /**
+   * Routable address other nodes should use to reach this one (IP or DNS name).
+   * Overrides the auto-detected host (RIVETOS_HOST → $HOSTNAME → 127.0.0.1).
+   * Needed for nodes whose hostname isn't resolvable mesh-wide — e.g. a WSL2
+   * peer that registers its node_name as host but is only reachable by LAN IP.
+   */
+  advertise_host?: string
   secret?: string
   /** mTLS configuration for agent-channel.
    * true = use default paths derived from node_name
