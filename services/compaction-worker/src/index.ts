@@ -18,6 +18,8 @@
  *   TOOL_SYNTH_CONCURRENCY      default: 2
  *   COMPACT_IDLE_MINUTES        default: 15
  *   COMPACT_LEAF_BATCH          default: 10  (also the full-window enqueue threshold)
+ *   COMPACT_STALE_MINUTES       default: 5760 (4 days) — flush below-floor tails of long-idle convs
+ *   COMPACT_STALE_MIN_BATCH     default: 2   — min messages for a stale-partial flush
  */
 
 import { parseCronItems, run } from 'graphile-worker'
@@ -30,7 +32,8 @@ async function main(): Promise<void> {
   console.log('[CompactWorker] Starting...')
   console.log(`[CompactWorker] LLM endpoint: ${config.llmUrl} (model: ${config.llmModel})`)
   console.log(
-    `[CompactWorker] Idle threshold: ${config.idleMinutes} min, leaf window: ${config.leafBatchSize}`,
+    `[CompactWorker] Idle threshold: ${config.idleMinutes} min, leaf window: ${config.leafBatchSize}, ` +
+      `stale-partial: ${config.staleMinutes} min / >=${config.staleMinBatch} msgs`,
   )
 
   const runner = await run({
