@@ -37,6 +37,16 @@ export const config = {
   minLeavesForBranch: intEnv('COMPACT_MIN_LEAFS', 5),
   minBranchesForRoot: intEnv('COMPACT_MIN_BRANCHES', 3),
 
+  // Stale-partial flush: once a conversation has been idle this long it is
+  // treated as final, so its leftover below-floor tail (1..MIN_BATCH_SIZE-1
+  // unsummarized messages, which the normal idle sweep skips by design) is
+  // flushed into a leaf summary anyway. Default 4 days. staleMinBatch is the
+  // floor for that flush — 2, not 1, so lone singleton conversations (already
+  // optimally represented as their own embedded message row) don't spawn a
+  // near-redundant summary per ping.
+  staleMinutes: intEnv('COMPACT_STALE_MINUTES', 4 * 24 * 60),
+  staleMinBatch: intEnv('COMPACT_STALE_MIN_BATCH', 2),
+
   // Tool-synth
   toolSynthEndpoint: process.env.TOOL_SYNTH_ENDPOINT ?? requireEnv('RIVETOS_COMPACTOR_URL'),
   toolSynthModel:

@@ -28,6 +28,10 @@ import {
 // slightly off but the rank order still holds.
 const FULL_WINDOW = 10
 const IDLE_MINUTES = 15
+// Mirrors COMPACT_STALE_MINUTES / COMPACT_STALE_MIN_BATCH — long-idle convs get
+// their below-floor tail flushed down to this many messages.
+const STALE_MINUTES = 4 * 24 * 60
+const STALE_MIN_BATCH = 2
 
 export function createStatsTool(pool: pg.Pool): Tool {
   return {
@@ -164,11 +168,14 @@ export function createStatsTool(pool: pg.Pool): Tool {
         // Unsummarized messages — bucketed by compactor eligibility.
         //   eligible:    will be picked by the next enqueue-idle pass
         //                (full window: >= FULL_WINDOW unsummarized, OR
-        //                 idle floor:  >= MIN_BATCH_SIZE AND idle >= IDLE_MINUTES)
+        //                 idle floor:  >= MIN_BATCH_SIZE AND idle >= IDLE_MINUTES, OR
+        //                 stale flush: >= STALE_MIN_BATCH AND idle >= STALE_MINUTES)
         //   active_tail: still-active conversation with MIN_BATCH_SIZE..FULL_WINDOW-1
         //                unsummarized — will flush once it goes idle or fills the window
-        //   below_floor: < MIN_BATCH_SIZE qualifying messages — compactLeaf can't
-        //                form a leaf summary, so these never compact by design
+        //   below_floor: too few qualifying messages to compact yet — < STALE_MIN_BATCH,
+        //                or < MIN_BATCH_SIZE and not yet stale. Flushed only once idle
+        //                reaches STALE_MINUTES (if >= STALE_MIN_BATCH); a singleton tail
+        //                never compacts by design.
         // The filter (LENGTH > 10 OR tool_name IS NOT NULL) matches enqueue-idle.ts.
         const buckets = await pool.query<UnsummarizedBucketRow>(
           `WITH per_conv AS (
@@ -186,10 +193,12 @@ export function createStatsTool(pool: pg.Pool): Tool {
              COALESCE(SUM(qualifying) FILTER (
                WHERE qualifying >= $1
                   OR (qualifying >= $2 AND updated_at < NOW() - ($3 || ' minutes')::interval)
+                  OR (qualifying >= $4 AND updated_at < NOW() - ($5 || ' minutes')::interval)
              ), 0) AS eligible_msgs,
              COUNT(*) FILTER (
                WHERE qualifying >= $1
                   OR (qualifying >= $2 AND updated_at < NOW() - ($3 || ' minutes')::interval)
+                  OR (qualifying >= $4 AND updated_at < NOW() - ($5 || ' minutes')::interval)
              ) AS eligible_convs,
              COALESCE(SUM(qualifying) FILTER (
                WHERE qualifying >= $2 AND qualifying < $1
@@ -199,10 +208,16 @@ export function createStatsTool(pool: pg.Pool): Tool {
                WHERE qualifying >= $2 AND qualifying < $1
                  AND updated_at >= NOW() - ($3 || ' minutes')::interval
              ) AS active_tail_convs,
-             COALESCE(SUM(qualifying) FILTER (WHERE qualifying < $2), 0) AS below_floor_msgs,
-             COUNT(*) FILTER (WHERE qualifying < $2) AS below_floor_convs
+             COALESCE(SUM(qualifying) FILTER (
+               WHERE qualifying < $2
+                 AND NOT (qualifying >= $4 AND updated_at < NOW() - ($5 || ' minutes')::interval)
+             ), 0) AS below_floor_msgs,
+             COUNT(*) FILTER (
+               WHERE qualifying < $2
+                 AND NOT (qualifying >= $4 AND updated_at < NOW() - ($5 || ' minutes')::interval)
+             ) AS below_floor_convs
            FROM per_conv`,
-          [FULL_WINDOW, MIN_BATCH_SIZE, IDLE_MINUTES],
+          [FULL_WINDOW, MIN_BATCH_SIZE, IDLE_MINUTES, STALE_MIN_BATCH, STALE_MINUTES],
         )
         const b = buckets.rows[0]
         const eligibleMsgs = Number(b.eligible_msgs)
@@ -219,9 +234,9 @@ export function createStatsTool(pool: pg.Pool): Tool {
         sections.push(
           `\n**Unsummarized messages:** ${totalUnsum.toLocaleString()} total` +
             `\n  Eligible for compaction: ${eligibleMsgs.toLocaleString()} msgs in ${eligibleConvs.toLocaleString()} convs ${eligibleStatus}` +
-            `\n    (≥${String(FULL_WINDOW)} unsummarized, OR ≥${String(MIN_BATCH_SIZE)} + idle ≥${String(IDLE_MINUTES)}m)` +
+            `\n    (≥${String(FULL_WINDOW)} unsummarized, OR ≥${String(MIN_BATCH_SIZE)} + idle ≥${String(IDLE_MINUTES)}m, OR ≥${String(STALE_MIN_BATCH)} + idle ≥${String(Math.round(STALE_MINUTES / 1440))}d)` +
             `\n  Active tail: ${activeTailMsgs.toLocaleString()} msgs in ${activeTailConvs.toLocaleString()} convs (will flush when idle)` +
-            `\n  Below floor: ${belowFloorMsgs.toLocaleString()} msgs in ${belowFloorConvs.toLocaleString()} convs (<${String(MIN_BATCH_SIZE)} qualifying — won't compact by design)`,
+            `\n  Below floor: ${belowFloorMsgs.toLocaleString()} msgs in ${belowFloorConvs.toLocaleString()} convs (<${String(STALE_MIN_BATCH)} qualifying, or not yet stale — won't compact yet)`,
         )
 
         // Top conversations the next enqueue-idle pass will pick (matches the
@@ -229,7 +244,9 @@ export function createStatsTool(pool: pg.Pool): Tool {
         const eligible = await pool.query<EligibleConvRow>(
           `SELECT c.id::text AS conversation_id, c.agent,
                   COUNT(m.id)::text AS unsummarized,
-                  CASE WHEN COUNT(m.id) >= $1 THEN 'full_window' ELSE 'idle_floor' END AS trigger
+                  CASE WHEN COUNT(m.id) >= $1 THEN 'full_window'
+                       WHEN COUNT(m.id) >= $2 THEN 'idle_floor'
+                       ELSE 'stale_partial' END AS trigger
              FROM ros_conversations c
              JOIN ros_messages m ON m.conversation_id = c.id
              LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
@@ -237,11 +254,13 @@ export function createStatsTool(pool: pg.Pool): Tool {
               AND ((m.content IS NOT NULL AND LENGTH(m.content) > 10)
                    OR m.tool_name IS NOT NULL)
             GROUP BY c.id, c.agent, c.updated_at
-           HAVING COUNT(m.id) >= $2
-              AND (COUNT(m.id) >= $1
-                   OR c.updated_at < NOW() - ($3 || ' minutes')::interval)
+           HAVING (COUNT(m.id) >= $2
+                   AND (COUNT(m.id) >= $1
+                        OR c.updated_at < NOW() - ($3 || ' minutes')::interval))
+               OR (COUNT(m.id) >= $4
+                   AND c.updated_at < NOW() - ($5 || ' minutes')::interval)
             ORDER BY c.updated_at ASC LIMIT 5`,
-          [FULL_WINDOW, MIN_BATCH_SIZE, IDLE_MINUTES],
+          [FULL_WINDOW, MIN_BATCH_SIZE, IDLE_MINUTES, STALE_MIN_BATCH, STALE_MINUTES],
         )
         if (eligible.rows.length > 0) {
           sections.push(
