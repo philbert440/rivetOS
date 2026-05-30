@@ -14,7 +14,7 @@
 import type { Channel, EditResult, InboundMessage, SessionState, StreamEvent } from '@rivetos/types'
 
 // Throttle: don't edit more often than this
-const EDIT_INTERVAL_MS = 600
+const EDIT_INTERVAL_MS = 4000
 
 // ---------------------------------------------------------------------------
 // State
