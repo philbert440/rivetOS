@@ -18,14 +18,35 @@ vi.mock('../config.js', () => ({
     idleMinutes: 15,
     minLeavesForBranch: 5,
     minBranchesForRoot: 3,
+    staleMinutes: 4 * 24 * 60,
+    staleMinBatch: 2,
     toolSynthEndpoint: 'http://localhost:8000',
     toolSynthModel: 'test-model',
   },
 }))
 
-import { withTransaction, insertSummary } from './compact-conversation.js'
+import { withTransaction, insertSummary, leafFloorFor } from './compact-conversation.js'
+import { MIN_BATCH_SIZE } from '@rivetos/memory-postgres'
 
 describe('compact-conversation', () => {
+  describe('leafFloorFor', () => {
+    it('drops to staleMinBatch for a session_stale flush', () => {
+      expect(leafFloorFor('session_stale', 2)).toBe(2)
+    })
+
+    it('holds the normal MIN_BATCH_SIZE for every other trigger', () => {
+      expect(leafFloorFor('session_idle', 2)).toBe(MIN_BATCH_SIZE)
+      expect(leafFloorFor('threshold', 2)).toBe(MIN_BATCH_SIZE)
+      expect(leafFloorFor('explicit', 2)).toBe(MIN_BATCH_SIZE)
+      expect(leafFloorFor(undefined, 2)).toBe(MIN_BATCH_SIZE)
+    })
+
+    it('honors a custom staleMinBatch', () => {
+      expect(leafFloorFor('session_stale', 1)).toBe(1)
+      expect(leafFloorFor('session_stale', 3)).toBe(3)
+    })
+  })
+
   describe('withTransaction', () => {
     it('should execute BEGIN and COMMIT in order', async () => {
       const mockClient = {
