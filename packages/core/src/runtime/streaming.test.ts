@@ -11,7 +11,7 @@
  * snapshotted here.
  *
  * Tests use vitest fake timers because StreamManager throttles edits with a
- * setTimeout(EDIT_INTERVAL_MS=600).
+ * setTimeout(EDIT_INTERVAL_MS=4000).
  */
 
 import { describe, it, vi, beforeEach, afterEach } from 'vitest';
@@ -105,9 +105,9 @@ function fakeSession(overrides: Partial<SessionState> = {}): SessionState {
 }
 
 async function flushThrottle() {
-  // The throttled edit timer fires at 600ms. Advance + flush microtasks to
+  // The throttled edit timer fires at 4000ms. Advance + flush microtasks to
   // let the resulting send/edit promise chain settle.
-  await vi.advanceTimersByTimeAsync(700);
+  await vi.advanceTimersByTimeAsync(4100);
   // Two extra microtask drains for the .then() chains after send/edit resolve.
   await Promise.resolve();
   await Promise.resolve();
