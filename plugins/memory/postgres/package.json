@@ -9,7 +9,7 @@
     "rivetos-memory-migrate": "dist/schema/migrate.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').cpSync('src/schema/migrations','dist/schema/migrations',{recursive:true})\"",
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs');fs.rmSync('dist/schema/migrations',{recursive:true,force:true});fs.cpSync('src/schema/migrations','dist/schema/migrations',{recursive:true})\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ package.json",
     "test": "vitest run",
