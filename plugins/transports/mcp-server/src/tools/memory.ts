@@ -115,10 +115,10 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
 export const memorySearchInputSchema = {
   query: z.string().describe('Search query — natural language question or keywords'),
   mode: z
-    .enum(['fts', 'trigram', 'regex'])
+    .enum(['hybrid', 'fts', 'trigram', 'regex', 'vector'])
     .optional()
     .describe(
-      'Search mode: fts (full-text, default), trigram (fuzzy/typo-tolerant), regex (pattern match)',
+      'Search mode (default hybrid). hybrid: fuses full-text + trigram + vector with RRF — best general recall, robust to dotted/literal terms (domains, IPs, model ids). fts: full-text only. trigram: fuzzy/literal-token match. regex: pattern match. vector: pure semantic (ANN over HNSW).',
     ),
   scope: z
     .enum(['messages', 'summaries', 'both'])

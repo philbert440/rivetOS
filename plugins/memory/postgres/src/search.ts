@@ -27,6 +27,7 @@ import {
   SUMMARY_IMPORTANCE,
   temporalDecaySql,
   importanceSql,
+  reciprocalRankFusion,
 } from './scoring.js'
 
 // ---------------------------------------------------------------------------
@@ -34,7 +35,7 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface SearchOptions {
-  mode?: 'fts' | 'vector' | 'regex' | 'trigram'
+  mode?: 'hybrid' | 'fts' | 'vector' | 'regex' | 'trigram'
   scope?: 'messages' | 'summaries' | 'both'
   limit?: number
   agent?: string
@@ -55,6 +56,17 @@ export interface SearchHit {
   kind?: string
   earliestAt?: Date
   latestAt?: Date
+}
+
+/**
+ * A retrieval candidate: a SearchHit plus the recency/importance boost used as
+ * a multiplier during fusion. `score` on a candidate holds the per-method raw
+ * relevance (for ordering within that method's list); the fused score is
+ * computed in rrfFuse and written back onto the returned SearchHit.
+ */
+interface Candidate extends SearchHit {
+  /** temporal·W_TEMPORAL + importance·W_IMPORTANCE, roughly [0, 0.55] */
+  boost: number
 }
 
 export interface SearchEngineConfig {
@@ -92,6 +104,20 @@ interface SummarySearchRow {
   semantic_sim?: string
 }
 
+/** Row shape returned by the hybrid candidate retrievers (text + vector). */
+interface CandidateRow {
+  id: string
+  content: string
+  role: string
+  agent: string
+  conversation_id: string
+  created_at: Date
+  boost: string
+  kind?: string
+  earliest_at?: Date | null
+  latest_at?: Date | null
+}
+
 interface EmbedResponseItem {
   embedding?: number[]
   index?: number
@@ -107,6 +133,14 @@ interface EmbedResponse {
 
 /** Query embedding timeout — single text, should be fast */
 const EMBED_TIMEOUT_MS = 5_000
+
+/**
+ * Candidate pool depth retrieved per method before fusion. Deeper pools let a
+ * doc that one method ranks mediocre — but another ranks highly — still surface
+ * (the whole point of fusion). Bounded so the three parallel queries stay cheap.
+ */
+const HYBRID_POOL_MIN = 50
+const HYBRID_POOL_MAX = 100
 
 /** Fallback semantic proxy when embedding is unavailable */
 const SEMANTIC_PROXY = (alias: string): string => `LEAST(LENGTH(${alias}.content) / 1000.0, 1.0)`
@@ -133,45 +167,278 @@ export class SearchEngine {
   }
 
   /**
-   * Search messages and/or summaries with hybrid scoring.
+   * Search messages and/or summaries.
    *
-   * For FTS mode: embeds the query once and passes to both message and
-   * summary search for real cosine similarity scoring. Falls back to
-   * length-based proxy if embedding fails.
+   * Default mode `hybrid` fuses three independent retrievers — FTS, trigram, and
+   * vector (HNSW) — with Reciprocal Rank Fusion, then applies a gentle
+   * recency/importance boost. This makes recall robust to the way any single
+   * method fails: FTS tokenization mangles literal/dotted terms (domains, IPs,
+   * model ids), trigram is blind to meaning, and vector misses exact tokens.
+   * Fusing them means a hit any one method finds survives.
    *
-   * Results are scored, sorted by relevance, and the top N returned.
+   * Explicit modes are deliberate escape hatches and skip fusion:
+   *   fts / trigram / regex — single text method (composite-scored as before)
+   *   vector                — pure ANN over the HNSW index (needs an embedding)
+   *
    * Access counts are incremented for returned results.
    */
   async search(query: string, options?: SearchOptions): Promise<SearchHit[]> {
-    const mode = options?.mode ?? 'fts'
+    const mode = options?.mode ?? 'hybrid'
     const scope = options?.scope ?? 'both'
     const limit = options?.limit ?? 20
+
+    if (mode === 'hybrid') {
+      return this.hybridSearch(query, scope, limit, options)
+    }
+
+    if (mode === 'vector') {
+      const qvec = await this.embedQuery(query)
+      // No embedding available (endpoint down / not configured) — degrade to FTS
+      // rather than returning nothing.
+      if (!qvec) return this.singleTextSearch('fts', query, scope, limit, options)
+      const hits = await this.vectorSearch(qvec, { scope, limit, agent: options?.agent })
+      void this.bumpAccess(hits)
+      return hits
+    }
+
+    // Explicit single text mode: fts / trigram / regex.
+    return this.singleTextSearch(mode, query, scope, limit, options)
+  }
+
+  /**
+   * Single-method text search (fts / trigram / regex) with the original
+   * composite scoring. Preserved as the explicit escape hatch.
+   */
+  private async singleTextSearch(
+    mode: string,
+    query: string,
+    scope: 'messages' | 'summaries' | 'both',
+    limit: number,
+    options?: SearchOptions,
+  ): Promise<SearchHit[]> {
     const results: SearchHit[] = []
 
-    // Embed query once for FTS hybrid scoring
+    // Embed query once for FTS hybrid scoring (semantic rerank term).
     let queryEmbedding: number[] | null = null
     if (mode === 'fts' && this.embedEndpoint) {
       queryEmbedding = await this.embedQuery(query)
     }
 
     if (scope === 'messages' || scope === 'both') {
-      const hits = await this.searchMessages(query, mode, limit, options, queryEmbedding)
-      results.push(...hits)
+      results.push(...(await this.searchMessages(query, mode, limit, options, queryEmbedding)))
+    }
+    if (scope === 'summaries' || scope === 'both') {
+      results.push(...(await this.searchSummaries(query, mode, limit, options, queryEmbedding)))
+    }
+
+    results.sort((a, b) => b.score - a.score)
+    const topResults = results.slice(0, limit)
+    void this.bumpAccess(topResults)
+    return topResults
+  }
+
+  /**
+   * Hybrid retrieval: run FTS, trigram, and vector arms in parallel over a deep
+   * candidate pool, fuse with RRF, boost by recency/importance, return top N.
+   * The vector arm is dropped (gracefully) when no embedding can be produced.
+   */
+  private async hybridSearch(
+    query: string,
+    scope: 'messages' | 'summaries' | 'both',
+    limit: number,
+    options?: SearchOptions,
+  ): Promise<SearchHit[]> {
+    const pool = Math.min(HYBRID_POOL_MAX, Math.max(HYBRID_POOL_MIN, limit * 3))
+
+    // Embed once for the vector arm; null (no endpoint / failure) drops that arm.
+    const qvec = this.embedEndpoint ? await this.embedQuery(query) : null
+
+    const [ftsList, trigramList, vectorList] = await Promise.all([
+      this.retrieveTextCandidates('fts', query, scope, pool, options),
+      this.retrieveTextCandidates('trigram', query, scope, pool, options),
+      qvec
+        ? this.retrieveVectorCandidates(qvec, scope, pool, options)
+        : Promise.resolve([] as Candidate[]),
+    ])
+
+    const fused = this.rrfFuse([ftsList, trigramList, vectorList])
+    const topResults = fused.slice(0, limit)
+    void this.bumpAccess(topResults)
+    return topResults
+  }
+
+  /**
+   * Fuse ranked candidate lists with Reciprocal Rank Fusion, then scale each
+   * doc's fused score by its recency/importance boost. Dedupes by type+id;
+   * a doc found by multiple methods accumulates contributions from each.
+   */
+  private rrfFuse(lists: Candidate[][]): SearchHit[] {
+    const fusedMap = reciprocalRankFusion(lists, (hit) => `${hit.type}:${hit.id}`)
+    const fused: SearchHit[] = []
+    for (const { item, rrf } of fusedMap.values()) {
+      const { boost, ...rest } = item
+      // RRF orders by relevance; boost (≤ ~0.55) lets recency/importance nudge
+      // adjacent ranks without overriding a strong cross-method match.
+      fused.push({ ...rest, score: rrf * (1 + boost) })
+    }
+    fused.sort((a, b) => b.score - a.score)
+    return fused
+  }
+
+  /**
+   * Retrieve a candidate pool for a single text method (fts | trigram), ordered
+   * by that method's raw relevance. Carries the recency/importance boost so
+   * fusion can apply it once, post-merge.
+   */
+  private async retrieveTextCandidates(
+    method: 'fts' | 'trigram',
+    query: string,
+    scope: 'messages' | 'summaries' | 'both',
+    pool: number,
+    options?: SearchOptions,
+  ): Promise<Candidate[]> {
+    const out: Candidate[] = []
+
+    if (scope === 'messages' || scope === 'both') {
+      const { whereClause, ftsScoreExpr, params, limitIdx } = this.buildTextQuery(
+        'm',
+        query,
+        method,
+        pool,
+        options,
+        null,
+        { agentFilter: true },
+      )
+      const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
+      const sql = `
+        SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
+               ${boostExpr} AS boost
+        FROM ros_messages m
+        WHERE ${whereClause}
+        ORDER BY ${ftsScoreExpr} DESC
+        LIMIT $${String(limitIdx)}
+      `
+      const res = await this.pool.query<CandidateRow>(sql, params)
+      out.push(...res.rows.map((r) => this.mapCandidate(r, 'message')))
     }
 
     if (scope === 'summaries' || scope === 'both') {
-      const hits = await this.searchSummaries(query, mode, limit, options, queryEmbedding)
-      results.push(...hits)
+      const { whereClause, ftsScoreExpr, params, limitIdx } = this.buildTextQuery(
+        's',
+        query,
+        method,
+        pool,
+        options,
+        null,
+        { agentFilter: false },
+      )
+      const boostExpr = `((${temporalDecaySql('s')}) * ${W_TEMPORAL} + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE})`
+      const sql = `
+        SELECT s.id, s.content, s.kind AS role, 'summary' AS agent, s.conversation_id,
+               s.created_at, s.kind, s.earliest_at, s.latest_at,
+               ${boostExpr} AS boost
+        FROM ros_summaries s
+        WHERE ${whereClause}
+        ORDER BY ${ftsScoreExpr} DESC
+        LIMIT $${String(limitIdx)}
+      `
+      const res = await this.pool.query<CandidateRow>(sql, params)
+      out.push(...res.rows.map((r) => this.mapCandidate(r, 'summary')))
     }
 
-    // Sort by composite score, take top N
-    results.sort((a, b) => b.score - a.score)
-    const topResults = results.slice(0, limit)
+    return out
+  }
 
-    // Bump access counts (non-blocking, fire-and-forget)
-    void this.bumpAccess(topResults)
+  /**
+   * Retrieve a candidate pool via approximate-nearest-neighbour over the HNSW
+   * index, ordered by cosine distance. Honors agent (messages) + date filters.
+   */
+  private async retrieveVectorCandidates(
+    qvec: number[],
+    scope: 'messages' | 'summaries' | 'both',
+    pool: number,
+    options?: SearchOptions,
+  ): Promise<Candidate[]> {
+    const vecLiteral = toVectorLiteral(qvec)
+    const out: Candidate[] = []
 
-    return topResults
+    if (scope === 'messages' || scope === 'both') {
+      const params: unknown[] = [vecLiteral]
+      const conds = ['m.embedding IS NOT NULL']
+      if (options?.agent) {
+        params.push(options.agent)
+        conds.push(`m.agent = $${String(params.length)}`)
+      }
+      if (options?.since) {
+        params.push(options.since)
+        conds.push(`m.created_at >= $${String(params.length)}`)
+      }
+      if (options?.before) {
+        params.push(options.before)
+        conds.push(`m.created_at < $${String(params.length)}`)
+      }
+      params.push(pool)
+      const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
+      const sql = `
+        SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
+               ${boostExpr} AS boost
+        FROM ros_messages m
+        WHERE ${conds.join(' AND ')}
+        ORDER BY m.embedding <=> $1::halfvec
+        LIMIT $${String(params.length)}
+      `
+      const res = await this.pool.query<CandidateRow>(sql, params)
+      out.push(...res.rows.map((r) => this.mapCandidate(r, 'message')))
+    }
+
+    if (scope === 'summaries' || scope === 'both') {
+      const params: unknown[] = [vecLiteral]
+      const conds = ['s.embedding IS NOT NULL'] // summaries are cross-agent
+      if (options?.since) {
+        params.push(options.since)
+        conds.push(`s.created_at >= $${String(params.length)}`)
+      }
+      if (options?.before) {
+        params.push(options.before)
+        conds.push(`s.created_at < $${String(params.length)}`)
+      }
+      params.push(pool)
+      const boostExpr = `((${temporalDecaySql('s')}) * ${W_TEMPORAL} + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE})`
+      const sql = `
+        SELECT s.id, s.content, s.kind AS role, 'summary' AS agent, s.conversation_id,
+               s.created_at, s.kind, s.earliest_at, s.latest_at,
+               ${boostExpr} AS boost
+        FROM ros_summaries s
+        WHERE ${conds.join(' AND ')}
+        ORDER BY s.embedding <=> $1::halfvec
+        LIMIT $${String(params.length)}
+      `
+      const res = await this.pool.query<CandidateRow>(sql, params)
+      out.push(...res.rows.map((r) => this.mapCandidate(r, 'summary')))
+    }
+
+    return out
+  }
+
+  /** Map a candidate row to a Candidate (raw per-method score is unused → 0). */
+  private mapCandidate(r: CandidateRow, type: 'message' | 'summary'): Candidate {
+    const base: Candidate = {
+      id: r.id,
+      type,
+      content: r.content,
+      role: r.role,
+      agent: r.agent,
+      conversationId: r.conversation_id,
+      score: 0,
+      createdAt: r.created_at,
+      boost: parseFloat(r.boost),
+    }
+    if (type === 'summary') {
+      base.kind = r.kind
+      base.earliestAt = r.earliest_at ?? undefined
+      base.latestAt = r.latest_at ?? undefined
+    }
+    return base
   }
 
   /**

@@ -28,9 +28,9 @@ export function createSearchTool(
         },
         mode: {
           type: 'string',
-          enum: ['fts', 'trigram', 'regex'],
+          enum: ['hybrid', 'fts', 'trigram', 'regex', 'vector'],
           description:
-            'Search mode: fts (full-text, default), trigram (fuzzy/typo-tolerant), regex (pattern match)',
+            'Search mode (default hybrid). hybrid: fuses full-text + trigram + vector with RRF — best general recall, robust to dotted/literal terms. fts: full-text only. trigram: fuzzy/literal-token match (domains, IPs, ids). regex: pattern match. vector: pure semantic (ANN over HNSW).',
         },
         scope: {
           type: 'string',
@@ -61,7 +61,7 @@ export function createSearchTool(
     },
     async execute(args: Record<string, unknown>): Promise<string> {
       const query = args.query as string
-      const mode = (args.mode as string | undefined) ?? 'fts'
+      const mode = (args.mode as string | undefined) ?? 'hybrid'
       const scope = (args.scope as string | undefined) ?? 'both'
       const limit = Math.min(Math.max((args.limit as number | undefined) ?? 10, 1), 50)
       const agent = args.agent as string | undefined
@@ -72,7 +72,7 @@ export function createSearchTool(
 
       // 1. Search
       const results = await searchEngine.search(query, {
-        mode: mode as 'fts' | 'trigram' | 'regex',
+        mode: mode as 'hybrid' | 'fts' | 'trigram' | 'regex' | 'vector',
         scope: scope as 'messages' | 'summaries' | 'both',
         limit,
         agent,
