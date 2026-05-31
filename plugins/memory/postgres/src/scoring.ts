@@ -97,6 +97,45 @@ export function computeRelevance(
 }
 
 // ---------------------------------------------------------------------------
+// Reciprocal Rank Fusion
+// ---------------------------------------------------------------------------
+
+/** Canonical RRF smoothing constant (Cormack et al., 2009). */
+export const RRF_K_DEFAULT = 60
+
+/**
+ * Fuse several ranked lists with Reciprocal Rank Fusion.
+ *
+ * Each list is assumed ordered best-first. A document's fused score is the sum
+ * over the lists it appears in of `1 / (k + rank)`, where rank is 1-based. A
+ * larger `k` flattens the advantage of top ranks. Documents are identified
+ * across lists by `keyOf` and accumulate contributions from every list.
+ *
+ * Pure and rank-based — no score normalization needed, which is the whole point
+ * of RRF: it fuses heterogeneous scorers (ts_rank_cd, trigram similarity,
+ * cosine distance) that aren't otherwise comparable.
+ *
+ * @returns a map of key → { item (first occurrence), rrf } in insertion order.
+ */
+export function reciprocalRankFusion<T>(
+  lists: readonly (readonly T[])[],
+  keyOf: (item: T) => string,
+  k: number = RRF_K_DEFAULT,
+): Map<string, { item: T; rrf: number }> {
+  const acc = new Map<string, { item: T; rrf: number }>()
+  for (const list of lists) {
+    list.forEach((item, idx) => {
+      const key = keyOf(item)
+      const inc = 1 / (k + idx + 1) // rank is idx + 1 (1-based)
+      const cur = acc.get(key)
+      if (cur) cur.rrf += inc
+      else acc.set(key, { item, rrf: inc })
+    })
+  }
+  return acc
+}
+
+// ---------------------------------------------------------------------------
 // SQL Fragments (for use in search queries)
 // ---------------------------------------------------------------------------
 
