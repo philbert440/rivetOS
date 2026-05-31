@@ -67,14 +67,16 @@ SEARCH_SCHEMA = {
             },
             "mode": {
                 "type": "string",
-                "enum": ["fts", "trigram", "regex"],
+                "enum": ["hybrid", "fts", "trigram", "regex", "vector"],
                 "description": (
-                    "fts (default) — websearch-syntax: ``foo bar`` is AND, "
-                    "``foo OR bar`` is OR, ``\"exact phrase\"`` matches that "
-                    "phrase, ``-noise`` excludes; blended with semantic when "
-                    "an embedding endpoint is configured. trigram — fuzzy "
-                    "/ literal tokens (IPs, MACs, error strings). regex — "
-                    "PostgreSQL ``~*`` pattern."
+                    "hybrid (default) — fuses FTS + trigram + vector (HNSW) "
+                    "with Reciprocal Rank Fusion; best general recall, robust "
+                    "to dotted/literal terms (domains, IPs, model ids) that "
+                    "plain FTS misses. fts — websearch-syntax: ``foo bar`` is "
+                    "AND, ``foo OR bar`` is OR, ``\"exact phrase\"`` matches "
+                    "that phrase, ``-noise`` excludes. trigram — fuzzy / "
+                    "literal tokens. regex — PostgreSQL ``~*``. vector — pure "
+                    "semantic ANN (needs an embedding endpoint)."
                 ),
             },
             "scope": {
@@ -213,7 +215,7 @@ ALL_TOOL_SCHEMAS = [SEARCH_SCHEMA, BROWSE_SCHEMA, STATS_SCHEMA]
 DEFAULT_AGENT = "rivet-hermes"
 DEFAULT_CHANNEL_PREFIX = "hermes"
 DEFAULT_RECALL_LIMIT = 10
-DEFAULT_RECALL_MODE = "fts"
+DEFAULT_RECALL_MODE = "hybrid"
 DEFAULT_EMBED_MODEL = "nemotron"
 
 # Phrases that pin a time window. FTS-on-the-query for these returns
