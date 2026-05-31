@@ -237,7 +237,7 @@ describe('OpenAICompatProvider', () => {
         'fetch',
         vi.fn().mockResolvedValueOnce({
           ok: true,
-          json: vi.fn(),
+          json: vi.fn().mockResolvedValueOnce({ data: [] }),
         }),
       )
 
@@ -334,11 +334,14 @@ describe('OpenAICompatProvider', () => {
 
       const provider = new OpenAICompatProvider({
         baseUrl: 'http://localhost:8000',
+        model: 'pinned-model',
         verifyModelOnInit: true,
       })
       const available = await provider.isAvailable()
 
-      // Should not crash; will return false when verifyModelOnInit is true
+      // Malformed body → empty model list. With a pinned model + verify on, the
+      // pinned model can't be found, so availability is false — and the
+      // undefined `data` is handled gracefully (no crash).
       expect(available).toBe(false)
     })
 
