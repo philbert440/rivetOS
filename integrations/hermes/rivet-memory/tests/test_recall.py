@@ -202,3 +202,68 @@ def test_unknown_mode_raises():
         assert "unknown search mode" in str(e)
     else:
         raise AssertionError("expected ValueError")
+
+
+# -- Hybrid retrieval (RRF) -------------------------------------------------
+
+
+def _cand_msg_row(id_="m1", boost=0.5):
+    """8-col candidate row: id, content, role, agent, conv, created_at,
+    method_score, boost."""
+    return (
+        id_,
+        "hello world",
+        "user",
+        "rivet-hermes",
+        "conv-1",
+        datetime.now(timezone.utc),
+        0.42,  # method_score
+        boost,
+    )
+
+
+def test_hybrid_text_candidate_param_order():
+    """The candidate retriever renders the method score in SELECT (first %s),
+    then the WHERE match (%s), then filters, then the pool LIMIT — same
+    positional-binding contract as the composite path."""
+    from rivet_memory.recall import SearchEngine
+
+    fake = _FakeClient([_cand_msg_row()])
+    eng = SearchEngine(fake)
+    cands = eng._retrieve_text_candidates(
+        "fts", "deckard", "messages", 50, "rivet-hermes", None, None
+    )
+
+    sql, params = fake.cursor.executed[0]
+    assert params == ["deckard", "deckard", "rivet-hermes", 50]
+    assert "ORDER BY method_score DESC" in sql
+    # boost (col 7) is carried alongside the hit for post-fusion scaling.
+    assert len(cands) == 1 and cands[0][1] == 0.5
+
+
+def test_hybrid_trigram_candidate_uses_similarity():
+    from rivet_memory.recall import SearchEngine
+
+    fake = _FakeClient([_cand_msg_row()])
+    eng = SearchEngine(fake)
+    eng._retrieve_text_candidates("trigram", "phildez", "messages", 50, None, None, None)
+    sql, params = fake.cursor.executed[0]
+    assert params == ["phildez", "phildez", 50]
+    assert "similarity(m.content, %s)" in sql
+    assert "websearch_to_tsquery" not in sql
+
+
+def test_hybrid_fuses_fts_and_trigram_arms():
+    """With no embedding endpoint the vector arm is skipped; FTS + trigram both
+    return the same row, so RRF dedupes to one hit with an accumulated score."""
+    from rivet_memory.recall import SearchEngine
+
+    fake = _FakeClient([_cand_msg_row(boost=0.5)])
+    eng = SearchEngine(fake)  # embed_endpoint=None → 2 arms
+    hits = eng._hybrid_search("deckard", "messages", 10, None, None, None)
+
+    assert len(hits) == 1
+    assert hits[0].id == "m1"
+    # Found by both arms at rank 1: rrf = 2 * 1/61; scaled by (1 + boost).
+    expected = (2 * (1 / 61)) * (1 + 0.5)
+    assert abs(hits[0].score - expected) < 1e-9

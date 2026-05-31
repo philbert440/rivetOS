@@ -210,7 +210,7 @@ def search_tool(
     if not query:
         return "memory_search: `query` is required."
 
-    mode = args.get("mode") or "fts"
+    mode = args.get("mode") or "hybrid"
     scope = args.get("scope") or "both"
     limit = max(1, min(int(args.get("limit") or 10), 50))
     agent = args.get("agent")
@@ -606,7 +606,7 @@ class Tools:
         query: str,
         *,
         limit: int = 10,
-        mode: str = "fts",
+        mode: str = "hybrid",
     ) -> str:
         """Run a search + format hits as a ``<rivet-memory-context>`` block.
 

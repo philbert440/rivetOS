@@ -19,6 +19,9 @@ Temporal uses Ebbinghaus-style decay with access reinforcement::
 from __future__ import annotations
 
 import math
+from typing import Callable, Dict, List, Sequence, Tuple, TypeVar
+
+_T = TypeVar("_T")
 
 # Decay rate — how fast memories fade without reinforcement.
 DECAY_LAMBDA = 0.05
@@ -34,6 +37,9 @@ W_IMPORTANCE = 0.1
 
 # Summaries get a fixed mid-range importance — they're already distilled.
 SUMMARY_IMPORTANCE = 0.6
+
+# Canonical Reciprocal Rank Fusion smoothing constant (Cormack et al., 2009).
+RRF_K_DEFAULT = 60
 
 
 def temporal_decay(days_since_access: float, access_count: int) -> float:
@@ -66,6 +72,40 @@ def compute_relevance(
         + temporal_score * W_TEMPORAL
         + importance * W_IMPORTANCE
     )
+
+
+# ---------------------------------------------------------------------------
+# Reciprocal Rank Fusion
+# ---------------------------------------------------------------------------
+
+
+def reciprocal_rank_fusion(
+    lists: Sequence[Sequence[_T]],
+    key_of: Callable[[_T], str],
+    k: int = RRF_K_DEFAULT,
+) -> Dict[str, Tuple[_T, float]]:
+    """Fuse several ranked lists with Reciprocal Rank Fusion.
+
+    Each list is assumed ordered best-first. A document's fused score is the sum
+    over the lists it appears in of ``1 / (k + rank)`` (rank is 1-based). A
+    larger ``k`` flattens the advantage of top ranks. Documents are identified
+    across lists by ``key_of`` and accumulate contributions from every list.
+
+    Pure and rank-based — no score normalization needed, which is the point of
+    RRF: it fuses heterogeneous scorers (ts_rank_cd, trigram similarity, cosine
+    distance) that aren't otherwise comparable. Returns an insertion-ordered
+    mapping of key -> (first-seen item, fused score).
+    """
+    acc: Dict[str, Tuple[_T, float]] = {}
+    for lst in lists:
+        for idx, item in enumerate(lst):
+            key = key_of(item)
+            inc = 1.0 / (k + idx + 1)  # rank is idx + 1 (1-based)
+            if key in acc:
+                acc[key] = (acc[key][0], acc[key][1] + inc)
+            else:
+                acc[key] = (item, inc)
+    return acc
 
 
 # ---------------------------------------------------------------------------

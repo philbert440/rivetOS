@@ -1,21 +1,22 @@
-"""SearchEngine — hybrid FTS + semantic + temporal + importance scoring.
+"""SearchEngine — hybrid retrieval over the RivetOS memory store.
 
-Direct port of ``plugins/memory/postgres/src/search.ts``. Three modes:
+Direct port of ``plugins/memory/postgres/src/search.ts``. Default mode
+``hybrid`` fuses three independent retrievers — FTS, trigram, and vector (ANN
+over the HNSW index) — with Reciprocal Rank Fusion, then a gentle
+recency/importance boost. This makes recall robust to how any single method
+fails: FTS tokenization mangles literal/dotted terms (domains, IPs, model ids),
+trigram is blind to meaning, and vector misses exact tokens. Fusing them means a
+hit any one method finds survives.
 
-- ``fts``     — ``websearch_to_tsquery`` + ``ts_rank_cd``; if an embedding endpoint
-                is configured, the query is embedded at search time and blended
-                with the FTS score via real cosine similarity on ``halfvec``.
-                ``websearch_to_tsquery`` honors ``OR`` (case-insensitive),
-                phrase quoting, and ``-NOT``, so natural-language queries
-                like ``today OR daily OR session`` behave as the caller
-                expects instead of silently AND-ing every token (the
-                ``plainto_tsquery`` behavior that caused PR #192's
-                first real-session miss).
-- ``trigram`` — ``pg_trgm`` similarity (fuzzy / typo-tolerant)
+Explicit modes are deliberate escape hatches and skip fusion:
+
+- ``fts``     — ``websearch_to_tsquery`` + ``ts_rank_cd``; with an embedding
+                endpoint the query is embedded and blended via cosine similarity
+                on ``halfvec``. ``websearch_to_tsquery`` honors ``OR``, phrase
+                quoting, and ``-NOT`` (PR #192).
+- ``trigram`` — ``pg_trgm`` similarity (fuzzy / typo-tolerant / literal tokens)
 - ``regex``   — PostgreSQL ``~*``
-
-Falls back to a length-based semantic proxy when no query embedding is
-available so a row missing FTS evidence still scores something.
+- ``vector``  — pure ANN over the HNSW index (requires an embedding)
 
 Access counts on returned rows are bumped fire-and-forget so the temporal
 component rewards frequent recall (Ebbinghaus reinforcement).
@@ -38,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Tuple
 
 from .client import RivetMemoryClient
 from .scoring import (
@@ -48,6 +49,7 @@ from .scoring import (
     W_SEMANTIC,
     W_TEMPORAL,
     importance_sql,
+    reciprocal_rank_fusion,
     temporal_decay_sql,
 )
 
@@ -59,7 +61,12 @@ EMBED_TIMEOUT_S = 5.0
 # worker truncates stored rows the same way, so query-side must match.
 EMBED_DIMS = 4000
 
-SearchMode = Literal["fts", "trigram", "regex"]
+# Candidate pool depth retrieved per method before RRF fusion. Deeper pools let
+# a doc one method ranks mediocre — but another ranks highly — still surface.
+HYBRID_POOL_MIN = 50
+HYBRID_POOL_MAX = 100
+
+SearchMode = Literal["hybrid", "fts", "trigram", "regex", "vector"]
 SearchScope = Literal["messages", "summaries", "both"]
 
 
@@ -106,13 +113,44 @@ class SearchEngine:
         self,
         query: str,
         *,
-        mode: SearchMode = "fts",
+        mode: SearchMode = "hybrid",
         scope: SearchScope = "both",
         limit: int = 20,
         agent: Optional[str] = None,
         since: Optional[str] = None,
         before: Optional[str] = None,
     ) -> List[SearchHit]:
+        if mode == "hybrid":
+            top = self._hybrid_search(query, scope, limit, agent, since, before)
+        elif mode == "vector":
+            qvec = self._embed_query(query)
+            if qvec is None:
+                # No embedding available — degrade to FTS rather than nothing.
+                return self._single_text_search(
+                    "fts", query, scope, limit, agent, since, before
+                )
+            top = self.vector_search(qvec, scope=scope, limit=limit, agent=agent)
+            return top  # vector_search already bumps access
+        else:
+            return self._single_text_search(
+                mode, query, scope, limit, agent, since, before
+            )
+
+        self._bump_access_async(top)
+        return top
+
+    def _single_text_search(
+        self,
+        mode: SearchMode,
+        query: str,
+        scope: SearchScope,
+        limit: int,
+        agent: Optional[str],
+        since: Optional[str],
+        before: Optional[str],
+    ) -> List[SearchHit]:
+        """Single-method text search (fts / trigram / regex) with the original
+        composite scoring. The explicit escape hatch."""
         query_embedding: Optional[List[float]] = None
         if mode == "fts" and self._embed_endpoint:
             query_embedding = self._embed_query(query)
@@ -131,14 +169,64 @@ class SearchEngine:
 
         results.sort(key=lambda h: h.score, reverse=True)
         top = results[:limit]
-        # Bump access counts in the background — never block on it.
+        self._bump_access_async(top)
+        return top
+
+    # -- Hybrid retrieval (default) -----------------------------------------
+
+    def _hybrid_search(
+        self,
+        query: str,
+        scope: SearchScope,
+        limit: int,
+        agent: Optional[str],
+        since: Optional[str],
+        before: Optional[str],
+    ) -> List[SearchHit]:
+        """Run FTS, trigram, and vector arms over a deep candidate pool, fuse
+        with RRF, scale by recency/importance, return top N. The vector arm is
+        dropped gracefully when no query embedding can be produced."""
+        pool = min(HYBRID_POOL_MAX, max(HYBRID_POOL_MIN, limit * 3))
+        qvec = self._embed_query(query) if self._embed_endpoint else None
+
+        lists: List[List[Tuple[SearchHit, float]]] = [
+            self._retrieve_text_candidates("fts", query, scope, pool, agent, since, before),
+            self._retrieve_text_candidates(
+                "trigram", query, scope, pool, agent, since, before
+            ),
+        ]
+        if qvec is not None:
+            lists.append(
+                self._retrieve_vector_candidates(qvec, scope, pool, agent, since, before)
+            )
+
+        return self._rrf_fuse(lists)[:limit]
+
+    @staticmethod
+    def _rrf_fuse(lists: List[List[Tuple[SearchHit, float]]]) -> List[SearchHit]:
+        """Fuse ranked (hit, boost) lists with RRF, then scale each fused score
+        by ``1 + boost`` so recency/importance nudges adjacent ranks without
+        overriding a strong cross-method match. Dedupes by type+id."""
+        # Each list is ordered best-first; RRF needs just the hits in order.
+        hit_lists = [[hit for hit, _ in lst] for lst in lists]
+        boost_by_key = {
+            f"{hit.type}:{hit.id}": boost for lst in lists for hit, boost in lst
+        }
+        fused = reciprocal_rank_fusion(hit_lists, lambda h: f"{h.type}:{h.id}")
+        out: List[SearchHit] = []
+        for key, (hit, rrf) in fused.items():
+            hit.score = rrf * (1.0 + boost_by_key.get(key, 0.0))
+            out.append(hit)
+        out.sort(key=lambda h: h.score, reverse=True)
+        return out
+
+    def _bump_access_async(self, hits: List[SearchHit]) -> None:
         threading.Thread(
             target=self._bump_access,
-            args=(top,),
+            args=(hits,),
             name="rivet-memory-bump-access",
             daemon=True,
         ).start()
-        return top
 
     def vector_search(
         self,
@@ -238,6 +326,235 @@ class SearchEngine:
             daemon=True,
         ).start()
         return top
+
+    # -- Internal: hybrid candidate retrievers ------------------------------
+
+    def _retrieve_text_candidates(
+        self,
+        method: Literal["fts", "trigram"],
+        query: str,
+        scope: SearchScope,
+        pool: int,
+        agent: Optional[str],
+        since: Optional[str],
+        before: Optional[str],
+    ) -> List[Tuple[SearchHit, float]]:
+        """Retrieve a candidate pool for one text method, ordered by that
+        method's raw relevance. Carries the recency/importance boost so fusion
+        can apply it once, post-merge."""
+        out: List[Tuple[SearchHit, float]] = []
+
+        def score_and_match(alias: str) -> Tuple[str, str]:
+            if method == "fts":
+                return (
+                    f"ts_rank_cd({alias}.content_tsv, "
+                    f"websearch_to_tsquery('english', %s))",
+                    f"{alias}.content_tsv @@ websearch_to_tsquery('english', %s)",
+                )
+            return (
+                f"similarity({alias}.content, %s)",
+                f"similarity({alias}.content, %s) > 0.3",
+            )
+
+        if scope in ("messages", "both"):
+            score_expr, match = score_and_match("m")
+            boost = f"(({temporal_decay_sql('m')}) * {W_TEMPORAL} + ({importance_sql('m')}) * {W_IMPORTANCE})"
+            conditions = [match]
+            params: list = [query, query]  # SELECT score_expr, then WHERE match
+            if agent:
+                conditions.append("m.agent = %s")
+                params.append(agent)
+            if since:
+                conditions.append("m.created_at >= %s")
+                params.append(since)
+            if before:
+                conditions.append("m.created_at < %s")
+                params.append(before)
+            params.append(pool)
+            sql = f"""
+                SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
+                       ({score_expr}) AS method_score,
+                       {boost} AS boost
+                  FROM ros_messages m
+                 WHERE {" AND ".join(conditions)}
+                 ORDER BY method_score DESC
+                 LIMIT %s
+            """
+            with self._client.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+            for r in rows:
+                out.append(
+                    (
+                        SearchHit(
+                            id=str(r[0]),
+                            type="message",
+                            content=r[1] or "",
+                            role=r[2],
+                            agent=r[3],
+                            conversation_id=str(r[4]),
+                            score=0.0,
+                            created_at=r[5],
+                        ),
+                        float(r[7]),
+                    )
+                )
+
+        if scope in ("summaries", "both"):
+            score_expr, match = score_and_match("s")
+            boost = f"(({temporal_decay_sql('s')}) * {W_TEMPORAL} + {SUMMARY_IMPORTANCE} * {W_IMPORTANCE})"
+            conditions = [match]
+            params = [query, query]
+            if since:
+                conditions.append("s.created_at >= %s")
+                params.append(since)
+            if before:
+                conditions.append("s.created_at < %s")
+                params.append(before)
+            params.append(pool)
+            sql = f"""
+                SELECT s.id, s.content, s.kind, 'summary' AS agent,
+                       s.conversation_id, s.created_at,
+                       s.kind, s.earliest_at, s.latest_at,
+                       ({score_expr}) AS method_score,
+                       {boost} AS boost
+                  FROM ros_summaries s
+                 WHERE {" AND ".join(conditions)}
+                 ORDER BY method_score DESC
+                 LIMIT %s
+            """
+            with self._client.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+            for r in rows:
+                out.append(
+                    (
+                        SearchHit(
+                            id=str(r[0]),
+                            type="summary",
+                            content=r[1] or "",
+                            role=r[2],
+                            agent=r[3],
+                            conversation_id=str(r[4]) if r[4] is not None else "",
+                            score=0.0,
+                            created_at=r[5],
+                            kind=r[6],
+                            earliest_at=r[7],
+                            latest_at=r[8],
+                        ),
+                        float(r[10]),
+                    )
+                )
+
+        return out
+
+    def _retrieve_vector_candidates(
+        self,
+        embedding: List[float],
+        scope: SearchScope,
+        pool: int,
+        agent: Optional[str],
+        since: Optional[str],
+        before: Optional[str],
+    ) -> List[Tuple[SearchHit, float]]:
+        """Retrieve a candidate pool via ANN over the HNSW index, ordered by
+        cosine distance. Honors agent (messages) + date filters."""
+        if len(embedding) > EMBED_DIMS:
+            embedding = embedding[:EMBED_DIMS]
+        vec = _vec_literal(embedding)
+        out: List[Tuple[SearchHit, float]] = []
+
+        if scope in ("messages", "both"):
+            boost = f"(({temporal_decay_sql('m')}) * {W_TEMPORAL} + ({importance_sql('m')}) * {W_IMPORTANCE})"
+            conditions = ["m.embedding IS NOT NULL"]
+            params: list = []
+            if agent:
+                conditions.append("m.agent = %s")
+                params.append(agent)
+            if since:
+                conditions.append("m.created_at >= %s")
+                params.append(since)
+            if before:
+                conditions.append("m.created_at < %s")
+                params.append(before)
+            params.append(pool)
+            sql = f"""
+                SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
+                       {boost} AS boost
+                  FROM ros_messages m
+                 WHERE {" AND ".join(conditions)}
+                 ORDER BY m.embedding <=> '{vec}'::halfvec
+                 LIMIT %s
+            """
+            with self._client.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+            for r in rows:
+                out.append(
+                    (
+                        SearchHit(
+                            id=str(r[0]),
+                            type="message",
+                            content=r[1] or "",
+                            role=r[2],
+                            agent=r[3],
+                            conversation_id=str(r[4]),
+                            score=0.0,
+                            created_at=r[5],
+                        ),
+                        float(r[6]),
+                    )
+                )
+
+        if scope in ("summaries", "both"):
+            boost = f"(({temporal_decay_sql('s')}) * {W_TEMPORAL} + {SUMMARY_IMPORTANCE} * {W_IMPORTANCE})"
+            conditions = ["s.embedding IS NOT NULL"]  # summaries are cross-agent
+            params = []
+            if since:
+                conditions.append("s.created_at >= %s")
+                params.append(since)
+            if before:
+                conditions.append("s.created_at < %s")
+                params.append(before)
+            params.append(pool)
+            sql = f"""
+                SELECT s.id, s.content, s.kind, 'summary' AS agent,
+                       s.conversation_id, s.created_at,
+                       s.kind, s.earliest_at, s.latest_at,
+                       {boost} AS boost
+                  FROM ros_summaries s
+                 WHERE {" AND ".join(conditions)}
+                 ORDER BY s.embedding <=> '{vec}'::halfvec
+                 LIMIT %s
+            """
+            with self._client.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+            for r in rows:
+                out.append(
+                    (
+                        SearchHit(
+                            id=str(r[0]),
+                            type="summary",
+                            content=r[1] or "",
+                            role=r[2],
+                            agent=r[3],
+                            conversation_id=str(r[4]) if r[4] is not None else "",
+                            score=0.0,
+                            created_at=r[5],
+                            kind=r[6],
+                            earliest_at=r[7],
+                            latest_at=r[8],
+                        ),
+                        float(r[10]),
+                    )
+                )
+
+        return out
 
     # -- Internal: query embedding ------------------------------------------
 
