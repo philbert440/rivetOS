@@ -119,6 +119,14 @@ jobs:
             npx nx run-many -t lint --all --parallel=5
           fi
 
+      - name: Typecheck
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            npx nx affected -t typecheck --parallel=5
+          else
+            npx nx run-many -t typecheck --all --parallel=5
+          fi
+
       - name: Test
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
