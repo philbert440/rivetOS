@@ -36,7 +36,19 @@ import {
 
 export interface CompactConversationPayload {
   conversationId: string
-  triggerType?: 'threshold' | 'session_idle' | 'explicit'
+  triggerType?: 'threshold' | 'session_idle' | 'session_stale' | 'explicit'
+}
+
+/**
+ * Leaf floor for a compaction job: a 'session_stale' flush treats the
+ * conversation as final and drops to staleMinBatch so its leftover below-floor
+ * tail gets summarized; every other trigger holds the normal MIN_BATCH_SIZE.
+ */
+export function leafFloorFor(
+  triggerType: CompactConversationPayload['triggerType'],
+  staleMinBatch: number,
+): number {
+  return triggerType === 'session_stale' ? staleMinBatch : MIN_BATCH_SIZE
 }
 
 interface PgClient {
@@ -110,6 +122,7 @@ async function compactLeaf(
   client: PgClient,
   convMeta: ConversationMeta,
   conversationId: string,
+  minBatch: number = MIN_BATCH_SIZE,
 ): Promise<number> {
   const messages = await client.query<CompactMessageRow & { id: string }>(
     `SELECT m.id, m.role, m.content, m.agent, m.created_at, m.tool_name, m.tool_args
@@ -121,7 +134,7 @@ async function compactLeaf(
     [conversationId, config.leafBatchSize],
   )
 
-  if (messages.rows.length < MIN_BATCH_SIZE) return 0
+  if (messages.rows.length < minBatch) return 0
 
   const formatted = formatLeafPrompt(convMeta, messages.rows)
 
@@ -249,7 +262,7 @@ async function compactParentLevel(
 }
 
 export const compactConversationTask: Task = async (payload, helpers) => {
-  const { conversationId } = payload as CompactConversationPayload
+  const { conversationId, triggerType } = payload as CompactConversationPayload
 
   if (shouldSkip(conversationId)) {
     helpers.logger.info(
@@ -258,13 +271,15 @@ export const compactConversationTask: Task = async (payload, helpers) => {
     return
   }
 
+  const leafFloor = leafFloorFor(triggerType, config.staleMinBatch)
+
   await helpers.withPgClient(async (client) => {
     const convMeta = await loadConversationMeta(client, conversationId)
 
     let leafRound = 0
     let totalCreated = 0
     while (leafRound < 10) {
-      const created = await compactLeaf(client, convMeta, conversationId)
+      const created = await compactLeaf(client, convMeta, conversationId, leafFloor)
       if (created === 0) break
       totalCreated += created
       leafRound += 1
