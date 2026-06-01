@@ -14,8 +14,15 @@
 /** Decay rate: how fast memories fade without reinforcement */
 const DECAY_LAMBDA = 0.05
 
-/** Reinforcement coefficient: how much each access slows decay */
-const REINFORCEMENT_ALPHA = 0.02
+/** Reinforcement coefficient: how much each access slows decay (capped below). */
+const REINFORCEMENT_ALPHA = 0.01
+
+/**
+ * Cap on accesses that count toward reinforcement. Uncapped, a row that keeps
+ * surfacing gets bumped → scores higher → surfaces again: a rich-get-richer loop
+ * that pumps noise to the top. Capping bounds the multiplier at 1 + ALPHA·CAP.
+ */
+const REINFORCEMENT_CAP = 25
 
 /** Weight for full-text search rank */
 export const W_FTS = 0.3
@@ -38,12 +45,13 @@ export const W_IMPORTANCE = 0.1
  *
  * Recent or frequently-accessed memories score higher.
  *
- * @param daysSinceAccess — days since last access (or creation if never accessed)
+ * @param daysSinceAccess — days since the reference time (now created_at; see SQL)
  * @param accessCount — number of times this item has been returned in search results
- * @returns score in range [0, ~1.5] (can exceed 1.0 for heavily reinforced items)
+ * @returns score in range [0, ~1.25] (reinforcement is capped)
  */
 export function temporalDecay(daysSinceAccess: number, accessCount: number): number {
-  return Math.exp(-DECAY_LAMBDA * daysSinceAccess) * (1.0 + REINFORCEMENT_ALPHA * accessCount)
+  const reinforced = 1.0 + REINFORCEMENT_ALPHA * Math.min(accessCount, REINFORCEMENT_CAP)
+  return Math.exp(-DECAY_LAMBDA * daysSinceAccess) * reinforced
 }
 
 // ---------------------------------------------------------------------------
@@ -53,15 +61,16 @@ export function temporalDecay(daysSinceAccess: number, accessCount: number): num
 /**
  * Base importance score by message type.
  *
- * Corrections and preferences matter most (they change behavior).
- * System messages and tool calls carry configuration weight.
- * Regular conversation is baseline.
+ * User turns (questions, corrections, preferences) anchor intent and rank
+ * highest; substantive assistant prose next. Tool-call stubs carry the least
+ * recall value — they must NOT outrank prose (the old 0.7 inverted this).
+ * System rows (delegation/audit/config events) sit mid.
  */
 export function importanceForRole(role: string, hasToolCall: boolean): number {
-  if (role === 'system') return 0.9
-  if (hasToolCall) return 0.7
-  if (role === 'user') return 0.6
-  return 0.5 // assistant without tools
+  if (role === 'system') return 0.5
+  if (hasToolCall) return 0.3 // tool-call stubs — least recall value
+  if (role === 'user') return 0.7 // user intent / corrections
+  return 0.6 // substantive assistant prose
 }
 
 /** Importance for summaries (always mid-range) */
@@ -146,7 +155,11 @@ export function reciprocalRankFusion<T>(
  * Expects columns: last_accessed_at, created_at, access_count
  */
 export function temporalDecaySql(alias: string): string {
-  return `EXP(-${DECAY_LAMBDA} * EXTRACT(EPOCH FROM (NOW() - COALESCE(${alias}.last_accessed_at, ${alias}.created_at))) / 86400.0) * (1.0 + ${REINFORCEMENT_ALPHA} * COALESCE(${alias}.access_count, 0))`
+  // Decay on memory AGE (created_at), not last_accessed_at. Resetting the clock
+  // on every search return made any recently-surfaced row float up regardless of
+  // the new query — cross-query contamination, the core of the feedback loop.
+  // Reinforcement via access_count is capped (LEAST) so it can't run away.
+  return `EXP(-${DECAY_LAMBDA} * EXTRACT(EPOCH FROM (NOW() - ${alias}.created_at)) / 86400.0) * (1.0 + ${REINFORCEMENT_ALPHA} * LEAST(COALESCE(${alias}.access_count, 0), ${REINFORCEMENT_CAP}))`
 }
 
 /**
@@ -155,5 +168,5 @@ export function temporalDecaySql(alias: string): string {
  * Expects columns: role, tool_name
  */
 export function importanceSql(alias: string): string {
-  return `CASE WHEN ${alias}.role = 'system' THEN 0.9 WHEN ${alias}.tool_name IS NOT NULL THEN 0.7 WHEN ${alias}.role = 'user' THEN 0.6 ELSE 0.5 END`
+  return `CASE WHEN ${alias}.role = 'system' THEN 0.5 WHEN ${alias}.tool_name IS NOT NULL THEN 0.3 WHEN ${alias}.role = 'user' THEN 0.7 ELSE 0.6 END`
 }

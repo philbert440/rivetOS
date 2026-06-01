@@ -180,14 +180,19 @@ function formatExpandedSummaries(
       }
     }
 
-    if (sourceMessages.length > 0) {
-      sections.push(`\n  **Source messages (${String(sourceMessages.length)}):**`)
-      for (const msg of sourceMessages.slice(0, 8)) {
+    // Only surface substantive source messages — skip stub/empty/tool rows that
+    // would re-introduce the noise the retrieval floor already removed.
+    const substantive = sourceMessages.filter(
+      (m) => m.content.trim().length >= 40 && m.role !== 'tool',
+    )
+    if (substantive.length > 0) {
+      sections.push(`\n  **Source messages (${String(substantive.length)}):**`)
+      for (const msg of substantive.slice(0, 4)) {
         const msgContent = msg.content.length > 300 ? msg.content.slice(0, 300) + '…' : msg.content
         sections.push(`  > [${msg.role}] ${msgContent}`)
       }
-      if (sourceMessages.length > 8) {
-        sections.push(`  > ... and ${String(sourceMessages.length - 8)} more messages`)
+      if (substantive.length > 4) {
+        sections.push(`  > ... and ${String(substantive.length - 4)} more messages`)
       }
     }
 
