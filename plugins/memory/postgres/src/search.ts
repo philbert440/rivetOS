@@ -142,6 +142,47 @@ const EMBED_TIMEOUT_MS = 5_000
 const HYBRID_POOL_MIN = 50
 const HYBRID_POOL_MAX = 100
 
+/**
+ * Minimum trimmed content length for a message to be eligible in HYBRID search.
+ * Mirrors the embedder's >20 floor but stricter: kills stubs that carry no
+ * recall value — empty rows, "het", "[thinking]", "[tool call] Bash",
+ * "still there?" — which otherwise ride the recency/importance boost to the top.
+ * Applied to hybrid only; explicit trigram/regex modes stay unfiltered so the
+ * "find this literal token anywhere" sweep still reaches short/tool rows.
+ */
+const MIN_CONTENT_LEN = 40
+
+/**
+ * RRF smoothing constant for hybrid fusion. Lower than the canonical 60 so the
+ * top cross-method matches separate from the long tail instead of clustering in
+ * a near-flat band (the old behavior let an empty row outrank the answer).
+ */
+const HYBRID_RRF_K = 20
+
+/**
+ * Relevance gate: after fusion, drop hits scoring below this fraction of the top
+ * hit — unless found by ≥2 arms (cross-method agreement). Stops the result list
+ * being padded to `limit` with weak filler.
+ */
+const GATE_FRACTION = 0.5
+
+/**
+ * Fusion bonus for summaries — the curated, high-signal layer. Without it the
+ * far more numerous raw messages bury summaries; a modest multiplier keeps the
+ * distilled layer competitive.
+ */
+const SUMMARY_FUSION_BONUS = 1.3
+
+/**
+ * A query "looks literal" when it carries tokens FTS tokenization mangles —
+ * dotted ids/domains/versions, paths, host:port, IPs, or alnum model ids
+ * (fp8, v100, w4a16). The trigram arm is routed in only for these; on prose it
+ * is blind character-overlap noise. Mirrors the recall discipline's
+ * "trigram-first for literal/punctuated terms".
+ */
+const LITERAL_QUERY_RE = /\w[./:_@]\w|\d{1,3}(?:\.\d{1,3}){2,}|[a-z]\d|\d[a-z]/i
+const looksLiteral = (q: string): boolean => LITERAL_QUERY_RE.test(q)
+
 /** Fallback semantic proxy when embedding is unavailable */
 const SEMANTIC_PROXY = (alias: string): string => `LEAST(LENGTH(${alias}.content) / 1000.0, 1.0)`
 
@@ -253,9 +294,15 @@ export class SearchEngine {
     // Embed once for the vector arm; null (no endpoint / failure) drops that arm.
     const qvec = this.embedEndpoint ? await this.embedQuery(query) : null
 
+    // Route the trigram arm in only for literal/dotted queries; on prose it is
+    // blind character-overlap noise. FTS always runs; vector runs when embedded.
+    const useTrigram = looksLiteral(query)
+
     const [ftsList, trigramList, vectorList] = await Promise.all([
       this.retrieveTextCandidates('fts', query, scope, pool, options),
-      this.retrieveTextCandidates('trigram', query, scope, pool, options),
+      useTrigram
+        ? this.retrieveTextCandidates('trigram', query, scope, pool, options)
+        : Promise.resolve([] as Candidate[]),
       qvec
         ? this.retrieveVectorCandidates(qvec, scope, pool, options)
         : Promise.resolve([] as Candidate[]),
@@ -273,16 +320,33 @@ export class SearchEngine {
    * a doc found by multiple methods accumulates contributions from each.
    */
   private rrfFuse(lists: Candidate[][]): SearchHit[] {
-    const fusedMap = reciprocalRankFusion(lists, (hit) => `${hit.type}:${hit.id}`)
-    const fused: SearchHit[] = []
-    for (const { item, rrf } of fusedMap.values()) {
+    const keyOf = (hit: Candidate): string => `${hit.type}:${hit.id}`
+    const fusedMap = reciprocalRankFusion(lists, keyOf, HYBRID_RRF_K)
+
+    // Per-doc arm membership: a hit found by ≥2 methods is strong cross-method
+    // agreement, kept regardless of the relevance gate below.
+    const armKeySets = lists.map((l) => new Set(l.map(keyOf)))
+
+    const scored = Array.from(fusedMap.values()).map(({ item, rrf }) => {
       const { boost, ...rest } = item
-      // RRF orders by relevance; boost (≤ ~0.55) lets recency/importance nudge
-      // adjacent ranks without overriding a strong cross-method match.
-      fused.push({ ...rest, score: rrf * (1 + boost) })
-    }
-    fused.sort((a, b) => b.score - a.score)
-    return fused
+      const key = keyOf(item)
+      const armCount = armKeySets.reduce((n, s) => n + (s.has(key) ? 1 : 0), 0)
+      // Summaries (curated layer) get a modest bonus so they aren't buried under
+      // the far more numerous raw messages; boost (≤ ~0.55) nudges by recency.
+      const layerBonus = item.type === 'summary' ? SUMMARY_FUSION_BONUS : 1
+      const score = rrf * (1 + boost) * layerBonus
+      return { hit: { ...rest, score }, armCount }
+    })
+
+    scored.sort((a, b) => b.hit.score - a.hit.score)
+    if (scored.length === 0) return []
+
+    // Relevance gate: keep cross-method agreement (≥2 arms) or anything within
+    // GATE_FRACTION of the top score; drop the weak tail instead of padding.
+    const top = scored[0].hit.score
+    return scored
+      .filter((s) => s.armCount >= 2 || s.hit.score >= top * GATE_FRACTION)
+      .map((s) => s.hit)
   }
 
   /**
@@ -307,7 +371,7 @@ export class SearchEngine {
         pool,
         options,
         null,
-        { agentFilter: true },
+        { agentFilter: true, qualityFilter: true },
       )
       const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
       const sql = `
@@ -330,7 +394,7 @@ export class SearchEngine {
         pool,
         options,
         null,
-        { agentFilter: false },
+        { agentFilter: false, qualityFilter: true },
       )
       const boostExpr = `((${temporalDecaySql('s')}) * ${W_TEMPORAL} + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE})`
       const sql = `
@@ -364,7 +428,10 @@ export class SearchEngine {
 
     if (scope === 'messages' || scope === 'both') {
       const params: unknown[] = [vecLiteral]
-      const conds = ['m.embedding IS NOT NULL']
+      const conds = [
+        'm.embedding IS NOT NULL',
+        `length(btrim(m.content)) >= ${String(MIN_CONTENT_LEN)} AND m.role <> 'tool'`,
+      ]
       if (options?.agent) {
         params.push(options.agent)
         conds.push(`m.agent = $${String(params.length)}`)
@@ -393,7 +460,10 @@ export class SearchEngine {
 
     if (scope === 'summaries' || scope === 'both') {
       const params: unknown[] = [vecLiteral]
-      const conds = ['s.embedding IS NOT NULL'] // summaries are cross-agent
+      const conds = [
+        's.embedding IS NOT NULL', // summaries are cross-agent
+        `length(btrim(s.content)) >= ${String(MIN_CONTENT_LEN)}`,
+      ]
       if (options?.since) {
         params.push(options.since)
         conds.push(`s.created_at >= $${String(params.length)}`)
@@ -618,7 +688,7 @@ export class SearchEngine {
     limit: number,
     options: SearchOptions | undefined,
     queryEmbedding: number[] | null | undefined,
-    opts: { agentFilter: boolean },
+    opts: { agentFilter: boolean; qualityFilter?: boolean },
   ): {
     whereClause: string
     ftsScoreExpr: string
@@ -647,6 +717,16 @@ export class SearchEngine {
       conditions.push(`${alias}.created_at < $${String(pi)}`)
       params.push(options.before)
       pi++
+    }
+
+    // Content-quality floor (hybrid only): drop stub/empty/tool rows that carry
+    // no recall value. Skipped for explicit trigram/regex escape hatches.
+    if (opts.qualityFilter) {
+      conditions.push(
+        alias === 'm'
+          ? `length(btrim(m.content)) >= ${String(MIN_CONTENT_LEN)} AND m.role <> 'tool'`
+          : `length(btrim(s.content)) >= ${String(MIN_CONTENT_LEN)}`,
+      )
     }
 
     // Mode-specific match condition and FTS score

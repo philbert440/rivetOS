@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { reciprocalRankFusion, RRF_K_DEFAULT } from './scoring.js'
+import { reciprocalRankFusion, RRF_K_DEFAULT, importanceForRole, temporalDecay } from './scoring.js'
 
 const keyOf = (x: { id: string }): string => x.id
 
@@ -63,5 +63,39 @@ describe('reciprocalRankFusion', () => {
   it('handles empty and missing lists without error', () => {
     expect(reciprocalRankFusion([], keyOf).size).toBe(0)
     expect(reciprocalRankFusion([[], []], keyOf).size).toBe(0)
+  })
+})
+
+describe('importanceForRole', () => {
+  it('ranks user intent ≥ assistant prose > tool-call stubs', () => {
+    expect(importanceForRole('user', false)).toBeGreaterThanOrEqual(
+      importanceForRole('assistant', false),
+    )
+    expect(importanceForRole('assistant', false)).toBeGreaterThan(
+      importanceForRole('assistant', true),
+    )
+  })
+
+  it('no longer lets tool-call stubs outrank prose (regression for the inversion)', () => {
+    // The bug: hasToolCall returned 0.7, above user (0.6) and assistant (0.5).
+    expect(importanceForRole('assistant', true)).toBeLessThan(importanceForRole('user', false))
+    expect(importanceForRole('assistant', true)).toBeLessThan(importanceForRole('assistant', false))
+  })
+})
+
+describe('temporalDecay', () => {
+  it('decays with age', () => {
+    expect(temporalDecay(0, 0)).toBeGreaterThan(temporalDecay(30, 0))
+  })
+
+  it('baseline (no access) is 1.0 at age 0', () => {
+    expect(temporalDecay(0, 0)).toBeCloseTo(1.0, 10)
+  })
+
+  it('caps reinforcement so a hot row cannot run away', () => {
+    const huge = temporalDecay(0, 100_000)
+    const atCap = temporalDecay(0, 25)
+    expect(huge).toBeCloseTo(atCap, 10) // both clamp to the cap
+    expect(huge).toBeLessThanOrEqual(1.25 + 1e-9) // bounded: 1 + 0.01*25
   })
 })
