@@ -4,8 +4,6 @@ sidebar:
   order: 4
 description: How to write channels, providers, tools, memory backends, and transports for RivetOS
 ---
-
-
 RivetOS supports five plugin types: **Providers** (talk to LLMs), **Channels** (send/receive messages), **Tools** (agent capabilities), **Memory** (persistent storage), and **Transports** (expose RivetOS to external clients). Every plugin uses the same self-registration contract.
 
 ---
@@ -224,7 +222,7 @@ interface Memory {
 
 The PostgreSQL memory plugin (`plugins/memory/postgres/`) is the reference. It implements full transcript storage, hybrid FTS + vector search, summary DAG (hierarchical compaction), event-driven embedding/compaction workers (running as Datahub services on Postgres `LISTEN`/`NOTIFY`), temporal decay scoring, and a review loop for pattern extraction. SQL DDL lives co-located in `plugins/memory/postgres/schema/`.
 
-See [MEMORY-DESIGN.md](MEMORY-DESIGN.md) for the full design.
+See [MEMORY-DESIGN.md](/reference/memory-design/) for the full design.
 
 ---
 

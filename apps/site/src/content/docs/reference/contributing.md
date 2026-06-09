@@ -4,8 +4,6 @@ sidebar:
   order: 4
 description: How to contribute to RivetOS
 ---
-
-
 **Last updated:** April 2026
 
 Thanks for your interest in contributing! This guide covers development setup, the Nx workflow, code style, and PR guidelines.
@@ -399,7 +397,7 @@ npx rivetos skill init my-skill --description="Does something useful"
 npx rivetos skill validate my-skill
 ```
 
-See [docs/SKILLS.md](docs/SKILLS.md) for the full guide.
+See [docs/SKILLS.md](/guides/skills/) for the full guide.
 
 ## Reporting Issues
 

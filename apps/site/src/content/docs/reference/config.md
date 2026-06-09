@@ -4,8 +4,6 @@ sidebar:
   order: 1
 description: Every configuration option for RivetOS
 ---
-
-
 RivetOS uses a single YAML config file for all settings. API keys and secrets go in `.env`, never in the config file.
 
 **Config file locations** (checked in order):
@@ -389,7 +387,7 @@ channels:
 ## `mesh`
 
 Multi-node mesh networking. Allows agents on different nodes to delegate tasks
-to each other via mTLS. See [`docs/mesh.md`](mesh.md) for full documentation.
+to each other via mTLS. See [`docs/mesh.md`](/guides/mesh/) for full documentation.
 
 ```yaml
 mesh:

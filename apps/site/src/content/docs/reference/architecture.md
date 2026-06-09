@@ -4,8 +4,6 @@ sidebar:
   order: 2
 description: How RivetOS works internally
 ---
-
-
 ## Design Principles
 
 1. **Domain-Driven Design** — Core domain is pure business logic. No framework dependencies, no I/O, no platform specifics. Plugins adapt the outside world to the domain.
