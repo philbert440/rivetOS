@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
-    "preview": "astro preview"
+    "build": "npm run sync-docs && astro build",
+    "preview": "astro preview",
+    "sync-docs": "node scripts/sync-docs.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.38.0",

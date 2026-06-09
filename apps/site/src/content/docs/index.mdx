@@ -25,20 +25,20 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="One command setup" icon="rocket">
     `rivetos init` walks you through everything — providers, channels, deployment. Running in minutes, not hours.
   </Card>
-  <Card title="Multi-agent by default" icon="puzzle">
-    Run one agent or a fleet. Opus reasons, Grok codes, local models research. They share memory, delegate tasks, and collaborate through a mesh network.
+  <Card title="Multi-agent mesh" icon="puzzle">
+    Run one agent or a fleet. Opus reasons, Grok codes, local models research. They share memory, delegate tasks over mTLS, and collaborate through a mesh network.
   </Card>
   <Card title="Your infrastructure, your rules" icon="setting">
     Docker on your laptop, LXC on Proxmox, Kubernetes in the cloud. Same config, same agents, different providers. No vendor lock-in.
   </Card>
   <Card title="Plugins for everything" icon="add-document">
-    Channels (Discord, Telegram, Voice), providers (Anthropic, OpenAI, xAI, Google, Ollama), tools (shell, files, web, MCP) — all pluggable, all replaceable.
+    Channels (Discord, Telegram, Voice), providers (Anthropic, OpenAI, xAI, Google, Ollama, openai-compat, claude-cli), tools (shell, files, web, MCP) — all pluggable, all replaceable.
   </Card>
-  <Card title="Learns and improves" icon="star">
-    Agents create skills from experience, apply them to future tasks, and get better over time. Built-in learning loop with autonomous skill creation.
+  <Card title="Persistent memory" icon="star">
+    Postgres-backed memory with hybrid FTS + vector search, compaction pipelines, and cross-agent recall. Agents learn from experience via skills.
   </Card>
-  <Card title="Container-native security" icon="approve-check">
-    The container IS the security boundary. Agents can only touch what's inside their container. No sandboxing gymnastics, no capability restrictions.
+  <Card title="MCP-native" icon="approve-check">
+    Expose RivetOS as an MCP server over Streamable HTTP. Memory, skills, web search, and runtime tools available to any MCP client.
   </Card>
 </CardGrid>
 
@@ -53,24 +53,25 @@ That's it. The wizard handles the rest.
 ## Architecture at a Glance
 
 ```
-┌───────────────────────────────────────────────────┐
-│                   RivetOS Agent                   │
-├──────────┬──────────┬──────────┬──────────────────┤
-│ Channel  │ Provider │  Tools   │     Memory       │
-├──────────┬──────────┬──────────┬──────────────────┤
-│ Discord  │ Anthropic│  Shell   │   Postgres w/    │
-│ Telegram │  OpenAI  │  Files   │ tree-based index │
-│ Voice    │   xAI    │   Web    │  for embeddings  │
-│          │  Google  │   MCP    │ shared by agents │
-│          │  Ollama  │          │                  │ 
-├──────────┴──────────┴──────────┴──────────────────┤
-│               Core Runtime Engine                 │
-│      Hooks · Skills · Streaming · Learning        │
-├───────────────────────────────────────────────────┤
-│         Container (Docker / LXC / K8s)            │
-└───────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                     RivetOS Runtime                       │
+├──────────┬──────────┬──────────┬────────────┬────────────┤
+│ Channel  │ Provider │  Tools   │   Memory   │ Transport  │
+├──────────┼──────────┼──────────┼────────────┼────────────┤
+│ Discord  │ Anthropic│  Shell   │  Postgres  │ MCP Server │
+│ Telegram │  OpenAI  │  Files   │  pgvector  │ (Streamable│
+│ Voice    │   xAI    │   Web    │ compaction │    HTTP)   │
+│ Agent    │  Google  │   MCP    │  + search  │            │
+│          │  Ollama  │          │            │            │
+│          │openai-   │          │            │            │
+│          │compat   │          │            │            │
+├──────────┴──────────┴──────────┴────────────┴────────────┤
+│        Core Runtime · Hooks · Skills · Mesh (mTLS)      │
+├───────────────────────────────────────────────────────────┤
+│      Unified Container Image (agent / datahub / mcp)      │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ## Ready to dive in?
 
-Check out the [Getting Started guide](/guides/getting-started/) to have your first agent running in under 5 minutes.
+Check out the [Getting Started guide](/guides/getting-started/) to have your first agent running in under 5 minutes, or read about [Mesh Networking](/guides/mesh/) for multi-node fleets.

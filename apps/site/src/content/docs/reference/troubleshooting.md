@@ -4,8 +4,6 @@ sidebar:
   order: 3
 description: Common issues and how to fix them
 ---
-
-
 Common issues and fixes. Start with `rivetos doctor` — it checks everything.
 
 > The unified Compose stack lives at `infra/docker/rivetos/docker-compose.yml`. Throughout this doc, bare `docker compose ...` examples assume you've either passed `-f infra/docker/rivetos/docker-compose.yml` or exported `COMPOSE_FILE=infra/docker/rivetos/docker-compose.yml` from the repo root.
@@ -87,7 +85,7 @@ npx rivetos start
 
 The provider is rate limiting you or overloaded.
 
-**Fix:** The circuit breaker prevents hammering a failing provider — it opens after 5 failures in 60 seconds and recovers automatically. Beyond that, switch agents/providers manually with `/model` or wait for the upstream to recover.
+**Fix:** The circuit breaker prevents hammering a failing provider — it opens after 5 failures in 60 seconds and recovers automatically. Provider fallback chains were removed in the AI SDK migration; if a provider is down, switch the agent's `provider:` setting until it recovers.
 
 ### "Maximum tool iterations reached"
 
