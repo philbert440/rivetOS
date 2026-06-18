@@ -41,8 +41,15 @@ const { Pool } = pg
 // Constants — must match the one-shot migration so migrated + live rows unify
 // ---------------------------------------------------------------------------
 
-/** Logical agent the captured sessions are filed under. */
-export const CAPTURE_AGENT = 'rivet-claude'
+/**
+ * Logical agent the captured sessions are filed under. Defaults to
+ * `rivet-claude`; deployments that host a distinct on-device agent (the phone's
+ * `claude -p`, Hermes, …) override it via `RIVETOS_CAPTURE_AGENT` so their turns
+ * file under their own mesh identity (e.g. `rivet-phone-claude`). Previously this
+ * override lived only in the hand-built phone bundle — a divergence that would
+ * silently regress the phone on a clean rebuild. It now lives in source.
+ */
+export const CAPTURE_AGENT = process.env.RIVETOS_CAPTURE_AGENT || 'rivet-claude'
 /** Channel label for captured sessions. */
 export const CAPTURE_CHANNEL = 'claude-code'
 /** Truncate giant tool outputs before they reach the embedder. */
@@ -64,7 +71,7 @@ export interface ParsedMessage {
   ts: string | null
   uuid: string | null
   sidechain: boolean
-  tools: Array<{ name: string; input: unknown }>
+  tools: Array<{ name: string; input: unknown; id: string | null; result: string | null }>
 }
 
 /** Result of parsing one transcript file. */
@@ -79,6 +86,15 @@ export interface ParsedTranscript {
 export interface IngestOptions {
   /** Absolute path to the Claude Code JSONL transcript. */
   transcriptPath: string
+  /**
+   * The hook payload's `session_id`. Authoritative for the conversation key so
+   * transcript-sourced rows unify with the payload path's prompt/tool rows for
+   * the same session (the payload path keys on `payload.session_id`). For a
+   * SubagentStop this is the parent session id, which is what merges subagent
+   * turns into the parent conversation. Falls back to the transcript's own
+   * sessionId, then the path-derived key.
+   */
+  sessionId?: string
   /** Postgres connection string. Falls back to resolvePgUrl(). */
   pgUrl?: string
   /** When true, mark the conversation inactive (SessionEnd). */
@@ -154,6 +170,39 @@ function asStr(v: unknown): string | null {
 }
 
 /**
+ * Canonical JSON: recursively sort object keys, compact form. Used to dedup tool
+ * calls reconstructed from the transcript against tool rows already stored. The
+ * DB column is `jsonb`, whose `::text` serialization sorts keys by (length, then
+ * bytes) and inserts spaces; a naive `JSON.stringify` preserves insertion order
+ * with no spaces, so the two never match by string. Canonicalizing both sides by
+ * value makes the multiset dedup correct — without it, every already-captured
+ * tool call looks "missing" and gets re-inserted as a duplicate.
+ */
+function canon(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v ?? null)
+  if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']'
+  const o = v as Record<string, unknown>
+  return (
+    '{' +
+    Object.keys(o)
+      .sort()
+      .map((k) => JSON.stringify(k) + ':' + canon(o[k]))
+      .join(',') +
+    '}'
+  )
+}
+
+/** Canonicalize a `jsonb::text` value read back from the DB for dedup keys. */
+function canonText(t: string | null): string {
+  if (t == null) return 'null'
+  try {
+    return canon(JSON.parse(t))
+  } catch {
+    return t
+  }
+}
+
+/**
  * Parse a Claude Code JSONL transcript into normalized turns. Deterministic:
  * the same file always yields the same message list in the same order, which
  * is what makes the count-based idempotency in ingestTranscript() correct.
@@ -164,6 +213,35 @@ export function parseTranscript(file: string): ParsedTranscript {
   let sessionId: string | null = null
   let prUrl: string | null = null
   const msgs: ParsedMessage[] = []
+
+  // Pre-scan: a tool_use's result lands in a *later* message (a user turn with a
+  // tool_result block referencing the tool_use_id). Build the id→result map up
+  // front so we can attach each result to its call in the single forward pass.
+  const resultById = new Map<string, string>()
+  for (const line of lines) {
+    const t = line.trim()
+    if (!t) continue
+    let o: Record<string, unknown>
+    try {
+      o = JSON.parse(t) as Record<string, unknown>
+    } catch {
+      continue
+    }
+    const c = (o.message as { content?: unknown } | undefined)?.content
+    if (!Array.isArray(c)) continue
+    for (const b of c as Array<Record<string, unknown>>) {
+      if (b.type !== 'tool_result') continue
+      const id = asStr(b.tool_use_id)
+      if (!id) continue
+      let rc = b.content
+      if (Array.isArray(rc)) {
+        rc = rc
+          .map((x) => (typeof x === 'string' ? x : ((x as { text?: string }).text ?? '')))
+          .join('\n')
+      }
+      resultById.set(id, typeof rc === 'string' ? rc : JSON.stringify(rc))
+    }
+  }
 
   for (const line of lines) {
     const t = line.trim()
@@ -194,7 +272,8 @@ export function parseTranscript(file: string): ParsedTranscript {
     let toolName: string | null = null
     let toolArgs: unknown = null
     let toolResult: string | null = null
-    const tools: Array<{ name: string; input: unknown }> = []
+    const tools: Array<{ name: string; input: unknown; id: string | null; result: string | null }> =
+      []
 
     if (typeof c === 'string') {
       text = c
@@ -205,9 +284,15 @@ export function parseTranscript(file: string): ParsedTranscript {
       for (const b of c as Array<Record<string, unknown>>) {
         if (b.type === 'text') textParts.push(asStr(b.text) ?? '')
         else if (b.type === 'thinking') thinkParts.push(asStr(b.thinking) ?? asStr(b.text) ?? '')
-        else if (b.type === 'tool_use')
-          tools.push({ name: asStr(b.name) ?? 'unknown', input: b.input })
-        else if (b.type === 'tool_result') {
+        else if (b.type === 'tool_use') {
+          const id = asStr(b.id)
+          tools.push({
+            name: asStr(b.name) ?? 'unknown',
+            input: b.input,
+            id,
+            result: id ? (resultById.get(id) ?? null) : null,
+          })
+        } else if (b.type === 'tool_result') {
           let rc = b.content
           if (Array.isArray(rc)) {
             rc = rc
@@ -352,17 +437,27 @@ async function insertMessage(
 }
 
 /**
- * Parse `transcriptPath` and insert assistant turns not already stored.
+ * Reconcile `transcriptPath` into its conversation: insert every turn the DB is
+ * missing — assistant text/reasoning, user prompts, and tool calls — and nothing
+ * it already has. This is the self-healing capture path.
  *
- * Scope: this path now captures **assistant text + reasoning only**. Prompts
- * and tool calls are captured per-event by the UserPromptSubmit / PostToolUse
- * hooks (see ingestHookEvent) — re-importing them from the transcript would
- * double-store them. Assistant prose is the one thing no hook payload carries,
- * so the transcript remains its sole source for interactive `claude` sessions.
+ * The live UserPromptSubmit / PostToolUse hooks write prompt + tool rows in real
+ * time; this transcript pass is their safety net. Whenever a live hook didn't
+ * fire or didn't reach the datahub (off-mesh, crash, model switch), the next
+ * Stop recovers the missed rows here — the transcript is the complete,
+ * authoritative record of the session.
  *
- * Idempotency is by transcript `uuid`, not row count: hook-sourced rows share
- * this conversation, so a count-based slice would mis-align. Safe to call
- * repeatedly and concurrently for the same transcript.
+ * Dedup is per-role so re-importing never doubles a live-captured row:
+ *  - assistant — by transcript `uuid` (assistant rows always carry it).
+ *  - tool      — by (tool_name + canonical-JSON args) multiset vs stored tool rows.
+ *  - user      — by content multiset vs stored user prompts.
+ * Multiset (count-based) dedup handles legitimately repeated prompts / identical
+ * tool calls. Safe to call repeatedly and concurrently for the same session (a
+ * per-session advisory lock serialises ingests).
+ *
+ * Caveat: a tool row recovered here can race a still-spooled offline replay of
+ * the same PostToolUse, producing a rare duplicate; the offline outbox is the
+ * unreliable edge and the recovered call is the higher-value record.
  */
 export async function ingestTranscript(opts: IngestOptions): Promise<IngestResult> {
   const { transcriptPath, markInactive = false, event } = opts
@@ -381,27 +476,46 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
 
   const parsed = parseTranscript(transcriptPath)
 
-  // Assistant turns carrying real text/reasoning. Pure tool-call turns (whose
-  // content parseTranscript fills with a "[tool call]" placeholder) are owned
-  // by the PostToolUse hook — skip them here.
+  // Desired state from the transcript, split by role.
+  // Assistant turns carrying real text/reasoning (pure "[tool call]" placeholder
+  // turns are represented by their tool rows below, not as assistant rows).
   const assistantMsgs = parsed.msgs.filter(
     (m) => m.role === 'assistant' && m.content !== '' && !m.content.startsWith('[tool call]'),
   )
-  if (assistantMsgs.length === 0) {
+  // Genuine user prompts only. A user turn that carries a tool_result (parseTranscript
+  // folds the result into content and sets toolResult) is not a prompt — the live
+  // UserPromptSubmit never captured those, so importing them would be noise.
+  const userMsgs = parsed.msgs.filter(
+    (m) =>
+      m.role === 'user' &&
+      m.toolResult == null &&
+      m.content !== '' &&
+      !m.content.startsWith('[tool call]'),
+  )
+  // One tool row per tool_use block, carrying its paired result.
+  const toolCalls = parsed.msgs.flatMap((m) =>
+    m.tools.map((t) => ({ ...t, uuid: m.uuid, ts: m.ts })),
+  )
+
+  if (assistantMsgs.length === 0 && userMsgs.length === 0 && toolCalls.length === 0) {
     return {
       sessionKey: fallbackKey,
       conversationId: '',
       created: false,
       inserted: 0,
       alreadyStored: 0,
-      skipped: 'no assistant content',
+      skipped: 'nothing to ingest',
     }
   }
 
-  // Key by the transcript's own session id so hook-sourced rows for the same
-  // interactive session land in this conversation. Fall back to the
-  // path-derived key only for transcripts that carry no session id at all.
-  const sessionKey = parsed.sessionId ? sessionKeyFromId(parsed.sessionId) : fallbackKey
+  // Authoritative key: the hook payload's session_id, so transcript rows unify
+  // with the payload path (which keys on payload.session_id) and subagent turns
+  // merge into the parent. Fall back to the transcript's own id, then the path.
+  const sessionKey = opts.sessionId
+    ? sessionKeyFromId(opts.sessionId)
+    : parsed.sessionId
+      ? sessionKeyFromId(parsed.sessionId)
+      : fallbackKey
 
   const pool = new Pool({ connectionString: opts.pgUrl ?? resolvePgUrl(), max: 1 })
   const client = await pool.connect()
@@ -418,7 +532,7 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
     const settings = {
       source: 'claude-code-hook',
       file: transcriptPath,
-      session_id: parsed.sessionId,
+      session_id: opts.sessionId ?? parsed.sessionId,
       pr_url: parsed.prUrl ?? null,
       last_event: event ?? null,
       last_ingest_at: new Date().toISOString(),
@@ -432,28 +546,88 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
       lastTs,
     })
 
-    // Idempotency: dedup by transcript uuid. Each transcript entry has a
-    // stable uuid, so re-ingesting a grown transcript inserts only new turns
-    // regardless of how many hook-sourced rows landed in between.
-    const stored = await client.query<{ uuid: string | null }>(
+    let inserted = 0
+    let alreadyStored = 0
+
+    // --- assistant: dedup by transcript uuid (stable per entry) ---
+    const storedA = await client.query<{ uuid: string | null }>(
       `SELECT metadata->>'uuid' AS uuid FROM ros_messages
         WHERE conversation_id = $1 AND role = 'assistant' AND metadata ? 'uuid'`,
       [conv.id],
     )
-    const seen = new Set(stored.rows.map((r) => r.uuid).filter((u): u is string => u !== null))
-
-    const fresh = assistantMsgs.filter((m) => !m.uuid || !seen.has(m.uuid))
-    for (const m of fresh) {
+    const seenA = new Set(storedA.rows.map((r) => r.uuid).filter((u): u is string => u !== null))
+    alreadyStored += seenA.size
+    for (const m of assistantMsgs.filter((m) => !m.uuid || !seenA.has(m.uuid))) {
       await insertMessage(client, conv.id, {
         role: 'assistant',
         content: m.content,
         metadata: { source: 'claude-code-hook', uuid: m.uuid, sidechain: m.sidechain },
         ts: m.ts,
       })
+      inserted++
     }
 
-    // Refresh conversation metadata: bump updated_at, upgrade a fallback
-    // title once Claude Code has generated one, and flip active on end.
+    // --- tool: dedup by (tool_name + canonical args) multiset ---
+    const storedT = await client.query<{ tool_name: string | null; args: string | null }>(
+      `SELECT tool_name, tool_args::text AS args FROM ros_messages
+        WHERE conversation_id = $1 AND role = 'tool'`,
+      [conv.id],
+    )
+    const toolHave = new Map<string, number>()
+    for (const r of storedT.rows) {
+      const k = `${r.tool_name}${canonText(r.args)}`
+      toolHave.set(k, (toolHave.get(k) ?? 0) + 1)
+    }
+    alreadyStored += storedT.rows.length
+    for (const t of toolCalls) {
+      const k = `${t.name}${canon(t.input ?? null)}`
+      const have = toolHave.get(k) ?? 0
+      if (have > 0) {
+        toolHave.set(k, have - 1)
+        continue
+      }
+      await insertMessage(client, conv.id, {
+        role: 'tool',
+        content: `[tool call] ${t.name}`,
+        toolName: t.name,
+        toolArgs: t.input ?? null,
+        toolResult: trunc(t.result),
+        metadata: {
+          source: 'claude-code-hook',
+          uuid: t.uuid,
+          hook_event: 'PostToolUse',
+          recovered: true,
+        },
+        ts: t.ts,
+      })
+      inserted++
+    }
+
+    // --- user: dedup by content multiset ---
+    const storedU = await client.query<{ content: string }>(
+      `SELECT content FROM ros_messages WHERE conversation_id = $1 AND role = 'user'`,
+      [conv.id],
+    )
+    const userHave = new Map<string, number>()
+    for (const r of storedU.rows) userHave.set(r.content, (userHave.get(r.content) ?? 0) + 1)
+    alreadyStored += storedU.rows.length
+    for (const m of userMsgs) {
+      const have = userHave.get(m.content) ?? 0
+      if (have > 0) {
+        userHave.set(m.content, have - 1)
+        continue
+      }
+      await insertMessage(client, conv.id, {
+        role: 'user',
+        content: m.content,
+        metadata: { source: 'claude-code-hook', uuid: m.uuid, recovered: true },
+        ts: m.ts,
+      })
+      inserted++
+    }
+
+    // Refresh conversation metadata: bump updated_at, upgrade a fallback title
+    // once Claude Code has generated one, and flip active on end.
     const nextTitle = parsed.aiTitle && parsed.aiTitle !== conv.title ? parsed.aiTitle : conv.title
     await client.query(
       `UPDATE ros_conversations
@@ -470,8 +644,8 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
       sessionKey,
       conversationId: conv.id,
       created: conv.created,
-      inserted: fresh.length,
-      alreadyStored: seen.size,
+      inserted,
+      alreadyStored,
     }
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined)

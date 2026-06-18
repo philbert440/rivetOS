@@ -177,6 +177,7 @@ async function runWorker(spoolFile: string): Promise<void> {
   try {
     const res = await ingestTranscript({
       transcriptPath: transcript,
+      sessionId: payload.session_id,
       event,
       markInactive: event === 'SessionEnd',
     })
