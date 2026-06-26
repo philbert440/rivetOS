@@ -96,7 +96,11 @@ export class TurnHandler {
 
       // System prompt — built once per session, cached
       if (!session.systemPrompt) {
-        session.systemPrompt = await workspace.buildSystemPrompt(agent.id, agent.local ?? false)
+        session.systemPrompt = await workspace.buildSystemPrompt(
+          agent.id,
+          agent.local ?? false,
+          message.userId,
+        )
       }
 
       // Abort controller
@@ -292,6 +296,10 @@ export class TurnHandler {
   ): Promise<void> {
     if (!this.deps.memory) return
 
+    // Per-user tag: stamp non-owner speakers' turns (both sides) so their
+    // conversations can be filtered/exported into their own memory later.
+    const profile = await this.deps.workspace.resolveProfile(message.userId)
+
     try {
       await this.deps.memory.append({
         sessionId: sessionKey,
@@ -303,6 +311,7 @@ export class TurnHandler {
           userId: message.userId,
           username: message.username,
           displayName: message.displayName,
+          ...(profile ? { profile } : {}),
           ...(savedImagePaths.length > 0 ? { images: savedImagePaths } : {}),
         },
       })
@@ -317,6 +326,7 @@ export class TurnHandler {
             toolsUsed: result.toolsUsed,
             iterations: result.iterations,
             usage: result.usage,
+            ...(profile ? { profile } : {}),
           },
         })
       }
