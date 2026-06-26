@@ -172,16 +172,47 @@ export class WorkspaceLoader implements Workspace {
    * Build the system prompt from core files + pinned files.
    * This is injected ONCE on session init, not every turn.
    */
-  async buildSystemPrompt(agentId?: string, extended = false): Promise<string> {
+  /**
+   * Resolve a per-user profile name from `users/profiles.json` (a
+   * `{ "<userId>": "<profile>" }` map). Returns null when there's no map or no
+   * entry — i.e. the default owner identity (USER.md) applies. Used to give
+   * non-owner speakers their own USER.md and to tag their memory.
+   */
+  async resolveProfile(userId?: string): Promise<string | null> {
+    if (!userId) return null
+    const raw = await this.read('users/profiles.json')
+    if (!raw) return null
+    try {
+      const map = JSON.parse(raw) as Record<string, string>
+      return map[userId] ?? null
+    } catch {
+      return null
+    }
+  }
+
+  async buildSystemPrompt(
+    agentId?: string,
+    extended = false,
+    userId?: string,
+  ): Promise<string> {
     const files = await this.load(extended)
     if (files.length === 0) {
       log.warn(
         `No workspace files loaded from ${this.baseDir} — agent will boot without personality files`,
       )
     }
+    // Per-user identity: if the speaker maps to a profile, swap USER.md for
+    // their `users/<profile>.md`. Everyone else gets the default USER.md.
+    const profile = await this.resolveProfile(userId)
+    const profileMd = profile ? await this.read(`users/${profile}.md`) : null
+
     let prompt = ''
     for (const file of files) {
-      prompt += `\n\n## ${file.name}\n${file.content}`
+      if (profileMd && file.name === 'USER.md') {
+        prompt += `\n\n## USER.md (${profile})\n${profileMd}`
+      } else {
+        prompt += `\n\n## ${file.name}\n${file.content}`
+      }
     }
 
     // Pinned files — after workspace files, before runtime section
