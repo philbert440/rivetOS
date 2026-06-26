@@ -179,6 +179,7 @@ const VOICE_LOCAL_KEYS = [
   'provider',
   'agent',
   'channel_id',
+  'voice_channel_id',
   'gerty_host',
   'stt_url',
   'tts_url',
