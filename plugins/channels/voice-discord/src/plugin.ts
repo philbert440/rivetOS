@@ -441,6 +441,9 @@ export class VoicePlugin implements Channel {
 
   /** Build an InboundMessage from a transcript and push it into the turn pipeline. */
   private emitInbound(userId: string, text: string): void {
+    console.log(
+      `[VoiceDBG] emit handler=${!!this.messageHandler} turnActive=${this.turnActive} text=${JSON.stringify(text.slice(0, 40))}`,
+    )
     if (!this.messageHandler) return
     const channelId = this.session instanceof LocalVoiceSession ? this.session.channelId : this.id
     // Barge-in: if a turn is mid-flight, /interrupt aborts it and runs this
@@ -463,9 +466,12 @@ export class VoicePlugin implements Channel {
       metadata: { thinking: 'off' },
       timestamp: Date.now(),
     }
-    void this.messageHandler(message).catch((err: unknown) => {
-      console.error('[Voice] turn handler error:', (err as Error).message)
-    })
+    console.log(`[VoiceDBG] dispatch text=${JSON.stringify(message.text.slice(0, 50))}`)
+    void this.messageHandler(message)
+      .then(() => console.log('[VoiceDBG] handler resolved'))
+      .catch((err: unknown) => {
+        console.error('[Voice] turn handler error:', (err as Error).message)
+      })
   }
 
   /**
@@ -474,11 +480,20 @@ export class VoicePlugin implements Channel {
    */
   onTurnComplete(sessionId: string, aborted: boolean): void {
     if (!(this.session instanceof LocalVoiceSession)) return
-    if (sessionId.split(':')[0] !== this.session.channelId) return
-    if (aborted) return // superseded by an interrupt — its tail is abandoned
+    const match = sessionId.split(':')[0] === this.session.channelId
+    console.log(
+      `[VoiceDBG] turnComplete sid=${sessionId} aborted=${aborted} match=${match} turnActive=${this.turnActive}`,
+    )
+    if (!match) return
+    // Always clear turnActive — an aborted turn that left it `true` would wedge
+    // every later utterance into barge-in mode and break the channel.
+    this.turnActive = false
+    if (aborted) {
+      this.streamBuf = '' // superseded by an interrupt — its tail is abandoned
+      return
+    }
     const tail = this.streamBuf.trim()
     this.streamBuf = ''
-    this.turnActive = false
     if (tail) this.session.enqueueSpeech(tail)
   }
 }
