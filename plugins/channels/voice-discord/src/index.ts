@@ -86,6 +86,7 @@ export const manifest: PluginManifest = {
       local: provider === 'local' ? buildLocalConfig(cfg, ctx.env as NodeJS.ProcessEnv) : undefined,
       agentId: (cfg.agent as string | undefined) ?? 'local',
       channelId: (cfg.channel_id as string | undefined) ?? 'voice-discord',
+      voiceChannelId: cfg.voice_channel_id as string | undefined,
       silenceDurationMs: cfg.silence_ms as number | undefined,
     })
 
