@@ -51,6 +51,7 @@ function buildLocalConfig(cfg: Record<string, unknown>, env: NodeJS.ProcessEnv):
     voiceInstruct: (cfg.voice_instruct as string | undefined) ?? DEFAULT_VOICE_INSTRUCT,
     language: (cfg.language as string | undefined) ?? 'English',
     sampleRate: (cfg.sample_rate as number | undefined) ?? 24000,
+    maxNewTokens: (cfg.tts_max_new_tokens as number | undefined) ?? 4096,
   }
 }
 

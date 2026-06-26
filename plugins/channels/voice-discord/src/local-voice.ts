@@ -31,6 +31,13 @@ export interface LocalVoiceConfig {
   language: string
   /** Sample rate of inbound mic PCM / TTS output PCM (24000). */
   sampleRate: number
+  /**
+   * Talker token budget per synth. Without it, qwen3-tts applies the deploy-YAML
+   * default (~2.16s of audio) and truncates anything longer. It's a *ceiling* —
+   * EOS still stops short utterances early. Must stay ≤ the talker stage's
+   * max_model_len (4096) or the server 400s. Default 4096 (~11s headroom).
+   */
+  maxNewTokens: number
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +160,8 @@ export async function synthesize(text: string, cfg: LocalVoiceConfig): Promise<B
     instructions: cfg.voiceInstruct,
     language: cfg.language,
     response_format: 'wav',
+    // Lift the default ~2.16s talker cap; EOS still stops short utterances early.
+    max_new_tokens: cfg.maxNewTokens,
   }
   const r = await fetch(cfg.ttsUrl, {
     method: 'POST',
