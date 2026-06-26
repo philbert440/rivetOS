@@ -8,9 +8,9 @@ import {
   GatewayIntentBits,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
-  type VoiceBasedChannel,
   type VoiceState,
   type GuildMember,
+  type Guild,
 } from 'discord.js'
 import {
   joinVoiceChannel,
@@ -255,23 +255,19 @@ export class VoicePlugin implements Channel {
     }
 
     if (left && this.session) {
-      const channel = oldState.channel
-      if (!channel) return
-      const allowedStillIn = channel.members.some(
-        (m: GuildMember) => this.config.allowedUsers.includes(m.id) && !m.user.bot,
-      )
-      if (allowedStillIn) return
+      const channelId = oldState.channelId
+      if (!channelId) return
+      // Use voice states (we have the GuildVoiceStates intent), NOT channel.members,
+      // which is empty without the privileged GuildMembers intent — that false
+      // emptiness made the bot think everyone left and disconnect after one turn.
+      if (this.allowedUserInChannel(oldState.guild, channelId)) return
 
       console.log('[Voice] All allowed users left, starting grace period')
       if (this.leaveTimeout) clearTimeout(this.leaveTimeout)
       this.leaveTimeout = setTimeout(() => {
-        const ch = oldState.guild.channels.cache.get(oldState.channelId!)
-        if (ch && 'members' in ch) {
-          const members = (ch as VoiceBasedChannel).members
-          const stillIn = members.some(
-            (m: GuildMember) => this.config.allowedUsers.includes(m.id) && !m.user.bot,
-          )
-          if (stillIn) return
+        if (this.allowedUserInChannel(oldState.guild, channelId)) {
+          this.leaveTimeout = null
+          return
         }
         console.log('[Voice] Auto-disconnecting')
         this.destroySession()
@@ -283,6 +279,14 @@ export class VoicePlugin implements Channel {
   // -----------------------------------------------------------------------
   // Startup Scan
   // -----------------------------------------------------------------------
+
+  /** Any allowed (non-bot) user currently in this voice channel, via voice states. */
+  private allowedUserInChannel(guild: Guild, channelId: string): boolean {
+    for (const [, vs] of guild.voiceStates.cache) {
+      if (vs.channelId === channelId && this.config.allowedUsers.includes(vs.id)) return true
+    }
+    return false
+  }
 
   private async startupScan(): Promise<void> {
     try {
