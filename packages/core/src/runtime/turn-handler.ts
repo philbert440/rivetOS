@@ -106,6 +106,8 @@ export class TurnHandler {
       // Stream handler
       const streamHandler: StreamHandler = (event) => {
         streamManager.handleStreamEvent(channel, message, session, event)
+        // Opt-in raw stream tap (voice synthesizes audio clause-by-clause).
+        channel.onStreamEvent?.(message, event)
       }
       this.deps.streamHandlers.set(sessionKey, streamHandler)
 

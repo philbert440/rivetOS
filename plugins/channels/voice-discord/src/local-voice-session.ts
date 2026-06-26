@@ -21,7 +21,6 @@ import { TranscriptLogger } from './transcript.js'
 import {
   transcribe,
   synthesize,
-  chunkText,
   Endpointer,
   DEFAULT_ENDPOINTER,
   type LocalVoiceConfig,
@@ -39,6 +38,8 @@ interface PrismMedia {
 export interface LocalSessionCallbacks {
   /** A complete user utterance was transcribed — hand it to the agent. */
   onUserUtterance: (userId: string, text: string) => void
+  /** The user started speaking (barge-in signal — used to interrupt the turn). */
+  onSpeechStart: (userId: string) => void
 }
 
 export class LocalVoiceSession {
@@ -58,7 +59,11 @@ export class LocalVoiceSession {
   private decoders = new Map<string, OpusDecoder>()
   private endpointers = new Map<string, Endpointer>()
   private audioReady = false
-  private speaking = false
+  // Streaming speech queue: clauses are enqueued as the agent generates them
+  // and synthesized/played in order. clearSpeech() (barge-in) drains it.
+  private speechQueue: string[] = []
+  private draining = false
+  private cancelled = false
 
   constructor(
     connection: VoiceConnection,
@@ -138,11 +143,11 @@ export class LocalVoiceSession {
       maxUtteranceMs: DEFAULT_ENDPOINTER.maxUtteranceMs,
     })
     endpointer.onSpeechStart = () => {
-      // Barge-in: if the user starts talking while we're speaking, stop playback.
-      if (this.speaking) {
-        this.audioPlayer.stop()
-        this.speaking = false
-      }
+      // Barge-in: the user started talking. Stop our audio immediately (don't
+      // wait for the agent round-trip), and signal the plugin so it can abort
+      // the active turn via /interrupt.
+      if (this.draining || this.speechQueue.length > 0) this.clearSpeech()
+      this.callbacks.onSpeechStart(userId)
     }
     endpointer.onUtterance = (pcm) => {
       void this.handleUtterance(userId, pcm)
@@ -181,32 +186,52 @@ export class LocalVoiceSession {
   // Speaking — called by the plugin from the turn:after hook
   // -----------------------------------------------------------------------
 
-  async speak(text: string): Promise<void> {
-    const clean = text.trim()
-    if (!clean) return
-    this.transcript.addMessage('Rivet', clean)
+  /** True while audio is queued or playing (used for barge-in / interrupt detection). */
+  isSpeaking(): boolean {
+    return this.draining || this.speechQueue.length > 0
+  }
 
-    // qwen3-tts truncates long inputs, so synthesize sentence/clause-sized
-    // chunks and play them back-to-back. Prefetch the next chunk while the
-    // current one is being written to keep playback gap-free, and lower
-    // time-to-first-audio (we start speaking after just the first chunk).
-    const chunks = chunkText(clean)
-    if (chunks.length === 0) return
+  /**
+   * Enqueue a clause for speech. Clauses arrive as the agent streams its reply,
+   * so the first one starts playing within ~1s of generation instead of after
+   * the whole turn. A single drainer synthesizes + plays them in order.
+   */
+  enqueueSpeech(clause: string): void {
+    const c = clause.trim()
+    if (!c) return
+    this.transcript.addMessage('Rivet', c)
+    this.cancelled = false
+    this.speechQueue.push(c)
+    if (!this.draining) void this.drainSpeech()
+  }
+
+  private async drainSpeech(): Promise<void> {
+    this.draining = true
     try {
-      this.speaking = true
-      let next: Promise<Buffer> = synthesize(chunks[0], this.cfg)
-      for (let i = 0; i < chunks.length; i++) {
-        const pcm = await next
-        if (i + 1 < chunks.length) next = synthesize(chunks[i + 1], this.cfg)
-        if (!this.speaking) break // barge-in cancelled playback
+      // Prefetch the next chunk's audio while the current one plays — gap-free.
+      let next: Promise<Buffer> | null = this.speechQueue.length
+        ? synthesize(this.speechQueue[0], this.cfg)
+        : null
+      while (this.speechQueue.length && !this.cancelled) {
+        this.speechQueue.shift()
+        const pcm = await (next as Promise<Buffer>)
+        next = this.speechQueue.length ? synthesize(this.speechQueue[0], this.cfg) : null
+        if (this.cancelled) break
         this.audioPlayer.playAudio(pcm)
       }
-      this.audioPlayer.endResponse()
     } catch (err: unknown) {
       console.error(`[LocalVoice] TTS failed: ${(err as Error).message}`)
     } finally {
-      this.speaking = false
+      this.draining = false
+      if (!this.cancelled) this.audioPlayer.endResponse()
     }
+  }
+
+  /** Barge-in / interrupt: drop queued speech and stop playback immediately. */
+  clearSpeech(): void {
+    this.cancelled = true
+    this.speechQueue = []
+    this.audioPlayer.stop()
   }
 
   getStatus(): string {
