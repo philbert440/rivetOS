@@ -38,6 +38,12 @@ export interface LocalVoiceConfig {
    * max_model_len (4096) or the server 400s. Default 4096 (~11s headroom).
    */
   maxNewTokens: number
+  /**
+   * CustomVoice preset speaker (e.g. 'aiden'). When set, synthesis uses the
+   * fixed preset voice — consistent across clauses/replies. When unset, falls
+   * back to VoiceDesign (voiceInstruct). Requires the CustomVoice TTS model.
+   */
+  speaker?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -152,17 +158,25 @@ export function parseAsr(raw: string): string {
 // TTS — reply text → 24kHz mono 16-bit LE PCM (ready for AudioPlayer.playAudio)
 // ---------------------------------------------------------------------------
 
-export async function synthesize(text: string, cfg: LocalVoiceConfig): Promise<Buffer> {
-  const payload = {
+export async function synthesize(
+  text: string,
+  cfg: LocalVoiceConfig,
+  speaker?: string,
+): Promise<Buffer> {
+  // A fixed CustomVoice preset speaker is consistent across clauses; VoiceDesign
+  // (no speaker) re-designs the voice each call and drifts between sentences.
+  const useSpeaker = speaker ?? cfg.speaker
+  const common = {
     model: cfg.ttsModel,
     input: text,
-    task_type: 'VoiceDesign',
-    instructions: cfg.voiceInstruct,
     language: cfg.language,
     response_format: 'wav',
     // Lift the default ~2.16s talker cap; EOS still stops short utterances early.
     max_new_tokens: cfg.maxNewTokens,
   }
+  const payload = useSpeaker
+    ? { ...common, task_type: 'CustomVoice', voice: useSpeaker }
+    : { ...common, task_type: 'VoiceDesign', instructions: cfg.voiceInstruct }
   const r = await fetch(cfg.ttsUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
