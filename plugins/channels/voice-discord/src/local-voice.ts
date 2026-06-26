@@ -202,6 +202,38 @@ export function chunkText(text: string, maxLen = 100): string[] {
   return out
 }
 
+/**
+ * Pull complete, speakable clauses out of a growing text buffer, leaving the
+ * incomplete tail for the next call. Breaks on sentence enders (. ! ? …) always,
+ * and on clause punctuation (, ; : —) once enough has accumulated, so we start
+ * speaking early without emitting choppy two-word fragments. Boundaries must be
+ * followed by whitespace/end (avoids splitting "3.5" or "e.g.").
+ */
+export function splitClauses(
+  buf: string,
+  minClauseChars = 30,
+): { clauses: string[]; rest: string } {
+  let lastBreak = -1
+  let sinceBreak = 0
+  for (let i = 0; i < buf.length; i++) {
+    const c = buf[i]
+    const next = buf[i + 1]
+    const atBoundary = next === undefined || next === ' ' || next === '\n'
+    sinceBreak++
+    if (!atBoundary) continue
+    const sentenceEnd = c === '.' || c === '!' || c === '?' || c === '…'
+    const clauseEnd = c === ',' || c === ';' || c === ':' || c === '—'
+    if (sentenceEnd || (clauseEnd && sinceBreak >= minClauseChars)) {
+      lastBreak = i
+      sinceBreak = 0
+    }
+  }
+  if (lastBreak === -1) return { clauses: [], rest: buf }
+  const head = buf.slice(0, lastBreak + 1).trim()
+  const rest = buf.slice(lastBreak + 1)
+  return { clauses: head ? chunkText(head) : [], rest }
+}
+
 // ---------------------------------------------------------------------------
 // Endpointer — silence-based VAD over the inbound PCM stream
 // ---------------------------------------------------------------------------

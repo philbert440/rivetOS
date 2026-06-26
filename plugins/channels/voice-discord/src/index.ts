@@ -94,11 +94,11 @@ export const manifest: PluginManifest = {
       // runtime starts the channel (logs the bot in) during runtime.start().
       ctx.registerChannel(voicePlugin)
       ctx.registerHook<TurnAfterContext>({
-        id: 'voice-discord:speak-response',
+        id: 'voice-discord:finalize-turn',
         event: 'turn:after',
-        description: 'Speak the agent response into the active local voice channel',
+        description: 'Flush the final spoken clause for the local voice channel',
         handler: (hc) => {
-          if (hc.sessionId) voicePlugin.speakResponse(hc.sessionId, hc.response, hc.aborted)
+          if (hc.sessionId) voicePlugin.onTurnComplete(hc.sessionId, hc.aborted)
         },
       })
       ctx.registerShutdown(() => voicePlugin.stop())

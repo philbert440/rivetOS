@@ -2,6 +2,8 @@
  * Channel interface — receives and sends messages on a surface.
  */
 
+import type { StreamEvent } from './events.js'
+
 export interface InboundMessage {
   id: string
   userId: string
@@ -102,6 +104,13 @@ export interface Channel {
   react?(channelId: string, messageId: string, emoji: string): Promise<void>
   /** Resolve attachment data (download from platform API, base64 encode, etc.) */
   resolveAttachment?(attachment: Attachment): Promise<ResolvedAttachment | null>
+  /**
+   * Optional: receive raw streaming events for a turn (live token deltas,
+   * `done`, etc.), in addition to the throttled edit path. Channels that need
+   * fine-grained streaming — e.g. voice synthesizing audio clause-by-clause —
+   * implement this; text channels ignore it.
+   */
+  onStreamEvent?(message: InboundMessage, event: StreamEvent): void
   onMessage(handler: (message: InboundMessage) => Promise<void>): void
   onCommand(
     handler: (command: string, args: string, message: InboundMessage) => Promise<void>,
