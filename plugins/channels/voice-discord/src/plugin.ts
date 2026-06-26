@@ -19,7 +19,15 @@ import {
   type DiscordGatewayAdapterCreator,
 } from '@discordjs/voice'
 import type { VoiceConnectionState } from '@discordjs/voice'
+import type {
+  Channel,
+  InboundMessage,
+  OutboundMessage,
+  EditResult,
+} from '@rivetos/types'
 import { VoiceSession } from './voice-session.js'
+import { LocalVoiceSession } from './local-voice-session.js'
+import type { LocalVoiceConfig } from './local-voice.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -42,27 +50,52 @@ export interface VoicePluginConfig {
   postgresPool?: import('pg').Pool
   /** Shared pg Pool — passed from boot.ts, NOT created per session */
   sharedPool?: import('pg').Pool
+  /**
+   * Backend for voice turns. 'xai'/'gemini' = cloud realtime (VoiceSession).
+   * 'local' = turn-based via the GERTY stack, routed through the real agent
+   * (LocalVoiceSession + this plugin acting as a RivetOS Channel).
+   */
+  provider?: 'xai' | 'gemini' | 'local'
+  /** Local (GERTY) STT/TTS config — required when provider === 'local'. */
+  local?: LocalVoiceConfig
+  /** Channel id this plugin registers as (local provider). Default 'voice-discord'. */
+  channelId?: string
+  /** Agent to route voice turns to (local provider). Default 'local'. */
+  agentId?: string
 }
 
 // ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
 
-export class VoicePlugin {
+export class VoicePlugin implements Channel {
+  // --- Channel interface ---
+  readonly id: string
+  readonly platform = 'voice-discord'
+
   private client: Client
   private config: VoicePluginConfig
-  private session: VoiceSession | null = null
+  private session: VoiceSession | LocalVoiceSession | null = null
   private leaveTimeout: ReturnType<typeof setTimeout> | null = null
+  private messageHandler?: (message: InboundMessage) => Promise<void>
+  private commandHandler?: (command: string, args: string, message: InboundMessage) => Promise<void>
+
+  get isLocal(): boolean {
+    return this.config.provider === 'local'
+  }
 
   constructor(config: VoicePluginConfig) {
     this.config = {
       voice: 'Ara',
-      silenceDurationMs: 1500,
+      silenceDurationMs: config.provider === 'local' ? 1200 : 1500,
       sampleRate: 24000,
       transcriptDir: 'transcripts',
       leaveGracePeriodMs: 10000,
+      channelId: 'voice-discord',
+      agentId: 'local',
       ...config,
     }
+    this.id = this.config.channelId ?? 'voice-discord'
 
     this.client = new Client({
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
@@ -279,8 +312,24 @@ export class VoicePlugin {
     })
 
     await entersState(connection, VoiceConnectionStatus.Ready, 30_000)
-    this.session = new VoiceSession(connection, this.config)
-    console.log('[Voice] Session active')
+
+    if (this.config.provider === 'local') {
+      if (!this.config.local) throw new Error('provider=local requires `local` config')
+      this.session = new LocalVoiceSession(
+        connection,
+        {
+          local: this.config.local,
+          allowedUsers: this.config.allowedUsers,
+          silenceDurationMs: this.config.silenceDurationMs,
+          transcriptDir: this.config.transcriptDir,
+        },
+        { onUserUtterance: (userId, text) => this.emitInbound(userId, text) },
+      )
+      console.log('[Voice] Local session active (GERTY stack, via agent)')
+    } else {
+      this.session = new VoiceSession(connection, this.config)
+      console.log('[Voice] Session active')
+    }
   }
 
   private destroySession(): void {
@@ -297,10 +346,78 @@ export class VoicePlugin {
     await this.client.login(this.config.discordToken)
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     console.log('[Voice] Stopping...')
     this.destroySession()
     if (this.leaveTimeout) clearTimeout(this.leaveTimeout)
-    void this.client.destroy()
+    await this.client.destroy()
+  }
+
+  // -----------------------------------------------------------------------
+  // Channel interface (local provider) — voice is a RivetOS Channel so turns
+  // run through the real agent. A transcribed utterance becomes an
+  // InboundMessage; the agent's reply is spoken from the turn:after hook
+  // (see speakResponse), NOT from streaming. send()/edit() therefore swallow
+  // streaming partials and the final text — they exist only to satisfy the
+  // StreamManager without voicing half-formed output.
+  // -----------------------------------------------------------------------
+
+  onMessage(handler: (message: InboundMessage) => Promise<void>): void {
+    this.messageHandler = handler
+  }
+
+  onCommand(
+    handler: (command: string, args: string, message: InboundMessage) => Promise<void>,
+  ): void {
+    this.commandHandler = handler
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async send(_message: OutboundMessage): Promise<string | null> {
+    // No-op: the spoken reply is produced by speakResponse() from turn:after.
+    return 'voice-stream'
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async edit(
+    _channelId: string,
+    messageId: string,
+    _text: string,
+    _overflowIds?: string[],
+  ): Promise<EditResult | null> {
+    // No-op for the same reason as send().
+    return { messageIds: [messageId] }
+  }
+
+  /** Build an InboundMessage from a transcript and push it into the turn pipeline. */
+  private emitInbound(userId: string, text: string): void {
+    if (!this.messageHandler) return
+    const channelId = this.session instanceof LocalVoiceSession ? this.session.channelId : this.id
+    const message: InboundMessage = {
+      id: `voice_${Date.now()}`,
+      userId,
+      channelId,
+      chatType: 'voice',
+      text,
+      platform: this.platform,
+      agent: this.config.agentId,
+      timestamp: Date.now(),
+    }
+    void this.messageHandler(message).catch((err: unknown) => {
+      console.error('[Voice] turn handler error:', (err as Error).message)
+    })
+  }
+
+  /**
+   * Speak the agent's final response. Called from a turn:after hook with the
+   * full response and the sessionId (`${channelId}:${userId}`). We only speak
+   * when the sessionId belongs to the active local voice channel.
+   */
+  speakResponse(sessionId: string, response: string, aborted: boolean): void {
+    if (aborted || !response.trim()) return
+    if (!(this.session instanceof LocalVoiceSession)) return
+    const channelId = sessionId.split(':')[0]
+    if (channelId !== this.session.channelId) return
+    void this.session.speak(response)
   }
 }
