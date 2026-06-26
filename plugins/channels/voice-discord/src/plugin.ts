@@ -24,9 +24,11 @@ import type {
   InboundMessage,
   OutboundMessage,
   EditResult,
+  StreamEvent,
 } from '@rivetos/types'
 import { VoiceSession } from './voice-session.js'
 import { LocalVoiceSession } from './local-voice-session.js'
+import { splitClauses } from './local-voice.js'
 import type { LocalVoiceConfig } from './local-voice.js'
 
 // ---------------------------------------------------------------------------
@@ -80,6 +82,15 @@ export class VoicePlugin implements Channel {
   private messageHandler?: (message: InboundMessage) => Promise<void>
   private commandHandler?: (command: string, args: string, message: InboundMessage) => Promise<void>
 
+  // Streaming-TTS state (local provider). streamBuf accumulates the agent's
+  // live text for the current turn; complete clauses are spoken as they arrive.
+  // Scoped by currentTurnId so a barge-in (/interrupt) turn never speaks the
+  // aborted turn's leftover text. turnActive => a turn is generating (=> next
+  // utterance interrupts it).
+  private streamBuf = ''
+  private currentTurnId = ''
+  private turnActive = false
+
   get isLocal(): boolean {
     return this.config.provider === 'local'
   }
@@ -87,7 +98,7 @@ export class VoicePlugin implements Channel {
   constructor(config: VoicePluginConfig) {
     this.config = {
       voice: 'Ara',
-      silenceDurationMs: config.provider === 'local' ? 1200 : 1500,
+      silenceDurationMs: config.provider === 'local' ? 900 : 1500,
       sampleRate: 24000,
       transcriptDir: 'transcripts',
       leaveGracePeriodMs: 10000,
@@ -323,7 +334,13 @@ export class VoicePlugin implements Channel {
           silenceDurationMs: this.config.silenceDurationMs,
           transcriptDir: this.config.transcriptDir,
         },
-        { onUserUtterance: (userId, text) => this.emitInbound(userId, text) },
+        {
+          onUserUtterance: (userId, text) => this.emitInbound(userId, text),
+          onSpeechStart: () => {
+            /* audio already stopped in-session; the turn is aborted when the
+               utterance completes (emitInbound emits /interrupt) */
+          },
+        },
       )
       console.log('[Voice] Local session active (GERTY stack, via agent)')
     } else {
@@ -389,16 +406,43 @@ export class VoicePlugin implements Channel {
     return { messageIds: [messageId] }
   }
 
+  /**
+   * Live token deltas for the active turn. Accumulate text and speak complete
+   * clauses as they arrive (low time-to-first-audio + stays under the TTS
+   * length cap). Scoped to the current turn's message id so a superseded
+   * (interrupted) turn's tail never bleeds into the next one.
+   */
+  onStreamEvent(message: InboundMessage, event: StreamEvent): void {
+    if (!(this.session instanceof LocalVoiceSession)) return
+    if (message.channelId !== this.session.channelId) return
+    if (message.id !== this.currentTurnId) return // stale/superseded turn
+    if (event.type === 'text') {
+      this.streamBuf += event.content
+      const { clauses, rest } = splitClauses(this.streamBuf)
+      for (const c of clauses) this.session.enqueueSpeech(c)
+      this.streamBuf = rest
+    } else if (event.type === 'interrupt' || event.type === 'error') {
+      this.streamBuf = '' // turn abandoned — don't speak the partial tail
+    }
+  }
+
   /** Build an InboundMessage from a transcript and push it into the turn pipeline. */
   private emitInbound(userId: string, text: string): void {
     if (!this.messageHandler) return
     const channelId = this.session instanceof LocalVoiceSession ? this.session.channelId : this.id
+    // Barge-in: if a turn is mid-flight, /interrupt aborts it and runs this
+    // utterance as the new turn (reusing this message id, so streaming matches).
+    const bargeIn = this.turnActive
+    const id = `voice_${Date.now()}`
+    this.streamBuf = ''
+    this.currentTurnId = id
+    this.turnActive = true
     const message: InboundMessage = {
-      id: `voice_${Date.now()}`,
+      id,
       userId,
       channelId,
       chatType: 'voice',
-      text,
+      text: bargeIn ? `/interrupt ${text}` : text,
       platform: this.platform,
       agent: this.config.agentId,
       timestamp: Date.now(),
@@ -409,15 +453,16 @@ export class VoicePlugin implements Channel {
   }
 
   /**
-   * Speak the agent's final response. Called from a turn:after hook with the
-   * full response and the sessionId (`${channelId}:${userId}`). We only speak
-   * when the sessionId belongs to the active local voice channel.
+   * Finalize a turn (from the turn:after hook). Speak any trailing text that
+   * didn't end on clause punctuation. Skip aborted turns (interrupted/partial).
    */
-  speakResponse(sessionId: string, response: string, aborted: boolean): void {
-    if (aborted || !response.trim()) return
+  onTurnComplete(sessionId: string, aborted: boolean): void {
     if (!(this.session instanceof LocalVoiceSession)) return
-    const channelId = sessionId.split(':')[0]
-    if (channelId !== this.session.channelId) return
-    void this.session.speak(response)
+    if (sessionId.split(':')[0] !== this.session.channelId) return
+    if (aborted) return // superseded by an interrupt — its tail is abandoned
+    const tail = this.streamBuf.trim()
+    this.streamBuf = ''
+    this.turnActive = false
+    if (tail) this.session.enqueueSpeech(tail)
   }
 }
