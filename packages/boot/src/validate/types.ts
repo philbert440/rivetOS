@@ -188,6 +188,7 @@ const VOICE_LOCAL_KEYS = [
   'language',
   'sample_rate',
   'silence_ms',
+  'tts_max_new_tokens',
 ] as const
 
 export const KNOWN_CHANNELS: Partial<Record<string, Set<string>>> = {
