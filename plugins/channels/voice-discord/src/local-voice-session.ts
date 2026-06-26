@@ -46,6 +46,8 @@ export class LocalVoiceSession {
   readonly channelId: string
   private connection: VoiceConnection
   private cfg: LocalVoiceConfig
+  /** Active CustomVoice speaker; switchable live via setVoice (/voice command). */
+  private speaker?: string
   private allowedUsers: string[]
   private silenceMs: number
   private callbacks: LocalSessionCallbacks
@@ -77,6 +79,7 @@ export class LocalVoiceSession {
   ) {
     this.connection = connection
     this.cfg = opts.local
+    this.speaker = opts.local.speaker
     this.allowedUsers = opts.allowedUsers
     this.silenceMs = opts.silenceDurationMs ?? DEFAULT_ENDPOINTER.silenceMs
     this.callbacks = callbacks
@@ -210,12 +213,14 @@ export class LocalVoiceSession {
     try {
       // Prefetch the next chunk's audio while the current one plays — gap-free.
       let next: Promise<Buffer> | null = this.speechQueue.length
-        ? synthesize(this.speechQueue[0], this.cfg)
+        ? synthesize(this.speechQueue[0], this.cfg, this.speaker)
         : null
       while (this.speechQueue.length && !this.cancelled) {
         this.speechQueue.shift()
         const pcm = await (next as Promise<Buffer>)
-        next = this.speechQueue.length ? synthesize(this.speechQueue[0], this.cfg) : null
+        next = this.speechQueue.length
+          ? synthesize(this.speechQueue[0], this.cfg, this.speaker)
+          : null
         if (this.cancelled) break
         this.audioPlayer.playAudio(pcm)
       }
@@ -240,10 +245,11 @@ export class LocalVoiceSession {
     return `Local voice: ${minutes}min | speakers: ${this.subscribed.size} | GERTY ${this.cfg.sttUrl.replace(/^https?:\/\//, '').split('/')[0]}`
   }
 
-  // setVoice is a no-op for local (voice is fixed by VoiceDesign instruct), kept
-  // for interface parity with the slash-command handler.
-  setVoice(_name: string): void {
-    /* local voice is the VoiceDesign instruct; nothing to switch */
+  /** Switch the live CustomVoice speaker (e.g. /voice anna). Takes effect on the
+   *  next reply. An empty name reverts to VoiceDesign (no preset). */
+  setVoice(name: string): void {
+    this.speaker = name.trim() || undefined
+    console.info(`[LocalVoice] speaker -> ${this.speaker ?? 'VoiceDesign'}`)
   }
 
   destroy(): void {
