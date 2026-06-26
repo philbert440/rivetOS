@@ -4,8 +4,6 @@ sidebar:
   order: 3
 description: Deploy RivetOS with Docker, Proxmox, or bare-metal
 ---
-
-
 RivetOS supports three deployment targets: **Docker** (recommended for most users), **Proxmox** (homelab), and **bare-metal** (manual). This guide covers each approach, multi-agent setups, networking, and backup/restore.
 
 > The unified Compose stack lives at `infra/docker/rivetos/docker-compose.yml`. Throughout this guide, `docker compose ...` examples assume you've either passed `-f infra/docker/rivetos/docker-compose.yml` or exported `COMPOSE_FILE=infra/docker/rivetos/docker-compose.yml` from the repo root.
@@ -40,7 +38,7 @@ docker compose -f infra/docker/rivetos/docker-compose.yml up -d
 
 ### Multi-Agent
 
-The unified Compose stack ships a single `agent` service. Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh — see the Mesh Networking guide — rather than as N agent services in one Compose file. The CLI's `rivetos agent add` and `rivetos init --join` walk you through this.
+The unified Compose stack ships a single `agent` service. Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh — see [Mesh Networking](/guides/mesh/) — rather than as N agent services in one Compose file. The CLI's `rivetos agent add` and `rivetos init --join` walk you through this.
 
 ### Docker Compose Architecture
 
@@ -152,23 +150,23 @@ you keep full control over Proxmox/Docker semantics.
 ### Proxmox Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Network: 192.168.1.0/24 (vmbr1)                      │
-│                                                     │
-│  PVE1 (datahub)    PVE2 (agents)    PVE3 (agents)   │
-│  ┌────────────┐    ┌────────────┐   ┌────────────┐  │
-│  │ CT 106     │    │ CT 101     │   │ CT 100     │  │
-│  │ postgres   │    │ opus       │   │ local      │  │
-│  │ NFS server │    │ 192.168.1.101│   │ 192.168.1.100│  │
-│  │ /rivet-shared/   │    ├────────────┤   └────────────┘  │
-│  │ 192.168.1.106│    │ CT 102     │                   │
-│  └────────────┘    │ grok       │                   │
-│                    │ 192.168.1.102│                   │
-│                    └────────────┘                   │
-│                                                     │
-│  NFS exports /rivet-shared/ to all agents                 │
-│  Agents mount /rivet-shared/ via bind mount               │
-└─────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│  Network: 192.168.1.0/24 (vmbr1)                       │
+│                                                        │
+│  PVE1 (datahub)    PVE2 (agents)    PVE3 (agents)      │
+│  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ │
+│  │ CT 106        │ │ CT 101        │ │ CT 100        │ │
+│  │ postgres      │ │ opus          │ │ local         │ │
+│  │ NFS server    │ │ 192.168.1.101 │ │ 192.168.1.100 │ │
+│  │ /rivet-shared/      │ ├───────────────┤ └───────────────┘ │
+│  │ 192.168.1.106 │ │ CT 102        │                   │
+│  └───────────────┘ │ grok          │                   │
+│                    │ 192.168.1.102 │                   │
+│                    └───────────────┘                   │
+│                                                        │
+│  NFS exports /rivet-shared/ to all agents                    │
+│  Agents mount /rivet-shared/ via bind mount                  │
+└────────────────────────────────────────────────────────┘
 ```
 
 ### Multi-Node Shared Storage
@@ -318,10 +316,10 @@ echo 'RIVETOS_PG_URL=postgresql://localhost:5432/rivetos' >> .env
 
 ### Port Reference
 
-| Port | Service    | Description                              |
-|------|------------|------------------------------------------|
+| Port | Service | Description |
+|------|---------|-------------|
 | 3100 | Agent HTTP | Agent channel (delegation, mesh, health) |
-| 5432 | PostgreSQL | Database (datahub only)                  |
+| 5432 | PostgreSQL | Database (datahub only) |
 
 ### Firewall Rules
 
@@ -346,12 +344,12 @@ mDNS auto-discovery is supported for future use but not yet implemented.
 ### What to Back Up
 
 | Component | Location | Method |
-|----------------|----------------------|---------------------|
-| Config         | `./config.yaml`      | File copy           |
-| Secrets        | `./.env`             | File copy (secure!) |
-| Workspace      | `./workspace/`       | File copy / rsync   |
-| Database       | PostgreSQL           | `pg_dump`           |
-| Shared storage | `/rivet-shared/` or volume | File copy / rsync   |
+|-----------|----------|--------|
+| Config | `./config.yaml` | File copy |
+| Secrets | `./.env` | File copy (secure!) |
+| Workspace | `./workspace/` | File copy / rsync |
+| Database | PostgreSQL | `pg_dump` |
+| Shared storage | `/rivet-shared/` or volume | File copy / rsync |
 
 ### Backup Script
 

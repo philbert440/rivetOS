@@ -4,9 +4,6 @@ sidebar:
   order: 2
 description: Get RivetOS running in under 5 minutes
 ---
-
-# Quick Start
-
 Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or **bare-metal**.
 
 ---
@@ -37,7 +34,7 @@ The wizard will:
 1. **Detect your environment** — Docker available? Proxmox? How much memory?
 2. **Choose deployment target** — Docker (recommended), Proxmox, or manual
 3. **Configure agents** — pick a provider, enter your API key, choose a model
-4. **Configure channels** — Discord, Telegram, Voice, or API-only
+4. **Configure channels** — Discord, Telegram, voice (Discord voice), terminal, or API-only
 5. **Review and deploy** — summary of your choices, then one-click deploy
 
 After the wizard completes, your agent is running.
@@ -202,11 +199,11 @@ npx rivetos start
 ### 6. Install as a system service (optional)
 
 ```bash
-# Install as a systemd service
-npx rivetos service install
+# Generate a systemd unit
+npx rivetos service init
 
-# Now it starts on boot
-sudo systemctl status rivetos
+# Start it
+npx rivetos service start
 ```
 
 ---
@@ -318,7 +315,8 @@ rivetos skills list       # Show available skills
 ## Next Steps
 
 - **[Channel Setup](/guides/channels/)** — Connect to Discord, Telegram, voice, and agent-to-agent messaging
-- **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, and openai-compat providers
+- **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, openai-compat, and claude-cli
+- **[Mesh Networking](/guides/mesh/)** — Multi-node fleets with mTLS delegation
 - **[Configuration Reference](/reference/config/)** — Every config option explained
 - **[Architecture](/reference/architecture/)** — How the system works
 - **[Plugins](/guides/plugins/)** — How to write your own channel, provider, or tool
