@@ -30,6 +30,21 @@ import { logger } from '../logger.js'
 
 const log = logger('TurnHandler')
 
+/**
+ * Appended to the system prompt for voice (`chatType: 'voice'`) turns. Replies
+ * are spoken aloud and synthesized clause-by-clause, so they must be short and
+ * free of any text-only formatting that would be read out literally.
+ */
+const VOICE_MODE_PROMPT = `
+
+## Voice mode
+You are talking out loud in a live voice conversation. Your reply will be read aloud by a text-to-speech voice, so:
+- Keep it SHORT — usually one to three spoken sentences. Give the headline, not an essay.
+- Plain spoken language only. NO markdown, headings, bullet lists, numbered lists, code blocks, tables, emoji, or URLs — they get read out character by character.
+- A quick, natural "let me check that" while you work is fine — just don't read out long status reports or step-by-step findings.
+- If something genuinely needs a long or structured answer, give the short spoken version and offer to send the details in text.
+- Sound natural and conversational, like talking to a person, not reading a document.`
+
 // ---------------------------------------------------------------------------
 // Dependencies — injected by the Runtime
 // ---------------------------------------------------------------------------
@@ -101,6 +116,10 @@ export class TurnHandler {
           agent.local ?? false,
           message.userId,
         )
+        // Voice turns are spoken aloud — keep them short and unformatted.
+        if (message.chatType === 'voice') {
+          session.systemPrompt += VOICE_MODE_PROMPT
+        }
       }
 
       // Abort controller
