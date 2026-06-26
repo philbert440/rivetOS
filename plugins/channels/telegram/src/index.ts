@@ -102,14 +102,16 @@ export class TelegramChannel implements Channel {
     // CJS index.js; dynamic import() across module systems wants a file:// URL.
     if (process.env.RIVETOS_TG_VOICE_BRIDGE === '1') {
       const url = pathToFileURL(join(__dirname, 'voice_bridge.mjs')).href
-      this.voiceBridge = import(url).then((m: VoiceBridgeModule) => {
-        console.log('[Telegram] voice bridge loaded')
-        return m
-      }).catch((err: unknown) => {
-        console.error(`[Telegram] voice bridge load failed: ${(err as Error).message}`)
-        this.voiceBridge = null
-        throw err
-      })
+      this.voiceBridge = import(url)
+        .then((m: VoiceBridgeModule) => {
+          console.log('[Telegram] voice bridge loaded')
+          return m
+        })
+        .catch((err: unknown) => {
+          console.error(`[Telegram] voice bridge load failed: ${(err as Error).message}`)
+          this.voiceBridge = null
+          throw err
+        })
     }
   }
 
@@ -357,19 +359,17 @@ export class TelegramChannel implements Channel {
       try {
         const bridge = await this.voiceBridge
         const ogg = await bridge.synthesize(raw)
-        const sent = await this.bot.api.sendVoice(
-          msg.channelId,
-          new InputFile(ogg, 'reply.ogg'),
-          {
-            reply_parameters: msg.replyToMessageId
-              ? { message_id: Number(msg.replyToMessageId) }
-              : undefined,
-            disable_notification: msg.silent,
-          },
-        )
+        const sent = await this.bot.api.sendVoice(msg.channelId, new InputFile(ogg, 'reply.ogg'), {
+          reply_parameters: msg.replyToMessageId
+            ? { message_id: Number(msg.replyToMessageId) }
+            : undefined,
+          disable_notification: msg.silent,
+        })
         return String(sent.message_id)
       } catch (err: unknown) {
-        console.error(`[Telegram] voice reply failed, falling back to text: ${(err as Error).message}`)
+        console.error(
+          `[Telegram] voice reply failed, falling back to text: ${(err as Error).message}`,
+        )
       }
     }
 
