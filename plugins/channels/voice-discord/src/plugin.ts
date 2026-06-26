@@ -454,6 +454,9 @@ export class VoicePlugin implements Channel {
       text: bargeIn ? `/interrupt ${text}` : text,
       platform: this.platform,
       agent: this.config.agentId,
+      // Voice runs thinking-off to cut latency — the 27B otherwise reasons on
+      // every turn (seconds of dead air). Text keeps the agent's level.
+      metadata: { thinking: 'off' },
       timestamp: Date.now(),
     }
     void this.messageHandler(message).catch((err: unknown) => {

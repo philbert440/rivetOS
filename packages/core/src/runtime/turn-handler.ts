@@ -142,7 +142,10 @@ export class TurnHandler {
         systemPrompt: session.systemPrompt,
         provider,
         tools: this.deps.tools,
-        thinking: session.thinking,
+        // Per-turn thinking override (e.g. voice asks for 'off' to cut latency);
+        // falls back to the session's level for normal text turns.
+        thinking:
+          (message.metadata?.thinking as typeof session.thinking | undefined) ?? session.thinking,
         modelOverride: agent.model,
         onStream: streamHandler,
         agentId: agent.id,
