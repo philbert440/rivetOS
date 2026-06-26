@@ -11,8 +11,23 @@
  * consecutive conflicts within 60 seconds.
  */
 
-import { Bot, Context, InlineKeyboard } from 'grammy'
+import { Bot, Context, InlineKeyboard, InputFile } from 'grammy'
 import { autoRetry } from '@grammyjs/auto-retry'
+import { writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+const tmpPath = (ext: string): string =>
+  join(tmpdir(), `tg-vb-${process.pid}-${Math.random().toString(36).slice(2)}.${ext}`)
+
+interface VoiceBridgeModule {
+  transcribe: (audioPath: string) => Promise<string>
+  synthesize: (
+    text: string,
+    opts?: { instruct?: string; speaker?: string; lang?: string },
+  ) => Promise<Buffer>
+}
 import type {
   Channel,
   EditResult,
@@ -60,6 +75,11 @@ export class TelegramChannel implements Channel {
   /** Flag to ensure handlers and catch are registered only once (prevents listener leaks on reconnect) */
   private handlersRegistered = false
 
+  /** Voice bridge — lazy-loaded ESM module (../voice_bridge.mjs beside the built index.js). */
+  private voiceBridge: Promise<VoiceBridgeModule> | null = null
+  /** ChatIds whose latest inbound was a voice note — reply with voice once, then revert to text. */
+  private voiceInboundChats = new Set<string>()
+
   private static readonly MAX_409_RETRIES = 5
   private static readonly CONFLICT_WINDOW_MS = 60_000
   private static readonly RETRY_DELAY_MS = 5_000
@@ -77,6 +97,37 @@ export class TelegramChannel implements Channel {
         maxDelaySeconds: 60,
       }),
     )
+
+    // Voice bridge — enabled with RIVETOS_TG_VOICE_BRIDGE=1. The .mjs sits beside the built
+    // CJS index.js; dynamic import() across module systems wants a file:// URL.
+    if (process.env.RIVETOS_TG_VOICE_BRIDGE === '1') {
+      const url = pathToFileURL(join(__dirname, 'voice_bridge.mjs')).href
+      this.voiceBridge = import(url).then((m: VoiceBridgeModule) => {
+        console.log('[Telegram] voice bridge loaded')
+        return m
+      }).catch((err: unknown) => {
+        console.error(`[Telegram] voice bridge load failed: ${(err as Error).message}`)
+        this.voiceBridge = null
+        throw err
+      })
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Voice helpers (only used when RIVETOS_TG_VOICE_BRIDGE=1)
+  // -----------------------------------------------------------------------
+
+  /** Download a Telegram file (by file_id) to a local tmp path; caller is responsible for cleanup. */
+  private async downloadTelegramFile(fileId: string): Promise<string> {
+    const file = await this.bot.api.getFile(fileId)
+    if (!file.file_path) throw new Error('no file_path from getFile')
+    const url = `https://api.telegram.org/file/bot${this.config.botToken}/${file.file_path}`
+    const r = await fetch(url)
+    if (!r.ok) throw new Error(`download ${r.status}`)
+    const ext = file.file_path.split('.').pop()?.toLowerCase() || 'oga'
+    const path = tmpPath(ext)
+    await writeFile(path, Buffer.from(await r.arrayBuffer()))
+    return path
   }
 
   // -----------------------------------------------------------------------
@@ -147,6 +198,30 @@ export class TelegramChannel implements Channel {
       const chatId = String(ctx.chat!.id)
       this.startTyping(chatId)
       try {
+        // Voice mode is sticky per-chat: marked on voice inbound, cleared on text inbound,
+        // so a multi-chunk reply stays in voice and back-to-back voice notes don't desync.
+        const voiceAtt = msg.attachments?.find((a) => a.type === 'voice')
+        if (!voiceAtt && msg.text) {
+          this.voiceInboundChats.delete(chatId)
+        }
+        // Voice inbound: download → STT → fill text → mark chat for voice reply.
+        // Fail-soft: on any error, keep msg.text empty and let the agent handle it as normal.
+        if (voiceAtt && this.voiceBridge && !msg.text) {
+          let audioPath: string | null = null
+          try {
+            const bridge = await this.voiceBridge
+            audioPath = await this.downloadTelegramFile(voiceAtt.fileId!)
+            const transcript = await bridge.transcribe(audioPath)
+            // Qwen3-ASR sometimes prefixes "language X<asr_text>..." — strip if present.
+            msg.text = transcript.replace(/^language\s+\S+\s*<asr_text>\s*/i, '').trim()
+            this.voiceInboundChats.add(chatId)
+            console.log(`[Telegram] voice→text on ${chatId}: ${msg.text.slice(0, 80)}`)
+          } catch (err: unknown) {
+            console.error(`[Telegram] STT failed on ${chatId}: ${(err as Error).message}`)
+          } finally {
+            if (audioPath) await rm(audioPath, { force: true }).catch(() => {})
+          }
+        }
         await this.messageHandler(msg)
       } catch (err: unknown) {
         console.error(`[Telegram] Handler error:`, err)
@@ -274,6 +349,29 @@ export class TelegramChannel implements Channel {
   async send(msg: OutboundMessage): Promise<string | null> {
     const raw = msg.text ?? ''
     if (!raw) return null
+
+    // Voice reply: chat is in voice mode (most recent inbound was voice, no text since).
+    // Marker is NOT cleared here — only a text inbound clears it. That way multi-chunk replies
+    // and rapid voice-then-voice both stay in voice. Falls through to text on any TTS error.
+    if (this.voiceInboundChats.has(msg.channelId) && this.voiceBridge) {
+      try {
+        const bridge = await this.voiceBridge
+        const ogg = await bridge.synthesize(raw)
+        const sent = await this.bot.api.sendVoice(
+          msg.channelId,
+          new InputFile(ogg, 'reply.ogg'),
+          {
+            reply_parameters: msg.replyToMessageId
+              ? { message_id: Number(msg.replyToMessageId) }
+              : undefined,
+            disable_notification: msg.silent,
+          },
+        )
+        return String(sent.message_id)
+      } catch (err: unknown) {
+        console.error(`[Telegram] voice reply failed, falling back to text: ${(err as Error).message}`)
+      }
+    }
 
     const html = markdownToTelegramHtml(raw)
     const keyboard = msg.buttons ? this.buildKeyboard(msg.buttons) : undefined
