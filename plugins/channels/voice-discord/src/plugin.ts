@@ -64,6 +64,12 @@ export interface VoicePluginConfig {
   channelId?: string
   /** Agent to route voice turns to (local provider). Default 'local'. */
   agentId?: string
+  /**
+   * Restrict auto-join to a single voice channel id. When set, the bot only
+   * follows allowed users into THIS channel and ignores all others (e.g. keep
+   * #general clear). Unset = join whichever channel an allowed user enters.
+   */
+  voiceChannelId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +237,8 @@ export class VoicePlugin implements Channel {
     const left = oldState.channelId && oldState.channelId !== newState.channelId
 
     if (joined && !this.session) {
+      // Restricted to a specific voice channel — ignore joins elsewhere.
+      if (this.config.voiceChannelId && newState.channelId !== this.config.voiceChannelId) return
       const channel = newState.channel
       if (!channel) return
       if (this.leaveTimeout) {
@@ -283,6 +291,7 @@ export class VoicePlugin implements Channel {
       for (const [, vs] of guild.voiceStates.cache) {
         if (
           vs.channelId &&
+          (!this.config.voiceChannelId || vs.channelId === this.config.voiceChannelId) &&
           this.config.allowedUsers.includes(vs.id) &&
           !vs.member?.user.bot &&
           !this.session
