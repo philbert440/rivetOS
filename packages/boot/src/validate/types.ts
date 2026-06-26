@@ -174,6 +174,22 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
   ]),
 }
 
+/** Keys for the local (GERTY) voice backend — shared by `voice` and `voice-discord`. */
+const VOICE_LOCAL_KEYS = [
+  'provider',
+  'agent',
+  'channel_id',
+  'gerty_host',
+  'stt_url',
+  'tts_url',
+  'stt_model',
+  'tts_model',
+  'voice_instruct',
+  'language',
+  'sample_rate',
+  'silence_ms',
+] as const
+
 export const KNOWN_CHANNELS: Partial<Record<string, Set<string>>> = {
   telegram: new Set(['bot_token', 'owner_id', 'allowed_users', 'agent']),
   discord: new Set([
@@ -194,6 +210,7 @@ export const KNOWN_CHANNELS: Partial<Record<string, Set<string>>> = {
     'voice',
     'instructions',
     'transcript_dir',
+    ...VOICE_LOCAL_KEYS,
   ]),
   'voice-discord': new Set([
     'bot_token',
@@ -203,6 +220,7 @@ export const KNOWN_CHANNELS: Partial<Record<string, Set<string>>> = {
     'voice',
     'instructions',
     'transcript_dir',
+    ...VOICE_LOCAL_KEYS,
   ]),
 }
 
