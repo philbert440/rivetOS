@@ -16,7 +16,7 @@
  * but must treat array fields like `messages` and `tools` as read-only
  * references. To modify either, reassign with a fresh array. In-place
  * mutations may not propagate through the AI SDK middleware that wraps the
- * loop after the migration in `loop-aisdk.ts`.
+ * loop after the AI SDK migration.
  *
  * The pipeline is the single mechanism powering safety gates, auto-actions,
  * session hooks, and eventually dynamic routing.
