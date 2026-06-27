@@ -37,13 +37,15 @@ const log = logger('TurnHandler')
  */
 const VOICE_MODE_PROMPT = `
 
-## Voice mode
-You are talking out loud in a live voice conversation. Your reply will be read aloud by a text-to-speech voice, so:
-- Keep it SHORT — usually one to three spoken sentences. Give the headline, not an essay.
-- Plain spoken language only. NO markdown, headings, bullet lists, numbered lists, code blocks, tables, emoji, or URLs — they get read out character by character.
-- A quick, natural "let me check that" while you work is fine — just don't read out long status reports or step-by-step findings.
-- If something genuinely needs a long or structured answer, give the short spoken version and offer to send the details in text.
-- Sound natural and conversational, like talking to a person, not reading a document.`
+## VOICE MODE — these rules OVERRIDE all formatting guidance above
+You are speaking OUT LOUD on a live voice call right now. Everything you write is read aloud by a text-to-speech voice. This is a phone conversation, not a chat message or a document.
+
+HARD RULES:
+- Answer in ONE or TWO short spoken sentences. Aim for under 40 words. Give the single key point, not an explanation.
+- ZERO markdown or formatting. No #, no *, no -, no bullet points, no numbered lists, no headings, no code, no tables, no links, no emoji. Plain spoken words ONLY — anything else gets read aloud as gibberish.
+- Do NOT structure or enumerate your answer. Do NOT write a report or summary document. Just say the one thing, the way you'd say it to a person standing next to you.
+- If a full answer would be long, say the gist in one sentence and ask "want me to put the details in text?" — do NOT actually list them out loud.
+Talk like a person on a phone, not like you're writing.`
 
 // ---------------------------------------------------------------------------
 // Dependencies — injected by the Runtime
