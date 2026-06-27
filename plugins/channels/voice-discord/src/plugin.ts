@@ -452,7 +452,6 @@ export class VoicePlugin implements Channel {
     // check X" while she's working doesn't kill the work. Don't touch the turn's
     // streaming state — the existing turn keeps producing audio.
     if (this.turnActive && !stop) {
-      console.log(`[VoiceDBG] steer text=${JSON.stringify(text.slice(0, 40))}`)
       const steerMsg: InboundMessage = {
         id: `voice_btw_${Date.now()}`,
         userId,
@@ -489,12 +488,9 @@ export class VoicePlugin implements Channel {
       metadata: { thinking: 'off' },
       timestamp: Date.now(),
     }
-    console.log(`[VoiceDBG] ${interrupt ? 'interrupt' : 'new'} text=${JSON.stringify(message.text.slice(0, 50))}`)
-    void this.messageHandler(message)
-      .then(() => console.log('[VoiceDBG] handler resolved'))
-      .catch((err: unknown) => {
-        console.error('[Voice] turn handler error:', (err as Error).message)
-      })
+    void this.messageHandler(message).catch((err: unknown) => {
+      console.error('[Voice] turn handler error:', (err as Error).message)
+    })
   }
 
   /**
@@ -503,11 +499,7 @@ export class VoicePlugin implements Channel {
    */
   onTurnComplete(sessionId: string, aborted: boolean): void {
     if (!(this.session instanceof LocalVoiceSession)) return
-    const match = sessionId.split(':')[0] === this.session.channelId
-    console.log(
-      `[VoiceDBG] turnComplete sid=${sessionId} aborted=${aborted} match=${match} turnActive=${this.turnActive}`,
-    )
-    if (!match) return
+    if (sessionId.split(':')[0] !== this.session.channelId) return
     // Always clear turnActive — an aborted turn that left it `true` would wedge
     // every later utterance into barge-in mode and break the channel.
     this.turnActive = false

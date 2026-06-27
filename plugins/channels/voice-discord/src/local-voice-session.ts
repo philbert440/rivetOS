@@ -119,7 +119,6 @@ export class LocalVoiceSession {
   private startListening(): void {
     this.connection.receiver.speaking.on('start', (userId: string) => {
       if (!this.allowedUsers.includes(userId)) return
-      console.log(`[VoiceDBG] speaking.start user=${userId} subscribed=${this.subscribed.has(userId)}`)
       if (this.subscribed.has(userId)) return
       this.subscribed.add(userId)
       this.subscribeToUser(userId)
@@ -169,7 +168,6 @@ export class LocalVoiceSession {
     decoder.on('error', (err: Error) => console.warn(`[LocalVoice] decode: ${err.message}`))
     opusStream.on('error', (err: Error) => console.warn(`[LocalVoice] opus: ${err.message}`))
     opusStream.on('end', () => {
-      console.log(`[VoiceDBG] stream end user=${userId}`)
       endpointer.flush()
       this.subscribed.delete(userId)
       this.opusStreams.delete(userId)
