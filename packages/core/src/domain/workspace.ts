@@ -37,6 +37,9 @@ export class WorkspaceLoader implements Workspace {
   private baseDir: string
   private cache: Map<string, string> = new Map()
   private pinnedFiles: Map<string, { content: string; size: number }> = new Map()
+  /** Live skill catalog (name + one-line description), injected into the prompt
+   *  so the agent discovers its skills instead of hand-rolling. Set at boot. */
+  private skillCatalog = ''
 
   constructor(baseDir: string) {
     this.baseDir = baseDir
@@ -172,16 +175,48 @@ export class WorkspaceLoader implements Workspace {
    * Build the system prompt from core files + pinned files.
    * This is injected ONCE on session init, not every turn.
    */
-  async buildSystemPrompt(agentId?: string, extended = false): Promise<string> {
+  /**
+   * Resolve a per-user profile name from `users/profiles.json` (a
+   * `{ "<userId>": "<profile>" }` map). Returns null when there's no map or no
+   * entry — i.e. the default owner identity (USER.md) applies. Used to give
+   * non-owner speakers their own USER.md and to tag their memory.
+   */
+  async resolveProfile(userId?: string): Promise<string | null> {
+    if (!userId) return null
+    const raw = await this.read('users/profiles.json')
+    if (!raw) return null
+    try {
+      const map = JSON.parse(raw) as Record<string, string>
+      return map[userId] ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /** Set the live skill catalog (built at boot from the SkillManager). */
+  setSkillCatalog(text: string): void {
+    this.skillCatalog = text.trim()
+  }
+
+  async buildSystemPrompt(agentId?: string, extended = false, userId?: string): Promise<string> {
     const files = await this.load(extended)
     if (files.length === 0) {
       log.warn(
         `No workspace files loaded from ${this.baseDir} — agent will boot without personality files`,
       )
     }
+    // Per-user identity: if the speaker maps to a profile, swap USER.md for
+    // their `users/<profile>.md`. Everyone else gets the default USER.md.
+    const profile = await this.resolveProfile(userId)
+    const profileMd = profile ? await this.read(`users/${profile}.md`) : null
+
     let prompt = ''
     for (const file of files) {
-      prompt += `\n\n## ${file.name}\n${file.content}`
+      if (profileMd && file.name === 'USER.md') {
+        prompt += `\n\n## USER.md (${profile})\n${profileMd}`
+      } else {
+        prompt += `\n\n## ${file.name}\n${file.content}`
+      }
     }
 
     // Pinned files — after workspace files, before runtime section
@@ -191,6 +226,11 @@ export class WorkspaceLoader implements Workspace {
 
     if (agentId) {
       prompt += `\n\n## Runtime\nAgent: ${agentId} | Time: ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })}`
+    }
+    // Live skill catalog — the always-on menu for progressive discovery. The
+    // agent sees what skills exist; invoking one loads its full SKILL.md.
+    if (this.skillCatalog) {
+      prompt += `\n\n${this.skillCatalog}`
     }
     return prompt.trim()
   }

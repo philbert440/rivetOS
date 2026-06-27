@@ -4,8 +4,6 @@ sidebar:
   order: 5
 description: How agents learn, store, and reuse knowledge
 ---
-
-
 Skills are reusable knowledge, workflows, and procedures that agents can discover and use. Unlike plugins (which are code), skills are **markdown documents** — anyone can write one without programming.
 
 ---

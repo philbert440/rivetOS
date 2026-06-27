@@ -124,6 +124,14 @@ export class OpenAICompatProvider implements Provider {
   private contextPinned: boolean
   /** Discovery runs once; cached so repeated isAvailable() calls don't re-probe. */
   private discovered = false
+  /**
+   * Per-turn flag: when the loop's thinking level is 'off', send
+   * `chat_template_kwargs.enable_thinking=false` so Qwen3/vLLM models skip
+   * reasoning (otherwise their chat template reasons on every turn regardless).
+   * Set in buildProviderOptions (has chatOptions), read in transformRequestBody
+   * (runs at request time, after buildProviderOptions for the same turn).
+   */
+  private suppressThinking = false
 
   constructor(config: OpenAICompatProviderConfig) {
     this.id = config.id ?? 'openai-compat'
@@ -217,16 +225,24 @@ export class OpenAICompatProvider implements Provider {
             const out = { ...body } as Record<string, unknown>
             if (this.topK !== undefined) out.top_k = this.topK
             if (this.minP !== undefined) out.min_p = this.minP
+            if (this.suppressThinking) {
+              out.chat_template_kwargs = {
+                ...(out.chat_template_kwargs ?? {}),
+                enable_thinking: false,
+              }
+            }
             return out
           },
         })
         return provider.chatModel(modelOverride ?? this.model)
       },
 
-      buildProviderOptions: (): JSONObject | undefined => {
+      buildProviderOptions: (_messages, chatOptions): JSONObject | undefined => {
         // Standard OpenAI knobs (temperature, topP, presencePenalty, etc.) are
         // owned by the loop via `streamText({ ... })`. vLLM extensions live in
-        // `transformRequestBody` above. No provider-keyed options for this one.
+        // `transformRequestBody` above. We do use the thinking level here:
+        // 'off' => suppress the model's chat-template reasoning for this turn.
+        this.suppressThinking = chatOptions?.thinking === 'off'
         return undefined
       },
 

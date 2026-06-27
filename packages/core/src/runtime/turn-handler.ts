@@ -30,6 +30,23 @@ import { logger } from '../logger.js'
 
 const log = logger('TurnHandler')
 
+/**
+ * Appended to the system prompt for voice (`chatType: 'voice'`) turns. Replies
+ * are spoken aloud and synthesized clause-by-clause, so they must be short and
+ * free of any text-only formatting that would be read out literally.
+ */
+const VOICE_MODE_PROMPT = `
+
+## VOICE MODE — these rules OVERRIDE all formatting guidance above
+You are speaking OUT LOUD on a live voice call right now. Everything you write is read aloud by a text-to-speech voice. This is a phone conversation, not a chat message or a document.
+
+HARD RULES:
+- Answer in ONE or TWO short spoken sentences. Aim for under 40 words. Give the single key point, not an explanation.
+- ZERO markdown or formatting. No #, no *, no -, no bullet points, no numbered lists, no headings, no code, no tables, no links, no emoji. Plain spoken words ONLY — anything else gets read aloud as gibberish.
+- Do NOT structure or enumerate your answer. Do NOT write a report or summary document. Just say the one thing, the way you'd say it to a person standing next to you.
+- If a full answer would be long, say the gist in one sentence and ask "want me to put the details in text?" — do NOT actually list them out loud.
+Talk like a person on a phone, not like you're writing.`
+
 // ---------------------------------------------------------------------------
 // Dependencies — injected by the Runtime
 // ---------------------------------------------------------------------------
@@ -96,7 +113,15 @@ export class TurnHandler {
 
       // System prompt — built once per session, cached
       if (!session.systemPrompt) {
-        session.systemPrompt = await workspace.buildSystemPrompt(agent.id, agent.local ?? false)
+        session.systemPrompt = await workspace.buildSystemPrompt(
+          agent.id,
+          agent.local ?? false,
+          message.userId,
+        )
+        // Voice turns are spoken aloud — keep them short and unformatted.
+        if (message.chatType === 'voice') {
+          session.systemPrompt += VOICE_MODE_PROMPT
+        }
       }
 
       // Abort controller
@@ -106,6 +131,8 @@ export class TurnHandler {
       // Stream handler
       const streamHandler: StreamHandler = (event) => {
         streamManager.handleStreamEvent(channel, message, session, event)
+        // Opt-in raw stream tap (voice synthesizes audio clause-by-clause).
+        channel.onStreamEvent?.(message, event)
       }
       this.deps.streamHandlers.set(sessionKey, streamHandler)
 
@@ -136,7 +163,10 @@ export class TurnHandler {
         systemPrompt: session.systemPrompt,
         provider,
         tools: this.deps.tools,
-        thinking: session.thinking,
+        // Per-turn thinking override (e.g. voice asks for 'off' to cut latency);
+        // falls back to the session's level for normal text turns.
+        thinking:
+          (message.metadata?.thinking as typeof session.thinking | undefined) ?? session.thinking,
         modelOverride: agent.model,
         onStream: streamHandler,
         agentId: agent.id,
@@ -290,6 +320,10 @@ export class TurnHandler {
   ): Promise<void> {
     if (!this.deps.memory) return
 
+    // Per-user tag: stamp non-owner speakers' turns (both sides) so their
+    // conversations can be filtered/exported into their own memory later.
+    const profile = await this.deps.workspace.resolveProfile(message.userId)
+
     try {
       await this.deps.memory.append({
         sessionId: sessionKey,
@@ -301,6 +335,7 @@ export class TurnHandler {
           userId: message.userId,
           username: message.username,
           displayName: message.displayName,
+          ...(profile ? { profile } : {}),
           ...(savedImagePaths.length > 0 ? { images: savedImagePaths } : {}),
         },
       })
@@ -315,6 +350,7 @@ export class TurnHandler {
             toolsUsed: result.toolsUsed,
             iterations: result.iterations,
             usage: result.usage,
+            ...(profile ? { profile } : {}),
           },
         })
       }

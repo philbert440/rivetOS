@@ -8,9 +8,9 @@ import {
   GatewayIntentBits,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
-  type VoiceBasedChannel,
   type VoiceState,
   type GuildMember,
+  type Guild,
 } from 'discord.js'
 import {
   joinVoiceChannel,
@@ -19,7 +19,17 @@ import {
   type DiscordGatewayAdapterCreator,
 } from '@discordjs/voice'
 import type { VoiceConnectionState } from '@discordjs/voice'
+import type {
+  Channel,
+  InboundMessage,
+  OutboundMessage,
+  EditResult,
+  StreamEvent,
+} from '@rivetos/types'
 import { VoiceSession } from './voice-session.js'
+import { LocalVoiceSession } from './local-voice-session.js'
+import { splitClauses } from './local-voice.js'
+import type { LocalVoiceConfig } from './local-voice.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -42,27 +52,67 @@ export interface VoicePluginConfig {
   postgresPool?: import('pg').Pool
   /** Shared pg Pool — passed from boot.ts, NOT created per session */
   sharedPool?: import('pg').Pool
+  /**
+   * Backend for voice turns. 'xai'/'gemini' = cloud realtime (VoiceSession).
+   * 'local' = turn-based via the GERTY stack, routed through the real agent
+   * (LocalVoiceSession + this plugin acting as a RivetOS Channel).
+   */
+  provider?: 'xai' | 'gemini' | 'local'
+  /** Local (GERTY) STT/TTS config — required when provider === 'local'. */
+  local?: LocalVoiceConfig
+  /** Channel id this plugin registers as (local provider). Default 'voice-discord'. */
+  channelId?: string
+  /** Agent to route voice turns to (local provider). Default 'local'. */
+  agentId?: string
+  /**
+   * Restrict auto-join to a single voice channel id. When set, the bot only
+   * follows allowed users into THIS channel and ignores all others (e.g. keep
+   * #general clear). Unset = join whichever channel an allowed user enters.
+   */
+  voiceChannelId?: string
 }
 
 // ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
 
-export class VoicePlugin {
+export class VoicePlugin implements Channel {
+  // --- Channel interface ---
+  readonly id: string
+  readonly platform = 'voice-discord'
+
   private client: Client
   private config: VoicePluginConfig
-  private session: VoiceSession | null = null
+  private session: VoiceSession | LocalVoiceSession | null = null
   private leaveTimeout: ReturnType<typeof setTimeout> | null = null
+  private messageHandler?: (message: InboundMessage) => Promise<void>
+  private commandHandler?: (command: string, args: string, message: InboundMessage) => Promise<void>
+
+  // Streaming-TTS state (local provider). streamBuf accumulates the agent's
+  // live text for the current turn; complete clauses are spoken as they arrive.
+  // Scoped by currentTurnId so a barge-in (/interrupt) turn never speaks the
+  // aborted turn's leftover text. turnActive => a turn is generating (=> next
+  // utterance interrupts it).
+  private streamBuf = ''
+  private currentTurnId = ''
+  private turnActive = false
+
+  get isLocal(): boolean {
+    return this.config.provider === 'local'
+  }
 
   constructor(config: VoicePluginConfig) {
     this.config = {
       voice: 'Ara',
-      silenceDurationMs: 1500,
+      silenceDurationMs: config.provider === 'local' ? 900 : 1500,
       sampleRate: 24000,
       transcriptDir: 'transcripts',
       leaveGracePeriodMs: 10000,
+      channelId: 'voice-discord',
+      agentId: 'local',
       ...config,
     }
+    this.id = this.config.channelId ?? 'voice-discord'
 
     this.client = new Client({
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
@@ -187,6 +237,8 @@ export class VoicePlugin {
     const left = oldState.channelId && oldState.channelId !== newState.channelId
 
     if (joined && !this.session) {
+      // Restricted to a specific voice channel — ignore joins elsewhere.
+      if (this.config.voiceChannelId && newState.channelId !== this.config.voiceChannelId) return
       const channel = newState.channel
       if (!channel) return
       if (this.leaveTimeout) {
@@ -203,23 +255,19 @@ export class VoicePlugin {
     }
 
     if (left && this.session) {
-      const channel = oldState.channel
-      if (!channel) return
-      const allowedStillIn = channel.members.some(
-        (m: GuildMember) => this.config.allowedUsers.includes(m.id) && !m.user.bot,
-      )
-      if (allowedStillIn) return
+      const channelId = oldState.channelId
+      if (!channelId) return
+      // Use voice states (we have the GuildVoiceStates intent), NOT channel.members,
+      // which is empty without the privileged GuildMembers intent — that false
+      // emptiness made the bot think everyone left and disconnect after one turn.
+      if (this.allowedUserInChannel(oldState.guild, channelId)) return
 
       console.log('[Voice] All allowed users left, starting grace period')
       if (this.leaveTimeout) clearTimeout(this.leaveTimeout)
       this.leaveTimeout = setTimeout(() => {
-        const ch = oldState.guild.channels.cache.get(oldState.channelId!)
-        if (ch && 'members' in ch) {
-          const members = (ch as VoiceBasedChannel).members
-          const stillIn = members.some(
-            (m: GuildMember) => this.config.allowedUsers.includes(m.id) && !m.user.bot,
-          )
-          if (stillIn) return
+        if (this.allowedUserInChannel(oldState.guild, channelId)) {
+          this.leaveTimeout = null
+          return
         }
         console.log('[Voice] Auto-disconnecting')
         this.destroySession()
@@ -232,6 +280,14 @@ export class VoicePlugin {
   // Startup Scan
   // -----------------------------------------------------------------------
 
+  /** Any allowed (non-bot) user currently in this voice channel, via voice states. */
+  private allowedUserInChannel(guild: Guild, channelId: string): boolean {
+    for (const [, vs] of guild.voiceStates.cache) {
+      if (vs.channelId === channelId && this.config.allowedUsers.includes(vs.id)) return true
+    }
+    return false
+  }
+
   private async startupScan(): Promise<void> {
     try {
       const guild = this.client.guilds.cache.get(this.config.guildId)
@@ -239,6 +295,7 @@ export class VoicePlugin {
       for (const [, vs] of guild.voiceStates.cache) {
         if (
           vs.channelId &&
+          (!this.config.voiceChannelId || vs.channelId === this.config.voiceChannelId) &&
           this.config.allowedUsers.includes(vs.id) &&
           !vs.member?.user.bot &&
           !this.session
@@ -279,8 +336,30 @@ export class VoicePlugin {
     })
 
     await entersState(connection, VoiceConnectionStatus.Ready, 30_000)
-    this.session = new VoiceSession(connection, this.config)
-    console.log('[Voice] Session active')
+
+    if (this.config.provider === 'local') {
+      if (!this.config.local) throw new Error('provider=local requires `local` config')
+      this.session = new LocalVoiceSession(
+        connection,
+        {
+          local: this.config.local,
+          allowedUsers: this.config.allowedUsers,
+          silenceDurationMs: this.config.silenceDurationMs,
+          transcriptDir: this.config.transcriptDir,
+        },
+        {
+          onUserUtterance: (userId, text) => this.emitInbound(userId, text),
+          onSpeechStart: () => {
+            /* audio already stopped in-session; the turn is aborted when the
+               utterance completes (emitInbound emits /interrupt) */
+          },
+        },
+      )
+      console.log('[Voice] Local session active (GERTY stack, via agent)')
+    } else {
+      this.session = new VoiceSession(connection, this.config)
+      console.log('[Voice] Session active')
+    }
   }
 
   private destroySession(): void {
@@ -297,10 +376,138 @@ export class VoicePlugin {
     await this.client.login(this.config.discordToken)
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     console.log('[Voice] Stopping...')
     this.destroySession()
     if (this.leaveTimeout) clearTimeout(this.leaveTimeout)
-    void this.client.destroy()
+    await this.client.destroy()
+  }
+
+  // -----------------------------------------------------------------------
+  // Channel interface (local provider) — voice is a RivetOS Channel so turns
+  // run through the real agent. A transcribed utterance becomes an
+  // InboundMessage; the agent's reply is spoken from the turn:after hook
+  // (see speakResponse), NOT from streaming. send()/edit() therefore swallow
+  // streaming partials and the final text — they exist only to satisfy the
+  // StreamManager without voicing half-formed output.
+  // -----------------------------------------------------------------------
+
+  onMessage(handler: (message: InboundMessage) => Promise<void>): void {
+    this.messageHandler = handler
+  }
+
+  onCommand(
+    handler: (command: string, args: string, message: InboundMessage) => Promise<void>,
+  ): void {
+    this.commandHandler = handler
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async send(_message: OutboundMessage): Promise<string | null> {
+    // No-op: the spoken reply is produced by speakResponse() from turn:after.
+    return 'voice-stream'
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async edit(
+    _channelId: string,
+    messageId: string,
+    _text: string,
+    _overflowIds?: string[],
+  ): Promise<EditResult | null> {
+    // No-op for the same reason as send().
+    return { messageIds: [messageId] }
+  }
+
+  /**
+   * Live token deltas for the active turn. Accumulate text and speak complete
+   * clauses as they arrive (low time-to-first-audio + stays under the TTS
+   * length cap). Scoped to the current turn's message id so a superseded
+   * (interrupted) turn's tail never bleeds into the next one.
+   */
+  onStreamEvent(message: InboundMessage, event: StreamEvent): void {
+    if (!(this.session instanceof LocalVoiceSession)) return
+    if (message.channelId !== this.session.channelId) return
+    if (message.id !== this.currentTurnId) return // stale/superseded turn
+    if (event.type === 'text') {
+      this.streamBuf += event.content
+      const { clauses, rest } = splitClauses(this.streamBuf)
+      for (const c of clauses) this.session.enqueueSpeech(c)
+      this.streamBuf = rest
+    } else if (event.type === 'interrupt' || event.type === 'error') {
+      this.streamBuf = '' // turn abandoned — don't speak the partial tail
+    }
+  }
+
+  /** Build an InboundMessage from a transcript and push it into the turn pipeline. */
+  private emitInbound(userId: string, text: string): void {
+    if (!this.messageHandler) return
+    const channelId = this.session instanceof LocalVoiceSession ? this.session.channelId : this.id
+    const stop =
+      /\b(stop|hold on|hold up|never ?mind|cancel|scratch that|shut up|forget it)\b/i.test(text)
+
+    // Mid-turn speech without a stop word → /steer: it folds into the RUNNING
+    // turn (and its in-flight tool calls) instead of aborting, so "btw also
+    // check X" while she's working doesn't kill the work. Don't touch the turn's
+    // streaming state — the existing turn keeps producing audio.
+    if (this.turnActive && !stop) {
+      const steerMsg: InboundMessage = {
+        id: `voice_btw_${Date.now()}`,
+        userId,
+        channelId,
+        chatType: 'voice',
+        text: `/steer ${text}`,
+        platform: this.platform,
+        agent: this.config.agentId,
+        metadata: { thinking: 'off' },
+        timestamp: Date.now(),
+      }
+      void this.messageHandler(steerMsg).catch((err: unknown) =>
+        console.error('[Voice] steer error:', (err as Error).message),
+      )
+      return
+    }
+
+    // Fresh turn, or a hard interrupt (stop word mid-turn): (re)start the turn.
+    const interrupt = this.turnActive && stop
+    const id = `voice_${Date.now()}`
+    this.streamBuf = ''
+    this.currentTurnId = id
+    this.turnActive = true
+    const message: InboundMessage = {
+      id,
+      userId,
+      channelId,
+      chatType: 'voice',
+      text: interrupt ? `/interrupt ${text}` : text,
+      platform: this.platform,
+      agent: this.config.agentId,
+      // Voice runs thinking-off to cut latency — the 27B otherwise reasons on
+      // every turn (seconds of dead air). Text keeps the agent's level.
+      metadata: { thinking: 'off' },
+      timestamp: Date.now(),
+    }
+    void this.messageHandler(message).catch((err: unknown) => {
+      console.error('[Voice] turn handler error:', (err as Error).message)
+    })
+  }
+
+  /**
+   * Finalize a turn (from the turn:after hook). Speak any trailing text that
+   * didn't end on clause punctuation. Skip aborted turns (interrupted/partial).
+   */
+  onTurnComplete(sessionId: string, aborted: boolean): void {
+    if (!(this.session instanceof LocalVoiceSession)) return
+    if (sessionId.split(':')[0] !== this.session.channelId) return
+    // Always clear turnActive — an aborted turn that left it `true` would wedge
+    // every later utterance into barge-in mode and break the channel.
+    this.turnActive = false
+    if (aborted) {
+      this.streamBuf = '' // superseded by an interrupt — its tail is abandoned
+      return
+    }
+    const tail = this.streamBuf.trim()
+    this.streamBuf = ''
+    if (tail) this.session.enqueueSpeech(tail)
   }
 }
