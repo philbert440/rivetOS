@@ -355,3 +355,67 @@ describe('WebFetchTool', () => {
     assert.ok(result.includes('©'));
   });
 });
+
+describe('WebSearchTool — xAI-backed provider', () => {
+  /** Minimal xAI /v1/responses payload (answer + url_citation annotations). */
+  function xaiResponse() {
+    return jsonResponse({
+      output: [
+        { type: 'reasoning', summary: [] },
+        {
+          type: 'web_search_call',
+          action: { sources: [{ type: 'url', url: 'https://nodejs.org/en' }] },
+        },
+        {
+          type: 'message',
+          content: [
+            {
+              type: 'output_text',
+              text: 'The latest LTS is v24.18.0.[[1]](https://nodejs.org/en)',
+              annotations: [{ type: 'url_citation', url: 'https://nodejs.org/en', title: '1' }],
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  it('prefers xAI when a key is set and returns a synthesized answer + sources', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(xaiResponse());
+    mockFetch(fetchMock);
+
+    const tool = new WebSearchTool({ xaiApiKey: 'test-key' });
+    const result = await tool.execute({ query: 'latest node lts', count: 5 });
+
+    // Hit the xAI Agent Tools endpoint, not Google/DDG.
+    assert.equal(fetchMock.mock.calls[0][0] as string, 'https://api.x.ai/v1/responses');
+    assert.ok(result.includes('v24.18.0'), 'answer present');
+    // Numeric citation title falls back to hostname.
+    assert.ok(result.includes('nodejs.org'), 'hostname source label');
+  });
+
+  it('never leaks the backend (no xai/grok in output)', async () => {
+    mockFetch(vi.fn().mockResolvedValue(xaiResponse()));
+    const tool = new WebSearchTool({ xaiApiKey: 'test-key' });
+    const result = await tool.execute({ query: 'anything', count: 3 });
+    assert.equal(/xai|grok/i.test(result), false, 'output must not name the backend');
+  });
+
+  it('does not call xAI when no key is configured', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ output: [] }));
+    mockFetch(fetchMock);
+    const prev = process.env.XAI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    try {
+      const tool = new WebSearchTool();
+      await tool.execute({ query: 'x', count: 3 });
+      assert.equal(
+        fetchMock.mock.calls.some((c) => String(c[0]).includes('api.x.ai')),
+        false,
+        'must not call xAI without a key',
+      );
+    } finally {
+      if (prev !== undefined) process.env.XAI_API_KEY = prev;
+    }
+  });
+});
