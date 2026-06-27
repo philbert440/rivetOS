@@ -143,7 +143,7 @@ describe('ShellTool', () => {
   it('should truncate long output', async () => {
     const tool = new ShellTool({ maxOutput: 50 });
     const result = await tool.execute({ command: 'seq 1 1000' });
-    assert.ok(result.includes('truncated'));
+    assert.ok(result.includes('elided'));
   });
 
   it('should handle commands that produce no output', async () => {
