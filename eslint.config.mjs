@@ -244,9 +244,9 @@ export default tseslint.config(
     },
   },
 
-  // voice-discord: mediaplex + sodium-native are native runtime peers of
-  // @discordjs/voice — required for opus encoding and encryption, never
-  // statically imported by us.
+  // voice-discord: mediaplex + sodium-native + @discordjs/opus are native
+  // runtime peers of @discordjs/voice / prism-media — required for opus
+  // encode/decode and encryption, never statically imported by us.
   {
     files: ['plugins/channels/voice-discord/package.json'],
     languageOptions: { parser: jsoncParser },
@@ -261,7 +261,7 @@ export default tseslint.config(
           checkVersionMismatches: true,
           includeTransitiveDependencies: false,
           ignoredFiles: ['**/*.test.ts', '**/*.spec.ts'],
-          ignoredDependencies: ['typescript', 'mediaplex', 'sodium-native'],
+          ignoredDependencies: ['typescript', 'mediaplex', 'sodium-native', '@discordjs/opus'],
         },
       ],
     },
