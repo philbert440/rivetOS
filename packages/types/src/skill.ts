@@ -44,12 +44,6 @@ export interface SkillManager {
    */
   load(skillName: string): Promise<string>
 
-  /**
-   * Given a user message, find the best matching skill by
-   * keyword/trigger matching. Returns null if no skill matches.
-   */
-  match(query: string): Skill | null
-
   /** Return all discovered skills. */
   list(): Skill[]
 

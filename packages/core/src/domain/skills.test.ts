@@ -124,41 +124,6 @@ describe('SkillManagerImpl', () => {
     });
   });
 
-  describe('match()', () => {
-    it('returns skill matching query keywords', async () => {
-      await createSkill('camera', '---\nname: Camera\ndescription: Control PTZ cameras\ntriggers: camera, ptz, surveillance\n---');
-      await createSkill('email', '---\nname: Email\ndescription: Send and read email\ntriggers: email, gmail, inbox\n---');
-
-      await manager.discover([tempDir]);
-      const result = manager.match('show me the camera feed');
-      assert.ok(result);
-      assert.equal(result.name, 'Camera');
-    });
-
-    it('returns null for unrelated queries', async () => {
-      await createSkill('camera', '---\nname: Camera\ndescription: Control cameras\ntriggers: camera, ptz\n---');
-
-      await manager.discover([tempDir]);
-      const result = manager.match('what is the meaning of life');
-      assert.equal(result, null);
-    });
-
-    it('returns null when no skills are loaded', () => {
-      const result = manager.match('anything');
-      assert.equal(result, null);
-    });
-
-    it('prefers exact name matches', async () => {
-      await createSkill('search', '---\nname: Search\ndescription: Web search\ntriggers: search, web, google\n---');
-      await createSkill('grep', '---\nname: Grep\ndescription: Search files with grep\ntriggers: grep, find, search\n---');
-
-      await manager.discover([tempDir]);
-      const result = manager.match('use grep to find the file');
-      assert.ok(result);
-      assert.equal(result.name, 'Grep');
-    });
-  });
-
   describe('list()', () => {
     it('returns all discovered skills', async () => {
       await createSkill('one', '---\nname: One\ndescription: First\n---');
