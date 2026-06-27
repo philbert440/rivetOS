@@ -158,17 +158,39 @@ export function parseAsr(raw: string): string {
 // TTS — reply text → 24kHz mono 16-bit LE PCM (ready for AudioPlayer.playAudio)
 // ---------------------------------------------------------------------------
 
+/**
+ * Strip markdown so the TTS doesn't read syntax aloud (e.g. "**" as "asterisk
+ * asterisk", "#" as "hash"). The agent is told to avoid markdown on voice, but
+ * the model still slips, so this is the belt-and-suspenders guard. Works on a
+ * single streamed clause too, even if a `**…**` pair is split across clauses.
+ */
+export function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' ') // fenced code blocks
+    .replace(/`([^`]*)`/g, '$1') // inline code
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1') // links/images -> label
+    .replace(/^\s{0,3}#{1,6}\s*/gm, '') // ATX headings
+    .replace(/^\s*[-*+]\s+/gm, '') // bullet markers
+    .replace(/[*`~]/g, '') // stray emphasis/code/strike markers
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
 export async function synthesize(
   text: string,
   cfg: LocalVoiceConfig,
   speaker?: string,
 ): Promise<Buffer> {
+  // TTS reads markdown punctuation aloud — strip it. Empty after stripping
+  // (e.g. a clause that was only "**") means nothing to say.
+  const clean = stripMarkdown(text)
+  if (!clean) return Buffer.alloc(0)
   // A fixed CustomVoice preset speaker is consistent across clauses; VoiceDesign
   // (no speaker) re-designs the voice each call and drifts between sentences.
   const useSpeaker = speaker ?? cfg.speaker
   const common = {
     model: cfg.ttsModel,
-    input: text,
+    input: clean,
     language: cfg.language,
     response_format: 'wav',
     // Lift the default ~2.16s talker cap; EOS still stops short utterances early.
