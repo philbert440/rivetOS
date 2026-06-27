@@ -188,7 +188,9 @@ export default tseslint.config(
             '**/__tests__/**',
             '**/vitest.config.ts',
           ],
-          ignoredDependencies: ['typescript'],
+          // esbuild: build-time bundler used by build scripts (e.g. claude-cli's
+          // scripts/bundle-rivet-memory.mjs), never imported by any runtime.
+          ignoredDependencies: ['typescript', 'esbuild'],
         },
       ],
     },

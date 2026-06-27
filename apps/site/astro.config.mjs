@@ -23,6 +23,9 @@ export default defineConfig({
         baseUrl: 'https://github.com/philbert440/rivetos/edit/main/apps/site/',
       },
       customCss: ['./src/styles/custom.css'],
+      components: {
+        Footer: './src/components/Footer.astro',
+      },
       sidebar: [
         {
           label: 'Getting Started',
