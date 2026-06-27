@@ -84,7 +84,7 @@ export const manifest: PluginManifest = {
       postgresConnectionString:
         root.memory?.postgres?.connection_string ?? ctx.env.RIVETOS_PG_URL ?? '',
       provider,
-      local: provider === 'local' ? buildLocalConfig(cfg, ctx.env as NodeJS.ProcessEnv) : undefined,
+      local: provider === 'local' ? buildLocalConfig(cfg, ctx.env) : undefined,
       agentId: (cfg.agent as string | undefined) ?? 'local',
       channelId: (cfg.channel_id as string | undefined) ?? 'voice-discord',
       voiceChannelId: cfg.voice_channel_id as string | undefined,

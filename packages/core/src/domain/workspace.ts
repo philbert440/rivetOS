@@ -198,11 +198,7 @@ export class WorkspaceLoader implements Workspace {
     this.skillCatalog = text.trim()
   }
 
-  async buildSystemPrompt(
-    agentId?: string,
-    extended = false,
-    userId?: string,
-  ): Promise<string> {
+  async buildSystemPrompt(agentId?: string, extended = false, userId?: string): Promise<string> {
     const files = await this.load(extended)
     if (files.length === 0) {
       log.warn(

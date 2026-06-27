@@ -443,9 +443,8 @@ export class VoicePlugin implements Channel {
   private emitInbound(userId: string, text: string): void {
     if (!this.messageHandler) return
     const channelId = this.session instanceof LocalVoiceSession ? this.session.channelId : this.id
-    const stop = /\b(stop|hold on|hold up|never ?mind|cancel|scratch that|shut up|forget it)\b/i.test(
-      text,
-    )
+    const stop =
+      /\b(stop|hold on|hold up|never ?mind|cancel|scratch that|shut up|forget it)\b/i.test(text)
 
     // Mid-turn speech without a stop word → /steer: it folds into the RUNNING
     // turn (and its in-flight tool calls) instead of aborting, so "btw also
