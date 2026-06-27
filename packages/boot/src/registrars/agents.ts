@@ -287,6 +287,20 @@ export async function registerAgentTools(
     }),
   )
 
+  // Progressive discovery: inject the live skill catalog into the system prompt
+  // so the agent sees what skills it has and reaches for them instead of
+  // hand-rolling shell/SQL. Invoking a skill loads its full SKILL.md on demand.
+  const skills = skillManager.list()
+  if (skills.length > 0) {
+    const catalog = [
+      '## Available skills',
+      'These are loadable skills for specific domains. When a request matches one — brokerage/investments, bank/net-worth, email, calendar, drive, memory, voice — USE the matching skill (load and invoke it) instead of improvising shell commands or guessing a database schema. Invoking a skill loads its full instructions and tools.',
+      ...skills.map((s) => `- **${s.name}**: ${s.description}`),
+    ].join('\n')
+    runtime.registerSkillCatalog(catalog)
+    log.info(`Skill catalog injected into system prompt (${skills.length} skills)`)
+  }
+
   log.info(
     meshEnabled
       ? 'Delegation (mesh), sub-agent, and skill tools registered'

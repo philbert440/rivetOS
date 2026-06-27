@@ -188,6 +188,11 @@ export class Runtime {
     this.router.registerProvider(provider)
   }
 
+  /** Inject the live skill catalog into the system prompt (progressive discovery). */
+  registerSkillCatalog(text: string): void {
+    this.workspace.setSkillCatalog(text)
+  }
+
   registerChannel(channel: Channel): void {
     this.channels.set(channel.id, channel)
 

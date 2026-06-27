@@ -37,6 +37,9 @@ export class WorkspaceLoader implements Workspace {
   private baseDir: string
   private cache: Map<string, string> = new Map()
   private pinnedFiles: Map<string, { content: string; size: number }> = new Map()
+  /** Live skill catalog (name + one-line description), injected into the prompt
+   *  so the agent discovers its skills instead of hand-rolling. Set at boot. */
+  private skillCatalog = ''
 
   constructor(baseDir: string) {
     this.baseDir = baseDir
@@ -190,6 +193,11 @@ export class WorkspaceLoader implements Workspace {
     }
   }
 
+  /** Set the live skill catalog (built at boot from the SkillManager). */
+  setSkillCatalog(text: string): void {
+    this.skillCatalog = text.trim()
+  }
+
   async buildSystemPrompt(
     agentId?: string,
     extended = false,
@@ -222,6 +230,11 @@ export class WorkspaceLoader implements Workspace {
 
     if (agentId) {
       prompt += `\n\n## Runtime\nAgent: ${agentId} | Time: ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })}`
+    }
+    // Live skill catalog — the always-on menu for progressive discovery. The
+    // agent sees what skills exist; invoking one loads its full SKILL.md.
+    if (this.skillCatalog) {
+      prompt += `\n\n${this.skillCatalog}`
     }
     return prompt.trim()
   }
