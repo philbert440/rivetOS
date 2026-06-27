@@ -48,6 +48,14 @@ export interface WebSearchConfig {
   googleApiKey?: string
   /** Google Custom Search Engine ID */
   googleCseId?: string
+  /**
+   * xAI API key. When set, an xAI-backed provider is used as the PREFERRED
+   * search backend (it returns a synthesized, cited answer). Surfaced to the
+   * model anonymously as plain web search — no provider branding leaks.
+   */
+  xaiApiKey?: string
+  /** xAI model for search (default: grok-4.3 — the model that supports web_search). */
+  xaiModel?: string
   /** Max results per search (default: 5) */
   maxResults?: number
 }
@@ -222,13 +230,104 @@ function parseDdgResults(html: string, maxResults: number): SearchResult[] {
 }
 
 // ---------------------------------------------------------------------------
+// xAI Provider (preferred when configured)
+//
+// Uses xAI's Agent Tools API (POST /v1/responses with a server-side
+// web_search tool) to get a synthesized, cited answer. Presented to the model
+// anonymously as ordinary web search — the `source` label is the result's
+// domain, never "xAI"/"Grok", so nothing about the backend leaks upstream.
+// ---------------------------------------------------------------------------
+
+interface XaiResponsesOutput {
+  type: string
+  content?: Array<{
+    type: string
+    text?: string
+    annotations?: Array<{ type: string; url?: string; title?: string }>
+  }>
+  action?: { sources?: Array<{ type?: string; url?: string }> }
+}
+
+/** Best-effort hostname for an anonymous source label (no backend branding). */
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return 'web'
+  }
+}
+
+function createXaiProvider(apiKey: string, model: string): SearchProvider {
+  return {
+    name: 'web',
+    async search(query: string, count: number): Promise<SearchResult[]> {
+      const response = await fetch('https://api.x.ai/v1/responses', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model, input: query, tools: [{ type: 'web_search' }] }),
+        signal: AbortSignal.timeout(45_000),
+      })
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '')
+        throw Object.assign(new Error(`web search ${response.status}: ${body.slice(0, 160)}`), {
+          status: response.status,
+        })
+      }
+
+      const data = (await response.json()) as { output?: XaiResponsesOutput[] }
+      const output = data.output ?? []
+
+      // The synthesized answer (with inline [n] citations) is the final message.
+      const message = output.find((o) => o.type === 'message')
+      const textPart = message?.content?.find((c) => c.type === 'output_text')
+      const answer = (textPart?.text ?? '').trim()
+
+      const results: SearchResult[] = []
+      if (answer) {
+        results.push({ title: 'Answer', snippet: answer, url: '', source: 'web' })
+      }
+
+      // Cited sources, in citation order. Fall back to the raw search sources
+      // if the model didn't attach url_citation annotations.
+      const seen = new Set<string>()
+      const pushUrl = (url?: string, title?: string): void => {
+        if (!url || seen.has(url)) return
+        seen.add(url)
+        // Citation titles are often just the index ("1", "2"); fall back to the
+        // hostname so the source list is readable.
+        const label = title && !/^\d+$/.test(title.trim()) ? title : hostnameOf(url)
+        results.push({ title: label, snippet: '', url, source: hostnameOf(url) })
+      }
+      for (const ann of textPart?.annotations ?? []) {
+        if (ann.type === 'url_citation') pushUrl(ann.url, ann.title)
+      }
+      if (results.length <= 1) {
+        for (const o of output) {
+          if (o.type === 'web_search_call') {
+            for (const s of o.action?.sources ?? []) pushUrl(s.url)
+          }
+        }
+      }
+
+      if (results.length === 0) return []
+      // Keep the answer plus up to `count` sources.
+      return results.slice(0, count + 1)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Web Search Tool
 // ---------------------------------------------------------------------------
 
 export class WebSearchTool implements Tool {
   name = 'internet_search'
   description =
-    'Search the web using Google. Returns titles, snippets, and URLs. ' +
+    'Search the web. Returns a concise answer with sources (titles, snippets, URLs). ' +
     'Use when you need current information, facts, or to find resources.'
   parameters = {
     type: 'object',
@@ -247,6 +346,13 @@ export class WebSearchTool implements Tool {
     this.maxResults = config?.maxResults ?? 5
     this.providers = []
 
+    // xAI-backed search is preferred when configured — it returns a
+    // synthesized, cited answer. Anonymized: nothing reveals the backend.
+    const xaiKey = config?.xaiApiKey ?? process.env.XAI_API_KEY ?? ''
+    if (xaiKey) {
+      this.providers.push(createXaiProvider(xaiKey, config?.xaiModel ?? 'grok-4.3'))
+    }
+
     const apiKey =
       config?.googleApiKey ?? process.env.GOOGLE_CSE_API_KEY ?? process.env.GOOGLE_API_KEY ?? ''
     const cseId = config?.googleCseId ?? process.env.GOOGLE_CSE_ID ?? ''
@@ -255,7 +361,7 @@ export class WebSearchTool implements Tool {
       this.providers.push(createGoogleProvider(apiKey, cseId))
     }
 
-    // DuckDuckGo is always available as fallback
+    // DuckDuckGo is always available as last-resort fallback
     this.providers.push(createDdgProvider())
   }
 
@@ -564,6 +670,8 @@ export const manifest: PluginManifest = {
     const plugin = createPlugin({
       googleApiKey: ctx.env.GOOGLE_CSE_API_KEY ?? ctx.env.GOOGLE_API_KEY,
       googleCseId: ctx.env.GOOGLE_CSE_ID,
+      xaiApiKey: ctx.env.XAI_API_KEY,
+      xaiModel: ctx.env.WEB_SEARCH_XAI_MODEL,
     })
     for (const tool of plugin.getTools()) ctx.registerTool(tool)
   },
