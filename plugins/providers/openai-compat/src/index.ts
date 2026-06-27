@@ -227,7 +227,7 @@ export class OpenAICompatProvider implements Provider {
             if (this.minP !== undefined) out.min_p = this.minP
             if (this.suppressThinking) {
               out.chat_template_kwargs = {
-                ...((out.chat_template_kwargs as Record<string, unknown>) ?? {}),
+                ...(out.chat_template_kwargs ?? {}),
                 enable_thinking: false,
               }
             }
