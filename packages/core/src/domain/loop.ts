@@ -276,7 +276,7 @@ export class AgentLoop {
       onStreamEvent: (e) => this.emit(e),
     })
     const tools: ToolSet = {
-      ...this.wrapToolsForImages(userTools, this.config.tools),
+      ...this.wrapTools(userTools, this.config.tools),
       compact_context: this.buildCompactContextTool(state),
       ...(bridge.getServerSideTools?.() ?? {}),
     }
@@ -860,8 +860,8 @@ export class AgentLoop {
   // Image archival — fire-and-forget wrapper around tool execute
   // -----------------------------------------------------------------------
 
-  private wrapToolsForImages(set: ToolSet, defs: Tool[]): ToolSet {
-    if (!this.hasImageProducingTools(defs)) return set
+  private wrapTools(set: ToolSet, defs: Tool[]): ToolSet {
+    const archiveImages = this.hasImageProducingTools(defs)
     const wrapped: ToolSet = {}
     for (const [name, t] of Object.entries(set)) {
       const original = t.execute
@@ -872,14 +872,30 @@ export class AgentLoop {
       wrapped[name] = {
         ...t,
         execute: async (input: unknown, opts: never) => {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-          const result = await original(input as never, opts)
-          // Fire-and-forget archival — never block the loop.
-          this.archiveImagesIfAny(result).catch(() => {
-            /* archival failures are non-fatal */
-          })
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-          return result
+          const t0 = Date.now()
+          const args = JSON.stringify(input ?? {}).slice(0, 200)
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            const result = await original(input as never, opts)
+            // Observability: every tool call gets one log line (name, args
+            // preview, result size, duration) — previously tool I/O was invisible.
+            const size =
+              typeof result === 'string' ? result.length : JSON.stringify(result ?? '').length
+            console.info(`[Tool] ${name} args=${args} → ${size}b in ${Date.now() - t0}ms`)
+            // Fire-and-forget image archival — never block the loop.
+            if (archiveImages) {
+              this.archiveImagesIfAny(result).catch(() => {
+                /* archival failures are non-fatal */
+              })
+            }
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+            return result
+          } catch (err) {
+            console.warn(
+              `[Tool] ${name} args=${args} ✗ ${(err as Error).message} in ${Date.now() - t0}ms`,
+            )
+            throw err
+          }
         },
       } as ToolSet[string]
     }
