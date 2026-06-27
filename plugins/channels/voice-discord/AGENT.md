@@ -57,10 +57,17 @@ Rivet Local's own self-chosen voice (VoiceDesign instruct) — see
   token (separate app from the text bot — one bot per gateway). Build, deliberate restart,
   test live in the VC.
 
-## ⚠️ BLOCKER — GERTY qwen3-tts caps output at a fixed ~2.16s
-Verified 2026-06-26: every TTS request returns exactly 103724 bytes (2.16s) regardless of
-input length (21→93 chars all identical). Short replies render fully + trailing silence;
-anything longer is hard-truncated mid-word. STT (qwen3-asr) is fine.
+## ✅ RESOLVED — qwen3-tts 2.16s cap was a missing request param (commit 656e1a1)
+The fixed ~2.16s truncation was NOT a server bug. qwen3-tts (vllm-omni serving_speech.py)
+applies a deploy-YAML default talker max_tokens when the request omits it, and overrides it
+only when the caller passes `max_new_tokens` (qwen3_tts is in
+`_SAMPLING_MAX_TOKENS_TTS_MODEL_TYPES`). Fix is purely client-side: send `max_new_tokens` in
+the /v1/audio/speech payload (LocalVoiceConfig.maxNewTokens, default 4096, key
+`tts_max_new_tokens`). It's a CEILING — EOS still stops short utterances early (verified
+"The power is back on." = 1.6s); long replies render fully (11.2s, clean STT round-trip).
+Must stay ≤ talker stage max_model_len (4096) or the server 400s. No server restart/patch.
+(Investigated `--generation-config auto` first — wrong lever, reverted; the omni TTS server is
+untouched and in its original config.) STT (qwen3-asr) is fine.
 
 Root cause (high confidence): the TTS serve command uses `--generation-config vllm`, which
 forces vLLM's default generation settings instead of the model's `generation_config.json`
@@ -79,8 +86,13 @@ low (~2s) for natural speech, so the server fix is the real unblock.
 - [x] LocalVoiceSession + VoicePlugin-as-Channel — typechecks, builds
 - [x] provider switch + config (index.ts manifest, validate/types.ts) — typechecks
 - [x] STT verified end-to-end against live GERTY (parse fix confirmed)
-- [ ] BLOCKED: TTS truncation (server-side, see above) — must lift before voice is usable
-- [ ] deploy + test on CT114 (needs Phil's bot token + the TTS fix)
+- [x] Path A (commit 4e69af2): streaming clause-by-clause TTS (Channel.onStreamEvent tap),
+      crisp barge-in via /interrupt, speech queue, snappier VAD (900ms). Clause splitting
+      verified snappy (first clause ~32 chars in). Builds; core change is a 1-line additive
+      hook (only fails typecheck in THIS worktree because node_modules→/opt/rivetos live tree).
+- [x] TTS 2.16s cap RESOLVED (commit 656e1a1) — client-side max_new_tokens; full replies render
+- [ ] deploy + test on CT114 — now only waiting on Phil's "Rivet Local Voice" bot token +
+      fresh-server guild/VC/text IDs + his Discord user ID
 - Waiting on Phil: (1) fix/greenlight the qwen3-tts output cap on pve3; (2) fresh Discord server
   (guild/VC/text IDs), "Rivet Local Voice" bot token (Guilds + GuildVoiceStates intents),
   invites, confirm Discord user ID for allowlist.
