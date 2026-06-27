@@ -266,7 +266,14 @@ export function splitClauses(
     const atBoundary = next === undefined || next === ' ' || next === '\n'
     sinceBreak++
     if (!atBoundary) continue
-    const sentenceEnd = c === '.' || c === '!' || c === '?' || c === '…'
+    // A period at the very end of the current buffer that follows a digit may be
+    // a decimal mid-number ("$21." with "76" still streaming). Defer it so we
+    // don't chop "$21.76" into "$21." + "76"; a real number-ending sentence
+    // still flushes via the next chunk or the turn tail.
+    const prev = buf[i - 1]
+    const decimalCliff =
+      c === '.' && next === undefined && prev !== undefined && prev >= '0' && prev <= '9'
+    const sentenceEnd = (c === '.' || c === '!' || c === '?' || c === '…') && !decimalCliff
     const clauseEnd = c === ',' || c === ';' || c === ':' || c === '—'
     if (sentenceEnd || (clauseEnd && sinceBreak >= minClauseChars)) {
       lastBreak = i
