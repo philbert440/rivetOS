@@ -22,6 +22,14 @@ import type {
 import type { DelegationEngine } from './delegation.js'
 import type { Router } from './router.js'
 import { logger } from '../logger.js'
+// Use undici's own fetch (not Node's global fetch). The mTLS dispatcher is
+// built from the node_modules `undici` Agent; Node's global fetch is backed by
+// a *different* bundled undici whose dispatcher handler interface is
+// incompatible — passing our Agent to global fetch throws
+// `invalid onRequestStart method (UND_ERR_INVALID_ARG)` before the request
+// leaves the host, silently breaking all remote mesh delegation. Importing
+// fetch from the same undici instance as the Agent keeps them in lockstep.
+import { fetch as undiciFetch, type Dispatcher } from 'undici'
 
 const log = logger('MeshDelegation')
 
@@ -305,16 +313,16 @@ export class MeshDelegationEngine {
         payload.model = request.model
       }
 
-      // Use shared undici dispatcher for mTLS (created once at construction)
-      const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+      // Use shared undici dispatcher for mTLS (created once at construction).
+      // Must call undici's own fetch here so the dispatcher and client come
+      // from the same undici instance (see import note above).
+      const res = await undiciFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
         signal: request.timeoutMs ? controller.signal : undefined,
-        dispatcher: this.config.httpsDispatcher as never,
-      }
-
-      const res = await fetch(url, fetchOptions)
+        dispatcher: this.config.httpsDispatcher as Dispatcher,
+      })
 
       if (timeout) clearTimeout(timeout)
 
