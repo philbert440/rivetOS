@@ -441,14 +441,37 @@ export class VoicePlugin implements Channel {
 
   /** Build an InboundMessage from a transcript and push it into the turn pipeline. */
   private emitInbound(userId: string, text: string): void {
-    console.log(
-      `[VoiceDBG] emit handler=${!!this.messageHandler} turnActive=${this.turnActive} text=${JSON.stringify(text.slice(0, 40))}`,
-    )
     if (!this.messageHandler) return
     const channelId = this.session instanceof LocalVoiceSession ? this.session.channelId : this.id
-    // Barge-in: if a turn is mid-flight, /interrupt aborts it and runs this
-    // utterance as the new turn (reusing this message id, so streaming matches).
-    const bargeIn = this.turnActive
+    const stop = /\b(stop|hold on|hold up|never ?mind|cancel|scratch that|shut up|forget it)\b/i.test(
+      text,
+    )
+
+    // Mid-turn speech without a stop word → /steer: it folds into the RUNNING
+    // turn (and its in-flight tool calls) instead of aborting, so "btw also
+    // check X" while she's working doesn't kill the work. Don't touch the turn's
+    // streaming state — the existing turn keeps producing audio.
+    if (this.turnActive && !stop) {
+      console.log(`[VoiceDBG] steer text=${JSON.stringify(text.slice(0, 40))}`)
+      const steerMsg: InboundMessage = {
+        id: `voice_btw_${Date.now()}`,
+        userId,
+        channelId,
+        chatType: 'voice',
+        text: `/steer ${text}`,
+        platform: this.platform,
+        agent: this.config.agentId,
+        metadata: { thinking: 'off' },
+        timestamp: Date.now(),
+      }
+      void this.messageHandler(steerMsg).catch((err: unknown) =>
+        console.error('[Voice] steer error:', (err as Error).message),
+      )
+      return
+    }
+
+    // Fresh turn, or a hard interrupt (stop word mid-turn): (re)start the turn.
+    const interrupt = this.turnActive && stop
     const id = `voice_${Date.now()}`
     this.streamBuf = ''
     this.currentTurnId = id
@@ -458,7 +481,7 @@ export class VoicePlugin implements Channel {
       userId,
       channelId,
       chatType: 'voice',
-      text: bargeIn ? `/interrupt ${text}` : text,
+      text: interrupt ? `/interrupt ${text}` : text,
       platform: this.platform,
       agent: this.config.agentId,
       // Voice runs thinking-off to cut latency — the 27B otherwise reasons on
@@ -466,7 +489,7 @@ export class VoicePlugin implements Channel {
       metadata: { thinking: 'off' },
       timestamp: Date.now(),
     }
-    console.log(`[VoiceDBG] dispatch text=${JSON.stringify(message.text.slice(0, 50))}`)
+    console.log(`[VoiceDBG] ${interrupt ? 'interrupt' : 'new'} text=${JSON.stringify(message.text.slice(0, 50))}`)
     void this.messageHandler(message)
       .then(() => console.log('[VoiceDBG] handler resolved'))
       .catch((err: unknown) => {

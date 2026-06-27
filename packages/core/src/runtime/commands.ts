@@ -153,10 +153,14 @@ export class CommandHandler {
       loop.steer(args)
       await channel.send({ channelId: message.channelId, text: '📨 Injected into current turn.' })
     } else {
-      await channel.send({
-        channelId: message.channelId,
-        text: '💤 No active turn. Just send a message.',
-      })
+      // The turn finished between the user speaking and this landing — don't drop
+      // the message; run it as a fresh turn (matches /interrupt's fallback).
+      const queue = this.deps.getQueue(sessionKey)
+      if (queue) {
+        await queue.enqueue({ ...message, text: args })
+      } else {
+        await this.deps.handleMessage(channel, { ...message, text: args })
+      }
     }
   }
 
