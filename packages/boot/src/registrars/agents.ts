@@ -196,6 +196,7 @@ export async function registerAgentTools(
       tls: tlsConfig,
       httpsDispatcher,
       localAgents,
+      nodeName,
     })
 
     // Register the mesh-aware delegation tool

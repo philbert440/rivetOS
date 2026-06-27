@@ -53,6 +53,22 @@ export interface MeshDelegationConfig {
 
   /** This node's agent IDs */
   localAgents: string[]
+
+  /**
+   * This node's name in the mesh registry. Used to exclude self when
+   * enumerating *remote* agents for the roster — otherwise this node's own
+   * agents would also show up as "remote on <self>".
+   */
+  nodeName?: string
+}
+
+/** A reachable agent and where it lives, for the delegation roster. */
+interface RosterEntry {
+  agentId: string
+  /** True if the agent runs on this node (delegation stays in-process). */
+  local: boolean
+  /** Names of remote nodes hosting this agent (online only). */
+  remoteNodes: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +77,13 @@ export interface MeshDelegationConfig {
 
 export class MeshDelegationEngine {
   private config: MeshDelegationConfig
+
+  /** Cached, human-readable roster of reachable agents (for the tool description). */
+  private rosterText = '(roster loading…)'
+  /** When the roster cache was last refreshed (epoch ms; 0 = never). */
+  private rosterFetchedAt = 0
+  /** How long a cached roster stays fresh before a lazy background refresh. */
+  private readonly rosterTtlMs = 30_000
 
   constructor(config: MeshDelegationConfig) {
     this.config = config
@@ -71,6 +94,98 @@ export class MeshDelegationEngine {
         log.error('Failed to create HTTPS dispatcher for mesh delegation', err),
       )
     }
+
+    // Prime the roster so the first turn already advertises real agents
+    // instead of the loading placeholder.
+    void this.refreshRoster()
+  }
+
+  // -------------------------------------------------------------------------
+  // Agent roster — what the model can actually delegate to
+  //
+  // The whole point of the mesh is that an agent can hand work to a *different*
+  // model on another node. But a delegate_task tool with a free-text target and
+  // a hardcoded "e.g. grok, opus" example leaves weaker local models guessing —
+  // they parrot the example and never discover who's really out there. So we
+  // advertise the live roster (local + online mesh peers) right in the tool.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Enumerate every agent this node can delegate to right now — its own
+   * local agents plus agents on online mesh peers. Local agents win: if an
+   * agent id exists both locally and remotely, delegation stays in-process,
+   * so we mark it local and don't advertise the remote copies.
+   */
+  async listReachableAgents(): Promise<RosterEntry[]> {
+    const byAgent = new Map<string, RosterEntry>()
+
+    for (const agentId of this.config.localAgents) {
+      byAgent.set(agentId, { agentId, local: true, remoteNodes: [] })
+    }
+
+    let nodes: MeshNode[] = []
+    try {
+      nodes = await this.config.meshRegistry.getNodes()
+    } catch (err: unknown) {
+      log.warn(`Could not read mesh registry for roster: ${(err as Error).message}`)
+    }
+
+    for (const node of nodes) {
+      if (node.status !== 'online') continue
+      // Skip self — its agents are already covered by localAgents above.
+      if (this.config.nodeName && node.name === this.config.nodeName) continue
+      for (const agentId of node.agents) {
+        const existing = byAgent.get(agentId)
+        if (existing?.local) continue // local copy preferred — don't list remotes
+        if (existing) {
+          if (!existing.remoteNodes.includes(node.name)) existing.remoteNodes.push(node.name)
+        } else {
+          byAgent.set(agentId, { agentId, local: false, remoteNodes: [node.name] })
+        }
+      }
+    }
+
+    return Array.from(byAgent.values())
+  }
+
+  /** Refresh the cached roster text from the live registry. Best-effort. */
+  private async refreshRoster(): Promise<void> {
+    const entries = await this.listReachableAgents()
+    this.rosterText = this.formatRoster(entries)
+    this.rosterFetchedAt = Date.now()
+  }
+
+  /** Format the roster as bullet lines for the tool description. */
+  private formatRoster(entries: RosterEntry[]): string {
+    if (entries.length === 0) return '(no agents currently reachable)'
+    return entries
+      .map((e) =>
+        e.local
+          ? `- ${e.agentId} (this node — local, in-process)`
+          : `- ${e.agentId} (remote: ${e.remoteNodes.join(', ')})`,
+      )
+      .join('\n')
+  }
+
+  /**
+   * The delegate_task description, including the live roster. Read fresh by the
+   * provider on every turn (via the tool's `description` getter), so it always
+   * reflects the current mesh. Kicks a background refresh when the cache is
+   * stale; returns the last-known roster immediately (never blocks a turn).
+   */
+  private buildDescription(): string {
+    if (Date.now() - this.rosterFetchedAt > this.rosterTtlMs) {
+      void this.refreshRoster()
+    }
+    return (
+      'Delegate a task to another agent — use when a different model or specialist ' +
+      'is better suited (e.g., ask "opus" to review code, ask "grok" for live web/X search). ' +
+      'The delegate runs with its own model and returns the result. ' +
+      'Works across the mesh — targets on other nodes are reached automatically.\n\n' +
+      'Agents you can delegate to right now (pass one as `to_agent`):\n' +
+      this.rosterText +
+      '\n\nPick the agent whose model/strengths fit the task; "local" runs a fresh context on this node.'
+    )
   }
 
   /**
@@ -81,9 +196,12 @@ export class MeshDelegationEngine {
     const route = await this.resolveRoute(request.toAgent)
 
     if (!route) {
+      const reachable = (await this.listReachableAgents()).map((e) => e.agentId)
       return {
         status: 'failed',
-        response: `Agent "${request.toAgent}" not found locally or in the mesh. Available local agents: ${this.config.localAgents.join(', ')}`,
+        response:
+          `Agent "${request.toAgent}" not found locally or in the mesh. ` +
+          `Agents you can delegate to: ${reachable.length ? reachable.join(', ') : '(none reachable)'}`,
       }
     }
 
@@ -233,13 +351,15 @@ export class MeshDelegationEngine {
    * This replaces the local-only delegation tool when mesh is enabled.
    */
   createDelegationTool(chainDepth = 0): Tool {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- the getter below needs the engine instance
+    const engine = this
     return {
       name: 'delegate_task',
-      description:
-        'Delegate a task to another agent. Use when you need a different model — ' +
-        'e.g., ask Grok to write code, ask Opus to review it. ' +
-        'The delegate runs with its own provider and returns the result. ' +
-        'Works across the mesh — can route to agents on other nodes.',
+      // Live description: read fresh by the provider every turn so the
+      // advertised roster always reflects the current mesh (see buildDescription).
+      get description(): string {
+        return engine.buildDescription()
+      },
       parameters: {
         type: 'object',
         properties: {
