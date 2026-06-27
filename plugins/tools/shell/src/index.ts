@@ -283,7 +283,10 @@ export class ShellTool implements Tool {
         child = exec(command, {
           cwd,
           timeout: this.config.timeoutMs,
-          maxBuffer: this.config.maxOutput,
+          // Capture well above the returned-output cap so large output is
+          // truncated gracefully (head+tail) instead of overflowing maxBuffer,
+          // which kills the child and loses everything.
+          maxBuffer: Math.max(this.config.maxOutput, 2 * 1024 * 1024),
           env: { ...process.env, TERM: 'dumb' },
         })
       } catch (err: unknown) {
@@ -312,6 +315,18 @@ export class ShellTool implements Tool {
       }
 
       child.on('error', (err) => {
+        // maxBuffer overflow (output > 2MB): return the captured head+tail
+        // instead of dropping everything the command produced.
+        const captured = (stdout + (stderr ? `\n[stderr] ${stderr}` : '')).trim()
+        if (/maxBuffer/i.test(err.message) && captured) {
+          resolve(
+            formatOutput(
+              warnings,
+              `${truncateMiddle(captured, this.config.maxOutput)}\n[output exceeded buffer]`,
+            ),
+          )
+          return
+        }
         resolve(formatOutput(warnings, `Error: ${err.message}`))
       })
 
@@ -324,13 +339,7 @@ export class ShellTool implements Tool {
         }
 
         if (output.length > this.config.maxOutput) {
-          resolve(
-            formatOutput(
-              warnings,
-              output.slice(0, this.config.maxOutput) +
-                `\n[truncated at ${this.config.maxOutput} bytes]`,
-            ),
-          )
+          resolve(formatOutput(warnings, truncateMiddle(output, this.config.maxOutput)))
           return
         }
 
@@ -362,6 +371,18 @@ export class ShellTool implements Tool {
 function formatOutput(warnings: string[], output: string): string {
   if (warnings.length === 0) return output
   return warnings.join('\n') + '\n\n' + output
+}
+
+/**
+ * Truncate to `max` bytes keeping the head AND tail — the start of output and
+ * its end (where results/summaries usually land) are both preserved, with a
+ * marker noting how much was elided. Beats head-only truncation for the model.
+ */
+function truncateMiddle(text: string, max: number): string {
+  if (text.length <= max) return text
+  const half = Math.floor(max / 2)
+  const elided = text.length - 2 * half
+  return `${text.slice(0, half)}\n\n[… ${elided} bytes elided …]\n\n${text.slice(-half)}`
 }
 
 // ---------------------------------------------------------------------------
