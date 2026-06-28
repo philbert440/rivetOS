@@ -340,6 +340,18 @@ export class TelegramChannel implements Channel {
         },
       ]
     }
+    if (msg?.video) {
+      inbound.attachments = [
+        {
+          type: 'video',
+          fileId: msg.video.file_id,
+          mimeType: msg.video.mime_type ?? 'video/mp4',
+          width: msg.video.width,
+          height: msg.video.height,
+          duration: msg.video.duration,
+        },
+      ]
+    }
 
     return inbound
   }
