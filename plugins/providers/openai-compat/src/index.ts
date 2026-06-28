@@ -84,6 +84,29 @@ export interface OpenAICompatProviderConfig {
    *  configured model id is not listed. Default: false — strict servers
    *  sometimes do not list all aliases. */
   verifyModelOnInit?: boolean
+  /** Repetition penalty (vLLM extension, ~1.0–1.3). Only sent when defined. */
+  repetitionPenalty?: number
+  /** Minimum tokens to generate before EOS is allowed (vLLM extension). */
+  minTokens?: number
+  /** Stop strings. Passed through as `stop`. */
+  stop?: string[]
+  /**
+   * vLLM `mm_processor_kwargs` — multimodal processor controls (e.g. video
+   * `fps`/`num_frames`, image `min_pixels`/`max_pixels`). Merged into the
+   * request body. See the served model's processor for accepted keys.
+   */
+  mmProcessorKwargs?: Record<string, unknown>
+  /**
+   * vLLM `chat_template_kwargs` — extra args forwarded to the chat template
+   * (e.g. `enable_thinking`). Merged with the per-turn thinking toggle.
+   */
+  chatTemplateKwargs?: Record<string, unknown>
+  /**
+   * Escape hatch: arbitrary top-level fields merged into every request body
+   * (e.g. `guided_decoding_backend`, `repetition_penalty`, server-specific
+   * knobs). Existing body fields are NOT overwritten.
+   */
+  extraBody?: Record<string, unknown>
 }
 
 interface OAIModel {
@@ -115,6 +138,12 @@ export class OpenAICompatProvider implements Provider {
   private frequencyPenalty: number | undefined
   private seed: number | undefined
   private defaultToolChoice: ToolChoice
+  private repetitionPenalty: number | undefined
+  private minTokens: number | undefined
+  private stop: string[] | undefined
+  private mmProcessorKwargs: Record<string, unknown> | undefined
+  private chatTemplateKwargs: Record<string, unknown> | undefined
+  private extraBody: Record<string, unknown> | undefined
   private contextWindowSize: number
   private outputTokenLimit: number
   private verifyModelOnInit: boolean
@@ -156,6 +185,12 @@ export class OpenAICompatProvider implements Provider {
     this.frequencyPenalty = config.frequencyPenalty
     this.seed = config.seed
     this.defaultToolChoice = config.defaultToolChoice ?? 'auto'
+    this.repetitionPenalty = config.repetitionPenalty
+    this.minTokens = config.minTokens
+    this.stop = config.stop
+    this.mmProcessorKwargs = config.mmProcessorKwargs
+    this.chatTemplateKwargs = config.chatTemplateKwargs
+    this.extraBody = config.extraBody
     this.contextWindowSize = config.contextWindow ?? 0
     this.contextPinned = (config.contextWindow ?? 0) > 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
@@ -207,6 +242,68 @@ export class OpenAICompatProvider implements Provider {
     return chatStreamAiSdk(this.buildAiSdkContext(), messages, options)
   }
 
+  /**
+   * Apply every configured sampling param and vLLM extension to the outbound
+   * request body. The AI SDK loop path sends only model/messages/tools, so
+   * without this the server falls back to its own sampling defaults and all
+   * configured knobs are silently ignored. Existing body fields are respected
+   * (filled only when absent) so future loop-level overrides still win.
+   */
+  applyVllmRequestExtensions(body: Record<string, unknown>): Record<string, unknown> {
+    const out = { ...body }
+    const fill = (key: string, value: unknown): void => {
+      if (value !== undefined && out[key] === undefined) out[key] = value
+    }
+
+    // Standard OpenAI sampling — config-driven, filled when the loop didn't set them.
+    fill('temperature', this.temperature)
+    fill('top_p', this.topP)
+    if (this.maxTokens > 0) fill('max_tokens', this.maxTokens)
+    fill('presence_penalty', this.presencePenalty)
+    fill('frequency_penalty', this.frequencyPenalty)
+    fill('seed', this.seed)
+    fill('stop', this.stop)
+
+    // vLLM sampling extensions (not part of the OpenAI schema).
+    if (this.topK !== undefined) out.top_k = this.topK
+    if (this.minP !== undefined) out.min_p = this.minP
+    if (this.repetitionPenalty !== undefined) out.repetition_penalty = this.repetitionPenalty
+    if (this.minTokens !== undefined) out.min_tokens = this.minTokens
+
+    // tool_choice — honor configured default when tools are present.
+    if (
+      Array.isArray(out.tools) &&
+      out.tools.length > 0 &&
+      this.defaultToolChoice !== 'auto' &&
+      out.tool_choice === undefined
+    ) {
+      out.tool_choice = this.defaultToolChoice
+    }
+
+    // chat_template_kwargs — merge config + per-turn thinking suppression.
+    const ctk: Record<string, unknown> = {
+      ...this.chatTemplateKwargs,
+      ...((out.chat_template_kwargs as Record<string, unknown> | undefined) ?? {}),
+    }
+    if (this.suppressThinking) ctk.enable_thinking = false
+    if (Object.keys(ctk).length > 0) out.chat_template_kwargs = ctk
+
+    // mm_processor_kwargs — multimodal processor controls (image/video).
+    if (this.mmProcessorKwargs) {
+      out.mm_processor_kwargs = {
+        ...this.mmProcessorKwargs,
+        ...(out.mm_processor_kwargs ?? {}),
+      }
+    }
+
+    // Arbitrary escape-hatch fields (filled only when absent).
+    if (this.extraBody) {
+      for (const [key, value] of Object.entries(this.extraBody)) fill(key, value)
+    }
+
+    return out
+  }
+
   // -----------------------------------------------------------------------
   // aiSdkBridge — AI SDK loop adapter (consumed by step 8b's loop)
   // -----------------------------------------------------------------------
@@ -219,20 +316,9 @@ export class OpenAICompatProvider implements Provider {
           name: this.name,
           apiKey: this.apiKey || undefined,
           includeUsage: true,
-          // vLLM extensions — top_k / min_p flow via the request-body transform.
-          // tool_choice is owned by the loop (passed via streamText options).
-          transformRequestBody: (body) => {
-            const out = { ...body } as Record<string, unknown>
-            if (this.topK !== undefined) out.top_k = this.topK
-            if (this.minP !== undefined) out.min_p = this.minP
-            if (this.suppressThinking) {
-              out.chat_template_kwargs = {
-                ...(out.chat_template_kwargs ?? {}),
-                enable_thinking: false,
-              }
-            }
-            return out
-          },
+          // Single live-path body hook: the AI SDK loop sends only model +
+          // messages + tools, so every sampling/vLLM knob is applied here.
+          transformRequestBody: (body) => this.applyVllmRequestExtensions(body),
         })
         return provider.chatModel(modelOverride ?? this.model)
       },
@@ -366,6 +452,12 @@ export const manifest: PluginManifest = {
         frequencyPenalty: cfg.frequency_penalty as number | undefined,
         seed: cfg.seed as number | undefined,
         defaultToolChoice: cfg.default_tool_choice as ToolChoice | undefined,
+        repetitionPenalty: cfg.repetition_penalty as number | undefined,
+        minTokens: cfg.min_tokens as number | undefined,
+        stop: cfg.stop as string[] | undefined,
+        mmProcessorKwargs: cfg.mm_processor_kwargs as Record<string, unknown> | undefined,
+        chatTemplateKwargs: cfg.chat_template_kwargs as Record<string, unknown> | undefined,
+        extraBody: cfg.extra_body as Record<string, unknown> | undefined,
         verifyModelOnInit: cfg.verify_model_on_init as boolean | undefined,
         id: 'openai-compat',
         name: (cfg.name as string | undefined) ?? 'openai-compat',
