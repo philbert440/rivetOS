@@ -37,15 +37,21 @@ export function partsToAiSdkUserContent(parts: ContentPart[]): AiSdkUserPart[] {
   for (const part of parts) {
     if (part.type === 'text') {
       if (part.text) out.push({ type: 'text', text: part.text })
-    } else if (part.data) {
-      out.push({
-        type: 'image',
-        image: `data:${part.mimeType ?? 'image/jpeg'};base64,${part.data}`,
-        mediaType: part.mimeType,
-      })
-    } else if (part.url) {
-      out.push({ type: 'image', image: new URL(part.url), mediaType: part.mimeType })
+    } else if (part.type === 'image') {
+      if (part.data) {
+        out.push({
+          type: 'image',
+          image: `data:${part.mimeType ?? 'image/jpeg'};base64,${part.data}`,
+          mediaType: part.mimeType,
+        })
+      } else if (part.url) {
+        out.push({ type: 'image', image: new URL(part.url), mediaType: part.mimeType })
+      }
     }
+    // VideoPart (and any future non-image media) is intentionally skipped here:
+    // the AI SDK openai-compatible serializer throws on non-image/audio/pdf
+    // media types, so providers that support video inject it themselves (the
+    // vLLM provider splices a `video_url` block via transformRequestBody).
   }
   return out
 }

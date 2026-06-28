@@ -4,8 +4,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { OpenAICompatProvider } from './index.js'
+import { OpenAICompatProvider, encodeVideoMarkers, spliceVideoUrls } from './index.js'
 import type { OpenAICompatProviderConfig } from './index.js'
+import type { Message } from '@rivetos/types'
 
 describe('OpenAICompatProvider', () => {
   describe('constructor and defaults', () => {
@@ -476,6 +477,51 @@ describe('OpenAICompatProvider', () => {
       expect(out.mm_processor_kwargs).toEqual({ fps: 2 })
       expect(out.chat_template_kwargs).toEqual({ enable_thinking: true })
       expect(out.guided_decoding_backend).toBe('xgrammar')
+    })
+  })
+
+  describe('video marker round-trip', () => {
+    it('encodes a VideoPart into a marker, stripping it from content', () => {
+      const msgs: Message[] = [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what happens here?' },
+            { type: 'video', url: 'https://cdn/clip.mp4', mimeType: 'video/mp4' },
+          ],
+        },
+      ]
+      const [m] = encodeVideoMarkers(msgs)
+      const parts = m.content as { type: string; text?: string }[]
+      expect(parts.some((p) => p.type === 'video')).toBe(false) // video stripped
+      expect(parts.some((p) => p.type === 'text' && p.text?.includes('RVT_VIDEO['))).toBe(true)
+    })
+
+    it('splices a marker back into an OpenAI video_url block (full round-trip)', () => {
+      const url = 'https://cdn/clip.mp4'
+      const encoded = encodeVideoMarkers([
+        { role: 'user', content: [{ type: 'text', text: 'hi' }, { type: 'video', url }] },
+      ])
+      const markerText = (encoded[0].content as { type: string; text?: string }[]).find(
+        (p) => p.text?.includes('RVT_VIDEO['),
+      )!.text
+      // Simulate the serialized OpenAI body the AI SDK produces.
+      const body = {
+        model: 'qwen-27b',
+        messages: [{ role: 'user', content: [{ type: 'text', text: `hi ${markerText}` }] }],
+      }
+      const out = spliceVideoUrls(body)
+      const content = (out.messages as { content: { type: string; video_url?: { url: string } }[] }[])[0]
+        .content
+      const vid = content.find((p) => p.type === 'video_url')
+      expect(vid?.video_url?.url).toBe(url)
+      // marker text removed from the text part
+      expect(content.find((p) => p.type === 'text')?.['text' as never]).not.toContain('RVT_VIDEO')
+    })
+
+    it('leaves bodies without markers untouched', () => {
+      const body = { model: 'm', messages: [{ role: 'user', content: 'plain text' }] }
+      expect(spliceVideoUrls(body)).toBe(body)
     })
   })
 })

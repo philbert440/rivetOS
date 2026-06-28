@@ -21,7 +21,18 @@ export interface ImagePart {
   mimeType?: string
 }
 
-export type ContentPart = TextPart | ImagePart
+export interface VideoPart {
+  type: 'video'
+  /** Base64-encoded video data (Telegram downloads bytes). */
+  data?: string
+  /** URL to fetch the video from (Discord CDN, etc.). Preferred over data —
+   *  videos are large, so a URL keeps the request small when available. */
+  url?: string
+  /** MIME type (video/mp4, video/webm, …). */
+  mimeType?: string
+}
+
+export type ContentPart = TextPart | ImagePart | VideoPart
 
 // ---------------------------------------------------------------------------
 // Messages

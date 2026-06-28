@@ -23,7 +23,14 @@
  *     handles cancellation.
  */
 
-import type { Provider, Message, ChatOptions, LLMChunk, PluginManifest } from '@rivetos/types'
+import type {
+  Provider,
+  Message,
+  ChatOptions,
+  LLMChunk,
+  PluginManifest,
+  ContentPart,
+} from '@rivetos/types'
 import { MODEL_DEFAULTS } from '@rivetos/types'
 import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
 import type { JSONObject } from '@ai-sdk/provider'
@@ -117,6 +124,86 @@ interface OAIModel {
 
 interface OAIModelsResponse {
   data?: OAIModel[]
+}
+
+// ---------------------------------------------------------------------------
+// Video — vLLM accepts OpenAI `video_url` content blocks, but the AI SDK's
+// openai-compatible serializer throws on non-image media types. So video is
+// carried out of the AI SDK message path: prepareMessages() replaces each
+// VideoPart with an inline text marker, and the request-body transform turns
+// markers back into `video_url` blocks. Marker-based (stateless) so concurrent
+// turns on a shared provider instance can't cross-contaminate.
+// ---------------------------------------------------------------------------
+
+const VIDEO_MARKER_RE = /RVT_VIDEO\[([A-Za-z0-9+/=]*)\]/g
+
+interface OpenAIContentPart {
+  type: string
+  text?: string
+  [k: string]: unknown
+}
+
+/** Replace VideoParts with inline text markers, stripping them from content. */
+export function encodeVideoMarkers(messages: Message[]): Message[] {
+  return messages.map((m) => {
+    if (!Array.isArray(m.content)) return m
+    const markers: string[] = []
+    const kept: ContentPart[] = []
+    for (const part of m.content) {
+      if (part.type === 'video') {
+        const url =
+          part.url ?? (part.data ? `data:${part.mimeType ?? 'video/mp4'};base64,${part.data}` : '')
+        if (url) markers.push(`RVT_VIDEO[${Buffer.from(url, 'utf8').toString('base64')}]`)
+      } else {
+        kept.push(part)
+      }
+    }
+    if (markers.length === 0) return m
+    kept.push({ type: 'text', text: markers.join('') })
+    return { ...m, content: kept }
+  })
+}
+
+/** Turn video markers in the serialized OpenAI body back into `video_url` blocks. */
+export function spliceVideoUrls(body: Record<string, unknown>): Record<string, unknown> {
+  const messages = body.messages
+  if (!Array.isArray(messages)) return body
+  let changed = false
+
+  const out = messages.map((msg: unknown) => {
+    const m = msg as { role?: string; content?: unknown }
+    const urls: string[] = []
+    const strip = (text: string): string =>
+      text.replace(VIDEO_MARKER_RE, (_full, u: string) => {
+        urls.push(Buffer.from(u, 'base64').toString('utf8'))
+        return ''
+      })
+
+    let content: unknown = m.content
+    if (typeof content === 'string') {
+      const stripped = strip(content)
+      if (urls.length === 0) return msg
+      const parts: OpenAIContentPart[] = []
+      if (stripped.trim()) parts.push({ type: 'text', text: stripped })
+      content = parts
+    } else if (Array.isArray(content)) {
+      const mapped = (content as OpenAIContentPart[]).map((p) =>
+        p.type === 'text' && typeof p.text === 'string' ? { ...p, text: strip(p.text) } : p,
+      )
+      if (urls.length === 0) return msg
+      content = mapped.filter((p) => !(p.type === 'text' && p.text === ''))
+    } else {
+      return msg
+    }
+
+    for (const u of urls) {
+      ;(content as OpenAIContentPart[]).push({ type: 'video_url', video_url: { url: u } })
+    }
+    changed = true
+    return { ...m, content }
+  })
+
+  return changed ? { ...body, messages: out } : body
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +388,8 @@ export class OpenAICompatProvider implements Provider {
       for (const [key, value] of Object.entries(this.extraBody)) fill(key, value)
     }
 
-    return out
+    // Reinstate any video markers as OpenAI `video_url` content blocks.
+    return spliceVideoUrls(out)
   }
 
   // -----------------------------------------------------------------------
@@ -337,7 +425,10 @@ export class OpenAICompatProvider implements Provider {
       // any leading system run as a single string for `streamText({ system })`.
       prepareMessages: (messages: Message[]) => {
         const { system, rest } = splitAndFoldSystem(messages)
-        return system ? { system, messages: rest } : { messages: rest }
+        // Pull VideoParts out of the AI SDK path (it can't serialize them) and
+        // leave inline markers; spliceVideoUrls() reinstates them as video_url.
+        const cleaned = encodeVideoMarkers(rest)
+        return system ? { system, messages: cleaned } : { messages: cleaned }
       },
     }
   }

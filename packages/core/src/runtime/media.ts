@@ -46,10 +46,30 @@ export async function resolveAttachments(
   }
 
   for (const attachment of message.attachments) {
-    if (attachment.type !== 'photo') continue
+    if (attachment.type !== 'photo' && attachment.type !== 'video') continue
 
     const resolved = await channel.resolveAttachment(attachment)
     if (!resolved) continue
+
+    // Video: prefer the URL (the model's server fetches it) since videos are
+    // large; only persist + base64 when the channel handed us raw bytes.
+    if (attachment.type === 'video') {
+      if (resolved.url) {
+        parts.push({ type: 'video', url: resolved.url, mimeType: resolved.mimeType ?? 'video/mp4' })
+      } else if (resolved.data) {
+        await mkdir(imageDir, { recursive: true })
+        const vext = resolved.mimeType?.split('/')[1] ?? 'mp4'
+        const vPath = join(imageDir, `${Date.now()}-${randomUUID().slice(0, 8)}.${vext}`)
+        await writeFile(vPath, Buffer.from(resolved.data, 'base64'))
+        savedImagePaths.push(vPath)
+        parts.push({
+          type: 'video',
+          data: resolved.data,
+          mimeType: resolved.mimeType ?? 'video/mp4',
+        })
+      }
+      continue
+    }
 
     // Save to disk
     await mkdir(imageDir, { recursive: true })
@@ -90,7 +110,9 @@ export async function resolveAttachments(
     }
   }
 
-  const userContent = parts.some((p) => p.type === 'image') ? parts : message.text
+  const userContent = parts.some((p) => p.type === 'image' || p.type === 'video')
+    ? parts
+    : message.text
   return { userContent, savedImagePaths }
 }
 
@@ -100,6 +122,8 @@ export async function resolveAttachments(
  */
 export function buildHistoryContent(text: string, savedImagePaths: string[]): string {
   if (savedImagePaths.length === 0) return text
-  const refs = savedImagePaths.map((p) => `[image:${p}]`).join(' ')
+  const refs = savedImagePaths
+    .map((p) => (/\.(mp4|webm|mov|mkv|avi)$/i.test(p) ? `[video:${p}]` : `[image:${p}]`))
+    .join(' ')
   return text ? `${text}\n${refs}` : refs
 }
