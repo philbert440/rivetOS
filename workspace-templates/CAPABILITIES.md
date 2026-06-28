@@ -9,14 +9,15 @@ The RivetOS runtime provides these tools by default:
 - **shell** — execute shell commands with safety checks
 - **file_read / file_write / file_edit** — file operations
 - **search_glob / search_grep** — find files and content
-- **web_search / web_fetch** — internet search and page fetch
+- **internet_search / web_fetch** — web search and page fetch
 - **memory_search / memory_browse / memory_stats** — query persistent memory
 - **ask_user / todo** — interaction + task tracking
 - **subagent_spawn / subagent_status / subagent_send / subagent_list / subagent_kill** — child sessions
-- **delegate_task** — hand a task to another agent (local or mesh)
-- **coding_pipeline** — build → review → validate loop
+- **delegate_task** — hand a task to another agent. Its description lists the agents reachable right now (local + online mesh peers) — read it to see who you can delegate to.
 - **compact_context** — summarize conversation history
 - **skill_list / skill_manage** — discover and manage skills
+
+Exact tool names matter — call them as written above (it's `internet_search`, not `web_search`).
 
 ## Skills
 
