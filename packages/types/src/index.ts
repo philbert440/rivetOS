@@ -5,7 +5,7 @@
  * Every other package depends on this. Nothing else.
  */
 
-export type { Message, ToolCall, ContentPart, TextPart, ImagePart } from './message.js'
+export type { Message, ToolCall, ContentPart, TextPart, ImagePart, VideoPart } from './message.js'
 export type {
   Provider,
   LLMResponse,

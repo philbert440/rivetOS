@@ -252,7 +252,11 @@ export class DiscordChannel implements Channel {
 
     if (msg.attachments.size > 0) {
       inbound.attachments = [...msg.attachments.values()].map((a) => ({
-        type: a.contentType?.startsWith('image/') ? ('photo' as const) : ('document' as const),
+        type: a.contentType?.startsWith('image/')
+          ? ('photo' as const)
+          : a.contentType?.startsWith('video/')
+            ? ('video' as const)
+            : ('document' as const),
         url: a.url,
         fileName: a.name,
         mimeType: a.contentType ?? undefined,
