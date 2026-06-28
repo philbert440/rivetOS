@@ -192,6 +192,13 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'name',
     'context_window',
     'max_output_tokens',
+    // vLLM extensions
+    'repetition_penalty',
+    'min_tokens',
+    'stop',
+    'mm_processor_kwargs',
+    'chat_template_kwargs',
+    'extra_body',
   ]),
 }
 

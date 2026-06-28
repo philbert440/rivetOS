@@ -412,4 +412,70 @@ describe('OpenAICompatProvider', () => {
       expect(provider).toBeDefined()
     })
   })
+
+  describe('applyVllmRequestExtensions', () => {
+    const base = { model: 'qwen-27b', messages: [{ role: 'user', content: 'hi' }] }
+
+    it('fills configured sampling params the loop omits (the silent-drop bug)', () => {
+      const p = new OpenAICompatProvider({
+        baseUrl: 'http://x:8003',
+        temperature: 1,
+        topP: 0.95,
+        topK: 20,
+        minP: 0,
+        maxTokens: 81920,
+        presencePenalty: 0.1,
+        frequencyPenalty: 0.2,
+        seed: 7,
+      })
+      const out = p.applyVllmRequestExtensions({ ...base })
+      expect(out.temperature).toBe(1)
+      expect(out.top_p).toBe(0.95)
+      expect(out.top_k).toBe(20)
+      expect(out.min_p).toBe(0)
+      expect(out.max_tokens).toBe(81920)
+      expect(out.presence_penalty).toBe(0.1)
+      expect(out.frequency_penalty).toBe(0.2)
+      expect(out.seed).toBe(7)
+    })
+
+    it('does not overwrite values already on the body', () => {
+      const p = new OpenAICompatProvider({ baseUrl: 'http://x:8003', temperature: 1 })
+      const out = p.applyVllmRequestExtensions({ ...base, temperature: 0.2 })
+      expect(out.temperature).toBe(0.2)
+    })
+
+    it('forwards vLLM-only sampling extensions', () => {
+      const p = new OpenAICompatProvider({
+        baseUrl: 'http://x:8003',
+        repetitionPenalty: 1.1,
+        minTokens: 5,
+        stop: ['</s>'],
+      })
+      const out = p.applyVllmRequestExtensions({ ...base })
+      expect(out.repetition_penalty).toBe(1.1)
+      expect(out.min_tokens).toBe(5)
+      expect(out.stop).toEqual(['</s>'])
+    })
+
+    it('applies default tool_choice only when tools are present', () => {
+      const p = new OpenAICompatProvider({ baseUrl: 'http://x:8003', defaultToolChoice: 'required' })
+      expect(p.applyVllmRequestExtensions({ ...base }).tool_choice).toBeUndefined()
+      const withTools = p.applyVllmRequestExtensions({ ...base, tools: [{ type: 'function' }] })
+      expect(withTools.tool_choice).toBe('required')
+    })
+
+    it('merges mm_processor_kwargs / chat_template_kwargs / extra_body', () => {
+      const p = new OpenAICompatProvider({
+        baseUrl: 'http://x:8003',
+        mmProcessorKwargs: { fps: 2 },
+        chatTemplateKwargs: { enable_thinking: true },
+        extraBody: { guided_decoding_backend: 'xgrammar' },
+      })
+      const out = p.applyVllmRequestExtensions({ ...base })
+      expect(out.mm_processor_kwargs).toEqual({ fps: 2 })
+      expect(out.chat_template_kwargs).toEqual({ enable_thinking: true })
+      expect(out.guided_decoding_backend).toBe('xgrammar')
+    })
+  })
 })
