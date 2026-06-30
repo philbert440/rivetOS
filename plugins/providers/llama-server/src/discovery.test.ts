@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { OpenAICompatProvider } from './index.js'
+import { LlamaServerProvider } from './index.js'
 
 /** Build a fake /v1/models fetch response. */
 function modelsResponse(data: Array<{ id: string; max_model_len?: number }>): Response {
@@ -15,13 +15,13 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('openai-compat auto-discovery', () => {
+describe('llama-server auto-discovery', () => {
   it('adopts the single served model when none is configured', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(modelsResponse([{ id: 'qwen3.6-27b-int4', max_model_len: 32768 }])),
     )
-    const p = new OpenAICompatProvider({ baseUrl: 'http://localhost:8000' })
+    const p = new LlamaServerProvider({ baseUrl: 'http://localhost:8000' })
     expect(p.getModel()).toBe('default') // placeholder before probe
 
     expect(await p.isAvailable()).toBe(true)
@@ -39,7 +39,7 @@ describe('openai-compat auto-discovery', () => {
         ]),
       ),
     )
-    const p = new OpenAICompatProvider({ baseUrl: 'http://localhost:8000' })
+    const p = new LlamaServerProvider({ baseUrl: 'http://localhost:8000' })
     await p.isAvailable()
     expect(p.getModel()).toBe('model-a')
     expect(p.getContextWindow()).toBe(8192)
@@ -50,7 +50,7 @@ describe('openai-compat auto-discovery', () => {
       'fetch',
       vi.fn().mockResolvedValue(modelsResponse([{ id: 'served-model', max_model_len: 32768 }])),
     )
-    const p = new OpenAICompatProvider({
+    const p = new LlamaServerProvider({
       baseUrl: 'http://localhost:8000',
       model: 'my-pinned-model',
       contextWindow: 16384,
@@ -70,7 +70,7 @@ describe('openai-compat auto-discovery', () => {
         ]),
       ),
     )
-    const p = new OpenAICompatProvider({ baseUrl: 'http://localhost:8000', model: 'pinned' })
+    const p = new LlamaServerProvider({ baseUrl: 'http://localhost:8000', model: 'pinned' })
     await p.isAvailable()
     expect(p.getContextWindow()).toBe(65536)
   })
@@ -81,7 +81,7 @@ describe('openai-compat auto-discovery', () => {
       .mockResolvedValueOnce(modelsResponse([{ id: 'first', max_model_len: 100 }]))
       .mockResolvedValueOnce(modelsResponse([{ id: 'second', max_model_len: 200 }]))
     vi.stubGlobal('fetch', fetchMock)
-    const p = new OpenAICompatProvider({ baseUrl: 'http://localhost:8000' })
+    const p = new LlamaServerProvider({ baseUrl: 'http://localhost:8000' })
     await p.isAvailable()
     await p.isAvailable()
     expect(p.getModel()).toBe('first') // not re-selected to 'second'
@@ -89,11 +89,11 @@ describe('openai-compat auto-discovery', () => {
   })
 })
 
-describe('openai-compat availability diagnostics', () => {
+describe('llama-server availability diagnostics', () => {
   it('returns false and warns on a connection failure', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
-    const p = new OpenAICompatProvider({ baseUrl: 'http://localhost:8000' })
+    const p = new LlamaServerProvider({ baseUrl: 'http://localhost:8000' })
     expect(await p.isAvailable()).toBe(false)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot reach'))
   })
@@ -104,7 +104,7 @@ describe('openai-compat availability diagnostics', () => {
       'fetch',
       vi.fn().mockResolvedValue({ ok: false, status: 401 } as unknown as Response),
     )
-    const p = new OpenAICompatProvider({ baseUrl: 'http://localhost:8000' })
+    const p = new LlamaServerProvider({ baseUrl: 'http://localhost:8000' })
     expect(await p.isAvailable()).toBe(false)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('api_key'))
   })
@@ -112,7 +112,7 @@ describe('openai-compat availability diagnostics', () => {
   it('fails availability when a pinned model is absent and verifyModelOnInit is set', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(modelsResponse([{ id: 'something-else' }])))
-    const p = new OpenAICompatProvider({
+    const p = new LlamaServerProvider({
       baseUrl: 'http://localhost:8000',
       model: 'expected-model',
       verifyModelOnInit: true,

@@ -1,35 +1,35 @@
 /**
- * Unit tests for OpenAICompatProvider — config normalization, auth headers,
+ * Unit tests for VllmProvider — config normalization, auth headers,
  * context building, model state, and availability probing.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { OpenAICompatProvider, encodeVideoMarkers, spliceVideoUrls } from './index.js'
-import type { OpenAICompatProviderConfig } from './index.js'
+import { VllmProvider, encodeVideoMarkers, spliceVideoUrls } from './index.js'
+import type { VllmProviderConfig } from './index.js'
 import type { Message } from '@rivetos/types'
 
-describe('OpenAICompatProvider', () => {
+describe('VllmProvider', () => {
   describe('constructor and defaults', () => {
     it('applies default values for all optional fields', () => {
-      const config: OpenAICompatProviderConfig = {
+      const config: VllmProviderConfig = {
         baseUrl: 'http://localhost:8000',
       }
-      const provider = new OpenAICompatProvider(config)
+      const provider = new VllmProvider(config)
 
-      expect(provider.id).toBe('openai-compat')
-      expect(provider.name).toBe('OpenAI-compatible server')
+      expect(provider.id).toBe('vllm')
+      expect(provider.name).toBe('vLLM')
       expect(provider.getModel()).toBe('default')
       expect(provider.getContextWindow()).toBe(0)
       expect(provider.getMaxOutputTokens()).toBe(0)
     })
 
     it('uses provided custom id and name', () => {
-      const config: OpenAICompatProviderConfig = {
+      const config: VllmProviderConfig = {
         baseUrl: 'http://localhost:8000',
         id: 'my-provider',
         name: 'My Custom Provider',
       }
-      const provider = new OpenAICompatProvider(config)
+      const provider = new VllmProvider(config)
 
       expect(provider.id).toBe('my-provider')
       expect(provider.name).toBe('My Custom Provider')
@@ -45,14 +45,14 @@ describe('OpenAICompatProvider', () => {
       ]
 
       for (const baseUrl of configs) {
-        const provider = new OpenAICompatProvider({ baseUrl })
+        const provider = new VllmProvider({ baseUrl })
         // All should normalize to bare http://localhost:8000
         expect(provider).toBeDefined()
       }
     })
 
     it('stores custom sampling parameters when provided', () => {
-      const config: OpenAICompatProviderConfig = {
+      const config: VllmProviderConfig = {
         baseUrl: 'http://localhost:8000',
         temperature: 0.5,
         topP: 0.8,
@@ -62,50 +62,50 @@ describe('OpenAICompatProvider', () => {
         frequencyPenalty: -0.5,
         seed: 42,
       }
-      const provider = new OpenAICompatProvider(config)
+      const provider = new VllmProvider(config)
       // Verify context has the values (via buildAiSdkContext indirectly tested)
       expect(provider).toBeDefined()
     })
 
     it('respects custom maxTokens and contextWindow', () => {
-      const config: OpenAICompatProviderConfig = {
+      const config: VllmProviderConfig = {
         baseUrl: 'http://localhost:8000',
         maxTokens: 2048,
         contextWindow: 8192,
         maxOutputTokens: 1024,
       }
-      const provider = new OpenAICompatProvider(config)
+      const provider = new VllmProvider(config)
 
       expect(provider.getMaxOutputTokens()).toBe(1024)
       expect(provider.getContextWindow()).toBe(8192)
     })
 
     it('accepts empty apiKey (for non-authenticated servers)', () => {
-      const config: OpenAICompatProviderConfig = {
+      const config: VllmProviderConfig = {
         baseUrl: 'http://localhost:8000',
       }
-      const provider = new OpenAICompatProvider(config)
+      const provider = new VllmProvider(config)
       expect(provider).toBeDefined()
     })
 
     it('stores apiKey when provided', () => {
-      const config: OpenAICompatProviderConfig = {
+      const config: VllmProviderConfig = {
         baseUrl: 'http://localhost:8000',
         apiKey: 'sk-test-key',
       }
-      const provider = new OpenAICompatProvider(config)
+      const provider = new VllmProvider(config)
       expect(provider).toBeDefined()
     })
   })
 
   describe('getModel / setModel', () => {
     it('returns default model initially', () => {
-      const provider = new OpenAICompatProvider({ baseUrl: 'http://localhost:8000' })
+      const provider = new VllmProvider({ baseUrl: 'http://localhost:8000' })
       expect(provider.getModel()).toBe('default')
     })
 
     it('returns custom model from config', () => {
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
         model: 'gpt-4',
       })
@@ -113,7 +113,7 @@ describe('OpenAICompatProvider', () => {
     })
 
     it('setModel updates the model', () => {
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
         model: 'model-a',
       })
@@ -126,7 +126,7 @@ describe('OpenAICompatProvider', () => {
 
   describe('aiSdkBridge', () => {
     it('returns a bridge with getModel, buildProviderOptions, prepareMessages', () => {
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
         model: 'test-model',
       })
@@ -141,7 +141,7 @@ describe('OpenAICompatProvider', () => {
     })
 
     it('getModel uses modelOverride when provided', () => {
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
         model: 'default-model',
       })
@@ -156,7 +156,7 @@ describe('OpenAICompatProvider', () => {
     })
 
     it('buildProviderOptions returns undefined (vLLM knobs flow via transformRequestBody)', () => {
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
       })
       const bridge = provider.aiSdkBridge()
@@ -165,7 +165,7 @@ describe('OpenAICompatProvider', () => {
     })
 
     it('prepareMessages splits leading system and folds mid-conversation system', () => {
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
       })
       const bridge = provider.aiSdkBridge()
@@ -191,7 +191,7 @@ describe('OpenAICompatProvider', () => {
     })
 
     it('prepareMessages handles no leading system message', () => {
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
       })
       const bridge = provider.aiSdkBridge()
@@ -221,7 +221,7 @@ describe('OpenAICompatProvider', () => {
         }),
       )
 
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
         verifyModelOnInit: false,
       })
@@ -242,7 +242,7 @@ describe('OpenAICompatProvider', () => {
         }),
       )
 
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
         apiKey: 'sk-test-key',
         verifyModelOnInit: false,
@@ -257,7 +257,7 @@ describe('OpenAICompatProvider', () => {
     it('returns false when fetch fails', async () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('Network error')))
 
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
       })
       const available = await provider.isAvailable()
@@ -274,7 +274,7 @@ describe('OpenAICompatProvider', () => {
         }),
       )
 
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
       })
       const available = await provider.isAvailable()
@@ -293,7 +293,7 @@ describe('OpenAICompatProvider', () => {
         }),
       )
 
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
         model: 'custom-model',
         verifyModelOnInit: true,
@@ -314,7 +314,7 @@ describe('OpenAICompatProvider', () => {
         }),
       )
 
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
         model: 'nonexistent-model',
         verifyModelOnInit: true,
@@ -333,7 +333,7 @@ describe('OpenAICompatProvider', () => {
         }),
       )
 
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
         model: 'pinned-model',
         verifyModelOnInit: true,
@@ -362,7 +362,7 @@ describe('OpenAICompatProvider', () => {
         }),
       )
 
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
         model: 'valid-model',
         verifyModelOnInit: true,
@@ -375,7 +375,7 @@ describe('OpenAICompatProvider', () => {
 
   describe('defaultToolChoice', () => {
     it('defaults to "auto"', () => {
-      const provider = new OpenAICompatProvider({
+      const provider = new VllmProvider({
         baseUrl: 'http://localhost:8000',
       })
       expect(provider).toBeDefined()
@@ -384,7 +384,7 @@ describe('OpenAICompatProvider', () => {
     it('accepts custom tool choice settings', () => {
       const toolChoices = ['none', 'required', 'auto'] as const
       for (const choice of toolChoices) {
-        const provider = new OpenAICompatProvider({
+        const provider = new VllmProvider({
           baseUrl: 'http://localhost:8000',
           defaultToolChoice: choice,
         })
@@ -395,7 +395,7 @@ describe('OpenAICompatProvider', () => {
 
   describe('context building', () => {
     it('includes all required fields in context', () => {
-      const config: OpenAICompatProviderConfig = {
+      const config: VllmProviderConfig = {
         baseUrl: 'http://localhost:8000/v1/',
         apiKey: 'sk-test',
         model: 'custom-model',
@@ -409,7 +409,7 @@ describe('OpenAICompatProvider', () => {
         seed: 123,
         defaultToolChoice: 'required' as const,
       }
-      const provider = new OpenAICompatProvider(config)
+      const provider = new VllmProvider(config)
       expect(provider).toBeDefined()
     })
   })
@@ -418,7 +418,7 @@ describe('OpenAICompatProvider', () => {
     const base = { model: 'qwen-27b', messages: [{ role: 'user', content: 'hi' }] }
 
     it('fills configured sampling params the loop omits (the silent-drop bug)', () => {
-      const p = new OpenAICompatProvider({
+      const p = new VllmProvider({
         baseUrl: 'http://x:8003',
         temperature: 1,
         topP: 0.95,
@@ -441,13 +441,13 @@ describe('OpenAICompatProvider', () => {
     })
 
     it('does not overwrite values already on the body', () => {
-      const p = new OpenAICompatProvider({ baseUrl: 'http://x:8003', temperature: 1 })
+      const p = new VllmProvider({ baseUrl: 'http://x:8003', temperature: 1 })
       const out = p.applyVllmRequestExtensions({ ...base, temperature: 0.2 })
       expect(out.temperature).toBe(0.2)
     })
 
     it('forwards vLLM-only sampling extensions', () => {
-      const p = new OpenAICompatProvider({
+      const p = new VllmProvider({
         baseUrl: 'http://x:8003',
         repetitionPenalty: 1.1,
         minTokens: 5,
@@ -460,14 +460,14 @@ describe('OpenAICompatProvider', () => {
     })
 
     it('applies default tool_choice only when tools are present', () => {
-      const p = new OpenAICompatProvider({ baseUrl: 'http://x:8003', defaultToolChoice: 'required' })
+      const p = new VllmProvider({ baseUrl: 'http://x:8003', defaultToolChoice: 'required' })
       expect(p.applyVllmRequestExtensions({ ...base }).tool_choice).toBeUndefined()
       const withTools = p.applyVllmRequestExtensions({ ...base, tools: [{ type: 'function' }] })
       expect(withTools.tool_choice).toBe('required')
     })
 
     it('merges mm_processor_kwargs / chat_template_kwargs / extra_body', () => {
-      const p = new OpenAICompatProvider({
+      const p = new VllmProvider({
         baseUrl: 'http://x:8003',
         mmProcessorKwargs: { fps: 2 },
         chatTemplateKwargs: { enable_thinking: true },

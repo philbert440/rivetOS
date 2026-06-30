@@ -47,7 +47,7 @@ agents:
 
 providers:
   anthropic:
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
     max_tokens: 16384
   xai:
     model: grok-4-1-fast-reasoning
@@ -62,10 +62,10 @@ channels:
       "OPUS_CHANNEL_ID": opus
       "GROK_CHANNEL_ID": grok
       "LOCAL_CHANNEL_ID": local
-  # Agent channel for inter-agent delegation
-  agent:
-    port: 3100
-    secret: ${RIVETOS_AGENT_SECRET}
+
+# Agents on the same node delegate to each other in-process — no extra config needed.
+# For delegation ACROSS nodes, enable the mesh (mTLS-authenticated); see docs/mesh.md.
+# The old `channels.agent` + `secret` bearer-token pattern is removed (replaced by mesh.tls).
 
 memory:
   postgres:
