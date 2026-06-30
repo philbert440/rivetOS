@@ -3,12 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import {
-  shouldSkip,
-  recordFailure,
-  recordSuccess,
-  breakerThreshold,
-} from './circuit-breaker.js'
+import { shouldSkip, recordFailure, recordSuccess, breakerThreshold } from './circuit-breaker.js'
 
 describe('circuit-breaker', () => {
   beforeEach(() => {
@@ -41,9 +36,7 @@ describe('circuit-breaker', () => {
     })
 
     it('should update lastFailAt on each call', async () => {
-      const { recordFailure: rf, shouldSkip: ss } = await import(
-        './circuit-breaker.js'
-      )
+      const { recordFailure: rf, shouldSkip: ss } = await import('./circuit-breaker.js')
       const now = Date.now()
       rf('conv-time')
       expect(ss('conv-time')).toBe(false) // not yet at threshold
@@ -67,18 +60,14 @@ describe('circuit-breaker', () => {
     })
 
     it('should return false for conversation below threshold', async () => {
-      const { recordFailure: rf, shouldSkip: ss } = await import(
-        './circuit-breaker.js'
-      )
+      const { recordFailure: rf, shouldSkip: ss } = await import('./circuit-breaker.js')
       rf('conv-below')
       rf('conv-below')
       expect(ss('conv-below')).toBe(false)
     })
 
     it('should return true once threshold is reached', async () => {
-      const { recordFailure: rf, shouldSkip: ss } = await import(
-        './circuit-breaker.js'
-      )
+      const { recordFailure: rf, shouldSkip: ss } = await import('./circuit-breaker.js')
       rf('conv-at-threshold')
       rf('conv-at-threshold')
       rf('conv-at-threshold')
@@ -86,9 +75,7 @@ describe('circuit-breaker', () => {
     })
 
     it('should return true after threshold is exceeded', async () => {
-      const { recordFailure: rf, shouldSkip: ss } = await import(
-        './circuit-breaker.js'
-      )
+      const { recordFailure: rf, shouldSkip: ss } = await import('./circuit-breaker.js')
       rf('conv-over')
       rf('conv-over')
       rf('conv-over')
@@ -98,9 +85,7 @@ describe('circuit-breaker', () => {
 
     it('should return false after reset window expires', async () => {
       vi.useFakeTimers()
-      const { recordFailure: rf, shouldSkip: ss } = await import(
-        './circuit-breaker.js'
-      )
+      const { recordFailure: rf, shouldSkip: ss } = await import('./circuit-breaker.js')
       const now = Date.now()
 
       // Hit the threshold
@@ -118,9 +103,7 @@ describe('circuit-breaker', () => {
 
     it('should return true if still within reset window', async () => {
       vi.useFakeTimers()
-      const { recordFailure: rf, shouldSkip: ss } = await import(
-        './circuit-breaker.js'
-      )
+      const { recordFailure: rf, shouldSkip: ss } = await import('./circuit-breaker.js')
       const now = Date.now()
 
       rf('conv-window')
@@ -138,16 +121,17 @@ describe('circuit-breaker', () => {
 
   describe('recordSuccess', () => {
     it('should reset an entry with no prior failures', async () => {
-      const { recordSuccess: rs, shouldSkip: ss } = await import(
-        './circuit-breaker.js'
-      )
+      const { recordSuccess: rs, shouldSkip: ss } = await import('./circuit-breaker.js')
       rs('conv-clean')
       expect(ss('conv-clean')).toBe(false)
     })
 
     it('should clear an entry below threshold', async () => {
-      const { recordFailure: rf, recordSuccess: rs, shouldSkip: ss } =
-        await import('./circuit-breaker.js')
+      const {
+        recordFailure: rf,
+        recordSuccess: rs,
+        shouldSkip: ss,
+      } = await import('./circuit-breaker.js')
       rf('conv-clear-below')
       rf('conv-clear-below')
       rs('conv-clear-below')
@@ -155,8 +139,11 @@ describe('circuit-breaker', () => {
     })
 
     it('should clear an entry at threshold', async () => {
-      const { recordFailure: rf, recordSuccess: rs, shouldSkip: ss } =
-        await import('./circuit-breaker.js')
+      const {
+        recordFailure: rf,
+        recordSuccess: rs,
+        shouldSkip: ss,
+      } = await import('./circuit-breaker.js')
       rf('conv-clear-threshold')
       rf('conv-clear-threshold')
       rf('conv-clear-threshold')
@@ -167,9 +154,7 @@ describe('circuit-breaker', () => {
     })
 
     it('should allow failure counter to start fresh after success', async () => {
-      const { recordFailure: rf, recordSuccess: rs } = await import(
-        './circuit-breaker.js'
-      )
+      const { recordFailure: rf, recordSuccess: rs } = await import('./circuit-breaker.js')
       rf('conv-fresh')
       rf('conv-fresh')
       rf('conv-fresh')
@@ -190,8 +175,11 @@ describe('circuit-breaker', () => {
   describe('integration: open → half-open → closed transition', () => {
     it('should transition from closed to open to closed', async () => {
       vi.useFakeTimers()
-      const { recordFailure: rf, recordSuccess: rs, shouldSkip: ss } =
-        await import('./circuit-breaker.js')
+      const {
+        recordFailure: rf,
+        recordSuccess: rs,
+        shouldSkip: ss,
+      } = await import('./circuit-breaker.js')
       const now = Date.now()
 
       // Closed: no failures
@@ -216,9 +204,7 @@ describe('circuit-breaker', () => {
 
     it('should re-open if half-open fails again within reset window', async () => {
       vi.useFakeTimers()
-      const { recordFailure: rf, shouldSkip: ss } = await import(
-        './circuit-breaker.js'
-      )
+      const { recordFailure: rf, shouldSkip: ss } = await import('./circuit-breaker.js')
       const now = Date.now()
 
       // Hit threshold

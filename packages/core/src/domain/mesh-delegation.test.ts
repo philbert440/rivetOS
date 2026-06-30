@@ -91,10 +91,7 @@ describe('MeshDelegationEngine roster', () => {
   })
 
   it('advertises the roster in the live delegate_task description', async () => {
-    const engine = makeEngine([
-      node('ct114', ['local', 'grok']),
-      node('ct115', ['opus']),
-    ])
+    const engine = makeEngine([node('ct114', ['local', 'grok']), node('ct115', ['opus'])])
     // Let the constructor's primed refresh settle.
     await new Promise((r) => setTimeout(r, 10))
 

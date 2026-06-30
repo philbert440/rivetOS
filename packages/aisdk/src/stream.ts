@@ -29,8 +29,7 @@ export function extractText(content: string | ContentPart[]): string {
 }
 
 type AiSdkUserPart =
-  | { type: 'text'; text: string }
-  | { type: 'image'; image: string | URL; mediaType?: string }
+  { type: 'text'; text: string } | { type: 'image'; image: string | URL; mediaType?: string }
 
 export function partsToAiSdkUserContent(parts: ContentPart[]): AiSdkUserPart[] {
   const out: AiSdkUserPart[] = []

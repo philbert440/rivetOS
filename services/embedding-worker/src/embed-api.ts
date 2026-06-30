@@ -10,7 +10,12 @@ import { config } from './config.js'
 function isTransientError(err: unknown): boolean {
   if (err instanceof TypeError) return true
   if (err instanceof Error && err.name === 'AbortError') return true
-  if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return true
+  if (
+    typeof DOMException !== 'undefined' &&
+    err instanceof DOMException &&
+    err.name === 'AbortError'
+  )
+    return true
   return false
 }
 
@@ -77,7 +82,9 @@ async function embedOnce(texts: string[]): Promise<Array<number[] | null> | 'tra
     }
   }
 
-  console.error(`[EmbedWorker] Batch embed failed after ${config.maxRetries} retries: ${lastError?.message}`)
+  console.error(
+    `[EmbedWorker] Batch embed failed after ${config.maxRetries} retries: ${lastError?.message}`,
+  )
   return 'transient'
 }
 

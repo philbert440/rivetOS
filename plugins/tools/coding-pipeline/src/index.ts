@@ -50,13 +50,7 @@ export interface CodingPipelineConfig {
 // ---------------------------------------------------------------------------
 
 type PipelinePhase =
-  | 'BUILD'
-  | 'SELF_REVIEW'
-  | 'RETURN_FOR_VALIDATION'
-  | 'FIX'
-  | 'COMMIT'
-  | 'DONE'
-  | 'FAILED'
+  'BUILD' | 'SELF_REVIEW' | 'RETURN_FOR_VALIDATION' | 'FIX' | 'COMMIT' | 'DONE' | 'FAILED'
 
 interface PipelineContext {
   spec: string

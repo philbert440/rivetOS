@@ -352,12 +352,7 @@ describe('VllmProvider', () => {
         vi.fn().mockResolvedValueOnce({
           ok: true,
           json: vi.fn().mockResolvedValueOnce({
-            data: [
-              { id: 'valid-model' },
-              { id: null },
-              { id: 123 },
-              { id: 'another-model' },
-            ],
+            data: [{ id: 'valid-model' }, { id: null }, { id: 123 }, { id: 'another-model' }],
           }),
         }),
       )
@@ -500,10 +495,16 @@ describe('VllmProvider', () => {
     it('splices a marker back into an OpenAI video_url block (full round-trip)', () => {
       const url = 'https://cdn/clip.mp4'
       const encoded = encodeVideoMarkers([
-        { role: 'user', content: [{ type: 'text', text: 'hi' }, { type: 'video', url }] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'hi' },
+            { type: 'video', url },
+          ],
+        },
       ])
-      const markerText = (encoded[0].content as { type: string; text?: string }[]).find(
-        (p) => p.text?.includes('RVT_VIDEO['),
+      const markerText = (encoded[0].content as { type: string; text?: string }[]).find((p) =>
+        p.text?.includes('RVT_VIDEO['),
       )!.text
       // Simulate the serialized OpenAI body the AI SDK produces.
       const body = {
@@ -511,8 +512,9 @@ describe('VllmProvider', () => {
         messages: [{ role: 'user', content: [{ type: 'text', text: `hi ${markerText}` }] }],
       }
       const out = spliceVideoUrls(body)
-      const content = (out.messages as { content: { type: string; video_url?: { url: string } }[] }[])[0]
-        .content
+      const content = (
+        out.messages as { content: { type: string; video_url?: { url: string } }[] }[]
+      )[0].content
       const vid = content.find((p) => p.type === 'video_url')
       expect(vid?.video_url?.url).toBe(url)
       // marker text removed from the text part

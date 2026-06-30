@@ -100,7 +100,9 @@ describe('classifyUnembeddable', () => {
   })
 
   it('detects long base64 blob (1500+ chars) with >95% base64 chars', () => {
-    const base64Payload = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.repeat(30)
+    const base64Payload = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.repeat(
+      30,
+    )
     const result = classifyUnembeddable(base64Payload)
     assert.equal(result, 'base64-blob')
   })

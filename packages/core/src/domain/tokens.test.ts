@@ -26,9 +26,7 @@ describe('estimateTokens', () => {
       {
         role: 'assistant',
         content: 'Running command',
-        toolCalls: [
-          { id: 'tc-1', name: 'shell', arguments: { command: 'echo hello' } },
-        ],
+        toolCalls: [{ id: 'tc-1', name: 'shell', arguments: { command: 'echo hello' } }],
       },
     ]
     const tokens = estimateTokens(messages)

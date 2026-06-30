@@ -116,10 +116,7 @@ describe('embedMcpServerForTurn', () => {
     // Config tempfile must exist with a sensible shape.
     const raw = await fs.readFile(handle.configPath, 'utf8')
     const parsed = JSON.parse(raw) as {
-      mcpServers: Record<
-        string,
-        { type: string; url: string; headers: Record<string, string> }
-      >
+      mcpServers: Record<string, { type: string; url: string; headers: Record<string, string> }>
     }
     expect(Object.keys(parsed.mcpServers)).toEqual(['rivetos'])
     expect(parsed.mcpServers.rivetos.type).toBe('http')

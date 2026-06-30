@@ -49,7 +49,9 @@ describe('RivetMcpServer (Phase 1.A slice 1)', () => {
 
   it('responds to /health/live without auth', async () => {
     h = await setup()
-    const healthUrl = new URL(`http://${h.server.address.host}:${String(h.server.address.port)}/health/live`)
+    const healthUrl = new URL(
+      `http://${h.server.address.host}:${String(h.server.address.port)}/health/live`,
+    )
 
     const res = await fetch(healthUrl)
     expect(res.status).toBe(200)

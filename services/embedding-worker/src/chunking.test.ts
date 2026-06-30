@@ -99,7 +99,10 @@ describe('meanPool', () => {
   })
 
   it('computes mean of two different vectors', () => {
-    const result = meanPool([[1, 2, 3], [3, 4, 5]])
+    const result = meanPool([
+      [1, 2, 3],
+      [3, 4, 5],
+    ])
     assert.deepEqual(result, [2, 3, 4])
   })
 
@@ -114,7 +117,11 @@ describe('meanPool', () => {
   })
 
   it('skips vectors with mismatched dimension', () => {
-    const result = meanPool([[1, 2, 3], [1, 2], [3, 4, 5]])
+    const result = meanPool([
+      [1, 2, 3],
+      [1, 2],
+      [3, 4, 5],
+    ])
     // First valid vec has dim 3, so [1,2] is skipped
     assert.deepEqual(result, [2, 3, 4])
   })
@@ -141,7 +148,10 @@ describe('meanPool', () => {
   })
 
   it('handles fractional vectors and computes mean correctly', () => {
-    const result = meanPool([[1.5, 2.5], [3.5, 4.5]])
+    const result = meanPool([
+      [1.5, 2.5],
+      [3.5, 4.5],
+    ])
     assert.deepEqual(result, [2.5, 3.5])
   })
 })

@@ -63,9 +63,7 @@ export const synthesizeToolCallTask: Task = async (payload, helpers) => {
     }
 
     const toolArgs =
-      typeof row.tool_args === 'string'
-        ? JSON.parse(row.tool_args || '{}')
-        : (row.tool_args ?? {})
+      typeof row.tool_args === 'string' ? JSON.parse(row.tool_args || '{}') : (row.tool_args ?? {})
 
     const synth = await synthesizeToolCallContent({
       endpoint: config.toolSynthEndpoint,
@@ -80,12 +78,7 @@ export const synthesizeToolCallTask: Task = async (payload, helpers) => {
       throw new Error('Empty synth response')
     }
 
-    await client.query(`UPDATE ros_messages SET content = $1 WHERE id = $2`, [
-      synth,
-      messageId,
-    ])
-    helpers.logger.info(
-      `[synthesize-tool-call] ${row.tool_name} → ${synth.slice(0, 80)}`,
-    )
+    await client.query(`UPDATE ros_messages SET content = $1 WHERE id = $2`, [synth, messageId])
+    helpers.logger.info(`[synthesize-tool-call] ${row.tool_name} → ${synth.slice(0, 80)}`)
   })
 }

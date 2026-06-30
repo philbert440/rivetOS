@@ -733,8 +733,7 @@ export class AgentLoop {
     messages: ModelMessage[],
   ): CompactionRequest[] | string {
     const replacements = args.replacements as
-      | Array<{ start_index: number; end_index: number; summary: string }>
-      | undefined
+      Array<{ start_index: number; end_index: number; summary: string }> | undefined
 
     if (!replacements || !Array.isArray(replacements) || replacements.length === 0) {
       return 'Error: replacements array is required and must not be empty'

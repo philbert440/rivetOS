@@ -3,10 +3,10 @@
  * unknown keys, type checks, and helpful error messages.
  */
 
-import { describe, it } from 'vitest';
-import * as assert from 'node:assert/strict';
-import { validateConfig, formatValidationResult, type ValidationResult } from './validate/index.js';
-import { MODEL_DEFAULTS } from '@rivetos/types';
+import { describe, it } from 'vitest'
+import * as assert from 'node:assert/strict'
+import { validateConfig, formatValidationResult, type ValidationResult } from './validate/index.js'
+import { MODEL_DEFAULTS } from '@rivetos/types'
 // Migrated from /src/validate.test.ts → packages/boot/src/validate.test.ts
 
 /** Minimal valid config for baseline tests */
@@ -28,40 +28,56 @@ function validConfig(): Record<string, unknown> {
         max_tokens: 8192,
       },
     },
-  };
+  }
 }
 
 /** Helper: assert result has no errors */
 function assertValid(result: ValidationResult): void {
   if (!result.valid) {
-    const msg = result.errors.map((e) => `[${e.path}] ${e.message}`).join('\n');
-    assert.fail(`Expected valid config but got errors:\n${msg}`);
+    const msg = result.errors.map((e) => `[${e.path}] ${e.message}`).join('\n')
+    assert.fail(`Expected valid config but got errors:\n${msg}`)
   }
 }
 
 /** Helper: assert result has an error matching a pattern */
-function assertError(result: ValidationResult, pathPattern: string | RegExp, msgPattern: string | RegExp): void {
+function assertError(
+  result: ValidationResult,
+  pathPattern: string | RegExp,
+  msgPattern: string | RegExp,
+): void {
   const match = result.errors.find((e) => {
-    const pathMatch = typeof pathPattern === 'string' ? e.path === pathPattern : pathPattern.test(e.path);
-    const msgMatch = typeof msgPattern === 'string' ? e.message.includes(msgPattern) : msgPattern.test(e.message);
-    return pathMatch && msgMatch;
-  });
+    const pathMatch =
+      typeof pathPattern === 'string' ? e.path === pathPattern : pathPattern.test(e.path)
+    const msgMatch =
+      typeof msgPattern === 'string' ? e.message.includes(msgPattern) : msgPattern.test(e.message)
+    return pathMatch && msgMatch
+  })
   if (!match) {
-    const actual = result.errors.map((e) => `  [${e.path}] ${e.message}`).join('\n');
-    assert.fail(`Expected error at "${pathPattern}" matching "${msgPattern}" but got:\n${actual || '  (no errors)'}`);
+    const actual = result.errors.map((e) => `  [${e.path}] ${e.message}`).join('\n')
+    assert.fail(
+      `Expected error at "${pathPattern}" matching "${msgPattern}" but got:\n${actual || '  (no errors)'}`,
+    )
   }
 }
 
 /** Helper: assert result has a warning matching a pattern */
-function assertWarning(result: ValidationResult, pathPattern: string | RegExp, msgPattern: string | RegExp): void {
+function assertWarning(
+  result: ValidationResult,
+  pathPattern: string | RegExp,
+  msgPattern: string | RegExp,
+): void {
   const match = result.warnings.find((e) => {
-    const pathMatch = typeof pathPattern === 'string' ? e.path === pathPattern : pathPattern.test(e.path);
-    const msgMatch = typeof msgPattern === 'string' ? e.message.includes(msgPattern) : msgPattern.test(e.message);
-    return pathMatch && msgMatch;
-  });
+    const pathMatch =
+      typeof pathPattern === 'string' ? e.path === pathPattern : pathPattern.test(e.path)
+    const msgMatch =
+      typeof msgPattern === 'string' ? e.message.includes(msgPattern) : msgPattern.test(e.message)
+    return pathMatch && msgMatch
+  })
   if (!match) {
-    const actual = result.warnings.map((e) => `  [${e.path}] ${e.message}`).join('\n');
-    assert.fail(`Expected warning at "${pathPattern}" matching "${msgPattern}" but got:\n${actual || '  (no warnings)'}`);
+    const actual = result.warnings.map((e) => `  [${e.path}] ${e.message}`).join('\n')
+    assert.fail(
+      `Expected warning at "${pathPattern}" matching "${msgPattern}" but got:\n${actual || '  (no warnings)'}`,
+    )
   }
 }
 
@@ -72,34 +88,34 @@ function assertWarning(result: ValidationResult, pathPattern: string | RegExp, m
 describe('Config Validation', () => {
   describe('top-level structure', () => {
     it('accepts a minimal valid config', () => {
-      const result = validateConfig(validConfig());
-      assertValid(result);
-    });
+      const result = validateConfig(validConfig())
+      assertValid(result)
+    })
 
     it('rejects null', () => {
-      const result = validateConfig(null);
-      assert.equal(result.valid, false);
-      assertError(result, '', 'must be a YAML object');
-    });
+      const result = validateConfig(null)
+      assert.equal(result.valid, false)
+      assertError(result, '', 'must be a YAML object')
+    })
 
     it('rejects a string', () => {
-      const result = validateConfig('not a config');
-      assert.equal(result.valid, false);
-    });
+      const result = validateConfig('not a config')
+      assert.equal(result.valid, false)
+    })
 
     it('rejects an array', () => {
-      const result = validateConfig([1, 2, 3]);
-      assert.equal(result.valid, false);
-    });
+      const result = validateConfig([1, 2, 3])
+      assert.equal(result.valid, false)
+    })
 
     it('warns on unknown top-level keys', () => {
-      const cfg = { ...validConfig(), experimental: true, foo: 'bar' };
-      const result = validateConfig(cfg);
-      assertValid(result);
-      assertWarning(result, 'experimental', 'Unknown top-level key');
-      assertWarning(result, 'foo', 'Unknown top-level key');
-    });
-  });
+      const cfg = { ...validConfig(), experimental: true, foo: 'bar' }
+      const result = validateConfig(cfg)
+      assertValid(result)
+      assertWarning(result, 'experimental', 'Unknown top-level key')
+      assertWarning(result, 'foo', 'Unknown top-level key')
+    })
+  })
 
   // =========================================================================
   // runtime section
@@ -107,81 +123,81 @@ describe('Config Validation', () => {
 
   describe('runtime', () => {
     it('requires runtime section', () => {
-      const cfg = validConfig();
-      delete cfg.runtime;
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime', 'Missing required section');
-    });
+      const cfg = validConfig()
+      delete cfg.runtime
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime', 'Missing required section')
+    })
 
     it('rejects non-object runtime', () => {
-      const cfg = { ...validConfig(), runtime: 'invalid' };
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime', 'must be an object');
-    });
+      const cfg = { ...validConfig(), runtime: 'invalid' }
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime', 'must be an object')
+    })
 
     it('requires workspace', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).workspace = undefined;
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.workspace', 'Missing required field');
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).workspace = undefined
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.workspace', 'Missing required field')
+    })
 
     it('requires default_agent', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).default_agent = undefined;
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.default_agent', 'Missing required field');
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).default_agent = undefined
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.default_agent', 'Missing required field')
+    })
 
     it('rejects non-string workspace', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).workspace = 42;
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.workspace', 'must be a string');
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).workspace = 42
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.workspace', 'must be a string')
+    })
 
     it('rejects non-positive turn_timeout', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).turn_timeout = 0;
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.turn_timeout', 'must be a positive number');
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).turn_timeout = 0
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.turn_timeout', 'must be a positive number')
+    })
 
     it('accepts valid turn_timeout', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).turn_timeout = 600;
-      const result = validateConfig(cfg);
-      assertValid(result);
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).turn_timeout = 600
+      const result = validateConfig(cfg)
+      assertValid(result)
+    })
 
     it('warns on unknown runtime keys', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).mystery_key = 'value';
-      const result = validateConfig(cfg);
-      assertWarning(result, 'runtime.mystery_key', 'Unknown runtime key');
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).mystery_key = 'value'
+      const result = validateConfig(cfg)
+      assertWarning(result, 'runtime.mystery_key', 'Unknown runtime key')
+    })
 
     it('rejects non-array skill_dirs', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).skill_dirs = '/single/path';
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.skill_dirs', 'must be an array');
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).skill_dirs = '/single/path'
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.skill_dirs', 'must be an array')
+    })
 
     it('accepts valid skill_dirs', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).skill_dirs = ['/opt/skills', '~/custom-skills'];
-      const result = validateConfig(cfg);
-      assertValid(result);
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).skill_dirs = ['/opt/skills', '~/custom-skills']
+      const result = validateConfig(cfg)
+      assertValid(result)
+    })
 
     it('rejects non-string entries in skill_dirs', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).skill_dirs = ['/valid', 42];
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.skill_dirs[1]', 'must be a string path');
-    });
-  });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).skill_dirs = ['/valid', 42]
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.skill_dirs[1]', 'must be a string path')
+    })
+  })
 
   // =========================================================================
   // heartbeats
@@ -189,49 +205,49 @@ describe('Config Validation', () => {
 
   describe('heartbeats', () => {
     it('accepts valid heartbeat', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).heartbeats = [
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).heartbeats = [
         { agent: 'opus', schedule: '30m', prompt: 'Check things.' },
-      ];
-      const result = validateConfig(cfg);
-      assertValid(result);
-    });
+      ]
+      const result = validateConfig(cfg)
+      assertValid(result)
+    })
 
     it('rejects non-array heartbeats', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).heartbeats = 'not an array';
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.heartbeats', 'must be an array');
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).heartbeats = 'not an array'
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.heartbeats', 'must be an array')
+    })
 
     it('requires agent, schedule, and prompt in heartbeat', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).heartbeats = [{}];
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.heartbeats[0].agent', 'requires a string "agent"');
-      assertError(result, 'runtime.heartbeats[0].schedule', 'requires a "schedule"');
-      assertError(result, 'runtime.heartbeats[0].prompt', 'requires a string "prompt"');
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).heartbeats = [{}]
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.heartbeats[0].agent', 'requires a string "agent"')
+      assertError(result, 'runtime.heartbeats[0].schedule', 'requires a "schedule"')
+      assertError(result, 'runtime.heartbeats[0].prompt', 'requires a string "prompt"')
+    })
 
     it('validates quiet_hours range', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).heartbeats = [
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).heartbeats = [
         { agent: 'opus', schedule: '30m', prompt: 'Check.', quiet_hours: { start: 25, end: -1 } },
-      ];
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.heartbeats[0].quiet_hours.start', '0-23');
-      assertError(result, 'runtime.heartbeats[0].quiet_hours.end', '0-23');
-    });
+      ]
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.heartbeats[0].quiet_hours.start', '0-23')
+      assertError(result, 'runtime.heartbeats[0].quiet_hours.end', '0-23')
+    })
 
     it('accepts valid quiet_hours', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).heartbeats = [
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).heartbeats = [
         { agent: 'opus', schedule: '30m', prompt: 'Check.', quiet_hours: { start: 23, end: 7 } },
-      ];
-      const result = validateConfig(cfg);
-      assertValid(result);
-    });
-  });
+      ]
+      const result = validateConfig(cfg)
+      assertValid(result)
+    })
+  })
 
   // =========================================================================
   // coding_pipeline
@@ -239,34 +255,34 @@ describe('Config Validation', () => {
 
   describe('coding_pipeline', () => {
     it('accepts valid pipeline config', () => {
-      const cfg = validConfig();
-      const agents = cfg.agents as Record<string, unknown>;
-      agents.grok = { provider: 'anthropic' };
-      (cfg.runtime as Record<string, unknown>).coding_pipeline = {
+      const cfg = validConfig()
+      const agents = cfg.agents as Record<string, unknown>
+      agents.grok = { provider: 'anthropic' }
+      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = {
         builder_agent: 'grok',
         validator_agent: 'opus',
         max_build_loops: 3,
         max_validation_loops: 2,
         auto_commit: true,
-      };
-      const result = validateConfig(cfg);
-      assertValid(result);
-    });
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+    })
 
     it('rejects non-positive max_build_loops', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).coding_pipeline = { max_build_loops: 0 };
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.coding_pipeline.max_build_loops', 'positive integer');
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = { max_build_loops: 0 }
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.coding_pipeline.max_build_loops', 'positive integer')
+    })
 
     it('rejects non-boolean auto_commit', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).coding_pipeline = { auto_commit: 'yes' };
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.coding_pipeline.auto_commit', 'must be a boolean');
-    });
-  });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = { auto_commit: 'yes' }
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.coding_pipeline.auto_commit', 'must be a boolean')
+    })
+  })
 
   // =========================================================================
   // agents section
@@ -274,47 +290,47 @@ describe('Config Validation', () => {
 
   describe('agents', () => {
     it('requires agents section', () => {
-      const cfg = validConfig();
-      delete cfg.agents;
-      const result = validateConfig(cfg);
-      assertError(result, 'agents', 'Missing required section');
-    });
+      const cfg = validConfig()
+      delete cfg.agents
+      const result = validateConfig(cfg)
+      assertError(result, 'agents', 'Missing required section')
+    })
 
     it('rejects empty agents', () => {
-      const cfg = { ...validConfig(), agents: {} };
-      const result = validateConfig(cfg);
-      assertError(result, 'agents', 'is empty');
-    });
+      const cfg = { ...validConfig(), agents: {} }
+      const result = validateConfig(cfg)
+      assertError(result, 'agents', 'is empty')
+    })
 
     it('requires provider on each agent', () => {
-      const cfg = { ...validConfig(), agents: { opus: {} } };
-      const result = validateConfig(cfg);
-      assertError(result, 'agents.opus.provider', 'missing required field "provider"');
-    });
+      const cfg = { ...validConfig(), agents: { opus: {} } }
+      const result = validateConfig(cfg)
+      assertError(result, 'agents.opus.provider', 'missing required field "provider"')
+    })
 
     it('rejects invalid default_thinking', () => {
-      const cfg = validConfig();
-      (cfg.agents as Record<string, Record<string, unknown>>).opus.default_thinking = 'turbo';
-      const result = validateConfig(cfg);
-      assertError(result, 'agents.opus.default_thinking', 'must be one of');
-    });
+      const cfg = validConfig()
+      ;(cfg.agents as Record<string, Record<string, unknown>>).opus.default_thinking = 'turbo'
+      const result = validateConfig(cfg)
+      assertError(result, 'agents.opus.default_thinking', 'must be one of')
+    })
 
     it('accepts all valid thinking levels', () => {
       for (const level of ['off', 'low', 'medium', 'high']) {
-        const cfg = validConfig();
-        (cfg.agents as Record<string, Record<string, unknown>>).opus.default_thinking = level;
-        const result = validateConfig(cfg);
-        assertValid(result);
+        const cfg = validConfig()
+        ;(cfg.agents as Record<string, Record<string, unknown>>).opus.default_thinking = level
+        const result = validateConfig(cfg)
+        assertValid(result)
       }
-    });
+    })
 
     it('warns on unknown agent keys', () => {
-      const cfg = validConfig();
-      (cfg.agents as Record<string, Record<string, unknown>>).opus.persona = 'friendly';
-      const result = validateConfig(cfg);
-      assertWarning(result, 'agents.opus.persona', 'Unknown agent key');
-    });
-  });
+      const cfg = validConfig()
+      ;(cfg.agents as Record<string, Record<string, unknown>>).opus.persona = 'friendly'
+      const result = validateConfig(cfg)
+      assertWarning(result, 'agents.opus.persona', 'Unknown agent key')
+    })
+  })
 
   // =========================================================================
   // providers section
@@ -322,103 +338,105 @@ describe('Config Validation', () => {
 
   describe('providers', () => {
     it('requires providers section', () => {
-      const cfg = validConfig();
-      delete cfg.providers;
-      const result = validateConfig(cfg);
-      assertError(result, 'providers', 'Missing required section');
-    });
+      const cfg = validConfig()
+      delete cfg.providers
+      const result = validateConfig(cfg)
+      assertError(result, 'providers', 'Missing required section')
+    })
 
     it('rejects empty providers', () => {
-      const cfg = { ...validConfig(), providers: {} };
-      const result = validateConfig(cfg);
-      assertError(result, 'providers', 'is empty');
-    });
+      const cfg = { ...validConfig(), providers: {} }
+      const result = validateConfig(cfg)
+      assertError(result, 'providers', 'is empty')
+    })
 
     it('requires model on each provider', () => {
-      const cfg = validConfig();
-      delete (cfg.providers as Record<string, Record<string, unknown>>).anthropic.model;
-      const result = validateConfig(cfg);
-      assertError(result, 'providers.anthropic.model', 'missing required field "model"');
-    });
+      const cfg = validConfig()
+      delete (cfg.providers as Record<string, Record<string, unknown>>).anthropic.model
+      const result = validateConfig(cfg)
+      assertError(result, 'providers.anthropic.model', 'missing required field "model"')
+    })
 
     it('requires base_url for ollama', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, unknown>).ollama = { model: 'llama3' };
-      (cfg.agents as Record<string, unknown>).local = { provider: 'ollama' };
-      const result = validateConfig(cfg);
-      assertError(result, 'providers.ollama.base_url', 'requires "base_url"');
-    });
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>).ollama = { model: 'llama3' }
+      ;(cfg.agents as Record<string, unknown>).local = { provider: 'ollama' }
+      const result = validateConfig(cfg)
+      assertError(result, 'providers.ollama.base_url', 'requires "base_url"')
+    })
 
     it('rejects removed "openai-compat" provider with migration hint', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, unknown>)['openai-compat'] = {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>)['openai-compat'] = {
         model: 'rivet',
         base_url: 'http://localhost:8000',
-      };
-      (cfg.agents as Record<string, unknown>).local = { provider: 'openai-compat' };
-      const result = validateConfig(cfg);
-      assertError(result, 'providers.openai-compat', 'vllm');
-    });
+      }
+      ;(cfg.agents as Record<string, unknown>).local = { provider: 'openai-compat' }
+      const result = validateConfig(cfg)
+      assertError(result, 'providers.openai-compat', 'vllm')
+    })
 
     it('requires base_url for vllm', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, unknown>).vllm = { model: 'rivet' };
-      (cfg.agents as Record<string, unknown>).local = { provider: 'vllm' };
-      const result = validateConfig(cfg);
-      assertError(result, 'providers.vllm.base_url', 'requires "base_url"');
-    });
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>).vllm = { model: 'rivet' }
+      ;(cfg.agents as Record<string, unknown>).local = { provider: 'vllm' }
+      const result = validateConfig(cfg)
+      assertError(result, 'providers.vllm.base_url', 'requires "base_url"')
+    })
 
     it('requires base_url for llama-server', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, unknown>)['llama-server'] = { model: 'rivet' };
-      (cfg.agents as Record<string, unknown>).local = { provider: 'llama-server' };
-      const result = validateConfig(cfg);
-      assertError(result, 'providers.llama-server.base_url', 'requires "base_url"');
-    });
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>)['llama-server'] = { model: 'rivet' }
+      ;(cfg.agents as Record<string, unknown>).local = { provider: 'llama-server' }
+      const result = validateConfig(cfg)
+      assertError(result, 'providers.llama-server.base_url', 'requires "base_url"')
+    })
 
     it('warns on hardcoded API key', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, Record<string, unknown>>).anthropic.api_key = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaa';
-      const result = validateConfig(cfg);
-      assertWarning(result, 'providers.anthropic.api_key', 'hardcoded API key');
-    });
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.api_key =
+        'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaa'
+      const result = validateConfig(cfg)
+      assertWarning(result, 'providers.anthropic.api_key', 'hardcoded API key')
+    })
 
     it('does not warn on env var reference', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, Record<string, unknown>>).anthropic.api_key = '${ANTHROPIC_API_KEY}';
-      const result = validateConfig(cfg);
-      const apiKeyWarnings = result.warnings.filter((w) => w.path === 'providers.anthropic.api_key');
-      assert.equal(apiKeyWarnings.length, 0, 'Should not warn on env var reference');
-    });
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.api_key =
+        '${ANTHROPIC_API_KEY}'
+      const result = validateConfig(cfg)
+      const apiKeyWarnings = result.warnings.filter((w) => w.path === 'providers.anthropic.api_key')
+      assert.equal(apiKeyWarnings.length, 0, 'Should not warn on env var reference')
+    })
 
     it('rejects non-positive max_tokens', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, Record<string, unknown>>).anthropic.max_tokens = -100;
-      const result = validateConfig(cfg);
-      assertError(result, 'providers.anthropic.max_tokens', 'must be a positive number');
-    });
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.max_tokens = -100
+      const result = validateConfig(cfg)
+      assertError(result, 'providers.anthropic.max_tokens', 'must be a positive number')
+    })
 
     it('warns on out-of-range temperature', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, Record<string, unknown>>).anthropic.temperature = 5.0;
-      const result = validateConfig(cfg);
-      assertWarning(result, 'providers.anthropic.temperature', 'outside typical range');
-    });
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.temperature = 5.0
+      const result = validateConfig(cfg)
+      assertWarning(result, 'providers.anthropic.temperature', 'outside typical range')
+    })
 
     it('warns on unknown provider type', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, unknown>).deepseek = { model: 'deepseek-chat' };
-      const result = validateConfig(cfg);
-      assertWarning(result, 'providers.deepseek', 'Unknown provider type');
-    });
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>).deepseek = { model: 'deepseek-chat' }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'providers.deepseek', 'Unknown provider type')
+    })
 
     it('warns on unknown keys in known provider', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, Record<string, unknown>>).anthropic.thinking_budget = 100;
-      const result = validateConfig(cfg);
-      assertWarning(result, 'providers.anthropic.thinking_budget', 'Unknown key');
-    });
-  });
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.thinking_budget = 100
+      const result = validateConfig(cfg)
+      assertWarning(result, 'providers.anthropic.thinking_budget', 'Unknown key')
+    })
+  })
 
   // =========================================================================
   // channels section
@@ -426,48 +444,48 @@ describe('Config Validation', () => {
 
   describe('channels', () => {
     it('accepts valid channel config', () => {
-      const cfg = validConfig();
+      const cfg = validConfig()
       cfg.channels = {
         telegram: { owner_id: '123', allowed_users: ['123'] },
-      };
-      const result = validateConfig(cfg);
-      assertValid(result);
-    });
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+    })
 
     it('warns on unknown channel type', () => {
-      const cfg = validConfig();
-      cfg.channels = { slack: { token: 'xoxb-...' } };
-      const result = validateConfig(cfg);
-      assertWarning(result, 'channels.slack', 'Unknown channel type');
-    });
+      const cfg = validConfig()
+      cfg.channels = { slack: { token: 'xoxb-...' } }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'channels.slack', 'Unknown channel type')
+    })
 
     it('warns on hardcoded bot token', () => {
-      const cfg = validConfig();
+      const cfg = validConfig()
       cfg.channels = {
         telegram: { bot_token: '1234567890:ABCdefGHIjklMNOpqrsTUVwxyz' },
-      };
-      const result = validateConfig(cfg);
-      assertWarning(result, 'channels.telegram.bot_token', 'hardcoded bot token');
-    });
+      }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'channels.telegram.bot_token', 'hardcoded bot token')
+    })
 
     it('validates discord channel_bindings type', () => {
-      const cfg = validConfig();
+      const cfg = validConfig()
       cfg.channels = {
         discord: { channel_bindings: 'not-an-object' },
-      };
-      const result = validateConfig(cfg);
-      assertError(result, 'channels.discord.channel_bindings', 'must be an object');
-    });
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'channels.discord.channel_bindings', 'must be an object')
+    })
 
     it('warns on unknown keys in known channel', () => {
-      const cfg = validConfig();
+      const cfg = validConfig()
       cfg.channels = {
         telegram: { owner_id: '123', webhook_url: 'http://...' },
-      };
-      const result = validateConfig(cfg);
-      assertWarning(result, 'channels.telegram.webhook_url', 'Unknown key');
-    });
-  });
+      }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'channels.telegram.webhook_url', 'Unknown key')
+    })
+  })
 
   // =========================================================================
   // memory section
@@ -475,26 +493,26 @@ describe('Config Validation', () => {
 
   describe('memory', () => {
     it('accepts valid memory config', () => {
-      const cfg = validConfig();
-      cfg.memory = { postgres: { connection_string: '${RIVETOS_PG_URL}' } };
-      const result = validateConfig(cfg);
-      assertValid(result);
-    });
+      const cfg = validConfig()
+      cfg.memory = { postgres: { connection_string: '${RIVETOS_PG_URL}' } }
+      const result = validateConfig(cfg)
+      assertValid(result)
+    })
 
     it('warns on unknown memory backend', () => {
-      const cfg = validConfig();
-      cfg.memory = { redis: { url: 'redis://localhost' } };
-      const result = validateConfig(cfg);
-      assertWarning(result, 'memory.redis', 'Unknown memory backend');
-    });
+      const cfg = validConfig()
+      cfg.memory = { redis: { url: 'redis://localhost' } }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'memory.redis', 'Unknown memory backend')
+    })
 
     it('warns on unknown postgres keys', () => {
-      const cfg = validConfig();
-      cfg.memory = { postgres: { pool_size: 10 } };
-      const result = validateConfig(cfg);
-      assertWarning(result, 'memory.postgres.pool_size', 'Unknown memory.postgres key');
-    });
-  });
+      const cfg = validConfig()
+      cfg.memory = { postgres: { pool_size: 10 } }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'memory.postgres.pool_size', 'Unknown memory.postgres key')
+    })
+  })
 
   // =========================================================================
   // Plugins (explicit list)
@@ -502,35 +520,35 @@ describe('Config Validation', () => {
 
   describe('plugins', () => {
     it('accepts a list of package names', () => {
-      const cfg = validConfig();
-      cfg.plugins = ['@rivetos/provider-anthropic', '@rivetos/tool-shell'];
-      assertValid(validateConfig(cfg));
-    });
+      const cfg = validConfig()
+      cfg.plugins = ['@rivetos/provider-anthropic', '@rivetos/tool-shell']
+      assertValid(validateConfig(cfg))
+    })
 
     it('rejects non-array plugins', () => {
-      const cfg = validConfig();
-      cfg.plugins = 'not-an-array';
-      assertError(validateConfig(cfg), 'plugins', 'must be an array');
-    });
+      const cfg = validConfig()
+      cfg.plugins = 'not-an-array'
+      assertError(validateConfig(cfg), 'plugins', 'must be an array')
+    })
 
     it('rejects non-string entries', () => {
-      const cfg = validConfig();
-      cfg.plugins = ['@rivetos/provider-anthropic', 42];
-      assertError(validateConfig(cfg), 'plugins[1]', 'non-empty package name string');
-    });
+      const cfg = validConfig()
+      cfg.plugins = ['@rivetos/provider-anthropic', 42]
+      assertError(validateConfig(cfg), 'plugins[1]', 'non-empty package name string')
+    })
 
     it('rejects empty-string entries', () => {
-      const cfg = validConfig();
-      cfg.plugins = ['  '];
-      assertError(validateConfig(cfg), 'plugins[0]', 'non-empty package name string');
-    });
+      const cfg = validConfig()
+      cfg.plugins = ['  ']
+      assertError(validateConfig(cfg), 'plugins[0]', 'non-empty package name string')
+    })
 
     it('rejects duplicate entries', () => {
-      const cfg = validConfig();
-      cfg.plugins = ['@rivetos/provider-anthropic', '@rivetos/provider-anthropic'];
-      assertError(validateConfig(cfg), 'plugins[1]', 'Duplicate plugin entry');
-    });
-  });
+      const cfg = validConfig()
+      cfg.plugins = ['@rivetos/provider-anthropic', '@rivetos/provider-anthropic']
+      assertError(validateConfig(cfg), 'plugins[1]', 'Duplicate plugin entry')
+    })
+  })
 
   // =========================================================================
   // Cross-reference validation
@@ -538,69 +556,89 @@ describe('Config Validation', () => {
 
   describe('cross-references', () => {
     it('errors when agent references undefined provider', () => {
-      const cfg = validConfig();
-      (cfg.agents as Record<string, Record<string, unknown>>).opus.provider = 'xai';
-      const result = validateConfig(cfg);
-      assertError(result, 'agents.opus.provider', 'Provider "xai" referenced by agent "opus" is not defined in [providers]');
-    });
+      const cfg = validConfig()
+      ;(cfg.agents as Record<string, Record<string, unknown>>).opus.provider = 'xai'
+      const result = validateConfig(cfg)
+      assertError(
+        result,
+        'agents.opus.provider',
+        'Provider "xai" referenced by agent "opus" is not defined in [providers]',
+      )
+    })
 
     it('error message lists available providers', () => {
-      const cfg = validConfig();
-      (cfg.agents as Record<string, Record<string, unknown>>).opus.provider = 'missing';
-      const result = validateConfig(cfg);
-      const err = result.errors.find((e) => e.path === 'agents.opus.provider');
-      assert.ok(err);
-      assert.ok(err.message.includes('anthropic'), 'Should list available provider "anthropic"');
-    });
+      const cfg = validConfig()
+      ;(cfg.agents as Record<string, Record<string, unknown>>).opus.provider = 'missing'
+      const result = validateConfig(cfg)
+      const err = result.errors.find((e) => e.path === 'agents.opus.provider')
+      assert.ok(err)
+      assert.ok(err.message.includes('anthropic'), 'Should list available provider "anthropic"')
+    })
 
     it('errors when default_agent references undefined agent', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).default_agent = 'nonexistent';
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.default_agent', 'Default agent "nonexistent" is not defined in [agents]');
-    });
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).default_agent = 'nonexistent'
+      const result = validateConfig(cfg)
+      assertError(
+        result,
+        'runtime.default_agent',
+        'Default agent "nonexistent" is not defined in [agents]',
+      )
+    })
 
     it('errors when heartbeat references undefined agent', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).heartbeats = [
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).heartbeats = [
         { agent: 'grok', schedule: '30m', prompt: 'Check.' },
-      ];
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.heartbeats[0].agent', 'Heartbeat agent "grok" is not defined');
-    });
+      ]
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.heartbeats[0].agent', 'Heartbeat agent "grok" is not defined')
+    })
 
     it('errors when coding_pipeline references undefined agents', () => {
-      const cfg = validConfig();
-      (cfg.runtime as Record<string, unknown>).coding_pipeline = {
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = {
         builder_agent: 'nonexistent-builder',
         validator_agent: 'nonexistent-validator',
-      };
-      const result = validateConfig(cfg);
-      assertError(result, 'runtime.coding_pipeline.builder_agent', 'Builder agent "nonexistent-builder"');
-      assertError(result, 'runtime.coding_pipeline.validator_agent', 'Validator agent "nonexistent-validator"');
-    });
+      }
+      const result = validateConfig(cfg)
+      assertError(
+        result,
+        'runtime.coding_pipeline.builder_agent',
+        'Builder agent "nonexistent-builder"',
+      )
+      assertError(
+        result,
+        'runtime.coding_pipeline.validator_agent',
+        'Validator agent "nonexistent-validator"',
+      )
+    })
 
     it('errors when discord channel_binding references undefined agent', () => {
-      const cfg = validConfig();
+      const cfg = validConfig()
       cfg.channels = {
         discord: {
           channel_bindings: {
             '123456': 'grok',
           },
         },
-      };
-      const result = validateConfig(cfg);
-      assertError(result, 'channels.discord.channel_bindings.123456', 'references agent "grok" which is not defined');
-    });
+      }
+      const result = validateConfig(cfg)
+      assertError(
+        result,
+        'channels.discord.channel_bindings.123456',
+        'references agent "grok" which is not defined',
+      )
+    })
 
     it('errors when telegram agent references undefined agent', () => {
-      const cfg = validConfig();
+      const cfg = validConfig()
       cfg.channels = {
         telegram: { agent: 'gemini', owner_id: '123' },
-      };
-      const result = validateConfig(cfg);
-      assertError(result, 'channels.telegram.agent', 'Telegram agent "gemini" is not defined');
-    });
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'channels.telegram.agent', 'Telegram agent "gemini" is not defined')
+    })
 
     it('passes with all cross-references resolved', () => {
       const cfg = {
@@ -624,11 +662,11 @@ describe('Config Validation', () => {
           },
           telegram: { agent: 'opus', owner_id: '123' },
         },
-      };
-      const result = validateConfig(cfg);
-      assertValid(result);
-    });
-  });
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+    })
+  })
 
   // =========================================================================
   // Full config (integration)
@@ -681,11 +719,11 @@ describe('Config Validation', () => {
         memory: {
           postgres: { connection_string: '${RIVETOS_PG_URL}' },
         },
-      };
-      const result = validateConfig(cfg);
-      assertValid(result);
-    });
-  });
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+    })
+  })
 
   // =========================================================================
   // formatValidationResult
@@ -693,34 +731,36 @@ describe('Config Validation', () => {
 
   describe('formatValidationResult', () => {
     it('formats a clean result', () => {
-      const result: ValidationResult = { valid: true, errors: [], warnings: [] };
-      const output = formatValidationResult(result);
-      assert.ok(output.includes('✅ Config is valid'));
-    });
+      const result: ValidationResult = { valid: true, errors: [], warnings: [] }
+      const output = formatValidationResult(result)
+      assert.ok(output.includes('✅ Config is valid'))
+    })
 
     it('formats errors', () => {
       const result: ValidationResult = {
         valid: false,
-        errors: [{ severity: 'error', path: 'runtime.workspace', message: 'Missing required field' }],
+        errors: [
+          { severity: 'error', path: 'runtime.workspace', message: 'Missing required field' },
+        ],
         warnings: [],
-      };
-      const output = formatValidationResult(result);
-      assert.ok(output.includes('❌'));
-      assert.ok(output.includes('runtime.workspace'));
-      assert.ok(output.includes('1 error'));
-    });
+      }
+      const output = formatValidationResult(result)
+      assert.ok(output.includes('❌'))
+      assert.ok(output.includes('runtime.workspace'))
+      assert.ok(output.includes('1 error'))
+    })
 
     it('formats warnings with valid config', () => {
       const result: ValidationResult = {
         valid: true,
         errors: [],
         warnings: [{ severity: 'warning', path: 'foo', message: 'Unknown key' }],
-      };
-      const output = formatValidationResult(result);
-      assert.ok(output.includes('⚠️'));
-      assert.ok(output.includes('✅'));
-      assert.ok(output.includes('1 warning'));
-    });
+      }
+      const output = formatValidationResult(result)
+      assert.ok(output.includes('⚠️'))
+      assert.ok(output.includes('✅'))
+      assert.ok(output.includes('1 warning'))
+    })
 
     it('formats mixed errors and warnings', () => {
       const result: ValidationResult = {
@@ -730,30 +770,30 @@ describe('Config Validation', () => {
           { severity: 'error', path: 'b', message: 'worse' },
         ],
         warnings: [{ severity: 'warning', path: 'c', message: 'meh' }],
-      };
-      const output = formatValidationResult(result);
-      assert.ok(output.includes('2 errors'));
-      assert.ok(output.includes('1 warning'));
-    });
-  });
+      }
+      const output = formatValidationResult(result)
+      assert.ok(output.includes('2 errors'))
+      assert.ok(output.includes('1 warning'))
+    })
+  })
 
   // =========================================================================
   // Deployment section
   // =========================================================================
   describe('deployment', () => {
     it('accepts valid docker deployment', () => {
-      const cfg = validConfig() as Record<string, unknown>;
+      const cfg = validConfig() as Record<string, unknown>
       cfg.deployment = {
         target: 'docker',
         datahub: { postgres: true, shared_storage: true },
         image: { build_from_source: true },
         docker: { network: 'rivetos-net', postgres_port: 5432 },
-      };
-      assertValid(validateConfig(cfg));
-    });
+      }
+      assertValid(validateConfig(cfg))
+    })
 
     it('accepts valid proxmox deployment', () => {
-      const cfg = validConfig() as Record<string, unknown>;
+      const cfg = validConfig() as Record<string, unknown>
       cfg.deployment = {
         target: 'proxmox',
         proxmox: {
@@ -764,109 +804,109 @@ describe('Config Validation', () => {
           ],
           network: { bridge: 'vmbr1', subnet: '192.168.1.0/24', gateway: '192.168.1.1' },
         },
-      };
-      assertValid(validateConfig(cfg));
-    });
+      }
+      assertValid(validateConfig(cfg))
+    })
 
     it('accepts minimal deployment (target only)', () => {
-      const cfg = validConfig() as Record<string, unknown>;
-      cfg.deployment = { target: 'manual' };
-      assertValid(validateConfig(cfg));
-    });
+      const cfg = validConfig() as Record<string, unknown>
+      cfg.deployment = { target: 'manual' }
+      assertValid(validateConfig(cfg))
+    })
 
     it('rejects missing target', () => {
-      const cfg = validConfig() as Record<string, unknown>;
-      cfg.deployment = { docker: {} };
-      assertError(validateConfig(cfg), 'deployment.target', 'Missing required');
-    });
+      const cfg = validConfig() as Record<string, unknown>
+      cfg.deployment = { docker: {} }
+      assertError(validateConfig(cfg), 'deployment.target', 'Missing required')
+    })
 
     it('rejects invalid target', () => {
-      const cfg = validConfig() as Record<string, unknown>;
-      cfg.deployment = { target: 'heroku' };
-      assertError(validateConfig(cfg), 'deployment.target', 'Invalid deployment target');
-    });
+      const cfg = validConfig() as Record<string, unknown>
+      cfg.deployment = { target: 'heroku' }
+      assertError(validateConfig(cfg), 'deployment.target', 'Invalid deployment target')
+    })
 
     it('warns on unknown deployment keys', () => {
-      const cfg = validConfig() as Record<string, unknown>;
-      cfg.deployment = { target: 'docker', mystery: true };
-      assertWarning(validateConfig(cfg), 'deployment.mystery', 'Unknown');
-    });
+      const cfg = validConfig() as Record<string, unknown>
+      cfg.deployment = { target: 'docker', mystery: true }
+      assertWarning(validateConfig(cfg), 'deployment.mystery', 'Unknown')
+    })
 
     it('rejects invalid postgres_port', () => {
-      const cfg = validConfig() as Record<string, unknown>;
-      cfg.deployment = { target: 'docker', docker: { postgres_port: 99999 } };
-      assertError(validateConfig(cfg), 'deployment.docker.postgres_port', 'between 0 and 65535');
-    });
+      const cfg = validConfig() as Record<string, unknown>
+      cfg.deployment = { target: 'docker', docker: { postgres_port: 99999 } }
+      assertError(validateConfig(cfg), 'deployment.docker.postgres_port', 'between 0 and 65535')
+    })
 
     it('rejects proxmox node without name', () => {
-      const cfg = validConfig() as Record<string, unknown>;
+      const cfg = validConfig() as Record<string, unknown>
       cfg.deployment = {
         target: 'proxmox',
         proxmox: { nodes: [{ role: 'datahub' }] },
-      };
-      assertError(validateConfig(cfg), /nodes\[0\]\.name/, 'requires a string');
-    });
+      }
+      assertError(validateConfig(cfg), /nodes\[0\]\.name/, 'requires a string')
+    })
 
     it('rejects proxmox node with invalid role', () => {
-      const cfg = validConfig() as Record<string, unknown>;
+      const cfg = validConfig() as Record<string, unknown>
       cfg.deployment = {
         target: 'proxmox',
         proxmox: { nodes: [{ name: 'pve1', role: 'master' }] },
-      };
-      assertError(validateConfig(cfg), /nodes\[0\]\.role/, 'must be one of');
-    });
+      }
+      assertError(validateConfig(cfg), /nodes\[0\]\.role/, 'must be one of')
+    })
 
     it('warns when proxmox config is set but target is docker', () => {
-      const cfg = validConfig() as Record<string, unknown>;
-      cfg.deployment = { target: 'docker', proxmox: { api_url: 'https://pve:8006' } };
-      assertWarning(validateConfig(cfg), 'deployment.proxmox', 'will be ignored');
-    });
+      const cfg = validConfig() as Record<string, unknown>
+      cfg.deployment = { target: 'docker', proxmox: { api_url: 'https://pve:8006' } }
+      assertWarning(validateConfig(cfg), 'deployment.proxmox', 'will be ignored')
+    })
 
     it('warns when no datahub node is defined', () => {
-      const cfg = validConfig() as Record<string, unknown>;
+      const cfg = validConfig() as Record<string, unknown>
       cfg.deployment = {
         target: 'proxmox',
         proxmox: { nodes: [{ name: 'pve1', role: 'agents' }] },
-      };
-      assertWarning(validateConfig(cfg), 'deployment.proxmox.nodes', 'No node has role');
-    });
+      }
+      assertWarning(validateConfig(cfg), 'deployment.proxmox.nodes', 'No node has role')
+    })
 
     it('rejects non-boolean build_from_source', () => {
-      const cfg = validConfig() as Record<string, unknown>;
-      cfg.deployment = { target: 'docker', image: { build_from_source: 'yes' } };
-      assertError(validateConfig(cfg), 'deployment.image.build_from_source', 'must be a boolean');
-    });
-  });
-});
+      const cfg = validConfig() as Record<string, unknown>
+      cfg.deployment = { target: 'docker', image: { build_from_source: 'yes' } }
+      assertError(validateConfig(cfg), 'deployment.image.build_from_source', 'must be a boolean')
+    })
+  })
+})
 
 describe('mesh.advertise_host', () => {
   it('accepts a routable IP', () => {
-    const cfg = validConfig();
-    cfg.mesh = { advertise_host: '192.0.2.4' };
-    assertValid(validateConfig(cfg));
-  });
+    const cfg = validConfig()
+    cfg.mesh = { advertise_host: '192.0.2.4' }
+    assertValid(validateConfig(cfg))
+  })
 
   it('accepts a DNS name', () => {
-    const cfg = validConfig();
-    cfg.mesh = { advertise_host: 'phildesk.mesh' };
-    assertValid(validateConfig(cfg));
-  });
+    const cfg = validConfig()
+    cfg.mesh = { advertise_host: 'phildesk.mesh' }
+    assertValid(validateConfig(cfg))
+  })
 
   it('rejects a non-string advertise_host', () => {
-    const cfg = validConfig();
-    cfg.mesh = { advertise_host: 1234 };
-    assertError(validateConfig(cfg), 'mesh.advertise_host', /non-empty string/);
-  });
+    const cfg = validConfig()
+    cfg.mesh = { advertise_host: 1234 }
+    assertError(validateConfig(cfg), 'mesh.advertise_host', /non-empty string/)
+  })
 
   it('rejects an empty advertise_host', () => {
-    const cfg = validConfig();
-    cfg.mesh = { advertise_host: '   ' };
-    assertError(validateConfig(cfg), 'mesh.advertise_host', /non-empty string/);
-  });
+    const cfg = validConfig()
+    cfg.mesh = { advertise_host: '   ' }
+    assertError(validateConfig(cfg), 'mesh.advertise_host', /non-empty string/)
+  })
 
   it('rejects shell metacharacters (it lands in ssh <user>@<host>)', () => {
-    const cfg = validConfig();
-    cfg.mesh = { advertise_host: '192.0.2.4; rm -rf /' };
-    assertError(validateConfig(cfg), 'mesh.advertise_host', /shell-unsafe/);
-  });
-});
+    const cfg = validConfig()
+    cfg.mesh = { advertise_host: '192.0.2.4; rm -rf /' }
+    assertError(validateConfig(cfg), 'mesh.advertise_host', /shell-unsafe/)
+  })
+})
