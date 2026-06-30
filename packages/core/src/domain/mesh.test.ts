@@ -265,12 +265,22 @@ describe('FileMeshRegistry', () => {
 
   it('getNodes returns all nodes', async () => {
     const node1 = buildLocalNode({
-      name: 'a', agents: ['opus'], host: '10.0.0.1', port: 3100,
-      providers: [], models: [], version: '0.7.0',
+      name: 'a',
+      agents: ['opus'],
+      host: '10.0.0.1',
+      port: 3100,
+      providers: [],
+      models: [],
+      version: '0.7.0',
     })
     const node2 = buildLocalNode({
-      name: 'b', agents: ['grok'], host: '10.0.0.2', port: 3100,
-      providers: [], models: [], version: '0.7.0',
+      name: 'b',
+      agents: ['grok'],
+      host: '10.0.0.2',
+      port: 3100,
+      providers: [],
+      models: [],
+      version: '0.7.0',
     })
 
     await registry.register(node1)

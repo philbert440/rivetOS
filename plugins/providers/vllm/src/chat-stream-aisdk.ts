@@ -38,10 +38,7 @@ import { ProviderError } from '@rivetos/types'
 // ---------------------------------------------------------------------------
 
 export type ToolChoice =
-  | 'auto'
-  | 'none'
-  | 'required'
-  | { type: 'function'; function: { name: string } }
+  'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } }
 
 export interface VllmAiSdkContext {
   /** Bare baseUrl (no /v1 suffix). */

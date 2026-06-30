@@ -43,14 +43,8 @@ describeIf('PostgresMemory.getContextForTurn', () => {
   afterAll(async () => {
     // Clean up test rows
     const pool = memory.getPool()
-    await pool.query(
-      `DELETE FROM ros_messages WHERE agent = $1`,
-      [TEST_AGENT],
-    )
-    await pool.query(
-      `DELETE FROM ros_conversations WHERE agent = $1`,
-      [TEST_AGENT],
-    )
+    await pool.query(`DELETE FROM ros_messages WHERE agent = $1`, [TEST_AGENT])
+    await pool.query(`DELETE FROM ros_conversations WHERE agent = $1`, [TEST_AGENT])
     await pool.end()
   })
 

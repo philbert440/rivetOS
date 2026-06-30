@@ -103,10 +103,7 @@ describe('convertMessagesToAiSdk', () => {
     const msgs: Message[] = [
       {
         role: 'user',
-        content: [
-          { type: 'text', text: 'just text' },
-          { type: 'image' },
-        ],
+        content: [{ type: 'text', text: 'just text' }, { type: 'image' }],
       },
     ]
     const out = convertMessagesToAiSdk(msgs)

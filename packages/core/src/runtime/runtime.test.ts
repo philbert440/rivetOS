@@ -8,14 +8,14 @@
  * Uses mock implementations of Provider, Channel, Memory, and Tool.
  */
 
-import { describe, it, beforeAll, afterAll } from 'vitest';
-import * as assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { Runtime } from './runtime.js';
-import { SILENT_RESPONSES } from '../domain/constants.js';
-import { makeMockProvider, makeMockProviderSequence } from '../test-utils/mock-aisdk-provider.js';
+import { describe, it, beforeAll, afterAll } from 'vitest'
+import * as assert from 'node:assert/strict'
+import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { Runtime } from './runtime.js'
+import { SILENT_RESPONSES } from '../domain/constants.js'
+import { makeMockProvider, makeMockProviderSequence } from '../test-utils/mock-aisdk-provider.js'
 import type {
   Provider,
   Channel,
@@ -28,7 +28,7 @@ import type {
   ChatOptions,
   MemoryEntry,
   MemorySearchResult,
-} from '@rivetos/types';
+} from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Mock Provider
@@ -40,7 +40,7 @@ function makeProvider(id: string, chunks: LLMChunk[]): Provider {
     name: `Mock ${id}`,
     modelId: 'test-model',
     chunks,
-  });
+  })
 }
 
 // Provider that does tool call on first invocation, text on second
@@ -61,7 +61,7 @@ function makeToolThenTextProvider(id: string): Provider {
         { type: 'done', usage: { promptTokens: 20, completionTokens: 10 } },
       ],
     ],
-  });
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -69,22 +69,23 @@ function makeToolThenTextProvider(id: string): Provider {
 // ---------------------------------------------------------------------------
 
 interface SentMessage {
-  channelId: string;
-  text?: string;
-  replyToMessageId?: string;
+  channelId: string
+  text?: string
+  replyToMessageId?: string
 }
 
 function makeChannel(id: string): Channel & {
-  sent: SentMessage[];
-  reactions: Array<{ channelId: string; messageId: string; emoji: string }>;
-  triggerMessage: (msg: InboundMessage) => Promise<void>;
-  triggerCommand: (command: string, args: string, msg: InboundMessage) => Promise<void>;
+  sent: SentMessage[]
+  reactions: Array<{ channelId: string; messageId: string; emoji: string }>
+  triggerMessage: (msg: InboundMessage) => Promise<void>
+  triggerCommand: (command: string, args: string, msg: InboundMessage) => Promise<void>
 } {
-  let messageHandler: ((message: InboundMessage) => Promise<void>) | null = null;
-  let commandHandler: ((command: string, args: string, message: InboundMessage) => Promise<void>) | null = null;
+  let messageHandler: ((message: InboundMessage) => Promise<void>) | null = null
+  let commandHandler:
+    ((command: string, args: string, message: InboundMessage) => Promise<void>) | null = null
 
-  const sent: SentMessage[] = [];
-  const reactions: Array<{ channelId: string; messageId: string; emoji: string }> = [];
+  const sent: SentMessage[] = []
+  const reactions: Array<{ channelId: string; messageId: string; emoji: string }> = []
 
   return {
     id,
@@ -98,28 +99,28 @@ function makeChannel(id: string): Channel & {
         channelId: message.channelId,
         text: message.text,
         replyToMessageId: message.replyToMessageId,
-      });
-      return `msg-${sent.length}`;
+      })
+      return `msg-${sent.length}`
     },
     async edit(_channelId: string, _messageId: string, _text: string): Promise<boolean> {
-      return true;
+      return true
     },
     async react(channelId: string, messageId: string, emoji: string): Promise<void> {
-      reactions.push({ channelId, messageId, emoji });
+      reactions.push({ channelId, messageId, emoji })
     },
     onMessage(handler: (message: InboundMessage) => Promise<void>) {
-      messageHandler = handler;
+      messageHandler = handler
     },
     onCommand(handler: (command: string, args: string, message: InboundMessage) => Promise<void>) {
-      commandHandler = handler;
+      commandHandler = handler
     },
     async triggerMessage(msg: InboundMessage) {
-      if (messageHandler) await messageHandler(msg);
+      if (messageHandler) await messageHandler(msg)
     },
     async triggerCommand(command: string, args: string, msg: InboundMessage) {
-      if (commandHandler) await commandHandler(command, args, msg);
+      if (commandHandler) await commandHandler(command, args, msg)
     },
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -127,24 +128,24 @@ function makeChannel(id: string): Channel & {
 // ---------------------------------------------------------------------------
 
 function makeMemory(): Memory & { appended: MemoryEntry[] } {
-  const appended: MemoryEntry[] = [];
+  const appended: MemoryEntry[] = []
 
   return {
     appended,
     async append(entry: MemoryEntry): Promise<string> {
-      appended.push(entry);
-      return `mem-${appended.length}`;
+      appended.push(entry)
+      return `mem-${appended.length}`
     },
     async search(_query: string, _options?: any): Promise<MemorySearchResult[]> {
-      return [];
+      return []
     },
     async getContextForTurn(_query: string, _agent: string): Promise<string> {
-      return '';
+      return ''
     },
     async getSessionHistory(_sessionId: string): Promise<Message[]> {
-      return [];
+      return []
     },
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,9 +162,9 @@ function makeTool(name: string, result: string): Tool {
       required: ['value'],
     },
     async execute(_args: Record<string, unknown>): Promise<string> {
-      return result;
+      return result
     },
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -180,17 +181,21 @@ function makeMessage(text: string, overrides?: Partial<InboundMessage>): Inbound
     platform: 'test',
     timestamp: Math.floor(Date.now() / 1000),
     ...overrides,
-  };
+  }
 }
 
 /** Wait for channel to have at least `count` messages (with timeout) */
-async function waitForSent(channel: { sent: SentMessage[] }, count: number, timeoutMs = 5000): Promise<void> {
-  const start = Date.now();
+async function waitForSent(
+  channel: { sent: SentMessage[] },
+  count: number,
+  timeoutMs = 5000,
+): Promise<void> {
+  const start = Date.now()
   while (channel.sent.length < count) {
     if (Date.now() - start > timeoutMs) {
-      throw new Error(`Timeout: expected ${count} messages, got ${channel.sent.length}`);
+      throw new Error(`Timeout: expected ${count} messages, got ${channel.sent.length}`)
     }
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 50))
   }
 }
 
@@ -199,86 +204,86 @@ async function waitForSent(channel: { sent: SentMessage[] }, count: number, time
 // ---------------------------------------------------------------------------
 
 describe('Runtime Integration', () => {
-  let workspaceDir: string;
+  let workspaceDir: string
 
   beforeAll(async () => {
-    workspaceDir = await mkdtemp(join(tmpdir(), 'rivetos-test-'));
+    workspaceDir = await mkdtemp(join(tmpdir(), 'rivetos-test-'))
     // Create minimal workspace files
-    await writeFile(join(workspaceDir, 'CORE.md'), '# Test Core');
-    await writeFile(join(workspaceDir, 'WORKSPACE.md'), '# Test Workspace');
-    await writeFile(join(workspaceDir, 'USER.md'), '# Test User');
-    await writeFile(join(workspaceDir, 'MEMORY.md'), '# Test Memory');
-    await mkdir(join(workspaceDir, 'memory'), { recursive: true });
-  });
+    await writeFile(join(workspaceDir, 'CORE.md'), '# Test Core')
+    await writeFile(join(workspaceDir, 'WORKSPACE.md'), '# Test Workspace')
+    await writeFile(join(workspaceDir, 'USER.md'), '# Test User')
+    await writeFile(join(workspaceDir, 'MEMORY.md'), '# Test Memory')
+    await mkdir(join(workspaceDir, 'memory'), { recursive: true })
+  })
 
   afterAll(async () => {
-    await rm(workspaceDir, { recursive: true, force: true });
-  });
+    await rm(workspaceDir, { recursive: true, force: true })
+  })
 
   it('full turn — text response arrives at channel', async () => {
     const provider = makeProvider('test-provider', [
       { type: 'text', delta: 'Hello from the agent!' },
       { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
-    ]);
+    ])
 
-    const channel = makeChannel('test-channel');
+    const channel = makeChannel('test-channel')
 
     const runtime = new Runtime({
       workspaceDir,
       defaultAgent: 'test-agent',
       agents: [{ id: 'test-agent', name: 'Test Agent', provider: 'test-provider' }],
-    });
+    })
 
-    runtime.registerProvider(provider);
-    runtime.registerChannel(channel);
-    await runtime.start();
+    runtime.registerProvider(provider)
+    runtime.registerChannel(channel)
+    await runtime.start()
 
-    await channel.triggerMessage(makeMessage('Hi there'));
-    await waitForSent(channel, 1);
+    await channel.triggerMessage(makeMessage('Hi there'))
+    await waitForSent(channel, 1)
 
-    assert.equal(channel.sent.length, 1);
-    assert.equal(channel.sent[0].text, 'Hello from the agent!');
-    assert.equal(channel.sent[0].channelId, 'chan-1');
+    assert.equal(channel.sent.length, 1)
+    assert.equal(channel.sent[0].text, 'Hello from the agent!')
+    assert.equal(channel.sent[0].channelId, 'chan-1')
 
-    await runtime.stop();
-  });
+    await runtime.stop()
+  })
 
   it('full turn — tool calling and response', async () => {
-    const provider = makeToolThenTextProvider('test-provider');
-    const channel = makeChannel('test-channel');
-    const tool = makeTool('test_tool', 'hello');
+    const provider = makeToolThenTextProvider('test-provider')
+    const channel = makeChannel('test-channel')
+    const tool = makeTool('test_tool', 'hello')
 
     const runtime = new Runtime({
       workspaceDir,
       defaultAgent: 'test-agent',
       agents: [{ id: 'test-agent', name: 'Test Agent', provider: 'test-provider' }],
-    });
+    })
 
-    runtime.registerProvider(provider);
-    runtime.registerChannel(channel);
-    runtime.registerTool(tool);
-    await runtime.start();
+    runtime.registerProvider(provider)
+    runtime.registerChannel(channel)
+    runtime.registerTool(tool)
+    await runtime.start()
 
-    await channel.triggerMessage(makeMessage('Use the tool'));
-    await waitForSent(channel, 1);
+    await channel.triggerMessage(makeMessage('Use the tool'))
+    await waitForSent(channel, 1)
 
-    assert.equal(channel.sent.length, 1);
-    assert.equal(channel.sent[0].text, 'Tool returned: hello');
+    assert.equal(channel.sent.length, 1)
+    assert.equal(channel.sent[0].text, 'Tool returned: hello')
 
-    await runtime.stop();
-  });
+    await runtime.stop()
+  })
 
   it('message routing — routes to correct provider per agent', async () => {
     const providerA = makeProvider('provider-a', [
       { type: 'text', delta: 'Response from A' },
       { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
-    ]);
+    ])
     const providerB = makeProvider('provider-b', [
       { type: 'text', delta: 'Response from B' },
       { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
-    ]);
+    ])
 
-    const channel = makeChannel('test-channel');
+    const channel = makeChannel('test-channel')
 
     const runtime = new Runtime({
       workspaceDir,
@@ -287,104 +292,109 @@ describe('Runtime Integration', () => {
         { id: 'agent-a', name: 'Agent A', provider: 'provider-a' },
         { id: 'agent-b', name: 'Agent B', provider: 'provider-b' },
       ],
-    });
+    })
 
-    runtime.registerProvider(providerA);
-    runtime.registerProvider(providerB);
-    runtime.registerChannel(channel);
-    await runtime.start();
+    runtime.registerProvider(providerA)
+    runtime.registerProvider(providerB)
+    runtime.registerChannel(channel)
+    await runtime.start()
 
     // Default agent routes to provider-a
-    await channel.triggerMessage(makeMessage('Hello'));
-    await waitForSent(channel, 1);
+    await channel.triggerMessage(makeMessage('Hello'))
+    await waitForSent(channel, 1)
 
-    assert.equal(channel.sent[0].text, 'Response from A');
+    assert.equal(channel.sent[0].text, 'Response from A')
 
     // Explicit agent routes to provider-b
-    await channel.triggerMessage(makeMessage('Hello', {
-      id: 'msg-2',
-      userId: 'user-2',
-      agent: 'agent-b',
-    }));
-    await waitForSent(channel, 2);
+    await channel.triggerMessage(
+      makeMessage('Hello', {
+        id: 'msg-2',
+        userId: 'user-2',
+        agent: 'agent-b',
+      }),
+    )
+    await waitForSent(channel, 2)
 
-    assert.equal(channel.sent[1].text, 'Response from B');
+    assert.equal(channel.sent[1].text, 'Response from B')
 
-    await runtime.stop();
-  });
+    await runtime.stop()
+  })
 
   it('memory append — both user and assistant messages are recorded', async () => {
     const provider = makeProvider('test-provider', [
       { type: 'text', delta: 'Remembered response' },
       { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
-    ]);
+    ])
 
-    const channel = makeChannel('test-channel');
-    const memory = makeMemory();
+    const channel = makeChannel('test-channel')
+    const memory = makeMemory()
 
     const runtime = new Runtime({
       workspaceDir,
       defaultAgent: 'test-agent',
       agents: [{ id: 'test-agent', name: 'Test Agent', provider: 'test-provider' }],
-    });
+    })
 
-    runtime.registerProvider(provider);
-    runtime.registerChannel(channel);
-    runtime.registerMemory(memory);
-    await runtime.start();
+    runtime.registerProvider(provider)
+    runtime.registerChannel(channel)
+    runtime.registerMemory(memory)
+    await runtime.start()
 
-    await channel.triggerMessage(makeMessage('Remember this'));
-    await waitForSent(channel, 1);
+    await channel.triggerMessage(makeMessage('Remember this'))
+    await waitForSent(channel, 1)
 
     // Wait a tick for memory append (happens after send)
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100))
 
-    assert.ok(memory.appended.length >= 2, `Expected at least 2 memory entries, got ${memory.appended.length}`);
+    assert.ok(
+      memory.appended.length >= 2,
+      `Expected at least 2 memory entries, got ${memory.appended.length}`,
+    )
 
-    const userEntry = memory.appended.find((e) => e.role === 'user');
-    const assistantEntry = memory.appended.find((e) => e.role === 'assistant');
+    const userEntry = memory.appended.find((e) => e.role === 'user')
+    const assistantEntry = memory.appended.find((e) => e.role === 'assistant')
 
-    assert.ok(userEntry, 'User message should be appended to memory');
-    assert.equal(userEntry!.content, 'Remember this');
-    assert.equal(userEntry!.agent, 'test-agent');
+    assert.ok(userEntry, 'User message should be appended to memory')
+    assert.equal(userEntry!.content, 'Remember this')
+    assert.equal(userEntry!.agent, 'test-agent')
 
-    assert.ok(assistantEntry, 'Assistant response should be appended to memory');
-    assert.equal(assistantEntry!.content, 'Remembered response');
-    assert.equal(assistantEntry!.agent, 'test-agent');
+    assert.ok(assistantEntry, 'Assistant response should be appended to memory')
+    assert.equal(assistantEntry!.content, 'Remembered response')
+    assert.equal(assistantEntry!.agent, 'test-agent')
 
-    await runtime.stop();
-  });
+    await runtime.stop()
+  })
 
   it('silent response — HEARTBEAT_OK is not sent to channel', async () => {
     const provider = makeProvider('test-provider', [
       { type: 'text', delta: 'HEARTBEAT_OK' },
       { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
-    ]);
+    ])
 
-    const channel = makeChannel('test-channel');
+    const channel = makeChannel('test-channel')
 
     const runtime = new Runtime({
       workspaceDir,
       defaultAgent: 'test-agent',
       agents: [{ id: 'test-agent', name: 'Test Agent', provider: 'test-provider' }],
-    });
+    })
 
-    runtime.registerProvider(provider);
-    runtime.registerChannel(channel);
-    await runtime.start();
+    runtime.registerProvider(provider)
+    runtime.registerChannel(channel)
+    await runtime.start()
 
-    await channel.triggerMessage(makeMessage('heartbeat check'));
+    await channel.triggerMessage(makeMessage('heartbeat check'))
 
     // Give it time to process
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 500))
 
-    assert.equal(channel.sent.length, 0, 'Silent response should not be sent to channel');
+    assert.equal(channel.sent.length, 0, 'Silent response should not be sent to channel')
 
-    await runtime.stop();
-  });
+    await runtime.stop()
+  })
 
   it('queue behavior — messages processed sequentially', async () => {
-    const responses: string[] = [];
+    const responses: string[] = []
 
     // Provider that takes 200ms to respond, returns different text per call.
     // Use a per-call sequence: chunks[0] for call 0, chunks[1] for call 1.
@@ -394,7 +404,7 @@ describe('Runtime Integration', () => {
       modelId: 'test-model',
       stepDelayMs: 200,
       onCall: ({ callIndex }) => {
-        responses.push(`response-${callIndex + 1}`);
+        responses.push(`response-${callIndex + 1}`)
       },
       chunks: [
         [
@@ -406,37 +416,37 @@ describe('Runtime Integration', () => {
           { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
         ],
       ],
-    });
+    })
 
-    const channel = makeChannel('test-channel');
+    const channel = makeChannel('test-channel')
 
     const runtime = new Runtime({
       workspaceDir,
       defaultAgent: 'test-agent',
       agents: [{ id: 'test-agent', name: 'Test Agent', provider: 'slow-provider' }],
-    });
+    })
 
-    runtime.registerProvider(provider);
-    runtime.registerChannel(channel);
-    await runtime.start();
+    runtime.registerProvider(provider)
+    runtime.registerChannel(channel)
+    await runtime.start()
 
     // Fire two messages from the same user quickly
-    const msg1 = makeMessage('First');
-    const msg2 = makeMessage('Second');
+    const msg1 = makeMessage('First')
+    const msg2 = makeMessage('Second')
 
     // Don't await — fire both nearly simultaneously
-    channel.triggerMessage(msg1);
-    await new Promise((r) => setTimeout(r, 20));
-    channel.triggerMessage(msg2);
+    channel.triggerMessage(msg1)
+    await new Promise((r) => setTimeout(r, 20))
+    channel.triggerMessage(msg2)
 
-    await waitForSent(channel, 2, 10000);
+    await waitForSent(channel, 2, 10000)
 
     // Verify sequential processing
-    assert.equal(responses[0], 'response-1');
-    assert.equal(responses[1], 'response-2');
-    assert.equal(channel.sent[0].text, 'response-1');
-    assert.equal(channel.sent[1].text, 'response-2');
+    assert.equal(responses[0], 'response-1')
+    assert.equal(responses[1], 'response-2')
+    assert.equal(channel.sent[0].text, 'response-1')
+    assert.equal(channel.sent[1].text, 'response-2')
 
-    await runtime.stop();
-  });
-});
+    await runtime.stop()
+  })
+})

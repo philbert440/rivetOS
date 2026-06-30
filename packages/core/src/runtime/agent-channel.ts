@@ -34,8 +34,7 @@ const log = logger('AgentChannel')
  */
 export function extractPeerIdentity(socket: TLSSocket): string {
   const peerCert = socket.getPeerCertificate() as
-    | { subject?: { CN?: string | string[] } }
-    | undefined
+    { subject?: { CN?: string | string[] } } | undefined
   const rawCn = peerCert?.subject?.CN
   return Array.isArray(rawCn) ? (rawCn[0] ?? 'unknown') : (rawCn ?? 'unknown')
 }

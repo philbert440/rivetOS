@@ -41,7 +41,9 @@ async function setup(): Promise<Harness> {
   await server.start()
   cleanups.push(() => server.stop())
 
-  const url = new URL(`http://${server.address.host ?? '127.0.0.1'}:${String(server.address.port ?? 0)}/mcp`)
+  const url = new URL(
+    `http://${server.address.host ?? '127.0.0.1'}:${String(server.address.port ?? 0)}/mcp`,
+  )
   const client = new Client({ name: 'session-attach-test', version: '0.0.0' })
   const transport = new StreamableHTTPClientTransport(url)
   await client.connect(transport)

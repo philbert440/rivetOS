@@ -45,12 +45,20 @@ function track(server: RivetMcpServer): Harness {
 }
 
 function tmpSocketPath(): string {
-  const p = path.join(os.tmpdir(), `rivetos-mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`)
+  const p = path.join(
+    os.tmpdir(),
+    `rivetos-mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`,
+  )
   tmpFiles.push(p)
   return p
 }
 
-async function fetchOver(host: string, port: number, urlPath: string, init?: RequestInit): Promise<Response> {
+async function fetchOver(
+  host: string,
+  port: number,
+  urlPath: string,
+  init?: RequestInit,
+): Promise<Response> {
   return fetch(`http://${host}:${String(port)}${urlPath}`, init)
 }
 

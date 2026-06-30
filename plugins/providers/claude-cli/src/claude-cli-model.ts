@@ -124,10 +124,7 @@ interface CliResult {
 }
 
 type CliEvent =
-  | CliSystemInit
-  | CliStreamEvent
-  | CliResult
-  | { type: string; [key: string]: unknown }
+  CliSystemInit | CliStreamEvent | CliResult | { type: string; [key: string]: unknown }
 
 // ---------------------------------------------------------------------------
 // Helpers — render AI SDK prompt back to CLI-friendly content blocks
@@ -140,12 +137,10 @@ type CliEvent =
  * from us for now).
  */
 export type CliImageSource =
-  | { type: 'base64'; media_type: string; data: string }
-  | { type: 'url'; url: string }
+  { type: 'base64'; media_type: string; data: string } | { type: 'url'; url: string }
 
 export type CliContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'image'; source: CliImageSource }
+  { type: 'text'; text: string } | { type: 'image'; source: CliImageSource }
 
 function systemFromMessage(msg: LanguageModelV3Message): string | null {
   if (msg.role !== 'system') return null

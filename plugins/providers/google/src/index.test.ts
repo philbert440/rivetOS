@@ -221,9 +221,7 @@ describe('GoogleProvider', () => {
       const available = await provider.isAvailable()
 
       expect(available).toBe(true)
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('models/gemini-2.5-pro'),
-      )
+      expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('models/gemini-2.5-pro'))
     })
 
     it('returns false on failed fetch (not ok)', async () => {
@@ -256,9 +254,7 @@ describe('GoogleProvider', () => {
       })
       await provider.isAvailable()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('key=secret-key-xyz'),
-      )
+      expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('key=secret-key-xyz'))
     })
 
     it('uses custom baseUrl if provided', async () => {
@@ -286,9 +282,7 @@ describe('GoogleProvider', () => {
       })
       await provider.isAvailable()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('models/gemini-exp-05-11'),
-      )
+      expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('models/gemini-exp-05-11'))
     })
   })
 

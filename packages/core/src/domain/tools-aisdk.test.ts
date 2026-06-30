@@ -93,10 +93,7 @@ describe('toAiSdkTools', () => {
       },
     })
 
-    const tools = toAiSdkTools(
-      [makeTool('echo', async () => 'done')],
-      { hooks: pipeline },
-    )
+    const tools = toAiSdkTools([makeTool('echo', async () => 'done')], { hooks: pipeline })
     const result = await tools.echo!.execute!({ x: 'hi' }, execOpts())
 
     assert.equal(result, 'done')
@@ -144,10 +141,7 @@ describe('toAiSdkTools', () => {
       },
     })
 
-    const tools = toAiSdkTools(
-      [makeTool('shell', async () => 'ran')],
-      { hooks: pipeline },
-    )
+    const tools = toAiSdkTools([makeTool('shell', async () => 'ran')], { hooks: pipeline })
     const result = await tools.shell!.execute!({}, execOpts())
     assert.equal(result, 'Blocked: Blocked by safety hook')
   })
@@ -308,19 +302,15 @@ describe('toAiSdkTools', () => {
         afterIsError = ctx.isError
       },
     })
-    const tools = toAiSdkTools(
-      [makeTool('explicit', async () => 'Error: explicit failure')],
-      { hooks: pipeline },
-    )
+    const tools = toAiSdkTools([makeTool('explicit', async () => 'Error: explicit failure')], {
+      hooks: pipeline,
+    })
     await tools.explicit!.execute!({}, execOpts())
     assert.equal(afterIsError, true)
   })
 
   it('returns a ToolSet with one entry per tool definition', () => {
-    const tools = toAiSdkTools([
-      makeTool('a', async () => 'x'),
-      makeTool('b', async () => 'y'),
-    ])
+    const tools = toAiSdkTools([makeTool('a', async () => 'x'), makeTool('b', async () => 'y')])
     assert.deepEqual(Object.keys(tools).sort(), ['a', 'b'])
     assert.equal(tools.a!.description, 'a description')
     assert.equal(tools.b!.description, 'b description')

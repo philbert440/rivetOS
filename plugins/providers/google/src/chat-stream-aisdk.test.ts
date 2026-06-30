@@ -64,7 +64,9 @@ describe('chat-stream-aisdk helpers', () => {
         { type: 'text' as const, text: ' world' },
       ]
       const extracted = content
-        .filter((p): p is typeof content[number] & { type: 'text'; text: string } => p.type === 'text')
+        .filter(
+          (p): p is (typeof content)[number] & { type: 'text'; text: string } => p.type === 'text',
+        )
         .map((p) => p.text)
         .join('')
       expect(extracted).toBe('hello world')
@@ -153,9 +155,7 @@ describe('chat-stream-aisdk helpers', () => {
         {
           role: 'assistant',
           content: 'calling tool',
-          toolCalls: [
-            { id: 'tc-1', name: 'search', arguments: {}, thoughtSignature: 'sig-abc' },
-          ],
+          toolCalls: [{ id: 'tc-1', name: 'search', arguments: {}, thoughtSignature: 'sig-abc' }],
         },
       ]
 
@@ -435,9 +435,13 @@ describe('chat-stream-aisdk helpers', () => {
       const parentController = new AbortController()
       const childController = new AbortController()
 
-      parentController.signal.addEventListener('abort', () => {
-        childController.abort()
-      }, { once: true })
+      parentController.signal.addEventListener(
+        'abort',
+        () => {
+          childController.abort()
+        },
+        { once: true },
+      )
 
       parentController.abort()
       expect(childController.signal.aborted).toBe(true)

@@ -7,11 +7,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import {
-  SubagentManagerImpl,
-  createSubagentTools,
-  type SubagentManagerConfig,
-} from './subagent.js'
+import { SubagentManagerImpl, createSubagentTools, type SubagentManagerConfig } from './subagent.js'
 import { InMemorySubagentStore } from './subagent-store.js'
 import { createSubagentExecutor, type SubagentExecutorConfig } from './subagent-worker.js'
 import type { Router } from './router.js'
@@ -60,10 +56,12 @@ function createMockWorkspace(): WorkspaceLoader {
  * Wire a manager + in-memory executor + enqueue function that mirrors the
  * production boot setup. Returns the manager and store.
  */
-function buildManager(agents: Array<{ id: string; provider: string }> = [
-  { id: 'grok', provider: 'xai' },
-  { id: 'opus', provider: 'anthropic' },
-]): {
+function buildManager(
+  agents: Array<{ id: string; provider: string }> = [
+    { id: 'grok', provider: 'xai' },
+    { id: 'opus', provider: 'anthropic' },
+  ],
+): {
   manager: SubagentManagerImpl
   store: InMemorySubagentStore
   pendingTurns: Promise<void>[]

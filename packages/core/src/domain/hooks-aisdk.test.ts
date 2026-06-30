@@ -170,10 +170,7 @@ describe('hookPipelineToMiddleware — transformParams', () => {
     const out = await mw.transformParams!({ type: 'stream', params, model: fakeModel })
 
     assert.equal(out.tools?.length, 1)
-    assert.equal(
-      (out.tools![0] as { name: string }).name,
-      'extra',
-    )
+    assert.equal((out.tools![0] as { name: string }).name, 'extra')
   })
 
   it('throws HookSkipError(skip-flag) when hook sets ctx.skip', async () => {
@@ -259,9 +256,7 @@ describe('hookPipelineToMiddleware — transformParams', () => {
       event: 'provider:before',
       priority: 90,
       handler(ctx) {
-        ;(ctx as ProviderBeforeContext).messages = [
-          { role: 'system', content: 'late' },
-        ]
+        ;(ctx as ProviderBeforeContext).messages = [{ role: 'system', content: 'late' }]
       },
     })
     pipeline.register({
@@ -269,9 +264,7 @@ describe('hookPipelineToMiddleware — transformParams', () => {
       event: 'provider:before',
       priority: 10,
       handler(ctx) {
-        ;(ctx as ProviderBeforeContext).messages = [
-          { role: 'system', content: 'early' },
-        ]
+        ;(ctx as ProviderBeforeContext).messages = [{ role: 'system', content: 'early' }]
       },
     })
 

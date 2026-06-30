@@ -404,8 +404,7 @@ describe('mapReasoningEffort', () => {
   it('degrades xhigh to high for multi-agent models', () => {
     const model = 'grok-4.20-multi-agent'
     const level = 'xhigh'
-    const result =
-      level === 'xhigh' && model.includes('multi-agent') ? 'high' : level
+    const result = level === 'xhigh' && model.includes('multi-agent') ? 'high' : level
     expect(result).toBe('high')
   })
 
