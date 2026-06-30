@@ -205,7 +205,10 @@ docker system df
 Check that the agent can reach the datahub:
 
 ```bash
-docker compose exec opus wget -qO- http://datahub:5432 || echo "Can't reach datahub"
+# Postgres speaks its own TCP protocol, not HTTP — test the port, don't wget it:
+docker compose exec opus pg_isready -h datahub -p 5432 || echo "Can't reach datahub"
+# (no psql client in the container? fall back to a raw TCP check)
+docker compose exec opus sh -c 'nc -z datahub 5432 && echo reachable || echo "Can'\''t reach datahub"'
 ```
 
 Common cause: network configuration mismatch. Ensure all containers are on the same Docker network.

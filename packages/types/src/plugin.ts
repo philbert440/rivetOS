@@ -140,12 +140,3 @@ export interface ChannelPlugin extends Plugin {
 export interface MemoryPlugin extends Plugin {
   createMemory(config: PluginConfig): Memory
 }
-
-// ---------------------------------------------------------------------------
-// Backward compat — the original Plugin with optional getTools
-// ---------------------------------------------------------------------------
-
-/** @deprecated Use ToolPlugin instead */
-export interface LegacyPlugin extends Plugin {
-  getTools?(): Tool[]
-}

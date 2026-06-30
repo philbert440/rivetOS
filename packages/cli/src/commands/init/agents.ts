@@ -14,12 +14,13 @@ function bail<T>(v: T | symbol): asserts v is T {
 
 /** Default models per provider */
 const DEFAULT_MODELS: Record<string, string> = {
-  anthropic: 'claude-sonnet-4-20250514',
+  anthropic: 'claude-opus-4-7',
   'claude-cli': 'opus',
   xai: 'grok-4-1-fast-reasoning',
   google: 'gemini-2.5-pro',
   ollama: 'qwen2.5:32b',
-  'openai-compat': 'default',
+  vllm: 'default',
+  'llama-server': 'default',
 }
 
 /** Environment variable name for each provider's API key */
@@ -27,6 +28,8 @@ export const PROVIDER_ENV_KEYS: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   xai: 'XAI_API_KEY',
   google: 'GOOGLE_API_KEY',
+  vllm: 'VLLM_API_KEY',
+  'llama-server': 'LLAMA_SERVER_API_KEY',
 }
 
 export async function configureAgents(): Promise<WizardAgent[]> {
@@ -70,9 +73,14 @@ export async function configureAgents(): Promise<WizardAgent[]> {
         { value: 'google' as const, label: 'Google', hint: 'Gemini' },
         { value: 'ollama' as const, label: 'Ollama', hint: 'local models' },
         {
-          value: 'openai-compat' as const,
-          label: 'OpenAI-compatible server',
-          hint: 'vLLM, TGI, llama.cpp llama-server, or any strict OpenAI-compat API',
+          value: 'vllm' as const,
+          label: 'vLLM',
+          hint: 'local/self-hosted vLLM server (full vLLM surface)',
+        },
+        {
+          value: 'llama-server' as const,
+          label: 'llama.cpp (llama-server)',
+          hint: 'local llama.cpp llama-server',
         },
       ],
     })
@@ -96,11 +104,24 @@ export async function configureAgents(): Promise<WizardAgent[]> {
       })
       bail(urlResult)
       baseUrl = urlResult
-    } else if (provider === 'openai-compat') {
+    } else if (provider === 'vllm') {
       const urlResult = await p.text({
-        message: 'OpenAI-compatible server base URL',
+        message: 'vLLM server base URL',
         placeholder: 'http://localhost:8000',
         defaultValue: 'http://localhost:8000',
+      })
+      bail(urlResult)
+      baseUrl = urlResult
+      const keyResult = await p.password({
+        message: 'API key (leave blank for unauthenticated servers)',
+      })
+      bail(keyResult)
+      apiKey = keyResult || undefined
+    } else if (provider === 'llama-server') {
+      const urlResult = await p.text({
+        message: 'llama.cpp llama-server base URL',
+        placeholder: 'http://localhost:8080',
+        defaultValue: 'http://localhost:8080',
       })
       bail(urlResult)
       baseUrl = urlResult

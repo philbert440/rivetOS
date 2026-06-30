@@ -17,7 +17,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 - **Tiny core, fat plugins** — The kernel stays under 5,000 lines. Everything else is swappable.
 - **Streaming-first** — `AsyncIterable<StreamEvent>` from every provider. Responses stream in real-time.
-- **6 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, openai-compat (vLLM / TGI / llama.cpp llama-server / any OpenAI-compatible server), claude-cli (Claude Code subscription).
+- **7 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, vLLM, llama-server (llama.cpp), claude-cli (Claude Code subscription).
 - **4 channel plugins** — Discord, Telegram, Agent (HTTP inter-agent), Voice (xAI Realtime).
 - **MCP transport plugin** — Expose RivetOS tools (memory, web, skills) to external MCP clients over StreamableHTTP.
 - **20+ built-in tools** — Shell, file I/O, search, web, memory, skills, interaction, MCP client, coding pipeline, delegation, sub-agents.
@@ -103,7 +103,7 @@ rivetOS/
 │   └── nx-plugin/      # @rivetos/nx — generators, executors, dev tooling
 ├── plugins/
 │   ├── channels/       # discord, telegram, agent, voice-discord
-│   ├── providers/      # anthropic, google, xai, ollama, openai-compat, claude-cli
+│   ├── providers/      # anthropic, google, xai, ollama, vllm, llama-server, claude-cli
 │   ├── memory/         # postgres (pgvector + FTS + summary DAG + workers)
 │   ├── tools/          # shell, file, search, web-search, interaction, mcp-client, coding-pipeline
 │   └── transports/     # mcp-server (expose RivetOS tools over MCP StreamableHTTP)
@@ -125,7 +125,8 @@ Skills are user-managed and live outside the source tree (default: `~/.rivetos/w
 | `provider-google` | Gemini models via Generative Language API (thought signatures) |
 | `provider-xai` | Grok models with live search and caching |
 | `provider-ollama` | Local Ollama models (native API) |
-| `provider-openai-compat` | OpenAI-compatible servers (vLLM, TGI, llama.cpp llama-server, Groq, Together, Fireworks, LocalAI) |
+| `provider-vllm` | vLLM server — full vLLM surface (sampling extensions, mm/chat_template kwargs, video, `reasoning_content`) |
+| `provider-llama-server` | llama.cpp llama-server — lean (`top_k`/`min_p` + `extra_body` escape hatch) |
 | `provider-claude-cli` | Drives the local `claude` binary (Claude Code) using the user's subscription OAuth token |
 
 ### Channels
@@ -171,7 +172,7 @@ agents:
 
 providers:
   anthropic:
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
 
 channels:
   discord:
@@ -221,7 +222,7 @@ Configuration:
 
 Containers & Service:
   rivetos build                   Build container images from source
-  rivetos service install         Install systemd unit
+  rivetos service init|start|stop|status|logs   Manage the systemd unit
 
 Mesh:
   rivetos mesh list|ping|status   Mesh management
@@ -229,7 +230,7 @@ Mesh:
 
 Memory:
   rivetos memory backfill-tool-synth   Synthesize content for historical tool calls
-  rivetos memory queue-status     Show ros_tool_synth_queue state
+  rivetos memory queue-status     Show graphile-worker job queue state
   rivetos db ...                  Low-level DB inspection helpers
 
 Development:

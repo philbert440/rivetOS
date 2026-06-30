@@ -66,7 +66,7 @@ agents:
 
 providers:
   anthropic:
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
     max_tokens: 8192
 
 channels:
@@ -260,11 +260,12 @@ You are a helpful AI assistant named Rivet.
 
 ## First Conversation
 
-Once your agent is running, talk to it through your configured channel:
+Once your agent is running, talk to it through whichever channel you configured:
 
-**Discord:** Send a message in the bound channel.
-**Terminal:** `npx rivetos chat myagent "Hello, who are you?"`
-**API:** `curl -X POST http://localhost:3100/api/message -H 'Content-Type: application/json' -d '{"content": "Hello"}'`
+**Discord:** Send a message in a bound channel (one listed under `channels.discord.channel_bindings`).
+**Telegram:** Message your bot directly, if you configured `channels.telegram`.
+
+> The agent HTTP channel (`POST /api/message`) is an mTLS-authenticated endpoint for **inter-agent / mesh delegation**, not a casual chat API — it expects a `{ fromAgent, message }` envelope over HTTPS with client certs. See [Mesh Networking](mesh.md).
 
 ### Useful Commands
 
@@ -272,38 +273,67 @@ In any channel, you can use slash commands:
 
 | Command | What it does |
 |---|---|
-| `/stop` | Abort the current response immediately |
+| `/stop` | Stop the current turn |
+| `/interrupt [message]` | Stop the current turn and send a new message |
+| `/steer [message]` | Inject guidance into the active turn |
 | `/new` | Start a fresh session (clears conversation history) |
-| `/status` | Show agent status and runtime info |
-| `/model` | Show or switch the current model |
+| `/status` | Show runtime status |
+| `/model [provider] [model]` | Show or switch the current model |
 | `/think [level]` | Set thinking depth: off, low, medium, high |
-| `/steer [message]` | Inject context mid-response |
-| `/context add [file]` | Pin a file into the agent's context |
-| `/context list` | Show pinned files |
-| `/context clear` | Remove all pinned files |
+| `/reasoning` | Toggle reasoning (thinking) visibility |
+| `/tools` | Toggle tool-call visibility |
+| `/context` | Show context-window stats |
+| `/memory` | Show memory system health and stats |
+| `/clear` | Clear queued messages |
+| `/help` | List available commands |
 
 ---
 
 ## CLI Reference (Quick)
 
 ```bash
-rivetos init              # Interactive setup wizard
-rivetos start             # Start the runtime
-rivetos stop              # Stop the running instance
-rivetos status            # Show runtime status and metrics
-rivetos doctor            # Health check (config, connectivity, containers)
-rivetos test              # Smoke test (provider, memory, tools)
-rivetos logs              # Tail agent logs
-rivetos update            # Pull latest source, rebuild, restart
-rivetos config            # View or edit configuration
-rivetos agent add         # Add a new agent
-rivetos agent list        # List configured agents
-rivetos mesh list         # Show mesh peers (multi-instance)
-rivetos mesh ping         # Health check all peers
-rivetos build             # Build container images from source
-rivetos service install   # Install as systemd service
-rivetos plugins list      # Show loaded plugins
-rivetos skills list       # Show available skills
+# Setup
+rivetos init                          # Interactive setup wizard
+rivetos update                        # Pull latest, rebuild, re-symlink (add --mesh or --bare-metal)
+rivetos doctor                        # Health check (config, providers, connectivity)
+
+# Runtime
+rivetos start [--config <path>]       # Start the runtime
+rivetos stop                          # Stop the running instance
+rivetos status                        # Show runtime status and metrics
+
+# Configuration
+rivetos config show|validate|edit|path
+rivetos config init                   # Generate a default config.yaml
+
+# Agents & models
+rivetos agent list|add|remove
+rivetos model                         # Show providers + current models
+rivetos model <provider> <model>      # Switch default model (persistent)
+
+# Providers
+rivetos <provider> status             # anthropic | xai | google | ollama
+rivetos ollama models                 # List local Ollama models
+
+# Mesh (multi-node)
+rivetos mesh list|ping|status
+rivetos mesh join <host>              # Join an existing mesh via a seed node
+rivetos keys rotate|list|status       # Manage mesh keys
+
+# Memory & database
+rivetos memory queue-status           # Show graphile-worker job queue
+rivetos memory backfill-tool-synth    # Enqueue historical tool calls for synthesis
+rivetos db migrate|status             # Run / inspect schema migrations
+
+# Containers & service
+rivetos build                         # Build container images from source
+rivetos service init|start|stop|restart|status|logs
+
+# Introspection
+rivetos logs [--lines --follow --since --grep]
+rivetos test [--quick]                # Smoke tests (config, provider, memory, tools)
+rivetos plugins list
+rivetos skills list
 ```
 
 ---

@@ -6,9 +6,9 @@
  * The class itself owns config and exposes the standard Provider surface plus
  * Ollama-specific model-management helpers (list/show/pull/unload).
  *
- * This plugin is specifically for Ollama instances. Other local servers
- * (vLLM, llama.cpp llama-server, TGI, etc.) should use the openai-compat
- * provider instead.
+ * This plugin is specifically for Ollama instances. Other local servers use a
+ * dedicated provider: vLLM → `@rivetos/provider-vllm`, llama.cpp's llama-server
+ * → `@rivetos/provider-llama-server`.
  */
 
 import type { Provider, Message, ChatOptions, LLMChunk, PluginManifest } from '@rivetos/types'
@@ -106,7 +106,7 @@ export class OllamaProvider implements Provider {
   }
 
   // -----------------------------------------------------------------------
-  // aiSdkBridge — AI SDK loop adapter (consumed by step 8b's loop)
+  // aiSdkBridge — AI SDK loop adapter (consumed by the AI SDK loop)
   // -----------------------------------------------------------------------
 
   aiSdkBridge(): ProviderAiSdkBridge {

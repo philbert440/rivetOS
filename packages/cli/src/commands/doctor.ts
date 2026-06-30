@@ -778,12 +778,14 @@ async function checkProviderConnectivity(
       return resp.ok
     }
 
-    case 'openai-compat': {
+    case 'vllm':
+    case 'llama-server': {
       const baseUrl = (config.base_url as string | undefined)
         ?.replace(/\/$/, '')
         .replace(/\/v1$/, '')
       if (!baseUrl) return false
-      const apiKey = (config.api_key as string | undefined) ?? process.env.OPENAI_COMPAT_API_KEY
+      const envKey = name === 'vllm' ? 'VLLM_API_KEY' : 'LLAMA_SERVER_API_KEY'
+      const apiKey = (config.api_key as string | undefined) ?? process.env[envKey]
       const headers: Record<string, string> = {}
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`
       const resp = await fetch(`${baseUrl}/v1/models`, {

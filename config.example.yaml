@@ -14,15 +14,15 @@ agents:
 
 providers:
   anthropic:
-    model: claude-sonnet-4-20250514
+    model: claude-opus-4-7
     max_tokens: 8192
     # api_key via env: ANTHROPIC_API_KEY
 
-  # --- Local models via strict OpenAI-compatible servers (vLLM, TGI, etc.) ---
-  # openai-compat:
+  # --- Local models: vLLM (full surface) or llama.cpp llama-server ---
+  # vllm:                                   # or "llama-server" for llama.cpp
   #   name: 'Local (vLLM)'
   #   base_url: http://localhost:8000       # or http://localhost:8000/v1
-  #   api_key: sk-no-key-required           # or ${OPENAI_COMPAT_API_KEY}
+  #   api_key: sk-no-key-required           # or ${VLLM_API_KEY}
   #   model: qwen3.6-35b-a3b-awq
   #   temperature: 0.7
   #   top_p: 0.9
@@ -56,7 +56,8 @@ channels:
 #   - "@rivetos/provider-google"
 #   - "@rivetos/provider-xai"
 #   - "@rivetos/provider-ollama"
-#   - "@rivetos/provider-openai-compat"
+#   - "@rivetos/provider-vllm"
+#   - "@rivetos/provider-llama-server"
 #   - "@rivetos/channel-telegram"
 #   - "@rivetos/channel-discord"
 #   - "@rivetos/channel-voice-discord"

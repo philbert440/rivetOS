@@ -11,13 +11,13 @@ runtime:
       prompt: Read HEARTBEAT.md if it exists. Follow it. If nothing needs attention, reply HEARTBEAT_OK.
 agents:
   %%AGENT_NAME%%:
-    provider: openai-compat
+    provider: vllm
     default_thinking: off
 providers:
-  openai-compat:
+  vllm:
     model: %%DEFAULT_MODEL%%
     base_url: %%BASE_URL%%
-    api_key: ${OPENAI_COMPAT_API_KEY}
+    api_key: ${VLLM_API_KEY}
     max_tokens: 4096
     temperature: 0.6
     # Context window size for /context stats and compaction thresholds.
