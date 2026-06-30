@@ -9,6 +9,7 @@
  *   GET  /api/mesh/ping — liveness probe (TLS handshake required, no app-layer auth)
  *   POST /api/message   — receive a delegated task, execute locally, return result
  *   GET  /api/mesh      — return current mesh registry (for seed sync)
+ *   POST /api/mesh/join — register a joining node, return the current roster
  *   GET  /api/agents    — list agents on this node
  *
  * Auth: Mutual TLS — peer must present a cert signed by our CA.
@@ -21,7 +22,7 @@ import { readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { TLSSocket } from 'node:tls'
 import type { DelegationEngine } from '../domain/delegation.js'
-import type { MeshRegistry } from '@rivetos/types'
+import type { MeshRegistry, MeshNode } from '@rivetos/types'
 import type { Router } from '../domain/router.js'
 import { logger } from '../logger.js'
 
@@ -239,6 +240,11 @@ export class AgentChannelServer {
         return
       }
 
+      if (method === 'POST' && url === '/api/mesh/join') {
+        await this.handleMeshJoin(req, res, peerCn)
+        return
+      }
+
       if (method === 'GET' && url === '/api/agents') {
         this.handleAgentsList(res)
         return
@@ -347,6 +353,58 @@ export class AgentChannelServer {
     const nodes = await this.config.meshRegistry.getNodes()
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(nodes))
+  }
+
+  // -----------------------------------------------------------------------
+  // POST /api/mesh/join — register a joining node, return the current roster
+  // -----------------------------------------------------------------------
+
+  private async handleMeshJoin(
+    req: IncomingMessage,
+    res: ServerResponse,
+    peerCn: string,
+  ): Promise<void> {
+    if (!this.config.meshRegistry) {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Mesh not configured' }))
+      return
+    }
+
+    let body: Record<string, unknown> | null
+    try {
+      body = await this.readBody(req)
+    } catch (err) {
+      res.writeHead(413, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+      return
+    }
+    if (!body) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }))
+      return
+    }
+
+    const node = body as unknown as MeshNode
+    if (!node.id || !node.name || !node.host || !node.port) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Missing required node fields (id, name, host, port)' }))
+      return
+    }
+
+    // Stamp server-side timestamps/status so a joining node can't backdate
+    // itself or arrive without a status.
+    node.lastSeen = Date.now()
+    node.registeredAt = node.registeredAt || Date.now()
+    // status comes from untrusted JSON, so read it from the raw body where it's
+    // genuinely `unknown` and may be absent.
+    node.status = (body.status as MeshNode['status'] | undefined) ?? 'online'
+
+    await this.config.meshRegistry.register(node)
+    log.info(`Mesh join: ${node.name} (${node.host}:${String(node.port)}) peer.cn=${peerCn}`)
+
+    const nodes = await this.config.meshRegistry.getNodes()
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ status: 'ok', nodes }))
   }
 
   // -----------------------------------------------------------------------
