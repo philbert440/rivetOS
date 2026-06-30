@@ -15,7 +15,10 @@ let root: string
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'rivetos-discovery-'))
   // Minimal package.json so createRequire(rootDir/package.json) works.
-  await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'tmp-root', version: '0.0.0' }))
+  await writeFile(
+    join(root, 'package.json'),
+    JSON.stringify({ name: 'tmp-root', version: '0.0.0' }),
+  )
 })
 
 afterEach(async () => {
@@ -35,10 +38,20 @@ async function writePkg(
 
 describe('discoverPlugins — production mode', () => {
   it('loads exactly the explicit list when all resolvable', async () => {
-    await writePkg(join(root, 'node_modules', '@rivetos', 'provider-anthropic'), '@rivetos/provider-anthropic', { type: 'provider', name: 'anthropic' })
-    await writePkg(join(root, 'node_modules', '@rivetos', 'tool-shell'), '@rivetos/tool-shell', { type: 'tool', name: 'shell' })
+    await writePkg(
+      join(root, 'node_modules', '@rivetos', 'provider-anthropic'),
+      '@rivetos/provider-anthropic',
+      { type: 'provider', name: 'anthropic' },
+    )
+    await writePkg(join(root, 'node_modules', '@rivetos', 'tool-shell'), '@rivetos/tool-shell', {
+      type: 'tool',
+      name: 'shell',
+    })
     // An installed plugin not in the explicit list — must NOT be picked up.
-    await writePkg(join(root, 'node_modules', '@rivetos', 'tool-file'), '@rivetos/tool-file', { type: 'tool', name: 'file' })
+    await writePkg(join(root, 'node_modules', '@rivetos', 'tool-file'), '@rivetos/tool-file', {
+      type: 'tool',
+      name: 'file',
+    })
 
     const reg = await discoverPlugins(root, {
       mode: 'production',
@@ -52,7 +65,10 @@ describe('discoverPlugins — production mode', () => {
   })
 
   it('fails fast naming a missing package', async () => {
-    await writePkg(join(root, 'node_modules', '@rivetos', 'tool-shell'), '@rivetos/tool-shell', { type: 'tool', name: 'shell' })
+    await writePkg(join(root, 'node_modules', '@rivetos', 'tool-shell'), '@rivetos/tool-shell', {
+      type: 'tool',
+      name: 'shell',
+    })
 
     await expect(
       discoverPlugins(root, {
@@ -77,7 +93,10 @@ describe('discoverPlugins — production mode', () => {
   })
 
   it('accepts non-@rivetos scopes (no scope handcuff)', async () => {
-    await writePkg(join(root, 'node_modules', 'acme-rivetos-thing'), 'acme-rivetos-thing', { type: 'tool', name: 'thing' })
+    await writePkg(join(root, 'node_modules', 'acme-rivetos-thing'), 'acme-rivetos-thing', {
+      type: 'tool',
+      name: 'thing',
+    })
 
     const reg = await discoverPlugins(root, {
       mode: 'production',
@@ -90,8 +109,14 @@ describe('discoverPlugins — production mode', () => {
 
 describe('discoverPlugins — workspace mode', () => {
   it('scans plugins/<category>/* with no explicit list', async () => {
-    await writePkg(join(root, 'plugins', 'providers', 'anthropic'), '@rivetos/provider-anthropic', { type: 'provider', name: 'anthropic' })
-    await writePkg(join(root, 'plugins', 'tools', 'shell'), '@rivetos/tool-shell', { type: 'tool', name: 'shell' })
+    await writePkg(join(root, 'plugins', 'providers', 'anthropic'), '@rivetos/provider-anthropic', {
+      type: 'provider',
+      name: 'anthropic',
+    })
+    await writePkg(join(root, 'plugins', 'tools', 'shell'), '@rivetos/tool-shell', {
+      type: 'tool',
+      name: 'shell',
+    })
 
     const reg = await discoverPlugins(root, { mode: 'workspace' })
 
@@ -100,8 +125,15 @@ describe('discoverPlugins — workspace mode', () => {
   })
 
   it('scans node_modules/* across any scope', async () => {
-    await writePkg(join(root, 'node_modules', '@rivetos', 'provider-anthropic'), '@rivetos/provider-anthropic', { type: 'provider', name: 'anthropic' })
-    await writePkg(join(root, 'node_modules', 'acme-rivetos-thing'), 'acme-rivetos-thing', { type: 'tool', name: 'thing' })
+    await writePkg(
+      join(root, 'node_modules', '@rivetos', 'provider-anthropic'),
+      '@rivetos/provider-anthropic',
+      { type: 'provider', name: 'anthropic' },
+    )
+    await writePkg(join(root, 'node_modules', 'acme-rivetos-thing'), 'acme-rivetos-thing', {
+      type: 'tool',
+      name: 'thing',
+    })
     // No marker — must not be discovered.
     await writePkg(join(root, 'node_modules', 'random-dep'), 'random-dep', undefined)
 
@@ -113,8 +145,14 @@ describe('discoverPlugins — workspace mode', () => {
   })
 
   it('unions explicit list with scans, deduped by package name', async () => {
-    await writePkg(join(root, 'plugins', 'providers', 'anthropic'), '@rivetos/provider-anthropic', { type: 'provider', name: 'anthropic' })
-    await writePkg(join(root, 'node_modules', '@rivetos', 'tool-shell'), '@rivetos/tool-shell', { type: 'tool', name: 'shell' })
+    await writePkg(join(root, 'plugins', 'providers', 'anthropic'), '@rivetos/provider-anthropic', {
+      type: 'provider',
+      name: 'anthropic',
+    })
+    await writePkg(join(root, 'node_modules', '@rivetos', 'tool-shell'), '@rivetos/tool-shell', {
+      type: 'tool',
+      name: 'shell',
+    })
 
     const reg = await discoverPlugins(root, {
       mode: 'workspace',
@@ -129,7 +167,10 @@ describe('discoverPlugins — workspace mode', () => {
   })
 
   it('does not throw on missing explicit-list entries (warns instead)', async () => {
-    await writePkg(join(root, 'plugins', 'tools', 'shell'), '@rivetos/tool-shell', { type: 'tool', name: 'shell' })
+    await writePkg(join(root, 'plugins', 'tools', 'shell'), '@rivetos/tool-shell', {
+      type: 'tool',
+      name: 'shell',
+    })
 
     const reg = await discoverPlugins(root, {
       mode: 'workspace',
@@ -140,7 +181,10 @@ describe('discoverPlugins — workspace mode', () => {
   })
 
   it('skips packages with invalid plugin types', async () => {
-    await writePkg(join(root, 'node_modules', 'bogus'), 'bogus', { type: 'something-bogus', name: 'x' })
+    await writePkg(join(root, 'node_modules', 'bogus'), 'bogus', {
+      type: 'something-bogus',
+      name: 'x',
+    })
 
     const reg = await discoverPlugins(root, { mode: 'workspace' })
 

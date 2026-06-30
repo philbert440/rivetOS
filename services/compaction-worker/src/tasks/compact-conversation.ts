@@ -27,12 +27,7 @@ import {
 } from '@rivetos/memory-postgres'
 import { config } from '../config.js'
 import { callLlm } from '../llm.js'
-import {
-  shouldSkip,
-  recordFailure,
-  recordSuccess,
-  breakerThreshold,
-} from '../circuit-breaker.js'
+import { shouldSkip, recordFailure, recordSuccess, breakerThreshold } from '../circuit-breaker.js'
 
 export interface CompactConversationPayload {
   conversationId: string

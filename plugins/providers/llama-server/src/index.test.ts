@@ -28,7 +28,11 @@ describe('LlamaServerProvider', () => {
     })
 
     it('normalizes a trailing slash and /v1 suffix off the base URL', () => {
-      for (const baseUrl of ['http://localhost:8080/', 'http://localhost:8080/v1', 'http://localhost:8080/v1/']) {
+      for (const baseUrl of [
+        'http://localhost:8080/',
+        'http://localhost:8080/v1',
+        'http://localhost:8080/v1/',
+      ]) {
         // Reaches into the stream context indirectly via applyRequestExtensions (URL not exposed),
         // so assert construction does not throw and model/ctx defaults hold.
         const p = new LlamaServerProvider({ baseUrl })

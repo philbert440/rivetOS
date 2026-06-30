@@ -14,7 +14,9 @@ vi.mock('../config.js', () => ({
 import { enqueueUnembeddedTask } from './enqueue-unembedded.js'
 
 interface MockHelpers {
-  withPgClient: (fn: (client: { query: ReturnType<typeof vi.fn> }) => Promise<void>) => Promise<void>
+  withPgClient: (
+    fn: (client: { query: ReturnType<typeof vi.fn> }) => Promise<void>,
+  ) => Promise<void>
   addJob: ReturnType<typeof vi.fn>
   logger: { info: ReturnType<typeof vi.fn> }
 }
@@ -53,9 +55,7 @@ describe('enqueue-unembedded', () => {
       { targetTable: 'ros_summaries', targetId: 's1' },
       { jobKey: 'embed-ros_summaries-s1', jobKeyMode: 'preserve_run_at', maxAttempts: 5 },
     )
-    expect(helpers.logger.info).toHaveBeenCalledWith(
-      expect.stringContaining('re-enqueued 3'),
-    )
+    expect(helpers.logger.info).toHaveBeenCalledWith(expect.stringContaining('re-enqueued 3'))
   })
 
   it('is a no-op (no jobs, no log) when nothing is unembedded', async () => {
