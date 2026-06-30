@@ -283,17 +283,22 @@ npx rivetos start
 ### Systemd Service
 
 ```bash
-# Install as a systemd service
-npx rivetos service install
+# Generate the systemd unit (a per-user unit unless you run it as root)
+npx rivetos service init
 
-# Manage
-sudo systemctl start rivetos
-sudo systemctl stop rivetos
-sudo systemctl status rivetos
-sudo systemctl enable rivetos   # Start on boot
+# Manage it through the CLI — it wraps systemctl and picks --user vs system automatically
+npx rivetos service start
+npx rivetos service stop
+npx rivetos service restart
+npx rivetos service status
+npx rivetos service logs          # follow the journal
 
-# Uninstall
-npx rivetos service uninstall
+# Enable on boot (user unit; drop --user if you ran `service init` as root)
+systemctl --user enable rivetos
+
+# Uninstall: stop, disable, then delete the unit file (path is printed by `service init`)
+npx rivetos service stop
+systemctl --user disable rivetos
 ```
 
 ### PostgreSQL Setup

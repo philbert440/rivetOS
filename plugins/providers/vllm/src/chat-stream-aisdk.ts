@@ -43,7 +43,7 @@ export type ToolChoice =
   | 'required'
   | { type: 'function'; function: { name: string } }
 
-export interface OpenAICompatAiSdkContext {
+export interface VllmAiSdkContext {
   /** Bare baseUrl (no /v1 suffix). */
   baseUrl: string
   apiKey: string
@@ -126,7 +126,7 @@ function buildToolSet(toolDefs: ToolDefinition[] | undefined): ToolSet {
 // ---------------------------------------------------------------------------
 
 export async function* chatStreamAiSdk(
-  ctx: OpenAICompatAiSdkContext,
+  ctx: VllmAiSdkContext,
   messages: Message[],
   options?: ChatOptions,
 ): AsyncIterable<LLMChunk> {

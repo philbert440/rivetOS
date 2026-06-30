@@ -155,13 +155,16 @@ The voice channel plugin connects your agent to Discord voice channels for real-
 
 | Provider | Backend | Best For |
 |----------|---------|----------|
-| **xai** | [xAI Realtime API](https://docs.x.ai/docs/guides/realtime-conversations) | Native xAI users, low-latency |
+| **xai** | [xAI Realtime API](https://docs.x.ai/docs/guides/realtime-conversations) | Lowest-latency cloud realtime |
 | **gemini** | [Gemini Live API](https://ai.google.dev/gemini-api/docs/live) | Google ecosystem, Google Search grounding |
+| **local** | Self-hosted GERTY STT/TTS stack | Fully local voice — no cloud, turn-based through your own STT/TTS servers, routed to a real agent |
+
+The `xai` and `gemini` providers are cloud realtime sessions. The `local` provider is turn-based: it transcribes with your STT server, runs the turn through a configured agent, and speaks the reply with your TTS server.
 
 ### Prerequisites
 
-- A Discord bot token (same one used for the text Discord channel is fine, or a separate one)
-- An API key for your chosen voice provider (xAI or Google)
+- A Discord bot token (the same one used for the text Discord channel is fine, or a separate one)
+- For `xai`/`gemini`: an API key for that provider. For `local`: a running GERTY STT/TTS stack
 - The bot must have **Connect** and **Speak** permissions in the voice channel
 
 ### 1. Configure
@@ -169,38 +172,23 @@ The voice channel plugin connects your agent to Discord voice channels for real-
 Add keys to `.env`:
 
 ```bash
-DISCORD_VOICE_TOKEN=MTIz...your-token-here
+DISCORD_BOT_TOKEN=MTIz...your-token-here
 
-# For xAI provider:
+# For the xai provider:
 XAI_API_KEY=xai-...your-key-here
 
-# For Gemini provider:
+# For the gemini provider (read from the environment by the Gemini Live session):
 GOOGLE_API_KEY=AIza...your-key-here
 ```
 
 Add to `config.yaml`:
 
 ```yaml
-# Example: Gemini Live provider
-channels:
-  voice-discord:
-    provider: gemini
-    discord_token: ${DISCORD_VOICE_TOKEN}
-    google_api_key: ${GOOGLE_API_KEY}
-    guild_id: "YOUR_SERVER_ID"
-    voice_channel_id: "YOUR_VOICE_CHANNEL_ID"
-    allowed_users:
-      - "YOUR_USER_ID"
-    voice: "Kore"
-    instructions: "You are a helpful assistant. Be concise in voice responses."
-```
-
-```yaml
-# Example: xAI Realtime provider
+# Example: xAI Realtime (cloud)
 channels:
   voice-discord:
     provider: xai
-    discord_token: ${DISCORD_VOICE_TOKEN}
+    bot_token: ${DISCORD_BOT_TOKEN}
     xai_api_key: ${XAI_API_KEY}
     guild_id: "YOUR_SERVER_ID"
     voice_channel_id: "YOUR_VOICE_CHANNEL_ID"
@@ -210,25 +198,57 @@ channels:
     instructions: "You are a helpful assistant. Be concise in voice responses."
 ```
 
+```yaml
+# Example: local GERTY STT/TTS (fully self-hosted, turn-based)
+channels:
+  voice-discord:
+    provider: local
+    bot_token: ${DISCORD_BOT_TOKEN}
+    guild_id: "YOUR_SERVER_ID"
+    voice_channel_id: "YOUR_VOICE_CHANNEL_ID"
+    allowed_users:
+      - "YOUR_USER_ID"
+    agent: opus                # which agent handles voice turns
+    gerty_host: gerty.local    # host running the STT/TTS servers
+    # stt_url / tts_url default to http://<gerty_host>:9000 and :9001
+    speaker: "default"
+    language: English
+```
+
 ### Config Options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `provider` | string | `xai` | Voice provider: `xai` or `gemini` |
-| `discord_token` | string | **required** | Discord bot token |
-| `guild_id` | string | **required** | Discord server ID |
+| `provider` | string | `xai` | Voice provider: `xai`, `gemini`, or `local` |
+| `bot_token` | string | `${DISCORD_BOT_TOKEN}` | Discord bot token |
+| `guild_id` | string | — | Discord server ID |
 | `voice_channel_id` | string | — | Bind to a specific voice channel (recommended for multi-agent) |
-| `allowed_users` | string[] | **required** | User IDs allowed to activate the bot |
-| `voice` | string | `Ara` (xAI) / `Kore` (Gemini) | Voice to use for text-to-speech |
+| `allowed_users` | string[] | — | User IDs allowed to activate the bot |
+| `voice` | string | `Ara` (xai) / `Kore` (gemini) | TTS voice for the cloud providers |
 | `instructions` | string | — | System instructions for the voice agent |
-| `silence_duration_ms` | number | `1500` | How long to wait after silence before responding |
+| `silence_ms` | number | `1500` (`900` for `local`) | Silence to wait for before the bot responds |
 | `sample_rate` | number | `24000` | Audio sample rate (Hz) |
 | `transcript_dir` | string | `transcripts` | Directory for voice transcript logs |
-| `leave_grace_period_ms` | number | `10000` | How long to wait before leaving after everyone else leaves |
-| `xai_api_key` | string | — | xAI API key (required for `xai` provider) |
-| `google_api_key` | string | — | Google API key (required for `gemini` provider) |
-| `gemini_model` | string | `gemini-2.0-flash-live-001` | Gemini model for live voice (only for `gemini` provider) |
-| `xai_collection_id` | string | — | xAI knowledge collection for context (only for `xai` provider) |
+| `xai_api_key` | string | `${XAI_API_KEY}` | xAI API key (required for the `xai` provider) |
+
+For the Gemini provider, set `GOOGLE_API_KEY` in `.env` — it's read from the environment, not from a config key.
+
+#### Local (GERTY) provider keys
+
+These apply only when `provider: local`:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `agent` | string | `local` | Agent that handles each voice turn |
+| `gerty_host` | string | `localhost` (or `GERTY_HOST`) | Host running the STT/TTS servers |
+| `stt_url` | string | `http://<gerty_host>:9000/v1/chat/completions` | Speech-to-text endpoint |
+| `tts_url` | string | `http://<gerty_host>:9001/v1/audio/speech` | Text-to-speech endpoint |
+| `stt_model` | string | `qwen3-asr` | STT model name |
+| `tts_model` | string | `qwen3-tts` | TTS model name |
+| `speaker` | string | — | Named TTS speaker/voice |
+| `voice_instruct` | string | built-in | Style instructions for the TTS voice |
+| `language` | string | `English` | Spoken language |
+| `tts_max_new_tokens` | number | `4096` | Max tokens per TTS synthesis |
 
 ### How It Works
 

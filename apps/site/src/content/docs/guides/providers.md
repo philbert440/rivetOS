@@ -2,7 +2,7 @@
 title: Provider Setup
 sidebar:
   order: 6
-description: How to configure LLM providers — Anthropic, xAI, Google, Ollama, openai-compat, and claude-cli
+description: How to configure LLM providers — Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
 ---
 
 Providers connect your agents to large language models. Each provider plugin handles API authentication, streaming, tool calling format differences, and thinking/reasoning support so your agent config stays clean.
@@ -29,13 +29,7 @@ RivetOS ships with six provider plugins:
 3. Go to **API Keys** → **Create Key**
 4. Copy the key (starts with `sk-ant-`)
 
-Alternatively, use **OAuth login** (no API key needed):
-
-```bash
-npx rivetos login
-```
-
-This opens a browser, authenticates with Anthropic, and stores tokens locally. The provider auto-detects OAuth tokens vs API keys.
+Prefer subscription/OAuth auth over an API key? Use the **`claude-cli` provider** instead — it drives the local `claude` binary (Claude Code CLI), which owns the OAuth flow. Run `claude login` once via the CLI itself; RivetOS does not handle the OAuth handshake. See the `claude-cli` provider in the [Configuration Reference](/reference/config/).
 
 ### 2. Configure
 
@@ -50,7 +44,7 @@ Add to `config.yaml`:
 ```yaml
 providers:
   anthropic:
-    model: claude-sonnet-4-20250514
+    model: claude-opus-4-7
     max_tokens: 8192
 
 agents:
@@ -63,11 +57,13 @@ agents:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `model` | string | `claude-opus-4-6` | Model identifier |
+| `model` | string | `claude-opus-4-7` | Model identifier |
 | `max_tokens` | number | `8192` | Maximum output tokens |
 | `api_key` | string | `${ANTHROPIC_API_KEY}` | API key. Use env var |
-| `base_url` | string | `https://api.anthropic.com` | API endpoint (for proxies) |
-| `token_path` | string | — | Path to OAuth token file (set automatically by `rivetos login`) |
+| `context_window` | number | — | Override the model's context-window size (advanced) |
+| `max_output_tokens` | number | — | Hard cap on output tokens |
+
+> For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (it drives the local `claude` binary and owns the OAuth flow).
 
 ### Thinking Levels
 
@@ -84,9 +80,9 @@ When `default_thinking` is set on the agent, the provider requests extended thin
 
 | Model | Speed | Intelligence | Context |
 |-------|:-----:|:------------:|:-------:|
-| `claude-opus-4-6` | Slow | Highest | 200K |
-| `claude-sonnet-4-20250514` | Fast | High | 200K |
-| `claude-haiku-3-5-20241022` | Fastest | Good | 200K |
+| `claude-opus-4-7` | Slow | Highest | 200K |
+| `claude-sonnet-4-6` | Fast | High | 200K |
+| `claude-haiku-4-5-20251001` | Fastest | Good | 200K |
 
 > **Docs:** [Anthropic API Reference](https://docs.anthropic.com/en/api/getting-started)
 
@@ -268,14 +264,65 @@ agents:
 
 ---
 
-## llama.cpp server (Local)
+## vLLM (Local / self-hosted)
 
-llama.cpp's `llama-server` is supported via the **openai-compat** provider — point it at your `llama-server` instance:
+Dedicated provider for a vLLM server. Exposes the full vLLM surface: sampling
+extensions (`top_k`, `min_p`, `repetition_penalty`, `min_tokens`),
+`mm_processor_kwargs` / `chat_template_kwargs`, the `extra_body` escape hatch,
+`video_url` content blocks, and `reasoning_content` parsing.
+
+Start a server: `vllm serve <model> --port 8000 [--reasoning-parser ...] [--enable-auto-tool-choice]`.
 
 ```yaml
 providers:
+  vllm:
+    base_url: http://localhost:8000      # trailing /v1 optional
+    model: default                       # 'default' auto-discovers from /v1/models
+    top_k: 40
+    min_p: 0.05
+    # api_key: ${VLLM_API_KEY}           # only if you started vLLM with --api-key
+
+agents:
   local:
-    provider_type: openai-compat
+    provider: vllm
+    local: true                          # extended context — tokens are free
+```
+
+Leave `model: default` and the provider auto-selects the served model (and adopts
+its context window) from `/v1/models`. For native `<think>` reasoning, start vLLM
+with a `--reasoning-parser`; the AI SDK reasoning surface consumes `reasoning_content`.
+
+### Config Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `base_url` | string | **required** | vLLM server URL (`/v1` optional). |
+| `model` | string | `default` | Served model id; `default` auto-discovers. |
+| `api_key` | string | `${VLLM_API_KEY}` | Bearer token (only if vLLM was started with `--api-key`). |
+| `max_tokens` | number | `4096` | Maximum output tokens. |
+| `temperature` / `top_p` | number | `0.7` / `0.95` | Standard sampling. |
+| `top_k` / `min_p` | number | — | vLLM sampling extensions. |
+| `presence_penalty` / `frequency_penalty` / `seed` / `stop` | — | — | Standard OpenAI knobs. |
+| `repetition_penalty` / `min_tokens` | number | — | vLLM extensions. |
+| `mm_processor_kwargs` / `chat_template_kwargs` / `extra_body` | object | — | vLLM passthroughs. |
+| `default_tool_choice` | string | `auto` | `auto`, `none`, or `required`. |
+| `verify_model_on_init` | boolean | `false` | Probe `/v1/models` at boot. |
+| `context_window` / `max_output_tokens` | number | — | Runtime budgeting overrides. |
+
+---
+
+## llama.cpp llama-server (Local)
+
+Dedicated provider for llama.cpp's `llama-server`. Deliberately lean: the standard
+OpenAI sampling knobs plus llama.cpp's `top_k` / `min_p` and a generic `extra_body`
+escape hatch (grammar, `n_probs`, …). It carries none of the vLLM-only machinery —
+use the `vllm` provider for that.
+
+Start a server: `llama-server -m <model.gguf> --port 8080 [--reasoning-format deepseek]`.
+
+```yaml
+providers:
+  llama-server:
     base_url: http://localhost:8080
     model: default
     top_k: 40
@@ -283,13 +330,29 @@ providers:
 
 agents:
   local:
-    provider: local
+    provider: llama-server
     local: true
 ```
 
-llama.cpp-specific sampling extensions (`top_k`, `min_p`) flow through to the server. Standard OpenAI knobs (`temperature`, `top_p`, etc.) work as expected. For native `<think>` reasoning, start `llama-server` with `--reasoning-format deepseek`.
+For native `<think>` reasoning, start `llama-server` with `--reasoning-format deepseek`
+so it emits `reasoning_content`. Set `LLAMA_SERVER_API_KEY` only if you started the
+server with `--api-key`.
 
-There is no longer a separate `llama-server` provider — it was removed in the AI SDK migration. The `openai-compat` plugin covers vLLM, TGI, llama.cpp, Groq, Together, Fireworks, LocalAI, and any other OpenAI-compatible server.
+### Config Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `base_url` | string | **required** | llama-server URL (`/v1` optional). |
+| `model` | string | `default` | Served model id; `default` auto-discovers. |
+| `api_key` | string | `${LLAMA_SERVER_API_KEY}` | Bearer token (only if started with `--api-key`). |
+| `max_tokens` | number | `4096` | Maximum output tokens. |
+| `temperature` / `top_p` | number | `0.7` / `0.95` | Standard sampling. |
+| `top_k` / `min_p` | number | — | llama.cpp sampling extensions. |
+| `presence_penalty` / `frequency_penalty` / `seed` / `stop` | — | — | Standard OpenAI knobs. |
+| `extra_body` | object | — | Escape hatch (grammar, `n_probs`, …). |
+| `default_tool_choice` | string | `auto` | `auto`, `none`, or `required`. |
+| `verify_model_on_init` | boolean | `false` | Probe `/v1/models` at boot. |
+| `context_window` / `max_output_tokens` | number | — | Runtime budgeting overrides. |
 
 ---
 

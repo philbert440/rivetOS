@@ -426,7 +426,7 @@ export function validateProviders(
       })
     }
 
-    if ((name === 'ollama' || name === 'openai-compat') && !provider.base_url) {
+    if ((name === 'ollama' || name === 'vllm' || name === 'llama-server') && !provider.base_url) {
       issues.push({
         severity: 'error',
         path: `${path}.base_url`,

@@ -43,7 +43,7 @@ agents:
 
 providers:
   anthropic:
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
     max_tokens: 16384
   xai:
     model: grok-4-1-fast-reasoning
@@ -57,9 +57,20 @@ channels:
       "OPUS_CHANNEL": opus
       "GROK_CHANNEL": grok
       "LOCAL_CHANNEL": local
-  agent:
-    port: 3100
-    secret: ${RIVETOS_AGENT_SECRET}
+
+# Cross-node delegation uses the mTLS-authenticated mesh (the old `channels.agent`
+# bearer-`secret` pattern is removed). Set `node_name` to THIS node's cert CN — so
+# this block differs per node. The datahub node acts as the discovery seed.
+mesh:
+  enabled: true
+  node_name: pve2              # must match this node's certificate CN
+  tls: true                    # default cert paths under /rivet-shared/rivet-ca
+  agent_channel_port: 3000
+  storage_dir: /rivet-shared
+  discovery:
+    mode: seed
+    seed_host: pve1.mesh       # datahub node; use .mesh DNS (matches cert SAN)
+    seed_port: 3000
 
 memory:
   postgres:

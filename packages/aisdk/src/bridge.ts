@@ -79,7 +79,7 @@ export interface ProviderAiSdkBridge {
   /**
    * Optional message preprocessing — extract a leading system prompt and/or
    * rewrite mid-conversation system messages. Used by providers with strict
-   * chat templates (vLLM + Qwen/Llama via openai-compat) where mid-conv system
+   * chat templates (vLLM/llama-server + Qwen/Llama) where mid-conv system
    * messages must be folded into user `[SYSTEM NOTICE]` content.
    *
    * Loop calls this before passing messages to `streamText`. Returns:

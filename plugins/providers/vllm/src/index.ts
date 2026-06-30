@@ -1,12 +1,16 @@
 /**
- * @rivetos/provider-openai-compat
+ * @rivetos/provider-vllm
  *
- * OpenAI-compatible chat-completions provider tuned for strict servers.
+ * Dedicated provider for vLLM's OpenAI-compatible server. Owns the full vLLM
+ * surface: native sampling extensions (`top_k`, `min_p`, `repetition_penalty`,
+ * `min_tokens`), `mm_processor_kwargs` / `chat_template_kwargs`, the `extra_body`
+ * escape hatch, `video_url` content blocks, and `reasoning_content` parsing.
  *
- * Target servers:
- *   - vLLM (`--enable-auto-tool-choice`, `--reasoning-parser`)
- *   - Text Generation Inference (TGI)
- *   - LocalAI, Together, Fireworks, Groq, or any other OpenAI-compatible API
+ * Run a server with: `vllm serve <model> --port <port> [--reasoning-parser ...]
+ * [--enable-auto-tool-choice]`. For a generic OpenAI-compatible endpoint that
+ * is NOT vLLM (TGI, Groq, Together, LocalAI, …), there is no generic provider
+ * anymore — point this provider at it if it speaks the vLLM dialect, or use
+ * `llama-server` for llama.cpp.
  *
  * Uses `@ai-sdk/openai-compatible` for the streaming path; this file owns
  * config, the `Provider` surface, and the `/v1/models` availability probe.
@@ -40,7 +44,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import {
   chatStreamAiSdk,
   splitAndFoldSystem,
-  type OpenAICompatAiSdkContext,
+  type VllmAiSdkContext,
   type ToolChoice,
 } from './chat-stream-aisdk.js'
 
@@ -50,7 +54,7 @@ export type { ToolChoice } from './chat-stream-aisdk.js'
 // Config
 // ---------------------------------------------------------------------------
 
-export interface OpenAICompatProviderConfig {
+export interface VllmProviderConfig {
   /** Base URL of the OpenAI-compatible server, e.g. 'http://localhost:8000'.
    *  The trailing '/v1' is optional — it is normalized away and re-appended. */
   baseUrl: string
@@ -79,7 +83,7 @@ export interface OpenAICompatProviderConfig {
   seed?: number
   /** Default tool_choice when tools are provided. Default: 'auto' */
   defaultToolChoice?: ToolChoice
-  /** Custom provider id. Default: 'openai-compat' */
+  /** Custom provider id. Default: 'vllm' */
   id?: string
   /** Custom display name. Default: 'OpenAI-compatible server' */
   name?: string
@@ -168,7 +172,6 @@ export function encodeVideoMarkers(messages: Message[]): Message[] {
 export function spliceVideoUrls(body: Record<string, unknown>): Record<string, unknown> {
   const messages = body.messages
   if (!Array.isArray(messages)) return body
-  let changed = false
 
   const out = messages.map((msg: unknown) => {
     const m = msg as { role?: string; content?: unknown }
@@ -199,18 +202,20 @@ export function spliceVideoUrls(body: Record<string, unknown>): Record<string, u
     for (const u of urls) {
       ;(content as OpenAIContentPart[]).push({ type: 'video_url', video_url: { url: u } })
     }
-    changed = true
     return { ...m, content }
   })
 
-  return changed ? { ...body, messages: out } : body
+  // Each unchanged message maps to its original ref above, so when nothing had
+  // a video marker we hand back the original body untouched.
+  const unchanged = out.every((m, i) => m === messages[i])
+  return unchanged ? body : { ...body, messages: out }
 }
 
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
-export class OpenAICompatProvider implements Provider {
+export class VllmProvider implements Provider {
   id: string
   name: string
   private baseUrl: string
@@ -249,9 +254,9 @@ export class OpenAICompatProvider implements Provider {
    */
   private suppressThinking = false
 
-  constructor(config: OpenAICompatProviderConfig) {
-    this.id = config.id ?? 'openai-compat'
-    this.name = config.name ?? 'OpenAI-compatible server'
+  constructor(config: VllmProviderConfig) {
+    this.id = config.id ?? 'vllm'
+    this.name = config.name ?? 'vLLM'
 
     // Normalize baseUrl — accept either 'http://host:port' or
     // 'http://host:port/v1'. The chat stream re-appends '/v1'.
@@ -260,9 +265,9 @@ export class OpenAICompatProvider implements Provider {
     this.baseUrl = base
 
     this.apiKey = config.apiKey ?? ''
-    this.model = config.model ?? MODEL_DEFAULTS['openai-compat']
+    this.model = config.model ?? MODEL_DEFAULTS['vllm']
     // 'default' is the placeholder we ship — treat it as "discover from server".
-    this.modelPinned = !!config.model && config.model !== MODEL_DEFAULTS['openai-compat']
+    this.modelPinned = !!config.model && config.model !== MODEL_DEFAULTS['vllm']
     this.maxTokens = config.maxTokens ?? 4096
     this.temperature = config.temperature ?? 0.7
     this.topP = config.topP ?? 0.95
@@ -306,7 +311,7 @@ export class OpenAICompatProvider implements Provider {
     return headers
   }
 
-  private buildAiSdkContext(): OpenAICompatAiSdkContext {
+  private buildAiSdkContext(): VllmAiSdkContext {
     return {
       baseUrl: this.baseUrl,
       apiKey: this.apiKey,
@@ -393,7 +398,7 @@ export class OpenAICompatProvider implements Provider {
   }
 
   // -----------------------------------------------------------------------
-  // aiSdkBridge — AI SDK loop adapter (consumed by step 8b's loop)
+  // aiSdkBridge — AI SDK loop adapter (consumed by the AI SDK loop)
   // -----------------------------------------------------------------------
 
   aiSdkBridge(): ProviderAiSdkBridge {
@@ -513,7 +518,7 @@ export class OpenAICompatProvider implements Provider {
     // Adopt the server's context length for the chosen model when unset.
     if (!this.contextPinned) {
       const chosen = models.find((m) => m.id === this.model) ?? models[0]
-      if (chosen?.max_model_len && chosen.max_model_len > 0) {
+      if (chosen.max_model_len && chosen.max_model_len > 0) {
         this.contextWindowSize = chosen.max_model_len
       }
     }
@@ -526,13 +531,13 @@ export class OpenAICompatProvider implements Provider {
 
 export const manifest: PluginManifest = {
   type: 'provider',
-  name: 'openai-compat',
+  name: 'vllm',
   register(ctx) {
     const cfg = ctx.pluginConfig ?? {}
     ctx.registerProvider(
-      new OpenAICompatProvider({
+      new VllmProvider({
         baseUrl: cfg.base_url as string,
-        apiKey: (cfg.api_key as string | undefined) ?? ctx.env.OPENAI_COMPAT_API_KEY ?? '',
+        apiKey: (cfg.api_key as string | undefined) ?? ctx.env.VLLM_API_KEY ?? '',
         model: cfg.model as string | undefined,
         maxTokens: cfg.max_tokens as number | undefined,
         temperature: cfg.temperature as number | undefined,
@@ -550,8 +555,8 @@ export const manifest: PluginManifest = {
         chatTemplateKwargs: cfg.chat_template_kwargs as Record<string, unknown> | undefined,
         extraBody: cfg.extra_body as Record<string, unknown> | undefined,
         verifyModelOnInit: cfg.verify_model_on_init as boolean | undefined,
-        id: 'openai-compat',
-        name: (cfg.name as string | undefined) ?? 'openai-compat',
+        id: 'vllm',
+        name: (cfg.name as string | undefined) ?? 'vllm',
         contextWindow: cfg.context_window as number | undefined,
         maxOutputTokens: cfg.max_output_tokens as number | undefined,
       }),

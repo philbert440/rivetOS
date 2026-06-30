@@ -113,8 +113,8 @@ export const REMOVED_AGENT_KEYS = new Map<string, string>([
  */
 export const REMOVED_PROVIDERS = new Map<string, string>([
   [
-    'llama-server',
-    'The "llama-server" provider was removed. Use "openai-compat" with base_url pointing at your llama.cpp server (e.g. http://localhost:8080).',
+    'openai-compat',
+    'The "openai-compat" provider was split into dedicated providers. Use "vllm" for a vLLM server, or "llama-server" for llama.cpp\'s llama-server — both take base_url.',
   ],
 ])
 
@@ -175,7 +175,7 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'context_window',
     'max_output_tokens',
   ]),
-  'openai-compat': new Set([
+  vllm: new Set([
     'model',
     'base_url',
     'api_key',
@@ -198,6 +198,26 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'stop',
     'mm_processor_kwargs',
     'chat_template_kwargs',
+    'extra_body',
+  ]),
+  'llama-server': new Set([
+    'model',
+    'base_url',
+    'api_key',
+    'max_tokens',
+    'temperature',
+    'top_p',
+    'top_k',
+    'min_p',
+    'presence_penalty',
+    'frequency_penalty',
+    'seed',
+    'default_tool_choice',
+    'verify_model_on_init',
+    'name',
+    'context_window',
+    'max_output_tokens',
+    'stop',
     'extra_body',
   ]),
 }

@@ -349,23 +349,31 @@ describe('Config Validation', () => {
       assertError(result, 'providers.ollama.base_url', 'requires "base_url"');
     });
 
-    it('rejects removed "llama-server" provider with migration hint', () => {
+    it('rejects removed "openai-compat" provider with migration hint', () => {
       const cfg = validConfig();
-      (cfg.providers as Record<string, unknown>)['llama-server'] = {
+      (cfg.providers as Record<string, unknown>)['openai-compat'] = {
         model: 'rivet',
-        base_url: 'http://localhost:8080',
+        base_url: 'http://localhost:8000',
       };
-      (cfg.agents as Record<string, unknown>).local = { provider: 'llama-server' };
-      const result = validateConfig(cfg);
-      assertError(result, 'providers.llama-server', 'openai-compat');
-    });
-
-    it('requires base_url for openai-compat', () => {
-      const cfg = validConfig();
-      (cfg.providers as Record<string, unknown>)['openai-compat'] = { model: 'rivet' };
       (cfg.agents as Record<string, unknown>).local = { provider: 'openai-compat' };
       const result = validateConfig(cfg);
-      assertError(result, 'providers.openai-compat.base_url', 'requires "base_url"');
+      assertError(result, 'providers.openai-compat', 'vllm');
+    });
+
+    it('requires base_url for vllm', () => {
+      const cfg = validConfig();
+      (cfg.providers as Record<string, unknown>).vllm = { model: 'rivet' };
+      (cfg.agents as Record<string, unknown>).local = { provider: 'vllm' };
+      const result = validateConfig(cfg);
+      assertError(result, 'providers.vllm.base_url', 'requires "base_url"');
+    });
+
+    it('requires base_url for llama-server', () => {
+      const cfg = validConfig();
+      (cfg.providers as Record<string, unknown>)['llama-server'] = { model: 'rivet' };
+      (cfg.agents as Record<string, unknown>).local = { provider: 'llama-server' };
+      const result = validateConfig(cfg);
+      assertError(result, 'providers.llama-server.base_url', 'requires "base_url"');
     });
 
     it('warns on hardcoded API key', () => {
@@ -655,13 +663,13 @@ describe('Config Validation', () => {
           opus: { provider: 'anthropic', default_thinking: 'medium' },
           grok: { provider: 'xai', default_thinking: 'low' },
           gemini: { provider: 'google', default_thinking: 'medium' },
-          local: { provider: 'openai-compat', default_thinking: 'off' },
+          local: { provider: 'vllm', default_thinking: 'off' },
         },
         providers: {
           anthropic: { model: MODEL_DEFAULTS.anthropic, max_tokens: 8192 },
           xai: { model: 'grok-4-1-fast-reasoning', max_tokens: 8192 },
           google: { model: 'gemini-2.5-pro', max_tokens: 8192 },
-          'openai-compat': { base_url: 'http://192.168.1.50:8000/v1', model: 'rivet-v0.1', temperature: 0.4 },
+          vllm: { base_url: 'http://192.168.1.50:8000/v1', model: 'rivet-v0.1', temperature: 0.4 },
         },
         channels: {
           telegram: { owner_id: '123456', allowed_users: ['123456'] },

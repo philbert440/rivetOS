@@ -75,7 +75,8 @@ function checkProviderAuth(
     xai: 'XAI_API_KEY',
     google: 'GOOGLE_API_KEY',
     ollama: '', // no key needed
-    'openai-compat': 'OPENAI_COMPAT_API_KEY',
+    vllm: '', // local server — key optional, checked above via config.api_key
+    'llama-server': '', // local server — key optional, checked above via config.api_key
   }
 
   const envVar = envVarMap[name]

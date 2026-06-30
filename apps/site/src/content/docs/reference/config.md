@@ -29,7 +29,7 @@ agents:
 
 providers:
   anthropic:
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
     max_tokens: 8192
 
 channels:
@@ -69,7 +69,8 @@ Top-level runtime configuration.
 |-----|------|---------|-------------|
 | `workspace` | string | **required** | Path to workspace directory containing CORE.md, USER.md, etc. |
 | `default_agent` | string | **required** | Agent to use when no channel binding matches. Must match a key in `agents`. |
-| `max_tool_iterations` | number | `100` | Maximum tool call iterations per turn. Safety cap to prevent runaway loops. |
+| `turn_timeout` | number | `900` | Wall-clock timeout for a single agent turn, in seconds. |
+| `context` | object | — | Context-management tuning. `context.soft_nudge_pct` (number[]) and `context.hard_nudge_pct` (number) control when the agent is nudged to compact as the window fills. |
 | `skill_dirs` | string[] | `[~/.rivetos/workspace/skills]` | Directories to scan for skills. |
 | `plugin_dirs` | string[] | `[]` | Additional directories to scan for plugins beyond the default `plugins/`. |
 
@@ -196,6 +197,7 @@ agents:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `provider` | string | **required** | Provider ID. Must match a key in `providers`. |
+| `model` | string | provider default | Model override — use a specific model from this provider instead of its default. Lets several agents share one provider at different models. |
 | `default_thinking` | string | `off` | Default thinking level: `off`, `low`, `medium`, `high`. |
 | `local` | boolean | `false` | If true, uses extended workspace context (includes CAPABILITIES.md, daily notes). Use for local models where tokens are free. |
 | `tools.exclude` | string[] | `[]` | Tool names to block for this agent. |
@@ -212,34 +214,36 @@ LLM provider configuration. Each key is a provider ID referenced by agents.
 ```yaml
 providers:
   anthropic:
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
     max_tokens: 8192
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `model` | string | `claude-sonnet-4-20250514` | Model identifier. |
+| `model` | string | `claude-opus-4-7` | Model identifier. |
 | `max_tokens` | number | `8192` | Maximum output tokens. |
 | `api_key` | string | `${ANTHROPIC_API_KEY}` | API key. Prefer env var. |
-| `temperature` | number | — | Sampling temperature (0-1). |
+| `context_window` | number | — | Override the model's context-window size (advanced; for budgeting). |
+| `max_output_tokens` | number | — | Hard cap on output tokens, independent of `max_tokens`. |
 
-**Auth:** Set `ANTHROPIC_API_KEY` in `.env`, or use OAuth: `rivetos login`
+**Auth:** Set `ANTHROPIC_API_KEY` in `.env`. For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (below), which delegates auth to the `claude` binary.
 
 ### xAI (Grok)
 
 ```yaml
 providers:
   xai:
-    model: grok-4-1-fast-reasoning
+    model: grok-4.20-reasoning
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `model` | string | `grok-4-1-fast-reasoning` | Model identifier. |
+| `model` | string | `grok-4.20-reasoning` | Model identifier. (`grok-4-1-fast-reasoning` is a cheaper tier good for compaction.) |
 | `api_key` | string | `${XAI_API_KEY}` | API key. |
 | `max_tokens` | number | `4096` | Maximum output tokens. |
 | `temperature` | number | — | Sampling temperature. |
-| `live_search` | boolean | — | Enable Grok's live search. |
+| `context_window` | number | — | Override the model's context-window size (advanced). |
+| `max_output_tokens` | number | — | Hard cap on output tokens. |
 
 ### Google (Gemini)
 
@@ -254,6 +258,8 @@ providers:
 | `model` | string | `gemini-2.5-pro` | Model identifier. |
 | `api_key` | string | `${GOOGLE_API_KEY}` | API key. |
 | `max_tokens` | number | `8192` | Maximum output tokens. |
+| `context_window` | number | — | Override the model's context-window size (advanced). |
+| `max_output_tokens` | number | — | Hard cap on output tokens. |
 
 ### Ollama
 
@@ -269,41 +275,89 @@ providers:
 | `model` | string | **required** | Model name (must be pulled locally). |
 | `base_url` | string | `http://localhost:11434` | Ollama API endpoint. |
 | `temperature` | number | — | Sampling temperature. |
-| `num_ctx` | number | — | Context window size. |
+| `num_ctx` | number | — | Context window size passed to Ollama. |
+| `keep_alive` | string | — | How long Ollama keeps the model loaded between requests (e.g. `5m`, `-1` for always). |
+| `context_window` | number | — | Override the context-window size reported to the runtime (advanced). |
+| `max_output_tokens` | number | — | Hard cap on output tokens. |
 
-### openai-compat
+### vllm
 
-Provider for any OpenAI-compatible server — vLLM, Text Generation Inference (TGI), LocalAI, Together, Fireworks, Groq, llama.cpp's `llama-server`, etc.
+Dedicated provider for a vLLM server. Exposes the full vLLM surface.
 
 - Folds any post-first `system` message into a `user` message with a `[SYSTEM NOTICE]` prefix (vLLM/Qwen/Llama templates reject mid-conversation system messages)
 - Consumes vLLM's native `reasoning_content` field when a `--reasoning-parser` is configured server-side
-- Supports OpenAI sampling knobs plus vLLM/llama.cpp extensions (`top_k`, `min_p`)
-
-For llama.cpp's `llama-server`, point `base_url` at the server (e.g. `http://localhost:8080`) — there is no longer a separate `llama-server` provider.
+- `model: default` auto-discovers the served model (and its context window) from `/v1/models`
 
 ```yaml
 providers:
-  openai-compat:
-    base_url: http://vllm.local:8000/v1
-    model: Qwen/Qwen2.5-72B-Instruct
-    api_key: ${VLLM_API_KEY}
+  vllm:
+    base_url: http://vllm.local:8000      # trailing /v1 optional
+    model: default
+    top_k: 40
+    min_p: 0.05
+    # api_key: ${VLLM_API_KEY}            # only if vLLM started with --api-key
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `base_url` | string | **required** | vLLM server URL (`/v1` optional). |
+| `model` | string | `default` | Served model id; `default` auto-discovers. |
+| `api_key` | string | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set). |
+| `max_tokens` | number | `4096` | Maximum output tokens. |
+| `temperature` | number | `0.7` | Sampling temperature. |
+| `top_p` | number | `0.95` | Nucleus sampling. |
+| `top_k` | number | — | vLLM sampling extension. |
+| `min_p` | number | — | vLLM sampling extension. |
+| `presence_penalty` | number | — | Standard OpenAI penalty. |
+| `frequency_penalty` | number | — | Standard OpenAI penalty. |
+| `repetition_penalty` | number | — | vLLM extension. |
+| `min_tokens` | number | — | vLLM extension; minimum output tokens. |
+| `stop` | string[] | — | Stop sequences. |
+| `seed` | number | — | Reproducible sampling seed. |
+| `context_window` | number | — | Context-window size reported to the runtime. |
+| `max_output_tokens` | number | — | Hard cap on output tokens. |
+| `default_tool_choice` | string | `auto` | `auto`, `none`, or `required`. |
+| `verify_model_on_init` | boolean | `false` | Probe `/v1/models` at boot to confirm the model is served. |
+| `name` | string | — | Display name for the provider. |
+| `mm_processor_kwargs` | object | — | vLLM multimodal processor kwargs (passthrough). |
+| `chat_template_kwargs` | object | — | vLLM chat-template kwargs (passthrough). |
+| `extra_body` | object | — | Arbitrary JSON merged into the request body (vLLM passthrough). |
+
+### llama-server
+
+Dedicated provider for llama.cpp's `llama-server`. Lean by design — standard OpenAI sampling plus llama.cpp's `top_k` / `min_p` and a generic `extra_body` escape hatch. None of the vLLM-only machinery (no `mm_processor_kwargs`, `chat_template_kwargs`, `repetition_penalty`, `min_tokens`, or video).
+
+For native `<think>` reasoning, start `llama-server` with `--reasoning-format deepseek`.
+
+```yaml
+providers:
+  llama-server:
+    base_url: http://localhost:8080
+    model: default
     top_k: 40
     min_p: 0.05
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `base_url` | string | **required** | Server URL (must include `/v1` for OpenAI-compatible endpoints). |
-| `model` | string | **required** | Model identifier known to the server. |
-| `api_key` | string | — | API key (sent as `Authorization: Bearer`). |
-| `max_tokens` | number | — | Maximum output tokens. |
-| `temperature` | number | — | Sampling temperature. |
-| `top_p` | number | — | Nucleus sampling. |
-| `top_k` | number | — | vLLM extension; ignored by strict OpenAI servers. |
-| `min_p` | number | — | vLLM extension. |
+| `base_url` | string | **required** | llama-server URL (`/v1` optional). |
+| `model` | string | `default` | Served model id; `default` auto-discovers. |
+| `api_key` | string | `${LLAMA_SERVER_API_KEY}` | Bearer token (only if `--api-key` set). |
+| `max_tokens` | number | `4096` | Maximum output tokens. |
+| `temperature` | number | `0.7` | Sampling temperature. |
+| `top_p` | number | `0.95` | Nucleus sampling. |
+| `top_k` | number | — | llama.cpp sampling extension. |
+| `min_p` | number | — | llama.cpp sampling extension. |
 | `presence_penalty` | number | — | Standard OpenAI penalty. |
 | `frequency_penalty` | number | — | Standard OpenAI penalty. |
+| `stop` | string[] | — | Stop sequences. |
 | `seed` | number | — | Reproducible sampling seed. |
+| `context_window` | number | — | Context-window size reported to the runtime. |
+| `max_output_tokens` | number | — | Hard cap on output tokens. |
+| `default_tool_choice` | string | `auto` | `auto`, `none`, or `required`. |
+| `verify_model_on_init` | boolean | `false` | Probe `/v1/models` at boot to confirm the model is served. |
+| `name` | string | — | Display name for the provider. |
+| `extra_body` | object | — | Arbitrary JSON merged into the request body (e.g. `grammar`, `n_probs`). |
 
 ### claude-cli
 
@@ -346,6 +400,11 @@ channels:
 | `channel_bindings` | object | **required** | Maps Discord channel IDs to agent names. |
 | `owner_id` | string | — | Discord user ID for owner-only features. |
 | `bot_token` | string | `${DISCORD_BOT_TOKEN}` | Bot token. Prefer env var. |
+| `allowed_guilds` | string[] | — | If set, only these guild (server) IDs may interact. |
+| `allowed_channels` | string[] | — | If set, only these channel IDs may interact (beyond `channel_bindings`). |
+| `allowed_users` | string[] | — | If set, only these user IDs may interact. |
+| `mention_only` | boolean | `false` | Only respond when the bot is @-mentioned. |
+| `mention_only_channels` | string[] | — | Channel IDs where mention-only mode applies (overrides the global setting per-channel). |
 
 **Setup:** Create a bot at [discord.com/developers](https://discord.com/developers/applications), copy the token, invite the bot to your server.
 
@@ -361,6 +420,8 @@ channels:
 |-----|------|---------|-------------|
 | `owner_id` | string | **required** | Telegram user ID. Only this user can talk to the bot. |
 | `bot_token` | string | `${TELEGRAM_BOT_TOKEN}` | Bot token from @BotFather. |
+| `allowed_users` | string[] | — | Additional Telegram user IDs permitted to interact, beyond `owner_id`. |
+| `agent` | string | `default_agent` | Agent that handles this channel. |
 
 ### Agent (HTTP)
 
@@ -433,11 +494,19 @@ Memory backend configuration. Currently supports PostgreSQL.
 memory:
   postgres:
     connection_string: ${RIVETOS_PG_URL}
+    # Optional — point the background memory loop at your own endpoints:
+    # embed_endpoint: http://your-embed-host:9402/v1
+    # review_endpoint: http://your-llm-host:8001/v1
+    # review_model: gemma-4-E2B-it-Q4_K_M.gguf
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `connection_string` | string | `${RIVETOS_PG_URL}` | PostgreSQL connection URL. |
+| `embed_endpoint` | string | — | OpenAI-compatible embeddings endpoint used by the embedding worker. Overrides the built-in default. |
+| `review_endpoint` | string | — | OpenAI-compatible endpoint for the background memory-review/consolidation loop. |
+| `review_model` | string | — | Model name the review loop requests at `review_endpoint`. |
+| `review_api_key` | string | — | API key for `review_endpoint`, if it requires one. |
 
 **Required extensions:** `pgvector` (for embedding storage and similarity search).
 

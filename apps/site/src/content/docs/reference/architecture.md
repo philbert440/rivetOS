@@ -26,8 +26,8 @@ description: How RivetOS works internally
 │  Discord     Google                 File I/O           │
 │  Agent       xAI                    Search (glob/grep) │
 │  Voice       Ollama                 Web Search/Fetch   │
-│              openai-compat          Interaction        │
-│                                     MCP Client         │
+│              vllm                   Interaction        │
+│              llama-server           MCP Client         │
 │                                     Coding Pipeline    │
 │                                                        │
 │  All plugins implement core interfaces.                │
@@ -344,7 +344,7 @@ rivetOS/
           provider.ts                ← rivetos <provider> status/setup/...
           plugins.ts                 ← rivetos plugins (list/info)
           plugin-init.ts             ← rivetos plugin init (wraps Nx generator)
-          service.ts                 ← rivetos service install/uninstall (systemd)
+          service.ts                 ← rivetos service init/start/stop/status/logs (systemd)
           skills.ts                  ← rivetos skills list
           skill-init.ts              ← rivetos skill init (scaffolds SKILL.md)
           skill-validate.ts          ← rivetos skill validate
@@ -375,7 +375,8 @@ rivetOS/
       google/                        ← Gemini (Generative Language API, thought signatures)
       xai/                           ← Grok (live search, conversation caching)
       ollama/                        ← Ollama (native API)
-      openai-compat/                 ← OpenAI-compatible servers (vLLM/TGI/llama.cpp llama-server/Groq/Together/LocalAI)
+      vllm/                          ← vLLM server (full vLLM surface: sampling extensions, mm/chat_template kwargs, video, reasoning_content)
+      llama-server/                  ← llama.cpp llama-server (lean: top_k/min_p + extra_body)
       claude-cli/                    ← Drives `claude` CLI via stream-json; embedded MCP bridge
     memory/
       postgres/                      ← Full transcript + hybrid search + summary DAG
@@ -603,7 +604,7 @@ agents:
 
 providers:
   anthropic:
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
   xai:
     model: grok-4-1-fast-reasoning
 

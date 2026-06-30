@@ -116,7 +116,7 @@ export class AnthropicProvider implements Provider {
   }
 
   // -----------------------------------------------------------------------
-  // aiSdkBridge — AI SDK loop adapter (consumed by step 8b's loop)
+  // aiSdkBridge — AI SDK loop adapter (consumed by the AI SDK loop)
   // -----------------------------------------------------------------------
 
   aiSdkBridge(): ProviderAiSdkBridge {

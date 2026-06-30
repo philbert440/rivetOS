@@ -131,10 +131,10 @@ export interface Provider {
   id: string
   name: string
   /**
-   * Legacy streaming entrypoint. Optional as of step 8b — providers that
-   * implement `aiSdkBridge` are driven by the AI SDK loop directly via
-   * `streamText` and do not need to implement `chatStream`. Queued for
-   * removal in step 8c once all in-tree providers expose `aiSdkBridge`.
+   * Legacy streaming entrypoint. Optional — providers that implement
+   * `aiSdkBridge` are driven by the AI SDK loop directly via `streamText` and
+   * do not need to implement `chatStream`. Slated for removal once all in-tree
+   * providers expose `aiSdkBridge`.
    */
   chatStream?(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk>
   chat?(messages: Message[], options?: ChatOptions): Promise<LLMResponse>
@@ -160,7 +160,7 @@ export interface Provider {
    */
   resetSession?(): void | Promise<void>
   /**
-   * Optional. AI SDK bridge factory. When set, the new loop (step 8b) drives
+   * Optional. AI SDK bridge factory. When set, the AI SDK loop drives
    * this provider via `streamText` directly, bypassing `chatStream`. Each
    * factory call returns a fresh bridge so per-call config (conversationId,
    * headers) can be baked into the returned `LanguageModelV2`.

@@ -194,7 +194,8 @@ jobs:
             plugins/providers/claude-cli
             plugins/providers/google
             plugins/providers/ollama
-            plugins/providers/openai-compat
+            plugins/providers/llama-server
+            plugins/providers/vllm
             plugins/providers/xai
             plugins/tools/coding-pipeline
             plugins/tools/file

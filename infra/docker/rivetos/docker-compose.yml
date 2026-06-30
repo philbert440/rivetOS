@@ -47,7 +47,7 @@ services:
     build:
       context: ../../..
       dockerfile: infra/containers/rivetos/Dockerfile
-    image: rivetos:dev
+    image: rivetos:latest
     command: ['node', 'dist/rivetos.js', 'start', '--role', 'migrate']
     environment:
       RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
@@ -62,7 +62,7 @@ services:
     build:
       context: ../../..
       dockerfile: infra/containers/rivetos/Dockerfile
-    image: rivetos:dev
+    image: rivetos:latest
     command: ['node', 'dist/rivetos.js', 'start', '--role', 'worker']
     environment:
       RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
@@ -81,7 +81,7 @@ services:
     build:
       context: ../../..
       dockerfile: infra/containers/rivetos/Dockerfile
-    image: rivetos:dev
+    image: rivetos:latest
     command: ['node', 'dist/rivetos.js', 'start', '--role', 'agent']
     environment:
       RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos

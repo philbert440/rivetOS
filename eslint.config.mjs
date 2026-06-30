@@ -161,7 +161,7 @@ export default tseslint.config(
 
   // Nx dependency checks — runs against each project's package.json.
   // Catches:
-  //   - imports of packages not declared as deps (the openai-compat class of bug)
+  //   - imports of packages not declared as deps (the missing-dependency class of bug)
   //   - declared deps that are never imported (drift)
   //   - version mismatches between workspace deps and root
   {

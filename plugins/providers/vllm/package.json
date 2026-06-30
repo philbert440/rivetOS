@@ -1,0 +1,56 @@
+{
+  "name": "@rivetos/provider-vllm",
+  "version": "0.4.0-beta.6",
+  "description": "vLLM provider — full vLLM OpenAI-compatible surface: sampling extensions, mm_processor_kwargs, chat_template_kwargs, video, and reasoning_content",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/ package.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.47",
+    "@rivetos/aisdk": "0.4.0-beta.6",
+    "@rivetos/types": "0.4.0-beta.6",
+    "ai": "^6.0.177",
+    "@ai-sdk/provider": "3.0.10"
+  },
+  "rivetos": {
+    "type": "provider",
+    "name": "vllm"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git",
+    "directory": "plugins/providers/vllm"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "nx": {
+    "tags": [
+      "scope:adapter",
+      "type:plugin"
+    ]
+  }
+}
