@@ -17,7 +17,7 @@ import { AgentChannelServer, loadTlsConfig, extractPeerIdentity } from './agent-
 import type { TLSSocket } from 'node:tls'
 import type { AgentChannelTlsConfig } from './agent-channel.js'
 import type { DelegationEngine } from '../domain/delegation.js'
-import type { MeshRegistry } from '@rivetos/types'
+import type { MeshRegistry, MeshNode } from '@rivetos/types'
 import type { Router } from '../domain/router.js'
 
 // ---------------------------------------------------------------------------
@@ -81,18 +81,26 @@ interface TlsRequestOptions {
   clientCert?: { cert: Buffer; key: Buffer }
   /** If true, skip server cert validation (we use a test CA, not a real one) */
   rejectUnauthorized?: boolean
+  /** HTTP method (default: GET) */
+  method?: string
+  /** JSON request body (sets Content-Type and serializes) */
+  body?: unknown
+  /** Override target port (defaults to the shared test server's port) */
+  port?: number
 }
 
 function makeRequest(opts: TlsRequestOptions): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
+    const payload = opts.body === undefined ? undefined : JSON.stringify(opts.body)
     const tlsOpts: https.RequestOptions = {
       hostname: '127.0.0.1',
-      port,
+      port: opts.port ?? port,
       path: opts.path ?? '/api/mesh/ping',
-      method: 'GET',
+      method: opts.method ?? 'GET',
       // For tests: supply our test CA so the server cert is trusted
       ca: readFileSync(join(FIXTURES, 'ca.crt')),
       rejectUnauthorized: opts.rejectUnauthorized ?? true,
+      headers: payload !== undefined ? { 'Content-Type': 'application/json' } : undefined,
     }
 
     if (opts.clientCert) {
@@ -109,6 +117,7 @@ function makeRequest(opts: TlsRequestOptions): Promise<{ status: number; body: s
     })
 
     req.on('error', reject)
+    if (payload !== undefined) req.write(payload)
     req.end()
   })
 }
@@ -224,6 +233,104 @@ describe('AgentChannelServer (mTLS)', () => {
 // ---------------------------------------------------------------------------
 // loadTlsConfig unit tests
 // ---------------------------------------------------------------------------
+
+describe('AgentChannelServer — POST /api/mesh/join', () => {
+  let joinServer: AgentChannelServer
+  let joinPort: number
+  let stored: MeshNode[] = []
+
+  const clientCert = (): { cert: Buffer; key: Buffer } => ({
+    cert: readFileSync(join(FIXTURES, 'node.crt')),
+    key: readFileSync(join(FIXTURES, 'node.key')),
+  })
+
+  const sampleNode = (): MeshNode => ({
+    id: 'node-123',
+    name: 'rivet-joiner',
+    agents: [],
+    host: '192.0.2.9',
+    port: 3100,
+    providers: [],
+    models: [],
+    capabilities: [],
+    status: 'online',
+    lastSeen: 0,
+    registeredAt: 0,
+    version: '0.4.0',
+  })
+
+  beforeAll(async () => {
+    stored = []
+    joinPort = 20443 + Math.floor(Math.random() * 1000)
+    const registry: MeshRegistry = {
+      register: async (n: MeshNode) => {
+        stored = [...stored.filter((s) => s.id !== n.id), n]
+      },
+      getNodes: async () => stored,
+    } as unknown as MeshRegistry
+    joinServer = new AgentChannelServer({
+      port: joinPort,
+      tls: loadFixtureTls(),
+      delegationEngine: noopDelegation,
+      meshRegistry: registry,
+      router: noopRouter,
+      localAgents: ['test-agent'],
+    })
+    await joinServer.start()
+  })
+
+  afterAll(async () => {
+    await joinServer.stop()
+  })
+
+  it('registers a joining node and returns the roster', async () => {
+    const res = await makeRequest({
+      port: joinPort,
+      path: '/api/mesh/join',
+      method: 'POST',
+      clientCert: clientCert(),
+      body: sampleNode(),
+    })
+    expect(res.status).toBe(200)
+    const body = JSON.parse(res.body) as { status: string; nodes: MeshNode[] }
+    expect(body.status).toBe('ok')
+    expect(body.nodes).toHaveLength(1)
+    expect(body.nodes[0].id).toBe('node-123')
+    // Server stamps lastSeen — the joiner sent 0.
+    expect(body.nodes[0].lastSeen).toBeGreaterThan(0)
+    expect(stored).toHaveLength(1)
+  })
+
+  it('is idempotent — rejoining the same id updates, not duplicates', async () => {
+    await makeRequest({
+      port: joinPort,
+      path: '/api/mesh/join',
+      method: 'POST',
+      clientCert: clientCert(),
+      body: sampleNode(),
+    })
+    const res = await makeRequest({
+      port: joinPort,
+      path: '/api/mesh/join',
+      method: 'POST',
+      clientCert: clientCert(),
+      body: sampleNode(),
+    })
+    const body = JSON.parse(res.body) as { nodes: MeshNode[] }
+    expect(body.nodes).toHaveLength(1)
+  })
+
+  it('rejects a node missing required fields with 400', async () => {
+    const res = await makeRequest({
+      port: joinPort,
+      path: '/api/mesh/join',
+      method: 'POST',
+      clientCert: clientCert(),
+      body: { name: 'no-id' },
+    })
+    expect(res.status).toBe(400)
+  })
+})
 
 describe('loadTlsConfig', () => {
   it('resolves default paths from nodeName when tls=true', () => {
