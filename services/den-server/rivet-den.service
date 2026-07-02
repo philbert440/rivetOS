@@ -1,0 +1,20 @@
+# rivet-den server — install to /etc/systemd/system/rivet-den.service
+# Deployed by `rivetos update` on nodes with den.enabled (see README).
+[Unit]
+Description=rivet-den server (agent activity diorama)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rivet
+WorkingDirectory=/opt/rivetos/services/den-server
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=3
+# Port/auth/dirs — see src/config.ts for all RIVETOS_DEN_* variables
+Environment=RIVETOS_DEN_PORT=5174
+EnvironmentFile=-/home/rivet/.rivetos/den.env
+
+[Install]
+WantedBy=multi-user.target
