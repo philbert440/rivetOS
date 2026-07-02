@@ -1,0 +1,96 @@
+{
+  "description": "rivet-den event capture for Grok Build. Install at ~/.grok/hooks/rivet-den.json (NOT config.toml). Event names per ~/.grok/docs/user-guide/10-hooks.md; the event name is passed as an argument because grok payloads omit hook_event_name.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh SessionStart",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh SessionEnd",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh UserPromptSubmit",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh PreToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh PostToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh PostToolUseFailure",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TurnAfter": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh TurnAfter",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "CompactBefore": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh CompactBefore",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
