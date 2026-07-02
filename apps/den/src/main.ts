@@ -11,13 +11,7 @@ import type { Station } from '@rivetos/den-packs'
 import { demoScript, DEMO_LOOP_MS } from './demo.js'
 import { configureAssets, loadAsset, pixelTexture, PX, type KeyedAsset } from './assets.js'
 import { loadPack, resolvePose } from './pack.js'
-import {
-  initEditor,
-  loadSaved,
-  pushLayout,
-  fetchServerLayout,
-  type RuntimePlacement,
-} from './editor.js'
+import { initEditor, loadLayout, setLayoutPack, type RuntimePlacement } from './editor.js'
 import { serverHttp, serverWs, withToken } from './net.js'
 
 const MARGIN = 26
@@ -101,10 +95,10 @@ async function boot() {
   const FRAME_H = SHELL.h + MARGIN * 2 + TITLEBAR
   const CHAR_HEIGHT = m.character.height
 
-  // ---- layout: pack default, overridden by the saved/server copy ----
-  const local = loadSaved()
-  const saved = local ?? (await fetchServerLayout())
-  if (local) pushLayout(local)
+  // ---- layout: pack default, overridden by the node's canonical copy ----
+  // Server-first, keyed per pack; localStorage is only the offline cache.
+  setLayoutPack(packName)
+  const saved = await loadLayout()
   const placements: RuntimePlacement[] = m.furniture
     .filter((f) => m.layout[f.id])
     .map((f) => {
@@ -708,34 +702,37 @@ async function boot() {
 
   // ---- edit mode ----
   let editorActive = false
-  initEditor({
-    world,
-    items: furniture,
-    stations,
-    stationPos,
-    variants: Object.fromEntries(
-      m.furniture.map((f) => [f.id, [f.src, ...(f.variants ?? [])].map((v) => pack.url(v))]),
-    ),
-    previewActivity: (a) => applyLocal({ type: 'activity', activity: a as Activity }),
-    onEditingChange: (on) => {
-      editorActive = on
+  initEditor(
+    {
+      world,
+      items: furniture,
+      stations,
+      stationPos,
+      variants: Object.fromEntries(
+        m.furniture.map((f) => [f.id, [f.src, ...(f.variants ?? [])].map((v) => pack.url(v))]),
+      ),
+      previewActivity: (a) => applyLocal({ type: 'activity', activity: a as Activity }),
+      onEditingChange: (on) => {
+        editorActive = on
+      },
+      swapItemArt: async (id, src) => {
+        const it = furniture[id]
+        it.asset = await loadAsset(src)
+        it.placement.src = src
+        applyScale(it)
+        if (id === 'board') refreshBoardOverlay()
+        if (id === 'desk') refreshTermOverlay()
+      },
+      applyScale: (id) => {
+        if (furniture[id]) applyScale(furniture[id])
+      },
+      onLayoutChange: () => {
+        refreshBoardOverlay()
+        refreshTermOverlay()
+      },
     },
-    swapItemArt: async (id, src) => {
-      const it = furniture[id]
-      it.asset = await loadAsset(src)
-      it.placement.src = src
-      applyScale(it)
-      if (id === 'board') refreshBoardOverlay()
-      if (id === 'desk') refreshTermOverlay()
-    },
-    applyScale: (id) => {
-      if (furniture[id]) applyScale(furniture[id])
-    },
-    onLayoutChange: () => {
-      refreshBoardOverlay()
-      refreshTermOverlay()
-    },
-  })
+    saved,
+  )
 
   // ---- push-to-talk ----
   const down = () => {
