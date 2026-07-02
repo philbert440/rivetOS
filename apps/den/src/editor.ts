@@ -43,37 +43,35 @@ const STATION_CHIPS: Record<string, string> = {
   'dig-spot': 'running_command',
 }
 
-const LS_KEY = 'rivetden-layout'
-const LAYOUT_URL = `${serverHttp}/layout`
-
-export function loadSaved(): SavedLayout | null {
-  try {
-    return JSON.parse(localStorage.getItem(LS_KEY) ?? 'null') as SavedLayout | null
-  } catch {
-    return null
-  }
+// Layouts are keyed per pack — coordinates only make sense against one shell.
+// The den-server copy is the ONLY source of truth: every browser pointed at
+// this node sees the same room. No layout (or no server) = pack defaults.
+let packKey = 'default'
+export function setLayoutPack(pack: string): void {
+  packKey = pack.replace(/[^\w.-]/g, '_')
 }
+const layoutUrl = () => `${serverHttp}/layout?viewer=default.${packKey}`
 
 export function pushLayout(layout: SavedLayout): void {
-  fetch(withToken(LAYOUT_URL), {
+  fetch(withToken(layoutUrl()), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(layout, null, 2),
   }).catch(() => {
-    /* server down — local copy still saved */
+    /* server down — edit is lost on reload, room falls back to pack defaults */
   })
 }
 
-export async function fetchServerLayout(): Promise<SavedLayout | null> {
+export async function loadLayout(): Promise<SavedLayout | null> {
   try {
-    const r = await fetch(withToken(LAYOUT_URL))
+    const r = await fetch(withToken(layoutUrl()))
     return r.ok ? ((await r.json()) as SavedLayout) : null
   } catch {
     return null
   }
 }
 
-export function initEditor(hooks: EditorHooks): void {
+export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): void {
   const btn = document.getElementById('edit-btn')!
   const panel = document.getElementById('edit-panel')!
   const chipsEl = document.getElementById('edit-chips')!
@@ -81,7 +79,7 @@ export function initEditor(hooks: EditorHooks): void {
 
   let editing = false
   let selected: string | null = null // furniture id or a station chip
-  const saved: SavedLayout = loadSaved() ?? { placements: {} }
+  const saved: SavedLayout = initial ?? { placements: {} }
 
   const highlight = new Graphics()
   highlight.visible = false
@@ -98,7 +96,6 @@ export function initEditor(hooks: EditorHooks): void {
         flip: it.placement.flip,
       }
     }
-    localStorage.setItem(LS_KEY, JSON.stringify(saved))
     pushLayout(saved)
     hooks.onLayoutChange()
   }
