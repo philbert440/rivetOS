@@ -1,0 +1,83 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`golden streams > typical coding session 1`] = `
+{
+  "rooms": {
+    "s1": {
+      "activity": "speaking",
+      "ended": false,
+      "lastMessage": "Fixed — all 42 tests pass.",
+      "log": [
+        {
+          "text": "fix the flaky test in ci",
+          "who": "user",
+        },
+        {
+          "text": "Fixed — all 42 tests pass.",
+          "who": "agent",
+        },
+      ],
+      "tasks": [
+        {
+          "done": true,
+          "label": "find flaky test",
+        },
+        {
+          "done": true,
+          "label": "fix it",
+        },
+        {
+          "done": true,
+          "label": "verify",
+        },
+      ],
+      "term": [
+        "$ npm test",
+        "42 passing",
+      ],
+      "thought": "",
+      "title": "fix the flaky test",
+      "tool": null,
+    },
+  },
+  "sessions": {
+    "s1": {
+      "harness": "claude-code",
+      "id": "s1",
+      "lastEventTs": 16,
+      "name": "rivet-claude",
+    },
+  },
+}
+`;
+
+exports[`golden streams > voice interruption and sleep 1`] = `
+{
+  "rooms": {
+    "s2": {
+      "activity": "sleeping",
+      "ended": true,
+      "lastMessage": "On it.",
+      "log": [
+        {
+          "text": "On it.",
+          "who": "agent",
+        },
+      ],
+      "tasks": [],
+      "term": [],
+      "thought": "",
+      "title": "chatting",
+      "tool": null,
+    },
+  },
+  "sessions": {
+    "s2": {
+      "harness": undefined,
+      "id": "s2",
+      "lastEventTs": 5,
+      "name": "s2",
+    },
+  },
+}
+`;
