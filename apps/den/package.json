@@ -1,0 +1,32 @@
+{
+  "name": "@rivetos/den-app",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "rivet-den viewer — pack-driven PixiJS diorama of live agent sessions",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/ package.json",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@rivetos/den-packs": "0.1.0",
+    "@rivetos/den-protocol": "0.1.0",
+    "pixi.js": "^8.19.0"
+  },
+  "devDependencies": {
+    "vite": "^8.1.2"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "nx": {
+    "tags": [
+      "scope:app",
+      "type:app"
+    ]
+  }
+}
