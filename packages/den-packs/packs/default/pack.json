@@ -1,0 +1,84 @@
+{
+  "spec": 1,
+  "name": "default",
+  "version": "1.0.0",
+  "author": "Rivet & Phil",
+  "license": "Apache-2.0",
+  "grid": { "pxPerUnit": 4 },
+  "chroma": { "color": "#ff00ff", "threshold": 32 },
+  "shell": { "src": "sprites/shell.png", "w": 1344, "h": 768 },
+  "character": {
+    "height": 142,
+    "poses": {
+      "idle": { "frames": ["sprites/char/idle_f0.png", "sprites/char/idle_f1.png"], "frameMs": 0 },
+      "walk": { "frames": ["sprites/char/walk_f0.png", "sprites/char/walk_f1.png"], "frameMs": 180 },
+      "type": { "frames": ["sprites/char/type_f0.png", "sprites/char/type_f1.png"], "frameMs": 260 },
+      "typebk": { "frames": ["sprites/char/typebk_f0.png", "sprites/char/typebk_f1.png"], "frameMs": 260 },
+      "typenb": { "frames": ["sprites/char/typenb_f0.png", "sprites/char/typenb_f1.png"], "frameMs": 260 },
+      "write": { "frames": ["sprites/char/write_f0.png", "sprites/char/write_f1.png"], "frameMs": 440 },
+      "dig": { "frames": ["sprites/char/dig_f0.png", "sprites/char/dig_f1.png"], "frameMs": 320 },
+      "phone": { "frames": ["sprites/char/phone_f0.png", "sprites/char/phone_f1.png"], "frameMs": 520 },
+      "sitside": { "frames": ["sprites/char/sitside_f0.png", "sprites/char/sitside_f1.png"], "frameMs": 260 },
+      "sleep": {
+        "frames": ["sprites/char/sleep_f0.png", "sprites/char/sleep_f1.png"],
+        "frameMs": 1100,
+        "height": 114
+      }
+    },
+    "activities": {
+      "idle": "idle",
+      "thinking": "idle",
+      "searching_web": "phone",
+      "editing_code": "type",
+      "running_command": "dig",
+      "writing_plan": "write",
+      "listening": "idle",
+      "speaking": "idle",
+      "sleeping": "sleep"
+    },
+    "tools": {}
+  },
+  "furniture": [
+    { "id": "window", "src": "sprites/furniture/window.png" },
+    { "id": "shelf", "src": "sprites/furniture/shelf.png" },
+    {
+      "id": "board",
+      "src": "sprites/furniture/board.png",
+      "textRect": { "x": 300, "y": 145, "w": 445, "h": 400 }
+    },
+    { "id": "bed", "src": "sprites/furniture/bed.png" },
+    {
+      "id": "desk",
+      "src": "sprites/furniture/desk.png",
+      "screen": { "x": 385, "y": 177, "w": 220, "h": 128 }
+    },
+    {
+      "id": "chair",
+      "src": "sprites/furniture/chair.png",
+      "sideSrc": "sprites/furniture/chair_side.png"
+    },
+    { "id": "toolbox", "src": "sprites/furniture/toolbox.png" },
+    { "id": "rug", "src": "sprites/furniture/rug.png" }
+  ],
+  "layout": {
+    "window": { "x": 279, "y": 365, "h": 240 },
+    "shelf": { "x": 1065, "y": 264, "h": 139 },
+    "board": { "x": 645, "y": 528, "h": 344 },
+    "bed": { "x": 50, "y": 817, "h": 436 },
+    "desk": { "x": 1068, "y": 617, "h": 324 },
+    "chair": { "x": 1074, "y": 645, "h": 174, "flip": true },
+    "toolbox": { "x": 1303, "y": 731, "h": 185, "flip": true },
+    "rug": { "x": 649, "y": 771, "h": 200 }
+  },
+  "stations": {
+    "idle": { "x": 520, "y": 745 },
+    "thinking": { "x": 520, "y": 745 },
+    "writing_plan": { "furn": "board", "dx": -110, "dy": 45 },
+    "searching_web": { "furn": "bed", "dx": 795, "dy": -157 },
+    "editing_code": { "furn": "chair", "dx": -52, "dy": 0 },
+    "running_command": { "furn": "toolbox", "dx": -79, "dy": -54 },
+    "listening": { "x": 620, "y": 748 },
+    "speaking": { "x": 620, "y": 748 },
+    "sleeping": { "furn": "bed", "dx": 99, "dy": -267 }
+  }
+}

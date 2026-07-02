@@ -1,0 +1,53 @@
+{
+  "name": "@rivetos/den-packs",
+  "version": "0.1.0",
+  "description": "rivet-den SpritePack spec, validator CLI, and the default reference pack",
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "den-pack": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/ package.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "packs",
+    "PACK.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@rivetos/den-protocol": "0.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git",
+    "directory": "packages/den-packs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "nx": {
+    "tags": [
+      "scope:contract",
+      "type:lib"
+    ]
+  }
+}

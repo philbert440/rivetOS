@@ -1,0 +1,245 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`golden manifest > default pack manifest snapshot 1`] = `
+{
+  "author": "Rivet & Phil",
+  "character": {
+    "activities": {
+      "editing_code": "type",
+      "idle": "idle",
+      "listening": "idle",
+      "running_command": "dig",
+      "searching_web": "phone",
+      "sleeping": "sleep",
+      "speaking": "idle",
+      "thinking": "idle",
+      "writing_plan": "write",
+    },
+    "height": 142,
+    "poses": {
+      "dig": {
+        "frameMs": 320,
+        "frames": [
+          "sprites/char/dig_f0.png",
+          "sprites/char/dig_f1.png",
+        ],
+      },
+      "idle": {
+        "frameMs": 0,
+        "frames": [
+          "sprites/char/idle_f0.png",
+          "sprites/char/idle_f1.png",
+        ],
+      },
+      "phone": {
+        "frameMs": 520,
+        "frames": [
+          "sprites/char/phone_f0.png",
+          "sprites/char/phone_f1.png",
+        ],
+      },
+      "sitside": {
+        "frameMs": 260,
+        "frames": [
+          "sprites/char/sitside_f0.png",
+          "sprites/char/sitside_f1.png",
+        ],
+      },
+      "sleep": {
+        "frameMs": 1100,
+        "frames": [
+          "sprites/char/sleep_f0.png",
+          "sprites/char/sleep_f1.png",
+        ],
+        "height": 114,
+      },
+      "type": {
+        "frameMs": 260,
+        "frames": [
+          "sprites/char/type_f0.png",
+          "sprites/char/type_f1.png",
+        ],
+      },
+      "typebk": {
+        "frameMs": 260,
+        "frames": [
+          "sprites/char/typebk_f0.png",
+          "sprites/char/typebk_f1.png",
+        ],
+      },
+      "typenb": {
+        "frameMs": 260,
+        "frames": [
+          "sprites/char/typenb_f0.png",
+          "sprites/char/typenb_f1.png",
+        ],
+      },
+      "walk": {
+        "frameMs": 180,
+        "frames": [
+          "sprites/char/walk_f0.png",
+          "sprites/char/walk_f1.png",
+        ],
+      },
+      "write": {
+        "frameMs": 440,
+        "frames": [
+          "sprites/char/write_f0.png",
+          "sprites/char/write_f1.png",
+        ],
+      },
+    },
+    "tools": {},
+  },
+  "chroma": {
+    "color": "#ff00ff",
+    "threshold": 32,
+  },
+  "furniture": [
+    {
+      "id": "window",
+      "src": "sprites/furniture/window.png",
+    },
+    {
+      "id": "shelf",
+      "src": "sprites/furniture/shelf.png",
+    },
+    {
+      "id": "board",
+      "src": "sprites/furniture/board.png",
+      "textRect": {
+        "h": 400,
+        "w": 445,
+        "x": 300,
+        "y": 145,
+      },
+    },
+    {
+      "id": "bed",
+      "src": "sprites/furniture/bed.png",
+    },
+    {
+      "id": "desk",
+      "screen": {
+        "h": 128,
+        "w": 220,
+        "x": 385,
+        "y": 177,
+      },
+      "src": "sprites/furniture/desk.png",
+    },
+    {
+      "id": "chair",
+      "sideSrc": "sprites/furniture/chair_side.png",
+      "src": "sprites/furniture/chair.png",
+    },
+    {
+      "id": "toolbox",
+      "src": "sprites/furniture/toolbox.png",
+    },
+    {
+      "id": "rug",
+      "src": "sprites/furniture/rug.png",
+    },
+  ],
+  "grid": {
+    "pxPerUnit": 4,
+  },
+  "layout": {
+    "bed": {
+      "h": 436,
+      "x": 50,
+      "y": 817,
+    },
+    "board": {
+      "h": 344,
+      "x": 645,
+      "y": 528,
+    },
+    "chair": {
+      "flip": true,
+      "h": 174,
+      "x": 1074,
+      "y": 645,
+    },
+    "desk": {
+      "h": 324,
+      "x": 1068,
+      "y": 617,
+    },
+    "rug": {
+      "h": 200,
+      "x": 649,
+      "y": 771,
+    },
+    "shelf": {
+      "h": 139,
+      "x": 1065,
+      "y": 264,
+    },
+    "toolbox": {
+      "flip": true,
+      "h": 185,
+      "x": 1303,
+      "y": 731,
+    },
+    "window": {
+      "h": 240,
+      "x": 279,
+      "y": 365,
+    },
+  },
+  "license": "Apache-2.0",
+  "name": "default",
+  "shell": {
+    "h": 768,
+    "src": "sprites/shell.png",
+    "w": 1344,
+  },
+  "spec": 1,
+  "stations": {
+    "editing_code": {
+      "dx": -52,
+      "dy": 0,
+      "furn": "chair",
+    },
+    "idle": {
+      "x": 520,
+      "y": 745,
+    },
+    "listening": {
+      "x": 620,
+      "y": 748,
+    },
+    "running_command": {
+      "dx": -79,
+      "dy": -54,
+      "furn": "toolbox",
+    },
+    "searching_web": {
+      "dx": 795,
+      "dy": -157,
+      "furn": "bed",
+    },
+    "sleeping": {
+      "dx": 99,
+      "dy": -267,
+      "furn": "bed",
+    },
+    "speaking": {
+      "x": 620,
+      "y": 748,
+    },
+    "thinking": {
+      "x": 520,
+      "y": 745,
+    },
+    "writing_plan": {
+      "dx": -110,
+      "dy": 45,
+      "furn": "board",
+    },
+  },
+  "version": "1.0.0",
+}
+`;
