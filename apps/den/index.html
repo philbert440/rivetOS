@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>rivet-den</title>
+  <style>
+    /* --ui is set by layout() in main.ts so the HTML widgets scale with the
+       canvas frame instead of staying fixed-px on every screen size */
+    :root { --ui: 1; }
+    html, body { margin: 0; padding: 0; background: #1b2230; height: 100%; overflow: hidden; }
+    #stage { position: fixed; inset: 0; }
+    #ptt {
+      position: fixed; bottom: calc(20px * var(--ui)); left: 50%; transform: translateX(-50%);
+      width: calc(84px * var(--ui)); height: calc(84px * var(--ui)); border-radius: 50%;
+      border: calc(4px * var(--ui)) solid #34d399; background: #0e1622; color: #34d399;
+      font: 700 calc(12px * var(--ui)) 'Courier New', monospace; letter-spacing: 1px;
+      cursor: pointer; user-select: none; -webkit-user-select: none;
+      touch-action: none; z-index: 10;
+    }
+    #ptt.active { background: #34d399; color: #0e1622; box-shadow: 0 0 24px #34d39988; }
+    /* RPG-style narration log: the conversation (PHIL ▸ / RIVET ▸) scrolls up
+       from the bottom of a fixed 3-line panel; newest line typewrites in.
+       Height must stay in sync with TOP_STACK in main.ts. */
+    #narration {
+      position: fixed; top: calc(10px * var(--ui)); left: 50%; transform: translateX(-50%);
+      width: min(760px, calc(100vw - 24px));
+      height: calc(66px * var(--ui));
+      box-sizing: border-box;
+      background: #0e1622ee; border: 2px solid #3a4a5e; border-radius: 8px;
+      padding: calc(5px * var(--ui)) calc(12px * var(--ui));
+      font: calc(12px * var(--ui))/1.55 'Courier New', monospace;
+      color: #c5d2e0; z-index: 10; overflow: hidden;
+      display: flex; flex-direction: column; justify-content: flex-end;
+    }
+    #narration:empty { display: none; }
+    #narration .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #narration .line.old { opacity: 0.5; }
+    #narration .who-user  { color: #60a5fa; font-weight: 700; }
+    #narration .who-agent { color: #34d399; font-weight: 700; }
+    #narration .cursor { color: #34d399; animation: narr-blink 0.8s steps(1) infinite; }
+    @keyframes narr-blink { 50% { opacity: 0; } }
+    #session-picker {
+      position: fixed; top: calc((10px + 66px + 8px) * var(--ui)); left: calc(14px * var(--ui)); z-index: 20;
+      background: #0e1622; color: #9fb3c8; border: 2px solid #3a4a5e;
+      font: 700 calc(12px * var(--ui)) 'Courier New', monospace;
+      padding: calc(6px * var(--ui)) calc(10px * var(--ui)); border-radius: 8px; cursor: pointer;
+    }
+    #edit-btn {
+      /* sits below the narration panel: top gap + panel height + gap */
+      position: fixed; top: calc((10px + 66px + 8px) * var(--ui)); right: calc(14px * var(--ui)); z-index: 20;
+      background: #0e1622; color: #9fb3c8; border: 2px solid #3a4a5e;
+      font: 700 calc(12px * var(--ui)) 'Courier New', monospace; letter-spacing: 1px;
+      padding: calc(8px * var(--ui)) calc(14px * var(--ui)); border-radius: 8px; cursor: pointer;
+    }
+    #edit-btn.on { color: #34d399; border-color: #34d399; }
+    #edit-panel {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 15;
+      background: #0e1622ee; border-top: 2px solid #3a4a5e;
+      padding: 8px 12px; display: none; color: #9fb3c8;
+      font: 12px 'Courier New', monospace;
+    }
+    #edit-panel.on { display: block; }
+    #edit-chips { margin-bottom: 6px; }
+    #edit-chips button {
+      background: #1a2534; color: #9fb3c8; border: 1px solid #3a4a5e;
+      font: 11px 'Courier New', monospace; padding: 4px 10px; margin-right: 6px;
+      border-radius: 6px; cursor: pointer;
+    }
+    #edit-chips button.sel { color: #34d399; border-color: #34d399; }
+    #edit-thumbs { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0; }
+    #edit-thumbs img {
+      height: 72px; border: 2px solid #3a4a5e; border-radius: 6px;
+      cursor: pointer; background: #222; image-rendering: pixelated;
+    }
+    #edit-thumbs img.sel { border-color: #34d399; }
+    #edit-hint { color: #5a6675; margin-top: 4px; }
+    #caption {
+      /* sits a fixed gap above the TALK button: bottom + button height + gap */
+      position: fixed; bottom: calc((20px + 84px + 10px) * var(--ui)); left: 50%; transform: translateX(-50%);
+      color: #9fb3c8; font: calc(12px * var(--ui)) 'Courier New', monospace; z-index: 10;
+      background: #0e1622cc; padding: 4px 10px; border-radius: 6px; white-space: nowrap;
+      max-width: 92vw; overflow: hidden; text-overflow: ellipsis;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="narration"></div>
+  <div id="caption"></div>
+  <button id="ptt">TALK</button>
+  <select id="session-picker" style="display:none"></select>
+  <button id="edit-btn">EDIT</button>
+  <div id="edit-panel">
+    <div id="edit-chips"></div>
+    <div id="edit-thumbs"></div>
+    <div id="edit-hint">drag to move · scroll to resize · click a thumbnail to swap art · EXPORT downloads layout.json</div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
