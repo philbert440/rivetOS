@@ -1,0 +1,148 @@
+import { mkdtempSync, readFileSync, writeFileSync, cpSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { afterAll, describe, expect, it } from 'vitest'
+import { validatePack, pngSize } from './index.js'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const DEFAULT_PACK = join(here, '..', 'packs', 'default')
+
+// minimal valid 1x1 transparent PNG
+const PNG_1X1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64',
+)
+
+const tmp: string[] = []
+afterAll(() => tmp.forEach((d) => rmSync(d, { recursive: true, force: true })))
+
+/** Copy the default pack to a temp dir and mutate its manifest. */
+function brokenPack(mutate: (m: Record<string, unknown>) => void): string {
+  const dir = mkdtempSync(join(tmpdir(), 'den-pack-'))
+  tmp.push(dir)
+  cpSync(DEFAULT_PACK, dir, { recursive: true })
+  const manifestPath = join(dir, 'pack.json')
+  const m = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
+  mutate(m)
+  writeFileSync(manifestPath, JSON.stringify(m))
+  return dir
+}
+
+describe('default pack', () => {
+  it('validates clean', () => {
+    const res = validatePack(DEFAULT_PACK)
+    expect(res.errors).toEqual([])
+    expect(res.ok).toBe(true)
+    expect(res.manifest?.name).toBe('default')
+  })
+})
+
+describe('pngSize', () => {
+  it('reads IHDR dimensions', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'den-png-'))
+    tmp.push(dir)
+    writeFileSync(join(dir, 'p.png'), PNG_1X1)
+    expect(pngSize(join(dir, 'p.png'))).toEqual({ w: 1, h: 1 })
+    writeFileSync(join(dir, 'notpng.png'), 'hello')
+    expect(pngSize(join(dir, 'notpng.png'))).toBeNull()
+  })
+})
+
+describe('validatePack failures', () => {
+  it('rejects a missing directory / manifest', () => {
+    const res = validatePack('/nonexistent-den-pack')
+    expect(res.ok).toBe(false)
+    expect(res.errors[0]).toMatch(/pack.json not found/)
+  })
+
+  it('rejects wrong spec version', () => {
+    const res = validatePack(brokenPack((m) => (m.spec = 2)))
+    expect(res.errors.join()).toMatch(/spec must be 1/)
+  })
+
+  it('rejects uncovered activities', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        const c = m.character as { activities: Record<string, string> }
+        delete c.activities.sleeping
+      }),
+    )
+    expect(res.errors.join()).toMatch(/activity not covered: sleeping/)
+  })
+
+  it('rejects activity mapped to unknown pose', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        ;(m.character as { activities: Record<string, string> }).activities.idle = 'moonwalk'
+      }),
+    )
+    expect(res.errors.join()).toMatch(/maps to unknown pose: moonwalk/)
+  })
+
+  it('rejects missing frame files', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        ;(m.character as { poses: Record<string, { frames: string[] }> }).poses.idle.frames.push(
+          'sprites/char/idle_f9.png',
+        )
+      }),
+    )
+    expect(res.errors.join()).toMatch(/file not found: sprites\/char\/idle_f9.png/)
+  })
+
+  it('rejects frame size mismatches', () => {
+    const dir = brokenPack(() => {})
+    writeFileSync(join(dir, 'sprites', 'char', 'idle_f1.png'), PNG_1X1)
+    const res = validatePack(dir)
+    expect(res.errors.join()).toMatch(/frame size mismatch/)
+  })
+
+  it('rejects path escapes', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        ;(m.furniture as { src: string }[])[0].src = '../../etc/passwd'
+      }),
+    )
+    expect(res.errors.join()).toMatch(/escapes the pack directory/)
+  })
+
+  it('rejects layout entries for unknown furniture', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        ;(m.layout as Record<string, unknown>).jacuzzi = { x: 1, y: 2, h: 3 }
+      }),
+    )
+    expect(res.errors.join()).toMatch(/layout places unknown furniture: jacuzzi/)
+  })
+
+  it('rejects stations anchored to unknown furniture and missing stations', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        const st = m.stations as Record<string, unknown>
+        st.sleeping = { furn: 'hammock' }
+        delete st.idle
+      }),
+    )
+    expect(res.errors.join()).toMatch(/unknown furniture anchor: hammock/)
+    expect(res.errors.join()).toMatch(/station not defined for activity: idle/)
+  })
+
+  it('rejects tool overrides to unknown poses', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        ;(m.character as { tools: Record<string, string> }).tools = { Bash: 'jackhammer' }
+      }),
+    )
+    expect(res.errors.join()).toMatch(/tool override Bash maps to unknown pose/)
+  })
+})
+
+// Golden: the default pack manifest is itself the reference fixture — lock its
+// shape so accidental edits to pack.json surface in review.
+describe('golden manifest', () => {
+  it('default pack manifest snapshot', () => {
+    const res = validatePack(DEFAULT_PACK)
+    expect(res.manifest).toMatchSnapshot()
+  })
+})
