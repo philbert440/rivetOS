@@ -1,0 +1,12 @@
+{
+  "name": "rivet-den",
+  "version": "0.1.0",
+  "description": "Live pixel-art diorama of your Claude Code session — lifecycle hooks translate agent activity into rivet-den protocol events and stream them to a den-server, where the room plays out in real time.",
+  "keywords": ["den", "visualizer", "diorama", "hooks", "rivetos", "pixel-art"],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "RivetOS"
+  }
+}
