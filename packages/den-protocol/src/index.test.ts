@@ -1,0 +1,155 @@
+import { describe, expect, it } from 'vitest';
+import {
+  initialDenState,
+  initialRoomState,
+  listSessions,
+  parseEvent,
+  reduceDen,
+  reduceRoom,
+  toolActivity,
+  type AgentEvent,
+  type AgentEventBody,
+} from './index.js';
+
+const ev = (session: string, body: AgentEventBody, extra?: Partial<AgentEvent>): AgentEvent =>
+  ({ v: 1, session, ...body, ...extra }) as AgentEvent;
+
+const run = (events: AgentEvent[]) => events.reduce(reduceDen, initialDenState);
+
+describe('parseEvent', () => {
+  it('accepts valid v1 events', () => {
+    expect(parseEvent({ v: 1, session: 's1', type: 'session.start', title: 'hi' })).not.toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'tool.start', tool: 'Bash' })).not.toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'tool.end' })).not.toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'speech.stt', active: true })).not.toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'task.plan', tasks: ['a', 'b'] })).not.toBeNull();
+  });
+
+  it('rejects malformed events', () => {
+    expect(parseEvent(null)).toBeNull();
+    expect(parseEvent('x')).toBeNull();
+    expect(parseEvent({ session: 's1', type: 'session.end' })).toBeNull(); // no v
+    expect(parseEvent({ v: 2, session: 's1', type: 'session.end' })).toBeNull(); // wrong v
+    expect(parseEvent({ v: 1, type: 'session.end' })).toBeNull(); // no session
+    expect(parseEvent({ v: 1, session: 's1', type: 'nope' })).toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'tool.start' })).toBeNull(); // no name
+    expect(parseEvent({ v: 1, session: 's1', type: 'activity', activity: 'dancing' })).toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'task.check', index: -1 })).toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'task.plan', tasks: ['a', 3] })).toBeNull();
+  });
+});
+
+describe('toolActivity fallback mapping', () => {
+  it('maps well-known tools', () => {
+    expect(toolActivity('WebSearch')).toBe('searching_web');
+    expect(toolActivity('mcp:rivetos:internet_search')).toBe('searching_web');
+    expect(toolActivity('Edit')).toBe('editing_code');
+    expect(toolActivity('Write')).toBe('editing_code');
+    expect(toolActivity('Read')).toBe('thinking');
+    expect(toolActivity('TaskCreate')).toBe('writing_plan');
+  });
+  it('falls back to running_command for unknown tools', () => {
+    expect(toolActivity('Bash')).toBe('running_command');
+    expect(toolActivity('mcp:whatever:frobnicate')).toBe('running_command');
+  });
+});
+
+describe('reduceRoom', () => {
+  it('tool.start sets tool + derived activity; tool.end clears back to thinking', () => {
+    let s = reduceRoom(initialRoomState, ev('s', { type: 'tool.start', tool: 'Bash' }));
+    expect(s.tool).toBe('Bash');
+    expect(s.activity).toBe('running_command');
+    s = reduceRoom(s, ev('s', { type: 'tool.end' }));
+    expect(s.tool).toBeNull();
+    expect(s.activity).toBe('thinking');
+  });
+
+  it('adapter-supplied activity wins over the derived one', () => {
+    const s = reduceRoom(
+      initialRoomState,
+      ev('s', { type: 'tool.start', tool: 'CustomTool', activity: 'searching_web' }),
+    );
+    expect(s.activity).toBe('searching_web');
+  });
+
+  it('log survives session.start; the rest resets', () => {
+    let s = reduceRoom(initialRoomState, ev('s', { type: 'message.user', text: 'hi' }));
+    s = reduceRoom(s, ev('s', { type: 'session.start', title: 'round 2' }));
+    expect(s.log).toHaveLength(1);
+    expect(s.title).toBe('round 2');
+    expect(s.tasks).toHaveLength(0);
+  });
+
+  it('thinking window trims to a word boundary when full', () => {
+    let s = initialRoomState;
+    for (let i = 0; i < 60; i++) s = reduceRoom(s, ev('s', { type: 'thinking.delta', text: 'word ' }));
+    expect(s.thought.length).toBeLessThanOrEqual(220);
+    expect(s.thought.startsWith('word')).toBe(true);
+  });
+});
+
+describe('reduceDen (multi-session)', () => {
+  it('keeps one room per session', () => {
+    const den = run([
+      ev('a', { type: 'session.start', title: 'A' }, { name: 'alpha', ts: 100 }),
+      ev('b', { type: 'session.start', title: 'B' }, { ts: 200 }),
+      ev('a', { type: 'tool.start', tool: 'Bash' }, { ts: 300 }),
+    ]);
+    expect(Object.keys(den.rooms)).toEqual(['a', 'b']);
+    expect(den.rooms.a.activity).toBe('running_command');
+    expect(den.rooms.b.activity).toBe('idle');
+  });
+
+  it('session list is recency-ordered, keeps names and harness', () => {
+    const den = run([
+      ev('a', { type: 'session.start', title: 'A' }, { name: 'alpha', harness: 'claude-code', ts: 100 }),
+      ev('b', { type: 'session.start', title: 'B' }, { ts: 200 }),
+      ev('a', { type: 'thinking.end' }, { ts: 300 }),
+    ]);
+    const list = listSessions(den);
+    expect(list.map((s) => s.id)).toEqual(['a', 'b']);
+    expect(list[0].name).toBe('alpha'); // sticky across later events without name
+    expect(list[0].harness).toBe('claude-code');
+    expect(list[1].name).toBe('b'); // falls back to id
+  });
+});
+
+// Golden-file tests: recorded event streams → full RoomState snapshots
+// (stored under __snapshots__/). If a reducer change alters these on purpose,
+// review the diff and update with `vitest -u`.
+describe('golden streams', () => {
+  it('typical coding session', () => {
+    const den = run([
+      ev('s1', { type: 'session.start', title: 'fix the flaky test' }, { name: 'rivet-claude', harness: 'claude-code', ts: 1 }),
+      ev('s1', { type: 'message.user', text: 'fix the flaky test in ci' }, { ts: 2 }),
+      ev('s1', { type: 'thinking.delta', text: 'Looking at the CI logs first… ' }, { ts: 3 }),
+      ev('s1', { type: 'task.plan', tasks: ['find flaky test', 'fix it', 'verify'] }, { ts: 4 }),
+      ev('s1', { type: 'tool.start', tool: 'Grep' }, { ts: 5 }),
+      ev('s1', { type: 'tool.end', tool: 'Grep' }, { ts: 6 }),
+      ev('s1', { type: 'task.check', index: 0 }, { ts: 7 }),
+      ev('s1', { type: 'tool.start', tool: 'Edit' }, { ts: 8 }),
+      ev('s1', { type: 'tool.end', tool: 'Edit' }, { ts: 9 }),
+      ev('s1', { type: 'task.check', index: 1 }, { ts: 10 }),
+      ev('s1', { type: 'tool.start', tool: 'Bash' }, { ts: 11 }),
+      ev('s1', { type: 'term.line', text: '$ npm test' }, { ts: 12 }),
+      ev('s1', { type: 'term.line', text: '42 passing' }, { ts: 13 }),
+      ev('s1', { type: 'tool.end', tool: 'Bash' }, { ts: 14 }),
+      ev('s1', { type: 'task.check', index: 2 }, { ts: 15 }),
+      ev('s1', { type: 'message.agent', text: 'Fixed — all 42 tests pass.' }, { ts: 16 }),
+    ]);
+    expect(den).toMatchSnapshot();
+  });
+
+  it('voice interruption and sleep', () => {
+    const den = run([
+      ev('s2', { type: 'session.start', title: 'chatting' }, { ts: 1 }),
+      ev('s2', { type: 'speech.stt', active: true }, { ts: 2 }),
+      ev('s2', { type: 'speech.stt', active: false }, { ts: 3 }),
+      ev('s2', { type: 'message.agent', text: 'On it.' }, { ts: 4 }),
+      ev('s2', { type: 'session.end' }, { ts: 5 }),
+    ]);
+    expect(den).toMatchSnapshot();
+    expect(den.rooms.s2.activity).toBe('sleeping');
+    expect(den.rooms.s2.ended).toBe(true);
+  });
+});
