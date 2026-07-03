@@ -19,12 +19,20 @@ export interface Pose {
   frames: string[]
   /** Milliseconds per frame; 0 renders frame 0 only. */
   frameMs: number
+  /** First N frames play ONCE on entering the pose (e.g. climbing into
+   *  bed), then the remaining frames loop. */
+  intro?: number
   /** Content height in shell units when this pose overrides the character
    *  default (e.g. lying-down sleep sprite). */
   height?: number
-  /** Attachment points in ORIGINAL frame-image coordinates — where the
-   *  renderer pins Z's, thought bubbles, props. */
+  /** Attachment points in frame-image coordinates — where the renderer
+   *  pins Z's, thought bubbles, props. */
   attachments?: Record<string, { x: number; y: number }>
+  /** Composite pose: this art contains the character AND the named
+   *  furniture piece(s) interacting. While active, the renderer hides that
+   *  furniture and draws this pose at its anchor instead (anchored to the
+   *  first id when several are replaced). */
+  replaces?: string | string[]
 }
 
 export interface CharacterSpec {
@@ -43,6 +51,8 @@ export interface FurnitureSpec {
   id: string
   /** Pack-relative sprite path. Bottom-center anchored. */
   src: string
+  /** Night-time art (local 19:00–07:00); day `src` is the fallback. */
+  nightSrc?: string
   /** Alternate art the renderer may swap in (EDIT mode). */
   variants?: string[]
   /** Monitor glass in ORIGINAL image coordinates — desk terminal text area. */
@@ -51,6 +61,9 @@ export interface FurnitureSpec {
   textRect?: Rect
   /** Side-view sprite for seat-sequence furniture (chair hop-on animation). */
   sideSrc?: string
+  /** Render layer: 'floor' pieces (rugs) draw under everything and never
+   *  occlude the character; default is depth-sorted standing furniture. */
+  layer?: 'floor'
 }
 
 export interface Placement {
@@ -80,8 +93,8 @@ export interface PackManifest {
   grid: { pxPerUnit: number }
   /** Chroma key applied to sprites (not the shell). */
   chroma: { color: string; threshold: number }
-  /** Room backdrop. Drawn unkeyed at shell size. */
-  shell: { src: string; w: number; h: number }
+  /** Room backdrop. Drawn unkeyed at shell size. `nightSrc` swaps in at night. */
+  shell: { src: string; w: number; h: number; nightSrc?: string }
   character: CharacterSpec
   furniture: FurnitureSpec[]
   /** Default arrangement, keyed by furniture id. */
