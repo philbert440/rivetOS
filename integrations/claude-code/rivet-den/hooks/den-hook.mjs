@@ -18,7 +18,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const DEN_URL = process.env.RIVET_DEN_URL ?? 'http://127.0.0.1:5174'
+// comma-separated fan-out: each node posts to its OWN den (bare-IP view) and
+// to the mesh hub, e.g. "http://127.0.0.1:80,http://10.0.0.1:80"
+const DEN_URLS = (process.env.RIVET_DEN_URL ?? 'http://127.0.0.1:5174').split(',').map((u) => u.trim()).filter(Boolean)
 const TOKEN = process.env.RIVET_DEN_TOKEN ?? ''
 const NAME = process.env.RIVET_DEN_NAME ?? os.hostname()
 
@@ -274,30 +276,35 @@ async function main() {
   // sequential /event posts, which preserve order at one round trip each.
   const headers = { 'content-type': 'application/json' }
   if (TOKEN) headers.authorization = `Bearer ${TOKEN}`
+  // fan out to every server; per server, one ordered POST /events batch
+  // (reduced atomically server-side). 404 = pre-batch server → sequential
+  // /event fallback, which still preserves order. First failure per server
+  // drops the rest of its batch: later events without predecessors are
+  // worse than none.
   if (events.length === 0) return
-  try {
-    const res = await fetch(`${DEN_URL}/events`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(events),
-      signal: AbortSignal.timeout(1500),
-    })
-    if (res.status !== 404) return
-  } catch {
-    return // server unreachable — retrying event-by-event won't help
-  }
-  for (const ev of events) {
-    try {
-      await fetch(`${DEN_URL}/event`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(ev),
-        signal: AbortSignal.timeout(1000),
-      })
-    } catch {
-      break
-    }
-  }
+  await Promise.allSettled(
+    DEN_URLS.map(async (base) => {
+      try {
+        const res = await fetch(`${base}/events`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(events),
+          signal: AbortSignal.timeout(1500),
+        })
+        if (res.status !== 404) return
+      } catch {
+        return // server unreachable — retrying event-by-event won't help
+      }
+      for (const ev of events) {
+        await fetch(`${base}/event`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(ev),
+          signal: AbortSignal.timeout(1000),
+        })
+      }
+    }),
+  )
 }
 
 main()
