@@ -225,6 +225,17 @@ export function createDenServer(config: DenConfig): DenServer {
         return json(res, 200, { sessions: listSessions(state) })
       }
 
+      if (req.method === 'DELETE' && url.pathname === '/session') {
+        const id = url.searchParams.get('session')
+        if (!id || !(id in state.rooms)) return json(res, 404, { error: 'unknown session' })
+        const rooms = { ...state.rooms }
+        const sessions = { ...state.sessions }
+        delete rooms[id]
+        delete sessions[id]
+        state = { rooms, sessions }
+        return json(res, 200, { ok: true })
+      }
+
       if (req.method === 'GET' && url.pathname === '/state') {
         const id = url.searchParams.get('session')
         const room = id ? (state.rooms[id] as typeof initialRoomState | undefined) : undefined

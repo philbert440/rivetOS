@@ -40,7 +40,7 @@ export const initialRoomState: RoomState = {
 }
 
 const THOUGHT_MAX = 220
-const LOG_MAX = 12
+const LOG_MAX = 60 // the chat panel scrolls now — keep real history
 const TERM_MAX = 6
 
 export function reduceRoom(state: RoomState, ev: AgentEvent): RoomState {
@@ -80,6 +80,9 @@ export function reduceRoom(state: RoomState, ev: AgentEvent): RoomState {
     case 'tool.end':
       return { ...state, tool: null, activity: 'thinking' }
     case 'thinking.delta': {
+      // spinner-style status lines ("✳ Architecting… (28s · …)") replace the
+      // bubble wholesale; real streamed thinking appends as before
+      if (/^[✳✢✻✽·] /.test(ev.text)) return { ...state, activity: 'thinking', tool: null, thought: ev.text }
       let thought = (state.thought + ev.text).slice(-THOUGHT_MAX)
       // when the window is full, trim to a word boundary so the stream never
       // opens mid-word

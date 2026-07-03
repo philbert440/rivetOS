@@ -19,45 +19,36 @@
       z-index: 10; user-select: none; -webkit-user-select: none;
     }
     #ptt-live.active { display: block; }
-    /* RPG-style narration log: the conversation (PHIL ▸ / RIVET ▸) scrolls up
-       from the bottom of a fixed 3-line panel; newest line typewrites in.
-       Height must stay in sync with TOP_STACK in main.ts. */
-    #narration {
-      position: fixed; top: calc(10px * var(--ui)); left: 50%; transform: translateX(-50%);
-      width: min(760px, calc(100vw - 24px));
-      height: calc(66px * var(--ui));
-      box-sizing: border-box;
-      background: #0e1622ee; border: 2px solid #3a4a5e; border-radius: 8px;
-      padding: calc(5px * var(--ui)) calc(12px * var(--ui));
-      font: calc(12px * var(--ui))/1.55 'Courier New', monospace;
-      color: #c5d2e0; z-index: 10; overflow: hidden;
-      display: flex; flex-direction: column; justify-content: flex-end;
-    }
-    #narration:empty { display: none; }
-    #narration .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #narration .line.old { opacity: 0.5; }
-    #narration .who-user  { color: #60a5fa; font-weight: 700; }
-    #narration .who-agent { color: #34d399; font-weight: 700; }
-    #narration .cursor { color: #34d399; animation: narr-blink 0.8s steps(1) infinite; }
-    @keyframes narr-blink { 50% { opacity: 0; } }
+    /* The RPG narration log lives inside the room canvas now (see the chat
+       panel in main.ts) — no HTML overlay for it anymore. */
+    /* session picker + gear are docked ONTO the den window's title bar —
+       left/top are set per-frame by positionChrome() in main.ts */
     #session-picker {
-      position: fixed; top: calc((10px + 66px + 8px) * var(--ui)); left: calc(14px * var(--ui)); z-index: 20;
-      background: #0e1622; color: #9fb3c8; border: 2px solid #3a4a5e;
+      position: fixed; transform: translateY(-50%); z-index: 20;
+      background: #e8ebef; color: #30394a; border: 2px solid #8b93a1;
       font: 700 calc(12px * var(--ui)) 'Courier New', monospace;
-      padding: calc(6px * var(--ui)) calc(10px * var(--ui)); border-radius: 8px; cursor: pointer;
+      padding: calc(4px * var(--ui)) calc(8px * var(--ui)); border-radius: 8px; cursor: pointer;
+    }
+    /* ✕ next to the picker: clears the selected (stale) session */
+    #session-x {
+      position: fixed; transform: translateY(-50%); z-index: 20;
+      background: #e8ebef; color: #8b5a5a; border: 2px solid #8b93a1;
+      font: 700 calc(12px * var(--ui)) 'Courier New', monospace;
+      width: calc(26px * var(--ui)); height: calc(26px * var(--ui));
+      border-radius: 6px; cursor: pointer; line-height: 1;
     }
     /* gear button + dropdown: EDIT toggle and push-to-talk key binding live
-       here — sits below the narration panel: top gap + panel height + gap */
+       here — pinned to the right end of the title bar */
     #gear {
-      position: fixed; top: calc((10px + 66px + 8px) * var(--ui)); right: calc(14px * var(--ui)); z-index: 21;
-      background: #0e1622; color: #9fb3c8; border: 2px solid #3a4a5e;
+      position: fixed; transform: translate(-100%, -50%); z-index: 21;
+      background: #e8ebef; color: #30394a; border: 2px solid #8b93a1;
       font: 700 calc(16px * var(--ui)) 'Courier New', monospace;
-      width: calc(38px * var(--ui)); height: calc(38px * var(--ui));
+      width: calc(34px * var(--ui)); height: calc(34px * var(--ui));
       border-radius: 8px; cursor: pointer; line-height: 1;
     }
     #gear.on { color: #34d399; border-color: #34d399; }
     #gear-menu {
-      position: fixed; top: calc((10px + 66px + 8px + 44px) * var(--ui)); right: calc(14px * var(--ui)); z-index: 21;
+      position: fixed; transform: translateX(-100%); z-index: 21;
       display: none; flex-direction: column; gap: 6px;
       background: #0e1622ee; border: 2px solid #3a4a5e; border-radius: 8px;
       padding: calc(8px * var(--ui));
@@ -102,10 +93,10 @@
 </head>
 <body>
   <div id="stage"></div>
-  <div id="narration"></div>
   <div id="caption"></div>
   <div id="ptt-live">● MIC LIVE</div>
   <select id="session-picker" style="display:none"></select>
+  <button id="session-x" style="display:none" title="remove this session from the den">✕</button>
   <button id="gear" title="settings">⚙</button>
   <div id="gear-menu">
     <button id="edit-btn">EDIT ROOM</button>
