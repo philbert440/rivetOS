@@ -185,6 +185,8 @@ export function createDenServer(config: DenConfig): DenServer {
       }
       if (req.method === 'GET' && config.staticDir) {
         if (serveStatic(res, config.staticDir, url.pathname)) return
+        // SPA fallback: extensionless paths (e.g. /demo) get the viewer shell
+        if (!extname(url.pathname) && serveStatic(res, config.staticDir, '/index.html')) return
       }
       json(res, 404, { error: 'not found' })
     })().catch((e: unknown) => {
