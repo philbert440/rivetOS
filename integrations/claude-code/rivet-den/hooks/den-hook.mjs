@@ -17,6 +17,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 // comma-separated fan-out: each node posts to its OWN den (bare-IP view) and
 // to the mesh hub, e.g. "http://127.0.0.1:80,http://10.0.0.1:80"
@@ -29,13 +31,21 @@ const harness = args.includes('--harness') ? args[args.indexOf('--harness') + 1]
 const eventArg = args.find((a, i) => i > 0 && args[i - 1] !== '--harness' && !a.startsWith('--'))
 
 async function main() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
   let p
-  try {
-    p = JSON.parse(raw)
-  } catch {
-    return
+  if (args[0] === '--flush') {
+    // detached second pass after a Stop: grok flushes the final
+    // agent_message_chunk only AFTER the stop hook exits, so a poll inside
+    // the hook can never see it — this re-reads once the writer unblocks
+    await new Promise((r) => setTimeout(r, 1500))
+    p = { session_id: args[1], transcript_path: args[2], hook_event_name: 'Flush' }
+  } else {
+    let raw = ''
+    for await (const chunk of process.stdin) raw += chunk
+    try {
+      p = JSON.parse(raw)
+    } catch {
+      return
+    }
   }
 
   // grok payloads are camelCase and may omit the id entirely — its hook
@@ -43,7 +53,21 @@ async function main() {
   // concurrent id-less harnesses don't melt into one room.
   const session =
     p.session_id ?? p.sessionId ?? process.env.GROK_SESSION_ID ?? `unknown-${process.ppid}`
-  const hookEvent = p.hook_event_name ?? p.hookEventName ?? eventArg ?? ''
+  // grok payloads carry snake_case names in hookEventName; normalize to the
+  // Claude Code spelling the switch below uses (real events only — the
+  // TurnAfter/CompactBefore fakes are gone, don't alias them back in)
+  const SNAKE = {
+    session_start: 'SessionStart',
+    session_end: 'SessionEnd',
+    user_prompt_submit: 'UserPromptSubmit',
+    pre_tool_use: 'PreToolUse',
+    post_tool_use: 'PostToolUse',
+    post_tool_use_failure: 'PostToolUseFailure',
+    pre_compact: 'PreCompact',
+    stop: 'Stop',
+  }
+  const rawEvent = p.hook_event_name ?? p.hookEventName ?? eventArg ?? ''
+  const hookEvent = SNAKE[rawEvent] ?? rawEvent
   const toolInput = p.tool_input ?? p.toolInput ?? {}
   const toolResponse = p.tool_response ?? p.toolResult
 
@@ -64,18 +88,33 @@ async function main() {
   const emit = (body) =>
     events.push({ v: 1, session, name: NAME, harness, ts: Date.now() + events.length, ...body })
 
+  // a session only becomes a den room once a human prompt arrives — grok
+  // subagent swarms and other promptless sessions would otherwise pile up
+  // as ghost rooms in the picker
   if (!st.started) {
+    if (hookEvent !== 'UserPromptSubmit') {
+      fs.writeFileSync(stateFile, JSON.stringify(st))
+      return
+    }
     st.started = true
-    const title = (String(p.prompt ?? path.basename(p.cwd ?? '')).trim() || 'session').slice(0, 48)
+    const title = (
+      String(p.prompt ?? path.basename(p.cwd ?? ''))
+        .replace(/<\/?user_query>/g, '')
+        .trim() || 'session'
+    ).slice(0, 48)
     emit({ type: 'session.start', title })
   }
 
   // ---- transcript tailing: thinking text + latest final answer ----
   const tailTranscript = () => {
     const out = { thinking: '', text: '' }
-    const file = p.transcript_path ?? p.transcriptPath
+    let file = p.transcript_path ?? p.transcriptPath
     if (!file) return out
     try {
+      // grok's transcriptPath is sometimes the session DIRECTORY, sometimes
+      // its updates.jsonl — always tail updates.jsonl so the offset tracks
+      // one file consistently
+      if (fs.statSync(file).isDirectory()) file = path.join(file, 'updates.jsonl')
       const stat = fs.statSync(file)
       if (stat.size <= st.offset) return out
       const fd = fs.openSync(file, 'r')
@@ -91,6 +130,12 @@ async function main() {
         } catch {
           continue
         }
+        // grok updates.jsonl: ACP session updates with streamed chunks —
+        // agent_thought_chunk is REAL thinking, agent_message_chunk the reply
+        const up = j?.params?.update
+        if (up?.sessionUpdate === 'agent_thought_chunk' && up.content?.text) out.thinking += up.content.text
+        if (up?.sessionUpdate === 'agent_message_chunk' && up.content?.text) out.text += up.content.text
+        // claude-code transcript: assistant message with content blocks
         const content = j?.message?.content
         if (j.type !== 'assistant' || !Array.isArray(content)) continue
         st.turnTokens = (st.turnTokens ?? 0) + (j.message?.usage?.output_tokens ?? 0)
@@ -194,7 +239,10 @@ async function main() {
     case 'SessionStart':
       break // session.start already emitted above
     case 'UserPromptSubmit': {
-      if (p.prompt) emit({ type: 'message.user', text: String(p.prompt).replace(/\r/g, '').trim().slice(0, 2000) })
+      if (p.prompt) {
+        const text = String(p.prompt).replace(/<\/?user_query>/g, '').replace(/\r/g, '').trim().slice(0, 2000)
+        if (text) emit({ type: 'message.user', text })
+      }
       emit({ type: 'speech.stt', active: true })
       emit({ type: 'speech.stt', active: false }) // reducer lands on 'thinking'
       st.turnStart = Date.now()
@@ -245,7 +293,7 @@ async function main() {
       // to the transcript jsonl — for a quick no-tool reply the first tail
       // reads nothing, so poll briefly for the late write (hook timeout is 5s)
       let { thinking, text } = tailTranscript()
-      for (let i = 0; i < 10 && !text; i++) {
+      for (let i = 0; i < 6 && !text; i++) {
         await new Promise((r) => setTimeout(r, 250))
         const again = tailTranscript()
         if (again.thinking) thinking += again.thinking
@@ -253,6 +301,21 @@ async function main() {
       }
       if (harness !== 'claude-code') emitThinking(thinking) // no spinner flash right before the bubble closes
       emit({ type: 'thinking.end' })
+      emitAgentText(text)
+      if (!text) {
+        // grok: the final chunk lands only after this hook exits — hand off
+        // to a detached flush pass
+        const tp = p.transcript_path ?? p.transcriptPath
+        if (tp) spawn(process.execPath, [fileURLToPath(import.meta.url), '--flush', session, tp, '--harness', harness], { detached: true, stdio: 'ignore' }).unref()
+      }
+      break
+    }
+    case 'Flush': {
+      let text = ''
+      for (let i = 0; i < 4 && !text; i++) {
+        text = tailTranscript().text
+        if (!text) await new Promise((r) => setTimeout(r, 500))
+      }
       emitAgentText(text)
       break
     }
