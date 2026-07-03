@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "rivetos",
-  "description": "RivetOS extensions for Claude Code — persistent cross-session memory, recall, and lifecycle capture.",
+  "description": "RivetOS extensions for Claude Code \u2014 persistent cross-session memory, recall, and lifecycle capture.",
   "owner": {
     "name": "RivetOS",
     "email": "philbert440@gmail.com"
@@ -9,8 +9,15 @@
   "plugins": [
     {
       "name": "rivet-memory",
-      "description": "Persistent memory for Claude Code. Adds the RivetOS MCP server (memory_search, memory_browse, skills, web) for recall, plus lifecycle hooks that capture every prompt and tool call into the RivetOS memory DB — so weeks later you can find the exact command that fixed something.",
+      "description": "Persistent memory for Claude Code. Adds the RivetOS MCP server (memory_search, memory_browse, skills, web) for recall, plus lifecycle hooks that capture every prompt and tool call into the RivetOS memory DB \u2014 so weeks later you can find the exact command that fixed something.",
       "source": "./integrations/claude-code/rivet-memory",
+      "category": "productivity",
+      "homepage": "https://github.com/philbert440/rivetOS"
+    },
+    {
+      "name": "rivet-den",
+      "description": "Live pixel-art diorama of your Claude Code session \u2014 lifecycle hooks stream agent activity (plans, tool runs, thinking, compaction naps) to a den-server where the room plays out in real time.",
+      "source": "./integrations/claude-code/rivet-den",
       "category": "productivity",
       "homepage": "https://github.com/philbert440/rivetOS"
     }
