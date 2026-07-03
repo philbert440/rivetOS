@@ -49,7 +49,7 @@ async function main() {
   const stateDir = path.join(os.homedir(), '.cache', 'rivet-den')
   fs.mkdirSync(stateDir, { recursive: true })
   const stateFile = path.join(stateDir, `${session.replace(/[^\w.-]/g, '_')}.json`)
-  let st = { started: false, labels: [], done: [], offset: 0 }
+  let st = { started: false, labels: [], done: [], offset: 0, lastSent: '', turnStart: 0, cog: null }
   try {
     st = { ...st, ...JSON.parse(fs.readFileSync(stateFile, 'utf8')) }
   } catch {
@@ -91,6 +91,7 @@ async function main() {
         }
         const content = j?.message?.content
         if (j.type !== 'assistant' || !Array.isArray(content)) continue
+        st.turnTokens = (st.turnTokens ?? 0) + (j.message?.usage?.output_tokens ?? 0)
         for (const block of content) {
           if (block.type === 'thinking' && block.thinking) out.thinking += block.thinking
           if (block.type === 'text' && block.text) out.text = block.text
@@ -102,7 +103,24 @@ async function main() {
     return out
   }
 
+  // Claude Code doesn't expose real thinking text to hooks, so the bubble
+  // gets a spinner word in the Anthropic CLI style instead of transcript tail
+  const COGS = ['Cogitating', 'Pondering', 'Ruminating', 'Noodling', 'Percolating', 'Mulling', 'Scheming', 'Brewing', 'Synthesizing', 'Marinating', 'Puzzling', 'Tinkering', 'Architecting', 'Wrangling']
+  const GLYPHS = ['✳', '✢', '✻', '✽']
   const emitThinking = (thinking) => {
+    if (harness === 'claude-code') {
+      // one spinner word per turn (picked at turn start), live elapsed time +
+      // output-token count — mirrors the Anthropic CLI's status line, e.g.
+      // "✢ Architecting… (1m 22s · ↓ 4.8k tokens)"
+      const secs = st.turnStart ? Math.max(0, Math.round((Date.now() - st.turnStart) / 1000)) : 0
+      const dur = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`
+      const tok = st.turnTokens ?? 0
+      const tokStr = tok >= 1000 ? `${(tok / 1000).toFixed(1)}k` : String(tok)
+      const word = st.cog ?? COGS[Math.floor(Math.random() * COGS.length)]
+      const glyph = GLYPHS[secs % GLYPHS.length]
+      emit({ type: 'thinking.delta', text: `${glyph} ${word}… (${dur} · ↓ ${tokStr} tokens)` })
+      return
+    }
     if (!thinking) return
     // ship the tail of the thought, trimmed to a word boundary — the reducer's
     // sliding window does the rest
@@ -125,6 +143,17 @@ async function main() {
       .replace(/\b([\w-]*(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]*\s*[=:]\s*)\S+/gi, '$1[redacted]')
       // well-known token prefixes (AWS, GitHub, Slack, OpenAI/Stripe-style) + bare JWTs
       .replace(/\b(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[a-z]-[\w-]{10,}|sk-[A-Za-z0-9_-]{16,}|eyJ[\w-]{8,}\.[\w-]+\.[\w-]+)\b/g, '[redacted]')
+
+  // every discovered assistant text block goes to the chat stream, deduped —
+  // mid-turn status notes (PreToolUse) as well as the final answer (Stop)
+  const emitAgentText = (text) => {
+    // keep newlines/indentation — the chat panel wraps and renders them now
+    const t = String(text ?? '').replace(/\r/g, '').trim().slice(0, 2000)
+    if (!t || t === st.lastSent) return
+    st.lastSent = t
+    emit({ type: 'message.agent', text: t })
+  }
+
   const termLine = (text) => {
     if (TERM_OFF) return
     const t = redact(String(text).replace(/[\r\t]/g, ' ').trimEnd()).slice(0, 80)
@@ -163,16 +192,22 @@ async function main() {
     case 'SessionStart':
       break // session.start already emitted above
     case 'UserPromptSubmit': {
-      if (p.prompt) emit({ type: 'message.user', text: String(p.prompt).replace(/\s+/g, ' ').trim().slice(0, 300) })
+      if (p.prompt) emit({ type: 'message.user', text: String(p.prompt).replace(/\r/g, '').trim().slice(0, 2000) })
       emit({ type: 'speech.stt', active: true })
       emit({ type: 'speech.stt', active: false }) // reducer lands on 'thinking'
+      st.turnStart = Date.now()
+      st.turnTokens = 0
+      st.cog = COGS[Math.floor(Math.random() * COGS.length)]
+      emitThinking('') // claude-code: put the spinner word in the bubble now
       break
     }
     case 'PreToolUse': {
       if (isPlanningTool) {
         emit({ type: 'activity', activity: 'writing_plan' })
       } else {
-        emitThinking(tailTranscript().thinking)
+        const tt = tailTranscript()
+        emitThinking(tt.thinking)
+        emitAgentText(tt.text)
         emit({ type: 'tool.start', tool: toolName || 'unknown' })
         if (isShellTool && toolInput.command) {
           termLine('$ ' + String(toolInput.command).replace(/\s+/g, ' '))
@@ -204,11 +239,19 @@ async function main() {
       break
     }
     case 'Stop': {
-      const { thinking, text } = tailTranscript()
-      emitThinking(thinking)
+      // Claude Code fires Stop BEFORE the final assistant message is flushed
+      // to the transcript jsonl — for a quick no-tool reply the first tail
+      // reads nothing, so poll briefly for the late write (hook timeout is 5s)
+      let { thinking, text } = tailTranscript()
+      for (let i = 0; i < 10 && !text; i++) {
+        await new Promise((r) => setTimeout(r, 250))
+        const again = tailTranscript()
+        if (again.thinking) thinking += again.thinking
+        if (again.text) text = again.text
+      }
+      if (harness !== 'claude-code') emitThinking(thinking) // no spinner flash right before the bubble closes
       emit({ type: 'thinking.end' })
-      const finalText = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 280)
-      if (finalText) emit({ type: 'message.agent', text: finalText })
+      emitAgentText(text)
       break
     }
     case 'SessionEnd': {
