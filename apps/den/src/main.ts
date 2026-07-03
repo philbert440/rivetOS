@@ -430,6 +430,9 @@ async function boot() {
   }
 
   const thought = bubble(260, 0x8aa1b8)
+  // live-ticking spinner meta: parsed from "✳ Word… (28s · ↓ 4.8k tokens)"
+  let thoughtSpin: { pre: string; secs: number; suf: string; at: number } | null = null
+  let thoughtSpinShown = -1
   const speech = bubble(280, 0x34d399)
   thought.container.zIndex = 9000
   speech.container.zIndex = 9001
@@ -439,35 +442,113 @@ async function boot() {
   const pttLive = document.getElementById('ptt-live')!
 
   // ---- RPG narration panel ----
-  const narration = document.getElementById('narration')!
+  // Lives IN the room, filling the empty wall in the upper right — left edge
+  // aligned with the whiteboard, right edge at the wall, bottom just above
+  // the whiteboard/shelf tops. The rect is computed from the live furniture
+  // placements (rebuildChatPanel), so it follows pack/layout changes.
+  const CHAT_PAD = 12,
+    CHAT_FS = 14,
+    CHAT_GAP = 6 // vertical gap between messages
+  let chatW = 640
+  let chatH = 120
+  const chat = new Container()
+  chat.zIndex = 9100
+  chat.visible = false
+  const chatBg = new Graphics()
+  chat.addChild(chatBg)
+  const chatMask = new Graphics()
+  chat.addChild(chatMask)
+  const chatContent = new Container()
+  chatContent.mask = chatMask
+  chat.addChild(chatContent)
+  world.addChild(chat)
+  const chatStyle = (fill: number, bold = false) =>
+    new TextStyle({ fontFamily: '"Courier New", monospace', fontSize: CHAT_FS, fontWeight: bold ? '700' : '400', fill })
+  const chatEntries: { who: Text; body: Text }[] = []
+  // scroll offset in px up from the bottom (0 = pinned to the newest message)
+  let chatScroll = 0
+  function layoutChatContent() {
+    let y = 0
+    for (const en of chatEntries) {
+      en.who.y = en.body.y = y
+      y += Math.max(en.body.height, en.who.height) + CHAT_GAP
+    }
+    const contentH = y - CHAT_GAP
+    const innerH = chatH - CHAT_PAD * 2
+    const maxScroll = Math.max(0, contentH - innerH)
+    chatScroll = Math.min(chatScroll, maxScroll)
+    chatContent.y = CHAT_PAD + Math.min(0, innerH - contentH) + chatScroll
+  }
+  chat.eventMode = 'static'
+  chat.on('wheel', (e) => {
+    // one text line per wheel tick, regardless of the device's deltaY scale
+    chatScroll -= Math.sign(e.deltaY) * CHAT_FS * 1.45
+    if (chatScroll < 0) chatScroll = 0
+    layoutChatContent()
+    e.preventDefault()
+  })
+  const furnTop = (id: string) => {
+    const it = furniture[id]
+    return it ? it.sprite.y - it.placement.h : Infinity
+  }
+  const furnLeft = (id: string) => {
+    const it = furniture[id]
+    if (!it) return Infinity
+    return it.sprite.x - (it.asset.bw / 2) * (it.placement.h / it.asset.bh)
+  }
+  function rebuildChatPanel() {
+    const top = 14
+    // flush with the whiteboard's FRAME (the tray sticks out ~18px past it),
+    // which also leaves window↔chat breathing room to match the top padding
+    const left = Math.min(furnLeft('board') + 18, SHELL.w - 14 - 640)
+    const bottom = Math.max(top + CHAT_PAD * 2 + 22, Math.min(furnTop('board'), furnTop('shelf'), SHELL.h * 0.45) - 16)
+    chatW = SHELL.w - 14 - left
+    chatH = bottom - top
+    chat.position.set(left, top)
+    chatBg
+      .clear()
+      .roundRect(0, 0, chatW, chatH, 10)
+      .fill({ color: 0x0e1622, alpha: 0.92 })
+      .roundRect(0, 0, chatW, chatH, 10)
+      .stroke({ width: 2, color: 0x3a4a5e })
+    chatMask.clear().roundRect(2, CHAT_PAD, chatW - 4, chatH - CHAT_PAD * 2, 6).fill(0xffffff)
+    chatContent.x = CHAT_PAD
+    narrLen = -1 // re-render into the new geometry
+    renderNarration()
+  }
   let narrLen = 0
-  let typer: { el: HTMLElement; cur: HTMLElement; full: string; i: number } | null = null
+  // the typewriter appends a blinking ▌ into the text itself — with word wrap
+  // there's no single cursor x/y to park a separate glyph at
+  let typer: { body: Text; full: string; i: number } | null = null
   function renderNarration() {
     if (state.log.length === narrLen) return
     narrLen = state.log.length
     typer = null // a new message finishes the previous reveal instantly
-    narration.innerHTML = ''
-    const entries = state.log.slice(-3)
-    entries.forEach((e, i) => {
-      const last = i === entries.length - 1
-      const line = document.createElement('div')
-      line.className = 'line' + (last ? '' : ' old')
-      const who = document.createElement('span')
-      who.className = e.who === 'user' ? 'who-user' : 'who-agent'
-      who.textContent = (e.who === 'user' ? 'YOU' : 'RIVET') + ' ▸ '
-      const body = document.createElement('span')
-      line.append(who, body)
-      narration.appendChild(line)
+    for (const en of chatEntries) {
+      en.who.destroy()
+      en.body.destroy()
+    }
+    chatEntries.length = 0
+    chat.visible = state.log.length > 0
+    state.log.forEach((e, i) => {
+      const last = i === state.log.length - 1
+      const who = new Text({ text: (e.who === 'user' ? 'YOU' : 'RIVET') + ' ▸ ', resolution: 2, style: chatStyle(e.who === 'user' ? 0x60a5fa : 0x34d399, true) })
+      const style = chatStyle(0xc5d2e0)
+      style.wordWrap = true
+      style.wordWrapWidth = Math.max(80, chatW - CHAT_PAD * 2 - who.width)
+      style.lineHeight = CHAT_FS * 1.45
+      const body = new Text({ text: e.text, resolution: 2, style })
+      body.x = who.width
+      who.alpha = body.alpha = last ? 1 : 0.55
+      chatContent.addChild(who, body)
+      chatEntries.push({ who, body })
       if (last) {
-        const cur = document.createElement('span')
-        cur.className = 'cursor'
-        cur.textContent = '▌'
-        line.appendChild(cur)
-        typer = { el: body, cur, full: e.text, i: 0 }
-      } else {
-        body.textContent = e.text
+        body.text = ''
+        typer = { body, full: e.text, i: 0 }
       }
     })
+    chatScroll = 0 // a new message pins the view back to the bottom
+    layoutChatContent()
   }
 
   // ---- layout / resize ----
@@ -475,7 +556,27 @@ async function boot() {
   let camS = 1
   const clampCamX = (x: number) => Math.min(0, Math.max(window.innerWidth - FRAME_W * camS, x))
   const UI_STACK = 48 + 26 + 8 // caption bottom + caption height + gap
-  const TOP_STACK = 10 + 66 + 8
+  const TOP_STACK = 10 // narration lives in-room now; just breathing room
+  // dock the session picker + gear onto the den window's title bar; called on
+  // layout() and whenever the camera pans the frame (mobile mode)
+  const pickerEl = document.getElementById('session-picker')! as HTMLElement
+  const sessionXEl = document.getElementById('session-x')! as HTMLElement
+  const gearEl = document.getElementById('gear')! as HTMLElement
+  const gearMenuEl = document.getElementById('gear-menu')! as HTMLElement
+  function positionChrome() {
+    const s = frame.scale.x
+    const fx = frame.position.x,
+      fy = frame.position.y
+    const cy = fy + (10 + (TITLEBAR - 14) / 2) * s // title-bar strip center
+    pickerEl.style.left = `${fx + 190 * s}px`
+    pickerEl.style.top = `${cy}px`
+    sessionXEl.style.left = `${fx + 190 * s + pickerEl.offsetWidth + 8}px`
+    sessionXEl.style.top = `${cy}px`
+    gearEl.style.left = `${fx + (FRAME_W - 18) * s}px`
+    gearEl.style.top = `${cy}px`
+    gearMenuEl.style.left = `${fx + (FRAME_W - 18) * s}px`
+    gearMenuEl.style.top = `${fy + (TITLEBAR + 2) * s}px`
+  }
   function layout() {
     const winW = window.innerWidth,
       winH = window.innerHeight
@@ -494,6 +595,7 @@ async function boot() {
       frame.scale.set(s)
       frame.position.set((winW - FRAME_W * s) / 2, top + (availH - FRAME_H * s) / 2)
     }
+    positionChrome()
   }
   layout()
   window.addEventListener('resize', layout)
@@ -511,12 +613,14 @@ async function boot() {
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
     delete sessionNames[id]
   }
+  rebuildChatPanel() // needs `state` — must run after it exists
 
   const picker = document.getElementById('session-picker')! as HTMLSelectElement
   const LOCAL_SESSIONS = new Set(['demo', 'preview'])
   function renderPicker() {
     const ids = Object.keys(rooms).filter((id) => !LOCAL_SESSIONS.has(id))
     picker.style.display = ids.length > 1 ? '' : 'none'
+    sessionXEl.style.display = picker.style.display
     picker.innerHTML = ''
     for (const id of ids) {
       const opt = document.createElement('option')
@@ -526,10 +630,25 @@ async function boot() {
       opt.selected = id === selectedSession
       picker.appendChild(opt)
     }
+    positionChrome() // the ✕ hangs off the picker's rendered width
   }
+  sessionXEl.addEventListener('click', () => {
+    const id = picker.value || selectedSession
+    if (!id) return
+    void fetch(withToken(`${serverHttp}/session?session=${encodeURIComponent(id)}`), { method: 'DELETE' }).catch(() => {})
+    dropSession(id)
+    if (selectedSession === id) {
+      selectedSession = Object.keys(rooms).filter((r) => r !== 'demo')[0] ?? null
+      state = (selectedSession && rooms[selectedSession]) || initialRoomState
+      narrLen = -1
+      refreshAll()
+    }
+    renderPicker()
+  })
   picker.addEventListener('change', () => {
     selectedSession = picker.value
     state = rooms[selectedSession] ?? initialRoomState
+    narrLen = -1 // force the chat panel to re-render for the new room
     refreshAll()
   })
 
@@ -583,7 +702,14 @@ async function boot() {
       ? `${ACTIVITY_LABEL[state.activity]} · ${state.tool}`
       : ACTIVITY_LABEL[state.activity]
     thought.container.visible = !!state.thought
-    if (state.thought) thought.set(state.thought)
+    if (state.thought) {
+      thought.set(state.thought)
+      // spinner status line → tick the elapsed time locally between hooks
+      const m = state.thought.match(/^(.* \()(?:(\d+)m )?(\d+)s( · .*\))$/)
+      thoughtSpin = m ? { pre: m[1], secs: (Number(m[2] ?? 0)) * 60 + Number(m[3]), suf: m[4], at: performance.now() } : null
+    } else {
+      thoughtSpin = null
+    }
   }
 
   function ingest(ev: AgentEvent) {
@@ -933,20 +1059,30 @@ async function boot() {
       speechTimer -= tk.deltaMS
       if (speechTimer <= 0) speech.container.visible = false
     }
+    if (thought.container.visible && thoughtSpin) {
+      const total = thoughtSpin.secs + Math.floor((performance.now() - thoughtSpin.at) / 1000)
+      if (total !== thoughtSpinShown) {
+        thoughtSpinShown = total
+        const dur = total < 60 ? `${total}s` : `${Math.floor(total / 60)}m ${total % 60}s`
+        thought.set(thoughtSpin.pre + dur + thoughtSpin.suf)
+      }
+    }
     if (typer) {
       typer.i += tk.deltaMS / 16
       const n = Math.floor(typer.i)
+      const blink = Math.floor(t / 400) % 2 ? '' : '▌'
       if (n >= typer.full.length) {
-        typer.el.textContent = typer.full
-        typer.cur.remove()
+        typer.body.text = typer.full
         typer = null
       } else {
-        typer.el.textContent = typer.full.slice(0, n)
+        typer.body.text = typer.full.slice(0, n) + blink
       }
+      layoutChatContent() // wrapped height grows as it types; stay pinned
     }
     if (mobileMode) {
       const want = clampCamX(window.innerWidth / 2 - camS * (MARGIN + char.x))
       frame.position.x += (want - frame.position.x) * Math.min(1, tk.deltaMS / 350)
+      positionChrome()
     }
   })
 
@@ -973,6 +1109,7 @@ async function boot() {
         applyScale(it)
         if (id === 'board') refreshBoardOverlay()
         if (id === 'desk') refreshTermOverlay()
+        if (id === 'board' || id === 'shelf') rebuildChatPanel()
       },
       applyScale: (id) => {
         if (furniture[id]) applyScale(furniture[id])
@@ -980,6 +1117,7 @@ async function boot() {
       onLayoutChange: () => {
         refreshBoardOverlay()
         refreshTermOverlay()
+        rebuildChatPanel()
       },
     },
     saved,
