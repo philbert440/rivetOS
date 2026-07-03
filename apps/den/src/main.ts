@@ -128,20 +128,33 @@ async function boot() {
   // ---- character poses, straight from the pack manifest ----
   type Frame = ReturnType<typeof pixelTexture>
   const poses: Record<string, Frame[]> = {}
+  const poseImgSize: Record<string, { w: number; h: number }> = {}
   await Promise.all(
     Object.entries(m.character.poses).map(async ([name, pose]) => {
       const h = pose.height ?? CHAR_HEIGHT
       poses[name] = await Promise.all(
-        pose.frames.map(async (f) => pixelTexture(await loadAsset(pack.url(f)), h)),
+        pose.frames.map(async (f) => {
+          const asset = await loadAsset(pack.url(f))
+          poseImgSize[name] ??= { w: asset.bw, h: asset.bh }
+          return pixelTexture(asset, h)
+        }),
       )
     }),
   )
   const poseHeight = (name: string): number => m.character.poses[name]?.height ?? CHAR_HEIGHT
+  let poseStartT = 0 // set on pose change; drives intro (play-once) frames
   function poseFrame(name: string, t: number): number {
     const frames = poses[name] ?? poses.idle
     if (frames.length < 2) return 0
-    const frameMs = m.character.poses[name]?.frameMs ?? 400
+    const spec = m.character.poses[name]
+    const frameMs = spec?.frameMs ?? 400
     if (frameMs === 0) return t % 3400 < 160 ? 1 : 0 // static pose: occasional blink
+    const intro = spec?.intro ?? 0
+    if (intro > 0) {
+      const el = t - poseStartT
+      if (el < intro * frameMs) return Math.floor(el / frameMs)
+      return intro + (Math.floor((el - intro * frameMs) / frameMs) % (frames.length - intro))
+    }
     return Math.floor(t / frameMs) % frames.length
   }
 
@@ -191,6 +204,9 @@ async function boot() {
     string,
     { sprite: Sprite; asset: KeyedAsset; placement: RuntimePlacement }
   > = {}
+  // functional rects live on the pack furniture entries, in coordinates of
+  // their shipped art — they only apply while that art is up
+  const furnSpec = (id: string) => m.furniture.find((f) => f.id === id)
   function applyScale(it: { sprite: Sprite; asset: KeyedAsset; placement: RuntimePlacement }) {
     it.sprite.texture = pixelTexture(it.asset, it.placement.h).texture
     it.sprite.scale.set(it.placement.flip ? -PX : PX, PX)
@@ -199,7 +215,9 @@ async function boot() {
       Math.round(it.placement.x / PX) * PX,
       Math.round(it.placement.y / PX) * PX,
     )
-    it.sprite.zIndex = it.placement.y
+    // floor-layer pieces (rugs) draw under everything and never occlude
+    it.sprite.zIndex =
+      furnSpec(it.placement.id)?.layer === 'floor' ? -9000 + it.placement.y : it.placement.y
   }
   placements.forEach((f, i) => {
     const a = furnAssets[i]
@@ -210,9 +228,44 @@ async function boot() {
     applyScale(furniture[f.id])
   })
 
-  // functional rects live on the pack furniture entries, in ORIGINAL image
-  // coordinates of their default art — they only apply while that art is up
-  const furnSpec = (id: string) => m.furniture.find((f) => f.id === id)
+  // ---- day/night art: `nightSrc` swaps in between 19:00 and 07:00 local ----
+  // (?tod=day|night forces it for testing). Only art still on its pack
+  // default is swapped — EDIT-mode variant choices are left alone.
+  const todOverride = new URLSearchParams(location.search).get('tod')
+  let sleepNight = false // sleeping forces night — the room dims for the nap
+  const isNight = () => {
+    if (sleepNight) return true
+    if (todOverride) return todOverride === 'night'
+    const hour = new Date().getHours()
+    return hour < 7 || hour >= 19
+  }
+  let nightApplied: boolean | null = null
+  async function applyTimeOfDay() {
+    const night = isNight()
+    if (night === nightApplied) return
+    nightApplied = night
+    if (m.shell.nightSrc) {
+      const src = night ? m.shell.nightSrc : m.shell.src
+      const a = await loadAsset(pack.url(src), false)
+      shellSprite.texture = pixelTexture(a, SHELL.h).texture
+    }
+    for (const f of m.furniture) {
+      if (!f.nightSrc) continue
+      const it = furniture[f.id]
+      if (!it) continue
+      const day = pack.url(f.src)
+      const nite = pack.url(f.nightSrc)
+      if (it.placement.src !== day && it.placement.src !== nite) continue // EDIT override wins
+      const want = night ? nite : day
+      if (it.placement.src === want) continue
+      it.asset = await loadAsset(want)
+      it.placement.src = want
+      applyScale(it)
+    }
+    refreshBoardOverlay()
+    refreshTermOverlay()
+  }
+  setInterval(() => void applyTimeOfDay(), 60_000)
 
   // ---- whiteboard text overlay ----
   const boardTitle = new Text({
@@ -256,7 +309,8 @@ async function boot() {
     }),
   })
   world.addChild(termText)
-  const termCols = 24
+  const termCols = 17 // fewer, larger glyphs — small monitors stay legible
+  let termRows = 3 // how many lines fit the glass — set by refreshTermOverlay
   function refreshTermOverlay() {
     const dk = furniture['desk']
     if (!dk) {
@@ -274,14 +328,21 @@ async function boot() {
     termText.position.set(tx, ty)
     termText.zIndex = dk.placement.y + 1
     // scale the 9px face so ~termCols columns span the screen width
-    termText.scale.set(tw / (termCols * 5.5))
+    const termScale = tw / (termCols * 5.5)
+    termText.scale.set(termScale)
+    // clamp to the glass: lines that don't fit scroll off the TOP, not the desk
+    const th = (rect ? rect.h : dk.asset.bh * 0.25) * s
+    termRows = Math.max(1, Math.floor(th / (11.5 * termScale)))
+    if (termText.text) renderTerm() // re-clamp after moves/resizes (state exists by then)
   }
   function renderTerm() {
     termText.text = state.term
+      .slice(-termRows)
       .map((l) => (l.length > termCols ? l.slice(0, termCols - 1) + '…' : l))
       .join('\n')
   }
   refreshTermOverlay()
+  void applyTimeOfDay()
 
   // ---- character ----
   const char = new Container()
@@ -289,17 +350,22 @@ async function boot() {
   const charSprite = new Sprite(poses.idle[0].texture)
   charSprite.anchor.set(0.5, 1)
   char.addChild(shadow, charSprite)
+  // spawn at the idle station, not the room origin
+  char.position.set(stations.idle.x ?? SHELL.w / 2, stations.idle.y ?? SHELL.h - 60)
   world.addChild(char)
   let poseName = 'idle'
   let poseFlip = false
   let squash = 1 // x-squash used to fake the chair swivel rotation
   function setPose(name: string, flip = false) {
+    if (name !== poseName) poseStartT = t
     poseName = name
     poseFlip = flip
   }
+  let frameOverride: number | null = null // outro playback pins the frame
   function renderPose(t: number) {
     const frames = poses[poseName] ?? poses.idle
-    charSprite.texture = frames[Math.min(poseFrame(poseName, t), frames.length - 1)].texture
+    const idx = frameOverride ?? poseFrame(poseName, t)
+    charSprite.texture = frames[Math.min(idx, frames.length - 1)].texture
     charSprite.scale.set((poseFlip ? -PX : PX) * squash, PX)
   }
   setPose('idle')
@@ -370,7 +436,7 @@ async function boot() {
   world.addChild(thought.container, speech.container)
 
   const caption = document.getElementById('caption')!
-  const ptt = document.getElementById('ptt')! as HTMLButtonElement
+  const pttLive = document.getElementById('ptt-live')!
 
   // ---- RPG narration panel ----
   const narration = document.getElementById('narration')!
@@ -408,7 +474,7 @@ async function boot() {
   let mobileMode = false
   let camS = 1
   const clampCamX = (x: number) => Math.min(0, Math.max(window.innerWidth - FRAME_W * camS, x))
-  const UI_STACK = 20 + 84 + 10 + 26 + 8
+  const UI_STACK = 48 + 26 + 8 // caption bottom + caption height + gap
   const TOP_STACK = 10 + 66 + 8
   function layout() {
     const winW = window.innerWidth,
@@ -494,6 +560,11 @@ async function boot() {
   }
 
   function refreshAll() {
+    const wantSleepNight = state.activity === 'sleeping'
+    if (wantSleepNight !== sleepNight) {
+      sleepNight = wantSleepNight
+      void applyTimeOfDay()
+    }
     renderBoard()
     renderLed()
     narrLen = -1
@@ -546,6 +617,12 @@ async function boot() {
   let t = 0
   type ChairPhase = 'hop_on' | 'swivel_in' | 'type' | 'swivel_out' | 'hop_off'
   let chairSeq: { phase: ChairPhase; t: number } | null = null
+  let hiddenFurn: string[] | null = null // furniture currently replaced by composite art
+  // outro: poses with intro frames play them REVERSED when leaving (climb
+  // back out of bed, put the phone away) before the character moves on
+  let settledPose: string | null = null
+  let outro: { pose: string; start: number; x: number; y: number; flip: boolean } | null = null
+  let lastCompositeFeet: { x: number; y: number } | null = null
   const HOP_MS = 340,
     SWIVEL_MS = 320
   const lerp = (a: number, b: number, p: number) => a + (b - a) * p
@@ -556,14 +633,87 @@ async function boot() {
     const targetPose = resolvePose(m, state.activity, state.tool)
     // seat choreography kicks in when the activity's station is the chair
     const wantsChair = station.furn === 'chair' && !!furniture['chair']
-    const tp = stationPos(station)
+    // composite pose: art contains character + furniture; walk to the
+    // furniture anchor itself, then swap in the composite and hide the piece
+    const rawReplaces = m.character.poses[targetPose]?.replaces
+    const replaceIds = rawReplaces ? (Array.isArray(rawReplaces) ? rawReplaces : [rawReplaces]) : []
+    // anchored to the FIRST replaced id; all listed pieces hide during the pose
+    const composite =
+      replaceIds.length > 0 && replaceIds.every((id) => furniture[id]) ? replaceIds : null
+    // the walk target IS the final (anchored + wall-clamped) composite spot,
+    // otherwise the clamp leaves him "not there yet" and walk/pose flicker
+    const compositeTarget = () => {
+      const fp = furniture[composite![0]].placement
+      const poseSpec = m.character.poses[targetPose]
+      const anchor = poseSpec.attachments?.anchor
+      const feet = poseSpec.attachments?.feet
+      const frame0 = poses[targetPose][0]
+      const imgW = poseImgSize[targetPose]?.w
+      const fFlip = !!fp.flip
+      const imgH = poseImgSize[targetPose]?.h
+      const dispW = frame0.cols * PX
+      const dispH = frame0.rows * PX
+      let x = fp.x
+      if (anchor && imgW) x = fp.x + (fFlip ? -1 : 1) * dispW * (0.5 - anchor.x / imgW)
+      // no wall clamp: composites clip at the room edge exactly like the
+      // furniture they replace, so the box never shifts on the swap
+      const settleX = x
+      // pin the anchor's y to the furniture baseline too (composite art may
+      // extend below it — e.g. feet under a wall-mounted board)
+      const settleY = anchor && imgH ? fp.y + dispH * (1 - anchor.y / imgH) : fp.y
+      // walk to where the character's FEET are inside the art, not the box —
+      // x AND y, so standing behind the furniture reads correctly
+      const walkX =
+        feet && imgW ? settleX + (fFlip ? -1 : 1) * dispW * (feet.x / imgW - 0.5) : settleX
+      const walkY = feet && imgH ? settleY + dispH * (feet.y / imgH - 1) : settleY
+      return { x: walkX, y: walkY, flip: fFlip, settleX, settleY }
+    }
+    const tp = composite ? compositeTarget() : stationPos(station)
     const dx = tp.x - char.x,
       dy = tp.y - char.y
     const dist = Math.hypot(dx, dy)
     const chairIt = furniture['chair']
     let behindChair = false // seated = tucked in behind the chair back
+    let activeComposite: string[] | null = null // set when settled into composite art
 
-    if (chairSeq && chairIt) {
+    // leaving a settled pose that has intro frames → play them in reverse first
+    if (!outro && settledPose && settledPose !== targetPose) {
+      const oSpec = m.character.poses[settledPose]
+      if (oSpec?.intro && oSpec.frameMs > 0) {
+        outro = { pose: settledPose, start: t, x: char.x, y: char.y, flip: poseFlip }
+      }
+      settledPose = null
+    }
+    let inOutro = false
+    if (outro) {
+      const oSpec = m.character.poses[outro.pose]
+      const el = t - outro.start
+      const dur = (oSpec.intro ?? 1) * oSpec.frameMs
+      if (el < dur) {
+        inOutro = true
+        char.x = outro.x
+        char.y = outro.y
+        poseName = outro.pose
+        poseFlip = outro.flip
+        frameOverride = (oSpec.intro ?? 1) - 1 - Math.floor(el / oSpec.frameMs)
+        charSprite.y = 0
+        charSprite.rotation = 0
+        const oRepl = oSpec.replaces
+          ? Array.isArray(oSpec.replaces)
+            ? oSpec.replaces
+            : [oSpec.replaces]
+          : []
+        if (oRepl.length > 0 && oRepl.every((id) => furniture[id])) activeComposite = oRepl
+      } else {
+        outro = null
+        frameOverride = null
+      }
+    }
+    if (!inOutro) frameOverride = null
+
+    if (inOutro) {
+      // holding position while the outro plays — no movement this tick
+    } else if (chairSeq && chairIt) {
       chairSeq.t += tk.deltaMS
       const side = stationPos(stations.editing_code ?? station)
       const seat = {
@@ -640,6 +790,18 @@ async function boot() {
           }
           break
       }
+    } else if (composite && (hiddenFurn?.join() === composite.join() || dist <= 4)) {
+      // settled in (latched once the swap happens): the composite art IS
+      // character + furniture together, anchored + clamped by
+      // compositeTarget(); flip follows the furniture placement
+      char.x = 'settleX' in tp && typeof tp.settleX === 'number' ? tp.settleX : tp.x
+      char.y = 'settleY' in tp && typeof tp.settleY === 'number' ? tp.settleY : tp.y
+      setPose(targetPose, 'flip' in tp && tp.flip === true)
+      charSprite.y = 0
+      charSprite.rotation = 0
+      activeComposite = composite
+      settledPose = targetPose
+      lastCompositeFeet = { x: tp.x, y: tp.y } // exit resumes from the feet spot
     } else if (dist > 4) {
       const step = Math.min(dist, 0.32 * tk.deltaMS)
       char.x += (dx / dist) * step
@@ -665,20 +827,74 @@ async function boot() {
     } else {
       setPose(targetPose)
       charSprite.rotation = 0
+      settledPose = targetPose
       // working poses sit still except for their frame animation; others breathe
       const still = m.character.poses[targetPose]?.frameMs !== 0 && targetPose !== 'idle'
       charSprite.y = still ? 0 : Math.sin(t / 550) * 3
     }
     renderPose(t)
-    tickZs(
-      tk.deltaMS,
-      state.activity === 'sleeping' && dist <= 4 && !chairSeq,
-      char.x - 62,
-      char.y - poseHeight('sleep') - 12,
-    )
-    char.zIndex = behindChair && chairIt ? chairIt.placement.y - 1 : 8000
-    thought.container.position.set(char.x + 34, char.y - CHAR_HEIGHT - 16)
-    speech.container.position.set(char.x + 34, char.y - CHAR_HEIGHT - 16)
+    // composite art stands in for its furniture — hide/restore on transition
+    if ((hiddenFurn?.join() ?? '') !== (activeComposite?.join() ?? '')) {
+      for (const id of hiddenFurn ?? []) {
+        if (furniture[id]) furniture[id].sprite.visible = true
+      }
+      // step out of the composite at the feet spot, then walk from there
+      if (hiddenFurn && lastCompositeFeet) {
+        char.x = lastCompositeFeet.x
+        char.y = lastCompositeFeet.y
+        lastCompositeFeet = null
+      }
+      for (const id of activeComposite ?? []) furniture[id].sprite.visible = false
+      hiddenFurn = activeComposite
+    }
+    // head point from the pose's head attachment, when defined
+    let headPt: { x: number; y: number } | null = null
+    {
+      const hSpec = m.character.poses[poseName]
+      const head = hSpec?.attachments?.head
+      const img = poseImgSize[poseName]
+      if (head && img) {
+        const f0 = poses[poseName][0]
+        headPt = {
+          x: char.x + (poseFlip ? -1 : 1) * f0.cols * PX * (head.x / img.w - 0.5),
+          y: char.y - f0.rows * PX + head.y * ((f0.rows * PX) / img.h),
+        }
+      }
+    }
+    {
+      // Z's drift up from ABOVE the head, not out of his forehead
+      const hx = headPt ? headPt.x : char.x - 62
+      const hy = headPt ? headPt.y - 34 : char.y - poseHeight('sleep') - 12
+      // spawn Z's the whole time he's settled asleep (composite settle keeps
+      // dist>0 by design — gate on the settled latch, not distance), and only
+      // once the climb-in intro has finished
+      const introMs =
+        (m.character.poses[poseName]?.intro ?? 0) * (m.character.poses[poseName]?.frameMs ?? 0)
+      const asleep =
+        state.activity === 'sleeping' &&
+        (activeComposite !== null || dist <= 4) &&
+        !inOutro &&
+        !chairSeq &&
+        t - poseStartT > introMs
+      tickZs(tk.deltaMS, asleep, hx, hy)
+    }
+    char.zIndex = activeComposite
+      ? Math.max(...activeComposite.map((id) => furniture[id].placement.y)) + 2 // in front of all replaced pieces + their text overlays
+      : behindChair && chairIt
+        ? chairIt.placement.y - 1
+        : composite
+          ? char.y // approaching/leaving a composite: depth-sort so he can pass behind it
+          : 8000
+    // the terminal must stay visible on the desk composite's monitor — his
+    // head is below the screen by construction, so it can safely top him
+    termText.zIndex = hiddenFurn?.includes('desk')
+      ? (char.zIndex as number) + 1
+      : (furniture['desk']?.placement.y ?? 0) + 1
+    // bubble bottom (tail dots hang below the anchor) must clear his face
+    const bubbleX = headPt ? headPt.x + 26 : char.x + 34
+    const bubbleY = headPt ? headPt.y - 58 : char.y - CHAR_HEIGHT - 16
+    thought.container.position.set(bubbleX, bubbleY)
+    speech.container.position.set(bubbleX, bubbleY)
     if (speechTimer > 0) {
       speechTimer -= tk.deltaMS
       if (speechTimer <= 0) speech.container.visible = false
@@ -734,18 +950,63 @@ async function boot() {
     saved,
   )
 
-  // ---- push-to-talk ----
+  // ---- gear menu (EDIT toggle + push-to-talk key binding) ----
+  const gear = document.getElementById('gear')!
+  const gearMenu = document.getElementById('gear-menu')!
+  const pttKeyBtn = document.getElementById('ptt-key')!
+  gear.addEventListener('click', () => {
+    gear.classList.toggle('on')
+    gearMenu.classList.toggle('open')
+  })
+  document.getElementById('edit-btn')!.addEventListener('click', () => {
+    gear.classList.remove('on')
+    gearMenu.classList.remove('open')
+  })
+
+  // ---- push-to-talk: hold the bound key to talk ----
+  const keyLabel = (code: string) => code.replace(/^(Key|Digit)/, '').toUpperCase()
+  let pttCode = localStorage.getItem('den.pttKey') ?? 'Space' // device pref, not room state
+  let pttArming = false // next keypress becomes the binding
+  let pttActive = false
+  pttKeyBtn.textContent = `TALK KEY: ${keyLabel(pttCode)}`
+  pttKeyBtn.addEventListener('click', () => {
+    pttArming = true
+    pttKeyBtn.classList.add('arming')
+    pttKeyBtn.textContent = 'PRESS A KEY…'
+  })
   const down = () => {
-    ptt.classList.add('active')
+    pttActive = true
+    pttLive.classList.add('active')
     applyLocal({ type: 'speech.stt', active: true })
   }
   const up = () => {
-    ptt.classList.remove('active')
+    pttActive = false
+    pttLive.classList.remove('active')
     applyLocal({ type: 'speech.stt', active: false })
   }
-  ptt.addEventListener('pointerdown', down)
-  ptt.addEventListener('pointerup', up)
-  ptt.addEventListener('pointerleave', () => ptt.classList.contains('active') && up())
+  window.addEventListener('keydown', (e) => {
+    const tag = (document.activeElement as HTMLElement | null)?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+    if (pttArming) {
+      pttArming = false
+      pttCode = e.code
+      localStorage.setItem('den.pttKey', pttCode)
+      pttKeyBtn.classList.remove('arming')
+      pttKeyBtn.textContent = `TALK KEY: ${keyLabel(pttCode)}`
+      e.preventDefault()
+      return
+    }
+    if (e.code !== pttCode || e.repeat) {
+      if (e.code === pttCode) e.preventDefault()
+      return
+    }
+    e.preventDefault()
+    down()
+  })
+  window.addEventListener('keyup', (e) => {
+    if (e.code === pttCode && pttActive) up()
+  })
+  window.addEventListener('blur', () => pttActive && up())
 
   // ---- debug: freeze a single activity via URL hash (#test-editing_code) ----
   const testActivity = /^#test-(\w+)$/.exec(location.hash)?.[1]
@@ -767,7 +1028,7 @@ async function boot() {
         const key = cycle * 10000 + i
         if (el >= te.at && !fired.has(key)) {
           fired.add(key)
-          if (!ptt.classList.contains('active') && !editorActive) applyLocal(te.ev)
+          if (!pttActive && !editorActive) applyLocal(te.ev)
         }
       })
     })
@@ -806,7 +1067,7 @@ async function boot() {
       ws.onmessage = (mev) => {
         everConnected = true
         // pause the live feed while editing so spot previews aren't overridden
-        if (demoStarted || editorActive || ptt.classList.contains('active')) return
+        if (demoStarted || editorActive || pttActive) return
         try {
           const data = JSON.parse(mev.data as string) as Record<string, unknown>
           if (data.type === 'snapshot') {
