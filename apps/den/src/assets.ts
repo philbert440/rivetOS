@@ -61,6 +61,13 @@ export async function loadAsset(url: string, key = true): Promise<KeyedAsset> {
   if (!key) return { canvas: c, ox: 0, oy: 0, bw: c.width, bh: c.height, iw: c.width, ih: c.height }
 
   const id = ctx.getImageData(0, 0, c.width, c.height)
+  // pre-keyed pack sprite (has real alpha): the authored canvas IS the frame —
+  // do not re-key or trim, or multi-frame alignment padding gets destroyed
+  for (let i = 3; i < id.data.length; i += 4) {
+    if (id.data[i] < 250) {
+      return { canvas: c, ox: 0, oy: 0, bw: c.width, bh: c.height, iw: c.width, ih: c.height }
+    }
+  }
   const d = id.data
   let minX = c.width,
     minY = c.height,
