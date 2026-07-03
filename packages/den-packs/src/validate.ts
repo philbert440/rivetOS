@@ -77,6 +77,7 @@ export function validatePack(dir: string): ValidationResult {
   }
 
   checkFile(m.shell.src, 'shell')
+  if (m.shell.nightSrc) checkFile(m.shell.nightSrc, 'shell nightSrc')
 
   // --- character -----------------------------------------------------------
   const poses = m.character?.poses ?? {}
@@ -88,6 +89,11 @@ export function validatePack(dir: string): ValidationResult {
     }
     if (typeof pose.frameMs !== 'number' || pose.frameMs < 0)
       errors.push(`pose ${name}: frameMs must be >= 0`)
+    if (
+      pose.intro !== undefined &&
+      !(Number.isInteger(pose.intro) && pose.intro > 0 && pose.intro < pose.frames.length)
+    )
+      errors.push(`pose ${name}: intro must be an integer between 1 and frames-1`)
     let size: { w: number; h: number } | null = null
     for (const f of pose.frames) {
       const abs = checkFile(f, `pose ${name}`)
@@ -114,6 +120,17 @@ export function validatePack(dir: string): ValidationResult {
   for (const [tool, pose] of Object.entries(m.character?.tools ?? {})) {
     if (!(pose in poses)) errors.push(`tool override ${tool} maps to unknown pose: ${pose}`)
   }
+  const declaredFurnIds = new Set((m.furniture ?? []).map((f) => f.id))
+  for (const [name, pose] of Object.entries(poses)) {
+    const repl = pose.replaces
+      ? Array.isArray(pose.replaces)
+        ? pose.replaces
+        : [pose.replaces]
+      : []
+    for (const id of repl) {
+      if (!declaredFurnIds.has(id)) errors.push(`pose ${name}: replaces unknown furniture: ${id}`)
+    }
+  }
 
   // --- furniture + layout --------------------------------------------------
   const furnIds = new Set<string>()
@@ -127,6 +144,7 @@ export function validatePack(dir: string): ValidationResult {
     checkFile(f.src, `furniture ${f.id}`)
     for (const v of f.variants ?? []) checkFile(v, `furniture ${f.id} variant`)
     if (f.sideSrc) checkFile(f.sideSrc, `furniture ${f.id} sideSrc`)
+    if (f.nightSrc) checkFile(f.nightSrc, `furniture ${f.id} nightSrc`)
     if (f.screen && !isRect(f.screen)) errors.push(`furniture ${f.id}: screen must be {x,y,w,h}`)
     if (f.textRect && !isRect(f.textRect))
       errors.push(`furniture ${f.id}: textRect must be {x,y,w,h}`)
