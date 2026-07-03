@@ -33,9 +33,10 @@ it must pass before a pack is served, published, or accepted into a registry.
 
 - **Shell units** — the room coordinate system, defined by `shell.w/h`.
   Layout placements, stations, and content heights use shell units.
-- **Original image coordinates** — pixel coordinates in a sprite's source PNG
-  before keying/trimming. Functional rects (`screen`, `textRect`) and pose
-  `attachments` use these, so they survive re-rasterization.
+- **Sprite image coordinates** — pixel coordinates in the shipped sprite PNG
+  (i.e. after any keying/trimming done at pack build time). Functional rects
+  (`screen`, `textRect`) and pose `attachments` use these, so they survive
+  re-rasterization.
 - **The grid** — `grid.pxPerUnit` is how many shell units one art-pixel spans.
   The renderer resamples every sprite onto this global grid so mixed-fidelity
   art still reads as one drawing. Higher-fidelity packs simply ship a smaller
@@ -87,8 +88,12 @@ trims to content. The shell is drawn unkeyed.
 }
 ```
 
-All furniture is bottom-center anchored. Functional rects are in original
-image coordinates of `src`.
+All furniture is bottom-center anchored. Functional rects are in pixel
+coordinates of the shipped `src` image.
+
+`nightSrc` (on furniture and on `shell`) swaps in between 19:00 and 07:00
+viewer-local time — day `src` is always the fallback, so night art is purely
+additive. Art that has been EDIT-swapped to a variant is left alone.
 
 ### layout & stations
 
