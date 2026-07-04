@@ -43,6 +43,7 @@ export interface DenDeploySettings {
   port: number
   token: string
   termEnabled: boolean
+  termOpen: boolean
   staticDir: string
   packsDir: string
 }
@@ -67,6 +68,7 @@ export function parseDenSettings(
     port: 5174,
     token: '',
     termEnabled: false,
+    termOpen: false,
     staticDir: join(root, 'apps', 'den', 'dist'),
     packsDir: join(root, 'packages', 'den-packs', 'packs'),
   }
@@ -101,6 +103,7 @@ export function parseDenSettings(
     port,
     token: typeof d.token === 'string' ? d.token : '',
     termEnabled: terminal?.enabled === true,
+    termOpen: terminal?.open === true,
     staticDir:
       typeof d.static_dir === 'string' && d.static_dir.trim() !== ''
         ? d.static_dir.trim()
@@ -128,6 +131,7 @@ export function buildDenEnvContent(s: DenDeploySettings): string {
   ]
   if (s.token) lines.push(`RIVETOS_DEN_TOKEN=${s.token}`)
   if (s.termEnabled) lines.push('RIVETOS_DEN_TERM=1')
+  if (s.termOpen) lines.push('RIVETOS_DEN_TERM_OPEN=1')
   lines.push(`RIVETOS_DEN_STATIC_DIR=${s.staticDir}`)
   lines.push(`RIVETOS_DEN_PACKS_DIR=${s.packsDir}`)
   return lines.join('\n') + '\n'

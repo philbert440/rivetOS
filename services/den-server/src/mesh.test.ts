@@ -34,6 +34,7 @@ async function start(overrides: Partial<DenConfig> = {}): Promise<{ den: DenServ
     meshCacheMs: 10_000,
     term: {
       enabled: false,
+      open: false,
       configFile: join(stateDir, 'den-term.json'),
       maxPtys: 4,
       scrollbackBytes: 262_144,

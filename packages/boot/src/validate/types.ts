@@ -48,7 +48,7 @@ export const KNOWN_DEN_KEYS = new Set([
   'static_dir',
 ])
 
-export const KNOWN_DEN_TERMINAL_KEYS = new Set(['enabled'])
+export const KNOWN_DEN_TERMINAL_KEYS = new Set(['enabled', 'open'])
 
 /**
  * Hosts den-server treats as loopback in its terminal security gate

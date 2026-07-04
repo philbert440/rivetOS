@@ -19,6 +19,11 @@ export interface DenTermConfig {
   /** Opt-in master switch — terminals are OFF unless RIVETOS_DEN_TERM=1/on.
    *  Spawning a shell as the service user is a deliberate act, never a default. */
   enabled: boolean
+  /** RIVETOS_DEN_TERM_OPEN=1: explicit operator opt-out of the tokenless
+   *  security gate — terminals stay enabled with no token off-loopback.
+   *  For trusted private networks; anything that can reach the port can
+   *  then spawn a shell as the service user. Loudly logged, never default. */
+  open: boolean
   /** Operator-owned command roster (see term/roster.ts). Re-read lazily, so
    *  edits don't need a restart. */
   configFile: string
@@ -73,6 +78,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     meshCacheMs: intEnv('RIVETOS_DEN_MESH_CACHE_MS', 10_000),
     term: {
       enabled: truthyEnv(env.RIVETOS_DEN_TERM),
+      open: truthyEnv(env.RIVETOS_DEN_TERM_OPEN),
       configFile: env.RIVETOS_DEN_TERM_CONFIG ?? join(homedir(), '.rivetos', 'den-term.json'),
       maxPtys: intEnv('RIVETOS_DEN_TERM_MAX', 4),
       scrollbackBytes: intEnv('RIVETOS_DEN_TERM_SCROLLBACK', 262_144),

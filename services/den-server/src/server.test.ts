@@ -33,6 +33,7 @@ async function start(
     meshCacheMs: 10_000,
     term: {
       enabled: false,
+      open: false,
       configFile: join(stateDir, 'den-term.json'),
       maxPtys: 4,
       scrollbackBytes: 262_144,
