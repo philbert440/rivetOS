@@ -25,7 +25,9 @@ import type { LayoutModel } from './layout-model.js'
 export const MARGIN = 26
 export const TITLEBAR = 48
 
-const ACTIVITY_LABEL: Record<Activity, string> = {
+// exported for the mesh overview (mesh.ts): cards speak the same
+// activity→label / activity→LED-color language as the window chrome
+export const ACTIVITY_LABEL: Record<Activity, string> = {
   idle: 'idle — puttering around the den',
   thinking: 'thinking…',
   writing_plan: 'writing the plan on the whiteboard',
@@ -37,7 +39,7 @@ const ACTIVITY_LABEL: Record<Activity, string> = {
   sleeping: 'sleeping — compacting memories',
 }
 
-const LED_COLOR: Record<Activity, number> = {
+export const LED_COLOR: Record<Activity, number> = {
   idle: 0x5a6675,
   thinking: 0xd6a53c,
   writing_plan: 0x34d399,

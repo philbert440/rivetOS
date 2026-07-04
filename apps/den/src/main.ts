@@ -25,9 +25,14 @@ import { createSessionStore, IDLE_SESSION, LOCAL_SESSIONS } from './sessions.js'
 import { createWindowManager } from './windows.js'
 import { createDrawer, type Drawer } from './drawer.js'
 import { createHeader } from './header.js'
+import { renderMesh } from './mesh.js'
 import { serverHttp, withToken } from './net.js'
 
 async function boot() {
+  // /mesh is a plain DOM route — no Pixi, no packs, no session feed. Every
+  // other path (incl. a direct node visit) is the session grid, as always.
+  if (location.pathname === '/mesh') return renderMesh(document.body)
+
   const app = new Application()
   await app.init({ background: 0x141a26, resizeTo: window, antialias: false })
   document.getElementById('stage')!.appendChild(app.canvas)
