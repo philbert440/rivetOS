@@ -22,10 +22,13 @@ const TAB_STRIP_H = 36 // mobile tab strip reserve, in ui-scaled px
 export interface DomAnchor {
   el: HTMLElement
   room: RoomInstance
-  x: number
-  y: number
+  x?: number
+  y?: number
   w?: number
   h?: number
+  /** When present, re-evaluated on every syncDom in place of x/y/w/h — for
+   *  rects that depend on mutable room state (furniture placements). */
+  rect?(): { x: number; y: number; w?: number; h?: number }
 }
 
 export interface WindowManagerDeps {
@@ -83,7 +86,8 @@ export function createWindowManager(deps: WindowManagerDeps): WindowManager {
         a.el.style.display = 'none'
         continue
       }
-      const r = anchorCss(root.position.x, root.position.y, root.scale.x, a)
+      const p = a.rect?.() ?? { x: a.x ?? 0, y: a.y ?? 0, w: a.w, h: a.h }
+      const r = anchorCss(root.position.x, root.position.y, root.scale.x, p)
       a.el.style.display = ''
       a.el.style.left = `${r.left}px`
       a.el.style.top = `${r.top}px`

@@ -1,9 +1,11 @@
 // Per-window terminal drawer: an xterm.js terminal attached to the session's
-// den-server PTY (WS /term?session=<id>), dropping down from the titlebar to
-// cover exactly the room recess. The DOM element is window CHROME, not room
-// scene — it is styled like the frame bezel and pinned to the recess rect via
-// the WindowManager's DomAnchor mechanism, so it tracks grid relayout, scale
-// and the mobile camera pan.
+// den-server PTY (WS /term?session=<id>), overlaid on the old chat panel's
+// footprint — the empty wall in the upper right of the room, whiteboard-
+// aligned (room.drawerRect()) — so the room stays visible around it. The DOM
+// element is window CHROME, not room scene — it is styled like the frame
+// bezel and pinned via the WindowManager's DomAnchor mechanism (a live
+// rect(), since the footprint follows furniture edits), so it tracks grid
+// relayout, scale and the mobile camera pan.
 //
 // Sizing: never CSS-transform the terminal — the div is sized in screen px
 // by syncDom and a debounced FitAddon.fit() re-derives cols×rows after every
@@ -22,7 +24,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { serverWsBase, withToken } from './net.js'
-import { MARGIN, TITLEBAR, type RoomInstance } from './room.js'
+import type { RoomInstance } from './room.js'
 import type { WindowManager } from './windows.js'
 
 const RECONNECT_MS = 3000
@@ -46,7 +48,7 @@ export interface DrawerOpts {
 }
 
 export function createDrawer(room: RoomInstance, sessionId: string, opts: DrawerOpts): Drawer {
-  // ---- DOM: bezel-styled chrome pinned to the room recess ----
+  // ---- DOM: bezel-styled chrome pinned to the old chat panel's rect ----
   const el = document.createElement('div')
   el.className = 'term-drawer'
   const well = document.createElement('div')
@@ -57,18 +59,14 @@ export function createDrawer(room: RoomInstance, sessionId: string, opts: Drawer
   // clicking into a terminal focuses its window, like any other chrome
   el.addEventListener('pointerdown', () => opts.wm.focus(sessionId))
 
-  // the dark recess the room sits in — same rect the frame chrome draws
-  const anchor = {
-    el,
-    room,
-    x: MARGIN - 6,
-    y: TITLEBAR + MARGIN - 6,
-    w: room.frameW - MARGIN * 2 + 12,
-    h: room.frameH - TITLEBAR - MARGIN * 2 + 12,
-  }
+  // the old chat panel's footprint — recomputed by syncDom (live rect) so
+  // furniture edits that move the whiteboard/shelf re-shape the drawer
+  const anchor = { el, room, rect: () => room.drawerRect() }
   let removeAnchor: (() => void) | null = null
 
   // ---- xterm ----
+  // 13 stays: the chat-footprint drawer is short (~8 rows at single-window
+  // scale) but dropping to 12 gains columns only, not rows — keep it legible
   const term = new Terminal({
     fontSize: 13,
     fontFamily: '"Courier New", monospace',

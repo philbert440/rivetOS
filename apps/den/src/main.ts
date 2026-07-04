@@ -156,6 +156,9 @@ async function boot() {
       )
     },
   })
+  // furniture edits move the drawer footprint (room.drawerRect) — re-derive
+  // every anchored DOM rect, same as the in-room board overlay resync
+  layoutModel.onChange(() => wm.syncDom())
 
   // zero sessions → one local window with the character asleep in bed; the
   // first real session replaces it (and it returns when the last one closes)

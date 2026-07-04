@@ -142,6 +142,12 @@ export interface RoomInstance {
   setTerm(hooks: RoomTermHooks | null): void
   /** Reflect the drawer's open state on the `>_` toggle. */
   setTermOpen(open: boolean): void
+  /** The terminal drawer's footprint, in frame-local px: the old chat
+   *  panel's rect — the empty wall in the upper right, left edge on the
+   *  whiteboard frame, right edge at the wall, bottom just above the
+   *  whiteboard/shelf tops. Computed live from the canonical furniture
+   *  placements, so editor moves re-shape it (re-read on layout changes). */
+  drawerRect(): { x: number; y: number; w: number; h: number }
   /** One ticker step. */
   update(dtMS: number): void
   applyTimeOfDay(): Promise<void>
@@ -607,6 +613,36 @@ export function createRoom(deps: RoomDeps): RoomInstance {
   }
   refreshTermOverlay()
   void applyTimeOfDay()
+
+  // ---- terminal drawer footprint (the old chat panel's rect) ----
+  // Reads the CANONICAL placements (not the render clones/sprites) so the
+  // rect is correct no matter where this room sits in the layout-model
+  // notify order. Coordinates are frame-local.
+  const canonTop = (id: string) => {
+    const it = furniture[id]
+    return it ? it.canonical.y - it.canonical.h : Infinity
+  }
+  const canonLeft = (id: string) => {
+    const it = furniture[id]
+    if (!it) return Infinity
+    return it.canonical.x - (it.asset.bw / 2) * (it.canonical.h / it.asset.bh)
+  }
+  function drawerRect() {
+    const top = 14
+    // flush with the whiteboard's FRAME (the tray sticks out ~18px past it),
+    // which also leaves window↔drawer breathing room to match the top padding
+    const left = Math.min(canonLeft('board') + 18, SHELL.w - 14 - 640)
+    const bottom = Math.max(
+      top + 46,
+      Math.min(canonTop('board'), canonTop('shelf'), SHELL.h * 0.45) - 16,
+    )
+    return {
+      x: MARGIN + left,
+      y: TITLEBAR + MARGIN + top,
+      w: SHELL.w - 14 - left,
+      h: bottom - top,
+    }
+  }
 
   // ---- character ----
   const char = new Container()
@@ -1172,6 +1208,7 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     onEvent,
     setTerm,
     setTermOpen,
+    drawerRect,
     update,
     applyTimeOfDay,
     charX: () => char.x,
