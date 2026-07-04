@@ -1,10 +1,12 @@
 // One den window: everything that draws or animates a single room — window
-// frame + chrome (title, subtitle, LED, per-window ✕, focus ring), furniture,
-// character + poses, bubbles, whiteboard/terminal overlays, chat panel, sleep
-// Z's. Created per session by the WindowManager (windows.ts). Rooms share the
-// canonical LayoutModel and the pack's KeyedAssets/pose frames; each instance
-// owns its sprites, its render clones of the placements, and all per-room
-// animation state.
+// frame + chrome (title, subtitle, LED, per-window ✕, `>_` terminal toggle,
+// focus ring), furniture, character + poses, bubbles, whiteboard/terminal
+// overlays, sleep Z's. Created per session by the WindowManager (windows.ts).
+// Rooms share the canonical LayoutModel and the pack's KeyedAssets/pose
+// frames; each instance owns its sprites, its render clones of the
+// placements, and all per-room animation state. (The old in-room chat panel
+// is gone — narration lives in the speech bubble, whiteboard and titlebar
+// subtitle; the terminal drawer (drawer.ts) took the chat panel's job.)
 
 import { Container, Graphics, Sprite, Text, TextStyle } from 'pixi.js'
 import {
@@ -89,6 +91,17 @@ export type RoomEditorHooks = Omit<
   'previewActivity' | 'onEditingChange' | 'onLayoutChange'
 >
 
+/** Terminal chrome hooks — present only while the session has a den-server
+ *  PTY linked to it (the `pty` decoration). The room draws the `>_` toggle
+ *  and upgrades ✕ to a two-click terminate; the drawer itself lives outside
+ *  the Pixi scene (drawer.ts) and is the owner's concern. */
+export interface RoomTermHooks {
+  /** `>_` clicked — open/collapse the drawer. */
+  onToggle(): void
+  /** Armed ✕ confirmed (second click within 3s) — terminate the PTY. */
+  onKill(): void
+}
+
 export interface RoomDeps {
   id: string
   pack: LoadedPack
@@ -122,6 +135,11 @@ export interface RoomInstance {
   setFocused(on: boolean): void
   /** Per-event side effects (speech bubble trigger) — call AFTER setState. */
   onEvent(ev: AgentEvent): void
+  /** Show (hooks) or remove (null) the terminal chrome: the `>_` toggle and
+   *  the armed-✕ terminate behavior. Idempotent; safe to call on updates. */
+  setTerm(hooks: RoomTermHooks | null): void
+  /** Reflect the drawer's open state on the `>_` toggle. */
+  setTermOpen(open: boolean): void
   /** One ticker step. */
   update(dtMS: number): void
   applyTimeOfDay(): Promise<void>
@@ -208,21 +226,19 @@ export function createRoom(deps: RoomDeps): RoomInstance {
   frame.addChild(subtitle)
 
   // OS-style per-window close button — the old #session-x, relocated onto
-  // each window's title bar (C4 upgrades its behavior for PTY sessions)
+  // each window's title bar. While the session has a PTY linked (setTerm),
+  // ✕ means TERMINATE and takes two clicks: the first arms it (red + a
+  // "sure?" chip for 3s), the second kills the PTY server-side. Without a
+  // PTY it keeps the C3 single-click dismiss.
   const X_SIZE = 26
   const closeX = FRAME_W - 40
+  let termHooks: RoomTermHooks | null = null
+  let termOpen = false
+  let killArmed = false
+  let disarmKill = () => {}
   if (deps.onClose) {
     const closeBtn = new Container()
     const xBg = new Graphics()
-    const drawX = (hover: boolean) => {
-      xBg
-        .clear()
-        .roundRect(-X_SIZE / 2, -X_SIZE / 2, X_SIZE, X_SIZE, 6)
-        .fill(hover ? 0xd9dee5 : 0xe8ebef)
-        .roundRect(-X_SIZE / 2, -X_SIZE / 2, X_SIZE, X_SIZE, 6)
-        .stroke({ width: 2, color: hover ? 0xb44e4e : 0x8b93a1 })
-    }
-    drawX(false)
     const xGlyph = new Text({
       text: '✕',
       resolution: 2,
@@ -234,6 +250,16 @@ export function createRoom(deps: RoomDeps): RoomInstance {
       }),
     })
     xGlyph.anchor.set(0.5)
+    const drawX = (hover: boolean) => {
+      xBg
+        .clear()
+        .roundRect(-X_SIZE / 2, -X_SIZE / 2, X_SIZE, X_SIZE, 6)
+        .fill(killArmed ? 0xc0504e : hover ? 0xd9dee5 : 0xe8ebef)
+        .roundRect(-X_SIZE / 2, -X_SIZE / 2, X_SIZE, X_SIZE, 6)
+        .stroke({ width: 2, color: killArmed ? 0x7f2d2b : hover ? 0xb44e4e : 0x8b93a1 })
+      xGlyph.style.fill = killArmed ? 0xffffff : 0x8b5a5a
+    }
+    drawX(false)
     closeBtn.addChild(xBg, xGlyph)
     closeBtn.position.set(closeX, TITLEBAR / 2 + 3)
     closeBtn.eventMode = 'static'
@@ -242,12 +268,109 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     closeBtn.on('pointerout', () => drawX(false))
     // closing must not first re-focus the dying window through the frame
     closeBtn.on('pointerdown', (e) => e.stopPropagation())
-    closeBtn.on('pointertap', () => deps.onClose!())
-    frame.addChild(closeBtn)
+    // "sure?" chip: rides just below the armed ✕ on the frame's face strip
+    const armChip = new Container()
+    const chipTxt = new Text({
+      text: 'sure?',
+      resolution: 2,
+      style: new TextStyle({
+        fontFamily: '"Courier New", monospace',
+        fontSize: 12,
+        fontWeight: '700',
+        fill: 0xffffff,
+      }),
+    })
+    chipTxt.anchor.set(0.5)
+    const chipW = chipTxt.width + 16
+    const chipBg = new Graphics().roundRect(-chipW / 2, -10, chipW, 20, 6).fill(0xc0504e)
+    armChip.addChild(chipBg, chipTxt)
+    armChip.position.set(closeX, TITLEBAR + 9)
+    armChip.visible = false
+    let killTimer: ReturnType<typeof setTimeout> | undefined
+    disarmKill = () => {
+      if (killTimer) clearTimeout(killTimer)
+      killTimer = undefined
+      if (!killArmed) return
+      killArmed = false
+      armChip.visible = false
+      drawX(false)
+    }
+    closeBtn.on('pointertap', () => {
+      if (!termHooks) {
+        deps.onClose!()
+        return
+      }
+      if (!killArmed) {
+        killArmed = true
+        armChip.visible = true
+        drawX(true)
+        killTimer = setTimeout(disarmKill, 3000)
+        return
+      }
+      disarmKill()
+      termHooks.onKill()
+    })
+    frame.addChild(closeBtn, armChip)
   }
 
-  // ---- title + subtitle layout: truncate to stay clear of the ✕ ----
-  const titleEndX = closeX - X_SIZE / 2 - 10
+  // ---- `>_` terminal toggle (left of ✕) — PTY-linked sessions only ----
+  const termX = closeX - X_SIZE - 10
+  let termBtn: Container | null = null
+  let drawTermBtn = (_hover: boolean) => {}
+  function ensureTermBtn() {
+    if (termBtn) return
+    const btn = new Container()
+    const tBg = new Graphics()
+    const tGlyph = new Text({
+      text: '>_',
+      resolution: 2,
+      style: new TextStyle({
+        fontFamily: '"Courier New", monospace',
+        fontSize: 13,
+        fontWeight: '700',
+        fill: 0x30394a,
+      }),
+    })
+    tGlyph.anchor.set(0.5)
+    drawTermBtn = (hover: boolean) => {
+      tBg
+        .clear()
+        .roundRect(-X_SIZE / 2, -X_SIZE / 2, X_SIZE, X_SIZE, 6)
+        .fill(termOpen ? 0x30394a : hover ? 0xd9dee5 : 0xe8ebef)
+        .roundRect(-X_SIZE / 2, -X_SIZE / 2, X_SIZE, X_SIZE, 6)
+        .stroke({ width: 2, color: termOpen || hover ? 0x2f9e63 : 0x8b93a1 })
+      tGlyph.style.fill = termOpen ? 0x6ee7a8 : 0x30394a
+    }
+    drawTermBtn(false)
+    btn.addChild(tBg, tGlyph)
+    btn.position.set(termX, TITLEBAR / 2 + 3)
+    btn.eventMode = 'static'
+    btn.cursor = 'pointer'
+    btn.on('pointerover', () => drawTermBtn(true))
+    btn.on('pointerout', () => drawTermBtn(false))
+    btn.on('pointertap', () => termHooks?.onToggle())
+    frame.addChild(btn)
+    termBtn = btn
+  }
+  function setTerm(hooks: RoomTermHooks | null) {
+    termHooks = hooks
+    if (hooks) ensureTermBtn()
+    if (termBtn) termBtn.visible = !!hooks
+    if (!hooks) {
+      disarmKill()
+      termOpen = false
+    }
+    drawTermBtn(false)
+    layoutTitlebar()
+  }
+  function setTermOpen(open: boolean) {
+    if (open === termOpen) return
+    termOpen = open
+    drawTermBtn(false)
+  }
+
+  // ---- title + subtitle layout: truncate to stay clear of ✕ (and `>_`) ----
+  const titleEndX = () => (termBtn?.visible ? termX : closeX) - X_SIZE / 2 - 10
   function fitText(t: Text, full: string, maxW: number) {
     t.text = full
     let keep = full.length
@@ -264,10 +387,10 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     fitText(
       titleText,
       titleName ? `rivet-den · ${titleName}` : 'rivet-den',
-      titleEndX - titleText.x,
+      titleEndX() - titleText.x,
     )
     subtitle.x = titleText.x + titleText.width + 14
-    fitText(subtitle, subtitleFull, titleEndX - subtitle.x)
+    fitText(subtitle, subtitleFull, titleEndX() - subtitle.x)
   }
   function setTitle(name: string, ended: boolean) {
     if (name === titleName && ended === titleEnded) return
@@ -579,135 +702,14 @@ export function createRoom(deps: RoomDeps): RoomInstance {
   speech.container.zIndex = 9001
   world.addChild(thought.container, speech.container)
 
-  // ---- RPG narration panel ----
-  // Lives IN the room, filling the empty wall in the upper right — left edge
-  // aligned with the whiteboard, right edge at the wall, bottom just above
-  // the whiteboard/shelf tops. The rect is computed from the live furniture
-  // placements (rebuildChatPanel), so it follows pack/layout changes.
-  const CHAT_PAD = 12,
-    CHAT_FS = 14,
-    CHAT_GAP = 6 // vertical gap between messages
-  let chatW = 640
-  let chatH = 120
-  const chat = new Container()
-  chat.zIndex = 9100
-  chat.visible = false
-  const chatBg = new Graphics()
-  chat.addChild(chatBg)
-  const chatMask = new Graphics()
-  chat.addChild(chatMask)
-  const chatContent = new Container()
-  chatContent.mask = chatMask
-  chat.addChild(chatContent)
-  world.addChild(chat)
-  const chatStyle = (fill: number, bold = false) =>
-    new TextStyle({
-      fontFamily: '"Courier New", monospace',
-      fontSize: CHAT_FS,
-      fontWeight: bold ? '700' : '400',
-      fill,
-    })
-  const chatEntries: { who: Text; body: Text }[] = []
-  // scroll offset in px up from the bottom (0 = pinned to the newest message)
-  let chatScroll = 0
-  function layoutChatContent() {
-    let y = 0
-    for (const en of chatEntries) {
-      en.who.y = en.body.y = y
-      y += Math.max(en.body.height, en.who.height) + CHAT_GAP
-    }
-    const contentH = y - CHAT_GAP
-    const innerH = chatH - CHAT_PAD * 2
-    const maxScroll = Math.max(0, contentH - innerH)
-    chatScroll = Math.min(chatScroll, maxScroll)
-    chatContent.y = CHAT_PAD + Math.min(0, innerH - contentH) + chatScroll
-  }
-  chat.eventMode = 'static'
-  chat.on('wheel', (e) => {
-    // one text line per wheel tick, regardless of the device's deltaY scale
-    chatScroll -= Math.sign(e.deltaY) * CHAT_FS * 1.45
-    if (chatScroll < 0) chatScroll = 0
-    layoutChatContent()
-    e.preventDefault()
-  })
-  const furnTop = (id: string) => {
-    const it = furniture[id]
-    return it ? it.sprite.y - it.placement.h : Infinity
-  }
-  const furnLeft = (id: string) => {
-    const it = furniture[id]
-    if (!it) return Infinity
-    return it.sprite.x - (it.asset.bw / 2) * (it.placement.h / it.asset.bh)
-  }
-  function rebuildChatPanel() {
-    const top = 14
-    // flush with the whiteboard's FRAME (the tray sticks out ~18px past it),
-    // which also leaves window↔chat breathing room to match the top padding
-    const left = Math.min(furnLeft('board') + 18, SHELL.w - 14 - 640)
-    const bottom = Math.max(
-      top + CHAT_PAD * 2 + 22,
-      Math.min(furnTop('board'), furnTop('shelf'), SHELL.h * 0.45) - 16,
-    )
-    chatW = SHELL.w - 14 - left
-    chatH = bottom - top
-    chat.position.set(left, top)
-    chatBg
-      .clear()
-      .roundRect(0, 0, chatW, chatH, 10)
-      .fill({ color: 0x0e1622, alpha: 0.92 })
-      .roundRect(0, 0, chatW, chatH, 10)
-      .stroke({ width: 2, color: 0x3a4a5e })
-    chatMask
-      .clear()
-      .roundRect(2, CHAT_PAD, chatW - 4, chatH - CHAT_PAD * 2, 6)
-      .fill(0xffffff)
-    chatContent.x = CHAT_PAD
-    narrLen = -1 // re-render into the new geometry
-    renderNarration()
-  }
-  let narrLen = 0
-  // the typewriter appends a blinking ▌ into the text itself — with word wrap
-  // there's no single cursor x/y to park a separate glyph at
-  let typer: { body: Text; full: string; i: number } | null = null
-  function renderNarration() {
-    if (state.log.length === narrLen) return
-    narrLen = state.log.length
-    typer = null // a new message finishes the previous reveal instantly
-    for (const en of chatEntries) {
-      en.who.destroy()
-      en.body.destroy()
-    }
-    chatEntries.length = 0
-    chat.visible = state.log.length > 0
-    state.log.forEach((e, i) => {
-      const last = i === state.log.length - 1
-      const who = new Text({
-        text: (e.who === 'user' ? 'YOU' : 'RIVET') + ' ▸ ',
-        resolution: 2,
-        style: chatStyle(e.who === 'user' ? 0x60a5fa : 0x34d399, true),
-      })
-      const style = chatStyle(0xc5d2e0)
-      style.wordWrap = true
-      style.wordWrapWidth = Math.max(80, chatW - CHAT_PAD * 2 - who.width)
-      style.lineHeight = CHAT_FS * 1.45
-      const body = new Text({ text: e.text, resolution: 2, style })
-      body.x = who.width
-      who.alpha = body.alpha = last ? 1 : 0.55
-      chatContent.addChild(who, body)
-      chatEntries.push({ who, body })
-      if (last) {
-        body.text = ''
-        typer = { body, full: e.text, i: 0 }
-      }
-    })
-    chatScroll = 0 // a new message pins the view back to the bottom
-    layoutChatContent()
-  }
+  // (The RPG narration chat panel that used to fill the upper-right wall is
+  // gone — the terminal drawer replaced it. RoomState.log still arrives via
+  // the protocol; it just isn't rendered. Narration is carried by the speech
+  // bubble, the whiteboard and the titlebar subtitle.)
 
   // ---- state: whatever main.ts last pushed via setState() ----
   let state: RoomState = initialRoomState
   let speechTimer = 0
-  rebuildChatPanel() // needs `state` — must run after it exists
 
   function renderBoard() {
     boardTitle.text = state.title ? `◤ ${state.title.toUpperCase()}` : ''
@@ -759,8 +761,6 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     }
     renderBoard()
     renderLed()
-    narrLen = -1
-    renderNarration()
     renderTerm()
     subtitleFull = state.tool
       ? `${ACTIVITY_LABEL[state.activity]} · ${state.tool}`
@@ -1112,18 +1112,6 @@ export function createRoom(deps: RoomDeps): RoomInstance {
         thought.set(thoughtSpin.pre + dur + thoughtSpin.suf)
       }
     }
-    if (typer) {
-      typer.i += dtMS / 16
-      const n = Math.floor(typer.i)
-      const blink = Math.floor(t / 400) % 2 ? '' : '▌'
-      if (n >= typer.full.length) {
-        typer.body.text = typer.full
-        typer = null
-      } else {
-        typer.body.text = typer.full.slice(0, n) + blink
-      }
-      layoutChatContent() // wrapped height grows as it types; stay pinned
-    }
   }
 
   // the editor works on the CANONICAL placements (shared across rooms) but
@@ -1155,7 +1143,6 @@ export function createRoom(deps: RoomDeps): RoomInstance {
         applyScale(it)
         if (id === 'board') refreshBoardOverlay()
         if (id === 'desk') refreshTermOverlay()
-        if (id === 'board' || id === 'shelf') rebuildChatPanel()
       },
       applyScale: (id) => {
         const it = furniture[id]
@@ -1170,7 +1157,6 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     for (const it of Object.values(furniture)) syncFromCanonical(it)
     refreshBoardOverlay()
     refreshTermOverlay()
-    rebuildChatPanel()
   })
 
   return {
@@ -1182,12 +1168,15 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     setTitle,
     setFocused: drawChrome,
     onEvent,
+    setTerm,
+    setTermOpen,
     update,
     applyTimeOfDay,
     charX: () => char.x,
     editorHooks,
     destroy: () => {
       dead = true
+      disarmKill()
       clearInterval(todTimer)
       offLayoutChange()
       frame.destroy({ children: true })
