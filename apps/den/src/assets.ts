@@ -3,7 +3,7 @@
 // screen reads as drawn at the same resolution. Grid size and chroma color
 // come from the active SpritePack (configureAssets), not engine constants.
 
-import { Texture } from 'pixi.js'
+import { CanvasSource, Texture } from 'pixi.js'
 
 // size of one art-pixel in shell units — set from pack.grid.pxPerUnit
 export let PX = 4
@@ -98,12 +98,36 @@ export async function loadAsset(url: string, key = true): Promise<KeyedAsset> {
 
 // Resample an asset so it displays at targetH shell-pixels tall with art-pixels
 // exactly PX shell-pixels big. Returns a low-res texture; draw it scaled by PX.
-export function pixelTexture(
-  asset: KeyedAsset,
-  targetH: number,
-): { texture: Texture; cols: number; rows: number } {
+//
+// Memoized per (asset, size): callers hit this from ticker frames (chair
+// swivel) and pointermove (editor drag), so an unmemoized version mints a new
+// canvas + GPU texture per call and pins them forever. The per-asset LRU also
+// bounds a drag through many transient heights; evicted textures are
+// destroyed, and CanvasSource keeps us out of Pixi's global Cache entirely.
+export interface PixelFrame {
+  texture: Texture
+  cols: number
+  rows: number
+}
+
+const texCache = new WeakMap<KeyedAsset, Map<string, PixelFrame>>()
+const TEX_LRU = 16
+
+export function pixelTexture(asset: KeyedAsset, targetH: number): PixelFrame {
   const rows = Math.max(1, Math.round(targetH / PX))
   const cols = Math.max(1, Math.round((asset.bw * (targetH / asset.bh)) / PX))
+  let perAsset = texCache.get(asset)
+  if (!perAsset) {
+    perAsset = new Map()
+    texCache.set(asset, perAsset)
+  }
+  const key = `${cols}x${rows}`
+  const hit = perAsset.get(key)
+  if (hit) {
+    perAsset.delete(key) // LRU bump
+    perAsset.set(key, hit)
+    return hit
+  }
   const small = document.createElement('canvas')
   small.width = cols
   small.height = rows
@@ -115,7 +139,15 @@ export function pixelTexture(
   const id = sctx.getImageData(0, 0, cols, rows)
   for (let i = 3; i < id.data.length; i += 4) id.data[i] = id.data[i] > 110 ? 255 : 0
   sctx.putImageData(id, 0, 0)
-  const texture = Texture.from(small)
-  texture.source.scaleMode = 'nearest'
-  return { texture, cols, rows }
+  const texture = new Texture({
+    source: new CanvasSource({ resource: small, scaleMode: 'nearest' }),
+  })
+  const frame: PixelFrame = { texture, cols, rows }
+  perAsset.set(key, frame)
+  if (perAsset.size > TEX_LRU) {
+    const [oldKey, old] = perAsset.entries().next().value as [string, PixelFrame]
+    perAsset.delete(oldKey)
+    old.texture.destroy(true)
+  }
+  return frame
 }

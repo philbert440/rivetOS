@@ -161,6 +161,12 @@ function validatePackInner(dir: string): ValidationResult {
     else if (!(pose in poses)) errors.push(`activity ${a} maps to unknown pose: ${pose}`)
   }
   if (!('walk' in poses)) warnings.push("no 'walk' pose — character will teleport between stations")
+  if (
+    Array.isArray(m.furniture) &&
+    m.furniture.some((f) => f?.id === 'chair') &&
+    !('sitside' in poses)
+  )
+    warnings.push("chair furniture without a 'sitside' pose — seat choreography disabled")
   for (const [tool, pose] of Object.entries(m.character?.tools ?? {})) {
     if (!(pose in poses)) errors.push(`tool override ${tool} maps to unknown pose: ${pose}`)
   }

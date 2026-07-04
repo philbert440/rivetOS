@@ -83,6 +83,20 @@ export interface Station {
   y?: number
 }
 
+/** Viewer tuning knobs — every field optional, viewer defaults apply.
+ *  These were hardcoded viewer constants; packs whose art disagrees with the
+ *  defaults (floor line, terminal density) override them here. */
+export interface ViewerTuning {
+  /** Where the character stands when a station has neither furn nor x/y
+   *  (shell units). */
+  fallbackStation?: { x: number; y: number }
+  /** Fraction of shell height where the walkable floor starts (stations are
+   *  clamped below this line). Default 0.755. */
+  floorTop?: number
+  /** Character columns rendered on the desk terminal glass. Default 17. */
+  termCols?: number
+}
+
 export interface PackManifest {
   spec: typeof PACK_SPEC_VERSION
   name: string
@@ -100,4 +114,6 @@ export interface PackManifest {
   /** Default arrangement, keyed by furniture id. */
   layout: Record<string, Placement>
   stations: Record<Activity, Station>
+  /** Optional viewer tuning; omit to accept the viewer defaults. */
+  viewer?: ViewerTuning
 }

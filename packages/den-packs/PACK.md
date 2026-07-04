@@ -107,6 +107,16 @@ furniture-anchored (`{ "furn": "board", "dx": -110, "dy": 45 }`, so
 rearranging the room moves the station too) or absolute (`{ "x": 520, "y":
 745 }`). All nine activities are required.
 
+`viewer` (optional) tunes renderer behavior the art implies but the schema
+can't derive: `fallbackStation` `{x, y}` for stations with neither `furn` nor
+coordinates, `floorTop` (fraction of shell height where the walkable floor
+starts, default 0.755), and `termCols` (characters per terminal line on the
+desk screen, default 17). Omit the block to accept the viewer defaults.
+
+Some viewer features key off reserved names: the `walk` pose (locomotion),
+and — when a `chair` furniture piece exists — a `sitside` pose for the
+seat-hop choreography. Missing ones degrade gracefully (validator warns).
+
 ## Validation
 
 `den-pack validate <dir>` checks:
