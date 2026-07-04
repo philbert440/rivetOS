@@ -10,6 +10,29 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+function truthyEnv(raw: string | undefined): boolean {
+  const v = (raw ?? '').trim().toLowerCase()
+  return v === '1' || v === 'on'
+}
+
+export interface DenTermConfig {
+  /** Opt-in master switch — terminals are OFF unless RIVETOS_DEN_TERM=1/on.
+   *  Spawning a shell as the service user is a deliberate act, never a default. */
+  enabled: boolean
+  /** Operator-owned command roster (see term/roster.ts). Re-read lazily, so
+   *  edits don't need a restart. */
+  configFile: string
+  /** Max concurrently running PTYs. */
+  maxPtys: number
+  /** Per-PTY scrollback ring cap (bytes). */
+  scrollbackBytes: number
+  /** How long a PTY with no attached viewers survives before SIGHUP (ms). */
+  detachedTtlMs: number
+  /** How long an exited PTY record lingers (scrollback inspectable) before
+   *  it is reaped (ms). */
+  exitLingerMs: number
+}
+
 export interface DenConfig {
   port: number
   host: string
@@ -30,6 +53,8 @@ export interface DenConfig {
   /** How long one /mesh.json overview (roster read + peer probes) is served
    *  from cache (ms). */
   meshCacheMs: number
+  /** Local PTY terminals (opt-in; see term/). */
+  term: DenTermConfig
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
@@ -46,5 +71,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     evictTtlMs: intEnv('RIVETOS_DEN_EVICT_TTL_MS', 24 * 60 * 60 * 1000),
     meshFile: env.RIVETOS_DEN_MESH_FILE ?? '',
     meshCacheMs: intEnv('RIVETOS_DEN_MESH_CACHE_MS', 10_000),
+    term: {
+      enabled: truthyEnv(env.RIVETOS_DEN_TERM),
+      configFile: env.RIVETOS_DEN_TERM_CONFIG ?? join(homedir(), '.rivetos', 'den-term.json'),
+      maxPtys: intEnv('RIVETOS_DEN_TERM_MAX', 4),
+      scrollbackBytes: intEnv('RIVETOS_DEN_TERM_SCROLLBACK', 262_144),
+      detachedTtlMs: intEnv('RIVETOS_DEN_TERM_DETACHED_TTL_MS', 1_800_000),
+      exitLingerMs: intEnv('RIVETOS_DEN_TERM_EXIT_LINGER_MS', 60_000),
+    },
   }
 }

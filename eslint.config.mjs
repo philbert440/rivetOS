@@ -244,6 +244,30 @@ export default tseslint.config(
     },
   },
 
+  // den-server: node-pty is an optional native dep (needs a C++ toolchain at
+  // install time) loaded via a guarded non-literal dynamic import so the
+  // build never depends on it being installed — the graph can't see the
+  // usage.
+  {
+    files: ['services/den-server/package.json'],
+    languageOptions: { parser: jsoncParser },
+    plugins: { '@nx': nxPlugin },
+    rules: {
+      '@nx/dependency-checks': [
+        'error',
+        {
+          buildTargets: ['build'],
+          checkMissingDependencies: true,
+          checkObsoleteDependencies: true,
+          checkVersionMismatches: true,
+          includeTransitiveDependencies: false,
+          ignoredFiles: ['**/*.test.ts', '**/*.spec.ts'],
+          ignoredDependencies: ['typescript', 'node-pty'],
+        },
+      ],
+    },
+  },
+
   // voice-discord: mediaplex + sodium-native + @discordjs/opus are native
   // runtime peers of @discordjs/voice / prism-media — required for opus
   // encode/decode and encryption, never statically imported by us.
