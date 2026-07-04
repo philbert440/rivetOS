@@ -16,9 +16,14 @@
 //
 // Auth: when config.token is set, every endpoint except /healthz requires
 // `Authorization: Bearer <token>` (WS: same header, or ?token= for browsers).
+//
+// Stream messages that are NOT protocol AgentEvents (viewers must handle
+// them before reducing): `{type:'snapshot',...}` on connect, and
+// `{type:'session.removed', session}` when an ended session is evicted
+// (evictTtlMs after session.end).
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import {
@@ -51,6 +56,8 @@ const CORS = {
 interface Client {
   ws: WebSocket
   session?: string
+  /** Heartbeat flag — set on pong, cleared on ping; dead = terminate. */
+  alive: boolean
 }
 
 export interface DenServer {
@@ -65,19 +72,32 @@ const json = (res: ServerResponse, code: number, body: unknown): void => {
   res.end(JSON.stringify(body))
 }
 
+// Buffer.concat before decoding: per-chunk toString would corrupt a
+// multi-byte UTF-8 char split across TCP chunks. On oversize we pause (not
+// destroy) so the caller can still deliver its 413 before hanging up.
 const readBody = (req: IncomingMessage, limit = 256 * 1024): Promise<string> =>
   new Promise((resolve, reject) => {
-    let body = ''
+    const chunks: Buffer[] = []
+    let size = 0
     req.on('data', (d: Buffer) => {
-      body += d.toString('utf8')
-      if (body.length > limit) {
+      size += d.length
+      if (size > limit) {
+        req.pause()
         reject(new Error('body too large'))
-        req.destroy()
+        return
       }
+      chunks.push(d)
     })
-    req.on('end', () => resolve(body))
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.on('error', reject)
   })
+
+// 413 that the client actually sees: respond first, then drop the socket
+// (the request stream is paused mid-upload, so it must not be reused)
+const tooLarge = (req: IncomingMessage, res: ServerResponse): void => {
+  res.on('finish', () => req.destroy())
+  json(res, 413, { error: 'body too large' })
+}
 
 // viewer keys become filenames — keep them boring
 const safeKey = (k: string): string => (/^[\w.-]{1,64}$/.test(k) ? k : '')
@@ -87,6 +107,39 @@ export function createDenServer(config: DenConfig): DenServer {
   const clients = new Set<Client>()
 
   mkdirSync(join(config.stateDir, 'layouts'), { recursive: true })
+
+  // skip half-dead sockets: readyState alone misses peers that vanished
+  // without a FIN, and an unbounded bufferedAmount is a slow memory leak
+  const MAX_BUFFERED = 1024 * 1024
+  const broadcast = (s: string, session?: string): void => {
+    for (const c of clients) {
+      if (c.ws.readyState !== 1 || (session && c.session && c.session !== session)) continue
+      if (c.ws.bufferedAmount > MAX_BUFFERED) {
+        c.ws.terminate()
+        clients.delete(c)
+        continue
+      }
+      c.ws.send(s)
+    }
+  }
+
+  const evictTimers = new Map<string, NodeJS.Timeout>()
+  const clearEviction = (session: string): void => {
+    const t = evictTimers.get(session)
+    if (t) clearTimeout(t)
+    evictTimers.delete(session)
+  }
+  const scheduleEviction = (session: string): void => {
+    const t = setTimeout(() => {
+      evictTimers.delete(session)
+      const { [session]: _room, ...rooms } = state.rooms
+      const { [session]: _info, ...sessions } = state.sessions
+      state = { rooms, sessions }
+      broadcast(JSON.stringify({ type: 'session.removed', v: 1, session }), session)
+    }, config.evictTtlMs)
+    t.unref?.()
+    evictTimers.set(session, t)
+  }
 
   const authorized = (req: IncomingMessage, url: URL): boolean => {
     if (!config.token) return true
@@ -127,7 +180,7 @@ export function createDenServer(config: DenConfig): DenServer {
 
       if (req.method === 'POST' && url.pathname === '/event') {
         const body = await readBody(req).catch(() => null)
-        if (body === null) return json(res, 413, { error: 'body too large' })
+        if (body === null) return tooLarge(req, res)
         let raw: unknown
         try {
           raw = JSON.parse(body)
@@ -137,10 +190,11 @@ export function createDenServer(config: DenConfig): DenServer {
         const ev = parseEvent(raw)
         if (!ev) return json(res, 422, { error: 'not a valid v1 AgentEvent' })
         state = reduceDen(state, ev)
-        const s = JSON.stringify(ev)
-        for (const c of clients) {
-          if (c.ws.readyState === 1 && (!c.session || c.session === ev.session)) c.ws.send(s)
-        }
+        // ended sessions linger for the TTL so the room is still visible
+        // asleep, then get evicted; any newer event cancels the eviction
+        clearEviction(ev.session)
+        if (ev.type === 'session.end') scheduleEviction(ev.session)
+        broadcast(JSON.stringify(ev), ev.session)
         return json(res, 200, { ok: true })
       }
 
@@ -169,13 +223,17 @@ export function createDenServer(config: DenConfig): DenServer {
         }
         if (req.method === 'POST') {
           const body = await readBody(req).catch(() => null)
-          if (body === null) return json(res, 413, { error: 'body too large' })
+          if (body === null) return tooLarge(req, res)
           try {
             JSON.parse(body)
           } catch {
             return json(res, 400, { error: 'invalid JSON' })
           }
-          writeFileSync(file, body)
+          // temp + rename: a crash mid-write must not leave truncated JSON
+          // that GET then serves verbatim
+          const tmp = `${file}.tmp`
+          writeFileSync(tmp, body)
+          renameSync(tmp, file)
           return json(res, 200, { ok: true })
         }
       }
@@ -198,6 +256,7 @@ export function createDenServer(config: DenConfig): DenServer {
   // noServer + manual upgrade so auth runs before the WS handshake completes
   const wss = new WebSocketServer({ noServer: true })
   server.on('upgrade', (req, socket, head) => {
+    socket.on('error', () => socket.destroy())
     const url = new URL(req.url ?? '/', 'http://localhost')
     if (url.pathname !== '/ws' || !authorized(req, url)) {
       socket.destroy()
@@ -208,9 +267,16 @@ export function createDenServer(config: DenConfig): DenServer {
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const session = url.searchParams.get('session') ?? undefined
-    const client: Client = { ws, session }
+    const client: Client = { ws, session, alive: true }
     clients.add(client)
+    // without an error listener one ECONNRESET from a dropped viewer is an
+    // uncaught exception that kills the whole server
+    ws.on('error', () => {
+      clients.delete(client)
+      ws.terminate()
+    })
     ws.on('close', () => clients.delete(client))
+    ws.on('pong', () => (client.alive = true))
     // catch the viewer up with a single snapshot instead of replayed events
     ws.send(
       JSON.stringify({
@@ -222,11 +288,29 @@ export function createDenServer(config: DenConfig): DenServer {
     )
   })
 
+  // heartbeat: half-open sockets (peer gone without a FIN) never fire
+  // 'close' on their own — ping them and terminate non-responders
+  const heartbeat = setInterval(() => {
+    for (const c of clients) {
+      if (!c.alive) {
+        c.ws.terminate()
+        clients.delete(c)
+        continue
+      }
+      c.alive = false
+      c.ws.ping()
+    }
+  }, 30_000)
+  heartbeat.unref?.()
+
   return {
     server,
     state: () => state,
     close: () =>
       new Promise((resolve) => {
+        clearInterval(heartbeat)
+        for (const t of evictTimers.values()) clearTimeout(t)
+        evictTimers.clear()
         for (const c of clients) c.ws.close()
         wss.close(() => server.close(() => resolve()))
       }),
