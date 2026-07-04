@@ -82,7 +82,8 @@ export function reduceRoom(state: RoomState, ev: AgentEvent): RoomState {
     case 'thinking.delta': {
       // spinner-style status lines ("✳ Architecting… (28s · …)") replace the
       // bubble wholesale; real streamed thinking appends as before
-      if (/^[✳✢✻✽·] /.test(ev.text)) return { ...state, activity: 'thinking', tool: null, thought: ev.text }
+      if (/^[✳✢✻✽·] /.test(ev.text))
+        return { ...state, activity: 'thinking', tool: null, thought: ev.text }
       let thought = (state.thought + ev.text).slice(-THOUGHT_MAX)
       // when the window is full, trim to a word boundary so the stream never
       // opens mid-word
