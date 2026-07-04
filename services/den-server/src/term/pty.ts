@@ -12,6 +12,11 @@ export interface PtyProc {
   kill(signal?: string): void
   onData(cb: (data: string | Buffer) => void): void
   onExit(cb: (exitCode: number | null) => void): void
+  /** Optional flow control: stop reading child output while every attached
+   *  viewer is saturated (node-pty has pause/resume; fakes and the piped
+   *  test backend may not — callers optional-chain). */
+  pause?(): void
+  resume?(): void
 }
 
 export interface PtySpawnOpts {
@@ -37,6 +42,8 @@ interface NodePtyLike {
     kill(signal?: string): void
     onData(cb: (data: string) => void): unknown
     onExit(cb: (ev: { exitCode: number; signal?: number }) => void): unknown
+    pause?(): void
+    resume?(): void
   }
 }
 
@@ -68,6 +75,8 @@ export function loadRealPtySpawn(
           kill: (signal) => proc.kill(signal),
           onData: (cb) => void proc.onData(cb),
           onExit: (cb) => void proc.onExit(({ exitCode }) => cb(exitCode)),
+          pause: () => proc.pause?.(),
+          resume: () => proc.resume?.(),
         }
       }
     } catch (e) {
