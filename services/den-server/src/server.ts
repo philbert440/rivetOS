@@ -6,6 +6,8 @@
 // the reducer state IS the replay.
 //
 //   POST /event                 one AgentEvent (JSON) per request
+//   POST /events                ordered batch (JSON array, max 100) — reduced
+//                               atomically; preferred for multi-event hooks
 //   GET  /sessions              recency-ordered session list
 //   GET  /state?session=<id>    RoomState snapshot for one session
 //   GET  /layout?viewer=<key>   per-viewer layout (server copy is canonical)
@@ -178,7 +180,21 @@ export function createDenServer(config: DenConfig): DenServer {
         return
       }
 
-      if (req.method === 'POST' && url.pathname === '/event') {
+      // Ingestion is serialized by construction: everything from parse to
+      // broadcast below is synchronous, so Node's event loop applies each
+      // request's events atomically and in arrival order — there is no await
+      // between reading `state` and writing it back. Cross-request ORDER is
+      // the client's job: send one batch, or sequential single POSTs.
+      const ingest = (ev: NonNullable<ReturnType<typeof parseEvent>>): void => {
+        state = reduceDen(state, ev)
+        // ended sessions linger for the TTL so the room is still visible
+        // asleep, then get evicted; any newer event cancels the eviction
+        clearEviction(ev.session)
+        if (ev.type === 'session.end') scheduleEviction(ev.session)
+        broadcast(JSON.stringify(ev), ev.session)
+      }
+
+      if (req.method === 'POST' && (url.pathname === '/event' || url.pathname === '/events')) {
         const body = await readBody(req).catch(() => null)
         if (body === null) return tooLarge(req, res)
         let raw: unknown
@@ -187,14 +203,21 @@ export function createDenServer(config: DenConfig): DenServer {
         } catch {
           return json(res, 400, { error: 'invalid JSON' })
         }
+        // /events: ordered batch — the whole array reduces in one synchronous
+        // pass, so in-batch order can never be scrambled by transport
+        if (url.pathname === '/events') {
+          if (!Array.isArray(raw) || raw.length === 0 || raw.length > 100)
+            return json(res, 400, { error: 'expected an array of 1-100 events' })
+          const evs = raw.map(parseEvent)
+          const bad = evs.findIndex((e) => !e)
+          if (bad !== -1)
+            return json(res, 422, { error: `event[${bad}] is not a valid v1 AgentEvent` })
+          for (const ev of evs) ingest(ev!)
+          return json(res, 200, { ok: true, ingested: evs.length })
+        }
         const ev = parseEvent(raw)
         if (!ev) return json(res, 422, { error: 'not a valid v1 AgentEvent' })
-        state = reduceDen(state, ev)
-        // ended sessions linger for the TTL so the room is still visible
-        // asleep, then get evicted; any newer event cancels the eviction
-        clearEviction(ev.session)
-        if (ev.type === 'session.end') scheduleEviction(ev.session)
-        broadcast(JSON.stringify(ev), ev.session)
+        ingest(ev)
         return json(res, 200, { ok: true })
       }
 

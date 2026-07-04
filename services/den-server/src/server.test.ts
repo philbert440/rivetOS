@@ -105,6 +105,27 @@ describe('den-server', () => {
     expect(rawBad.status).toBe(400)
   })
 
+  it('ingests ordered batches via /events', async () => {
+    const { den, base } = await start()
+    const batch = [
+      EV,
+      { v: 1, session: 's1', type: 'tool.start', tool: 'Bash' },
+      { v: 1, session: 's1', type: 'term.line', text: '$ ls' },
+      { v: 1, session: 's1', type: 'tool.end' },
+    ]
+    const res = await post(base, '/events', batch)
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { ingested: number }).ingested).toBe(4)
+    expect(den.state().rooms.s1.term).toEqual(['$ ls'])
+    expect(den.state().rooms.s1.activity).toBe('thinking') // tool.end applied last
+
+    expect((await post(base, '/events', [])).status).toBe(400)
+    expect((await post(base, '/events', { not: 'an array' })).status).toBe(400)
+    const mixed = await post(base, '/events', [EV, { garbage: true }])
+    expect(mixed.status).toBe(422)
+    expect(((await mixed.json()) as { error: string }).error).toMatch(/event\[1\]/)
+  })
+
   it('survives a hard-killed WS client', async () => {
     const { base, port } = await start()
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
