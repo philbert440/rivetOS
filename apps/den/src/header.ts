@@ -1,5 +1,6 @@
-// Global header strip (top right): [+ NEW ▾][⚙]. The gear button/menu moved
-// in here from their old fixed cluster; + NEW spawns harness sessions through
+// Global header strip (top right): [+ NEW ▾][MESH][⚙]. The gear button/menu
+// moved in here from their old fixed cluster; MESH navigates to the /mesh
+// overview route (mesh.ts); + NEW spawns harness sessions through
 // den-server's opt-in terminal API:
 //
 //   /term/config (once at boot) → enabled? roster labels for the ▾ dropdown
@@ -12,7 +13,7 @@
 // pre-register the PTY link and auto-open the drawer when the session's
 // window shows up on the event stream.
 
-import { serverHttp, withToken } from './net.js'
+import { serverHttp, viewerHref, withToken } from './net.js'
 
 export interface Header {
   /** Resolves once /term/config answered — true when terminals are usable. */
@@ -41,6 +42,12 @@ export function createHeader(opts: HeaderOpts): Header {
   const menu = document.getElementById('new-menu')!
   const gear = document.getElementById('gear')!
   const gearMenu = document.getElementById('gear-menu')!
+
+  // [MESH] → the mesh overview route. Always rendered (a node with no mesh
+  // file just gets the friendly empty state); ?server=/?token= ride along.
+  document.getElementById('mesh-btn')!.addEventListener('click', () => {
+    location.href = viewerHref('/mesh')
+  })
 
   let enabled = false
 
