@@ -99,7 +99,11 @@ export function sshExecQuiet(host: string, command: string, sshUser = 'rivet'): 
  * auth fails, falls back to `root` with a warning. Returns the working user, or
  * null if both fail.
  */
-export function resolveSshUser(host: string, requestedUser: string, tag: string): string | null {
+export function resolveSshUser(
+  host: string,
+  requestedUser: string | string[],
+  tag: string,
+): string | null {
   const tryUser = (user: string): boolean => {
     try {
       execSync(
@@ -112,11 +116,14 @@ export function resolveSshUser(host: string, requestedUser: string, tag: string)
     }
   }
 
-  if (tryUser(requestedUser)) return requestedUser
+  const candidates = [...new Set(Array.isArray(requestedUser) ? requestedUser : [requestedUser])]
+  for (const user of candidates) {
+    if (tryUser(user)) return user
+  }
 
-  if (requestedUser !== 'root' && tryUser('root')) {
+  if (!candidates.includes('root') && tryUser('root')) {
     console.error(
-      `    ${tag} [warn] node not yet migrated to ${requestedUser} user, falling back to root`,
+      `    ${tag} [warn] node not reachable as ${candidates.join('/')}, falling back to root`,
     )
     return 'root'
   }

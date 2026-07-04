@@ -54,15 +54,18 @@ export async function gitUpdateNodeAsync(
   nodeName: string,
   opts: UpdateOptions,
   isAgent: boolean = true,
+  nodeSshUser?: string,
 ): Promise<NodeUpdateResult> {
   const tag = `[${nodeName}]`
   const start = Date.now()
 
-  // Step 1: SSH connectivity check — auto-detect user with fallback
-  const sshUser = resolveSshUser(host, opts.sshUser, tag)
+  // Step 1: SSH connectivity check — the node's own sshUser (mesh.json)
+  // first, then the global default, then root
+  const candidates = [nodeSshUser, opts.sshUser].filter((u): u is string => !!u)
+  const sshUser = resolveSshUser(host, candidates, tag)
   if (!sshUser) {
     console.error(
-      `    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${opts.sshUser} or root`,
+      `    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${candidates.join('/')} or root`,
     )
     return { success: false, failedStep: 'ssh', elapsedMs: Date.now() - start }
   }
@@ -236,8 +239,37 @@ export async function gitUpdateNodeAsync(
 
   // Get final commit SHA
   const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
-  console.log(`    ${tag} ✅ Done (${commit || 'unknown'})`)
-  return { success: true, commit: commit || undefined, elapsedMs: Date.now() - start }
+
+  // Step 6: validate the node's config against the code we just deployed.
+  // An update that invalidates config (renamed provider, removed key) makes
+  // the service crash-loop SILENTLY until someone notices the node "offline"
+  // — that exact failure hid ct114 for a week. Non-fatal, but loud.
+  let configInvalid = false
+  if (isAgent) {
+    const validateOut = sshExecQuiet(
+      host,
+      'cd /opt/rivetos && node packages/cli/dist/index.js config validate 2>&1 | tail -2',
+      sshUser,
+    )
+    if (validateOut && !validateOut.includes('Config is valid')) {
+      configInvalid = true
+      console.error(`    ${tag} 🚨 CONFIG INVALID after update — service will crash-loop:`)
+      console.error(`    ${tag}    ${validateOut.split('\n').join(`\n    ${tag}    `)}`)
+      console.error(
+        `    ${tag}    fix ~/.rivetos/config.yaml on ${nodeName}, then: sudo systemctl restart rivetos`,
+      )
+    }
+  }
+
+  console.log(
+    `    ${tag} ✅ Done (${commit || 'unknown'})${configInvalid ? ' — but config INVALID' : ''}`,
+  )
+  return {
+    success: true,
+    commit: commit || undefined,
+    elapsedMs: Date.now() - start,
+    configInvalid: configInvalid || undefined,
+  }
 }
 
 /**
@@ -256,15 +288,17 @@ export async function npmUpdateNodeAsync(
   nodeName: string,
   opts: UpdateOptions,
   isAgent: boolean = true,
+  nodeSshUser?: string,
 ): Promise<NodeUpdateResult> {
   const tag = `[${nodeName}]`
   const start = Date.now()
 
   // Step 1: SSH connectivity check
-  const sshUser = resolveSshUser(host, opts.sshUser, tag)
+  const candidates = [nodeSshUser, opts.sshUser].filter((u): u is string => !!u)
+  const sshUser = resolveSshUser(host, candidates, tag)
   if (!sshUser) {
     console.error(
-      `    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${opts.sshUser} or root`,
+      `    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${candidates.join('/')} or root`,
     )
     return { success: false, failedStep: 'ssh', elapsedMs: Date.now() - start }
   }
