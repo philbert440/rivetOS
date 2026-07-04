@@ -463,7 +463,12 @@ async function boot() {
   chat.addChild(chatContent)
   world.addChild(chat)
   const chatStyle = (fill: number, bold = false) =>
-    new TextStyle({ fontFamily: '"Courier New", monospace', fontSize: CHAT_FS, fontWeight: bold ? '700' : '400', fill })
+    new TextStyle({
+      fontFamily: '"Courier New", monospace',
+      fontSize: CHAT_FS,
+      fontWeight: bold ? '700' : '400',
+      fill,
+    })
   const chatEntries: { who: Text; body: Text }[] = []
   // scroll offset in px up from the bottom (0 = pinned to the newest message)
   let chatScroll = 0
@@ -501,7 +506,10 @@ async function boot() {
     // flush with the whiteboard's FRAME (the tray sticks out ~18px past it),
     // which also leaves window↔chat breathing room to match the top padding
     const left = Math.min(furnLeft('board') + 18, SHELL.w - 14 - 640)
-    const bottom = Math.max(top + CHAT_PAD * 2 + 22, Math.min(furnTop('board'), furnTop('shelf'), SHELL.h * 0.45) - 16)
+    const bottom = Math.max(
+      top + CHAT_PAD * 2 + 22,
+      Math.min(furnTop('board'), furnTop('shelf'), SHELL.h * 0.45) - 16,
+    )
     chatW = SHELL.w - 14 - left
     chatH = bottom - top
     chat.position.set(left, top)
@@ -511,7 +519,10 @@ async function boot() {
       .fill({ color: 0x0e1622, alpha: 0.92 })
       .roundRect(0, 0, chatW, chatH, 10)
       .stroke({ width: 2, color: 0x3a4a5e })
-    chatMask.clear().roundRect(2, CHAT_PAD, chatW - 4, chatH - CHAT_PAD * 2, 6).fill(0xffffff)
+    chatMask
+      .clear()
+      .roundRect(2, CHAT_PAD, chatW - 4, chatH - CHAT_PAD * 2, 6)
+      .fill(0xffffff)
     chatContent.x = CHAT_PAD
     narrLen = -1 // re-render into the new geometry
     renderNarration()
@@ -532,7 +543,11 @@ async function boot() {
     chat.visible = state.log.length > 0
     state.log.forEach((e, i) => {
       const last = i === state.log.length - 1
-      const who = new Text({ text: (e.who === 'user' ? 'YOU' : 'RIVET') + ' ▸ ', resolution: 2, style: chatStyle(e.who === 'user' ? 0x60a5fa : 0x34d399, true) })
+      const who = new Text({
+        text: (e.who === 'user' ? 'YOU' : 'RIVET') + ' ▸ ',
+        resolution: 2,
+        style: chatStyle(e.who === 'user' ? 0x60a5fa : 0x34d399, true),
+      })
       const style = chatStyle(0xc5d2e0)
       style.wordWrap = true
       style.wordWrapWidth = Math.max(80, chatW - CHAT_PAD * 2 - who.width)
@@ -559,10 +574,10 @@ async function boot() {
   const TOP_STACK = 10 // narration lives in-room now; just breathing room
   // dock the session picker + gear onto the den window's title bar; called on
   // layout() and whenever the camera pans the frame (mobile mode)
-  const pickerEl = document.getElementById('session-picker')! as HTMLElement
-  const sessionXEl = document.getElementById('session-x')! as HTMLElement
-  const gearEl = document.getElementById('gear')! as HTMLElement
-  const gearMenuEl = document.getElementById('gear-menu')! as HTMLElement
+  const pickerEl = document.getElementById('session-picker')!
+  const sessionXEl = document.getElementById('session-x')!
+  const gearEl = document.getElementById('gear')!
+  const gearMenuEl = document.getElementById('gear-menu')!
   function positionChrome() {
     const s = frame.scale.x
     const fx = frame.position.x,
@@ -635,7 +650,9 @@ async function boot() {
   sessionXEl.addEventListener('click', () => {
     const id = picker.value || selectedSession
     if (!id) return
-    void fetch(withToken(`${serverHttp}/session?session=${encodeURIComponent(id)}`), { method: 'DELETE' }).catch(() => {})
+    void fetch(withToken(`${serverHttp}/session?session=${encodeURIComponent(id)}`), {
+      method: 'DELETE',
+    }).catch(() => {})
     dropSession(id)
     if (selectedSession === id) {
       selectedSession = Object.keys(rooms).filter((r) => r !== 'demo')[0] ?? null
@@ -706,7 +723,14 @@ async function boot() {
       thought.set(state.thought)
       // spinner status line → tick the elapsed time locally between hooks
       const m = state.thought.match(/^(.* \()(?:(\d+)m )?(\d+)s( · .*\))$/)
-      thoughtSpin = m ? { pre: m[1], secs: (Number(m[2] ?? 0)) * 60 + Number(m[3]), suf: m[4], at: performance.now() } : null
+      thoughtSpin = m
+        ? {
+            pre: m[1],
+            secs: Number(m[2] ?? 0) * 60 + Number(m[3]),
+            suf: m[4],
+            at: performance.now(),
+          }
+        : null
     } else {
       thoughtSpin = null
     }
