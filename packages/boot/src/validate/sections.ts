@@ -758,7 +758,13 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
   // den-server's own runtime gate remains the backstop.
   const host = typeof den.host === 'string' ? den.host.trim() : '127.0.0.1'
   const hasToken = typeof den.token === 'string' && den.token.length > 0
-  if (den.enabled === true && terminalEnabled && !terminalOpen && !DEN_LOOPBACK_HOSTS.has(host) && !hasToken) {
+  if (
+    den.enabled === true &&
+    terminalEnabled &&
+    !terminalOpen &&
+    !DEN_LOOPBACK_HOSTS.has(host) &&
+    !hasToken
+  ) {
     issues.push({
       severity: 'error',
       path: `${path}.token`,
