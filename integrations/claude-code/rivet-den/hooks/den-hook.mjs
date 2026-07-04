@@ -48,10 +48,13 @@ async function main() {
     }
   }
 
-  // grok payloads are camelCase and may omit the id entirely — its hook
-  // runner exports GROK_SESSION_ID. Last resort: key on parent pid so two
-  // concurrent id-less harnesses don't melt into one room.
+  // RIVET_DEN_SESSION is injected by the den-server PTY spawner so a harness
+  // it launched reports into the pre-created room — it beats the harness's
+  // own id. grok payloads are camelCase and may omit the id entirely — its
+  // hook runner exports GROK_SESSION_ID. Last resort: key on parent pid so
+  // two concurrent id-less harnesses don't melt into one room.
   const session =
+    process.env.RIVET_DEN_SESSION ??
     p.session_id ?? p.sessionId ?? process.env.GROK_SESSION_ID ?? `unknown-${process.ppid}`
   // grok payloads carry snake_case names in hookEventName; normalize to the
   // Claude Code spelling the switch below uses (real events only — the
