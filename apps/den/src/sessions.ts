@@ -1,9 +1,9 @@
 // Session state store: one RoomState per session id, fed by the den-server
-// WebSocket (silent reconnect, authoritative snapshot reconcile) with the
-// scripted demo loop as the no-server fallback. WHICH session drives a den
-// window stays the caller's concern (selectedSession lives in main.ts); the
-// store just keeps the map current and reports every change through the
-// callbacks.
+// WebSocket (silent reconnect, authoritative snapshot reconcile). The demo
+// loop runs ONLY on explicit #demo — an unreachable server just warns and
+// keeps retrying. Turning sessions into windows is the caller's concern
+// (main.ts drives the WindowManager from these callbacks); the store just
+// keeps the map current and reports every change.
 
 import {
   initialRoomState,
@@ -15,17 +15,20 @@ import {
 import { demoScript, DEMO_LOOP_MS } from './demo.js'
 import { serverHttp, serverWs, withToken } from './net.js'
 
-/** Sessions that only ever exist client-side — never listed in the picker,
- *  never evicted by a server snapshot. */
-export const LOCAL_SESSIONS = new Set(['demo'])
+/** The synthetic zero-sessions placeholder window (robot asleep in bed). */
+export const IDLE_SESSION = '(idle)'
+
+/** Sessions that only ever exist client-side — no server-side eviction, and
+ *  their windows are never destroyed by a snapshot reconcile. */
+export const LOCAL_SESSIONS = new Set(['demo', IDLE_SESSION])
 
 export interface SessionStoreOpts {
   /** false = #demo mode: skip the WebSocket entirely and run the demo loop. */
   wantLive: boolean
   /** Register a per-frame callback (the demo driver's clock). */
   addTick(fn: () => void): void
-  /** A session's state changed. pickerDirty = new session or a name change. */
-  onSessionUpsert(id: string, state: RoomState, pickerDirty: boolean): void
+  /** A session's state changed (also fires for sessions seen first here). */
+  onSessionUpsert(id: string, state: RoomState): void
   /** Per-event side effects (speech bubble trigger etc.) — fires right after
    *  onSessionUpsert for the same event. */
   onEvent(ev: AgentEvent): void
@@ -33,8 +36,6 @@ export interface SessionStoreOpts {
   onSessionRemoved(id: string): void
   /** Snapshot reconciled — ids in server recency order (most recent first). */
   onSnapshot(ids: string[]): void
-  /** The demo fallback engaged (no server reachable, or #demo). */
-  onDemoStart(): void
   /** A demo beat fired — the caller routes it (and may drop it mid-preview). */
   onDemoEvent(ev: AgentEventBody): void
 }
@@ -61,19 +62,17 @@ export function createSessionStore(opts: SessionStoreOpts): SessionStore {
   }
 
   function ingest(ev: AgentEvent) {
-    const isNew = !(ev.session in rooms)
     rooms[ev.session] = reduceRoom(rooms[ev.session] ?? initialRoomState, ev)
     if (ev.name) sessionNames[ev.session] = ev.name
-    opts.onSessionUpsert(ev.session, rooms[ev.session], isNew || !!ev.name)
+    opts.onSessionUpsert(ev.session, rooms[ev.session])
     opts.onEvent(ev)
   }
 
-  // ---- demo fallback driver ----
+  // ---- demo driver (explicit #demo only — never a fallback) ----
   let demoStarted = false
   function startDemoOnce() {
     if (demoStarted) return
     demoStarted = true
-    opts.onDemoStart()
     const start = performance.now()
     const fired = new Set<number>()
     opts.addTick(() => {
@@ -116,14 +115,22 @@ export function createSessionStore(opts: SessionStoreOpts): SessionStore {
     }
   }
 
-  // silent reconnect — NEVER reload the page
+  // silent reconnect — NEVER reload the page, and NEVER fall back to the
+  // demo loop: an unreachable server warns once and keeps the sleeping
+  // empty-state window until the feed comes (back) up
   let everConnected = false
+  let warnedUnreachable = false
+  const warnUnreachable = () => {
+    if (warnedUnreachable) return
+    warnedUnreachable = true
+    console.warn('[den] den-server unreachable — live sessions will appear when it comes back')
+  }
   const connect = () => {
     let ws: WebSocket
     try {
       ws = new WebSocket(withToken(serverWs))
     } catch {
-      startDemoOnce()
+      warnUnreachable() // malformed URL — retrying would not help
       return
     }
     const failTimer = setTimeout(() => {
@@ -141,8 +148,8 @@ export function createSessionStore(opts: SessionStoreOpts): SessionStore {
     }
     ws.onclose = () => {
       clearTimeout(failTimer)
-      if (everConnected) setTimeout(connect, 3000)
-      else startDemoOnce()
+      if (!everConnected) warnUnreachable()
+      setTimeout(connect, 3000)
     }
   }
 
