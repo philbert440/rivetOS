@@ -83,6 +83,23 @@ memory:
     # review_model: gemma-4-E2B-it-Q4_K_M.gguf
 
 # ---------------------------------------------------------------------------
+# rivet-den (optional) — per-node agent activity diorama (docs/DEN.md).
+# When enabled, `rivetos update` deploys/refreshes rivet-den.service on this
+# node and GENERATES ~/.rivetos/den.env from this section, and the runtime's
+# mesh registration advertises the den (capability + metadata.denPort) so
+# viewers discover it via /mesh.json.
+# ---------------------------------------------------------------------------
+# den:
+#   enabled: true
+#   host: 0.0.0.0            # default 127.0.0.1 (loopback fail-safe)
+#   port: 5174               # default
+#   token: change-me         # REQUIRED when terminal.enabled and host isn't loopback
+#   terminal:
+#     enabled: false         # local PTY terminals — a deliberate opt-in
+#   # static_dir: /opt/rivetos/apps/den/dist            # defaults derived
+#   # packs_dir: /opt/rivetos/packages/den-packs/packs  # from install root
+
+# ---------------------------------------------------------------------------
 # Deployment (optional) — uncomment to enable containerized deployment.
 # If omitted, RivetOS runs bare-metal (just: rivetos start).
 # ---------------------------------------------------------------------------
