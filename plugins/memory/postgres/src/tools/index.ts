@@ -13,6 +13,7 @@ import type { MemoryToolsConfig } from './helpers.js'
 import { createSearchTool } from './search-tool.js'
 import { createBrowseTool } from './browse-tool.js'
 import { createStatsTool } from './stats-tool.js'
+import { createGetFullTool } from './get-full-tool.js'
 
 export type { MemoryToolsConfig } from './helpers.js'
 
@@ -26,6 +27,7 @@ export function createMemoryTools(
   if (config?.pool) {
     tools.push(createBrowseTool(config.pool))
     tools.push(createStatsTool(config.pool))
+    tools.push(createGetFullTool(config.pool))
   }
 
   return tools
