@@ -10,8 +10,14 @@ share a canvas, so animation alignment is free.
 Frames are written as <pose>_f0.png … in --out (or in place of the inputs'
 directory). Inputs may be JPG straight from the generator.
 
+--lcc drops everything but the largest connected component per frame
+(dithered-shadow speckle cleanup, same as process-strip.py). It is OPT-IN
+here because composite poses legitimately contain disconnected pieces
+(character apart from furniture, floating Z's) that LCC would delete —
+check the output when you use it.
+
 Usage:
-  union-crop.py FRAME1 FRAME2 [...] --pose NAME --out DIR
+  union-crop.py FRAME1 FRAME2 [...] --pose NAME --out DIR [--lcc]
 """
 import sys, argparse
 from pathlib import Path
@@ -28,16 +34,44 @@ def key_image(im):
                 op[x, y] = (r, g, b, 255)
     return out
 
+# same speckle cleanup as process-strip.py — keep in sync
+def largest_component(im):
+    from collections import deque
+    w, h = im.size; px = im.load()
+    seen = [[False] * w for _ in range(h)]
+    best = None
+    for y in range(h):
+        for x in range(w):
+            if px[x, y][3] and not seen[y][x]:
+                q = deque([(x, y)]); seen[y][x] = True; cells = []
+                while q:
+                    cx, cy = q.popleft(); cells.append((cx, cy))
+                    for nx, ny in ((cx+1,cy),(cx-1,cy),(cx,cy+1),(cx,cy-1)):
+                        if 0 <= nx < w and 0 <= ny < h and px[nx, ny][3] and not seen[ny][nx]:
+                            seen[ny][nx] = True; q.append((nx, ny))
+                if best is None or len(cells) > len(best):
+                    best = cells
+    keep = set(best or [])
+    for y in range(h):
+        for x in range(w):
+            if px[x, y][3] and (x, y) not in keep:
+                px[x, y] = (0, 0, 0, 0)
+    return im
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('frames', nargs='+')
     ap.add_argument('--pose', required=True)
     ap.add_argument('--out', required=True)
+    ap.add_argument('--lcc', action='store_true',
+                    help='keep only the largest connected component per frame (speckle cleanup)')
     a = ap.parse_args()
 
     keyed = []
     for f in a.frames:
         im = key_image(Image.open(f).convert('RGB'))
+        if a.lcc:
+            im = largest_component(im)
         bb = im.getbbox()
         if not bb:
             sys.exit(f'{f}: keyed to nothing — wrong chroma?')

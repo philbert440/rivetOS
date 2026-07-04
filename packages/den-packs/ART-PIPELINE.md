@@ -12,8 +12,11 @@ the runtime depends on them.
 All sprites are generated on a solid magenta (`#ff00ff`) background. The key
 metric is `min(r, b) - g > 32`, NOT a distance-to-color test — it also
 catches the generator's drift toward pink and magenta-tinted shadow pixels.
-Gray *dithered* shadows survive the key as disconnected speckles; the tools
-drop everything but the largest connected component.
+Gray *dithered* shadows survive the key as disconnected speckles.
+`process-strip.py` always drops everything but the largest connected
+component; `union-crop.py` only does it with `--lcc`, because composite
+poses legitimately contain disconnected pieces that the cleanup would
+delete.
 
 Packs ship **pre-keyed PNGs with real alpha**. The renderer detects alpha and
 passes those sprites through untouched — this is what preserves multi-frame
@@ -28,7 +31,8 @@ magenta background. Then:
 
 Keys, trims, normalizes both frames onto one bottom-center-anchored canvas
 (no jitter), installs as `POSE_f0/f1.png`. `--single` installs one image as
-both frames; `--no-footfix` skips the mirror patch for foot-notch artifacts.
+both frames; `--footfix` mirrors the clean right foot over a notched left
+one — opt-in, symmetric standing poses only (it corrupts walk cycles).
 
 ## Recipe 2 — animation series (3+ frames)
 

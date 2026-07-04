@@ -10,10 +10,12 @@ the frames into a pack.
 Requires Pillow. See ART-PIPELINE.md for the full authoring recipe.
 
 Usage:
-  process-strip.py STRIP.png POSE --pack DIR [--single] [--no-footfix]
+  process-strip.py STRIP.png POSE --pack DIR [--single] [--footfix]
 
-  --single       image is one frame, not a strip (installed as f0 AND f1)
-  --no-footfix   skip the left-foot mirror patch
+  --single    image is one frame, not a strip (installed as f0 AND f1)
+  --footfix   mirror the right foot over a notched left one (bottom 20%).
+              OPT-IN: it assumes a symmetric standing pose — on walk cycles
+              or any asymmetric pose it silently corrupts the feet.
 """
 import sys, json, argparse
 from pathlib import Path
@@ -70,7 +72,8 @@ def main():
     ap.add_argument('strip'); ap.add_argument('pose')
     ap.add_argument('--pack', required=True, help='pack directory (contains pack.json)')
     ap.add_argument('--single', action='store_true')
-    ap.add_argument('--no-footfix', action='store_true')
+    ap.add_argument('--footfix', action='store_true',
+                    help='mirror right foot over notched left (symmetric poses only)')
     a = ap.parse_args()
 
     im = Image.open(a.strip).convert('RGB')
@@ -85,7 +88,7 @@ def main():
         if not bb:
             sys.exit('frame keyed to nothing — wrong chroma?')
         f = f.crop(bb)
-        if not a.no_footfix:
+        if a.footfix:
             f = footfix(f)
         frames.append(f)
     if a.single:

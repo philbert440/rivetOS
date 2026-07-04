@@ -93,7 +93,7 @@ async function main() {
   // as ghost rooms in the picker
   if (!st.started) {
     if (hookEvent !== 'UserPromptSubmit') {
-      fs.writeFileSync(stateFile, JSON.stringify(st))
+      if (hookEvent !== 'Flush') fs.writeFileSync(stateFile, JSON.stringify(st))
       return
     }
     st.started = true
@@ -332,11 +332,10 @@ async function main() {
       break
   }
 
-  if (hookEvent !== 'SessionEnd') fs.writeFileSync(stateFile, JSON.stringify(st))
+  // never resurrect state SessionEnd deleted (a detached --flush can land after it)
+  if (hookEvent !== 'SessionEnd' && !(hookEvent === 'Flush' && !st.started))
+    fs.writeFileSync(stateFile, JSON.stringify(st))
 
-  // ---- ship, best-effort, bounded: one ordered batch to /events (reduced
-  // atomically server-side). 404 = pre-batch server → fall back to
-  // sequential /event posts, which preserve order at one round trip each.
   const headers = { 'content-type': 'application/json' }
   if (TOKEN) headers.authorization = `Bearer ${TOKEN}`
   // fan out to every server; per server, one ordered POST /events batch
