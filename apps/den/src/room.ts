@@ -1,9 +1,10 @@
 // One den window: everything that draws or animates a single room — window
-// frame + chrome, furniture, character + poses, bubbles, whiteboard/terminal
-// overlays, chat panel, sleep Z's. Created by main.ts (C3 makes it a grid —
-// one room per session). Rooms share the canonical LayoutModel and the
-// pack's KeyedAssets/pose frames; each instance owns its sprites, its render
-// clones of the placements, and all per-room animation state.
+// frame + chrome (title, subtitle, LED, per-window ✕, focus ring), furniture,
+// character + poses, bubbles, whiteboard/terminal overlays, chat panel, sleep
+// Z's. Created per session by the WindowManager (windows.ts). Rooms share the
+// canonical LayoutModel and the pack's KeyedAssets/pose frames; each instance
+// owns its sprites, its render clones of the placements, and all per-room
+// animation state.
 
 import { Container, Graphics, Sprite, Text, TextStyle } from 'pixi.js'
 import {
@@ -103,8 +104,8 @@ export interface RoomDeps {
   /** Shared pose frame sets, pre-rasterized by main.ts. */
   poses: Record<string, PixelFrame[]>
   poseImgSize: Record<string, { w: number; h: number }>
-  /** DOM caption strip under the canvas (dies with the picker in C3). */
-  captionEl: HTMLElement
+  /** Close (✕) handler — when absent (local windows) no ✕ is rendered. */
+  onClose?: () => void
 }
 
 export interface RoomInstance {
@@ -115,6 +116,10 @@ export interface RoomInstance {
   frameH: number
   /** Point the room at a (new) RoomState and re-render everything from it. */
   setState(s: RoomState): void
+  /** Title-bar text: 'rivet-den · <name>' (grayed out when ended). */
+  setTitle(name: string, ended: boolean): void
+  /** Focus ring on/off — a slightly brighter chrome outer stroke. */
+  setFocused(on: boolean): void
   /** Per-event side effects (speech bubble trigger) — call AFTER setState. */
   onEvent(ev: AgentEvent): void
   /** One ticker step. */
@@ -128,7 +133,7 @@ export interface RoomInstance {
 }
 
 export function createRoom(deps: RoomDeps): RoomInstance {
-  const { pack, fonts, layout, poses, poseImgSize, chairSideAsset, captionEl } = deps
+  const { pack, fonts, layout, poses, poseImgSize, chairSideAsset } = deps
   const m = pack.manifest
   const SHELL = { w: m.shell.w, h: m.shell.h }
   const FRAME_W = SHELL.w + MARGIN * 2
@@ -156,14 +161,23 @@ export function createRoom(deps: RoomDeps): RoomInstance {
   // ---- window-frame chrome ----
   const frame = new Container()
   const chrome = new Graphics()
-    .roundRect(0, 0, FRAME_W, FRAME_H, 18)
-    .fill(0x8b93a1)
-    .roundRect(4, 4, FRAME_W - 8, FRAME_H - 8, 14)
-    .fill(0xb7bec9)
-    .roundRect(MARGIN - 6, TITLEBAR + MARGIN - 6, SHELL.w + 12, SHELL.h + 12, 6)
-    .fill(0x30394a)
-    .roundRect(12, 10, FRAME_W - 24, TITLEBAR - 14, 8)
-    .fill(0xe8ebef)
+  function drawChrome(focused: boolean) {
+    chrome.clear().roundRect(0, 0, FRAME_W, FRAME_H, 18).fill(0x8b93a1)
+    // focus ring: a slightly brighter stroke riding the outer bezel
+    if (focused)
+      chrome.roundRect(1.5, 1.5, FRAME_W - 3, FRAME_H - 3, 17).stroke({
+        width: 3,
+        color: 0xd3dbe6,
+      })
+    chrome
+      .roundRect(4, 4, FRAME_W - 8, FRAME_H - 8, 14)
+      .fill(0xb7bec9)
+      .roundRect(MARGIN - 6, TITLEBAR + MARGIN - 6, SHELL.w + 12, SHELL.h + 12, 6)
+      .fill(0x30394a)
+      .roundRect(12, 10, FRAME_W - 24, TITLEBAR - 14, 8)
+      .fill(0xe8ebef)
+  }
+  drawChrome(false)
   frame.addChild(chrome)
   const led = new Graphics()
   frame.addChild(led)
@@ -179,6 +193,88 @@ export function createRoom(deps: RoomDeps): RoomInstance {
   })
   titleText.position.set(58, TITLEBAR / 2 - 10)
   frame.addChild(titleText)
+  // per-window activity subtitle — replaces the old DOM caption strip
+  const subtitle = new Text({
+    text: '',
+    resolution: 2,
+    style: new TextStyle({
+      fontFamily: '"Courier New", monospace',
+      fontSize: 14,
+      fontWeight: '700',
+      fill: 0x8b93a1,
+    }),
+  })
+  subtitle.position.set(0, TITLEBAR / 2 - 8)
+  frame.addChild(subtitle)
+
+  // OS-style per-window close button — the old #session-x, relocated onto
+  // each window's title bar (C4 upgrades its behavior for PTY sessions)
+  const X_SIZE = 26
+  const closeX = FRAME_W - 40
+  if (deps.onClose) {
+    const closeBtn = new Container()
+    const xBg = new Graphics()
+    const drawX = (hover: boolean) => {
+      xBg
+        .clear()
+        .roundRect(-X_SIZE / 2, -X_SIZE / 2, X_SIZE, X_SIZE, 6)
+        .fill(hover ? 0xd9dee5 : 0xe8ebef)
+        .roundRect(-X_SIZE / 2, -X_SIZE / 2, X_SIZE, X_SIZE, 6)
+        .stroke({ width: 2, color: hover ? 0xb44e4e : 0x8b93a1 })
+    }
+    drawX(false)
+    const xGlyph = new Text({
+      text: '✕',
+      resolution: 2,
+      style: new TextStyle({
+        fontFamily: '"Courier New", monospace',
+        fontSize: 16,
+        fontWeight: '700',
+        fill: 0x8b5a5a,
+      }),
+    })
+    xGlyph.anchor.set(0.5)
+    closeBtn.addChild(xBg, xGlyph)
+    closeBtn.position.set(closeX, TITLEBAR / 2 + 3)
+    closeBtn.eventMode = 'static'
+    closeBtn.cursor = 'pointer'
+    closeBtn.on('pointerover', () => drawX(true))
+    closeBtn.on('pointerout', () => drawX(false))
+    // closing must not first re-focus the dying window through the frame
+    closeBtn.on('pointerdown', (e) => e.stopPropagation())
+    closeBtn.on('pointertap', () => deps.onClose!())
+    frame.addChild(closeBtn)
+  }
+
+  // ---- title + subtitle layout: truncate to stay clear of the ✕ ----
+  const titleEndX = closeX - X_SIZE / 2 - 10
+  function fitText(t: Text, full: string, maxW: number) {
+    t.text = full
+    let keep = full.length
+    while (keep > 0 && t.width > maxW) {
+      keep--
+      t.text = full.slice(0, keep) + '…'
+    }
+  }
+  let titleName = ''
+  let titleEnded = false
+  let subtitleFull = ''
+  function layoutTitlebar() {
+    titleText.style.fill = titleEnded ? 0x8b93a1 : 0x30394a
+    fitText(
+      titleText,
+      titleName ? `rivet-den · ${titleName}` : 'rivet-den',
+      titleEndX - titleText.x,
+    )
+    subtitle.x = titleText.x + titleText.width + 14
+    fitText(subtitle, subtitleFull, titleEndX - subtitle.x)
+  }
+  function setTitle(name: string, ended: boolean) {
+    if (name === titleName && ended === titleEnded) return
+    titleName = name
+    titleEnded = ended
+    layoutTitlebar()
+  }
 
   // ---- room ----
   const world = new Container()
@@ -205,10 +301,14 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     canonicalSrc: string // last canonical src adopted — day/night divergence guard
   }
   const furniture: Record<string, FurnItem> = {}
+  // set by destroy(): async art loads (day/night swap, editor variant) must
+  // not touch sprites after the window closed — grids destroy rooms routinely
+  let dead = false
   // functional rects live on the pack furniture entries, in coordinates of
   // their shipped art — they only apply while that art is up
   const furnSpec = (id: string) => m.furniture.find((f) => f.id === id)
   function applyScale(it: { sprite: Sprite; asset: KeyedAsset; placement: RuntimePlacement }) {
+    if (dead) return
     it.sprite.texture = pixelTexture(it.asset, it.placement.h).texture
     it.sprite.scale.set(it.placement.flip ? -PX : PX, PX)
     // snap to the global pixel grid so all sprites share one raster
@@ -247,6 +347,7 @@ export function createRoom(deps: RoomDeps): RoomInstance {
       it.canonicalSrc = it.canonical.src
       it.placement.src = it.canonical.src
       void loadAsset(it.placement.src).then((a) => {
+        if (dead) return
         it.asset = a
         applyScale(it)
       })
@@ -273,6 +374,7 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     if (m.shell.nightSrc) {
       const src = night ? m.shell.nightSrc : m.shell.src
       const a = await loadAsset(pack.url(src), false)
+      if (dead) return
       shellSprite.texture = pixelTexture(a, SHELL.h).texture
     }
     for (const f of m.furniture) {
@@ -285,9 +387,11 @@ export function createRoom(deps: RoomDeps): RoomInstance {
       const want = night ? nite : day
       if (it.placement.src === want) continue
       it.asset = await loadAsset(want)
+      if (dead) return
       it.placement.src = want
       applyScale(it)
     }
+    if (dead) return
     refreshBoardOverlay()
     refreshTermOverlay()
   }
@@ -658,9 +762,10 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     narrLen = -1
     renderNarration()
     renderTerm()
-    captionEl.textContent = state.tool
+    subtitleFull = state.tool
       ? `${ACTIVITY_LABEL[state.activity]} · ${state.tool}`
       : ACTIVITY_LABEL[state.activity]
+    layoutTitlebar()
     thought.container.visible = !!state.thought
     if (state.thought) {
       thought.set(state.thought)
@@ -1042,7 +1147,9 @@ export function createRoom(deps: RoomDeps): RoomInstance {
         const it = furniture[id]
         it.canonical.src = src
         it.canonicalSrc = src
-        it.asset = await loadAsset(src)
+        const asset = await loadAsset(src)
+        if (dead) return
+        it.asset = asset
         it.placement.src = src
         it.placement.flip = it.canonical.flip // editor resets flip before swapping
         applyScale(it)
@@ -1072,12 +1179,15 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     frameW: FRAME_W,
     frameH: FRAME_H,
     setState,
+    setTitle,
+    setFocused: drawChrome,
     onEvent,
     update,
     applyTimeOfDay,
     charX: () => char.x,
     editorHooks,
     destroy: () => {
+      dead = true
       clearInterval(todTimer)
       offLayoutChange()
       frame.destroy({ children: true })

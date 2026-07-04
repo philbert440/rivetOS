@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
   <title>rivet-den</title>
   <style>
-    /* --ui is set by layout() in main.ts so the HTML widgets scale with the
-       canvas frame instead of staying fixed-px on every screen size */
+    /* --ui is set by the WindowManager's layout() so the HTML widgets scale
+       with the canvas frames instead of staying fixed-px on every screen */
     :root { --ui: 1; }
     html, body { margin: 0; padding: 0; background: #1b2230; height: 100%; overflow: hidden; }
     #stage { position: fixed; inset: 0; }
@@ -19,28 +19,26 @@
       z-index: 10; user-select: none; -webkit-user-select: none;
     }
     #ptt-live.active { display: block; }
-    /* The RPG narration log lives inside the room canvas now (see the chat
-       panel in main.ts) — no HTML overlay for it anymore. */
-    /* session picker + gear are docked ONTO the den window's title bar —
-       left/top are set per-frame by positionChrome() in main.ts */
-    #session-picker {
-      position: fixed; transform: translateY(-50%); z-index: 20;
-      background: #e8ebef; color: #30394a; border: 2px solid #8b93a1;
-      font: 700 calc(12px * var(--ui)) 'Courier New', monospace;
-      padding: calc(4px * var(--ui)) calc(8px * var(--ui)); border-radius: 8px; cursor: pointer;
+    /* Per-window chrome (title, activity subtitle, LED, ✕) is Pixi now —
+       drawn by room.ts inside each window's title bar. */
+    /* mobile tab strip: one visible window at a time — tap a tab to switch */
+    #tab-strip {
+      position: fixed; top: 0; left: 0; right: calc(50px * var(--ui)); z-index: 20;
+      display: none; gap: 6px; padding: calc(6px * var(--ui)) calc(8px * var(--ui));
+      overflow-x: auto; scrollbar-width: none;
     }
-    /* ✕ next to the picker: clears the selected (stale) session */
-    #session-x {
-      position: fixed; transform: translateY(-50%); z-index: 20;
-      background: #e8ebef; color: #8b5a5a; border: 2px solid #8b93a1;
-      font: 700 calc(12px * var(--ui)) 'Courier New', monospace;
-      width: calc(26px * var(--ui)); height: calc(26px * var(--ui));
-      border-radius: 6px; cursor: pointer; line-height: 1;
+    #tab-strip.show { display: flex; }
+    #tab-strip button {
+      flex: 0 0 auto; background: #1a2534; color: #9fb3c8; border: 1px solid #3a4a5e;
+      font: 700 calc(11px * var(--ui)) 'Courier New', monospace; letter-spacing: 1px;
+      padding: calc(4px * var(--ui)) calc(10px * var(--ui)); border-radius: 6px;
+      cursor: pointer; white-space: nowrap;
     }
-    /* gear button + dropdown: EDIT toggle and push-to-talk key binding live
-       here — pinned to the right end of the title bar */
+    #tab-strip button.sel { color: #34d399; border-color: #34d399; }
+    /* gear button + dropdown: EDIT toggle (acts on the focused window) and
+       the global push-to-talk key binding — fixed header strip, top right */
     #gear {
-      position: fixed; transform: translate(-100%, -50%); z-index: 21;
+      position: fixed; top: calc(8px * var(--ui)); right: calc(8px * var(--ui)); z-index: 21;
       background: #e8ebef; color: #30394a; border: 2px solid #8b93a1;
       font: 700 calc(16px * var(--ui)) 'Courier New', monospace;
       width: calc(34px * var(--ui)); height: calc(34px * var(--ui));
@@ -48,7 +46,7 @@
     }
     #gear.on { color: #34d399; border-color: #34d399; }
     #gear-menu {
-      position: fixed; transform: translateX(-100%); z-index: 21;
+      position: fixed; top: calc(48px * var(--ui)); right: calc(8px * var(--ui)); z-index: 21;
       display: none; flex-direction: column; gap: 6px;
       background: #0e1622ee; border: 2px solid #3a4a5e; border-radius: 8px;
       padding: calc(8px * var(--ui));
@@ -82,21 +80,12 @@
     }
     #edit-thumbs img.sel { border-color: #34d399; }
     #edit-hint { color: #5a6675; margin-top: 4px; }
-    #caption {
-      /* sits just above the bottom edge (mic pill overlays it when live) */
-      position: fixed; bottom: calc(48px * var(--ui)); left: 50%; transform: translateX(-50%);
-      color: #9fb3c8; font: calc(12px * var(--ui)) 'Courier New', monospace; z-index: 10;
-      background: #0e1622cc; padding: 4px 10px; border-radius: 6px; white-space: nowrap;
-      max-width: 92vw; overflow: hidden; text-overflow: ellipsis;
-    }
   </style>
 </head>
 <body>
   <div id="stage"></div>
-  <div id="caption"></div>
   <div id="ptt-live">● MIC LIVE</div>
-  <select id="session-picker" style="display:none"></select>
-  <button id="session-x" style="display:none" title="remove this session from the den">✕</button>
+  <div id="tab-strip"></div>
   <button id="gear" title="settings">⚙</button>
   <div id="gear-menu">
     <button id="edit-btn">EDIT ROOM</button>
