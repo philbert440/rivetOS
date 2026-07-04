@@ -11,6 +11,7 @@ import type { Station } from '@rivetos/den-packs'
 import { demoScript, DEMO_LOOP_MS } from './demo.js'
 import { configureAssets, loadAsset, pixelTexture, PX, type KeyedAsset } from './assets.js'
 import { loadPack, resolvePose } from './pack.js'
+import { loadPackFonts } from './fonts.js'
 import { initEditor, loadLayout, setLayoutPack, type RuntimePlacement } from './editor.js'
 import { serverHttp, serverWs, withToken } from './net.js'
 
@@ -41,11 +42,11 @@ const LED_COLOR: Record<Activity, number> = {
   sleeping: 0x8b5cf6,
 }
 
-function bubble(maxWidth: number, color: number) {
+function bubble(maxWidth: number, color: number, fontFamily: string) {
   const g = new Graphics()
   const style = new TextStyle({
-    fontFamily: '"Courier New", monospace',
-    fontSize: 14,
+    fontFamily,
+    fontSize: 16,
     fill: 0x22303f,
     wordWrap: true,
     wordWrapWidth: maxWidth - 20,
@@ -84,6 +85,7 @@ async function boot() {
   // ---- load the SpritePack: every art constant comes from the manifest ----
   const packName = new URLSearchParams(location.search).get('pack') ?? 'default'
   const pack = await loadPack(`${serverHttp}/packs/${packName}`)
+  const fonts = await loadPackFonts(pack)
   const m = pack.manifest
   configureAssets({
     pxPerUnit: m.grid.pxPerUnit,
@@ -268,14 +270,17 @@ async function boot() {
   setInterval(() => void applyTimeOfDay(), 60_000)
 
   // ---- whiteboard text overlay ----
+  let boardWrapW = 300 // writable width in world px — set by refreshBoardOverlay
   const boardTitle = new Text({
     text: '',
     resolution: 2,
     style: new TextStyle({
-      fontFamily: '"Courier New", monospace',
-      fontSize: 15,
+      fontFamily: fonts.fontFor('board'),
+      fontSize: 16,
       fontWeight: '700',
       fill: 0x2b6cb0,
+      wordWrap: true,
+      wordWrapWidth: 300,
     }),
   })
   const boardList = new Container()
@@ -290,10 +295,16 @@ async function boot() {
     const rect = spec?.textRect && bd.placement.src === pack.url(spec.src) ? spec.textRect : null
     const tlx = rect ? bx + (rect.x - bd.asset.ox) * s : bx + bd.asset.bw * s * 0.12
     const tly = rect ? by + (rect.y - bd.asset.oy) * s : by + bd.asset.bh * s * 0.12
+    boardWrapW = Math.max(60, (rect ? rect.w : bd.asset.bw * 0.76) * s)
+    boardTitle.style.wordWrapWidth = boardWrapW
     boardTitle.position.set(tlx, tly)
     boardList.position.set(tlx, tly + 26)
     boardTitle.zIndex = bd.placement.y + 1
     boardList.zIndex = bd.placement.y + 1
+    // re-wrap existing content after moves/resizes. Guarded: renderBoard reads
+    // `state`, which doesn't exist during the init-time call — and the board
+    // only ever has content once state does (renderBoard is its sole writer)
+    if (boardTitle.text || boardList.children.length) renderBoard()
   }
   refreshBoardOverlay()
 
@@ -395,7 +406,7 @@ async function boot() {
       text: 'z',
       resolution: 2,
       style: new TextStyle({
-        fontFamily: '"Courier New", monospace',
+        fontFamily: fonts.fontFor('zzz'),
         fontSize: 22,
         fontWeight: '700',
         fill: 0xffffff,
@@ -429,11 +440,11 @@ async function boot() {
     }
   }
 
-  const thought = bubble(260, 0x8aa1b8)
+  const thought = bubble(260, 0x8aa1b8, fonts.fontFor('bubble'))
   // live-ticking spinner meta: parsed from "✳ Word… (28s · ↓ 4.8k tokens)"
   let thoughtSpin: { pre: string; secs: number; suf: string; at: number } | null = null
   let thoughtSpinShown = -1
-  const speech = bubble(280, 0x34d399)
+  const speech = bubble(280, 0x34d399, fonts.fontFor('bubble'))
   thought.container.zIndex = 9000
   speech.container.zIndex = 9001
   world.addChild(thought.container, speech.container)
@@ -671,8 +682,11 @@ async function boot() {
 
   function renderBoard() {
     boardTitle.text = state.title ? `◤ ${state.title.toUpperCase()}` : ''
+    // list starts below the title, however many lines it wrapped to
+    boardList.y = boardTitle.y + (boardTitle.text ? Math.max(26, boardTitle.height + 6) : 0)
     boardList.removeChildren()
-    state.tasks.forEach((t, i) => {
+    let rowY = 0
+    for (const t of state.tasks) {
       const row = new Container()
       const box = new Graphics()
         .rect(0, 3, 12, 12)
@@ -682,16 +696,19 @@ async function boot() {
         text: t.label,
         resolution: 2,
         style: new TextStyle({
-          fontFamily: '"Courier New", monospace',
-          fontSize: 14,
+          fontFamily: fonts.fontFor('board'),
+          fontSize: 16,
           fill: t.done ? 0x8fa3b5 : 0x22303f,
+          wordWrap: true,
+          wordWrapWidth: Math.max(40, boardWrapW - 20),
         }),
       })
       label.position.set(20, 0)
       row.addChild(box, label)
-      row.y = i * 24
+      row.y = rowY
       boardList.addChild(row)
-    })
+      rowY += Math.max(24, label.height + 8)
+    }
   }
 
   function renderLed() {
