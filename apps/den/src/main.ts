@@ -309,7 +309,7 @@ async function boot() {
     }),
   })
   world.addChild(termText)
-  const termCols = 17 // fewer, larger glyphs — small monitors stay legible
+  const termCols = m.viewer?.termCols ?? 17 // fewer, larger glyphs — small monitors stay legible
   let termRows = 3 // how many lines fit the glass — set by refreshTermOverlay
   function refreshTermOverlay() {
     const dk = furniture['desk']
@@ -504,16 +504,25 @@ async function boot() {
   let selectedSession: string | null = null
   let state: RoomState = initialRoomState
   let speechTimer = 0
+  let flushWs: () => void = () => {} // assigned by the live-feed branch
+  function dropSession(id: string) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete rooms[id]
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete sessionNames[id]
+  }
 
   const picker = document.getElementById('session-picker')! as HTMLSelectElement
+  const LOCAL_SESSIONS = new Set(['demo', 'preview'])
   function renderPicker() {
-    const ids = Object.keys(rooms).filter((id) => id !== 'demo')
+    const ids = Object.keys(rooms).filter((id) => !LOCAL_SESSIONS.has(id))
     picker.style.display = ids.length > 1 ? '' : 'none'
     picker.innerHTML = ''
     for (const id of ids) {
       const opt = document.createElement('option')
       opt.value = id
-      opt.textContent = sessionNames[id] ?? id.slice(0, 12)
+      const name = sessionNames[id] ?? id.slice(0, 12)
+      opt.textContent = rooms[id]?.ended ? `${name} (ended)` : name
       opt.selected = id === selectedSession
       picker.appendChild(opt)
     }
@@ -594,14 +603,39 @@ async function boot() {
     }
   }
 
-  // local events (demo loop, push-to-talk preview) run through the same path
-  const applyLocal = (ev: AgentEventBody) =>
-    ingest({ v: 1, session: selectedSession ?? 'demo', ...ev })
+  // local events (demo loop, push-to-talk preview) run through the same path.
+  // Editor/PTT previews act on a scratch copy of the current room — reducing
+  // them into a real session's state would leave permanent lies (activity,
+  // log lines) that survive after the preview ends.
+  let previewReturnTo: string | null = null
+  function enterPreview() {
+    if (previewReturnTo !== null) return
+    previewReturnTo = selectedSession ?? 'demo'
+    rooms['preview'] = { ...(rooms[previewReturnTo] ?? state) }
+    selectedSession = 'preview'
+    state = rooms['preview']
+  }
+  function exitPreview() {
+    if (previewReturnTo === null) return
+    delete rooms['preview']
+    selectedSession = previewReturnTo
+    previewReturnTo = null
+    state = rooms[selectedSession] ?? initialRoomState
+    refreshAll()
+    flushWs()
+  }
+  const applyLocal = (ev: AgentEventBody) => {
+    const local = editorActive || pttActive
+    if (local) enterPreview()
+    ingest({ v: 1, session: local ? 'preview' : (selectedSession ?? 'demo'), ...ev })
+  }
 
   // ---- movement + animation ----
+  const fallbackStation = m.viewer?.fallbackStation ?? { x: SHELL.w / 2, y: SHELL.h * 0.9 }
+  const floorTop = m.viewer?.floorTop ?? 0.755
   function stationPos(s: Station): { x: number; y: number } {
-    let x = s.x ?? 520,
-      y = s.y ?? 745
+    let x = s.x ?? fallbackStation.x,
+      y = s.y ?? fallbackStation.y
     if (s.furn && furniture[s.furn]) {
       const p = furniture[s.furn].placement
       x = p.x + (s.dx ?? 0)
@@ -611,7 +645,7 @@ async function boot() {
     // bleeds off-frame (e.g. the bed) — otherwise the robot walks off-screen
     return {
       x: Math.min(SHELL.w - 40, Math.max(40, x)),
-      y: Math.min(SHELL.h - 12, Math.max(SHELL.h * 0.755, y)),
+      y: Math.min(SHELL.h - 12, Math.max(SHELL.h * floorTop, y)),
     }
   }
   let t = 0
@@ -888,7 +922,7 @@ async function boot() {
     // the terminal must stay visible on the desk composite's monitor — his
     // head is below the screen by construction, so it can safely top him
     termText.zIndex = hiddenFurn?.includes('desk')
-      ? (char.zIndex as number) + 1
+      ? char.zIndex + 1
       : (furniture['desk']?.placement.y ?? 0) + 1
     // bubble bottom (tail dots hang below the anchor) must clear his face
     const bubbleX = headPt ? headPt.x + 26 : char.x + 34
@@ -930,6 +964,7 @@ async function boot() {
       previewActivity: (a) => applyLocal({ type: 'activity', activity: a as Activity }),
       onEditingChange: (on) => {
         editorActive = on
+        if (!on && !pttActive) exitPreview()
       },
       swapItemArt: async (id, src) => {
         const it = furniture[id]
@@ -980,9 +1015,12 @@ async function boot() {
     applyLocal({ type: 'speech.stt', active: true })
   }
   const up = () => {
-    pttActive = false
     pttLive.classList.remove('active')
+    // send the release while still in preview mode, THEN drop the flag —
+    // otherwise the stt-false event lands in the real session's state
     applyLocal({ type: 'speech.stt', active: false })
+    pttActive = false
+    if (!editorActive) exitPreview()
   }
   window.addEventListener('keydown', (e) => {
     const tag = (document.activeElement as HTMLElement | null)?.tagName
@@ -1048,6 +1086,65 @@ async function boot() {
   } else {
     // live feed with silent reconnect — NEVER reload the page
     let everConnected = false
+
+    const selectFallback = () => {
+      const ids = Object.keys(rooms).filter((id) => !LOCAL_SESSIONS.has(id))
+      selectedSession = ids[0] ?? null
+      state = selectedSession ? rooms[selectedSession] : initialRoomState
+      refreshAll()
+      renderPicker()
+    }
+
+    const handleWs = (raw: string) => {
+      try {
+        const data = JSON.parse(raw) as Record<string, unknown>
+        if (data.type === 'snapshot') {
+          // the snapshot is authoritative: reconcile, don't just merge —
+          // sessions evicted while we were disconnected must disappear
+          const snapRooms = (data.rooms ?? {}) as Record<string, RoomState>
+          for (const s of (data.sessions ?? []) as { id: string; name: string }[])
+            sessionNames[s.id] = s.name
+          for (const id of Object.keys(rooms)) {
+            if (!LOCAL_SESSIONS.has(id) && !(id in snapRooms)) dropSession(id)
+          }
+          Object.assign(rooms, snapRooms)
+          const ids = ((data.sessions ?? []) as { id: string }[]).map((s) => s.id)
+          // a real session always wins over the boot placeholder; server
+          // recency order picks the replacement
+          if ((!selectedSession || selectedSession === 'demo') && ids.length)
+            selectedSession = ids[0]
+          if (selectedSession && !rooms[selectedSession] && previewReturnTo === null) {
+            selectFallback()
+            return
+          }
+          if (selectedSession && rooms[selectedSession]) {
+            state = rooms[selectedSession]
+            refreshAll()
+          }
+          renderPicker()
+        } else if (data.type === 'session.removed') {
+          const id = data.session as string
+          dropSession(id)
+          if (id === selectedSession) selectFallback()
+          else renderPicker()
+        } else {
+          ingest(data as unknown as AgentEvent)
+        }
+      } catch {
+        /* ignore malformed */
+      }
+    }
+
+    // while editing / push-to-talk the preview owns the stage — buffer the
+    // live feed instead of dropping it, and replay on exit so no event that
+    // arrived meanwhile is lost (dropped events used to desync rooms until
+    // the next reconnect)
+    const wsBuffer: string[] = []
+    const WS_BUFFER_MAX = 2000
+    flushWs = () => {
+      while (wsBuffer.length) handleWs(wsBuffer.shift()!)
+    }
+
     const connect = () => {
       let ws: WebSocket
       try {
@@ -1066,34 +1163,18 @@ async function boot() {
       ws.onopen = () => clearTimeout(failTimer)
       ws.onmessage = (mev) => {
         everConnected = true
-        // pause the live feed while editing so spot previews aren't overridden
-        if (demoStarted || editorActive || pttActive) return
-        try {
-          const data = JSON.parse(mev.data as string) as Record<string, unknown>
-          if (data.type === 'snapshot') {
-            // seed every room + the session registry from the server state
-            for (const s of (data.sessions ?? []) as { id: string; name: string }[])
-              sessionNames[s.id] = s.name
-            for (const [id, room] of Object.entries(
-              (data.rooms ?? {}) as Record<string, RoomState>,
-            )) {
-              rooms[id] = room
-            }
-            const ids = Object.keys(rooms).filter((id) => id !== 'demo')
-            // a real session always wins over the boot placeholder
-            if ((!selectedSession || selectedSession === 'demo') && ids.length)
-              selectedSession = ids[0]
-            if (selectedSession && rooms[selectedSession]) {
-              state = rooms[selectedSession]
-              refreshAll()
-            }
-            renderPicker()
-          } else {
-            ingest(data as unknown as AgentEvent)
+        if (demoStarted) return
+        if (editorActive || pttActive) {
+          wsBuffer.push(mev.data as string)
+          // overflow: drop the backlog and force a reconnect — the fresh
+          // snapshot on reconnect re-syncs cheaper than an unbounded buffer
+          if (wsBuffer.length > WS_BUFFER_MAX) {
+            wsBuffer.length = 0
+            ws.close()
           }
-        } catch {
-          /* ignore malformed */
+          return
         }
+        handleWs(mev.data as string)
       }
       ws.onclose = () => {
         clearTimeout(failTimer)
@@ -1105,4 +1186,16 @@ async function boot() {
   }
 }
 
-void boot()
+void boot().catch((err: unknown) => {
+  // a failed boot (server down, missing pack, bad manifest) must say so —
+  // a silent black canvas reads as a GPU bug and hides the real cause
+  const el = document.createElement('div')
+  el.style.cssText =
+    'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;' +
+    'background:#141a26;color:#e8ebef;font-family:"Courier New",monospace;' +
+    'font-size:16px;padding:32px;text-align:center;white-space:pre-wrap;z-index:9999'
+  const msg = err instanceof Error ? err.message : String(err)
+  el.textContent = `den failed to start\n\n${msg}\n\n(check that den-server is running and the pack exists)`
+  document.body.appendChild(el)
+  console.error('den boot failed:', err)
+})
