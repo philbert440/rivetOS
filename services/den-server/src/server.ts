@@ -228,10 +228,8 @@ export function createDenServer(config: DenConfig): DenServer {
       if (req.method === 'DELETE' && url.pathname === '/session') {
         const id = url.searchParams.get('session')
         if (!id || !(id in state.rooms)) return json(res, 404, { error: 'unknown session' })
-        const rooms = { ...state.rooms }
-        const sessions = { ...state.sessions }
-        delete rooms[id]
-        delete sessions[id]
+        const { [id]: _room, ...rooms } = state.rooms
+        const { [id]: _info, ...sessions } = state.sessions
         state = { rooms, sessions }
         clearEviction(id)
         // every OTHER viewer must drop the room too, not just the deleter
