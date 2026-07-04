@@ -22,15 +22,21 @@ export interface DenConfig {
   staticDir: string
   /** SpritePack root served at /packs/ (optional). */
   packsDir: string
+  /** How long an ended session's room lingers before eviction (ms). */
+  evictTtlMs: number
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
   return {
     port: intEnv('RIVETOS_DEN_PORT', 5174),
-    host: env.RIVETOS_DEN_HOST ?? '0.0.0.0',
+    // fail safe: loopback unless explicitly exposed — the default token is
+    // empty, so 0.0.0.0 out of the box would be unauthenticated on all
+    // interfaces. Mesh deployments set RIVETOS_DEN_HOST=0.0.0.0.
+    host: env.RIVETOS_DEN_HOST ?? '127.0.0.1',
     token: env.RIVETOS_DEN_TOKEN ?? '',
     stateDir: env.RIVETOS_DEN_STATE_DIR ?? join(homedir(), '.rivetos', 'den'),
     staticDir: env.RIVETOS_DEN_STATIC_DIR ?? '',
     packsDir: env.RIVETOS_DEN_PACKS_DIR ?? '',
+    evictTtlMs: intEnv('RIVETOS_DEN_EVICT_TTL_MS', 24 * 60 * 60 * 1000),
   }
 }

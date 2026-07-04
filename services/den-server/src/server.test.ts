@@ -14,10 +14,21 @@ afterEach(async () => {
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
 })
 
-async function start(token = ''): Promise<{ den: DenServer; base: string; port: number }> {
+async function start(
+  token = '',
+  evictTtlMs = 60_000,
+): Promise<{ den: DenServer; base: string; port: number }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
   dirs.push(stateDir)
-  const config: DenConfig = { port: 0, host: '127.0.0.1', token, stateDir, staticDir: '', packsDir: '' }
+  const config: DenConfig = {
+    port: 0,
+    host: '127.0.0.1',
+    token,
+    stateDir,
+    staticDir: '',
+    packsDir: '',
+    evictTtlMs,
+  }
   const den = createDenServer(config)
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
@@ -92,6 +103,49 @@ describe('den-server', () => {
     expect((await post(base, '/layout?viewer=../evil', {})).status).toBe(400)
     const rawBad = await fetch(`${base}/layout`, { method: 'POST', body: 'not json' })
     expect(rawBad.status).toBe(400)
+  })
+
+  it('survives a hard-killed WS client', async () => {
+    const { base, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
+    await new Promise((r) => ws.once('open', r))
+    ws.terminate() // no close frame — the ungraceful drop that used to crash
+    await new Promise((r) => setTimeout(r, 50))
+    expect((await post(base, '/event', EV)).status).toBe(200)
+    expect((await fetch(`${base}/healthz`)).status).toBe(200)
+  })
+
+  it('evicts ended sessions after the TTL and broadcasts removal', async () => {
+    const { den, base, port } = await start('', 40)
+    await post(base, '/event', EV)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
+    const messages: Record<string, unknown>[] = []
+    ws.on('message', (d: Buffer) => messages.push(JSON.parse(d.toString()) as Record<string, unknown>))
+    await new Promise((r) => ws.once('open', r))
+
+    await post(base, '/event', { v: 1, session: 's1', type: 'session.end' })
+    expect(den.state().rooms.s1.ended).toBe(true) // still visible, asleep
+    await new Promise((r) => setTimeout(r, 120))
+    expect(den.state().rooms.s1).toBeUndefined()
+    expect(den.state().sessions.s1).toBeUndefined()
+    expect(messages.some((m) => m.type === 'session.removed' && m.session === 's1')).toBe(true)
+    ws.close()
+  })
+
+  it('a fresh session.start cancels a pending eviction', async () => {
+    const { den, base } = await start('', 40)
+    await post(base, '/event', EV)
+    await post(base, '/event', { v: 1, session: 's1', type: 'session.end' })
+    await post(base, '/event', { ...EV, title: 'resumed' })
+    await new Promise((r) => setTimeout(r, 120))
+    expect(den.state().rooms.s1.title).toBe('resumed')
+  })
+
+  it('413s oversized bodies with a response the client can read', async () => {
+    const { base } = await start()
+    const big = 'x'.repeat(300 * 1024)
+    const res = await fetch(`${base}/event`, { method: 'POST', body: big }).catch(() => null)
+    expect(res?.status).toBe(413)
   })
 
   it('enforces bearer auth on everything but /healthz', async () => {
