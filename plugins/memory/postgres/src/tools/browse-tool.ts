@@ -4,7 +4,7 @@
 
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
-import type { MessageRow } from './helpers.js'
+import { truncationHint, type MessageRow } from './helpers.js'
 
 export function createBrowseTool(pool: pg.Pool): Tool {
   return {
@@ -82,7 +82,7 @@ export function createBrowseTool(pool: pg.Pool): Tool {
 
       const sql = `
         SELECT m.id, m.role, m.agent, m.content, m.created_at,
-               m.conversation_id, m.tool_name
+               m.conversation_id, m.tool_name, m.metadata
         FROM ros_messages m
         ${where}
         ORDER BY m.created_at ${order}
@@ -98,7 +98,7 @@ export function createBrowseTool(pool: pg.Pool): Tool {
           const ts = r.created_at.toISOString().replace('T', ' ').slice(0, 19)
           const tool = r.tool_name ? ` [tool: ${r.tool_name}]` : ''
           const content = r.content.length > 500 ? r.content.slice(0, 500) + '…' : r.content
-          return `[${ts}] ${r.agent}/${r.role}${tool}\n${content}`
+          return `[${ts}] ${r.agent}/${r.role}${tool}\n${content}${truncationHint(r.metadata, r.id)}`
         })
 
         return (

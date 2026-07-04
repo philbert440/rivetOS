@@ -52,6 +52,10 @@ export interface SearchHit {
   conversationId: string
   score: number
   createdAt: Date
+  /** Set when the stored content/tool_result was truncated at capture
+   *  (metadata.truncated) — memory_get_full can fetch the rest. */
+  truncated?: boolean
+  fullLength?: number
   // Summary-specific fields
   kind?: string
   earliestAt?: Date
@@ -88,6 +92,7 @@ interface MessageSearchRow {
   conversation_id: string
   created_at: Date
   score: string
+  metadata?: Record<string, unknown> | null
 }
 
 interface SummarySearchRow {
@@ -113,6 +118,7 @@ interface CandidateRow {
   conversation_id: string
   created_at: Date
   boost: string
+  metadata?: Record<string, unknown> | null
   kind?: string
   earliest_at?: Date | null
   latest_at?: Date | null
@@ -375,7 +381,7 @@ export class SearchEngine {
       )
       const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
       const sql = `
-        SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
+        SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at,
                ${boostExpr} AS boost
         FROM ros_messages m
         WHERE ${whereClause}
@@ -447,7 +453,7 @@ export class SearchEngine {
       params.push(pool)
       const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
       const sql = `
-        SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
+        SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at,
                ${boostExpr} AS boost
         FROM ros_messages m
         WHERE ${conds.join(' AND ')}
@@ -503,6 +509,11 @@ export class SearchEngine {
       createdAt: r.created_at,
       boost: parseFloat(r.boost),
     }
+    if (type === 'message' && r.metadata?.truncated === true) {
+      base.truncated = true
+      const full = r.metadata.full_content_length ?? r.metadata.full_tool_result_length
+      if (typeof full === 'number') base.fullLength = full
+    }
     if (type === 'summary') {
       base.kind = r.kind
       base.earliestAt = r.earliest_at ?? undefined
@@ -539,7 +550,7 @@ export class SearchEngine {
       const importance = importanceSql('m')
 
       const sql = `
-        SELECT m.id, m.content, m.role, m.agent,
+        SELECT m.id, m.content, m.role, m.agent, m.metadata,
                m.conversation_id, m.created_at,
                (1 - (m.embedding <=> $1::halfvec)) AS semantic_sim,
                (
@@ -564,6 +575,15 @@ export class SearchEngine {
           conversationId: r.conversation_id,
           score: parseFloat(r.score),
           createdAt: r.created_at,
+          ...(r.metadata?.truncated === true
+            ? {
+                truncated: true,
+                fullLength: [
+                  r.metadata.full_content_length,
+                  r.metadata.full_tool_result_length,
+                ].find((v): v is number => typeof v === 'number'),
+              }
+            : {}),
         })),
       )
     }
@@ -798,7 +818,7 @@ export class SearchEngine {
     const importance = importanceSql('m')
 
     const sql = `
-      SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
+      SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at,
              (
                ${ftsScoreExpr} * ${W_FTS}
                + ${semanticExpr} * ${W_SEMANTIC}

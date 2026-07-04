@@ -18,6 +18,20 @@ export interface MessageRow {
   created_at: Date
   conversation_id: string
   tool_name: string | null
+  metadata: Record<string, unknown> | null
+}
+
+/** One-line marker appended to recall output when a row was truncated at
+ *  capture time — carries the original length and the memory_get_full handle
+ *  (issue #197). Empty string for complete rows. */
+export function truncationHint(
+  meta: Record<string, unknown> | null | undefined,
+  id: string,
+): string {
+  if (!meta || meta.truncated !== true) return ''
+  const full = meta.full_content_length ?? meta.full_tool_result_length
+  const len = typeof full === 'number' ? `${String(full)} chars` : 'unknown length'
+  return `\n⚠ truncated at capture (full: ${len}) → memory_get_full id=${id}`
 }
 
 export interface CountRow {

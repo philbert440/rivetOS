@@ -231,8 +231,11 @@ function formatMessages(sections: string[], messageHits: SearchHit[]): void {
   for (const hit of messageHits) {
     const age = Math.floor((Date.now() - hit.createdAt.getTime()) / MS_PER_DAY)
     const preview = hit.content.length > 400 ? hit.content.slice(0, 400) + '…' : hit.content
+    const trunc = hit.truncated
+      ? ` ⚠ truncated at capture${hit.fullLength ? ` (full: ${String(hit.fullLength)} chars)` : ''} → memory_get_full id=${hit.id}`
+      : ''
     sections.push(
-      `- [${hit.agent}/${hit.role}] (${String(age)}d ago, score: ${hit.score.toFixed(3)}) ${preview}`,
+      `- [${hit.agent}/${hit.role}] (${String(age)}d ago, score: ${hit.score.toFixed(3)}) ${preview}${trunc}`,
     )
   }
 }
