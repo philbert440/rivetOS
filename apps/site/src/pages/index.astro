@@ -1,0 +1,475 @@
+---
+// rivetos.dev landing — custom page, brand design system (emerald-on-dark,
+// DM Sans + JetBrains Mono, blueprint grid). Docs remain Starlight; this
+// replaces only the splash. Assets self-hosted except Google Fonts.
+import demoGif from '../assets/den-demo.gif'
+import logoDark from '../assets/logo-dark.svg'
+const GH = 'https://github.com/philbert440/rivetos'
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RivetOS — run your own agents, watch them work</title>
+    <meta
+      name="description"
+      content="A lightweight agent runtime you self-host. Persistent memory, a multi-agent mesh, pluggable providers and channels — and a live pixel diorama of your agent at work."
+    />
+    <meta property="og:title" content="RivetOS" />
+    <meta property="og:description" content="Run your own agents. Watch them work." />
+    <meta property="og:image" content="https://rivetos.dev/og.png" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <nav>
+      <a class="brand" href="/">
+        <img src={logoDark.src} alt="" width="26" height="26" />
+        <span>RivetOS</span>
+      </a>
+      <div class="nav-links">
+        <a href="/guides/getting-started/">Docs</a>
+        <a href={GH}>GitHub</a>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <div class="hero-copy">
+        <h1>Run your own agents.<br /><em>Watch them work.</em></h1>
+        <p class="tagline">
+          RivetOS is a lightweight agent runtime you self-host — a tiny stable core, everything
+          else a plugin. Persistent memory, a multi-agent mesh, seven LLM providers, and a live
+          diorama of what your agent is doing right now.
+        </p>
+        <div class="install">
+          <code><span class="prompt">$</span> npx rivetos init</code>
+        </div>
+        <div class="ctas">
+          <a class="btn primary" href="/guides/getting-started/">Get started</a>
+          <a class="btn" href={GH}>View on GitHub</a>
+        </div>
+        <p class="fine">Apache 2.0 · no CLA · runs in a container on your hardware</p>
+      </div>
+      <figure class="hero-demo">
+        <img
+          src={demoGif.src}
+          width="634"
+          height="475"
+          alt="rivet-den: a pixel-art room where a robot agent writes its plan on a whiteboard, codes at a desk terminal, and naps during context compaction"
+          loading="eager"
+        />
+        <figcaption>
+          rivet-den — your session, live: plans on the whiteboard, real commands on the terminal,
+          compaction is a nap.
+        </figcaption>
+      </figure>
+    </header>
+
+    <main>
+      <section class="act">
+        <div class="act-copy">
+          <h2><span class="index">01</span> Runs on your hardware</h2>
+          <p>
+            The container is the product: Docker on a laptop, LXC on Proxmox, one config file.
+            Providers are plugins — Anthropic, xAI, Google, or fully local via Ollama, vLLM, and
+            llama.cpp. Your keys, your GPUs, your rules.
+          </p>
+        </div>
+        <div class="act-visual chips" aria-label="Providers and channels">
+          <span class="chip">anthropic</span><span class="chip">xai</span>
+          <span class="chip">google</span><span class="chip">ollama</span>
+          <span class="chip">vllm</span><span class="chip">llama.cpp</span>
+          <span class="chip">claude-cli</span><span class="chip alt">discord</span>
+          <span class="chip alt">telegram</span><span class="chip alt">voice</span>
+          <span class="chip alt">mcp</span><span class="chip alt">agent-http</span>
+        </div>
+      </section>
+
+      <section class="act">
+        <div class="act-copy">
+          <h2><span class="index">02</span> Remembers everything</h2>
+          <p>
+            Postgres-backed memory with hybrid full-text + vector search, summary compaction, and
+            cross-agent recall. Ask what you decided three weeks ago; get the answer in
+            milliseconds, not a scroll through transcripts.
+          </p>
+        </div>
+        <div class="act-visual term" role="img" aria-label="Example memory search in a terminal">
+          <div class="term-bar"><i></i><i></i><i></i></div>
+          <pre><code><span class="prompt">rivet&gt;</span> memory_search "mesh CA decision?"
+<span class="ok">●</span> 3 hits · hybrid fts+vector · 48ms
+  1. <span class="dim">06-12</span> one root CA, per-node certs
+  2. <span class="dim">06-13</span> rotation via update --mesh
+  3. <span class="dim">06-27</span> roster fix deployed fleet-wide</code></pre>
+        </div>
+      </section>
+
+      <section class="act">
+        <div class="act-copy">
+          <h2><span class="index">03</span> A fleet, not a bot</h2>
+          <p>
+            Run one agent or several — different models, one shared memory. Agents delegate to
+            each other over an mTLS mesh: the reasoning model plans, the fast one executes, the
+            local one stays free. Same runtime on every node.
+          </p>
+        </div>
+        <div class="act-visual mesh" role="img" aria-label="Three agent nodes connected by a mesh, sharing one memory">
+          <svg viewBox="0 0 360 200" fill="none">
+            <g class="mesh-lines" stroke="#34d399" stroke-opacity="0.35">
+              <path d="M84 52 L276 52" /><path d="M84 52 L180 148" /><path d="M276 52 L180 148" />
+            </g>
+            <g font-family="JetBrains Mono, monospace" font-size="12">
+              <circle cx="84" cy="52" r="26" class="node" />
+              <text x="84" y="56" text-anchor="middle">opus</text>
+              <circle cx="276" cy="52" r="26" class="node" />
+              <text x="276" y="56" text-anchor="middle">grok</text>
+              <circle cx="180" cy="148" r="26" class="node" />
+              <text x="180" y="152" text-anchor="middle">local</text>
+              <text x="180" y="30" text-anchor="middle" class="label">delegation · mTLS</text>
+              <text x="180" y="188" text-anchor="middle" class="label">one shared memory</text>
+            </g>
+          </svg>
+        </div>
+      </section>
+
+      <section class="closing">
+        <h2>Five minutes to a running agent</h2>
+        <div class="install big">
+          <code><span class="prompt">$</span> npx rivetos init</code>
+        </div>
+        <p>
+          The wizard walks through providers, channels, and deployment.
+          <a href="/guides/getting-started/">Getting started →</a>
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Apache 2.0</span>
+      <a href="/guides/introduction/">Docs</a>
+      <a href="/reference/changelog/">Changelog</a>
+      <a href={GH}>GitHub</a>
+    </footer>
+  </body>
+</html>
+
+<style>
+  /* Rivet brand tokens (canonical — see design system) */
+  :root {
+    --bg: #101412;
+    --fg: #e8ede5;
+    --surface: #151a16;
+    --surface-hover: #1b221c;
+    --muted: #93a390;
+    --border: #ffffff0f;
+    --accent: #34d399;
+    --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f6f4;
+      --fg: #1a1f1a;
+      --surface: #e8ece8;
+      --surface-hover: #dde3dd;
+      --muted: #5a665a;
+      --border: #d8e0d8;
+      --accent: #059669;
+    }
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    /* blueprint grid — the signature motif */
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 64px 64px;
+    background-position: center top;
+  }
+  ::selection {
+    background: #10b98140;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  code, pre, .chip {
+    font-family: var(--font-mono);
+  }
+
+  nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 20px 24px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--fg);
+    font-weight: 700;
+    font-size: 1.15rem;
+  }
+  .nav-links {
+    display: flex;
+    gap: 22px;
+  }
+  .nav-links a {
+    color: var(--muted);
+  }
+  .nav-links a:hover {
+    color: var(--accent);
+  }
+
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    gap: 48px;
+    align-items: center;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 56px 24px 72px;
+  }
+  h1 {
+    font-size: clamp(2rem, 4.5vw, 3.1rem);
+    line-height: 1.12;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  h1 em {
+    font-style: normal;
+    color: var(--accent);
+  }
+  .tagline {
+    margin: 18px 0 26px;
+    color: var(--muted);
+    font-size: 1.05rem;
+    max-width: 46ch;
+  }
+  .install {
+    display: inline-block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 18px;
+    margin-bottom: 22px;
+  }
+  .install code {
+    font-size: 0.95rem;
+  }
+  .prompt {
+    color: var(--accent);
+    user-select: none;
+  }
+  .ctas {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    display: inline-block;
+    padding: 10px 22px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    background: var(--surface);
+    font-weight: 500;
+  }
+  .btn:hover {
+    background: var(--surface-hover);
+  }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #08130d;
+  }
+  .btn.primary:hover {
+    filter: brightness(1.08);
+  }
+  .fine {
+    margin-top: 18px;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .hero-demo {
+    min-width: 0;
+  }
+  .hero-demo img {
+    width: 100%;
+    height: auto;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    box-shadow: 0 0 60px #34d39918, 0 24px 48px #0008;
+  }
+  .hero-demo figcaption {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-family: var(--font-mono);
+  }
+
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+  .act {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    gap: 48px;
+    align-items: center;
+    padding: 56px 0;
+    border-top: 1px solid var(--border);
+  }
+  .act:nth-of-type(2n) .act-copy {
+    order: 2;
+  }
+  .index {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    margin-right: 10px;
+  }
+  .act h2 {
+    font-size: 1.6rem;
+    letter-spacing: -0.01em;
+    margin-bottom: 12px;
+  }
+  .act p {
+    color: var(--muted);
+    max-width: 52ch;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .chip {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 0.85rem;
+    color: var(--fg);
+  }
+  .chip.alt {
+    color: var(--accent);
+  }
+
+  .term {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .term-bar {
+    display: flex;
+    gap: 6px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .term-bar i {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--muted);
+    opacity: 0.4;
+  }
+  .term pre {
+    padding: 16px 18px;
+    font-size: 0.82rem;
+    line-height: 1.7;
+    overflow-x: auto;
+  }
+  .term .ok {
+    color: var(--accent);
+  }
+  .term .dim {
+    color: var(--muted);
+  }
+
+  .mesh svg {
+    width: 100%;
+    max-width: 420px;
+    display: block;
+    margin: 0 auto;
+  }
+  .mesh .node {
+    fill: var(--surface);
+    stroke: var(--accent);
+    stroke-opacity: 0.6;
+  }
+  .mesh text {
+    fill: var(--fg);
+  }
+  .mesh .label {
+    fill: var(--muted);
+    font-size: 11px;
+  }
+  .mesh-lines path {
+    stroke-dasharray: 4 6;
+  }
+
+  .closing {
+    text-align: center;
+    padding: 72px 0 88px;
+    border-top: 1px solid var(--border);
+  }
+  .closing h2 {
+    font-size: 1.8rem;
+    margin-bottom: 22px;
+  }
+  .closing p {
+    color: var(--muted);
+    margin-top: 18px;
+  }
+  .install.big code {
+    font-size: 1.1rem;
+  }
+
+  footer {
+    display: flex;
+    justify-content: center;
+    gap: 26px;
+    padding: 26px 24px 40px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  @media (max-width: 840px) {
+    .hero,
+    .act {
+      grid-template-columns: 1fr;
+      gap: 28px;
+      padding-top: 36px;
+      padding-bottom: 36px;
+    }
+    .act:nth-of-type(2n) .act-copy {
+      order: 0;
+    }
+    .hero {
+      padding-top: 20px;
+    }
+  }
+</style>
