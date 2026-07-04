@@ -30,6 +30,8 @@ export interface RivetConfig {
   deployment?: DeploymentSection
   /** Multi-agent mesh configuration — cross-instance delegation */
   mesh?: MeshSection
+  /** rivet-den — per-node agent activity diorama server (services/den-server) */
+  den?: DenSection
   /**
    * Explicit plugin list — npm package names of rivetos plugins to load.
    * Authoritative in production (flat install): missing entries fail-fast.
@@ -80,6 +82,45 @@ export interface MeshSection {
     host: string
     port?: number
   }>
+}
+
+// ---------------------------------------------------------------------------
+// Den Section (YAML shape — snake_case)
+// ---------------------------------------------------------------------------
+
+/**
+ * rivet-den configuration — the per-node activity diorama server.
+ *
+ * When `enabled`, two things happen:
+ * - `rivetos update` deploys/refreshes rivet-den.service on this node and
+ *   GENERATES ~/.rivetos/den.env from this section (host/port/token/terminal
+ *   flags/static+packs dirs).
+ * - The runtime's mesh self-registration advertises the `den` capability and
+ *   `metadata.denPort`, so den viewers discover this node via /mesh.json —
+ *   restart-proof, no hand-editing of mesh.json.
+ */
+export interface DenSection {
+  /** Deploy + advertise the den server on this node (default: false) */
+  enabled?: boolean
+  /** Bind host for the den server (default: 127.0.0.1 — loopback fail-safe) */
+  host?: string
+  /** Den HTTP/WS port (default: 5174) */
+  port?: number
+  /**
+   * Bearer token required on every non-health endpoint when set.
+   * REQUIRED (validation error) when `terminal.enabled` and `host` is not
+   * loopback — mirrors den-server's own startup security gate so the
+   * misconfig fails at config-validate time, not at first click.
+   */
+  token?: string
+  /** Local PTY terminals — off by default (spawns shells as the service user) */
+  terminal?: {
+    enabled?: boolean
+  }
+  /** Override for the SpritePack root served at /packs/ (default: <install>/packages/den-packs/packs) */
+  packs_dir?: string
+  /** Override for the built viewer app served at / (default: <install>/apps/den/dist) */
+  static_dir?: string
 }
 
 // ---------------------------------------------------------------------------

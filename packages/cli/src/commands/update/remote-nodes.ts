@@ -11,6 +11,7 @@
 import { execSync } from 'node:child_process'
 import { buildMeshDispatcher } from '../../lib/mtls.js'
 import { sshExec, sshExecQuiet, resolveSshUser, isSafeArg } from '../../lib/ssh.js'
+import { deployDenRemote, noteDenSkippedForNpmMode } from './den-deploy.js'
 import type { UpdateOptions, NodeUpdateResult } from './types.js'
 
 /**
@@ -264,6 +265,13 @@ export async function gitUpdateNodeAsync(
     }
   }
 
+  // Step 7: den-server deploy stage — nodes whose config has den.enabled get
+  // rivet-den.service built/installed/refreshed alongside rivetos.service.
+  // Auxiliary: a failed den never fails the node update, but it is surfaced
+  // in the result and the summary table. (Only agent nodes reach this point —
+  // infrastructure nodes returned above.)
+  const den = await deployDenRemote(host, nodeName, sshUser, opts.restart)
+
   console.log(
     `    ${tag} ✅ Done (${commit || 'unknown'})${configInvalid ? ' — but config INVALID' : ''}`,
   )
@@ -272,6 +280,7 @@ export async function gitUpdateNodeAsync(
     commit: commit || undefined,
     elapsedMs: Date.now() - start,
     configInvalid: configInvalid || undefined,
+    den,
   }
 }
 
@@ -368,7 +377,14 @@ export async function npmUpdateNodeAsync(
     }
   }
 
-  // Step 5: capture installed version (rivetos version → "RivetOS v0.4.0-beta.2")
+  // Step 5: den-server has no npm-mode deploy path yet (needs a source
+  // checkout) — surface the gap loudly on den-enabled nodes instead of
+  // silently skipping.
+  if (isAgent) {
+    noteDenSkippedForNpmMode(host, nodeName, sshUser)
+  }
+
+  // Step 6: capture installed version (rivetos version → "RivetOS v0.4.0-beta.2")
   const versionOutput = sshExecQuiet(host, 'rivetos version 2>/dev/null || echo unknown', sshUser)
   const versionMatch = versionOutput.match(/v(\S+)/)
   const installedVersion = versionMatch ? versionMatch[1] : 'unknown'

@@ -25,7 +25,12 @@ single snapshot instead of replayed events.
 
 ## Configuration (env)
 
-- `RIVETOS_DEN_PORT` (5174) / `RIVETOS_DEN_HOST` (0.0.0.0)
+On RivetOS-managed nodes these come from `~/.rivetos/den.env`, which
+`rivetos update` GENERATES from the `den:` section of `~/.rivetos/config.yaml`
+— edit the config, not the env file (see Deploy below).
+
+- `RIVETOS_DEN_PORT` (5174) / `RIVETOS_DEN_HOST` (127.0.0.1 — loopback
+  fail-safe; set `0.0.0.0` to serve the LAN, ideally with a token)
 - `RIVETOS_DEN_TOKEN` — when set, every endpoint except `/healthz` requires
   `Authorization: Bearer <token>` (or `?token=` for browser WebSockets).
   Optional on trusted mesh nodes; required for anything internet-facing.
@@ -86,7 +91,16 @@ install, term endpoints answer 503 and everything else works.
 
 ## Deploy
 
-`rivet-den.service` is the systemd unit (drop env overrides in
-`~/.rivetos/den.env`). Harness adapters (Claude Code plugin, Grok Build
-hooks, rivetos-native emitters) live in `integrations/` and the core harness
-layer — they translate harness activity into protocol events and POST here.
+On RivetOS nodes the den is config-driven: set `den.enabled: true` (plus
+host/port/token/terminal) in `~/.rivetos/config.yaml` and run
+`rivetos update`. The update builds this package, installs/refreshes
+`rivet-den.service`, generates `~/.rivetos/den.env` from the config, rebuilds
+`node-pty` when terminals are enabled, restarts the unit, and probes
+`/healthz`. Full flow, node-pty ABI runbook, and the terminal security model:
+[docs/DEN.md](../../docs/DEN.md), "Deploying with RivetOS".
+
+On non-RivetOS hosts, `rivet-den.service` is the systemd unit (there,
+`~/.rivetos/den.env` is yours to hand-edit). Harness adapters (Claude Code
+plugin, Grok Build hooks, rivetos-native emitters) live in `integrations/`
+and the core harness layer — they translate harness activity into protocol
+events and POST here.

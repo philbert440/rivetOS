@@ -1,5 +1,7 @@
-# rivet-den server — install to /etc/systemd/system/rivet-den.service
-# Deployed by `rivetos update` on nodes with den.enabled (see README).
+# rivet-den server — installed to /etc/systemd/system/rivet-den.service by
+# `rivetos update` on nodes whose config has den.enabled: true (see docs/DEN.md).
+# ~/.rivetos/den.env is GENERATED from the config's den: section on every
+# update — edit config.yaml, not the env file.
 [Unit]
 Description=rivet-den server (agent activity diorama)
 After=network-online.target
@@ -8,13 +10,25 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=rivet
+Group=rivet
 WorkingDirectory=/opt/rivetos/services/den-server
 ExecStart=/usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=3
-# Port/auth/dirs — see src/config.ts for all RIVETOS_DEN_* variables
+Environment=HOME=/home/rivet
+# Port/auth/dirs — see src/config.ts for all RIVETOS_DEN_* variables.
+# den.env (config-managed) overrides this default.
 Environment=RIVETOS_DEN_PORT=5174
 EnvironmentFile=-/home/rivet/.rivetos/den.env
+StandardOutput=journal
+StandardError=journal
+
+# Hardening — mirrors rivetos.service. Terminals (when enabled) spawn harness
+# CLIs as the rivet user, so they get the same write surface as the runtime.
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/home/rivet -/rivet-shared /opt/rivetos
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
