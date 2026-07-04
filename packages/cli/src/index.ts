@@ -19,6 +19,7 @@
  *   rivetos test                     — run smoke tests
  *   rivetos skills list              — show all discovered skills
  *   rivetos plugins list             — show loaded plugins with status
+ *   rivetos plugins sync             — refresh TUI plugin installs from source
  *   rivetos version                  — show version
  */
 
@@ -127,6 +128,7 @@ function showHelp(): void {
     rivetos logs [options]              Tail runtime logs (--lines, --follow, --since, --grep)
     rivetos skills list                 Show all discovered skills
     rivetos plugins list                Show configured plugins with status
+    rivetos plugins sync                Refresh TUI plugin installs from source
 
   Providers:
     rivetos <provider> status           Check provider connectivity
