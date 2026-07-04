@@ -1,6 +1,6 @@
 // SpritePack manifest types — spec v1. See PACK.md for the authored contract.
-// Everything the prototype hand-tuned in layout.ts / main.ts lives here as
-// pack data: art grid, chroma key, pose sets, furniture geometry, layout.
+// Everything a den needs that was once hand-tuned in viewer code lives here
+// as pack data: art grid, chroma key, pose sets, furniture geometry, layout.
 
 import type { Activity } from '@rivetos/den-protocol'
 
