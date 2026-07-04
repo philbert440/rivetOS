@@ -97,6 +97,11 @@ export function parseEvent(raw: unknown): AgentEvent | null {
   if (e.v !== PROTOCOL_VERSION) return null
   if (typeof e.session !== 'string' || e.session.length === 0) return null
   if (typeof e.type !== 'string') return null
+  // envelope optionals: wrong-typed metadata (ts: "abc", name: 42) would
+  // otherwise flow into the recency sort / display untouched
+  if (e.name !== undefined && typeof e.name !== 'string') return null
+  if (e.harness !== undefined && typeof e.harness !== 'string') return null
+  if (e.ts !== undefined && (typeof e.ts !== 'number' || !Number.isFinite(e.ts))) return null
   const str = (k: string) => typeof e[k] === 'string'
   switch (e.type) {
     case 'session.start':

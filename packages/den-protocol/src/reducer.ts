@@ -44,6 +44,9 @@ const LOG_MAX = 12
 const TERM_MAX = 6
 
 export function reduceRoom(state: RoomState, ev: AgentEvent): RoomState {
+  // an ended room only wakes up on a new session.start — late tool.end /
+  // speech events from a dying harness must not reanimate it
+  if (state.ended && ev.type !== 'session.start') return state
   switch (ev.type) {
     case 'session.start':
       // the conversation log survives session boundaries (compaction, resume)
@@ -105,6 +108,9 @@ export function reduceRoom(state: RoomState, ev: AgentEvent): RoomState {
       }
     case 'term.line':
       return { ...state, term: [...state.term, ev.text].slice(-TERM_MAX) }
+    default:
+      // additive-within-v1: consumers ignore event types they don't know
+      return state
   }
 }
 
@@ -134,7 +140,9 @@ export function reduceDen(state: DenState, ev: AgentEvent): DenState {
     id: ev.session,
     name: ev.name || prev?.name || ev.session,
     harness: ev.harness ?? prev?.harness,
-    lastEventTs: ev.ts ?? prev?.lastEventTs,
+    // monotonic: a stale out-of-order event must not drop the session down
+    // the recency-sorted picker
+    lastEventTs: ev.ts === undefined ? prev?.lastEventTs : Math.max(ev.ts, prev?.lastEventTs ?? 0),
   }
   return {
     rooms: { ...state.rooms, [ev.session]: reduceRoom(room, ev) },

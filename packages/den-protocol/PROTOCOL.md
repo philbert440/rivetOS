@@ -30,7 +30,7 @@ they don't know.
 | type             | payload                              | effect on RoomState                                              |
 |------------------|--------------------------------------|------------------------------------------------------------------|
 | `session.start`  | `title`                              | reset room (log survives), set title                             |
-| `session.end`    | —                                    | activity → `sleeping`, `ended: true`                             |
+| `session.end`    | —                                    | activity → `sleeping`, `ended: true`; room then ignores all but a new `session.start` |
 | `task.plan`      | `tasks: string[]`                    | replace task list, activity → `writing_plan`                     |
 | `task.check`     | `index`                              | mark task done                                                   |
 | `activity`       | `activity`                           | set coarse activity directly, clears `tool`                      |
