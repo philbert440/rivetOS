@@ -35,16 +35,67 @@
       cursor: pointer; white-space: nowrap;
     }
     #tab-strip button.sel { color: #34d399; border-color: #34d399; }
-    /* gear button + dropdown: EDIT toggle (acts on the focused window) and
-       the global push-to-talk key binding — fixed header strip, top right */
-    #gear {
+    /* global header strip, top right: [+ NEW ▾][⚙]. + NEW only renders when
+       den-server has terminals enabled (see header.ts) */
+    #header-strip {
       position: fixed; top: calc(8px * var(--ui)); right: calc(8px * var(--ui)); z-index: 21;
+      display: flex; gap: calc(6px * var(--ui)); align-items: flex-start;
+    }
+    /* wider strip when + NEW is visible → push the mobile tab strip over */
+    body.term-on #tab-strip { right: calc(160px * var(--ui)); }
+    #gear {
       background: #e8ebef; color: #30394a; border: 2px solid #8b93a1;
       font: 700 calc(16px * var(--ui)) 'Courier New', monospace;
       width: calc(34px * var(--ui)); height: calc(34px * var(--ui));
       border-radius: 8px; cursor: pointer; line-height: 1;
     }
     #gear.on { color: #34d399; border-color: #34d399; }
+    #new-wrap { position: relative; display: none; }
+    #new-wrap.on { display: flex; }
+    #new-wrap > button {
+      background: #e8ebef; color: #30394a; border: 2px solid #8b93a1;
+      font: 700 calc(13px * var(--ui)) 'Courier New', monospace; letter-spacing: 1px;
+      height: calc(34px * var(--ui)); cursor: pointer; line-height: 1;
+    }
+    #new-session { border-radius: 8px 0 0 8px; padding: 0 calc(10px * var(--ui)); }
+    #new-menu-btn { border-radius: 0 8px 8px 0; border-left: none; padding: 0 calc(7px * var(--ui)); }
+    #new-session:hover, #new-menu-btn:hover { color: #2f9e63; border-color: #2f9e63; }
+    #new-menu {
+      position: absolute; top: calc(100% + 6px); right: 0; z-index: 21;
+      display: none; flex-direction: column; gap: 6px;
+      background: #0e1622ee; border: 2px solid #3a4a5e; border-radius: 8px;
+      padding: calc(8px * var(--ui));
+    }
+    #new-menu.open { display: flex; }
+    #new-menu button {
+      background: #1a2534; color: #9fb3c8; border: 1px solid #3a4a5e;
+      font: 700 calc(12px * var(--ui)) 'Courier New', monospace; letter-spacing: 1px;
+      padding: calc(7px * var(--ui)) calc(12px * var(--ui)); border-radius: 6px;
+      cursor: pointer; text-align: left; white-space: nowrap;
+    }
+    #new-menu button:hover { color: #34d399; border-color: #34d399; }
+    /* wake affordance on the sleeping idle window (term-enabled servers) */
+    .wake-chip {
+      position: fixed; z-index: 10; transform: translate(-50%, -50%);
+      background: #0e1622cc; color: #6ee7a8; border: 1px solid #2f9e63;
+      font: 700 calc(12px * var(--ui)) 'Courier New', monospace; letter-spacing: 1px;
+      padding: calc(6px * var(--ui)) calc(12px * var(--ui)); border-radius: 999px;
+      cursor: pointer; white-space: nowrap;
+    }
+    .wake-chip:hover { color: #0e1622; background: #34d399; }
+    /* per-window terminal drawer: window CHROME (frame bezel styling), not
+       room scene — pinned over the room recess by a DomAnchor (drawer.ts) */
+    .term-drawer {
+      position: fixed; z-index: 9; box-sizing: border-box;
+      background: #b7bec9; border: 2px solid #8b93a1;
+      border-radius: 4px 4px 10px 10px; padding: 6px;
+      box-shadow: 0 12px 28px #0009;
+    }
+    .term-drawer-well {
+      width: 100%; height: 100%; box-sizing: border-box; overflow: hidden;
+      background: #30394a; border-radius: 5px; padding: 5px;
+    }
+    .term-drawer .xterm { height: 100%; }
     #gear-menu {
       position: fixed; top: calc(48px * var(--ui)); right: calc(8px * var(--ui)); z-index: 21;
       display: none; flex-direction: column; gap: 6px;
@@ -86,7 +137,14 @@
   <div id="stage"></div>
   <div id="ptt-live">● MIC LIVE</div>
   <div id="tab-strip"></div>
-  <button id="gear" title="settings">⚙</button>
+  <div id="header-strip">
+    <div id="new-wrap">
+      <button id="new-session" title="new session (server default harness)">+ NEW</button>
+      <button id="new-menu-btn" title="pick a harness">▾</button>
+      <div id="new-menu"></div>
+    </div>
+    <button id="gear" title="settings">⚙</button>
+  </div>
   <div id="gear-menu">
     <button id="edit-btn">EDIT ROOM</button>
     <button id="ptt-key">TALK KEY: SPACE</button>

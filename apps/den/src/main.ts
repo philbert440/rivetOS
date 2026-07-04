@@ -1,8 +1,10 @@
 // Boot + orchestration: Pixi app, pack/font/asset loading, the window grid
 // (one complete den window per active session, via the WindowManager),
-// session store wiring, and the global DOM chrome (gear menu, push-to-talk,
-// edit panel, mobile tab strip). Per-window chrome (title, subtitle, LED, ✕)
-// lives in room.ts; grid layout + focus live in windows.ts.
+// session store wiring, and the global DOM chrome (header strip with + NEW
+// and the gear menu, push-to-talk, edit panel, mobile tab strip, per-window
+// terminal drawers). Per-window chrome (title, subtitle, LED, ✕, `>_`) lives
+// in room.ts; grid layout + focus live in windows.ts; the drawer itself in
+// drawer.ts.
 
 import { Application } from 'pixi.js'
 import {
@@ -21,7 +23,9 @@ import { createLayoutModel } from './layout-model.js'
 import { createRoom, MARGIN, TITLEBAR } from './room.js'
 import { createSessionStore, IDLE_SESSION, LOCAL_SESSIONS } from './sessions.js'
 import { createWindowManager } from './windows.js'
-import { serverHttp } from './net.js'
+import { createDrawer, type Drawer } from './drawer.js'
+import { createHeader } from './header.js'
+import { serverHttp, withToken } from './net.js'
 
 async function boot() {
   const app = new Application()
@@ -98,6 +102,8 @@ async function boot() {
   function closeSession(id: string) {
     // exactly the old #session-x semantics, relocated per-window:
     // DELETE /session server-side, drop locally, and reflow the grid
+    // (den-server also kills any PTY still linked to the session)
+    dropDrawer(id)
     store.delete(id)
     wm.remove(id)
     syncIdleWindow()
@@ -157,6 +163,34 @@ async function boot() {
     } else if (hasReal && wm.has(IDLE_SESSION)) {
       wm.remove(IDLE_SESSION)
     }
+    syncWakeChip()
+  }
+
+  // wake affordance on the sleeping idle window: a chip that spawns the
+  // server's default harness (only rendered when terminals are enabled)
+  let wakeChip: { el: HTMLElement; off: () => void } | null = null
+  function syncWakeChip() {
+    const idleRoom = wm.get(IDLE_SESSION)
+    const want = !!idleRoom && header.enabled()
+    if (want && !wakeChip) {
+      const el = document.createElement('button')
+      el.className = 'wake-chip'
+      el.textContent = '>_ start a session'
+      el.title = 'spawn the default harness'
+      el.addEventListener('click', () => header.spawnDefault())
+      document.body.appendChild(el)
+      const off = wm.addAnchor({
+        el,
+        room: idleRoom,
+        x: MARGIN + m.shell.w / 2,
+        y: TITLEBAR + MARGIN + m.shell.h * 0.72, // over the floor, clear of the whiteboard
+      })
+      wakeChip = { el, off }
+    } else if (!want && wakeChip) {
+      wakeChip.off()
+      wakeChip.el.remove()
+      wakeChip = null
+    }
   }
 
   // ---- preview: local events act on a scratch copy of the FOCUSED room ----
@@ -209,6 +243,8 @@ async function boot() {
       const room = wm.ensure(id)
       room.setTitle(nameFor(id), s.ended) // late-arriving names update here too
       if (!(previewing && id === previewRoomId)) room.setState(s)
+      syncTermChrome(id)
+      adoptSpawn(id)
       syncIdleWindow()
     },
     onEvent: (ev) => {
@@ -216,6 +252,7 @@ async function boot() {
       wm.get(ev.session)?.onEvent(ev)
     },
     onSessionRemoved: (id) => {
+      dropDrawer(id)
       wm.remove(id)
       syncIdleWindow()
     },
@@ -228,13 +265,89 @@ async function boot() {
         const room = wm.ensure(id)
         room.setTitle(nameFor(id), s.ended)
         if (!(previewing && id === previewRoomId)) room.setState(s)
+        syncTermChrome(id)
       }
+      // drawers whose windows the reconcile destroyed
+      for (const id of [...drawers.keys()]) if (!wm.has(id)) dropDrawer(id)
       syncIdleWindow()
+    },
+    onPty: (id) => {
+      // PTY link learned late (throttled /sessions refresh or a + NEW spawn)
+      syncTermChrome(id)
+      adoptSpawn(id)
     },
     onDemoEvent: (ev) => {
       if (!pttActive && !editorActive) applyLocal(ev)
     },
   })
+
+  // ---- per-window terminal drawers (sessions with a linked PTY only) ----
+  const drawers = new Map<string, Drawer>()
+  function syncTermChrome(id: string) {
+    if (LOCAL_SESSIONS.has(id)) return
+    const room = wm.get(id)
+    if (!room) return
+    const ptyId = store.sessionPtys[id]
+    if (ptyId && !drawers.has(id)) {
+      const drawer = createDrawer(room, id, {
+        wm,
+        onOpenChange: (open) => room.setTermOpen(open),
+      })
+      drawers.set(id, drawer)
+      room.setTerm({
+        onToggle: () => drawer.toggle(),
+        onKill: () => {
+          // end the PTY explicitly, then leave through the normal dismiss
+          // (DELETE /session) so the window goes away for every viewer —
+          // session eviction alone would keep it around for the evict TTL
+          const pid = store.sessionPtys[id]
+          if (pid)
+            void fetch(withToken(`${serverHttp}/term?id=${encodeURIComponent(pid)}`), {
+              method: 'DELETE',
+            }).catch(() => {})
+          closeSession(id)
+        },
+      })
+    } else if (!ptyId && drawers.has(id)) {
+      // the PTY vanished server-side (reaped) — back to a plain observer
+      dropDrawer(id)
+      room.setTerm(null)
+    }
+  }
+  function dropDrawer(id: string) {
+    const d = drawers.get(id)
+    if (!d) return
+    d.destroy()
+    drawers.delete(id)
+  }
+
+  // ---- global header strip: [+ NEW ▾][⚙] ----
+  // + NEW spawns a harness via POST /term; when the harness's den session
+  // shows up on the event stream we focus its window and drop its drawer
+  // open. Correlation is by denSession, with a 15s expiry.
+  const SPAWN_CORRELATE_MS = 15_000
+  const pendingSpawn = new Map<string, ReturnType<typeof setTimeout>>()
+  function adoptSpawn(id: string) {
+    const timer = pendingSpawn.get(id)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    pendingSpawn.delete(id)
+    wm.focus(id)
+    drawers.get(id)?.setOpen(true)
+  }
+  const header = createHeader({
+    onSpawned: (denSession, ptyId) => {
+      store.setPty(denSession, ptyId)
+      const old = pendingSpawn.get(denSession)
+      if (old) clearTimeout(old)
+      pendingSpawn.set(
+        denSession,
+        setTimeout(() => pendingSpawn.delete(denSession), SPAWN_CORRELATE_MS),
+      )
+      if (wm.has(denSession)) adoptSpawn(denSession) // window already up
+    },
+  })
+  void header.ready.then(() => syncWakeChip()) // idle chip needs enabled()
 
   syncIdleWindow() // boot state: one sleeping window until the feed speaks
 
@@ -304,7 +417,7 @@ async function boot() {
 
   // headless-verification / debugging handle (?debug)
   if (new URLSearchParams(location.search).has('debug'))
-    Object.assign(window, { __den: { wm, store } })
+    Object.assign(window, { __den: { wm, store, drawers, header } })
 
   // ---- debug: freeze a single activity via URL hash (#test-editing_code) ----
   const testActivity = /^#test-(\w+)$/.exec(location.hash)?.[1]
