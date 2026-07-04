@@ -75,7 +75,7 @@ async function main() {
   const stateDir = path.join(os.homedir(), '.cache', 'rivet-den')
   fs.mkdirSync(stateDir, { recursive: true })
   const stateFile = path.join(stateDir, `${session.replace(/[^\w.-]/g, '_')}.json`)
-  let st = { started: false, labels: [], done: [], offset: 0, lastSent: '', turnStart: 0, cog: null }
+  let st = { started: false, labels: [], done: [], offset: 0, lastSent: '', turnStart: 0, cog: null, taskIds: [] }
   try {
     st = { ...st, ...JSON.parse(fs.readFileSync(stateFile, 'utf8')) }
   } catch {
@@ -270,6 +270,29 @@ async function main() {
       if (isPlanningTool) {
         // no tool.start was emitted for these — no tool.end either
         if (toolName === 'TodoWrite') handleTodos(toolInput.todos)
+        // TaskCreate/TaskUpdate (the newer task tools) drive the whiteboard
+        // too: the hook keeps its own id→row ledger since, unlike TodoWrite,
+        // each call carries only a delta rather than the whole list
+        if (toolName === 'TaskCreate') {
+          const label = String(toolInput.subject ?? '').slice(0, 60)
+          const idMatch = /#(\d+)/.exec(
+            typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse ?? ''),
+          )
+          if (label) {
+            st.labels.push(label)
+            st.done.push(false)
+            st.taskIds.push(idMatch ? idMatch[1] : null)
+            emit({ type: 'task.plan', tasks: st.labels })
+            st.done.forEach((d, i) => d && emit({ type: 'task.check', index: i }))
+          }
+        }
+        if (toolName === 'TaskUpdate' && toolInput.status === 'completed') {
+          const idx = st.taskIds.indexOf(String(toolInput.taskId ?? ''))
+          if (idx >= 0 && !st.done[idx]) {
+            st.done[idx] = true
+            emit({ type: 'task.check', index: idx })
+          }
+        }
       } else {
         if (isShellTool) {
           const r = toolResponse

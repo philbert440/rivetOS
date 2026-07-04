@@ -56,8 +56,9 @@ describe('toolActivity fallback mapping', () => {
     expect(toolActivity('Read')).toBe('thinking');
     expect(toolActivity('TaskCreate')).toBe('writing_plan');
   });
-  it('falls back to running_command for unknown tools', () => {
-    expect(toolActivity('Bash')).toBe('running_command');
+  it('maps shell tools to the computer, unknown tools to the toolbox', () => {
+    expect(toolActivity('Bash')).toBe('editing_code');
+    expect(toolActivity('run_terminal_cmd')).toBe('editing_code');
     expect(toolActivity('mcp:whatever:frobnicate')).toBe('running_command');
   });
 });
@@ -66,7 +67,7 @@ describe('reduceRoom', () => {
   it('tool.start sets tool + derived activity; tool.end clears back to thinking', () => {
     let s = reduceRoom(initialRoomState, ev('s', { type: 'tool.start', tool: 'Bash' }));
     expect(s.tool).toBe('Bash');
-    expect(s.activity).toBe('running_command');
+    expect(s.activity).toBe('editing_code');
     s = reduceRoom(s, ev('s', { type: 'tool.end' }));
     expect(s.tool).toBeNull();
     expect(s.activity).toBe('thinking');
@@ -128,7 +129,7 @@ describe('reduceDen (multi-session)', () => {
       ev('a', { type: 'tool.start', tool: 'Bash' }, { ts: 300 }),
     ]);
     expect(Object.keys(den.rooms)).toEqual(['a', 'b']);
-    expect(den.rooms.a.activity).toBe('running_command');
+    expect(den.rooms.a.activity).toBe('editing_code');
     expect(den.rooms.b.activity).toBe('idle');
   });
 

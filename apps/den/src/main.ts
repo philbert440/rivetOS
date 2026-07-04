@@ -799,6 +799,7 @@ async function boot() {
     }
   }
   let t = 0
+  let stickyActivity: Activity = 'idle' // last activity with a place of its own
   type ChairPhase = 'hop_on' | 'swivel_in' | 'type' | 'swivel_out' | 'hop_off'
   let chairSeq: { phase: ChairPhase; t: number } | null = null
   let hiddenFurn: string[] | null = null // furniture currently replaced by composite art
@@ -813,7 +814,12 @@ async function boot() {
 
   app.ticker.add((tk) => {
     t += tk.deltaMS
-    const station = stations[state.activity] ?? stations.idle
+    // thinking/listening happen wherever you already are — the robot keeps
+    // its spot (desk, board, toolbox) and just shows the bubble/pose instead
+    // of trotting to a dedicated corner between every tool call
+    if (state.activity !== 'thinking' && state.activity !== 'listening')
+      stickyActivity = state.activity
+    const station = stations[stickyActivity] ?? stations.idle
     const targetPose = resolvePose(m, state.activity, state.tool)
     // seat choreography kicks in when the activity's station is the chair
     const wantsChair = station.furn === 'chair' && !!furniture['chair']
