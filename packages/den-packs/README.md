@@ -14,5 +14,5 @@ import { validatePack } from '@rivetos/den-packs'
 const { ok, errors, manifest } = validatePack('path/to/pack')
 ```
 
-`packs/default` is `default-pack@1`: the prototype den art (s440 character
-family, Phil's room arrangement) migrated into the manifest format.
+`packs/default` is `default-pack@2`: the high-fi Grok Imagine art set —
+see [ART-PIPELINE.md](ART-PIPELINE.md) for how it was authored.
