@@ -315,6 +315,20 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       proc.onExit((exitCode) => onExit(r, exitCode))
       audit('spawn', r)
       armDetachedTtl(r)
+      // room:true entries get their den room immediately: harness hooks only
+      // fire on the first prompt, and the viewer can't offer a terminal to
+      // type that prompt into until a session window exists. The harness's
+      // own events land in the same room via RIVET_DEN_SESSION and take over.
+      if (entry.room)
+        deps.ingest({
+          v: 1,
+          session: denSession,
+          type: 'session.start',
+          title: entry.label,
+          name: env.RIVET_DEN_NAME,
+          harness: 'rivetos',
+          ts: now(),
+        })
       return info(r)
     },
 
