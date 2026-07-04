@@ -30,9 +30,14 @@ magenta background. Then:
     tools/process-strip.py strip.png POSE --pack <dir>
 
 Keys, trims, normalizes both frames onto one bottom-center-anchored canvas
-(no jitter), installs as `POSE_f0/f1.png`. `--single` installs one image as
-both frames; `--footfix` mirrors the clean right foot over a notched left
-one — opt-in, symmetric standing poses only (it corrupts walk cycles).
+(no jitter), installs as `POSE_f0/f1.png`.
+
+Flags:
+
+- `--single` — one image instead of a strip, installed as both frames.
+- `--footfix` — mirror the clean right foot over a notched left one.
+  **Opt-in on purpose**: it assumes a symmetric standing pose and silently
+  corrupts walk cycles. Reach for it only on the specific notch artifact.
 
 ## Recipe 2 — animation series (3+ frames)
 
@@ -47,6 +52,13 @@ independently — that is exactly what re-introduces jitter. If frames come
 back inconsistent (one huge, one shifted), don't fight it with per-frame
 offsets: regenerate the series. A consistent series costs one prompt; an
 inconsistent one costs an evening.
+
+Flags:
+
+- `--lcc` — largest-connected-component speckle cleanup, same as
+  process-strip's built-in. **Opt-in on purpose**: composite poses contain
+  legitimately disconnected pieces (character apart from furniture, floating
+  Z's) that the cleanup would delete. Eyeball the output when you use it.
 
 ## Recipe 3 — composite pose (character + furniture in one art)
 
