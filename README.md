@@ -29,6 +29,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **Full control surface** — `/stop`, `/steer`, `/new`, `/status`, `/model`, `/think`, `/context`.
 - **Interrupt that works** — `AbortController` propagated to every API call and tool.
 - **Persistent memory** — PostgreSQL + pgvector. Hybrid FTS + vector search. Summary DAG. Learning loop.
+- **rivet-den** — a live pixel-art diorama of your agent at work. [Watch the demo](docs/DEN.md).
 - **Structured observability** — JSON logging, runtime metrics, health endpoints, `rivetos doctor`.
 - **LTS releases** — Pin a version. It won't break for 12 months.
 - **Apache 2.0** — No CLA, no dual-licensing, no surprises. Patent grant included.
@@ -264,6 +265,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 - [Skills](docs/SKILLS.md) — How to write and share skills
 - [Deployment](docs/DEPLOYMENT.md) — Docker, Proxmox, multi-agent, backup
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — Common issues and fixes
+- [rivet-den](docs/DEN.md) — Live agent diorama: quickstart, protocol, pack spec, art pipeline
 - [Examples](docs/examples/) — Ready-to-use config files
 
 ## License
