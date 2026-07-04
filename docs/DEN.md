@@ -188,6 +188,12 @@ behind HTTP — so the whole model in one place:
   validator refuses the config at deploy time, and den-server re-checks at
   startup and force-disables terminals (loudly) if the state is ever reached
   anyway.
+- **Trusted-network opt-out.** `den.terminal.open: true` explicitly waives the
+  token requirement — for private LANs where convenience wins. Understand what
+  it means: anything that can reach the port can spawn a shell as the service
+  user. den-server logs the open state at startup; it is never the default.
+  (`token:` can then be omitted entirely — the whole den runs unauthenticated,
+  like the pre-2.0 prototype did.)
 - **Roster ownership.** The HTTP API accepts only command *keys* from the
   operator-owned roster (`~/.rivetos/den-term.json`); argv/cwd/env never
   travel over the wire in either direction, and every command is spawned

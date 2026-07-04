@@ -120,6 +120,7 @@ function baseConfig(stateDir: string, term: Partial<DenTermConfig> = {}): DenCon
     meshCacheMs: 10_000,
     term: {
       enabled: true,
+      open: false,
       configFile: join(stateDir, 'den-term.json'),
       maxPtys: 4,
       scrollbackBytes: 262_144,

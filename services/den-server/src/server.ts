@@ -212,9 +212,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // host would hang an unauthenticated shell (running as the service user)
   // on the network. Force terminals off and say so loudly — but never crash:
   // Restart=on-failure would loop the whole den over a config mistake.
+  // RIVETOS_DEN_TERM_OPEN=1 is the explicit operator opt-out for trusted
+  // private networks — the gate stands down, the log line stays.
   const LOOPBACK_HOSTS = ['127.0.0.1', '::1', 'localhost']
   const termGateError =
-    config.term.enabled && !config.token && !LOOPBACK_HOSTS.includes(config.host)
+    config.term.enabled &&
+    !config.term.open &&
+    !config.token &&
+    !LOOPBACK_HOSTS.includes(config.host)
       ? 'terminal disabled: RIVETOS_DEN_TOKEN required when host is not loopback'
       : ''
   const termEnabled = config.term.enabled && !termGateError
@@ -222,7 +227,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     console.error(
       `[den-server] SECURITY: refusing to enable terminals — RIVETOS_DEN_TERM is set but ` +
         `RIVETOS_DEN_TOKEN is empty and host ${config.host} is not loopback. ` +
-        `Set RIVETOS_DEN_TOKEN or bind to 127.0.0.1.`,
+        `Set RIVETOS_DEN_TOKEN, bind to 127.0.0.1, or opt out with RIVETOS_DEN_TERM_OPEN=1 ` +
+        `on a trusted network.`,
+    )
+  if (termEnabled && config.term.open && !config.token && !LOOPBACK_HOSTS.includes(config.host))
+    console.warn(
+      `[den-server] terminals are OPEN (tokenless on ${config.host}) by explicit ` +
+        `RIVETOS_DEN_TERM_OPEN — anything that can reach this port can spawn a shell ` +
+        `as this user.`,
     )
 
   const rosterProvider = createRosterProvider(config.term.configFile)

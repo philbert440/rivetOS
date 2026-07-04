@@ -69,6 +69,7 @@ async function start(
     meshCacheMs: 10_000,
     term: {
       enabled: true,
+      open: false,
       configFile: join(stateDir, 'den-term.json'),
       maxPtys: 4,
       scrollbackBytes: 262_144,
@@ -305,6 +306,10 @@ describe('term endpoints', () => {
     }
     // the event relay keeps working — the gate only takes terminals down
     expect((await post(exposed.base, '/event', { v: 1, session: 's', type: 'session.end' })).status).toBe(200)
+
+    // enabled + no token + 0.0.0.0 + explicit open flag → allowed (trusted LAN)
+    const open = await start({ host: '0.0.0.0', token: '' }, { open: true })
+    expect((await post(open.base, '/term', { command: 'shell' })).status).toBe(201)
 
     // enabled + no token + loopback → fine (mesh-internal default posture)
     const loopback = await start({ host: '127.0.0.1', token: '' })

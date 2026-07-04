@@ -96,6 +96,9 @@ memory:
 #   token: change-me         # REQUIRED when terminal.enabled and host isn't loopback
 #   terminal:
 #     enabled: false         # local PTY terminals — a deliberate opt-in
+#     open: false            # true = explicitly allow tokenless terminals on a
+#                            # trusted private network (anything that can reach
+#                            # the port can spawn a shell as the service user)
 #   # static_dir: /opt/rivetos/apps/den/dist            # defaults derived
 #   # packs_dir: /opt/rivetos/packages/den-packs/packs  # from install root
 
