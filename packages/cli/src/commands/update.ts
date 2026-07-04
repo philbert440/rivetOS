@@ -25,6 +25,7 @@ import { loadMeshFile, type MeshNode } from '../lib/mesh-file.js'
 import { restartViaSystemd, assertSafeArg, resolveSshUser } from '../lib/ssh.js'
 import type { UpdateOptions, NodeUpdateResult } from './update/types.js'
 import { gitUpdateNodeAsync, npmUpdateNodeAsync, waitForHealth } from './update/remote-nodes.js'
+import { deployDenLocal } from './update/den-deploy.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
@@ -314,6 +315,13 @@ export default async function update(): Promise<void> {
     }
   }
 
+  // Step 4.5: den-server deploy stage (bare-metal/manual only) — deploys or
+  // refreshes rivet-den.service when the config has den.enabled, prints a
+  // notice when an unmanaged rivet-den.service is running, no-op otherwise.
+  if (deployment === 'manual' || deployment === 'bare-metal') {
+    await deployDenLocal(ROOT, opts.restart)
+  }
+
   // Step 5: Post-update — report what changed
   const newPkg = JSON.parse(await readFile(resolve(ROOT, 'package.json'), 'utf-8')) as {
     version: string
@@ -572,6 +580,9 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
       let status: string
       if (isAgent) {
         status = result.configInvalid ? '✅ ⚠cfg' : '✅'
+        // den-server deploy stage marker (nodes with den.enabled)
+        if (result.den === 'deployed') status += ' +den'
+        else if (result.den === 'failed') status += ' ⚠den'
       } else if (result.workers && result.workers.length > 0) {
         status = `✅ (sync+${String(result.workers.length)}w)`
       } else {
@@ -591,6 +602,12 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   if (cfgBad.length > 0) {
     console.log(
       `  🚨 ${String(cfgBad.length)} node(s) have an INVALID config after this update — they will crash-loop until fixed (see per-node output above).`,
+    )
+  }
+  const denBad = results.filter((r) => r.den === 'failed')
+  if (denBad.length > 0) {
+    console.log(
+      `  ⚠️  ${String(denBad.length)} node(s) failed the den-server deploy stage (rivetos itself updated fine — see per-node output above, and journalctl -u rivet-den on the node).`,
     )
   }
   console.log('')
@@ -681,6 +698,9 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
             )
           }
         }
+
+        // den-server deploy stage — same treatment the remotes got.
+        await deployDenLocal(ROOT, localOpts.restart)
       }
 
       console.log('  ✅ Local node updated')

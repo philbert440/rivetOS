@@ -24,6 +24,7 @@ import {
   validateChannels,
   validateMemory,
   validateMesh,
+  validateDen,
 } from './sections.js'
 import { validateDeployment } from './deployment.js'
 import { validateCrossReferences } from './cross-refs.js'
@@ -182,6 +183,15 @@ export function validateConfig(config: unknown): ValidationResult {
       issues.push({ severity: 'error', path: 'mesh', message: '"mesh" must be an object' })
     } else {
       validateMesh(cfg.mesh as Record<string, unknown>, issues)
+    }
+  }
+
+  // === den (optional — deploy wiring + terminal security gate) ===
+  if (cfg.den) {
+    if (typeof cfg.den !== 'object' || Array.isArray(cfg.den)) {
+      issues.push({ severity: 'error', path: 'den', message: '"den" must be an object' })
+    } else {
+      validateDen(cfg.den as Record<string, unknown>, issues)
     }
   }
 

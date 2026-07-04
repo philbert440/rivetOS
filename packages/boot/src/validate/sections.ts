@@ -14,6 +14,9 @@ import {
   KNOWN_HEARTBEAT_KEYS,
   KNOWN_PIPELINE_KEYS,
   KNOWN_MEMORY_POSTGRES_KEYS,
+  KNOWN_DEN_KEYS,
+  KNOWN_DEN_TERMINAL_KEYS,
+  DEN_LOOPBACK_HOSTS,
   API_KEY_PATTERNS,
   type ValidationIssue,
 } from './types.js'
@@ -634,6 +637,126 @@ export function validateMesh(mesh: Record<string, unknown>, issues: ValidationIs
       path: `${path}.secret`,
       message:
         'mesh.secret is deprecated for agent-channel authentication (mTLS is now used exclusively). It is retained only for update --mesh orchestration. Do not rely on it for new code.',
+    })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Den — rivet-den per-node server (deploy + mesh advertising)
+//
+// The terminal token rule mirrors den-server's own startup security gate
+// (services/den-server/src/server.ts): terminals spawn shells as the service
+// user, so exposing them off-loopback without a bearer token would hang an
+// unauthenticated shell on the network. den-server force-disables terminals
+// at runtime in that state; we reject the config here so the mistake is
+// caught at config-validate/deploy time, not at first click.
+// ---------------------------------------------------------------------------
+
+export function validateDen(den: Record<string, unknown>, issues: ValidationIssue[]): void {
+  const path = 'den'
+
+  for (const key of Object.keys(den)) {
+    if (!KNOWN_DEN_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `${path}.${key}`,
+        message: `Unknown den key "${key}"`,
+      })
+    }
+  }
+
+  if (den.enabled !== undefined && typeof den.enabled !== 'boolean') {
+    issues.push({
+      severity: 'error',
+      path: `${path}.enabled`,
+      message: '"den.enabled" must be a boolean',
+    })
+  }
+
+  if (den.host !== undefined && (typeof den.host !== 'string' || den.host.trim() === '')) {
+    issues.push({
+      severity: 'error',
+      path: `${path}.host`,
+      message: '"den.host" must be a non-empty string (bind address, e.g. 127.0.0.1 or 0.0.0.0)',
+    })
+  }
+
+  if (den.port !== undefined) {
+    if (
+      typeof den.port !== 'number' ||
+      !Number.isInteger(den.port) ||
+      den.port < 1 ||
+      den.port > 65535
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.port`,
+        message: '"den.port" must be an integer between 1 and 65535',
+      })
+    }
+  }
+
+  if (den.token !== undefined && typeof den.token !== 'string') {
+    issues.push({
+      severity: 'error',
+      path: `${path}.token`,
+      message: '"den.token" must be a string',
+    })
+  }
+
+  let terminalEnabled = false
+  if (den.terminal !== undefined) {
+    if (typeof den.terminal !== 'object' || Array.isArray(den.terminal) || den.terminal === null) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.terminal`,
+        message: '"den.terminal" must be an object (e.g. { enabled: true })',
+      })
+    } else {
+      const terminal = den.terminal as Record<string, unknown>
+      for (const key of Object.keys(terminal)) {
+        if (!KNOWN_DEN_TERMINAL_KEYS.has(key)) {
+          issues.push({
+            severity: 'warning',
+            path: `${path}.terminal.${key}`,
+            message: `Unknown den.terminal key "${key}"`,
+          })
+        }
+      }
+      if (terminal.enabled !== undefined && typeof terminal.enabled !== 'boolean') {
+        issues.push({
+          severity: 'error',
+          path: `${path}.terminal.enabled`,
+          message: '"den.terminal.enabled" must be a boolean',
+        })
+      }
+      terminalEnabled = terminal.enabled === true
+    }
+  }
+
+  for (const key of ['packs_dir', 'static_dir'] as const) {
+    if (den[key] !== undefined && (typeof den[key] !== 'string' || den[key].trim() === '')) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.${key}`,
+        message: `"den.${key}" must be a non-empty string path`,
+      })
+    }
+  }
+
+  // SECURITY GATE — token required when terminals are exposed off loopback.
+  // Only enforced when den.enabled (a disabled section deploys nothing);
+  // den-server's own runtime gate remains the backstop.
+  const host = typeof den.host === 'string' ? den.host.trim() : '127.0.0.1'
+  const hasToken = typeof den.token === 'string' && den.token.length > 0
+  if (den.enabled === true && terminalEnabled && !DEN_LOOPBACK_HOSTS.has(host) && !hasToken) {
+    issues.push({
+      severity: 'error',
+      path: `${path}.token`,
+      message:
+        '"den.token" is required when den.terminal.enabled is true and den.host is not loopback ' +
+        '(127.0.0.1/::1/localhost) — an exposed token-less terminal would hang an unauthenticated ' +
+        'shell on the network. Set den.token or bind den.host to loopback.',
     })
   }
 }

@@ -910,3 +910,137 @@ describe('mesh.advertise_host', () => {
     assertError(validateConfig(cfg), 'mesh.advertise_host', /shell-unsafe/)
   })
 })
+
+// ===========================================================================
+// den — deploy wiring + terminal security gate
+// ===========================================================================
+
+describe('den', () => {
+  it('config without a den section is valid (den disabled by default)', () => {
+    assertValid(validateConfig(validConfig()))
+  })
+
+  it('accepts a minimal enabled den section', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('accepts a fully specified den section', () => {
+    const cfg = validConfig()
+    cfg.den = {
+      enabled: true,
+      host: '0.0.0.0',
+      port: 5174,
+      token: 'a-long-secret',
+      terminal: { enabled: true },
+      packs_dir: '/opt/rivetos/packages/den-packs/packs',
+      static_dir: '/opt/rivetos/apps/den/dist',
+    }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('rejects a non-object den section', () => {
+    const cfg = validConfig()
+    cfg.den = ['enabled']
+    assertError(validateConfig(cfg), 'den', 'must be an object')
+  })
+
+  it('warns on unknown den keys', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, prot: 5174 }
+    assertWarning(validateConfig(cfg), 'den.prot', 'Unknown den key')
+  })
+
+  it('warns on unknown den.terminal keys', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, terminal: { enabled: true, shell: '/bin/zsh' }, token: 't' }
+    assertWarning(validateConfig(cfg), 'den.terminal.shell', 'Unknown den.terminal key')
+  })
+
+  it('rejects non-boolean enabled', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: 'yes' }
+    assertError(validateConfig(cfg), 'den.enabled', 'must be a boolean')
+  })
+
+  it('rejects an empty host', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, host: '  ' }
+    assertError(validateConfig(cfg), 'den.host', /non-empty string/)
+  })
+
+  it('rejects out-of-range and non-integer ports', () => {
+    for (const port of [0, 65536, 51.74, 'p5174']) {
+      const cfg = validConfig()
+      cfg.den = { enabled: true, port }
+      assertError(validateConfig(cfg), 'den.port', /integer between 1 and 65535/)
+    }
+  })
+
+  it('port is optional (defaults applied downstream)', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, host: '0.0.0.0' }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('rejects a non-object terminal', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, terminal: true }
+    assertError(validateConfig(cfg), 'den.terminal', 'must be an object')
+  })
+
+  it('rejects non-boolean terminal.enabled', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, terminal: { enabled: 'on' } }
+    assertError(validateConfig(cfg), 'den.terminal.enabled', 'must be a boolean')
+  })
+
+  it('rejects empty packs_dir / static_dir overrides', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, packs_dir: '', static_dir: 42 }
+    const result = validateConfig(cfg)
+    assertError(result, 'den.packs_dir', /non-empty string path/)
+    assertError(result, 'den.static_dir', /non-empty string path/)
+  })
+
+  // --- terminal security gate (mirrors den-server's startup gate) ---------
+
+  it('requires a token when terminals are enabled on a non-loopback host', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, host: '0.0.0.0', terminal: { enabled: true } }
+    assertError(validateConfig(cfg), 'den.token', /token.*required|required when/i)
+  })
+
+  it('allows token-less terminals on the default (loopback) host', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, terminal: { enabled: true } }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('allows token-less terminals on an explicit loopback host', () => {
+    for (const host of ['127.0.0.1', '::1', 'localhost']) {
+      const cfg = validConfig()
+      cfg.den = { enabled: true, host, terminal: { enabled: true } }
+      assertValid(validateConfig(cfg))
+    }
+  })
+
+  it('allows exposed terminals when a token is set', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, host: '0.0.0.0', token: 'secret', terminal: { enabled: true } }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('allows an exposed host without terminals and without a token', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, host: '0.0.0.0' }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('does not fire the gate when den is disabled (section is inert)', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: false, host: '0.0.0.0', terminal: { enabled: true } }
+    assertValid(validateConfig(cfg))
+  })
+})

@@ -1,5 +1,7 @@
 /** Shared types for the `rivetos update` command and its remote-node workers. */
 
+import type { DenDeployOutcome } from './den-deploy.js'
+
 export interface UpdateOptions {
   version?: string
   restart: boolean
@@ -26,4 +28,8 @@ export interface NodeUpdateResult {
   /** Post-update `config validate` failed — the service will crash-loop
    *  until ~/.rivetos/config.yaml is fixed (update itself succeeded). */
   configInvalid?: boolean
+  /** den-server deploy stage outcome (nodes with den.enabled in config).
+   *  A 'failed' den does NOT fail the node update — den is auxiliary — but
+   *  it is surfaced in the summary table. */
+  den?: DenDeployOutcome
 }

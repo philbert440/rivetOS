@@ -263,6 +263,60 @@ describe('FileMeshRegistry', () => {
     expect(node.id).toBe('my-fixed-id')
   })
 
+  it('buildLocalNode passes capabilities and metadata through (den advertising)', () => {
+    const node = buildLocalNode({
+      name: 'den-node',
+      agents: ['opus'],
+      host: '192.168.1.101',
+      port: 3100,
+      providers: [],
+      models: [],
+      capabilities: ['den'],
+      metadata: { denPort: 5174 },
+      version: '0.7.0',
+    })
+
+    expect(node.capabilities).toEqual(['den'])
+    expect(node.metadata).toEqual({ denPort: 5174 })
+  })
+
+  it('buildLocalNode defaults to empty capabilities and no metadata key', () => {
+    const node = buildLocalNode({
+      name: 'plain-node',
+      agents: ['opus'],
+      host: '192.168.1.101',
+      port: 3100,
+      providers: [],
+      models: [],
+      version: '0.7.0',
+    })
+
+    expect(node.capabilities).toEqual([])
+    // No stray metadata key — register() writes the entry verbatim into
+    // mesh.json, so absent must stay absent (not `metadata: undefined`).
+    expect('metadata' in node).toBe(false)
+  })
+
+  it('registered den capability + metadata survive the mesh.json round-trip', async () => {
+    const node = buildLocalNode({
+      name: 'den-node',
+      agents: ['opus'],
+      host: '192.168.1.101',
+      port: 3100,
+      providers: [],
+      models: [],
+      capabilities: ['den'],
+      metadata: { denPort: 5199 },
+      version: '0.7.0',
+    })
+
+    await registry.register(node)
+
+    const byCapability = await registry.findByCapability('den')
+    expect(byCapability).toHaveLength(1)
+    expect(byCapability[0].metadata).toEqual({ denPort: 5199 })
+  })
+
   it('getNodes returns all nodes', async () => {
     const node1 = buildLocalNode({
       name: 'a',

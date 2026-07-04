@@ -161,7 +161,13 @@ export async function registerAgentTools(
       tls: tlsConfig,
     })
 
-    // Build and register the local node
+    // Build and register the local node.
+    //
+    // Capabilities/metadata are derived from config on every startup because
+    // register() wholesale-replaces this node's roster entry — hand-edited
+    // tags in mesh.json don't survive a restart. den.enabled here is what
+    // makes den-node discovery (viewer /mesh.json) restart-proof.
+    const denEnabled = config.den?.enabled === true
     const localNode = buildLocalNode({
       existingId: nodeName,
       name: nodeName,
@@ -172,6 +178,8 @@ export async function registerAgentTools(
       models: Object.values(config.agents)
         .map((a) => a.model)
         .filter((m): m is string => !!m),
+      capabilities: denEnabled ? ['den'] : undefined,
+      metadata: denEnabled ? { denPort: config.den?.port ?? 5174 } : undefined,
       version: '0.1.0',
     })
 

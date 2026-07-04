@@ -34,8 +34,29 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
   'transports',
   'deployment',
   'mesh',
+  'den',
   'plugins',
 ])
+
+export const KNOWN_DEN_KEYS = new Set([
+  'enabled',
+  'host',
+  'port',
+  'token',
+  'terminal',
+  'packs_dir',
+  'static_dir',
+])
+
+export const KNOWN_DEN_TERMINAL_KEYS = new Set(['enabled'])
+
+/**
+ * Hosts den-server treats as loopback in its terminal security gate
+ * (services/den-server/src/server.ts LOOPBACK_HOSTS). Keep in sync — the
+ * config validator mirrors that gate so a token-less exposed terminal is
+ * rejected at validate time instead of force-disabled at runtime.
+ */
+export const DEN_LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
 
 export const KNOWN_DEPLOYMENT_KEYS = new Set([
   'target',

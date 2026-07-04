@@ -397,6 +397,14 @@ export interface BuildLocalNodeArgs {
   models: string[]
   /** Capabilities */
   capabilities?: string[]
+  /**
+   * Arbitrary node metadata (e.g. `{ denPort: 5174 }` when the node runs a
+   * den server). Note: register() wholesale-replaces the node's roster entry,
+   * so anything that must survive a restart has to flow through here — tags
+   * hand-edited into mesh.json on a runtime-owned entry are wiped on the next
+   * startup.
+   */
+  metadata?: Record<string, unknown>
   /** RivetOS version */
   version: string
 }
@@ -412,6 +420,7 @@ export function buildLocalNode(args: BuildLocalNodeArgs): MeshNode {
     providers: args.providers,
     models: args.models,
     capabilities: args.capabilities ?? [],
+    ...(args.metadata ? { metadata: args.metadata } : {}),
     status: 'online',
     lastSeen: Date.now(),
     registeredAt: Date.now(),
