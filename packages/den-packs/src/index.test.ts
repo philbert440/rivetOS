@@ -128,6 +128,60 @@ describe('validatePack failures', () => {
     expect(res.errors.join()).toMatch(/station not defined for activity: idle/)
   })
 
+  it('returns errors (never throws) on structurally malformed manifests', () => {
+    const cases: ((m: Record<string, unknown>) => void)[] = [
+      (m) => ((m.character as { poses: Record<string, unknown> }).poses.idle = null),
+      (m) => ((m.character as { poses: Record<string, unknown> }).poses.idle = { frames: [42], frameMs: 0 }),
+      (m) => ((m.stations as Record<string, unknown>).idle = null),
+      (m) => ((m.layout as Record<string, unknown>).desk = null),
+      (m) => (m.furniture = {}),
+      (m) => (m.furniture = [null, 7]),
+      (m) => (m.character = 'nope'),
+    ]
+    for (const mutate of cases) {
+      const res = validatePack(brokenPack(mutate))
+      expect(res.ok).toBe(false)
+      expect(res.errors.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('rejects out-of-bounds and degenerate functional rects', () => {
+    const oob = validatePack(
+      brokenPack((m) => {
+        const f = (m.furniture as { id: string; screen?: unknown }[]).find((x) => x.screen)!
+        f.screen = { x: 99999, y: 99999, w: 5, h: 5 }
+      }),
+    )
+    expect(oob.errors.join()).toMatch(/outside image/)
+    const neg = validatePack(
+      brokenPack((m) => {
+        const f = (m.furniture as { id: string; screen?: unknown }[]).find((x) => x.screen)!
+        f.screen = { x: -10, y: 0, w: -220, h: 5 }
+      }),
+    )
+    expect(neg.errors.join()).toMatch(/x,y >= 0 and w,h > 0/)
+  })
+
+  it('rejects non-PNG furniture art', () => {
+    const dir = brokenPack(() => {})
+    const m = JSON.parse(readFileSync(join(dir, 'pack.json'), 'utf8')) as {
+      furniture: { src: string }[]
+    }
+    writeFileSync(join(dir, m.furniture[0].src), 'not a png')
+    const res = validatePack(dir)
+    expect(res.errors.join()).toMatch(/not a PNG/)
+  })
+
+  it('rejects attachments outside the frame image', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        const poses = (m.character as { poses: Record<string, { attachments?: unknown }> }).poses
+        poses[Object.keys(poses)[0]].attachments = { zzz: { x: 100000, y: 5 } }
+      }),
+    )
+    expect(res.errors.join()).toMatch(/outside frame/)
+  })
+
   it('rejects tool overrides to unknown poses', () => {
     const res = validatePack(
       brokenPack((m) => {
