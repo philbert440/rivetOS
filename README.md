@@ -239,6 +239,7 @@ Development:
   rivetos skill init              Scaffold a new skill
   rivetos skill validate          Validate skill frontmatter
   rivetos plugins list            Show configured plugins
+  rivetos plugins sync            Refresh TUI plugin installs (claude-code/grok/hermes)
   rivetos skills list             Show discovered skills
 ```
 
