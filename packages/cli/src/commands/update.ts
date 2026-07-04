@@ -414,7 +414,10 @@ async function verifyDataPersistence(): Promise<void> {
 function probeNodeOnly(node: MeshNode): NodeUpdateResult {
   const start = Date.now()
   const candidates = [node.sshUser, 'rivet'].filter((u): u is string => !!u)
-  const user = resolveSshUser(node.host, candidates, `[${node.name}]`)
+  // non-linux nodes often run sshd on a non-standard port (phone dropbear
+  // :8022, registered as the node's mesh port)
+  const probePort = node.platform && node.platform !== 'linux' ? node.port : 22
+  const user = resolveSshUser(node.host, candidates, `[${node.name}]`, probePort)
   if (user) {
     console.log(`    [${node.name}] ✅ reachable as ${user}@ (manual update path)`)
     return { success: true, commit: 'manual', elapsedMs: Date.now() - start }

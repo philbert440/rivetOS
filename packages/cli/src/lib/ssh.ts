@@ -103,11 +103,12 @@ export function resolveSshUser(
   host: string,
   requestedUser: string | string[],
   tag: string,
+  port = 22,
 ): string | null {
   const tryUser = (user: string): boolean => {
     try {
       execSync(
-        `ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no ${user}@${host} "echo ok"`,
+        `ssh -p ${String(port)} -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no ${user}@${host} "echo ok"`,
         { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
       )
       return true
