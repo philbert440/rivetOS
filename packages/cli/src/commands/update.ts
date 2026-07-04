@@ -111,7 +111,7 @@ function showHelp(): void {
     --npm              Use npm install -g @rivetos/cli@<channel> instead of git pull
     --channel <tag>    npm dist-tag or version (default: beta) — implies --npm
     --ssh-user <user>  SSH user for remote nodes (default: rivet)
-    --include-offline  Also attempt nodes the roster marks offline (recovery)
+    --include-offline  Obsolete (all nodes are probed over SSH now); accepted as a no-op
 
   Modes:
 
@@ -420,27 +420,21 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     process.exit(1)
   }
 
-  // Include online agent nodes + all infrastructure nodes (they don't heartbeat,
-  // so their status is always 'offline' — but we still want to sync code to them).
-  const allNodes = Object.values(meshFile.nodes)
-  const eligible = allNodes.filter((n) => n.status === 'online' || (n.role && n.role !== 'agent'))
-  // Offline agent nodes — normally skipped, but a reachable-but-down node is
-  // exactly what you want to push code to during recovery, so --include-offline
-  // opts them in (the per-node SSH check still drops genuinely unreachable ones).
-  const offlineAgents = allNodes.filter((n) => !eligible.includes(n))
-  const nodes = opts.includeOffline ? [...eligible, ...offlineAgents] : eligible
-
-  // Never skip silently — surface what's being left out and how to include it.
-  if (offlineAgents.length > 0) {
-    const names = offlineAgents.map((n) => n.name).join(', ')
-    if (opts.includeOffline) {
-      console.log(`  Including ${String(offlineAgents.length)} offline node(s): ${names}`)
-    } else {
-      console.log(
-        `  ⚠️  Skipping ${String(offlineAgents.length)} offline node(s): ${names} ` +
-          `— re-run with --include-offline to attempt them.`,
-      )
-    }
+  // Probe EVERY node — roster status is not reachability. A node whose
+  // service is crash-looping heartbeats nothing and shows 'offline' in the
+  // roster while its host is perfectly reachable, and pushing the update is
+  // often exactly what fixes it (ct114, 2026-07-04: config invalidated by a
+  // provider rename crash-looped for days as roster-'offline'). The per-node
+  // SSH check is the real gate; genuinely dead hosts fail fast there.
+  const nodes = Object.values(meshFile.nodes)
+  const rosterOffline = nodes.filter(
+    (n) => n.status !== 'online' && (!n.role || n.role === 'agent'),
+  )
+  if (rosterOffline.length > 0) {
+    const names = rosterOffline.map((n) => n.name).join(', ')
+    console.log(
+      `  ℹ️  Roster marks ${String(rosterOffline.length)} node(s) offline (${names}) — probing them anyway; SSH decides.`,
+    )
     console.log('')
   }
 
@@ -496,10 +490,10 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         // git pull for now (their workers — embedder, compactor — aren't yet
         // packaged for npm install). Migrate them in a follow-up.
         return isAgent
-          ? npmUpdateNodeAsync(node.host, node.name, localOpts, true)
-          : gitUpdateNodeAsync(node.host, node.name, localOpts, false)
+          ? npmUpdateNodeAsync(node.host, node.name, localOpts, true, node.sshUser)
+          : gitUpdateNodeAsync(node.host, node.name, localOpts, false, node.sshUser)
       }
-      return gitUpdateNodeAsync(node.host, node.name, localOpts, isAgent)
+      return gitUpdateNodeAsync(node.host, node.name, localOpts, isAgent, node.sshUser)
     }),
   )
 
@@ -544,7 +538,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
     if (result.success) {
       let status: string
       if (isAgent) {
-        status = '✅'
+        status = result.configInvalid ? '✅ ⚠cfg' : '✅'
       } else if (result.workers && result.workers.length > 0) {
         status = `✅ (sync+${String(result.workers.length)}w)`
       } else {
@@ -560,6 +554,12 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   }
   console.log('  ══════════════════════════════════════════════')
   console.log(`  Remote: ${String(updated)} updated, ${String(failedCount)} failed`)
+  const cfgBad = results.filter((r) => r.configInvalid)
+  if (cfgBad.length > 0) {
+    console.log(
+      `  🚨 ${String(cfgBad.length)} node(s) have an INVALID config after this update — they will crash-loop until fixed (see per-node output above).`,
+    )
+  }
   console.log('')
 
   // Step 4: Update local node last — restart kills the process

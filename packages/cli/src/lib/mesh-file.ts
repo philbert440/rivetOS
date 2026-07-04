@@ -16,6 +16,8 @@ export interface MeshNode {
   agents?: string[]
   host: string
   port: number
+  /** SSH login for update/deploy tooling when it isn't `rivet` (e.g. phildesk → `philip`). */
+  sshUser?: string
   providers?: string[]
   models?: string[]
   capabilities?: string[]

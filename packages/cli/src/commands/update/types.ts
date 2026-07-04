@@ -11,7 +11,9 @@ export interface UpdateOptions {
   npm: boolean
   /** npm dist-tag or version specifier — defaults to "beta" */
   channel: string
-  /** Also attempt nodes the roster marks offline (recovery deploys). Default false. */
+  /** Obsolete: every node is probed over SSH now regardless of roster
+   *  status (a reachable host with a crashed service is exactly what an
+   *  update fixes). Kept so existing invocations don't break. */
   includeOffline: boolean
 }
 
@@ -21,4 +23,7 @@ export interface NodeUpdateResult {
   failedStep?: string
   elapsedMs: number
   workers?: string[]
+  /** Post-update `config validate` failed — the service will crash-loop
+   *  until ~/.rivetos/config.yaml is fixed (update itself succeeded). */
+  configInvalid?: boolean
 }
