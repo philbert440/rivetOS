@@ -12,6 +12,7 @@
 //   GET  /state?session=<id>    RoomState snapshot for one session
 //   GET  /layout?viewer=<key>   per-viewer layout (server copy is canonical)
 //   POST /layout?viewer=<key>   persist a viewer layout
+//   GET  /mesh.json             den-enabled mesh roster + per-node den health
 //   WS   /ws?session=<id>       snapshot + live events (no filter = all)
 //   GET  /healthz               liveness (never auth-gated)
 //   GET  /packs/*, /*           static packs + built viewer, when configured
@@ -37,6 +38,7 @@ import {
   type DenState,
 } from '@rivetos/den-protocol'
 import type { DenConfig } from './config.js'
+import { createMeshView } from './mesh.js'
 
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -55,7 +57,7 @@ const MIME: Record<string, string> = {
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'content-type, authorization',
 }
 
@@ -147,6 +149,18 @@ export function createDenServer(config: DenConfig): DenServer {
     evictTimers.set(session, t)
   }
 
+  const meshView = createMeshView({
+    meshFile: config.meshFile,
+    cacheMs: config.meshCacheMs,
+    // `latest` is only answerable for our own sessions; peers just get probed
+    getLocalLatest: () => {
+      const sessions = listSessions(state)
+      if (sessions.length === 0) return null
+      const room = state.rooms[sessions[0].id] as typeof initialRoomState | undefined
+      return room ? { activity: room.activity, title: room.title } : null
+    },
+  })
+
   const authorized = (req: IncomingMessage, url: URL): boolean => {
     if (!config.token) return true
     const header = req.headers.authorization ?? ''
@@ -227,6 +241,14 @@ export function createDenServer(config: DenConfig): DenServer {
 
       if (req.method === 'GET' && url.pathname === '/sessions') {
         return json(res, 200, { sessions: listSessions(state) })
+      }
+
+      // `.json` deliberately: the extensionless /mesh belongs to the viewer
+      // SPA and falls through to the static index.html fallback below
+      if (req.method === 'GET' && url.pathname === '/mesh.json') {
+        const overview = await meshView.overview()
+        if (!overview) return json(res, 404, { error: 'no mesh file' })
+        return json(res, 200, overview)
       }
 
       if (req.method === 'DELETE' && url.pathname === '/session') {

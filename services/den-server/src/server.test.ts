@@ -28,6 +28,8 @@ async function start(
     staticDir: '',
     packsDir: '',
     evictTtlMs,
+    meshFile: '',
+    meshCacheMs: 10_000,
   }
   const den = createDenServer(config)
   servers.push(den)

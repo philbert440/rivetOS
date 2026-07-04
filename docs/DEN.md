@@ -46,6 +46,56 @@ sessions, one server — the picker chooses which room drives the den.
 Default pack weighs ~8.6MB of pre-keyed PNGs served once and cached;
 `grid.pxPerUnit: 2` keeps textures small and the render cheap.
 
+## Mesh view
+
+One den-server runs per node; `GET /mesh.json` (auth-gated like every other
+endpoint) is how a viewer sees them all. The server reads the mesh roster —
+`RIVETOS_DEN_MESH_FILE` if set, else `/rivet-shared/mesh.json`, else
+`~/.rivetos/mesh.json` — projects the den-enabled nodes, probes each one's
+den `/healthz` in parallel (1.5s budget per peer), and answers:
+
+```json
+{
+  "updatedAt": 1751600000000,
+  "nodes": [
+    { "id": "rivet-claude", "name": "rivet-claude",
+      "denUrl": "http://192.0.2.10:5174", "online": true, "sessions": 2,
+      "latest": { "activity": "coding", "title": "wiring the mesh view" } }
+  ]
+}
+```
+
+The whole result is cached for `RIVETOS_DEN_MESH_CACHE_MS` (default 10s).
+`latest` appears only on the entry that is this process — `RIVETOS_DEN_NODE_ID`
+(else the machine hostname) matched against roster node ids; when nothing
+matches, no entry carries a `latest`, which is fine. The endpoint is `/mesh.json`
+*with* the extension on purpose: the extensionless `/mesh` stays free for the
+viewer SPA's route.
+
+A node is den-enabled when its roster entry has `'den'` in `capabilities`, a
+`metadata.denPort`, or a full `metadata.denUrl` (http/https only — anything
+else is ignored with a warning). The entry's top-level `port` is the agent
+channel, **not** the den, which is why the den port lives in metadata:
+
+```json
+"rivet-claude": {
+  "capabilities": ["den"],
+  "metadata": { "denPort": 5174 }
+}
+```
+
+**Warning — the runtime clobbers hand-edits.** As of this writing,
+`FileMeshRegistry.register()` (`packages/core/src/domain/mesh.ts`) replaces a
+node's whole entry (`data.nodes[node.id] = node`), and every RivetOS runtime
+startup re-registers its own entry via `buildLocalNode()`
+(`packages/boot/src/registrars/agents.ts`), which builds it with empty
+`capabilities` and no `metadata`. Den tags hand-added to an agent node's entry
+are therefore wiped whenever that node's runtime restarts, and must be
+re-applied. (`rivetos mesh join` does not overwrite the named entry — it
+registers a fresh empty-capability entry under a newly generated UUID id,
+which is its own kind of roster noise.) Entries the runtime doesn't own —
+infra roles, hand-maintained nodes — keep their tags.
+
 ## Mobile & performance
 
 The viewer runs fine on phones (it camera-follows the character in portrait).
