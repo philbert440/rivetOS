@@ -86,6 +86,11 @@ export function toolActivity(name: string): Activity {
   if (n === 'taskcreate' || n === 'taskupdate' || n === 'exitplanmode' || n === 'enterplanmode')
     return 'writing_plan'
   if (n === 'read' || n === 'grep' || n === 'glob') return 'thinking'
+  // CLI/shell runs happen at the computer — the desk terminal is already
+  // echoing the command. The toolbox (running_command) is for plugin/MCP
+  // tools and anything else without a station of its own.
+  if (n === 'bash' || n === 'run_terminal_cmd' || n === 'shell' || n.includes('terminal'))
+    return 'editing_code'
   return 'running_command'
 }
 
