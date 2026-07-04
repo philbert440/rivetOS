@@ -25,12 +25,28 @@ export function pngSize(file: string): { w: number; h: number } | null {
   return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
 }
 
-const isRect = (r: unknown): boolean =>
+const isRect = (r: unknown): r is { x: number; y: number; w: number; h: number } =>
   typeof r === 'object' &&
   r !== null &&
-  ['x', 'y', 'w', 'h'].every((k) => typeof (r as Record<string, unknown>)[k] === 'number')
+  ['x', 'y', 'w', 'h'].every((k) => Number.isFinite((r as Record<string, unknown>)[k]))
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
 
 export function validatePack(dir: string): ValidationResult {
+  // backstop: a hostile manifest must never turn the gatekeeper into an
+  // uncaught exception — anything the guards below miss becomes an error
+  try {
+    return validatePackInner(dir)
+  } catch (e) {
+    return {
+      ok: false,
+      errors: [`pack.json is structurally malformed: ${(e as Error).message}`],
+      warnings: [],
+    }
+  }
+}
+
+function validatePackInner(dir: string): ValidationResult {
   const errors: string[] = []
   const warnings: string[] = []
   const fail = (): ValidationResult => ({ ok: false, errors, warnings })
@@ -64,6 +80,10 @@ export function validatePack(dir: string): ValidationResult {
 
   // pack-relative path check: must exist inside dir, no escaping
   const checkFile = (rel: string, what: string): string | null => {
+    if (typeof rel !== 'string') {
+      errors.push(`${what}: path must be a string, got ${JSON.stringify(rel)}`)
+      return null
+    }
     if (normalize(rel).startsWith('..') || rel.startsWith('/')) {
       errors.push(`${what}: path escapes the pack directory: ${rel}`)
       return null
@@ -76,13 +96,27 @@ export function validatePack(dir: string): ValidationResult {
     return abs
   }
 
-  checkFile(m.shell.src, 'shell')
-  if (m.shell.nightSrc) checkFile(m.shell.nightSrc, 'shell nightSrc')
+  // existence + PNG-ness in one step (a renamed JPEG passes existsSync and
+  // then fails at render time)
+  const checkPng = (rel: string, what: string): { w: number; h: number } | null => {
+    const abs = checkFile(rel, what)
+    if (!abs) return null
+    const s = pngSize(abs)
+    if (!s) errors.push(`${what}: not a PNG: ${rel}`)
+    return s
+  }
+
+  checkPng(m.shell.src, 'shell')
+  if (m.shell.nightSrc) checkPng(m.shell.nightSrc, 'shell nightSrc')
 
   // --- character -----------------------------------------------------------
   const poses = m.character?.poses ?? {}
   if (!(m.character?.height > 0)) errors.push('character.height must be > 0')
   for (const [name, pose] of Object.entries(poses)) {
+    if (!isObj(pose)) {
+      errors.push(`pose ${name}: must be an object`)
+      continue
+    }
     if (!Array.isArray(pose.frames) || pose.frames.length === 0) {
       errors.push(`pose ${name}: frames must be a non-empty array`)
       continue
@@ -109,6 +143,16 @@ export function validatePack(dir: string): ValidationResult {
         size ??= s
       }
     }
+    // attachments are in frame-image coordinates — must land inside the frame
+    for (const [aName, pt] of Object.entries(pose.attachments ?? {})) {
+      if (!isObj(pt) || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
+        errors.push(`pose ${name}: attachment ${aName} must be {x,y} numbers`)
+      } else if (size && (pt.x < 0 || pt.y < 0 || pt.x > size.w || pt.y > size.h)) {
+        errors.push(
+          `pose ${name}: attachment ${aName} (${pt.x},${pt.y}) outside frame ${size.w}x${size.h}`,
+        )
+      }
+    }
   }
   const activities = m.character?.activities ?? ({} as Record<string, string>)
   for (const a of ACTIVITIES) {
@@ -120,7 +164,10 @@ export function validatePack(dir: string): ValidationResult {
   for (const [tool, pose] of Object.entries(m.character?.tools ?? {})) {
     if (!(pose in poses)) errors.push(`tool override ${tool} maps to unknown pose: ${pose}`)
   }
-  const declaredFurnIds = new Set((m.furniture ?? []).map((f) => f.id))
+  const furniture = Array.isArray(m.furniture) ? m.furniture : []
+  if (m.furniture !== undefined && !Array.isArray(m.furniture))
+    errors.push('furniture must be an array')
+  const declaredFurnIds = new Set(furniture.filter(isObj).map((f) => f.id))
   for (const [name, pose] of Object.entries(poses)) {
     const repl = pose.replaces
       ? Array.isArray(pose.replaces)
@@ -134,29 +181,46 @@ export function validatePack(dir: string): ValidationResult {
 
   // --- furniture + layout --------------------------------------------------
   const furnIds = new Set<string>()
-  for (const f of m.furniture ?? []) {
-    if (!f.id) {
+  for (const f of furniture) {
+    if (!isObj(f) || !f.id || typeof f.id !== 'string') {
       errors.push('furniture entry without id')
       continue
     }
     if (furnIds.has(f.id)) errors.push(`duplicate furniture id: ${f.id}`)
     furnIds.add(f.id)
-    checkFile(f.src, `furniture ${f.id}`)
-    for (const v of f.variants ?? []) checkFile(v, `furniture ${f.id} variant`)
-    if (f.sideSrc) checkFile(f.sideSrc, `furniture ${f.id} sideSrc`)
-    if (f.nightSrc) checkFile(f.nightSrc, `furniture ${f.id} nightSrc`)
-    if (f.screen && !isRect(f.screen)) errors.push(`furniture ${f.id}: screen must be {x,y,w,h}`)
-    if (f.textRect && !isRect(f.textRect))
-      errors.push(`furniture ${f.id}: textRect must be {x,y,w,h}`)
+    const srcSize = checkPng(f.src, `furniture ${f.id}`)
+    for (const v of f.variants ?? []) checkPng(v, `furniture ${f.id} variant`)
+    if (f.sideSrc) checkPng(f.sideSrc, `furniture ${f.id} sideSrc`)
+    if (f.nightSrc) checkPng(f.nightSrc, `furniture ${f.id} nightSrc`)
+    // functional rects are in ORIGINAL image coordinates — an out-of-bounds
+    // rect validates fine structurally but breaks the terminal/whiteboard
+    // overlay at render time
+    for (const key of ['screen', 'textRect'] as const) {
+      const r = f[key]
+      if (r === undefined) continue
+      if (!isRect(r)) {
+        errors.push(`furniture ${f.id}: ${key} must be {x,y,w,h}`)
+      } else if (r.w <= 0 || r.h <= 0 || r.x < 0 || r.y < 0) {
+        errors.push(`furniture ${f.id}: ${key} must have x,y >= 0 and w,h > 0`)
+      } else if (srcSize && (r.x + r.w > srcSize.w || r.y + r.h > srcSize.h)) {
+        errors.push(
+          `furniture ${f.id}: ${key} (${r.x},${r.y} ${r.w}x${r.h}) outside image ${srcSize.w}x${srcSize.h}`,
+        )
+      }
+    }
   }
   for (const [id, p] of Object.entries(m.layout ?? {})) {
     if (!furnIds.has(id)) errors.push(`layout places unknown furniture: ${id}`)
-    if (typeof p.x !== 'number' || typeof p.y !== 'number' || !(p.h > 0))
+    if (!isObj(p) || typeof p.x !== 'number' || typeof p.y !== 'number' || !(p.h > 0))
       errors.push(`layout ${id}: requires numeric x, y and h > 0`)
   }
   for (const [act, st] of Object.entries(m.stations ?? {})) {
     if (!(ACTIVITIES as readonly string[]).includes(act))
       errors.push(`station for unknown activity: ${act}`)
+    if (typeof st !== 'object' || st === null) {
+      errors.push(`station ${act}: must be an object`)
+      continue
+    }
     if (st.furn && !furnIds.has(st.furn))
       errors.push(`station ${act}: unknown furniture anchor: ${st.furn}`)
     if (!st.furn && (typeof st.x !== 'number' || typeof st.y !== 'number'))
