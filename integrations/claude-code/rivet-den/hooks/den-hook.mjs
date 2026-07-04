@@ -110,8 +110,24 @@ async function main() {
     if (tail) emit({ type: 'thinking.delta', text: tail })
   }
 
+  // Terminal lines mirror REAL command/output text onto a den anyone with
+  // access to the server can watch. RIVET_DEN_TERM=off disables them
+  // entirely; otherwise redact() catches the obvious secret shapes. This is
+  // best-effort, not a guarantee — the real control is who can reach the
+  // den-server (see README).
+  const TERM_OFF = (process.env.RIVET_DEN_TERM ?? '') === 'off'
+  const redact = (s) =>
+    s
+      // Authorization / Bearer headers FIRST (the key=/: rule below would
+      // otherwise consume the word "Bearer" and leave the token standing)
+      .replace(/\b(bearer|basic)\s+[\w+./=-]{8,}/gi, '$1 [redacted]')
+      // KEY=value / key: value where the key names a credential
+      .replace(/\b([\w-]*(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]*\s*[=:]\s*)\S+/gi, '$1[redacted]')
+      // well-known token prefixes (AWS, GitHub, Slack, OpenAI/Stripe-style) + bare JWTs
+      .replace(/\b(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[a-z]-[\w-]{10,}|sk-[A-Za-z0-9_-]{16,}|eyJ[\w-]{8,}\.[\w-]+\.[\w-]+)\b/g, '[redacted]')
   const termLine = (text) => {
-    const t = String(text).replace(/[\r\t]/g, ' ').trimEnd().slice(0, 80)
+    if (TERM_OFF) return
+    const t = redact(String(text).replace(/[\r\t]/g, ' ').trimEnd()).slice(0, 80)
     if (t.trim()) emit({ type: 'term.line', text: t })
   }
 
@@ -210,12 +226,23 @@ async function main() {
 
   if (hookEvent !== 'SessionEnd') fs.writeFileSync(stateFile, JSON.stringify(st))
 
-  // ---- ship, best-effort, bounded. Sequential on purpose: the server
-  // reduces in arrival order, and concurrent POSTs race (tool.end can land
-  // before tool.start). First failure aborts the batch — the server is down,
-  // and later events without their predecessors are worse than none.
+  // ---- ship, best-effort, bounded: one ordered batch to /events (reduced
+  // atomically server-side). 404 = pre-batch server → fall back to
+  // sequential /event posts, which preserve order at one round trip each.
   const headers = { 'content-type': 'application/json' }
   if (TOKEN) headers.authorization = `Bearer ${TOKEN}`
+  if (events.length === 0) return
+  try {
+    const res = await fetch(`${DEN_URL}/events`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(events),
+      signal: AbortSignal.timeout(1500),
+    })
+    if (res.status !== 404) return
+  } catch {
+    return // server unreachable — retrying event-by-event won't help
+  }
   for (const ev of events) {
     try {
       await fetch(`${DEN_URL}/event`, {
