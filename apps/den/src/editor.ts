@@ -71,22 +71,32 @@ export async function loadLayout(): Promise<SavedLayout | null> {
   }
 }
 
-export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): void {
-  const btn = document.getElementById('edit-btn')!
-  const panel = document.getElementById('edit-panel')!
-  const chipsEl = document.getElementById('edit-chips')!
-  const thumbsEl = document.getElementById('edit-thumbs')!
+export interface EditorDom {
+  btn: HTMLElement
+  panel: HTMLElement
+  chips: HTMLElement
+  thumbs: HTMLElement
+}
+
+export interface Editor {
+  /** Point the editor at a room's live objects (world, sprites, stations). */
+  setTarget(hooks: EditorHooks, initial: SavedLayout | null): void
+  /** Unhook from the current target (per-sprite + world listeners). */
+  detach(): void
+  /** True while EDIT mode is on. */
+  isActive(): boolean
+}
+
+export function createEditor(dom: EditorDom): Editor {
+  let hooks: EditorHooks | null = null
+  let saved: SavedLayout = { placements: {} }
 
   let editing = false
   let selected: string | null = null // furniture id or a station chip
-  const saved: SavedLayout = initial ?? { placements: {} }
-
-  const highlight = new Graphics()
-  highlight.visible = false
-  highlight.zIndex = 9500
-  hooks.world.addChild(highlight)
+  let highlight: Graphics | null = null
 
   function persist(): void {
+    if (!hooks) return
     for (const [id, it] of Object.entries(hooks.items)) {
       saved.placements[id] = {
         ...saved.placements[id],
@@ -103,6 +113,7 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
   const selectedStation = (): string | null => (selected && STATION_CHIPS[selected]) || null
 
   function drawHighlight(): void {
+    if (!hooks || !highlight) return
     highlight.clear()
     const act = selectedStation()
     if (editing && act && hooks.stations[act]) {
@@ -137,27 +148,28 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
   }
 
   function renderThumbs(): void {
-    thumbsEl.innerHTML = ''
-    ;(selected ? (hooks.variants[selected] ?? []) : []).forEach((src) => {
+    dom.thumbs.innerHTML = ''
+    ;(hooks && selected ? (hooks.variants[selected] ?? []) : []).forEach((src) => {
       const img = document.createElement('img')
       img.src = src
       img.onclick = async () => {
-        if (!selected || !hooks.items[selected]) return
+        if (!hooks || !selected || !hooks.items[selected]) return
         // new art always lands un-mirrored, exactly as the thumbnail shows
         hooks.items[selected].placement.flip = false
         saved.placements[selected] = { ...saved.placements[selected], src, flip: false }
         await hooks.swapItemArt(selected, src)
         persist()
-        ;[...thumbsEl.children].forEach((c) => c.classList.remove('sel'))
+        ;[...dom.thumbs.children].forEach((c) => c.classList.remove('sel'))
         img.classList.add('sel')
         drawHighlight()
       }
-      thumbsEl.appendChild(img)
+      dom.thumbs.appendChild(img)
     })
   }
 
   function renderChips(): void {
-    chipsEl.innerHTML = ''
+    if (!hooks) return
+    dom.chips.innerHTML = ''
     const ids = [...Object.keys(hooks.items), ...Object.keys(STATION_CHIPS)]
     ids.forEach((id) => {
       const b = document.createElement('button')
@@ -170,21 +182,21 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
         drawHighlight()
         // selecting a spot sends the robot there so you can see the pose live
         const act = STATION_CHIPS[id]
-        if (act) hooks.previewActivity(act)
+        if (act) hooks?.previewActivity(act)
       }
-      chipsEl.appendChild(b)
+      dom.chips.appendChild(b)
     })
     const flip = document.createElement('button')
     flip.textContent = 'FLIP'
     flip.onclick = () => {
-      if (!selected || !hooks.items[selected]) return
+      if (!hooks || !selected || !hooks.items[selected]) return
       const it = hooks.items[selected]
       it.placement.flip = !it.placement.flip
       hooks.applyScale(selected)
       persist()
       drawHighlight()
     }
-    chipsEl.appendChild(flip)
+    dom.chips.appendChild(flip)
     const exp = document.createElement('button')
     exp.textContent = 'EXPORT'
     exp.style.float = 'right'
@@ -195,7 +207,7 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
       a.download = 'layout.json'
       a.click()
     }
-    chipsEl.appendChild(exp)
+    dom.chips.appendChild(exp)
   }
 
   // ---- drag + resize ----
@@ -204,6 +216,7 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
   let dragOff = { x: 0, y: 0 }
 
   function moveStation(act: string, px: number, py: number): void {
+    if (!hooks) return
     const s = hooks.stations[act]
     if (s.furn && hooks.items[s.furn]) {
       const a = hooks.items[s.furn].placement
@@ -217,21 +230,10 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
     }
   }
 
-  for (const [id, it] of Object.entries(hooks.items)) {
-    it.sprite.eventMode = 'static'
-    it.sprite.on('pointerdown', (e: FederatedPointerEvent) => {
-      if (!editing) return
-      selected = id
-      dragId = id
-      const p = hooks.world.toLocal(e.global)
-      dragOff = { x: p.x - it.placement.x, y: p.y - it.placement.y }
-      renderChips()
-      renderThumbs()
-      drawHighlight()
-    })
-  }
-  hooks.world.eventMode = 'static'
-  hooks.world.on('pointerdown', (e: FederatedPointerEvent) => {
+  // handler fn refs are stored so detach() can unhook them without leaks
+  const spriteHandlers: { sprite: Sprite; fn: (e: FederatedPointerEvent) => void }[] = []
+  const onWorldDown = (e: FederatedPointerEvent): void => {
+    if (!hooks) return
     // with a spot chip selected, grabbing anywhere repositions that spot
     const act = selectedStation()
     if (!editing || !act) return
@@ -239,9 +241,9 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
     const p = hooks.world.toLocal(e.global)
     moveStation(act, p.x, p.y)
     drawHighlight()
-  })
-  hooks.world.on('globalpointermove', (e: FederatedPointerEvent) => {
-    if (!editing) return
+  }
+  const onWorldMove = (e: FederatedPointerEvent): void => {
+    if (!hooks || !editing) return
     if (dragStation) {
       const p = hooks.world.toLocal(e.global)
       moveStation(dragStation, p.x, p.y)
@@ -256,7 +258,7 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
     it.sprite.position.set(it.placement.x, it.placement.y)
     hooks.applyScale(dragId) // keeps zIndex in sync with y
     drawHighlight()
-  })
+  }
   const endDrag = (): void => {
     if (dragId || dragStation) {
       dragId = null
@@ -264,13 +266,12 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
       persist()
     }
   }
-  hooks.world.on('pointerup', endDrag)
-  hooks.world.on('pointerupoutside', endDrag)
 
+  // window-level listeners: registered ONCE, gated on the current target
   window.addEventListener(
     'wheel',
     (e) => {
-      if (!editing || !selected || !hooks.items[selected]) return
+      if (!hooks || !editing || !selected || !hooks.items[selected]) return
       const it = hooks.items[selected]
       it.placement.h = Math.max(24, Math.round(it.placement.h * (e.deltaY < 0 ? 1.05 : 0.95)))
       hooks.applyScale(selected)
@@ -280,10 +281,11 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
     { passive: true },
   )
 
-  btn.addEventListener('click', () => {
+  dom.btn.addEventListener('click', () => {
+    if (!hooks) return
     editing = !editing
-    btn.classList.toggle('on', editing)
-    panel.classList.toggle('on', editing)
+    dom.btn.classList.toggle('on', editing)
+    dom.panel.classList.toggle('on', editing)
     if (!editing) {
       selected = null
       dragStation = null
@@ -295,4 +297,52 @@ export function initEditor(hooks: EditorHooks, initial: SavedLayout | null): voi
     }
     hooks.onEditingChange(editing)
   })
+
+  function setTarget(next: EditorHooks, initial: SavedLayout | null): void {
+    detach()
+    hooks = next
+    saved = initial ?? { placements: {} }
+    highlight = new Graphics()
+    highlight.visible = false
+    highlight.zIndex = 9500
+    next.world.addChild(highlight)
+    for (const [id, it] of Object.entries(next.items)) {
+      it.sprite.eventMode = 'static'
+      const fn = (e: FederatedPointerEvent): void => {
+        if (!editing) return
+        selected = id
+        dragId = id
+        const p = next.world.toLocal(e.global)
+        dragOff = { x: p.x - it.placement.x, y: p.y - it.placement.y }
+        renderChips()
+        renderThumbs()
+        drawHighlight()
+      }
+      it.sprite.on('pointerdown', fn)
+      spriteHandlers.push({ sprite: it.sprite, fn })
+    }
+    next.world.eventMode = 'static'
+    next.world.on('pointerdown', onWorldDown)
+    next.world.on('globalpointermove', onWorldMove)
+    next.world.on('pointerup', endDrag)
+    next.world.on('pointerupoutside', endDrag)
+  }
+
+  function detach(): void {
+    if (!hooks) return
+    for (const { sprite, fn } of spriteHandlers) sprite.off('pointerdown', fn)
+    spriteHandlers.length = 0
+    hooks.world.off('pointerdown', onWorldDown)
+    hooks.world.off('globalpointermove', onWorldMove)
+    hooks.world.off('pointerup', endDrag)
+    hooks.world.off('pointerupoutside', endDrag)
+    highlight?.destroy()
+    highlight = null
+    selected = null
+    dragId = null
+    dragStation = null
+    hooks = null
+  }
+
+  return { setTarget, detach, isActive: () => editing }
 }
