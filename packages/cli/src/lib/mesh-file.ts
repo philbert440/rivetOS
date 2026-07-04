@@ -18,6 +18,13 @@ export interface MeshNode {
   port: number
   /** SSH login for update/deploy tooling when it isn't `rivet` (e.g. phildesk → `philip`). */
   sshUser?: string
+  /** Host platform. Default 'linux'. Non-linux nodes (e.g. rivet-phone →
+   *  'android') are full mesh members but have no automated update path yet:
+   *  `update --mesh` probes and reports them without attempting git/systemd. */
+  platform?: string
+  /** Arbitrary per-node metadata (e.g. deployable:false as an explicit
+   *  update opt-out regardless of platform). */
+  metadata?: Record<string, unknown>
   providers?: string[]
   models?: string[]
   capabilities?: string[]
