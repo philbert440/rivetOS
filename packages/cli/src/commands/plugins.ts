@@ -5,6 +5,7 @@
  *
  * Usage:
  *   rivetos plugins list       Show all configured plugins with status
+ *   rivetos plugins sync       Refresh per-user TUI plugin installs from source
  */
 
 import { readFile, readdir, access } from 'node:fs/promises'
@@ -129,10 +130,17 @@ export default async function plugins(): Promise<void> {
     console.log('')
     console.log('Subcommands:')
     console.log('  list       Show all plugins with status')
+    console.log('  sync       Refresh TUI plugin installs (claude-code/grok/hermes) from source')
+    console.log('             [--dry-run] [--tui <name>] [--root <dir>]')
     return
   }
 
   switch (subcommand) {
+    case 'sync': {
+      const { default: pluginsSync } = await import('./plugins-sync.js')
+      pluginsSync(process.argv.slice(4))
+      break
+    }
     case 'list': {
       const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
       type Section = Partial<Record<string, Record<string, unknown>>>
