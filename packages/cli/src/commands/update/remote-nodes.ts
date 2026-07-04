@@ -272,6 +272,20 @@ export async function gitUpdateNodeAsync(
   // infrastructure nodes returned above.)
   const den = await deployDenRemote(host, nodeName, sshUser, opts.restart)
 
+  // Refresh per-user TUI plugin installs from the updated source (hooks,
+  // MCP wiring). Non-fatal: nodes without any TUI installs just no-op.
+  try {
+    await sshExec(
+      host,
+      'cd /opt/rivetos && npx tsx packages/cli/src/index.ts plugins sync',
+      `${tag} plugins sync`,
+      60_000,
+      sshUser,
+    )
+  } catch {
+    console.warn(`    ${tag} ⚠️  plugins sync failed (non-fatal)`)
+  }
+
   console.log(
     `    ${tag} ✅ Done (${commit || 'unknown'})${configInvalid ? ' — but config INVALID' : ''}`,
   )
