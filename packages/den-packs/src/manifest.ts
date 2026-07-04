@@ -97,6 +97,20 @@ export interface ViewerTuning {
   termCols?: number
 }
 
+export type FontRole = 'board' | 'bubble' | 'zzz'
+
+/** A pack-supplied display font and the viewer text surfaces it claims. */
+export interface FontSpec {
+  /** CSS font-family name registered via FontFace. */
+  family: string
+  /** Pack-relative font file (.ttf/.otf/.woff/.woff2). */
+  src: string
+  /** Which viewer text surfaces this font claims. */
+  roles: FontRole[]
+  /** Pack-relative attribution/license text file. */
+  license?: string
+}
+
 export interface PackManifest {
   spec: typeof PACK_SPEC_VERSION
   name: string
@@ -116,4 +130,6 @@ export interface PackManifest {
   stations: Record<Activity, Station>
   /** Optional viewer tuning; omit to accept the viewer defaults. */
   viewer?: ViewerTuning
+  /** Optional display fonts; omit to accept the viewer's default fonts. */
+  fonts?: FontSpec[]
 }

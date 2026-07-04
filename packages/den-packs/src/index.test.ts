@@ -192,6 +192,81 @@ describe('validatePack failures', () => {
   })
 })
 
+describe('fonts validation', () => {
+  type FontEntry = { family: string; src: string; roles: string[]; license?: string }
+  const fontsOf = (m: Record<string, unknown>): FontEntry[] => m.fonts as FontEntry[]
+
+  it('accepts the default pack fonts entry', () => {
+    const res = validatePack(DEFAULT_PACK)
+    expect(res.ok).toBe(true)
+    expect(res.warnings).toEqual([])
+    expect(res.manifest?.fonts?.[0]?.family).toBe('Emoticomic')
+  })
+
+  it('rejects a non-font file extension', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        fontsOf(m)[0].src = 'pack.json' // exists, but not a font
+      }),
+    )
+    expect(res.errors.join()).toMatch(/not a font file .+: pack.json/)
+  })
+
+  it('rejects a missing font file', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        fontsOf(m)[0].src = 'fonts/ghost.woff2'
+      }),
+    )
+    expect(res.errors.join()).toMatch(/font Emoticomic: file not found: fonts\/ghost.woff2/)
+  })
+
+  it('rejects empty or missing roles', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        fontsOf(m)[0].roles = []
+      }),
+    )
+    expect(res.errors.join()).toMatch(/font Emoticomic: roles must be a non-empty array/)
+  })
+
+  it('warns (not errors) on unknown roles — forward compat', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        fontsOf(m)[0].roles = ['board', 'marquee']
+      }),
+    )
+    expect(res.ok).toBe(true)
+    expect(res.warnings.join()).toMatch(/font Emoticomic: unknown role: marquee/)
+  })
+
+  it('warns on a missing license file reference and on omitted license', () => {
+    const missing = validatePack(
+      brokenPack((m) => {
+        fontsOf(m)[0].license = 'fonts/ghost-LICENSE.txt'
+      }),
+    )
+    expect(missing.errors.join()).toMatch(/font Emoticomic license: file not found/)
+    const omitted = validatePack(
+      brokenPack((m) => {
+        delete fontsOf(m)[0].license
+      }),
+    )
+    expect(omitted.ok).toBe(true)
+    expect(omitted.warnings.join()).toMatch(/font Emoticomic: no license file/)
+  })
+
+  it('rejects duplicate font families', () => {
+    const res = validatePack(
+      brokenPack((m) => {
+        const fonts = fontsOf(m)
+        fonts.push({ ...fonts[0] })
+      }),
+    )
+    expect(res.errors.join()).toMatch(/duplicate font family: Emoticomic/)
+  })
+})
+
 // Golden: the default pack manifest is itself the reference fixture — lock its
 // shape so accidental edits to pack.json surface in review.
 describe('golden manifest', () => {

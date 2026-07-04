@@ -151,6 +151,18 @@ exports[`golden manifest > default pack manifest snapshot 1`] = `
     "color": "#ff00ff",
     "threshold": 32,
   },
+  "fonts": [
+    {
+      "family": "Emoticomic",
+      "license": "fonts/emoticomic-LICENSE.txt",
+      "roles": [
+        "board",
+        "bubble",
+        "zzz",
+      ],
+      "src": "fonts/emoticomic.ttf",
+    },
+  ],
   "furniture": [
     {
       "id": "window",

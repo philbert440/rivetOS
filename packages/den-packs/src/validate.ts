@@ -7,9 +7,9 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-condition, @typescript-eslint/restrict-template-expressions */
 
 import { readFileSync, existsSync, statSync } from 'node:fs'
-import { join, normalize } from 'node:path'
+import { extname, join, normalize } from 'node:path'
 import { ACTIVITIES } from '@rivetos/den-protocol'
-import { PACK_SPEC_VERSION, type PackManifest } from './manifest.js'
+import { PACK_SPEC_VERSION, type FontRole, type PackManifest } from './manifest.js'
 
 export interface ValidationResult {
   ok: boolean
@@ -31,6 +31,9 @@ const isRect = (r: unknown): r is { x: number; y: number; w: number; h: number }
   ['x', 'y', 'w', 'h'].every((k) => Number.isFinite((r as Record<string, unknown>)[k]))
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
+
+const FONT_ROLES: readonly FontRole[] = ['board', 'bubble', 'zzz']
+const FONT_EXTENSIONS = new Set(['.ttf', '.otf', '.woff', '.woff2'])
 
 export function validatePack(dir: string): ValidationResult {
   // backstop: a hostile manifest must never turn the gatekeeper into an
@@ -234,6 +237,36 @@ function validatePackInner(dir: string): ValidationResult {
   }
   for (const a of ACTIVITIES) {
     if (!(a in (m.stations ?? {}))) errors.push(`station not defined for activity: ${a}`)
+  }
+
+  // --- fonts ---------------------------------------------------------------
+  const fonts = Array.isArray(m.fonts) ? m.fonts : []
+  if (m.fonts !== undefined && !Array.isArray(m.fonts)) errors.push('fonts must be an array')
+  const fontFamilies = new Set<string>()
+  for (const f of fonts) {
+    if (!isObj(f) || typeof f.family !== 'string' || f.family.length === 0) {
+      errors.push('font entry without family')
+      continue
+    }
+    if (fontFamilies.has(f.family)) errors.push(`duplicate font family: ${f.family}`)
+    fontFamilies.add(f.family)
+    // existence + format in one step, same idea as checkPng: a missing or
+    // non-font file registers fine and then fails inside FontFace at runtime
+    const abs = checkFile(f.src, `font ${f.family}`)
+    if (abs && !FONT_EXTENSIONS.has(extname(f.src).toLowerCase()))
+      errors.push(`font ${f.family}: not a font file (.ttf/.otf/.woff/.woff2): ${f.src}`)
+    if (!Array.isArray(f.roles) || f.roles.length === 0) {
+      errors.push(`font ${f.family}: roles must be a non-empty array`)
+    } else {
+      // unknown roles warn, not error — older validators must pass packs
+      // authored against newer viewers that grew new text surfaces
+      for (const r of f.roles) {
+        if (!(FONT_ROLES as readonly string[]).includes(r))
+          warnings.push(`font ${f.family}: unknown role: ${r}`)
+      }
+    }
+    if (f.license !== undefined) checkFile(f.license, `font ${f.family} license`)
+    else warnings.push(`font ${f.family}: no license file — ship attribution with bundled fonts`)
   }
 
   return { ok: errors.length === 0, errors, warnings, manifest: m }

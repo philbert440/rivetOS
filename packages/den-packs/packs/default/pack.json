@@ -296,5 +296,17 @@
       "dx": 23,
       "dy": -258
     }
-  }
+  },
+  "fonts": [
+    {
+      "family": "Emoticomic",
+      "src": "fonts/emoticomic.ttf",
+      "roles": [
+        "board",
+        "bubble",
+        "zzz"
+      ],
+      "license": "fonts/emoticomic-LICENSE.txt"
+    }
+  ]
 }

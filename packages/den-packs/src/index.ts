@@ -6,6 +6,8 @@ export {
   type FurnitureSpec,
   type Placement,
   type Station,
+  type FontRole,
+  type FontSpec,
   type PackManifest,
 } from './manifest.js'
 
