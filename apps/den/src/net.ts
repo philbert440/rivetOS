@@ -22,5 +22,9 @@ export const serverWs =
       ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`
       : `ws://${location.hostname}:${DEV_PORT}`) + '/ws'
 
+/** WS origin without the /ws suffix — for other WS endpoints on the same
+ *  server (the terminal drawer builds `${serverWsBase}/term?session=…`). */
+export const serverWsBase = serverWs.slice(0, -'/ws'.length)
+
 export const withToken = (url: string): string =>
   token ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : url

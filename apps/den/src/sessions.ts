@@ -36,6 +36,9 @@ export interface SessionStoreOpts {
   onSessionRemoved(id: string): void
   /** Snapshot reconciled — ids in server recency order (most recent first). */
   onSnapshot(ids: string[]): void
+  /** A session's PTY link appeared/changed outside a snapshot (a lazy
+   *  /sessions refresh, or the header registering its own POST /term). */
+  onPty?(id: string, pty: string): void
   /** A demo beat fired — the caller routes it (and may drop it mid-preview). */
   onDemoEvent(ev: AgentEventBody): void
 }
@@ -43,7 +46,13 @@ export interface SessionStoreOpts {
 export interface SessionStore {
   rooms: Record<string, RoomState>
   sessionNames: Record<string, string>
+  /** den session id → den-server PTY id, while the server reports the link
+   *  (the `pty` decoration on /sessions and the snapshot). Sessions without
+   *  an entry are plain observers — no terminal chrome. */
+  sessionPtys: Record<string, string>
   ingest(ev: AgentEvent): void
+  /** Record a session↔PTY link learned out-of-band (POST /term response). */
+  setPty(id: string, pty: string): void
   /** Drop a session locally AND ask den-server to evict it. */
   delete(id: string): void
   /** Connect the live feed — or start the demo loop, per wantLive. */
@@ -53,17 +62,53 @@ export interface SessionStore {
 export function createSessionStore(opts: SessionStoreOpts): SessionStore {
   const rooms: Record<string, RoomState> = {}
   const sessionNames: Record<string, string> = {}
+  const sessionPtys: Record<string, string> = {}
 
   function dropSession(id: string) {
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
     delete rooms[id]
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
     delete sessionNames[id]
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete sessionPtys[id]
+  }
+
+  // Events never carry the pty decoration — only /sessions and the snapshot
+  // do. A session that STARTS mid-connection (its PTY spawned by another
+  // viewer or straight from the CLI) would stay button-less until the next
+  // reconnect, so a session.start for an unlinked session triggers one
+  // throttled /sessions refresh to pick the decoration up.
+  let ptyRefreshAt = 0
+  function refreshPtys() {
+    const now = Date.now()
+    if (now - ptyRefreshAt < 2000) return
+    ptyRefreshAt = now
+    fetch(withToken(`${serverHttp}/sessions`))
+      .then((r) =>
+        r.ok ? (r.json() as Promise<{ sessions: { id: string; pty?: string }[] }>) : null,
+      )
+      .then((data) => {
+        if (!data) return
+        for (const s of data.sessions) {
+          if (s.pty && sessionPtys[s.id] !== s.pty) {
+            sessionPtys[s.id] = s.pty
+            opts.onPty?.(s.id, s.pty)
+          }
+        }
+      })
+      .catch(() => {})
   }
 
   function ingest(ev: AgentEvent) {
     rooms[ev.session] = reduceRoom(rooms[ev.session] ?? initialRoomState, ev)
     if (ev.name) sessionNames[ev.session] = ev.name
+    if (
+      opts.wantLive &&
+      ev.type === 'session.start' &&
+      !LOCAL_SESSIONS.has(ev.session) &&
+      !sessionPtys[ev.session]
+    )
+      refreshPtys()
     opts.onSessionUpsert(ev.session, rooms[ev.session])
     opts.onEvent(ev)
   }
@@ -96,8 +141,15 @@ export function createSessionStore(opts: SessionStoreOpts): SessionStore {
         // the snapshot is authoritative: reconcile, don't just merge —
         // sessions evicted while we were disconnected must disappear
         const snapRooms = (data.rooms ?? {}) as Record<string, RoomState>
-        for (const s of (data.sessions ?? []) as { id: string; name: string }[])
+        const snapSessions = (data.sessions ?? []) as { id: string; name: string; pty?: string }[]
+        for (const s of snapSessions) {
           sessionNames[s.id] = s.name
+          // the snapshot is authoritative for the PTY link too — a decoration
+          // that disappeared (PTY reaped) must revert the ✕ to plain dismiss
+          if (s.pty) sessionPtys[s.id] = s.pty
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          else delete sessionPtys[s.id]
+        }
         for (const id of Object.keys(rooms)) {
           if (!LOCAL_SESSIONS.has(id) && !(id in snapRooms)) dropSession(id)
         }
@@ -156,7 +208,13 @@ export function createSessionStore(opts: SessionStoreOpts): SessionStore {
   return {
     rooms,
     sessionNames,
+    sessionPtys,
     ingest,
+    setPty: (id, pty) => {
+      if (sessionPtys[id] === pty) return
+      sessionPtys[id] = pty
+      opts.onPty?.(id, pty)
+    },
     delete: (id) => {
       void fetch(withToken(`${serverHttp}/session?session=${encodeURIComponent(id)}`), {
         method: 'DELETE',
