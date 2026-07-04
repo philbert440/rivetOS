@@ -36,8 +36,14 @@ async function main() {
     return
   }
 
-  const session = p.session_id ?? p.sessionId ?? 'unknown'
+  // grok payloads are camelCase and may omit the id entirely — its hook
+  // runner exports GROK_SESSION_ID. Last resort: key on parent pid so two
+  // concurrent id-less harnesses don't melt into one room.
+  const session =
+    p.session_id ?? p.sessionId ?? process.env.GROK_SESSION_ID ?? `unknown-${process.ppid}`
   const hookEvent = p.hook_event_name ?? p.hookEventName ?? eventArg ?? ''
+  const toolInput = p.tool_input ?? p.toolInput ?? {}
+  const toolResponse = p.tool_response ?? p.toolResult
 
   // ---- per-session translator state ----
   const stateDir = path.join(os.homedir(), '.cache', 'rivet-den')
@@ -51,11 +57,14 @@ async function main() {
   }
 
   const events = []
-  const emit = (body) => events.push({ v: 1, session, name: NAME, harness, ts: Date.now(), ...body })
+  // ts ticks up per event so a batch keeps its order through the reducer's
+  // monotonic lastEventTs even though it's emitted within one millisecond
+  const emit = (body) =>
+    events.push({ v: 1, session, name: NAME, harness, ts: Date.now() + events.length, ...body })
 
   if (!st.started) {
     st.started = true
-    const title = String(p.prompt ?? path.basename(p.cwd ?? '') ?? 'session').slice(0, 48)
+    const title = (String(p.prompt ?? path.basename(p.cwd ?? '')).trim() || 'session').slice(0, 48)
     emit({ type: 'session.start', title })
   }
 
@@ -124,6 +133,15 @@ async function main() {
   }
 
   const toolName = p.tool_name ?? p.toolName ?? ''
+  // planning tools drive the whiteboard instead of tool.start/tool.end —
+  // PreToolUse and PostToolUse must agree on this set or the room gets a
+  // tool.end with no matching tool.start
+  const isPlanningTool = /^(TodoWrite|TaskCreate|TaskUpdate)$/.test(toolName)
+  // grok aliases Claude-style names: Bash→run_terminal_cmd, Edit→search_replace
+  const isShellTool = toolName === 'Bash' || toolName === 'run_terminal_cmd'
+  const isEditTool = /^(Edit|Write|MultiEdit|NotebookEdit|search_replace|write_file)$/.test(
+    toolName,
+  )
 
   switch (hookEvent) {
     case 'SessionStart':
@@ -135,42 +153,41 @@ async function main() {
       break
     }
     case 'PreToolUse': {
-      if (toolName === 'TodoWrite' || toolName === 'TaskCreate' || toolName === 'TaskUpdate') {
+      if (isPlanningTool) {
         emit({ type: 'activity', activity: 'writing_plan' })
       } else {
         emitThinking(tailTranscript().thinking)
         emit({ type: 'tool.start', tool: toolName || 'unknown' })
-        if (toolName === 'Bash' && p.tool_input?.command) {
-          termLine('$ ' + String(p.tool_input.command).replace(/\s+/g, ' '))
+        if (isShellTool && toolInput.command) {
+          termLine('$ ' + String(toolInput.command).replace(/\s+/g, ' '))
         }
       }
       break
     }
     case 'PostToolUse':
     case 'PostToolUseFailure': {
-      if (toolName === 'TodoWrite') {
-        handleTodos(p.tool_input?.todos)
+      if (isPlanningTool) {
+        // no tool.start was emitted for these — no tool.end either
+        if (toolName === 'TodoWrite') handleTodos(toolInput.todos)
       } else {
-        if (toolName === 'Bash') {
-          const r = p.tool_response
+        if (isShellTool) {
+          const r = toolResponse
           const out = typeof r === 'string' ? r : [r?.stdout, r?.stderr].filter(Boolean).join('\n')
           for (const l of String(out ?? '').split('\n').filter((l) => l.trim()).slice(-4)) termLine(l)
-        } else if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(toolName) && p.tool_input?.file_path) {
-          termLine('✎ ' + path.basename(p.tool_input.file_path))
+        } else if (isEditTool && (toolInput.file_path ?? toolInput.filePath)) {
+          termLine('✎ ' + path.basename(toolInput.file_path ?? toolInput.filePath))
         }
         emit({ type: 'tool.end', tool: toolName || undefined })
       }
       break
     }
-    case 'PreCompact':
-    case 'CompactBefore': {
+    case 'PreCompact': {
       // context compaction → nap in the bed until the next event wakes him
       emit({ type: 'thinking.end' })
       emit({ type: 'activity', activity: 'sleeping' })
       break
     }
-    case 'Stop':
-    case 'TurnAfter': {
+    case 'Stop': {
       const { thinking, text } = tailTranscript()
       emitThinking(thinking)
       emit({ type: 'thinking.end' })
@@ -193,19 +210,24 @@ async function main() {
 
   if (hookEvent !== 'SessionEnd') fs.writeFileSync(stateFile, JSON.stringify(st))
 
-  // ---- ship, best-effort, fire-and-forget-ish (bounded) ----
+  // ---- ship, best-effort, bounded. Sequential on purpose: the server
+  // reduces in arrival order, and concurrent POSTs race (tool.end can land
+  // before tool.start). First failure aborts the batch — the server is down,
+  // and later events without their predecessors are worse than none.
   const headers = { 'content-type': 'application/json' }
   if (TOKEN) headers.authorization = `Bearer ${TOKEN}`
-  await Promise.allSettled(
-    events.map((ev) =>
-      fetch(`${DEN_URL}/event`, {
+  for (const ev of events) {
+    try {
+      await fetch(`${DEN_URL}/event`, {
         method: 'POST',
         headers,
         body: JSON.stringify(ev),
-        signal: AbortSignal.timeout(1500),
-      }),
-    ),
-  )
+        signal: AbortSignal.timeout(1000),
+      })
+    } catch {
+      break
+    }
+  }
 }
 
 main()

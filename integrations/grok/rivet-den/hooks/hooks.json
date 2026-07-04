@@ -1,5 +1,5 @@
 {
-  "description": "rivet-den event capture for Grok Build. Install at ~/.grok/hooks/rivet-den.json (NOT config.toml). Event names per ~/.grok/docs/user-guide/10-hooks.md; the event name is passed as an argument because grok payloads omit hook_event_name.",
+  "description": "rivet-den event capture for Grok Build. Install at ~/.grok/hooks/rivet-den.json (NOT config.toml). Event names are the REAL Grok events per ~/.grok/docs/user-guide/10-hooks.md (grok v0.1.219) — Stop and PreCompact, not the TurnAfter/CompactBefore fakes an earlier rivet-memory integration shipped. The event name is passed as an argument because grok payloads omit hook_event_name. Matchers are regex in Grok, hence '.*' not '*'.",
   "hooks": {
     "SessionStart": [
       {
@@ -36,7 +36,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "*",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
@@ -48,7 +48,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "*",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
@@ -60,7 +60,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "*",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
@@ -70,23 +70,23 @@
         ]
       }
     ],
-    "TurnAfter": [
+    "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh TurnAfter",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh Stop",
             "timeout": 5
           }
         ]
       }
     ],
-    "CompactBefore": [
+    "PreCompact": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh CompactBefore",
+            "command": "${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-den/bin/grok-den-hook.sh PreCompact",
             "timeout": 5
           }
         ]
