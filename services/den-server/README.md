@@ -13,6 +13,7 @@ single snapshot instead of replayed events.
 | `/sessions`               | GET    | recency-ordered session list                       |
 | `/state?session=<id>`     | GET    | RoomState snapshot                                 |
 | `/layout?viewer=<key>`    | GET/POST | per-viewer layout store; GET falls back to `default` |
+| `/mesh.json`              | GET    | den-enabled mesh nodes + probed den health (see docs/DEN.md “Mesh view”) |
 | `/ws?session=<id>`        | WS     | snapshot message, then live events (no param = all sessions) |
 | `/packs/*`                | GET    | static SpritePacks when `RIVETOS_DEN_PACKS_DIR` set |
 | `/*`                      | GET    | built viewer app when `RIVETOS_DEN_STATIC_DIR` set |
@@ -26,6 +27,11 @@ single snapshot instead of replayed events.
   Optional on trusted mesh nodes; required for anything internet-facing.
 - `RIVETOS_DEN_STATE_DIR` (`~/.rivetos/den`) — layout persistence
 - `RIVETOS_DEN_STATIC_DIR` / `RIVETOS_DEN_PACKS_DIR` — optional static roots
+- `RIVETOS_DEN_MESH_FILE` — mesh roster for `/mesh.json`; empty tries
+  `/rivet-shared/mesh.json` then `~/.rivetos/mesh.json`
+- `RIVETOS_DEN_MESH_CACHE_MS` (10000) — `/mesh.json` result cache TTL
+- `RIVETOS_DEN_NODE_ID` (hostname) — this node's id in the roster, used to
+  attach `latest` to the local entry
 
 ## Deploy
 

@@ -24,6 +24,12 @@ export interface DenConfig {
   packsDir: string
   /** How long an ended session's room lingers before eviction (ms). */
   evictTtlMs: number
+  /** Mesh roster for GET /mesh.json. Empty = try the canonical
+   *  /rivet-shared/mesh.json, then ~/.rivetos/mesh.json. */
+  meshFile: string
+  /** How long one /mesh.json overview (roster read + peer probes) is served
+   *  from cache (ms). */
+  meshCacheMs: number
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
@@ -38,5 +44,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     staticDir: env.RIVETOS_DEN_STATIC_DIR ?? '',
     packsDir: env.RIVETOS_DEN_PACKS_DIR ?? '',
     evictTtlMs: intEnv('RIVETOS_DEN_EVICT_TTL_MS', 24 * 60 * 60 * 1000),
+    meshFile: env.RIVETOS_DEN_MESH_FILE ?? '',
+    meshCacheMs: intEnv('RIVETOS_DEN_MESH_CACHE_MS', 10_000),
   }
 }
