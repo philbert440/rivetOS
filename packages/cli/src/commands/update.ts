@@ -322,6 +322,16 @@ export default async function update(): Promise<void> {
     await deployDenLocal(ROOT, opts.restart)
   }
 
+  // Step 4.6: refresh per-user TUI plugin installs (hooks, MCP wiring) from
+  // the updated source. Without this, repo-side hook fixes never reach the
+  // installed copies — a stale den-hook silently broke session linkage once.
+  try {
+    const { default: pluginsSync } = await import('./plugins-sync.js')
+    pluginsSync(['--root', ROOT])
+  } catch (err: unknown) {
+    console.warn(`  ⚠️  plugins sync failed (non-fatal): ${(err as Error).message}`)
+  }
+
   // Step 5: Post-update — report what changed
   const newPkg = JSON.parse(await readFile(resolve(ROOT, 'package.json'), 'utf-8')) as {
     version: string
@@ -701,6 +711,13 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
 
         // den-server deploy stage — same treatment the remotes got.
         await deployDenLocal(ROOT, localOpts.restart)
+      }
+
+      try {
+        const { default: pluginsSync } = await import('./plugins-sync.js')
+        pluginsSync(['--root', ROOT])
+      } catch (err: unknown) {
+        console.warn(`  ⚠️  plugins sync failed (non-fatal): ${(err as Error).message}`)
       }
 
       console.log('  ✅ Local node updated')
