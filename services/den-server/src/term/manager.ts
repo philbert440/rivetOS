@@ -9,8 +9,9 @@
 //     adapter treats an empty string as a real session id (S2 review)
 //   - every spawn/kill/exit is appended to ${stateDir}/term-audit.log
 //
-// Attachment is a seam for the next PR (WS channel): attach(id, cb) feeds
-// live output to a subscriber and holds off the detached-TTL reaper.
+// Attachment (attach(id, cb, onExit?)) feeds live output + the exit
+// notification to a subscriber (the WS /term channel in term/ws.ts) and holds
+// off the detached-TTL reaper while at least one subscriber is attached.
 
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
@@ -52,12 +53,15 @@ export interface PtyInfo {
   pid: number
   attached: number
   createdAt: number
+  cols: number
+  rows: number
   state: 'running' | 'exited'
   exitCode?: number | null
   lastOutputTs: number
 }
 
 type DataSubscriber = (data: string | Buffer) => void
+type ExitSubscriber = (exitCode: number | null) => void
 
 interface PtyRecord {
   id: string
@@ -72,7 +76,10 @@ interface PtyRecord {
   scrollback: Buffer[]
   scrollbackSize: number
   attached: Set<DataSubscriber>
+  exitWatchers: Set<ExitSubscriber>
   createdAt: number
+  cols: number
+  rows: number
   lastOutputTs: number
   state: 'running' | 'exited'
   exitCode?: number | null
@@ -91,11 +98,17 @@ export interface TermManager {
   /** SIGHUP → SIGKILL(3s); exited records are reaped immediately. false = unknown id. */
   kill(id: string): boolean
   /** Subscribe to live output; cancels the detached-TTL reaper while at least
-   *  one subscriber is attached. Returns a detach fn; null = unknown id. */
-  attach(id: string, cb: DataSubscriber): (() => void) | null
+   *  one subscriber is attached. `onExit` (optional) fires once when the
+   *  child exits, after the final output has fanned out. Returns a detach fn;
+   *  null = unknown id. */
+  attach(id: string, cb: DataSubscriber, onExit?: ExitSubscriber): (() => void) | null
   scrollback(id: string): Buffer | undefined
   write(id: string, data: string | Buffer): boolean
+  /** Resize the child and record the new dimensions (hello frames report them). */
   resize(id: string, cols: number, rows: number): boolean
+  /** Flow control for saturated viewers — no-op on backends without pause. */
+  pause(id: string): boolean
+  resume(id: string): boolean
   /** Count of running PTYs (what the cap is enforced against). */
   active(): number
   /** Clear all timers and SIGHUP running PTYs (server shutdown / tests). */
@@ -210,6 +223,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       pid: r.pid,
       attached: r.attached.size,
       createdAt: r.createdAt,
+      cols: r.cols,
+      rows: r.rows,
       state: r.state,
       lastOutputTs: r.lastOutputTs,
     }
@@ -235,6 +250,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         harness: 'rivetos',
       })
     }
+    // notify after the final data fan-out (data events precede exit) so
+    // attached WS clients see output frames, then the exit frame — copy the
+    // set: a watcher's reaction is usually to detach
+    for (const w of [...r.exitWatchers]) w(exitCode)
     r.reapTimer = setTimeout(() => {
       r.reapTimer = undefined
       reap(r)
@@ -279,7 +298,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         scrollback: [],
         scrollbackSize: 0,
         attached: new Set(),
+        exitWatchers: new Set(),
         createdAt: now(),
+        cols,
+        rows,
         lastOutputTs: now(),
         state: 'running',
       }
@@ -315,10 +337,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       return true
     },
 
-    attach(id, cb) {
+    attach(id, cb, onExit) {
       const r = records.get(id)
       if (!r) return null
       r.attached.add(cb)
+      if (onExit) r.exitWatchers.add(onExit)
       if (r.detachTimer) {
         clearTimeout(r.detachTimer)
         r.detachTimer = undefined
@@ -328,6 +351,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         if (detached) return
         detached = true
         r.attached.delete(cb)
+        if (onExit) r.exitWatchers.delete(onExit)
         if (r.attached.size === 0) armDetachedTtl(r)
       }
     },
@@ -348,6 +372,22 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       const r = records.get(id)
       if (!r || r.state !== 'running') return false
       r.proc.resize(cols, rows)
+      r.cols = cols
+      r.rows = rows
+      return true
+    },
+
+    pause(id): boolean {
+      const r = records.get(id)
+      if (!r || r.state !== 'running') return false
+      r.proc.pause?.()
+      return true
+    },
+
+    resume(id): boolean {
+      const r = records.get(id)
+      if (!r || r.state !== 'running') return false
+      r.proc.resume?.()
       return true
     },
 

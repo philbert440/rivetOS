@@ -17,6 +17,8 @@
 //   POST /term                  spawn a roster command in a PTY (opt-in)
 //   GET  /term/list             live + recently-exited PTYs
 //   DELETE /term?id=<id>        kill a PTY (SIGHUP → SIGKILL)
+//   WS   /term?id=<pty>         terminal attach: hello + scrollback replay +
+//        | ?session=<den>       live bytes (see term/ws.ts for the framing)
 //   WS   /ws?session=<id>       snapshot + live events (no filter = all)
 //   GET  /healthz               liveness (never auth-gated)
 //   GET  /packs/*, /*           static packs + built viewer, when configured
@@ -46,6 +48,7 @@ import { createMeshView } from './mesh.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
+import { createTermWs } from './term/ws.js'
 
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -231,6 +234,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       })
       return termManager
     })())
+
+  // WS /term attach channel — shares the memoized manager (and its 503/gate
+  // semantics: gated or disabled terminals destroy the upgrade)
+  const termWs = createTermWs({ manager: ensureManager, enabled: () => termEnabled })
 
   // sessions gain a `pty: '<id>'` marker while a local PTY is linked to them
   // (extra field — viewers that don't know it ignore it)
@@ -472,11 +479,20 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy())
     const url = new URL(req.url ?? '/', 'http://localhost')
-    if (url.pathname !== '/ws' || !authorized(req, url)) {
+    if (!authorized(req, url)) {
       socket.destroy()
       return
     }
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+    if (url.pathname === '/ws') {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+      return
+    }
+    if (url.pathname === '/term') {
+      // auth is decided out here; enabled/known-id checks live inside
+      termWs.handleUpgrade(req, socket, head, url)
+      return
+    }
+    socket.destroy()
   })
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -503,7 +519,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   })
 
   // heartbeat: half-open sockets (peer gone without a FIN) never fire
-  // 'close' on their own — ping them and terminate non-responders
+  // 'close' on their own — ping them and terminate non-responders. Term
+  // clients ride the same sweep.
   const heartbeat = setInterval(() => {
     for (const c of clients) {
       if (!c.alive) {
@@ -514,6 +531,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       c.alive = false
       c.ws.ping()
     }
+    termWs.heartbeat()
   }, 30_000)
   heartbeat.unref?.()
 
@@ -525,6 +543,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         clearInterval(heartbeat)
         for (const t of evictTimers.values()) clearTimeout(t)
         evictTimers.clear()
+        termWs.close()
         termManager?.close()
         for (const c of clients) c.ws.close()
         wss.close(() => server.close(() => resolve()))
