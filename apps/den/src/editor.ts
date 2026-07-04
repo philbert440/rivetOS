@@ -85,6 +85,9 @@ export interface Editor {
   detach(): void
   /** True while EDIT mode is on. */
   isActive(): boolean
+  /** Toggle EDIT mode programmatically (same path as the EDIT button) —
+   *  focus changes exit edit BEFORE re-targeting, never mid-edit. */
+  setEditing(on: boolean): void
 }
 
 export function createEditor(dom: EditorDom): Editor {
@@ -281,13 +284,14 @@ export function createEditor(dom: EditorDom): Editor {
     { passive: true },
   )
 
-  dom.btn.addEventListener('click', () => {
-    if (!hooks) return
-    editing = !editing
+  function setEditing(on: boolean): void {
+    if (!hooks || editing === on) return
+    editing = on
     dom.btn.classList.toggle('on', editing)
     dom.panel.classList.toggle('on', editing)
     if (!editing) {
       selected = null
+      dragId = null
       dragStation = null
     }
     drawHighlight()
@@ -296,7 +300,9 @@ export function createEditor(dom: EditorDom): Editor {
       renderThumbs()
     }
     hooks.onEditingChange(editing)
-  })
+  }
+
+  dom.btn.addEventListener('click', () => setEditing(!editing))
 
   function setTarget(next: EditorHooks, initial: SavedLayout | null): void {
     detach()
@@ -344,5 +350,5 @@ export function createEditor(dom: EditorDom): Editor {
     hooks = null
   }
 
-  return { setTarget, detach, isActive: () => editing }
+  return { setTarget, detach, isActive: () => editing, setEditing }
 }

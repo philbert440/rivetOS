@@ -1,7 +1,8 @@
-// Boot + orchestration: Pixi app, pack/font/asset loading, ONE room instance
-// (C3 turns this into a grid — one den window per session), session store
-// wiring, DOM chrome (picker, gear menu, push-to-talk, edit panel), and the
-// screen-space layout that scales the room's frame to the viewport.
+// Boot + orchestration: Pixi app, pack/font/asset loading, the window grid
+// (one complete den window per active session, via the WindowManager),
+// session store wiring, and the global DOM chrome (gear menu, push-to-talk,
+// edit panel, mobile tab strip). Per-window chrome (title, subtitle, LED, ✕)
+// lives in room.ts; grid layout + focus live in windows.ts.
 
 import { Application } from 'pixi.js'
 import {
@@ -18,7 +19,8 @@ import { loadPackFonts } from './fonts.js'
 import { createEditor, loadLayout, setLayoutPack } from './editor.js'
 import { createLayoutModel } from './layout-model.js'
 import { createRoom, MARGIN, TITLEBAR } from './room.js'
-import { createSessionStore, LOCAL_SESSIONS } from './sessions.js'
+import { createSessionStore, IDLE_SESSION, LOCAL_SESSIONS } from './sessions.js'
+import { createWindowManager } from './windows.js'
 import { serverHttp } from './net.js'
 
 async function boot() {
@@ -75,204 +77,9 @@ async function boot() {
     ? await loadAsset(pack.url(chairSideSrc)).catch(() => null)
     : null
 
-  const caption = document.getElementById('caption')!
   const pttLive = document.getElementById('ptt-live')!
 
-  // ---- the one den window ----
-  const room = createRoom({
-    id: 'den',
-    pack,
-    fonts,
-    layout: layoutModel,
-    shell,
-    furnitureAssets,
-    chairSideAsset,
-    poses,
-    poseImgSize,
-    captionEl: caption,
-  })
-  app.stage.addChild(room.root)
-
-  // ---- layout / resize ----
-  let mobileMode = false
-  let camS = 1
-  const clampCamX = (x: number) => Math.min(0, Math.max(window.innerWidth - room.frameW * camS, x))
-  const UI_STACK = 48 + 26 + 8 // caption bottom + caption height + gap
-  const TOP_STACK = 10 // narration lives in-room now; just breathing room
-  // dock the session picker + gear onto the den window's title bar; called on
-  // layout() and whenever the camera pans the frame (mobile mode)
-  const pickerEl = document.getElementById('session-picker')!
-  const sessionXEl = document.getElementById('session-x')!
-  const gearEl = document.getElementById('gear')!
-  const gearMenuEl = document.getElementById('gear-menu')!
-  function positionChrome() {
-    const s = room.root.scale.x
-    const fx = room.root.position.x,
-      fy = room.root.position.y
-    const cy = fy + (10 + (TITLEBAR - 14) / 2) * s // title-bar strip center
-    pickerEl.style.left = `${fx + 190 * s}px`
-    pickerEl.style.top = `${cy}px`
-    sessionXEl.style.left = `${fx + 190 * s + pickerEl.offsetWidth + 8}px`
-    sessionXEl.style.top = `${cy}px`
-    gearEl.style.left = `${fx + (room.frameW - 18) * s}px`
-    gearEl.style.top = `${cy}px`
-    gearMenuEl.style.left = `${fx + (room.frameW - 18) * s}px`
-    gearMenuEl.style.top = `${fy + (TITLEBAR + 2) * s}px`
-  }
-  function layout() {
-    const winW = window.innerWidth,
-      winH = window.innerHeight
-    const ui = Math.max(0.6, Math.min(1.25, Math.min(winW, winH) / 760))
-    document.documentElement.style.setProperty('--ui', String(ui))
-    const top = TOP_STACK * ui
-    const availH = Math.max(160, winH - top - UI_STACK * ui)
-    mobileMode = winW / availH < room.frameW / room.frameH
-    if (mobileMode) {
-      camS = availH / room.frameH
-      room.root.scale.set(camS)
-      room.root.position.set(clampCamX(winW / 2 - camS * (MARGIN + room.charX())), top)
-    } else {
-      const pad = 12 * ui
-      const s = Math.min((winW - pad * 2) / room.frameW, availH / room.frameH)
-      room.root.scale.set(s)
-      room.root.position.set((winW - room.frameW * s) / 2, top + (availH - room.frameH * s) / 2)
-    }
-    positionChrome()
-  }
-  layout()
-  window.addEventListener('resize', layout)
-
-  // ---- session selection: the picker chooses which session drives the den ----
-  let selectedSession: string | null = null
-  const picker = document.getElementById('session-picker')! as HTMLSelectElement
-  function renderPicker() {
-    const ids = Object.keys(store.rooms).filter((id) => !LOCAL_SESSIONS.has(id))
-    picker.style.display = ids.length > 1 ? '' : 'none'
-    sessionXEl.style.display = picker.style.display
-    picker.innerHTML = ''
-    for (const id of ids) {
-      const opt = document.createElement('option')
-      opt.value = id
-      const name = store.sessionNames[id] ?? id.slice(0, 12)
-      opt.textContent = store.rooms[id]?.ended ? `${name} (ended)` : name
-      opt.selected = id === selectedSession
-      picker.appendChild(opt)
-    }
-    positionChrome() // the ✕ hangs off the picker's rendered width
-  }
-  const selectedState = () =>
-    (selectedSession ? store.rooms[selectedSession] : undefined) ?? initialRoomState
-  // push the selected session's state at the room — unless a preview owns the
-  // stage right now (exitPreview re-pushes when the preview ends)
-  const applySelected = () => {
-    if (!previewing) room.setState(selectedState())
-  }
-  const selectFallback = () => {
-    const ids = Object.keys(store.rooms).filter((id) => !LOCAL_SESSIONS.has(id))
-    selectedSession = ids[0] ?? null
-    applySelected()
-    renderPicker()
-  }
-  sessionXEl.addEventListener('click', () => {
-    const id = picker.value || selectedSession
-    if (!id) return
-    store.delete(id)
-    if (selectedSession === id) {
-      selectedSession = Object.keys(store.rooms).filter((r) => r !== 'demo')[0] ?? null
-      applySelected()
-    }
-    renderPicker()
-  })
-  picker.addEventListener('change', () => {
-    selectedSession = picker.value
-    applySelected()
-  })
-
-  // ---- preview: local events act on a scratch copy of the current room ----
-  // Reducing editor/PTT preview events into a real session's state would
-  // leave permanent lies (activity, log lines) that survive after the
-  // preview ends. While a preview owns the stage the store keeps reducing
-  // live events into its map — nothing is buffered or lost — and exiting
-  // simply re-pushes the store's current state at the room.
-  let previewing = false
-  let previewState: RoomState = initialRoomState
-  function enterPreview() {
-    if (previewing) return
-    previewing = true
-    previewState = { ...selectedState() }
-  }
-  function exitPreview() {
-    if (!previewing) return
-    previewing = false
-    // the selected session may have been evicted while the preview owned the
-    // stage — fall back exactly as the live handler would have
-    if (selectedSession && !LOCAL_SESSIONS.has(selectedSession) && !store.rooms[selectedSession])
-      selectFallback()
-    else room.setState(selectedState())
-  }
-  // local events (demo loop, editor pose preview, push-to-talk) run through
-  // the same reducer as live ones
-  const applyLocal = (ev: AgentEventBody) => {
-    const local = editorActive || pttActive
-    if (local) {
-      enterPreview()
-      const full: AgentEvent = { v: 1, session: 'preview', ...ev }
-      previewState = reduceRoom(previewState, full)
-      room.setState(previewState)
-      room.onEvent(full)
-    } else {
-      store.ingest({ v: 1, session: selectedSession ?? 'demo', ...ev })
-    }
-  }
-
-  // ---- session store: live den-server feed, demo as fallback ----
-  const wantLive = location.hash !== '#demo' && location.pathname !== '/demo'
-  const store = createSessionStore({
-    wantLive,
-    addTick: (fn) => app.ticker.add(fn),
-    onSessionUpsert: (id, s, pickerDirty) => {
-      if (!selectedSession) selectedSession = id
-      if (pickerDirty) renderPicker()
-      if (id !== selectedSession || previewing) return
-      room.setState(s)
-    },
-    onEvent: (ev) => {
-      if (ev.session !== selectedSession || previewing) return
-      room.onEvent(ev)
-    },
-    onSessionRemoved: (id) => {
-      if (id === selectedSession) selectFallback()
-      else renderPicker()
-    },
-    onSnapshot: (ids) => {
-      // a real session always wins over the boot placeholder; server
-      // recency order picks the replacement
-      if ((!selectedSession || selectedSession === 'demo') && ids.length) selectedSession = ids[0]
-      if (selectedSession && !store.rooms[selectedSession] && !previewing) {
-        selectFallback()
-        return
-      }
-      if (selectedSession && store.rooms[selectedSession]) applySelected()
-      renderPicker()
-    },
-    onDemoStart: () => {
-      selectedSession ??= 'demo'
-    },
-    onDemoEvent: (ev) => {
-      if (!pttActive && !editorActive) applyLocal(ev)
-    },
-  })
-
-  app.ticker.add((tk) => {
-    room.update(tk.deltaMS)
-    if (mobileMode) {
-      const want = clampCamX(window.innerWidth / 2 - camS * (MARGIN + room.charX()))
-      room.root.position.x += (want - room.root.position.x) * Math.min(1, tk.deltaMS / 350)
-      positionChrome()
-    }
-  })
-
-  // ---- edit mode ----
+  // ---- edit mode (target follows window focus — wired in onFocusChange) ----
   let editorActive = false
   const editor = createEditor({
     btn: document.getElementById('edit-btn')!,
@@ -280,18 +87,159 @@ async function boot() {
     chips: document.getElementById('edit-chips')!,
     thumbs: document.getElementById('edit-thumbs')!,
   })
-  editor.setTarget(
-    {
-      ...room.editorHooks(),
-      previewActivity: (a) => applyLocal({ type: 'activity', activity: a as Activity }),
-      onEditingChange: (on) => {
-        editorActive = on
-        if (!on && !pttActive) exitPreview()
-      },
-      onLayoutChange: () => layoutModel.notifyChange(),
+
+  // ---- the window grid: one complete den window per session ----
+  const IDLE_STATE: RoomState = { ...initialRoomState, activity: 'sleeping' }
+  const stateFor = (id: string): RoomState =>
+    id === IDLE_SESSION ? IDLE_STATE : (store.rooms[id] ?? initialRoomState)
+  const nameFor = (id: string): string =>
+    id === IDLE_SESSION ? '' : (store.sessionNames[id] ?? id.slice(0, 12))
+
+  function closeSession(id: string) {
+    // exactly the old #session-x semantics, relocated per-window:
+    // DELETE /session server-side, drop locally, and reflow the grid
+    store.delete(id)
+    wm.remove(id)
+    syncIdleWindow()
+  }
+
+  const wm = createWindowManager({
+    stage: app.stage,
+    frameW: m.shell.w + MARGIN * 2,
+    frameH: m.shell.h + MARGIN * 2 + TITLEBAR,
+    isLocal: (id) => LOCAL_SESSIONS.has(id),
+    tabStrip: document.getElementById('tab-strip')!,
+    getName: (id) => nameFor(id) || id,
+    makeRoom: (id) =>
+      createRoom({
+        id,
+        pack,
+        fonts,
+        layout: layoutModel,
+        shell,
+        furnitureAssets,
+        chairSideAsset,
+        poses,
+        poseImgSize,
+        onClose: LOCAL_SESSIONS.has(id) ? undefined : () => closeSession(id),
+      }),
+    onFocusChange: (id) => {
+      // never hot-swap the editor mid-edit: exit EDIT first (which also ends
+      // its preview via onEditingChange), then re-point at the new window
+      if (editor.isActive()) editor.setEditing(false)
+      if (previewing) exitPreview() // a held PTT re-enters on the new focus
+      editor.detach()
+      const room = id ? wm.get(id) : undefined
+      if (!room) return
+      editor.setTarget(
+        {
+          ...room.editorHooks(),
+          previewActivity: (a) => applyLocal({ type: 'activity', activity: a as Activity }),
+          onEditingChange: (on) => {
+            editorActive = on
+            if (!on && !pttActive) exitPreview()
+          },
+          onLayoutChange: () => layoutModel.notifyChange(),
+        },
+        saved,
+      )
     },
-    saved,
-  )
+  })
+
+  // zero sessions → one local window with the character asleep in bed; the
+  // first real session replaces it (and it returns when the last one closes)
+  function syncIdleWindow() {
+    const hasReal = wm.ids().some((id) => id !== IDLE_SESSION)
+    if (!hasReal && !wm.has(IDLE_SESSION)) {
+      const room = wm.ensure(IDLE_SESSION)
+      room.setTitle('', false)
+      room.setState(IDLE_STATE)
+    } else if (hasReal && wm.has(IDLE_SESSION)) {
+      wm.remove(IDLE_SESSION)
+    }
+  }
+
+  // ---- preview: local events act on a scratch copy of the FOCUSED room ----
+  // Reducing editor/PTT preview events into a real session's state would
+  // leave permanent lies (activity, log lines) that survive after the
+  // preview ends. While a preview owns a window the store keeps reducing
+  // live events into its map — nothing is buffered or lost — and exiting
+  // simply re-pushes the store's current state at the room.
+  let previewing = false
+  let previewRoomId: string | null = null
+  let previewState: RoomState = initialRoomState
+  function enterPreview() {
+    if (previewing) return
+    const id = wm.focusedId()
+    if (!id) return
+    previewing = true
+    previewRoomId = id
+    previewState = { ...stateFor(id) }
+  }
+  function exitPreview() {
+    if (!previewing) return
+    previewing = false
+    const id = previewRoomId
+    previewRoomId = null
+    // the window may have been closed/evicted while the preview owned it
+    if (id) wm.get(id)?.setState(stateFor(id))
+  }
+  // local events (demo loop, editor pose preview, push-to-talk) run through
+  // the same reducer as live ones
+  function applyLocal(ev: AgentEventBody) {
+    if (editorActive || pttActive) {
+      enterPreview()
+      if (!previewRoomId) return
+      const full: AgentEvent = { v: 1, session: 'preview', ...ev }
+      previewState = reduceRoom(previewState, full)
+      const room = wm.get(previewRoomId)
+      room?.setState(previewState)
+      room?.onEvent(full)
+    } else {
+      store.ingest({ v: 1, session: 'demo', ...ev })
+    }
+  }
+
+  // ---- session store: live den-server feed (demo only on explicit #demo) ----
+  const wantLive = location.hash !== '#demo' && location.pathname !== '/demo'
+  const store = createSessionStore({
+    wantLive,
+    addTick: (fn) => app.ticker.add(fn),
+    onSessionUpsert: (id, s) => {
+      const room = wm.ensure(id)
+      room.setTitle(nameFor(id), s.ended) // late-arriving names update here too
+      if (!(previewing && id === previewRoomId)) room.setState(s)
+      syncIdleWindow()
+    },
+    onEvent: (ev) => {
+      if (previewing && ev.session === previewRoomId) return
+      wm.get(ev.session)?.onEvent(ev)
+    },
+    onSessionRemoved: (id) => {
+      wm.remove(id)
+      syncIdleWindow()
+    },
+    onSnapshot: () => {
+      // the snapshot is authoritative on EVERY reconnect: create missing
+      // windows, destroy evicted ones — local windows (idle/demo) survive
+      wm.reconcile(new Set(Object.keys(store.rooms)))
+      for (const [id, s] of Object.entries(store.rooms)) {
+        if (LOCAL_SESSIONS.has(id)) continue
+        const room = wm.ensure(id)
+        room.setTitle(nameFor(id), s.ended)
+        if (!(previewing && id === previewRoomId)) room.setState(s)
+      }
+      syncIdleWindow()
+    },
+    onDemoEvent: (ev) => {
+      if (!pttActive && !editorActive) applyLocal(ev)
+    },
+  })
+
+  syncIdleWindow() // boot state: one sleeping window until the feed speaks
+
+  // single ticker: every visible room animates its own session
+  app.ticker.add((tk) => wm.update(tk.deltaMS))
 
   // ---- gear menu (EDIT toggle + push-to-talk key binding) ----
   const gear = document.getElementById('gear')!
@@ -306,7 +254,7 @@ async function boot() {
     gearMenu.classList.remove('open')
   })
 
-  // ---- push-to-talk: hold the bound key to talk ----
+  // ---- push-to-talk: hold the bound key to talk (previews the focused room) ----
   const keyLabel = (code: string) => code.replace(/^(Key|Digit)/, '').toUpperCase()
   let pttCode = localStorage.getItem('den.pttKey') ?? 'Space' // device pref, not room state
   let pttArming = false // next keypress becomes the binding
@@ -354,6 +302,10 @@ async function boot() {
   })
   window.addEventListener('blur', () => pttActive && up())
 
+  // headless-verification / debugging handle (?debug)
+  if (new URLSearchParams(location.search).has('debug'))
+    Object.assign(window, { __den: { wm, store } })
+
   // ---- debug: freeze a single activity via URL hash (#test-editing_code) ----
   const testActivity = /^#test-(\w+)$/.exec(location.hash)?.[1]
   if (testActivity) {
@@ -362,7 +314,7 @@ async function boot() {
     return
   }
 
-  // ---- live den-server feed, demo as fallback ----
+  // ---- live den-server feed (or the #demo loop) ----
   store.start()
 }
 
