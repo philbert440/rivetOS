@@ -233,6 +233,9 @@ export function createDenServer(config: DenConfig): DenServer {
         delete rooms[id]
         delete sessions[id]
         state = { rooms, sessions }
+        clearEviction(id)
+        // every OTHER viewer must drop the room too, not just the deleter
+        broadcast(JSON.stringify({ type: 'session.removed', v: 1, session: id }), id)
         return json(res, 200, { ok: true })
       }
 
