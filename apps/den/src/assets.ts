@@ -47,7 +47,23 @@ function keyness(r: number, g: number, b: number): number {
   )
 }
 
-export async function loadAsset(url: string, key = true): Promise<KeyedAsset> {
+// Module-level URL-keyed cache: N rooms share ONE KeyedAsset per sprite
+// (pixelTexture already memoizes per KeyedAsset downstream). The promise is
+// cached, not the value, so concurrent loads of the same URL dedupe too.
+const assetCache = new Map<string, Promise<KeyedAsset>>()
+
+export function loadAsset(url: string, key = true): Promise<KeyedAsset> {
+  const cacheKey = `${url}|${key}`
+  const hit = assetCache.get(cacheKey)
+  if (hit) return hit
+  const pending = decodeAsset(url, key)
+  assetCache.set(cacheKey, pending)
+  // a failed load must not poison the cache — callers may retry
+  void pending.catch(() => assetCache.delete(cacheKey))
+  return pending
+}
+
+async function decodeAsset(url: string, key: boolean): Promise<KeyedAsset> {
   const img = new Image()
   img.crossOrigin = 'anonymous'
   img.src = url
