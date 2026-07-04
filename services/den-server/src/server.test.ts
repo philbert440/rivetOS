@@ -30,6 +30,14 @@ async function start(
     evictTtlMs,
     meshFile: '',
     meshCacheMs: 10_000,
+    term: {
+      enabled: false,
+      configFile: join(stateDir, 'den-term.json'),
+      maxPtys: 4,
+      scrollbackBytes: 262_144,
+      detachedTtlMs: 1_800_000,
+      exitLingerMs: 60_000,
+    },
   }
   const den = createDenServer(config)
   servers.push(den)

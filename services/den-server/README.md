@@ -14,6 +14,10 @@ single snapshot instead of replayed events.
 | `/state?session=<id>`     | GET    | RoomState snapshot                                 |
 | `/layout?viewer=<key>`    | GET/POST | per-viewer layout store; GET falls back to `default` |
 | `/mesh.json`              | GET    | den-enabled mesh nodes + probed den health (see docs/DEN.md “Mesh view”) |
+| `/term/config`            | GET    | terminal roster — keys + labels only, never argv/cwd/env |
+| `/term`                   | POST   | spawn a roster command in a PTY (opt-in; `{command?, cols?, rows?}`) |
+| `/term/list`              | GET    | live + recently-exited PTYs                        |
+| `/term?id=<id>`           | DELETE | kill a PTY (SIGHUP, SIGKILL after 3 s)             |
 | `/ws?session=<id>`        | WS     | snapshot message, then live events (no param = all sessions) |
 | `/packs/*`                | GET    | static SpritePacks when `RIVETOS_DEN_PACKS_DIR` set |
 | `/*`                      | GET    | built viewer app when `RIVETOS_DEN_STATIC_DIR` set |
@@ -32,6 +36,53 @@ single snapshot instead of replayed events.
 - `RIVETOS_DEN_MESH_CACHE_MS` (10000) — `/mesh.json` result cache TTL
 - `RIVETOS_DEN_NODE_ID` (hostname) — this node's id in the roster, used to
   attach `latest` to the local entry
+
+## Terminals (opt-in)
+
+`RIVETOS_DEN_TERM=1` lets the den spawn local PTYs running harness CLIs
+(claude / grok / hermes / shell by default) so the viewer can open terminals.
+This puts a shell running as the service user behind the HTTP API, so the
+posture is deliberately strict:
+
+- **Off by default.** Terminals only exist when `RIVETOS_DEN_TERM=1`/`on`.
+- **Token-gated off loopback.** If the host is not `127.0.0.1`/`::1`/
+  `localhost` and `RIVETOS_DEN_TOKEN` is empty, terminals are forced off at
+  startup (loud log, term endpoints answer 503; the event relay keeps
+  running).
+- **Roster keys only over the wire.** The API accepts only command keys from
+  the operator-owned roster (`RIVETOS_DEN_TERM_CONFIG`, default
+  `~/.rivetos/den-term.json`, re-read lazily — no restart needed). Each entry
+  is an argv array spawned directly, never through a shell. `/term/config`
+  never exposes argv/cwd/env.
+- **Audited.** Every spawn/kill/exit appends a JSON line to
+  `$RIVETOS_DEN_STATE_DIR/term-audit.log`.
+
+Roster file shape:
+
+```json
+{
+  "default": "claude",
+  "cwd": "/home/rivet",
+  "env": { "FOO": "bar" },
+  "commands": {
+    "claude": { "label": "Claude Code", "cmd": ["claude"], "room": true },
+    "shell":  { "label": "Shell", "cmd": ["bash", "-l"], "room": false }
+  }
+}
+```
+
+`room: true` marks a den-aware harness: if its process exits without having
+sent `session.end`, the server ingests a synthetic one so the room closes.
+`room: false` entries never produce synthetic events. Spawned PTYs get
+`RIVET_DEN_SESSION` / `RIVET_DEN_URL` / `RIVET_DEN_TOKEN` / `RIVET_DEN_NAME`
+in their env so harness hook adapters report into the right room.
+
+Knobs: `RIVETOS_DEN_TERM_MAX` (4 concurrent PTYs),
+`RIVETOS_DEN_TERM_SCROLLBACK` (262144 bytes per PTY),
+`RIVETOS_DEN_TERM_DETACHED_TTL_MS` (1800000 — unattached PTYs are reaped),
+`RIVETOS_DEN_TERM_EXIT_LINGER_MS` (60000 — exited records linger for
+inspection). `node-pty` is an optional dependency; when it failed to
+install, term endpoints answer 503 and everything else works.
 
 ## Deploy
 

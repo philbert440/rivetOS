@@ -21,16 +21,25 @@ function tmp(): string {
 }
 
 async function start(overrides: Partial<DenConfig> = {}): Promise<{ den: DenServer; base: string }> {
+  const stateDir = tmp()
   const config: DenConfig = {
     port: 0,
     host: '127.0.0.1',
     token: '',
-    stateDir: tmp(),
+    stateDir,
     staticDir: '',
     packsDir: '',
     evictTtlMs: 60_000,
     meshFile: '',
     meshCacheMs: 10_000,
+    term: {
+      enabled: false,
+      configFile: join(stateDir, 'den-term.json'),
+      maxPtys: 4,
+      scrollbackBytes: 262_144,
+      detachedTtlMs: 1_800_000,
+      exitLingerMs: 60_000,
+    },
     ...overrides,
   }
   const den = createDenServer(config)
