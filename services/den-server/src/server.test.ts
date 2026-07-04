@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -17,6 +17,7 @@ afterEach(async () => {
 async function start(
   token = '',
   evictTtlMs = 60_000,
+  opts: { staticDir?: string; packsDir?: string } = {},
 ): Promise<{ den: DenServer; base: string; port: number }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
   dirs.push(stateDir)
@@ -25,8 +26,8 @@ async function start(
     host: '127.0.0.1',
     token,
     stateDir,
-    staticDir: '',
-    packsDir: '',
+    staticDir: opts.staticDir ?? '',
+    packsDir: opts.packsDir ?? '',
     evictTtlMs,
     meshFile: '',
     meshCacheMs: 10_000,
@@ -201,5 +202,30 @@ describe('den-server', () => {
       ok.once('error', j)
     })
     ok.close()
+  })
+
+  it('serves the viewer shell and pack art without auth; APIs stay gated', async () => {
+    // the SPA's <script>/<link>/sprite subresources can't carry a token —
+    // static must be public or a tokened page boots to a blank shell
+    const staticDir = mkdtempSync(join(tmpdir(), 'den-static-'))
+    const packsDir = mkdtempSync(join(tmpdir(), 'den-packs-'))
+    dirs.push(staticDir, packsDir)
+    mkdirSync(join(staticDir, 'assets'))
+    writeFileSync(join(staticDir, 'index.html'), '<html>shell</html>')
+    writeFileSync(join(staticDir, 'assets', 'app.js'), 'js')
+    // a static file named like an API path must NOT shadow the gated route
+    writeFileSync(join(staticDir, 'mesh.json'), '{"spoof":true}')
+    mkdirSync(join(packsDir, 'default'))
+    writeFileSync(join(packsDir, 'default', 'pack.json'), '{}')
+
+    const { base } = await start('sekrit', 60_000, { staticDir, packsDir })
+    expect((await fetch(`${base}/index.html`)).status).toBe(200)
+    expect((await fetch(`${base}/assets/app.js`)).status).toBe(200)
+    expect((await fetch(`${base}/`)).status).toBe(200) // SPA fallback
+    expect((await fetch(`${base}/mesh`)).status).toBe(200) // SPA fallback
+    expect((await fetch(`${base}/packs/default/pack.json`)).status).toBe(200)
+    expect((await fetch(`${base}/sessions`)).status).toBe(401)
+    expect((await fetch(`${base}/mesh.json`)).status).toBe(401) // not shadowed
+    expect((await fetch(`${base}/term/config`)).status).toBe(401)
   })
 })

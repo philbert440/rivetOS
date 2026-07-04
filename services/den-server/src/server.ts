@@ -65,6 +65,22 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 }
 
+// Routed API paths — never shadowed by static files or the SPA fallback,
+// and always behind the auth gate (the unauthenticated static block above
+// the gate skips them explicitly).
+const API_PATHS = new Set([
+  '/event',
+  '/events',
+  '/sessions',
+  '/state',
+  '/session',
+  '/layout',
+  '/mesh.json',
+  '/term',
+  '/term/config',
+  '/term/list',
+])
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
@@ -281,6 +297,21 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         json(res, 200, { ok: true, sessions: Object.keys(state.rooms).length })
         return
       }
+      // Static viewer + pack art are served WITHOUT auth: the SPA's own
+      // <script>/<link>/sprite subresources can't carry a bearer token, so
+      // gating them just breaks the app shell (blank page) without protecting
+      // anything sensitive. Session data, events, layouts, mesh, and
+      // terminals all stay behind the gate below.
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        if (config.packsDir && url.pathname.startsWith('/packs/')) {
+          if (serveStatic(res, config.packsDir, url.pathname.slice('/packs/'.length))) return
+        }
+        if (config.staticDir && !API_PATHS.has(url.pathname)) {
+          if (serveStatic(res, config.staticDir, url.pathname)) return
+          // SPA fallback: extensionless paths (e.g. /mesh, /demo) get the shell
+          if (!extname(url.pathname) && serveStatic(res, config.staticDir, '/index.html')) return
+        }
+      }
       if (!authorized(req, url)) {
         json(res, 401, { error: 'unauthorized' })
         return
@@ -459,14 +490,6 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         }
       }
 
-      if (req.method === 'GET' && config.packsDir && url.pathname.startsWith('/packs/')) {
-        if (serveStatic(res, config.packsDir, url.pathname.slice('/packs/'.length))) return
-      }
-      if (req.method === 'GET' && config.staticDir) {
-        if (serveStatic(res, config.staticDir, url.pathname)) return
-        // SPA fallback: extensionless paths (e.g. /demo) get the viewer shell
-        if (!extname(url.pathname) && serveStatic(res, config.staticDir, '/index.html')) return
-      }
       json(res, 404, { error: 'not found' })
     })().catch((e: unknown) => {
       console.error('request failed:', e)
