@@ -265,18 +265,28 @@ describe('term manager', () => {
     expect(manager.kill(pty.id)).toBe(false) // unknown now
   })
 
-  it('self-ingests a synthetic session.end when a room:true pty exits', () => {
+  it('self-ingests session.start on spawn and session.end on exit for room:true ptys', () => {
     const { manager, procs, ingested } = makeManager({}, { roomOpen: () => true })
     const pty = manager.spawn('claude', 80, 24, '')
-    procs[0].emitExit(1)
+    // the room exists immediately — harness hooks only fire on the first
+    // prompt, which needs a window with a terminal to type into
     expect(ingested).toHaveLength(1)
     expect(ingested[0]).toMatchObject({
+      v: 1,
+      session: pty.denSession,
+      type: 'session.start',
+      title: 'Claude Code',
+      harness: 'rivetos',
+    })
+    procs[0].emitExit(1)
+    expect(ingested).toHaveLength(2)
+    expect(ingested[1]).toMatchObject({
       v: 1,
       session: pty.denSession,
       type: 'session.end',
       harness: 'rivetos',
     })
-    expect(typeof ingested[0].ts).toBe('number')
+    expect(typeof ingested[1].ts).toBe('number')
   })
 
   it('never ingests synthetic events for room:false (shell) ptys', () => {
@@ -290,7 +300,9 @@ describe('term manager', () => {
     const { manager, procs, ingested } = makeManager({}, { roomOpen: () => false })
     manager.spawn('claude', 80, 24, '')
     procs[0].emitExit(0)
-    expect(ingested).toEqual([])
+    // only the spawn-time session.start; no end for a room that closed already
+    expect(ingested).toHaveLength(1)
+    expect(ingested[0].type).toBe('session.start')
   })
 
   it('writes parseable audit lines for spawn, kill and exit', () => {
