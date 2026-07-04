@@ -28,9 +28,12 @@ const RESTART_TIMEOUT_MS = 90_000
  * ["rivet-embedder.service", "rivet-compactor.service"]). On failure, returns [].
  */
 export function discoverRivetWorkers(host: string, sshUser = 'rivet'): string[] {
+  // Only enabled units: a disabled unit is disabled on purpose (one-shot
+  // backfills, retired workers) — restarting it re-runs it and then reads
+  // as 'failed' when it exits (datahub's rivet-v5-backfill, 2026-07-04).
   const out = sshExecQuiet(
     host,
-    "systemctl list-unit-files 'rivet-*.service' --no-legend --no-pager 2>/dev/null | awk '{print \\$1}'",
+    "systemctl list-unit-files 'rivet-*.service' --state=enabled --no-legend --no-pager 2>/dev/null | awk '{print \\$1}'",
     sshUser,
   )
   if (!out) return []
