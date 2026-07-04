@@ -37,6 +37,14 @@ describe('parseEvent', () => {
     expect(parseEvent({ v: 1, session: 's1', type: 'task.check', index: -1 })).toBeNull();
     expect(parseEvent({ v: 1, session: 's1', type: 'task.plan', tasks: ['a', 3] })).toBeNull();
   });
+
+  it('rejects wrong-typed envelope optionals', () => {
+    expect(parseEvent({ v: 1, session: 's1', type: 'session.end', ts: 'abc' })).toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'session.end', ts: NaN })).toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'session.end', name: 42 })).toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'session.end', harness: {} })).toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'session.end', ts: 5, name: 'n' })).not.toBeNull();
+  });
 });
 
 describe('toolActivity fallback mapping', () => {
@@ -81,10 +89,34 @@ describe('reduceRoom', () => {
   });
 
   it('thinking window trims to a word boundary when full', () => {
+    // variable-length words so slice(-220) cannot accidentally land on a
+    // boundary — a fixed 5-char delta made this test pass with the trim removed
+    const words = ['a', 'bb', 'ccc', 'dddd', 'eeeeeee', 'ffffffffff', 'ggggg'];
     let s = initialRoomState;
-    for (let i = 0; i < 60; i++) s = reduceRoom(s, ev('s', { type: 'thinking.delta', text: 'word ' }));
+    for (let i = 0; i < 120; i++)
+      s = reduceRoom(s, ev('s', { type: 'thinking.delta', text: `${words[i % words.length]} ` }));
     expect(s.thought.length).toBeLessThanOrEqual(220);
-    expect(s.thought.startsWith('word')).toBe(true);
+    // every chunk in the window must be one of the source words — no leading
+    // partial word cut mid-stream
+    for (const w of s.thought.trimEnd().split(' ')) expect(words).toContain(w);
+  });
+
+  it('ignores unknown event types (additive-within-v1)', () => {
+    let s = reduceRoom(initialRoomState, ev('s', { type: 'tool.start', tool: 'Bash' }));
+    const next = reduceRoom(s, { v: 1, session: 's', type: 'confetti.burst' } as unknown as AgentEvent);
+    expect(next).toEqual(s);
+  });
+
+  it('an ended room ignores everything but session.start', () => {
+    let s = reduceRoom(initialRoomState, ev('s', { type: 'session.end' }));
+    expect(s.ended).toBe(true);
+    s = reduceRoom(s, ev('s', { type: 'tool.end' }));
+    s = reduceRoom(s, ev('s', { type: 'speech.stt', active: false }));
+    expect(s.activity).toBe('sleeping');
+    expect(s.ended).toBe(true);
+    s = reduceRoom(s, ev('s', { type: 'session.start', title: 'back' }));
+    expect(s.ended).toBe(false);
+    expect(s.title).toBe('back');
   });
 });
 
@@ -111,6 +143,17 @@ describe('reduceDen (multi-session)', () => {
     expect(list[0].name).toBe('alpha'); // sticky across later events without name
     expect(list[0].harness).toBe('claude-code');
     expect(list[1].name).toBe('b'); // falls back to id
+  });
+
+  it('lastEventTs is monotonic under out-of-order delivery', () => {
+    const den = run([
+      ev('a', { type: 'session.start', title: 'A' }, { ts: 100 }),
+      ev('b', { type: 'session.start', title: 'B' }, { ts: 200 }),
+      ev('a', { type: 'thinking.end' }, { ts: 300 }),
+      ev('a', { type: 'tool.end' }, { ts: 150 }), // stale retry
+    ]);
+    expect(den.sessions.a.lastEventTs).toBe(300);
+    expect(listSessions(den).map((s) => s.id)).toEqual(['a', 'b']);
   });
 });
 
