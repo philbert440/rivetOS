@@ -21,9 +21,9 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
-import { loadMeshFile } from '../lib/mesh-file.js'
-import { restartViaSystemd, assertSafeArg } from '../lib/ssh.js'
-import type { UpdateOptions } from './update/types.js'
+import { loadMeshFile, type MeshNode } from '../lib/mesh-file.js'
+import { restartViaSystemd, assertSafeArg, resolveSshUser } from '../lib/ssh.js'
+import type { UpdateOptions, NodeUpdateResult } from './update/types.js'
 import { gitUpdateNodeAsync, npmUpdateNodeAsync, waitForHealth } from './update/remote-nodes.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -409,6 +409,22 @@ async function verifyDataPersistence(): Promise<void> {
  * 4. Print summary table
  * 5. Update local node last (restart kills the process)
  */
+/** Reachability-only pass for nodes we can't auto-update (non-linux platform
+ *  or explicit deployable:false): SSH probe, report, touch nothing. */
+function probeNodeOnly(node: MeshNode): NodeUpdateResult {
+  const start = Date.now()
+  const candidates = [node.sshUser, 'rivet'].filter((u): u is string => !!u)
+  const user = resolveSshUser(node.host, candidates, `[${node.name}]`)
+  if (user) {
+    console.log(`    [${node.name}] ✅ reachable as ${user}@ (manual update path)`)
+    return { success: true, commit: 'manual', elapsedMs: Date.now() - start }
+  }
+  console.log(
+    `    [${node.name}] ⚪ not reachable right now (roaming/asleep is normal for this node)`,
+  )
+  return { success: true, commit: 'unreached', elapsedMs: Date.now() - start }
+}
+
 async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   console.log('🔩 RivetOS Mesh Rolling Update')
   console.log('')
@@ -485,6 +501,20 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   const results = await Promise.all(
     remoteNodes.map((node) => {
       const isAgent = !node.role || node.role === 'agent'
+      // Different host OS is still a node — but git/systemd only works on
+      // linux. Non-linux platforms (rivet-phone: android) and explicit
+      // deployable:false opt-outs are probed for reachability and reported,
+      // never git-pulled. Automated android path: issue to follow.
+      if ((node.platform && node.platform !== 'linux') || node.metadata?.deployable === false) {
+        const reason =
+          node.platform && node.platform !== 'linux'
+            ? `platform=${node.platform}`
+            : 'deployable=false'
+        console.log(
+          `    [${node.name}] ⏭️  ${reason} — no automated update path; probing reachability only`,
+        )
+        return Promise.resolve(probeNodeOnly(node))
+      }
       if (opts.npm) {
         // npm mode: agents take the npm path, infrastructure nodes still use
         // git pull for now (their workers — embedder, compactor — aren't yet
