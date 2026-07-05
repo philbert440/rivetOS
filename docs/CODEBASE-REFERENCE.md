@@ -515,7 +515,7 @@ Channel receives message
 | `session:start` | New session | Context loading |
 | `session:end` | Session ending | Auto-summary |
 | `turn:before` | Before processing | Content filtering |
-| `turn:after` | After turn completes | **Review loop**, delegation tracking |
+| `turn:after` | After turn completes | Delegation tracking |
 | `turn:reflect` | After complex turns | Pattern analysis |
 | `skill:before` | Before skill load | Skip gate |
 | `skill:after` | After skill used | Metrics |
