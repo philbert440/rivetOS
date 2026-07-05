@@ -201,7 +201,10 @@ export function createRoom(deps: RoomDeps): RoomInstance {
   // ---- window-frame chrome ----
   const frame = new Container()
   const chrome = new Graphics()
-  function drawChrome(focused: boolean) {
+  let chromeFocused = false
+  let termOpen = false
+  function drawChrome(focused = chromeFocused) {
+    chromeFocused = focused
     chrome.clear().roundRect(0, 0, FRAME_W, FRAME_H, 18).fill(0x8b93a1)
     // focus ring: a slightly brighter stroke riding the outer bezel
     if (focused)
@@ -216,6 +219,23 @@ export function createRoom(deps: RoomDeps): RoomInstance {
       .fill(0x30394a)
       .roundRect(12, 10, FRAME_W - 24, TITLEBAR - 14, 8)
       .fill(0xe8ebef)
+    drawTermOutline()
+  }
+  // open terminal drawer: the room's dark outline reroutes around it — a
+  // dark slab under the drawer's footprint whose 6px left/bottom margins
+  // (the DOM mat covers the rest) read as the recess ring hugging the
+  // drawer. Starts at the recess top so the chrome band above stays
+  // unbroken gray, and scales with the window like the ring itself. Lives
+  // on its own layer ABOVE the room world (chrome sits underneath it).
+  const termOutline = new Graphics()
+  function drawTermOutline() {
+    termOutline.clear()
+    if (!termOpen) return
+    const dr = drawerRect()
+    const top = TITLEBAR + MARGIN - 6
+    termOutline
+      .roundRect(dr.x - 6, top, MARGIN + SHELL.w + 6 - (dr.x - 6), dr.y + dr.h + 6 - top, 6)
+      .fill(0x30394a)
   }
   drawChrome(false)
   frame.addChild(chrome)
@@ -255,7 +275,6 @@ export function createRoom(deps: RoomDeps): RoomInstance {
   const X_SIZE = 26
   const closeX = FRAME_W - 40
   let termHooks: RoomTermHooks | null = null
-  let termOpen = false
   let killArmed = false
   let disarmKill = () => {}
   if (deps.onClose) {
@@ -380,7 +399,10 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     if (termBtn) termBtn.visible = !!hooks
     if (!hooks) {
       disarmKill()
-      termOpen = false
+      if (termOpen) {
+        termOpen = false
+        drawChrome()
+      }
     }
     drawTermBtn(false)
     layoutTitlebar()
@@ -389,6 +411,7 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     if (open === termOpen) return
     termOpen = open
     drawTermBtn(false)
+    drawChrome()
   }
 
   // ---- title + subtitle layout: truncate to stay clear of ✕ (and `>_`) ----
@@ -430,6 +453,7 @@ export function createRoom(deps: RoomDeps): RoomInstance {
   roomMask.position.set(MARGIN, TITLEBAR + MARGIN)
   frame.addChild(roomMask)
   world.mask = roomMask
+  frame.addChild(termOutline)
   const shellSprite = new Sprite(pixelTexture(deps.shell, SHELL.h).texture)
   shellSprite.scale.set(PX)
   shellSprite.zIndex = -10000
