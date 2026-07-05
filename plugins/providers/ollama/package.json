@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/provider-ollama",
   "version": "0.4.0-beta.6",
-  "description": "Ollama provider — native API, streaming, model management",
+  "description": "Ollama provider \u2014 native API, streaming, model management",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -50,7 +50,8 @@
   "nx": {
     "tags": [
       "scope:adapter",
-      "type:plugin"
+      "type:plugin",
+      "domain:runtime"
     ]
   }
 }

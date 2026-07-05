@@ -153,6 +153,49 @@ export default tseslint.config(
               sourceTag: 'scope:tooling',
               onlyDependOnLibsWithTags: ['scope:tooling'],
             },
+            // Domain axis (bounded contexts — see plans/agentic-modernization).
+            // A domain may reach shared contracts and itself; composition
+            // roots (boot/cli) carry no domain tag, so nothing binds them.
+            {
+              sourceTag: 'domain:shared',
+              onlyDependOnLibsWithTags: ['domain:shared'],
+            },
+            {
+              sourceTag: 'domain:memory',
+              onlyDependOnLibsWithTags: ['domain:shared', 'domain:memory'],
+            },
+            {
+              sourceTag: 'domain:runtime',
+              onlyDependOnLibsWithTags: ['domain:shared', 'domain:runtime'],
+            },
+            {
+              sourceTag: 'domain:interfaces',
+              onlyDependOnLibsWithTags: ['domain:shared', 'domain:interfaces'],
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // Known cross-domain leak, tolerated ONLY here until the MCP unification
+  // follow-up puts memory tools behind a contract: mcp-server re-exposes
+  // @rivetos/memory-postgres tools over MCP.
+  {
+    files: ['plugins/transports/mcp-server/**/*.ts'],
+    plugins: { '@nx': nxPlugin },
+    rules: {
+      '@nx/enforce-module-boundaries': [
+        'error',
+        {
+          enforceBuildableLibDependency: false,
+          allow: ['@rivetos/memory-postgres'],
+          banTransitiveDependencies: true,
+          depConstraints: [
+            {
+              sourceTag: 'domain:runtime',
+              onlyDependOnLibsWithTags: ['domain:shared', 'domain:runtime'],
+            },
           ],
         },
       ],

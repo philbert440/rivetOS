@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/tool-mcp-client",
   "version": "0.4.0-beta.6",
-  "description": "MCP client plugin — connects to MCP servers and registers their tools as native RivetOS tools",
+  "description": "MCP client plugin \u2014 connects to MCP servers and registers their tools as native RivetOS tools",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -47,7 +47,8 @@
   "nx": {
     "tags": [
       "scope:adapter",
-      "type:plugin"
+      "type:plugin",
+      "domain:runtime"
     ]
   }
 }

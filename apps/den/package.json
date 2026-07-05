@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "rivet-den viewer — pack-driven PixiJS diorama of live agent sessions",
+  "description": "rivet-den viewer \u2014 pack-driven PixiJS diorama of live agent sessions",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -28,7 +28,8 @@
   "nx": {
     "tags": [
       "scope:app",
-      "type:app"
+      "type:app",
+      "domain:interfaces"
     ]
   }
 }

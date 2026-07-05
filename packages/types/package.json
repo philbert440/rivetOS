@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/types",
   "version": "0.4.0-beta.6",
-  "description": "Shared interfaces for RivetOS — Provider, Channel, Tool, Memory",
+  "description": "Shared interfaces for RivetOS \u2014 Provider, Channel, Tool, Memory",
   "license": "Apache-2.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -39,7 +39,8 @@
   "nx": {
     "tags": [
       "scope:contract",
-      "type:lib"
+      "type:lib",
+      "domain:shared"
     ]
   }
 }

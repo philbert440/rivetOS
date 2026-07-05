@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Embedding worker — graphile-worker task that embeds rows from ros_messages/ros_summaries via Nemotron",
+  "description": "Embedding worker \u2014 graphile-worker task that embeds rows from ros_messages/ros_summaries via Nemotron",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -24,6 +24,10 @@
     "node": ">=22.0.0"
   },
   "nx": {
-    "tags": ["scope:app", "type:app"]
+    "tags": [
+      "scope:app",
+      "type:app",
+      "domain:memory"
+    ]
   }
 }

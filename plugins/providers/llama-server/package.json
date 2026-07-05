@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/provider-llama-server",
   "version": "0.4.0-beta.6",
-  "description": "llama.cpp llama-server provider — lean OpenAI-compatible client with top_k/min_p and an extra_body escape hatch",
+  "description": "llama.cpp llama-server provider \u2014 lean OpenAI-compatible client with top_k/min_p and an extra_body escape hatch",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -50,7 +50,8 @@
   "nx": {
     "tags": [
       "scope:adapter",
-      "type:plugin"
+      "type:plugin",
+      "domain:runtime"
     ]
   }
 }
