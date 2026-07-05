@@ -25,6 +25,10 @@ import {
   createSubagentExecutor,
   createSubagentWorker,
   createPgDelegationRecorder,
+  PgTaskStore,
+  createChatLoopExecutor,
+  createExecutorRegistry,
+  createTaskRunner,
   SkillManagerImpl,
   createSkillListTool,
   createSkillManageTool,
@@ -266,6 +270,35 @@ export async function registerAgentTools(
       })
       return Promise.resolve()
     }
+  }
+
+  // ------------------------------------------------------------------
+  // Task engine (phase 1a) — durable ros_tasks + embedded run-task runner.
+  //
+  // Enabled by default and inert: nothing creates task rows yet, so the
+  // runner idles on an empty queue. Only the chat-loop executor is
+  // registered for now; CLI harness executors land at cutover step (b).
+  // On startup the runner crash-sweeps rows this node left 'running'.
+  // ------------------------------------------------------------------
+  const tasksEnabled = config.tasks?.enabled !== false
+  if (tasksEnabled && pgUrl && pool) {
+    const taskStore = new PgTaskStore(pool)
+    const executors = createExecutorRegistry()
+    executors.register('chat-loop', createChatLoopExecutor(executorCfg))
+    const taskRunner = createTaskRunner({
+      pgUrl,
+      store: taskStore,
+      executors,
+      nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
+      workspaceDir,
+    })
+    await taskRunner.start()
+    runtime.addShutdownHook(async () => {
+      await taskRunner.stop()
+    })
+    log.info('Task engine started — run-task runner listening (inert until tasks are created)')
+  } else if (tasksEnabled) {
+    log.info('No pgUrl — task engine not started (requires Postgres)')
   }
 
   const subagentManager = new SubagentManagerImpl({
