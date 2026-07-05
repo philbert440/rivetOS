@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/den-protocol",
   "version": "0.1.0",
-  "description": "rivet-den event protocol \u2014 normalized agent events + pure room-state reducer",
+  "description": "rivet-den event protocol — normalized agent events + pure room-state reducer",
   "license": "Apache-2.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

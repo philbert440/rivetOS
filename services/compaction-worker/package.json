@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Compaction worker \u2014 graphile-worker tasks for bottom-up summarization (leaf/branch/root) and tool-call content synthesis",
+  "description": "Compaction worker — graphile-worker tasks for bottom-up summarization (leaf/branch/root) and tool-call content synthesis",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",

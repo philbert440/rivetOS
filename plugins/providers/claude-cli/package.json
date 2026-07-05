@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/provider-claude-cli",
   "version": "0.4.0-beta.6",
-  "description": "Claude Code CLI provider \u2014 shells out to the local `claude` binary, using the user's subscription OAuth token. Sanctioned pattern per Anthropic's April 2026 third-party harness policy.",
+  "description": "Claude Code CLI provider — shells out to the local `claude` binary, using the user's subscription OAuth token. Sanctioned pattern per Anthropic's April 2026 third-party harness policy.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",

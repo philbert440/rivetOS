@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/provider-vllm",
   "version": "0.4.0-beta.6",
-  "description": "vLLM provider \u2014 full vLLM OpenAI-compatible surface: sampling extensions, mm_processor_kwargs, chat_template_kwargs, video, and reasoning_content",
+  "description": "vLLM provider — full vLLM OpenAI-compatible surface: sampling extensions, mm_processor_kwargs, chat_template_kwargs, video, and reasoning_content",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/aisdk",
   "version": "0.4.0-beta.6",
-  "description": "AI SDK \u2194 RivetOS adapter helpers \u2014 message conversion, fullStream-part translation, the provider bridge contract",
+  "description": "AI SDK ↔ RivetOS adapter helpers — message conversion, fullStream-part translation, the provider bridge contract",
   "license": "Apache-2.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
