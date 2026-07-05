@@ -10,6 +10,7 @@
  * incoming mesh delegations) and FileMeshRegistry (tracks all nodes).
  */
 
+import { spawn } from 'node:child_process'
 import type { Runtime } from '@rivetos/core'
 import { loadTlsConfig } from '@rivetos/core'
 import {
@@ -284,12 +285,16 @@ export async function registerAgentTools(
     const taskStore = new PgTaskStore(pool)
     const executors = createExecutorRegistry()
     executors.register('chat-loop', createChatLoopExecutor(executorCfg))
+    await registerClaudeCliTaskExecutor(runtime, config, executors, workspaceDir)
     const taskRunner = createTaskRunner({
       pgUrl,
       store: taskStore,
       executors,
       nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
       workspaceDir,
+      // Context-refs resolution (step (b) checklist) — the runner folds
+      // memory context into TaskSpec.resolvedContext when refs are present.
+      memory: runtime.getMemory(),
     })
     await taskRunner.start()
     runtime.addShutdownHook(async () => {
@@ -359,6 +364,67 @@ export async function registerAgentTools(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Register the claude-cli harness-session executor (phase 1 step (b)) when
+ * the `claude` binary is resolvable. Binary resolution mirrors the claude-cli
+ * provider: config.providers['claude-cli'].binary, falling back to PATH.
+ * If the binary (or the provider package) is missing, log and skip — the
+ * task engine simply has no ('harness-session','claude-cli') executor.
+ */
+async function registerClaudeCliTaskExecutor(
+  runtime: Runtime,
+  config: RivetConfig,
+  executors: ReturnType<typeof createExecutorRegistry>,
+  workspaceDir: string,
+): Promise<void> {
+  const providerCfg = config.providers?.['claude-cli'] ?? {}
+  const binary = (providerCfg.binary as string | undefined) ?? 'claude'
+
+  const available = await new Promise<boolean>((resolve) => {
+    try {
+      const env = { ...process.env }
+      delete env.ANTHROPIC_API_KEY
+      delete env.ANTHROPIC_AUTH_TOKEN
+      const proc = spawn(binary, ['--version'], { env, stdio: ['ignore', 'ignore', 'ignore'] })
+      proc.on('error', () => {
+        resolve(false)
+      })
+      proc.on('close', (code) => {
+        resolve(code === 0)
+      })
+    } catch {
+      resolve(false)
+    }
+  })
+  if (!available) {
+    log.info(`claude binary "${binary}" not resolvable — claude-cli task executor not registered`)
+    return
+  }
+
+  try {
+    const { ClaudeCliExecutor } = await import('@rivetos/provider-claude-cli')
+    executors.register(
+      'harness-session',
+      new ClaudeCliExecutor({
+        binary,
+        modelId: providerCfg.model as string | undefined,
+        toolsArg: providerCfg.tools as string | undefined,
+        effort: providerCfg.effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined,
+        permissionMode: providerCfg.permission_mode as string | undefined,
+        cwd: (providerCfg.cwd as string | undefined) ?? workspaceDir,
+        tools: () => runtime.getTools(),
+      }),
+      'claude-cli',
+    )
+    log.info(`Task executor registered: (harness-session, claude-cli) via ${binary}`)
+  } catch (err: unknown) {
+    log.warn(
+      `@rivetos/provider-claude-cli not loadable — claude-cli task executor skipped: ` +
+        (err as Error).message,
+    )
+  }
+}
 
 /** Get the local IP — reads from environment or falls back to hostname */
 function getLocalHost(): string {

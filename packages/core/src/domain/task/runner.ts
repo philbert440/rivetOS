@@ -236,6 +236,11 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
       let exceededReason: string | undefined
       for await (const event of handle.events) {
         if (event.type !== 'turn.end') continue
+        // Harness executors surface the spawn's session id — append it to
+        // the row so the task's CLI sessions stay traceable.
+        if (event.harnessSessionId) {
+          await opts.store.appendHarnessSessionId?.(task.id, event.harnessSessionId)
+        }
         const runningTotal = addUsage(totalUsage, event.usage)
         await opts.store.updateUsage(task.id, runningTotal)
         // Budget is enforced BETWEEN turns — hard exceed aborts the executor.

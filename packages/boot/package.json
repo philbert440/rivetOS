@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/boot",
   "version": "0.4.0-beta.6",
-  "description": "RivetOS composition root — config loading, plugin wiring, lifecycle",
+  "description": "RivetOS composition root \u2014 config loading, plugin wiring, lifecycle",
   "license": "Apache-2.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,6 +16,7 @@
   "dependencies": {
     "@rivetos/types": "0.4.0-beta.6",
     "@rivetos/core": "0.4.0-beta.6",
+    "@rivetos/provider-claude-cli": "0.4.0-beta.6",
     "pg": "^8.20.0",
     "undici": "^8.1.0",
     "yaml": "^2.8.3"
