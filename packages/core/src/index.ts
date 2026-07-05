@@ -75,6 +75,27 @@ export type {
   SubagentWorker,
   SubagentWorkerOptions,
 } from './domain/subagent-worker.js'
+export { InMemoryTaskStore, PgTaskStore, TASK_JOB_NAME, taskJobKey } from './domain/task/store.js'
+export type {
+  TaskStore,
+  TaskRow,
+  NewTaskInput,
+  TaskListFilter,
+  PgTaskStoreOptions,
+} from './domain/task/store.js'
+export { createChatLoopExecutor } from './domain/task/chat-loop-executor.js'
+export type { ChatLoopExecutorConfig } from './domain/task/chat-loop-executor.js'
+export {
+  createExecutorRegistry,
+  createTaskHandler,
+  createTaskRunner,
+} from './domain/task/runner.js'
+export type {
+  TaskExecutorRegistry,
+  TaskHandlerOptions,
+  TaskRunner,
+  TaskRunnerOptions,
+} from './domain/task/runner.js'
 export {
   SkillManagerImpl,
   createSkillListTool,
