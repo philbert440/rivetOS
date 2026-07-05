@@ -628,19 +628,18 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     return it.canonical.x - (it.asset.bw / 2) * (it.canonical.h / it.asset.bh)
   }
   function drawerRect() {
-    const top = 14
-    // flush with the whiteboard's FRAME (the tray sticks out ~18px past it),
-    // which also leaves window↔drawer breathing room to match the top padding
-    const left = Math.min(canonLeft('board') + 18, SHELL.w - 14 - 640)
+    // part of the WINDOW, not the room: full frame width (aligned with the
+    // room recess), hanging flush from the titlebar, down to just above the
+    // whiteboard/shelf tops (live furniture placements, editor-aware)
     const bottom = Math.max(
-      top + 46,
+      60,
       Math.min(canonTop('board'), canonTop('shelf'), SHELL.h * 0.45) - 16,
     )
     return {
-      x: MARGIN + left,
-      y: TITLEBAR + MARGIN + top,
-      w: SHELL.w - 14 - left,
-      h: bottom - top,
+      x: MARGIN - 6,
+      y: TITLEBAR - 2,
+      w: SHELL.w + 12,
+      h: MARGIN + bottom + 2 - 6,
     }
   }
 
