@@ -44,11 +44,6 @@ export {
 } from './tools/memory.js'
 export type { MemoryToolsOptions, MemoryToolsHandle } from './tools/memory.js'
 
-// Backwards-compatibility shim — prefer `createMemoryTools`.
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-export { createMemorySearchTool } from './tools/memory-search.js'
-export type { MemorySearchToolOptions, MemorySearchToolHandle } from './tools/memory-search.js'
-
 export { createWebTools, internetSearchInputSchema, webFetchInputSchema } from './tools/web.js'
 export type { WebToolsOptions, WebToolsHandle } from './tools/web.js'
 

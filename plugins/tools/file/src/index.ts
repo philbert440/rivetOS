@@ -28,9 +28,6 @@ export function createPlugin(config?: FileToolsConfig): ToolPlugin {
   }
 }
 
-/** @deprecated Use createPlugin() instead */
-export const createFileToolsPlugin = createPlugin
-
 export const manifest: PluginManifest = {
   type: 'tool',
   name: 'file',

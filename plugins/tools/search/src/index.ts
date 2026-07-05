@@ -26,9 +26,6 @@ export function createPlugin(config?: SearchToolsConfig): ToolPlugin {
   }
 }
 
-/** @deprecated Use createPlugin() instead */
-export const createSearchToolsPlugin = createPlugin
-
 export const manifest: PluginManifest = {
   type: 'tool',
   name: 'search',
