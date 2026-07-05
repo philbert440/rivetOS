@@ -100,6 +100,9 @@
          starts at the recess top and scales with the window — no borders
          here or they'd slice up through the chrome band. */
       background: #b7bec9; border: none; padding: 6px;
+      /* rounded bottom corners let the canvas outline slab underneath show
+         through, rounding the outline's INNER edge to match its outer one */
+      border-radius: 0 0 6px 6px;
     }
     .term-drawer-well {
       width: 100%; height: 100%; box-sizing: border-box; overflow: hidden;
