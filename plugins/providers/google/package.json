@@ -50,7 +50,8 @@
   "nx": {
     "tags": [
       "scope:adapter",
-      "type:plugin"
+      "type:plugin",
+      "domain:runtime"
     ]
   }
 }

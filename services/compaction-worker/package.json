@@ -25,6 +25,10 @@
     "node": ">=22.0.0"
   },
   "nx": {
-    "tags": ["scope:app", "type:app"]
+    "tags": [
+      "scope:app",
+      "type:app",
+      "domain:memory"
+    ]
   }
 }

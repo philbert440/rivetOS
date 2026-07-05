@@ -59,7 +59,8 @@
   "nx": {
     "tags": [
       "scope:transport",
-      "type:plugin"
+      "type:plugin",
+      "domain:runtime"
     ]
   }
 }

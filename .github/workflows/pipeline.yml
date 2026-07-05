@@ -119,6 +119,18 @@ jobs:
             npx nx run-many -t lint --all --parallel=5
           fi
 
+      # Meta-test: assert the boundary walls themselves still hold (a config
+      # regression violates nothing, so package lint alone won't catch it).
+      # Only runs when the files that can weaken the wall change.
+      - name: Boundary probes
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ] || \
+             git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(eslint\.config\.mjs|scripts/boundary-probe\.mjs)$|package\.json$'; then
+            npm run lint:boundaries
+          else
+            echo "No boundary-relevant files changed — skipping probes"
+          fi
+
       - name: Typecheck
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then

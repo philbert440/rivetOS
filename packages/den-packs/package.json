@@ -47,7 +47,8 @@
   "nx": {
     "tags": [
       "scope:contract",
-      "type:lib"
+      "type:lib",
+      "domain:interfaces"
     ]
   }
 }
