@@ -231,7 +231,7 @@ async function meshPing(flags: Flags): Promise<void> {
 
 async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
   if (!host) {
-    console.error('  Usage: rivetos mesh join <host> [--port <port>] [--secret <secret>]')
+    console.error('  Usage: rivetos mesh join <host> [--port <port>]')
     process.exit(1)
   }
 
@@ -310,9 +310,6 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
     console.log(`        mode: seed`)
     console.log(`        seedHost: "${host}"`)
     console.log(`        seedPort: ${String(port)}`)
-    if (flags.secret) {
-      console.log(`      secret: "\${RIVETOS_MESH_SECRET}"`)
-    }
     console.log('')
   } catch (err: unknown) {
     console.error(`  ❌ Join failed: ${(err as Error).message}`)
@@ -400,7 +397,6 @@ interface Flags {
   json?: boolean
   timeout?: number
   port?: number
-  secret?: string
   sshUser?: string
 }
 
@@ -410,7 +406,6 @@ function parseFlags(args: string[]): Flags {
     if (args[i] === '--json') flags.json = true
     if (args[i] === '--timeout' && args[i + 1]) flags.timeout = Number(args[++i])
     if (args[i] === '--port' && args[i + 1]) flags.port = Number(args[++i])
-    if (args[i] === '--secret' && args[i + 1]) flags.secret = args[++i]
     if (args[i] === '--ssh-user' && args[i + 1]) flags.sshUser = args[++i]
   }
   // --ssh-user flows into `<user>@<host>` ssh strings — reject shell metachars.

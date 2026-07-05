@@ -55,6 +55,10 @@ export interface MeshSection {
    * peer that registers its node_name as host but is only reachable by LAN IP.
    */
   advertise_host?: string
+  /**
+   * @deprecated Ignored — agent-channel auth is mTLS only. The key is still
+   * accepted (validation emits a warning) so existing configs don't break.
+   */
   secret?: string
   /** mTLS configuration for agent-channel.
    * true = use default paths derived from node_name
