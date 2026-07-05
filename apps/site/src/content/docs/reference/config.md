@@ -101,28 +101,6 @@ runtime:
 | `quiet_hours.start` | number | — | Hour (0-23) to start quiet period (no heartbeats). |
 | `quiet_hours.end` | number | — | Hour (0-23) to end quiet period. |
 
-### `runtime.coding_pipeline`
-
-Configuration for the multi-agent build → review → validate coding loop.
-
-```yaml
-runtime:
-  coding_pipeline:
-    builder_agent: grok
-    validator_agent: opus
-    max_build_loops: 3
-    max_validation_loops: 2
-    auto_commit: true
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `builder_agent` | string | — | Agent that writes code. Must match a key in `agents`. |
-| `validator_agent` | string | — | Agent that reviews code. Must match a key in `agents`. |
-| `max_build_loops` | number | `3` | Max build-fix iterations before giving up. |
-| `max_validation_loops` | number | `2` | Max validation rounds per build. |
-| `auto_commit` | boolean | `true` | Auto-commit on successful validation. |
-
 ### `runtime.safety`
 
 Safety hooks configuration.
@@ -480,7 +458,7 @@ mesh:
 | `mesh.discovery.mode` | string | — | `seed` \| `static` \| `mdns`. |
 | `mesh.discovery.seed_host` | string | — | Seed node hostname (use `<nodeName>.mesh`). |
 | `mesh.discovery.seed_port` | number | `3100` | Seed node port. |
-| `mesh.secret` | string | — | **Deprecated** — retained for `update --mesh` orchestration only. |
+| `mesh.secret` | string | — | **Ignored** — mesh agent-channel auth is mTLS only. Accepted with a warning for back-compat; remove it from your config. |
 
 ---
 
@@ -496,17 +474,14 @@ memory:
     connection_string: ${RIVETOS_PG_URL}
     # Optional — point the background memory loop at your own endpoints:
     # embed_endpoint: http://your-embed-host:9402/v1
-    # review_endpoint: http://your-llm-host:8001/v1
-    # review_model: gemma-4-E2B-it-Q4_K_M.gguf
+    # delegation_tracking: true
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `connection_string` | string | `${RIVETOS_PG_URL}` | PostgreSQL connection URL. |
 | `embed_endpoint` | string | — | OpenAI-compatible embeddings endpoint used by the embedding worker. Overrides the built-in default. |
-| `review_endpoint` | string | — | OpenAI-compatible endpoint for the background memory-review/consolidation loop. |
-| `review_model` | string | — | Model name the review loop requests at `review_endpoint`. |
-| `review_api_key` | string | — | API key for `review_endpoint`, if it requires one. |
+| `delegation_tracking` | boolean | `false` | Persist delegation events into memory (`ros_messages`, channel `delegation`) for auditing. |
 
 **Required extensions:** `pgvector` (for embedding storage and similarity search).
 

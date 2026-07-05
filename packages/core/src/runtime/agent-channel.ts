@@ -58,13 +58,6 @@ export interface AgentChannelConfig {
   /** Port to listen on (default: 3000) */
   port?: number
 
-  /**
-   * Shared secret — DEPRECATED for agent-channel auth.
-   * No longer used by AgentChannelServer. Kept in type for compat.
-   * @deprecated Auth is now mutual TLS; this field is ignored.
-   */
-  secret?: string
-
   /** TLS configuration — required. Mesh = TLS, no plaintext fallback. */
   tls: AgentChannelTlsConfig
 

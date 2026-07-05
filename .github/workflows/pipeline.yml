@@ -197,7 +197,6 @@ jobs:
             plugins/providers/llama-server
             plugins/providers/vllm
             plugins/providers/xai
-            plugins/tools/coding-pipeline
             plugins/tools/file
             plugins/tools/interaction
             plugins/tools/mcp-client

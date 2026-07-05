@@ -376,7 +376,7 @@ chatbot shell; it's your operating system.
   models, same identity, same memory, same workspace files). Check
   \`config.yaml\` to see who else is configured.
 - **Tools** are provided by the runtime: \`shell\`, \`file_*\`, \`search_*\`,
-  \`web_*\`, \`memory_*\`, \`subagent_*\`, \`coding_pipeline\`, plus any skills
+  \`web_*\`, \`memory_*\`, \`subagent_*\`, plus any skills
   you've loaded. See \`CAPABILITIES.md\` for the full inventory.
 - **Memory is persistent across sessions.** Every conversation you've ever
   had with your human is stored and searchable via \`memory_search\`,

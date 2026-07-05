@@ -126,8 +126,6 @@ export async function registerAgentTools(
     const meshCfg: MeshConfig = {
       enabled: true,
       nodeName,
-      // secret retained in type but not used for agent-channel auth
-      secret: meshConfig.secret ? resolveEnv(meshConfig.secret) : undefined,
       heartbeatIntervalMs: meshConfig.heartbeat_interval_ms,
       staleThresholdMs: meshConfig.stale_threshold_ms,
       tls:
@@ -320,13 +318,6 @@ export async function registerAgentTools(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Resolve ${ENV_VAR} in a string value */
-function resolveEnv(value: string): string {
-  return value.replace(/\$\{(\w+)\}/g, (_, name: string) => {
-    return process.env[name] ?? ''
-  })
-}
 
 /** Get the local IP — reads from environment or falls back to hostname */
 function getLocalHost(): string {

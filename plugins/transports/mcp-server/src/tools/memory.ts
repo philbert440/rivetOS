@@ -7,10 +7,6 @@
  * local agent has. All three tools share a single `PostgresMemory` instance
  * (and its pg pool) for the server's lifetime; callers must invoke the
  * returned `close()` during shutdown to drain the pool.
- *
- * Replaces the original `memory-search.ts` (single-tool factory) — the export
- * is kept as a thin shim for backwards compatibility but new code should call
- * `createMemoryTools`.
  */
 
 import { PostgresMemory, createMemoryTools as createPgMemoryTools } from '@rivetos/memory-postgres'

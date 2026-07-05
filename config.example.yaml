@@ -67,7 +67,6 @@ channels:
 #   - "@rivetos/tool-interaction"
 #   - "@rivetos/tool-web-search"
 #   - "@rivetos/tool-mcp-client"
-#   - "@rivetos/tool-coding-pipeline"
 #   - "@rivetos/memory-postgres"
 #   - "@rivetos/mcp-server"
 
@@ -78,9 +77,8 @@ memory:
     # Embedding and compaction are handled by the unified rivetos image
     # running with --role worker (see infra/docker/rivetos/docker-compose.yml).
     #
-    # Optional: review loop endpoint for background memory consolidation
-    # review_endpoint: http://your-llm-host:8001/v1
-    # review_model: gemma-4-E2B-it-Q4_K_M.gguf
+    # Optional: persist delegation events into memory
+    # delegation_tracking: true
 
 # ---------------------------------------------------------------------------
 # rivet-den (optional) — per-node agent activity diorama (docs/DEN.md).

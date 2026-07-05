@@ -89,7 +89,6 @@ Core packages use their directory name. Plugins use the directory name without t
 | `plugins/tools/web-search` | `tool-web-search` | `npx nx run tool-web-search:build` |
 | `plugins/tools/interaction` | `tool-interaction` | `npx nx run tool-interaction:test` |
 | `plugins/tools/mcp-client` | `tool-mcp-client` | `npx nx run tool-mcp-client:build` |
-| `plugins/tools/coding-pipeline` | `tool-coding-pipeline` | `npx nx run tool-coding-pipeline:lint` |
 | `packages/nx-plugin` | `@rivetos/nx` | `npx nx run @rivetos/nx:test` |
 
 > **Tip:** Run `npx nx show projects` to list all project names, or `npx nx show project <name>` to see available targets for a specific project.

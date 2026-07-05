@@ -129,6 +129,13 @@ describe('Config Validation', () => {
       assertError(result, 'runtime', 'Missing required section')
     })
 
+    it('errors on removed runtime.coding_pipeline with migration hint', () => {
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = { builder: 'x' }
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.coding_pipeline', 'coding-pipeline plugin was removed')
+    })
+
     it('rejects non-object runtime', () => {
       const cfg = { ...validConfig(), runtime: 'invalid' }
       const result = validateConfig(cfg)
@@ -246,41 +253,6 @@ describe('Config Validation', () => {
       ]
       const result = validateConfig(cfg)
       assertValid(result)
-    })
-  })
-
-  // =========================================================================
-  // coding_pipeline
-  // =========================================================================
-
-  describe('coding_pipeline', () => {
-    it('accepts valid pipeline config', () => {
-      const cfg = validConfig()
-      const agents = cfg.agents as Record<string, unknown>
-      agents.grok = { provider: 'anthropic' }
-      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = {
-        builder_agent: 'grok',
-        validator_agent: 'opus',
-        max_build_loops: 3,
-        max_validation_loops: 2,
-        auto_commit: true,
-      }
-      const result = validateConfig(cfg)
-      assertValid(result)
-    })
-
-    it('rejects non-positive max_build_loops', () => {
-      const cfg = validConfig()
-      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = { max_build_loops: 0 }
-      const result = validateConfig(cfg)
-      assertError(result, 'runtime.coding_pipeline.max_build_loops', 'positive integer')
-    })
-
-    it('rejects non-boolean auto_commit', () => {
-      const cfg = validConfig()
-      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = { auto_commit: 'yes' }
-      const result = validateConfig(cfg)
-      assertError(result, 'runtime.coding_pipeline.auto_commit', 'must be a boolean')
     })
   })
 
@@ -512,6 +484,37 @@ describe('Config Validation', () => {
       const result = validateConfig(cfg)
       assertWarning(result, 'memory.postgres.pool_size', 'Unknown memory.postgres key')
     })
+
+    it('errors on removed review-loop keys', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          review_endpoint: 'http://x:8001/v1',
+          review_model: 'gemma',
+          review_api_key: 'k',
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres.review_endpoint', 'review loop was removed')
+      assertError(result, 'memory.postgres.review_model', 'review loop was removed')
+      assertError(result, 'memory.postgres.review_api_key', 'review loop was removed')
+    })
+
+    it('accepts boolean delegation_tracking and rejects non-boolean', () => {
+      const cfg = validConfig()
+      cfg.memory = { postgres: { delegation_tracking: true } }
+      assertValid(validateConfig(cfg))
+
+      cfg.memory = { postgres: { delegation_tracking: 'yes' } }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres.delegation_tracking', 'must be a boolean')
+    })
+
+    it('accepts embed_model without warning', () => {
+      const cfg = validConfig()
+      cfg.memory = { postgres: { embed_model: 'nemotron' } }
+      assertValid(validateConfig(cfg))
+    })
   })
 
   // =========================================================================
@@ -595,25 +598,6 @@ describe('Config Validation', () => {
       assertError(result, 'runtime.heartbeats[0].agent', 'Heartbeat agent "grok" is not defined')
     })
 
-    it('errors when coding_pipeline references undefined agents', () => {
-      const cfg = validConfig()
-      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = {
-        builder_agent: 'nonexistent-builder',
-        validator_agent: 'nonexistent-validator',
-      }
-      const result = validateConfig(cfg)
-      assertError(
-        result,
-        'runtime.coding_pipeline.builder_agent',
-        'Builder agent "nonexistent-builder"',
-      )
-      assertError(
-        result,
-        'runtime.coding_pipeline.validator_agent',
-        'Validator agent "nonexistent-validator"',
-      )
-    })
-
     it('errors when discord channel_binding references undefined agent', () => {
       const cfg = validConfig()
       cfg.channels = {
@@ -646,7 +630,6 @@ describe('Config Validation', () => {
           workspace: '~/.rivetos/workspace',
           default_agent: 'opus',
           heartbeats: [{ agent: 'opus', schedule: '30m', prompt: 'Check.' }],
-          coding_pipeline: { builder_agent: 'grok', validator_agent: 'opus' },
         },
         agents: {
           opus: { provider: 'anthropic', default_thinking: 'medium' },
@@ -689,13 +672,6 @@ describe('Config Validation', () => {
               quiet_hours: { start: 23, end: 7 },
             },
           ],
-          coding_pipeline: {
-            builder_agent: 'grok',
-            validator_agent: 'opus',
-            max_build_loops: 3,
-            max_validation_loops: 2,
-            auto_commit: true,
-          },
         },
         agents: {
           opus: { provider: 'anthropic', default_thinking: 'medium' },

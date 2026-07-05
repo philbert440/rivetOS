@@ -12,8 +12,8 @@ import {
   KNOWN_PROVIDERS,
   KNOWN_CHANNELS,
   KNOWN_HEARTBEAT_KEYS,
-  KNOWN_PIPELINE_KEYS,
   KNOWN_MEMORY_POSTGRES_KEYS,
+  REMOVED_MEMORY_POSTGRES_KEYS,
   KNOWN_DEN_KEYS,
   KNOWN_DEN_TERMINAL_KEYS,
   DEN_LOOPBACK_HOSTS,
@@ -116,18 +116,6 @@ export function validateRuntime(runtime: Record<string, unknown>, issues: Valida
       }
     }
   }
-
-  if (runtime.coding_pipeline !== undefined) {
-    if (typeof runtime.coding_pipeline !== 'object' || Array.isArray(runtime.coding_pipeline)) {
-      issues.push({
-        severity: 'error',
-        path: 'runtime.coding_pipeline',
-        message: '"runtime.coding_pipeline" must be an object',
-      })
-    } else {
-      validateCodingPipeline(runtime.coding_pipeline as Record<string, unknown>, issues)
-    }
-  }
 }
 
 function validateHeartbeat(hb: unknown, index: number, issues: ValidationIssue[]): void {
@@ -198,49 +186,6 @@ function validateHeartbeat(hb: unknown, index: number, issues: ValidationIssue[]
         })
       }
     }
-  }
-}
-
-function validateCodingPipeline(
-  pipeline: Record<string, unknown>,
-  issues: ValidationIssue[],
-): void {
-  for (const key of Object.keys(pipeline)) {
-    if (!KNOWN_PIPELINE_KEYS.has(key)) {
-      issues.push({
-        severity: 'warning',
-        path: `runtime.coding_pipeline.${key}`,
-        message: `Unknown coding_pipeline key "${key}"`,
-      })
-    }
-  }
-
-  if (pipeline.max_build_loops !== undefined) {
-    if (typeof pipeline.max_build_loops !== 'number' || pipeline.max_build_loops < 1) {
-      issues.push({
-        severity: 'error',
-        path: 'runtime.coding_pipeline.max_build_loops',
-        message: '"max_build_loops" must be a positive integer',
-      })
-    }
-  }
-
-  if (pipeline.max_validation_loops !== undefined) {
-    if (typeof pipeline.max_validation_loops !== 'number' || pipeline.max_validation_loops < 1) {
-      issues.push({
-        severity: 'error',
-        path: 'runtime.coding_pipeline.max_validation_loops',
-        message: '"max_validation_loops" must be a positive integer',
-      })
-    }
-  }
-
-  if (pipeline.auto_commit !== undefined && typeof pipeline.auto_commit !== 'boolean') {
-    issues.push({
-      severity: 'error',
-      path: 'runtime.coding_pipeline.auto_commit',
-      message: '"auto_commit" must be a boolean',
-    })
   }
 }
 
@@ -559,13 +504,27 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
     } else {
       const pg = memory.postgres as Record<string, unknown>
       for (const key of Object.keys(pg)) {
-        if (!KNOWN_MEMORY_POSTGRES_KEYS.has(key)) {
+        const removedMsg = REMOVED_MEMORY_POSTGRES_KEYS.get(key)
+        if (removedMsg) {
+          issues.push({
+            severity: 'error',
+            path: `memory.postgres.${key}`,
+            message: removedMsg,
+          })
+        } else if (!KNOWN_MEMORY_POSTGRES_KEYS.has(key)) {
           issues.push({
             severity: 'warning',
             path: `memory.postgres.${key}`,
             message: `Unknown memory.postgres key "${key}"`,
           })
         }
+      }
+      if (pg.delegation_tracking !== undefined && typeof pg.delegation_tracking !== 'boolean') {
+        issues.push({
+          severity: 'error',
+          path: 'memory.postgres.delegation_tracking',
+          message: '"delegation_tracking" must be a boolean (true/false)',
+        })
       }
     }
   }
@@ -574,7 +533,8 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
 // ---------------------------------------------------------------------------
 // Mesh (mTLS Migration — Phase 0.5)
 // TLS is mandatory when mesh.enabled; fail fast with clear error if tls not set.
-// mesh.secret is deprecated for agent channel (retained for update --mesh only).
+// mesh.secret is dead — mTLS is the sole agent-channel auth. The key is still
+// accepted (with a warning) so existing configs don't break on upgrade.
 // ---------------------------------------------------------------------------
 
 export function validateMesh(mesh: Record<string, unknown>, issues: ValidationIssue[]): void {
@@ -636,7 +596,7 @@ export function validateMesh(mesh: Record<string, unknown>, issues: ValidationIs
       severity: 'warning',
       path: `${path}.secret`,
       message:
-        'mesh.secret is deprecated for agent-channel authentication (mTLS is now used exclusively). It is retained only for update --mesh orchestration. Do not rely on it for new code.',
+        'mesh.secret is ignored — agent-channel authentication is mTLS only. Remove this key from your config.',
     })
   }
 }

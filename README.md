@@ -20,7 +20,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **7 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, vLLM, llama-server (llama.cpp), claude-cli (Claude Code subscription).
 - **4 channel plugins** — Discord, Telegram, Agent (HTTP inter-agent), Voice (xAI Realtime).
 - **MCP transport plugin** — Expose RivetOS tools (memory, web, skills) to external MCP clients over StreamableHTTP.
-- **20+ built-in tools** — Shell, file I/O, search, web, memory, skills, interaction, MCP client, coding pipeline, delegation, sub-agents.
+- **20+ built-in tools** — Shell, file I/O, search, web, memory, skills, interaction, MCP client, delegation, sub-agents.
 - **Multi-agent mesh** — Delegate tasks across agents. Local or remote. Transparent routing.
 - **Hook system** — Composable pipeline for safety, auto-actions, session lifecycle.
 - **Interactive setup** — `rivetos init` walks you through everything step by step.
@@ -106,7 +106,7 @@ rivetOS/
 │   ├── channels/       # discord, telegram, agent, voice-discord
 │   ├── providers/      # anthropic, google, xai, ollama, vllm, llama-server, claude-cli
 │   ├── memory/         # postgres (pgvector + FTS + summary DAG + workers)
-│   ├── tools/          # shell, file, search, web-search, interaction, mcp-client, coding-pipeline
+│   ├── tools/          # shell, file, search, web-search, interaction, mcp-client
 │   └── transports/     # mcp-server (expose RivetOS tools over MCP StreamableHTTP)
 ├── apps/
 │   └── site/           # Astro docs site
@@ -149,7 +149,6 @@ Skills are user-managed and live outside the source tree (default: `~/.rivetos/w
 | `tool-web-search` | Google CSE + DuckDuckGo fallback, HTML → markdown |
 | `tool-interaction` | `ask_user` (structured questions) and `todo` (task list) |
 | `tool-mcp-client` | MCP protocol client (stdio + HTTP transports) |
-| `tool-coding-pipeline` | Multi-agent build → review → validate loop |
 
 The memory plugin (`@rivetos/memory-postgres`) additionally registers `memory_search`, `memory_browse`, and `memory_stats`. Delegation, sub-agents, and skill management add `delegate_task`, `subagent_*`, and `skill_*` tools at runtime.
 

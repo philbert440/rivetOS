@@ -53,25 +53,6 @@ export function validateCrossReferences(
     }
   }
 
-  // Coding pipeline agents must exist
-  if (runtime.coding_pipeline && typeof runtime.coding_pipeline === 'object') {
-    const pipeline = runtime.coding_pipeline as Record<string, unknown>
-    if (typeof pipeline.builder_agent === 'string' && !agentIds.has(pipeline.builder_agent)) {
-      issues.push({
-        severity: 'error',
-        path: 'runtime.coding_pipeline.builder_agent',
-        message: `Builder agent "${pipeline.builder_agent}" is not defined in [agents]. Available: ${[...agentIds].join(', ') || '(none)'}`,
-      })
-    }
-    if (typeof pipeline.validator_agent === 'string' && !agentIds.has(pipeline.validator_agent)) {
-      issues.push({
-        severity: 'error',
-        path: 'runtime.coding_pipeline.validator_agent',
-        message: `Validator agent "${pipeline.validator_agent}" is not defined in [agents]. Available: ${[...agentIds].join(', ') || '(none)'}`,
-      })
-    }
-  }
-
   // Discord channel_bindings agent refs must exist
   const channels = (cfg.channels ?? {}) as Record<
     string,

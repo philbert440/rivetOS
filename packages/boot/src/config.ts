@@ -55,6 +55,12 @@ export interface MeshSection {
    * peer that registers its node_name as host but is only reachable by LAN IP.
    */
   advertise_host?: string
+  /**
+   * @deprecated Ignored — agent-channel auth is mTLS only. The key is still
+   * accepted (validation emits a warning) so existing configs don't break.
+   * Note: deliberately absent from @rivetos/types MeshConfig — this boot-level
+   * field exists only for YAML back-compat and is never forwarded.
+   */
   secret?: string
   /** mTLS configuration for agent-channel.
    * true = use default paths derived from node_name
@@ -184,7 +190,6 @@ export interface RuntimeSection {
   /** Additional directories to scan for plugins (relative to monorepo root) */
   plugin_dirs?: string[]
   heartbeats?: HeartbeatSection[]
-  coding_pipeline?: CodingPipelineSection
   safety?: SafetySection
   auto_actions?: AutoActionsSection
 }
@@ -211,14 +216,6 @@ export interface HeartbeatSection {
   prompt: string
   output_channel?: string
   quiet_hours?: { start: number; end: number }
-}
-
-export interface CodingPipelineSection {
-  builder_agent?: string
-  validator_agent?: string
-  max_build_loops?: number
-  max_validation_loops?: number
-  auto_commit?: boolean
 }
 
 export interface SafetySection {
