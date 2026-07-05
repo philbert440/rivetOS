@@ -291,6 +291,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     if (!existsSync(file) || !statSync(file).isFile()) return false
     res.writeHead(200, {
       'Content-Type': MIME[extname(file)] ?? 'application/octet-stream',
+      // hashed bundles cache forever; everything else (index.html, packs)
+      // revalidates so deploys don't depend on the user hard-refreshing
+      'Cache-Control': /-[\w]{8}\.\w+$/.test(file)
+        ? 'public, max-age=31536000, immutable'
+        : 'no-cache',
       ...CORS,
     })
     res.end(readFileSync(file))
