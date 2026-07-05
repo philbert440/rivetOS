@@ -12,7 +12,6 @@ import {
   KNOWN_PROVIDERS,
   KNOWN_CHANNELS,
   KNOWN_HEARTBEAT_KEYS,
-  KNOWN_PIPELINE_KEYS,
   KNOWN_MEMORY_POSTGRES_KEYS,
   KNOWN_DEN_KEYS,
   KNOWN_DEN_TERMINAL_KEYS,
@@ -117,17 +116,6 @@ export function validateRuntime(runtime: Record<string, unknown>, issues: Valida
     }
   }
 
-  if (runtime.coding_pipeline !== undefined) {
-    if (typeof runtime.coding_pipeline !== 'object' || Array.isArray(runtime.coding_pipeline)) {
-      issues.push({
-        severity: 'error',
-        path: 'runtime.coding_pipeline',
-        message: '"runtime.coding_pipeline" must be an object',
-      })
-    } else {
-      validateCodingPipeline(runtime.coding_pipeline as Record<string, unknown>, issues)
-    }
-  }
 }
 
 function validateHeartbeat(hb: unknown, index: number, issues: ValidationIssue[]): void {
@@ -198,49 +186,6 @@ function validateHeartbeat(hb: unknown, index: number, issues: ValidationIssue[]
         })
       }
     }
-  }
-}
-
-function validateCodingPipeline(
-  pipeline: Record<string, unknown>,
-  issues: ValidationIssue[],
-): void {
-  for (const key of Object.keys(pipeline)) {
-    if (!KNOWN_PIPELINE_KEYS.has(key)) {
-      issues.push({
-        severity: 'warning',
-        path: `runtime.coding_pipeline.${key}`,
-        message: `Unknown coding_pipeline key "${key}"`,
-      })
-    }
-  }
-
-  if (pipeline.max_build_loops !== undefined) {
-    if (typeof pipeline.max_build_loops !== 'number' || pipeline.max_build_loops < 1) {
-      issues.push({
-        severity: 'error',
-        path: 'runtime.coding_pipeline.max_build_loops',
-        message: '"max_build_loops" must be a positive integer',
-      })
-    }
-  }
-
-  if (pipeline.max_validation_loops !== undefined) {
-    if (typeof pipeline.max_validation_loops !== 'number' || pipeline.max_validation_loops < 1) {
-      issues.push({
-        severity: 'error',
-        path: 'runtime.coding_pipeline.max_validation_loops',
-        message: '"max_validation_loops" must be a positive integer',
-      })
-    }
-  }
-
-  if (pipeline.auto_commit !== undefined && typeof pipeline.auto_commit !== 'boolean') {
-    issues.push({
-      severity: 'error',
-      path: 'runtime.coding_pipeline.auto_commit',
-      message: '"auto_commit" must be a boolean',
-    })
   }
 }
 

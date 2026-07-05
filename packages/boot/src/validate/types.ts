@@ -103,7 +103,6 @@ export const KNOWN_RUNTIME_KEYS = new Set([
   'skill_dirs',
   'plugin_dirs',
   'heartbeats',
-  'coding_pipeline',
   'safety',
   'auto_actions',
 ])
@@ -303,14 +302,6 @@ export const KNOWN_HEARTBEAT_KEYS = new Set([
   'prompt',
   'output_channel',
   'quiet_hours',
-])
-
-export const KNOWN_PIPELINE_KEYS = new Set([
-  'builder_agent',
-  'validator_agent',
-  'max_build_loops',
-  'max_validation_loops',
-  'auto_commit',
 ])
 
 export const KNOWN_MEMORY_POSTGRES_KEYS = new Set([

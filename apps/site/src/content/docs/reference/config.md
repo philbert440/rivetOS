@@ -101,28 +101,6 @@ runtime:
 | `quiet_hours.start` | number | — | Hour (0-23) to start quiet period (no heartbeats). |
 | `quiet_hours.end` | number | — | Hour (0-23) to end quiet period. |
 
-### `runtime.coding_pipeline`
-
-Configuration for the multi-agent build → review → validate coding loop.
-
-```yaml
-runtime:
-  coding_pipeline:
-    builder_agent: grok
-    validator_agent: opus
-    max_build_loops: 3
-    max_validation_loops: 2
-    auto_commit: true
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `builder_agent` | string | — | Agent that writes code. Must match a key in `agents`. |
-| `validator_agent` | string | — | Agent that reviews code. Must match a key in `agents`. |
-| `max_build_loops` | number | `3` | Max build-fix iterations before giving up. |
-| `max_validation_loops` | number | `2` | Max validation rounds per build. |
-| `auto_commit` | boolean | `true` | Auto-commit on successful validation. |
-
 ### `runtime.safety`
 
 Safety hooks configuration.

@@ -67,8 +67,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   ├── search/              # search_glob, search_grep
 │   │   ├── interaction/         # ask_user, todo list
 │   │   ├── web-search/          # Google CSE + web_fetch (Readability)
-│   │   ├── mcp-client/          # MCP protocol client (stdio + HTTP transports)
-│   │   └── coding-pipeline/     # Multi-agent build-review-fix loop
+│   │   └── mcp-client/          # MCP protocol client (stdio + HTTP transports)
 │   │
 │   ├── memory/                  # ~5,700 lines — Persistence backends
 │   │   └── postgres/            # PostgreSQL (conversations, messages, search,
@@ -554,7 +553,7 @@ Channel receives message
 2. **Domain layer is pure** — no I/O, no `fs`, no `fetch`. Only interfaces.
 3. **Application layer wires I/O** — runtime/, boot/registrars/
 4. **Plugins use dynamic import** — boot never statically imports a plugin
-5. **Late binding for tools** — coding pipeline gets tool executors as closures, not direct refs
+5. **Late binding for tools** — composite tools get tool executors as closures, not direct refs
 6. **Config is YAML, not code** — all user-facing config in `config.yaml`
 7. **Secrets in `.env`** — never in config YAML, never in container images
 8. **Containers are stateless** — all data on volumes/bind mounts
@@ -578,7 +577,6 @@ runtime:
   max_tool_iterations: 100
   skill_dirs: [~/.rivetos/skills]
   heartbeats: [...]
-  coding_pipeline: { builder_agent, validator_agent, ... }
   safety: { shellDanger, workspaceFence, audit }
   auto_actions: { format, lint, test, gitCheck }
 
