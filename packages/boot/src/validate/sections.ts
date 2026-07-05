@@ -16,6 +16,7 @@ import {
   REMOVED_MEMORY_POSTGRES_KEYS,
   KNOWN_DEN_KEYS,
   KNOWN_DEN_TERMINAL_KEYS,
+  KNOWN_TASKS_KEYS,
   DEN_LOOPBACK_HOSTS,
   API_KEY_PATTERNS,
   type ValidationIssue,
@@ -733,6 +734,33 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
         '(127.0.0.1/::1/localhost) — an exposed token-less terminal would hang an unauthenticated ' +
         'shell on the network. Set den.token, bind den.host to loopback, or explicitly opt out ' +
         'with den.terminal.open: true on a trusted private network.',
+    })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tasks — durable task engine (ros_tasks + embedded runner, phase 1).
+// Default enabled: with zero rows the engine is inert.
+// ---------------------------------------------------------------------------
+
+export function validateTasks(tasks: Record<string, unknown>, issues: ValidationIssue[]): void {
+  const path = 'tasks'
+
+  for (const key of Object.keys(tasks)) {
+    if (!KNOWN_TASKS_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `${path}.${key}`,
+        message: `Unknown tasks key "${key}"`,
+      })
+    }
+  }
+
+  if (tasks.enabled !== undefined && typeof tasks.enabled !== 'boolean') {
+    issues.push({
+      severity: 'error',
+      path: `${path}.enabled`,
+      message: '"tasks.enabled" must be a boolean',
     })
   }
 }

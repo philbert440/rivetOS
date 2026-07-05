@@ -1,7 +1,7 @@
 /**
  * @rivetos/types — Shared interfaces for the RivetOS agent runtime.
  *
- * Interfaces only. Zero dependencies. Leaf package.
+ * Interfaces only. Contract-scope dependencies only (@rivetos/den-protocol).
  * Every other package depends on this. Nothing else.
  */
 
@@ -104,6 +104,21 @@ export type {
   SubagentManager,
 } from './subagent.js'
 export type { Skill, SkillManager } from './skill.js'
+export type {
+  TaskExecutorKind,
+  TaskStatus,
+  ContextRef,
+  AcceptanceCriterion,
+  TaskBudget,
+  TaskUsage,
+  TaskSpec,
+  TaskEvent,
+  TaskVerdict,
+  TaskResult,
+  TaskHandle,
+  HarnessExecutorCapabilities,
+  HarnessExecutor,
+} from './task.js'
 export type {
   HookEventName,
   HookContext,

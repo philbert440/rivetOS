@@ -32,6 +32,8 @@ export interface RivetConfig {
   mesh?: MeshSection
   /** rivet-den — per-node agent activity diorama server (services/den-server) */
   den?: DenSection
+  /** Durable task engine (ros_tasks + embedded runner) — phase 1 */
+  tasks?: TasksSection
   /**
    * Explicit plugin list — npm package names of rivetos plugins to load.
    * Authoritative in production (flat install): missing entries fail-fast.
@@ -105,6 +107,16 @@ export interface MeshSection {
  *   `metadata.denPort`, so den viewers discover this node via /mesh.json —
  *   restart-proof, no hand-editing of mesh.json.
  */
+/**
+ * Task engine configuration — the durable `ros_tasks` model + embedded
+ * graphile-worker runner (phase 1). Enabled by default: with zero rows the
+ * engine is inert (nothing creates tasks until the cutover steps land).
+ */
+export interface TasksSection {
+  /** Start the task runner (default: true — inert with zero rows) */
+  enabled?: boolean
+}
+
 export interface DenSection {
   /** Deploy + advertise the den server on this node (default: false) */
   enabled?: boolean

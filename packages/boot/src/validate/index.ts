@@ -25,6 +25,7 @@ import {
   validateMemory,
   validateMesh,
   validateDen,
+  validateTasks,
 } from './sections.js'
 import { validateDeployment } from './deployment.js'
 import { validateCrossReferences } from './cross-refs.js'
@@ -192,6 +193,15 @@ export function validateConfig(config: unknown): ValidationResult {
       issues.push({ severity: 'error', path: 'den', message: '"den" must be an object' })
     } else {
       validateDen(cfg.den as Record<string, unknown>, issues)
+    }
+  }
+
+  // === tasks (optional — durable task engine; default enabled + inert) ===
+  if (cfg.tasks) {
+    if (typeof cfg.tasks !== 'object' || Array.isArray(cfg.tasks)) {
+      issues.push({ severity: 'error', path: 'tasks', message: '"tasks" must be an object' })
+    } else {
+      validateTasks(cfg.tasks as Record<string, unknown>, issues)
     }
   }
 

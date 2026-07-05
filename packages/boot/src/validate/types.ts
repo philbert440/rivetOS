@@ -35,8 +35,11 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
   'deployment',
   'mesh',
   'den',
+  'tasks',
   'plugins',
 ])
+
+export const KNOWN_TASKS_KEYS = new Set(['enabled'])
 
 export const KNOWN_DEN_KEYS = new Set([
   'enabled',

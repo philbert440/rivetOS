@@ -136,3 +136,9 @@ memory:
 #   #     bridge: vmbr1
 #   #     subnet: 192.168.1.0/24
 #   #     gateway: 192.168.1.1
+
+# Durable task engine (phase 1) — embedded run-task runner over ros_tasks.
+# Inert until something creates tasks; requires Postgres + the 0002 migration
+# (rivetos-memory-migrate). Disable to skip starting the runner entirely.
+# tasks:
+#   enabled: true
