@@ -94,13 +94,18 @@
        room scene — pinned over the room recess by a DomAnchor (drawer.ts) */
     .term-drawer {
       position: fixed; z-index: 9; box-sizing: border-box;
-      background: #30394a; border: 2px solid #8b93a1; border-top: none;
-      border-radius: 0 0 10px 10px; padding: 0;
+      /* light-gray chrome mat merging into the titlebar (top) and bezel
+         (right); the room's dark outline continues around the drawer via the
+         dark left/bottom edges — open, the outline hugs the drawer; closed,
+         the canvas recess outline shows as usual */
+      background: #b7bec9; border: none;
+      border-left: 6px solid #30394a; border-bottom: 6px solid #30394a;
+      border-radius: 0 0 0 8px; padding: 6px;
       box-shadow: 0 12px 28px #0009;
     }
     .term-drawer-well {
       width: 100%; height: 100%; box-sizing: border-box; overflow: hidden;
-      background: #30394a; border-radius: 0 0 8px 8px; padding: 6px;
+      background: #30394a; border-radius: 6px; padding: 6px;
     }
     .term-drawer .xterm { height: 100%; }
     #gear-menu {
