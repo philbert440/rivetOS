@@ -259,7 +259,6 @@ RivetOS ships with several skills out of the box:
 | `stealth-browser` | Headless browser automation |
 | `tmux` | Terminal multiplexer management |
 | `weather` | Weather lookup |
-| `coding-pipeline` | Multi-agent code build/review loop |
 
 ---
 

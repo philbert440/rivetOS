@@ -28,7 +28,6 @@ description: How RivetOS works internally
 │  Voice       Ollama                 Web Search/Fetch   │
 │              vllm                   Interaction        │
 │              llama-server           MCP Client         │
-│                                     Coding Pipeline    │
 │                                                        │
 │  All plugins implement core interfaces.                │
 │  All plugins are replaceable.                          │
@@ -407,7 +406,6 @@ rivetOS/
       web-search/                    ← internet_search, web_fetch
       interaction/                   ← ask_user, todo (2 tool files)
       mcp-client/                    ← MCP server connection + tool discovery
-      coding-pipeline/               ← Build → review → validate loop
     transports/
       mcp-server/                    ← @rivetos/mcp-server — exposes RivetOS tools
                                      ←   (memory_*, web_*, skill_*, runtime) over MCP

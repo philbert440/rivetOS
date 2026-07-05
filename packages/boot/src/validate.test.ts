@@ -250,41 +250,6 @@ describe('Config Validation', () => {
   })
 
   // =========================================================================
-  // coding_pipeline
-  // =========================================================================
-
-  describe('coding_pipeline', () => {
-    it('accepts valid pipeline config', () => {
-      const cfg = validConfig()
-      const agents = cfg.agents as Record<string, unknown>
-      agents.grok = { provider: 'anthropic' }
-      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = {
-        builder_agent: 'grok',
-        validator_agent: 'opus',
-        max_build_loops: 3,
-        max_validation_loops: 2,
-        auto_commit: true,
-      }
-      const result = validateConfig(cfg)
-      assertValid(result)
-    })
-
-    it('rejects non-positive max_build_loops', () => {
-      const cfg = validConfig()
-      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = { max_build_loops: 0 }
-      const result = validateConfig(cfg)
-      assertError(result, 'runtime.coding_pipeline.max_build_loops', 'positive integer')
-    })
-
-    it('rejects non-boolean auto_commit', () => {
-      const cfg = validConfig()
-      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = { auto_commit: 'yes' }
-      const result = validateConfig(cfg)
-      assertError(result, 'runtime.coding_pipeline.auto_commit', 'must be a boolean')
-    })
-  })
-
-  // =========================================================================
   // agents section
   // =========================================================================
 
@@ -595,25 +560,6 @@ describe('Config Validation', () => {
       assertError(result, 'runtime.heartbeats[0].agent', 'Heartbeat agent "grok" is not defined')
     })
 
-    it('errors when coding_pipeline references undefined agents', () => {
-      const cfg = validConfig()
-      ;(cfg.runtime as Record<string, unknown>).coding_pipeline = {
-        builder_agent: 'nonexistent-builder',
-        validator_agent: 'nonexistent-validator',
-      }
-      const result = validateConfig(cfg)
-      assertError(
-        result,
-        'runtime.coding_pipeline.builder_agent',
-        'Builder agent "nonexistent-builder"',
-      )
-      assertError(
-        result,
-        'runtime.coding_pipeline.validator_agent',
-        'Validator agent "nonexistent-validator"',
-      )
-    })
-
     it('errors when discord channel_binding references undefined agent', () => {
       const cfg = validConfig()
       cfg.channels = {
@@ -646,7 +592,6 @@ describe('Config Validation', () => {
           workspace: '~/.rivetos/workspace',
           default_agent: 'opus',
           heartbeats: [{ agent: 'opus', schedule: '30m', prompt: 'Check.' }],
-          coding_pipeline: { builder_agent: 'grok', validator_agent: 'opus' },
         },
         agents: {
           opus: { provider: 'anthropic', default_thinking: 'medium' },
@@ -689,13 +634,6 @@ describe('Config Validation', () => {
               quiet_hours: { start: 23, end: 7 },
             },
           ],
-          coding_pipeline: {
-            builder_agent: 'grok',
-            validator_agent: 'opus',
-            max_build_loops: 3,
-            max_validation_loops: 2,
-            auto_commit: true,
-          },
         },
         agents: {
           opus: { provider: 'anthropic', default_thinking: 'medium' },

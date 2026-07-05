@@ -184,7 +184,6 @@ export interface RuntimeSection {
   /** Additional directories to scan for plugins (relative to monorepo root) */
   plugin_dirs?: string[]
   heartbeats?: HeartbeatSection[]
-  coding_pipeline?: CodingPipelineSection
   safety?: SafetySection
   auto_actions?: AutoActionsSection
 }
@@ -211,14 +210,6 @@ export interface HeartbeatSection {
   prompt: string
   output_channel?: string
   quiet_hours?: { start: number; end: number }
-}
-
-export interface CodingPipelineSection {
-  builder_agent?: string
-  validator_agent?: string
-  max_build_loops?: number
-  max_validation_loops?: number
-  auto_commit?: boolean
 }
 
 export interface SafetySection {

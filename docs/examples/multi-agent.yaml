@@ -8,12 +8,6 @@ runtime:
   default_agent: opus
   turn_timeout: 900
 
-  # Coding pipeline uses two agents for build/review
-  coding_pipeline:
-    builder_agent: grok
-    validator_agent: opus
-    auto_commit: true
-
   # Heartbeat — periodic background tasks
   heartbeats:
     - agent: opus
@@ -37,9 +31,6 @@ agents:
   grok:
     provider: xai
     # Grok handles code writing, fast tasks
-    tools:
-      exclude:
-        - coding_pipeline    # Don't let Grok call itself in the pipeline
   local:
     provider: ollama
     local: true              # Extended context (free tokens)

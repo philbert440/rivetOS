@@ -67,7 +67,6 @@ channels:
 #   - "@rivetos/tool-interaction"
 #   - "@rivetos/tool-web-search"
 #   - "@rivetos/tool-mcp-client"
-#   - "@rivetos/tool-coding-pipeline"
 #   - "@rivetos/memory-postgres"
 #   - "@rivetos/mcp-server"
 
