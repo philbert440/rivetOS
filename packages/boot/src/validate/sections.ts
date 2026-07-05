@@ -574,7 +574,8 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
 // ---------------------------------------------------------------------------
 // Mesh (mTLS Migration — Phase 0.5)
 // TLS is mandatory when mesh.enabled; fail fast with clear error if tls not set.
-// mesh.secret is deprecated for agent channel (retained for update --mesh only).
+// mesh.secret is dead — mTLS is the sole agent-channel auth. The key is still
+// accepted (with a warning) so existing configs don't break on upgrade.
 // ---------------------------------------------------------------------------
 
 export function validateMesh(mesh: Record<string, unknown>, issues: ValidationIssue[]): void {
@@ -636,7 +637,7 @@ export function validateMesh(mesh: Record<string, unknown>, issues: ValidationIs
       severity: 'warning',
       path: `${path}.secret`,
       message:
-        'mesh.secret is deprecated for agent-channel authentication (mTLS is now used exclusively). It is retained only for update --mesh orchestration. Do not rely on it for new code.',
+        'mesh.secret is ignored — agent-channel authentication is mTLS only. Remove this key from your config.',
     })
   }
 }

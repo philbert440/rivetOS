@@ -476,7 +476,7 @@ mesh:
 | `mesh.discovery.mode` | string | — | `seed` \| `static` \| `mdns`. |
 | `mesh.discovery.seed_host` | string | — | Seed node hostname (use `<nodeName>.mesh`). |
 | `mesh.discovery.seed_port` | number | `3100` | Seed node port. |
-| `mesh.secret` | string | — | **Deprecated** — retained for `update --mesh` orchestration only. |
+| `mesh.secret` | string | — | **Ignored** — mesh agent-channel auth is mTLS only. Accepted with a warning for back-compat; remove it from your config. |
 
 ---
 
