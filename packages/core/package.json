@@ -53,7 +53,8 @@
   "nx": {
     "tags": [
       "scope:domain",
-      "type:lib"
+      "type:lib",
+      "domain:runtime"
     ]
   }
 }

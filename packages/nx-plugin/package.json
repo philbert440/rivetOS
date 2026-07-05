@@ -48,7 +48,8 @@
   "nx": {
     "tags": [
       "scope:tooling",
-      "type:lib"
+      "type:lib",
+      "domain:shared"
     ]
   }
 }

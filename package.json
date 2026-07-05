@@ -69,7 +69,8 @@
     "containers:build": "nx run container-rivetos:build",
     "compose:up": "docker compose -f infra/docker/rivetos/docker-compose.yml up -d",
     "compose:down": "docker compose -f infra/docker/rivetos/docker-compose.yml down",
-    "clean": "find packages plugins -path '*/src/*.d.ts' -delete && find packages plugins -path '*/src/*.d.ts.map' -delete && echo 'Cleaned build artifacts from src/'"
+    "clean": "find packages plugins -path '*/src/*.d.ts' -delete && find packages plugins -path '*/src/*.d.ts.map' -delete && echo 'Cleaned build artifacts from src/'",
+    "lint:boundaries": "node scripts/boundary-probe.mjs"
   },
   "bugs": {
     "url": "https://github.com/philbert440/rivetOS/issues"

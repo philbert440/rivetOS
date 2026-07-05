@@ -4,6 +4,79 @@ import prettier from 'eslint-plugin-prettier/recommended'
 import nxPlugin from '@nx/eslint-plugin'
 import jsoncParser from 'jsonc-eslint-parser'
 
+// Shared module-boundary constraints — referenced by the global rule and
+// the mcp-server override so the override can't silently drop an axis.
+// Phase 1 note: the ros_tasks engine should introduce domain:tasks (and mesh
+// may deserve its own tag once the gateway lands) — extend both axes here.
+const BOUNDARY_DEP_CONSTRAINTS = [
+  {
+    sourceTag: 'scope:contract',
+    onlyDependOnLibsWithTags: ['scope:contract'],
+  },
+  {
+    sourceTag: 'scope:domain',
+    onlyDependOnLibsWithTags: ['scope:contract', 'scope:domain'],
+  },
+  {
+    sourceTag: 'scope:adapter',
+    onlyDependOnLibsWithTags: ['scope:contract', 'scope:adapter'],
+  },
+  {
+    sourceTag: 'scope:transport',
+    onlyDependOnLibsWithTags: [
+      'scope:contract',
+      'scope:domain',
+      'scope:adapter',
+      'scope:transport',
+    ],
+  },
+  {
+    sourceTag: 'scope:composition',
+    onlyDependOnLibsWithTags: [
+      'scope:contract',
+      'scope:domain',
+      'scope:adapter',
+      'scope:transport',
+      'scope:composition',
+      'scope:tooling',
+    ],
+  },
+  {
+    sourceTag: 'scope:app',
+    onlyDependOnLibsWithTags: [
+      'scope:contract',
+      'scope:domain',
+      'scope:adapter',
+      'scope:transport',
+      'scope:composition',
+      'scope:app',
+    ],
+  },
+  {
+    sourceTag: 'scope:tooling',
+    onlyDependOnLibsWithTags: ['scope:tooling'],
+  },
+  // Domain axis (bounded contexts — see plans/agentic-modernization).
+  // A domain may reach shared contracts and itself; composition
+  // roots (boot/cli) carry no domain tag, so nothing binds them.
+  {
+    sourceTag: 'domain:shared',
+    onlyDependOnLibsWithTags: ['domain:shared'],
+  },
+  {
+    sourceTag: 'domain:memory',
+    onlyDependOnLibsWithTags: ['domain:shared', 'domain:memory'],
+  },
+  {
+    sourceTag: 'domain:runtime',
+    onlyDependOnLibsWithTags: ['domain:shared', 'domain:runtime'],
+  },
+  {
+    sourceTag: 'domain:interfaces',
+    onlyDependOnLibsWithTags: ['domain:shared', 'domain:interfaces'],
+  },
+]
+
 export default tseslint.config(
   // Global ignores
   {
@@ -105,55 +178,30 @@ export default tseslint.config(
           banTransitiveDependencies: true,
           checkNestedExternalImports: true,
           allowCircularSelfDependency: false,
-          depConstraints: [
-            {
-              sourceTag: 'scope:contract',
-              onlyDependOnLibsWithTags: ['scope:contract'],
-            },
-            {
-              sourceTag: 'scope:domain',
-              onlyDependOnLibsWithTags: ['scope:contract', 'scope:domain'],
-            },
-            {
-              sourceTag: 'scope:adapter',
-              onlyDependOnLibsWithTags: ['scope:contract', 'scope:adapter'],
-            },
-            {
-              sourceTag: 'scope:transport',
-              onlyDependOnLibsWithTags: [
-                'scope:contract',
-                'scope:domain',
-                'scope:adapter',
-                'scope:transport',
-              ],
-            },
-            {
-              sourceTag: 'scope:composition',
-              onlyDependOnLibsWithTags: [
-                'scope:contract',
-                'scope:domain',
-                'scope:adapter',
-                'scope:transport',
-                'scope:composition',
-                'scope:tooling',
-              ],
-            },
-            {
-              sourceTag: 'scope:app',
-              onlyDependOnLibsWithTags: [
-                'scope:contract',
-                'scope:domain',
-                'scope:adapter',
-                'scope:transport',
-                'scope:composition',
-                'scope:app',
-              ],
-            },
-            {
-              sourceTag: 'scope:tooling',
-              onlyDependOnLibsWithTags: ['scope:tooling'],
-            },
-          ],
+          depConstraints: BOUNDARY_DEP_CONSTRAINTS,
+        },
+      ],
+    },
+  },
+
+  // Known cross-domain leak, tolerated ONLY here until the MCP unification
+  // follow-up puts memory tools behind a contract: mcp-server re-exposes
+  // @rivetos/memory-postgres tools over MCP. Same full rule config as the
+  // global block (both axes, all options) — only `allow` differs.
+  {
+    files: ['plugins/transports/mcp-server/**/*.ts'],
+    plugins: { '@nx': nxPlugin },
+    rules: {
+      '@nx/enforce-module-boundaries': [
+        'error',
+        {
+          enforceBuildableLibDependency: false,
+          allow: ['@rivetos/memory-postgres'],
+          checkDynamicDependenciesExceptions: ['.*'],
+          banTransitiveDependencies: true,
+          checkNestedExternalImports: true,
+          allowCircularSelfDependency: false,
+          depConstraints: BOUNDARY_DEP_CONSTRAINTS,
         },
       ],
     },

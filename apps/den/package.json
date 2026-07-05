@@ -28,7 +28,8 @@
   "nx": {
     "tags": [
       "scope:app",
-      "type:app"
+      "type:app",
+      "domain:interfaces"
     ]
   }
 }
