@@ -24,9 +24,6 @@ export function createPlugin(): ToolPlugin {
   }
 }
 
-/** @deprecated Use createPlugin() instead */
-export const createInteractionToolsPlugin = createPlugin
-
 export const manifest: PluginManifest = {
   type: 'tool',
   name: 'interaction',
