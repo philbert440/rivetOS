@@ -622,19 +622,11 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     const it = furniture[id]
     return it ? it.canonical.y - it.canonical.h : Infinity
   }
-  const canonLeft = (id: string) => {
-    const it = furniture[id]
-    if (!it) return Infinity
-    return it.canonical.x - (it.asset.bw / 2) * (it.canonical.h / it.asset.bh)
-  }
   function drawerRect() {
     // part of the WINDOW, not the room: full frame width (aligned with the
     // room recess), hanging flush from the titlebar, down to just above the
     // whiteboard/shelf tops (live furniture placements, editor-aware)
-    const bottom = Math.max(
-      60,
-      Math.min(canonTop('board'), canonTop('shelf'), SHELL.h * 0.45) - 16,
-    )
+    const bottom = Math.max(60, Math.min(canonTop('board'), canonTop('shelf'), SHELL.h * 0.45) - 16)
     return {
       x: MARGIN - 6,
       y: TITLEBAR - 2,
