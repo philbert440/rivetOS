@@ -636,15 +636,23 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     const it = furniture[id]
     return it ? it.canonical.y - it.canonical.h : Infinity
   }
+  const canonLeft = (id: string) => {
+    const it = furniture[id]
+    if (!it) return Infinity
+    return it.canonical.x - (it.asset.bw / 2) * (it.canonical.h / it.asset.bh)
+  }
   function drawerRect() {
-    // part of the WINDOW, not the room: full frame width (aligned with the
-    // room recess), hanging flush from the titlebar, down to just above the
-    // whiteboard/shelf tops (live furniture placements, editor-aware)
+    // part of the WINDOW, not the room: the old chat panel's footprint (right
+    // of the whiteboard frame, down to just above the whiteboard/shelf tops —
+    // live furniture placements, editor-aware) but hanging flush from the
+    // titlebar and running into the right bezel, so it reads as window chrome
+    // dropped over the room rather than a panel floating inside it.
+    const left = Math.min(canonLeft('board') + 18, SHELL.w - 14 - 640)
     const bottom = Math.max(60, Math.min(canonTop('board'), canonTop('shelf'), SHELL.h * 0.45) - 16)
     return {
-      x: MARGIN - 6,
+      x: MARGIN + left,
       y: TITLEBAR - 2,
-      w: SHELL.w + 12,
+      w: SHELL.w + 6 - left,
       h: MARGIN + bottom + 2 - 6,
     }
   }
