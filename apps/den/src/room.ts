@@ -51,7 +51,12 @@ export const LED_COLOR: Record<Activity, number> = {
   sleeping: 0x8b5cf6,
 }
 
-function bubble(maxWidth: number, color: number, fontFamily: string) {
+function bubble(
+  maxWidth: number,
+  color: number,
+  fontFamily: string,
+  tail: 'thought' | 'talk' = 'thought',
+) {
   const g = new Graphics()
   const style = new TextStyle({
     fontFamily,
@@ -77,10 +82,19 @@ function bubble(maxWidth: number, color: number, fontFamily: string) {
         .fill({ color: 0xffffff, alpha: 0.96 })
         .roundRect(0, 0, w, h, 10)
         .stroke({ width: 2, color })
-        .circle(w / 2 - 30, h + 8, 5)
-        .fill({ color: 0xffffff, alpha: 0.96 })
-        .circle(w / 2 - 38, h + 17, 3)
-        .fill({ color: 0xffffff, alpha: 0.96 })
+      if (tail === 'thought') {
+        // dot-trail cloud tail
+        g.circle(w / 2 - 30, h + 8, 5)
+          .fill({ color: 0xffffff, alpha: 0.96 })
+          .circle(w / 2 - 38, h + 17, 3)
+          .fill({ color: 0xffffff, alpha: 0.96 })
+      } else {
+        // pointed talk tail, outlined like the bubble body
+        g.poly([w / 2 - 40, h - 2, w / 2 - 22, h - 2, w / 2 - 42, h + 18])
+          .fill({ color: 0xffffff, alpha: 0.96 })
+          .poly([w / 2 - 40, h - 1, w / 2 - 42, h + 18, w / 2 - 22, h - 1])
+          .stroke({ width: 2, color })
+      }
       c.pivot.set(w / 2, h)
     },
   }
@@ -726,7 +740,7 @@ export function createRoom(deps: RoomDeps): RoomInstance {
   // live-ticking spinner meta: parsed from "✳ Word… (28s · ↓ 4.8k tokens)"
   let thoughtSpin: { pre: string; secs: number; suf: string; at: number } | null = null
   let thoughtSpinShown = -1
-  const speech = bubble(280, 0x34d399, fonts.fontFor('bubble'))
+  const speech = bubble(280, 0x34d399, fonts.fontFor('bubble'), 'talk')
   thought.container.zIndex = 9000
   speech.container.zIndex = 9001
   world.addChild(thought.container, speech.container)
@@ -795,11 +809,14 @@ export function createRoom(deps: RoomDeps): RoomInstance {
       ? `${ACTIVITY_LABEL[state.activity]} · ${state.tool}`
       : ACTIVITY_LABEL[state.activity]
     layoutTitlebar()
-    thought.container.visible = !!state.thought
-    if (state.thought) {
-      thought.set(state.thought)
+    // harnesses that can't stream thinking traces (Claude) still get a
+    // bubble — a plain "thinking…" beats a poker face
+    const thoughtText = state.thought || (state.activity === 'thinking' ? 'thinking…' : '')
+    thought.container.visible = !!thoughtText
+    if (thoughtText) {
+      thought.set(thoughtText)
       // spinner status line → tick the elapsed time locally between hooks
-      const m = state.thought.match(/^(.* \()(?:(\d+)m )?(\d+)s( · .*\))$/)
+      const m = thoughtText.match(/^(.* \()(?:(\d+)m )?(\d+)s( · .*\))$/)
       thoughtSpin = m
         ? {
             pre: m[1],
@@ -864,7 +881,12 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     if (state.activity !== 'thinking' && state.activity !== 'listening')
       stickyActivity = state.activity
     const station = stations[stickyActivity] ?? stations.idle
-    const targetPose = resolvePose(m, state.activity, state.tool)
+    // thinking keeps the settled pose too (typing at the desk composite,
+    // writing at the board): swapping to the blink-pose mid-scene dissolved
+    // the composite and replayed its intro on every think→type transition.
+    // The thought bubble alone signals thinking.
+    const poseActivity = state.activity === 'thinking' ? stickyActivity : state.activity
+    const targetPose = resolvePose(m, poseActivity, state.tool)
     // seat choreography kicks in when the activity's station is the chair
     const wantsChair = station.furn === 'chair' && !!furniture['chair']
     // composite pose: art contains character + furniture; walk to the
