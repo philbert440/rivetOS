@@ -13,6 +13,7 @@ import {
   KNOWN_CHANNELS,
   KNOWN_HEARTBEAT_KEYS,
   KNOWN_MEMORY_POSTGRES_KEYS,
+  REMOVED_MEMORY_POSTGRES_KEYS,
   KNOWN_DEN_KEYS,
   KNOWN_DEN_TERMINAL_KEYS,
   DEN_LOOPBACK_HOSTS,
@@ -503,13 +504,27 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
     } else {
       const pg = memory.postgres as Record<string, unknown>
       for (const key of Object.keys(pg)) {
-        if (!KNOWN_MEMORY_POSTGRES_KEYS.has(key)) {
+        const removedMsg = REMOVED_MEMORY_POSTGRES_KEYS.get(key)
+        if (removedMsg) {
+          issues.push({
+            severity: 'error',
+            path: `memory.postgres.${key}`,
+            message: removedMsg,
+          })
+        } else if (!KNOWN_MEMORY_POSTGRES_KEYS.has(key)) {
           issues.push({
             severity: 'warning',
             path: `memory.postgres.${key}`,
             message: `Unknown memory.postgres key "${key}"`,
           })
         }
+      }
+      if (pg.delegation_tracking !== undefined && typeof pg.delegation_tracking !== 'boolean') {
+        issues.push({
+          severity: 'error',
+          path: 'memory.postgres.delegation_tracking',
+          message: '"delegation_tracking" must be a boolean (true/false)',
+        })
       }
     }
   }

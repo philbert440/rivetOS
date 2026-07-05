@@ -58,6 +58,8 @@ export interface MeshSection {
   /**
    * @deprecated Ignored — agent-channel auth is mTLS only. The key is still
    * accepted (validation emits a warning) so existing configs don't break.
+   * Note: deliberately absent from @rivetos/types MeshConfig — this boot-level
+   * field exists only for YAML back-compat and is never forwarded.
    */
   secret?: string
   /** mTLS configuration for agent-channel.
