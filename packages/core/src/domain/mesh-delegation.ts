@@ -47,12 +47,6 @@ export interface MeshDelegationConfig {
   /** Mesh registry — used to find remote agents */
   meshRegistry: MeshRegistry
 
-  /**
-   * Shared secret — DEPRECATED for agent-channel auth.
-   * @deprecated No longer used for agent-channel communication. Retained for compat.
-   */
-  secret?: string
-
   /** TLS material for outbound mTLS connections */
   tls: import('../runtime/agent-channel.js').AgentChannelTlsConfig
 

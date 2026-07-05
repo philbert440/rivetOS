@@ -103,7 +103,6 @@ export const KNOWN_RUNTIME_KEYS = new Set([
   'skill_dirs',
   'plugin_dirs',
   'heartbeats',
-  'coding_pipeline',
   'safety',
   'auto_actions',
 ])
@@ -118,6 +117,10 @@ export const REMOVED_RUNTIME_KEYS = new Map<string, string>([
   [
     'fallbacks',
     'Provider fallback was removed in the AI SDK migration. Remove "runtime.fallbacks" from your config.',
+  ],
+  [
+    'coding_pipeline',
+    'The coding-pipeline plugin was removed. Remove "runtime.coding_pipeline"; use delegate_task (and the upcoming task engine) instead.',
   ],
 ])
 
@@ -305,20 +308,30 @@ export const KNOWN_HEARTBEAT_KEYS = new Set([
   'quiet_hours',
 ])
 
-export const KNOWN_PIPELINE_KEYS = new Set([
-  'builder_agent',
-  'validator_agent',
-  'max_build_loops',
-  'max_validation_loops',
-  'auto_commit',
-])
-
 export const KNOWN_MEMORY_POSTGRES_KEYS = new Set([
   'connection_string',
   'embed_endpoint',
-  'review_endpoint',
-  'review_model',
-  'review_api_key',
+  'embed_model',
+  'delegation_tracking',
+])
+
+/**
+ * Keys removed in the phase-0 deletion pass — hard error so stale config
+ * fails loudly instead of silently booting without the feature.
+ */
+export const REMOVED_MEMORY_POSTGRES_KEYS = new Map<string, string>([
+  [
+    'review_endpoint',
+    'The background review loop was removed — compaction is the single consolidation path. Remove "review_endpoint"; for delegation-event persistence set "delegation_tracking: true".',
+  ],
+  [
+    'review_model',
+    'The background review loop was removed. Remove "review_model" from memory.postgres.',
+  ],
+  [
+    'review_api_key',
+    'The background review loop was removed. Remove "review_api_key" from memory.postgres.',
+  ],
 ])
 
 export const API_KEY_PATTERNS = [

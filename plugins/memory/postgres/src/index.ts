@@ -2,7 +2,7 @@
  * @rivetos/memory-postgres
  *
  * RivetOS Memory System — hybrid-scored search, summary DAG,
- * access-frequency tracking, and background review loop.
+ * and access-frequency tracking.
  *
  * Tables: ros_messages, ros_conversations, ros_summaries, ros_summary_sources
  *
@@ -17,7 +17,6 @@
  *   tools/          — agent tools: memory_search (unified), memory_browse, memory_stats
  *   embedder.ts     — schema migration helpers (ensureEmbedderSchema)
  *   compactor/      — types, prompts, constants (shared with Datahub worker)
- *   review-loop.ts  — turn-based background review (runs on agent CTs)
  *   scoring.ts      — pure domain: relevance scoring functions (no I/O)
  *
  * Embedding and compaction jobs run as graphile-worker services:
@@ -73,18 +72,14 @@ export {
 
 export { computeRelevance, temporalDecay } from './scoring.js'
 
-export { ReviewLoop } from './review-loop.js'
-export type { ReviewLoopConfig, TurnCompleteData, ReviewMetrics } from './review-loop.js'
-
 // ---------------------------------------------------------------------------
 // Plugin manifest
 // ---------------------------------------------------------------------------
 
-import type { PluginManifest, TurnAfterContext, DelegationAfterContext } from '@rivetos/types'
+import type { PluginManifest, DelegationAfterContext } from '@rivetos/types'
 import { PostgresMemory } from './adapter.js'
 import { createMemoryTools } from './tools/index.js'
 import { ensureEmbedderSchema } from './embedder.js'
-import { ReviewLoop } from './review-loop.js'
 
 export const manifest: PluginManifest = {
   type: 'memory',
@@ -117,112 +112,73 @@ export const manifest: PluginManifest = {
       ctx.registerTool(tool)
     }
 
-    const reviewEndpoint =
-      (cfg.review_endpoint as string | undefined) ?? ctx.env.RIVETOS_REVIEW_URL ?? ''
-    const reviewModel = (cfg.review_model as string | undefined) ?? 'rivet-v0.1'
-    const reviewApiKey =
-      (cfg.review_api_key as string | undefined) ?? ctx.env.RIVETOS_REVIEW_API_KEY ?? ''
-
-    if (!reviewEndpoint) {
-      ctx.logger.info(
-        `Memory: postgres (ros_* tables + centralized workers on Datahub)` +
-          (embedEndpoint
-            ? ` | hybrid search via ${embedEndpoint}`
-            : ' | FTS-only (no embed endpoint)'),
-      )
-      return
+    // Opt-in: on main this hook was (accidentally) gated behind the removed
+    // review-loop's endpoint check, so deployed configs never ran it. Keep
+    // that deployed behavior unless explicitly enabled.
+    if (cfg.delegation_tracking === true) {
+      registerDelegationTracker()
     }
 
-    const reviewLoop = new ReviewLoop({
-      reviewEndpoint,
-      reviewModel,
-      reviewApiKey: reviewApiKey || undefined,
-      pool,
-      turnThreshold: 10,
-      iterationThreshold: 15,
-      verbose: true,
-    })
+    function registerDelegationTracker(): void {
+      ctx.registerHook({
+        id: 'memory:delegation-tracker',
+        event: 'delegation:after',
+        priority: 90,
+        description: 'Persist delegation events for learning and auditing',
+        onError: 'continue',
+        handler: async (delCtx: DelegationAfterContext) => {
+          const parts = [
+            `Delegation: ${delCtx.fromAgent} → ${delCtx.toAgent}`,
+            `Task: ${delCtx.task.slice(0, 200)}`,
+            `Status: ${delCtx.status}`,
+            `Duration: ${String(delCtx.durationMs)}ms`,
+          ]
+          if (delCtx.toolsUsed?.length) parts.push(`Tools: ${delCtx.toolsUsed.join(', ')}`)
+          if (delCtx.cached) parts.push('(cached result)')
+          const insight = parts.join(' | ')
 
-    ctx.registerHook({
-      id: 'memory:review-loop',
-      event: 'turn:after',
-      priority: 95,
-      description: 'Background memory review — counts turns and triggers LLM review',
-      onError: 'continue',
-      handler: (turnCtx: TurnAfterContext) => {
-        if (turnCtx.aborted) return
-        const hadErrorRecovery = turnCtx.toolsUsed.some(
-          (t, i) => i > 0 && turnCtx.toolsUsed[i - 1] === t,
-        )
-        reviewLoop.onTurnComplete({
-          agentId: turnCtx.agentId ?? 'unknown',
-          sessionId: turnCtx.sessionId ?? 'unknown',
-          response: turnCtx.response,
-          toolsUsed: turnCtx.toolsUsed,
-          iterations: turnCtx.iterations,
-          hadErrorRecovery,
-          hadUserCorrection: Boolean(turnCtx.metadata.hadSteer),
-          usage: turnCtx.usage,
-        })
-      },
-    })
-
-    ctx.registerHook({
-      id: 'memory:delegation-tracker',
-      event: 'delegation:after',
-      priority: 90,
-      description: 'Persist delegation events for learning and auditing',
-      onError: 'continue',
-      handler: async (delCtx: DelegationAfterContext) => {
-        const parts = [
-          `Delegation: ${delCtx.fromAgent} → ${delCtx.toAgent}`,
-          `Task: ${delCtx.task.slice(0, 200)}`,
-          `Status: ${delCtx.status}`,
-          `Duration: ${String(delCtx.durationMs)}ms`,
-        ]
-        if (delCtx.toolsUsed?.length) parts.push(`Tools: ${delCtx.toolsUsed.join(', ')}`)
-        if (delCtx.cached) parts.push('(cached result)')
-        const insight = parts.join(' | ')
-
-        const conv = await pool.query(
-          `SELECT id FROM ros_conversations WHERE agent = $1 AND active = true ORDER BY updated_at DESC LIMIT 1`,
-          [delCtx.agentId],
-        )
-        if (conv.rows.length === 0) return
-        const convId = (conv.rows[0] as Record<string, unknown>).id as string
-
-        await pool.query(
-          `INSERT INTO ros_messages (conversation_id, agent, channel, role, content, metadata, created_at)
-           VALUES ($1, $2, 'delegation', 'system', $3, $4, NOW())`,
-          [
-            convId,
-            delCtx.agentId,
-            insight,
-            JSON.stringify({
-              type: 'delegation_event',
-              fromAgent: delCtx.fromAgent,
-              toAgent: delCtx.toAgent,
-              status: delCtx.status,
-              durationMs: delCtx.durationMs,
-              toolsUsed: delCtx.toolsUsed,
-              cached: delCtx.cached,
-            }),
-          ],
-        )
-
-        if (delCtx.status === 'completed') {
-          ctx.logger.debug(
-            `📨 Delegation tracked: ${delCtx.fromAgent} → ${delCtx.toAgent} ` +
-              `(${String(delCtx.durationMs)}ms)`,
+          const conv = await pool.query(
+            `SELECT id FROM ros_conversations WHERE agent = $1 AND active = true ORDER BY updated_at DESC LIMIT 1`,
+            [delCtx.agentId],
           )
-        } else {
-          ctx.logger.warn(`📨 Delegation ${delCtx.status}: ${delCtx.fromAgent} → ${delCtx.toAgent}`)
-        }
-      },
-    })
+          if (conv.rows.length === 0) return
+          const convId = (conv.rows[0] as Record<string, unknown>).id as string
 
-    ctx.logger.info(`Review loop: active (threshold: 10 turns, endpoint: ${reviewEndpoint})`)
-    ctx.logger.info('Delegation tracker: active')
+          await pool.query(
+            `INSERT INTO ros_messages (conversation_id, agent, channel, role, content, metadata, created_at)
+           VALUES ($1, $2, 'delegation', 'system', $3, $4, NOW())`,
+            [
+              convId,
+              delCtx.agentId,
+              insight,
+              JSON.stringify({
+                type: 'delegation_event',
+                fromAgent: delCtx.fromAgent,
+                toAgent: delCtx.toAgent,
+                status: delCtx.status,
+                durationMs: delCtx.durationMs,
+                toolsUsed: delCtx.toolsUsed,
+                cached: delCtx.cached,
+              }),
+            ],
+          )
+
+          if (delCtx.status === 'completed') {
+            ctx.logger.debug(
+              `📨 Delegation tracked: ${delCtx.fromAgent} → ${delCtx.toAgent} ` +
+                `(${String(delCtx.durationMs)}ms)`,
+            )
+          } else {
+            ctx.logger.warn(
+              `📨 Delegation ${delCtx.status}: ${delCtx.fromAgent} → ${delCtx.toAgent}`,
+            )
+          }
+        },
+      })
+
+      ctx.logger.info('Delegation tracker: active')
+    }
+
     ctx.logger.info(
       `Memory: postgres (ros_* tables + centralized workers on Datahub)` +
         (embedEndpoint

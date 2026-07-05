@@ -70,9 +70,9 @@ export interface RegistrationContext {
 
   /**
    * Returns a closure that, when invoked at tool-execution time, looks up
-   * `toolName` in the runtime and invokes it. Used by composite tools like
-   * coding-pipeline that orchestrate other tools whose registration order
-   * is not guaranteed.
+   * `toolName` in the runtime and invokes it. Used by composite tools
+   * that orchestrate other tools whose registration order is not
+   * guaranteed.
    */
   lateBindTool(toolName: string): (args: Record<string, unknown>) => Promise<string>
 

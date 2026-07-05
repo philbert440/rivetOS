@@ -78,7 +78,7 @@ export const manifest: PluginManifest = {
 | `registerProvider` / `registerChannel` / `registerTool` / `registerMemory` | Hand instances to the runtime |
 | `registerHook(hook)` | Subscribe to lifecycle events |
 | `registerShutdown(fn)` | Called during graceful shutdown |
-| `lateBindTool(name)` | Returns a closure that resolves a tool at execution time — used by composite tools (e.g. coding-pipeline) when registration order isn't guaranteed |
+| `lateBindTool(name)` | Returns a closure that resolves a tool at execution time — used by composite tools when registration order isn't guaranteed |
 | `onRegistrationComplete(fn)` | Fires once after every plugin has registered. Receives `{ tools }`. Used by transports to enumerate the finalized tool set before opening their listening socket. |
 
 Boot has **no per-plugin knowledge.** Every kind of plugin goes through the same loader (`packages/boot/src/registrars/plugins.ts`).
@@ -198,7 +198,6 @@ interface ToolDefinition {
 | `tool-web-search` | `internet_search`, `web_fetch` | Google CSE + DuckDuckGo fallback, HTML → markdown |
 | `tool-interaction` | `ask_user`, `todo` | Structured questions, session-scoped task list |
 | `tool-mcp-client` | dynamic | Connects to MCP servers (stdio + HTTP), exposes their tools |
-| `tool-coding-pipeline` | `coding_pipeline` | Build → review → validate loop. Uses `lateBindTool` to call delegation/sub-agent tools without hard-coding registration order. |
 
 The memory plugin (`@rivetos/memory-postgres`) additionally registers `memory_search`, `memory_browse`, `memory_stats`. Delegation, sub-agents, and skill management add `delegate_task`, `subagent_*`, and `skill_*` tools at runtime.
 

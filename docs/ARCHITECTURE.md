@@ -24,7 +24,6 @@
 │  Voice       Ollama                 Web Search/Fetch   │
 │              vllm                   Interaction        │
 │              llama-server           MCP Client         │
-│                                     Coding Pipeline    │
 │                                                        │
 │  All plugins implement core interfaces.                │
 │  All plugins are replaceable.                          │
@@ -385,7 +384,6 @@ rivetOS/
           search.ts                  ← Hybrid FTS + vector search with scoring
           scoring.ts                 ← Search result relevance scoring
           expand.ts                  ← Summary expansion (drill into source messages)
-          review-loop.ts             ← Learning loop: reflect → synthesize → store
           compactor/                 ← Summary DAG (v5 pipeline)
             compactor.ts             ← CompactionEngine — hierarchical summarization
             types.ts                 ← v5 prompts (leaf/branch/root), types, formatters
@@ -403,7 +401,6 @@ rivetOS/
       web-search/                    ← internet_search, web_fetch
       interaction/                   ← ask_user, todo (2 tool files)
       mcp-client/                    ← MCP server connection + tool discovery
-      coding-pipeline/               ← Build → review → validate loop
     transports/
       mcp-server/                    ← @rivetos/mcp-server — exposes RivetOS tools
                                      ←   (memory_*, web_*, skill_*, runtime) over MCP
