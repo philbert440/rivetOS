@@ -233,9 +233,31 @@ export function createRoom(deps: RoomDeps): RoomInstance {
     if (!termOpen) return
     const dr = drawerRect()
     const top = TITLEBAR + MARGIN - 6
+    const x0 = dr.x - 6 // outline's outer left edge
+    const xr = MARGIN + SHELL.w + 6 // recess right ring, outer edge
+    const yb = dr.y + dr.h + 6 // outline's outer bottom edge
     termOutline
-      .roundRect(dr.x - 6, top, MARGIN + SHELL.w + 6 - (dr.x - 6), dr.y + dr.h + 6 - top, 6)
+      .moveTo(x0, top)
+      .lineTo(xr, top)
+      .lineTo(xr, yb)
+      .lineTo(x0 + 6, yb)
+      .arcTo(x0, yb, x0, yb - 6, 6) // convex bottom-left corner
+      .lineTo(x0, top)
+      .closePath()
       .fill(0x30394a)
+    // concave fillets where the outline meets the room's top ring (top-left)
+    // and right ring (bottom-right) — same 6px rounding as the recess corners
+    for (const [px, py] of [
+      [x0, top + 6],
+      [MARGIN + SHELL.w, yb],
+    ]) {
+      termOutline
+        .moveTo(px, py)
+        .lineTo(px - 6, py)
+        .arc(px - 6, py + 6, 6, -Math.PI / 2, 0)
+        .closePath()
+        .fill(0x30394a)
+    }
   }
   drawChrome(false)
   frame.addChild(chrome)
