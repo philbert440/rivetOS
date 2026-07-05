@@ -307,6 +307,7 @@ export const KNOWN_HEARTBEAT_KEYS = new Set([
 export const KNOWN_MEMORY_POSTGRES_KEYS = new Set([
   'connection_string',
   'embed_endpoint',
+  'delegation_tracking',
 ])
 
 export const API_KEY_PATTERNS = [

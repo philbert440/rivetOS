@@ -115,7 +115,6 @@ export function validateRuntime(runtime: Record<string, unknown>, issues: Valida
       }
     }
   }
-
 }
 
 function validateHeartbeat(hb: unknown, index: number, issues: ValidationIssue[]): void {

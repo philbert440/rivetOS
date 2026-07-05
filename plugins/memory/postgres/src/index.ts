@@ -112,61 +112,73 @@ export const manifest: PluginManifest = {
       ctx.registerTool(tool)
     }
 
-    ctx.registerHook({
-      id: 'memory:delegation-tracker',
-      event: 'delegation:after',
-      priority: 90,
-      description: 'Persist delegation events for learning and auditing',
-      onError: 'continue',
-      handler: async (delCtx: DelegationAfterContext) => {
-        const parts = [
-          `Delegation: ${delCtx.fromAgent} → ${delCtx.toAgent}`,
-          `Task: ${delCtx.task.slice(0, 200)}`,
-          `Status: ${delCtx.status}`,
-          `Duration: ${String(delCtx.durationMs)}ms`,
-        ]
-        if (delCtx.toolsUsed?.length) parts.push(`Tools: ${delCtx.toolsUsed.join(', ')}`)
-        if (delCtx.cached) parts.push('(cached result)')
-        const insight = parts.join(' | ')
+    // Opt-in: on main this hook was (accidentally) gated behind the removed
+    // review-loop's endpoint check, so deployed configs never ran it. Keep
+    // that deployed behavior unless explicitly enabled.
+    if (cfg.delegation_tracking === true) {
+      registerDelegationTracker()
+    }
 
-        const conv = await pool.query(
-          `SELECT id FROM ros_conversations WHERE agent = $1 AND active = true ORDER BY updated_at DESC LIMIT 1`,
-          [delCtx.agentId],
-        )
-        if (conv.rows.length === 0) return
-        const convId = (conv.rows[0] as Record<string, unknown>).id as string
+    function registerDelegationTracker(): void {
+      ctx.registerHook({
+        id: 'memory:delegation-tracker',
+        event: 'delegation:after',
+        priority: 90,
+        description: 'Persist delegation events for learning and auditing',
+        onError: 'continue',
+        handler: async (delCtx: DelegationAfterContext) => {
+          const parts = [
+            `Delegation: ${delCtx.fromAgent} → ${delCtx.toAgent}`,
+            `Task: ${delCtx.task.slice(0, 200)}`,
+            `Status: ${delCtx.status}`,
+            `Duration: ${String(delCtx.durationMs)}ms`,
+          ]
+          if (delCtx.toolsUsed?.length) parts.push(`Tools: ${delCtx.toolsUsed.join(', ')}`)
+          if (delCtx.cached) parts.push('(cached result)')
+          const insight = parts.join(' | ')
 
-        await pool.query(
-          `INSERT INTO ros_messages (conversation_id, agent, channel, role, content, metadata, created_at)
-           VALUES ($1, $2, 'delegation', 'system', $3, $4, NOW())`,
-          [
-            convId,
-            delCtx.agentId,
-            insight,
-            JSON.stringify({
-              type: 'delegation_event',
-              fromAgent: delCtx.fromAgent,
-              toAgent: delCtx.toAgent,
-              status: delCtx.status,
-              durationMs: delCtx.durationMs,
-              toolsUsed: delCtx.toolsUsed,
-              cached: delCtx.cached,
-            }),
-          ],
-        )
-
-        if (delCtx.status === 'completed') {
-          ctx.logger.debug(
-            `📨 Delegation tracked: ${delCtx.fromAgent} → ${delCtx.toAgent} ` +
-              `(${String(delCtx.durationMs)}ms)`,
+          const conv = await pool.query(
+            `SELECT id FROM ros_conversations WHERE agent = $1 AND active = true ORDER BY updated_at DESC LIMIT 1`,
+            [delCtx.agentId],
           )
-        } else {
-          ctx.logger.warn(`📨 Delegation ${delCtx.status}: ${delCtx.fromAgent} → ${delCtx.toAgent}`)
-        }
-      },
-    })
+          if (conv.rows.length === 0) return
+          const convId = (conv.rows[0] as Record<string, unknown>).id as string
 
-    ctx.logger.info('Delegation tracker: active')
+          await pool.query(
+            `INSERT INTO ros_messages (conversation_id, agent, channel, role, content, metadata, created_at)
+           VALUES ($1, $2, 'delegation', 'system', $3, $4, NOW())`,
+            [
+              convId,
+              delCtx.agentId,
+              insight,
+              JSON.stringify({
+                type: 'delegation_event',
+                fromAgent: delCtx.fromAgent,
+                toAgent: delCtx.toAgent,
+                status: delCtx.status,
+                durationMs: delCtx.durationMs,
+                toolsUsed: delCtx.toolsUsed,
+                cached: delCtx.cached,
+              }),
+            ],
+          )
+
+          if (delCtx.status === 'completed') {
+            ctx.logger.debug(
+              `📨 Delegation tracked: ${delCtx.fromAgent} → ${delCtx.toAgent} ` +
+                `(${String(delCtx.durationMs)}ms)`,
+            )
+          } else {
+            ctx.logger.warn(
+              `📨 Delegation ${delCtx.status}: ${delCtx.fromAgent} → ${delCtx.toAgent}`,
+            )
+          }
+        },
+      })
+
+      ctx.logger.info('Delegation tracker: active')
+    }
+
     ctx.logger.info(
       `Memory: postgres (ros_* tables + centralized workers on Datahub)` +
         (embedEndpoint

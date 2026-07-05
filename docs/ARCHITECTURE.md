@@ -384,7 +384,6 @@ rivetOS/
           search.ts                  ← Hybrid FTS + vector search with scoring
           scoring.ts                 ← Search result relevance scoring
           expand.ts                  ← Summary expansion (drill into source messages)
-          review-loop.ts             ← Learning loop: reflect → synthesize → store
           compactor/                 ← Summary DAG (v5 pipeline)
             compactor.ts             ← CompactionEngine — hierarchical summarization
             types.ts                 ← v5 prompts (leaf/branch/root), types, formatters
