@@ -183,6 +183,16 @@ describe('InMemoryTaskStore', () => {
 
 const TEST_PG_URL = process.env.RIVETOS_TASKS_TEST_PG_URL
 
+describe('InMemoryTaskStore node affinity', () => {
+  it('claim refuses a task pinned to another node and admits its own', async () => {
+    const store = new InMemoryTaskStore()
+    const pinned = await store.create(input({ nodeAffinity: 'node-b' }))
+    expect(await store.claim(pinned.id, 'node-a')).toBeUndefined()
+    const claimed = await store.claim(pinned.id, 'node-b')
+    expect(claimed?.status).toBe('running')
+  })
+})
+
 describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
   const suffix = Math.random().toString(36).slice(2, 10)
   const taskSchema = `ros_tasks_test_${suffix}`
@@ -254,6 +264,14 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
     expect(winners).toHaveLength(1)
     expect(winners[0]?.status).toBe('running')
     expect(winners[0]?.attempt).toBe(1)
+  })
+
+  it('claim refuses a task pinned to another node (affinity guard)', async () => {
+    const pinned = await store.create(input({ nodeAffinity: 'node-b' }))
+    expect(await store.claim(pinned.id, 'node-a')).toBeUndefined()
+    const row = await store.get(pinned.id)
+    expect(row?.status).toBe('queued')
+    expect((await store.claim(pinned.id, 'node-b'))?.status).toBe('running')
   })
 
   it('send stashes pending_message and replaces the job under the same jobKey', async () => {

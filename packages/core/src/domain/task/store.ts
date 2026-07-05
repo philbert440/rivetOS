@@ -237,6 +237,11 @@ export class InMemoryTaskStore implements TaskStore {
     if (!row || (row.status !== 'queued' && row.status !== 'awaiting-input')) {
       return Promise.resolve(undefined)
     }
+    // Affinity guard — mirror of the PG claim: pinned tasks only run on
+    // their node.
+    if (row.nodeAffinity && row.nodeAffinity !== node) {
+      return Promise.resolve(undefined)
+    }
     row.status = 'running'
     row.startedAt = Date.now()
     // Stamp liveness at claim so a fresh claim is never crash-swept before
@@ -527,6 +532,9 @@ export class PgTaskStore implements TaskStore {
              attempt = attempt + 1
        WHERE id = $1
          AND status IN ('queued','awaiting-input')
+         -- Affinity guard: a task pinned to another node must not run here,
+         -- even if its job lands in this node's queue (gateway dispatch).
+         AND (node_affinity IS NULL OR node_affinity = $2)
        RETURNING *`,
       [id, node],
     )

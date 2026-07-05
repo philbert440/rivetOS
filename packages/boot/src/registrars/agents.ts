@@ -258,7 +258,6 @@ export async function registerAgentTools(
     enqueueTurn = (sessionId) => subagentWorker!.enqueue(sessionId)
     runtime.addShutdownHook(async () => {
       await subagentWorker?.stop()
-      await pool?.end()
     })
   } else {
     const executor = createSubagentExecutor(executorCfg)
@@ -299,6 +298,15 @@ export async function registerAgentTools(
     log.info('Task engine started — run-task runner listening (inert until tasks are created)')
   } else if (tasksEnabled) {
     log.info('No pgUrl — task engine not started (requires Postgres)')
+  }
+
+  // Pool teardown LAST: hooks run in registration order, and both the
+  // subagent worker and the task runner must stop before Postgres goes away
+  // (in-flight PgTaskStore/PgSubagentStore calls would otherwise fail).
+  if (pool) {
+    runtime.addShutdownHook(async () => {
+      await pool?.end()
+    })
   }
 
   const subagentManager = new SubagentManagerImpl({
