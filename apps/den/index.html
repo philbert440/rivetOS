@@ -95,12 +95,11 @@
     .term-drawer {
       position: fixed; z-index: 9; box-sizing: border-box;
       /* light-gray chrome mat merging into the titlebar (top) and bezel
-         (right); the room's dark outline continues around the drawer via the
-         dark left/bottom edges — open, the outline hugs the drawer; closed,
-         the canvas recess outline shows as usual */
-      background: #b7bec9; border: none;
-      border-left: 6px solid #30394a; border-bottom: 6px solid #30394a;
-      border-radius: 0 0 0 8px; padding: 6px;
+         (right). The room's dark outline hugging its left/bottom edges is
+         drawn by the CANVAS (room.ts drawChrome, term-open state) so it
+         starts at the recess top and scales with the window — no borders
+         here or they'd slice up through the chrome band. */
+      background: #b7bec9; border: none; padding: 6px;
       box-shadow: 0 12px 28px #0009;
     }
     .term-drawer-well {
