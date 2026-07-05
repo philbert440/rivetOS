@@ -4,7 +4,7 @@
  * store tests; the handler is the interesting logic).
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type {
   HarnessExecutor,
   HarnessExecutorCapabilities,
@@ -13,8 +13,8 @@ import type {
   TaskSpec,
   TaskUsage,
 } from '@rivetos/types'
-import { InMemoryTaskStore, type NewTaskInput } from './store.js'
-import { createExecutorRegistry, createTaskHandler } from './runner.js'
+import { InMemoryTaskStore, type NewTaskInput, type TaskStore } from './store.js'
+import { createExecutorRegistry, createTaskHandler, createTaskRunner } from './runner.js'
 
 const caps: HarnessExecutorCapabilities = {
   steerable: true,
@@ -40,6 +40,8 @@ function usageFor(turn: number): TaskUsage {
 interface FakeExecutorOptions {
   turns?: number
   verdict?: TaskResult['verdict']
+  /** Called at each start() — lets tests interleave store writes mid-run. */
+  onStart?: (spec: TaskSpec, callIndex: number) => void | Promise<void>
 }
 
 /** Fake executor: emits `turns` turn.start/turn.end pairs, honoring abort
@@ -71,6 +73,7 @@ function makeFakeExecutor(opts?: FakeExecutorOptions): HarnessExecutor & {
       }
 
       void (async () => {
+        await opts?.onStart?.(spec, specs.length - 1)
         let ranTurns = 0
         for (let t = 1; t <= turns; t++) {
           if (signal.aborted) break
@@ -130,11 +133,13 @@ function taskInput(overrides?: Partial<NewTaskInput>): NewTaskInput {
   }
 }
 
-function wire(executor: HarnessExecutor): {
+function wire(
+  executor: HarnessExecutor,
+  store = new InMemoryTaskStore(),
+): {
   store: InMemoryTaskStore
   handler: (taskId: string) => Promise<void>
 } {
-  const store = new InMemoryTaskStore()
   const executors = createExecutorRegistry()
   executors.register('chat-loop', executor)
   const handler = createTaskHandler({ store, executors, nodeId: 'test-node' })
@@ -197,20 +202,129 @@ describe('createTaskHandler', () => {
     expect(row?.usage?.turns).toBeLessThan(5)
   })
 
-  it('interactive task flips to awaiting-input, send resumes via steer', async () => {
+  it('interactive task flips to awaiting-input; send resumes with resumeMessage, not goal', async () => {
     const fake = makeFakeExecutor()
     const { store, handler } = wire(fake)
     const task = await store.create(taskInput({ spec: { interactive: true } }))
 
     await handler(task.id)
     expect((await store.get(task.id))?.status).toBe('awaiting-input')
+    expect(fake.specs[0].resumeMessage).toBeUndefined()
 
     await store.send(task.id, 'now do the next bit')
     await handler(task.id)
 
     const row = await store.get(task.id)
     expect(row?.status).toBe('awaiting-input') // still interactive — parks again
-    expect(fake.steers).toEqual(['now do the next bit'])
+    expect(row?.pendingMessage).toBeUndefined() // consumed, not replayed
     expect(fake.specs).toHaveLength(2)
+    // P3: the stashed message drives the resumed run INSTEAD of the goal.
+    expect(fake.specs[1].resumeMessage).toBe('now do the next bit')
+  })
+
+  it('a send racing the park attempt is consumed, not lost (P2)', async () => {
+    const store = new InMemoryTaskStore()
+    let taskId = ''
+    const fake = makeFakeExecutor({
+      // First run: a steer lands while the executor is still working —
+      // after this run completes, the park attempt must refuse and the
+      // handler must continue with the raced message.
+      onStart: async (_spec, callIndex) => {
+        if (callIndex === 0) await store.send(taskId, 'raced steer')
+      },
+    })
+    const { handler } = wire(fake, store)
+    const task = await store.create(taskInput({ spec: { interactive: true } }))
+    taskId = task.id
+
+    await handler(task.id)
+
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('awaiting-input') // second run parked cleanly
+    expect(row?.pendingMessage).toBeUndefined()
+    expect(fake.specs).toHaveLength(2)
+    expect(fake.specs[1].resumeMessage).toBe('raced steer')
+  })
+
+  it('a store failure after claim fails the task instead of stranding it running (P4)', async () => {
+    const fake = makeFakeExecutor()
+    const store = new InMemoryTaskStore()
+    store.updateUsage = () => Promise.reject(new Error('pg blipped'))
+    const { handler } = wire(fake, store)
+    const task = await store.create(taskInput())
+
+    await handler(task.id) // must not throw
+
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('failed')
+    expect(row?.error).toBe('pg blipped')
+  })
+
+  it('heartbeats periodically while a task executes (P5)', async () => {
+    const fake = makeFakeExecutor({ turns: 4 }) // ~60ms of work
+    const store = new InMemoryTaskStore()
+    const heartbeats: string[] = []
+    const realHeartbeat = store.heartbeat.bind(store)
+    store.heartbeat = (id) => {
+      heartbeats.push(id)
+      return realHeartbeat(id)
+    }
+    const executors = createExecutorRegistry()
+    executors.register('chat-loop', fake)
+    const handler = createTaskHandler({
+      store,
+      executors,
+      nodeId: 'test-node',
+      heartbeatIntervalMs: 10,
+    })
+    const task = await store.create(taskInput())
+
+    await handler(task.id)
+
+    expect(heartbeats.length).toBeGreaterThanOrEqual(2)
+    expect(heartbeats.every((id) => id === task.id)).toBe(true)
+  })
+})
+
+describe('createTaskRunner start() guards (P1)', () => {
+  function stubStore(overrides: Partial<TaskStore>): TaskStore {
+    const base = new InMemoryTaskStore()
+    return Object.assign(base, overrides) as TaskStore
+  }
+
+  it('no-ops (never throws) when sweep reports the relation missing', async () => {
+    const relationMissing = Object.assign(
+      new Error('relation "ros_tasks" does not exist'),
+      { code: '42P01' },
+    )
+    const store = stubStore({ sweep: () => Promise.reject(relationMissing) })
+    const runner = createTaskRunner({
+      // Unreachable on purpose — start() must return before connecting.
+      pgUrl: 'postgres://nobody:nope@127.0.0.1:1/does-not-exist',
+      store,
+      executors: createExecutorRegistry(),
+      nodeId: 'test-node',
+    })
+
+    await expect(runner.start()).resolves.toBeUndefined()
+    await runner.stop()
+  })
+
+  it('no-ops when isReady() reports the table missing', async () => {
+    const sweep = vi.fn()
+    const store = stubStore({
+      isReady: () => Promise.resolve(false),
+      sweep: sweep as unknown as TaskStore['sweep'],
+    })
+    const runner = createTaskRunner({
+      pgUrl: 'postgres://nobody:nope@127.0.0.1:1/does-not-exist',
+      store,
+      executors: createExecutorRegistry(),
+      nodeId: 'test-node',
+    })
+
+    await expect(runner.start()).resolves.toBeUndefined()
+    expect(sweep).not.toHaveBeenCalled() // disabled before sweeping
+    await runner.stop()
   })
 })

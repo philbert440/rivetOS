@@ -214,7 +214,11 @@ async function runTask(
     })
 
     const history: Array<{ role: 'user' | 'assistant'; content: string }> = []
-    let message: string | undefined = spec.goal
+    // Resume from awaiting-input: the steered message opens the run INSTEAD
+    // of the goal — the goal must never re-execute on resume. Interim shape:
+    // still a fresh conversation; rehydrating history from the task's memory
+    // conversation (session_key = task:<id>) lands at cutover step (c).
+    let message: string | undefined = spec.resumeMessage ?? spec.goal
     let lastResponse = ''
 
     while (message !== undefined) {

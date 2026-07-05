@@ -112,8 +112,20 @@ export interface TaskStore {
   /**
    * Flip a running task to awaiting-input (turn ended with no queued
    * message); the job completes and send() re-enqueues.
+   *
+   * Guarded against the lost-message race: if a concurrent send() stashed a
+   * pending_message between the last turn and this call, the flip is refused
+   * (returns false) — the caller must takePendingMessage() and keep going
+   * instead of parking.
    */
-  markAwaitingInput(id: string): Promise<void>
+  markAwaitingInput(id: string): Promise<boolean>
+
+  /**
+   * Atomically read-and-clear pending_message (returns undefined when none).
+   * Used when claiming an awaiting-input resume and when markAwaitingInput
+   * loses the race against a concurrent send().
+   */
+  takePendingMessage(id: string): Promise<string | undefined>
 
   /**
    * Steer/resume: stash the pending message and (re-)enqueue the run-task
@@ -129,10 +141,30 @@ export interface TaskStore {
 
   /**
    * Startup crash sweep (Appendix C): 'running' rows claimed by this node
-   * are requeued when attempt < max_attempts, else failed with
-   * error='worker_restarted'. Returns the number of rows touched.
+   * whose last_heartbeat_at is stale (older than the sweep window, default
+   * 90s — an overlapping old process still heartbeats its rows and must not
+   * be double-run) are requeued when attempt < max_attempts, else failed
+   * with error='worker_restarted'. Also reaps parked 'awaiting-input' rows
+   * older than their budget.maxWallClockMs (default 24h) → 'timeout'.
+   * Returns the number of rows touched.
    */
   sweep(node: string): Promise<number>
+
+  /** Present on PG-backed stores: false when the ros_tasks table is missing
+   *  (migration not applied) — the runner must no-op, never crash boot. */
+  isReady?(): Promise<boolean>
+}
+
+/** Running rows with a heartbeat newer than this are NOT crash-swept. */
+export const SWEEP_STALE_MS_DEFAULT = 90_000
+/** Parked awaiting-input rows time out after budget.maxWallClockMs, else this. */
+export const AWAITING_INPUT_TTL_MS_DEFAULT = 24 * 60 * 60 * 1000
+
+export interface TaskStoreTuning {
+  /** Heartbeat staleness window for the crash sweep (default 90s). */
+  sweepStaleMs?: number
+  /** Fallback TTL for parked awaiting-input rows (default 24h). */
+  awaitingInputTtlMs?: number
 }
 
 function newTaskId(): string {
@@ -146,8 +178,16 @@ function newTaskId(): string {
 
 export class InMemoryTaskStore implements TaskStore {
   private rows = new Map<string, TaskRow>()
+  private sweepStaleMs: number
+  private awaitingInputTtlMs: number
 
-  constructor(private enqueue?: (taskId: string) => void) {}
+  constructor(
+    private enqueue?: (taskId: string) => void,
+    tuning?: TaskStoreTuning,
+  ) {
+    this.sweepStaleMs = tuning?.sweepStaleMs ?? SWEEP_STALE_MS_DEFAULT
+    this.awaitingInputTtlMs = tuning?.awaitingInputTtlMs ?? AWAITING_INPUT_TTL_MS_DEFAULT
+  }
 
   create(input: NewTaskInput): Promise<TaskRow> {
     const id = newTaskId()
@@ -199,6 +239,9 @@ export class InMemoryTaskStore implements TaskStore {
     }
     row.status = 'running'
     row.startedAt = Date.now()
+    // Stamp liveness at claim so a fresh claim is never crash-swept before
+    // the first periodic heartbeat fires.
+    row.lastHeartbeatAt = Date.now()
     row.claimedBy = node
     row.attempt += 1
     return Promise.resolve({ ...row })
@@ -217,12 +260,23 @@ export class InMemoryTaskStore implements TaskStore {
     return Promise.resolve()
   }
 
-  markAwaitingInput(id: string): Promise<void> {
+  markAwaitingInput(id: string): Promise<boolean> {
     const row = this.rows.get(id)
-    if (!row || row.status !== 'running') return Promise.resolve()
+    // pending_message guard: a concurrent send() wins — refuse the park so
+    // the caller consumes the message instead of wiping it.
+    if (!row || row.status !== 'running' || row.pendingMessage !== undefined) {
+      return Promise.resolve(false)
+    }
     row.status = 'awaiting-input'
+    return Promise.resolve(true)
+  }
+
+  takePendingMessage(id: string): Promise<string | undefined> {
+    const row = this.rows.get(id)
+    if (!row || row.pendingMessage === undefined) return Promise.resolve(undefined)
+    const message = row.pendingMessage
     row.pendingMessage = undefined
-    return Promise.resolve()
+    return Promise.resolve(message)
   }
 
   send(id: string, message: string): Promise<void> {
@@ -248,19 +302,38 @@ export class InMemoryTaskStore implements TaskStore {
   }
 
   sweep(node: string): Promise<number> {
+    const now = Date.now()
     let n = 0
     for (const row of this.rows.values()) {
-      if (row.status !== 'running' || row.claimedBy !== node) continue
-      if (row.attempt < row.maxAttempts) {
-        row.status = 'queued'
-        this.enqueue?.(row.id)
-      } else {
-        row.status = 'failed'
-        row.error = 'worker_restarted'
-        row.completedAt = Date.now()
-        row.durationMs = row.startedAt ? row.completedAt - row.startedAt : 0
+      if (row.claimedBy !== node) continue
+
+      if (row.status === 'running') {
+        // Heartbeat-fresh rows belong to an overlapping old process that is
+        // still executing — leave them alone (no double-run on restart).
+        const fresh =
+          row.lastHeartbeatAt !== undefined && now - row.lastHeartbeatAt < this.sweepStaleMs
+        if (fresh) continue
+        if (row.attempt < row.maxAttempts) {
+          row.status = 'queued'
+          this.enqueue?.(row.id)
+        } else {
+          row.status = 'failed'
+          row.error = 'worker_restarted'
+          row.completedAt = now
+          row.durationMs = row.startedAt ? now - row.startedAt : 0
+        }
+        n++
+      } else if (row.status === 'awaiting-input') {
+        // Parked-task reaper: expire rows nobody resumed within their budget.
+        const ttl = row.budget.maxWallClockMs ?? this.awaitingInputTtlMs
+        const parkedSince = row.lastHeartbeatAt ?? row.createdAt
+        if (now - parkedSince < ttl) continue
+        row.status = 'timeout'
+        row.error = 'awaiting-input expired'
+        row.completedAt = now
+        row.durationMs = row.startedAt ? now - row.startedAt : 0
+        n++
       }
-      n++
     }
     return Promise.resolve(n)
   }
@@ -338,13 +411,15 @@ function pgToPublic(row: PgTaskRow): TaskRow {
   }
 }
 
-export interface PgTaskStoreOptions {
+export interface PgTaskStoreOptions extends TaskStoreTuning {
   /** graphile-worker schema — override only in tests. */
   graphileSchema?: string
 }
 
 export class PgTaskStore implements TaskStore {
   private graphileSchema: string
+  private sweepStaleMs: number
+  private awaitingInputTtlMs: number
 
   constructor(
     private pool: pg.Pool,
@@ -354,6 +429,18 @@ export class PgTaskStore implements TaskStore {
     if (!/^[a-zA-Z0-9_]+$/.test(this.graphileSchema)) {
       throw new Error(`Invalid graphile schema name: ${this.graphileSchema}`)
     }
+    this.sweepStaleMs = opts?.sweepStaleMs ?? SWEEP_STALE_MS_DEFAULT
+    this.awaitingInputTtlMs = opts?.awaitingInputTtlMs ?? AWAITING_INPUT_TTL_MS_DEFAULT
+  }
+
+  /** False when the ros_tasks table is missing (0002 migration not applied).
+   *  The runner checks this before sweeping so boot never crash-loops on a
+   *  node whose memory DB hasn't been migrated yet. */
+  async isReady(): Promise<boolean> {
+    const { rows } = await this.pool.query<{ reg: string | null }>(
+      `SELECT to_regclass('ros_tasks') AS reg`,
+    )
+    return rows[0]?.reg != null
   }
 
   /** INSERT + add_job under the same transaction — a task row without a job
@@ -433,6 +520,9 @@ export class PgTaskStore implements TaskStore {
       `UPDATE ros_tasks
          SET status = 'running',
              started_at = now(),
+             -- Liveness stamp at claim: a fresh claim must never be
+             -- crash-swept before the first periodic heartbeat fires.
+             last_heartbeat_at = now(),
              claimed_by = $2,
              attempt = attempt + 1
        WHERE id = $1
@@ -459,14 +549,33 @@ export class PgTaskStore implements TaskStore {
     )
   }
 
-  async markAwaitingInput(id: string): Promise<void> {
-    await this.pool.query(
+  async markAwaitingInput(id: string): Promise<boolean> {
+    // pending_message guard: a concurrent send() stashed a message — refuse
+    // the park (and DON'T wipe the message); the caller consumes it via
+    // takePendingMessage() and keeps the turn loop going.
+    const { rowCount } = await this.pool.query(
       `UPDATE ros_tasks
-         SET status = 'awaiting-input',
-             pending_message = NULL
-       WHERE id = $1 AND status = 'running'`,
+         SET status = 'awaiting-input'
+       WHERE id = $1 AND status = 'running' AND pending_message IS NULL`,
       [id],
     )
+    return (rowCount ?? 0) > 0
+  }
+
+  async takePendingMessage(id: string): Promise<string | undefined> {
+    const { rows } = await this.pool.query<{ pending_message: string | null }>(
+      `WITH taken AS (
+         SELECT id, pending_message FROM ros_tasks
+          WHERE id = $1 AND pending_message IS NOT NULL
+          FOR UPDATE
+       )
+       UPDATE ros_tasks SET pending_message = NULL
+         FROM taken
+        WHERE ros_tasks.id = taken.id
+        RETURNING taken.pending_message`,
+      [id],
+    )
+    return rows[0]?.pending_message ?? undefined
   }
 
   async send(id: string, message: string): Promise<void> {
@@ -499,12 +608,18 @@ export class PgTaskStore implements TaskStore {
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')
+      // Heartbeat window: rows with a fresh last_heartbeat_at belong to an
+      // overlapping old process that is still executing (systemd restart) —
+      // sweeping them would double-run the task.
+      const stale = `(last_heartbeat_at IS NULL
+                      OR last_heartbeat_at < now() - ($2::bigint * interval '1 millisecond'))`
       const requeued = await client.query<{ id: string }>(
         `UPDATE ros_tasks
            SET status = 'queued'
          WHERE status = 'running' AND claimed_by = $1 AND attempt < max_attempts
+           AND ${stale}
          RETURNING id`,
-        [node],
+        [node, this.sweepStaleMs],
       )
       for (const { id } of requeued.rows) {
         await this.addJob(client, id, { replace: true })
@@ -516,11 +631,27 @@ export class PgTaskStore implements TaskStore {
                completed_at = now(),
                duration_ms = CASE WHEN started_at IS NULL THEN 0
                                   ELSE (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::int END
-         WHERE status = 'running' AND claimed_by = $1`,
-        [node],
+         WHERE status = 'running' AND claimed_by = $1
+           AND ${stale}`,
+        [node, this.sweepStaleMs],
+      )
+      // Parked-task reaper: awaiting-input rows nobody resumed within their
+      // budget.maxWallClockMs (fallback: the store TTL, default 24h) expire.
+      const reaped = await client.query(
+        `UPDATE ros_tasks
+           SET status = 'timeout',
+               error = 'awaiting-input expired',
+               completed_at = now(),
+               duration_ms = CASE WHEN started_at IS NULL THEN 0
+                                  ELSE (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::int END
+         WHERE status = 'awaiting-input' AND claimed_by = $1
+           AND COALESCE(last_heartbeat_at, created_at)
+               < now() - (COALESCE((budget->>'maxWallClockMs')::bigint, $2::bigint)
+                          * interval '1 millisecond')`,
+        [node, this.awaitingInputTtlMs],
       )
       await client.query('COMMIT')
-      return (requeued.rowCount ?? 0) + (failed.rowCount ?? 0)
+      return (requeued.rowCount ?? 0) + (failed.rowCount ?? 0) + (reaped.rowCount ?? 0)
     } catch (err) {
       await client.query('ROLLBACK')
       throw err

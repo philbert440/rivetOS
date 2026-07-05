@@ -56,6 +56,13 @@ export interface TaskSpec {
   model?: string
   effort?: 'low' | 'medium' | 'high'
   systemPromptAppend?: string
+  /**
+   * Resume from awaiting-input: the steered message that drives the opening
+   * turn INSTEAD of `goal` — the goal must never re-execute on resume.
+   * Until memory-conversation rehydration lands (cutover step (c)),
+   * executors still start a fresh conversation seeded with this message.
+   */
+  resumeMessage?: string
   session: SessionContext // session_key = `task:${taskId}`
 }
 

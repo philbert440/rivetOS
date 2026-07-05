@@ -103,6 +103,45 @@ describe('ChatLoopExecutor specifics', () => {
     expect(result.usage.turns).toBe(1)
   })
 
+  it('resume executes resumeMessage instead of the goal (P3)', async () => {
+    const userTexts: string[] = []
+    const provider = makeMockProvider({
+      id: 'mock',
+      chunks: [
+        { type: 'text', delta: 'resumed' },
+        { type: 'done', usage: { promptTokens: 1, completionTokens: 1 } },
+      ],
+      onCall: ({ prompt }) => {
+        for (const msg of prompt) {
+          if (msg.role !== 'user') continue
+          for (const part of msg.content) {
+            if (part.type === 'text') userTexts.push(part.text)
+          }
+        }
+      },
+    })
+    const router = {
+      getAgents: () => [{ id: 'conformance-agent', name: 'conformance-agent', provider: 'mock' }],
+      getProviders: () => [provider],
+    } as unknown as Router
+    const executor = createChatLoopExecutor(makeConfig({ router }))
+
+    const handle = executor.start(
+      makeConformanceSpec({
+        goal: 'THE ORIGINAL GOAL',
+        resumeMessage: 'pick up where we left off',
+      }),
+      { signal: new AbortController().signal },
+    )
+    const result = await handle.result
+
+    expect(result.verdict).toBe('completed')
+    expect(result.usage.turns).toBe(1)
+    expect(userTexts).toContain('pick up where we left off')
+    // The goal must never re-execute as a user turn on resume.
+    expect(userTexts).not.toContain('THE ORIGINAL GOAL')
+  })
+
   it('steer before the first turn completes runs a follow-up turn', async () => {
     const executor = createChatLoopExecutor(makeConfig())
     const handle = executor.start(makeConformanceSpec(), {

@@ -104,8 +104,9 @@ describe('InMemoryTaskStore', () => {
     expect(reclaimed?.attempt).toBe(2)
   })
 
-  it('sweep requeues under max_attempts and fails at the cap', async () => {
-    const store = new InMemoryTaskStore()
+  it('sweep requeues stale rows under max_attempts and fails at the cap', async () => {
+    // sweepStaleMs 0 → every heartbeat is already stale (claim stamps one).
+    const store = new InMemoryTaskStore(undefined, { sweepStaleMs: 0 })
     const retryable = await store.create(input({ maxAttempts: 2 }))
     const capped = await store.create(input({ maxAttempts: 1 }))
     const otherNode = await store.create(input({ maxAttempts: 1 }))
@@ -120,6 +121,59 @@ describe('InMemoryTaskStore', () => {
     expect(failed?.error).toBe('worker_restarted')
     // Other node's row untouched.
     expect((await store.get(otherNode.id))?.status).toBe('running')
+  })
+
+  it('sweep skips rows with a fresh heartbeat (overlapping old process)', async () => {
+    const store = new InMemoryTaskStore() // default 90s window
+    const task = await store.create(input({ maxAttempts: 2 }))
+    await store.claim(task.id, 'node-a') // claim stamps last_heartbeat_at
+
+    expect(await store.sweep('node-a')).toBe(0)
+    expect((await store.get(task.id))?.status).toBe('running')
+  })
+
+  it('markAwaitingInput refuses when a concurrent send stashed a message', async () => {
+    const store = new InMemoryTaskStore()
+    const task = await store.create(input())
+    await store.claim(task.id, 'node-a')
+
+    // Interleaving: send() lands between the last turn and the park attempt.
+    await store.send(task.id, 'raced message')
+    expect(await store.markAwaitingInput(task.id)).toBe(false)
+    // The message survives and is claimable exactly once.
+    expect(await store.takePendingMessage(task.id)).toBe('raced message')
+    expect(await store.takePendingMessage(task.id)).toBeUndefined()
+    // With the message consumed, the park succeeds.
+    expect(await store.markAwaitingInput(task.id)).toBe(true)
+    expect((await store.get(task.id))?.status).toBe('awaiting-input')
+  })
+
+  it('sweep times out expired awaiting-input rows and spares fresh ones', async () => {
+    // TTL 0 → parked rows expire immediately; fresh-branch store uses default.
+    const expiring = new InMemoryTaskStore(undefined, { awaitingInputTtlMs: 0 })
+    const expired = await expiring.create(input())
+    await expiring.claim(expired.id, 'node-a')
+    await expiring.markAwaitingInput(expired.id)
+    expect(await expiring.sweep('node-a')).toBe(1)
+    const row = await expiring.get(expired.id)
+    expect(row?.status).toBe('timeout')
+    expect(row?.error).toBe('awaiting-input expired')
+
+    const fresh = new InMemoryTaskStore() // default 24h TTL
+    const parked = await fresh.create(input())
+    await fresh.claim(parked.id, 'node-a')
+    await fresh.markAwaitingInput(parked.id)
+    expect(await fresh.sweep('node-a')).toBe(0)
+    expect((await fresh.get(parked.id))?.status).toBe('awaiting-input')
+  })
+
+  it('budget.maxWallClockMs overrides the awaiting-input TTL', async () => {
+    const store = new InMemoryTaskStore() // default TTL 24h — budget wins
+    const task = await store.create(input({ budget: { maxWallClockMs: 0 } }))
+    await store.claim(task.id, 'node-a')
+    await store.markAwaitingInput(task.id)
+    expect(await store.sweep('node-a')).toBe(1)
+    expect((await store.get(task.id))?.status).toBe('timeout')
   })
 })
 
@@ -232,29 +286,75 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
     expect(row?.pendingMessage).toBeUndefined()
   })
 
-  it('sweep requeues under max_attempts and fails at the cap, per node', async () => {
+  it('isReady is true with the migration applied', async () => {
+    expect(await store.isReady()).toBe(true)
+  })
+
+  it('markAwaitingInput refuses when a concurrent send stashed a message', async () => {
+    const task = await store.create(input())
+    await store.claim(task.id, 'node-a')
+
+    // Interleaving: send() lands between the last turn and the park attempt.
+    await store.send(task.id, 'raced message')
+    expect(await store.markAwaitingInput(task.id)).toBe(false)
+    // The stashed message survives the refused park and is claimed once.
+    expect(await store.takePendingMessage(task.id)).toBe('raced message')
+    expect(await store.takePendingMessage(task.id)).toBeUndefined()
+    // With the message consumed, the park succeeds.
+    expect(await store.markAwaitingInput(task.id)).toBe(true)
+    expect((await store.get(task.id))?.status).toBe('awaiting-input')
+  })
+
+  it('sweep requeues stale rows under max_attempts and fails at the cap, per node', async () => {
     // Unique node names — the scratch schema is shared across this suite's
     // tests, so sweeping 'node-a' would catch rows earlier tests left running.
-    const retryable = await store.create(input({ maxAttempts: 2 }))
-    const capped = await store.create(input({ maxAttempts: 1 }))
-    const other = await store.create(input({ maxAttempts: 1 }))
-    await store.claim(retryable.id, 'sweep-node-a')
-    await store.claim(capped.id, 'sweep-node-a')
-    await store.claim(other.id, 'sweep-node-b')
+    // staleStore: sweepStaleMs 0 → the claim-time heartbeat is already stale.
+    const staleStore = new PgTaskStore(pool, { graphileSchema, sweepStaleMs: 0 })
+    const retryable = await staleStore.create(input({ maxAttempts: 2 }))
+    const capped = await staleStore.create(input({ maxAttempts: 1 }))
+    const other = await staleStore.create(input({ maxAttempts: 1 }))
+    await staleStore.claim(retryable.id, 'sweep-node-a')
+    await staleStore.claim(capped.id, 'sweep-node-a')
+    await staleStore.claim(other.id, 'sweep-node-b')
 
-    expect(await store.sweep('sweep-node-a')).toBe(2)
-    expect((await store.get(retryable.id))?.status).toBe('queued')
+    expect(await staleStore.sweep('sweep-node-a')).toBe(2)
+    expect((await staleStore.get(retryable.id))?.status).toBe('queued')
     expect(await jobCount(retryable.id)).toBe(1)
-    const failed = await store.get(capped.id)
+    const failed = await staleStore.get(capped.id)
     expect(failed?.status).toBe('failed')
     expect(failed?.error).toBe('worker_restarted')
-    expect((await store.get(other.id))?.status).toBe('running')
+    expect((await staleStore.get(other.id))?.status).toBe('running')
+  })
+
+  it('sweep skips running rows with a fresh heartbeat (overlapping old process)', async () => {
+    // Default 90s window; claim stamps last_heartbeat_at = now().
+    const task = await store.create(input({ maxAttempts: 2 }))
+    await store.claim(task.id, 'sweep-node-fresh')
+    expect(await store.sweep('sweep-node-fresh')).toBe(0)
+    expect((await store.get(task.id))?.status).toBe('running')
+  })
+
+  it('sweep times out expired awaiting-input rows (budget TTL) and spares fresh ones', async () => {
+    const expired = await store.create(input({ budget: { maxWallClockMs: 0 } }))
+    await store.claim(expired.id, 'sweep-node-ttl')
+    expect(await store.markAwaitingInput(expired.id)).toBe(true)
+
+    const parked = await store.create(input()) // default 24h TTL
+    await store.claim(parked.id, 'sweep-node-ttl')
+    expect(await store.markAwaitingInput(parked.id)).toBe(true)
+
+    expect(await store.sweep('sweep-node-ttl')).toBe(1)
+    const row = await store.get(expired.id)
+    expect(row?.status).toBe('timeout')
+    expect(row?.error).toBe('awaiting-input expired')
+    expect((await store.get(parked.id))?.status).toBe('awaiting-input')
   })
 
   it('claiming a task the sweep failed loses the CAS', async () => {
-    const task = await store.create(input({ maxAttempts: 1 }))
-    await store.claim(task.id, 'sweep-node-c')
-    await store.sweep('sweep-node-c')
-    expect(await store.claim(task.id, 'sweep-node-c')).toBeUndefined()
+    const staleStore = new PgTaskStore(pool, { graphileSchema, sweepStaleMs: 0 })
+    const task = await staleStore.create(input({ maxAttempts: 1 }))
+    await staleStore.claim(task.id, 'sweep-node-c')
+    await staleStore.sweep('sweep-node-c')
+    expect(await staleStore.claim(task.id, 'sweep-node-c')).toBeUndefined()
   })
 })
