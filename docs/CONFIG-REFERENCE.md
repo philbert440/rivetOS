@@ -485,6 +485,19 @@ The memory plugin handles schema creation and migration automatically on first b
 
 ---
 
+## `tasks`
+
+Durable task engine (phase 1). The embedded `run-task` runner starts when
+Postgres is configured and the `0002_ros_tasks` migration has been applied
+(`rivetos-memory-migrate`); on unmigrated nodes it logs a warning and stays
+inert instead of failing boot.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Start the embedded task runner. Inert while nothing creates tasks. |
+
+Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (default 2000).
+
 ## `transports`
 
 Inbound surfaces that expose RivetOS tools to external clients. Currently: the MCP server transport (`@rivetos/mcp-server`) — a StreamableHTTP MCP server that exposes `memory_*`, `web_*`, `skill_*`, and runtime tools to any MCP-speaking client (Claude Code, Cursor, etc.).
