@@ -466,6 +466,15 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     this.log.info('task.spawn', { taskId: spec.taskId, pid: spawned.proc.pid, hasMcp: !!bridge })
 
     let sessionId: string | undefined
+    let spawnFailure: string | undefined
+    // spawn() failures (ENOENT etc.) surface as async 'error' events — an
+    // unhandled one would crash the process, and result must never reject.
+    spawned.proc.once('error', (err) => {
+      spawnFailure ??= `Failed to spawn ${this.cfg.binary}: ${err.message}`
+    })
+    spawned.proc.stdin.on('error', () => {
+      /* EPIPE on a dead child — the proc 'error'/exit path reports it */
+    })
     let text = ''
     let sawResult = false
     let resultText: string | undefined
@@ -576,6 +585,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
       }
 
       const exitCode = await spawned.waitExit()
+      error ??= spawnFailure
       if (exitCode !== 0 && !sawResult && error === undefined) {
         error = `claude CLI exited ${String(exitCode)}: ${spawned.stderrText().slice(0, 500)}`
       }
