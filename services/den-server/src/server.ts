@@ -115,6 +115,20 @@ export interface DenServerOptions {
     prefix: string
     handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
   }>
+  /**
+   * Gateway WS mounts (G5): exact-path upgrade handlers under /api/*,
+   * checked AFTER the bearer gate — same trust model as extraRoutes. The
+   * handler owns the ws handshake (its own WebSocketServer in noServer mode).
+   */
+  extraUpgrades?: Array<{
+    path: string
+    handle: (
+      req: IncomingMessage,
+      socket: import('node:stream').Duplex,
+      head: Buffer,
+      url: URL,
+    ) => void
+  }>
 }
 
 const json = (res: ServerResponse, code: number, body: unknown): void => {
@@ -582,6 +596,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     if (url.pathname === '/term') {
       // auth is decided out here; enabled/known-id checks live inside
       termWs.handleUpgrade(req, socket, head, url)
+      return
+    }
+    const up = opts.extraUpgrades?.find((u) => u.path === url.pathname)
+    if (up) {
+      up.handle(req, socket, head, url)
       return
     }
     socket.destroy()

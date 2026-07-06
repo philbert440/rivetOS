@@ -81,6 +81,8 @@ export { TaskBackedSubagentManager } from './domain/task/subagent-task-manager.j
 export { createTaskCompletionWaiter } from './domain/task/completion-waiter.js'
 export { createTaskApiRoute } from './domain/task/task-api.js'
 export { createCatalogApiRoute } from './domain/task/catalog-api.js'
+export { createGatewayChannel } from './domain/gateway-channel.js'
+export type { GatewayChannelHandle } from './domain/gateway-channel.js'
 export type { TaskCompletionWaiter } from './domain/task/completion-waiter.js'
 export { runHeartbeatViaTasks } from './domain/task/heartbeat-task.js'
 export type { TaskBackedSubagentManagerConfig } from './domain/task/subagent-task-manager.js'
