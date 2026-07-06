@@ -174,11 +174,11 @@ export async function boot(configPath?: string): Promise<void> {
   await registerPlugins(runtime, config, registry, pipeline, workspaceDir)
 
   // 4. Agent tools (delegation, sub-agents, skills) — after plugins so they can reference them
-  await registerAgentTools(runtime, config, workspaceDir)
+  const { gatewayRoutes } = await registerAgentTools(runtime, config, workspaceDir)
 
-  // 4.6. Gateway (G0) — the den server embedded in this process; /api/*
-  //      route families mount here in later gateway PRs.
-  await registerGateway(runtime, config, rootDir)
+  // 4.6. Gateway (G0/G1) — the den server embedded in this process, with the
+  //      task-engine route families mounted behind its bearer gate.
+  await registerGateway(runtime, config, rootDir, gatewayRoutes)
 
   // 5. Lifecycle
   await writePidFile()
