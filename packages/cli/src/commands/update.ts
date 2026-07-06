@@ -25,7 +25,7 @@ import { loadMeshFile, type MeshNode } from '../lib/mesh-file.js'
 import { restartViaSystemd, assertSafeArg, resolveSshUser } from '../lib/ssh.js'
 import type { UpdateOptions, NodeUpdateResult } from './update/types.js'
 import { gitUpdateNodeAsync, npmUpdateNodeAsync, waitForHealth } from './update/remote-nodes.js'
-import { deployDenLocal } from './update/den-deploy.js'
+import { retireDenUnitLocal, verifyGatewayLocal } from './update/den-deploy.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
@@ -297,6 +297,12 @@ export default async function update(): Promise<void> {
   }
 
   // Step 4: Restart
+  // G0: retire the standalone rivet-den unit BEFORE restarting rivetos —
+  // the gateway (embedded den) binds the same port on startup.
+  if (deployment === 'manual' || deployment === 'bare-metal') {
+    retireDenUnitLocal()
+  }
+
   if (opts.restart) {
     if (deployment === 'docker') {
       console.log('\nRestarting containers (data volumes preserved)...')
@@ -315,11 +321,10 @@ export default async function update(): Promise<void> {
     }
   }
 
-  // Step 4.5: den-server deploy stage (bare-metal/manual only) — deploys or
-  // refreshes rivet-den.service when the config has den.enabled, prints a
-  // notice when an unmanaged rivet-den.service is running, no-op otherwise.
+  // Step 4.5: gateway health (bare-metal/manual only) — the den routes are
+  // served by the embedded gateway now; verify /healthz after the restart.
   if (deployment === 'manual' || deployment === 'bare-metal') {
-    await deployDenLocal(ROOT, opts.restart)
+    await verifyGatewayLocal(opts.restart)
   }
 
   // Step 4.6: refresh per-user TUI plugin installs (hooks, MCP wiring) from
@@ -701,6 +706,9 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         }
 
         if (localOpts.restart) {
+          // G0: retire the standalone rivet-den unit before the restart —
+          // the embedded gateway binds the same port.
+          retireDenUnitLocal()
           console.log('    Restarting service...')
           if (!restartViaSystemd()) {
             console.log(
@@ -709,8 +717,8 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
           }
         }
 
-        // den-server deploy stage — same treatment the remotes got.
-        await deployDenLocal(ROOT, localOpts.restart)
+        // Gateway health — same treatment the remotes got.
+        await verifyGatewayLocal(localOpts.restart)
       }
 
       try {

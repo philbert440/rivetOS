@@ -39,6 +39,7 @@ const COMMANDS: Partial<Record<string, () => Promise<void> | void>> = {
   logs: () => import('./commands/logs.js').then((m) => m.default()),
   keys: () => import('./commands/keys.js').then((m) => m.default()),
   mesh: () => import('./commands/mesh.js').then((m) => m.default()),
+  gateway: () => import('./commands/gateway.js').then((m) => m.default()),
   memory: () => import('./commands/memory.js').then((m) => m.default()),
   db: () => import('./commands/db.js').then((m) => m.default()),
   test: () => import('./commands/test.js').then((m) => m.default()),

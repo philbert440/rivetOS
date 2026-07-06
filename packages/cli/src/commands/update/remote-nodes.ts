@@ -11,7 +11,7 @@
 import { execSync } from 'node:child_process'
 import { buildMeshDispatcher } from '../../lib/mtls.js'
 import { sshExec, sshExecQuiet, resolveSshUser, isSafeArg } from '../../lib/ssh.js'
-import { deployDenRemote, noteDenSkippedForNpmMode } from './den-deploy.js'
+import { retireDenUnitRemote, verifyGatewayRemote } from './den-deploy.js'
 import type { UpdateOptions, NodeUpdateResult } from './types.js'
 
 /**
@@ -227,8 +227,10 @@ export async function gitUpdateNodeAsync(
     console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
   }
 
-  // Step 5: restart service
+  // Step 5: restart service. G0: retire any standalone rivet-den unit FIRST —
+  // the embedded gateway binds the same port on startup.
   if (opts.restart) {
+    await retireDenUnitRemote(host, nodeName, sshUser)
     try {
       console.log(`    ${tag} Restarting service...`)
       // Use sudo when logged in as rivet (non-root)
@@ -265,12 +267,11 @@ export async function gitUpdateNodeAsync(
     }
   }
 
-  // Step 7: den-server deploy stage — nodes whose config has den.enabled get
-  // rivet-den.service built/installed/refreshed alongside rivetos.service.
-  // Auxiliary: a failed den never fails the node update, but it is surfaced
-  // in the result and the summary table. (Only agent nodes reach this point —
-  // infrastructure nodes returned above.)
-  const den = await deployDenRemote(host, nodeName, sshUser, opts.restart)
+  // Step 7: gateway health — the den routes are served by the embedded
+  // gateway now; probe /healthz on den-enabled nodes after the restart.
+  // Auxiliary: a failed probe never fails the node update, but it is
+  // surfaced in the result and the summary table.
+  const den = opts.restart ? await verifyGatewayRemote(host, nodeName, sshUser) : 'skipped'
 
   // Refresh per-user TUI plugin installs from the updated source (hooks,
   // MCP wiring). Non-fatal: nodes without any TUI installs just no-op.
@@ -380,6 +381,7 @@ export async function npmUpdateNodeAsync(
   // they don't run rivetos itself, only worker services which keep their
   // own deploy path until we migrate them too).
   if (isAgent && opts.restart) {
+    await retireDenUnitRemote(host, nodeName, sshUser)
     try {
       console.log(`    ${tag} Restarting service...`)
       const restartCmd =
@@ -391,11 +393,10 @@ export async function npmUpdateNodeAsync(
     }
   }
 
-  // Step 5: den-server has no npm-mode deploy path yet (needs a source
-  // checkout) — surface the gap loudly on den-enabled nodes instead of
-  // silently skipping.
-  if (isAgent) {
-    noteDenSkippedForNpmMode(host, nodeName, sshUser)
+  // Step 5: gateway health — G0 closes the old npm-mode gap: the gateway is
+  // embedded in rivetos, so den-enabled npm nodes get it with the package.
+  if (isAgent && opts.restart) {
+    await verifyGatewayRemote(host, nodeName, sshUser)
   }
 
   // Step 6: capture installed version (rivetos version → "RivetOS v0.4.0-beta.2")

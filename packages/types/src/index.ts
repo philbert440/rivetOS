@@ -170,3 +170,4 @@ export {
 } from './utils.js'
 export { MODEL_DEFAULTS } from './defaults.js'
 export type { ProviderName } from './defaults.js'
+export type { GatewayRoute, GatewayHandle } from './gateway.js'

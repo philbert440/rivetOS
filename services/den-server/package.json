@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "rivet-den per-node service — protocol event ingest, WS fanout, replay snapshots, layout store, pack/viewer static serving",
+  "description": "rivet-den per-node service \u2014 protocol event ingest, WS fanout, replay snapshots, layout store, pack/viewer static serving",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -28,9 +28,14 @@
   },
   "nx": {
     "tags": [
-      "scope:app",
-      "type:app",
+      "scope:transport",
+      "type:lib",
       "domain:interfaces"
     ]
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./server": "./dist/server.js",
+    "./config": "./dist/config.js"
   }
 }

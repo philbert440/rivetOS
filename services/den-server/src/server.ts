@@ -105,6 +105,16 @@ export interface DenServerOptions {
   /** PTY backend override for tests: a fake spawn, or null to simulate a
    *  failed node-pty import. Omitted = lazy real node-pty. */
   ptySpawn?: PtySpawn | null
+  /**
+   * Gateway route mounts (G0, Appendix F): matched by longest prefix AFTER
+   * the bearer gate and BEFORE den's own API routes and static serving —
+   * /api/* families (tasks, catalog, sessions, …) plug in here without
+   * touching this router.
+   */
+  extraRoutes?: Array<{
+    prefix: string
+    handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
+  }>
 }
 
 const json = (res: ServerResponse, code: number, body: unknown): void => {
@@ -332,6 +342,18 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       if (!authorized(req, url)) {
         json(res, 401, { error: 'unauthorized' })
         return
+      }
+
+      // Gateway route mounts (G0): longest prefix wins; behind the bearer
+      // gate, ahead of den's own API routes.
+      if (opts.extraRoutes?.length) {
+        const route = opts.extraRoutes
+          .filter((r) => url.pathname === r.prefix || url.pathname.startsWith(r.prefix + '/'))
+          .sort((a, b) => b.prefix.length - a.prefix.length)[0]
+        if (route) {
+          await route.handler(req, res)
+          return
+        }
       }
 
       if (req.method === 'POST' && (url.pathname === '/event' || url.pathname === '/events')) {

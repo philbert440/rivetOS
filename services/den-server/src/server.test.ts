@@ -17,7 +17,14 @@ afterEach(async () => {
 async function start(
   token = '',
   evictTtlMs = 60_000,
-  opts: { staticDir?: string; packsDir?: string } = {},
+  opts: {
+    staticDir?: string
+    packsDir?: string
+    extraRoutes?: Array<{
+      prefix: string
+      handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void
+    }>
+  } = {},
 ): Promise<{ den: DenServer; base: string; port: number }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
   dirs.push(stateDir)
@@ -41,7 +48,7 @@ async function start(
       exitLingerMs: 60_000,
     },
   }
-  const den = createDenServer(config)
+  const den = createDenServer(config, { extraRoutes: opts.extraRoutes })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
   const port = (den.server.address() as AddressInfo).port
@@ -228,5 +235,47 @@ describe('den-server', () => {
     expect((await fetch(`${base}/sessions`)).status).toBe(401)
     expect((await fetch(`${base}/mesh.json`)).status).toBe(401) // not shadowed
     expect((await fetch(`${base}/term/config`)).status).toBe(401)
+  })
+})
+
+describe('gateway route mounts (G0)', () => {
+  const ping = {
+    prefix: '/api/ping',
+    handler: (_req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ pong: true }))
+    },
+  }
+
+  it('serves mounted routes behind the bearer gate', async () => {
+    const { base } = await start('sekret', 60_000, { extraRoutes: [ping] })
+    const unauthorized = await fetch(`${base}/api/ping`)
+    expect(unauthorized.status).toBe(401)
+    const ok = await fetch(`${base}/api/ping`, {
+      headers: { authorization: 'Bearer sekret' },
+    })
+    expect(ok.status).toBe(200)
+    expect(await ok.json()).toEqual({ pong: true })
+  })
+
+  it('longest prefix wins and subpaths route to the mount', async () => {
+    const deep = {
+      prefix: '/api/ping/deep',
+      handler: (_req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ deep: true }))
+      },
+    }
+    const { base } = await start('', 60_000, { extraRoutes: [ping, deep] })
+    expect(await (await fetch(`${base}/api/ping/deep/x`)).json()).toEqual({ deep: true })
+    expect(await (await fetch(`${base}/api/ping/other`)).json()).toEqual({ pong: true })
+  })
+
+  it('den routes are untouched by mounts', async () => {
+    const { base } = await start('', 60_000, { extraRoutes: [ping] })
+    const res = await post(base, '/event', EV)
+    expect(res.status).toBe(200)
+    const body = (await (await fetch(`${base}/sessions`)).json()) as { sessions: unknown[] }
+    expect(body.sessions).toHaveLength(1)
   })
 })
