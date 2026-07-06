@@ -111,8 +111,19 @@ interface MCPConnection {
   /** v1 (sessionful SDK) handles — absent on v2 connections. */
   client?: Client
   transport?: Transport
-  /** v2 (2026-07-28 RC) facade — absent on v1 connections. */
-  v2?: import('@rivetos/mcp-v2').V2McpConnection
+  /** v2 (2026-07-28 RC) facade — absent on v1 connections. Structural
+   *  mirror of @rivetos/mcp-v2's V2McpConnection (the package is loaded
+   *  dynamically; an inline ESM type import breaks the CJS build). */
+  v2?: {
+    listTools(): Promise<
+      Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>
+    >
+    callToolRaw(
+      name: string,
+      args: Record<string, unknown>,
+    ): Promise<{ content: Array<Record<string, unknown>>; isError?: boolean }>
+    close(): Promise<void>
+  }
   connected: boolean
   tools: MCPDiscoveredTool[]
 }
