@@ -48,7 +48,7 @@ export interface NewTaskInput {
   executor: TaskExecutorKind
   executorTarget?: string
   agentId: string
-  origin: 'heartbeat' | 'chat' | 'tool' | 'mesh' | 'api'
+  origin: 'heartbeat' | 'chat' | 'tool' | 'mesh' | 'api' | 'eval'
   requestedBy?: string
   contextRefs?: ContextRef[]
   acceptanceCriteria?: AcceptanceCriterion[]

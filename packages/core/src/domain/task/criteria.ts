@@ -89,6 +89,11 @@ export function normalizeCriteria(
   const explicit = validateShape(input.acceptanceCriteria)
   if (explicit.length > 0) return explicit
 
+  // Verifier child tasks are STRUCTURALLY exempt (not config-dependent):
+  // deriving a goal criterion for a verifier would make the verifier itself
+  // evaluable — an eval-loop hazard no skip_origins override may reintroduce.
+  if (input.origin === 'eval') return []
+
   if (!policy.enabled || policy.skipOrigins.includes(input.origin)) return []
 
   if (input.origin === 'api') {

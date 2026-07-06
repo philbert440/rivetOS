@@ -59,6 +59,17 @@ describe('normalizeCriteria policy paths', () => {
     expect(normalizeCriteria({ goal: 'g', origin: 'mesh' }, ON)).toHaveLength(1)
   })
 
+  it("origin 'eval' is structurally exempt — even if skip_origins is overridden away", () => {
+    const noSkips = criteriaPolicyFromConfig({ enabled: true, skip_origins: [] })
+    expect(normalizeCriteria({ goal: 'verify x', origin: 'eval' }, noSkips)).toEqual([])
+  })
+
+  it('skip_origins override replaces the default list', () => {
+    const custom = criteriaPolicyFromConfig({ enabled: true, skip_origins: ['mesh'] })
+    expect(normalizeCriteria({ goal: 'g', origin: 'mesh' }, custom)).toEqual([])
+    expect(normalizeCriteria({ goal: 'g', origin: 'heartbeat' }, custom)).toHaveLength(1)
+  })
+
   it('require off / derive off honored', () => {
     const lax = criteriaPolicyFromConfig({ enabled: true, require_criteria: false })
     expect(normalizeCriteria({ goal: 'g', origin: 'api' }, lax)).toEqual([])
