@@ -119,6 +119,16 @@ export type {
   HarnessExecutorCapabilities,
   HarnessExecutor,
 } from './task.js'
+export type { CriterionReport, VerifierResult, EvalOutcome } from './task.js'
+export {
+  TASK_RESULT_FENCE,
+  TASK_RESULT_JSON_SCHEMA,
+  parseTaskResultJson,
+  parseTaskResultBlock,
+  validateTaskResultShape,
+  taskResultFenceInstructions,
+} from './task-result.js'
+export type { ParsedTaskResult } from './task-result.js'
 // den event vocabulary — re-exported so executors emitting TaskEvent den
 // payloads don't need a direct @rivetos/den-protocol dependency.
 export type { AgentEventBody } from '@rivetos/den-protocol'
