@@ -154,6 +154,8 @@ export interface DenSection {
   /** Local PTY terminals — off by default (spawns shells as the service user) */
   terminal?: {
     enabled?: boolean
+    /** Explicit opt-out of the tokenless security gate (trusted LAN only). */
+    open?: boolean
   }
   /** Override for the SpritePack root served at /packs/ (default: <install>/packages/den-packs/packs) */
   packs_dir?: string
