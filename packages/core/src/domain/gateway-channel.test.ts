@@ -117,6 +117,21 @@ describe('gateway channel /api/sessions', () => {
     expect(texts).toEqual(['mine', 'echo: mine'])
   })
 
+  it('concurrent ?wait long-polls resolve FIFO — no cross-delivery', async () => {
+    const { base } = await start({ delayMs: 30 })
+    const [a, b] = await Promise.all([
+      post(base, 's7', { text: 'first' }, '?wait=1&timeoutMs=5000'),
+      (async () => {
+        await new Promise((r) => setTimeout(r, 10))
+        return post(base, 's7', { text: 'second' }, '?wait=1&timeoutMs=5000')
+      })(),
+    ])
+    const ra = ((await a.json()) as { message: { text: string } }).message.text
+    const rb = ((await b.json()) as { message: { text: string } }).message.text
+    expect(ra).toBe('echo: first')
+    expect(rb).toBe('echo: second')
+  })
+
   it('validates bodies: 400 on missing text', async () => {
     const { base } = await start()
     expect((await post(base, 's6', {})).status).toBe(400)
