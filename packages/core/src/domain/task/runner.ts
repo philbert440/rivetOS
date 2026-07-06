@@ -266,9 +266,25 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
         return
       }
 
-      // Interactive task turn ended without a queued message → park it.
+      // Kill requested while the turn was in flight (requestKill flips the
+      // row without aborting the executor): record the outcome as killed and
+      // discard the result — legacy subagent "let it finish, drop the
+      // result" semantics.
+      const rowAfterTurn = await opts.store.get(task.id)
+      if (rowAfterTurn?.status === 'killed') {
+        await opts.store.finish(task.id, 'killed', {
+          ...totalResult,
+          verdict: 'killed',
+          error: totalResult.error ?? 'killed',
+        })
+        return
+      }
+
+      // Interactive task turn ended without a queued message → park it,
+      // snapshotting the turn's result so status readers see lastResponse
+      // and usage while the row sits awaiting-input.
       if (result.verdict === 'completed' && spec.interactive === true) {
-        if (await opts.store.markAwaitingInput(task.id)) return
+        if (await opts.store.markAwaitingInput(task.id, totalResult)) return
         // Park refused: a concurrent send() stashed a message between the
         // last turn and the flip. Claim it and keep the turn loop going —
         // parking would have wiped it.
@@ -277,7 +293,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
         // Raced with something that already consumed/cleared the message
         // (e.g. another park). Try once more; if still refused, fall through
         // to a terminal finish rather than loop forever.
-        if (await opts.store.markAwaitingInput(task.id)) return
+        if (await opts.store.markAwaitingInput(task.id, totalResult)) return
         log.warn(`Task ${task.id} could not park or reclaim a message — finishing completed`)
       }
 
