@@ -27,6 +27,7 @@ import type {
 } from '@rivetos/types'
 import type { TaskRow, TaskStore } from './store.js'
 import type { TaskCompletionWaiter } from './completion-waiter.js'
+import type { EscalationNotifier } from './escalation.js'
 import { logger } from '../../logger.js'
 
 const log = logger('TaskEval')
@@ -58,6 +59,8 @@ export interface EvaluationCoordinatorOptions {
    * child's queued job (the loser no-ops).
    */
   runTask?: (taskId: string) => Promise<void>
+  /** Escalation delivery (2f) — refuted-after-retries pings a human. */
+  escalation?: EscalationNotifier
 }
 
 export interface EvaluationContext {
@@ -83,6 +86,11 @@ export interface EvaluationCoordinator {
    * verification failure must never take down the parent's finish path.
    */
   evaluate(task: TaskRow, result: TaskResult, ctx?: EvaluationContext): Promise<EvaluationPass>
+  /**
+   * Terminal refutation (retry budget spent): flip the outcome to
+   * 'escalated' on the row and notify. Never throws.
+   */
+  escalate(task: TaskRow, result: TaskResult, pass: EvaluationPass): Promise<void>
 }
 
 const DEFAULT_VERIFIER_BUDGET = { maxTurns: 1, maxUsd: 0.05, maxWallClockMs: 300_000 }
@@ -144,6 +152,48 @@ export function createEvaluationCoordinator(
         return { outcome, refutation: `evaluation infrastructure error: ${msg}` }
       }
     },
+
+    escalate(task: TaskRow, result: TaskResult, pass: EvaluationPass): Promise<void> {
+      return doEscalate(task, result, pass)
+    },
+  }
+
+  async function doEscalate(
+    task: TaskRow,
+    result: TaskResult,
+    pass: EvaluationPass,
+  ): Promise<void> {
+    try {
+      const outcome: EvalOutcome = {
+        ...pass.outcome,
+        verdict: 'escalated',
+        escalatedAt: new Date().toISOString(),
+      }
+      await store.recordEval(task.id, outcome)
+      if (opts.escalation) {
+        // Truly fire-and-forget with a hang guard: a stuck channel send must
+        // never block the parent's finish path. 10s is generous for a ping;
+        // past it we log and move on (the escalated verdict is already on
+        // the row — the scoreboard still surfaces it).
+        const timeout = new Promise<'timeout'>((r) => {
+          const t = setTimeout(() => r('timeout'), 10_000)
+          t.unref()
+        })
+        const sent = await Promise.race([
+          opts.escalation.notify({ task, result, outcome, refutation: pass.refutation }),
+          timeout,
+        ])
+        if (sent === 'timeout') {
+          log.error(`Task ${task.id} escalation notify timed out (>10s) — continuing to finish`)
+        }
+      } else {
+        log.warn(`Task ${task.id} escalated — no escalation notifier configured`)
+      }
+    } catch (err: unknown) {
+      log.error(
+        `Task ${task.id} escalation failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
   }
 
   async function runVerifierChild(

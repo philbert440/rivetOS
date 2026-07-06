@@ -343,7 +343,12 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
           priorVerifierIds: evalVerifierIds,
         })
         evalVerifierIds = pass.outcome.verifierTaskIds
-        if (
+        if (pass.outcome.verdict === 'refuted' && evalAttempts >= opts.evaluation.maxRetries) {
+          // Retry budget spent: escalate (records 'escalated' + notifies),
+          // then fall through to the executor-verdict finish — the terminal
+          // status is still the executor's truth (Phil's call).
+          await opts.evaluation.escalate(task, totalResult, pass)
+        } else if (
           pass.outcome.verdict === 'refuted' &&
           pass.refutation !== undefined &&
           evalAttempts < opts.evaluation.maxRetries

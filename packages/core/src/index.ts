@@ -96,6 +96,12 @@ export type {
   EvaluationCoordinator,
   EvaluationConfig,
 } from './domain/task/evaluation-coordinator.js'
+export {
+  createChannelEscalationNotifier,
+  createLogEscalationNotifier,
+  formatEscalation,
+} from './domain/task/escalation.js'
+export type { EscalationNotifier, TaskEscalationPayload } from './domain/task/escalation.js'
 export { createCatalogApiRoute } from './domain/task/catalog-api.js'
 export { createGatewayChannel } from './domain/gateway-channel.js'
 export type { GatewayChannelHandle } from './domain/gateway-channel.js'

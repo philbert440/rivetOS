@@ -25,6 +25,8 @@ import {
   createTaskCompletionWaiter,
   createTaskApiRoute,
   createEvaluationCoordinator,
+  createChannelEscalationNotifier,
+  createLogEscalationNotifier,
   criteriaPolicyFromConfig,
   createCatalogApiRoute,
   createTaskHandler,
@@ -348,6 +350,18 @@ export async function registerAgentTools(
             store: taskEngineStore,
             waiter: taskWaiter,
             runTask: (taskId) => runTaskRef.current?.(taskId) ?? Promise.resolve(),
+            escalation: evalSection.escalation?.channel
+              ? createChannelEscalationNotifier(
+                  (channelId, text) => runtime.broadcastToChannel(channelId, text),
+                  {
+                    channelId: evalSection.escalation.channel,
+                    gatewayBase:
+                      config.den?.enabled !== false
+                        ? `http://${config.mesh?.node_name ?? 'localhost'}:${String(config.den?.port ?? 5174)}`
+                        : undefined,
+                  },
+                )
+              : createLogEscalationNotifier(),
             nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
             config: {
               maxRetries: evalSection.max_retries,
