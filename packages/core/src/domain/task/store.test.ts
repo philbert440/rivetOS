@@ -319,6 +319,25 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
     expect(back?.evalAttempt).toBe(1)
   })
 
+  it('stashEvalRetry persists retry state on a running row only', async () => {
+    const row = await store.create({ goal: 'g', executor: 'chat-loop', agentId: 'a', origin: 'api' })
+    await store.claim(row.id, 'test-node')
+    await store.stashEvalRetry(row.id, 1, '## Verifier refutation ...')
+    const running = await store.get(row.id)
+    expect(running?.evalAttempt).toBe(1)
+    expect(running?.pendingMessage).toContain('Verifier refutation')
+    await store.finish(row.id, 'completed', {
+      verdict: 'completed',
+      summary: 's',
+      artifacts: [],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, turns: 1, wallClockMs: 1 },
+    })
+    const done = await store.get(row.id)
+    expect(done?.pendingMessage).toBeUndefined()
+    await store.stashEvalRetry(row.id, 2, 'late') // terminal — must be a no-op
+    expect((await store.get(row.id))?.evalAttempt).toBe(1)
+  })
+
   afterAll(async () => {
     await utils.release()
     await pool.end()

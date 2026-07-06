@@ -173,6 +173,90 @@ describe('EvaluationCoordinator end-to-end', () => {
   })
 })
 
+describe('retry loop (2e)', () => {
+  it('refuted → steered retry → verified; attempts + accumulated verifier ids on the row', async () => {
+    let verifierRuns = 0
+    const rig = makeRig((spec) => {
+      if (spec.goal.startsWith('You are an adversarial VERIFIER')) {
+        verifierRuns += 1
+        const pass = verifierRuns >= 2 // first pass refutes, second verifies
+        return {
+          verdict: 'completed',
+          summary: pass ? 'all good now' : 'docs missing',
+          artifacts: [],
+          usage,
+          criteriaSelfReport: [
+            { id: 'c1', met: true, evidence: 'ok' },
+            { id: 'c2', met: pass, evidence: pass ? 'docs added' : 'no docs found' },
+          ],
+        }
+      }
+      // Parent turns: the retry turn arrives as resumeMessage.
+      return {
+        verdict: 'completed',
+        summary: spec.resumeMessage?.startsWith('## Verifier refutation')
+          ? 'fixed the docs'
+          : 'did the work',
+        artifacts: [],
+        usage,
+      }
+    })
+    const parent = await runParent(rig)
+    expect(parent.status).toBe('completed')
+    expect(parent.eval?.verdict).toBe('verified')
+    expect(parent.eval?.attempts).toBe(1)
+    expect(parent.eval?.verifierTaskIds).toHaveLength(2)
+    expect(parent.evalAttempt).toBe(1)
+    // The fix actually ran: the parent result reflects the retry turn.
+    expect(parent.result?.summary).toBe('fixed the docs')
+  })
+
+  it('maxRetries 0 → single refuted pass, no retry', async () => {
+    const executors = createExecutorRegistry()
+    let parentRuns = 0
+    executors.register(
+      'chat-loop',
+      scriptedExecutor((spec) => {
+        if (!spec.goal.startsWith('You are an adversarial VERIFIER')) parentRuns += 1
+        return {
+          verdict: 'completed',
+          summary: 's',
+          artifacts: [],
+          usage,
+          ...(spec.goal.startsWith('You are an adversarial VERIFIER')
+            ? { criteriaSelfReport: [{ id: 'c1', met: false, evidence: 'no' }] }
+            : {}),
+        }
+      }),
+    )
+    let handler: (taskId: string) => Promise<void>
+    const store = new InMemoryTaskStore((taskId) => {
+      void handler(taskId)
+    })
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 5 })
+    cleanups.push(() => waiter.stop())
+    const coordinator = createEvaluationCoordinator({
+      store,
+      waiter,
+      nodeId: 'test-node',
+      config: { skipOrigins: [], maxRetries: 0 },
+      runTask: (taskId) => handler(taskId),
+    })
+    handler = createTaskHandler({ store, executors, nodeId: 'test-node', evaluation: coordinator })
+    const row = await store.create({
+      goal: 'g',
+      executor: 'chat-loop',
+      agentId: 'a',
+      origin: 'api',
+      acceptanceCriteria: [CRITERIA[0]],
+    })
+    const terminal = await waiter.wait(row.id, { deadlineMs: 5_000 })
+    expect(terminal?.eval?.verdict).toBe('refuted')
+    expect(terminal?.eval?.attempts).toBe(0)
+    expect(parentRuns).toBe(1)
+  })
+})
+
 describe('inline verifier run (deadlock guard)', () => {
   it('verifies even when the job queue never fires (all slots blocked)', async () => {
     const executors = createExecutorRegistry()
