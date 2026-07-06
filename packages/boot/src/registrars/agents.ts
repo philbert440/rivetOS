@@ -27,6 +27,7 @@ import {
   createSubagentExecutor,
   createSubagentWorker,
   createPgDelegationRecorder,
+  createTaskDelegationRecorder,
   PgTaskStore,
   createChatLoopExecutor,
   createExecutorRegistry,
@@ -79,10 +80,31 @@ export async function registerAgentTools(
   let delegationRecorder: DelegationRunsRecorder | undefined
   let subagentWorker: SubagentWorker | undefined
 
+  // Task-engine cutover gate (steps (d)/(e)): the engine only takes over
+  // when ros_tasks exists. On an unmigrated node everything below falls back
+  // to the legacy engines, matching the tasks.enabled=false revert path.
+  const tasksEnabled = config.tasks?.enabled !== false
+  let taskEngineStore: PgTaskStore | undefined
+
   if (pgUrl) {
     pool = new pg.Pool({ connectionString: pgUrl, max: 4 })
     subagentStore = new PgSubagentStore(pool)
-    delegationRecorder = createPgDelegationRecorder(pool)
+    if (tasksEnabled) {
+      const taskStore = new PgTaskStore(pool)
+      if (await taskStore.isReady()) {
+        taskEngineStore = taskStore
+      } else {
+        log.warn(
+          'ros_tasks missing — task engine cutovers stay on the legacy engines until rivetos-memory-migrate runs',
+        )
+      }
+    }
+    // Cutover step (e): delegation audit rows land in ros_tasks as terminal
+    // rows (recordTerminal, no job). Legacy ros_delegation_runs recorder is
+    // the fallback; the table is archived at the final 0003.
+    delegationRecorder = taskEngineStore
+      ? createTaskDelegationRecorder(taskEngineStore)
+      : createPgDelegationRecorder(pool)
   } else {
     subagentStore = new InMemorySubagentStore()
     log.info('No pgUrl — subagent sessions + delegation runs are process-local (in-memory)')
@@ -282,21 +304,11 @@ export async function registerAgentTools(
   // (grok, hermes) are still pending.
   // On startup the runner crash-sweeps rows this node left 'running'.
   // ------------------------------------------------------------------
-  const tasksEnabled = config.tasks?.enabled !== false
-  let taskEngineStore: PgTaskStore | undefined
   if (tasksEnabled && pgUrl && pool) {
-    const taskStore = new PgTaskStore(pool)
-    // Cutover gate: only hand the subagent tools to the task engine when
-    // ros_tasks actually exists. On an unmigrated node the runner below
-    // no-ops with a warning — the tools must fall back to the legacy
-    // manager the same way, not hard-fail every subagent_spawn INSERT.
-    if (await taskStore.isReady()) {
-      taskEngineStore = taskStore
-    } else {
-      log.warn(
-        'ros_tasks missing — subagent tools stay on the legacy engine until rivetos-memory-migrate runs',
-      )
-    }
+    // taskEngineStore was readiness-gated at pool setup; the runner still
+    // starts against a fresh store either way — it no-ops with a warning on
+    // an unmigrated node and picks the table up after migration + restart.
+    const taskStore = taskEngineStore ?? new PgTaskStore(pool)
     const executors = createExecutorRegistry()
     // Task-conversation persistence + resume rehydration (step (c)) — turns
     // file under session_key task:<id> alongside the harness executors' rows.
