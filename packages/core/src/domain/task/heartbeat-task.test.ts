@@ -9,6 +9,7 @@ import type { HeartbeatConfig } from '@rivetos/types'
 import { InMemoryTaskStore } from './store.js'
 import { createExecutorRegistry, createTaskHandler } from './runner.js'
 import { runHeartbeatViaTasks } from './heartbeat-task.js'
+import { createTaskCompletionWaiter } from './completion-waiter.js'
 import type {
   HarnessExecutor,
   HarnessExecutorCapabilities,
@@ -96,12 +97,9 @@ describe('runHeartbeatViaTasks', () => {
     const store = wire(executor)
     const deliver = vi.fn(async () => {})
 
-    await runHeartbeatViaTasks(hb, {
-      store,
-      turnTimeoutMs: 5_000,
-      deliver,
-      pollIntervalMs: 10,
-    })
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
+    await runHeartbeatViaTasks(hb, { store, waiter, turnTimeoutMs: 5_000, deliver })
+    await waiter.stop()
 
     expect(deliver).toHaveBeenCalledWith(hb, 'all quiet')
     const rows = await store.list()
@@ -116,7 +114,9 @@ describe('runHeartbeatViaTasks', () => {
   it('failed run: no delivery, row records the failure', async () => {
     const store = wire(fakeExecutor({ verdict: 'failed' }))
     const deliver = vi.fn(async () => {})
-    await runHeartbeatViaTasks(hb, { store, turnTimeoutMs: 5_000, deliver, pollIntervalMs: 10 })
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
+    await runHeartbeatViaTasks(hb, { store, waiter, turnTimeoutMs: 5_000, deliver })
+    await waiter.stop()
     expect(deliver).not.toHaveBeenCalled()
     expect((await store.list())[0].status).toBe('failed')
   })
@@ -124,14 +124,11 @@ describe('runHeartbeatViaTasks', () => {
   it('deadline: kills the row before releasing the slot — no overlap window', async () => {
     const store = wire(fakeExecutor({ hang: true }))
     const deliver = vi.fn(async () => {})
-    await runHeartbeatViaTasks(hb, {
-      store,
-      // Deadline = turnTimeoutMs + 60s; use a negative bound so the first
-      // poll is already past it while the fake turn hangs.
-      turnTimeoutMs: -61_000,
-      deliver,
-      pollIntervalMs: 10,
-    })
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
+    // Deadline = turnTimeoutMs + 60s; use a negative bound so the wait is
+    // already expired while the fake turn hangs.
+    await runHeartbeatViaTasks(hb, { store, waiter, turnTimeoutMs: -61_000, deliver })
+    await waiter.stop()
     expect(deliver).not.toHaveBeenCalled()
     const row = (await store.list())[0]
     expect(row.status).toBe('killed')
