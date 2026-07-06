@@ -19,7 +19,7 @@ export type TaskStatus =
   'queued' | 'running' | 'awaiting-input' | 'completed' | 'failed' | 'killed' | 'timeout'
 
 export interface ContextRef {
-  kind: 'conversation' | 'message' | 'task' | 'file' | 'url'
+  kind: 'conversation' | 'message' | 'task' | 'file' | 'url' | 'wiki'
   ref: string
   note?: string
 }
