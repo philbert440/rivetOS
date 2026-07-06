@@ -148,6 +148,36 @@ describe('InMemoryTaskStore', () => {
     expect((await store.get(task.id))?.status).toBe('awaiting-input')
   })
 
+  it('markAwaitingInput persists the interim result snapshot', async () => {
+    const store = new InMemoryTaskStore()
+    const task = await store.create(input())
+    await store.claim(task.id, 'node-a')
+    expect(await store.markAwaitingInput(task.id, completedResult)).toBe(true)
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('awaiting-input')
+    expect(row?.result?.summary).toBe('done')
+  })
+
+  it('requestKill flips pre-terminal rows, returns prior status, no-ops on terminal', async () => {
+    const store = new InMemoryTaskStore()
+    const queued = await store.create(input())
+    expect(await store.requestKill(queued.id)).toBe('queued')
+    expect((await store.get(queued.id))?.status).toBe('killed')
+
+    const parked = await store.create(input())
+    await store.claim(parked.id, 'node-a')
+    await store.markAwaitingInput(parked.id)
+    expect(await store.requestKill(parked.id)).toBe('awaiting-input')
+
+    const running = await store.create(input())
+    await store.claim(running.id, 'node-a')
+    expect(await store.requestKill(running.id)).toBe('running')
+
+    // Already killed → undefined; missing → undefined.
+    expect(await store.requestKill(queued.id)).toBeUndefined()
+    expect(await store.requestKill('nope')).toBeUndefined()
+  })
+
   it('sweep times out expired awaiting-input rows and spares fresh ones', async () => {
     // TTL 0 → parked rows expire immediately; fresh-branch store uses default.
     const expiring = new InMemoryTaskStore(undefined, { awaitingInputTtlMs: 0 })
@@ -321,6 +351,33 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
     // With the message consumed, the park succeeds.
     expect(await store.markAwaitingInput(task.id)).toBe(true)
     expect((await store.get(task.id))?.status).toBe('awaiting-input')
+  })
+
+  it('markAwaitingInput persists the interim result snapshot', async () => {
+    const task = await store.create(input())
+    await store.claim(task.id, 'node-a')
+    expect(await store.markAwaitingInput(task.id, completedResult)).toBe(true)
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('awaiting-input')
+    expect(row?.result?.summary).toBe('done')
+  })
+
+  it('requestKill flips pre-terminal rows, returns prior status, no-ops on terminal', async () => {
+    const queued = await store.create(input())
+    expect(await store.requestKill(queued.id)).toBe('queued')
+    expect((await store.get(queued.id))?.status).toBe('killed')
+
+    const parked = await store.create(input())
+    await store.claim(parked.id, 'node-a')
+    await store.markAwaitingInput(parked.id)
+    expect(await store.requestKill(parked.id)).toBe('awaiting-input')
+
+    const running = await store.create(input())
+    await store.claim(running.id, 'node-a')
+    expect(await store.requestKill(running.id)).toBe('running')
+
+    expect(await store.requestKill(queued.id)).toBeUndefined()
+    expect(await store.requestKill(crypto.randomUUID())).toBeUndefined()
   })
 
   it('sweep requeues stale rows under max_attempts and fails at the cap, per node', async () => {
