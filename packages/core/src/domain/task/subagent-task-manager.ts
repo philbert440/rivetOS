@@ -78,6 +78,17 @@ function elapsedOf(row: TaskRow): number {
   return row.durationMs ?? 0
 }
 
+/** Legacy 0003-backfilled rows carry their transcript/tools in spec JSONB. */
+function specHistory(row: TaskRow): SubagentSession['history'] {
+  const h = row.spec.history
+  return Array.isArray(h) ? (h as SubagentSession['history']) : []
+}
+
+function specTools(row: TaskRow): string[] {
+  const t = row.spec.toolsUsed
+  return Array.isArray(t) ? (t as string[]) : []
+}
+
 function toSession(row: TaskRow, parentAgent: string, router: Router): SubagentSession {
   return {
     id: row.id,
@@ -85,10 +96,13 @@ function toSession(row: TaskRow, parentAgent: string, router: Router): SubagentS
     childAgent: row.agentId,
     provider: router.getAgents().find((a) => a.id === row.agentId)?.provider ?? 'unknown',
     status: mapStatus(row),
-    history: [],
+    history: specHistory(row),
     createdAt: row.createdAt,
-    iterations: row.result?.usage.turns ?? row.usage?.turns ?? 0,
-    toolsUsed: [],
+    iterations:
+      row.result?.usage.turns ??
+      row.usage?.turns ??
+      (typeof row.spec.iterations === 'number' ? row.spec.iterations : 0),
+    toolsUsed: specTools(row),
     usage: usageOf(row),
     durationMs: row.durationMs,
     lastResponse: lastResponse(row) || undefined,
@@ -134,12 +148,15 @@ export class TaskBackedSubagentManager implements SubagentManager {
       agent: row.agentId,
       status: mapStatus(row),
       elapsedMs: elapsedOf(row),
-      iterations: row.result?.usage.turns ?? row.usage?.turns ?? 0,
-      toolsUsed: [],
+      iterations:
+        row.result?.usage.turns ??
+        row.usage?.turns ??
+        (typeof row.spec.iterations === 'number' ? row.spec.iterations : 0),
+      toolsUsed: specTools(row),
       lastResponse: lastResponse(row),
       usage: usageOf(row),
       error: row.error ?? row.result?.error,
-      messageCount: await this.messageCount(row.id),
+      messageCount: await this.messageCount(row),
     }
   }
 
@@ -167,8 +184,10 @@ export class TaskBackedSubagentManager implements SubagentManager {
       mine.map(async (r) => {
         const session = toSession(r, this.config.parentAgent ?? 'parent', this.config.router)
         // subagent_list reports history.length — hydrate from the task's
-        // memory conversation so counts match status().messageCount.
-        session.history = await this.history(r.id)
+        // memory conversation (spec.history stays as the fallback for
+        // 0003-backfilled rows, already set by toSession).
+        const live = await this.history(r.id)
+        if (live.length > 0) session.history = live
         return session
       }),
     )
@@ -204,7 +223,8 @@ export class TaskBackedSubagentManager implements SubagentManager {
     }
   }
 
-  private async messageCount(taskId: string): Promise<number> {
-    return (await this.history(taskId)).length
+  private async messageCount(row: TaskRow): Promise<number> {
+    const live = (await this.history(row.id)).length
+    return live > 0 ? live : specHistory(row).length
   }
 }

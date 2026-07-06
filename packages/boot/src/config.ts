@@ -121,7 +121,12 @@ export interface MeshSection {
  * engine is inert (nothing creates tasks until the cutover steps land).
  */
 export interface TasksSection {
-  /** Start the task runner (default: true — inert with zero rows) */
+  /**
+   * Start the durable task runner (default: true). Since g2a the task engine
+   * is the ONLY orchestration engine: `enabled: false` does NOT revert to a
+   * legacy engine — subagent tools run process-local (in-memory store),
+   * delegation audit is a noop, and heartbeats are skipped.
+   */
   enabled?: boolean
 }
 
