@@ -315,6 +315,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // Gateway API aliases (G2/G3/G6, Appendix F): stable /api/* names for
   // den's existing surfaces. Legacy paths stay — adapters/viewers migrate
   // at leisure; RivetHub clients use only the /api/* names.
+  //
+  // FOOTGUN: canonicalize() runs before extraRoutes matching, so a gateway
+  // mount at an aliased prefix (e.g. '/api/events') would NEVER match —
+  // aliased prefixes belong to den; new route families must use fresh
+  // prefixes (/api/tasks, /api/catalog, ...).
   const API_ALIASES: Record<string, string> = {
     '/api/events': '/events',
     '/api/events/event': '/event',
