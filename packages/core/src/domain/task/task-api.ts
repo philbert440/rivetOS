@@ -50,12 +50,19 @@ function json(res: ServerResponse, code: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
+class BodyTooLarge extends Error {}
+
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     size += (chunk as Buffer).length
-    if (size > MAX_BODY_BYTES) throw new Error('body too large')
+    if (size > MAX_BODY_BYTES) {
+      // Stop reading — the caller answers 413 and then drops the connection
+      // so a slow client can't hold the socket streaming an oversized body.
+      req.pause()
+      throw new BodyTooLarge('body too large')
+    }
     chunks.push(chunk as Buffer)
   }
   if (size === 0) return {}
@@ -122,7 +129,11 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
         // POST /api/tasks — create (+ optional wait)
         if (req.method === 'POST' && !id) {
           const body = await readJsonBody(req).catch((err: unknown) => {
-            json(res, 400, { error: (err as Error).message || 'invalid JSON body' })
+            const tooLarge = err instanceof BodyTooLarge
+            json(res, tooLarge ? 413 : 400, {
+              error: (err as Error).message || 'invalid JSON body',
+            })
+            if (tooLarge) res.once('finish', () => req.destroy())
             return null
           })
           if (body === null) return
@@ -138,10 +149,16 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           const terminal = await waiter.wait(row.id, { deadlineMs: waitMs })
           if (!terminal) {
             // Deadline: kill before answering — no zombie runs (mesh/heartbeat
-            // precedent). The durable row is returned for inspection.
+            // precedent). requestKill only flips pre-terminal rows, so if the
+            // task finished in the window after the wait timed out, the
+            // re-read sees the real terminal row — answer 200 with it rather
+            // than a lying 504 (review finding).
             await store.requestKill(row.id)
-            const killed = await store.get(row.id)
-            return json(res, 504, { error: 'wait deadline exceeded — task killed', task: killed })
+            const after = await store.get(row.id)
+            if (after && after.status !== 'killed') {
+              return json(res, 200, { task: toWire(after) })
+            }
+            return json(res, 504, { error: 'wait deadline exceeded — task killed', task: after })
           }
           return json(res, 200, { task: toWire(terminal) })
         }
@@ -175,7 +192,10 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
         // GET /api/tasks/:id
         if (req.method === 'GET' && !action) return json(res, 200, { task: toWire(row) })
 
-        // GET /api/tasks/:id/wait
+        // GET /api/tasks/:id/wait — deliberately does NOT kill on deadline:
+        // GET is a side-effect-free observation; only the creating POST owns
+        // the task's lifetime. A watcher timing out must not kill someone
+        // else's run.
         if (req.method === 'GET' && action === 'wait') {
           const waitMs = clampWaitMs(url.searchParams.get('timeoutMs'))
           const terminal = await waiter.wait(id, { deadlineMs: waitMs })
