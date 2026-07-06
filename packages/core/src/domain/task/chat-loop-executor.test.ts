@@ -288,6 +288,71 @@ describe('ChatLoopExecutor specifics', () => {
     expect(memory.append).not.toHaveBeenCalled()
   })
 
+  it('parses a trailing TASK_RESULT fence into the structured result (2c)', async () => {
+    const fenced = [
+      'All done, here is my work.',
+      '',
+      '```TASK_RESULT',
+      JSON.stringify({
+        verdict: 'completed',
+        summary: 'shipped the thing',
+        artifacts: [{ kind: 'commit', ref: 'abc1234' }],
+        criteriaSelfReport: [{ id: 'goal', met: true, evidence: 'it exists' }],
+      }),
+      '```',
+    ].join('\n')
+    const provider = makeMockProvider({
+      id: 'mock',
+      chunks: [
+        { type: 'text', delta: fenced },
+        { type: 'done', usage: { promptTokens: 1, completionTokens: 1 } },
+      ],
+    })
+    const router = {
+      getAgents: () => [{ id: 'conformance-agent', name: 'conformance-agent', provider: 'mock' }],
+      getProviders: () => [provider],
+    } as unknown as Router
+    const executor = createChatLoopExecutor(makeConfig({ router }))
+    const result = await executor.start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('completed')
+    expect(result.summary).toBe('shipped the thing')
+    expect(result.artifacts).toEqual([{ kind: 'commit', ref: 'abc1234' }])
+    expect(result.criteriaSelfReport).toEqual([{ id: 'goal', met: true, evidence: 'it exists' }])
+    expect(result.output).toBe('All done, here is my work.')
+  })
+
+  it('self-reported failed verdict surfaces as failed with error (2c)', async () => {
+    const fenced = '```TASK_RESULT\n{"verdict":"failed","summary":"could not"}\n```'
+    const provider = makeMockProvider({
+      id: 'mock',
+      chunks: [
+        { type: 'text', delta: fenced },
+        { type: 'done', usage: { promptTokens: 1, completionTokens: 1 } },
+      ],
+    })
+    const router = {
+      getAgents: () => [{ id: 'conformance-agent', name: 'conformance-agent', provider: 'mock' }],
+      getProviders: () => [provider],
+    } as unknown as Router
+    const executor = createChatLoopExecutor(makeConfig({ router }))
+    const result = await executor.start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('failed')
+    expect(result.error).toBe('could not')
+  })
+
+  it('no fence → phase-1 fallback shape (whole response as summary)', async () => {
+    const executor = createChatLoopExecutor(makeConfig())
+    const result = await executor.start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('completed')
+    expect(result.summary).toBe('Task response')
+  })
+
   it('accumulates costUsd from the pricing map so budget.maxUsd can fire', async () => {
     // Mock provider reports 7 prompt / 11 completion tokens per turn.
     const executor = createChatLoopExecutor(

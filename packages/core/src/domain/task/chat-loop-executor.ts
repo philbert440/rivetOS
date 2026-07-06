@@ -25,6 +25,7 @@ import type {
   TaskUsage,
   Tool,
 } from '@rivetos/types'
+import { parseTaskResultBlock, taskResultFenceInstructions } from '@rivetos/types'
 import { AgentLoop } from '../loop.js'
 import type { Router } from '../router.js'
 import type { WorkspaceLoader } from '../workspace.js'
@@ -250,6 +251,7 @@ async function runTask(
                 .join('\n')}`
             : '',
           spec.systemPromptAppend ? `\n${spec.systemPromptAppend}` : '',
+          `\n\n${taskResultFenceInstructions()}`,
         ].join('')
 
     const excluded = new Set(spec.excludeTools ?? [])
@@ -363,6 +365,22 @@ async function runTask(
       }
     }
 
+    // Phase 2c: the scaffold demands a fenced TASK_RESULT; honor it when the
+    // model complied. Fallback (no/malformed fence) is the phase-1 shape —
+    // the whole response as summary, verdict completed — so nothing breaks
+    // on models that ignore the contract.
+    const parsed = parseTaskResultBlock(lastResponse)
+    if (parsed) {
+      return {
+        verdict: parsed.verdict,
+        summary: parsed.summary,
+        output: parsed.output ?? stripTaskResultFence(lastResponse),
+        artifacts: parsed.artifacts,
+        criteriaSelfReport: parsed.criteriaSelfReport,
+        usage,
+        ...(parsed.verdict === 'failed' ? { error: parsed.summary } : {}),
+      }
+    }
     return {
       verdict: 'completed',
       summary: lastResponse,
@@ -375,4 +393,10 @@ async function runTask(
     log.error(`Task ${spec.taskId} failed after ${String(Date.now() - startedAt)}ms: ${msg}`)
     return fail(msg)
   }
+}
+
+/** Drop the trailing TASK_RESULT fence from output — the structured fields
+ *  carry its content; the requester-facing output shouldn't repeat it. */
+function stripTaskResultFence(text: string): string {
+  return text.replace(/```TASK_RESULT\s*\n[\s\S]*?```\s*$/, '').trimEnd()
 }
