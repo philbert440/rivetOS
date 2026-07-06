@@ -173,6 +173,11 @@ describe('InMemoryTaskStore', () => {
     await store.claim(running.id, 'node-a')
     expect(await store.requestKill(running.id)).toBe('running')
 
+    // Legacy parity: kill stamps the error text and freezes duration.
+    const killedRow = await store.get(running.id)
+    expect(killedRow?.error).toBe('Killed by parent')
+    expect(killedRow?.durationMs).toBeDefined()
+
     // Already killed → undefined; missing → undefined.
     expect(await store.requestKill(queued.id)).toBeUndefined()
     expect(await store.requestKill('nope')).toBeUndefined()
@@ -375,6 +380,10 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
     const running = await store.create(input())
     await store.claim(running.id, 'node-a')
     expect(await store.requestKill(running.id)).toBe('running')
+
+    const killedRow = await store.get(running.id)
+    expect(killedRow?.error).toBe('Killed by parent')
+    expect(killedRow?.durationMs).toBeDefined()
 
     expect(await store.requestKill(queued.id)).toBeUndefined()
     expect(await store.requestKill(crypto.randomUUID())).toBeUndefined()

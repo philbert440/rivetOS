@@ -286,7 +286,17 @@ export async function registerAgentTools(
   let taskEngineStore: PgTaskStore | undefined
   if (tasksEnabled && pgUrl && pool) {
     const taskStore = new PgTaskStore(pool)
-    taskEngineStore = taskStore
+    // Cutover gate: only hand the subagent tools to the task engine when
+    // ros_tasks actually exists. On an unmigrated node the runner below
+    // no-ops with a warning — the tools must fall back to the legacy
+    // manager the same way, not hard-fail every subagent_spawn INSERT.
+    if (await taskStore.isReady()) {
+      taskEngineStore = taskStore
+    } else {
+      log.warn(
+        'ros_tasks missing — subagent tools stay on the legacy engine until rivetos-memory-migrate runs',
+      )
+    }
     const executors = createExecutorRegistry()
     // Task-conversation persistence + resume rehydration (step (c)) — turns
     // file under session_key task:<id> alongside the harness executors' rows.

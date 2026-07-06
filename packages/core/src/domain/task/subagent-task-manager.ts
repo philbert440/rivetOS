@@ -70,9 +70,12 @@ function usageOf(row: TaskRow): { promptTokens: number; completionTokens: number
 }
 
 function elapsedOf(row: TaskRow): number {
-  if (row.durationMs != null) return row.durationMs
-  if (row.startedAt != null) return Date.now() - row.startedAt
-  return 0
+  // Only a live turn keeps the clock running; parked/terminal rows read the
+  // frozen duration stamped at park/kill/finish time.
+  if ((row.status === 'running' || row.status === 'queued') && row.startedAt != null) {
+    return Date.now() - row.startedAt
+  }
+  return row.durationMs ?? 0
 }
 
 function toSession(row: TaskRow, parentAgent: string, router: Router): SubagentSession {
@@ -159,9 +162,16 @@ export class TaskBackedSubagentManager implements SubagentManager {
 
   async list(): Promise<SubagentSession[]> {
     const rows = await this.config.store.list()
-    return rows
-      .filter((r) => r.origin === 'tool' && r.spec.subagent === true)
-      .map((r) => toSession(r, this.config.parentAgent ?? 'parent', this.config.router))
+    const mine = rows.filter((r) => r.origin === 'tool' && r.spec.subagent === true)
+    return Promise.all(
+      mine.map(async (r) => {
+        const session = toSession(r, this.config.parentAgent ?? 'parent', this.config.router)
+        // subagent_list reports history.length — hydrate from the task's
+        // memory conversation so counts match status().messageCount.
+        session.history = await this.history(r.id)
+        return session
+      }),
+    )
   }
 
   async kill(sessionId: string): Promise<void> {
@@ -180,18 +190,21 @@ export class TaskBackedSubagentManager implements SubagentManager {
     return row
   }
 
-  private async messageCount(taskId: string): Promise<number> {
-    if (!this.config.memory) return 0
+  private async history(taskId: string): Promise<SubagentSession['history']> {
+    if (!this.config.memory) return []
     try {
-      const history = await this.config.memory.getSessionHistory(`task:${taskId}`, { limit: 1000 })
-      return history.length
+      return await this.config.memory.getSessionHistory(`task:${taskId}`, { limit: 1000 })
     } catch (err: unknown) {
       log.warn(
-        `messageCount for task ${taskId} unavailable: ${
+        `history for task ${taskId} unavailable: ${
           err instanceof Error ? err.message : String(err)
         }`,
       )
-      return 0
+      return []
     }
+  }
+
+  private async messageCount(taskId: string): Promise<number> {
+    return (await this.history(taskId)).length
   }
 }
