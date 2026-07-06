@@ -49,6 +49,10 @@ export {
   CAPTURE_AGENT,
   CAPTURE_CHANNEL,
 } from './transcript-capture.js'
+// Task engine (phase 1 step (b)) — HarnessExecutor over headless claude -p.
+export { ClaudeCliExecutor, parseTaskResultBlock, buildTaskSystemAppend } from './executor.js'
+export type { ClaudeCliExecutorConfig } from './executor.js'
+
 export type {
   IngestOptions,
   IngestResult,

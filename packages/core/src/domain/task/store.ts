@@ -136,6 +136,12 @@ export interface TaskStore {
   /** Merge usage after a turn and stamp last_heartbeat_at. */
   updateUsage(id: string, usage: TaskUsage): Promise<void>
 
+  /**
+   * Append a harness spawn's session id to harness_session_ids (deduped).
+   * Optional: only harness-session executors surface session ids.
+   */
+  appendHarnessSessionId?(id: string, sessionId: string): Promise<void>
+
   /** Liveness stamp while a turn is in flight. */
   heartbeat(id: string): Promise<void>
 
@@ -297,6 +303,14 @@ export class InMemoryTaskStore implements TaskStore {
     if (!row) return Promise.resolve()
     row.usage = usage
     row.lastHeartbeatAt = Date.now()
+    return Promise.resolve()
+  }
+
+  appendHarnessSessionId(id: string, sessionId: string): Promise<void> {
+    const row = this.rows.get(id)
+    if (row && !row.harnessSessionIds.includes(sessionId)) {
+      row.harnessSessionIds.push(sessionId)
+    }
     return Promise.resolve()
   }
 
@@ -605,6 +619,15 @@ export class PgTaskStore implements TaskStore {
     await this.pool.query(
       `UPDATE ros_tasks SET usage = $2::jsonb, last_heartbeat_at = now() WHERE id = $1`,
       [id, JSON.stringify(usage)],
+    )
+  }
+
+  async appendHarnessSessionId(id: string, sessionId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE ros_tasks
+         SET harness_session_ids = harness_session_ids || to_jsonb($2::text)
+       WHERE id = $1 AND NOT (harness_session_ids @> to_jsonb($2::text))`,
+      [id, sessionId],
     )
   }
 

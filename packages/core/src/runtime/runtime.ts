@@ -171,6 +171,10 @@ export class Runtime {
   getPgUrl(): string | undefined {
     return this.config.pgUrl ?? process.env.RIVETOS_PG_URL
   }
+  /** Registered memory adapter (undefined until a memory plugin registers). */
+  getMemory(): Memory | undefined {
+    return this.memory
+  }
   /**
    * Register an async shutdown hook. Called in registration order during
    * stop(). Used by boot registrars (subagent worker, agent channel, mesh
