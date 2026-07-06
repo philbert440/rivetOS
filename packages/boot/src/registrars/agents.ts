@@ -339,11 +339,15 @@ export async function registerAgentTools(
     // only — the in-memory fallback has no waiter and nothing evaluable
     // (criteria derivation is also eval-gated).
     const evalSection = config.tasks?.eval
+    // Late-bound to taskRunner.handler below — the coordinator runs verifier
+    // children inline in the parent's worker slot (deadlock-free, see #280).
+    const runTaskRef: { current?: (taskId: string) => Promise<void> } = {}
     const evaluation =
       evalSection?.enabled && taskWaiter
         ? createEvaluationCoordinator({
             store: taskEngineStore,
             waiter: taskWaiter,
+            runTask: (taskId) => runTaskRef.current?.(taskId) ?? Promise.resolve(),
             nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
             config: {
               agentId: evalSection.verifier?.agent_id,
@@ -370,6 +374,7 @@ export async function registerAgentTools(
       // memory context into TaskSpec.resolvedContext when refs are present.
       memory: runtime.getMemory(),
     })
+    runTaskRef.current = taskRunner.handler
     await taskRunner.start()
     runtime.addShutdownHook(async () => {
       await taskRunner.stop()
