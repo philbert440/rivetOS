@@ -148,6 +148,22 @@ describe('InMemoryTaskStore', () => {
     expect((await store.get(task.id))?.status).toBe('awaiting-input')
   })
 
+  it('recordTerminal inserts a terminal row with no enqueue; claim refuses it', async () => {
+    const enqueued: string[] = []
+    const store = new InMemoryTaskStore((id) => enqueued.push(id))
+    const row = await store.recordTerminal(input({ goal: 'audited elsewhere' }), {
+      status: 'completed',
+      result: completedResult,
+      startedAt: Date.now() - 500,
+      durationMs: 500,
+    })
+    expect(enqueued).toHaveLength(0)
+    expect(row.status).toBe('completed')
+    expect(row.result?.summary).toBe('done')
+    expect(row.durationMs).toBe(500)
+    expect(await store.claim(row.id, 'node-a')).toBeUndefined()
+  })
+
   it('markAwaitingInput persists the interim result snapshot', async () => {
     const store = new InMemoryTaskStore()
     const task = await store.create(input())

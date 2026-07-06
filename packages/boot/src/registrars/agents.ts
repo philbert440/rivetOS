@@ -331,7 +331,11 @@ export async function registerAgentTools(
     runtime.addShutdownHook(async () => {
       await taskRunner.stop()
     })
-    log.info('Task engine started — run-task runner listening (inert until tasks are created)')
+    log.info(
+      taskEngineStore
+        ? 'Task engine started — subagent tools + delegation audit are task-backed'
+        : 'Task engine runner started (ros_tasks missing — legacy engines remain active)',
+    )
   } else if (tasksEnabled) {
     log.info('No pgUrl — task engine not started (requires Postgres)')
   }

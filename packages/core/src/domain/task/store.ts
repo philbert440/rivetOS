@@ -600,10 +600,10 @@ export class PgTaskStore implements TaskStore {
          (id, goal, context_refs, acceptance_criteria, spec, executor,
           executor_target, agent_id, requested_by, origin, parent_task_id,
           chain_depth, budget, usage, max_attempts, attempt, status, error,
-          result, session_key, started_at, completed_at, duration_ms)
+          result, session_key, created_at, started_at, completed_at, duration_ms)
        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10,
                $11, $12, $13::jsonb, $14::jsonb, $15, 1, $16, $17, $18::jsonb,
-               $19, to_timestamp($20 / 1000.0), now(), $21)
+               $19, to_timestamp($20 / 1000.0), to_timestamp($20 / 1000.0), now(), $21)
        RETURNING *`,
       [
         id,
