@@ -328,3 +328,20 @@ describe('createTaskRunner start() guards (P1)', () => {
     await runner.stop()
   })
 })
+
+describe('stranding interim (Appendix E)', () => {
+  it('claim refusal on a foreign-affinity row re-enqueues it per-node', async () => {
+    const reenqueued: string[] = []
+    const store = new InMemoryTaskStore()
+    store.reenqueue = (id: string) => {
+      reenqueued.push(id)
+      return Promise.resolve()
+    }
+    const { handler } = wire(makeFakeExecutor(), store)
+    const pinned = await store.create(taskInput({ nodeAffinity: 'other-node' }))
+
+    await handler(pinned.id) // this runner is 'test-node' — claim refuses
+    expect(reenqueued).toEqual([pinned.id])
+    expect((await store.get(pinned.id))?.status).toBe('queued')
+  })
+})
