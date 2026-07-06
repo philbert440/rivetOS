@@ -294,6 +294,9 @@ export class InMemoryTaskStore implements TaskStore {
     }
     row.status = 'awaiting-input'
     if (interim) row.result = interim
+    // Freeze elapsed at park — a parked session reads as 'completed' to the
+    // subagent surface, so its clock must not keep running.
+    row.durationMs = row.startedAt ? Date.now() - row.startedAt : 0
     return Promise.resolve(true)
   }
 
@@ -305,6 +308,8 @@ export class InMemoryTaskStore implements TaskStore {
     const prior = row.status
     row.status = 'killed'
     row.completedAt = Date.now()
+    row.error = row.error ?? 'Killed by parent'
+    row.durationMs = row.startedAt ? row.completedAt - row.startedAt : 0
     return Promise.resolve(prior)
   }
 
@@ -604,7 +609,9 @@ export class PgTaskStore implements TaskStore {
     const { rowCount } = await this.pool.query(
       `UPDATE ros_tasks
          SET status = 'awaiting-input',
-             result = COALESCE($2, result)
+             result = COALESCE($2, result),
+             duration_ms = CASE WHEN started_at IS NULL THEN 0
+                                ELSE (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::int END
        WHERE id = $1 AND status = 'running' AND pending_message IS NULL`,
       [id, interim ? JSON.stringify(interim) : null],
     )
@@ -614,7 +621,11 @@ export class PgTaskStore implements TaskStore {
   async requestKill(id: string): Promise<TaskStatus | undefined> {
     const { rows } = await this.pool.query<{ prior: TaskStatus }>(
       `UPDATE ros_tasks t
-         SET status = 'killed', completed_at = now()
+         SET status = 'killed',
+             completed_at = now(),
+             error = COALESCE(t.error, 'Killed by parent'),
+             duration_ms = CASE WHEN t.started_at IS NULL THEN 0
+                                ELSE (EXTRACT(EPOCH FROM (now() - t.started_at)) * 1000)::int END
         FROM (SELECT id, status AS prior FROM ros_tasks
                WHERE id = $1 AND status IN ('queued','awaiting-input','running')
                FOR UPDATE) p

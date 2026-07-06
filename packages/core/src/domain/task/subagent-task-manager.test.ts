@@ -229,6 +229,49 @@ describe('TaskBackedSubagentManager', () => {
     expect(sessions[0].childAgent).toBe('opus')
   })
 
+  it('kill stamps the legacy error text and status surfaces it', async () => {
+    const { manager, settle } = wire()
+    const session = await manager.spawn({ agent: 'opus', task: 'x' })
+    await settle()
+    await manager.kill(session.id)
+    const status = await manager.status(session.id)
+    expect(status.error).toBe('Killed by parent')
+  })
+
+  it('elapsed freezes when a session parks', async () => {
+    const { manager, store, settle } = wire()
+    const session = await manager.spawn({ agent: 'opus', task: 'x' })
+    await settle()
+    const row = await store.get(session.id)
+    expect(row?.status).toBe('awaiting-input')
+    expect(row?.durationMs).toBeDefined()
+    const status = await manager.status(session.id)
+    expect(status.elapsedMs).toBe(row?.durationMs)
+    await new Promise((r) => setTimeout(r, 15))
+    const later = await manager.status(session.id)
+    expect(later.elapsedMs).toBe(status.elapsedMs)
+  })
+
+  it('list hydrates history from the task memory conversation', async () => {
+    const memory = {
+      getSessionHistory: vi.fn(async (key: string) =>
+        key.startsWith('task:')
+          ? [
+              { role: 'user' as const, content: 'q' },
+              { role: 'assistant' as const, content: 'a' },
+            ]
+          : [],
+      ),
+    }
+    const executors = createExecutorRegistry()
+    executors.register('chat-loop', makeFakeExecutor())
+    const store = new InMemoryTaskStore()
+    const manager = new TaskBackedSubagentManager({ router: mockRouter(), store, memory })
+    await manager.spawn({ agent: 'opus', task: 'x' })
+    const sessions = await manager.list()
+    expect(sessions[0].history).toHaveLength(2)
+  })
+
   it('spawn stamps timeoutMs as budget.maxWallClockMs and the subagent marker', async () => {
     const { manager, store } = wire()
     const session = await manager.spawn({ agent: 'opus', task: 'x', timeoutMs: 5000 })
