@@ -80,6 +80,14 @@ export type { ChatLoopExecutorConfig } from './domain/task/chat-loop-executor.js
 export { TaskBackedSubagentManager } from './domain/task/subagent-task-manager.js'
 export { createTaskCompletionWaiter } from './domain/task/completion-waiter.js'
 export { createTaskApiRoute } from './domain/task/task-api.js'
+export {
+  normalizeCriteria,
+  criteriaPolicyFromConfig,
+  CRITERIA_POLICY_OFF,
+  CriteriaRequiredError,
+  CriteriaShapeError,
+} from './domain/task/criteria.js'
+export type { CriteriaPolicy } from './domain/task/criteria.js'
 export { createCatalogApiRoute } from './domain/task/catalog-api.js'
 export { createGatewayChannel } from './domain/gateway-channel.js'
 export type { GatewayChannelHandle } from './domain/gateway-channel.js'

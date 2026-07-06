@@ -11,6 +11,7 @@
  * 3. Not found → error
  */
 
+import { CRITERIA_POLICY_OFF, normalizeCriteria, type CriteriaPolicy } from './task/criteria.js'
 import type {
   DelegationRequest,
   DelegationResult,
@@ -40,6 +41,8 @@ const log = logger('MeshDelegation')
 // ---------------------------------------------------------------------------
 
 export interface MeshDelegationConfig {
+  /** Criteria policy (phase 2b) — default OFF, delegation behaves as phase 1. */
+  criteriaPolicy?: CriteriaPolicy
   /** The local DelegationEngine for same-process delegation */
   localEngine: DelegationEngine
 
@@ -334,6 +337,10 @@ export class MeshDelegationEngine {
         executor: 'chat-loop',
         agentId: request.toAgent,
         origin: 'mesh',
+        acceptanceCriteria: normalizeCriteria(
+          { goal: request.task, origin: 'mesh' },
+          this.config.criteriaPolicy ?? CRITERIA_POLICY_OFF,
+        ),
         nodeAffinity: route.node.name,
         requestedBy: request.fromAgent,
         chainDepth: chainDepth + 1,
