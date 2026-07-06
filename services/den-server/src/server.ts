@@ -312,9 +312,30 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     return true
   }
 
+  // Gateway API aliases (G2/G3/G6, Appendix F): stable /api/* names for
+  // den's existing surfaces. Legacy paths stay — adapters/viewers migrate
+  // at leisure; RivetHub clients use only the /api/* names.
+  const API_ALIASES: Record<string, string> = {
+    '/api/events': '/events',
+    '/api/events/event': '/event',
+    '/api/events/sessions': '/sessions',
+    '/api/events/state': '/state',
+    '/api/events/ws': '/ws',
+    '/api/mesh': '/mesh.json',
+    '/api/terminal': '/term',
+    '/api/terminal/config': '/term/config',
+    '/api/terminal/list': '/term/list',
+    '/api/terminal/ws': '/term',
+  }
+  const canonicalize = (url: URL): void => {
+    const alias = API_ALIASES[url.pathname]
+    if (alias) url.pathname = alias
+  }
+
   const server = createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://localhost')
+      canonicalize(url)
       if (req.method === 'OPTIONS') {
         res.writeHead(204, CORS)
         res.end()
@@ -333,7 +354,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         if (config.packsDir && url.pathname.startsWith('/packs/')) {
           if (serveStatic(res, config.packsDir, url.pathname.slice('/packs/'.length))) return
         }
-        if (config.staticDir && !API_PATHS.has(url.pathname)) {
+        // /api/* belongs to gateway route mounts and aliases — never the
+        // static viewer. Without this carve-out the SPA fallback hijacks
+        // extensionless GETs like /api/tasks (G1 regression, fixed in G2).
+        if (config.staticDir && !API_PATHS.has(url.pathname) && !url.pathname.startsWith('/api/')) {
           if (serveStatic(res, config.staticDir, url.pathname)) return
           // SPA fallback: extensionless paths (e.g. /mesh, /demo) get the shell
           if (!extname(url.pathname) && serveStatic(res, config.staticDir, '/index.html')) return
@@ -541,6 +565,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy())
     const url = new URL(req.url ?? '/', 'http://localhost')
+    canonicalize(url)
     if (!authorized(req, url)) {
       socket.destroy()
       return

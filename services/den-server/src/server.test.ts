@@ -279,3 +279,67 @@ describe('gateway route mounts (G0)', () => {
     expect(body.sessions).toHaveLength(1)
   })
 })
+
+describe('gateway API aliases (G2/G3/G6) + SPA carve-out', () => {
+  it('POST /api/events ingests a batch; GET /api/events/sessions lists', async () => {
+    const { base } = await start()
+    const res = await post(base, '/api/events', [EV])
+    expect(res.status).toBe(200)
+    const body = (await (await fetch(`${base}/api/events/sessions`)).json()) as {
+      sessions: unknown[]
+    }
+    expect(body.sessions).toHaveLength(1)
+  })
+
+  it('GET /api/mesh answers the mesh overview', async () => {
+    const { base } = await start()
+    const res = await fetch(`${base}/api/mesh`)
+    expect(res.status).toBe(200)
+  })
+
+  it('GET /api/terminal/config answers like /term/config', async () => {
+    const { base } = await start()
+    const [a, b] = await Promise.all([
+      fetch(`${base}/api/terminal/config`),
+      fetch(`${base}/term/config`),
+    ])
+    expect(a.status).toBe(b.status)
+  })
+
+  it('WS /api/events/ws behaves like /ws (snapshot on connect)', async () => {
+    const { base, port } = await start()
+    await post(base, '/event', EV)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/events/ws`)
+    const first = await new Promise<string>((resolve, reject) => {
+      ws.once('message', (d) => resolve(String(d)))
+      ws.once('error', reject)
+    })
+    ws.close()
+    expect((JSON.parse(first) as { type: string }).type).toBe('snapshot')
+  })
+
+  it('static SPA fallback never hijacks /api/* (G1 regression)', async () => {
+    const staticDir = mkdtempSync(join(tmpdir(), 'den-static-'))
+    dirs.push(staticDir)
+    writeFileSync(join(staticDir, 'index.html'), '<!doctype html>SPA')
+    const { base } = await start('', 60_000, {
+      staticDir,
+      extraRoutes: [
+        {
+          prefix: '/api/echo',
+          handler: (_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end('{"api":true}')
+          },
+        },
+      ],
+    })
+    // extensionless GET under /api must reach the mount, not index.html
+    expect(await (await fetch(`${base}/api/echo/thing`)).json()).toEqual({ api: true })
+    // and unknown /api paths 404 as JSON-ish, not the SPA shell
+    const miss = await fetch(`${base}/api/unknown`)
+    expect(miss.headers.get('content-type')).not.toContain('text/html')
+    // the SPA still serves everywhere else
+    expect(await (await fetch(`${base}/some/route`)).text()).toContain('SPA')
+  })
+})
