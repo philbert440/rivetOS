@@ -98,6 +98,7 @@ export function createTaskCompletionWaiter(
 
       try {
         for (;;) {
+          if (stopped) return undefined
           const row = await opts.store.get(taskId)
           if (!row) return undefined
           if (TERMINAL.includes(row.status)) return row
@@ -123,6 +124,9 @@ export function createTaskCompletionWaiter(
     async stop(): Promise<void> {
       stopped = true
       listenHealthy = false
+      // Cancel in-flight waits — a draining 30m mesh wait must not block
+      // shutdown; callers get undefined and the durable row survives.
+      for (const taskId of [...wakeups.keys()]) wake(taskId)
       await client?.end().catch(() => undefined)
       client = undefined
     },

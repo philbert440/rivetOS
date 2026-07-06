@@ -213,4 +213,13 @@ describe('MeshDelegationEngine postgres transport', () => {
     expect(result.status).not.toBe('completed')
     expect(await store.list()).toHaveLength(0)
   })
+
+  it('refuses mesh delegation past the chain-depth cap without creating a row', async () => {
+    const store = new InMemoryTaskStore()
+    const engine = makePgEngine(remote, store)
+    const result = await engine.delegate({ fromAgent: 'local', toAgent: 'grok', task: 'x' }, 3)
+    expect(result.status).toBe('failed')
+    expect(result.response).toContain('chain too deep')
+    expect(await store.list()).toHaveLength(0)
+  })
 })
