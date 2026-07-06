@@ -25,7 +25,6 @@
  * when the user stops a turn or the outer turn-timeout fires.
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
@@ -39,20 +38,22 @@ import type {
 import { APICallError } from '@ai-sdk/provider'
 import type { Tool } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
+import {
+  buildArgs,
+  spawnClaudeTurn,
+  type ClaudeCliEffort,
+  type CliContentBlock,
+  type CliResult,
+  type CliStreamEvent,
+  type CliSystemInit,
+} from './spawn-turn.js'
 import type { BridgeLogger } from './log.js'
 import { createLogger } from './log.js'
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-/** Grace period between SIGTERM and SIGKILL when terminating the child. */
-const KILL_GRACE_MS = 2_000
-
-/** Max bytes of child stderr we retain (only the first 500 chars are surfaced). */
-const STDERR_CAP = 64 * 1024
-
-export type ClaudeCliEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+// Spawn / flag-assembly / stream-json layer lives in spawn-turn.ts (shared
+// with the ClaudeCliExecutor). Re-export the types this module historically
+// owned so existing importers keep working.
+export type { ClaudeCliEffort, CliContentBlock, CliImageSource } from './spawn-turn.js'
 
 export interface ClaudeCliModelConfig {
   /** Provider id used for AI SDK error attribution. */
@@ -80,67 +81,8 @@ export interface ClaudeCliModelConfig {
 }
 
 // ---------------------------------------------------------------------------
-// CLI stream-json event shapes (partial — only the bits we consume)
-// ---------------------------------------------------------------------------
-
-interface CliSystemInit {
-  type: 'system'
-  subtype: 'init'
-  session_id: string
-  model: string
-  apiKeySource?: string
-  tools: string[]
-}
-
-interface CliStreamEvent {
-  type: 'stream_event'
-  event: {
-    type: string
-    index?: number
-    content_block?: { type?: string }
-    delta?: {
-      type?: string
-      text?: string
-      thinking?: string
-    }
-  }
-  session_id: string
-}
-
-interface CliResult {
-  type: 'result'
-  subtype: string
-  is_error: boolean
-  result?: string
-  stop_reason?: string
-  session_id: string
-  total_cost_usd?: number
-  usage?: {
-    input_tokens?: number
-    output_tokens?: number
-    cache_creation_input_tokens?: number
-    cache_read_input_tokens?: number
-  }
-}
-
-type CliEvent =
-  CliSystemInit | CliStreamEvent | CliResult | { type: string; [key: string]: unknown }
-
-// ---------------------------------------------------------------------------
 // Helpers — render AI SDK prompt back to CLI-friendly content blocks
 // ---------------------------------------------------------------------------
-
-/**
- * Anthropic Messages API content-block shape, which Claude Code's
- * `--input-format stream-json` accepts on the user-turn `content` field.
- * We only emit `text` and `image` blocks (the only shapes the CLI needs
- * from us for now).
- */
-export type CliImageSource =
-  { type: 'base64'; media_type: string; data: string } | { type: 'url'; url: string }
-
-export type CliContentBlock =
-  { type: 'text'; text: string } | { type: 'image'; source: CliImageSource }
 
 function systemFromMessage(msg: LanguageModelV3Message): string | null {
   if (msg.role !== 'system') return null
@@ -342,21 +284,8 @@ function redactContentForLog(blocks: CliContentBlock[]): unknown[] {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers — env + args
+// Helpers — providerOptions
 // ---------------------------------------------------------------------------
-
-/**
- * CRITICAL: scrub OAuth-impersonating env vars. If ANTHROPIC_API_KEY is set,
- * the CLI uses API-key auth and bills the console — defeating the entire
- * point of this provider. Strip both vars so the CLI falls back to its
- * OAuth keychain.
- */
-function buildChildEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env }
-  delete env.ANTHROPIC_API_KEY
-  delete env.ANTHROPIC_AUTH_TOKEN
-  return env
-}
 
 function mapEffortFromProviderOptions(
   providerOptions: LanguageModelV3CallOptions['providerOptions'],
@@ -368,71 +297,6 @@ function mapEffortFromProviderOptions(
     return raw
   }
   return fallback
-}
-
-function buildArgs(
-  config: ClaudeCliModelConfig,
-  effort: ClaudeCliEffort,
-  systemText: string,
-  mcpConfigPath: string | undefined,
-): string[] {
-  const args: string[] = [
-    '-p',
-    '--input-format',
-    'stream-json',
-    '--output-format',
-    'stream-json',
-    '--verbose',
-    '--include-partial-messages',
-    '--permission-mode',
-    config.permissionMode,
-    '--effort',
-    effort,
-    '--tools',
-    config.toolsArg,
-  ]
-
-  if (config.modelId) {
-    args.push('--model', config.modelId)
-  }
-
-  if (config.excludeDynamicSections) {
-    args.push('--exclude-dynamic-system-prompt-sections')
-  }
-
-  if (config.appendSystemPrompt && systemText) {
-    args.push('--append-system-prompt', systemText)
-  }
-
-  if (mcpConfigPath) {
-    args.push('--mcp-config', mcpConfigPath)
-  }
-
-  // No --session-id stitching: each turn is a one-shot. Multi-turn state
-  // lives in the loop's message history, not in claude's session store.
-  args.push('--no-session-persistence')
-
-  return args
-}
-
-// ---------------------------------------------------------------------------
-// Line iterator over a Readable stream
-// ---------------------------------------------------------------------------
-
-async function* iterateLines(stream: NodeJS.ReadableStream): AsyncIterable<string> {
-  let buffer = ''
-  for await (const chunk of stream) {
-    const str: string = typeof chunk === 'string' ? chunk : chunk.toString('utf-8')
-    buffer += str
-    let idx = buffer.indexOf('\n')
-    while (idx !== -1) {
-      const line = buffer.slice(0, idx)
-      buffer = buffer.slice(idx + 1)
-      yield line
-      idx = buffer.indexOf('\n')
-    }
-  }
-  if (buffer.length > 0) yield buffer
 }
 
 function emptyUsage(): LanguageModelV3Usage {
@@ -561,60 +425,46 @@ export class ClaudeCliModel implements LanguageModelV3 {
       mcpEnabled: !!bridge,
     })
 
-    const args = buildArgs(this.config, effort, systemText, bridge?.configPath)
+    // Wire stdin: one user turn as stream-json input, then close.
+    // `content` is an Anthropic content-block array — text + image blocks
+    // (see renderPromptForCli). Falls back to an empty string if the prompt
+    // had no user-side parts at all, matching the CLI's accepted shape.
+    const cliContent: string | CliContentBlock[] = userContent.length === 0 ? '' : userContent
 
-    let proc: ChildProcessWithoutNullStreams
+    const flags = {
+      binary: this.config.binary,
+      modelId: this.config.modelId,
+      toolsArg: this.config.toolsArg,
+      effort,
+      permissionMode: this.config.permissionMode,
+      excludeDynamicSections: this.config.excludeDynamicSections,
+      systemText: this.config.appendSystemPrompt ? systemText : '',
+      mcpConfigPath: bridge?.configPath,
+      cwd: this.config.cwd,
+    }
+
+    let turn: ReturnType<typeof spawnClaudeTurn>
     try {
-      proc = spawn(this.config.binary, args, {
-        env: buildChildEnv(),
-        cwd: this.config.cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
+      turn = spawnClaudeTurn(flags, cliContent)
     } catch (err: unknown) {
       if (bridge) await bridge.close().catch(() => undefined)
       const msg = err instanceof Error ? err.message : String(err)
       throw new APICallError({
         message: `Failed to spawn ${this.config.binary}: ${msg}`,
         url: this.config.binary,
-        requestBodyValues: { args },
+        requestBodyValues: { args: buildArgs(flags) },
         isRetryable: false,
       })
     }
+    const { proc, args } = turn
+    // A single killProc() in `finally` guarantees the child is reaped on every
+    // exit path (normal, error, abort, cancel), closing the zombie-on-error gap.
+    const killProc = turn.kill
 
     this.log.info('claude.spawn', {
       pid: proc.pid,
       model: this.modelId,
       hasMcp: !!bridge,
-    })
-
-    // Wire stdin: one user turn as stream-json input, then close.
-    // `content` is an Anthropic content-block array — text + image blocks
-    // (see renderPromptForCli). Falls back to an empty string if the prompt
-    // had no user-side parts at all, matching the CLI's accepted shape.
-    const cliContent: string | CliContentBlock[] = userContent.length === 0 ? '' : userContent
-    const inputLine =
-      JSON.stringify({ type: 'user', message: { role: 'user', content: cliContent } }) + '\n'
-    proc.stdin.write(inputLine)
-    proc.stdin.end()
-
-    // Terminate the child idempotently: SIGTERM, then SIGKILL if it ignores us.
-    // No internal *runtime* timeout — Claude Code owns max-output-tokens and
-    // runtime limits — this only bounds how long a *kill* can hang. A single
-    // killProc() in `finally` guarantees the child is reaped on every exit path
-    // (normal, error, abort, cancel), closing the zombie-on-error gap.
-    let killTimer: ReturnType<typeof setTimeout> | undefined
-    const killProc = (): void => {
-      if (proc.exitCode !== null) return // already exited — nothing to do
-      if (!proc.killed) proc.kill('SIGTERM')
-      if (!killTimer) {
-        killTimer = setTimeout(() => {
-          if (proc.exitCode === null) proc.kill('SIGKILL')
-        }, KILL_GRACE_MS)
-        killTimer.unref()
-      }
-    }
-    proc.once('exit', () => {
-      if (killTimer) clearTimeout(killTimer)
     })
 
     // Forward AI SDK's abortSignal — kills the spawn if the loop stops the turn.
@@ -635,14 +485,6 @@ export class ClaudeCliModel implements LanguageModelV3 {
         })
       }
     }
-
-    // Cap stderr accumulation — we only ever surface the first 500 chars, so an
-    // unbounded child writing to stderr for the whole run can't grow this string
-    // without limit.
-    let stderr = ''
-    proc.stderr.on('data', (d: Buffer) => {
-      if (stderr.length < STDERR_CAP) stderr += d.toString()
-    })
 
     const log = this.log
     const providerId = this.provider
@@ -671,15 +513,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
         controller.enqueue({ type: 'stream-start', warnings: [] })
 
         try {
-          for await (const line of iterateLines(proc.stdout)) {
-            if (!line.trim()) continue
-            let event: CliEvent
-            try {
-              event = JSON.parse(line) as CliEvent
-            } catch {
-              continue
-            }
-
+          for await (const event of turn.events()) {
             if (event.type === 'system') {
               lastApiKeySource = (event as CliSystemInit).apiKeySource
               log.debug('system.init', { apiKeySource: lastApiKeySource })
@@ -796,18 +630,15 @@ export class ClaudeCliModel implements LanguageModelV3 {
           if (reasoningOpen) controller.enqueue({ type: 'reasoning-end', id: REASON_ID })
 
           // Await process close to surface non-zero exits.
-          const exitCode: number | null = await new Promise((resolve) => {
-            if (proc.exitCode !== null) return resolve(proc.exitCode)
-            proc.once('close', (code) => resolve(code))
-          })
+          const exitCode: number | null = await turn.waitExit()
 
           if (exitCode !== 0 && !sawResult) {
             log.warn('claude.nonzero_exit', {
               exitCode,
-              stderr: stderr.slice(0, 200),
+              stderr: turn.stderrText().slice(0, 200),
             })
             throw new APICallError({
-              message: `claude CLI exited ${String(exitCode)}: ${stderr.slice(0, 500)}`,
+              message: `claude CLI exited ${String(exitCode)}: ${turn.stderrText().slice(0, 500)}`,
               url: 'claude-cli://stream-json',
               requestBodyValues: {},
               statusCode: exitCode ?? 500,
