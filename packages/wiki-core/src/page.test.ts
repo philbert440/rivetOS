@@ -118,6 +118,34 @@ describe('applyPatch', () => {
   })
 })
 
+describe('round-trip edge cases (#285 review)', () => {
+  it('CRLF input parses; hyphen and en-dash history headings parse', () => {
+    const crlf = SAMPLE.replace(/\n/g, '\r\n').replace('— Phase 1', '- Phase 1')
+    const page = parseWikiPage(crlf)
+    expect(page.history[0].title).toBe('Phase 1 cutover shipped')
+  })
+
+  it('### inside fenced code does not split history; ## inside fence does not split sections', () => {
+    const md = SAMPLE + '\n```\n### 2020-01-01 — not an entry\n## not a section\n```\n'
+    const page = parseWikiPage(md)
+    expect(page.history).toHaveLength(2)
+    expect(page.history[1].body).toContain('### 2020-01-01')
+  })
+
+  it('preamble, extra sections, and unknown frontmatter keys survive round-trip', () => {
+    const md = SAMPLE.replace('---\n\n## Current state', '---\ntouched_by: human\n---\n\nA preamble line.\n\n## Current state').replace('---\ntitle:', '---\ntitle:')
+    // build explicitly: inject extra key + preamble + extra section
+    const md2 = SAMPLE.replace('last_verified:', 'touched_by: human\nlast_verified:') + '\n## See also\n\n- other-topic\n'
+    const page = parseWikiPage(md2)
+    expect(page.meta.extra).toEqual({ touched_by: 'human' })
+    expect(page.extraSections).toEqual([{ heading: 'See also', body: '- other-topic' }])
+    const round = parseWikiPage(serializeWikiPage(page))
+    expect(round.meta.extra).toEqual({ touched_by: 'human' })
+    expect(round.extraSections).toEqual(page.extraSections)
+    expect(serializeWikiPage(round)).toBe(serializeWikiPage(page))
+  })
+})
+
 describe('normalizeSlug', () => {
   it('kebab-cases and bounds', () => {
     expect(normalizeSlug('  RivetOS Task Engine! ')).toBe('rivetos-task-engine')

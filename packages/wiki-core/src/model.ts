@@ -30,6 +30,8 @@ export interface WikiFrontmatter {
   /** ISO timestamp of the last extraction that verified Current state. */
   lastVerified?: string
   sources: WikiSource[]
+  /** Unknown frontmatter keys — preserved verbatim (forward compat). */
+  extra?: Record<string, unknown>
 }
 
 export interface WikiHistoryEntry {
@@ -47,6 +49,10 @@ export interface WikiPage {
   currentState: string
   /** Newest-first dated entries under "## History". */
   history: WikiHistoryEntry[]
+  /** Body text before the first "##" heading — preserved verbatim. */
+  preamble?: string
+  /** Sections other than Current state/History — preserved verbatim. */
+  extraSections?: Array<{ heading: string; body: string }>
 }
 
 /**

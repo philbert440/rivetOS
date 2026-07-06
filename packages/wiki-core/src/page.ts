@@ -14,7 +14,8 @@ import {
 } from './model.js'
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/
-const HISTORY_HEADING_RE = /^### (\d{4}-\d{2}-\d{2})(?:\s+—\s+(.*))?$/
+// Accept em-dash, en-dash, or ASCII hyphen between date and title.
+const HISTORY_HEADING_RE = /^### (\d{4}-\d{2}-\d{2})(?:\s+[—–-]\s+(.*))?$/
 
 export class WikiParseError extends Error {
   constructor(detail: string) {
@@ -23,7 +24,8 @@ export class WikiParseError extends Error {
   }
 }
 
-export function parseWikiPage(markdown: string): WikiPage {
+export function parseWikiPage(input: string): WikiPage {
+  const markdown = input.replace(/\r\n/g, '\n')
   const fm = FRONTMATTER_RE.exec(markdown)
   if (!fm) throw new WikiParseError('missing YAML frontmatter')
   const rawMeta = parseYaml(fm[1]) as Record<string, unknown> | null
@@ -31,19 +33,27 @@ export function parseWikiPage(markdown: string): WikiPage {
   const meta = normalizeMeta(rawMeta)
 
   const body = markdown.slice(fm[0].length)
-  const sections = splitSections(body)
+  const { preamble, sections } = splitSections(body)
   const current = sections.find((s) => s.heading.toLowerCase() === 'current state')
   const history = sections.find((s) => s.heading.toLowerCase() === 'history')
+  const extras = sections.filter(
+    (s) => !['current state', 'history'].includes(s.heading.toLowerCase()),
+  )
 
   return {
     meta,
     currentState: (current?.body ?? '').trim(),
     history: history ? parseHistory(history.body) : [],
+    ...(preamble.trim() !== '' ? { preamble: preamble.trim() } : {}),
+    ...(extras.length > 0
+      ? { extraSections: extras.map((s) => ({ heading: s.heading, body: s.body.trim() })) }
+      : {}),
   }
 }
 
 export function serializeWikiPage(page: WikiPage): string {
   const meta: Record<string, unknown> = {
+    ...(page.meta.extra ?? {}),
     title: page.meta.title,
     slug: page.meta.slug,
     aliases: page.meta.aliases,
@@ -57,6 +67,7 @@ export function serializeWikiPage(page: WikiPage): string {
     .join('\n')
   return [
     `---\n${stringifyYaml(meta).trimEnd()}\n---`,
+    ...(page.preamble ? ['', page.preamble] : []),
     '',
     '## Current state',
     '',
@@ -65,6 +76,7 @@ export function serializeWikiPage(page: WikiPage): string {
     '## History',
     '',
     history.trimEnd(),
+    ...(page.extraSections ?? []).flatMap((s) => ['', `## ${s.heading}`, '', s.body]),
     '',
   ].join('\n')
 }
@@ -98,9 +110,8 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
   page.meta.entities = union(page.meta.entities, patch.addEntities)
   page.meta.lastVerified = patch.verifiedAt
   for (const src of patch.addSources ?? []) {
-    const dup = page.meta.sources.find(
-      (s) => s.kind === src.kind && s.ids.join(',') === src.ids.join(','),
-    )
+    const key = (x: { ids: string[] }): string => JSON.stringify([...x.ids].sort())
+    const dup = page.meta.sources.find((s) => s.kind === src.kind && key(s) === key(src))
     if (!dup) page.meta.sources.push(src)
   }
 
@@ -135,6 +146,16 @@ function normalizeMeta(raw: Record<string, unknown>): WikiFrontmatter {
   if (typeof slug !== 'string' || slug.trim() === '') throw new WikiParseError('slug required')
   const strList = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  const KNOWN = new Set([
+    'title',
+    'slug',
+    'aliases',
+    'tags',
+    'entities',
+    'last_verified',
+    'sources',
+  ])
+  const extra = Object.fromEntries(Object.entries(raw).filter(([k]) => !KNOWN.has(k)))
   return {
     title,
     slug: normalizeSlug(slug),
@@ -142,6 +163,7 @@ function normalizeMeta(raw: Record<string, unknown>): WikiFrontmatter {
     tags: strList(raw.tags),
     entities: strList(raw.entities),
     lastVerified: typeof raw.last_verified === 'string' ? raw.last_verified : undefined,
+    ...(Object.keys(extra).length > 0 ? { extra } : {}),
     sources: Array.isArray(raw.sources)
       ? raw.sources.filter(
           (s): s is WikiFrontmatter['sources'][number] =>
@@ -156,22 +178,27 @@ interface Section {
   body: string
 }
 
-function splitSections(body: string): Section[] {
+function splitSections(body: string): { preamble: string; sections: Section[] } {
   const sections: Section[] = []
+  const pre: string[] = []
   let heading: string | undefined
   let buf: string[] = []
+  let inFence = false
   for (const line of body.split('\n')) {
-    const m = /^## (.+)$/.exec(line)
+    if (/^```/.test(line.trim())) inFence = !inFence
+    const m = !inFence ? /^## (.+)$/.exec(line) : null
     if (m) {
       if (heading !== undefined) sections.push({ heading, body: buf.join('\n') })
       heading = m[1].trim()
       buf = []
     } else if (heading !== undefined) {
       buf.push(line)
+    } else {
+      pre.push(line)
     }
   }
   if (heading !== undefined) sections.push({ heading, body: buf.join('\n') })
-  return sections
+  return { preamble: pre.join('\n'), sections }
 }
 
 function parseHistory(body: string): WikiHistoryEntry[] {
@@ -182,8 +209,10 @@ function parseHistory(body: string): WikiHistoryEntry[] {
     if (current) entries.push({ ...current, body: buf.join('\n').trim() })
     buf = []
   }
+  let inFence = false
   for (const line of body.split('\n')) {
-    const m = HISTORY_HEADING_RE.exec(line)
+    if (/^```/.test(line.trim())) inFence = !inFence
+    const m = !inFence ? HISTORY_HEADING_RE.exec(line) : null
     if (m) {
       flush()
       current = { date: m[1], title: m[2] ?? '', body: '' }
