@@ -18,7 +18,7 @@
 
 import { z } from 'zod'
 
-import type { ToolRegistration } from '../server.js'
+import type { ToolRegistration } from '@rivetos/mcp'
 
 export const sessionAttachInputSchema = {
   agent: z

@@ -14,8 +14,8 @@
 import { WebSearchTool, WebFetchTool } from '@rivetos/tool-web-search'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '../server.js'
-import { adaptRivetTool } from './adapt.js'
+import type { ToolRegistration } from '@rivetos/mcp-v1'
+import { adaptRivetTool } from '@rivetos/mcp'
 
 export interface WebToolsOptions {
   /** Google Custom Search API key — falls back to `GOOGLE_CSE_API_KEY` / `GOOGLE_API_KEY`. */

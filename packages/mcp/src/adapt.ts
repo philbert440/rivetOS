@@ -21,7 +21,7 @@
 import type { Tool, ToolResult } from '@rivetos/types'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '../server.js'
+import type { ToolRegistration } from './registration.js'
 
 export interface AdaptRivetToolOptions {
   /**

@@ -16,8 +16,8 @@ import { SkillManagerImpl, createSkillListTool, createSkillManageTool } from '@r
 import type { Tool } from '@rivetos/types'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '../server.js'
-import { adaptRivetTool } from './adapt.js'
+import type { ToolRegistration } from '@rivetos/mcp-v1'
+import { adaptRivetTool } from '@rivetos/mcp'
 
 export interface SkillToolsOptions {
   /**

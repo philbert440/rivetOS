@@ -1,16 +1,12 @@
 /**
- * @rivetos/mcp-server
+ * @rivetos/mcp-server — the in-process MCP transport plugin.
  *
- * RivetOS MCP server — exposes RivetOS tools (memory, skills, runtime,
- * utility) over the Model Context Protocol.
- *
- * Phase 1.A — Slice 3: bare StreamableHTTP server with `/health/live`,
- * an `echo` smoke-test tool, the full memory data-plane
- * (`memory_search`, `memory_browse`, `memory_stats`), and web tools
- * (`internet_search`, `web_fetch`). mTLS, session.attach handshake, and the
- * remaining data-plane tools (skill_*) follow in subsequent slices.
- *
- * See: /rivet-shared/plans/mcp-architecture-overhaul.md §Phase 1
+ * Post-unification (PR 1) this package is the transport MANIFEST plus
+ * compatibility re-exports: the SDK-agnostic core lives in @rivetos/mcp,
+ * the SDK-1.29 server mount in @rivetos/mcp-v1, and the standalone sidecar
+ * (curated memory/web/skills/file/shell/search tool suites + cli) in
+ * @rivetos/mcp-sidecar. dist/cli.js remains a compat shim for installed
+ * rivet-memory-mcp.sh launchers.
  */
 
 export {
@@ -19,56 +15,26 @@ export {
   defaultEchoTool,
   RIVETOS_MCP_SERVER_NAME,
   RIVETOS_MCP_SERVER_VERSION,
-} from './server.js'
+  createSessionAttachTool,
+  sessionAttachInputSchema,
+} from '@rivetos/mcp-v1'
 export type {
   RivetMcpServer,
   RivetMcpServerOptions,
   RivetMcpStdioServer,
   RivetMcpStdioServerOptions,
   ToolRegistration,
-} from './server.js'
+  SessionState,
+  SessionAttachResult,
+  CreateSessionAttachToolOptions,
+} from '@rivetos/mcp-v1'
 
 export {
   adaptRivetTool,
   adaptRivetToolDynamic,
   jsonSchemaToZodShape,
   toolResultToString,
-} from './tools/adapt.js'
-export type { AdaptRivetToolOptions } from './tools/adapt.js'
-
-export {
-  createMemoryTools,
-  memorySearchInputSchema,
-  memoryBrowseInputSchema,
-  memoryStatsInputSchema,
-} from './tools/memory.js'
-export type { MemoryToolsOptions, MemoryToolsHandle } from './tools/memory.js'
-
-export { createWebTools, internetSearchInputSchema, webFetchInputSchema } from './tools/web.js'
-export type { WebToolsOptions, WebToolsHandle } from './tools/web.js'
-
-export { createSkillTools, skillListInputSchema, skillManageInputSchema } from './tools/skills.js'
-export type { SkillToolsOptions, SkillToolsHandle } from './tools/skills.js'
-
-export { createSessionAttachTool, sessionAttachInputSchema } from './tools/session-attach.js'
-export type {
-  SessionState,
-  SessionAttachResult,
-  CreateSessionAttachToolOptions,
-} from './tools/session-attach.js'
-
-export { createShellTool, shellInputSchema } from './tools/shell.js'
-export type { ShellToolOptions, ShellToolHandle } from './tools/shell.js'
-
-export {
-  createFileTools,
-  fileReadInputSchema,
-  fileWriteInputSchema,
-  fileEditInputSchema,
-} from './tools/file.js'
-export type { FileToolsOptions, FileToolsHandle } from './tools/file.js'
-
-export { createSearchTools, searchGlobInputSchema, searchGrepInputSchema } from './tools/search.js'
-export type { SearchToolsOptions, SearchToolsHandle } from './tools/search.js'
+} from '@rivetos/mcp'
+export type { AdaptRivetToolOptions } from '@rivetos/mcp'
 
 export { manifest } from './manifest.js'

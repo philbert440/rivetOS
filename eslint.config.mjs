@@ -184,29 +184,6 @@ export default tseslint.config(
     },
   },
 
-  // Known cross-domain leak, tolerated ONLY here until the MCP unification
-  // follow-up puts memory tools behind a contract: mcp-server re-exposes
-  // @rivetos/memory-postgres tools over MCP. Same full rule config as the
-  // global block (both axes, all options) — only `allow` differs.
-  {
-    files: ['plugins/transports/mcp-server/**/*.ts'],
-    plugins: { '@nx': nxPlugin },
-    rules: {
-      '@nx/enforce-module-boundaries': [
-        'error',
-        {
-          enforceBuildableLibDependency: false,
-          allow: ['@rivetos/memory-postgres'],
-          checkDynamicDependenciesExceptions: ['.*'],
-          banTransitiveDependencies: true,
-          checkNestedExternalImports: true,
-          allowCircularSelfDependency: false,
-          depConstraints: BOUNDARY_DEP_CONSTRAINTS,
-        },
-      ],
-    },
-  },
-
   // Nx dependency checks — runs against each project's package.json.
   // Catches:
   //   - imports of packages not declared as deps (the missing-dependency class of bug)

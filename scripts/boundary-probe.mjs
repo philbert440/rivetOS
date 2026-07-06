@@ -20,9 +20,18 @@ const probes = [
     expectViolation: true,
   },
   {
-    name: 'allow escape hatch: mcp-server → memory-postgres must PASS',
+    // The tolerated override is GONE (MCP unification PR 1): the transport
+    // must no longer reach memory-postgres — the sidecar app owns that edge.
+    name: 'override retired: mcp-server → memory-postgres must FAIL',
     project: '@rivetos/mcp-server',
     file: 'plugins/transports/mcp-server/src/boundary-probe.ts',
+    code: "import type { PostgresMemoryConfig } from '@rivetos/memory-postgres'\nexport type _P = PostgresMemoryConfig\n",
+    expectViolation: true,
+  },
+  {
+    name: 'sidecar app legitimately composes memory-postgres: mcp-sidecar → memory-postgres must PASS',
+    project: '@rivetos/mcp-sidecar',
+    file: 'services/mcp-sidecar/src/boundary-probe.ts',
     code: "import type { PostgresMemoryConfig } from '@rivetos/memory-postgres'\nexport type _P = PostgresMemoryConfig\n",
     expectViolation: false,
   },

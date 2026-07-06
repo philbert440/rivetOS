@@ -35,8 +35,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
+import type { ToolRegistration } from '@rivetos/mcp'
+export type { ToolRegistration }
 
-import { createSessionAttachTool, type SessionState } from './tools/session-attach.js'
+import { createSessionAttachTool, type SessionState } from './session-attach.js'
 
 export const RIVETOS_MCP_SERVER_NAME = 'rivetos-mcp-server'
 export const RIVETOS_MCP_SERVER_VERSION = '0.4.0-beta.6'
@@ -56,12 +58,6 @@ const SERVER_VERSION = RIVETOS_MCP_SERVER_VERSION
  * is a flat zod raw shape (matching the MCP SDK), and `execute` returns
  * a string. This will widen in slice 3 once real RivetOS tools land.
  */
-export interface ToolRegistration {
-  name: string
-  description: string
-  inputSchema: z.ZodRawShape
-  execute: (args: Record<string, unknown>) => Promise<string>
-}
 
 export interface RivetMcpServerOptions {
   /** TCP host to bind. Default: `127.0.0.1`. Ignored if `socketPath` is set. */

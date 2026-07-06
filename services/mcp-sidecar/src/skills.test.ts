@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
-import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '../server.js'
+import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '@rivetos/mcp-v1'
 import { createSkillTools, type SkillToolsHandle } from './skills.js'
 
 const SEED_SKILL_NAME = 'mcp-test-seed'

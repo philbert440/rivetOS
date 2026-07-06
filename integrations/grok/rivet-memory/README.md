@@ -52,7 +52,7 @@ npm run build      # produces dist/ for the MCP server and the capture worker
 ```
 
 This produces:
-- `$RIVETOS_ROOT/plugins/transports/mcp-server/dist/cli.js` (memory MCP server)
+- `$RIVETOS_ROOT/services/mcp-sidecar/dist/cli.js` (memory MCP server)
 - `$RIVETOS_ROOT/integrations/grok/rivet-memory/capture/dist/grok-memory-capture.js` (capture worker)
 
 ### 2. Configure the RivetOS MCP Server (Recommended)
@@ -71,7 +71,7 @@ command = "/opt/rivetos/integrations/grok/rivet-memory/bin/rivet-memory-mcp.sh"
 Alternative (direct):
 ```toml
 [mcp_servers.rivetos]
-command = "/opt/rivetos/plugins/transports/mcp-server/dist/cli.js"
+command = "/opt/rivetos/services/mcp-sidecar/dist/cli.js"
 args = ["--stdio"]
 ```
 

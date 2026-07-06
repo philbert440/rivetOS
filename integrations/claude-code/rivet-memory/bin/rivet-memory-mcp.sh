@@ -21,7 +21,11 @@ if [ -f "$RIVETOS_ENV" ]; then
   set +a
 fi
 
-CLI="$RIVETOS_ROOT/plugins/transports/mcp-server/dist/cli.js"
+CLI="$RIVETOS_ROOT/services/mcp-sidecar/dist/cli.js"
+# pre-unification fallback (older checkouts still ship the shim path)
+if [ ! -f "$CLI" ]; then
+  CLI="$RIVETOS_ROOT/plugins/transports/mcp-server/dist/cli.js"
+fi
 if [ ! -f "$CLI" ]; then
   echo "rivet-memory: MCP server not built at $CLI" >&2
   echo "rivet-memory: run 'npm run build' in $RIVETOS_ROOT" >&2
