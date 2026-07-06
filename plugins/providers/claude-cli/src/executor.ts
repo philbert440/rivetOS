@@ -35,6 +35,7 @@
 import type {
   AgentEventBody,
   HarnessExecutor,
+  Memory,
   HarnessExecutorCapabilities,
   TaskEvent,
   TaskHandle,
@@ -77,6 +78,44 @@ export interface ClaudeCliExecutorConfig {
   /** Live RivetOS tools for the per-spawn MCP bridge; filtered per task by
    *  spec.tools (tool names). Resolved at start() time. */
   tools?: () => Tool[]
+  /** Task-conversation source for resume rehydration: on resume-from-
+   *  awaiting-input the prior transcript (session_key task:<id>, written by
+   *  the capture hooks) is rendered into the system append so the resumed
+   *  spawn sees what already happened — parity with chat-loop (step (c)). */
+  memory?: Pick<Memory, 'getSessionHistory'>
+}
+
+/** Caps for the rendered resume transcript — keep the system append sane. */
+const RESUME_TRANSCRIPT_MAX_CHARS = 24_000
+const RESUME_MESSAGE_MAX_CHARS = 2_000
+
+/**
+ * Render the task's prior conversation for a resumed spawn: role-labeled,
+ * newest-preserved (oldest turns drop first when over budget), each message
+ * truncated. Returns '' when there is nothing usable.
+ */
+export function renderResumeTranscript(history: Array<{ role: string; content: unknown }>): string {
+  const lines: string[] = []
+  for (const m of history) {
+    if (m.role !== 'user' && m.role !== 'assistant') continue
+    if (typeof m.content !== 'string' || m.content.trim() === '') continue
+    const body =
+      m.content.length > RESUME_MESSAGE_MAX_CHARS
+        ? m.content.slice(0, RESUME_MESSAGE_MAX_CHARS) + '\n…[truncated]'
+        : m.content
+    lines.push(`[${m.role}]\n${body}`)
+  }
+  if (lines.length === 0) return ''
+  // Keep the newest turns: drop from the front until under budget.
+  let total = lines.reduce((n, l) => n + l.length + 2, 0)
+  let start = 0
+  while (total > RESUME_TRANSCRIPT_MAX_CHARS && start < lines.length - 1) {
+    total -= lines[start].length + 2
+    start++
+  }
+  const kept = lines.slice(start)
+  const dropped = start > 0 ? `(${String(start)} earlier message(s) omitted)\n\n` : ''
+  return `### Prior conversation (task resumed — do NOT redo completed work)\n${dropped}${kept.join('\n\n')}`
 }
 
 /** Mirrors the provider default — curated file/shell/web set. */
@@ -105,10 +144,60 @@ interface ParsedTaskResult {
   criteriaSelfReport?: TaskResult['criteriaSelfReport']
 }
 
+/** JSON Schema handed to `claude --json-schema` — the CLI forces the model
+ *  through a StructuredOutput tool, so the result event carries exactly this
+ *  shape (no mid-conversation fence false-positives, review P5a). */
+export const TASK_RESULT_JSON_SCHEMA = JSON.stringify({
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['completed', 'failed'] },
+    summary: { type: 'string', description: 'One-paragraph summary of what you did' },
+    output: { type: 'string', description: 'Optional full result payload for the requester' },
+    artifacts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', enum: ['file', 'url', 'commit', 'message'] },
+          ref: { type: 'string' },
+          note: { type: 'string' },
+        },
+        required: ['kind', 'ref'],
+      },
+    },
+    criteriaSelfReport: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          met: { type: 'boolean' },
+          evidence: { type: 'string' },
+        },
+        required: ['id', 'met'],
+      },
+    },
+  },
+  required: ['verdict', 'summary'],
+})
+
+/**
+ * Parse a structured-output JSON string (the result event's `result` field
+ * when --json-schema is in force). Same validation/coercion as the fenced
+ * parser. Returns undefined on any shape problem; never throws.
+ */
+export function parseTaskResultJson(json: string): ParsedTaskResult | undefined {
+  try {
+    return validateTaskResultShape(JSON.parse(json) as Record<string, unknown>)
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Parse the LAST fenced TASK_RESULT block out of the model's final text.
- * Returns undefined on any shape problem — callers fall back to a plain
- * 'completed' result carrying the raw text. Never throws.
+ * Fallback path — kept for CLIs without --json-schema and as belt-and-braces
+ * when the structured result is missing. Never throws.
  */
 export function parseTaskResultBlock(text: string): ParsedTaskResult | undefined {
   let match: RegExpExecArray | null
@@ -117,8 +206,16 @@ export function parseTaskResultBlock(text: string): ParsedTaskResult | undefined
   while ((match = TASK_RESULT_RE.exec(text)) !== null) last = match[1]
   if (!last) return undefined
   try {
-    const raw = JSON.parse(last) as Record<string, unknown>
-    if (typeof raw !== 'object') return undefined
+    return validateTaskResultShape(JSON.parse(last) as Record<string, unknown>)
+  } catch {
+    return undefined
+  }
+}
+
+/** Shared shape validation + verdict coercion for both parse paths. */
+function validateTaskResultShape(raw: Record<string, unknown>): ParsedTaskResult | undefined {
+  {
+    if (typeof raw !== 'object' || raw === null) return undefined
     let verdict = raw.verdict
     const summary = raw.summary
     if (typeof verdict === 'string' && COERCED_VERDICTS.includes(verdict)) {
@@ -144,8 +241,6 @@ export function parseTaskResultBlock(text: string): ParsedTaskResult | undefined
       artifacts,
       criteriaSelfReport: criteria,
     }
-  } catch {
-    return undefined
   }
 }
 
@@ -163,8 +258,10 @@ export function buildTaskSystemAppend(spec: TaskSpec): string {
     spec.systemPromptAppend ?? '',
     [
       '### Structured result (REQUIRED)',
-      'End your FINAL message with a fenced code block labeled TASK_RESULT',
-      'containing a single JSON object of this shape:',
+      'You will be required to provide a structured result (verdict/summary/',
+      'artifacts/criteriaSelfReport) at the end of the turn. If for any',
+      'reason that prompt does not appear, end your FINAL message with a',
+      'fenced code block labeled TASK_RESULT containing this JSON shape:',
       '',
       '```TASK_RESULT',
       '{',
@@ -328,8 +425,27 @@ export class ClaudeCliExecutor implements HarnessExecutor {
   ): Promise<TaskResult> {
     const startedAt = Date.now()
     const usage = emptyUsage()
-    const systemText = buildTaskSystemAppend(spec)
+    let systemText = buildTaskSystemAppend(spec)
+    // Resume rehydration (step-(c) parity): render the task conversation the
+    // capture hooks wrote under task:<id> into the system append. Failure
+    // degrades to an empty transcript — losing context is survivable,
+    // failing the resume is not.
+    if (spec.resumeMessage !== undefined && this.cfg.memory) {
+      try {
+        const history = await this.cfg.memory.getSessionHistory(`task:${spec.taskId}`, {
+          limit: 1000,
+        })
+        const transcript = renderResumeTranscript(history)
+        if (transcript) systemText = `${systemText}\n\n${transcript}`
+      } catch (err: unknown) {
+        this.log.warn('task.resume.rehydration.failed', {
+          taskId: spec.taskId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
     let lastText = ''
+    let lastStructured: string | undefined
     let lastError: string | undefined
 
     const allowedTools = (): Tool[] => {
@@ -356,6 +472,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
       })
 
       if (turn.text) lastText = turn.text
+      if (turn.structured) lastStructured = turn.structured
       if (turn.error) {
         lastError = turn.error
         break
@@ -387,9 +504,12 @@ export class ClaudeCliExecutor implements HarnessExecutor {
       }
     }
 
-    // Structured result: parse the fenced TASK_RESULT block; fall back to a
-    // plain 'completed' result carrying the final text.
-    const parsed = parseTaskResultBlock(lastText)
+    // Structured result: the --json-schema result is authoritative; the
+    // fenced TASK_RESULT block is the fallback (older CLI / missing result);
+    // last resort is a plain 'completed' result carrying the final text.
+    const parsed =
+      (lastStructured ? parseTaskResultJson(lastStructured) : undefined) ??
+      parseTaskResultBlock(lastText)
     if (parsed) {
       return { ...parsed, output: parsed.output ?? lastText, usage }
     }
@@ -419,7 +539,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
       setActiveSpawn: (s: SpawnedTurn | undefined) => void
     },
     usage: TaskUsage,
-  ): Promise<{ text: string; sessionId?: string; error?: string }> {
+  ): Promise<{ text: string; structured?: string; sessionId?: string; error?: string }> {
     const den = (event: AgentEventBody): void => {
       run.events.push({ ts: Date.now(), type: 'den', event })
     }
@@ -448,6 +568,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
           excludeDynamicSections: this.cfg.excludeDynamicSections ?? true,
           systemText,
           mcpConfigPath: bridge?.configPath,
+          jsonSchema: TASK_RESULT_JSON_SCHEMA,
           cwd: spec.workingDir ?? this.cfg.cwd,
         },
         message,
@@ -485,6 +606,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     let text = ''
     let sawResult = false
     let resultText: string | undefined
+    let structured: string | undefined
     let error: string | undefined
     let thinkingOpen = false
     const toolNamesById = new Map<string, string>()
@@ -587,6 +709,9 @@ export class ClaudeCliExecutor implements HarnessExecutor {
             error ??= `claude-cli error: ${r.result ?? 'unknown'}`
           } else if (typeof r.result === 'string' && r.result) {
             resultText = r.result
+            // With --json-schema in force the result field is the
+            // schema-validated JSON, not prose.
+            if (parseTaskResultJson(r.result)) structured = r.result
           }
         }
       }
@@ -616,6 +741,6 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     // turn, so a TASK_RESULT block emitted mid-conversation can be picked up
     // by the parser. Acceptable for now (parser takes the LAST block);
     // revisit with structured output (--json-schema) later.
-    return { text: resultText ?? text, sessionId, error }
+    return { text: text || (structured ? '' : (resultText ?? '')), structured, sessionId, error }
   }
 }

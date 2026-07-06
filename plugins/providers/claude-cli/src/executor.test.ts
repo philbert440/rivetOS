@@ -14,7 +14,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import type { TaskEvent } from '@rivetos/types'
-import { ClaudeCliExecutor, parseTaskResultBlock } from './executor.js'
+import {
+  ClaudeCliExecutor,
+  parseTaskResultBlock,
+  parseTaskResultJson,
+  renderResumeTranscript,
+  TASK_RESULT_JSON_SCHEMA,
+} from './executor.js'
 import {
   runExecutorConformance,
   makeConformanceSpec,
@@ -219,6 +225,71 @@ describe('ClaudeCliExecutor', () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined()
   })
 
+  it('passes --json-schema with the TASK_RESULT schema on every spawn', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    await makeExecutor(fake.binary).start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    const args = fake.args()
+    const schemaArg = args[args.indexOf('--json-schema') + 1]
+    expect(schemaArg).toBe(TASK_RESULT_JSON_SCHEMA)
+    expect(JSON.parse(schemaArg).required).toEqual(['verdict', 'summary'])
+  })
+
+  it('structured --json-schema result wins over prose and fenced blocks', async () => {
+    const structured = JSON.stringify({
+      verdict: 'failed',
+      summary: 'structured says failed',
+      criteriaSelfReport: [{ id: 'c1', met: false, evidence: 'nope' }],
+    })
+    const lines = successLines(
+      'prose text with a stale fence\n```TASK_RESULT\n{"verdict":"completed","summary":"fence lies"}\n```',
+    )
+    ;(lines[3] as { result: string }).result = structured
+    const fake = makeFakeClaude(lines)
+    const result = await makeExecutor(fake.binary).start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('failed')
+    expect(result.summary).toBe('structured says failed')
+    expect(result.criteriaSelfReport).toEqual([{ id: 'c1', met: false, evidence: 'nope' }])
+  })
+
+  it('resume injects the prior transcript into the system append', async () => {
+    const fake = makeFakeClaude(successLines('resumed ok'))
+    const memory = {
+      getSessionHistory: async () => [
+        { role: 'user' as const, content: 'original goal text' },
+        { role: 'assistant' as const, content: 'first pass, awaiting input' },
+      ],
+    }
+    const executor = new ClaudeCliExecutor({ binary: fake.binary, memory })
+    await executor.start(
+      makeConformanceSpec({ goal: 'original goal text', resumeMessage: 'here is the input' }),
+      { signal: new AbortController().signal },
+    ).result
+    // The fake binary records args newline-split, so read the raw capture —
+    // the transcript is a multi-line --append-system-prompt value.
+    const rawArgs = fs.readFileSync(path.join(fake.dir, 'args.txt'), 'utf8')
+    expect(rawArgs).toContain('Prior conversation (task resumed')
+    expect(rawArgs).toContain('original goal text')
+    expect(rawArgs).toContain('first pass, awaiting input')
+  })
+
+  it('resume survives a rehydration failure without the transcript', async () => {
+    const fake = makeFakeClaude(successLines('resumed anyway'))
+    const memory = {
+      getSessionHistory: async () => {
+        throw new Error('pg down')
+      },
+    }
+    const executor = new ClaudeCliExecutor({ binary: fake.binary, memory })
+    const result = await executor.start(makeConformanceSpec({ resumeMessage: 'go' }), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('completed')
+  })
+
   it('parses a well-formed TASK_RESULT block', async () => {
     const finalText = [
       'Work complete.',
@@ -342,5 +413,43 @@ describe('parseTaskResultBlock', () => {
       )
       expect(parsed).toMatchObject({ verdict: 'failed', summary: `model claimed ${v}` })
     }
+  })
+})
+
+describe('parseTaskResultJson', () => {
+  it('validates and coerces like the fenced parser', () => {
+    expect(parseTaskResultJson('{"verdict":"killed","summary":"s"}')?.verdict).toBe('failed')
+    expect(parseTaskResultJson('{"verdict":"completed"}')).toBeUndefined()
+    expect(parseTaskResultJson('not json')).toBeUndefined()
+  })
+})
+
+describe('renderResumeTranscript', () => {
+  it('renders role-labeled turns and skips non-chat rows', () => {
+    const out = renderResumeTranscript([
+      { role: 'user', content: 'q1' },
+      { role: 'tool', content: 'noise' },
+      { role: 'assistant', content: 'a1' },
+    ])
+    expect(out).toContain('[user]\nq1')
+    expect(out).toContain('[assistant]\na1')
+    expect(out).not.toContain('noise')
+  })
+
+  it('drops oldest turns over budget and notes the omission', () => {
+    const big = 'x'.repeat(2_500)
+    const history = Array.from({ length: 20 }, (_, i) => ({
+      role: i % 2 ? 'assistant' : 'user',
+      content: `${String(i)}-${big}`,
+    }))
+    const out = renderResumeTranscript(history)
+    expect(out.length).toBeLessThan(30_000)
+    expect(out).toContain('earlier message(s) omitted')
+    expect(out).toContain('19-') // newest kept
+    expect(out).not.toContain('[user]\n0-') // oldest dropped
+  })
+
+  it('returns empty for unusable history', () => {
+    expect(renderResumeTranscript([{ role: 'tool', content: 'x' }])).toBe('')
   })
 })

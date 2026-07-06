@@ -288,6 +288,25 @@ describe('ChatLoopExecutor specifics', () => {
     expect(memory.append).not.toHaveBeenCalled()
   })
 
+  it('accumulates costUsd from the pricing map so budget.maxUsd can fire', async () => {
+    // Mock provider reports 7 prompt / 11 completion tokens per turn.
+    const executor = createChatLoopExecutor(
+      makeConfig({ pricing: { mock: { inputPerMTok: 3, outputPerMTok: 15 } } }),
+    )
+    const result = await executor.start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.usage.costUsd).toBeCloseTo((7 * 3 + 11 * 15) / 1_000_000, 12)
+  })
+
+  it('costUsd stays undefined without a pricing entry (local providers free)', async () => {
+    const executor = createChatLoopExecutor(makeConfig({ pricing: { otherProvider: {} } }))
+    const result = await executor.start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.usage.costUsd).toBeUndefined()
+  })
+
   it('steer before the first turn completes runs a follow-up turn', async () => {
     const executor = createChatLoopExecutor(makeConfig())
     const handle = executor.start(makeConformanceSpec(), {

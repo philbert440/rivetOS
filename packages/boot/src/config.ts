@@ -128,6 +128,13 @@ export interface TasksSection {
    * delegation audit is a noop, and heartbeats are skipped.
    */
   enabled?: boolean
+  /**
+   * Per-provider pricing in USD per million tokens, e.g.
+   *   pricing: { xai: { input_per_mtok: 3, output_per_mtok: 15 } }
+   * Lets budget.maxUsd fire for in-process (chat-loop) tasks. Providers
+   * without an entry cost 0 (local vllm stays free).
+   */
+  pricing?: Record<string, { input_per_mtok?: number; output_per_mtok?: number }>
 }
 
 export interface DenSection {
