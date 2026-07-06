@@ -30,6 +30,7 @@ import { WorkspaceLoader } from '../domain/workspace.js'
 import { MessageQueue, isCommand, parseCommand } from '../domain/queue.js'
 import { createHeartbeatScheduler, type HeartbeatScheduler } from '../domain/heartbeat-scheduler.js'
 import type { TaskStore } from '../domain/task/store.js'
+import { runHeartbeatViaTasks } from '../domain/task/heartbeat-task.js'
 import type { HeartbeatConfig } from '@rivetos/types'
 import { CommandHandler } from './commands.js'
 import { StreamManager } from './streaming.js'
@@ -369,57 +370,16 @@ export class Runtime {
     log.info('Ready.')
   }
 
-  /**
-   * Run one heartbeat as a durable task (cutover step (f)): create the row
-   * (origin 'heartbeat', promptMode 'heartbeat', maxAttempts 1 — a crashed
-   * tick is failed by the sweep, never re-run; cron does not backfill), poll
-   * to terminal bounded by turnTimeout, deliver the output. The crontab job
-   * holds its worker slot for the wait — heartbeat concurrency is small and
-   * turnTimeout bounds it (grok design consult, 2026-07-06).
-   */
+  /** Run one heartbeat as a durable ros_tasks row (cutover step (f)) —
+   *  see domain/task/heartbeat-task.ts for the mechanics + design notes. */
   private async runHeartbeatTask(hbConfig: HeartbeatConfig): Promise<void> {
     const store = this.heartbeatTaskStore
     if (!store) return
-    const turnTimeoutMs = this.config.turnTimeout ? this.config.turnTimeout * 1000 : 1_800_000
-    const row = await store.create({
-      goal: hbConfig.prompt,
-      executor: 'chat-loop',
-      agentId: hbConfig.agent,
-      origin: 'heartbeat',
-      requestedBy: 'system:heartbeat',
-      spec: { promptMode: 'heartbeat' },
-      budget: { maxWallClockMs: turnTimeoutMs },
-      maxAttempts: 1,
+    await runHeartbeatViaTasks(hbConfig, {
+      store,
+      turnTimeoutMs: this.config.turnTimeout ? this.config.turnTimeout * 1000 : 1_800_000,
+      deliver: (cfg, response) => this.deliverHeartbeatOutput(cfg, response),
     })
-
-    const deadline = Date.now() + turnTimeoutMs + 60_000
-    for (;;) {
-      await new Promise((r) => setTimeout(r, 2_000))
-      const current = await store.get(row.id)
-      if (!current) {
-        log.warn(`Heartbeat task ${row.id} disappeared — no delivery`)
-        return
-      }
-      if (['completed', 'failed', 'killed', 'timeout'].includes(current.status)) {
-        if (current.status !== 'completed') {
-          log.warn(
-            `Heartbeat task ${row.id} ended ${current.status}${current.error ? `: ${current.error}` : ''}`,
-          )
-          return
-        }
-        await this.deliverHeartbeatOutput(
-          hbConfig,
-          current.result?.output ?? current.result?.summary ?? '',
-        )
-        return
-      }
-      if (Date.now() > deadline) {
-        log.warn(
-          `Heartbeat task ${row.id} still ${current.status} past deadline — abandoning wait (row remains durable)`,
-        )
-        return
-      }
-    }
   }
 
   /** Best-effort heartbeat output delivery with the silent-response filter. */
