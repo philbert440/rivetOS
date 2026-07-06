@@ -1,6 +1,6 @@
 ---
 name: memory-recall
-description: 'This skill should be used whenever the user asks about something that happened in a past conversation or a specific time window — "what did we do this morning / yesterday / today / recently / earlier / last week", "check memory", "do you remember", "have we seen this before", "what was that thing we tried", "did we already…", "what was the IP/MAC/password of X". Also use for any "where does X live" / "what is the IP of Y" infra lookup. Encodes the rivet-memory recall discipline — browse-with-date-range FIRST for time-bounded questions, multi-angle search plus trigram fallback for topic questions.'
+description: 'This skill should be used whenever the user asks about something that happened in a past conversation or a specific time window — "what did we do this morning / yesterday / today / recently / earlier / last week", "check memory", "do you remember", "have we seen this before", "what was that thing we tried", "did we already…", "what was the IP/MAC/password of X". Also use for any "where does X live" / "what is the IP of Y" infra lookup. Encodes the rivet-memory recall discipline — browse-with-date-range FIRST for time-bounded questions, multi-angle search with trigram-first for any literal/punctuated term (domains, IPs, IDs, paths, brand names) for topic questions.'
 version: 0.2.0
 ---
 
@@ -60,13 +60,26 @@ Run three queries from different vectors:
 
 Three queries from different vectors beats one query, every time.
 
-### 3. Semantic returns thin? → fall back to `mode: "trigram"`.
+### 3. Literal or punctuated term? → lead with `mode: "trigram"`. Thin/empty FTS → trigram, same turn, always.
 
-`memory_search` defaults to semantic embeddings. They miss literal token
-matches: IPs, MACs, hostnames, port numbers, exact error strings. The moment
-you see ≤ 2 hits on a query that *should* have matched, re-run it with
-`mode: "trigram"`. Often the result is already in memory, indexed under
-different surrounding text.
+`memory_search` defaults to `mode: "fts"` (full-text), which **tokenizes on
+punctuation**. So a query for a dotted / brand / identifier term —
+`"families.app"`, `"emkit.dev"`, `"10.4.20.8"`, `"qwen3.6-27b-int4"`,
+`/var/www/emkit.dev` — gets split apart and can return **zero hits even when the
+fact is right there in memory**. Two non-negotiable defaults:
+
+1. **If the term contains a dot, slash, colon, dash-joined id, IP/MAC, port,
+   file path, or package/domain/brand name → run `mode: "trigram"` from the
+   start.** These are literal tokens, not semantic concepts. (Same for exact
+   error strings.)
+2. **Any FTS query that returns 0–2 hits → immediately re-run it in
+   `mode: "trigram"` in the same turn.** Never report "no results" off an
+   FTS-only pass. Trigram is fuzzy/substring and catches what FTS tokenization
+   drops.
+
+(2026-05-31: default-FTS searches for `"families.app"` and `"emkit.dev"`
+returned *No results found*; the identical terms in trigram surfaced the entire
+project history. Don't repeat that whiff.)
 
 ### 4. Empty results aren't ground truth.
 
