@@ -95,6 +95,13 @@ export interface IngestOptions {
    * sessionId, then the path-derived key.
    */
   sessionId?: string
+  /**
+   * Verbatim conversation key override — wins over every derived key. Set for
+   * task-engine spawns (RIVETOS_SESSION_KEY=`task:<taskId>`) so every CLI
+   * session a task spawns files under the task's one conversation, which is
+   * what `Memory.getSessionHistory('task:<id>')` rehydrates from at resume.
+   */
+  sessionKeyOverride?: string
   /** Postgres connection string. Falls back to resolvePgUrl(). */
   pgUrl?: string
   /** When true, mark the conversation inactive (SessionEnd). */
@@ -355,6 +362,23 @@ export function sessionKeyFromId(sessionId: string): string {
   return 'claude-code:' + sessionId
 }
 
+/**
+ * Resolve the conversation key for an ingest. Precedence: explicit override
+ * (task-engine spawns, used verbatim — e.g. `task:<taskId>`) → hook payload
+ * session_id → transcript's own session id → path-derived fallback.
+ */
+export function resolveConversationKey(parts: {
+  override?: string
+  hookSessionId?: string
+  transcriptSessionId?: string | null
+  fallbackKey: string
+}): string {
+  if (parts.override) return parts.override
+  if (parts.hookSessionId) return sessionKeyFromId(parts.hookSessionId)
+  if (parts.transcriptSessionId) return sessionKeyFromId(parts.transcriptSessionId)
+  return parts.fallbackKey
+}
+
 interface ConvRow {
   id: string
   created: boolean
@@ -508,14 +532,16 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
     }
   }
 
-  // Authoritative key: the hook payload's session_id, so transcript rows unify
-  // with the payload path (which keys on payload.session_id) and subagent turns
-  // merge into the parent. Fall back to the transcript's own id, then the path.
-  const sessionKey = opts.sessionId
-    ? sessionKeyFromId(opts.sessionId)
-    : parsed.sessionId
-      ? sessionKeyFromId(parsed.sessionId)
-      : fallbackKey
+  // Authoritative key order: an explicit override (task-engine spawns) beats
+  // the hook payload's session_id, which beats the transcript's own id, then
+  // the path-derived key. session_id keying unifies transcript rows with the
+  // payload path and merges subagent turns into the parent.
+  const sessionKey = resolveConversationKey({
+    override: opts.sessionKeyOverride,
+    hookSessionId: opts.sessionId,
+    transcriptSessionId: parsed.sessionId,
+    fallbackKey,
+  })
 
   const pool = new Pool({ connectionString: opts.pgUrl ?? resolvePgUrl(), max: 1 })
   const client = await pool.connect()
@@ -684,6 +710,8 @@ export interface HookEventPayload {
 export interface HookEventOptions {
   /** The parsed hook payload from stdin. */
   payload: HookEventPayload
+  /** Verbatim conversation key override — see IngestOptions.sessionKeyOverride. */
+  sessionKeyOverride?: string
   /** Postgres connection string. Falls back to resolvePgUrl(). */
   pgUrl?: string
 }
@@ -712,7 +740,14 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
   const { payload } = opts
   const event = payload.hook_event_name ?? 'unknown'
   const sessionId = payload.session_id
-  if (!sessionId) {
+  // Same precedence + empty-override handling as the transcript path — the
+  // two ingest paths for one session must never key different conversations.
+  const sessionKey = resolveConversationKey({
+    override: opts.sessionKeyOverride,
+    hookSessionId: sessionId,
+    fallbackKey: '',
+  })
+  if (!sessionKey) {
     return {
       sessionKey: '',
       conversationId: '',
@@ -721,7 +756,6 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
       skipped: 'no session_id',
     }
   }
-  const sessionKey = sessionKeyFromId(sessionId)
 
   // Map the event to a single ros_messages row.
   let row: {

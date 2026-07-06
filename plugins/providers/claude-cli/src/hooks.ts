@@ -80,6 +80,13 @@ function log(msg: string): void {
 interface HookPayload {
   hook_event_name?: string
   session_id?: string
+  /**
+   * Stamped into the spool at hook time from RIVETOS_SESSION_KEY (set in the
+   * task executor's spawn env, value `task:<taskId>`). Carried in the payload
+   * rather than re-read in the worker so the detached worker never depends on
+   * env inheritance.
+   */
+  rivetos_session_key?: string
   transcript_path?: string
   cwd?: string
   reason?: string
@@ -113,6 +120,12 @@ async function runHook(): Promise<void> {
   // A payload event needs a session_id; a transcript event needs a path.
   // Anything with neither carries nothing to capture.
   if (!payload.session_id && !payload.transcript_path) return
+
+  // Task-engine spawns export RIVETOS_SESSION_KEY; hooks run inside the
+  // spawned CLI's env, so this is where the task↔conversation join happens.
+  if (process.env.RIVETOS_SESSION_KEY) {
+    payload.rivetos_session_key = process.env.RIVETOS_SESSION_KEY
+  }
 
   try {
     fs.mkdirSync(SPOOL_DIR, { recursive: true })
@@ -153,7 +166,10 @@ async function runWorker(spoolFile: string): Promise<void> {
   // the stdin payload; no transcript involved.
   if ((PAYLOAD_EVENTS as readonly string[]).includes(event)) {
     try {
-      const res = await ingestHookEvent({ payload })
+      const res = await ingestHookEvent({
+        payload,
+        sessionKeyOverride: payload.rivetos_session_key,
+      })
       if (res.skipped) {
         log(`${event} ${res.sessionKey}: skipped (${res.skipped})`)
       } else {
@@ -178,6 +194,7 @@ async function runWorker(spoolFile: string): Promise<void> {
     const res = await ingestTranscript({
       transcriptPath: transcript,
       sessionId: payload.session_id,
+      sessionKeyOverride: payload.rivetos_session_key,
       event,
       markInactive: event === 'SessionEnd',
     })

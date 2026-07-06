@@ -17,6 +17,7 @@ import type {
   HarnessExecutor,
   HarnessExecutorCapabilities,
   HookPipeline,
+  Memory,
   TaskEvent,
   TaskHandle,
   TaskResult,
@@ -44,6 +45,14 @@ export interface ChatLoopExecutorConfig {
   /** Turn wall-clock timeout in seconds (passed to AgentLoop as ms) */
   turnTimeout?: number
   contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
+  /**
+   * Task-conversation persistence. Turns are appended under
+   * `session_key = task:<taskId>` and rehydrated from the same key when a
+   * task resumes from awaiting-input, so a resumed run keeps its transcript
+   * across process restarts. Optional — without it the executor runs
+   * fresh-conversation-only (in-memory dev / tests).
+   */
+  memory?: Pick<Memory, 'append' | 'getSessionHistory'>
 }
 
 /** Unbounded push queue exposed as an AsyncIterable — done() completes it. */
@@ -153,6 +162,38 @@ export function createChatLoopExecutor(cfg: ChatLoopExecutorConfig): HarnessExec
   }
 }
 
+/**
+ * Best-effort persistence of one completed turn into the task's memory
+ * conversation. Capture failures degrade resume context but must never fail
+ * the task — log and continue.
+ */
+async function persistTurn(
+  memory: ChatLoopExecutorConfig['memory'],
+  sessionKey: string,
+  spec: TaskSpec,
+  turn: number,
+  userMessage: string,
+  assistantResponse: string,
+): Promise<void> {
+  if (!memory) return
+  const base = {
+    sessionId: sessionKey,
+    agent: spec.agentId,
+    channel: 'task',
+    metadata: { taskId: spec.taskId, turn },
+  }
+  try {
+    await memory.append({ ...base, role: 'user', content: userMessage })
+    await memory.append({ ...base, role: 'assistant', content: assistantResponse })
+  } catch (err: unknown) {
+    log.warn(
+      `Task ${spec.taskId} turn ${String(turn)} capture failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+  }
+}
+
 interface RunContext {
   events: EventQueue
   abortSignal: AbortSignal
@@ -199,12 +240,17 @@ async function runTask(
 
     const tools = deduplicateTools(filterToolsForAgent(cfg.tools(), spec.agentId, cfg.toolFilter))
 
+    // The task's memory conversation key — the contract shared with the
+    // harness executors (RIVETOS_SESSION_KEY) and Memory.getSessionHistory.
+    const sessionKey = `task:${spec.taskId}`
+
     const loop = new AgentLoop({
       systemPrompt: basePrompt + scaffold,
       provider,
       tools,
       modelOverride: spec.model ?? agent.model,
       agentId: spec.agentId,
+      sessionId: sessionKey,
       workspaceDir: spec.workingDir ?? cfg.workspaceDir,
       hooks: cfg.hooks,
       freshConversation: true,
@@ -215,9 +261,30 @@ async function runTask(
 
     const history: Array<{ role: 'user' | 'assistant'; content: string }> = []
     // Resume from awaiting-input: the steered message opens the run INSTEAD
-    // of the goal — the goal must never re-execute on resume. Interim shape:
-    // still a fresh conversation; rehydrating history from the task's memory
-    // conversation (session_key = task:<id>) lands at cutover step (c).
+    // of the goal — the goal must never re-execute on resume. The prior
+    // transcript is rehydrated from the task's memory conversation so the
+    // resumed turn sees what already happened; degrading to an empty history
+    // (memory down / no rows yet) is survivable, losing the no-replay
+    // invariant is not.
+    if (spec.resumeMessage !== undefined && cfg.memory) {
+      try {
+        // Explicit generous cap — the adapter's default is 100 rows, which a
+        // long multi-turn task can exceed; AgentLoop's own compaction handles
+        // oversized rehydrated history, so err on the side of completeness.
+        const past = await cfg.memory.getSessionHistory(sessionKey, { limit: 1000 })
+        for (const m of past) {
+          if ((m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') {
+            history.push({ role: m.role, content: m.content })
+          }
+        }
+      } catch (err: unknown) {
+        log.warn(
+          `Task ${spec.taskId} history rehydration failed — resuming with empty history: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      }
+    }
     let message: string | undefined = spec.resumeMessage ?? spec.goal
     let lastResponse = ''
 
@@ -244,6 +311,7 @@ async function runTask(
         { role: 'user', content: message },
         { role: 'assistant', content: turn.response },
       )
+      await persistTurn(cfg.memory, sessionKey, spec, usage.turns, message, turn.response)
       message = run.nextSteer()
     }
 
