@@ -1019,4 +1019,57 @@ describe('den', () => {
     cfg.den = { enabled: false, host: '0.0.0.0', terminal: { enabled: true } }
     assertValid(validateConfig(cfg))
   })
+
+  describe('tasks.eval (phase 2)', () => {
+    it('accepts a full valid eval section', () => {
+      const cfg = validConfig()
+      cfg.tasks = {
+        enabled: true,
+        pricing: { xai: { input_per_mtok: 3, output_per_mtok: 15 } },
+        eval: {
+          enabled: true,
+          require_criteria: true,
+          derive_internal: true,
+          skip_origins: ['heartbeat'],
+          max_retries: 1,
+          verifier: { agent_id: 'rivet', executor: 'chat-loop', budget: { max_usd: 0.02 } },
+          escalation: { channel: 'telegram:123' },
+        },
+      }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('does not warn on the pricing key (regression: missing from KNOWN_TASKS_KEYS)', () => {
+      const cfg = validConfig()
+      cfg.tasks = { pricing: {} }
+      const result = validateConfig(cfg)
+      assert.equal(
+        result.warnings.some((w) => w.path === 'tasks.pricing'),
+        false,
+      )
+    })
+
+    it('rejects non-boolean flags and negative max_retries', () => {
+      const cfg = validConfig()
+      cfg.tasks = { eval: { enabled: 'yes', require_criteria: 1, max_retries: -1 } }
+      const result = validateConfig(cfg)
+      assertError(result, 'tasks.eval.enabled', 'must be a boolean')
+      assertError(result, 'tasks.eval.require_criteria', 'must be a boolean')
+      assertError(result, 'tasks.eval.max_retries', 'non-negative integer')
+    })
+
+    it('rejects bad verifier executor and non-string skip_origins', () => {
+      const cfg = validConfig()
+      cfg.tasks = { eval: { verifier: { executor: 'mesh' }, skip_origins: [42] } }
+      const result = validateConfig(cfg)
+      assertError(result, 'tasks.eval.verifier.executor', "'chat-loop' or 'harness-session'")
+      assertError(result, 'tasks.eval.skip_origins', 'array of strings')
+    })
+
+    it('warns on unknown eval keys', () => {
+      const cfg = validConfig()
+      cfg.tasks = { eval: { strictness: 'max' } }
+      assertWarning(validateConfig(cfg), 'tasks.eval.strictness', 'Unknown tasks.eval key')
+    })
+  })
 })
