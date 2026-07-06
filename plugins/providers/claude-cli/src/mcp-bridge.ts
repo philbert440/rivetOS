@@ -36,12 +36,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 
-import {
-  adaptRivetToolDynamic,
-  createMcpServer,
-  type RivetMcpServer,
-  type ToolRegistration,
-} from '@rivetos/mcp-server'
+import { adaptRivetToolDynamic, type ToolRegistration } from '@rivetos/mcp'
+import { createMcpServer, type RivetMcpServer } from '@rivetos/mcp-v1'
 import type { Tool } from '@rivetos/types'
 import type { BridgeLogger } from './log.js'
 
