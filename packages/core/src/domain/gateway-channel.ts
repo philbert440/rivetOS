@@ -132,10 +132,16 @@ export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayC
     send(message: OutboundMessage): Promise<string | null> {
       if (!message.text) return Promise.resolve(null)
       const msg = record(message.channelId, 'assistant', message.text)
+      // FIFO: one assistant reply resolves exactly ONE waiter. Turns on a
+      // session are serialized per user by the runtime queue, so replies
+      // arrive in submission order and FIFO pairing is correct; resolving
+      // every waiter cross-delivered replies to concurrent long-polls
+      // (review finding). Multi-user concurrent ?wait on one session can
+      // still interleave — RivetHub uses one client per session; revisit
+      // with per-turn correlation ids if that changes.
       const pending = waiters.get(message.channelId)
-      if (pending?.length) {
-        for (const resolve of pending.splice(0)) resolve(msg)
-      }
+      const resolve = pending?.shift()
+      if (resolve) resolve(msg)
       return Promise.resolve(msg.id)
     },
     onStreamEvent(message: InboundMessage, event: StreamEvent): void {
