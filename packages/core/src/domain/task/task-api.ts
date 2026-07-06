@@ -43,6 +43,13 @@ const STATUSES: readonly TaskStatus[] = [
 export interface TaskApiOptions {
   store: TaskStore
   waiter: TaskCompletionWaiter
+  /**
+   * Agent-aware dispatch (G4): resolve a nodeAffinity for creates that don't
+   * pin one — local agents pin to this node, mesh agents to their host.
+   * Returning undefined leaves the row unpinned (global queue); returning
+   * an Error message rejects the create with 400 (agent nowhere).
+   */
+  resolveAffinity?: (agentId: string) => Promise<string | { error: string } | undefined>
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -140,6 +147,12 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           if (body === undefined) return json(res, 400, { error: 'body must be a JSON object' })
           const input = parseCreate(body)
           if (typeof input === 'string') return json(res, 400, { error: input })
+          if (!input.nodeAffinity && opts.resolveAffinity) {
+            const resolved = await opts.resolveAffinity(input.agentId)
+            if (typeof resolved === 'object' && resolved !== null)
+              return json(res, 400, { error: resolved.error })
+            input.nodeAffinity = resolved
+          }
 
           const row = await store.create(input)
           if (url.searchParams.get('wait') !== '1' && url.searchParams.get('wait') !== 'true') {

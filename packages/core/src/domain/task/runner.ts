@@ -45,6 +45,8 @@ export interface TaskExecutorRegistry {
   register(kind: TaskExecutorKind, executor: HarnessExecutor, target?: string): void
   /** Target-specific registration wins; falls back to the kind-level one. */
   resolve(kind: TaskExecutorKind, target?: string): HarnessExecutor | undefined
+  /** Registered executors, for the gateway catalog (key = kind[:target]). */
+  entries(): Array<{ key: string; executor: HarnessExecutor }>
 }
 
 export function createExecutorRegistry(): TaskExecutorRegistry {
@@ -57,6 +59,9 @@ export function createExecutorRegistry(): TaskExecutorRegistry {
     },
     resolve(kind, target): HarnessExecutor | undefined {
       return executors.get(key(kind, target)) ?? executors.get(key(kind))
+    },
+    entries(): Array<{ key: string; executor: HarnessExecutor }> {
+      return [...executors.entries()].map(([k, executor]) => ({ key: k, executor }))
     },
   }
 }
