@@ -311,7 +311,22 @@ export class MeshDelegationEngine {
     const waiter = this.config.waiter
     if (!store || !waiter) return this.delegateRemote(request, route, chainDepth)
     const startTime = Date.now()
+    // Unset timeoutMs: the HTTP path blocked forever; the task path caps the
+    // wait at 30m (heartbeat precedent) — deliberate delta, the row + kill
+    // are durable either way. Documented in Appendix E.
     const waitMs = (request.timeoutMs ?? 1_800_000) + 5_000
+
+    // Chain-depth cap enforced BEFORE creating the row — the remote executor
+    // never re-reads chain_depth (delegate_task is excluded there), so the
+    // delegator-side check is the loop guard, matching DelegationEngine.
+    const maxChainDepth = 3
+    if (chainDepth + 1 > maxChainDepth) {
+      return {
+        status: 'failed',
+        response: `Delegation chain too deep (${String(chainDepth + 1)} > ${String(maxChainDepth)}) — refusing mesh delegation to ${request.toAgent}`,
+        durationMs: 0,
+      }
+    }
 
     try {
       const row = await store.create({
