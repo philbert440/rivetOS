@@ -117,6 +117,7 @@ describe('EvaluationCoordinator end-to-end', () => {
     expect(parent.eval?.verifierTaskIds).toHaveLength(1)
 
     const child = await rig.store.get(parent.eval!.verifierTaskIds[0])
+    expect(child?.status).toBe('completed') // default budget must allow the one real turn
     expect(child?.origin).toBe('eval')
     expect(child?.parentTaskId).toBe(parent.id)
     expect(child?.acceptanceCriteria).toEqual([]) // structurally exempt (2b)

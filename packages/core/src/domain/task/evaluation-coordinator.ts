@@ -39,7 +39,9 @@ export interface EvaluationConfig {
   agentId?: string
   executor?: 'chat-loop' | 'harness-session'
   executorTarget?: string
-  /** Verifier child budget (default: 1 turn, $0.05, 5 min). */
+  /** Verifier child budget (default: one real turn — maxTurns 2 under the
+   *  runner's >= between-turns check — $0.05, 5 min). max_turns: 1 in YAML
+   *  self-destructs the verifier; the boot wiring floors it to 2. */
   budget?: { maxUsd?: number; maxTurns?: number; maxWallClockMs?: number }
   /** Origins that never get evaluated (mirrors tasks.eval.skip_origins). */
   skipOrigins: string[]
