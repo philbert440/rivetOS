@@ -1,0 +1,212 @@
+/**
+ * /api/tasks — gateway route family (G1, Appendix F).
+ *
+ * The task engine's HTTP surface: create (optionally waiting for the
+ * terminal row via the shared TaskCompletionWaiter — the LISTEN ros_task_done
+ * consumer), read, list, steer, kill. Phase 2's scoreboard and RivetHub's
+ * task UI consume this; mesh callers keep their in-process path.
+ *
+ * Sub-routes (all JSON; mounted behind the gateway bearer gate):
+ *   POST /api/tasks                  create; ?wait=1[&timeoutMs=] blocks for
+ *                                    the terminal row (deadline-kill like the
+ *                                    mesh transport — no zombie runs)
+ *   GET  /api/tasks                  list; ?status=&agentId=&limit=
+ *   GET  /api/tasks/:id              one row
+ *   GET  /api/tasks/:id/wait         block for terminal; ?timeoutMs=
+ *   POST /api/tasks/:id/steer        {message} → send/resume
+ *   POST /api/tasks/:id/kill         requestKill (idempotent)
+ */
+
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { GatewayRoute } from '@rivetos/types'
+import type { TaskStatus } from '@rivetos/types'
+import type { NewTaskInput, TaskListFilter, TaskRow, TaskStore } from './store.js'
+import type { TaskCompletionWaiter } from './completion-waiter.js'
+import { logger } from '../../logger.js'
+
+const log = logger('TaskApi')
+
+const DEFAULT_WAIT_MS = 120_000
+const MAX_WAIT_MS = 1_800_000
+const MAX_BODY_BYTES = 256 * 1024
+
+const STATUSES: readonly TaskStatus[] = [
+  'queued',
+  'running',
+  'awaiting-input',
+  'completed',
+  'failed',
+  'killed',
+  'timeout',
+]
+
+export interface TaskApiOptions {
+  store: TaskStore
+  waiter: TaskCompletionWaiter
+}
+
+function json(res: ServerResponse, code: number, body: unknown): void {
+  res.writeHead(code, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify(body))
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length
+    if (size > MAX_BODY_BYTES) throw new Error('body too large')
+    chunks.push(chunk as Buffer)
+  }
+  if (size === 0) return {}
+  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+  return parsed as Record<string, unknown>
+}
+
+function clampWaitMs(raw: string | null): number {
+  const n = raw ? Number.parseInt(raw, 10) : NaN
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_WAIT_MS
+  return Math.min(n, MAX_WAIT_MS)
+}
+
+/** Public row shape — TaskRow verbatim; it is already JSON-safe. */
+function toWire(row: TaskRow): TaskRow {
+  return row
+}
+
+function parseCreate(body: Record<string, unknown>): NewTaskInput | string {
+  if (typeof body.goal !== 'string' || body.goal.trim() === '') return 'goal (string) is required'
+  if (typeof body.agentId !== 'string' || body.agentId.trim() === '')
+    return 'agentId (string) is required'
+  const executor = body.executor ?? 'chat-loop'
+  if (executor !== 'chat-loop' && executor !== 'harness-session' && executor !== 'mesh')
+    return `unknown executor ${JSON.stringify(executor)}`
+  return {
+    goal: body.goal,
+    agentId: body.agentId,
+    executor,
+    executorTarget: typeof body.executorTarget === 'string' ? body.executorTarget : undefined,
+    origin: 'api',
+    requestedBy: typeof body.requestedBy === 'string' ? body.requestedBy : 'gateway',
+    nodeAffinity: typeof body.nodeAffinity === 'string' ? body.nodeAffinity : undefined,
+    spec:
+      typeof body.spec === 'object' && body.spec !== null && !Array.isArray(body.spec)
+        ? (body.spec as Record<string, unknown>)
+        : undefined,
+    budget:
+      typeof body.budget === 'object' && body.budget !== null && !Array.isArray(body.budget)
+        ? body.budget
+        : undefined,
+    contextRefs: Array.isArray(body.contextRefs)
+      ? (body.contextRefs as NewTaskInput['contextRefs'])
+      : undefined,
+    acceptanceCriteria: Array.isArray(body.acceptanceCriteria)
+      ? (body.acceptanceCriteria as NewTaskInput['acceptanceCriteria'])
+      : undefined,
+    maxAttempts: 1,
+  }
+}
+
+export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
+  const { store, waiter } = opts
+
+  return {
+    prefix: '/api/tasks',
+    handler: async (req, res) => {
+      try {
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const rest = url.pathname.slice('/api/tasks'.length).replace(/^\//, '')
+        const [id, action] = rest === '' ? [undefined, undefined] : rest.split('/')
+
+        // POST /api/tasks — create (+ optional wait)
+        if (req.method === 'POST' && !id) {
+          const body = await readJsonBody(req).catch((err: unknown) => {
+            json(res, 400, { error: (err as Error).message || 'invalid JSON body' })
+            return null
+          })
+          if (body === null) return
+          if (body === undefined) return json(res, 400, { error: 'body must be a JSON object' })
+          const input = parseCreate(body)
+          if (typeof input === 'string') return json(res, 400, { error: input })
+
+          const row = await store.create(input)
+          if (url.searchParams.get('wait') !== '1' && url.searchParams.get('wait') !== 'true') {
+            return json(res, 201, { task: toWire(row) })
+          }
+          const waitMs = clampWaitMs(url.searchParams.get('timeoutMs'))
+          const terminal = await waiter.wait(row.id, { deadlineMs: waitMs })
+          if (!terminal) {
+            // Deadline: kill before answering — no zombie runs (mesh/heartbeat
+            // precedent). The durable row is returned for inspection.
+            await store.requestKill(row.id)
+            const killed = await store.get(row.id)
+            return json(res, 504, { error: 'wait deadline exceeded — task killed', task: killed })
+          }
+          return json(res, 200, { task: toWire(terminal) })
+        }
+
+        // GET /api/tasks — list
+        if (req.method === 'GET' && !id) {
+          const filter: TaskListFilter = {}
+          const status = url.searchParams.get('status')
+          if (status) {
+            if (!STATUSES.includes(status as TaskStatus))
+              return json(res, 400, { error: `unknown status "${status}"` })
+            filter.status = status as TaskStatus
+          }
+          const agentId = url.searchParams.get('agentId')
+          if (agentId) filter.agentId = agentId
+          const limit = url.searchParams.get('limit')
+          if (limit) {
+            const n = Number.parseInt(limit, 10)
+            if (!Number.isFinite(n) || n <= 0) return json(res, 400, { error: 'invalid limit' })
+            filter.limit = n
+          }
+          const rows = await store.list(filter)
+          return json(res, 200, { tasks: rows.map(toWire) })
+        }
+
+        if (!id) return json(res, 405, { error: 'method not allowed' })
+
+        const row = await store.get(id)
+        if (!row) return json(res, 404, { error: `no task ${id}` })
+
+        // GET /api/tasks/:id
+        if (req.method === 'GET' && !action) return json(res, 200, { task: toWire(row) })
+
+        // GET /api/tasks/:id/wait
+        if (req.method === 'GET' && action === 'wait') {
+          const waitMs = clampWaitMs(url.searchParams.get('timeoutMs'))
+          const terminal = await waiter.wait(id, { deadlineMs: waitMs })
+          if (!terminal) return json(res, 504, { error: 'wait deadline exceeded' })
+          return json(res, 200, { task: toWire(terminal) })
+        }
+
+        // POST /api/tasks/:id/steer
+        if (req.method === 'POST' && action === 'steer') {
+          const body = await readJsonBody(req).catch(() => undefined)
+          const message = body?.message
+          if (typeof message !== 'string' || message.trim() === '')
+            return json(res, 400, { error: 'message (string) is required' })
+          if (['completed', 'failed', 'killed', 'timeout'].includes(row.status))
+            return json(res, 409, { error: `task is terminal (${row.status})` })
+          await store.send(id, message)
+          return json(res, 202, { ok: true })
+        }
+
+        // POST /api/tasks/:id/kill
+        if (req.method === 'POST' && action === 'kill') {
+          const prior = await store.requestKill(id)
+          return json(res, 200, { ok: true, prior: prior ?? null })
+        }
+
+        return json(res, 405, { error: 'method not allowed' })
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        log.warn(`task api error: ${msg}`)
+        if (!res.headersSent) json(res, 500, { error: msg })
+      }
+    },
+  }
+}

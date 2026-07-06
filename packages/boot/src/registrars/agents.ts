@@ -23,6 +23,7 @@ import {
   createSubagentTools,
   createTaskDelegationRecorder,
   createTaskCompletionWaiter,
+  createTaskApiRoute,
   createTaskHandler,
   InMemoryTaskStore,
   type TaskStore,
@@ -37,17 +38,22 @@ import {
 } from '@rivetos/core'
 import type { DelegationRunsRecorder } from '@rivetos/core'
 import pg from 'pg'
-import type { MeshConfig } from '@rivetos/types'
+import type { GatewayRoute, MeshConfig } from '@rivetos/types'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
 
 const log = logger('Boot:Agents')
 
+export interface AgentToolsResult {
+  /** Route families for the embedded gateway (G1+): mounted by registerGateway. */
+  gatewayRoutes: GatewayRoute[]
+}
+
 export async function registerAgentTools(
   runtime: Runtime,
   config: RivetConfig,
   workspaceDir: string,
-): Promise<void> {
+): Promise<AgentToolsResult> {
   // Build tool filter from agent configs
   const toolFilter: Record<string, { exclude?: string[]; include?: string[] }> = {}
   for (const [id, agent] of Object.entries(config.agents)) {
@@ -401,6 +407,16 @@ export async function registerAgentTools(
       ? 'Delegation (mesh), sub-agent, and skill tools registered'
       : 'Delegation, sub-agent, and skill tools registered',
   )
+
+  // G1: the /api/tasks route family — mounted by registerGateway. Only when
+  // the durable engine is live (the API is meaningless over the in-memory
+  // fallback: rows would vanish on restart and other nodes can't see them).
+  return {
+    gatewayRoutes:
+      taskEngineStore && taskWaiter
+        ? [createTaskApiRoute({ store: taskEngineStore, waiter: taskWaiter })]
+        : [],
+  }
 }
 
 // ---------------------------------------------------------------------------
