@@ -93,7 +93,10 @@ export interface EvaluationCoordinator {
   escalate(task: TaskRow, result: TaskResult, pass: EvaluationPass): Promise<void>
 }
 
-const DEFAULT_VERIFIER_BUDGET = { maxTurns: 1, maxUsd: 0.05, maxWallClockMs: 300_000 }
+// maxTurns semantics: the runner's between-turns check is `turns >= maxTurns`
+// AFTER a turn ends — maxTurns: 1 kills the run the moment its only turn
+// finishes (live-smoke finding, ct114 2026-07-07). 2 = exactly one real turn.
+const DEFAULT_VERIFIER_BUDGET = { maxTurns: 2, maxUsd: 0.05, maxWallClockMs: 300_000 }
 
 export function createEvaluationCoordinator(
   opts: EvaluationCoordinatorOptions,
