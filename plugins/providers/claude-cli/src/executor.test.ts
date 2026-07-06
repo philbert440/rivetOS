@@ -236,6 +236,28 @@ describe('ClaudeCliExecutor', () => {
     expect(JSON.parse(schemaArg).required).toEqual(['verdict', 'summary'])
   })
 
+  it('structuredResult=false omits --json-schema (older CLI fallback)', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({ binary: fake.binary, structuredResult: false })
+    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    expect(fake.args()).not.toContain('--json-schema')
+  })
+
+  it('interactive park: structured completed verdict keeps the session resumable', async () => {
+    // A steered interactive task whose turn ends with a structured
+    // 'completed' must produce verdict completed (the runner parks it),
+    // NOT failed — the schema forcing must not kill parking sessions.
+    const structured = JSON.stringify({ verdict: 'completed', summary: 'paused for input' })
+    const lines = successLines('did the first part, waiting for your call')
+    ;(lines[3] as { result: string }).result = structured
+    const fake = makeFakeClaude(lines)
+    const result = await makeExecutor(fake.binary).start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('completed')
+    expect(result.summary).toBe('paused for input')
+  })
+
   it('structured --json-schema result wins over prose and fenced blocks', async () => {
     const structured = JSON.stringify({
       verdict: 'failed',

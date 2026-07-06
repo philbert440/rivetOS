@@ -458,6 +458,38 @@ async function registerClaudeCliTaskExecutor(
     return
   }
 
+  // Capability probe: --json-schema on an old CLI hard-fails every spawn
+  // (unknown flag) before the fence fallback could ever run — detect support
+  // up front and fall back to the fenced TASK_RESULT contract when absent.
+  const structuredResult = await new Promise<boolean>((resolve) => {
+    try {
+      const env = { ...process.env }
+      delete env.ANTHROPIC_API_KEY
+      delete env.ANTHROPIC_AUTH_TOKEN
+      const proc = spawn(binary, ['--help'], { env, stdio: ['ignore', 'pipe', 'ignore'] })
+      let out = ''
+      proc.stdout.on('data', (c: Buffer) => (out += c.toString()))
+      const timer = setTimeout(() => {
+        proc.kill('SIGKILL')
+        resolve(false)
+      }, 3_000)
+      timer.unref()
+      proc.on('error', () => {
+        clearTimeout(timer)
+        resolve(false)
+      })
+      proc.on('close', () => {
+        clearTimeout(timer)
+        resolve(out.includes('--json-schema'))
+      })
+    } catch {
+      resolve(false)
+    }
+  })
+  if (!structuredResult) {
+    log.warn('claude CLI lacks --json-schema — TASK_RESULT falls back to the fenced block')
+  }
+
   try {
     const { ClaudeCliExecutor } = await import('@rivetos/provider-claude-cli')
     executors.register(
@@ -472,6 +504,7 @@ async function registerClaudeCliTaskExecutor(
         tools: () => runtime.getTools(),
         // Resume rehydration (step-(c) parity with chat-loop).
         memory: runtime.getMemory(),
+        structuredResult,
       }),
       'claude-cli',
     )
