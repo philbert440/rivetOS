@@ -405,21 +405,23 @@ channels:
 
 Inter-agent communication channel. Enables delegation between agents and mesh networking.
 
-> **Note:** `secret` is deprecated for agent-channel auth as of Phase 0.5. The
-> agent channel now uses mutual TLS (`mesh.tls`). Configure `mesh:` instead of
-> relying on the channel secret for cross-node auth.
+> **Note:** for cross-node (mesh) auth, `secret` is superseded by mutual TLS
+> (`mesh.tls`) as of Phase 0.5 — configure `mesh:` for node-to-node traffic.
+> The standalone `channels.agent` plugin **still enforces** its bearer
+> `secret` when configured; it is deprecated, not dead. The plugin's fate is
+> decided when the gateway subsumes agent HTTP ingress (phase 1/5).
 
 ```yaml
 channels:
   agent:
     port: 3100
-    # secret no longer used for authentication — see mesh.tls
+    secret: ${AGENT_CHANNEL_SECRET}  # still enforced by this plugin when set
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `port` | number | `3100` | HTTPS port for agent-to-agent messaging. |
-| `secret` | string | — | **Deprecated.** Was the bearer token for agent channel auth. No longer checked; mesh auth is now mTLS via `mesh.tls`. |
+| `secret` | string | — | **Deprecated but enforced.** Bearer token checked by the standalone agent channel plugin when set. Mesh node-to-node auth uses mTLS via `mesh.tls` instead. |
 
 ---
 

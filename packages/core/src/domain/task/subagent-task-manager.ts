@@ -21,6 +21,7 @@
  * memory they degrade to empty/0.
  */
 
+import { CRITERIA_POLICY_OFF, normalizeCriteria, type CriteriaPolicy } from './criteria.js'
 import type {
   Memory,
   SubagentManager,
@@ -35,6 +36,8 @@ import { logger } from '../../logger.js'
 const log = logger('TaskBackedSubagentManager')
 
 export interface TaskBackedSubagentManagerConfig {
+  /** Criteria policy (phase 2b) — default OFF, spawn behaves as phase 1. */
+  criteriaPolicy?: CriteriaPolicy
   router: Router
   store: TaskStore
   /** History/messageCount source — the task's memory conversation. */
@@ -133,6 +136,10 @@ export class TaskBackedSubagentManager implements SubagentManager {
       executor: 'chat-loop',
       agentId: request.agent,
       origin: 'tool',
+      acceptanceCriteria: normalizeCriteria(
+        { goal: request.task, origin: 'tool' },
+        this.config.criteriaPolicy ?? CRITERIA_POLICY_OFF,
+      ),
       requestedBy: this.config.parentAgent ?? 'parent',
       spec: { ...SUBAGENT_MARKER },
       budget: request.timeoutMs ? { maxWallClockMs: request.timeoutMs } : undefined,
