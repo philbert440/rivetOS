@@ -276,15 +276,21 @@ export async function registerAgentTools(
   // Task engine (phase 1a) — durable ros_tasks + embedded run-task runner.
   //
   // Enabled by default and inert: nothing creates task rows yet, so the
-  // runner idles on an empty queue. Only the chat-loop executor is
-  // registered for now; CLI harness executors land at cutover step (b).
+  // runner idles on an empty queue. chat-loop always registers; claude-cli
+  // registers when its binary probe passes; further CLI harness executors
+  // (grok, hermes) are still pending.
   // On startup the runner crash-sweeps rows this node left 'running'.
   // ------------------------------------------------------------------
   const tasksEnabled = config.tasks?.enabled !== false
   if (tasksEnabled && pgUrl && pool) {
     const taskStore = new PgTaskStore(pool)
     const executors = createExecutorRegistry()
-    executors.register('chat-loop', createChatLoopExecutor(executorCfg))
+    // Task-conversation persistence + resume rehydration (step (c)) — turns
+    // file under session_key task:<id> alongside the harness executors' rows.
+    executors.register(
+      'chat-loop',
+      createChatLoopExecutor({ ...executorCfg, memory: runtime.getMemory() }),
+    )
     await registerClaudeCliTaskExecutor(runtime, config, executors, workspaceDir)
     const taskRunner = createTaskRunner({
       pgUrl,

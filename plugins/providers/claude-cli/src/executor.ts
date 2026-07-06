@@ -13,8 +13,8 @@
  *   - Per spawn: the per-spawn MCP bridge (embedMcpServerForTurn) exposes the
  *     task's allowed RivetOS tools via --mcp-config; the child env carries
  *     RIVETOS_SESSION_KEY=task:<taskId> (the contracted join key for the
- *     task's memory conversation — the hook-side join lands at cutover step
- *     (c); transcript capture currently keys off the CLI session_id) and
+ *     task's memory conversation — capture hooks stamp it into the spool and
+ *     both ingest paths key on it, so every spawn files under task:<id>) and
  *     RIVETOS_DEN_HOOK_DISABLED=1 (this executor owns den emission — the
  *     hook must not double-report).
  *   - stream-json → TaskEvent: assistant text → den message.agent, thinking
@@ -453,10 +453,10 @@ export class ClaudeCliExecutor implements HarnessExecutor {
         message,
         {
           env: {
-            // Contracted join key for the task's memory conversation. NOTE:
-            // transcript capture does not consume this yet — today it keys
-            // off the CLI session_id / transcript path; the hook-side join
-            // lands at cutover step (c).
+            // Contracted join key for the task's memory conversation —
+            // capture hooks carry it through the spool as a verbatim key
+            // override, so every CLI session this task spawns files under
+            // one task:<id> conversation (rehydrated on resume).
             RIVETOS_SESSION_KEY: `task:${spec.taskId}`,
             // This executor owns den emission — the den hook must stay quiet.
             RIVETOS_DEN_HOOK_DISABLED: '1',
