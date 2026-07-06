@@ -145,6 +145,14 @@ export interface TaskStore {
   recordEval(id: string, outcome: EvalOutcome): Promise<void>
 
   /**
+   * Durably stash retry state at the retry decision (phase 2e): bump
+   * eval_attempt and stash the refutation scaffold as pending_message, so a
+   * crash mid-retry re-claims into the resume path (goal never re-executes,
+   * retry budget not reset) instead of replaying from scratch.
+   */
+  stashEvalRetry(id: string, attempt: number, steer: string): Promise<void>
+
+  /**
    * Flip a running task to awaiting-input (turn ended with no queued
    * message); the job completes and send() re-enqueues.
    *
@@ -367,6 +375,14 @@ export class InMemoryTaskStore implements TaskStore {
     if (!row) return Promise.resolve()
     row.eval = outcome
     row.evalAttempt = outcome.attempts
+    return Promise.resolve()
+  }
+
+  stashEvalRetry(id: string, attempt: number, steer: string): Promise<void> {
+    const row = this.rows.get(id)
+    if (!row) return Promise.resolve()
+    row.evalAttempt = attempt
+    row.pendingMessage = steer
     return Promise.resolve()
   }
 
@@ -740,6 +756,14 @@ export class PgTaskStore implements TaskStore {
     await this.pool.query(
       `UPDATE ros_tasks SET eval = $2::jsonb, eval_attempt = $3 WHERE id = $1`,
       [id, JSON.stringify(outcome), outcome.attempts],
+    )
+  }
+
+  async stashEvalRetry(id: string, attempt: number, steer: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE ros_tasks SET eval_attempt = $2, pending_message = $3
+       WHERE id = $1 AND status = 'running'`,
+      [id, attempt, steer],
     )
   }
 

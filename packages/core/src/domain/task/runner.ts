@@ -359,6 +359,12 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
             opts.evaluation.maxRetries,
             pass.refutation,
           )
+          // Durable retry state: a crash from here re-claims into the resume
+          // path (pending_message → resumeMessage; eval_attempt keeps the
+          // budget) instead of replaying the goal. The very next executor
+          // run consumes the in-memory copy; the stash is reclaimed at
+          // finish() (pending_message is NULLed) or by the crash sweep.
+          await opts.store.stashEvalRetry(task.id, evalAttempts, resumeMessage)
           continue
         }
       }
