@@ -165,6 +165,35 @@ describe('/api/tasks', () => {
     expect(((await kill.json()) as { prior: string | null }).prior).toBeNull()
   })
 
+  it('GET /:id/wait resolves immediately on an already-terminal row (no kill)', async () => {
+    const { base, store } = await startApi()
+    const made = (await (
+      await create(base, { goal: 'fast', agentId: 'opus' }, '?wait=1&timeoutMs=5000')
+    ).json()) as { task: { id: string } }
+    const res = await fetch(`${base}/api/tasks/${made.task.id}/wait?timeoutMs=50`)
+    expect(res.status).toBe(200)
+    expect((await store.get(made.task.id))?.status).toBe('completed')
+  })
+
+  it('GET /:id/wait deadline answers 504 WITHOUT killing (observer semantics)', async () => {
+    const { base, store } = await startApi({ hang: true })
+    const made = (await (await create(base, { goal: 'slow', agentId: 'opus' })).json()) as {
+      task: { id: string }
+    }
+    const res = await fetch(`${base}/api/tasks/${made.task.id}/wait?timeoutMs=50`)
+    expect(res.status).toBe(504)
+    expect((await store.get(made.task.id))?.status).not.toBe('killed')
+  })
+
+  it('rejects oversized bodies with 413', async () => {
+    const { base } = await startApi()
+    const res = await create(base, {
+      goal: 'x'.repeat(300 * 1024),
+      agentId: 'opus',
+    })
+    expect(res.status).toBe(413)
+  })
+
   it('404 on unknown ids, 405 on unsupported methods', async () => {
     const { base } = await startApi()
     expect((await fetch(`${base}/api/tasks/nope`)).status).toBe(404)
