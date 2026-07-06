@@ -362,6 +362,10 @@ function verdictToStatus(result: TaskResult): TaskStatus {
 export interface TaskRunner {
   start(): Promise<void>
   stop(): Promise<void>
+  /** The node's task handler — exposed so the EvaluationCoordinator can run
+   *  verifier children INLINE in the parent's worker slot (deadlock-free at
+   *  any concurrency; the CAS claim makes it race-safe vs the queued job). */
+  handler: (taskId: string) => Promise<void>
 }
 
 export interface TaskRunnerOptions extends TaskHandlerOptions {
@@ -389,6 +393,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
   let runner: Runner | undefined
 
   return {
+    handler,
     async start(): Promise<void> {
       // Never crash boot for a missing ros_tasks table (0002 migration not
       // applied on this node yet) — disable the engine and say so clearly.

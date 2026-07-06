@@ -47,6 +47,15 @@ export interface EvaluationCoordinatorOptions {
   waiter: TaskCompletionWaiter
   nodeId: string
   config: EvaluationConfig
+  /**
+   * Run a task inline in the CALLING worker slot (late-bound to the node's
+   * task handler). Without it the verifier child waits on the job queue —
+   * which can deadlock when every slot is a parent blocked in eval-wait
+   * (concurrency=1 is a guaranteed hang). With it, verification consumes no
+   * extra slot: the CAS claim makes the inline run race-safe against the
+   * child's queued job (the loser no-ops).
+   */
+  runTask?: (taskId: string) => Promise<void>
 }
 
 export interface EvaluationCoordinator {
@@ -138,6 +147,25 @@ export function createEvaluationCoordinator(
       maxAttempts: 1,
     })
 
+    // Inline-first: run the child in THIS worker slot. If the queued job
+    // won the claim race instead, fall back to waiting on it.
+    if (opts.runTask) {
+      await opts.runTask(child.id).catch((err: unknown) => {
+        log.warn(
+          `Inline verifier run for ${child.id} errored — falling back to queue: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      })
+      const after = await store.get(child.id)
+      if (after && isTerminal(after.status)) {
+        if (after.status !== 'completed' || !after.result) {
+          return refutedBy(child.id, `verifier run ${after.status}: ${after.error ?? 'no result'}`)
+        }
+        return mapVerifierResult(child.id, task.acceptanceCriteria, after.result)
+      }
+    }
+
     const deadlineMs = (budget.maxWallClockMs ?? 300_000) + 60_000
     const terminal = await waiter.wait(child.id, { deadlineMs })
     if (!terminal) {
@@ -185,6 +213,12 @@ export function mapVerifierResult(
     `Verifier summary: ${result.summary}`,
   ].join('\n')
   return { taskId, verdict: 'refuted', summary: result.summary, criteriaReport, refutation }
+}
+
+function isTerminal(status: string): boolean {
+  return (
+    status === 'completed' || status === 'failed' || status === 'killed' || status === 'timeout'
+  )
 }
 
 function refutedBy(taskId: string, reason: string): VerifierResult & { taskId?: string } {

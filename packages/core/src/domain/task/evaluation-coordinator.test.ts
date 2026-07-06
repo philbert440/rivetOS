@@ -173,6 +173,54 @@ describe('EvaluationCoordinator end-to-end', () => {
   })
 })
 
+describe('inline verifier run (deadlock guard)', () => {
+  it('verifies even when the job queue never fires (all slots blocked)', async () => {
+    const executors = createExecutorRegistry()
+    executors.register(
+      'chat-loop',
+      scriptedExecutor((spec) => ({
+        verdict: 'completed',
+        summary: 's',
+        artifacts: [],
+        usage,
+        ...(spec.goal.startsWith('You are an adversarial VERIFIER')
+          ? { criteriaSelfReport: CRITERIA.map((c) => ({ id: c.id, met: true, evidence: 'e' })) }
+          : {}),
+      })),
+    )
+    // Enqueue callback: fire the handler for the PARENT only — child jobs
+    // are dropped, simulating a queue with no free slots.
+    let handler: (taskId: string) => Promise<void>
+    const fired = new Set<string>()
+    const store = new InMemoryTaskStore((taskId) => {
+      if (fired.size === 0) {
+        fired.add(taskId)
+        void handler(taskId)
+      }
+    })
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 5 })
+    cleanups.push(() => waiter.stop())
+    const coordinator = createEvaluationCoordinator({
+      store,
+      waiter,
+      nodeId: 'test-node',
+      config: { skipOrigins: [] },
+      runTask: (taskId) => handler(taskId),
+    })
+    handler = createTaskHandler({ store, executors, nodeId: 'test-node', evaluation: coordinator })
+
+    const row = await store.create({
+      goal: 'do it',
+      executor: 'chat-loop',
+      agentId: 'a',
+      origin: 'api',
+      acceptanceCriteria: CRITERIA,
+    })
+    const terminal = await waiter.wait(row.id, { deadlineMs: 5_000 })
+    expect(terminal?.eval?.verdict).toBe('verified')
+  })
+})
+
 describe('mapVerifierResult', () => {
   const criteria = CRITERIA
   it('all met → verified', () => {
