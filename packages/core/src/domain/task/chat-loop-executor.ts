@@ -268,7 +268,10 @@ async function runTask(
     // invariant is not.
     if (spec.resumeMessage !== undefined && cfg.memory) {
       try {
-        const past = await cfg.memory.getSessionHistory(sessionKey)
+        // Explicit generous cap — the adapter's default is 100 rows, which a
+        // long multi-turn task can exceed; AgentLoop's own compaction handles
+        // oversized rehydrated history, so err on the side of completeness.
+        const past = await cfg.memory.getSessionHistory(sessionKey, { limit: 1000 })
         for (const m of past) {
           if ((m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') {
             history.push({ role: m.role, content: m.content })

@@ -740,7 +740,14 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
   const { payload } = opts
   const event = payload.hook_event_name ?? 'unknown'
   const sessionId = payload.session_id
-  if (!sessionId && !opts.sessionKeyOverride) {
+  // Same precedence + empty-override handling as the transcript path — the
+  // two ingest paths for one session must never key different conversations.
+  const sessionKey = resolveConversationKey({
+    override: opts.sessionKeyOverride,
+    hookSessionId: sessionId,
+    fallbackKey: '',
+  })
+  if (!sessionKey) {
     return {
       sessionKey: '',
       conversationId: '',
@@ -749,7 +756,6 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
       skipped: 'no session_id',
     }
   }
-  const sessionKey = opts.sessionKeyOverride ?? sessionKeyFromId(sessionId as string)
 
   // Map the event to a single ros_messages row.
   let row: {

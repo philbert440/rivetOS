@@ -225,7 +225,7 @@ describe('ChatLoopExecutor specifics', () => {
     const result = await executor.start(spec, { signal: new AbortController().signal }).result
 
     expect(result.verdict).toBe('completed')
-    expect(memory.getSessionHistory).toHaveBeenCalledWith(`task:${spec.taskId}`)
+    expect(memory.getSessionHistory).toHaveBeenCalledWith(`task:${spec.taskId}`, { limit: 1000 })
     const flat = prompts[0]
     // Prior turns precede the resume message; system rows are filtered.
     expect(flat.map((m) => m.text)).toEqual([
