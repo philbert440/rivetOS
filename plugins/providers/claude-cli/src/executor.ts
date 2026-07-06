@@ -78,6 +78,10 @@ export interface ClaudeCliExecutorConfig {
   /** Live RivetOS tools for the per-spawn MCP bridge; filtered per task by
    *  spec.tools (tool names). Resolved at start() time. */
   tools?: () => Tool[]
+  /** Pass --json-schema for structured TASK_RESULT (default true). Boot
+   *  probes the CLI's --help and disables this for older CLIs — an unknown
+   *  flag would hard-fail every spawn with no fence fallback ever reached. */
+  structuredResult?: boolean
   /** Task-conversation source for resume rehydration: on resume-from-
    *  awaiting-input the prior transcript (session_key task:<id>, written by
    *  the capture hooks) is rendered into the system append so the resumed
@@ -259,9 +263,12 @@ export function buildTaskSystemAppend(spec: TaskSpec): string {
     [
       '### Structured result (REQUIRED)',
       'You will be required to provide a structured result (verdict/summary/',
-      'artifacts/criteriaSelfReport) at the end of the turn. If for any',
-      'reason that prompt does not appear, end your FINAL message with a',
-      'fenced code block labeled TASK_RESULT containing this JSON shape:',
+      'artifacts/criteriaSelfReport) at the end of the turn. IMPORTANT:',
+      '"failed" means the task itself failed and cannot proceed. If you are',
+      'pausing to wait for input or a follow-up, use verdict "completed"',
+      'with a summary of progress so far — the session stays resumable.',
+      'If the structured prompt does not appear, end your FINAL message',
+      'with a fenced code block labeled TASK_RESULT containing this shape:',
       '',
       '```TASK_RESULT',
       '{',
@@ -568,7 +575,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
           excludeDynamicSections: this.cfg.excludeDynamicSections ?? true,
           systemText,
           mcpConfigPath: bridge?.configPath,
-          jsonSchema: TASK_RESULT_JSON_SCHEMA,
+          jsonSchema: (this.cfg.structuredResult ?? true) ? TASK_RESULT_JSON_SCHEMA : undefined,
           cwd: spec.workingDir ?? this.cfg.cwd,
         },
         message,
