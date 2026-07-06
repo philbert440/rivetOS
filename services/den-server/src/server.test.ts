@@ -291,10 +291,15 @@ describe('gateway API aliases (G2/G3/G6) + SPA carve-out', () => {
     expect(body.sessions).toHaveLength(1)
   })
 
-  it('GET /api/mesh answers the mesh overview', async () => {
+  it('GET /api/mesh behaves exactly like /mesh.json (alias parity)', async () => {
     const { base } = await start()
-    const res = await fetch(`${base}/api/mesh`)
-    expect(res.status).toBe(200)
+    // Environment-agnostic: with no mesh file both 404, with one both 200 —
+    // the alias must never diverge from the canonical route.
+    const [aliased, canonical] = await Promise.all([
+      fetch(`${base}/api/mesh`),
+      fetch(`${base}/mesh.json`),
+    ])
+    expect(aliased.status).toBe(canonical.status)
   })
 
   it('GET /api/terminal/config answers like /term/config', async () => {
