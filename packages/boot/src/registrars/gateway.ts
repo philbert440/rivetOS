@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { logger, type Runtime } from '@rivetos/core'
+import { logger, createGatewayChannel, type Runtime } from '@rivetos/core'
 import type { GatewayRoute } from '@rivetos/types'
 import type { RivetConfig } from '../config.js'
 
@@ -78,6 +78,14 @@ export async function registerGateway(
   const { createDenServer } = await import('@rivetos/den-server/server')
   const { loadConfig: loadDenConfig } = await import('@rivetos/den-server/config')
 
+  // G5: the gateway channel — RivetHub chat into the normal turn pipeline.
+  // Registered like any other channel; its routes + WS ride the gateway.
+  const gatewayChannel = createGatewayChannel()
+  runtime.registerChannel(gatewayChannel.channel)
+  runtime.addShutdownHook(async () => {
+    await gatewayChannel.close()
+  })
+
   const env = buildGatewayEnv(config, installRoot)
   const denConfig = loadDenConfig({ ...env })
   // Token semantics UNCHANGED from the standalone server: den.token from
@@ -92,7 +100,10 @@ export async function registerGateway(
       ? ensureGatewayToken()
       : (config.den.token?.trim() ?? '')
 
-  const den = createDenServer(denConfig, { extraRoutes })
+  const den = createDenServer(denConfig, {
+    extraRoutes: [...extraRoutes, ...gatewayChannel.routes],
+    extraUpgrades: [gatewayChannel.upgrade],
+  })
 
   const listening = await new Promise<boolean>((resolve) => {
     den.server.once('error', (err: NodeJS.ErrnoException) => {
