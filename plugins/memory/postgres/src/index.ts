@@ -187,3 +187,6 @@ export const manifest: PluginManifest = {
     )
   },
 }
+
+export { WikiIndex } from './wiki/index-reader.js'
+export type { WikiTopicRow, WikiTopicHit, WikiIndexConfig, ExtractionMark } from './wiki/index-reader.js'
