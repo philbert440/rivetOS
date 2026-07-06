@@ -127,6 +127,10 @@ export interface SpawnTurnFlags {
   systemText: string
   /** Embedded MCP bridge config path for --mcp-config (omit when absent). */
   mcpConfigPath?: string
+  /** JSON Schema for structured output (--json-schema) — the CLI forces the
+   *  model through a StructuredOutput tool and the result event's `result`
+   *  field carries the schema-validated JSON string. */
+  jsonSchema?: string
   /** Working directory for the spawned process. */
   cwd?: string
 }
@@ -162,6 +166,9 @@ export function buildArgs(flags: SpawnTurnFlags): string[] {
 
   if (flags.mcpConfigPath) {
     args.push('--mcp-config', flags.mcpConfigPath)
+  }
+  if (flags.jsonSchema) {
+    args.push('--json-schema', flags.jsonSchema)
   }
 
   // No --session-id stitching: each spawn is a one-shot. Multi-turn state

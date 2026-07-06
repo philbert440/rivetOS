@@ -285,9 +285,17 @@ export async function registerAgentTools(
   const executors = createExecutorRegistry()
   // Task-conversation persistence + resume rehydration (step (c)) — turns
   // file under session_key task:<id> alongside the harness executors' rows.
+  const taskPricing = config.tasks?.pricing
+    ? Object.fromEntries(
+        Object.entries(config.tasks.pricing).map(([provider, p]) => [
+          provider,
+          { inputPerMTok: p.input_per_mtok, outputPerMTok: p.output_per_mtok },
+        ]),
+      )
+    : undefined
   executors.register(
     'chat-loop',
-    createChatLoopExecutor({ ...executorCfg, memory: runtime.getMemory() }),
+    createChatLoopExecutor({ ...executorCfg, memory: runtime.getMemory(), pricing: taskPricing }),
   )
   await registerClaudeCliTaskExecutor(runtime, config, executors, workspaceDir)
 
@@ -462,6 +470,8 @@ async function registerClaudeCliTaskExecutor(
         permissionMode: providerCfg.permission_mode as string | undefined,
         cwd: (providerCfg.cwd as string | undefined) ?? workspaceDir,
         tools: () => runtime.getTools(),
+        // Resume rehydration (step-(c) parity with chat-loop).
+        memory: runtime.getMemory(),
       }),
       'claude-cli',
     )
