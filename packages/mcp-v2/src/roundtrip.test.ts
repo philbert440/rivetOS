@@ -79,6 +79,30 @@ describe('mcp v2 round-trip (RC-drift gate)', () => {
     expect(await client.callTool('echo', { text: 'still up' })).toBe('echo: still up')
   })
 
+  it('rejects wrong-length tokens (constant-time path)', async () => {
+    const server = createV2McpServer({ port: 0, authToken: 'sekret', tools: [] })
+    await server.start()
+    cleanups.push(() => server.close())
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer nope-way-longer-than-the-token' },
+    })
+    expect(res.status).toBe(401)
+  })
+
+  it('unix socket: stale socket replaced, mode 0600', async () => {
+    const { mkdtempSync, statSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-v2-sock-'))
+    const sock = join(dir, 'mcp.sock')
+    writeFileSync(sock, '') // stale file at the socket path
+    const server = createV2McpServer({ socketPath: sock, tools: [] })
+    await server.start()
+    cleanups.push(() => server.close())
+    expect(statSync(sock).mode & 0o777).toBe(0o600)
+  })
+
   it('bearer auth gates the MCP endpoint but not /health/live', async () => {
     const server = createV2McpServer({ port: 0, authToken: 'sekret', tools: [] })
     await server.start()

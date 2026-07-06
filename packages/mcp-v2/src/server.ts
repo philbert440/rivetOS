@@ -11,6 +11,8 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { chmodSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { timingSafeEqual } from 'node:crypto'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import { toNodeHandler } from '@modelcontextprotocol/node'
@@ -42,7 +44,13 @@ function tokenMatches(expected: string, header: string | undefined): boolean {
   if (!header?.startsWith('Bearer ')) return false
   const got = Buffer.from(header.slice('Bearer '.length))
   const want = Buffer.from(expected)
-  return got.length === want.length && timingSafeEqual(got, want)
+  // Constant-time even on length mismatch (v1 parity): compare against a
+  // same-length dummy so the comparison cost never leaks the token length.
+  if (got.length !== want.length) {
+    timingSafeEqual(want, Buffer.from(want))
+    return false
+  }
+  return timingSafeEqual(got, want)
 }
 
 /** Build a fresh per-request McpServer over the shared tool registrations. */
@@ -100,7 +108,18 @@ export function createV2McpServer(options: V2McpServerOptions = {}): V2McpServer
       await new Promise<void>((resolve, reject) => {
         server.once('error', reject)
         if (options.socketPath) {
-          server.listen(options.socketPath, resolve)
+          // v1 parity: stale-socket unlink, parent mkdir, then 0600 after
+          // bind — filesystem perms ARE the auth boundary on a socket.
+          mkdirSync(dirname(options.socketPath), { recursive: true })
+          if (existsSync(options.socketPath)) unlinkSync(options.socketPath)
+          server.listen(options.socketPath, () => {
+            try {
+              chmodSync(options.socketPath as string, 0o600)
+            } catch {
+              /* surfaced by connect failures; never crash startup */
+            }
+            resolve()
+          })
         } else {
           server.listen(options.port ?? 5700, options.host ?? '127.0.0.1', resolve)
         }
