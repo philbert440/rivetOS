@@ -53,6 +53,12 @@ export interface ChatLoopExecutorConfig {
    * fresh-conversation-only (in-memory dev / tests).
    */
   memory?: Pick<Memory, 'append' | 'getSessionHistory'>
+  /**
+   * Optional per-provider pricing (USD per million tokens) so budget.maxUsd
+   * can fire for in-process turns. Absent providers cost 0 — local vllm
+   * stays free; add an entry (config tasks.pricing) for paid APIs like xai.
+   */
+  pricing?: Record<string, { inputPerMTok?: number; outputPerMTok?: number }>
 }
 
 /** Unbounded push queue exposed as an AsyncIterable — done() completes it. */
@@ -309,6 +315,14 @@ async function runTask(
       usage.inputTokens += turn.usage?.promptTokens ?? 0
       usage.outputTokens += turn.usage?.completionTokens ?? 0
       usage.totalTokens = usage.inputTokens + usage.outputTokens
+      const price = cfg.pricing?.[agent.provider]
+      if (price) {
+        usage.costUsd =
+          (usage.costUsd ?? 0) +
+          ((turn.usage?.promptTokens ?? 0) * (price.inputPerMTok ?? 0) +
+            (turn.usage?.completionTokens ?? 0) * (price.outputPerMTok ?? 0)) /
+            1_000_000
+      }
       usage.wallClockMs = Date.now() - startedAt
       run.events.push({ ts: Date.now(), type: 'turn.end', turn: usage.turns, usage: { ...usage } })
 
