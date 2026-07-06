@@ -68,9 +68,8 @@ export async function registerAgentTools(
   // ------------------------------------------------------------------
   // Durability — Postgres-backed if pgUrl is configured, in-memory otherwise.
   //
-  // Substrate touches three things: subagent sessions, the delegation runs
-  // audit log, and the graphile-worker job queue for run-subagent-turn.
-  // All three share the same Postgres connection pool.
+  // Substrate is the task engine: ros_tasks + the graphile-worker run-task
+  // queue + the completion waiter, all on one Postgres connection pool.
   // ------------------------------------------------------------------
   const pgUrl = runtime.getPgUrl()
   let pool: pg.Pool | undefined
@@ -337,9 +336,9 @@ export async function registerAgentTools(
     log.info('No pgUrl — task engine in-memory (subagent tools only)')
   }
 
-  // Pool teardown LAST: hooks run in registration order, and both the
-  // subagent worker and the task runner must stop before Postgres goes away
-  // (in-flight PgTaskStore calls would otherwise fail).
+  // Pool teardown LAST: hooks run in registration order, and the task
+  // runner + waiter must stop before Postgres goes away (in-flight
+  // PgTaskStore calls would otherwise fail).
   if (pool) {
     runtime.addShutdownHook(async () => {
       await pool?.end()
