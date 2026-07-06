@@ -21,8 +21,8 @@ import {
 } from '@rivetos/tool-search'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '../server.js'
-import { adaptRivetTool } from './adapt.js'
+import type { ToolRegistration } from '@rivetos/mcp-v1'
+import { adaptRivetTool } from '@rivetos/mcp'
 
 export interface SearchToolsOptions extends SearchGlobConfig, SearchGrepConfig {
   /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */

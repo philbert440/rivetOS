@@ -16,7 +16,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
-import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '../server.js'
+import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '@rivetos/mcp-v1'
 import { createMemoryTools, type MemoryToolsHandle } from './memory.js'
 
 const PG_URL = process.env.RIVETOS_PG_URL ?? ''

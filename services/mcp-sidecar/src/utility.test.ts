@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
-import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '../server.js'
+import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '@rivetos/mcp-v1'
 import { createShellTool, type ShellToolHandle } from './shell.js'
 import { createFileTools, type FileToolsHandle } from './file.js'
 import { createSearchTools, type SearchToolsHandle } from './search.js'

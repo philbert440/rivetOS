@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/mcp-server",
   "version": "0.4.0-beta.6",
-  "description": "RivetOS MCP server — exposes RivetOS tools (memory, skills, runtime, utility) over the Model Context Protocol",
+  "description": "RivetOS MCP server \u2014 exposes RivetOS tools (memory, skills, runtime, utility) over the Model Context Protocol",
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
@@ -18,15 +18,9 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@rivetos/core": "0.4.0-beta.6",
-    "@rivetos/memory-postgres": "0.4.0-beta.6",
-    "@rivetos/tool-file": "0.4.0-beta.6",
-    "@rivetos/tool-search": "0.4.0-beta.6",
-    "@rivetos/tool-shell": "0.4.0-beta.6",
-    "@rivetos/tool-web-search": "0.4.0-beta.6",
-    "@rivetos/types": "0.4.0-beta.6",
-    "zod": "^4.3.6"
+    "@rivetos/mcp": "0.4.0-beta.6",
+    "@rivetos/mcp-v1": "0.4.0-beta.6",
+    "@rivetos/types": "0.4.0-beta.6"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
