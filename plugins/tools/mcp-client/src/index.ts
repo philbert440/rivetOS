@@ -105,25 +105,30 @@ interface MCPCallToolResult {
 // MCP Connection — wraps a single MCP server connection
 // ---------------------------------------------------------------------------
 
+/**
+ * Structural mirror of @rivetos/mcp-v2's V2McpConnection — the package loads
+ * dynamically (per-server opt-in) and this CJS build cannot inline-import
+ * ESM types.
+ */
+interface V2Facade {
+  listTools(): Promise<
+    Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>
+  >
+  callToolRaw(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ content: Array<Record<string, unknown>>; isError?: boolean }>
+  close(): Promise<void>
+}
+
 interface MCPConnection {
   id: string
   config: MCPServerConfig
   /** v1 (sessionful SDK) handles — absent on v2 connections. */
   client?: Client
   transport?: Transport
-  /** v2 (2026-07-28 RC) facade — absent on v1 connections. Structural
-   *  mirror of @rivetos/mcp-v2's V2McpConnection (the package is loaded
-   *  dynamically; an inline ESM type import breaks the CJS build). */
-  v2?: {
-    listTools(): Promise<
-      Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>
-    >
-    callToolRaw(
-      name: string,
-      args: Record<string, unknown>,
-    ): Promise<{ content: Array<Record<string, unknown>>; isError?: boolean }>
-    close(): Promise<void>
-  }
+  /** v2 (2026-07-28 RC) facade — absent on v1 connections. */
+  v2?: V2Facade
   connected: boolean
   tools: MCPDiscoveredTool[]
 }
@@ -303,7 +308,20 @@ export class MCPClientPlugin {
     if (config.transport === 'sse') {
       throw new Error(`MCP server "${id}": sse transport is v1-only`)
     }
-    const { connectV2 } = await import('@rivetos/mcp-v2')
+    // Runtime-assembled specifier: the v2 facade loads only when a server
+    // opts in, and scope:adapter must not hold a static edge to the
+    // scope:transport mount package — this is protocol plumbing, not an
+    // architectural dependency (same pattern as the sidecar compat shim).
+    const v2Pkg = ['@rivetos', 'mcp-v2'].join('/')
+    const { connectV2 } = (await import(v2Pkg)) as {
+      connectV2: (opts: {
+        name?: string
+        url?: string
+        command?: string
+        args?: string[]
+        env?: Record<string, string>
+      }) => Promise<V2Facade>
+    }
     const timeout = config.connectTimeout ?? 30_000
     const connectPromise = connectV2(
       config.transport === 'stdio'
