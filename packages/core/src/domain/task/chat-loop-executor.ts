@@ -224,19 +224,27 @@ async function runTask(
   if (!provider) return fail(`Provider "${agent.provider}" not available`)
 
   try {
-    const basePrompt = await cfg.workspace.buildSystemPrompt(spec.agentId)
-    const scaffold = [
-      '\n\n## Task Context',
-      'You are executing a delegated task. Complete it thoroughly, then provide a clear summary of what you accomplished.',
-      `\n### Goal\n${spec.goal}`,
-      spec.resolvedContext ? `\n### Context\n${spec.resolvedContext}` : '',
-      spec.acceptanceCriteria.length > 0
-        ? `\n### Acceptance criteria\n${spec.acceptanceCriteria
-            .map((c) => `- [${c.id}] ${c.description}`)
-            .join('\n')}`
-        : '',
-      spec.systemPromptAppend ? `\n${spec.systemPromptAppend}` : '',
-    ].join('')
+    // Prompt parity (heartbeat cutover): heartbeat tasks run the workspace
+    // heartbeat prompt with NO delegated-task scaffold — the goal is the
+    // heartbeat prompt itself, exactly like the legacy inline AgentLoop.
+    const heartbeat = spec.promptMode === 'heartbeat'
+    const basePrompt = heartbeat
+      ? await cfg.workspace.buildHeartbeatPrompt(spec.agentId)
+      : await cfg.workspace.buildSystemPrompt(spec.agentId)
+    const scaffold = heartbeat
+      ? (spec.systemPromptAppend ?? '')
+      : [
+          '\n\n## Task Context',
+          'You are executing a delegated task. Complete it thoroughly, then provide a clear summary of what you accomplished.',
+          `\n### Goal\n${spec.goal}`,
+          spec.resolvedContext ? `\n### Context\n${spec.resolvedContext}` : '',
+          spec.acceptanceCriteria.length > 0
+            ? `\n### Acceptance criteria\n${spec.acceptanceCriteria
+                .map((c) => `- [${c.id}] ${c.description}`)
+                .join('\n')}`
+            : '',
+          spec.systemPromptAppend ? `\n${spec.systemPromptAppend}` : '',
+        ].join('')
 
     const tools = deduplicateTools(filterToolsForAgent(cfg.tools(), spec.agentId, cfg.toolFilter))
 
@@ -311,7 +319,17 @@ async function runTask(
         { role: 'user', content: message },
         { role: 'assistant', content: turn.response },
       )
-      await persistTurn(cfg.memory, sessionKey, spec, usage.turns, message, turn.response)
+      // Heartbeat turns are deliberately NOT persisted to memory — they were
+      // polluting getContextForTurn "Recent" (see runtime heartbeat notes);
+      // the ros_tasks row itself is the durable record.
+      await persistTurn(
+        heartbeat ? undefined : cfg.memory,
+        sessionKey,
+        spec,
+        usage.turns,
+        message,
+        turn.response,
+      )
       message = run.nextSteer()
     }
 

@@ -38,6 +38,7 @@ function createMockWorkspace(opts?: { fail?: boolean }): WorkspaceLoader {
       if (opts?.fail) throw new Error('workspace exploded')
       return `System prompt for ${agentId}`
     }),
+    buildHeartbeatPrompt: vi.fn(async (agentId: string) => `Heartbeat prompt for ${agentId}`),
     load: vi.fn(async () => []),
   } as unknown as WorkspaceLoader
 }
@@ -248,6 +249,43 @@ describe('ChatLoopExecutor specifics', () => {
       { signal: new AbortController().signal },
     ).result
     expect(result.verdict).toBe('completed')
+  })
+
+  it('promptMode heartbeat uses the heartbeat prompt, no scaffold, no memory persistence', async () => {
+    let systemPrompt = ''
+    const provider = makeMockProvider({
+      id: 'mock',
+      chunks: [
+        { type: 'text', delta: 'tick' },
+        { type: 'done', usage: { promptTokens: 1, completionTokens: 1 } },
+      ],
+      onCall: ({ prompt }) => {
+        for (const msg of prompt) {
+          if (msg.role === 'system' && typeof msg.content === 'string') systemPrompt = msg.content
+        }
+      },
+    })
+    const router = {
+      getAgents: () => [{ id: 'conformance-agent', name: 'conformance-agent', provider: 'mock' }],
+      getProviders: () => [provider],
+    } as unknown as Router
+    const memory: ChatLoopExecutorConfig['memory'] = {
+      append: vi.fn(async () => 'id'),
+      getSessionHistory: vi.fn(async () => []),
+    }
+    const workspace = createMockWorkspace()
+    const executor = createChatLoopExecutor(makeConfig({ router, memory, workspace }))
+    const result = await executor.start(
+      makeConformanceSpec({ goal: 'heartbeat prompt text', promptMode: 'heartbeat' }),
+      { signal: new AbortController().signal },
+    ).result
+
+    expect(result.verdict).toBe('completed')
+    expect(workspace.buildHeartbeatPrompt).toHaveBeenCalledWith('conformance-agent')
+    expect(systemPrompt).toBe('Heartbeat prompt for conformance-agent')
+    expect(systemPrompt).not.toContain('Task Context')
+    // Heartbeat turns are deliberately not persisted to memory.
+    expect(memory.append).not.toHaveBeenCalled()
   })
 
   it('steer before the first turn completes runs a follow-up turn', async () => {

@@ -29,6 +29,8 @@ import { Router } from '../domain/router.js'
 import { WorkspaceLoader } from '../domain/workspace.js'
 import { MessageQueue, isCommand, parseCommand } from '../domain/queue.js'
 import { createHeartbeatScheduler, type HeartbeatScheduler } from '../domain/heartbeat-scheduler.js'
+import type { TaskStore } from '../domain/task/store.js'
+import type { HeartbeatConfig } from '@rivetos/types'
 import { CommandHandler } from './commands.js'
 import { StreamManager } from './streaming.js'
 import { SessionManager } from './sessions.js'
@@ -76,6 +78,7 @@ export class Runtime {
   private memoryConnected = false
   private config: RuntimeConfig
   private heartbeatScheduler?: HeartbeatScheduler
+  private heartbeatTaskStore?: TaskStore
   private healthServer?: HealthServer
   private reconnectionManager: ReconnectionManager
   private shutdownHooks: Array<() => Promise<void>> = []
@@ -172,6 +175,15 @@ export class Runtime {
     return this.config.pgUrl ?? process.env.RIVETOS_PG_URL
   }
   /** Registered memory adapter (undefined until a memory plugin registers). */
+  /**
+   * Cutover step (f): heartbeat runs become ros_tasks rows. Boot calls this
+   * (before start()) when the task engine is live; without it the legacy
+   * inline-AgentLoop heartbeat path runs unchanged.
+   */
+  setHeartbeatTaskStore(store: TaskStore): void {
+    this.heartbeatTaskStore = store
+  }
+
   getMemory(): Memory | undefined {
     return this.memory
   }
@@ -309,6 +321,15 @@ export class Runtime {
             return
           }
 
+          // Cutover step (f): with the task engine live, each heartbeat run
+          // is a durable ros_tasks row (origin 'heartbeat'); this handler
+          // waits for the terminal row and delivers the output. Legacy
+          // inline path below is the fallback (unmigrated / tasks disabled).
+          if (this.heartbeatTaskStore) {
+            await this.runHeartbeatTask(hbConfig)
+            return
+          }
+
           const { provider } = this.router.route({
             id: 'heartbeat',
             userId: 'system:heartbeat',
@@ -335,16 +356,7 @@ export class Runtime {
 
           const result = await loop.run(hbConfig.prompt, [])
 
-          if (result.response && hbConfig.outputChannel) {
-            const isSilent = SILENT_RESPONSES.some((s) => result.response.trim() === s)
-            if (!isSilent) {
-              for (const [, ch] of this.channels) {
-                await ch
-                  .send({ channelId: hbConfig.outputChannel, text: result.response })
-                  .catch(() => {}) // fire-and-forget — heartbeat delivery is best-effort
-              }
-            }
-          }
+          await this.deliverHeartbeatOutput(hbConfig, result.response)
 
           // Heartbeat responses are deliberately not persisted. They were polluting
           // getContextForTurn() "Recent" section and causing agents to believe they
@@ -355,6 +367,69 @@ export class Runtime {
     }
 
     log.info('Ready.')
+  }
+
+  /**
+   * Run one heartbeat as a durable task (cutover step (f)): create the row
+   * (origin 'heartbeat', promptMode 'heartbeat', maxAttempts 1 — a crashed
+   * tick is failed by the sweep, never re-run; cron does not backfill), poll
+   * to terminal bounded by turnTimeout, deliver the output. The crontab job
+   * holds its worker slot for the wait — heartbeat concurrency is small and
+   * turnTimeout bounds it (grok design consult, 2026-07-06).
+   */
+  private async runHeartbeatTask(hbConfig: HeartbeatConfig): Promise<void> {
+    const store = this.heartbeatTaskStore
+    if (!store) return
+    const turnTimeoutMs = this.config.turnTimeout ? this.config.turnTimeout * 1000 : 1_800_000
+    const row = await store.create({
+      goal: hbConfig.prompt,
+      executor: 'chat-loop',
+      agentId: hbConfig.agent,
+      origin: 'heartbeat',
+      requestedBy: 'system:heartbeat',
+      spec: { promptMode: 'heartbeat' },
+      budget: { maxWallClockMs: turnTimeoutMs },
+      maxAttempts: 1,
+    })
+
+    const deadline = Date.now() + turnTimeoutMs + 60_000
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 2_000))
+      const current = await store.get(row.id)
+      if (!current) {
+        log.warn(`Heartbeat task ${row.id} disappeared — no delivery`)
+        return
+      }
+      if (['completed', 'failed', 'killed', 'timeout'].includes(current.status)) {
+        if (current.status !== 'completed') {
+          log.warn(
+            `Heartbeat task ${row.id} ended ${current.status}${current.error ? `: ${current.error}` : ''}`,
+          )
+          return
+        }
+        await this.deliverHeartbeatOutput(
+          hbConfig,
+          current.result?.output ?? current.result?.summary ?? '',
+        )
+        return
+      }
+      if (Date.now() > deadline) {
+        log.warn(
+          `Heartbeat task ${row.id} still ${current.status} past deadline — abandoning wait (row remains durable)`,
+        )
+        return
+      }
+    }
+  }
+
+  /** Best-effort heartbeat output delivery with the silent-response filter. */
+  private async deliverHeartbeatOutput(hbConfig: HeartbeatConfig, response: string): Promise<void> {
+    if (!response || !hbConfig.outputChannel) return
+    const isSilent = SILENT_RESPONSES.some((s) => response.trim() === s)
+    if (isSilent) return
+    for (const [, ch] of this.channels) {
+      await ch.send({ channelId: hbConfig.outputChannel, text: response }).catch(() => {}) // fire-and-forget — heartbeat delivery is best-effort
+    }
   }
 
   async stop(): Promise<void> {

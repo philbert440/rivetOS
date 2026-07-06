@@ -57,6 +57,12 @@ export interface TaskSpec {
   effort?: 'low' | 'medium' | 'high'
   systemPromptAppend?: string
   /**
+   * System-prompt flavor. 'heartbeat' selects the workspace heartbeat prompt
+   * with no task scaffold — prompt parity for cutover heartbeat tasks;
+   * default 'task' is the chat system prompt + delegated-task scaffold.
+   */
+  promptMode?: 'task' | 'heartbeat'
+  /**
    * Resume from awaiting-input: the steered message that drives the opening
    * turn INSTEAD of `goal` — the goal must never re-execute on resume.
    * Until memory-conversation rehydration lands (cutover step (c)),
