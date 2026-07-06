@@ -33,6 +33,7 @@ import type {
 import { buildLocalSessionContext } from '@rivetos/types'
 import type { TaskRow, TaskStore } from './store.js'
 import { TASK_JOB_NAME, taskJobName } from './store.js'
+import { buildRetryMessage } from './evaluation-coordinator.js'
 import { logger } from '../../logger.js'
 
 const log = logger('TaskRunner')
@@ -232,6 +233,9 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
 
   try {
     let totalUsage = ZERO_USAGE
+    // 2e: verifier-driven retry state (distinct from crash-recovery attempt).
+    let evalAttempts = task.evalAttempt
+    let evalVerifierIds: string[] = task.eval?.verifierTaskIds ?? []
 
     // One iteration per executor run. Interactive tasks loop when a steered
     // message raced the park attempt (P2) — the reclaimed message seeds the
@@ -327,11 +331,36 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
         log.warn(`Task ${task.id} could not park or reclaim a message — finishing completed`)
       }
 
-      // Phase 2d: verifier pass before the terminal flip — the eval outcome
-      // lands on the row first, so ?wait consumers and the done-notify see
-      // an already-evaluated task. Verify-only: verdict/status unchanged.
+      // Phase 2d/2e: verifier pass before the terminal flip — the eval
+      // outcome lands on the row first, so ?wait consumers and the
+      // done-notify see an already-evaluated task. On refutation, spend up
+      // to maxRetries steered re-runs (the refutation drives the next turn
+      // through the resume path — the goal never re-executes); the final
+      // outcome keeps the executor's verdict/status untouched.
       if (opts.evaluation?.shouldEvaluate(task, totalResult)) {
-        await opts.evaluation.evaluate(task, totalResult)
+        const pass = await opts.evaluation.evaluate(task, totalResult, {
+          attempts: evalAttempts,
+          priorVerifierIds: evalVerifierIds,
+        })
+        evalVerifierIds = pass.outcome.verifierTaskIds
+        if (
+          pass.outcome.verdict === 'refuted' &&
+          pass.refutation !== undefined &&
+          evalAttempts < opts.evaluation.maxRetries
+        ) {
+          evalAttempts += 1
+          log.warn(
+            `Task ${task.id} refuted by verifier — retry ${String(evalAttempts)}/${String(
+              opts.evaluation.maxRetries,
+            )}`,
+          )
+          resumeMessage = buildRetryMessage(
+            evalAttempts,
+            opts.evaluation.maxRetries,
+            pass.refutation,
+          )
+          continue
+        }
       }
       await opts.store.finish(task.id, verdictToStatus(totalResult), totalResult)
       return

@@ -350,6 +350,7 @@ export async function registerAgentTools(
             runTask: (taskId) => runTaskRef.current?.(taskId) ?? Promise.resolve(),
             nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
             config: {
+              maxRetries: evalSection.max_retries,
               agentId: evalSection.verifier?.agent_id,
               executor: evalSection.verifier?.executor,
               executorTarget: evalSection.verifier?.executor_target,
