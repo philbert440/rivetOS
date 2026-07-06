@@ -331,9 +331,12 @@ export async function registerAgentTools(
     runtime.addShutdownHook(async () => {
       await taskRunner.stop()
     })
+    // Cutover step (f): heartbeat runs become durable ros_tasks rows. The
+    // runtime falls back to the legacy inline path when unset.
+    if (taskEngineStore) runtime.setHeartbeatTaskStore(taskEngineStore)
     log.info(
       taskEngineStore
-        ? 'Task engine started — subagent tools + delegation audit are task-backed'
+        ? 'Task engine started — subagent tools, delegation audit + heartbeats are task-backed'
         : 'Task engine runner started (ros_tasks missing — legacy engines remain active)',
     )
   } else if (tasksEnabled) {
