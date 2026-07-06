@@ -171,7 +171,21 @@ export function createEvaluationCoordinator(
       }
       await store.recordEval(task.id, outcome)
       if (opts.escalation) {
-        await opts.escalation.notify({ task, result, outcome, refutation: pass.refutation })
+        // Truly fire-and-forget with a hang guard: a stuck channel send must
+        // never block the parent's finish path. 10s is generous for a ping;
+        // past it we log and move on (the escalated verdict is already on
+        // the row — the scoreboard still surfaces it).
+        const timeout = new Promise<'timeout'>((r) => {
+          const t = setTimeout(() => r('timeout'), 10_000)
+          t.unref()
+        })
+        const sent = await Promise.race([
+          opts.escalation.notify({ task, result, outcome, refutation: pass.refutation }),
+          timeout,
+        ])
+        if (sent === 'timeout') {
+          log.error(`Task ${task.id} escalation notify timed out (>10s) — continuing to finish`)
+        }
       } else {
         log.warn(`Task ${task.id} escalated — no escalation notifier configured`)
       }
