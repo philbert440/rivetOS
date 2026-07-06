@@ -85,6 +85,8 @@ export type {
 } from './domain/task/store.js'
 export { createChatLoopExecutor } from './domain/task/chat-loop-executor.js'
 export type { ChatLoopExecutorConfig } from './domain/task/chat-loop-executor.js'
+export { TaskBackedSubagentManager } from './domain/task/subagent-task-manager.js'
+export type { TaskBackedSubagentManagerConfig } from './domain/task/subagent-task-manager.js'
 export {
   createExecutorRegistry,
   createTaskHandler,

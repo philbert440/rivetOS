@@ -20,6 +20,7 @@ import {
   buildLocalNode,
   AgentChannelServer,
   SubagentManagerImpl,
+  TaskBackedSubagentManager,
   createSubagentTools,
   InMemorySubagentStore,
   PgSubagentStore,
@@ -282,8 +283,10 @@ export async function registerAgentTools(
   // On startup the runner crash-sweeps rows this node left 'running'.
   // ------------------------------------------------------------------
   const tasksEnabled = config.tasks?.enabled !== false
+  let taskEngineStore: PgTaskStore | undefined
   if (tasksEnabled && pgUrl && pool) {
     const taskStore = new PgTaskStore(pool)
+    taskEngineStore = taskStore
     const executors = createExecutorRegistry()
     // Task-conversation persistence + resume rehydration (step (c)) — turns
     // file under session_key task:<id> alongside the harness executors' rows.
@@ -320,11 +323,22 @@ export async function registerAgentTools(
     })
   }
 
-  const subagentManager = new SubagentManagerImpl({
-    router: runtime.getRouter(),
-    store: subagentStore,
-    enqueueTurn,
-  })
+  // Cutover step (d): with the task engine live, the subagent tools write
+  // ros_tasks rows (TaskBackedSubagentManager) — same 5-tool surface, one
+  // engine. The legacy worker above keeps draining any pre-cutover
+  // ros_subagent_sessions rows; revert = tasks.enabled=false, which falls
+  // back to the legacy manager wholesale.
+  const subagentManager = taskEngineStore
+    ? new TaskBackedSubagentManager({
+        router: runtime.getRouter(),
+        store: taskEngineStore,
+        memory: runtime.getMemory(),
+      })
+    : new SubagentManagerImpl({
+        router: runtime.getRouter(),
+        store: subagentStore,
+        enqueueTurn,
+      })
   for (const tool of createSubagentTools(subagentManager)) {
     runtime.registerTool(tool)
   }

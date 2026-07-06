@@ -117,8 +117,22 @@ export interface TaskStore {
    * pending_message between the last turn and this call, the flip is refused
    * (returns false) — the caller must takePendingMessage() and keep going
    * instead of parking.
+   *
+   * `interim` persists the turn's result snapshot alongside the park so
+   * consumers (subagent_status) can read lastResponse/usage while the row is
+   * awaiting-input — a parked row would otherwise carry no result at all.
    */
-  markAwaitingInput(id: string): Promise<boolean>
+  markAwaitingInput(id: string, interim?: TaskResult): Promise<boolean>
+
+  /**
+   * Kill request: CAS flip any pre-terminal row (queued / awaiting-input /
+   * running) to 'killed' and return its prior status; undefined when the row
+   * is missing or already terminal. Killing 'running' does NOT abort the
+   * in-flight turn — the runner re-reads the row at turn end and discards the
+   * outcome (same "let it finish, drop the result" semantics as the legacy
+   * subagent engine).
+   */
+  requestKill(id: string): Promise<TaskStatus | undefined>
 
   /**
    * Atomically read-and-clear pending_message (returns undefined when none).
@@ -271,7 +285,7 @@ export class InMemoryTaskStore implements TaskStore {
     return Promise.resolve()
   }
 
-  markAwaitingInput(id: string): Promise<boolean> {
+  markAwaitingInput(id: string, interim?: TaskResult): Promise<boolean> {
     const row = this.rows.get(id)
     // pending_message guard: a concurrent send() wins — refuse the park so
     // the caller consumes the message instead of wiping it.
@@ -279,7 +293,19 @@ export class InMemoryTaskStore implements TaskStore {
       return Promise.resolve(false)
     }
     row.status = 'awaiting-input'
+    if (interim) row.result = interim
     return Promise.resolve(true)
+  }
+
+  requestKill(id: string): Promise<TaskStatus | undefined> {
+    const row = this.rows.get(id)
+    if (!row || !['queued', 'awaiting-input', 'running'].includes(row.status)) {
+      return Promise.resolve(undefined)
+    }
+    const prior = row.status
+    row.status = 'killed'
+    row.completedAt = Date.now()
+    return Promise.resolve(prior)
   }
 
   takePendingMessage(id: string): Promise<string | undefined> {
@@ -571,17 +597,32 @@ export class PgTaskStore implements TaskStore {
     )
   }
 
-  async markAwaitingInput(id: string): Promise<boolean> {
+  async markAwaitingInput(id: string, interim?: TaskResult): Promise<boolean> {
     // pending_message guard: a concurrent send() stashed a message — refuse
     // the park (and DON'T wipe the message); the caller consumes it via
     // takePendingMessage() and keeps the turn loop going.
     const { rowCount } = await this.pool.query(
       `UPDATE ros_tasks
-         SET status = 'awaiting-input'
+         SET status = 'awaiting-input',
+             result = COALESCE($2, result)
        WHERE id = $1 AND status = 'running' AND pending_message IS NULL`,
-      [id],
+      [id, interim ? JSON.stringify(interim) : null],
     )
     return (rowCount ?? 0) > 0
+  }
+
+  async requestKill(id: string): Promise<TaskStatus | undefined> {
+    const { rows } = await this.pool.query<{ prior: TaskStatus }>(
+      `UPDATE ros_tasks t
+         SET status = 'killed', completed_at = now()
+        FROM (SELECT id, status AS prior FROM ros_tasks
+               WHERE id = $1 AND status IN ('queued','awaiting-input','running')
+               FOR UPDATE) p
+       WHERE t.id = p.id
+       RETURNING p.prior`,
+      [id],
+    )
+    return rows[0]?.prior
   }
 
   async takePendingMessage(id: string): Promise<string | undefined> {
