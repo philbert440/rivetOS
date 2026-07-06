@@ -184,7 +184,12 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
   }
 
   const resolvedContext = await resolveContext(task, opts)
-  const spec = task.spec as { interactive?: boolean; tools?: string[]; model?: string }
+  const spec = task.spec as {
+    interactive?: boolean
+    tools?: string[]
+    model?: string
+    promptMode?: 'task' | 'heartbeat'
+  }
 
   // Resuming from awaiting-input: consume the stashed message atomically —
   // it must drive the opening turn INSTEAD of the goal (the goal must never
@@ -220,6 +225,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
           budget: task.budget,
           tools: spec.tools,
           model: spec.model,
+          promptMode: spec.promptMode,
           workingDir: opts.workspaceDir,
           resumeMessage,
           session: buildLocalSessionContext({
