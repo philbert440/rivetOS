@@ -3,8 +3,9 @@
  *
  * Read-only aggregates over ros_task_outcomes_v (terminal, evaluable tasks:
  * criteria non-empty, not verifier children, not audit-only inserts). The
- * headline honesty metric is divergenceRate — how often an executor claimed
- * completed and the verifier refuted. RivetHub's outcomes panel (phase 4)
+ * headline honesty metric is divergenceRate — the share of tasks where the
+ * executor claimed completed and the verifier refuted OR escalation fired
+ * (an escalation began life as a divergence the retry couldn't fix). RivetHub's outcomes panel (phase 4)
  * reads exactly this endpoint.
  *
  *   GET /api/outcomes?since=2026-07-01&until=2026-07-06&agentId=&origin=
@@ -31,10 +32,15 @@ interface Bucket {
   verified: number
   refuted: number
   escalated: number
+  /** Honesty failures: completed-but-refuted OR escalated (product call —
+   *  an escalation began life as a divergence the retry couldn't fix). */
   diverged: number
   divergenceRate: number
   totalCostUsd?: number
   avgDurationMs?: number
+  /** internal accumulators — stripped in finalize */
+  _durSum?: number
+  _durN?: number
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -65,8 +71,8 @@ function fold(bucket: Bucket, row: OutcomeRow): void {
   if (row.diverged || row.evalVerdict === 'escalated') bucket.diverged += 1
   if (row.costUsd !== undefined) bucket.totalCostUsd = (bucket.totalCostUsd ?? 0) + row.costUsd
   if (row.durationMs !== undefined) {
-    const priorTotal = (bucket.avgDurationMs ?? 0) * (bucket.tasks - 1)
-    bucket.avgDurationMs = Math.round((priorTotal + row.durationMs) / bucket.tasks)
+    bucket._durSum = (bucket._durSum ?? 0) + row.durationMs
+    bucket._durN = (bucket._durN ?? 0) + 1
   }
 }
 
@@ -75,6 +81,9 @@ function finalize(bucket: Bucket): Bucket {
   if (bucket.totalCostUsd !== undefined) {
     bucket.totalCostUsd = Math.round(bucket.totalCostUsd * 10_000) / 10_000
   }
+  if (bucket._durN) bucket.avgDurationMs = Math.round((bucket._durSum ?? 0) / bucket._durN)
+  delete bucket._durSum
+  delete bucket._durN
   return bucket
 }
 

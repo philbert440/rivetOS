@@ -839,8 +839,19 @@ export class PgTaskStore implements TaskStore {
     }
     if (filter?.agentId) add('agent_id = ?', filter.agentId)
     if (filter?.origin) add('origin = ?', filter.origin)
-    if (filter?.since) add('day >= to_timestamp(?::double precision / 1000)', filter.since)
-    if (filter?.until) add('day <= to_timestamp(?::double precision / 1000)', filter.until)
+    // Bound on completion TIME, not the day bucket — sub-day since/until
+    // must match InMemory semantics (grok #283). The view has no
+    // completed_at column (0004 already shipped), so bound via the base row.
+    if (filter?.since)
+      add(
+        'id IN (SELECT id FROM ros_tasks WHERE completed_at >= to_timestamp(?::double precision / 1000))',
+        filter.since,
+      )
+    if (filter?.until)
+      add(
+        'id IN (SELECT id FROM ros_tasks WHERE completed_at <= to_timestamp(?::double precision / 1000))',
+        filter.until,
+      )
     params.push(filter?.limit ?? 10_000)
     const { rows } = await this.pool.query<{
       id: string
@@ -869,7 +880,11 @@ export class PgTaskStore implements TaskStore {
       executor: r.executor,
       executorTarget: r.executor_target ?? undefined,
       origin: r.origin,
-      day: r.day ? r.day.toISOString().slice(0, 10) : '',
+      // node-pg parses the view's timestamp-without-tz as session-local;
+      // re-anchor to UTC so the bucket label matches the view's truncation.
+      day: r.day
+        ? new Date(r.day.getTime() - r.day.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+        : '',
       status: r.status,
       executorVerdict: r.executor_verdict ?? undefined,
       evalVerdict: r.eval_verdict ?? undefined,
