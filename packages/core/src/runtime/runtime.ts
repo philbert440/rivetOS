@@ -80,6 +80,7 @@ export class Runtime {
   private config: RuntimeConfig
   private heartbeatScheduler?: HeartbeatScheduler
   private heartbeatTaskStore?: TaskStore
+  private heartbeatTaskWaiter?: import('../domain/task/completion-waiter.js').TaskCompletionWaiter
   private healthServer?: HealthServer
   private reconnectionManager: ReconnectionManager
   private shutdownHooks: Array<() => Promise<void>> = []
@@ -181,8 +182,12 @@ export class Runtime {
    * (before start()) when the task engine is live; without it the legacy
    * inline-AgentLoop heartbeat path runs unchanged.
    */
-  setHeartbeatTaskStore(store: TaskStore): void {
+  setHeartbeatTaskStore(
+    store: TaskStore,
+    waiter: import('../domain/task/completion-waiter.js').TaskCompletionWaiter,
+  ): void {
     this.heartbeatTaskStore = store
+    this.heartbeatTaskWaiter = waiter
   }
 
   getMemory(): Memory | undefined {
@@ -374,9 +379,11 @@ export class Runtime {
    *  see domain/task/heartbeat-task.ts for the mechanics + design notes. */
   private async runHeartbeatTask(hbConfig: HeartbeatConfig): Promise<void> {
     const store = this.heartbeatTaskStore
-    if (!store) return
+    const waiter = this.heartbeatTaskWaiter
+    if (!store || !waiter) return
     await runHeartbeatViaTasks(hbConfig, {
       store,
+      waiter,
       turnTimeoutMs: this.config.turnTimeout ? this.config.turnTimeout * 1000 : 1_800_000,
       deliver: (cfg, response) => this.deliverHeartbeatOutput(cfg, response),
     })

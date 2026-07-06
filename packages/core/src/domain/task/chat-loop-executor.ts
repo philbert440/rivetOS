@@ -246,7 +246,10 @@ async function runTask(
           spec.systemPromptAppend ? `\n${spec.systemPromptAppend}` : '',
         ].join('')
 
-    const tools = deduplicateTools(filterToolsForAgent(cfg.tools(), spec.agentId, cfg.toolFilter))
+    const excluded = new Set(spec.excludeTools ?? [])
+    const tools = deduplicateTools(
+      filterToolsForAgent(cfg.tools(), spec.agentId, cfg.toolFilter),
+    ).filter((t) => !excluded.has(t.name))
 
     // The task's memory conversation key — the contract shared with the
     // harness executors (RIVETOS_SESSION_KEY) and Memory.getSessionHistory.

@@ -63,6 +63,12 @@ export interface TaskSpec {
    */
   promptMode?: 'task' | 'heartbeat'
   /**
+   * Tool names to strip from the executor's toolset. Mesh-delegated tasks
+   * exclude delegate_task — the noDelegation loop guard the legacy
+   * /api/message path applied (Appendix E).
+   */
+  excludeTools?: string[]
+  /**
    * Resume from awaiting-input: the steered message that drives the opening
    * turn INSTEAD of `goal` — the goal must never re-execute on resume.
    * Until memory-conversation rehydration lands (cutover step (c)),
