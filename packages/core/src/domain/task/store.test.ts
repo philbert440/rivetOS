@@ -338,6 +338,42 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
     expect((await store.get(row.id))?.evalAttempt).toBe(1)
   })
 
+  it('listOutcomes reads the outcomes view with filters', async () => {
+    const row = await store.create({
+      goal: 'g',
+      executor: 'chat-loop',
+      agentId: 'outcome-agent',
+      origin: 'api',
+      acceptanceCriteria: [{ id: 'c1', description: 'd', kind: 'manual' }],
+    })
+    await store.claim(row.id, 'test-node')
+    await store.finish(row.id, 'completed', {
+      verdict: 'completed',
+      summary: 's',
+      artifacts: [],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, turns: 1, wallClockMs: 1, costUsd: 0.02 },
+    })
+    await store.recordEval(row.id, {
+      verdict: 'verified',
+      attempts: 0,
+      verifierTaskIds: [],
+      criteriaReport: [{ id: 'c1', met: true, evidence: 'e' }],
+      diverged: false,
+    })
+    const rows = await store.listOutcomes({ agentId: 'outcome-agent' })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      agentId: 'outcome-agent',
+      status: 'completed',
+      executorVerdict: 'completed',
+      evalVerdict: 'verified',
+      diverged: false,
+      costUsd: 0.02,
+    })
+    expect(rows[0].day).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(await store.listOutcomes({ agentId: 'nobody' })).toHaveLength(0)
+  })
+
   afterAll(async () => {
     await utils.release()
     await pool.end()

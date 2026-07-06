@@ -24,6 +24,7 @@ import {
   createTaskDelegationRecorder,
   createTaskCompletionWaiter,
   createTaskApiRoute,
+  createOutcomesApiRoute,
   createEvaluationCoordinator,
   createChannelEscalationNotifier,
   createLogEscalationNotifier,
@@ -500,6 +501,7 @@ export async function registerAgentTools(
         resolveAffinity,
         criteriaPolicy,
       }),
+      createOutcomesApiRoute({ store: taskEngineStore }),
     )
   }
   gatewayRoutes.push(
