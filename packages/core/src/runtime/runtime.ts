@@ -327,42 +327,16 @@ export class Runtime {
             return
           }
 
-          // Cutover step (f): with the task engine live, each heartbeat run
-          // is a durable ros_tasks row (origin 'heartbeat'); this handler
-          // waits for the terminal row and delivers the output. Legacy
-          // inline path below is the fallback (unmigrated / tasks disabled).
-          if (this.heartbeatTaskStore) {
-            await this.runHeartbeatTask(hbConfig)
+          // Heartbeat runs are ros_tasks rows (cutover g2a: the legacy
+          // inline AgentLoop path is deleted). Without a migrated task
+          // engine there is nothing to run them on — warn and skip.
+          if (!this.heartbeatTaskStore) {
+            log.warn(
+              `Heartbeat "${hbConfig.agent}" skipped — task engine not ready (run rivetos-memory-migrate)`,
+            )
             return
           }
-
-          const { provider } = this.router.route({
-            id: 'heartbeat',
-            userId: 'system:heartbeat',
-            channelId: 'heartbeat',
-            chatType: 'system',
-            text: hbConfig.prompt,
-            platform: 'heartbeat',
-            agent: hbConfig.agent,
-            timestamp: Math.floor(Date.now() / 1000),
-          })
-
-          const systemPrompt = await this.workspace.buildHeartbeatPrompt(hbConfig.agent)
-          const loop = new AgentLoop({
-            systemPrompt,
-            provider,
-            tools: this.tools,
-            agentId: hbConfig.agent,
-            workspaceDir: this.config.workspaceDir,
-            freshConversation: true,
-            turnTimeout: this.config.turnTimeout ? this.config.turnTimeout * 1000 : undefined,
-            contextWindow: provider.getContextWindow(),
-            contextConfig: this.config.contextConfig,
-          })
-
-          const result = await loop.run(hbConfig.prompt, [])
-
-          await this.deliverHeartbeatOutput(hbConfig, result.response)
+          await this.runHeartbeatTask(hbConfig)
 
           // Heartbeat responses are deliberately not persisted. They were polluting
           // getContextForTurn() "Recent" section and causing agents to believe they
