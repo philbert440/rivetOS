@@ -178,9 +178,9 @@ export class Runtime {
   }
   /** Registered memory adapter (undefined until a memory plugin registers). */
   /**
-   * Cutover step (f): heartbeat runs become ros_tasks rows. Boot calls this
-   * (before start()) when the task engine is live; without it the legacy
-   * inline-AgentLoop heartbeat path runs unchanged.
+   * Heartbeat runs are ros_tasks rows (steps (f)/(g2a) — the legacy inline
+   * path is deleted). Boot calls this before start() when the task engine
+   * is live; without it heartbeats warn and skip until migration.
    */
   setHeartbeatTaskStore(
     store: TaskStore,

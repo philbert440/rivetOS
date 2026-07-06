@@ -281,3 +281,52 @@ describe('TaskBackedSubagentManager', () => {
     expect(row?.maxAttempts).toBe(1)
   })
 })
+
+describe('0003-backfilled legacy rows', () => {
+  it('status/list read history, tools, iterations from spec JSONB', async () => {
+    const { manager, store } = wire()
+    // Shape 0003 writes: terminal row with the legacy transcript in spec.
+    const row = await store.recordTerminal(
+      {
+        goal: 'do the legacy thing',
+        executor: 'chat-loop',
+        agentId: 'opus',
+        origin: 'tool',
+        requestedBy: 'opus',
+        spec: {
+          interactive: true,
+          subagent: true,
+          legacyBackfill: '0003',
+          history: [
+            { role: 'user', content: 'do the legacy thing' },
+            { role: 'assistant', content: 'legacy done' },
+          ],
+          toolsUsed: ['memory_search'],
+          iterations: 2,
+        },
+      },
+      {
+        status: 'completed',
+        result: {
+          verdict: 'completed',
+          summary: 'legacy done',
+          output: 'legacy done',
+          artifacts: [],
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, turns: 2, wallClockMs: 9 },
+        },
+        durationMs: 9,
+      },
+    )
+
+    const status = await manager.status(row.id)
+    expect(status.status).toBe('completed')
+    expect(status.toolsUsed).toEqual(['memory_search'])
+    expect(status.iterations).toBe(2)
+    expect(status.messageCount).toBe(2) // spec.history fallback (no memory wired)
+    expect(status.lastResponse).toBe('legacy done')
+
+    const sessions = await manager.list()
+    const legacy = sessions.find((s) => s.id === row.id)
+    expect(legacy?.history).toHaveLength(2)
+  })
+})
