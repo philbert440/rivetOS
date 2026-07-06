@@ -12,9 +12,11 @@
  *     steering is a no-op.
  *   - Per spawn: the per-spawn MCP bridge (embedMcpServerForTurn) exposes the
  *     task's allowed RivetOS tools via --mcp-config; the child env carries
- *     RIVETOS_SESSION_KEY=task:<taskId> (transcript capture joins the task's
- *     memory conversation) and RIVETOS_DEN_HOOK_DISABLED=1 (this executor
- *     owns den emission — the hook must not double-report).
+ *     RIVETOS_SESSION_KEY=task:<taskId> (the contracted join key for the
+ *     task's memory conversation — the hook-side join lands at cutover step
+ *     (c); transcript capture currently keys off the CLI session_id) and
+ *     RIVETOS_DEN_HOOK_DISABLED=1 (this executor owns den emission — the
+ *     hook must not double-report).
  *   - stream-json → TaskEvent: assistant text → den message.agent, thinking
  *     deltas → den thinking.delta/thinking.end, tool_use/tool_result → den
  *     tool.start/tool.end. CliResult → {type:'cost'} (total_cost_usd) and
@@ -88,13 +90,12 @@ export const TASK_RESULT_FENCE = 'TASK_RESULT'
 
 const TASK_RESULT_RE = /```TASK_RESULT\s*\n([\s\S]*?)```/g
 
-const VERDICTS: readonly TaskVerdict[] = [
-  'completed',
-  'failed',
-  'killed',
-  'timeout',
-  'budget-exceeded',
-]
+/** Verdicts the MODEL may self-report — the scaffold only offers these.
+ *  'killed'/'timeout'/'budget-exceeded' are runner/executor-owned: a model
+ *  self-reporting one is coerced to 'failed' (it claimed abnormal-termination
+ *  semantics, so failure is the honest reading) with its summary kept. */
+const MODEL_VERDICTS: readonly TaskVerdict[] = ['completed', 'failed']
+const COERCED_VERDICTS: readonly string[] = ['killed', 'timeout', 'budget-exceeded']
 
 interface ParsedTaskResult {
   verdict: TaskVerdict
@@ -118,9 +119,12 @@ export function parseTaskResultBlock(text: string): ParsedTaskResult | undefined
   try {
     const raw = JSON.parse(last) as Record<string, unknown>
     if (typeof raw !== 'object') return undefined
-    const verdict = raw.verdict
+    let verdict = raw.verdict
     const summary = raw.summary
-    if (typeof summary !== 'string' || !VERDICTS.includes(verdict as TaskVerdict)) {
+    if (typeof verdict === 'string' && COERCED_VERDICTS.includes(verdict)) {
+      verdict = 'failed'
+    }
+    if (typeof summary !== 'string' || !MODEL_VERDICTS.includes(verdict as TaskVerdict)) {
       return undefined
     }
     const artifacts = Array.isArray(raw.artifacts)
@@ -449,7 +453,10 @@ export class ClaudeCliExecutor implements HarnessExecutor {
         message,
         {
           env: {
-            // Transcript capture joins the task's memory conversation.
+            // Contracted join key for the task's memory conversation. NOTE:
+            // transcript capture does not consume this yet — today it keys
+            // off the CLI session_id / transcript path; the hook-side join
+            // lands at cutover step (c).
             RIVETOS_SESSION_KEY: `task:${spec.taskId}`,
             // This executor owns den emission — the den hook must stay quiet.
             RIVETOS_DEN_HOOK_DISABLED: '1',
@@ -604,7 +611,11 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     }
 
     // Prefer the result event's final text (covers result-only turns with no
-    // assistant events); fall back to accumulated assistant text.
+    // assistant events); fall back to accumulated assistant text. NOTE: the
+    // accumulated-text fallback concatenates EVERY assistant message of the
+    // turn, so a TASK_RESULT block emitted mid-conversation can be picked up
+    // by the parser. Acceptable for now (parser takes the LAST block);
+    // revisit with structured output (--json-schema) later.
     return { text: resultText ?? text, sessionId, error }
   }
 }

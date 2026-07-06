@@ -381,16 +381,30 @@ async function registerClaudeCliTaskExecutor(
   const providerCfg = config.providers?.['claude-cli'] ?? {}
   const binary = (providerCfg.binary as string | undefined) ?? 'claude'
 
+  // 3s probe timeout: a hung binary must never stall boot — kill it, warn,
+  // and skip registration.
+  const PROBE_TIMEOUT_MS = 3_000
   const available = await new Promise<boolean>((resolve) => {
     try {
       const env = { ...process.env }
       delete env.ANTHROPIC_API_KEY
       delete env.ANTHROPIC_AUTH_TOKEN
       const proc = spawn(binary, ['--version'], { env, stdio: ['ignore', 'ignore', 'ignore'] })
+      const timer = setTimeout(() => {
+        log.warn(
+          `claude --version probe timed out after ${String(PROBE_TIMEOUT_MS)}ms — ` +
+            `killing probe, skipping claude-cli task executor`,
+        )
+        proc.kill('SIGKILL')
+        resolve(false)
+      }, PROBE_TIMEOUT_MS)
+      timer.unref()
       proc.on('error', () => {
+        clearTimeout(timer)
         resolve(false)
       })
       proc.on('close', (code) => {
+        clearTimeout(timer)
         resolve(code === 0)
       })
     } catch {

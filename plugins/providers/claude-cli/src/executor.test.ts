@@ -332,4 +332,15 @@ describe('parseTaskResultBlock', () => {
     )
     expect(parseTaskResultBlock('no block here')).toBe(undefined)
   })
+
+  it('coerces runner-owned verdicts self-reported by the model to failed', () => {
+    // 'killed'/'timeout'/'budget-exceeded' are runner/executor-owned — a
+    // model self-reporting one is coerced to 'failed', summary kept.
+    for (const v of ['killed', 'timeout', 'budget-exceeded']) {
+      const parsed = parseTaskResultBlock(
+        '```TASK_RESULT\n{"verdict":"' + v + '","summary":"model claimed ' + v + '"}\n```',
+      )
+      expect(parsed).toMatchObject({ verdict: 'failed', summary: `model claimed ${v}` })
+    }
+  })
 })
