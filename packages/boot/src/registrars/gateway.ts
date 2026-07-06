@@ -113,6 +113,12 @@ export async function registerGateway(
             `still running? (systemctl disable --now rivet-den) Gateway NOT started.`,
         )
         resolve(false)
+      } else if (err.code === 'EACCES' && denConfig.port < 1024) {
+        log.warn(
+          `Gateway cannot bind :${String(denConfig.port)} without CAP_NET_BIND_SERVICE — ` +
+            `run \`rivetos gateway caps\` then restart (Appendix F G7). Gateway NOT started.`,
+        )
+        resolve(false)
       } else {
         log.error(`Gateway failed to bind: ${err.message}`)
         resolve(false)
