@@ -19,8 +19,8 @@
   },
   "dependencies": {
     "@rivetos/mcp": "0.4.0-beta.6",
-    "@rivetos/mcp-v1": "0.4.0-beta.6",
-    "@rivetos/types": "0.4.0-beta.6"
+    "@rivetos/types": "0.4.0-beta.6",
+    "@rivetos/mcp-v2": "0.4.0-beta.6"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

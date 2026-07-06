@@ -1,5 +1,5 @@
 /**
- * In-process MCP transport plugin.
+ * In-process MCP transport plugin — serves the 2026-07-28 RC (v2, stateless).
  *
  * When `transports.mcp` is configured, the boot loader instantiates this
  * manifest, which waits for runtime registration to finish (via
@@ -22,8 +22,8 @@
  */
 
 import type { PluginManifest } from '@rivetos/types'
-import { createMcpServer, type ToolRegistration } from '@rivetos/mcp-v1'
-import { adaptRivetToolDynamic } from '@rivetos/mcp'
+import { createV2McpServer } from '@rivetos/mcp-v2'
+import { adaptRivetToolDynamic, type ToolRegistration } from '@rivetos/mcp'
 
 export const manifest: PluginManifest = {
   type: 'transport',
@@ -40,16 +40,16 @@ export const manifest: PluginManifest = {
     ctx.onRegistrationComplete(async (snapshot) => {
       const tools: ToolRegistration[] = snapshot.tools.map((t) => adaptRivetToolDynamic(t))
 
-      const server = createMcpServer({
+      // v2 cutover (MCP unification PR 2): stateless 2026-07-28 RC server.
+      // Config surface unchanged. Note: on a unix socket the fs perms are
+      // the boundary; require_bearer_on_socket keeps its meaning by simply
+      // passing the token through (v2 auth check is token-or-nothing).
+      const server = createV2McpServer({
         host,
         port,
         socketPath,
-        authToken,
-        requireBearerOnSocket,
+        authToken: socketPath && !requireBearerOnSocket ? undefined : authToken,
         tools,
-        log: (msg, meta) => {
-          ctx.logger.debug(`${msg}${meta ? ' ' + JSON.stringify(meta) : ''}`)
-        },
       })
 
       try {
@@ -69,7 +69,7 @@ export const manifest: PluginManifest = {
               ')',
           )
         }
-        ctx.registerShutdown(() => server.stop())
+        ctx.registerShutdown(() => server.close())
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
         ctx.logger.error(`MCP transport failed to start: ${message}`)

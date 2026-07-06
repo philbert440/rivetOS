@@ -38,6 +38,13 @@ import type { ContentPart } from '@rivetos/types'
 // ---------------------------------------------------------------------------
 
 export interface MCPServerConfig {
+  /**
+   * MCP protocol generation. 'v1' (default) speaks sessionful 2025-11-25 —
+   * what today's external MCP servers expect. 'v2' opts a server into the
+   * 2026-07-28 RC stateless protocol (via @rivetos/mcp-v2's facade); flip
+   * per-server as the ecosystem upgrades. SSE is v1-only.
+   */
+  protocol?: 'v1' | 'v2'
   /** Transport type */
   transport: 'stdio' | 'streamable-http' | 'sse'
   /** For stdio: command to run */
@@ -98,11 +105,30 @@ interface MCPCallToolResult {
 // MCP Connection — wraps a single MCP server connection
 // ---------------------------------------------------------------------------
 
+/**
+ * Structural mirror of @rivetos/mcp-v2's V2McpConnection — the package loads
+ * dynamically (per-server opt-in) and this CJS build cannot inline-import
+ * ESM types.
+ */
+interface V2Facade {
+  listTools(): Promise<
+    Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>
+  >
+  callToolRaw(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ content: Array<Record<string, unknown>>; isError?: boolean }>
+  close(): Promise<void>
+}
+
 interface MCPConnection {
   id: string
   config: MCPServerConfig
-  client: Client
-  transport: Transport
+  /** v1 (sessionful SDK) handles — absent on v2 connections. */
+  client?: Client
+  transport?: Transport
+  /** v2 (2026-07-28 RC) facade — absent on v1 connections. */
+  v2?: V2Facade
   connected: boolean
   tools: MCPDiscoveredTool[]
 }
@@ -163,7 +189,7 @@ export class MCPClientPlugin {
   async disconnect(): Promise<void> {
     for (const [id, conn] of this.connections) {
       try {
-        await conn.transport.close()
+        await (conn.v2 ? conn.v2.close() : conn.transport!.close())
         conn.connected = false
         console.log(`[MCP] Disconnected from "${id}"`)
       } catch (err: unknown) {
@@ -190,6 +216,7 @@ export class MCPClientPlugin {
   // -----------------------------------------------------------------------
 
   private async connectServer(id: string, config: MCPServerConfig): Promise<MCPConnection> {
+    if (config.protocol === 'v2') return this.connectServerV2(id, config)
     const client = new Client({ name: 'rivet-os', version: '0.2.0' }, { capabilities: {} })
 
     let transport: Transport
@@ -276,6 +303,59 @@ export class MCPClientPlugin {
     return { id, config, client, transport, connected: true, tools }
   }
 
+  /** v2 (2026-07-28 RC, stateless) connection via the @rivetos/mcp-v2 facade. */
+  private async connectServerV2(id: string, config: MCPServerConfig): Promise<MCPConnection> {
+    if (config.transport === 'sse') {
+      throw new Error(`MCP server "${id}": sse transport is v1-only`)
+    }
+    // Runtime-assembled specifier: the v2 facade loads only when a server
+    // opts in, and scope:adapter must not hold a static edge to the
+    // scope:transport mount package — this is protocol plumbing, not an
+    // architectural dependency (same pattern as the sidecar compat shim).
+    const v2Pkg = ['@rivetos', 'mcp-v2'].join('/')
+    const { connectV2 } = (await import(v2Pkg)) as {
+      connectV2: (opts: {
+        name?: string
+        url?: string
+        command?: string
+        args?: string[]
+        env?: Record<string, string>
+      }) => Promise<V2Facade>
+    }
+    const timeout = config.connectTimeout ?? 30_000
+    const connectPromise = connectV2(
+      config.transport === 'stdio'
+        ? {
+            name: 'rivet-os',
+            command: config.command,
+            args: config.args,
+            env: { ...process.env, ...(config.env ?? {}) } as Record<string, string>,
+          }
+        : { name: 'rivet-os', url: config.url },
+    )
+    const v2 = await Promise.race([
+      connectPromise,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Connection to "${id}" timed out after ${String(timeout)}ms`)),
+          timeout,
+        ),
+      ),
+    ])
+
+    const prefix = config.toolPrefix ?? ''
+    const discovered = await v2.listTools()
+    const tools: MCPDiscoveredTool[] = discovered.map((t) => ({
+      mcpName: t.name,
+      rivetName: prefix ? `${prefix}${t.name}` : t.name,
+      description: t.description ?? `MCP tool from ${id}`,
+      inputSchema: t.inputSchema ?? { type: 'object', properties: {} },
+    }))
+    // v2 is stateless per request — there is no session to drop, so no
+    // onclose/auto-reconnect wiring; a failed call surfaces per call.
+    return { id, config, v2, connected: true, tools }
+  }
+
   // -----------------------------------------------------------------------
   // Internal: Reconnect a disconnected server
   // -----------------------------------------------------------------------
@@ -318,10 +398,12 @@ export class MCPClientPlugin {
         }
 
         try {
-          const result = (await conn.client.callTool({
-            name: mcpTool.mcpName,
-            arguments: args,
-          })) as MCPCallToolResult
+          const result = conn.v2
+            ? ((await conn.v2.callToolRaw(mcpTool.mcpName, args)) as MCPCallToolResult)
+            : ((await conn.client!.callTool({
+                name: mcpTool.mcpName,
+                arguments: args,
+              })) as MCPCallToolResult)
 
           // Convert MCP result content to RivetOS ToolResult
           return this.convertResult(result)
