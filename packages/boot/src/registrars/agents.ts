@@ -28,6 +28,8 @@ import {
   createSubagentWorker,
   createPgDelegationRecorder,
   createTaskDelegationRecorder,
+  createTaskCompletionWaiter,
+  type TaskCompletionWaiter,
   PgTaskStore,
   createChatLoopExecutor,
   createExecutorRegistry,
@@ -85,6 +87,7 @@ export async function registerAgentTools(
   // to the legacy engines, matching the tasks.enabled=false revert path.
   const tasksEnabled = config.tasks?.enabled !== false
   let taskEngineStore: PgTaskStore | undefined
+  let taskWaiter: TaskCompletionWaiter | undefined
 
   if (pgUrl) {
     pool = new pg.Pool({ connectionString: pgUrl, max: 4 })
@@ -105,6 +108,14 @@ export async function registerAgentTools(
     delegationRecorder = taskEngineStore
       ? createTaskDelegationRecorder(taskEngineStore)
       : createPgDelegationRecorder(pool)
+    // Shared completion waiter (LISTEN ros_task_done + poll) — mesh transport
+    // and task-backed heartbeats wait on it (step g1).
+    if (taskEngineStore) {
+      taskWaiter = createTaskCompletionWaiter({ store: taskEngineStore, pgUrl })
+      runtime.addShutdownHook(async () => {
+        await taskWaiter?.stop()
+      })
+    }
   } else {
     subagentStore = new InMemorySubagentStore()
     log.info('No pgUrl — subagent sessions + delegation runs are process-local (in-memory)')
@@ -231,6 +242,12 @@ export async function registerAgentTools(
       httpsDispatcher,
       localAgents,
       nodeName,
+      // Cutover step (g1): postgres mesh transport when the task engine is
+      // live; config mesh.delegation_transport: 'http' forces the legacy
+      // undici path (phone-android / nodes off the shared datahub PG).
+      taskStore: taskEngineStore,
+      waiter: taskWaiter,
+      transport: meshConfig.delegation_transport,
     })
 
     // Register the mesh-aware delegation tool
@@ -333,7 +350,7 @@ export async function registerAgentTools(
     })
     // Cutover step (f): heartbeat runs become durable ros_tasks rows. The
     // runtime falls back to the legacy inline path when unset.
-    if (taskEngineStore) runtime.setHeartbeatTaskStore(taskEngineStore)
+    if (taskEngineStore && taskWaiter) runtime.setHeartbeatTaskStore(taskEngineStore, taskWaiter)
     log.info(
       taskEngineStore
         ? 'Task engine started — subagent tools, delegation audit + heartbeats are task-backed'

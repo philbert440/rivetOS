@@ -21,6 +21,8 @@ import type {
 } from '@rivetos/types'
 import type { DelegationEngine } from './delegation.js'
 import type { Router } from './router.js'
+import type { TaskStore } from './task/store.js'
+import type { TaskCompletionWaiter } from './task/completion-waiter.js'
 import { logger } from '../logger.js'
 // Use undici's own fetch (not Node's global fetch). The mTLS dispatcher is
 // built from the node_modules `undici` Agent; Node's global fetch is backed by
@@ -62,6 +64,17 @@ export interface MeshDelegationConfig {
    * agents would also show up as "remote on <self>".
    */
   nodeName?: string
+
+  /**
+   * Postgres mesh transport (cutover step g1, Appendix E). When the task
+   * store + waiter are present and `transport` is not forced to 'http',
+   * remote delegation creates a node_affinity ros_tasks row and waits on it
+   * instead of the undici mTLS POST. The HTTP path remains the fallback for
+   * nodes without the shared datahub Postgres (phone-android, dev).
+   */
+  taskStore?: TaskStore
+  waiter?: TaskCompletionWaiter
+  transport?: 'postgres' | 'http'
 }
 
 /** A reachable agent and where it lives, for the delegation roster. */
@@ -212,6 +225,11 @@ export class MeshDelegationEngine {
       return this.config.localEngine.delegate(request, chainDepth)
     }
 
+    if (this.config.taskStore && this.config.waiter && this.config.transport !== 'http') {
+      log.info(`Delegating to ${request.toAgent} via ros_tasks (node_affinity=${route.node.name})`)
+      return this.delegateRemoteViaTasks(request, route, chainDepth)
+    }
+
     log.info(
       `Delegating to ${request.toAgent} remotely via ${route.node.name} (${route.node.host}:${String(route.node.port)})`,
     )
@@ -275,6 +293,83 @@ export class MeshDelegationEngine {
         rejectUnauthorized: true,
       },
     })
+  }
+
+  /**
+   * Postgres mesh transport: one node_affinity ros_tasks row, claimed and
+   * executed by the target node's runner (per-node run-task:<node> job),
+   * awaited via LISTEN ros_task_done + poll. Synchronous surface unchanged.
+   * delegate_task is excluded from the remote toolset — the noDelegation
+   * loop guard the HTTP path applied to mesh-received delegations.
+   */
+  private async delegateRemoteViaTasks(
+    request: DelegationRequest,
+    route: MeshDelegationRoute,
+    chainDepth = 0,
+  ): Promise<DelegationResult> {
+    const store = this.config.taskStore
+    const waiter = this.config.waiter
+    if (!store || !waiter) return this.delegateRemote(request, route, chainDepth)
+    const startTime = Date.now()
+    const waitMs = (request.timeoutMs ?? 1_800_000) + 5_000
+
+    try {
+      const row = await store.create({
+        goal: request.task,
+        executor: 'chat-loop',
+        agentId: request.toAgent,
+        origin: 'mesh',
+        nodeAffinity: route.node.name,
+        requestedBy: request.fromAgent,
+        chainDepth: chainDepth + 1,
+        spec: {
+          delegation: true,
+          meshFrom: this.config.nodeName,
+          excludeTools: ['delegate_task'],
+          ...(request.model ? { model: request.model } : {}),
+        },
+        budget: request.timeoutMs ? { maxWallClockMs: request.timeoutMs } : undefined,
+        maxAttempts: 1,
+      })
+
+      const terminal = await waiter.wait(row.id, { deadlineMs: waitMs })
+      const durationMs = Date.now() - startTime
+
+      if (!terminal) {
+        // Deadline (or vanished row): kill before returning so the remote
+        // runner discards the in-flight outcome — no zombie mesh runs.
+        await store.requestKill(row.id)
+        return {
+          status: 'timeout',
+          response: `Remote delegation to ${request.toAgent} on ${route.node.name} timed out after ${String(waitMs)}ms (task ${row.id} killed)`,
+          durationMs,
+        }
+      }
+
+      if (terminal.status === 'completed') {
+        return {
+          status: 'completed',
+          response:
+            terminal.result?.output ??
+            terminal.result?.summary ??
+            '[no response from remote agent]',
+          iterations: terminal.result?.usage.turns,
+          durationMs,
+        }
+      }
+
+      return {
+        status: terminal.status === 'timeout' ? 'timeout' : 'failed',
+        response: `Remote delegation to ${request.toAgent} on ${route.node.name} ${terminal.status}${terminal.error ? `: ${terminal.error}` : ''}`,
+        durationMs,
+      }
+    } catch (err: unknown) {
+      return {
+        status: 'failed',
+        response: `Remote delegation to ${request.toAgent} on ${route.node.name} failed: ${err instanceof Error ? err.message : String(err)}`,
+        durationMs: Date.now() - startTime,
+      }
+    }
   }
 
   private async delegateRemote(

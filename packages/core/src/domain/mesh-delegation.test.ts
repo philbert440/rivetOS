@@ -103,3 +103,114 @@ describe('MeshDelegationEngine roster', () => {
     expect(desc).toContain('local')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Postgres mesh transport (cutover step g1)
+// ---------------------------------------------------------------------------
+
+import { InMemoryTaskStore } from './task/store.js'
+import { createTaskCompletionWaiter } from './task/completion-waiter.js'
+
+function makePgEngine(
+  nodes: MeshNode[],
+  store: InMemoryTaskStore,
+  transport?: 'postgres' | 'http',
+): MeshDelegationEngine {
+  return new MeshDelegationEngine({
+    localEngine: {} as DelegationEngine,
+    router: { getAgents: () => [] } as unknown as Router,
+    meshRegistry: makeRegistry(nodes),
+    tls: { ca: '', cert: '', key: '' },
+    httpsDispatcher: {},
+    localAgents: ['local'],
+    nodeName: 'ct115',
+    taskStore: store,
+    waiter: createTaskCompletionWaiter({ store, pollFallbackMs: 10 }),
+    transport,
+  })
+}
+
+describe('MeshDelegationEngine postgres transport', () => {
+  const remote = [node('ct112', ['grok'])]
+
+  it('creates a node_affinity mesh task and returns the terminal result', async () => {
+    // Simulated remote runner: claim + finish whatever gets enqueued.
+    const store: InMemoryTaskStore = new InMemoryTaskStore((id) => {
+      void (async () => {
+        await store.claim(id, 'ct112')
+        await store.finish(id, 'completed', {
+          verdict: 'completed',
+          summary: 'remote grok says hi',
+          output: 'remote grok says hi',
+          artifacts: [],
+          usage: { inputTokens: 5, outputTokens: 7, totalTokens: 12, turns: 2, wallClockMs: 3 },
+        })
+      })()
+    })
+    const engine = makePgEngine(remote, store)
+
+    const result = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'grok', task: 'summarize the mesh' },
+      1,
+    )
+
+    expect(result.status).toBe('completed')
+    expect(result.response).toBe('remote grok says hi')
+    expect(result.iterations).toBe(2)
+
+    const rows = await store.list()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].origin).toBe('mesh')
+    expect(rows[0].nodeAffinity).toBe('ct112')
+    expect(rows[0].requestedBy).toBe('local')
+    expect(rows[0].chainDepth).toBe(2)
+    expect(rows[0].spec).toMatchObject({
+      delegation: true,
+      meshFrom: 'ct115',
+      excludeTools: ['delegate_task'],
+    })
+    expect(rows[0].maxAttempts).toBe(1)
+  })
+
+  it('timeout: kills the row and returns status timeout', async () => {
+    const store = new InMemoryTaskStore() // nobody claims — remote node down
+    const engine = makePgEngine(remote, store)
+
+    const result = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'grok', task: 'never answered', timeoutMs: -5_500 },
+      0,
+    )
+
+    expect(result.status).toBe('timeout')
+    expect((await store.list())[0].status).toBe('killed')
+  })
+
+  it('failed remote run maps to failed with the error text', async () => {
+    const store: InMemoryTaskStore = new InMemoryTaskStore((id) => {
+      void (async () => {
+        await store.claim(id, 'ct112')
+        await store.finish(id, 'failed', {
+          verdict: 'failed',
+          summary: 'boom',
+          artifacts: [],
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, turns: 0, wallClockMs: 0 },
+          error: 'provider exploded',
+        })
+      })()
+    })
+    const engine = makePgEngine(remote, store)
+    const result = await engine.delegate({ fromAgent: 'local', toAgent: 'grok', task: 'x' }, 0)
+    expect(result.status).toBe('failed')
+    expect(result.response).toContain('provider exploded')
+  })
+
+  it("transport 'http' forces the legacy path (no task rows)", async () => {
+    const store = new InMemoryTaskStore()
+    const engine = makePgEngine(remote, store, 'http')
+    // The undici path will fail fast against the fake node — that's fine;
+    // the assertion is that no ros_tasks row was created.
+    const result = await engine.delegate({ fromAgent: 'local', toAgent: 'grok', task: 'x' }, 0)
+    expect(result.status).not.toBe('completed')
+    expect(await store.list()).toHaveLength(0)
+  })
+})

@@ -32,7 +32,7 @@ import type {
 } from '@rivetos/types'
 import { buildLocalSessionContext } from '@rivetos/types'
 import type { TaskRow, TaskStore } from './store.js'
-import { TASK_JOB_NAME } from './store.js'
+import { TASK_JOB_NAME, taskJobName } from './store.js'
 import { logger } from '../../logger.js'
 
 const log = logger('TaskRunner')
@@ -140,6 +140,17 @@ export function createTaskHandler(opts: TaskHandlerOptions): (taskId: string) =>
   return async (taskId: string): Promise<void> => {
     const task = await opts.store.claim(taskId, opts.nodeId)
     if (!task) {
+      // Stranding interim (Appendix E): a wrong-node worker consumed a
+      // global-name job for a pinned row (mixed-version mesh window). Put
+      // the job back under the row's per-node name instead of dropping it.
+      const row = await opts.store.get(taskId)
+      if (row?.status === 'queued' && row.nodeAffinity && row.nodeAffinity !== opts.nodeId) {
+        await opts.store.reenqueue?.(taskId)
+        log.warn(
+          `Task ${taskId} is pinned to ${row.nodeAffinity} — re-enqueued under its per-node job`,
+        )
+        return
+      }
       log.warn(`Skipping task ${taskId} — already claimed, terminal, or removed`)
       return
     }
@@ -189,6 +200,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     tools?: string[]
     model?: string
     promptMode?: 'task' | 'heartbeat'
+    excludeTools?: string[]
   }
 
   // Resuming from awaiting-input: consume the stashed message atomically —
@@ -226,6 +238,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
           tools: spec.tools,
           model: spec.model,
           promptMode: spec.promptMode,
+          excludeTools: spec.excludeTools,
           workingDir: opts.workspaceDir,
           resumeMessage,
           session: buildLocalSessionContext({
@@ -398,16 +411,23 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         concurrency: opts.concurrency ?? envInt('RIVETOS_TASKS_CONCURRENCY', 4),
         pollInterval: opts.pollIntervalMs ?? envInt('RIVETOS_TASKS_POLL_MS', 2_000),
         noHandleSignals: true,
-        taskList: {
-          [TASK_JOB_NAME]: async (payload) => {
+        taskList: (() => {
+          const runJob = async (payload: unknown): Promise<void> => {
             const taskId = (payload as { taskId?: string } | null)?.taskId
             if (typeof taskId !== 'string' || taskId.length === 0) {
               log.warn(`run-task fired with invalid payload: ${JSON.stringify(payload)}`)
               return
             }
             await handler(taskId)
-          },
-        },
+          }
+          // Global name for unpinned rows + this node's per-node name for
+          // affinity rows (Appendix E) — same handler, the claim guard is
+          // the correctness boundary either way.
+          return {
+            [TASK_JOB_NAME]: runJob,
+            [taskJobName(opts.nodeId)]: runJob,
+          }
+        })(),
       })
 
       log.info('Ready — graphile-worker listening for run-task jobs')

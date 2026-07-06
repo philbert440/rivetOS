@@ -29,6 +29,15 @@ import type {
 
 export const TASK_JOB_NAME = 'run-task'
 
+/**
+ * graphile-worker task name for a row — per-node when affinity is set
+ * ('run-task:<node>', Appendix E) so only the target node's runner ever
+ * dequeues it; the global name serves unpinned rows.
+ */
+export function taskJobName(nodeAffinity?: string | null): string {
+  return nodeAffinity ? `${TASK_JOB_NAME}:${nodeAffinity}` : TASK_JOB_NAME
+}
+
 /** graphile-worker job key for a task — one live job per task row. */
 export function taskJobKey(taskId: string): string {
   return `task:${taskId}`
@@ -190,6 +199,10 @@ export interface TaskStore {
   /** Present on PG-backed stores: false when the ros_tasks table is missing
    *  (migration not applied) — the runner must no-op, never crash boot. */
   isReady?(): Promise<boolean>
+
+  /** Re-enqueue a queued row under its correct (per-node) job name — the
+   *  stranding interim for mixed-version mesh windows (Appendix E). */
+  reenqueue?(id: string): Promise<void>
 }
 
 /** Running rows with a heartbeat newer than this are NOT crash-swept. */
@@ -351,6 +364,12 @@ export class InMemoryTaskStore implements TaskStore {
     // subagent surface, so its clock must not keep running.
     row.durationMs = row.startedAt ? Date.now() - row.startedAt : 0
     return Promise.resolve(true)
+  }
+
+  reenqueue(id: string): Promise<void> {
+    const row = this.rows.get(id)
+    if (row?.status === 'queued') this.enqueue?.(id)
+    return Promise.resolve()
   }
 
   requestKill(id: string): Promise<TaskStatus | undefined> {
@@ -582,7 +601,7 @@ export class PgTaskStore implements TaskStore {
           taskJobKey(id),
         ],
       )
-      await this.addJob(client, id)
+      await this.addJob(client, id, { nodeAffinity: input.nodeAffinity })
       await client.query('COMMIT')
       return pgToPublic(rows[0])
     } catch (err) {
@@ -748,8 +767,11 @@ export class PgTaskStore implements TaskStore {
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')
-      await client.query(`UPDATE ros_tasks SET pending_message = $2 WHERE id = $1`, [id, message])
-      await this.addJob(client, id, { replace: true })
+      const { rows } = await client.query<{ node_affinity: string | null }>(
+        `UPDATE ros_tasks SET pending_message = $2 WHERE id = $1 RETURNING node_affinity`,
+        [id, message],
+      )
+      await this.addJob(client, id, { replace: true, nodeAffinity: rows[0]?.node_affinity })
       await client.query('COMMIT')
     } catch (err) {
       await client.query('ROLLBACK')
@@ -793,11 +815,11 @@ export class PgTaskStore implements TaskStore {
            SET status = 'queued'
          WHERE status = 'running' AND claimed_by = $1 AND attempt < max_attempts
            AND ${stale}
-         RETURNING id`,
+         RETURNING id, node_affinity`,
         [node, this.sweepStaleMs],
       )
-      for (const { id } of requeued.rows) {
-        await this.addJob(client, id, { replace: true })
+      for (const row of requeued.rows as Array<{ id: string; node_affinity: string | null }>) {
+        await this.addJob(client, row.id, { replace: true, nodeAffinity: row.node_affinity })
       }
       const failed = await client.query(
         `UPDATE ros_tasks
@@ -839,7 +861,7 @@ export class PgTaskStore implements TaskStore {
   private async addJob(
     client: pg.PoolClient,
     taskId: string,
-    opts?: { replace?: boolean },
+    opts?: { replace?: boolean; nodeAffinity?: string | null },
   ): Promise<void> {
     await client.query(
       `SELECT ${this.graphileSchema}.add_job(
@@ -850,11 +872,30 @@ export class PgTaskStore implements TaskStore {
          job_key_mode => $4
        )`,
       [
-        TASK_JOB_NAME,
+        taskJobName(opts?.nodeAffinity),
         JSON.stringify({ taskId }),
         taskJobKey(taskId),
         opts?.replace ? 'replace' : 'preserve_run_at',
       ],
     )
+  }
+
+  /**
+   * Re-enqueue a queued row under its correct (per-node) job name — the
+   * stranding interim for mixed-version windows where an old node enqueued a
+   * pinned row on the global name and a wrong-node worker consumed the job.
+   */
+  async reenqueue(id: string): Promise<void> {
+    const client = await this.pool.connect()
+    try {
+      const { rows } = await client.query<{ node_affinity: string | null }>(
+        `SELECT node_affinity FROM ros_tasks WHERE id = $1 AND status = 'queued'`,
+        [id],
+      )
+      if (rows.length === 0) return
+      await this.addJob(client, id, { replace: true, nodeAffinity: rows[0].node_affinity })
+    } finally {
+      client.release()
+    }
   }
 }

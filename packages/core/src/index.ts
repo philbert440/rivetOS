@@ -76,7 +76,13 @@ export type {
   SubagentWorker,
   SubagentWorkerOptions,
 } from './domain/subagent-worker.js'
-export { InMemoryTaskStore, PgTaskStore, TASK_JOB_NAME, taskJobKey } from './domain/task/store.js'
+export {
+  InMemoryTaskStore,
+  PgTaskStore,
+  TASK_JOB_NAME,
+  taskJobKey,
+  taskJobName,
+} from './domain/task/store.js'
 export type {
   TaskStore,
   TaskRow,
@@ -88,6 +94,9 @@ export type {
 export { createChatLoopExecutor } from './domain/task/chat-loop-executor.js'
 export type { ChatLoopExecutorConfig } from './domain/task/chat-loop-executor.js'
 export { TaskBackedSubagentManager } from './domain/task/subagent-task-manager.js'
+export { createTaskCompletionWaiter } from './domain/task/completion-waiter.js'
+export type { TaskCompletionWaiter } from './domain/task/completion-waiter.js'
+export { runHeartbeatViaTasks } from './domain/task/heartbeat-task.js'
 export type { TaskBackedSubagentManagerConfig } from './domain/task/subagent-task-manager.js'
 export {
   createExecutorRegistry,

@@ -14,7 +14,8 @@ import { resolve } from 'node:path'
 import pg from 'pg'
 import { makeWorkerUtils, type WorkerUtils } from 'graphile-worker'
 import type { NewTaskInput } from './store.js'
-import { InMemoryTaskStore, PgTaskStore, taskJobKey, TASK_JOB_NAME } from './store.js'
+import { createTaskCompletionWaiter } from './completion-waiter.js'
+import { InMemoryTaskStore, PgTaskStore, taskJobKey, taskJobName, TASK_JOB_NAME } from './store.js'
 
 function input(overrides?: Partial<NewTaskInput>): NewTaskInput {
   return {
@@ -288,11 +289,11 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
     await admin.end()
   })
 
-  async function jobCount(taskId: string): Promise<number> {
+  async function jobCount(taskId: string, identifier: string = TASK_JOB_NAME): Promise<number> {
     const { rows } = await pool.query<{ n: string }>(
       `SELECT count(*) AS n FROM ${graphileSchema}.jobs
         WHERE task_identifier = $1 AND key = $2`,
-      [TASK_JOB_NAME, taskJobKey(taskId)],
+      [identifier, taskJobKey(taskId)],
     )
     return Number(rows[0].n)
   }
@@ -403,6 +404,50 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
 
     expect(await store.requestKill(queued.id)).toBeUndefined()
     expect(await store.requestKill(crypto.randomUUID())).toBeUndefined()
+  })
+
+  it('nodeAffinity rows enqueue under the per-node job name (Appendix E)', async () => {
+    const pinned = await store.create(input({ nodeAffinity: 'ct112' }))
+    expect(await jobCount(pinned.id)).toBe(0)
+    expect(await jobCount(pinned.id, taskJobName('ct112'))).toBe(1)
+
+    // send() re-enqueues under the same per-node name.
+    await store.claim(pinned.id, 'ct112')
+    await store.markAwaitingInput(pinned.id)
+    await store.send(pinned.id, 'more')
+    expect(await jobCount(pinned.id, taskJobName('ct112'))).toBe(1)
+    expect(await jobCount(pinned.id)).toBe(0)
+
+    // reenqueue (stranding interim) also lands on the per-node name.
+    const stranded = await store.create(input({ nodeAffinity: 'ct113' }))
+    await pool.query(`SELECT ${graphileSchema}.remove_job($1)`, [taskJobKey(stranded.id)])
+    await store.reenqueue(stranded.id)
+    expect(await jobCount(stranded.id, taskJobName('ct113'))).toBe(1)
+  })
+
+  it('LISTEN ros_task_done wakes the completion waiter (real NOTIFY)', async () => {
+    const waiter = createTaskCompletionWaiter({
+      store,
+      pgUrl: TEST_PG_URL,
+      // Long poll cadences: if the NOTIFY does not arrive, the wait times out.
+      pollListenMs: 60_000,
+      pollFallbackMs: 60_000,
+    })
+    try {
+      const task = await store.create(input())
+      await store.claim(task.id, 'node-a')
+      const wait = waiter.wait(task.id, { deadlineMs: 10_000 })
+      // Give the waiter a beat to do its first row check and park on LISTEN.
+      await new Promise((r) => setTimeout(r, 300))
+      await store.finish(task.id, 'completed', completedResult)
+      const started = Date.now()
+      const terminal = await wait
+      expect(terminal?.status).toBe('completed')
+      // NOTIFY-driven wake: far faster than the 60s poll cadence.
+      expect(Date.now() - started).toBeLessThan(5_000)
+    } finally {
+      await waiter.stop()
+    }
   })
 
   it('recordTerminal inserts a terminal row with result and no run-task job', async () => {

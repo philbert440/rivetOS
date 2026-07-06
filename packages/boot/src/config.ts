@@ -76,6 +76,14 @@ export interface MeshSection {
       }
   /** Port for the agent channel HTTP server (default: 3000) */
   agent_channel_port?: number
+
+  /**
+   * Mesh delegation transport (cutover step g1). Default: 'postgres' when
+   * the task engine is live (shared datahub ros_tasks + node_affinity);
+   * set 'http' to force the legacy undici mTLS path (nodes without the
+   * shared Postgres — phone-android, dev boxes).
+   */
+  delegation_transport?: 'postgres' | 'http'
   /** Shared storage directory for mesh.json (default: /rivet-shared) */
   storage_dir?: string
   discovery?: {

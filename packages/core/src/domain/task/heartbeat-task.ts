@@ -17,20 +17,19 @@
 
 import type { HeartbeatConfig } from '@rivetos/types'
 import type { TaskStore } from './store.js'
+import type { TaskCompletionWaiter } from './completion-waiter.js'
 import { logger } from '../../logger.js'
 
 const log = logger('HeartbeatTask')
 
-const TERMINAL = ['completed', 'failed', 'killed', 'timeout']
-
 export interface HeartbeatTaskOptions {
   store: TaskStore
+  /** Shared completion waiter (LISTEN + poll fallback). */
+  waiter: TaskCompletionWaiter
   /** Turn wall-clock bound in ms (drives budget + wait deadline). */
   turnTimeoutMs: number
   /** Output delivery (silent-filter + channel fan-out live in the caller). */
   deliver: (hbConfig: HeartbeatConfig, response: string) => Promise<void>
-  /** Poll interval override for tests. */
-  pollIntervalMs?: number
 }
 
 /** Create the heartbeat task row and wait for its terminal state. */
@@ -39,7 +38,6 @@ export async function runHeartbeatViaTasks(
   opts: HeartbeatTaskOptions,
 ): Promise<void> {
   const { store, deliver } = opts
-  const pollMs = opts.pollIntervalMs ?? 2_000
 
   const row = await store.create({
     goal: hbConfig.prompt,
@@ -52,33 +50,24 @@ export async function runHeartbeatViaTasks(
     maxAttempts: 1,
   })
 
-  const deadline = Date.now() + opts.turnTimeoutMs + 60_000
-  for (;;) {
-    await new Promise((r) => setTimeout(r, pollMs))
-    const current = await store.get(row.id)
-    if (!current) {
-      log.warn(`Heartbeat task ${row.id} disappeared — no delivery`)
-      return
-    }
-    if (TERMINAL.includes(current.status)) {
-      if (current.status !== 'completed') {
-        log.warn(
-          `Heartbeat task ${row.id} ended ${current.status}${
-            current.error ? `: ${current.error}` : ''
-          }`,
-        )
-        return
-      }
-      await deliver(hbConfig, current.result?.output ?? current.result?.summary ?? '')
-      return
-    }
-    if (Date.now() > deadline) {
-      // Kill before releasing the crontab slot — the next tick must never
-      // overlap a still-running run. The runner discards the outcome at
-      // turn end (requestKill semantics from step (d)).
-      await store.requestKill(row.id)
-      log.warn(`Heartbeat task ${row.id} exceeded its deadline — killed, no delivery`)
-      return
-    }
+  const terminal = await opts.waiter.wait(row.id, {
+    deadlineMs: opts.turnTimeoutMs + 60_000,
+  })
+  if (!terminal) {
+    // Deadline or row vanished. Kill before the crontab slot is released —
+    // the next tick must never overlap a still-running run; the runner
+    // discards the killed row's outcome at turn end (step-(d) semantics).
+    await store.requestKill(row.id)
+    log.warn(`Heartbeat task ${row.id} exceeded its deadline — killed, no delivery`)
+    return
   }
+  if (terminal.status !== 'completed') {
+    log.warn(
+      `Heartbeat task ${row.id} ended ${terminal.status}${
+        terminal.error ? `: ${terminal.error}` : ''
+      }`,
+    )
+    return
+  }
+  await deliver(hbConfig, terminal.result?.output ?? terminal.result?.summary ?? '')
 }
