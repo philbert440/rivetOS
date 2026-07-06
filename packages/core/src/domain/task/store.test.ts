@@ -273,6 +273,15 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
       'utf8',
     )
     await pool.query(sql)
+    // ...and 0004 (phase 2d: eval columns) — the store maps them.
+    const evalSql = readFileSync(
+      resolve(
+        __dirname,
+        '../../../../../plugins/memory/postgres/src/schema/migrations/0004_task_eval.sql',
+      ),
+      'utf8',
+    )
+    await pool.query(evalSql)
 
     // Install graphile-worker into its own scratch schema.
     utils = await makeWorkerUtils({ connectionString: TEST_PG_URL, schema: graphileSchema })
@@ -280,6 +289,35 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
 
     store = new PgTaskStore(pool, { graphileSchema })
   }, 60_000)
+
+  it('recordEval roundtrips the eval outcome without touching status/result', async () => {
+    const row = await store.create({
+      goal: 'g',
+      executor: 'chat-loop',
+      agentId: 'a',
+      origin: 'api',
+      acceptanceCriteria: [{ id: 'c1', description: 'd', kind: 'manual' }],
+    })
+    await store.finish(row.id, 'completed', {
+      verdict: 'completed',
+      summary: 's',
+      artifacts: [],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, turns: 1, wallClockMs: 1 },
+    })
+    await store.recordEval(row.id, {
+      verdict: 'refuted',
+      attempts: 1,
+      verifierTaskIds: ['00000000-0000-0000-0000-000000000000'],
+      criteriaReport: [{ id: 'c1', met: false, evidence: 'nope' }],
+      diverged: true,
+    })
+    const back = await store.get(row.id)
+    expect(back?.status).toBe('completed')
+    expect(back?.result?.verdict).toBe('completed')
+    expect(back?.eval?.verdict).toBe('refuted')
+    expect(back?.eval?.diverged).toBe(true)
+    expect(back?.evalAttempt).toBe(1)
+  })
 
   afterAll(async () => {
     await utils.release()

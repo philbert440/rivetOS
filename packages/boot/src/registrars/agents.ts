@@ -24,6 +24,7 @@ import {
   createTaskDelegationRecorder,
   createTaskCompletionWaiter,
   createTaskApiRoute,
+  createEvaluationCoordinator,
   criteriaPolicyFromConfig,
   createCatalogApiRoute,
   createTaskHandler,
@@ -334,12 +335,37 @@ export async function registerAgentTools(
   }
 
   if (tasksEnabled && pgUrl && pool && taskEngineStore) {
+    // Phase 2d: verifier pass on completed evaluable tasks. Durable engine
+    // only — the in-memory fallback has no waiter and nothing evaluable
+    // (criteria derivation is also eval-gated).
+    const evalSection = config.tasks?.eval
+    const evaluation =
+      evalSection?.enabled && taskWaiter
+        ? createEvaluationCoordinator({
+            store: taskEngineStore,
+            waiter: taskWaiter,
+            nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
+            config: {
+              agentId: evalSection.verifier?.agent_id,
+              executor: evalSection.verifier?.executor,
+              executorTarget: evalSection.verifier?.executor_target,
+              budget: evalSection.verifier?.budget
+                ? {
+                    maxUsd: evalSection.verifier.budget.max_usd,
+                    maxTurns: evalSection.verifier.budget.max_turns,
+                  }
+                : undefined,
+              skipOrigins: evalSection.skip_origins ?? ['heartbeat'],
+            },
+          })
+        : undefined
     const taskRunner = createTaskRunner({
       pgUrl,
       store: taskEngineStore,
       executors,
       nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
       workspaceDir,
+      evaluation,
       // Context-refs resolution (step (b) checklist) — the runner folds
       // memory context into TaskSpec.resolvedContext when refs are present.
       memory: runtime.getMemory(),
