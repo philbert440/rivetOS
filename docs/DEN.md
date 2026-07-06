@@ -258,6 +258,7 @@ aliases). Two G7 knobs:
   `den.static_dir` to the built app's directory — the SPA fallback serves it
   for every non-API path.
 - **Binding :80/:443 directly** (no reverse proxy): run `rivetos gateway caps`
-  once (installs a systemd drop-in granting `CAP_NET_BIND_SERVICE`), set
-  `den.port: 443`, restart. `rivetos gateway token` prints the bearer token
+  once (installs a systemd drop-in granting `CAP_NET_BIND_SERVICE` as an
+  ambient capability — note that processes the agent spawns, including den
+  terminals, inherit it), set `den.port: 443`, restart. `rivetos gateway token` prints the bearer token
   for non-loopback clients when `den.token: gateway-token-file` is set.
