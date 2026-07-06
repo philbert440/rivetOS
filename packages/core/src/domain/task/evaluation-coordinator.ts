@@ -32,6 +32,8 @@ import { logger } from '../../logger.js'
 const log = logger('TaskEval')
 
 export interface EvaluationConfig {
+  /** Verifier-driven retries before giving up (default 1 — Phil's call). */
+  maxRetries?: number
   /** Verifier agent — defaults to the parent task's agent. */
   agentId?: string
   executor?: 'chat-loop' | 'harness-session'
@@ -58,14 +60,29 @@ export interface EvaluationCoordinatorOptions {
   runTask?: (taskId: string) => Promise<void>
 }
 
+export interface EvaluationContext {
+  /** Verifier-driven retry number this pass follows (0 = first attempt). */
+  attempts: number
+  /** Verifier child ids from earlier passes — accumulated on the outcome. */
+  priorVerifierIds: string[]
+}
+
+export interface EvaluationPass {
+  outcome: EvalOutcome
+  /** Steer text for the retry turn — set iff refuted. */
+  refutation?: string
+}
+
 export interface EvaluationCoordinator {
+  /** Verifier-driven retries the runner may spend (config, default 1). */
+  readonly maxRetries: number
   /** Should this parent task get a verifier pass at all? */
   shouldEvaluate(task: TaskRow, result: TaskResult): boolean
   /**
    * Run one verifier pass and return the recorded outcome. Never throws —
    * verification failure must never take down the parent's finish path.
    */
-  evaluate(task: TaskRow, result: TaskResult): Promise<EvalOutcome>
+  evaluate(task: TaskRow, result: TaskResult, ctx?: EvaluationContext): Promise<EvaluationPass>
 }
 
 const DEFAULT_VERIFIER_BUDGET = { maxTurns: 1, maxUsd: 0.05, maxWallClockMs: 300_000 }
@@ -76,6 +93,7 @@ export function createEvaluationCoordinator(
   const { store, waiter, config } = opts
 
   return {
+    maxRetries: config.maxRetries ?? 1,
     shouldEvaluate(task: TaskRow, result: TaskResult): boolean {
       if (task.origin === 'eval') return false // a verifier is never verified
       if (result.verdict !== 'completed') return false // failures speak for themselves
@@ -86,13 +104,19 @@ export function createEvaluationCoordinator(
       return true
     },
 
-    async evaluate(task: TaskRow, result: TaskResult): Promise<EvalOutcome> {
+    async evaluate(
+      task: TaskRow,
+      result: TaskResult,
+      ctx: EvaluationContext = { attempts: 0, priorVerifierIds: [] },
+    ): Promise<EvaluationPass> {
       try {
         const verifier = await runVerifierChild(task, result)
         const outcome: EvalOutcome = {
           verdict: verifier.verdict,
-          attempts: task.evalAttempt,
-          verifierTaskIds: verifier.taskId ? [verifier.taskId] : [],
+          attempts: ctx.attempts,
+          verifierTaskIds: verifier.taskId
+            ? [...ctx.priorVerifierIds, verifier.taskId]
+            : ctx.priorVerifierIds,
           criteriaReport: verifier.criteriaReport,
           diverged: result.verdict === 'completed' && verifier.verdict === 'refuted',
         }
@@ -104,20 +128,20 @@ export function createEvaluationCoordinator(
             }`,
           )
         }
-        return outcome
+        return { outcome, refutation: verifier.refutation }
       } catch (err: unknown) {
         // Never let evaluation take down the parent's finish path.
         const msg = err instanceof Error ? err.message : String(err)
         log.error(`Task ${task.id} evaluation errored — recording refuted-by-error: ${msg}`)
         const outcome: EvalOutcome = {
           verdict: 'refuted',
-          attempts: task.evalAttempt,
-          verifierTaskIds: [],
+          attempts: ctx.attempts,
+          verifierTaskIds: ctx.priorVerifierIds,
           criteriaReport: [],
           diverged: result.verdict === 'completed',
         }
         await store.recordEval(task.id, outcome).catch(() => undefined)
-        return outcome
+        return { outcome, refutation: `evaluation infrastructure error: ${msg}` }
       }
     },
   }
@@ -229,6 +253,18 @@ function refutedBy(taskId: string, reason: string): VerifierResult & { taskId?: 
     criteriaReport: [],
     refutation: reason,
   }
+}
+
+/** Steer message injected into the retry turn after a refutation (2e). */
+export function buildRetryMessage(attempt: number, maxRetries: number, refutation: string): string {
+  return [
+    `## Verifier refutation (retry ${attempt}/${maxRetries})`,
+    'An adversarial verifier reviewed your completed work against the acceptance criteria and REFUTED it:',
+    '',
+    refutation,
+    '',
+    'Address each unmet criterion with concrete evidence. Re-run checks where needed, fix what is actually missing, and finish with an updated TASK_RESULT (criteriaSelfReport for every criterion).',
+  ].join('\n')
 }
 
 /** The verifier child's goal — an adversarial audit brief over the parent. */
