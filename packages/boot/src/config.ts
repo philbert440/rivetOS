@@ -135,6 +135,42 @@ export interface TasksSection {
    * without an entry cost 0 (local vllm stays free).
    */
   pricing?: Record<string, { input_per_mtok?: number; output_per_mtok?: number }>
+  /** Phase-2 evaluation loop — dark by default; independent of `enabled`. */
+  eval?: TasksEvalSection
+}
+
+/**
+ * Evaluation configuration (phase 2). With `enabled: false` (default) the
+ * runner behaves exactly as phase 1 shipped: executor completion is terminal,
+ * no verifier child tasks, no escalation. Skeptical-but-proportionate by
+ * design: gateway tasks with explicit criteria get the full adversarial pass;
+ * internal tasks get one derived goal criterion + a cheap one-shot verify;
+ * heartbeats skip eval entirely (observability, not deliverables).
+ */
+export interface TasksEvalSection {
+  /** Master gate for the verify → retry → escalate loop (default: false). */
+  enabled?: boolean
+  /** Gateway POST /api/tasks rejects empty acceptance criteria (default: true when eval enabled). */
+  require_criteria?: boolean
+  /** Auto-derive a single goal criterion for internal creators (default: true). */
+  derive_internal?: boolean
+  /** Origins that never get evaluated (default: ['heartbeat']). */
+  skip_origins?: string[]
+  /** Verifier-driven retries before escalation (default: 1). */
+  max_retries?: number
+  /** Verifier child-task settings; defaults to a cheap local one-shot. */
+  verifier?: {
+    /** Agent that runs verification (default: the parent task's agent). */
+    agent_id?: string
+    executor?: 'chat-loop' | 'harness-session'
+    executor_target?: string
+    budget?: { max_usd?: number; max_turns?: number }
+  }
+  /** Escalation delivery; unset = log-only. */
+  escalation?: {
+    /** Channel id in HeartbeatConfig.outputChannel shape, e.g. `telegram:<chat>`. */
+    channel?: string
+  }
 }
 
 export interface DenSection {
