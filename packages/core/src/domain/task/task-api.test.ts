@@ -200,3 +200,54 @@ describe('/api/tasks', () => {
     expect((await fetch(`${base}/api/tasks`, { method: 'DELETE' })).status).toBe(405)
   })
 })
+
+describe('agent-aware dispatch (resolveAffinity)', () => {
+  async function startWithResolver() {
+    const executors = createExecutorRegistry()
+    executors.register('chat-loop', fakeExecutor({ hang: true }))
+    const store = new InMemoryTaskStore()
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
+    const route = createTaskApiRoute({
+      store,
+      waiter,
+      resolveAffinity: async (agentId) =>
+        agentId === 'local-agent'
+          ? 'this-node'
+          : agentId === 'remote-agent'
+            ? 'ct112'
+            : { error: `agent "${agentId}" not found locally or on the mesh` },
+    })
+    const server: Server = createServer((req, res) => {
+      void route.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as AddressInfo).port
+    cleanups.push(async () => {
+      await waiter.stop()
+      await new Promise((r) => server.close(r))
+    })
+    return { base: `http://127.0.0.1:${port}`, store }
+  }
+
+  it('pins unpinned creates to the resolved node', async () => {
+    const { base, store } = await startWithResolver()
+    const res = await create(base, { goal: 'x', agentId: 'remote-agent' })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    expect((await store.get(task.id))?.nodeAffinity).toBe('ct112')
+  })
+
+  it('explicit nodeAffinity wins over the resolver', async () => {
+    const { base, store } = await startWithResolver()
+    const res = await create(base, { goal: 'x', agentId: 'remote-agent', nodeAffinity: 'ct113' })
+    const { task } = (await res.json()) as { task: { id: string } }
+    expect((await store.get(task.id))?.nodeAffinity).toBe('ct113')
+  })
+
+  it('unknown agents 400 instead of creating a doomed row', async () => {
+    const { base, store } = await startWithResolver()
+    const res = await create(base, { goal: 'x', agentId: 'nobody' })
+    expect(res.status).toBe(400)
+    expect(await store.list()).toHaveLength(0)
+  })
+})

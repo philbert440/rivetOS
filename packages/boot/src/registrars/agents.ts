@@ -24,6 +24,7 @@ import {
   createTaskDelegationRecorder,
   createTaskCompletionWaiter,
   createTaskApiRoute,
+  createCatalogApiRoute,
   createTaskHandler,
   InMemoryTaskStore,
   type TaskStore,
@@ -38,7 +39,7 @@ import {
 } from '@rivetos/core'
 import type { DelegationRunsRecorder } from '@rivetos/core'
 import pg from 'pg'
-import type { GatewayRoute, MeshConfig } from '@rivetos/types'
+import type { GatewayRoute, MeshConfig, MeshRegistry } from '@rivetos/types'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
 
@@ -88,6 +89,7 @@ export async function registerAgentTools(
   const tasksEnabled = config.tasks?.enabled !== false
   let taskEngineStore: PgTaskStore | undefined
   let taskWaiter: TaskCompletionWaiter | undefined
+  let meshRegistryRef: MeshRegistry | undefined
   let delegationRecorder: DelegationRunsRecorder | undefined
 
   if (pgUrl) {
@@ -191,6 +193,7 @@ export async function registerAgentTools(
       mesh: meshCfg,
       tls: tlsConfig,
     })
+    meshRegistryRef = meshRegistry
 
     // Build and register the local node.
     //
@@ -408,15 +411,52 @@ export async function registerAgentTools(
       : 'Delegation, sub-agent, and skill tools registered',
   )
 
-  // G1: the /api/tasks route family — mounted by registerGateway. Only when
-  // the durable engine is live (the API is meaningless over the in-memory
-  // fallback: rows would vanish on restart and other nodes can't see them).
-  return {
-    gatewayRoutes:
-      taskEngineStore && taskWaiter
-        ? [createTaskApiRoute({ store: taskEngineStore, waiter: taskWaiter })]
-        : [],
+  // G1/G4: gateway route families — mounted by registerGateway. Tasks only
+  // when the durable engine is live (the API over the in-memory fallback
+  // would lie about durability); catalog always (it describes the node).
+  const nodeName = config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local'
+  const registry = meshRegistryRef
+
+  // Agent-aware dispatch (G4, from the G1 smoke followup): unpinned creates
+  // resolve to the agent's home node — local agents pin here, mesh agents to
+  // their (online) host, unknown agents 400 instead of a doomed global row.
+  const resolveAffinity = async (
+    agentId: string,
+  ): Promise<string | { error: string } | undefined> => {
+    if (
+      runtime
+        .getRouter()
+        .getAgents()
+        .some((a) => a.id === agentId)
+    )
+      return nodeName
+    if (registry) {
+      const nodes = await registry.findByAgent(agentId)
+      const online = nodes.filter((n) => n.status === 'online' && n.name !== nodeName)
+      if (online.length > 0) {
+        return online.sort((a, b) => b.lastSeen - a.lastSeen)[0].name
+      }
+    }
+    return { error: `agent "${agentId}" not found locally${registry ? ' or on the mesh' : ''}` }
   }
+
+  const gatewayRoutes: GatewayRoute[] = []
+  if (taskEngineStore && taskWaiter) {
+    gatewayRoutes.push(
+      createTaskApiRoute({ store: taskEngineStore, waiter: taskWaiter, resolveAffinity }),
+    )
+  }
+  gatewayRoutes.push(
+    createCatalogApiRoute({
+      nodeName,
+      router: runtime.getRouter(),
+      tools: () => runtime.getTools(),
+      executors,
+      skills: () => skillManager.list(),
+      meshRegistry: registry,
+    }),
+  )
+  return { gatewayRoutes }
 }
 
 // ---------------------------------------------------------------------------
