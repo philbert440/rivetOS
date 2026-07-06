@@ -99,6 +99,33 @@ export interface TaskRow {
   durationMs?: number
 }
 
+/** One row of ros_task_outcomes_v (2g) — terminal, evaluable tasks only. */
+export interface OutcomeRow {
+  id: string
+  agentId: string
+  executor: string
+  executorTarget?: string
+  origin: string
+  /** UTC day bucket, YYYY-MM-DD. */
+  day: string
+  status: TaskStatus
+  executorVerdict?: string
+  evalVerdict?: string
+  diverged: boolean
+  costUsd?: number
+  evalAttempt: number
+  durationMs?: number
+}
+
+export interface OutcomeFilter {
+  /** Epoch ms bounds on completion time. */
+  since?: number
+  until?: number
+  agentId?: string
+  origin?: string
+  limit?: number
+}
+
 export interface TaskListFilter {
   status?: TaskStatus
   agentId?: string
@@ -151,6 +178,10 @@ export interface TaskStore {
    * retry budget not reset) instead of replaying from scratch.
    */
   stashEvalRetry(id: string, attempt: number, steer: string): Promise<void>
+
+  /** Scoreboard rows (2g): terminal, evaluable (criteria non-empty), not
+   *  verifier children or audit-only inserts. PG reads ros_task_outcomes_v. */
+  listOutcomes(filter?: OutcomeFilter): Promise<OutcomeRow[]>
 
   /**
    * Flip a running task to awaiting-input (turn ended with no queued
@@ -384,6 +415,38 @@ export class InMemoryTaskStore implements TaskStore {
     row.evalAttempt = attempt
     row.pendingMessage = steer
     return Promise.resolve()
+  }
+
+  listOutcomes(filter?: OutcomeFilter): Promise<OutcomeRow[]> {
+    const terminal = new Set(['completed', 'failed', 'killed', 'timeout'])
+    const rows = [...this.rows.values()]
+      .filter(
+        (r) =>
+          terminal.has(r.status) &&
+          r.origin !== 'eval' &&
+          r.spec.auditOnly !== true &&
+          r.acceptanceCriteria.length > 0 &&
+          (!filter?.agentId || r.agentId === filter.agentId) &&
+          (!filter?.origin || r.origin === filter.origin) &&
+          (!filter?.since || (r.completedAt ?? 0) >= filter.since) &&
+          (!filter?.until || (r.completedAt ?? 0) <= filter.until),
+      )
+      .map((r) => ({
+        id: r.id,
+        agentId: r.agentId,
+        executor: r.executor,
+        executorTarget: r.executorTarget,
+        origin: r.origin,
+        day: new Date(r.completedAt ?? r.createdAt).toISOString().slice(0, 10),
+        status: r.status,
+        executorVerdict: r.result?.verdict,
+        evalVerdict: r.eval?.verdict,
+        diverged: r.result?.verdict === 'completed' && r.eval?.verdict === 'refuted',
+        costUsd: r.usage?.costUsd,
+        evalAttempt: r.evalAttempt,
+        durationMs: r.durationMs,
+      }))
+    return Promise.resolve(rows.slice(0, filter?.limit ?? 10_000))
   }
 
   markAwaitingInput(id: string, interim?: TaskResult): Promise<boolean> {
@@ -765,6 +828,71 @@ export class PgTaskStore implements TaskStore {
        WHERE id = $1 AND status = 'running'`,
       [id, attempt, steer],
     )
+  }
+
+  async listOutcomes(filter?: OutcomeFilter): Promise<OutcomeRow[]> {
+    const clauses: string[] = []
+    const params: unknown[] = []
+    const add = (sql: string, value: unknown): void => {
+      params.push(value)
+      clauses.push(sql.replace('?', `$${String(params.length)}`))
+    }
+    if (filter?.agentId) add('agent_id = ?', filter.agentId)
+    if (filter?.origin) add('origin = ?', filter.origin)
+    // Bound on completion TIME, not the day bucket — sub-day since/until
+    // must match InMemory semantics (grok #283). The view has no
+    // completed_at column (0004 already shipped), so bound via the base row.
+    if (filter?.since)
+      add(
+        'id IN (SELECT id FROM ros_tasks WHERE completed_at >= to_timestamp(?::double precision / 1000))',
+        filter.since,
+      )
+    if (filter?.until)
+      add(
+        'id IN (SELECT id FROM ros_tasks WHERE completed_at <= to_timestamp(?::double precision / 1000))',
+        filter.until,
+      )
+    params.push(filter?.limit ?? 10_000)
+    const { rows } = await this.pool.query<{
+      id: string
+      agent_id: string
+      executor: string
+      executor_target: string | null
+      origin: string
+      day: Date | null
+      status: TaskStatus
+      executor_verdict: string | null
+      eval_verdict: string | null
+      diverged: boolean
+      cost_usd: string | null
+      eval_attempt: number
+      duration_ms: number | null
+    }>(
+      `SELECT * FROM ros_task_outcomes_v
+       ${clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''}
+       ORDER BY day DESC NULLS LAST
+       LIMIT $${String(params.length)}`,
+      params,
+    )
+    return rows.map((r) => ({
+      id: r.id,
+      agentId: r.agent_id,
+      executor: r.executor,
+      executorTarget: r.executor_target ?? undefined,
+      origin: r.origin,
+      // node-pg parses the view's timestamp-without-tz as session-local;
+      // re-anchor to UTC so the bucket label matches the view's truncation.
+      day: r.day
+        ? new Date(r.day.getTime() - r.day.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+        : '',
+      status: r.status,
+      executorVerdict: r.executor_verdict ?? undefined,
+      evalVerdict: r.eval_verdict ?? undefined,
+      diverged: r.diverged,
+      costUsd: r.cost_usd !== null ? Number(r.cost_usd) : undefined,
+      evalAttempt: r.eval_attempt,
+      durationMs: r.duration_ms ?? undefined,
+    }))
   }
 
   async markAwaitingInput(id: string, interim?: TaskResult): Promise<boolean> {

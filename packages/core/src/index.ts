@@ -103,6 +103,7 @@ export {
 } from './domain/task/escalation.js'
 export type { EscalationNotifier, TaskEscalationPayload } from './domain/task/escalation.js'
 export { createCatalogApiRoute } from './domain/task/catalog-api.js'
+export { createOutcomesApiRoute } from './domain/task/outcomes-api.js'
 export { createGatewayChannel } from './domain/gateway-channel.js'
 export type { GatewayChannelHandle } from './domain/gateway-channel.js'
 export type { TaskCompletionWaiter } from './domain/task/completion-waiter.js'
