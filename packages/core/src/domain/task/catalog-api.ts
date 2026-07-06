@@ -69,11 +69,25 @@ export function createCatalogApiRoute(opts: CatalogApiOptions): GatewayRoute {
         if (sub === 'agents') return json(res, 200, { agents })
         if (sub !== '') return json(res, 404, { error: `no catalog section "${sub}"` })
 
+        // Per-executor deadline: a hung listCommands() probe must degrade to
+        // an empty manifest, never block the whole sheet (review follow-up).
+        const COMMANDS_TIMEOUT_MS = 3_000
+        const commandsFor = async (executor: {
+          listCommands?: () => Promise<unknown[]>
+        }): Promise<unknown[]> => {
+          if (!executor.listCommands) return []
+          return Promise.race([
+            executor.listCommands().catch(() => []),
+            new Promise<unknown[]>((resolve) =>
+              setTimeout(() => resolve([]), COMMANDS_TIMEOUT_MS).unref?.(),
+            ),
+          ])
+        }
         const executors = await Promise.all(
           opts.executors.entries().map(async ({ key, executor }) => ({
             key,
             capabilities: executor.capabilities(),
-            commands: executor.listCommands ? await executor.listCommands().catch(() => []) : [],
+            commands: await commandsFor(executor as { listCommands?: () => Promise<unknown[]> }),
           })),
         )
 
