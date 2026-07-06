@@ -81,6 +81,12 @@ export interface TaskHandlerOptions {
   workspaceDir?: string
   /** Liveness heartbeat cadence while a task executes (default 30s). */
   heartbeatIntervalMs?: number
+  /**
+   * Evaluation coordinator (phase 2d) — when set, a completed evaluable
+   * task gets a verifier pass BEFORE finish() so waiters never observe an
+   * unevaluated terminal row. Absent = phase-1 behavior.
+   */
+  evaluation?: import('./evaluation-coordinator.js').EvaluationCoordinator
 }
 
 const HEARTBEAT_INTERVAL_MS_DEFAULT = 30_000
@@ -321,6 +327,12 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
         log.warn(`Task ${task.id} could not park or reclaim a message — finishing completed`)
       }
 
+      // Phase 2d: verifier pass before the terminal flip — the eval outcome
+      // lands on the row first, so ?wait consumers and the done-notify see
+      // an already-evaluated task. Verify-only: verdict/status unchanged.
+      if (opts.evaluation?.shouldEvaluate(task, totalResult)) {
+        await opts.evaluation.evaluate(task, totalResult)
+      }
       await opts.store.finish(task.id, verdictToStatus(totalResult), totalResult)
       return
     }
