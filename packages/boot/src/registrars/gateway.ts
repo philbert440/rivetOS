@@ -80,12 +80,17 @@ export async function registerGateway(
 
   const env = buildGatewayEnv(config, installRoot)
   const denConfig = loadDenConfig({ ...env })
-  // Token precedence: explicit den.token > generated per-node token when the
-  // bind is non-loopback (tokenless loopback stays allowed — dev
-  // convenience, same as the standalone server).
+  // Token semantics UNCHANGED from the standalone server: den.token from
+  // config or tokenless. Nodes like ct112/ct114 run 0.0.0.0 + terminal.open
+  // with tokenless hook ingest — auto-generating a token here would 401
+  // their /event POSTs on deploy. The generated ~/.rivetos/gateway.token
+  // (rivetos gateway token) is OPT-IN plumbing for RivetHub clients later;
+  // the gateway only uses it when den.token is set to the literal string
+  // 'gateway-token-file'.
   denConfig.token =
-    config.den.token?.trim() ||
-    (denConfig.host === '127.0.0.1' || denConfig.host === 'localhost' ? '' : ensureGatewayToken())
+    config.den.token?.trim() === 'gateway-token-file'
+      ? ensureGatewayToken()
+      : (config.den.token?.trim() ?? '')
 
   const den = createDenServer(denConfig, { extraRoutes })
 

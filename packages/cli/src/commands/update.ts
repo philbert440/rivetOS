@@ -660,11 +660,16 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         // non-fatal
       }
 
-      if (localOpts.restart && !restartViaSystemd()) {
-        console.log(
-          '    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
-        )
+      if (localOpts.restart) {
+        // G0: retire the standalone rivet-den unit before the restart.
+        retireDenUnitLocal()
+        if (!restartViaSystemd()) {
+          console.log(
+            '    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
+          )
+        }
       }
+      await verifyGatewayLocal(localOpts.restart)
       console.log('  ✅ Local node updated')
     } catch (err: unknown) {
       console.error(`  ❌ Local node update failed: ${(err as Error).message}`)

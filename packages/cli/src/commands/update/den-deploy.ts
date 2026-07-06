@@ -192,6 +192,15 @@ export async function verifyGatewayLocal(restart: boolean): Promise<DenDeployOut
     return 'skipped'
   }
 
+  // False-green guard — see verifyGatewayRemote.
+  if (execLocalQuiet('systemctl is-active rivet-den 2>/dev/null || true') === 'active') {
+    console.error(
+      `    ${tag} ❌ rivet-den.service is STILL ACTIVE — the embedded gateway could not bind; ` +
+        'stop the unit (sudo systemctl disable --now rivet-den) and restart rivetos',
+    )
+    return 'failed'
+  }
+
   const probe = `curl -fsS -m 3 http://${denProbeHost(den.host)}:${String(den.port)}/healthz`
   const deadline = Date.now() + DEN_HEALTH_TIMEOUT_MS
   for (;;) {
@@ -265,6 +274,23 @@ export async function verifyGatewayRemote(
   if (!den.enabled) return 'skipped'
   if (!isSafeArg(den.host)) {
     console.error(`    ${tag} ❌ den.host "${den.host}" contains shell-unsafe characters`)
+    return 'failed'
+  }
+
+  // False-green guard: /healthz answering while the RETIRED unit is still
+  // active means the old standalone server is serving — the embed never cut
+  // over (e.g. sudo-less retire failed and rivetos hit EADDRINUSE).
+  const sudo = sshUser === 'root' ? '' : 'sudo '
+  const staleUnit = sshExecQuiet(
+    host,
+    `${sudo}systemctl is-active rivet-den 2>/dev/null || true`,
+    sshUser,
+  )
+  if (staleUnit === 'active') {
+    console.error(
+      `    ${tag} ❌ rivet-den.service is STILL ACTIVE — the embedded gateway could not bind; ` +
+        `stop the unit (${sudo}systemctl disable --now rivet-den) and restart rivetos`,
+    )
     return 'failed'
   }
 

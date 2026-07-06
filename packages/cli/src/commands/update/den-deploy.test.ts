@@ -14,9 +14,9 @@ vi.mock('../../lib/ssh.js', async (importOriginal) => {
 import { sshExec, sshExecQuiet } from '../../lib/ssh.js'
 import {
   parseDenSettings,
-  buildDenEnvContent,
   denProbeHost,
-  deployDenRemote,
+  retireDenUnitRemote,
+  verifyGatewayRemote,
 } from './den-deploy.js'
 
 const sshExecMock = vi.mocked(sshExec)
@@ -94,10 +94,6 @@ describe('parseDenSettings', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// buildDenEnvContent
-// ---------------------------------------------------------------------------
-
 describe('denProbeHost', () => {
   it('probes loopback for wildcard binds, the bind host otherwise', () => {
     expect(denProbeHost('0.0.0.0')).toBe('127.0.0.1')
@@ -108,149 +104,60 @@ describe('denProbeHost', () => {
 })
 
 // ---------------------------------------------------------------------------
-// deployDenRemote — control flow over mocked SSH
+// retire/verify — control flow over mocked SSH
 // ---------------------------------------------------------------------------
 
 /** Wire sshExecQuiet to answer by command shape. */
-function stubQuiet(opts: { configYaml: string; unitState?: string; healthz?: string }) {
+function stubQuiet(opts: {
+  configYaml: string
+  unitActive?: string
+  unitEnabled?: string
+  healthz?: string
+}) {
   sshExecQuietMock.mockImplementation((_host: string, command: string) => {
     if (command.includes('config.yaml')) return opts.configYaml
-    if (command.includes('is-active')) return opts.unitState ?? 'inactive'
+    if (command.includes('is-active')) return opts.unitActive ?? 'inactive'
+    if (command.includes('is-enabled')) return opts.unitEnabled ?? 'disabled'
     if (command.includes('/healthz')) return opts.healthz ?? '{"ok":true}'
     return ''
   })
 }
 
-describe('deployDenRemote', () => {
-  it('skips quietly when den is disabled and no unit is running', async () => {
-    stubQuiet({ configYaml: 'runtime:\n  workspace: /tmp\n', unitState: 'inactive' })
+const DEN_YAML = 'den:\n  enabled: true\n  host: 0.0.0.0\n  port: 5174\n'
 
-    const outcome = await deployDenRemote('192.0.2.10', 'node-a', 'rivet', true)
-
-    expect(outcome).toBe('skipped')
+describe('retireDenUnitRemote', () => {
+  it('no-ops when the unit is neither active nor enabled', async () => {
+    stubQuiet({ configYaml: DEN_YAML })
+    await retireDenUnitRemote('192.0.2.10', 'node-a', 'rivet')
     expect(sshExecMock).not.toHaveBeenCalled()
   })
 
-  it('leaves an active unit alone (with a notice) when den is disabled — no surprise teardowns', async () => {
-    stubQuiet({ configYaml: 'runtime:\n  workspace: /tmp\n', unitState: 'active' })
-
-    const outcome = await deployDenRemote('192.0.2.10', 'node-a', 'rivet', true)
-
-    expect(outcome).toBe('unmanaged-active')
-    // Never stops/disables/restarts anything.
-    expect(sshExecMock).not.toHaveBeenCalled()
-  })
-
-  it('deploys end-to-end when den.enabled: build, unit, env, pty rebuild, restart, healthz', async () => {
-    sshExecMock.mockResolvedValue(undefined)
-    stubQuiet({ configYaml: DEN_YAML })
-
-    const outcome = await deployDenRemote('192.0.2.10', 'node-a', 'rivet', true)
-
-    expect(outcome).toBe('deployed')
-    const commands = sshExecMock.mock.calls.map((c) => c[1])
-    expect(commands.some((c) => c.includes('nx run @rivetos/den-server:build'))).toBe(true)
-    expect(
-      commands.some((c) =>
-        c.includes(
-          'sudo cp /opt/rivetos/services/den-server/rivet-den.service /etc/systemd/system/rivet-den.service',
-        ),
-      ),
-    ).toBe(true)
-    expect(commands.some((c) => c.includes('systemctl enable rivet-den'))).toBe(true)
-    expect(commands.some((c) => c.includes('npm rebuild node-pty'))).toBe(true)
-    expect(commands.some((c) => c.includes("require('node-pty')"))).toBe(true)
-    expect(commands.some((c) => c.includes('sudo systemctl restart rivet-den'))).toBe(true)
-
-    // The generated den.env travels base64-encoded — decode and verify.
-    const envCmd = commands.find((c) => c.includes('den.env'))
-    expect(envCmd).toBeDefined()
-    const b64 = /echo '([A-Za-z0-9+/=]+)'/.exec(envCmd!)?.[1]
-    expect(b64).toBeDefined()
-    const env = Buffer.from(b64!, 'base64').toString('utf-8')
-    expect(env).toContain('RIVETOS_DEN_PORT=5175')
-    expect(env).toContain('RIVETOS_DEN_TOKEN=den-secret')
-    expect(env).toContain('RIVETOS_DEN_TERM=1')
-    expect(envCmd).toContain('chmod 600 /home/rivet/.rivetos/den.env')
-  })
-
-  it('skips the node-pty rebuild when terminals are off', async () => {
-    sshExecMock.mockResolvedValue(undefined)
-    stubQuiet({ configYaml: 'den:\n  enabled: true\n' })
-
-    const outcome = await deployDenRemote('192.0.2.10', 'node-a', 'rivet', true)
-
-    expect(outcome).toBe('deployed')
-    const commands = sshExecMock.mock.calls.map((c) => c[1])
-    expect(commands.some((c) => c.includes('node-pty'))).toBe(false)
-  })
-
-  it('degrades to a warning when the node-pty rebuild fails (term 503s by design)', async () => {
-    sshExecMock.mockImplementation((_host, command: string) => {
-      if (command.includes('node-pty')) {
-        return Promise.reject(new Error('gyp ERR! find Python'))
-      }
-      return Promise.resolve()
-    })
-    stubQuiet({ configYaml: DEN_YAML })
-
-    const outcome = await deployDenRemote('192.0.2.10', 'node-a', 'rivet', true)
-
-    expect(outcome).toBe('deployed')
-    // Still restarted the service after the failed rebuild.
-    const commands = sshExecMock.mock.calls.map((c) => c[1])
-    expect(commands.some((c) => c.includes('systemctl restart rivet-den'))).toBe(true)
-  })
-
-  it('fails (without throwing) when the den build fails', async () => {
-    sshExecMock.mockImplementation((_host, command: string) => {
-      if (command.includes(':build')) return Promise.reject(new Error('tsc exploded'))
-      return Promise.resolve()
-    })
-    stubQuiet({ configYaml: DEN_YAML })
-
-    const outcome = await deployDenRemote('192.0.2.10', 'node-a', 'rivet', true)
-
-    expect(outcome).toBe('failed')
-    // Never got as far as touching the unit or restarting.
-    const commands = sshExecMock.mock.calls.map((c) => c[1])
-    expect(commands.some((c) => c.includes('systemctl restart rivet-den'))).toBe(false)
-  })
-
-  it('writes unit + env but skips restart and health probe with --no-restart', async () => {
-    sshExecMock.mockResolvedValue(undefined)
-    stubQuiet({ configYaml: DEN_YAML })
-
-    const outcome = await deployDenRemote('192.0.2.10', 'node-a', 'rivet', false)
-
-    expect(outcome).toBe('deployed')
-    const commands = sshExecMock.mock.calls.map((c) => c[1])
-    expect(commands.some((c) => c.includes('den.env'))).toBe(true)
-    expect(commands.some((c) => c.includes('systemctl restart rivet-den'))).toBe(false)
-    const quietCommands = sshExecQuietMock.mock.calls.map((c) => c[1])
-    expect(quietCommands.some((c) => c.includes('/healthz'))).toBe(false)
-  })
-
-  it('drops the sudo prefix and chowns den.env for root logins', async () => {
-    sshExecMock.mockResolvedValue(undefined)
-    stubQuiet({ configYaml: DEN_YAML })
-
-    const outcome = await deployDenRemote('192.0.2.10', 'node-a', 'root', true)
-
-    expect(outcome).toBe('deployed')
-    const commands = sshExecMock.mock.calls.map((c) => c[1])
-    expect(commands.some((c) => c.includes('sudo '))).toBe(false)
-    expect(commands.some((c) => c.includes('chown rivet:rivet /home/rivet/.rivetos/den.env'))).toBe(
-      true,
+  it('disables an active unit before the rivetos restart', async () => {
+    stubQuiet({ configYaml: DEN_YAML, unitActive: 'active' })
+    await retireDenUnitRemote('192.0.2.10', 'node-a', 'rivet')
+    expect(sshExecMock).toHaveBeenCalledWith(
+      '192.0.2.10',
+      expect.stringContaining('systemctl disable --now rivet-den'),
+      expect.any(String),
+      expect.any(Number),
+      'rivet',
     )
   })
+})
 
-  it('refuses a shell-unsafe den.host instead of interpolating it', async () => {
-    stubQuiet({ configYaml: 'den:\n  enabled: true\n  host: "$(reboot)"\n' })
+describe('verifyGatewayRemote', () => {
+  it('skips when den is disabled', async () => {
+    stubQuiet({ configYaml: 'runtime:\n  workspace: /tmp\n' })
+    expect(await verifyGatewayRemote('192.0.2.10', 'node-a', 'rivet')).toBe('skipped')
+  })
 
-    const outcome = await deployDenRemote('192.0.2.10', 'node-a', 'rivet', true)
+  it('reports deployed on a healthy embedded gateway', async () => {
+    stubQuiet({ configYaml: DEN_YAML, unitActive: 'inactive' })
+    expect(await verifyGatewayRemote('192.0.2.10', 'node-a', 'rivet')).toBe('deployed')
+  })
 
-    expect(outcome).toBe('failed')
-    expect(sshExecMock).not.toHaveBeenCalled()
+  it('FAILS when /healthz answers but the retired unit is still active (false-green guard)', async () => {
+    stubQuiet({ configYaml: DEN_YAML, unitActive: 'active' })
+    expect(await verifyGatewayRemote('192.0.2.10', 'node-a', 'rivet')).toBe('failed')
   })
 })
