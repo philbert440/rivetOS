@@ -363,6 +363,17 @@ export class Runtime {
     })
   }
 
+  /**
+   * Best-effort broadcast to a channel id across all registered channels
+   * (the heartbeat-delivery pattern — channels that don't own the id ignore
+   * it). Used by task escalation (2f); never throws.
+   */
+  async broadcastToChannel(channelId: string, text: string): Promise<void> {
+    for (const [, ch] of this.channels) {
+      await ch.send({ channelId, text }).catch(() => {})
+    }
+  }
+
   /** Best-effort heartbeat output delivery with the silent-response filter. */
   private async deliverHeartbeatOutput(hbConfig: HeartbeatConfig, response: string): Promise<void> {
     if (!response || !hbConfig.outputChannel) return
