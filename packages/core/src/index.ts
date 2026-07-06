@@ -56,26 +56,10 @@ export { WorkspaceLoader } from './domain/workspace.js'
 export { MessageQueue, isCommand, parseCommand } from './domain/queue.js'
 export { SILENT_RESPONSES } from './domain/constants.js'
 export { DelegationEngine, filterToolsForAgent, deduplicateTools } from './domain/delegation.js'
-export { noopDelegationRecorder, createPgDelegationRecorder } from './domain/delegation-recorder.js'
+export { noopDelegationRecorder } from './domain/delegation-recorder.js'
 export { createTaskDelegationRecorder } from './domain/task/delegation-task-recorder.js'
 export type { DelegationRunsRecorder } from './domain/delegation-recorder.js'
-export { createHeartbeatScheduler, scheduleToCronMatch } from './domain/heartbeat-scheduler.js'
-export { SubagentManagerImpl, createSubagentTools } from './domain/subagent.js'
-export type { SubagentManagerConfig } from './domain/subagent.js'
-export { InMemorySubagentStore, PgSubagentStore } from './domain/subagent-store.js'
-export type {
-  SubagentStore,
-  NewSessionInput,
-  TurnResult as SubagentTurnResult,
-  ClaimedSession,
-} from './domain/subagent-store.js'
-export { createSubagentExecutor, createSubagentWorker } from './domain/subagent-worker.js'
-export type {
-  SubagentExecutor,
-  SubagentExecutorConfig,
-  SubagentWorker,
-  SubagentWorkerOptions,
-} from './domain/subagent-worker.js'
+export { createSubagentTools } from './domain/subagent.js'
 export {
   InMemoryTaskStore,
   PgTaskStore,

@@ -19,16 +19,13 @@ import {
   FileMeshRegistry,
   buildLocalNode,
   AgentChannelServer,
-  SubagentManagerImpl,
   TaskBackedSubagentManager,
   createSubagentTools,
-  InMemorySubagentStore,
-  PgSubagentStore,
-  createSubagentExecutor,
-  createSubagentWorker,
-  createPgDelegationRecorder,
   createTaskDelegationRecorder,
   createTaskCompletionWaiter,
+  createTaskHandler,
+  InMemoryTaskStore,
+  type TaskStore,
   type TaskCompletionWaiter,
   PgTaskStore,
   createChatLoopExecutor,
@@ -37,9 +34,8 @@ import {
   SkillManagerImpl,
   createSkillListTool,
   createSkillManageTool,
-  type SubagentStore,
 } from '@rivetos/core'
-import type { DelegationRunsRecorder, SubagentWorker } from '@rivetos/core'
+import type { DelegationRunsRecorder } from '@rivetos/core'
 import pg from 'pg'
 import type { MeshConfig } from '@rivetos/types'
 import type { RivetConfig } from '../config.js'
@@ -78,47 +74,40 @@ export async function registerAgentTools(
   // ------------------------------------------------------------------
   const pgUrl = runtime.getPgUrl()
   let pool: pg.Pool | undefined
-  let subagentStore: SubagentStore
-  let delegationRecorder: DelegationRunsRecorder | undefined
-  let subagentWorker: SubagentWorker | undefined
 
-  // Task-engine cutover gate (steps (d)/(e)): the engine only takes over
-  // when ros_tasks exists. On an unmigrated node everything below falls back
-  // to the legacy engines, matching the tasks.enabled=false revert path.
+  // Task engine substrate (g2a: the ONLY orchestration engine — the legacy
+  // subagent store/worker and ros_delegation_runs recorder are deleted).
+  // On an unmigrated PG node the engine is degraded: subagent tools run over
+  // an in-memory store (process-local), delegation audit is a noop, and
+  // heartbeats are skipped until rivetos-memory-migrate runs.
   const tasksEnabled = config.tasks?.enabled !== false
   let taskEngineStore: PgTaskStore | undefined
   let taskWaiter: TaskCompletionWaiter | undefined
+  let delegationRecorder: DelegationRunsRecorder | undefined
 
   if (pgUrl) {
     pool = new pg.Pool({ connectionString: pgUrl, max: 4 })
-    subagentStore = new PgSubagentStore(pool)
     if (tasksEnabled) {
       const taskStore = new PgTaskStore(pool)
       if (await taskStore.isReady()) {
         taskEngineStore = taskStore
       } else {
         log.warn(
-          'ros_tasks missing — task engine cutovers stay on the legacy engines until rivetos-memory-migrate runs',
+          'ros_tasks missing — task engine degraded (in-memory subagents, no heartbeats) until rivetos-memory-migrate runs',
         )
       }
     }
-    // Cutover step (e): delegation audit rows land in ros_tasks as terminal
-    // rows (recordTerminal, no job). Legacy ros_delegation_runs recorder is
-    // the fallback; the table is archived at the final 0003.
-    delegationRecorder = taskEngineStore
-      ? createTaskDelegationRecorder(taskEngineStore)
-      : createPgDelegationRecorder(pool)
-    // Shared completion waiter (LISTEN ros_task_done + poll) — mesh transport
-    // and task-backed heartbeats wait on it (step g1).
     if (taskEngineStore) {
+      delegationRecorder = createTaskDelegationRecorder(taskEngineStore)
+      // Shared completion waiter (LISTEN ros_task_done + poll) — mesh
+      // transport and task-backed heartbeats wait on it (step g1).
       taskWaiter = createTaskCompletionWaiter({ store: taskEngineStore, pgUrl })
       runtime.addShutdownHook(async () => {
         await taskWaiter?.stop()
       })
     }
   } else {
-    subagentStore = new InMemorySubagentStore()
-    log.info('No pgUrl — subagent sessions + delegation runs are process-local (in-memory)')
+    log.info('No pgUrl — subagent sessions are process-local; delegation audit disabled')
   }
 
   // Build the local delegation engine (always needed — mesh wraps it)
@@ -272,44 +261,15 @@ export async function registerAgentTools(
     runtime.registerTool(localDelegation.createDelegationTool())
   }
 
-  // ------------------------------------------------------------------
-  // Sub-agents — graphile-worker driven (Postgres) or in-process executor.
-  //
-  // On startup the worker sweeps any stale 'running' rows from a prior
-  // crash and flips them to 'failed' with error='worker_restarted'
-  // (turn-level resume is out of scope — session state is durable, but
-  // a mid-flight turn does not resume).
-  // ------------------------------------------------------------------
   const executorCfg = {
     router: runtime.getRouter(),
     workspace: runtime.getWorkspace(),
-    store: subagentStore,
     tools: () => runtime.getTools(),
     hooks: runtime.getHooks(),
     toolFilter: hasFilters ? toolFilter : undefined,
     workspaceDir,
     turnTimeout: config.runtime.turn_timeout,
     contextConfig,
-  }
-
-  let enqueueTurn: (sessionId: string) => Promise<void>
-  if (pgUrl) {
-    subagentWorker = createSubagentWorker({ ...executorCfg, pgUrl })
-    await subagentWorker.start()
-    enqueueTurn = (sessionId) => subagentWorker!.enqueue(sessionId)
-    runtime.addShutdownHook(async () => {
-      await subagentWorker?.stop()
-    })
-  } else {
-    const executor = createSubagentExecutor(executorCfg)
-    // In-memory mode: fire the turn in the background so spawn/send return
-    // immediately (matches the prior void-runInBackground semantics).
-    enqueueTurn = (sessionId) => {
-      void executor.executeTurn(sessionId).catch((err: unknown) => {
-        log.error(`In-memory subagent turn failed: ${(err as Error).message}`)
-      })
-      return Promise.resolve()
-    }
   }
 
   // ------------------------------------------------------------------
@@ -321,22 +281,42 @@ export async function registerAgentTools(
   // (grok, hermes) are still pending.
   // On startup the runner crash-sweeps rows this node left 'running'.
   // ------------------------------------------------------------------
-  if (tasksEnabled && pgUrl && pool) {
-    // taskEngineStore was readiness-gated at pool setup; the runner still
-    // starts against a fresh store either way — it no-ops with a warning on
-    // an unmigrated node and picks the table up after migration + restart.
-    const taskStore = taskEngineStore ?? new PgTaskStore(pool)
-    const executors = createExecutorRegistry()
-    // Task-conversation persistence + resume rehydration (step (c)) — turns
-    // file under session_key task:<id> alongside the harness executors' rows.
-    executors.register(
-      'chat-loop',
-      createChatLoopExecutor({ ...executorCfg, memory: runtime.getMemory() }),
-    )
-    await registerClaudeCliTaskExecutor(runtime, config, executors, workspaceDir)
+  // Executor registry — shared by the durable runner and the in-memory
+  // fallback path.
+  const executors = createExecutorRegistry()
+  // Task-conversation persistence + resume rehydration (step (c)) — turns
+  // file under session_key task:<id> alongside the harness executors' rows.
+  executors.register(
+    'chat-loop',
+    createChatLoopExecutor({ ...executorCfg, memory: runtime.getMemory() }),
+  )
+  await registerClaudeCliTaskExecutor(runtime, config, executors, workspaceDir)
+
+  // Subagent tool store: durable when the engine is live, else process-local
+  // (g2a: the in-memory task store replaces the deleted InMemorySubagentStore;
+  // its enqueue callback runs the same task handler in-process).
+  let subagentTaskStore: TaskStore = taskEngineStore as TaskStore
+  if (!taskEngineStore) {
+    const handlerRef: { run?: (taskId: string) => Promise<void> } = {}
+    const inMemoryStore: InMemoryTaskStore = new InMemoryTaskStore((taskId) => {
+      void handlerRef.run?.(taskId).catch((err: unknown) => {
+        log.error(`In-memory task turn failed: ${(err as Error).message}`)
+      })
+    })
+    handlerRef.run = createTaskHandler({
+      store: inMemoryStore,
+      executors,
+      nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
+      workspaceDir,
+      memory: runtime.getMemory(),
+    })
+    subagentTaskStore = inMemoryStore
+  }
+
+  if (tasksEnabled && pgUrl && pool && taskEngineStore) {
     const taskRunner = createTaskRunner({
       pgUrl,
-      store: taskStore,
+      store: taskEngineStore,
       executors,
       nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
       workspaceDir,
@@ -348,43 +328,32 @@ export async function registerAgentTools(
     runtime.addShutdownHook(async () => {
       await taskRunner.stop()
     })
-    // Cutover step (f): heartbeat runs become durable ros_tasks rows. The
-    // runtime falls back to the legacy inline path when unset.
-    if (taskEngineStore && taskWaiter) runtime.setHeartbeatTaskStore(taskEngineStore, taskWaiter)
-    log.info(
-      taskEngineStore
-        ? 'Task engine started — subagent tools, delegation audit + heartbeats are task-backed'
-        : 'Task engine runner started (ros_tasks missing — legacy engines remain active)',
-    )
+    // Cutover step (f): heartbeat runs are durable ros_tasks rows.
+    if (taskWaiter) runtime.setHeartbeatTaskStore(taskEngineStore, taskWaiter)
+    log.info('Task engine started — subagent tools, delegation audit + heartbeats are task-backed')
+  } else if (tasksEnabled && pgUrl) {
+    log.info('Task engine degraded — ros_tasks missing; subagent tools run in-memory')
   } else if (tasksEnabled) {
-    log.info('No pgUrl — task engine not started (requires Postgres)')
+    log.info('No pgUrl — task engine in-memory (subagent tools only)')
   }
 
   // Pool teardown LAST: hooks run in registration order, and both the
   // subagent worker and the task runner must stop before Postgres goes away
-  // (in-flight PgTaskStore/PgSubagentStore calls would otherwise fail).
+  // (in-flight PgTaskStore calls would otherwise fail).
   if (pool) {
     runtime.addShutdownHook(async () => {
       await pool?.end()
     })
   }
 
-  // Cutover step (d): with the task engine live, the subagent tools write
-  // ros_tasks rows (TaskBackedSubagentManager) — same 5-tool surface, one
-  // engine. The legacy worker above keeps draining any pre-cutover
-  // ros_subagent_sessions rows; revert = tasks.enabled=false, which falls
-  // back to the legacy manager wholesale.
-  const subagentManager = taskEngineStore
-    ? new TaskBackedSubagentManager({
-        router: runtime.getRouter(),
-        store: taskEngineStore,
-        memory: runtime.getMemory(),
-      })
-    : new SubagentManagerImpl({
-        router: runtime.getRouter(),
-        store: subagentStore,
-        enqueueTurn,
-      })
+  // g2a: the task-backed manager is the only subagent engine — durable rows
+  // when the engine is live, process-local otherwise. One-way cutover: the
+  // legacy store/worker engine is deleted (0003 archived its tables).
+  const subagentManager = new TaskBackedSubagentManager({
+    router: runtime.getRouter(),
+    store: subagentTaskStore,
+    memory: runtime.getMemory(),
+  })
   for (const tool of createSubagentTools(subagentManager)) {
     runtime.registerTool(tool)
   }
