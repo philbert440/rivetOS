@@ -66,7 +66,10 @@ afterEach(async () => {
   for (const fn of cleanups.splice(0)) await fn()
 })
 
-async function startApi(opts?: { hang?: boolean }): Promise<{
+async function startApi(opts?: {
+  hang?: boolean
+  criteriaPolicy?: import('./criteria.js').CriteriaPolicy
+}): Promise<{
   base: string
   store: InMemoryTaskStore
   waiter: TaskCompletionWaiter
@@ -79,7 +82,7 @@ async function startApi(opts?: { hang?: boolean }): Promise<{
   })
   handler = createTaskHandler({ store, executors, nodeId: 'test-node' })
   const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
-  const route = createTaskApiRoute({ store, waiter })
+  const route = createTaskApiRoute({ store, waiter, criteriaPolicy: opts?.criteriaPolicy })
 
   const server: Server = createServer((req, res) => {
     void route.handler(req, res)
@@ -129,6 +132,31 @@ describe('/api/tasks', () => {
     expect(res.status).toBe(504)
     const { task } = (await res.json()) as { task: { id: string } }
     expect((await store.get(task.id))?.status).toBe('killed')
+  })
+
+  it('criteria policy (2b): require_criteria 400s empty creates, accepts explicit; malformed criteria 400 even with policy off', async () => {
+    const { criteriaPolicyFromConfig } = await import('./criteria.js')
+    const { base } = await startApi({ criteriaPolicy: criteriaPolicyFromConfig({ enabled: true }) })
+    const empty = await create(base, { goal: 'g', agentId: 'a' })
+    expect(empty.status).toBe(400)
+    expect(((await empty.json()) as { error: string }).error).toContain('acceptanceCriteria')
+
+    const ok = await create(base, {
+      goal: 'g',
+      agentId: 'a',
+      acceptanceCriteria: [{ id: 'c1', description: 'done' }],
+    })
+    expect(ok.status).toBe(201)
+    const { task } = (await ok.json()) as {
+      task: { acceptanceCriteria: Array<{ id: string; kind: string }> }
+    }
+    expect(task.acceptanceCriteria).toEqual([{ id: 'c1', description: 'done', kind: 'manual' }])
+
+    const { base: offBase } = await startApi()
+    const malformed = await create(offBase, { goal: 'g', agentId: 'a', acceptanceCriteria: [{ id: '' }] })
+    expect(malformed.status).toBe(400)
+    const legacyEmpty = await create(offBase, { goal: 'g', agentId: 'a' })
+    expect(legacyEmpty.status).toBe(201)
   })
 
   it('validates create bodies (400) and unknown statuses on list', async () => {

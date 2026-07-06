@@ -16,6 +16,7 @@
  */
 
 import type { HeartbeatConfig } from '@rivetos/types'
+import { CRITERIA_POLICY_OFF, normalizeCriteria, type CriteriaPolicy } from './criteria.js'
 import type { TaskStore } from './store.js'
 import type { TaskCompletionWaiter } from './completion-waiter.js'
 import { logger } from '../../logger.js'
@@ -30,6 +31,8 @@ export interface HeartbeatTaskOptions {
   turnTimeoutMs: number
   /** Output delivery (silent-filter + channel fan-out live in the caller). */
   deliver: (hbConfig: HeartbeatConfig, response: string) => Promise<void>
+  /** Criteria policy (phase 2b) — heartbeats are skip-listed by default. */
+  criteriaPolicy?: CriteriaPolicy
 }
 
 /** Create the heartbeat task row and wait for its terminal state. */
@@ -44,6 +47,10 @@ export async function runHeartbeatViaTasks(
     executor: 'chat-loop',
     agentId: hbConfig.agent,
     origin: 'heartbeat',
+    acceptanceCriteria: normalizeCriteria(
+      { goal: hbConfig.prompt, origin: 'heartbeat' },
+      opts.criteriaPolicy ?? CRITERIA_POLICY_OFF,
+    ),
     requestedBy: 'system:heartbeat',
     spec: { promptMode: 'heartbeat' },
     budget: { maxWallClockMs: opts.turnTimeoutMs },

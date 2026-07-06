@@ -21,6 +21,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { GatewayRoute } from '@rivetos/types'
 import type { TaskStatus } from '@rivetos/types'
 import type { NewTaskInput, TaskListFilter, TaskRow, TaskStore } from './store.js'
+import {
+  CRITERIA_POLICY_OFF,
+  CriteriaRequiredError,
+  CriteriaShapeError,
+  normalizeCriteria,
+  type CriteriaPolicy,
+} from './criteria.js'
 import type { TaskCompletionWaiter } from './completion-waiter.js'
 import { logger } from '../../logger.js'
 
@@ -43,6 +50,12 @@ const STATUSES: readonly TaskStatus[] = [
 export interface TaskApiOptions {
   store: TaskStore
   waiter: TaskCompletionWaiter
+  /**
+   * Acceptance-criteria policy (phase 2b). Default OFF: creates behave as
+   * phase 1 shipped. When eval is enabled with require_criteria, POST
+   * /api/tasks rejects empty criteria with 400.
+   */
+  criteriaPolicy?: CriteriaPolicy
   /**
    * Agent-aware dispatch (G4): resolve a nodeAffinity for creates that don't
    * pin one — local agents pin to this node, mesh agents to their host.
@@ -122,6 +135,23 @@ function parseCreate(body: Record<string, unknown>): NewTaskInput | string {
   }
 }
 
+/** Apply criteria policy to a parsed create; returns an error string for 400. */
+function applyCriteriaPolicy(input: NewTaskInput, policy: CriteriaPolicy): NewTaskInput | string {
+  try {
+    return {
+      ...input,
+      acceptanceCriteria: normalizeCriteria(
+        { goal: input.goal, origin: input.origin, acceptanceCriteria: input.acceptanceCriteria },
+        policy,
+      ),
+    }
+  } catch (err) {
+    if (err instanceof CriteriaRequiredError || err instanceof CriteriaShapeError)
+      return err.message
+    throw err
+  }
+}
+
 export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
   const { store, waiter } = opts
 
@@ -145,7 +175,9 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           })
           if (body === null) return
           if (body === undefined) return json(res, 400, { error: 'body must be a JSON object' })
-          const input = parseCreate(body)
+          const parsed = parseCreate(body)
+          if (typeof parsed === 'string') return json(res, 400, { error: parsed })
+          const input = applyCriteriaPolicy(parsed, opts.criteriaPolicy ?? CRITERIA_POLICY_OFF)
           if (typeof input === 'string') return json(res, 400, { error: input })
           if (!input.nodeAffinity && opts.resolveAffinity) {
             const resolved = await opts.resolveAffinity(input.agentId)
