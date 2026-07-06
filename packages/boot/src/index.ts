@@ -16,6 +16,7 @@ import { discoverPlugins } from './discovery.js'
 import { registerHooks } from './registrars/hooks.js'
 import { registerPlugins } from './registrars/plugins.js'
 import { registerAgentTools } from './registrars/agents.js'
+import { registerGateway } from './registrars/gateway.js'
 import { writePidFile, registerShutdownHandlers } from './lifecycle.js'
 
 // Re-export config types for consumers
@@ -174,6 +175,10 @@ export async function boot(configPath?: string): Promise<void> {
 
   // 4. Agent tools (delegation, sub-agents, skills) — after plugins so they can reference them
   await registerAgentTools(runtime, config, workspaceDir)
+
+  // 4.6. Gateway (G0) — the den server embedded in this process; /api/*
+  //      route families mount here in later gateway PRs.
+  await registerGateway(runtime, config, rootDir)
 
   // 5. Lifecycle
   await writePidFile()
