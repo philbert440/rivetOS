@@ -14,6 +14,11 @@
 // Per-session translator state (todo diff, transcript offset, started flag)
 // lives under ~/.cache/rivet-den/. Everything is best-effort: exit 0 always.
 
+// Executor-owned sessions (RivetOS task engine, ClaudeCliExecutor) emit den
+// events themselves — bail before ANY state or network work so the spawned
+// claude's hooks can't double-report the session.
+if (process.env.RIVETOS_DEN_HOOK_DISABLED === '1') process.exit(0)
+
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'

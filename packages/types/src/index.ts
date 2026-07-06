@@ -119,6 +119,9 @@ export type {
   HarnessExecutorCapabilities,
   HarnessExecutor,
 } from './task.js'
+// den event vocabulary — re-exported so executors emitting TaskEvent den
+// payloads don't need a direct @rivetos/den-protocol dependency.
+export type { AgentEventBody } from '@rivetos/den-protocol'
 export type {
   HookEventName,
   HookContext,
