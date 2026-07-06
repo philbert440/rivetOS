@@ -25,6 +25,7 @@ import type {
   TaskResult,
   TaskStatus,
   TaskUsage,
+  EvalOutcome,
 } from '@rivetos/types'
 
 export const TASK_JOB_NAME = 'run-task'
@@ -87,6 +88,10 @@ export interface TaskRow {
   conversationId?: string
   sessionKey?: string
   harnessSessionIds: string[]
+  /** Evaluation outcome (phase 2d) — undefined until the eval loop settles. */
+  eval?: EvalOutcome
+  /** Verifier-driven retry counter (distinct from crash-recovery attempt). */
+  evalAttempt: number
   createdAt: number
   startedAt?: number
   lastHeartbeatAt?: number
@@ -134,6 +139,10 @@ export interface TaskStore {
 
   /** Persist the terminal outcome: status + result + duration + completed_at. */
   finish(id: string, status: TaskStatus, result: TaskResult): Promise<void>
+
+  /** Persist the evaluation outcome on a parent row (phase 2d) — does NOT
+   *  touch status/result; the executor's verdict is never overwritten. */
+  recordEval(id: string, outcome: EvalOutcome): Promise<void>
 
   /**
    * Flip a running task to awaiting-input (turn ended with no queued
@@ -258,6 +267,7 @@ export class InMemoryTaskStore implements TaskStore {
       budget: input.budget ?? {},
       status: 'queued',
       attempt: 0,
+      evalAttempt: 0,
       maxAttempts: input.maxAttempts ?? 1,
       conversationId: input.conversationId,
       sessionKey: taskJobKey(id),
@@ -290,6 +300,7 @@ export class InMemoryTaskStore implements TaskStore {
       usage: outcome.result.usage,
       status: outcome.status,
       attempt: 1,
+      evalAttempt: 0,
       maxAttempts: input.maxAttempts ?? 1,
       error: outcome.result.error,
       result: outcome.result,
@@ -348,6 +359,14 @@ export class InMemoryTaskStore implements TaskStore {
     row.pendingMessage = undefined
     row.completedAt = Date.now()
     row.durationMs = row.startedAt ? row.completedAt - row.startedAt : 0
+    return Promise.resolve()
+  }
+
+  recordEval(id: string, outcome: EvalOutcome): Promise<void> {
+    const row = this.rows.get(id)
+    if (!row) return Promise.resolve()
+    row.eval = outcome
+    row.evalAttempt = outcome.attempts
     return Promise.resolve()
   }
 
@@ -491,6 +510,8 @@ interface PgTaskRow {
   conversation_id: string | null
   session_key: string | null
   harness_session_ids: string[]
+  eval: EvalOutcome | null
+  eval_attempt: number
   created_at: Date
   started_at: Date | null
   last_heartbeat_at: Date | null
@@ -525,6 +546,8 @@ function pgToPublic(row: PgTaskRow): TaskRow {
     conversationId: row.conversation_id ?? undefined,
     sessionKey: row.session_key ?? undefined,
     harnessSessionIds: row.harness_session_ids,
+    eval: row.eval ?? undefined,
+    evalAttempt: row.eval_attempt,
     createdAt: row.created_at.getTime(),
     startedAt: row.started_at?.getTime(),
     lastHeartbeatAt: row.last_heartbeat_at?.getTime(),
@@ -710,6 +733,13 @@ export class PgTaskStore implements TaskStore {
                                 ELSE (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::int END
        WHERE id = $1`,
       [id, status, JSON.stringify(result), JSON.stringify(result.usage), result.error ?? null],
+    )
+  }
+
+  async recordEval(id: string, outcome: EvalOutcome): Promise<void> {
+    await this.pool.query(
+      `UPDATE ros_tasks SET eval = $2::jsonb, eval_attempt = $3 WHERE id = $1`,
+      [id, JSON.stringify(outcome), outcome.attempts],
     )
   }
 

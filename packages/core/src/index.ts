@@ -88,6 +88,14 @@ export {
   CriteriaShapeError,
 } from './domain/task/criteria.js'
 export type { CriteriaPolicy } from './domain/task/criteria.js'
+export {
+  createEvaluationCoordinator,
+  mapVerifierResult,
+} from './domain/task/evaluation-coordinator.js'
+export type {
+  EvaluationCoordinator,
+  EvaluationConfig,
+} from './domain/task/evaluation-coordinator.js'
 export { createCatalogApiRoute } from './domain/task/catalog-api.js'
 export { createGatewayChannel } from './domain/gateway-channel.js'
 export type { GatewayChannelHandle } from './domain/gateway-channel.js'
