@@ -16,6 +16,7 @@ import { InMemoryTaskStore, type TaskRow } from './store.js'
 import { createExecutorRegistry, createTaskHandler } from './runner.js'
 import { createTaskCompletionWaiter, type TaskCompletionWaiter } from './completion-waiter.js'
 import { createEvaluationCoordinator, mapVerifierResult } from './evaluation-coordinator.js'
+import { formatEscalation } from './escalation.js'
 
 const usage: TaskUsage = { inputTokens: 1, outputTokens: 1, totalTokens: 2, turns: 1, wallClockMs: 1 }
 const caps: HarnessExecutorCapabilities = {
@@ -135,8 +136,10 @@ describe('EvaluationCoordinator end-to-end', () => {
         : {}),
     }))
     const parent = await runParent(rig)
-    expect(parent.status).toBe('completed') // 2d does not change the terminal status
-    expect(parent.eval?.verdict).toBe('refuted')
+    expect(parent.status).toBe('completed') // eval never changes the terminal status
+    // Terminal refutation escalates (2f) — the refuted verdict is the
+    // intermediate state; retry exhaustion flips it to 'escalated'.
+    expect(parent.eval?.verdict).toBe('escalated')
     expect(parent.eval?.diverged).toBe(true)
     expect(parent.eval?.criteriaReport.find((c) => c.id === 'c2')?.met).toBe(false)
   })
@@ -152,7 +155,7 @@ describe('EvaluationCoordinator end-to-end', () => {
         : {}),
     }))
     const parent = await runParent(rig)
-    expect(parent.eval?.verdict).toBe('refuted')
+    expect(parent.eval?.verdict).toBe('escalated') // refuted → retries spent → escalated
     expect(parent.eval?.criteriaReport.find((c) => c.id === 'c2')?.evidence).toContain(
       'did not report',
     )
@@ -251,9 +254,111 @@ describe('retry loop (2e)', () => {
       acceptanceCriteria: [CRITERIA[0]],
     })
     const terminal = await waiter.wait(row.id, { deadlineMs: 5_000 })
-    expect(terminal?.eval?.verdict).toBe('refuted')
+    expect(terminal?.eval?.verdict).toBe('escalated') // maxRetries 0: straight to escalation
     expect(terminal?.eval?.attempts).toBe(0)
     expect(parentRuns).toBe(1)
+  })
+})
+
+describe('escalation (2f)', () => {
+  it('refuted after retry budget → eval.verdict escalated + notifier pinged; status stays completed', async () => {
+    const pings: Array<{ taskId: string; text: string }> = []
+    const executors = createExecutorRegistry()
+    executors.register(
+      'chat-loop',
+      scriptedExecutor((spec) => ({
+        verdict: 'completed',
+        summary: 'looks done',
+        artifacts: [{ kind: 'file', ref: 'a.ts' }],
+        usage,
+        ...(spec.goal.startsWith('You are an adversarial VERIFIER')
+          ? { criteriaSelfReport: [{ id: 'c1', met: false, evidence: 'still broken' }] }
+          : {}),
+      })),
+    )
+    let handler: (taskId: string) => Promise<void>
+    const store = new InMemoryTaskStore((taskId) => {
+      void handler(taskId)
+    })
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 5 })
+    cleanups.push(() => waiter.stop())
+    const coordinator = createEvaluationCoordinator({
+      store,
+      waiter,
+      nodeId: 'test-node',
+      config: { skipOrigins: [], maxRetries: 1 },
+      runTask: (taskId) => handler(taskId),
+      escalation: {
+        notify: (payload) => {
+          pings.push({ taskId: payload.task.id, text: formatEscalation(payload) })
+          return Promise.resolve()
+        },
+      },
+    })
+    handler = createTaskHandler({ store, executors, nodeId: 'test-node', evaluation: coordinator })
+    const row = await store.create({
+      goal: 'ship it',
+      executor: 'chat-loop',
+      agentId: 'a',
+      origin: 'api',
+      acceptanceCriteria: [CRITERIA[0]],
+    })
+    const terminal = await waiter.wait(row.id, { deadlineMs: 5_000 })
+    expect(terminal?.status).toBe('completed') // executor's truth survives
+    expect(terminal?.eval?.verdict).toBe('escalated')
+    expect(terminal?.eval?.escalatedAt).toBeDefined()
+    expect(terminal?.eval?.verifierTaskIds).toHaveLength(2) // initial + post-retry pass
+    expect(pings).toHaveLength(1)
+    expect(pings[0].taskId).toBe(row.id)
+    expect(pings[0].text).toContain('escalated')
+    expect(pings[0].text).toContain('[c1] NOT MET')
+    expect(pings[0].text).toContain('file: a.ts')
+  })
+
+  it('notifier failure never breaks the finish path', async () => {
+    const rig = (() => {
+      const executors = createExecutorRegistry()
+      executors.register(
+        'chat-loop',
+        scriptedExecutor((spec) => ({
+          verdict: 'completed',
+          summary: 's',
+          artifacts: [],
+          usage,
+          ...(spec.goal.startsWith('You are an adversarial VERIFIER')
+            ? { criteriaSelfReport: [{ id: 'c1', met: false, evidence: 'no' }] }
+            : {}),
+        })),
+      )
+      let handler: (taskId: string) => Promise<void>
+      const store = new InMemoryTaskStore((taskId) => {
+        void handler(taskId)
+      })
+      const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 5 })
+      cleanups.push(() => waiter.stop())
+      const coordinator = createEvaluationCoordinator({
+        store,
+        waiter,
+        nodeId: 'test-node',
+        config: { skipOrigins: [], maxRetries: 0 },
+        runTask: (taskId) => handler(taskId),
+        escalation: {
+          notify: () => Promise.reject(new Error('telegram down')),
+        },
+      })
+      handler = createTaskHandler({ store, executors, nodeId: 'test-node', evaluation: coordinator })
+      return { store, waiter }
+    })()
+    const row = await rig.store.create({
+      goal: 'g',
+      executor: 'chat-loop',
+      agentId: 'a',
+      origin: 'api',
+      acceptanceCriteria: [CRITERIA[0]],
+    })
+    const terminal = await rig.waiter.wait(row.id, { deadlineMs: 5_000 })
+    expect(terminal?.status).toBe('completed')
+    expect(terminal?.eval?.verdict).toBe('escalated')
   })
 })
 
