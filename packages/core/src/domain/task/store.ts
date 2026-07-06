@@ -91,9 +91,26 @@ export interface TaskListFilter {
   limit?: number
 }
 
+/** Terminal outcome for recordTerminal — audit rows that never run. */
+export interface TerminalOutcome {
+  status: Extract<TaskStatus, 'completed' | 'failed' | 'timeout' | 'killed'>
+  result: TaskResult
+  /** Epoch ms the recorded work actually started (defaults to now). */
+  startedAt?: number
+  durationMs?: number
+}
+
 export interface TaskStore {
   /** Insert a queued task and enqueue its run-task job atomically. */
   create(input: NewTaskInput): Promise<TaskRow>
+
+  /**
+   * Insert an already-terminal row with NO run-task job — the audit path for
+   * work that executed elsewhere (sync delegation, cutover step (e)). The
+   * trg_task_done notify trigger is AFTER UPDATE only, so a terminal INSERT
+   * emits no ros_task_done notification — by design; nothing waits on it.
+   */
+  recordTerminal(input: NewTaskInput, outcome: TerminalOutcome): Promise<TaskRow>
 
   get(id: string): Promise<TaskRow | undefined>
 
@@ -236,6 +253,42 @@ export class InMemoryTaskStore implements TaskStore {
     }
     this.rows.set(id, row)
     this.enqueue?.(id)
+    return Promise.resolve({ ...row })
+  }
+
+  recordTerminal(input: NewTaskInput, outcome: TerminalOutcome): Promise<TaskRow> {
+    const id = newTaskId()
+    const now = Date.now()
+    const row: TaskRow = {
+      id,
+      goal: input.goal,
+      contextRefs: input.contextRefs ?? [],
+      acceptanceCriteria: input.acceptanceCriteria ?? [],
+      spec: input.spec ?? {},
+      executor: input.executor,
+      executorTarget: input.executorTarget,
+      agentId: input.agentId,
+      requestedBy: input.requestedBy,
+      origin: input.origin,
+      parentTaskId: input.parentTaskId,
+      chainDepth: input.chainDepth ?? 0,
+      nodeAffinity: input.nodeAffinity,
+      budget: input.budget ?? {},
+      usage: outcome.result.usage,
+      status: outcome.status,
+      attempt: 1,
+      maxAttempts: input.maxAttempts ?? 1,
+      error: outcome.result.error,
+      result: outcome.result,
+      conversationId: input.conversationId,
+      sessionKey: taskJobKey(id),
+      harnessSessionIds: [],
+      createdAt: outcome.startedAt ?? now,
+      startedAt: outcome.startedAt ?? now,
+      completedAt: now,
+      durationMs: outcome.durationMs ?? (outcome.startedAt ? now - outcome.startedAt : 0),
+    }
+    this.rows.set(id, row)
     return Promise.resolve({ ...row })
   }
 
@@ -538,6 +591,45 @@ export class PgTaskStore implements TaskStore {
     } finally {
       client.release()
     }
+  }
+
+  async recordTerminal(input: NewTaskInput, outcome: TerminalOutcome): Promise<TaskRow> {
+    const id = newTaskId()
+    const { rows } = await this.pool.query<PgTaskRow>(
+      `INSERT INTO ros_tasks
+         (id, goal, context_refs, acceptance_criteria, spec, executor,
+          executor_target, agent_id, requested_by, origin, parent_task_id,
+          chain_depth, budget, usage, max_attempts, attempt, status, error,
+          result, session_key, started_at, completed_at, duration_ms)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10,
+               $11, $12, $13::jsonb, $14::jsonb, $15, 1, $16, $17, $18::jsonb,
+               $19, to_timestamp($20 / 1000.0), now(), $21)
+       RETURNING *`,
+      [
+        id,
+        input.goal,
+        JSON.stringify(input.contextRefs ?? []),
+        JSON.stringify(input.acceptanceCriteria ?? []),
+        JSON.stringify(input.spec ?? {}),
+        input.executor,
+        input.executorTarget ?? null,
+        input.agentId,
+        input.requestedBy ?? null,
+        input.origin,
+        input.parentTaskId ?? null,
+        input.chainDepth ?? 0,
+        JSON.stringify(input.budget ?? {}),
+        JSON.stringify(outcome.result.usage),
+        input.maxAttempts ?? 1,
+        outcome.status,
+        outcome.result.error ?? null,
+        JSON.stringify(outcome.result),
+        taskJobKey(id),
+        outcome.startedAt ?? Date.now(),
+        outcome.durationMs ?? (outcome.startedAt != null ? Date.now() - outcome.startedAt : 0),
+      ],
+    )
+    return pgToPublic(rows[0])
   }
 
   async get(id: string): Promise<TaskRow | undefined> {
