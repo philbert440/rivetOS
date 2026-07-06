@@ -22,8 +22,8 @@
  */
 
 import type { PluginManifest } from '@rivetos/types'
-import { createMcpServer, type ToolRegistration } from './server.js'
-import { adaptRivetToolDynamic } from './tools/adapt.js'
+import { createMcpServer, type ToolRegistration } from '@rivetos/mcp-v1'
+import { adaptRivetToolDynamic } from '@rivetos/mcp'
 
 export const manifest: PluginManifest = {
   type: 'transport',

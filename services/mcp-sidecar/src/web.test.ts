@@ -15,7 +15,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
-import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '../server.js'
+import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '@rivetos/mcp-v1'
 import { createWebTools, type WebToolsHandle } from './web.js'
 
 const skipNetwork = process.env.RIVETOS_TEST_SKIP_NETWORK === '1'

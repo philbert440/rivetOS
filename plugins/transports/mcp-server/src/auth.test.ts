@@ -16,7 +16,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 
-import { createMcpServer, type RivetMcpServer } from './server.js'
+import { createMcpServer, type RivetMcpServer } from '@rivetos/mcp-v1'
 
 interface Harness {
   server: RivetMcpServer

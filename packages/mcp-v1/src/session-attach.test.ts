@@ -13,7 +13,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
-import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '../server.js'
+import { createMcpServer, defaultEchoTool, type RivetMcpServer } from './server.js'
 
 interface Harness {
   server: RivetMcpServer

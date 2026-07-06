@@ -75,7 +75,7 @@ claude plugin install rivet-memory@rivetos
 The plugin runs the **built** RivetOS artifacts in place — it does not bundle
 them. It needs a RivetOS checkout with `dist/` built:
 
-- `plugins/transports/mcp-server/dist/cli.js` — the MCP server
+- `services/mcp-sidecar/dist/cli.js` — the MCP server
 - `plugins/providers/claude-cli/dist/hooks.js` — the capture handler
 
 Run `npm run build` in the RivetOS repo if either is missing.
