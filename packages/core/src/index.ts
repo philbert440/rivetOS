@@ -57,6 +57,7 @@ export { MessageQueue, isCommand, parseCommand } from './domain/queue.js'
 export { SILENT_RESPONSES } from './domain/constants.js'
 export { DelegationEngine, filterToolsForAgent, deduplicateTools } from './domain/delegation.js'
 export { noopDelegationRecorder, createPgDelegationRecorder } from './domain/delegation-recorder.js'
+export { createTaskDelegationRecorder } from './domain/task/delegation-task-recorder.js'
 export type { DelegationRunsRecorder } from './domain/delegation-recorder.js'
 export { createHeartbeatScheduler, scheduleToCronMatch } from './domain/heartbeat-scheduler.js'
 export { SubagentManagerImpl, createSubagentTools } from './domain/subagent.js'
@@ -81,6 +82,7 @@ export type {
   TaskRow,
   NewTaskInput,
   TaskListFilter,
+  TerminalOutcome,
   PgTaskStoreOptions,
 } from './domain/task/store.js'
 export { createChatLoopExecutor } from './domain/task/chat-loop-executor.js'

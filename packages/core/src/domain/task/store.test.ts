@@ -389,6 +389,23 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
     expect(await store.requestKill(crypto.randomUUID())).toBeUndefined()
   })
 
+  it('recordTerminal inserts a terminal row with result and no run-task job', async () => {
+    const row = await store.recordTerminal(input({ goal: 'audited elsewhere' }), {
+      status: 'completed',
+      result: completedResult,
+      startedAt: Date.now() - 500,
+      durationMs: 500,
+    })
+    expect(row.status).toBe('completed')
+    expect(row.result?.summary).toBe('done')
+    expect(row.durationMs).toBe(500)
+    expect(row.attempt).toBe(1)
+    expect(row.completedAt).toBeDefined()
+    expect(await jobCount(row.id)).toBe(0)
+    // Terminal from birth: claim must refuse it.
+    expect(await store.claim(row.id, 'node-a')).toBeUndefined()
+  })
+
   it('sweep requeues stale rows under max_attempts and fails at the cap, per node', async () => {
     // Unique node names — the scratch schema is shared across this suite's
     // tests, so sweeping 'node-a' would catch rows earlier tests left running.
