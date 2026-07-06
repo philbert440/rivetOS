@@ -98,6 +98,47 @@ export interface TaskResult {
   error?: string
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2 — evaluation (design: modernization-followups.md §Phase 2).
+// A completed task with acceptance criteria gets an adversarial verifier pass
+// (child task row, origin 'eval') before it goes terminal: refute → one
+// steered retry → escalate. These are the row-level contracts; the loop
+// itself lives in core's EvaluationCoordinator.
+// ---------------------------------------------------------------------------
+
+/** Per-criterion verdict from the verifier (evidence-backed, not self-report). */
+export interface CriterionReport {
+  id: string
+  met: boolean
+  evidence: string
+}
+
+/** Structured output of one verifier child task. */
+export interface VerifierResult {
+  verdict: 'verified' | 'refuted'
+  summary: string
+  criteriaReport: CriterionReport[]
+  /** Steer text injected into the retry turn when refuted. */
+  refutation?: string
+}
+
+/**
+ * Terminal evaluation state on the PARENT row (`eval` column). The executor's
+ * own verdict is never overwritten — an escalated task keeps its executor
+ * terminal status with eval.verdict='escalated', so the scoreboard can show
+ * both truths (and their divergence) instead of one.
+ */
+export interface EvalOutcome {
+  verdict: 'verified' | 'refuted' | 'escalated'
+  /** Verifier-driven retry count consumed (eval_attempt column mirror). */
+  attempts: number
+  verifierTaskIds: string[]
+  criteriaReport: CriterionReport[]
+  /** Executor claimed completed but the verifier refuted. */
+  diverged: boolean
+  escalatedAt?: string
+}
+
 export interface TaskHandle {
   events: AsyncIterable<TaskEvent>
   steer(message: string): Promise<void>

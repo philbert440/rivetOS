@@ -39,7 +39,16 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
   'plugins',
 ])
 
-export const KNOWN_TASKS_KEYS = new Set(['enabled'])
+export const KNOWN_TASKS_KEYS = new Set(['enabled', 'pricing', 'eval'])
+export const KNOWN_TASKS_EVAL_KEYS = new Set([
+  'enabled',
+  'require_criteria',
+  'derive_internal',
+  'skip_origins',
+  'max_retries',
+  'verifier',
+  'escalation',
+])
 
 export const KNOWN_DEN_KEYS = new Set([
   'enabled',

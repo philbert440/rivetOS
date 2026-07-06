@@ -17,6 +17,7 @@ import {
   KNOWN_DEN_KEYS,
   KNOWN_DEN_TERMINAL_KEYS,
   KNOWN_TASKS_KEYS,
+  KNOWN_TASKS_EVAL_KEYS,
   DEN_LOOPBACK_HOSTS,
   API_KEY_PATTERNS,
   type ValidationIssue,
@@ -761,6 +762,106 @@ export function validateTasks(tasks: Record<string, unknown>, issues: Validation
       severity: 'error',
       path: `${path}.enabled`,
       message: '"tasks.enabled" must be a boolean',
+    })
+  }
+
+  if (tasks.eval !== undefined) {
+    if (typeof tasks.eval !== 'object' || tasks.eval === null || Array.isArray(tasks.eval)) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.eval`,
+        message: '"tasks.eval" must be an object',
+      })
+    } else {
+      validateTasksEval(tasks.eval as Record<string, unknown>, issues)
+    }
+  }
+}
+
+function validateTasksEval(evalSection: Record<string, unknown>, issues: ValidationIssue[]): void {
+  const path = 'tasks.eval'
+
+  for (const key of Object.keys(evalSection)) {
+    if (!KNOWN_TASKS_EVAL_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `${path}.${key}`,
+        message: `Unknown tasks.eval key "${key}"`,
+      })
+    }
+  }
+
+  for (const flag of ['enabled', 'require_criteria', 'derive_internal'] as const) {
+    if (evalSection[flag] !== undefined && typeof evalSection[flag] !== 'boolean') {
+      issues.push({
+        severity: 'error',
+        path: `${path}.${flag}`,
+        message: `"${path}.${flag}" must be a boolean`,
+      })
+    }
+  }
+
+  if (
+    evalSection.max_retries !== undefined &&
+    (typeof evalSection.max_retries !== 'number' ||
+      !Number.isInteger(evalSection.max_retries) ||
+      evalSection.max_retries < 0)
+  ) {
+    issues.push({
+      severity: 'error',
+      path: `${path}.max_retries`,
+      message: `"${path}.max_retries" must be a non-negative integer`,
+    })
+  }
+
+  if (
+    evalSection.skip_origins !== undefined &&
+    (!Array.isArray(evalSection.skip_origins) ||
+      evalSection.skip_origins.some((o) => typeof o !== 'string'))
+  ) {
+    issues.push({
+      severity: 'error',
+      path: `${path}.skip_origins`,
+      message: `"${path}.skip_origins" must be an array of strings`,
+    })
+  }
+
+  const verifier = evalSection.verifier
+  if (verifier !== undefined && (typeof verifier !== 'object' || verifier === null)) {
+    issues.push({
+      severity: 'error',
+      path: `${path}.verifier`,
+      message: `"${path}.verifier" must be an object`,
+    })
+  }
+  if (verifier && typeof verifier === 'object') {
+    const executor = (verifier as Record<string, unknown>).executor
+    if (executor !== undefined && executor !== 'chat-loop' && executor !== 'harness-session') {
+      issues.push({
+        severity: 'error',
+        path: `${path}.verifier.executor`,
+        message: `"${path}.verifier.executor" must be 'chat-loop' or 'harness-session'`,
+      })
+    }
+  }
+
+  const escalation = evalSection.escalation
+  if (escalation !== undefined && (typeof escalation !== 'object' || escalation === null)) {
+    issues.push({
+      severity: 'error',
+      path: `${path}.escalation`,
+      message: `"${path}.escalation" must be an object`,
+    })
+  } else if (
+    escalation &&
+    typeof escalation === 'object' &&
+    (escalation as Record<string, unknown>).channel !== undefined &&
+    typeof (escalation as Record<string, unknown>).channel !== 'string'
+  ) {
+    issues.push({
+      severity: 'error',
+      path: `${path}.escalation.channel`,
+      message: `"${path}.escalation.channel" must be a string`,
     })
   }
 }
