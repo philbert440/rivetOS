@@ -24,6 +24,7 @@ import {
   createTaskDelegationRecorder,
   createTaskCompletionWaiter,
   createTaskApiRoute,
+  criteriaPolicyFromConfig,
   createCatalogApiRoute,
   createTaskHandler,
   InMemoryTaskStore,
@@ -87,6 +88,8 @@ export async function registerAgentTools(
   // an in-memory store (process-local), delegation audit is a noop, and
   // heartbeats are skipped until rivetos-memory-migrate runs.
   const tasksEnabled = config.tasks?.enabled !== false
+  // Phase 2b: one criteria policy for every task creator on this node.
+  const criteriaPolicy = criteriaPolicyFromConfig(config.tasks?.eval)
   let taskEngineStore: PgTaskStore | undefined
   let taskWaiter: TaskCompletionWaiter | undefined
   let meshRegistryRef: MeshRegistry | undefined
@@ -232,6 +235,7 @@ export async function registerAgentTools(
     })
 
     const meshDelegation = new MeshDelegationEngine({
+      criteriaPolicy,
       localEngine: localDelegation,
       router: runtime.getRouter(),
       meshRegistry,
@@ -369,6 +373,7 @@ export async function registerAgentTools(
     router: runtime.getRouter(),
     store: subagentTaskStore,
     memory: runtime.getMemory(),
+    criteriaPolicy,
   })
   for (const tool of createSubagentTools(subagentManager)) {
     runtime.registerTool(tool)
@@ -443,7 +448,12 @@ export async function registerAgentTools(
   const gatewayRoutes: GatewayRoute[] = []
   if (taskEngineStore && taskWaiter) {
     gatewayRoutes.push(
-      createTaskApiRoute({ store: taskEngineStore, waiter: taskWaiter, resolveAffinity }),
+      createTaskApiRoute({
+        store: taskEngineStore,
+        waiter: taskWaiter,
+        resolveAffinity,
+        criteriaPolicy,
+      }),
     )
   }
   gatewayRoutes.push(
