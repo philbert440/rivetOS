@@ -61,46 +61,6 @@ describeIf('PostgresMemory.getContextForTurn', () => {
   })
 })
 
-describeIf('PostgresMemory.listSessions (seamless 5k)', () => {
-  let memory: PostgresMemory
-  const AGENT = `test-list-${Date.now()}`
-
-  beforeAll(async () => {
-    memory = new PostgresMemory({ connectionString: PG_URL })
-    expect(await memory.isHealthy()).toBe(true)
-    await memory.append({
-      sessionId: `heartbeat:${AGENT}`,
-      agent: AGENT,
-      channel: 'heartbeat',
-      role: 'assistant',
-      content: 'HEARTBEAT_OK',
-    })
-    await memory.append({
-      sessionId: `chat-${AGENT}`,
-      agent: AGENT,
-      channel: 'gateway',
-      role: 'user',
-      content: 'a real conversation turn',
-    })
-  })
-
-  afterAll(async () => {
-    const pool = memory.getPool()
-    await pool.query(`DELETE FROM ros_messages WHERE agent = $1`, [AGENT])
-    await pool.query(`DELETE FROM ros_conversations WHERE agent = $1`, [AGENT])
-    await pool.end()
-  })
-
-  it('lists real conversations but EXCLUDES heartbeat sessions (#317)', async () => {
-    const rows = await memory.listSessions({ limit: 200 })
-    const keys = rows.map((r) => r.sessionId)
-    expect(keys).toContain(`chat-${AGENT}`)
-    expect(keys).not.toContain(`heartbeat:${AGENT}`)
-    const real = rows.find((r) => r.sessionId === `chat-${AGENT}`)
-    expect(real?.messageCount).toBeGreaterThanOrEqual(1)
-    expect(real?.lastActive).toBeInstanceOf(Date)
-  })
-})
 
 describeIf('getContextForTurn wiki section (3f)', () => {
   const SLUG = `wiki-3f-test-${Date.now()}`

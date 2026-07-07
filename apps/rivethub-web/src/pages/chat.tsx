@@ -15,10 +15,11 @@ import { Transcript } from '../components/transcript.js'
 import { Composer } from '../components/composer.js'
 import { XtermAttach } from '../components/xterm-attach.js'
 
+// A conversation id IS a UUID so it can be the harness's native session id
+// (claude --session-id requires a UUID). Then the join key, the harness's
+// on-disk store filename, and the drawer id are all the same value.
 function newSessionId(): string {
-  const d = new Date()
-  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
-  return `chat-${stamp}-${crypto.randomUUID().slice(0, 4)}`
+  return crypto.randomUUID()
 }
 
 export function ChatPage(): JSX.Element {
@@ -34,44 +35,50 @@ export function ChatPage(): JSX.Element {
   }, [baseUrl, token])
 
   const connected = useGatewayReady()
-  const sessionsQuery = useQuery({
-    queryKey: ['sessions', baseUrl, token ?? ''],
-    queryFn: ({ signal }) => useConnection.getState().gateway.listSessions(signal),
+  // The drawer lists the node's harness sessions straight from their on-disk
+  // stores — node+harness specific by construction (the store is local disk,
+  // so it never holds another node's sessions). Ids are the harness's native
+  // session ids; opening one resumes it.
+  const harnessQuery = useQuery({
+    queryKey: ['harness-sessions', baseUrl, token ?? ''],
+    queryFn: ({ signal }) => useConnection.getState().gateway.harnessSessions(signal),
     refetchInterval: 30_000,
-    enabled: connected,
-  })
-  // Durable harness sessions from memory (seamless 5k): conversations that
-  // survive restarts / were started outside this RivetHub process. Merged
-  // under the live ring so you can reopen any captured thread.
-  const conversationsQuery = useQuery({
-    queryKey: ['conversations', baseUrl, token ?? ''],
-    queryFn: ({ signal }) => useConnection.getState().gateway.listConversations(signal),
-    refetchInterval: 60_000,
     enabled: connected,
   })
 
   if (!connected) return <NotConnected />
 
-  const known = sessionsQuery.data?.sessions.map((s) => s.id) ?? []
-  const captured = conversationsQuery.data?.conversations.map((c) => c.id) ?? []
-  // drafts first, then the live ring, then durable-only conversations — deduped
-  const sessions = [...new Set([...chat.drafts, ...known, ...captured])]
+  const harness = harnessQuery.data?.sessions ?? []
+  const harnessById = new Map(harness.map((s) => [s.id, s] as const))
+  // Fresh drafts (a UUID with no store file yet) first, then every harness
+  // session, newest-first from the store. Deduped: once a draft's first turn
+  // creates its store file, it shows as a harness session, not a draft.
+  const draftItems = chat.drafts
+    .filter((d) => !harnessById.has(d))
+    .map((id) => ({ id, title: 'new conversation', command: undefined }))
+  const harnessItems = harness.map((s) => ({ id: s.id, title: s.title, command: s.command }))
+  const items = [...draftItems, ...harnessItems]
   const active = useChat((s) => s.active)
+  const activeHarness = active ? harnessById.get(active) : undefined
 
   return (
     <div className="flex h-full">
       <SessionDrawer
-        sessions={sessions}
+        items={items}
         active={active}
-        error={sessionsQuery.isError ? sessionsQuery.error.message : undefined}
+        error={harnessQuery.isError ? harnessQuery.error.message : undefined}
       />
-      {active ? <ActiveSession sessionId={active} /> : <EmptyState />}
+      {active ? (
+        <ActiveSession sessionId={active} harnessCommand={activeHarness?.command} />
+      ) : (
+        <EmptyState />
+      )}
     </div>
   )
 }
 
 function SessionDrawer(props: {
-  sessions: string[]
+  items: { id: string; title: string; command?: string }[]
   active?: string
   error?: string
 }): JSX.Element {
@@ -101,20 +108,21 @@ function SessionDrawer(props: {
       </div>
       {props.error && <div className="px-3 py-2 font-mono text-xs text-red">{props.error}</div>}
       <div className="flex-1 overflow-y-auto px-2">
-        {props.sessions.map((id) => (
+        {props.items.map((it) => (
           <button
-            key={id}
-            onClick={() => setActive(id)}
-            className={`mb-1 block w-full truncate rounded px-3 py-2 text-left font-mono text-xs ${
-              id === props.active
+            key={it.id}
+            onClick={() => setActive(it.id)}
+            title={it.command ? `${it.command} · ${it.id}` : it.id}
+            className={`mb-1 block w-full truncate rounded px-3 py-2 text-left text-xs ${
+              it.id === props.active
                 ? 'bg-panel-2 text-em'
                 : 'text-ink-dim hover:bg-panel-2 hover:text-ink'
             }`}
           >
-            {id}
+            {it.title}
           </button>
         ))}
-        {props.sessions.length === 0 && !props.error && (
+        {props.items.length === 0 && !props.error && (
           <div className="px-3 py-2 text-xs text-ink-dim">no conversations yet</div>
         )}
       </div>
@@ -122,7 +130,7 @@ function SessionDrawer(props: {
   )
 }
 
-function ActiveSession(props: { sessionId: string }): JSX.Element {
+function ActiveSession(props: { sessionId: string; harnessCommand?: string }): JSX.Element {
   const [mode, setMode] = useState<'chat' | 'terminal'>('chat')
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
@@ -215,15 +223,21 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
   // Idempotent server-side; the client guard avoids UI churn on double calls.
   const ensurePty = async (): Promise<string> => {
     if (termPtyRef.current) return termPtyRef.current
-    const command = settings?.agent || undefined
     const gw = useConnection.getState().gateway
-    // model id is the roster command when the node has one (e.g. 'claude'); an
-    // API-only agent has none → fall back to the node's default harness.
+    // A harness session (already in the store) resumes; a fresh conversation
+    // pins its id (--session-id, via the join key) so its store file lines up.
+    // Command: the harness's own for a resume, else the model dropdown.
+    const command = props.harnessCommand || settings?.agent || undefined
+    const body = {
+      session: props.sessionId,
+      ...(command ? { command } : {}),
+      ...(props.harnessCommand ? { resume: props.sessionId } : {}),
+    }
+    // An API-only agent has no roster command → fall back to the node default
+    // rather than 404 (keeps the session id via --session-id if a UUID).
     const p = command
-      ? await gw
-          .termSpawn({ command, session: props.sessionId })
-          .catch(() => gw.termSpawn({ session: props.sessionId }))
-      : await gw.termSpawn({ session: props.sessionId })
+      ? await gw.termSpawn(body).catch(() => gw.termSpawn({ session: props.sessionId }))
+      : await gw.termSpawn(body)
     setTermPtyId(p.id)
     termPtyRef.current = p.id
     return p.id
