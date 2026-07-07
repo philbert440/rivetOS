@@ -283,7 +283,11 @@ export class PostgresMemory implements Memory {
     const maxTokens = options?.maxTokens ?? 4000
     const sections: string[] = []
     let tokenEstimate = 0
+    // Cross-section dedup: one shared 300-char-prefix key so wiki state,
+    // recent lines, and hybrid hits actually collide (#290 — mixed-length
+    // keys made the old set dead weight).
     const seen = new Set<string>()
+    const dedupKey = (s: string): string => s.slice(0, 300)
 
     // 1. Recent messages from this agent's active conversations (exclude heartbeat noise)
     const recent = await this.pool.query<RecentMessageRow>(
@@ -300,8 +304,8 @@ export class PostgresMemory implements Memory {
     if (recent.rows.length > 0) {
       sections.push('\n## Recent')
       for (const row of recent.rows.reverse()) {
-        if (seen.has(row.content)) continue
-        seen.add(row.content)
+        if (seen.has(dedupKey(row.content))) continue
+        seen.add(dedupKey(row.content))
         const line = `[${row.role}] ${row.content.slice(0, 500)}`
         tokenEstimate += Math.ceil(line.length / 4)
         if (tokenEstimate > maxTokens) break
@@ -319,15 +323,20 @@ export class PostgresMemory implements Memory {
           sections.push('\n## Wiki (curated state)')
           for (const hit of wikiHits) {
             const body = hit.currentState.slice(0, 800)
-            seen.add(body.slice(0, 500)) // dedupe overlapping raw hits below
+            seen.add(dedupKey(body))
             const line = `**${hit.title}** (wiki:${hit.slug})\n${body}`
             tokenEstimate += Math.ceil(line.length / 4)
             if (tokenEstimate > maxTokens) break
             sections.push(line)
           }
         }
-      } catch {
-        this.wikiAvailable = false
+      } catch (err: unknown) {
+        // Latch off ONLY for missing-table (0005 not applied) — transient
+        // PG errors just skip the wiki leg this turn (#290).
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/relation .*ros_wiki_topics.* does not exist/i.test(msg)) {
+          this.wikiAvailable = false
+        }
       }
     }
 
@@ -341,8 +350,8 @@ export class PostgresMemory implements Memory {
     if (relevant.length > 0) {
       sections.push('\n## Relevant Context')
       for (const r of relevant) {
-        if (seen.has(r.content)) continue
-        seen.add(r.content)
+        if (seen.has(dedupKey(r.content))) continue
+        seen.add(dedupKey(r.content))
         const age = Math.floor((Date.now() - r.createdAt.getTime()) / MS_PER_DAY)
         const line = `[${r.agent}/${r.role}, ${String(age)}d ago] ${r.content.slice(0, 500)}`
         tokenEstimate += Math.ceil(line.length / 4)
