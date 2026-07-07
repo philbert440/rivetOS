@@ -73,8 +73,10 @@ describeIf('WikiIndex (PG)', () => {
       ['rivetos-task-engine'],
     )
     expect(rows[0].embed_status).toBe('done')
-    // changed content → reset for re-embed
-    await index.upsertTopic(page('rivetos-task-engine', 'gateway serves :5174 now too'))
+    // alias change alters the search surface → reset too
+    await index.upsertTopic(
+      page('rivetos-task-engine', 'ros_tasks is the only engine', { addAliases: ['ros-tasks'] }),
+    )
     ;({ rows } = await pool.query('SELECT embed_status FROM ros_wiki_topics WHERE slug = $1', [
       'rivetos-task-engine',
     ]))

@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS ros_wiki_topics (
     -- be a generated column; single writer keeps it trivially consistent).
     search_text       TEXT NOT NULL DEFAULT '',
     content_tsv       tsvector GENERATED ALWAYS AS (to_tsvector('english', search_text)) STORED,
-    embedding         halfvec(4000),
+    -- 1024-d: prod embed stack is Qwen3-Embedding-0.6B (June cutover) —
+    -- verified against live ros_messages typmod, NOT the stale 0001 baseline.
+    embedding         halfvec(1024),
     embed_status      TEXT,
     embed_failures    INTEGER DEFAULT 0,
     embed_error       TEXT,
