@@ -22,7 +22,11 @@ export const enqueueWikiBackfillTask: Task = async (_payload, helpers) => {
        FROM ros_summaries s
        LEFT JOIN ros_wiki_extractions e ON e.summary_id = s.id
        WHERE s.kind = 'leaf'
-         AND (e.summary_id IS NULL OR e.status = 'failed')
+         AND (e.summary_id IS NULL
+              -- failed rows re-sweep on a 24h backoff: a poison summary
+              -- costs at most one LLM call per day instead of one per
+              -- 10-minute tick (#292 review).
+              OR (e.status = 'failed' AND e.extracted_at < now() - interval '24 hours'))
        ORDER BY s.created_at ASC
        LIMIT $1`,
       [config.wikiBackfillBatch],
