@@ -50,13 +50,14 @@
       border-radius: 8px; cursor: pointer; line-height: 1;
     }
     #gear.on { color: #34d399; border-color: #34d399; }
-    #mesh-btn {
+    #mesh-btn, #home-btn {
       background: #e8ebef; color: #30394a; border: 2px solid #8b93a1;
       font: 700 calc(13px * var(--ui)) 'Courier New', monospace; letter-spacing: 1px;
       height: calc(34px * var(--ui)); padding: 0 calc(10px * var(--ui));
       border-radius: 8px; cursor: pointer; line-height: 1;
     }
-    #mesh-btn:hover { color: #2f9e63; border-color: #2f9e63; }
+    #home-btn { display: none; }  /* only shown when served under a parent app (RivetHub) */
+    #mesh-btn:hover, #home-btn:hover { color: #2f9e63; border-color: #2f9e63; }
     #new-wrap { position: relative; display: none; }
     #new-wrap.on { display: flex; }
     #new-wrap > button {
@@ -192,6 +193,7 @@
       <button id="new-menu-btn" title="pick a harness">▾</button>
       <div id="new-menu"></div>
     </div>
+    <button id="home-btn" title="back to RivetHub">◀ HUB</button>
     <button id="mesh-btn" title="mesh overview">MESH</button>
     <button id="gear" title="settings">⚙</button>
   </div>
