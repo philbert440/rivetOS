@@ -1,0 +1,28 @@
+{
+  "name": "@rivetos/wiki-core",
+  "version": "0.4.0-beta.6",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/ package.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "vitest": "^4.1.5"
+  },
+  "nx": {
+    "tags": [
+      "scope:contract",
+      "type:lib",
+      "domain:memory"
+    ]
+  },
+  "description": "Memory wiki page model \u2014 parse/apply/serialize, pure (no I/O)"
+}
