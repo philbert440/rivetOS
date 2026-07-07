@@ -138,6 +138,25 @@ describe('term manager', () => {
     expect(manager.ptyForSession(pty.denSession)).toBe(pty.id)
   })
 
+  it('session join key: denSession IS the session, RIVETOS_SESSION_KEY set, spawn-or-get', () => {
+    const { manager, spawns } = makeManager({}, { token: 'sekrit', port: 5199 })
+    const a = manager.spawn('claude', 80, 24, '127.0.0.1', 'chat-20260707-abcd')
+    expect(a.denSession).toBe('chat-20260707-abcd')
+    expect(spawns[0].opts.env.RIVET_DEN_SESSION).toBe('chat-20260707-abcd')
+    expect(spawns[0].opts.env.RIVETOS_SESSION_KEY).toBe('chat-20260707-abcd')
+    expect(manager.ptyForSession('chat-20260707-abcd')).toBe(a.id)
+
+    // spawn-or-get: same session returns the SAME pty, no second spawn
+    const b = manager.spawn('claude', 80, 24, '127.0.0.1', 'chat-20260707-abcd')
+    expect(b.id).toBe(a.id)
+    expect(spawns.length).toBe(1)
+  })
+
+  it('rejects a malformed session id', () => {
+    const { manager } = makeManager({})
+    expect(() => manager.spawn('claude', 80, 24, '', 'bad session id!')).toThrow(/invalid session/)
+  })
+
   it('OMITS RIVET_DEN_TOKEN entirely when the token is empty', () => {
     // an empty-string token would be read by the hook adapter as a real
     // value — the key must be absent, not ''

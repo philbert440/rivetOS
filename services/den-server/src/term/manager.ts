@@ -90,7 +90,13 @@ interface PtyRecord {
 
 export interface TermManager {
   /** Throws TermSpawnError ('unknown-command' → 404, 'cap' → 409). */
-  spawn(rosterKey: string | undefined, cols: number, rows: number, remote: string): PtyInfo
+  spawn(
+    rosterKey: string | undefined,
+    cols: number,
+    rows: number,
+    remote: string,
+    session?: string,
+  ): PtyInfo
   list(): PtyInfo[]
   get(id: string): PtyInfo | undefined
   /** PTY id linked to a den session, while its record exists. */
@@ -262,7 +268,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   }
 
   return {
-    spawn(rosterKey, cols, rows, remote): PtyInfo {
+    spawn(rosterKey, cols, rows, remote, session): PtyInfo {
+      // Spawn-or-get: a conversation's PTY is a singleton keyed by `session`.
+      // Re-entering Terminal (or chat inject) for a live conversation reuses
+      // the same harness rather than spawning a second (seamless modes).
+      if (session) {
+        if (!/^[a-zA-Z0-9:_.-]{1,120}$/.test(session))
+          throw new TermSpawnError('unknown-command', `invalid session id: ${session}`)
+        const existingId = bySession.get(session)
+        const existing = existingId ? records.get(existingId) : undefined
+        if (existing && existing.state === 'running') return info(existing)
+      }
       const roster = deps.roster()
       const key = rosterKey ?? roster.default
       const entry = roster.commands[key] as (typeof roster.commands)[string] | undefined
@@ -272,12 +288,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         throw new TermSpawnError('cap', `pty limit reached (${config.term.maxPtys})`)
 
       const id = `pty-${randomBytes(4).toString('hex')}`
-      const denSession = `den-${id}`
+      // The conversation join key IS the den session, so den (?session), the
+      // capture hooks (RIVETOS_SESSION_KEY), and this PTY all share one id.
+      const denSession = session ?? `den-${id}`
       const cwd = entry.cwd ?? roster.cwd
       const env: Record<string, string> = {}
       for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v
       Object.assign(env, roster.env, entry.env ?? {})
       setNonEmpty(env, 'RIVET_DEN_SESSION', denSession)
+      // Capture hooks key the transcript on this — chat reads the same
+      // conversation the terminal is running (seamless modes join key).
+      if (session) setNonEmpty(env, 'RIVETOS_SESSION_KEY', session)
       setNonEmpty(env, 'RIVET_DEN_TOKEN', config.token)
       env.RIVET_DEN_URL = `http://127.0.0.1:${config.port}`
       env.RIVET_DEN_NAME = `${hostname()}:${key}`
