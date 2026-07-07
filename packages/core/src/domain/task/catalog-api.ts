@@ -72,7 +72,8 @@ async function buildAgents(opts: CatalogApiOptions): Promise<CatalogAgent[]> {
         const { provider, model } = d as { provider: string; model?: unknown }
         return typeof model === 'string' ? { provider, model } : { provider }
       }
-      return n.agents.map((agentId): CatalogAgent => {
+      const agentIds = Array.isArray(n.agents) ? n.agents : []
+      return agentIds.map((agentId): CatalogAgent => {
         const d = detailFor(agentId)
         return d
           ? { id: agentId, node: n.name, local: false, provider: d.provider, model: d.model }

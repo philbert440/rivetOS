@@ -50,6 +50,15 @@ function node(
 }
 
 async function start(): Promise<string> {
+  return startWith([
+    node('ct115', ['claude']),
+    // ct112 advertises per-agent detail (#272); 'down' is offline
+    node('ct112', ['grok'], 'online', { grok: { provider: 'xai', model: 'grok-4-1' } }),
+    node('down', ['x'], 'offline'),
+  ])
+}
+
+async function startWith(nodes: MeshNode[]): Promise<string> {
   const executors = createExecutorRegistry()
   executors.register('chat-loop', {
     name: 'chat-loop',
@@ -76,12 +85,7 @@ async function start(): Promise<string> {
     registerAgent: vi.fn(),
   } as unknown as Router
   const meshRegistry = {
-    getNodes: async () => [
-      node('ct115', ['claude']),
-      // ct112 advertises per-agent detail (#272); 'down' is offline
-      node('ct112', ['grok'], 'online', { grok: { provider: 'xai', model: 'grok-4-1' } }),
-      node('down', ['x'], 'offline'),
-    ],
+    getNodes: async () => nodes,
   } as unknown as MeshRegistry
 
   const route = createCatalogApiRoute({
@@ -117,12 +121,25 @@ describe('/api/catalog', () => {
       'grok@ct112',
     ])
     // #272: the remote grok carries its advertised provider/model
-    const grok = body.agents.find((a) => a.id === 'grok')
-    expect(grok).toMatchObject({ node: 'ct112', provider: 'xai', model: 'grok-4-1' })
+    const grokDetail = body.agents.find((a) => a.id === 'grok')
+    expect(grokDetail).toMatchObject({ node: 'ct112', provider: 'xai', model: 'grok-4-1' })
     const harness = body.executors.find((e) => e.key === 'harness-session:claude-cli')
     expect(harness?.commands).toEqual([{ name: '/compact', description: 'compact context' }])
     expect(body.tools).toContain('memory_search')
     expect(body.skills[0].name).toBe('deep-research')
+  })
+
+  it('remote agents without advertised detail stay bare (older peers)', async () => {
+    const base = await startWith([
+      node('ct115', ['claude']),
+      node('ct112', ['grok']), // no agentDetails
+    ])
+    const body = (await (await fetch(`${base}/api/catalog/agents`)).json()) as {
+      agents: Array<{ id: string; node: string; provider?: string; model?: string }>
+    }
+    const grok = body.agents.find((a) => a.id === 'grok')
+    expect(grok).toEqual({ id: 'grok', node: 'ct112', local: false })
+    expect(grok?.provider).toBeUndefined()
   })
 
   it('GET /api/catalog/agents serves the agents slice; 404 elsewhere; 405 non-GET', async () => {
