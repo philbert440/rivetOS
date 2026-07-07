@@ -399,6 +399,29 @@ describe('POST /term/inject (seamless modes 5c)', () => {
       202,
     )
   })
+
+  it('is behind the bearer gate (401 without the token)', async () => {
+    const { base } = await start('sekret', 60_000, { term: true })
+    expect((await post(base, '/term/inject', { session: 'x', text: 'hi' })).status).toBe(401)
+    // with the token it reaches the handler (409 = no live harness)
+    const ok = await post(
+      base,
+      '/term/inject',
+      { session: 'x', text: 'hi' },
+      { authorization: 'Bearer sekret' },
+    )
+    expect(ok.status).toBe(409)
+  })
+
+  it('409s injecting into an exited-but-lingering harness', async () => {
+    fakeProcs.length = 0
+    const { base } = await start('', 60_000, { term: true })
+    await post(base, '/term', { command: 'shell', session: 'chat-z' })
+    // exit the harness; its record lingers (exitLingerMs) and the session
+    // alias still resolves, but write() refuses a non-running proc.
+    fakeProcs[0].emit('exit', 0)
+    expect((await post(base, '/term/inject', { session: 'chat-z', text: 'hi' })).status).toBe(409)
+  })
 })
 
 describe('gateway API aliases (G2/G3/G6) + SPA carve-out', () => {
