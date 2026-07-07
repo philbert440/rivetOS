@@ -346,12 +346,17 @@ export function createGatewayChannel(opts?: {
           if (req.method === 'GET' && key === '') {
             const mem = opts?.getMemory?.()
             const rows = (await mem?.listSessions?.({ limit })) ?? []
-            const conversations = rows.map((r) => ({
-              id: r.sessionId,
-              lastActive:
-                r.lastActive instanceof Date ? r.lastActive.getTime() : Number(r.lastActive),
-              messages: r.messageCount,
-            }))
+            const conversations = rows.map((r) => {
+              // pg normally hands back timestamptz as Date, but a custom type
+              // parser could return a string — Date() takes both; guard NaN
+              // (#317 review).
+              const t = new Date(r.lastActive).getTime()
+              return {
+                id: r.sessionId,
+                lastActive: Number.isFinite(t) ? t : 0,
+                messages: r.messageCount,
+              }
+            })
             return json(res, 200, { conversations } satisfies ConversationsListResponse)
           }
 

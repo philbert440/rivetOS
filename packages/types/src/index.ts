@@ -195,6 +195,8 @@ export type {
   SessionSummary,
   SessionMessage,
   SessionsListResponse,
+  ConversationSummary,
+  ConversationsListResponse,
   SessionMessagesResponse,
   SessionPostRequest,
   SessionPostAccepted,
