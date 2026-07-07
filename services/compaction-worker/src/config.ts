@@ -30,6 +30,7 @@ export const config = {
   // Wiki extraction (phase 3c) — dark by default; single writer per design.
   wikiExtraction: process.env.WIKI_EXTRACTION === '1',
   wikiDir: process.env.WIKI_DIR ?? '/rivet-shared/wiki',
+  wikiBackfillBatch: intEnv('WIKI_BACKFILL_BATCH', 25),
 
   // Batch sizes (worker-local — library exports only absolute budgets)
   leafBatchSize: intEnv('COMPACT_LEAF_BATCH', 10),
