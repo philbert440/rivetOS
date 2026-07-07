@@ -13,7 +13,7 @@ function frameTitle(frame: NotificationFrame): string {
 }
 
 function frameBody(frame: NotificationFrame): string {
-  return frame.kind === 'escalation' ? frame.summary : frame.taskId
+  return frame.kind === 'escalation' ? frame.summary : `${frame.taskId} — ${frame.status}`
 }
 
 export function Toasts(): JSX.Element {
@@ -22,21 +22,37 @@ export function Toasts(): JSX.Element {
   const navigate = useNavigate()
   const toasts = entries.filter((e) => e.toast)
 
-  const open = (frame: NotificationFrame): void => {
-    if (frame.kind === 'escalation') void navigate({ to: frame.href })
-    else void navigate({ to: `/tasks/${frame.taskId}` })
+  const open = (entry: { id: string; frame: NotificationFrame }): void => {
+    dismiss(entry.id) // navigating consumed it; don't let it linger
+    if (entry.frame.kind === 'escalation') void navigate({ to: entry.frame.href })
+    else void navigate({ to: `/tasks/${entry.frame.taskId}` })
   }
+
+  // Red chrome is for bad news only — a completed task.done must not look
+  // like an error (#303 review).
+  const severity = (frame: NotificationFrame): 'red' | 'em' =>
+    frame.kind === 'escalation' || (frame.kind === 'task.done' && frame.status !== 'completed')
+      ? 'red'
+      : 'em'
 
   return (
     <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-96 flex-col gap-2">
       {toasts.map((e) => (
         <div
           key={e.id}
-          className="pointer-events-auto rounded-lg border border-red/50 bg-panel-2 px-4 py-3 shadow-lg"
+          className={`pointer-events-auto rounded-lg border bg-panel-2 px-4 py-3 shadow-lg ${
+            severity(e.frame) === 'red' ? 'border-red/50' : 'border-em/50'
+          }`}
         >
           <div className="flex items-start justify-between gap-3">
-            <button className="min-w-0 text-left" onClick={() => open(e.frame)}>
-              <div className="font-mono text-xs font-semibold text-red">{frameTitle(e.frame)}</div>
+            <button className="min-w-0 text-left" onClick={() => open(e)}>
+              <div
+                className={`font-mono text-xs font-semibold ${
+                  severity(e.frame) === 'red' ? 'text-red' : 'text-em'
+                }`}
+              >
+                {frameTitle(e.frame)}
+              </div>
               <div className="mt-1 truncate text-sm text-ink">{frameBody(e.frame)}</div>
               <div className="mt-1 font-mono text-[10px] text-ink-dim">
                 {new Date(e.frame.ts).toLocaleTimeString()} · durable record in /api/outcomes
