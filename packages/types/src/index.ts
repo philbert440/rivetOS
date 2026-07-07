@@ -220,4 +220,12 @@ export type {
   MeshDenNode,
   MeshOverview,
   NotificationFrame,
+  TermConfigResponse,
+  TermSpawnRequest,
+  TermSpawnResponse,
+  PtyInfo,
+  TermListResponse,
+  TermHelloFrame,
+  TermExitFrame,
+  TermControlFrame,
 } from './gateway-api.js'

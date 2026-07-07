@@ -290,6 +290,78 @@ export interface MeshOverview {
 }
 
 // ---------------------------------------------------------------------------
+// /api/terminal — den's PTY surface (aliased to /term*; shapes are
+// den-server-local literals mirrored here for clients, like /api/mesh)
+// ---------------------------------------------------------------------------
+
+export interface TermConfigResponse {
+  enabled: boolean
+  default: string
+  maxPtys: number
+  active: number
+  commands: { id: string; label: string; room: boolean }[]
+}
+
+export interface TermSpawnRequest {
+  /** roster key from TermConfigResponse.commands; default when omitted */
+  command?: string
+  cols?: number
+  rows?: number
+}
+
+export interface TermSpawnResponse {
+  id: string
+  denSession: string
+  command: string
+  pid: number
+  /** epoch ms */
+  createdAt: number
+}
+
+export interface PtyInfo {
+  id: string
+  denSession: string
+  command: string
+  state: 'running' | 'exited'
+  pid: number
+  /** currently attached WS clients */
+  attached: number
+  exitCode?: number | null
+  /** epoch ms */
+  createdAt: number
+  lastOutputTs?: number
+  cols: number
+  rows: number
+}
+
+export interface TermListResponse {
+  ptys: PtyInfo[]
+}
+
+/** First frame on WS /api/terminal/ws (JSON; everything after is binary
+ *  scrollback/output, plus a final TermExitFrame). */
+export interface TermHelloFrame {
+  type: 'hello'
+  v: 1
+  id: string
+  denSession: string
+  command: string
+  cols: number
+  rows: number
+  state: 'running' | 'exited'
+  exitCode?: number | null
+}
+
+export interface TermExitFrame {
+  type: 'exit'
+  code: number | null
+  signal?: string
+}
+
+/** Client → server JSON control frames (keystrokes ride as binary). */
+export type TermControlFrame = { type: 'resize'; cols: number; rows: number } | { type: 'kill' }
+
+// ---------------------------------------------------------------------------
 // WS /api/notifications/ws (phase 4e) — ephemeral delivery; /api/outcomes is
 // the durable escalation inbox.
 // ---------------------------------------------------------------------------
