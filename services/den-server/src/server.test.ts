@@ -79,6 +79,7 @@ async function start(
       scrollbackBytes: 262_144,
       detachedTtlMs: 1_800_000,
       exitLingerMs: 60_000,
+      injectReadyMs: 10,
     },
   }
   let pid = 2000
@@ -374,6 +375,9 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     // spawn the conversation's harness with the join key
     const spawn = await post(base, '/term', { command: 'shell', session: 'chat-x' })
     expect(spawn.status).toBe(201)
+    // ready-gate (5g): the harness must emit output before injects flush
+    fakeProcs[0].emit('data', Buffer.from('welcome'))
+    await new Promise((r) => setTimeout(r, 30)) // let the settle timer fire
     // inject a chat turn
     const inj = await post(base, '/term/inject', { session: 'chat-x', text: 'hello world' })
     expect(inj.status).toBe(202)
