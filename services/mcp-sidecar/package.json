@@ -21,7 +21,9 @@
     "@rivetos/tool-shell": "0.4.0-beta.6",
     "@rivetos/tool-web-search": "0.4.0-beta.6",
     "zod": "^4.3.6",
-    "@rivetos/core": "0.4.0-beta.6"
+    "@rivetos/core": "0.4.0-beta.6",
+    "@rivetos/wiki-core": "0.4.0-beta.6",
+    "pg": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

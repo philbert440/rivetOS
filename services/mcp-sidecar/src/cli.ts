@@ -63,6 +63,7 @@ import {
 } from '@rivetos/mcp-v1'
 import { createFileTools, type FileToolsHandle } from './file.js'
 import { createMemoryTools, type MemoryToolsHandle } from './memory.js'
+import { createWikiTools, type WikiToolsHandle } from './wiki.js'
 import { createSearchTools, type SearchToolsHandle } from './search.js'
 import { createShellTool, type ShellToolHandle } from './shell.js'
 import { createSkillTools, type SkillToolsHandle } from './skills.js'
@@ -113,6 +114,26 @@ async function main(): Promise<void> {
     console.log(
       '[rivetos-mcp-server] RIVETOS_PG_URL not set — memory tools disabled (echo + web only)',
     )
+  }
+
+  // --- Wiki tools (require Postgres — the curated layer, phase 3g) ---------
+  if (pgUrl) {
+    try {
+      const handle: WikiToolsHandle = createWikiTools({
+        pgUrl,
+        embedEndpoint: process.env.RIVETOS_EMBED_URL,
+        embedModel: process.env.RIVETOS_EMBED_MODEL,
+        wikiDir: process.env.WIKI_DIR,
+      })
+      tools.push(...handle.tools)
+      cleanups.push(() => handle.close())
+      console.log(
+        `[rivetos-mcp-server] wiki tools enabled (${handle.tools.map((t) => t.name).join(', ')})`,
+      )
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[rivetos-mcp-server] failed to enable wiki tools: ${message}`)
+    }
   }
 
   // --- Skill tools (always available) --------------------------------------
