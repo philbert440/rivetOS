@@ -8,7 +8,7 @@
 import { create } from 'zustand'
 import type { NotificationFrame } from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
-import { useConnection } from './connection.js'
+import { isValidGatewayUrl, useConnection } from './connection.js'
 
 export interface NotificationEntry {
   id: string
@@ -19,6 +19,35 @@ export interface NotificationEntry {
 
 const TOAST_MS = 8_000
 const INBOX_MAX = 50
+
+/**
+ * Desktop shell bridge (4j): under Tauri (withGlobalTauri) forward frames to
+ * OS notifications when the window isn't visible — the in-app toast covers
+ * the focused case. Feature-detected; the web app takes no Tauri dependency.
+ */
+interface TauriGlobal {
+  notification?: {
+    isPermissionGranted(): Promise<boolean>
+    requestPermission(): Promise<string>
+    sendNotification(opts: { title: string; body: string }): void
+  }
+}
+
+function nativeNotify(frame: NotificationFrame): void {
+  const tauri = (globalThis as { __TAURI__?: TauriGlobal }).__TAURI__
+  const api = tauri?.notification
+  if (!api || document.visibilityState === 'visible') return
+  void (async () => {
+    let granted = await api.isPermissionGranted()
+    if (!granted) granted = (await api.requestPermission()) === 'granted'
+    if (!granted) return
+    api.sendNotification(
+      frame.kind === 'escalation'
+        ? { title: `⚠ Rivet escalation — ${frame.agentId}`, body: frame.summary }
+        : { title: `Rivet task ${frame.status}`, body: frame.taskId },
+    )
+  })()
+}
 
 interface NotificationsState {
   entries: NotificationEntry[]
@@ -52,8 +81,12 @@ export const useNotifications = create<NotificationsState>((set) => ({
       set({ entries: [], unread: 0 })
     }
     currentEndpoint = endpointKey
+    // Skip the socket when no http(s) gateway is configured (desktop shell
+    // first-run: origin is tauri://localhost) — #4j.
+    if (!isValidGatewayUrl(useConnection.getState().baseUrl)) return
     const { gateway } = useConnection.getState()
     subscription = gateway.watchNotifications((frame) => {
+      nativeNotify(frame)
       counter += 1
       const id = `n-${String(counter)}`
       set((s) => ({

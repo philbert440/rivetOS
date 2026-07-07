@@ -17,7 +17,7 @@
 import { create } from 'zustand'
 import type { SessionMessage, SessionWsFrame, StreamEvent } from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
-import { useConnection } from './connection.js'
+import { isValidGatewayUrl, useConnection } from './connection.js'
 
 export interface LiveTurn {
   /** accumulated assistant text deltas for the in-flight turn */
@@ -124,10 +124,15 @@ export const useChat = create<ChatState>((set, get) => ({
   connect: (endpointKey) => {
     subscription?.close()
     if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
-      // New gateway: session ids are per-node; drop everything.
       set({ messages: {}, live: {}, opened: [], drafts: [], active: undefined })
     }
     currentEndpoint = endpointKey
+    // No gateway configured (fresh desktop shell, or a bad URL): don't open
+    // a socket against a non-http origin — WebKit throws on the URL (#4j).
+    if (!isValidGatewayUrl(useConnection.getState().baseUrl)) {
+      set({ wsStatus: 'closed' })
+      return
+    }
     const { gateway } = useConnection.getState()
     subscription = gateway.watchSessions(
       (frame: SessionWsFrame) => {

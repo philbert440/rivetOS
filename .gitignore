@@ -34,3 +34,7 @@ packages/cli/workspace-templates/
 /AGENT.md
 /MEMORY.md
 /references/
+
+# Tauri (rivethub-desktop) build output
+apps/rivethub-desktop/src-tauri/target/
+apps/rivethub-desktop/src-tauri/gen/

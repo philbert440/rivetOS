@@ -13,6 +13,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import type { PtyInfo, TermExitFrame, TermHelloFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
+import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 
 export function TerminalPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
@@ -20,15 +21,18 @@ export function TerminalPage(): JSX.Element {
   const endpointKey = `${baseUrl}|${token ?? ''}`
   const [attached, setAttached] = useState<string | undefined>()
   const [spawnError, setSpawnError] = useState<string | undefined>()
+  const connected = useGatewayReady()
 
   const config = useQuery({
     queryKey: ['term-config', baseUrl, token ?? ''],
     queryFn: ({ signal }) => useConnection.getState().gateway.termConfig(signal),
+    enabled: connected,
   })
   const list = useQuery({
     queryKey: ['term-list', baseUrl, token ?? ''],
     queryFn: ({ signal }) => useConnection.getState().gateway.termList(signal),
     refetchInterval: 10_000,
+    enabled: connected,
   })
 
   const spawn = async (command?: string): Promise<void> => {
@@ -42,6 +46,7 @@ export function TerminalPage(): JSX.Element {
     }
   }
 
+  if (!connected) return <NotConnected />
   if (config.isError)
     return <div className="p-8 font-mono text-sm text-red">{config.error.message}</div>
   if (config.data && !config.data.enabled)

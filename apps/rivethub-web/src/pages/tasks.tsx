@@ -9,6 +9,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from '@tanstack/react-router'
 import type { TaskStatus, TaskWire } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
+import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
   queued: 'text-ink-dim',
@@ -43,9 +44,11 @@ export function TasksPage(): JSX.Element {
   const token = useConnection((s) => s.token)
   const navigate = useNavigate()
   const [statusFilter, setStatusFilter] = useState<TaskStatus | ''>('')
+  const connected = useGatewayReady()
 
   const tasks = useQuery({
     queryKey: ['tasks', baseUrl, token ?? '', statusFilter],
+    enabled: connected,
     queryFn: ({ signal }) =>
       useConnection
         .getState()
@@ -55,6 +58,8 @@ export function TasksPage(): JSX.Element {
         ),
     refetchInterval: 15_000,
   })
+
+  if (!connected) return <NotConnected />
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-8">
@@ -117,11 +122,14 @@ export function TaskDetailPage(): JSX.Element {
   const [acting, setActing] = useState(false)
   const [actionError, setActionError] = useState<string | undefined>()
 
+  const connected = useGatewayReady()
   const task = useQuery({
     queryKey: ['task', baseUrl, token ?? '', taskId],
     queryFn: ({ signal }) => useConnection.getState().gateway.getTask(taskId, signal),
     refetchInterval: 10_000,
+    enabled: connected,
   })
+  if (!connected) return <NotConnected />
 
   const t = task.data?.task
   const terminal = t && ['completed', 'failed', 'killed', 'timeout'].includes(t.status)

@@ -8,6 +8,7 @@
 import { useEffect, useState, type JSX } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useConnection } from '../stores/connection.js'
+import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { useChat } from '../stores/chat.js'
 import { Transcript } from '../components/transcript.js'
 import { Composer } from '../components/composer.js'
@@ -30,11 +31,15 @@ export function ChatPage(): JSX.Element {
     return () => useChat.getState().disconnect()
   }, [baseUrl, token])
 
+  const connected = useGatewayReady()
   const sessionsQuery = useQuery({
     queryKey: ['sessions', baseUrl, token ?? ''],
     queryFn: ({ signal }) => useConnection.getState().gateway.listSessions(signal),
     refetchInterval: 30_000,
+    enabled: connected,
   })
+
+  if (!connected) return <NotConnected />
 
   const known = sessionsQuery.data?.sessions.map((s) => s.id) ?? []
   const sessions = [...chat.drafts.filter((d) => !known.includes(d)), ...known]
