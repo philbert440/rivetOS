@@ -90,7 +90,11 @@ export async function registerGateway(
 
   // G5: the gateway channel — RivetHub chat into the normal turn pipeline.
   // Registered like any other channel; its routes + WS ride the gateway.
-  const gatewayChannel = createGatewayChannel()
+  const gatewayChannel = createGatewayChannel({
+    // Seamless modes (5e): durable chat backfill reads the memory transcript;
+    // memory registers on the runtime after this, so pass a lazy accessor.
+    getMemory: () => runtime.getMemory(),
+  })
   runtime.registerChannel(gatewayChannel.channel)
   runtime.addShutdownHook(async () => {
     await gatewayChannel.close()
