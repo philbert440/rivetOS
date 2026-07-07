@@ -17,6 +17,7 @@ import { useConnection } from '../stores/connection.js'
 export function TerminalPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
+  const endpointKey = `${baseUrl}|${token ?? ''}`
   const [attached, setAttached] = useState<string | undefined>()
   const [spawnError, setSpawnError] = useState<string | undefined>()
 
@@ -81,7 +82,7 @@ export function TerminalPage(): JSX.Element {
       </div>
 
       {attached ? (
-        <XtermAttach key={`${baseUrl}|${attached}`} ptyId={attached} />
+        <XtermAttach key={`${endpointKey}|${attached}`} ptyId={attached} />
       ) : (
         <div className="flex flex-1 items-center justify-center text-sm text-ink-dim">
           Spawn or pick a terminal above.
@@ -133,19 +134,29 @@ function XtermAttach(props: { ptyId: string }): JSX.Element {
     term.open(host)
     fit.fit()
 
+    // disposed guard: StrictMode dev runs mount→cleanup→mount; frames from
+    // the first (closing) socket must never write into a disposed terminal
+    // (#302 review).
+    let disposed = false
     const { gateway } = useConnection.getState()
     const ws = new WebSocket(gateway.terminalWsUrl({ id: props.ptyId }))
     ws.binaryType = 'arraybuffer'
 
-    ws.onopen = () => setStatus('attached')
-    ws.onclose = () => setStatus((s) => (s === 'exited' ? s : 'closed'))
+    ws.onopen = () => {
+      if (!disposed) setStatus('attached')
+    }
+    ws.onclose = () => {
+      if (!disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
+    }
     ws.onmessage = (event: MessageEvent) => {
+      if (disposed) return
       if (typeof event.data === 'string') {
         const frame = JSON.parse(event.data) as TermHelloFrame | TermExitFrame
         if (frame.type === 'hello') {
-          // adopt the PTY's size, then push our fitted size back
-          const { cols, rows } = term
-          ws.send(JSON.stringify({ type: 'resize', cols, rows }))
+          // client geometry wins: the PTY spawned with server defaults;
+          // push our fitted size (skip when it already matches).
+          if (frame.cols !== term.cols || frame.rows !== term.rows)
+            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
           if (frame.state === 'exited') setStatus('exited')
         } else {
           setStatus('exited')
@@ -159,15 +170,24 @@ function XtermAttach(props: { ptyId: string }): JSX.Element {
     const dataSub = term.onData((data) => {
       if (ws.readyState === 1) ws.send(new TextEncoder().encode(data))
     })
+    // Debounced: a drag-resize fires the observer per frame; the PTY only
+    // needs the settled geometry (#302 review).
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
     const resizeObserver = new ResizeObserver(() => {
-      fit.fit()
-      if (ws.readyState === 1)
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+      if (resizeTimer) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        if (disposed) return
+        fit.fit()
+        if (ws.readyState === 1)
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+      }, 150)
     })
     resizeObserver.observe(host)
 
     return () => {
       // detach, never kill — the manager's TTL owns the PTY's fate
+      disposed = true
+      if (resizeTimer) clearTimeout(resizeTimer)
       resizeObserver.disconnect()
       dataSub.dispose()
       ws.close()
