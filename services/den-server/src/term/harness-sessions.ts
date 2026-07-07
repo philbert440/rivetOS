@@ -4,11 +4,12 @@
 // is how the RivetHub drawer lists conversations; opening one resumes the
 // harness's native session (claude --resume <id>).
 //
-// Currently supports Claude Code (~/.claude/projects/<cwd-slug>/<id>.jsonl).
-// Other harnesses yield [] until their store format is added — the drawer just
-// shows nothing for them rather than breaking.
+// Supports Claude Code (~/.claude/projects/<cwd-slug>/<id>.jsonl) and grok
+// Build (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json). Other harnesses
+// (hermes) yield [] until their store format is added — the drawer just shows
+// nothing for them rather than breaking.
 
-import { readdir, stat, open } from 'node:fs/promises'
+import { readdir, stat, open, readFile } from 'node:fs/promises'
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -109,6 +110,55 @@ async function listClaudeSessions(limit: number): Promise<HarnessSession[]> {
   return out
 }
 
+/** ~/.grok/sessions (respects GROK_HOME). grok stores one DIR per session:
+ *  <sessions>/<url-encoded-cwd>/<uuid>/summary.json. */
+function grokSessionsDir(): string {
+  const base = process.env.GROK_HOME?.trim() || join(homedir(), '.grok')
+  return join(base, 'sessions')
+}
+
+async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
+  const dir = grokSessionsDir()
+  let cwdDirs: string[]
+  try {
+    cwdDirs = await readdir(dir)
+  } catch {
+    return [] // no grok store on this node
+  }
+  const out: HarnessSession[] = []
+  for (const cwd of cwdDirs) {
+    let entries: import('node:fs').Dirent[]
+    try {
+      entries = await readdir(join(dir, cwd), { withFileTypes: true })
+    } catch {
+      continue // e.g. session_search.sqlite is a file, not a dir
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue
+      // summary.json carries the id, a real title, and updated_at — much
+      // cleaner than parsing chat_history.jsonl.
+      try {
+        const s = JSON.parse(await readFile(join(dir, cwd, e.name, 'summary.json'), 'utf8')) as {
+          info?: { id?: string }
+          session_summary?: string
+          updated_at?: string
+        }
+        const id = s.info?.id || e.name
+        const t = s.updated_at ? Date.parse(s.updated_at) : NaN
+        out.push({
+          id,
+          command: 'grok',
+          title: s.session_summary?.trim().slice(0, 120) || id,
+          updatedAt: Number.isFinite(t) ? t : 0,
+        })
+      } catch {
+        /* no summary / unreadable → skip this session */
+      }
+    }
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit)
+}
+
 /**
  * Does a harness already have an on-disk session with this id? Store existence
  * is the ground truth for choosing --resume (continue) vs --session-id (pin a
@@ -138,7 +188,8 @@ export async function listHarnessSessions(
 ): Promise<HarnessSession[]> {
   const all: HarnessSession[] = []
   if (commands.includes('claude')) all.push(...(await listClaudeSessions(limit)))
-  // grok / hermes stores: add when their formats are wired.
-  all.sort((a, b) => b.updatedAt - a.updatedAt)
+  if (commands.includes('grok')) all.push(...(await listGrokSessions(limit)))
+  // hermes store format not yet wired — its node's drawer stays empty.
+  all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
