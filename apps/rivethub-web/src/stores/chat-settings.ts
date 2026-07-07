@@ -38,7 +38,14 @@ export const useChatSettings = create<SettingsState>((set, getState) => ({
   get: (key) => getState().byKey[key] ?? DEFAULT,
   set: (key, patch) =>
     set((s) => {
-      const next = { ...s.byKey, [key]: { ...(s.byKey[key] ?? DEFAULT), ...patch } }
+      let next = { ...s.byKey, [key]: { ...(s.byKey[key] ?? DEFAULT), ...patch } }
+      // Cap growth: keep the most-recently-touched N (the updated key is
+      // re-inserted last, so slicing the tail keeps it) — #310 review.
+      const MAX = 200
+      const keys = Object.keys(next)
+      if (keys.length > MAX) {
+        next = Object.fromEntries(keys.slice(-MAX).map((k) => [k, next[k]]))
+      }
       try {
         localStorage.setItem(KEY, JSON.stringify(next))
       } catch {
