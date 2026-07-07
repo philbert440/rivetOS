@@ -21,7 +21,7 @@ import type { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { logger, createGatewayChannel, agentEventToFrame, type Runtime } from '@rivetos/core'
+import { logger, createGatewayChannel, type Runtime } from '@rivetos/core'
 import type { GatewayRoute } from '@rivetos/types'
 
 /** WS upgrade handler shape den-server accepts (same as the channel's). */
@@ -115,11 +115,9 @@ export async function registerGateway(
     extraUpgrades: [gatewayChannel.upgrade, ...extraUpgrades],
     // Seamless modes (5d): bridge live harness AgentEvents into the chat WS
     // so a PTY conversation's chat view streams (thinking/tool indicators +
-    // the assistant message on Stop). Terminal + den views are unaffected.
-    onAgentEvent: (ev) => {
-      const frame = agentEventToFrame(ev)
-      if (frame) gatewayChannel.emitFrame(frame)
-    },
+    // the coalesced assistant message per turn). Terminal + den views are
+    // unaffected; `task:` sessions are skipped inside the bridge.
+    onAgentEvent: (ev) => gatewayChannel.bridgeAgentEvent(ev),
   })
 
   const listening = await new Promise<boolean>((resolve) => {
