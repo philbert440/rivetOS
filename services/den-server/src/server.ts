@@ -418,6 +418,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           .filter((r) => url.pathname === r.prefix || url.pathname.startsWith(r.prefix + '/'))
           .sort((a, b) => b.prefix.length - a.prefix.length)[0]
         if (route) {
+          // Gateway handlers use writeHead directly and know nothing about
+          // CORS; set the same headers den's own routes send so cross-node
+          // browser clients (RivetHub settings probe, 4h node switcher)
+          // aren't blocked. setHeader survives the handler's writeHead.
+          for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
           await route.handler(req, res)
           return
         }
