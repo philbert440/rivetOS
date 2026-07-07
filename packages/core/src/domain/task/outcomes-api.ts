@@ -15,7 +15,7 @@
  */
 
 import type { ServerResponse } from 'node:http'
-import type { GatewayRoute } from '@rivetos/types'
+import type { GatewayRoute, OutcomeBucket, OutcomesResponse } from '@rivetos/types'
 import type { OutcomeFilter, OutcomeRow, TaskStore } from './store.js'
 import { logger } from '../../logger.js'
 
@@ -25,20 +25,9 @@ export interface OutcomesApiOptions {
   store: TaskStore
 }
 
-interface Bucket {
-  tasks: number
-  completed: number
-  failed: number
-  verified: number
-  refuted: number
-  escalated: number
-  /** Honesty failures: completed-but-refuted OR escalated (product call —
-   *  an escalation began life as a divergence the retry couldn't fix). */
-  diverged: number
-  divergenceRate: number
-  totalCostUsd?: number
-  avgDurationMs?: number
-  /** internal accumulators — stripped in finalize */
+/** OutcomeBucket wire shape (@rivetos/types) + internal accumulators that
+ *  finalize() strips before emission. */
+interface Bucket extends OutcomeBucket {
   _durSum?: number
   _durN?: number
 }
@@ -133,7 +122,7 @@ export function createOutcomesApiRoute(opts: OutcomesApiOptions): GatewayRoute {
           byAgent: groupBy(rows, (r) => r.agentId),
           byExecutor: groupBy(rows, (r) => r.executorTarget ?? r.executor),
           byDay: groupBy(rows, (r) => r.day),
-        })
+        } satisfies OutcomesResponse)
       } catch (err: unknown) {
         log.error(`/api/outcomes failed: ${err instanceof Error ? err.message : String(err)}`)
         json(res, 500, { error: 'internal error' })

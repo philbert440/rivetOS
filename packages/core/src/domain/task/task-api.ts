@@ -18,8 +18,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { GatewayRoute } from '@rivetos/types'
-import type { TaskStatus } from '@rivetos/types'
+import type { GatewayRoute, TaskStatus, TaskWire } from '@rivetos/types'
 import type { NewTaskInput, TaskListFilter, TaskRow, TaskStore } from './store.js'
 import {
   CRITERIA_POLICY_OFF,
@@ -97,8 +96,12 @@ function clampWaitMs(raw: string | null): number {
   return Math.min(n, MAX_WAIT_MS)
 }
 
-/** Public row shape — TaskRow verbatim; it is already JSON-safe. */
-function toWire(row: TaskRow): TaskRow {
+/**
+ * Public row shape — TaskRow verbatim; it is already JSON-safe. The TaskWire
+ * return type is the compile-time lock against @rivetos/types gateway-api.ts:
+ * drift between the store row and the published contract fails the build here.
+ */
+function toWire(row: TaskRow): TaskWire {
   return row
 }
 
