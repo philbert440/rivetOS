@@ -612,7 +612,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           const ptyId = manager.ptyForSession(p.session)
           if (!ptyId) return json(res, 409, { error: 'no live harness for session' })
           const submit = p.submit !== false // default true
-          if (!manager.write(ptyId, submit ? `${p.text}\r` : p.text))
+          if (!manager.inject(ptyId, submit ? `${p.text}\r` : p.text))
             return json(res, 409, { error: 'harness not writable' })
           return json(res, 202, { ok: true, ptyId })
         }

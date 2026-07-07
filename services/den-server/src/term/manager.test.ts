@@ -184,22 +184,92 @@ describe('term manager', () => {
     expect(spawns[0].opts.env.PATH).toBe(process.env.PATH)
   })
 
-  it('enforces maxPtys against RUNNING ptys and 404s unknown keys', () => {
+  it('404s unknown keys; an exited pty frees its slot while its record lingers', () => {
     const { manager, procs } = makeManager({ maxPtys: 2 })
     manager.spawn('shell', 80, 24, '')
     manager.spawn('shell', 80, 24, '')
-    expect(() => manager.spawn('shell', 80, 24, '')).toThrowError(TermSpawnError)
-    try {
-      manager.spawn('shell', 80, 24, '')
-    } catch (e) {
-      expect((e as TermSpawnError).code).toBe('cap')
-    }
     expect(() => manager.spawn('nope', 80, 24, '')).toThrowError(/unknown command/)
-    // an exited pty frees its slot even while its record lingers
     procs[0].emitExit(0)
     expect(manager.spawn('shell', 80, 24, '').state).toBe('running')
-    expect(manager.active()).toBe(2)
-    expect(manager.list()).toHaveLength(3) // 2 running + 1 lingering
+  })
+
+  // ready() drives a pty past its ready-gate: emit output, fire the settle
+  // timer. Only ready + idle ptys are LRU-evictable.
+  const makeReady = (proc: FakeProc): void => {
+    proc.emitData('booted')
+    vi.advanceTimersByTime(600)
+  }
+
+  it('LRU pool (5g): at the cap, evicts the least-recently-ACTIVE idle pty', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ maxPtys: 2, injectReadyMs: 500 })
+    manager.spawn('shell', 80, 24, '') // proc[0] — oldest activity
+    makeReady(procs[0])
+    vi.advanceTimersByTime(10)
+    manager.spawn('shell', 80, 24, '') // proc[1] — more recent
+    makeReady(procs[1])
+    vi.advanceTimersByTime(10)
+    // both ready + idle + unattached → 3rd evicts the LRU (proc[0])
+    expect(manager.spawn('shell', 80, 24, '').state).toBe('running')
+    expect(procs[0].kills).toContain('SIGHUP') // oldest activity evicted
+    expect(procs[1].kills).toEqual([])
+  })
+
+  it('LRU pool: chat inject protects an unattached harness from eviction (#316)', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ maxPtys: 2, injectReadyMs: 500 })
+    const a = manager.spawn('shell', 80, 24, '', 'chat-a') // oldest
+    makeReady(procs[0])
+    vi.advanceTimersByTime(10)
+    const b = manager.spawn('shell', 80, 24, '', 'chat-b')
+    makeReady(procs[1])
+    vi.advanceTimersByTime(10)
+    // a is older, but the user just chatted it → inject bumps its activity
+    manager.inject(a.id, 'still here\r')
+    void b
+    // now b is the least-recently-active → b is evicted, a is protected
+    expect(manager.spawn('shell', 80, 24, '').state).toBe('running')
+    expect(procs[0].kills).toEqual([]) // a protected by chat activity
+    expect(procs[1].kills).toContain('SIGHUP') // b evicted
+  })
+
+  it('LRU pool: never evicts attached / booting ptys; cap is real when all active', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ maxPtys: 2, injectReadyMs: 500 })
+    const a = manager.spawn('shell', 80, 24, '')
+    makeReady(procs[0])
+    const b = manager.spawn('shell', 80, 24, '')
+    makeReady(procs[1])
+    manager.attach(a.id, () => {}) // watched
+    manager.attach(b.id, () => {}) // watched
+    expect(() => manager.spawn('shell', 80, 24, '')).toThrowError(/all active/)
+    expect(procs[0].kills).toEqual([])
+    expect(procs[1].kills).toEqual([])
+  })
+
+  it('inject buffer is bounded before ready (#316)', () => {
+    const { manager } = makeManager({ injectReadyMs: 500 })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-cap')
+    // 32 buffered ok, 33rd rejected (no output yet → never ready)
+    for (let i = 0; i < 32; i++) expect(manager.inject(pty.id, `${String(i)}\r`)).toBe(true)
+    expect(manager.inject(pty.id, 'overflow\r')).toBe(false)
+  })
+
+  it('inject ready-gate (5g): buffers until first output settles, then flushes', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ injectReadyMs: 300 })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-r')
+    // inject before any output → buffered, not written
+    expect(manager.inject(pty.id, 'hello\r')).toBe(true)
+    expect(procs[0].writes).toEqual([])
+    // first output starts the settle timer; still buffered until it fires
+    procs[0].emitData('welcome to claude')
+    expect(procs[0].writes).toEqual([])
+    vi.advanceTimersByTime(300)
+    expect(procs[0].writes).toEqual(['hello\r']) // flushed after settle
+    // once ready, a later inject writes through immediately
+    manager.inject(pty.id, 'again\r')
+    expect(procs[0].writes).toEqual(['hello\r', 'again\r'])
   })
 
   it('caps scrollback at the byte limit, dropping the oldest bytes', () => {

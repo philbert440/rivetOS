@@ -223,6 +223,8 @@ describe('emitFrame (seamless-modes push)', () => {
       messages: { id: string }[]
     }
     expect(msgs.messages.some((m) => m.id === 'm1')).toBe(true)
+  })
+})
 
 describe('GET /api/conversations/:key/messages (seamless-modes backfill 5e)', () => {
   async function startWithMemory(
