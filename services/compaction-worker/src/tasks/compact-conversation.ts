@@ -175,6 +175,15 @@ async function compactLeaf(
     console.log(
       `[CompactWorker] Leaf ${summaryId} (${messages.rows.length} msgs, conv ${conversationId.slice(0, 8)})`,
     )
+    // Phase 3c: hand the fresh leaf to the wiki extractor. Enqueued INSIDE
+    // the transaction (same client) so a rollback never leaves a dangling
+    // job; the task itself is flag-gated + idempotent, so this is safe to
+    // enqueue even with WIKI_EXTRACTION off.
+    await client.query(
+      `SELECT graphile_worker.add_job('extract-wiki', $1::json,
+              job_key := $2, max_attempts := 2, priority := 5)`,
+      [JSON.stringify({ summaryId, conversationId }), `wiki-ext-${summaryId}`],
+    )
     return 1
   })
 }

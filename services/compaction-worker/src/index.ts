@@ -27,6 +27,7 @@ import { config } from './config.js'
 import { compactConversationTask } from './tasks/compact-conversation.js'
 import { synthesizeToolCallTask } from './tasks/synthesize-tool-call.js'
 import { enqueueIdleTask } from './tasks/enqueue-idle.js'
+import { extractWikiTask } from './tasks/extract-wiki.js'
 
 async function main(): Promise<void> {
   console.log('[CompactWorker] Starting...')
@@ -45,6 +46,7 @@ async function main(): Promise<void> {
       'compact-conversation': compactConversationTask,
       'synthesize-tool-call': synthesizeToolCallTask,
       'enqueue-idle': enqueueIdleTask,
+      'extract-wiki': extractWikiTask,
     },
     parsedCronItems: parseCronItems([
       {
