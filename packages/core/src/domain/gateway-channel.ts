@@ -59,6 +59,13 @@ export interface GatewayChannelHandle {
     path: string
     handle: (req: IncomingMessage, socket: Duplex, head: Buffer, url: URL) => void
   }
+  /** Push an external frame to WS subscribers + ring message frames
+   *  (seamless-modes; exposed for the bridge and tests). */
+  emitFrame(frame: SessionWsFrame): void
+  /** Bridge one live harness AgentEvent into the chat view (seamless modes).
+   *  Stateful: coalesces per-block assistant text into one committed message
+   *  per turn; skips `task:` sessions. Wire to den-server's onAgentEvent. */
+  bridgeAgentEvent(ev: AgentEventForBridge): void
   close(): Promise<void>
 }
 
@@ -121,6 +128,25 @@ export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayC
     s.lastActive = msg.ts
     broadcast({ kind: 'message', ...msg }, sessionId)
     return msg
+  }
+
+  // Seamless-modes bridge state: per-session accumulated assistant text,
+  // flushed to ONE message frame at the turn boundary (see bridgeAgentEvent).
+  const pendingAssistant = new Map<string, string>()
+
+  const emitFrame = (frame: SessionWsFrame): void => {
+    if (frame.kind === 'message') {
+      const s = session(frame.sessionId)
+      if (!s.ring.some((m) => m.id === frame.id)) {
+        const { kind: _k, ...msg } = frame
+        s.ring.push(msg)
+        if (s.ring.length > RING_MAX) s.ring.splice(0, s.ring.length - RING_MAX)
+        s.lastActive = msg.ts
+      }
+      broadcast(frame, frame.sessionId)
+    } else {
+      broadcast(frame, frame.session)
+    }
   }
 
   const channel: Channel = {
@@ -285,10 +311,94 @@ export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayC
         wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
       },
     },
+    // Seamless modes (5d): broadcast a frame to /api/sessions/ws subscribers;
+    // ring message frames so a late client's backfill sees them. Exposed for
+    // tests + the bridge below.
+    emitFrame,
+    // Seamless modes (5d): bridge a live harness AgentEvent into the chat
+    // view. STATEFUL by design (#313 review): message.agent fires per text
+    // block, not once — so interim blocks stream as text deltas and coalesce
+    // into ONE assistant message committed at the turn boundary (next user
+    // turn, or session.end), never one bubble per block. thinking/tool events
+    // drive the live "working…" indicators. `task:` sessions are the task
+    // engine's namespace and are skipped (no RivetHub-chat pollution).
+    bridgeAgentEvent: (ev: AgentEventForBridge): void => {
+      const sid = ev.session
+      if (typeof sid !== 'string' || sid.startsWith('task:')) return
+      const str = (k: string): string => (typeof ev[k] === 'string' ? ev[k] : '')
+      const ts = typeof ev.ts === 'number' ? ev.ts : Date.now()
+      const flushAssistant = (): void => {
+        const text = pendingAssistant.get(sid)
+        if (text) {
+          emitFrame({
+            kind: 'message',
+            id: randomUUID(),
+            sessionId: sid,
+            role: 'assistant',
+            text,
+            ts,
+          })
+          pendingAssistant.delete(sid)
+        }
+      }
+      switch (ev.type) {
+        case 'message.user':
+          flushAssistant() // a new user turn commits the prior assistant turn
+          emitFrame({
+            kind: 'message',
+            id: randomUUID(),
+            sessionId: sid,
+            role: 'user',
+            text: str('text'),
+            ts,
+          })
+          break
+        case 'message.agent':
+          // interim block: accumulate + stream (one committed bubble per turn)
+          pendingAssistant.set(sid, (pendingAssistant.get(sid) ?? '') + str('text'))
+          emitFrame({ kind: 'stream', session: sid, event: { type: 'text', content: str('text') } })
+          break
+        case 'thinking.delta':
+          emitFrame({
+            kind: 'stream',
+            session: sid,
+            event: { type: 'reasoning', content: str('text') },
+          })
+          break
+        case 'tool.start':
+          emitFrame({
+            kind: 'stream',
+            session: sid,
+            event: { type: 'tool_start', content: str('tool') },
+          })
+          break
+        case 'tool.end':
+          emitFrame({
+            kind: 'stream',
+            session: sid,
+            event: { type: 'tool_result', content: str('tool') },
+          })
+          break
+        case 'session.end':
+          flushAssistant() // commit the final assistant turn
+          emitFrame({ kind: 'stream', session: sid, event: { type: 'done', content: '' } })
+          break
+      }
+    },
     close: async () => {
       for (const sub of subscribers) sub.ws.terminate()
       subscribers.clear()
       await new Promise<void>((resolve) => wss.close(() => resolve()))
     },
   }
+}
+
+/** The ingested-AgentEvent shape the bridge reads (den-server passes this
+ *  verbatim) — deliberately broad so core needn't depend on
+ *  @rivetos/den-protocol; the bridge reads fields defensively. */
+export interface AgentEventForBridge {
+  session: string
+  type: string
+  ts?: number
+  [k: string]: unknown
 }
