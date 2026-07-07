@@ -176,7 +176,15 @@ describe('term manager', () => {
     reopen.manager.spawn('claude', 80, 24, '', uuid, uuid)
     expect(reopen.spawns[0].argv).toEqual(['claude', '--resume', uuid])
 
-    // a non-claude harness / non-UUID id gets no flags
+    // grok gets the same flags (it also has --session-id/--resume)
+    const grokNew = makeManager({}, { sessionExists: () => false })
+    grokNew.manager.spawn('grok', 80, 24, '', uuid)
+    expect(grokNew.spawns[0].argv).toEqual(['grok', '--session-id', uuid])
+    const grokResume = makeManager({}, { sessionExists: () => true })
+    grokResume.manager.spawn('grok', 80, 24, '', uuid)
+    expect(grokResume.spawns[0].argv).toEqual(['grok', '--resume', uuid])
+
+    // a non-harness command / non-UUID id gets no flags
     const shell = makeManager({})
     shell.manager.spawn('shell', 80, 24, '', uuid)
     expect(shell.spawns[0].argv).toEqual(['bash', '-l'])
