@@ -4,6 +4,11 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  optimizeDeps: {
+    // Workspace-linked CJS package: prebundle for named-export interop in
+    // dev (the production rollup build handles CJS on its own).
+    include: ['@rivetos/gateway-client'],
+  },
   server: {
     // Dev-only: proxy gateway calls to a live node so `vite` against ct115
     // (or any node via RIVETHUB_DEV_GATEWAY) just works.
