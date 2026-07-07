@@ -12,7 +12,10 @@ import { normalizeSlug, type WikiPatch } from '@rivetos/wiki-core'
 /** Bump to re-extract everything via the backfill (independent of compaction's). */
 export const WIKI_PIPELINE_VERSION = 1
 
-export const WIKI_EXTRACT_MAX_TOKENS = 2048
+// 6000 not 2048: the local qwen-27b serves with thinking ON — reasoning
+// alone can burn 2k tokens before the JSON starts (first live extraction
+// died exactly this way). Mirrors LEAF_MAX_TOKENS headroom logic.
+export const WIKI_EXTRACT_MAX_TOKENS = 6000
 
 /** Summaries shorter than this carry too little signal to mine. */
 export const WIKI_MIN_SUMMARY_CHARS = 200
