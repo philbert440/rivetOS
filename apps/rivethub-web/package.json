@@ -16,6 +16,7 @@
     "@fontsource/dm-sans": "^5.2.5",
     "@fontsource/jetbrains-mono": "^5.2.5",
     "@rivetos/gateway-client": "*",
+    "@rivetos/types": "*",
     "@tanstack/react-query": "^5.90.0",
     "@tanstack/react-router": "^1.130.0",
     "react": "^19.2.0",
