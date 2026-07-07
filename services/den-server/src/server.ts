@@ -395,8 +395,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           !gatewayOwned
         ) {
           if (serveStatic(res, config.staticDir, url.pathname)) return
-          // SPA fallback: extensionless paths (e.g. /mesh, /demo) get the shell
-          if (!extname(url.pathname) && serveStatic(res, config.staticDir, '/index.html')) return
+          // SPA fallback: extensionless paths (e.g. /mesh, /demo) get the
+          // shell. A nested app bundled under the static root (the den
+          // viewer at /den/ inside a rivethub deploy) gets ITS index for
+          // paths under its prefix — /den/mesh must boot den, not rivethub.
+          if (!extname(url.pathname)) {
+            const seg = url.pathname.split('/')[1]
+            if (seg && serveStatic(res, config.staticDir, `/${seg}/index.html`)) return
+            if (serveStatic(res, config.staticDir, '/index.html')) return
+          }
         }
       }
       if (!authorized(req, url)) {

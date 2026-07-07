@@ -8,12 +8,16 @@ import { useQuery } from '@tanstack/react-query'
 import { useConnection } from '../stores/connection.js'
 
 export function ChatPage(): JSX.Element {
-  const gateway = useConnection((s) => s.gateway)
   const baseUrl = useConnection((s) => s.baseUrl)
+  const token = useConnection((s) => s.token)
 
   const sessions = useQuery({
-    queryKey: ['sessions', baseUrl],
-    queryFn: ({ signal }) => gateway.listSessions(signal),
+    // Token in the key: a credential change on the same origin must not
+    // serve the prior credential's cache. getState() in the fn: the query
+    // always runs against the LIVE gateway, never a stale closure
+    // (#297 review).
+    queryKey: ['sessions', baseUrl, token ?? ''],
+    queryFn: ({ signal }) => useConnection.getState().gateway.listSessions(signal),
   })
 
   return (

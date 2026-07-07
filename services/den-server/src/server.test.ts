@@ -221,6 +221,9 @@ describe('den-server', () => {
     mkdirSync(join(staticDir, 'assets'))
     writeFileSync(join(staticDir, 'index.html'), '<html>shell</html>')
     writeFileSync(join(staticDir, 'assets', 'app.js'), 'js')
+    // nested app bundled under the root (den viewer inside a rivethub deploy)
+    mkdirSync(join(staticDir, 'den'))
+    writeFileSync(join(staticDir, 'den', 'index.html'), '<html>den shell</html>')
     // a static file named like an API path must NOT shadow the gated route
     writeFileSync(join(staticDir, 'mesh.json'), '{"spoof":true}')
     mkdirSync(join(packsDir, 'default'))
@@ -231,6 +234,9 @@ describe('den-server', () => {
     expect((await fetch(`${base}/assets/app.js`)).status).toBe(200)
     expect((await fetch(`${base}/`)).status).toBe(200) // SPA fallback
     expect((await fetch(`${base}/mesh`)).status).toBe(200) // SPA fallback
+    // deep route under a nested app boots THAT app's shell, not the root's
+    expect(await (await fetch(`${base}/den/mesh`)).text()).toBe('<html>den shell</html>')
+    expect(await (await fetch(`${base}/demo`)).text()).toBe('<html>shell</html>')
     expect((await fetch(`${base}/packs/default/pack.json`)).status).toBe(200)
     expect((await fetch(`${base}/sessions`)).status).toBe(401)
     expect((await fetch(`${base}/mesh.json`)).status).toBe(401) // not shadowed

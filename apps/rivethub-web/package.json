@@ -43,8 +43,7 @@
     "targets": {
       "build": {
         "dependsOn": [
-          "^build",
-          "@rivetos/den-app:build"
+          "^build"
         ]
       }
     }
