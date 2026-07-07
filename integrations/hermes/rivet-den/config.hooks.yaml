@@ -8,28 +8,32 @@
 # the event payload on stdin and reports into the den room named by
 # RIVET_DEN_SESSION (injected by the den-server PTY spawner).
 #
-# Event names verified against the Hermes docs
+# NOTE: Hermes splits the command into argv WITHOUT shell expansion, so `$HOME`
+# would reach node literally — every command is wrapped in `sh -c` so the shell
+# expands it (keeps the block portable across users: /home/rivet, /home/philip).
+#
+# Event names + the assistant_response field are from the Hermes docs
 # (hermes-agent.nousresearch.com/docs/user-guide/features/hooks): the reply is
 # on post_llm_call.assistant_response, so no transcript parsing is needed.
 
 hooks:
   on_session_start:
-    - command: 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs on_session_start'
+    - command: "sh -c 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs on_session_start'"
       timeout: 5
   pre_llm_call:
-    - command: 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs pre_llm_call'
+    - command: "sh -c 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs pre_llm_call'"
       timeout: 5
   pre_tool_call:
     - matcher: '.*'
-      command: 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs pre_tool_call'
+      command: "sh -c 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs pre_tool_call'"
       timeout: 5
   post_tool_call:
     - matcher: '.*'
-      command: 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs post_tool_call'
+      command: "sh -c 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs post_tool_call'"
       timeout: 5
   post_llm_call:
-    - command: 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs post_llm_call'
+    - command: "sh -c 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs post_llm_call'"
       timeout: 5
   on_session_end:
-    - command: 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs on_session_end'
+    - command: "sh -c 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs on_session_end'"
       timeout: 5
