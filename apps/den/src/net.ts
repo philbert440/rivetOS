@@ -74,9 +74,14 @@ export const withToken = (url: string): string =>
  *  ?token= overrides alive across routes — they configure the API, not the
  *  page, and losing them on a route change would silently break auth. */
 export const viewerHref = (path: string): string => {
+  // Resolve against the vite base so co-located deploys (base=/den/) route
+  // to /den/mesh instead of rivethub's /mesh (#297 review). BASE_URL is '/'
+  // on den-rooted nodes, so this is a no-op there.
+  const base = import.meta.env.BASE_URL ?? '/'
+  const resolved = path === '/' ? base : base.replace(/\/$/, '') + path
   const keep = new URLSearchParams()
   if (override) keep.set('server', override)
   if (token) keep.set('token', token)
   const q = keep.toString()
-  return q ? `${path}?${q}` : path
+  return q ? `${resolved}?${q}` : resolved
 }

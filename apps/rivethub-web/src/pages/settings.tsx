@@ -1,4 +1,5 @@
 import { useState, type JSX } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useConnection } from '../stores/connection.js'
 import { RivetGateway } from '@rivetos/gateway-client'
 
@@ -10,6 +11,7 @@ type ProbeState =
 
 export function SettingsPage(): JSX.Element {
   const { baseUrl, token, setConnection } = useConnection()
+  const queryClient = useQueryClient()
   const [draftUrl, setDraftUrl] = useState(baseUrl)
   const [draftToken, setDraftToken] = useState(token ?? '')
   const [probe, setProbe] = useState<ProbeState>({ kind: 'idle' })
@@ -34,6 +36,8 @@ export function SettingsPage(): JSX.Element {
 
   const save = (): void => {
     setConnection(draftUrl.trim().replace(/\/+$/, ''), draftToken.trim() || undefined)
+    // Drop every cached response from the previous endpoint/credential.
+    void queryClient.invalidateQueries()
   }
 
   return (
