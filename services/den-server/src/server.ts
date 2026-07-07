@@ -575,8 +575,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         }
 
         // POST /term/inject — write a chat turn into the session's harness
-        // stdin (seamless modes 5c). One server-side write path owns stdin;
-        // terminal attach stays read-mostly.
+        // stdin (seamless modes 5c). Chat sends go through THIS path rather
+        // than raw client keystrokes, so the composer isn't fighting the TUI;
+        // a terminal attach can still write too (it's the same PTY), so this
+        // isn't a hard single-writer lock — just the sanctioned chat path.
         if (req.method === 'POST' && url.pathname === '/term/inject') {
           const body = await readBody(req).catch(() => null)
           if (body === null) return tooLarge(req, res)
