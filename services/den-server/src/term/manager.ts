@@ -106,6 +106,7 @@ export interface TermManager {
     rows: number,
     remote: string,
     session?: string,
+    resume?: string,
   ): PtyInfo
   list(): PtyInfo[]
   get(id: string): PtyInfo | undefined
@@ -139,6 +140,20 @@ const SIGKILL_DELAY_MS = 3000
 /** Max chat injects buffered before a fresh harness is ready (#316 review) —
  *  a real turn is a handful; well beyond that is a client spamming. */
 const INJECT_BUFFER_MAX = 32
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * How each harness pins/resumes a session id so the join key, its on-disk
+ * store filename, and the drawer id are ALL the same value. Keyed on the
+ * roster command. A new conversation spawns with `sessionFlag <id>` (forcing
+ * the harness's native id = our join key); reopening a harness session spawns
+ * with `resumeFlag <id>`. Ids must be valid UUIDs (Claude requires it for
+ * --session-id), so RivetHub generates UUID conversation ids.
+ */
+const HARNESS_FLAGS: Record<string, { sessionFlag: string; resumeFlag: string }> = {
+  claude: { sessionFlag: '--session-id', resumeFlag: '--resume' },
+}
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:
  *  the hook adapter treats an empty RIVET_DEN_SESSION as a real session id. */
@@ -289,7 +304,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   }
 
   return {
-    spawn(rosterKey, cols, rows, remote, session): PtyInfo {
+    spawn(rosterKey, cols, rows, remote, session, resume): PtyInfo {
       // Spawn-or-get: a conversation's PTY is a singleton keyed by `session`.
       // Re-entering Terminal (or chat inject) for a live conversation reuses
       // the same harness rather than spawning a second (seamless modes).
@@ -351,13 +366,23 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       env.TERM = 'xterm-256color'
       env.COLORTERM = 'truecolor'
 
-      const proc = deps.spawn(entry.cmd, { cwd, env, cols, rows })
+      // Harness session pinning/resume (seamless drawer): make the harness's
+      // native session id equal our join key, so its on-disk store file and
+      // the drawer id line up. Only for UUID ids (Claude requires it).
+      const flags = HARNESS_FLAGS[key]
+      let argv = entry.cmd
+      if (flags) {
+        if (resume && UUID_RE.test(resume)) argv = [...entry.cmd, flags.resumeFlag, resume]
+        else if (session && UUID_RE.test(session)) argv = [...entry.cmd, flags.sessionFlag, session]
+      }
+
+      const proc = deps.spawn(argv, { cwd, env, cols, rows })
       const r: PtyRecord = {
         id,
         denSession,
         command: key,
         room: entry.room,
-        argv: entry.cmd,
+        argv,
         cwd,
         remote,
         pid: proc.pid,

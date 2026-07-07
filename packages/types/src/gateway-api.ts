@@ -73,21 +73,6 @@ export interface SessionsListResponse {
   sessions: SessionSummary[]
 }
 
-/** GET /api/conversations — captured conversations from memory, for the
- *  seamless-modes harness-session drawer (distinct from the process-local
- *  /api/sessions ring: these are durable, and survive restarts). */
-export interface ConversationSummary {
-  /** the session_key the transcript is keyed on */
-  id: string
-  /** epoch ms of the last message */
-  lastActive: number
-  messages: number
-}
-
-export interface ConversationsListResponse {
-  conversations: ConversationSummary[]
-}
-
 export interface SessionMessagesResponse {
   messages: SessionMessage[]
 }
@@ -365,6 +350,20 @@ export interface TermInjectRequest {
 export interface TermInjectResponse {
   ok: true
   ptyId: string
+}
+
+export interface HarnessSession {
+  id: string
+  /** roster command it belongs to (e.g. 'claude') */
+  command: string
+  /** drawer label: first user message / summary, or the id */
+  title: string
+  /** epoch ms of last activity */
+  updatedAt: number
+}
+
+export interface HarnessSessionsResponse {
+  sessions: HarnessSession[]
 }
 
 export interface PtyInfo {
