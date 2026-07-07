@@ -131,7 +131,7 @@ function SessionDrawer(props: {
 }
 
 function ActiveSession(props: { sessionId: string; harnessCommand?: string }): JSX.Element {
-  const [mode, setMode] = useState<'chat' | 'terminal'>('chat')
+  const [mode, setMode] = useState<'chat' | 'terminal' | 'den'>('chat')
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
   const [spawning, setSpawning] = useState(false)
@@ -284,29 +284,28 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     <div className="flex min-w-0 flex-1 flex-col">
       <div className="flex items-center justify-between border-b border-line bg-panel/40 px-4 py-1.5">
         <span className="truncate font-mono text-xs text-ink-dim">{props.sessionId}</span>
-        <span className="flex items-center gap-2">
-          {/* [Chat | Terminal] toggle — same session, two views */}
-          <span className="flex overflow-hidden rounded-md border border-line">
-            <button
-              onClick={() => setMode('chat')}
-              className={`px-2.5 py-1 font-mono text-[11px] ${mode === 'chat' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
-            >
-              Chat
-            </button>
-            <button
-              onClick={enterTerminal}
-              className={`border-l border-line px-2.5 py-1 font-mono text-[11px] ${mode === 'terminal' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
-            >
-              Terminal
-            </button>
-          </span>
-          <a
-            href={denUrl}
-            className="rounded-md border border-line px-2.5 py-1 font-mono text-[11px] text-ink-dim hover:border-em hover:text-em"
-            title="open the den for this node"
+        {/* [Chat | Terminal | Den] — three views of ONE session; the bar
+            stays visible so the den never takes over with no way back. */}
+        <span className="flex overflow-hidden rounded-md border border-line">
+          <button
+            onClick={() => setMode('chat')}
+            className={`px-2.5 py-1 font-mono text-[11px] ${mode === 'chat' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
+          >
+            Chat
+          </button>
+          <button
+            onClick={enterTerminal}
+            className={`border-l border-line px-2.5 py-1 font-mono text-[11px] ${mode === 'terminal' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
+          >
+            Terminal
+          </button>
+          <button
+            onClick={() => setMode('den')}
+            title="the den for this conversation"
+            className={`border-l border-line px-2.5 py-1 font-mono text-[11px] ${mode === 'den' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
           >
             ▦ Den
-          </a>
+          </button>
         </span>
       </div>
 
@@ -325,6 +324,15 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
             onSend={sendToHarness}
           />
         </>
+      ) : mode === 'den' ? (
+        // Embedded, not a link-out: replaces the chat/terminal area so the
+        // toggle bar (the way back) stays put. Same session as chat/terminal.
+        <iframe
+          key={props.sessionId}
+          src={denUrl}
+          title="den"
+          className="min-h-0 flex-1 border-0 bg-bg"
+        />
       ) : termError ? (
         <div className="flex flex-1 items-center justify-center font-mono text-sm text-red">
           {termError}
