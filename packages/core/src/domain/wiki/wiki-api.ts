@@ -16,7 +16,12 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ServerResponse } from 'node:http'
 import { parseWikiPage } from '@rivetos/wiki-core'
-import type { GatewayRoute, WikiIndexResponse, WikiPageResponse } from '@rivetos/types'
+import type {
+  GatewayRoute,
+  WikiGapsResponse,
+  WikiIndexResponse,
+  WikiPageResponse,
+} from '@rivetos/types'
 import { logger } from '../../logger.js'
 
 const log = logger('WikiApi')
@@ -114,7 +119,7 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
           return json(res, 200, {
             redLinks: gaps.redLinks,
             stalest: gaps.stalest.map(toIndexEntry),
-          })
+          } satisfies WikiGapsResponse)
         }
 
         if (!SLUG_RE.test(slug)) return json(res, 400, { error: 'invalid slug' })

@@ -18,8 +18,16 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { GatewayRoute } from '@rivetos/types'
-import type { TaskStatus } from '@rivetos/types'
+import type {
+  GatewayRoute,
+  TaskKillResponse,
+  TaskResponse,
+  TasksListResponse,
+  TaskStatus,
+  TaskSteerAccepted,
+  TaskWaitTimeoutResponse,
+  TaskWire,
+} from '@rivetos/types'
 import type { NewTaskInput, TaskListFilter, TaskRow, TaskStore } from './store.js'
 import {
   CRITERIA_POLICY_OFF,
@@ -97,8 +105,12 @@ function clampWaitMs(raw: string | null): number {
   return Math.min(n, MAX_WAIT_MS)
 }
 
-/** Public row shape — TaskRow verbatim; it is already JSON-safe. */
-function toWire(row: TaskRow): TaskRow {
+/**
+ * Public row shape — TaskRow verbatim; it is already JSON-safe. The TaskWire
+ * return type is the compile-time lock against @rivetos/types gateway-api.ts:
+ * drift between the store row and the published contract fails the build here.
+ */
+function toWire(row: TaskRow): TaskWire {
   return row
 }
 
@@ -188,7 +200,7 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
 
           const row = await store.create(input)
           if (url.searchParams.get('wait') !== '1' && url.searchParams.get('wait') !== 'true') {
-            return json(res, 201, { task: toWire(row) })
+            return json(res, 201, { task: toWire(row) } satisfies TaskResponse)
           }
           const waitMs = clampWaitMs(url.searchParams.get('timeoutMs'))
           const terminal = await waiter.wait(row.id, { deadlineMs: waitMs })
@@ -201,11 +213,14 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
             await store.requestKill(row.id)
             const after = await store.get(row.id)
             if (after && after.status !== 'killed') {
-              return json(res, 200, { task: toWire(after) })
+              return json(res, 200, { task: toWire(after) } satisfies TaskResponse)
             }
-            return json(res, 504, { error: 'wait deadline exceeded — task killed', task: after })
+            return json(res, 504, {
+              error: 'wait deadline exceeded — task killed',
+              task: after ? toWire(after) : undefined,
+            } satisfies TaskWaitTimeoutResponse)
           }
-          return json(res, 200, { task: toWire(terminal) })
+          return json(res, 200, { task: toWire(terminal) } satisfies TaskResponse)
         }
 
         // GET /api/tasks — list
@@ -226,7 +241,7 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
             filter.limit = n
           }
           const rows = await store.list(filter)
-          return json(res, 200, { tasks: rows.map(toWire) })
+          return json(res, 200, { tasks: rows.map(toWire) } satisfies TasksListResponse)
         }
 
         if (!id) return json(res, 405, { error: 'method not allowed' })
@@ -235,7 +250,8 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
         if (!row) return json(res, 404, { error: `no task ${id}` })
 
         // GET /api/tasks/:id
-        if (req.method === 'GET' && !action) return json(res, 200, { task: toWire(row) })
+        if (req.method === 'GET' && !action)
+          return json(res, 200, { task: toWire(row) } satisfies TaskResponse)
 
         // GET /api/tasks/:id/wait — deliberately does NOT kill on deadline:
         // GET is a side-effect-free observation; only the creating POST owns
@@ -245,7 +261,7 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           const waitMs = clampWaitMs(url.searchParams.get('timeoutMs'))
           const terminal = await waiter.wait(id, { deadlineMs: waitMs })
           if (!terminal) return json(res, 504, { error: 'wait deadline exceeded' })
-          return json(res, 200, { task: toWire(terminal) })
+          return json(res, 200, { task: toWire(terminal) } satisfies TaskResponse)
         }
 
         // POST /api/tasks/:id/steer
@@ -257,13 +273,13 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           if (['completed', 'failed', 'killed', 'timeout'].includes(row.status))
             return json(res, 409, { error: `task is terminal (${row.status})` })
           await store.send(id, message)
-          return json(res, 202, { ok: true })
+          return json(res, 202, { ok: true } satisfies TaskSteerAccepted)
         }
 
         // POST /api/tasks/:id/kill
         if (req.method === 'POST' && action === 'kill') {
           const prior = await store.requestKill(id)
-          return json(res, 200, { ok: true, prior: prior ?? null })
+          return json(res, 200, { ok: true, prior: prior ?? null } satisfies TaskKillResponse)
         }
 
         return json(res, 405, { error: 'method not allowed' })

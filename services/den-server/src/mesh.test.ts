@@ -6,6 +6,23 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createDenServer, type DenServer } from './server.js'
 import { createMeshView, loadMeshFile, meshFilePaths, type MeshOverview } from './mesh.js'
 import type { DenConfig } from './config.js'
+import type {
+  MeshDenNode as MeshDenNodeWire,
+  MeshOverview as MeshOverviewWire,
+} from '@rivetos/types'
+import type { MeshDenNode } from './mesh.js'
+
+// Compile-time lock: den-server's local mesh shapes must stay mutually
+// assignable with the canonical wire contracts in @rivetos/types
+// gateway-api.ts (types is a devDependency — den-server ships dependency-free
+// at runtime). Drift in either direction fails this file's typecheck.
+const _meshWireLock: [
+  (n: MeshDenNode) => MeshDenNodeWire,
+  (n: MeshDenNodeWire) => MeshDenNode,
+  (o: MeshOverview) => MeshOverviewWire,
+  (o: MeshOverviewWire) => MeshOverview,
+] = [(n) => n, (n) => n, (o) => o, (o) => o]
+void _meshWireLock
 
 const servers: DenServer[] = []
 const dirs: string[] = []

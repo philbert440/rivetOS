@@ -21,6 +21,7 @@
     "node-pty": "^1.0.0"
   },
   "devDependencies": {
+    "@rivetos/types": "*",
     "@types/ws": "^8.5.10"
   },
   "engines": {

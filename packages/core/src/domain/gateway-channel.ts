@@ -30,6 +30,12 @@ import type {
   GatewayRoute,
   InboundMessage,
   OutboundMessage,
+  SessionMessage,
+  SessionMessagesResponse,
+  SessionPostAccepted,
+  SessionPostReply,
+  SessionsListResponse,
+  SessionWsFrame,
   StreamEvent,
 } from '@rivetos/types'
 import { logger } from '../logger.js'
@@ -42,13 +48,9 @@ const MAX_WAIT_MS = 600_000
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_BUFFERED = 1024 * 1024
 
-interface RingMessage {
-  id: string
-  sessionId: string
-  role: 'user' | 'assistant'
-  text: string
-  ts: number
-}
+// Wire contract lives in @rivetos/types gateway-api.ts; ring entries ARE the
+// wire shape.
+type RingMessage = SessionMessage
 
 export interface GatewayChannelHandle {
   channel: Channel
@@ -98,7 +100,7 @@ export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayC
     return s
   }
 
-  const broadcast = (frame: Record<string, unknown>, sessionId: string): void => {
+  const broadcast = (frame: SessionWsFrame, sessionId: string): void => {
     const payload = JSON.stringify(frame)
     for (const sub of subscribers) {
       if (sub.ws.readyState !== 1 || (sub.session && sub.session !== sessionId)) continue
@@ -173,13 +175,13 @@ export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayC
                 messages: s.ring.length,
               }))
               .sort((a, b) => b.lastActive - a.lastActive)
-            return json(res, 200, { sessions: list })
+            return json(res, 200, { sessions: list } satisfies SessionsListResponse)
           }
 
           if (!id || sub !== 'messages') return json(res, 404, { error: 'not found' })
 
           if (req.method === 'GET') {
-            return json(res, 200, { messages: session(id).ring })
+            return json(res, 200, { messages: session(id).ring } satisfies SessionMessagesResponse)
           }
 
           if (req.method === 'POST') {
@@ -239,10 +241,11 @@ export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayC
               })
             })
 
-            if (!replyPromise) return json(res, 202, { accepted: true, session: id })
+            if (!replyPromise)
+              return json(res, 202, { accepted: true, session: id } satisfies SessionPostAccepted)
             const reply = await replyPromise
             if (!reply) return json(res, 504, { error: 'no reply before deadline' })
-            return json(res, 200, { message: reply })
+            return json(res, 200, { message: reply } satisfies SessionPostReply)
           }
 
           return json(res, 405, { error: 'method not allowed' })
