@@ -107,8 +107,9 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
           } satisfies WikiIndexResponse)
         }
 
-        // GET /api/wiki/gaps
-        if (slug === 'gaps' && !sub) {
+        // GET /api/wiki/_gaps — underscore keeps it outside SLUG_RE, so no
+        // topic slug can ever shadow it (#289 review).
+        if (slug === '_gaps' && !sub) {
           const gaps = await opts.index.gaps({ staleLimit: intParam(url, 'limit', 10) })
           return json(res, 200, {
             redLinks: gaps.redLinks,
@@ -169,7 +170,8 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
 function intParam(url: URL, name: string, fallback: number): number {
   const raw = url.searchParams.get(name)
   const n = raw ? Number.parseInt(raw, 10) : NaN
-  return Number.isFinite(n) && n >= 0 ? n : fallback
+  // Cap: a ?limit=1e9 must not turn a read-only endpoint into a memory hog.
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, 500) : fallback
 }
 
 function toIndexEntry(t: WikiTopicSummary): {

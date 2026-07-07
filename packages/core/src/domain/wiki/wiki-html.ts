@@ -153,7 +153,9 @@ function inline(s: string): string {
   t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   // [[slug]] wiki links, then plain URLs.
   t = t.replace(/\[\[([a-z0-9-]+)\]\]/g, '<a href="/wiki/$1">$1</a>')
-  t = t.replace(/(https?:\/\/[^\s&<]+)/g, '<a href="$1">$1</a>')
+  // Text is pre-escaped, so '<' can't occur and entities like &amp; are
+  // safe inside href — stop only at whitespace (#289: '&' truncated URLs).
+  t = t.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
   return t
 }
 

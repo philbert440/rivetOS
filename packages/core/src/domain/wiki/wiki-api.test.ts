@@ -90,7 +90,7 @@ describe('/api/wiki', () => {
     }
     expect(search.topics[0].slug).toBe(TOPIC.slug)
     expect(search.topics[0].excerpt).toContain('only engine')
-    const gaps = (await (await fetch(`${base}/api/wiki/gaps`)).json()) as {
+    const gaps = (await (await fetch(`${base}/api/wiki/_gaps`)).json()) as {
       redLinks: Array<{ entity: string }>
     }
     expect(gaps.redLinks[0].entity).toBe('host:ct999')
@@ -149,5 +149,7 @@ describe('/wiki HTML', () => {
     expect(out).not.toContain('<script>')
     expect(out).toContain('href="/wiki/other-topic"')
     expect(out).toContain('href="https://example.com"')
+    const amp = renderMarkdown('see https://x.dev/?a=1&b=2 now')
+    expect(amp).toContain('href="https://x.dev/?a=1&amp;b=2"')
   })
 })
