@@ -1,0 +1,52 @@
+{
+  "name": "@rivetos/rivethub-web",
+  "version": "0.4.0-beta.6",
+  "private": true,
+  "type": "module",
+  "description": "RivetHub web client \u2014 chat-first UI over the gateway API; served as static assets by den-server",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node scripts/copy-den.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/ package.json",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fontsource/dm-sans": "^5.2.5",
+    "@fontsource/jetbrains-mono": "^5.2.5",
+    "@rivetos/gateway-client": "*",
+    "@tanstack/react-query": "^5.90.0",
+    "@tanstack/react-router": "^1.130.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "tailwindcss": "^4.1.0",
+    "vite": "^8.1.2",
+    "vitest": "^4.1.5"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "nx": {
+    "tags": [
+      "scope:app",
+      "type:app",
+      "domain:interfaces"
+    ],
+    "targets": {
+      "build": {
+        "dependsOn": [
+          "^build",
+          "@rivetos/den-app:build"
+        ]
+      }
+    }
+  }
+}
