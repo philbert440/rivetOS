@@ -139,19 +139,32 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
     <div className="flex min-w-0 flex-1 flex-col">
       <div className="flex items-center justify-between border-b border-line bg-panel/40 px-4 py-1.5">
         <span className="truncate font-mono text-xs text-ink-dim">{props.sessionId}</span>
-        <select
-          value={agent ?? ''}
-          onChange={(e) => setAgent(e.target.value || undefined)}
-          className="rounded border border-line bg-panel px-2 py-1 font-mono text-xs"
-        >
-          <option value="">default agent</option>
-          {localAgents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.id}
-              {'model' in a && a.model ? ` (${a.model})` : ''}
-            </option>
-          ))}
-        </select>
+        <span className="flex items-center gap-2">
+          {catalog.isLoading && (
+            <span className="font-mono text-[11px] text-ink-dim">loading agents…</span>
+          )}
+          {catalog.isError && (
+            <span className="font-mono text-[11px] text-red">catalog unavailable</span>
+          )}
+          {catalog.isSuccess && localAgents.length === 0 && (
+            <span className="font-mono text-[11px] text-ink-dim">
+              no local agents — using default
+            </span>
+          )}
+          <select
+            value={agent ?? ''}
+            onChange={(e) => setAgent(e.target.value || undefined)}
+            className="rounded border border-line bg-panel px-2 py-1 font-mono text-xs"
+          >
+            <option value="">default agent</option>
+            {localAgents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.id}
+                {'model' in a && a.model ? ` (${a.model})` : ''}
+              </option>
+            ))}
+          </select>
+        </span>
       </div>
       <div className="flex-1 overflow-y-auto">
         <Transcript messages={messages} live={live} />

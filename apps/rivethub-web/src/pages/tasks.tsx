@@ -22,10 +22,20 @@ const STATUS_COLORS: Record<TaskStatus, string> = {
 
 function evalBadge(task: TaskWire): JSX.Element | undefined {
   const verdict = task.eval?.verdict
-  if (!verdict) return undefined
-  const color =
-    verdict === 'verified' ? 'text-em' : verdict === 'escalated' ? 'text-red' : 'text-ink-dim'
-  return <span className={`font-mono text-[11px] ${color}`}>eval:{verdict}</span>
+  if (!verdict) {
+    // Evaluable but unevaluated: the verifier is still running (or queued).
+    // Without this, a completed-awaiting-eval task reads as "skipped"
+    // (#303 review).
+    if (task.acceptanceCriteria.length > 0 && task.status === 'completed')
+      return <span className="font-mono text-[11px] text-ink-dim">eval:pending</span>
+    return undefined
+  }
+  return <span className={`font-mono text-[11px] ${evalColor(verdict)}`}>eval:{verdict}</span>
+}
+
+/** Shared verdict → color so list and detail can't disagree (#303 review). */
+function evalColor(verdict: string): string {
+  return verdict === 'verified' ? 'text-em' : verdict === 'escalated' ? 'text-red' : 'text-ink-dim'
 }
 
 export function TasksPage(): JSX.Element {
@@ -104,6 +114,7 @@ export function TaskDetailPage(): JSX.Element {
   const token = useConnection((s) => s.token)
   const queryClient = useQueryClient()
   const [steerText, setSteerText] = useState('')
+  const [acting, setActing] = useState(false)
   const [actionError, setActionError] = useState<string | undefined>()
 
   const task = useQuery({
@@ -115,13 +126,22 @@ export function TaskDetailPage(): JSX.Element {
   const t = task.data?.task
   const terminal = t && ['completed', 'failed', 'killed', 'timeout'].includes(t.status)
 
-  const act = async (fn: () => Promise<unknown>): Promise<void> => {
+  const act = async (fn: () => Promise<unknown>): Promise<boolean> => {
+    if (acting) return false
     setActionError(undefined)
+    setActing(true)
     try {
       await fn()
+      // detail AND list — navigating back must not show pre-action status
+      // for a poll interval (#303 review)
       await queryClient.invalidateQueries({ queryKey: ['task', baseUrl, token ?? '', taskId] })
+      await queryClient.invalidateQueries({ queryKey: ['tasks', baseUrl, token ?? ''] })
+      return true
     } catch (err) {
       setActionError((err as Error).message)
+      return false
+    } finally {
+      setActing(false)
     }
   }
 
@@ -143,12 +163,9 @@ export function TaskDetailPage(): JSX.Element {
         {t.durationMs !== undefined && (
           <Cell k="duration" v={`${String(Math.round(t.durationMs / 1000))}s`} />
         )}
-        {t.eval && (
-          <Cell
-            k="eval"
-            v={t.eval.verdict}
-            className={t.eval.verdict === 'escalated' ? 'text-red' : 'text-em'}
-          />
+        {t.eval && <Cell k="eval" v={t.eval.verdict} className={evalColor(t.eval.verdict)} />}
+        {!t.eval && t.acceptanceCriteria.length > 0 && t.status === 'completed' && (
+          <Cell k="eval" v="pending" className="text-ink-dim" />
         )}
         {t.evalAttempt > 0 && <Cell k="retries" v={String(t.evalAttempt)} />}
       </div>
@@ -202,17 +219,23 @@ export function TaskDetailPage(): JSX.Element {
             <button
               onClick={() =>
                 void act(() => useConnection.getState().gateway.steerTask(taskId, steerText)).then(
-                  () => setSteerText(''),
+                  (ok) => {
+                    if (ok) setSteerText('') // keep the draft on failure
+                  },
                 )
               }
-              disabled={!steerText.trim()}
+              disabled={!steerText.trim() || acting}
               className="rounded border border-line px-3 py-2 text-sm hover:border-em disabled:opacity-40"
             >
               Steer
             </button>
             <button
-              onClick={() => void act(() => useConnection.getState().gateway.killTask(taskId))}
-              className="rounded border border-red/40 px-3 py-2 text-sm text-red hover:border-red"
+              onClick={() => {
+                if (window.confirm(`Kill task ${taskId}?`))
+                  void act(() => useConnection.getState().gateway.killTask(taskId))
+              }}
+              disabled={acting}
+              className="rounded border border-red/40 px-3 py-2 text-sm text-red hover:border-red disabled:opacity-40"
             >
               Kill
             </button>
