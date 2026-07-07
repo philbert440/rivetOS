@@ -5,7 +5,7 @@
  * seeds a transcript on first open.
  */
 
-import { useEffect, useState, type JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
@@ -115,6 +115,11 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
   const [mode, setMode] = useState<'chat' | 'terminal'>('chat')
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
+  const [spawning, setSpawning] = useState(false)
+  // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
+  // (state is captured stale in an unmount-only effect) — #310 review.
+  const termPtyRef = useRef<string | undefined>(undefined)
+  termPtyRef.current = termPtyId
   const messages = useChat((s) => s.messages[props.sessionId]) ?? []
   const live = useChat((s) => s.live[props.sessionId])
   const wsStatus = useChat((s) => s.wsStatus)
@@ -140,18 +145,55 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
     if (backfill.data) seed(props.sessionId, backfill.data.messages)
   }, [backfill.data, props.sessionId])
 
+  // Kill the session's terminal PTY when leaving this conversation — without
+  // it, switching sessions orphans a PTY for the 30-min detach TTL and can
+  // hit maxPtys after a few sessions (#310 review). Toggling Chat↔Terminal
+  // does NOT unmount ActiveSession, so it keeps the PTY for reattach.
+  useEffect(() => {
+    return () => {
+      const id = termPtyRef.current
+      if (id)
+        void useConnection
+          .getState()
+          .gateway.termKill(id)
+          .catch(() => undefined)
+    }
+  }, [])
+
+  // Model change invalidates a running terminal (it's the wrong harness now):
+  // kill it so the next Terminal entry respawns with the chosen model.
+  const agentSel = settings?.agent ?? ''
+  useEffect(() => {
+    const id = termPtyRef.current
+    if (id) {
+      void useConnection
+        .getState()
+        .gateway.termKill(id)
+        .catch(() => undefined)
+      setTermPtyId(undefined)
+      setMode('chat')
+    }
+  }, [agentSel])
+
   // Switching to Terminal spawns the harness matching the chosen model once
-  // (the TUI side of this session); toggling back detaches but leaves the PTY
-  // for reattach. The model id maps to a term roster command when one exists.
+  // (the TUI side of this session); toggling back detaches but keeps the PTY
+  // for reattach. In-flight guard: a double-click can't spawn two.
   const enterTerminal = (): void => {
     setMode('terminal')
-    if (termPtyId) return
+    if (termPtyId || spawning) return
+    setSpawning(true)
     const command = settings?.agent || undefined
-    void useConnection
-      .getState()
-      .gateway.termSpawn(command ? { command } : {})
+    const gw = useConnection.getState().gateway
+    // The model id is the roster command when the node has one for it (e.g.
+    // 'claude' → Claude Code); if it doesn't (an API-only agent), fall back
+    // to the node's default harness rather than 404.
+    const spawn = command
+      ? gw.termSpawn({ command }).catch(() => gw.termSpawn({}))
+      : gw.termSpawn({})
+    void spawn
       .then((p) => setTermPtyId(p.id))
       .catch((e: unknown) => setTermError((e as Error).message))
+      .finally(() => setSpawning(false))
   }
 
   const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/`
