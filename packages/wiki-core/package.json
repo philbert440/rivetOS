@@ -21,7 +21,7 @@
     "tags": [
       "scope:contract",
       "type:lib",
-      "domain:memory"
+      "domain:shared"
     ]
   },
   "description": "Memory wiki page model \u2014 parse/apply/serialize, pure (no I/O)"

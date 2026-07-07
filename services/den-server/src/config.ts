@@ -50,6 +50,8 @@ export interface DenConfig {
   staticDir: string
   /** SpritePack root served at /packs/ (optional). */
   packsDir: string
+  /** 302 target for GET / — e.g. '/wiki' makes the wiki the landing page. */
+  rootRedirect: string
   /** How long an ended session's room lingers before eviction (ms). */
   evictTtlMs: number
   /** Mesh roster for GET /mesh.json. Empty = try the canonical
@@ -72,6 +74,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     token: env.RIVETOS_DEN_TOKEN ?? '',
     stateDir: env.RIVETOS_DEN_STATE_DIR ?? join(homedir(), '.rivetos', 'den'),
     staticDir: env.RIVETOS_DEN_STATIC_DIR ?? '',
+    rootRedirect: env.RIVETOS_DEN_ROOT_REDIRECT ?? '',
     packsDir: env.RIVETOS_DEN_PACKS_DIR ?? '',
     evictTtlMs: intEnv('RIVETOS_DEN_EVICT_TTL_MS', 24 * 60 * 60 * 1000),
     meshFile: env.RIVETOS_DEN_MESH_FILE ?? '',
