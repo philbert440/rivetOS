@@ -92,6 +92,10 @@ interface PtyRecord {
   ready: boolean
   injectBuffer: string[]
   readyTimer?: NodeJS.Timeout
+  /** Max(lastOutputTs, last inject) — the LRU-eviction signal. Bumped on BOTH
+   *  stdout AND chat inject so an actively-chatted (but unattached) harness
+   *  isn't evicted between a send and its reply (#316 review). */
+  lastActivityTs: number
 }
 
 export interface TermManager {
@@ -131,6 +135,10 @@ export interface TermManager {
 }
 
 const SIGKILL_DELAY_MS = 3000
+
+/** Max chat injects buffered before a fresh harness is ready (#316 review) —
+ *  a real turn is a handful; well beyond that is a client spamming. */
+const INJECT_BUFFER_MAX = 32
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:
  *  the hook adapter treats an empty RIVET_DEN_SESSION as a real session id. */
@@ -301,21 +309,26 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       if (!entry) throw new TermSpawnError('unknown-command', `unknown command: ${key}`)
       const running = [...records.values()].filter((r) => r.state === 'running')
       if (running.length >= config.term.maxPtys) {
-        // LRU pool (seamless 5g): at the cap, evict the least-recently-active
-        // UNATTACHED pty so a new conversation can spawn. The evicted
-        // conversation goes cold — its transcript is durable in memory and a
-        // later open respawns it (spawn-or-get). A pty someone is watching
-        // (attached) is never evicted; if every running pty is attached, the
-        // cap is real. Brief maxPtys+1 until the victim exits is acceptable
-        // for a soft cap.
+        // LRU pool (seamless 5g): at the cap, evict the least-recently-ACTIVE
+        // idle pty so a new conversation can spawn. The evicted conversation
+        // goes cold — its transcript is durable in memory and a later open
+        // respawns it (spawn-or-get). Never evict a pty that is:
+        //   - attached (a Terminal view is watching), OR
+        //   - still booting / holding buffered injects (a first turn is
+        //     queued), OR
+        //   - recently active — lastActivityTs is bumped on BOTH output AND
+        //     chat inject, so a conversation you're actively chatting (whose
+        //     harness is unattached — inject doesn't attach) isn't evicted
+        //     mid-thread just because it's quiet between the send and the
+        //     reply (#316 review — the eviction signal must include chat, not
+        //     just stdout).
+        // If every running pty is protected, the cap is real. Brief maxPtys+1
+        // until the victim exits is acceptable for a soft cap.
         const victim = running
-          .filter((r) => r.attached.size === 0)
-          .sort((a, b) => a.lastOutputTs - b.lastOutputTs)[0]
+          .filter((r) => r.attached.size === 0 && r.ready && r.injectBuffer.length === 0)
+          .sort((a, b) => a.lastActivityTs - b.lastActivityTs)[0]
         if (!victim)
-          throw new TermSpawnError(
-            'cap',
-            `pty limit reached (${config.term.maxPtys}); all attached`,
-          )
+          throw new TermSpawnError('cap', `pty limit reached (${config.term.maxPtys}); all active`)
         audit('kill', victim, { reason: 'lru-evict' })
         escalate(victim)
       }
@@ -360,16 +373,23 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         state: 'running',
         ready: false,
         injectBuffer: [],
+        lastActivityTs: now(),
       }
       records.set(id, r)
       bySession.set(denSession, id)
       proc.onData((data) => {
         r.lastOutputTs = now()
+        r.lastActivityTs = now()
         // Ready-gate: on the FIRST output, wait a short settle for the TUI to
         // finish its initial render, then flush any buffered chat injects.
         if (!r.ready && !r.readyTimer) {
           r.readyTimer = setTimeout(() => {
             r.readyTimer = undefined
+            // the proc may have died during the settle window (#316 review)
+            if (r.state !== 'running') {
+              r.injectBuffer = []
+              return
+            }
             r.ready = true
             for (const d of r.injectBuffer) r.proc.write(d)
             r.injectBuffer = []
@@ -452,10 +472,20 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     inject(id, data): boolean {
       const r = records.get(id)
       if (!r || r.state !== 'running') return false
+      // Chat activity protects this pty from LRU eviction (#316 review): a
+      // conversation being chatted is unattached (inject doesn't attach) but
+      // must not be evicted between the send and the harness's reply.
+      r.lastActivityTs = now()
       // Ready-gate (5g): before the harness TUI is up, buffer instead of
       // writing into the void; the onData settle timer flushes it.
-      if (r.ready) r.proc.write(data)
-      else r.injectBuffer.push(typeof data === 'string' ? data : data.toString())
+      if (r.ready) {
+        r.proc.write(data)
+        return true
+      }
+      // Bounded buffer: a client can't grow memory by spamming inject before
+      // the harness is ready (#316 review).
+      if (r.injectBuffer.length >= INJECT_BUFFER_MAX) return false
+      r.injectBuffer.push(typeof data === 'string' ? data : data.toString())
       return true
     },
 

@@ -138,12 +138,15 @@ describe('term endpoints', () => {
     expect(spawns[1].opts).toMatchObject({ cols: 20, rows: 24 })
   })
 
-  it('404s unknown roster keys; LRU-evicts an unattached pty at the cap (5g)', async () => {
-    const { base } = await start({}, { maxPtys: 1 })
+  it('404s unknown roster keys; LRU-evicts an idle unattached pty at the cap (5g)', async () => {
+    const { base, procs } = await start({}, { maxPtys: 1 })
     expect((await post(base, '/term', { command: 'not-a-key' })).status).toBe(404)
     expect((await post(base, '/term', { command: 'shell' })).status).toBe(201)
-    // at the cap with an UNATTACHED pty, a new spawn evicts the LRU rather
-    // than 409ing (the 409-when-all-attached path is covered in manager.test).
+    // a booting pty (no output yet) is NOT evictable → the cap is real
+    expect((await post(base, '/term', { command: 'shell' })).status).toBe(409)
+    // once ready (first output settled) it becomes LRU-evictable → 201
+    procs[0].emit('data', Buffer.from('booted'))
+    await new Promise((r) => setTimeout(r, 30)) // injectReadyMs:10 settle
     expect((await post(base, '/term', { command: 'shell' })).status).toBe(201)
   })
 

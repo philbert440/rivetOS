@@ -159,10 +159,13 @@ export const useChat = create<ChatState>((set, get) => ({
           if (!isOpen(msg.sessionId)) return
           set((s) => {
             let list = s.messages[msg.sessionId] ?? []
-            // the real user frame supersedes any optimistic bubble of the same
-            // text (seamless harness send — see addOptimisticUser)
-            if (msg.role === 'user')
-              list = list.filter((m) => !(m.id.startsWith('optim:') && m.text === msg.text))
+            // the real user frame supersedes ONE optimistic bubble of the same
+            // text — remove only the first match so two identical turns
+            // ("yes" then "yes") don't collapse to one (#316 review).
+            if (msg.role === 'user') {
+              const i = list.findIndex((m) => m.id.startsWith('optim:') && m.text === msg.text)
+              if (i >= 0) list = [...list.slice(0, i), ...list.slice(i + 1)]
+            }
             return {
               messages: { ...s.messages, [msg.sessionId]: appendMessage(list, msg) },
               // an assistant message ends the in-flight turn

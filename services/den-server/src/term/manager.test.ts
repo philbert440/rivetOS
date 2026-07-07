@@ -193,28 +193,66 @@ describe('term manager', () => {
     expect(manager.spawn('shell', 80, 24, '').state).toBe('running')
   })
 
-  it('LRU pool (5g): at the cap, evicts the least-recently-active UNATTACHED pty', () => {
+  // ready() drives a pty past its ready-gate: emit output, fire the settle
+  // timer. Only ready + idle ptys are LRU-evictable.
+  const makeReady = (proc: FakeProc): void => {
+    proc.emitData('booted')
+    vi.advanceTimersByTime(600)
+  }
+
+  it('LRU pool (5g): at the cap, evicts the least-recently-ACTIVE idle pty', () => {
     vi.useFakeTimers()
-    const { manager, procs } = makeManager({ maxPtys: 2 })
-    manager.spawn('shell', 80, 24, '') // proc[0] — oldest
+    const { manager, procs } = makeManager({ maxPtys: 2, injectReadyMs: 500 })
+    manager.spawn('shell', 80, 24, '') // proc[0] — oldest activity
+    makeReady(procs[0])
     vi.advanceTimersByTime(10)
     manager.spawn('shell', 80, 24, '') // proc[1] — more recent
+    makeReady(procs[1])
     vi.advanceTimersByTime(10)
-    // both unattached → spawning a 3rd evicts the LRU (proc[0]), doesn't throw
+    // both ready + idle + unattached → 3rd evicts the LRU (proc[0])
     expect(manager.spawn('shell', 80, 24, '').state).toBe('running')
-    expect(procs[0].kills).toContain('SIGHUP') // oldest evicted
-    expect(procs[1].kills).toEqual([]) // more recent kept
+    expect(procs[0].kills).toContain('SIGHUP') // oldest activity evicted
+    expect(procs[1].kills).toEqual([])
   })
 
-  it('LRU pool: never evicts an ATTACHED pty; cap is real when all attached', () => {
-    const { manager, procs } = makeManager({ maxPtys: 2 })
+  it('LRU pool: chat inject protects an unattached harness from eviction (#316)', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ maxPtys: 2, injectReadyMs: 500 })
+    const a = manager.spawn('shell', 80, 24, '', 'chat-a') // oldest
+    makeReady(procs[0])
+    vi.advanceTimersByTime(10)
+    const b = manager.spawn('shell', 80, 24, '', 'chat-b')
+    makeReady(procs[1])
+    vi.advanceTimersByTime(10)
+    // a is older, but the user just chatted it → inject bumps its activity
+    manager.inject(a.id, 'still here\r')
+    void b
+    // now b is the least-recently-active → b is evicted, a is protected
+    expect(manager.spawn('shell', 80, 24, '').state).toBe('running')
+    expect(procs[0].kills).toEqual([]) // a protected by chat activity
+    expect(procs[1].kills).toContain('SIGHUP') // b evicted
+  })
+
+  it('LRU pool: never evicts attached / booting ptys; cap is real when all active', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ maxPtys: 2, injectReadyMs: 500 })
     const a = manager.spawn('shell', 80, 24, '')
+    makeReady(procs[0])
     const b = manager.spawn('shell', 80, 24, '')
-    manager.attach(a.id, () => {})
-    manager.attach(b.id, () => {})
-    expect(() => manager.spawn('shell', 80, 24, '')).toThrowError(/all attached/)
+    makeReady(procs[1])
+    manager.attach(a.id, () => {}) // watched
+    manager.attach(b.id, () => {}) // watched
+    expect(() => manager.spawn('shell', 80, 24, '')).toThrowError(/all active/)
     expect(procs[0].kills).toEqual([])
     expect(procs[1].kills).toEqual([])
+  })
+
+  it('inject buffer is bounded before ready (#316)', () => {
+    const { manager } = makeManager({ injectReadyMs: 500 })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-cap')
+    // 32 buffered ok, 33rd rejected (no output yet → never ready)
+    for (let i = 0; i < 32; i++) expect(manager.inject(pty.id, `${String(i)}\r`)).toBe(true)
+    expect(manager.inject(pty.id, 'overflow\r')).toBe(false)
   })
 
   it('inject ready-gate (5g): buffers until first output settles, then flushes', () => {
