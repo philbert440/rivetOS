@@ -7,8 +7,8 @@
 
 import { useEffect, useState, type JSX } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
+import { useConnection } from '../stores/connection.js'
+import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { useChat } from '../stores/chat.js'
 import { Transcript } from '../components/transcript.js'
 import { Composer } from '../components/composer.js'
@@ -31,7 +31,7 @@ export function ChatPage(): JSX.Element {
     return () => useChat.getState().disconnect()
   }, [baseUrl, token])
 
-  const connected = isValidGatewayUrl(baseUrl)
+  const connected = useGatewayReady()
   const sessionsQuery = useQuery({
     queryKey: ['sessions', baseUrl, token ?? ''],
     queryFn: ({ signal }) => useConnection.getState().gateway.listSessions(signal),
@@ -175,21 +175,6 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
         <Transcript messages={messages} live={live} />
       </div>
       <Composer sessionId={props.sessionId} wsStatus={wsStatus} agent={agent} />
-    </div>
-  )
-}
-
-function NotConnected(): JSX.Element {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3">
-      <div className="text-3xl">🔩</div>
-      <div className="text-sm text-ink-dim">No node connected.</div>
-      <Link
-        to="/settings"
-        className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em"
-      >
-        Connect to a node
-      </Link>
     </div>
   )
 }

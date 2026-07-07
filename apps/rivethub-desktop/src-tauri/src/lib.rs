@@ -12,6 +12,8 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
+/// Left-click tray / global shortcut: hide when already front-and-center,
+/// otherwise summon.
 fn toggle_main(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let visible = win.is_visible().unwrap_or(false);
@@ -19,9 +21,18 @@ fn toggle_main(app: &tauri::AppHandle) {
         if visible && focused {
             let _ = win.hide();
         } else {
-            let _ = win.show();
-            let _ = win.set_focus();
+            show_main(app);
         }
+    }
+}
+
+/// Tray menu "Show": unconditionally bring the window forward — never a
+/// hide, even when it's already focused (#306 review).
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
     }
 }
 
@@ -54,7 +65,7 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => toggle_main(app),
+                    "show" => show_main(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })

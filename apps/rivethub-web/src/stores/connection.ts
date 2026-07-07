@@ -101,7 +101,12 @@ function makeGateway(baseUrl: string, token?: string): RivetGateway {
  *  starts unconfigured and prompts for a node (#4j smoke). */
 function defaultBaseUrl(): string {
   const stored = localStorage.getItem(BASE_KEY)
-  if (stored) return normalize(stored)
+  if (stored) {
+    const s = normalize(stored)
+    // a poisoned/stale non-http value (e.g. tauri://localhost) must not slip
+    // past the origin guard (#306).
+    return isValidGatewayUrl(s) ? s : ''
+  }
   const origin = normalize(window.location.origin)
   return isValidGatewayUrl(origin) ? origin : ''
 }
