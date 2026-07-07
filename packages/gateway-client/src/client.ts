@@ -28,6 +28,12 @@ import type {
   WikiIndexResponse,
   WikiPageResponse,
 } from '@rivetos/types'
+import type {
+  TermConfigResponse,
+  TermListResponse,
+  TermSpawnRequest,
+  TermSpawnResponse,
+} from '@rivetos/types'
 import { request, type QueryValue } from './http.js'
 import {
   subscribe,
@@ -212,6 +218,45 @@ export class RivetGateway {
       raw: true,
       signal,
     })
+  }
+
+  // -- terminal (den PTY surface via the /api/terminal aliases) ---------------
+
+  termConfig(signal?: AbortSignal): Promise<TermConfigResponse> {
+    return request(this.config, '/api/terminal/config', { signal })
+  }
+
+  termList(signal?: AbortSignal): Promise<TermListResponse> {
+    return request(this.config, '/api/terminal/list', { signal })
+  }
+
+  termSpawn(body: TermSpawnRequest = {}): Promise<TermSpawnResponse> {
+    return request(this.config, '/api/terminal', { method: 'POST', body })
+  }
+
+  termKill(ptyId: string): Promise<{ ok: true }> {
+    return request(this.config, '/api/terminal', {
+      method: 'DELETE',
+      query: { id: ptyId },
+    })
+  }
+
+  /**
+   * Attach URL for WS /api/terminal/ws (binary protocol — hello JSON frame,
+   * then scrollback/live bytes; see den-server term/ws.ts). The caller opens
+   * the socket itself (xterm needs raw binary; the subscribe() helper is
+   * JSON-frame-only). Token rides ?token= like every gateway WS.
+   */
+  terminalWsUrl(attach: { id?: string; session?: string }): string {
+    const u = new URL(
+      '/api/terminal/ws',
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    )
+    u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
+    if (attach.id) u.searchParams.set('id', attach.id)
+    if (attach.session) u.searchParams.set('session', attach.session)
+    if (this.config.token) u.searchParams.set('token', this.config.token)
+    return u.toString()
   }
 
   // -- notifications (4e — server route lands with the escalation WS) --------
