@@ -9,6 +9,7 @@
 // shows nothing for them rather than breaking.
 
 import { readdir, stat, open } from 'node:fs/promises'
+import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -106,6 +107,24 @@ async function listClaudeSessions(limit: number): Promise<HarnessSession[]> {
     out.push({ id: f.id, command: 'claude', title: title || f.id, updatedAt: Math.floor(f.mtime) })
   }
   return out
+}
+
+/**
+ * Does a harness already have an on-disk session with this id? Store existence
+ * is the ground truth for choosing --resume (continue) vs --session-id (pin a
+ * NEW id) when re-spawning a conversation whose PTY was evicted (#318 review).
+ * Sync + cheap (a handful of existsSync); unknown harnesses → false.
+ */
+export function harnessSessionExists(command: string, id: string): boolean {
+  if (command !== 'claude') return false
+  const dir = claudeProjectsDir()
+  let slugs: string[]
+  try {
+    slugs = readdirSync(dir)
+  } catch {
+    return false
+  }
+  return slugs.some((slug) => existsSync(join(dir, slug, `${id}.jsonl`)))
 }
 
 /**
