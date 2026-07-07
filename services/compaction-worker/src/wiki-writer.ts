@@ -42,9 +42,11 @@ export class WikiWriter {
     await mkdir(join(this.root, 'topics'), { recursive: true })
     if (!existsSync(join(this.root, '.git'))) {
       await execFileAsync('git', ['init', '-b', 'main', this.root])
-      await this.git('config', 'user.name', 'RivetOS Wiki')
-      await this.git('config', 'user.email', 'wiki@rivetos.dev')
     }
+    // Always (re)assert the local identity — a re-cloned repo would lack it
+    // and every commit would fail on a bare service user (#287 review).
+    await this.git('config', 'user.name', 'RivetOS Wiki')
+    await this.git('config', 'user.email', 'wiki@rivetos.dev')
   }
 
   pagePath(slug: string): string {

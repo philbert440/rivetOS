@@ -53,6 +53,17 @@ describe('parseWikiPatches', () => {
   })
 })
 
+describe('patch cap', () => {
+  it('caps at 3 patches regardless of what the LLM emits', () => {
+    const many = JSON.stringify(
+      Array.from({ length: 6 }, (_, i) => ({ action: 'create', slug: `t${i}`, current_state: 'x' })),
+    )
+    const { patches, rejected } = parseWikiPatches(many, '2026-07-07T00:00:00Z')
+    expect(patches).toHaveLength(3)
+    expect(rejected.some((r) => r.includes('patch cap'))).toBe(true)
+  })
+})
+
 describe('formatExtractionPrompt', () => {
   it('includes candidates and the no-candidates fallback', () => {
     const withC = formatExtractionPrompt({

@@ -130,5 +130,11 @@ export function parseWikiPatches(
       verifiedAt,
     })
   }
+  // Hard cap mirrors the prompt's 0-3 contract — a prompt-injected summary
+  // can't fan out into mass page vandalism (#287 review).
+  if (patches.length > 3) {
+    rejected.push(`patch cap: dropped ${patches.length - 3} beyond the first 3`)
+    patches.length = 3
+  }
   return { patches, rejected }
 }
