@@ -156,6 +156,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 const HARNESS_FLAGS: Record<string, { sessionFlag: string; resumeFlag: string }> = {
   claude: { sessionFlag: '--session-id', resumeFlag: '--resume' },
+  grok: { sessionFlag: '--session-id', resumeFlag: '--resume' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:
