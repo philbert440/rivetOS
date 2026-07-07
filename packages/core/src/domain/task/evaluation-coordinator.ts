@@ -39,7 +39,9 @@ export interface EvaluationConfig {
   agentId?: string
   executor?: 'chat-loop' | 'harness-session'
   executorTarget?: string
-  /** Verifier child budget (default: 1 turn, $0.05, 5 min). */
+  /** Verifier child budget (default: one real turn — maxTurns 2 under the
+   *  runner's >= between-turns check — $0.05, 5 min). max_turns: 1 in YAML
+   *  self-destructs the verifier; the boot wiring floors it to 2. */
   budget?: { maxUsd?: number; maxTurns?: number; maxWallClockMs?: number }
   /** Origins that never get evaluated (mirrors tasks.eval.skip_origins). */
   skipOrigins: string[]
@@ -93,7 +95,10 @@ export interface EvaluationCoordinator {
   escalate(task: TaskRow, result: TaskResult, pass: EvaluationPass): Promise<void>
 }
 
-const DEFAULT_VERIFIER_BUDGET = { maxTurns: 1, maxUsd: 0.05, maxWallClockMs: 300_000 }
+// maxTurns semantics: the runner's between-turns check is `turns >= maxTurns`
+// AFTER a turn ends — maxTurns: 1 kills the run the moment its only turn
+// finishes (live-smoke finding, ct114 2026-07-07). 2 = exactly one real turn.
+const DEFAULT_VERIFIER_BUDGET = { maxTurns: 2, maxUsd: 0.05, maxWallClockMs: 300_000 }
 
 export function createEvaluationCoordinator(
   opts: EvaluationCoordinatorOptions,
