@@ -6,7 +6,7 @@
  * fail the parent's finish path.
  */
 
-import type { EvalOutcome, TaskResult } from '@rivetos/types'
+import type { EvalOutcome, NotificationFrame, TaskResult } from '@rivetos/types'
 import type { TaskRow } from './store.js'
 import { logger } from '../../logger.js'
 
@@ -54,6 +54,46 @@ export function createChannelEscalationNotifier(
           }`,
         )
       }
+    },
+  }
+}
+
+/**
+ * Escalate to connected RivetHub clients over the notifications WS (4e).
+ * Ephemeral by design — /api/outcomes is the durable inbox — so this
+ * composes with (never replaces) the log/channel notifier.
+ */
+export function createGatewayEscalationNotifier(
+  broadcast: (frame: NotificationFrame) => void,
+): EscalationNotifier {
+  return {
+    notify(payload: TaskEscalationPayload): Promise<void> {
+      try {
+        broadcast({
+          kind: 'escalation',
+          taskId: payload.task.id,
+          agentId: payload.task.agentId,
+          summary: `${trunc(payload.task.goal, 140)} — refuted after ${String(payload.outcome.attempts)} retr${payload.outcome.attempts === 1 ? 'y' : 'ies'}`,
+          href: `/tasks/${payload.task.id}`,
+          ts: Date.now(),
+        })
+      } catch (err: unknown) {
+        log.error(
+          `Gateway escalation broadcast for task ${payload.task.id} failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      }
+      return Promise.resolve()
+    },
+  }
+}
+
+/** Fan one escalation to several notifiers (log + gateway + channel…). */
+export function composeEscalationNotifiers(...notifiers: EscalationNotifier[]): EscalationNotifier {
+  return {
+    async notify(payload: TaskEscalationPayload): Promise<void> {
+      await Promise.all(notifiers.map((n) => n.notify(payload).catch(() => undefined)))
     },
   }
 }
