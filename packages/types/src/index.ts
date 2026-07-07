@@ -223,6 +223,8 @@ export type {
   TermConfigResponse,
   TermSpawnRequest,
   TermSpawnResponse,
+  TermInjectRequest,
+  TermInjectResponse,
   PtyInfo,
   TermListResponse,
   TermHelloFrame,
