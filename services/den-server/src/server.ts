@@ -369,6 +369,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       // gating them just breaks the app shell (blank page) without protecting
       // anything sensitive. Session data, events, layouts, mesh, and
       // terminals all stay behind the gate below.
+      // Landing redirect (3e): '/' → config.rootRedirect (e.g. /wiki on the
+      // datahub node) — before static so the SPA shell doesn't swallow it.
+      if (config.rootRedirect && url.pathname === '/' && req.method === 'GET') {
+        res.writeHead(302, { Location: config.rootRedirect })
+        res.end()
+        return
+      }
       if (req.method === 'GET' || req.method === 'HEAD') {
         if (config.packsDir && url.pathname.startsWith('/packs/')) {
           if (serveStatic(res, config.packsDir, url.pathname.slice('/packs/'.length))) return
@@ -376,7 +383,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // /api/* belongs to gateway route mounts and aliases — never the
         // static viewer. Without this carve-out the SPA fallback hijacks
         // extensionless GETs like /api/tasks (G1 regression, fixed in G2).
-        if (config.staticDir && !API_PATHS.has(url.pathname) && !url.pathname.startsWith('/api/')) {
+        // Gateway mounts own their prefixes even outside /api/ (e.g. /wiki)
+        // — without this the SPA fallback hijacks them (G1-regression class).
+        const gatewayOwned = (opts.extraRoutes ?? []).some(
+          (r) => url.pathname === r.prefix || url.pathname.startsWith(r.prefix + '/'),
+        )
+        if (
+          config.staticDir &&
+          !API_PATHS.has(url.pathname) &&
+          !url.pathname.startsWith('/api/') &&
+          !gatewayOwned
+        ) {
           if (serveStatic(res, config.staticDir, url.pathname)) return
           // SPA fallback: extensionless paths (e.g. /mesh, /demo) get the shell
           if (!extname(url.pathname) && serveStatic(res, config.staticDir, '/index.html')) return

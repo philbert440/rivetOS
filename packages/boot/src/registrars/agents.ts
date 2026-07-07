@@ -25,6 +25,8 @@ import {
   createTaskCompletionWaiter,
   createTaskApiRoute,
   createOutcomesApiRoute,
+  createWikiApiRoute,
+  createWikiHtmlRoute,
   createEvaluationCoordinator,
   createChannelEscalationNotifier,
   createLogEscalationNotifier,
@@ -45,6 +47,7 @@ import {
 import type { DelegationRunsRecorder } from '@rivetos/core'
 import pg from 'pg'
 import type { GatewayRoute, MeshConfig, MeshRegistry } from '@rivetos/types'
+import { WikiIndex } from '@rivetos/memory-postgres'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
 
@@ -507,6 +510,16 @@ export async function registerAgentTools(
         criteriaPolicy,
       }),
       createOutcomesApiRoute({ store: taskEngineStore }),
+    )
+  }
+  // Phase 3e: wiki routes — read-only over the PG index + NFS repo files.
+  // Mounted whenever the shared pool exists; degrade to empty results until
+  // 0005 is applied (WikiIndex.isReady guards nothing here — reads fail soft).
+  if (pool) {
+    const wikiIndex = new WikiIndex(pool)
+    gatewayRoutes.push(
+      createWikiApiRoute({ index: wikiIndex }),
+      createWikiHtmlRoute({ index: wikiIndex, nodeName: config.mesh?.node_name }),
     )
   }
   gatewayRoutes.push(
