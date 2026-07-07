@@ -32,6 +32,14 @@ interface NotificationsState {
 let subscription: Subscription | undefined
 let currentEndpoint: string | undefined
 let counter = 0
+// Pending toast auto-dismiss timers — cleared on connect/disconnect so no
+// timer fires into a torn-down or switched-endpoint store (#300 review).
+const timers = new Set<ReturnType<typeof setTimeout>>()
+
+function clearTimers(): void {
+  for (const t of timers) clearTimeout(t)
+  timers.clear()
+}
 
 export const useNotifications = create<NotificationsState>((set) => ({
   entries: [],
@@ -39,6 +47,7 @@ export const useNotifications = create<NotificationsState>((set) => ({
 
   connect: (endpointKey) => {
     subscription?.close()
+    clearTimers()
     if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
       set({ entries: [], unread: 0 })
     }
@@ -52,10 +61,12 @@ export const useNotifications = create<NotificationsState>((set) => ({
         unread: s.unread + 1,
       }))
       const timer = setTimeout(() => {
+        timers.delete(timer)
         set((s) => ({
           entries: s.entries.map((e) => (e.id === id ? { ...e, toast: false } : e)),
         }))
       }, TOAST_MS)
+      timers.add(timer)
       ;(timer as { unref?: () => void }).unref?.()
     })
   },
@@ -63,6 +74,7 @@ export const useNotifications = create<NotificationsState>((set) => ({
   disconnect: () => {
     subscription?.close()
     subscription = undefined
+    clearTimers()
   },
 
   dismissToast: (id) =>
