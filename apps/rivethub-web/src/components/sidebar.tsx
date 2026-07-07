@@ -25,7 +25,10 @@ export function Sidebar(): JSX.Element {
           <Link
             key={item.to}
             to={item.to}
-            className="rounded px-3 py-2 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink [&.active]:bg-panel-2 [&.active]:text-em"
+            className="rounded px-3 py-2 text-sm"
+            activeProps={{ className: 'bg-panel-2 text-em' }}
+            inactiveProps={{ className: 'text-ink-dim hover:bg-panel-2 hover:text-ink' }}
+            activeOptions={{ exact: item.to === '/' }}
           >
             <span className="mr-2 inline-block w-5 text-center font-mono">{item.icon}</span>
             {item.label}

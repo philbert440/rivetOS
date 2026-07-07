@@ -31,7 +31,9 @@ import { serverHttp, withToken } from './net.js'
 async function boot() {
   // /mesh is a plain DOM route — no Pixi, no packs, no session feed. Every
   // other path (incl. a direct node visit) is the session grid, as always.
-  if (location.pathname === '/mesh') return renderMesh(document.body)
+  // endsWith, not ===: under a co-located deploy the viewer lives at
+  // /den/ (vite --base=/den/), so the route is /den/mesh (#297 review).
+  if (location.pathname.endsWith('/mesh')) return renderMesh(document.body)
 
   const app = new Application()
   await app.init({ background: 0x141a26, resizeTo: window, antialias: false })
