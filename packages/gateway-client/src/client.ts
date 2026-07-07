@@ -30,6 +30,8 @@ import type {
 } from '@rivetos/types'
 import type {
   TermConfigResponse,
+  TermInjectRequest,
+  TermInjectResponse,
   TermListResponse,
   TermSpawnRequest,
   TermSpawnResponse,
@@ -239,6 +241,12 @@ export class RivetGateway {
       method: 'DELETE',
       query: { id: ptyId },
     })
+  }
+
+  /** Inject a chat turn into a conversation's live harness stdin (seamless
+   *  modes) — requires a PTY already spawned for the session. */
+  termInject(body: TermInjectRequest): Promise<TermInjectResponse> {
+    return request(this.config, '/api/terminal/inject', { method: 'POST', body })
   }
 
   /**

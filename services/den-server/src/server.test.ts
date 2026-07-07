@@ -2,10 +2,33 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
+import { EventEmitter } from 'node:events'
 import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDenServer, type DenServer } from './server.js'
 import type { DenConfig } from './config.js'
+import type { PtyProc } from './term/pty.js'
+
+// Inspectable fake PTY for terminal/inject tests.
+const fakeProcs: FakeProc[] = []
+class FakeProc extends EventEmitter implements PtyProc {
+  writes: string[] = []
+  constructor(public readonly pid: number) {
+    super()
+    fakeProcs.push(this)
+  }
+  write(data: string | Buffer): void {
+    this.writes.push(data.toString())
+  }
+  resize(): void {}
+  kill(): void {}
+  onData(cb: (data: string | Buffer) => void): void {
+    this.on('data', cb)
+  }
+  onExit(cb: (code: number | null) => void): void {
+    this.on('exit', cb)
+  }
+}
 
 const servers: DenServer[] = []
 const dirs: string[] = []
@@ -33,6 +56,7 @@ async function start(
         url: URL,
       ) => void
     }>
+    term?: boolean
   } = {},
 ): Promise<{ den: DenServer; base: string; port: number }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
@@ -48,8 +72,8 @@ async function start(
     meshFile: '',
     meshCacheMs: 10_000,
     term: {
-      enabled: false,
-      open: false,
+      enabled: opts.term ?? false,
+      open: opts.term ?? false,
       configFile: join(stateDir, 'den-term.json'),
       maxPtys: 4,
       scrollbackBytes: 262_144,
@@ -57,7 +81,12 @@ async function start(
       exitLingerMs: 60_000,
     },
   }
-  const den = createDenServer(config, { extraRoutes: opts.extraRoutes, extraUpgrades: opts.extraUpgrades })
+  let pid = 2000
+  const den = createDenServer(config, {
+    extraRoutes: opts.extraRoutes,
+    extraUpgrades: opts.extraUpgrades,
+    ...(opts.term ? { ptySpawn: () => new FakeProc(++pid) } : {}),
+  })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
   const port = (den.server.address() as AddressInfo).port
@@ -335,6 +364,40 @@ describe('gateway route mounts (G0)', () => {
     expect(res.status).toBe(200)
     const body = (await (await fetch(`${base}/sessions`)).json()) as { sessions: unknown[] }
     expect(body.sessions).toHaveLength(1)
+  })
+})
+
+describe('POST /term/inject (seamless modes 5c)', () => {
+  it('writes a chat turn into the session harness stdin', async () => {
+    fakeProcs.length = 0
+    const { base } = await start('', 60_000, { term: true })
+    // spawn the conversation's harness with the join key
+    const spawn = await post(base, '/term', { command: 'shell', session: 'chat-x' })
+    expect(spawn.status).toBe(201)
+    // inject a chat turn
+    const inj = await post(base, '/term/inject', { session: 'chat-x', text: 'hello world' })
+    expect(inj.status).toBe(202)
+    expect(((await inj.json()) as { ptyId: string }).ptyId).toMatch(/^pty-/)
+    // it reached the (only) fake pty, submit key appended
+    expect(fakeProcs[0].writes).toContain('hello world\r')
+    // submit:false omits the CR
+    await post(base, '/term/inject', { session: 'chat-x', text: 'raw', submit: false })
+    expect(fakeProcs[0].writes).toContain('raw')
+  })
+
+  it('validates and 409s a session with no live harness', async () => {
+    const { base } = await start('', 60_000, { term: true })
+    expect((await post(base, '/term/inject', { text: 'hi' })).status).toBe(400) // no session
+    expect((await post(base, '/term/inject', { session: 'x' })).status).toBe(400) // no text
+    expect((await post(base, '/term/inject', { session: 'nope', text: 'hi' })).status).toBe(409)
+  })
+
+  it('is reachable via the /api/terminal/inject alias', async () => {
+    const { base } = await start('', 60_000, { term: true })
+    await post(base, '/term', { command: 'shell', session: 'chat-y' })
+    expect((await post(base, '/api/terminal/inject', { session: 'chat-y', text: 'hi' })).status).toBe(
+      202,
+    )
   })
 })
 

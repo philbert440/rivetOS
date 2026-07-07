@@ -79,6 +79,7 @@ const API_PATHS = new Set([
   '/term',
   '/term/config',
   '/term/list',
+  '/term/inject',
 ])
 
 const CORS = {
@@ -344,6 +345,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     '/api/terminal': '/term',
     '/api/terminal/config': '/term/config',
     '/api/terminal/list': '/term/list',
+    '/api/terminal/inject': '/term/inject',
     '/api/terminal/ws': '/term',
   }
   const canonicalize = (url: URL): void => {
@@ -570,6 +572,31 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           const id = url.searchParams.get('id') ?? ''
           if (!manager.kill(id)) return json(res, 404, { error: 'unknown pty' })
           return json(res, 200, { ok: true })
+        }
+
+        // POST /term/inject — write a chat turn into the session's harness
+        // stdin (seamless modes 5c). One server-side write path owns stdin;
+        // terminal attach stays read-mostly.
+        if (req.method === 'POST' && url.pathname === '/term/inject') {
+          const body = await readBody(req).catch(() => null)
+          if (body === null) return tooLarge(req, res)
+          let raw: unknown
+          try {
+            raw = JSON.parse(body || '{}')
+          } catch {
+            return json(res, 400, { error: 'invalid JSON' })
+          }
+          const p = raw as { session?: unknown; text?: unknown; submit?: unknown }
+          if (typeof p.session !== 'string' || p.session === '')
+            return json(res, 400, { error: 'session (string) is required' })
+          if (typeof p.text !== 'string')
+            return json(res, 400, { error: 'text (string) is required' })
+          const ptyId = manager.ptyForSession(p.session)
+          if (!ptyId) return json(res, 409, { error: 'no live harness for session' })
+          const submit = p.submit !== false // default true
+          if (!manager.write(ptyId, submit ? `${p.text}\r` : p.text))
+            return json(res, 409, { error: 'harness not writable' })
+          return json(res, 202, { ok: true, ptyId })
         }
       }
 

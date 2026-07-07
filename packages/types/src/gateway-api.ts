@@ -333,6 +333,25 @@ export interface TermSpawnResponse {
   createdAt: number
 }
 
+/**
+ * Inject a chat turn into a conversation's live harness (seamless modes 5c):
+ * the text is written to the session's PTY stdin — one server-side write path
+ * owns stdin, so terminal attach can stay read-mostly. Requires a live PTY
+ * for the session (spawn it first with TermSpawnRequest.session).
+ */
+export interface TermInjectRequest {
+  /** conversation join key — the PTY spawned with this session */
+  session: string
+  text: string
+  /** append the harness's submit key (CR) after the text; default true */
+  submit?: boolean
+}
+
+export interface TermInjectResponse {
+  ok: true
+  ptyId: string
+}
+
 export interface PtyInfo {
   id: string
   denSession: string
