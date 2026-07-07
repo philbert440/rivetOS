@@ -5,7 +5,7 @@
  * seeds a transcript on first open.
  */
 
-import { useEffect, type JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useConnection } from '../stores/connection.js'
 import { useChat } from '../stores/chat.js'
@@ -105,6 +105,7 @@ function SessionDrawer(props: {
 }
 
 function ActiveSession(props: { sessionId: string }): JSX.Element {
+  const [agent, setAgent] = useState<string | undefined>()
   const messages = useChat((s) => s.messages[props.sessionId]) ?? []
   const live = useChat((s) => s.live[props.sessionId])
   const wsStatus = useChat((s) => s.wsStatus)
@@ -125,12 +126,37 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
     if (backfill.data) seed(props.sessionId, backfill.data.messages)
   }, [backfill.data, props.sessionId])
 
+  // Catalog-driven agent picker (4g): local agents only — a remote agent
+  // needs a task, not a chat turn. Empty = the node's default agent.
+  const catalog = useQuery({
+    queryKey: ['catalog-agents', baseUrl, token ?? ''],
+    queryFn: ({ signal }) => useConnection.getState().gateway.catalogAgents(signal),
+    staleTime: 300_000,
+  })
+  const localAgents = (catalog.data?.agents ?? []).filter((a) => a.local)
+
   return (
     <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex items-center justify-between border-b border-line bg-panel/40 px-4 py-1.5">
+        <span className="truncate font-mono text-xs text-ink-dim">{props.sessionId}</span>
+        <select
+          value={agent ?? ''}
+          onChange={(e) => setAgent(e.target.value || undefined)}
+          className="rounded border border-line bg-panel px-2 py-1 font-mono text-xs"
+        >
+          <option value="">default agent</option>
+          {localAgents.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.id}
+              {'model' in a && a.model ? ` (${a.model})` : ''}
+            </option>
+          ))}
+        </select>
+      </div>
       <div className="flex-1 overflow-y-auto">
         <Transcript messages={messages} live={live} />
       </div>
-      <Composer sessionId={props.sessionId} wsStatus={wsStatus} />
+      <Composer sessionId={props.sessionId} wsStatus={wsStatus} agent={agent} />
     </div>
   )
 }

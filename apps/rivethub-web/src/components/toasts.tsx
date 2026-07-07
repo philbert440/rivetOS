@@ -1,4 +1,5 @@
 import type { JSX } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import type { NotificationFrame } from '@rivetos/types'
 import { useNotifications } from '../stores/notifications.js'
 
@@ -18,7 +19,13 @@ function frameBody(frame: NotificationFrame): string {
 export function Toasts(): JSX.Element {
   const entries = useNotifications((s) => s.entries)
   const dismiss = useNotifications((s) => s.dismissToast)
+  const navigate = useNavigate()
   const toasts = entries.filter((e) => e.toast)
+
+  const open = (frame: NotificationFrame): void => {
+    if (frame.kind === 'escalation') void navigate({ to: frame.href })
+    else void navigate({ to: `/tasks/${frame.taskId}` })
+  }
 
   return (
     <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-96 flex-col gap-2">
@@ -28,13 +35,13 @@ export function Toasts(): JSX.Element {
           className="pointer-events-auto rounded-lg border border-red/50 bg-panel-2 px-4 py-3 shadow-lg"
         >
           <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
+            <button className="min-w-0 text-left" onClick={() => open(e.frame)}>
               <div className="font-mono text-xs font-semibold text-red">{frameTitle(e.frame)}</div>
               <div className="mt-1 truncate text-sm text-ink">{frameBody(e.frame)}</div>
               <div className="mt-1 font-mono text-[10px] text-ink-dim">
                 {new Date(e.frame.ts).toLocaleTimeString()} · durable record in /api/outcomes
               </div>
-            </div>
+            </button>
             <button
               onClick={() => dismiss(e.id)}
               className="text-ink-dim hover:text-ink"
