@@ -60,19 +60,31 @@ export function subscribe<TFrame>(
     for (const [key, value] of Object.entries(opts.query ?? {})) {
       if (value !== undefined) u.searchParams.set(key, value)
     }
+    // Operators note: the token appears in server/proxy access logs — the
+    // unavoidable browser tradeoff (no WS headers). LAN-trust posture today.
     if (config.token) u.searchParams.set('token', config.token)
     return u.toString()
   }
 
   const connect = (): void => {
     if (closed) return
+    // One pending reconnect at most: a socket that emits close twice (proxy
+    // half-close, error→close races) must not leave an orphaned timer that
+    // fires after close() or spawns a second live socket (#296 review).
+    if (timer) clearTimeout(timer)
+    timer = undefined
     opts.onStatus?.('connecting')
-    ws = factory(url())
-    ws.addEventListener('open', () => {
+    const socket = factory(url())
+    ws = socket
+    socket.addEventListener('open', () => {
+      if (closed) {
+        socket.close(1000)
+        return
+      }
       attempt = 0
       opts.onStatus?.('open')
     })
-    ws.addEventListener('message', (event: never) => {
+    socket.addEventListener('message', (event: never) => {
       const data = (event as { data: unknown }).data
       if (typeof data !== 'string') return
       try {
@@ -82,16 +94,17 @@ export function subscribe<TFrame>(
         // keepalives; dropping one frame must not kill the subscription.
       }
     })
-    ws.addEventListener('close', () => {
+    socket.addEventListener('close', () => {
       opts.onStatus?.('closed')
       if (closed) return
+      if (timer) clearTimeout(timer) // double-close must not stack timers
       const backoff = Math.min(500 * 2 ** attempt, maxBackoff)
       attempt += 1
       timer = setTimeout(connect, backoff + Math.random() * 250)
       // Node returns a Timeout with unref; browsers return a number.
       ;(timer as { unref?: () => void }).unref?.()
     })
-    ws.addEventListener('error', () => {
+    socket.addEventListener('error', () => {
       // close always follows error; reconnect is handled there.
     })
   }

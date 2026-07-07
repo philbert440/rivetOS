@@ -230,10 +230,11 @@ export class RivetGateway {
 
   // -- health -----------------------------------------------------------------
 
-  /** Cheap reachability probe (den-server /healthz, never token-gated). */
+  /** Cheap reachability probe (den-server /healthz, never token-gated) —
+   *  sent tokenless so the credential never rides a probe. */
   async health(signal?: AbortSignal): Promise<boolean> {
     try {
-      await request(this.config, '/healthz', { signal })
+      await request({ baseUrl: this.config.baseUrl }, '/healthz', { signal })
       return true
     } catch {
       return false
