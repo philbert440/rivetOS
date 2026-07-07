@@ -59,6 +59,8 @@ export interface GatewayChannelHandle {
     path: string
     handle: (req: IncomingMessage, socket: Duplex, head: Buffer, url: URL) => void
   }
+  /** Push an external frame to WS subscribers (seamless-modes den bridge). */
+  emitFrame(frame: SessionWsFrame): void
   close(): Promise<void>
 }
 
@@ -285,10 +287,83 @@ export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayC
         wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
       },
     },
+    // Seamless modes (5d): push an external frame to /api/sessions/ws
+    // subscribers — the den-event bridge maps a harness's live AgentEvents
+    // into stream/message frames so the chat view of a PTY conversation
+    // streams like the chat-loop path. Message frames also land in the ring
+    // so a late-connecting client's list/backfill sees them.
+    emitFrame: (frame: SessionWsFrame): void => {
+      if (frame.kind === 'message') {
+        const s = session(frame.sessionId)
+        if (!s.ring.some((m) => m.id === frame.id)) {
+          const { kind: _k, ...msg } = frame
+          s.ring.push(msg)
+          if (s.ring.length > RING_MAX) s.ring.splice(0, s.ring.length - RING_MAX)
+          s.lastActive = msg.ts
+        }
+        broadcast(frame, frame.sessionId)
+      } else {
+        broadcast(frame, frame.session)
+      }
+    },
     close: async () => {
       for (const sub of subscribers) sub.ws.terminate()
       subscribers.clear()
       await new Promise<void>((resolve) => wss.close(() => resolve()))
     },
   }
+}
+
+/**
+ * Map a den AgentEvent to a sessions-WS frame for the chat view of a live
+ * harness conversation (seamless modes 5d). Assistant/user text become
+ * message frames (message.agent lands once on the harness Stop); thinking /
+ * tool events become stream frames that drive the live "working…" indicators.
+ * Returns null for events that aren't chat-relevant (session.start, activity,
+ * raw term.line — the terminal view shows those).
+ */
+export function agentEventToFrame(ev: AgentEventForBridge): SessionWsFrame | null {
+  const session = ev.session
+  const ts = typeof ev.ts === 'number' ? ev.ts : Date.now()
+  const str = (k: string): string => (typeof ev[k] === 'string' ? ev[k] : '')
+  switch (ev.type) {
+    case 'message.user':
+      return {
+        kind: 'message',
+        id: randomUUID(),
+        sessionId: session,
+        role: 'user',
+        text: str('text'),
+        ts,
+      }
+    case 'message.agent':
+      return {
+        kind: 'message',
+        id: randomUUID(),
+        sessionId: session,
+        role: 'assistant',
+        text: str('text'),
+        ts,
+      }
+    case 'thinking.delta':
+      return { kind: 'stream', session, event: { type: 'reasoning', content: str('text') } }
+    case 'tool.start':
+      return { kind: 'stream', session, event: { type: 'tool_start', content: str('tool') } }
+    case 'tool.end':
+      return { kind: 'stream', session, event: { type: 'tool_result', content: str('tool') } }
+    case 'session.end':
+      return { kind: 'stream', session, event: { type: 'done', content: '' } }
+    default:
+      return null
+  }
+}
+
+/** The ingested-AgentEvent shape the bridge reads (den-server passes this
+ *  verbatim) — deliberately broad so core needn't depend on
+ *  @rivetos/den-protocol; agentEventToFrame reads fields defensively. */
+export interface AgentEventForBridge {
+  session: string
+  type: string
+  ts?: number
+  [k: string]: unknown
 }

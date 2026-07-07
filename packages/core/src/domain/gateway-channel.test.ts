@@ -7,7 +7,11 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
 import { describe, it, expect, afterEach } from 'vitest'
-import { createGatewayChannel, type GatewayChannelHandle } from './gateway-channel.js'
+import {
+  createGatewayChannel,
+  agentEventToFrame,
+  type GatewayChannelHandle,
+} from './gateway-channel.js'
 
 const cleanups: Array<() => Promise<void> | void> = []
 afterEach(async () => {
@@ -135,5 +139,62 @@ describe('gateway channel /api/sessions', () => {
   it('validates bodies: 400 on missing text', async () => {
     const { base } = await start()
     expect((await post(base, 's6', {})).status).toBe(400)
+  })
+})
+
+describe('agentEventToFrame (seamless-modes bridge)', () => {
+  it('maps harness AgentEvents to chat frames', () => {
+    expect(agentEventToFrame({ session: 'c1', type: 'message.user', text: 'hi', ts: 5 })).toMatchObject(
+      { kind: 'message', sessionId: 'c1', role: 'user', text: 'hi', ts: 5 },
+    )
+    expect(agentEventToFrame({ session: 'c1', type: 'message.agent', text: 'yo', ts: 6 })).toMatchObject(
+      { kind: 'message', sessionId: 'c1', role: 'assistant', text: 'yo', ts: 6 },
+    )
+    expect(agentEventToFrame({ session: 'c1', type: 'thinking.delta', text: '...' })).toEqual({
+      kind: 'stream',
+      session: 'c1',
+      event: { type: 'reasoning', content: '...' },
+    })
+    expect(agentEventToFrame({ session: 'c1', type: 'tool.start', tool: 'Bash' })).toEqual({
+      kind: 'stream',
+      session: 'c1',
+      event: { type: 'tool_start', content: 'Bash' },
+    })
+    expect(agentEventToFrame({ session: 'c1', type: 'tool.end' })).toEqual({
+      kind: 'stream',
+      session: 'c1',
+      event: { type: 'tool_result', content: '' },
+    })
+    expect(agentEventToFrame({ session: 'c1', type: 'session.end' })).toMatchObject({
+      kind: 'stream',
+      event: { type: 'done' },
+    })
+    // non-chat events → null (terminal/den show them)
+    expect(agentEventToFrame({ session: 'c1', type: 'session.start', title: 't' })).toBeNull()
+    expect(agentEventToFrame({ session: 'c1', type: 'activity', activity: 'thinking' })).toBeNull()
+    expect(agentEventToFrame({ session: 'c1', type: 'term.line', text: '$ ls' })).toBeNull()
+  })
+})
+
+describe('emitFrame (seamless-modes push)', () => {
+  it('broadcasts to a session subscriber and rings message frames', async () => {
+    const { gw, base, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=conv-1`)
+    const got: unknown[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString())))
+    await new Promise((r) => ws.once('open', r))
+
+    gw.emitFrame({ kind: 'stream', session: 'conv-1', event: { type: 'reasoning', content: 'x' } })
+    gw.emitFrame({ kind: 'message', id: 'm1', sessionId: 'conv-1', role: 'assistant', text: 'hi', ts: 1 })
+    gw.emitFrame({ kind: 'stream', session: 'other', event: { type: 'text', content: 'nope' } })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    expect(got.length).toBe(2) // the 'other' session frame is filtered out
+    // the message frame landed in the ring (backfill sees it)
+    const msgs = (await (await fetch(`${base}/api/sessions/conv-1/messages`)).json()) as {
+      messages: { id: string }[]
+    }
+    expect(msgs.messages.some((m) => m.id === 'm1')).toBe(true)
   })
 })
