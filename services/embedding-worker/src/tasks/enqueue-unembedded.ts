@@ -26,7 +26,12 @@
 import type { Task } from 'graphile-worker'
 import { config } from '../config.js'
 
-const TABLES = ['ros_messages', 'ros_summaries'] as const
+/** Per-table column spec — wiki topics key on slug and embed search_text. */
+const TABLES = [
+  { table: 'ros_messages', idCol: 'id', contentCol: 'content' },
+  { table: 'ros_summaries', idCol: 'id', contentCol: 'content' },
+  { table: 'ros_wiki_topics', idCol: 'slug', contentCol: 'search_text' },
+] as const
 
 interface UnembeddedRow {
   id: string
@@ -36,18 +41,22 @@ export const enqueueUnembeddedTask: Task = async (_payload, helpers) => {
   await helpers.withPgClient(async (client) => {
     let enqueued = 0
 
-    for (const table of TABLES) {
-      const { rows } = await client.query<UnembeddedRow>(
-        `SELECT id::text AS id
-           FROM ${table}
-          WHERE embedding IS NULL
-            AND embed_status IS NULL
-            AND content IS NOT NULL
-            AND LENGTH(content) > 20
-          ORDER BY created_at DESC
-          LIMIT $1`,
-        [config.sweepLimit],
-      )
+    for (const { table, idCol, contentCol } of TABLES) {
+      const { rows } = await client
+        .query<UnembeddedRow>(
+          `SELECT ${idCol}::text AS id
+             FROM ${table}
+            WHERE embedding IS NULL
+              AND embed_status IS NULL
+              AND ${contentCol} IS NOT NULL
+              AND LENGTH(${contentCol}) > 20
+            ORDER BY created_at DESC
+            LIMIT $1`,
+          [config.sweepLimit],
+        )
+        // ros_wiki_topics predates some deploys (0005) — missing table is
+        // an empty sweep, not a crash.
+        .catch(() => ({ rows: [] as UnembeddedRow[] }))
 
       for (const row of rows) {
         await helpers.addJob(
