@@ -194,9 +194,10 @@ export interface TaskWaitTimeoutResponse {
 export type CatalogAgent =
   /** model can be absent on agents whose provider resolves it lazily */
   | { id: string; provider: string; model?: string; node: string; local: true }
-  /** Remote mesh entries carry no provider/model until mesh registration
-   * advertises richer metadata (followups #272). */
-  | { id: string; node: string; local: false }
+  /** Remote mesh entries: provider/model present when the owning node
+   * advertised per-agent detail in its mesh registration (#272); absent on
+   * older peers. */
+  | { id: string; node: string; local: false; provider?: string; model?: string }
 
 export interface CatalogCommand {
   name: string
