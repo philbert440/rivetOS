@@ -128,11 +128,22 @@ describe('/wiki HTML', () => {
     expect(index).toContain('Gaps — worth a conversation')
     expect(index).toContain('host:ct999')
     expect(index).toContain(`/wiki/${TOPIC.slug}`)
+    expect(index).toContain('RivetOS Wiki') // sidebar shell
+    expect(index).toContain('/wiki/_recent')
 
     const page = await (await fetch(`${base}/wiki/${TOPIC.slug}`)).text()
-    expect(page).toContain('Current state')
     expect(page).toContain('only engine')
     expect(page).toContain('2026-07-06')
+    expect(page).toContain('infobox')
+    expect(page).toContain('?view=history')
+    const history = await (await fetch(`${base}/wiki/${TOPIC.slug}?view=history`)).text()
+    expect(history).toContain('Provenance')
+    const raw = await fetch(`${base}/wiki/${TOPIC.slug}?view=raw`)
+    expect(raw.headers.get('content-type')).toContain('text/markdown')
+    const recent = await (await fetch(`${base}/wiki/_recent`)).text()
+    expect(recent).toContain(TOPIC.slug)
+    const rnd = await fetch(`${base}/wiki/_random`, { redirect: 'manual' })
+    expect(rnd.status).toBe(302)
 
     const missing = await fetch(`${base}/wiki/never-heard-of-it`)
     expect(missing.status).toBe(404)
