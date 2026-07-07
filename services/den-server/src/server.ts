@@ -526,9 +526,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           }
           if (typeof raw !== 'object' || raw === null)
             return json(res, 400, { error: 'expected an object' })
-          const p = raw as { command?: unknown; cols?: unknown; rows?: unknown }
+          const p = raw as {
+            command?: unknown
+            cols?: unknown
+            rows?: unknown
+            session?: unknown
+          }
           if (p.command !== undefined && typeof p.command !== 'string')
             return json(res, 400, { error: 'command must be a roster key' })
+          if (p.session !== undefined && typeof p.session !== 'string')
+            return json(res, 400, { error: 'session must be a string' })
           const clamp = (v: unknown, lo: number, hi: number, dflt: number): number =>
             typeof v === 'number' && Number.isFinite(v)
               ? Math.min(hi, Math.max(lo, Math.floor(v)))
@@ -539,6 +546,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               clamp(p.cols, 20, 500, 80),
               clamp(p.rows, 5, 200, 24),
               req.socket.remoteAddress ?? '',
+              p.session,
             )
             return json(res, 201, {
               id: pty.id,

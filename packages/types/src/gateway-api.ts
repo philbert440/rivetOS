@@ -310,6 +310,16 @@ export interface TermConfigResponse {
 export interface TermSpawnRequest {
   /** roster key from TermConfigResponse.commands; default when omitted */
   command?: string
+  /**
+   * Conversation join key (seamless modes): when set, this PTY's denSession
+   * IS this id and the harness runs with RIVETOS_SESSION_KEY=<session>, so
+   * chat / den / terminal are three views of ONE session. Spawn is
+   * spawn-or-get: an existing PTY for this session is returned, not a second.
+   */
+  session?: string
+  /** Harness-native session id to resume (e.g. `claude --resume`) when the
+   *  pool respawns a cold conversation. Reserved; wired with the pool. */
+  resume?: string
   cols?: number
   rows?: number
 }
