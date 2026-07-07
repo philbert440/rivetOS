@@ -27,6 +27,10 @@ export const config = {
   // Worker-local concurrency
   compactConcurrency: intEnv('COMPACT_CONCURRENCY', 1),
 
+  // Wiki extraction (phase 3c) — dark by default; single writer per design.
+  wikiExtraction: process.env.WIKI_EXTRACTION === '1',
+  wikiDir: process.env.WIKI_DIR ?? '/rivet-shared/wiki',
+
   // Batch sizes (worker-local — library exports only absolute budgets)
   leafBatchSize: intEnv('COMPACT_LEAF_BATCH', 10),
   branchBatchSize: intEnv('COMPACT_BRANCH_BATCH', 8),
