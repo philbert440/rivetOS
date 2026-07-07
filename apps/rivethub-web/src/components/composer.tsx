@@ -4,13 +4,15 @@ import { useConnection } from '../stores/connection.js'
 
 export function Composer(props: { sessionId: string; wsStatus: WsStatus }): JSX.Element {
   const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | undefined>()
   const connected = props.wsStatus === 'open'
 
   const send = async (): Promise<void> => {
     const body = text.trim()
-    if (!body) return
+    if (!body || sending) return
     setError(undefined)
+    setSending(true) // lock: double-Enter must not fire duplicate turns
     setText('')
     try {
       // Fire-and-forget; the reply (and the echo of this message) arrives on
@@ -20,6 +22,8 @@ export function Composer(props: { sessionId: string; wsStatus: WsStatus }): JSX.
     } catch (err) {
       setError((err as Error).message)
       setText(body) // give the draft back
+    } finally {
+      setSending(false)
     }
   }
 
@@ -38,12 +42,12 @@ export function Composer(props: { sessionId: string; wsStatus: WsStatus }): JSX.
           }}
           rows={Math.min(6, Math.max(1, text.split('\n').length))}
           placeholder={connected ? 'Message Rivet… (Enter to send)' : 'reconnecting…'}
-          disabled={!connected}
+          disabled={!connected || sending}
           className="flex-1 resize-none rounded border border-line bg-panel px-3 py-2.5 text-sm outline-none focus:border-em disabled:opacity-50"
         />
         <button
           onClick={() => void send()}
-          disabled={!connected || !text.trim()}
+          disabled={!connected || sending || !text.trim()}
           className="rounded bg-em-dim px-4 py-2.5 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
         >
           Send

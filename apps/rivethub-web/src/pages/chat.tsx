@@ -23,9 +23,10 @@ export function ChatPage(): JSX.Element {
   const token = useConnection((s) => s.token)
   const chat = useChat()
 
-  // One socket for the whole page; reconnect when the endpoint changes.
+  // One socket for the whole page; reconnect (and reset per-gateway state)
+  // when the endpoint identity changes.
   useEffect(() => {
-    chat.connect()
+    chat.connect(`${baseUrl}|${token ?? ''}`)
     return () => useChat.getState().disconnect()
   }, [baseUrl, token])
 
@@ -107,12 +108,16 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
   const messages = useChat((s) => s.messages[props.sessionId]) ?? []
   const live = useChat((s) => s.live[props.sessionId])
   const wsStatus = useChat((s) => s.wsStatus)
+  const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
   const baseUrl = useConnection((s) => s.baseUrl)
+  const token = useConnection((s) => s.token)
 
-  // HTTP backfill on first open (and on endpoint change).
+  // HTTP backfill on first open, on endpoint/credential change, and after
+  // every reconnect (wsEpoch) — frames dropped during an outage only come
+  // back through the ring.
   const backfill = useQuery({
-    queryKey: ['session-messages', baseUrl, props.sessionId],
+    queryKey: ['session-messages', baseUrl, token ?? '', props.sessionId, wsEpoch],
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.sessionMessages(props.sessionId, signal),
   })
