@@ -28,6 +28,11 @@ interface MeshFileData {
   nodes: Record<string, MeshFileNode | undefined>
 }
 
+// These two are the /api/mesh (/mesh.json) wire shapes. Their canonical
+// client-facing mirror is MeshDenNode/MeshOverview in @rivetos/types
+// gateway-api.ts; den-server stays dependency-free at runtime, so the two
+// definitions are locked against each other by a compile-time assertion in
+// mesh.test.ts (types is a devDependency only).
 export interface MeshDenNode {
   id: string
   name: string
