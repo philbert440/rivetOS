@@ -11,27 +11,24 @@ const HARNESS_LABEL: Record<string, string> = {
 
 function label(agent: CatalogAgent): string {
   const base = HARNESS_LABEL[agent.id] ?? agent.id
-  // remote agents show where they run; local models show their model id
-  if (!agent.local) return `${base} @ ${agent.node}`
+  // local agents show their model when configured (increment 2 expands the
+  // local provider into its live-served models)
   return 'model' in agent && agent.model ? `${base} (${agent.model})` : base
 }
 
 /**
- * Build the model dropdown options from the catalog. Local agents first
- * (this node's harnesses / models), then remote agents grouped by node.
- * Increment-2 will expand the local provider into its live-served models;
- * for now each configured agent is one option.
+ * Model dropdown options from the catalog — LOCAL agents only. A chat turn
+ * runs on this node; a remote/mesh agent isn't routable for chat (it needs a
+ * task), so mesh entries are excluded to avoid a dead selection (#310 review).
+ * De-duped by id.
  */
 export function modelOptions(agents: CatalogAgent[]): SelectOption[] {
-  const opts: SelectOption[] = [{ value: '', label: 'default agent', group: 'This node' }]
+  const opts: SelectOption[] = [{ value: '', label: 'default agent' }]
+  const seen = new Set<string>([''])
   for (const a of agents) {
-    if (a.local) opts.push({ value: a.id, label: label(a), group: 'This node' })
+    if (!a.local || seen.has(a.id)) continue
+    seen.add(a.id)
+    opts.push({ value: a.id, label: label(a) })
   }
-  const remote = agents.filter((a) => !a.local)
-  for (const a of remote) {
-    opts.push({ value: a.id, label: label(a), group: 'On the mesh' })
-  }
-  // de-dupe by value (mesh can list an id on several nodes; keep the first)
-  const seen = new Set<string>()
-  return opts.filter((o) => (seen.has(o.value) ? false : (seen.add(o.value), true)))
+  return opts
 }
