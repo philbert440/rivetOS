@@ -46,6 +46,18 @@ type Gaps = Awaited<ReturnType<WikiIndexLike['gaps']>>
 export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
   const wikiDir = opts.wikiDir ?? '/rivet-shared/wiki'
 
+  // Topic-set cache (#294): one listTopics per 30s window instead of per
+  // request — redlink checks and the sidebar count tolerate 30s staleness
+  // (the extractor writes minutes apart). 2000 covers wiki scale for years;
+  // the cap only affects redlink coloring, never article serving.
+  let cache: { topics: Topic[]; total: number; at: number } | undefined
+  const topicSet = async (): Promise<{ topics: Topic[]; total: number }> => {
+    if (cache && Date.now() - cache.at < 30_000) return cache
+    const { topics, total } = await opts.index.listTopics({ limit: 2000 })
+    cache = { topics, total, at: Date.now() }
+    return cache
+  }
+
   return {
     prefix: '/wiki',
     handler: async (req, res) => {
@@ -53,7 +65,7 @@ export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
         if (req.method !== 'GET') return text(res, 405, 'method not allowed')
         const url = new URL(req.url ?? '/', 'http://localhost')
         const rest = url.pathname.slice('/wiki'.length).replace(/^\//, '')
-        const { topics, total } = await opts.index.listTopics({ limit: 500 })
+        const { topics, total } = await topicSet()
         const ctx: RenderCtx = {
           slugs: new Set(topics.map((t) => t.slug)),
           nodeName: opts.nodeName,
@@ -63,6 +75,7 @@ export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
         if (rest === '') {
           const q = url.searchParams.get('q')
           if (q) {
+            ctx.q = q
             const hits = await opts.index.searchTopics(q, { limit: 20 })
             return page(res, ctx, `Search: ${q}`, renderSearch(q, hits))
           }
@@ -70,14 +83,19 @@ export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
           return page(res, ctx, 'Main Page', renderMain(topics, total, gaps, ctx))
         }
 
-        if (rest === '_all') return page(res, ctx, 'All topics', renderAll(topics))
+        if (rest === '_all') {
+          const tag = url.searchParams.get('tag')
+          const filtered = tag ? topics.filter((t) => t.tags.includes(tag)) : topics
+          return page(res, ctx, tag ? `Topics: ${tag}` : 'All topics', renderAll(filtered))
+        }
         if (rest === '_recent') return page(res, ctx, 'Recent changes', renderRecent(topics))
         if (rest === '_gaps') {
           const gaps = await opts.index.gaps({ staleLimit: 20 })
           return page(res, ctx, 'Gaps', renderGaps(gaps, ctx))
         }
         if (rest === '_random') {
-          const pick = topics[Math.floor(Math.random() * Math.max(topics.length, 1))]
+          const pick =
+            topics.length > 0 ? topics[Math.floor(Math.random() * topics.length)] : undefined
           res.writeHead(302, { Location: pick ? `/wiki/${pick.slug}` : '/wiki' })
           res.end()
           return
@@ -140,6 +158,8 @@ interface RenderCtx {
   slugs: Set<string>
   nodeName?: string
   total: number
+  /** Current search query — echoed (escaped) into the sidebar box. */
+  q?: string
 }
 
 function esc(s: string): string {
@@ -261,7 +281,7 @@ ${meta.entities.length > 0 ? `<tr><th>Entities</th><td>${meta.entities.map((e) =
       : ''
   const categories =
     meta.tags.length > 0
-      ? `<nav class="catbar">Categories: ${meta.tags.map((t) => `<a href="/wiki/_all">${esc(t)}</a>`).join(' · ')}</nav>`
+      ? `<nav class="catbar">Categories: ${meta.tags.map((t) => `<a href="/wiki/_all?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join(' · ')}</nav>`
       : ''
   return `${infobox}
 ${renderMarkdown(p.currentState, ctx)}
@@ -436,7 +456,7 @@ details{margin:.45rem 0}summary{cursor:pointer}
 <body><div class="layout">
 <aside class="sidebar">
 <a class="logo" href="/wiki"><span class="bolt">🔩</span> RivetOS Wiki</a>
-<form action="/wiki" method="get"><input type="search" name="q" placeholder="Search memory…"></form>
+<form action="/wiki" method="get"><input type="search" name="q" value="${esc(ctx.q ?? '')}" placeholder="Search memory…"></form>
 <nav>
 <h4>Navigate</h4>
 <a href="/wiki">Main page</a>
