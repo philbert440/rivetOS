@@ -95,11 +95,44 @@ describe('listHarnessSessions', () => {
     delete process.env.GROK_HOME
   })
 
+  it('lists hermes sessions from state.db (title = first user message)', async () => {
+    let DatabaseSync: (new (p: string) => { exec(sql: string): void; close(): void }) | undefined
+    try {
+      ;({ DatabaseSync } = await import('node:sqlite'))
+    } catch {
+      return // node:sqlite unavailable — skip (Node < 22.5)
+    }
+    const base = mkdtempSync(join(tmpdir(), 'hermes-store-'))
+    dirs.push(base)
+    const db = new DatabaseSync(join(base, 'state.db'))
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER);
+      CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT, timestamp INTEGER);
+      INSERT INTO sessions VALUES ('sess_a', 1000, 2000), ('sess_b', 3000, 5000);
+      INSERT INTO messages VALUES ('sess_a','user','fix the parser',1000);
+      INSERT INTO messages VALUES ('sess_b','user','ship the release',3000);
+    `)
+    db.close()
+    process.env.HERMES_HOME = base
+
+    const sessions = await listHarnessSessions(['hermes'])
+    expect(sessions.map((s) => `${s.id}:${s.title}`)).toEqual([
+      'sess_b:ship the release', // ended_at 5000 → newest
+      'sess_a:fix the parser',
+    ])
+    expect(sessions[0].command).toBe('hermes')
+    expect(harnessSessionExists('hermes', 'sess_a')).toBe(true)
+    expect(harnessSessionExists('hermes', 'nope')).toBe(false)
+    delete process.env.HERMES_HOME
+  })
+
   it('empty when the harness has no store / is not a known harness', async () => {
     process.env.CLAUDE_CONFIG_DIR = join(tmpdir(), 'does-not-exist-' + String(process.pid))
     process.env.GROK_HOME = join(tmpdir(), 'no-grok-' + String(process.pid))
-    expect(await listHarnessSessions(['claude', 'grok'])).toEqual([])
-    expect(await listHarnessSessions(['hermes', 'shell'])).toEqual([]) // no reader wired
+    process.env.HERMES_HOME = join(tmpdir(), 'no-hermes-' + String(process.pid))
+    expect(await listHarnessSessions(['claude', 'grok', 'hermes'])).toEqual([])
+    expect(await listHarnessSessions(['shell'])).toEqual([]) // no reader wired
     delete process.env.GROK_HOME
+    delete process.env.HERMES_HOME
   })
 })
