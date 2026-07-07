@@ -196,6 +196,14 @@ export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayC
             if (body === undefined || typeof body.text !== 'string' || body.text.trim() === '')
               return json(res, 400, { error: 'text (string) is required' })
 
+            // Per-turn reasoning effort rides in metadata.thinking — the turn
+            // handler reads it and falls back to the session level (RivetHub's
+            // effort dropdown, persisted per-conversation client-side).
+            const THINK = ['off', 'low', 'medium', 'high', 'xhigh']
+            const thinking =
+              typeof body.thinking === 'string' && THINK.includes(body.thinking)
+                ? body.thinking
+                : undefined
             const inbound: InboundMessage = {
               id: randomUUID(),
               userId: typeof body.userId === 'string' ? body.userId : 'gateway-user',
@@ -204,6 +212,7 @@ export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayC
               text: body.text,
               platform: 'gateway',
               agent: typeof body.agent === 'string' ? body.agent : opts?.defaultAgent,
+              ...(thinking ? { metadata: { thinking } } : {}),
               timestamp: Math.floor(Date.now() / 1000),
             }
             record(id, 'user', body.text)

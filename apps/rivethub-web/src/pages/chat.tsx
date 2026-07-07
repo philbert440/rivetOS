@@ -10,8 +10,10 @@ import { useQuery } from '@tanstack/react-query'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { useChat } from '../stores/chat.js'
+import { useChatSettings } from '../stores/chat-settings.js'
 import { Transcript } from '../components/transcript.js'
 import { Composer } from '../components/composer.js'
+import { XtermAttach } from '../components/xterm-attach.js'
 
 function newSessionId(): string {
   const d = new Date()
@@ -110,7 +112,9 @@ function SessionDrawer(props: {
 }
 
 function ActiveSession(props: { sessionId: string }): JSX.Element {
-  const [agent, setAgent] = useState<string | undefined>()
+  const [mode, setMode] = useState<'chat' | 'terminal'>('chat')
+  const [termPtyId, setTermPtyId] = useState<string | undefined>()
+  const [termError, setTermError] = useState<string | undefined>()
   const messages = useChat((s) => s.messages[props.sessionId]) ?? []
   const live = useChat((s) => s.live[props.sessionId])
   const wsStatus = useChat((s) => s.wsStatus)
@@ -118,6 +122,11 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
   const seed = useChat((s) => s.seed)
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
+
+  // per-conversation model + effort (persisted). Keyed per node + session.
+  const settingsKey = `${baseUrl}::${props.sessionId}`
+  const settings = useChatSettings((s) => s.byKey[settingsKey])
+  const setSetting = useChatSettings((s) => s.set)
 
   // HTTP backfill on first open, on endpoint/credential change, and after
   // every reconnect (wsEpoch) — frames dropped during an outage only come
@@ -131,50 +140,77 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
     if (backfill.data) seed(props.sessionId, backfill.data.messages)
   }, [backfill.data, props.sessionId])
 
-  // Catalog-driven agent picker (4g): local agents only — a remote agent
-  // needs a task, not a chat turn. Empty = the node's default agent.
-  const catalog = useQuery({
-    queryKey: ['catalog-agents', baseUrl, token ?? ''],
-    queryFn: ({ signal }) => useConnection.getState().gateway.catalogAgents(signal),
-    staleTime: 300_000,
-  })
-  const localAgents = (catalog.data?.agents ?? []).filter((a) => a.local)
+  // Switching to Terminal spawns the harness matching the chosen model once
+  // (the TUI side of this session); toggling back detaches but leaves the PTY
+  // for reattach. The model id maps to a term roster command when one exists.
+  const enterTerminal = (): void => {
+    setMode('terminal')
+    if (termPtyId) return
+    const command = settings?.agent || undefined
+    void useConnection
+      .getState()
+      .gateway.termSpawn(command ? { command } : {})
+      .then((p) => setTermPtyId(p.id))
+      .catch((e: unknown) => setTermError((e as Error).message))
+  }
+
+  const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/`
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
       <div className="flex items-center justify-between border-b border-line bg-panel/40 px-4 py-1.5">
         <span className="truncate font-mono text-xs text-ink-dim">{props.sessionId}</span>
         <span className="flex items-center gap-2">
-          {catalog.isLoading && (
-            <span className="font-mono text-[11px] text-ink-dim">loading agents…</span>
-          )}
-          {catalog.isError && (
-            <span className="font-mono text-[11px] text-red">catalog unavailable</span>
-          )}
-          {catalog.isSuccess && localAgents.length === 0 && (
-            <span className="font-mono text-[11px] text-ink-dim">
-              no local agents — using default
-            </span>
-          )}
-          <select
-            value={agent ?? ''}
-            onChange={(e) => setAgent(e.target.value || undefined)}
-            className="rounded border border-line bg-panel px-2 py-1 font-mono text-xs"
+          {/* [Chat | Terminal] toggle — same session, two views */}
+          <span className="flex overflow-hidden rounded-md border border-line">
+            <button
+              onClick={() => setMode('chat')}
+              className={`px-2.5 py-1 font-mono text-[11px] ${mode === 'chat' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
+            >
+              Chat
+            </button>
+            <button
+              onClick={enterTerminal}
+              className={`border-l border-line px-2.5 py-1 font-mono text-[11px] ${mode === 'terminal' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
+            >
+              Terminal
+            </button>
+          </span>
+          <a
+            href={denUrl}
+            className="rounded-md border border-line px-2.5 py-1 font-mono text-[11px] text-ink-dim hover:border-em hover:text-em"
+            title="open the den for this node"
           >
-            <option value="">default agent</option>
-            {localAgents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.id}
-                {'model' in a && a.model ? ` (${a.model})` : ''}
-              </option>
-            ))}
-          </select>
+            ▦ Den
+          </a>
         </span>
       </div>
-      <div className="flex-1 overflow-y-auto">
-        <Transcript messages={messages} live={live} />
-      </div>
-      <Composer sessionId={props.sessionId} wsStatus={wsStatus} agent={agent} />
+
+      {mode === 'chat' ? (
+        <>
+          <div className="flex-1 overflow-y-auto">
+            <Transcript messages={messages} live={live} />
+          </div>
+          <Composer
+            sessionId={props.sessionId}
+            wsStatus={wsStatus}
+            settingsKey={settingsKey}
+            agent={settings?.agent || undefined}
+            effort={settings?.effort ?? 'medium'}
+            onSetting={(patch) => setSetting(settingsKey, patch)}
+          />
+        </>
+      ) : termError ? (
+        <div className="flex flex-1 items-center justify-center font-mono text-sm text-red">
+          {termError}
+        </div>
+      ) : termPtyId ? (
+        <XtermAttach key={`${baseUrl}|${termPtyId}`} ptyId={termPtyId} />
+      ) : (
+        <div className="flex flex-1 items-center justify-center text-sm text-ink-dim">
+          spawning terminal…
+        </div>
+      )}
     </div>
   )
 }
