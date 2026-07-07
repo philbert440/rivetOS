@@ -262,8 +262,20 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     // Show the turn immediately — the inject echo (harness hook → bridge) has
     // real latency, unlike the chat-loop's instant echo.
     addOptimisticUser(props.sessionId, body)
+    const gw = useConnection.getState().gateway
     await ensurePty()
-    await useConnection.getState().gateway.termInject({ session: props.sessionId, text: body })
+    try {
+      await gw.termInject({ session: props.sessionId, text: body })
+    } catch (err) {
+      // The harness may have been LRU-evicted while we held a stale pty ref
+      // (#318 review): drop the ref, respawn (store-existence → --resume so
+      // context is kept), and retry once.
+      termPtyRef.current = undefined
+      setTermPtyId(undefined)
+      await ensurePty()
+      await gw.termInject({ session: props.sessionId, text: body })
+      void err
+    }
   }
 
   const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(props.sessionId)}`

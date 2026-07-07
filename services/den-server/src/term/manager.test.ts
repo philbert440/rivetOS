@@ -70,6 +70,7 @@ function makeManager(
     roster?: TermRoster
     roomOpen?: (s: string) => boolean
     spawn?: PtySpawn
+    sessionExists?: (command: string, id: string) => boolean
   } = {},
 ): Harness {
   const stateDir = tmp()
@@ -110,6 +111,7 @@ function makeManager(
     roster: () => extra.roster ?? defaultRoster(),
     ingest: (ev) => ingested.push(ev),
     roomOpen: extra.roomOpen,
+    sessionExists: extra.sessionExists,
     log: (m) => logs.push(m),
   })
   managers.push(manager)
@@ -155,6 +157,32 @@ describe('term manager', () => {
   it('rejects a malformed session id', () => {
     const { manager } = makeManager({})
     expect(() => manager.spawn('claude', 80, 24, '', 'bad session id!')).toThrow(/invalid session/)
+  })
+
+  it('harness flags (#318): UUID session → --session-id (new) or --resume (existing/resume)', () => {
+    const uuid = '11111111-1111-1111-1111-111111111111'
+    // no store file → new session, pin the id
+    const fresh = makeManager({}, { sessionExists: () => false })
+    fresh.manager.spawn('claude', 80, 24, '', uuid)
+    expect(fresh.spawns[0].argv).toEqual(['claude', '--session-id', uuid])
+
+    // store file exists (re-spawn after eviction) → resume it, keep context
+    const evicted = makeManager({}, { sessionExists: () => true })
+    evicted.manager.spawn('claude', 80, 24, '', uuid)
+    expect(evicted.spawns[0].argv).toEqual(['claude', '--resume', uuid])
+
+    // explicit resume always wins
+    const reopen = makeManager({}, { sessionExists: () => false })
+    reopen.manager.spawn('claude', 80, 24, '', uuid, uuid)
+    expect(reopen.spawns[0].argv).toEqual(['claude', '--resume', uuid])
+
+    // a non-claude harness / non-UUID id gets no flags
+    const shell = makeManager({})
+    shell.manager.spawn('shell', 80, 24, '', uuid)
+    expect(shell.spawns[0].argv).toEqual(['bash', '-l'])
+    const nonUuid = makeManager({}, { sessionExists: () => true })
+    nonUuid.manager.spawn('claude', 80, 24, '', 'chat-20260707-abcd')
+    expect(nonUuid.spawns[0].argv).toEqual(['claude'])
   })
 
   it('OMITS RIVET_DEN_TOKEN entirely when the token is empty', () => {
