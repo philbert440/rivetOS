@@ -189,6 +189,15 @@ export const manifest: PluginManifest = {
 }
 
 export { WikiIndex } from './wiki/index-reader.js'
+export {
+  WIKI_EXTRACT_SYSTEM_PROMPT,
+  WIKI_EXTRACT_MAX_TOKENS,
+  WIKI_MIN_SUMMARY_CHARS,
+  WIKI_PIPELINE_VERSION,
+  formatExtractionPrompt,
+  parseWikiPatches,
+} from './wiki/prompts.js'
+export type { ExtractionCandidate } from './wiki/prompts.js'
 export type {
   WikiTopicRow,
   WikiTopicHit,
