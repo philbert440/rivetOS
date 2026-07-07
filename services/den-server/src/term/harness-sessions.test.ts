@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { listHarnessSessions } from './harness-sessions.js'
+import { listHarnessSessions, harnessSessionExists } from './harness-sessions.js'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -80,6 +80,18 @@ describe('listHarnessSessions', () => {
     expect(sessions.some((s) => s.command === 'claude')).toBe(true)
     // sorted last-updated first across harnesses
     expect(sessions[0].updatedAt).toBeGreaterThan(sessions[sessions.length - 1].updatedAt)
+    delete process.env.GROK_HOME
+  })
+
+  it('harnessSessionExists: grok checks the session DIR, not summary.json (written later)', async () => {
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-exists-'))
+    dirs.push(grokBase)
+    // a brand-new grok session: the dir exists but summary.json not written yet
+    mkdirSync(join(grokBase, 'sessions', '%2Fhome%2Frivet', 'bbbb-2222'), { recursive: true })
+    process.env.GROK_HOME = grokBase
+    expect(harnessSessionExists('grok', 'bbbb-2222')).toBe(true) // dir present → resume
+    expect(harnessSessionExists('grok', 'nope-0000')).toBe(false)
+    expect(harnessSessionExists('hermes', 'bbbb-2222')).toBe(false) // unknown harness
     delete process.env.GROK_HOME
   })
 

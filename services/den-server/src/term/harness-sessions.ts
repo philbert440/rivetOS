@@ -173,7 +173,11 @@ export function harnessSessionExists(command: string, id: string): boolean {
     hit = (slug) => join(dir, slug, `${id}.jsonl`)
   } else if (command === 'grok') {
     dir = grokSessionsDir()
-    hit = (cwd) => join(dir, cwd, id, 'summary.json')
+    // grok's --session-id refuses an id whose session DIR already exists, and
+    // it creates that dir before summary.json — so test the dir, not the
+    // (later-written) summary, or an immediate re-spawn wrongly picks
+    // --session-id and errors.
+    hit = (cwd) => join(dir, cwd, id)
   } else {
     return false
   }
