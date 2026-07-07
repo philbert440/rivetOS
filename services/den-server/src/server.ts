@@ -130,6 +130,13 @@ export interface DenServerOptions {
       url: URL,
     ) => void
   }>
+  /**
+   * Seamless modes (5d): a tap on every ingested AgentEvent, after it has
+   * updated den state and fanned to den viewers. The gateway bridges these
+   * into /api/sessions/ws so the chat view of a live-harness conversation
+   * streams. Fire-and-forget — must never throw into the ingest path.
+   */
+  onAgentEvent?: (ev: { session: string; type: string; [k: string]: unknown }) => void
 }
 
 const json = (res: ServerResponse, code: number, body: unknown): void => {
@@ -230,6 +237,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     clearEviction(ev.session)
     if (ev.type === 'session.end') scheduleEviction(ev.session)
     broadcast(JSON.stringify(ev), ev.session)
+    // Seamless-modes tap: bridge to the chat view (5d). Never let it throw
+    // into ingest.
+    if (opts.onAgentEvent) {
+      try {
+        opts.onAgentEvent(ev as unknown as { session: string; type: string })
+      } catch {
+        /* bridge errors must not break den ingest */
+      }
+    }
   }
 
   // ── terminals (opt-in) ─────────────────────────────────────────────────

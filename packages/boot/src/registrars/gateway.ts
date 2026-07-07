@@ -113,6 +113,11 @@ export async function registerGateway(
   const den = createDenServer(denConfig, {
     extraRoutes: [...extraRoutes, ...gatewayChannel.routes],
     extraUpgrades: [gatewayChannel.upgrade, ...extraUpgrades],
+    // Seamless modes (5d): bridge live harness AgentEvents into the chat WS
+    // so a PTY conversation's chat view streams (thinking/tool indicators +
+    // the coalesced assistant message per turn). Terminal + den views are
+    // unaffected; `task:` sessions are skipped inside the bridge.
+    onAgentEvent: (ev) => gatewayChannel.bridgeAgentEvent(ev),
   })
 
   const listening = await new Promise<boolean>((resolve) => {

@@ -6,8 +6,12 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
+import type { SessionWsFrame } from '@rivetos/types'
 import { describe, it, expect, afterEach } from 'vitest'
-import { createGatewayChannel, type GatewayChannelHandle } from './gateway-channel.js'
+import {
+  createGatewayChannel,
+  type GatewayChannelHandle,
+} from './gateway-channel.js'
 
 const cleanups: Array<() => Promise<void> | void> = []
 afterEach(async () => {
@@ -135,5 +139,89 @@ describe('gateway channel /api/sessions', () => {
   it('validates bodies: 400 on missing text', async () => {
     const { base } = await start()
     expect((await post(base, 's6', {})).status).toBe(400)
+  })
+})
+
+describe('bridgeAgentEvent (seamless-modes bridge)', () => {
+  it('coalesces per-block assistant text into ONE message per turn', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c1`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    gw.bridgeAgentEvent({ session: 'c1', type: 'message.user', text: 'hi', ts: 1 })
+    gw.bridgeAgentEvent({ session: 'c1', type: 'thinking.delta', text: 'hmm' })
+    gw.bridgeAgentEvent({ session: 'c1', type: 'message.agent', text: 'part 1 ' }) // block 1
+    gw.bridgeAgentEvent({ session: 'c1', type: 'tool.start', tool: 'Bash' })
+    gw.bridgeAgentEvent({ session: 'c1', type: 'tool.end', tool: 'Bash' })
+    gw.bridgeAgentEvent({ session: 'c1', type: 'message.agent', text: 'part 2' }) // block 2
+    gw.bridgeAgentEvent({ session: 'c1', type: 'session.end' }) // turn boundary → commit
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const assistant = got.filter((f) => f.kind === 'message' && f.role === 'assistant')
+    expect(assistant).toHaveLength(1) // ONE bubble, not one per block
+    expect(assistant[0].kind === 'message' && assistant[0].text).toBe('part 1 part 2')
+    // interim blocks streamed as text deltas (the live bubble)
+    expect(got.filter((f) => f.kind === 'stream' && f.event.type === 'text')).toHaveLength(2)
+    expect(got.some((f) => f.kind === 'stream' && f.event.type === 'reasoning')).toBe(true)
+    expect(got.some((f) => f.kind === 'stream' && f.event.type === 'tool_start')).toBe(true)
+    expect(got.some((f) => f.kind === 'message' && f.role === 'user')).toBe(true)
+  })
+
+  it('commits the prior assistant turn when the next user turn starts', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c2`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    gw.bridgeAgentEvent({ session: 'c2', type: 'message.agent', text: 'answer' })
+    gw.bridgeAgentEvent({ session: 'c2', type: 'message.user', text: 'next' }) // flush prior
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const msgs = got.filter((f) => f.kind === 'message')
+    expect(msgs.some((f) => f.kind === 'message' && f.role === 'assistant' && f.text === 'answer')).toBe(
+      true,
+    )
+    expect(msgs.some((f) => f.kind === 'message' && f.role === 'user' && f.text === 'next')).toBe(true)
+  })
+
+  it('skips task: sessions (task engine namespace)', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws`) // all sessions
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+    gw.bridgeAgentEvent({ session: 'task:abc', type: 'message.agent', text: 'x' })
+    gw.bridgeAgentEvent({ session: 'task:abc', type: 'session.end' })
+    await new Promise((r) => setTimeout(r, 30))
+    ws.close()
+    expect(got).toHaveLength(0)
+  })
+})
+
+describe('emitFrame (seamless-modes push)', () => {
+  it('broadcasts to a session subscriber and rings message frames', async () => {
+    const { gw, base, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=conv-1`)
+    const got: unknown[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString())))
+    await new Promise((r) => ws.once('open', r))
+
+    gw.emitFrame({ kind: 'stream', session: 'conv-1', event: { type: 'reasoning', content: 'x' } })
+    gw.emitFrame({ kind: 'message', id: 'm1', sessionId: 'conv-1', role: 'assistant', text: 'hi', ts: 1 })
+    gw.emitFrame({ kind: 'stream', session: 'other', event: { type: 'text', content: 'nope' } })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    expect(got.length).toBe(2) // the 'other' session frame is filtered out
+    // the message frame landed in the ring (backfill sees it)
+    const msgs = (await (await fetch(`${base}/api/sessions/conv-1/messages`)).json()) as {
+      messages: { id: string }[]
+    }
+    expect(msgs.messages.some((m) => m.id === 'm1')).toBe(true)
   })
 })
