@@ -16,11 +16,19 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import type { IncomingMessage } from 'node:http'
+import type { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { logger, createGatewayChannel, type Runtime } from '@rivetos/core'
 import type { GatewayRoute } from '@rivetos/types'
+
+/** WS upgrade handler shape den-server accepts (same as the channel's). */
+interface GatewayUpgrade {
+  path: string
+  handle: (req: IncomingMessage, socket: Duplex, head: Buffer, url: URL) => void
+}
 import type { RivetConfig } from '../config.js'
 
 const log = logger('Boot:Gateway')
@@ -71,6 +79,7 @@ export async function registerGateway(
   config: RivetConfig,
   installRoot: string,
   extraRoutes: GatewayRoute[] = [],
+  extraUpgrades: GatewayUpgrade[] = [],
 ): Promise<GatewayStart | undefined> {
   if (config.den?.enabled !== true) return undefined
 
@@ -103,7 +112,7 @@ export async function registerGateway(
 
   const den = createDenServer(denConfig, {
     extraRoutes: [...extraRoutes, ...gatewayChannel.routes],
-    extraUpgrades: [gatewayChannel.upgrade],
+    extraUpgrades: [gatewayChannel.upgrade, ...extraUpgrades],
   })
 
   const listening = await new Promise<boolean>((resolve) => {
