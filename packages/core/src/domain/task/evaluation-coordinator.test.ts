@@ -37,8 +37,11 @@ function scriptedExecutor(fn: (spec: TaskSpec) => TaskResult): HarnessExecutor {
     name: 'scripted',
     capabilities: () => caps,
     start: (spec: TaskSpec) => ({
+      // Emit a real turn.end so the runner's between-turns budget check runs
+      // — a silent events stream masked the maxTurns:1 verifier kill (ct114).
       events: (async function* () {
         await Promise.resolve()
+        yield { ts: 1, type: 'turn.end' as const, turn: 1, usage }
       })(),
       steer: () => Promise.resolve(),
       kill: () => Promise.resolve(),
@@ -114,6 +117,7 @@ describe('EvaluationCoordinator end-to-end', () => {
     expect(parent.eval?.verifierTaskIds).toHaveLength(1)
 
     const child = await rig.store.get(parent.eval!.verifierTaskIds[0])
+    expect(child?.status).toBe('completed') // default budget must allow the one real turn
     expect(child?.origin).toBe('eval')
     expect(child?.parentTaskId).toBe(parent.id)
     expect(child?.acceptanceCriteria).toEqual([]) // structurally exempt (2b)

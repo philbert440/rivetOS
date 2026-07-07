@@ -372,7 +372,12 @@ export async function registerAgentTools(
               budget: evalSection.verifier?.budget
                 ? {
                     maxUsd: evalSection.verifier.budget.max_usd,
-                    maxTurns: evalSection.verifier.budget.max_turns,
+                    // Floor 2: the runner's >= between-turns check makes
+                    // maxTurns 1 kill the verifier at its only turn's end.
+                    maxTurns:
+                      evalSection.verifier.budget.max_turns !== undefined
+                        ? Math.max(2, evalSection.verifier.budget.max_turns)
+                        : undefined,
                   }
                 : undefined,
               skipOrigins: evalSection.skip_origins ?? ['heartbeat'],
