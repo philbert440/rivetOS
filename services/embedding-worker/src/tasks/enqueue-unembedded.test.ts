@@ -24,7 +24,11 @@ interface MockHelpers {
 /** Build helpers whose pg client returns `byTable[table]` rows for each table. */
 function makeHelpers(byTable: Record<string, Array<{ id: string }>>): MockHelpers {
   const query = vi.fn(async (sql: string, params?: unknown[]) => {
-    const table = sql.includes('ros_messages') ? 'ros_messages' : 'ros_summaries'
+    const table = sql.includes('ros_messages')
+      ? 'ros_messages'
+      : sql.includes('ros_wiki_topics')
+        ? 'ros_wiki_topics'
+        : 'ros_summaries'
     expect(params).toEqual([200]) // sweepLimit threaded as $1
     return { rows: byTable[table] ?? [], rowCount: (byTable[table] ?? []).length }
   })
@@ -56,6 +60,19 @@ describe('enqueue-unembedded', () => {
       { jobKey: 'embed-ros_summaries-s1', jobKeyMode: 'preserve_run_at', maxAttempts: 5 },
     )
     expect(helpers.logger.info).toHaveBeenCalledWith(expect.stringContaining('re-enqueued 3'))
+  })
+
+  it('sweeps ros_wiki_topics keyed on slug (3d)', async () => {
+    const helpers = makeHelpers({ ros_wiki_topics: [{ id: 'gerty-vllm-stack' }] })
+
+    await enqueueUnembeddedTask({} as any, helpers as any)
+
+    expect(helpers.addJob).toHaveBeenCalledOnce()
+    expect(helpers.addJob).toHaveBeenCalledWith(
+      'embed-target',
+      { targetTable: 'ros_wiki_topics', targetId: 'gerty-vllm-stack' },
+      expect.objectContaining({ jobKey: 'embed-ros_wiki_topics-gerty-vllm-stack' }),
+    )
   })
 
   it('is a no-op (no jobs, no log) when nothing is unembedded', async () => {

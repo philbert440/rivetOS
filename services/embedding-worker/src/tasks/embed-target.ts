@@ -20,8 +20,18 @@ import { classifyUnembeddable } from '../classify.js'
 import { embedBatch } from '../embed-api.js'
 
 export interface EmbedTargetPayload {
-  targetTable: 'ros_messages' | 'ros_summaries'
+  targetTable: 'ros_messages' | 'ros_summaries' | 'ros_wiki_topics'
   targetId: string
+}
+
+/** Per-table column spec — wiki topics key on slug and embed search_text. */
+const TABLE_SPECS: Record<
+  EmbedTargetPayload['targetTable'],
+  { idCol: string; contentCol: string }
+> = {
+  ros_messages: { idCol: 'id', contentCol: 'content' },
+  ros_summaries: { idCol: 'id', contentCol: 'content' },
+  ros_wiki_topics: { idCol: 'slug', contentCol: 'search_text' },
 }
 
 interface ContentRow {
@@ -32,17 +42,18 @@ interface ContentRow {
 export const embedTargetTask: Task = async (payload, helpers) => {
   const { targetTable, targetId } = payload as EmbedTargetPayload
 
-  if (targetTable !== 'ros_messages' && targetTable !== 'ros_summaries') {
-    helpers.logger.error(`[embed-target] invalid target_table: ${targetTable}`)
+  const spec = TABLE_SPECS[targetTable]
+  if (!spec) {
+    helpers.logger.error(`[embed-target] invalid target_table: ${String(targetTable)}`)
     return
   }
 
   await helpers.withPgClient(async (client) => {
     const result = await client.query<ContentRow>(
-      `SELECT id, content FROM ${targetTable}
-        WHERE id = $1
-          AND content IS NOT NULL
-          AND LENGTH(content) > 0`,
+      `SELECT ${spec.idCol} AS id, ${spec.contentCol} AS content FROM ${targetTable}
+        WHERE ${spec.idCol} = $1
+          AND ${spec.contentCol} IS NOT NULL
+          AND LENGTH(${spec.contentCol}) > 0`,
       [targetId],
     )
 
@@ -62,7 +73,7 @@ export const embedTargetTask: Task = async (payload, helpers) => {
         `UPDATE ${targetTable}
             SET embed_status = 'unembeddable',
                 embed_error = $1
-          WHERE id = $2`,
+          WHERE ${spec.idCol} = $2`,
         [`unembeddable: ${unembeddable}`, targetId],
       )
       helpers.logger.info(
@@ -96,7 +107,7 @@ export const embedTargetTask: Task = async (payload, helpers) => {
                   WHEN COALESCE(embed_failures, 0) + 1 >= $2 THEN 'failed'
                   ELSE embed_status
                 END
-          WHERE id = $3`,
+          WHERE ${spec.idCol} = $3`,
         ['Embedding returned null', config.maxFailures, targetId],
       )
       throw new Error('Embedding returned null')
@@ -113,7 +124,7 @@ export const embedTargetTask: Task = async (payload, helpers) => {
               embed_status = NULL,
               embed_error = NULL,
               embed_failures = 0
-        WHERE id = $2`,
+        WHERE ${spec.idCol} = $2`,
       [`[${truncatedVec.join(',')}]`, targetId],
     )
 
