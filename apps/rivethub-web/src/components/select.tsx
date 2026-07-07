@@ -32,36 +32,52 @@ export function Select(props: {
   }
 
   return (
-    <select
-      value={props.value}
-      title={props.title}
-      disabled={props.disabled}
-      onChange={(e) => props.onChange(e.target.value)}
-      className="cursor-pointer rounded-md border border-line bg-panel-2 px-2.5 py-1.5 font-mono text-xs text-ink outline-none hover:border-em/60 focus:border-em disabled:opacity-40"
-    >
-      {grouped
-        ? [...groups.entries()].map(([g, opts]) =>
-            g ? (
-              <optgroup key={g} label={g}>
-                {opts.map((o) => (
+    <span className="relative inline-flex items-center">
+      <select
+        value={props.value}
+        title={props.title}
+        disabled={props.disabled}
+        onChange={(e) => props.onChange(e.target.value)}
+        // appearance-none is REQUIRED: WebKitGTK (the desktop shell) draws a
+        // native GTK <select> and ignores bg/text CSS without it — that's why
+        // the dropdowns looked light-grey against the dark app. The chevron is
+        // a sibling SVG since appearance-none drops the native arrow.
+        className="cursor-pointer appearance-none rounded-md border border-line bg-panel-2 py-1.5 pl-2.5 pr-7 font-mono text-xs text-ink outline-none hover:border-em/60 focus:border-em disabled:opacity-40"
+      >
+        {grouped
+          ? [...groups.entries()].map(([g, opts]) =>
+              g ? (
+                <optgroup key={g} label={g}>
+                  {opts.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : (
+                opts.map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
                   </option>
-                ))}
-              </optgroup>
-            ) : (
-              opts.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))
-            ),
-          )
-        : props.options.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-    </select>
+                ))
+              ),
+            )
+          : props.options.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+      </select>
+      <svg
+        className="pointer-events-none absolute right-2 h-3 w-3 text-ink-dim"
+        viewBox="0 0 12 12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.5}
+        aria-hidden="true"
+      >
+        <path d="M2.5 4.5 6 8l3.5-3.5" />
+      </svg>
+    </span>
   )
 }
