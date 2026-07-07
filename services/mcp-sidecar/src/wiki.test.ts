@@ -51,4 +51,13 @@ describe('wiki tools (3g)', () => {
     expect(await read.execute({ slug: 'gertee' })).toContain('Did you mean: gerty')
     expect(await read.execute({ slug: '../etc/passwd' })).toContain('Invalid slug')
   })
+
+  it('malformed page degrades to raw-with-warning instead of throwing', async () => {
+    writeFileSync(join(wikiDir, 'topics', 'broken.md'), 'no frontmatter here, human scribbles')
+    const { tools } = handle()
+    const read = tools.find((t) => t.name === 'wiki_read')!
+    const out = await read.execute({ slug: 'broken' })
+    expect(out).toContain('malformed')
+    expect(out).toContain('human scribbles')
+  })
 })

@@ -91,10 +91,16 @@ export function createWikiTools(options: WikiToolsOptions): WikiToolsHandle {
               : ''
           return `No page for "${slug}" — a red link.${hint}`
         }
-        // Serve the file verbatim — history + provenance included; parse only
-        // to validate it's a real page.
-        parseWikiPage(markdown)
-        return markdown
+        // Serve the file verbatim — history + provenance included. A parse
+        // failure (malformed human edit) degrades to raw-with-warning: the
+        // human's content is still the truth, just unstructured (#291).
+        try {
+          parseWikiPage(markdown)
+          return markdown
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return `⚠ Page "${slug}" is malformed (${msg}) — raw content follows; the next extractor pass will re-structure it.\n\n${markdown}`
+        }
       },
     },
   ]
