@@ -15,6 +15,11 @@ export function Composer(props: {
   agent?: string
   effort: ThinkingLevel
   onSetting: (patch: Partial<ChatSettings>) => void
+  /** Seamless modes: when set, a turn drives the session's live harness
+   *  (inject into its PTY) instead of the chat-loop postMessage — so chat,
+   *  terminal, and den are one conversation. The reply streams back via the
+   *  den→sessions-WS bridge. */
+  onSend?: (text: string) => Promise<void>
 }): JSX.Element {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
@@ -38,14 +43,21 @@ export function Composer(props: {
     setSending(true) // lock: double-Enter must not fire duplicate turns
     setText('')
     try {
-      // Fire-and-forget; the reply (and this message's echo) arrive on the
-      // sessions WS. Model (agent) + effort (thinking) ride the request and
-      // persist per-conversation.
-      await useConnection.getState().gateway.postMessage(props.sessionId, {
-        text: body,
-        agent: props.agent,
-        thinking: props.effort,
-      })
+      if (props.onSend) {
+        // Seamless: drive the live harness (its den events stream the reply
+        // back through the bridge). Model = the spawned harness; effort is a
+        // per-harness default for now.
+        await props.onSend(body)
+      } else {
+        // Fire-and-forget; the reply (and this message's echo) arrive on the
+        // sessions WS. Model (agent) + effort (thinking) ride the request and
+        // persist per-conversation.
+        await useConnection.getState().gateway.postMessage(props.sessionId, {
+          text: body,
+          agent: props.agent,
+          thinking: props.effort,
+        })
+      }
     } catch (err) {
       setError((err as Error).message)
       setText(body) // give the draft back
