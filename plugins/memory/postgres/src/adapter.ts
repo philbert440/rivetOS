@@ -409,7 +409,9 @@ export class PostgresMemory implements Memory {
               COUNT(m.id)       AS message_count
        FROM ros_conversations c
        JOIN ros_messages m ON m.conversation_id = c.id
-       WHERE c.active = true AND c.session_key IS NOT NULL
+       WHERE c.active = true
+         AND c.session_key IS NOT NULL
+         AND c.session_key NOT LIKE 'heartbeat:%'
        GROUP BY c.session_key
        ORDER BY last_active DESC
        LIMIT $1`,
