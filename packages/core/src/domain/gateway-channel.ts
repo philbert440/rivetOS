@@ -35,7 +35,6 @@ import type {
   SessionPostAccepted,
   SessionPostReply,
   SessionsListResponse,
-  ConversationsListResponse,
   SessionWsFrame,
   StreamEvent,
 } from '@rivetos/types'
@@ -113,10 +112,6 @@ type MemoryBackfill = {
     sessionId: string,
     options?: { limit?: number },
   ): Promise<Array<{ role: string; content: unknown }>>
-  /** Optional (seamless 5k): enumerate captured conversations for the drawer. */
-  listSessions?(options?: {
-    limit?: number
-  }): Promise<Array<{ sessionId: string; lastActive: Date; messageCount: number }>>
 }
 
 export function createGatewayChannel(opts?: {
@@ -339,26 +334,6 @@ export function createGatewayChannel(opts?: {
           const limRaw = url.searchParams.get('limit')
           const limN = limRaw ? Number.parseInt(limRaw, 10) : NaN
           const limit = Number.isFinite(limN) && limN > 0 ? Math.min(limN, 1000) : 200
-
-          // GET /api/conversations — list captured conversations for the
-          // harness-session drawer (seamless 5k). Empty when the store can't
-          // enumerate (listSessions is optional on Memory).
-          if (req.method === 'GET' && key === '') {
-            const mem = opts?.getMemory?.()
-            const rows = (await mem?.listSessions?.({ limit })) ?? []
-            const conversations = rows.map((r) => {
-              // pg normally hands back timestamptz as Date, but a custom type
-              // parser could return a string — Date() takes both; guard NaN
-              // (#317 review).
-              const t = new Date(r.lastActive).getTime()
-              return {
-                id: r.sessionId,
-                lastActive: Number.isFinite(t) ? t : 0,
-                messages: r.messageCount,
-              }
-            })
-            return json(res, 200, { conversations } satisfies ConversationsListResponse)
-          }
 
           if (req.method !== 'GET' || !key || sub !== 'messages')
             return json(res, 404, { error: 'not found' })

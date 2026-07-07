@@ -49,6 +49,7 @@ import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
 import { createTermWs } from './term/ws.js'
+import { listHarnessSessions } from './term/harness-sessions.js'
 
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -80,6 +81,7 @@ const API_PATHS = new Set([
   '/term/config',
   '/term/list',
   '/term/inject',
+  '/term/harness-sessions',
 ])
 
 const CORS = {
@@ -362,6 +364,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     '/api/terminal/config': '/term/config',
     '/api/terminal/list': '/term/list',
     '/api/terminal/inject': '/term/inject',
+    '/api/terminal/harness-sessions': '/term/harness-sessions',
     '/api/terminal/ws': '/term',
   }
   const canonicalize = (url: URL): void => {
@@ -549,11 +552,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             cols?: unknown
             rows?: unknown
             session?: unknown
+            resume?: unknown
           }
           if (p.command !== undefined && typeof p.command !== 'string')
             return json(res, 400, { error: 'command must be a roster key' })
           if (p.session !== undefined && typeof p.session !== 'string')
             return json(res, 400, { error: 'session must be a string' })
+          if (p.resume !== undefined && typeof p.resume !== 'string')
+            return json(res, 400, { error: 'resume must be a string' })
           const clamp = (v: unknown, lo: number, hi: number, dflt: number): number =>
             typeof v === 'number' && Number.isFinite(v)
               ? Math.min(hi, Math.max(lo, Math.floor(v)))
@@ -565,6 +571,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               clamp(p.rows, 5, 200, 24),
               req.socket.remoteAddress ?? '',
               p.session,
+              p.resume,
             )
             return json(res, 201, {
               id: pty.id,
@@ -582,6 +589,18 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
         if (req.method === 'GET' && url.pathname === '/term/list') {
           return json(res, 200, { ptys: manager.list() })
+        }
+
+        // GET /term/harness-sessions — list the node's harness sessions
+        // straight from their on-disk stores (node-local by construction, so
+        // no cross-node bleed). The drawer opens one via spawn { session, resume }.
+        if (req.method === 'GET' && url.pathname === '/term/harness-sessions') {
+          const roster = rosterProvider.get()
+          const limRaw = url.searchParams.get('limit')
+          const limN = limRaw ? Number.parseInt(limRaw, 10) : NaN
+          const limit = Number.isFinite(limN) && limN > 0 ? Math.min(limN, 500) : 100
+          const sessions = await listHarnessSessions(Object.keys(roster.commands), limit)
+          return json(res, 200, { sessions })
         }
 
         if (req.method === 'DELETE' && url.pathname === '/term') {

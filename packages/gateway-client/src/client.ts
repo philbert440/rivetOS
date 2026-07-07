@@ -17,7 +17,6 @@ import type {
   SessionPostReply,
   SessionPostRequest,
   SessionsListResponse,
-  ConversationsListResponse,
   SessionWsFrame,
   TaskCreateRequest,
   TaskKillResponse,
@@ -31,6 +30,7 @@ import type {
 } from '@rivetos/types'
 import type {
   TermConfigResponse,
+  HarnessSessionsResponse,
   TermInjectRequest,
   TermInjectResponse,
   TermListResponse,
@@ -91,13 +91,6 @@ export class RivetGateway {
 
   listSessions(signal?: AbortSignal): Promise<SessionsListResponse> {
     return request(this.config, '/api/sessions', { signal })
-  }
-
-  /** Captured conversations from memory (seamless-modes harness-session
-   *  drawer) — durable, survives restarts, distinct from the process-local
-   *  /api/sessions ring. Empty when the store can't enumerate. */
-  listConversations(signal?: AbortSignal): Promise<ConversationsListResponse> {
-    return request(this.config, '/api/conversations', { signal })
   }
 
   sessionMessages(sessionId: string, signal?: AbortSignal): Promise<SessionMessagesResponse> {
@@ -247,6 +240,13 @@ export class RivetGateway {
 
   termList(signal?: AbortSignal): Promise<TermListResponse> {
     return request(this.config, '/api/terminal/list', { signal })
+  }
+
+  /** The node's harness sessions, read from their on-disk stores (seamless
+   *  drawer) — node+harness specific by construction. Open one by spawning
+   *  with { session, resume: <id> }. */
+  harnessSessions(signal?: AbortSignal): Promise<HarnessSessionsResponse> {
+    return request(this.config, '/api/terminal/harness-sessions', { signal })
   }
 
   termSpawn(body: TermSpawnRequest = {}): Promise<TermSpawnResponse> {
