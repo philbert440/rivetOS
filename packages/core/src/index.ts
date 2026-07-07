@@ -99,6 +99,8 @@ export type {
 export {
   createChannelEscalationNotifier,
   createLogEscalationNotifier,
+  createGatewayEscalationNotifier,
+  composeEscalationNotifiers,
   formatEscalation,
 } from './domain/task/escalation.js'
 export type { EscalationNotifier, TaskEscalationPayload } from './domain/task/escalation.js'
@@ -108,6 +110,8 @@ export { createWikiApiRoute } from './domain/wiki/wiki-api.js'
 export type { WikiIndexLike, WikiApiOptions } from './domain/wiki/wiki-api.js'
 export { createWikiHtmlRoute, renderMarkdown } from './domain/wiki/wiki-html.js'
 export { createGatewayChannel } from './domain/gateway-channel.js'
+export { createNotificationsChannel } from './domain/notifications-channel.js'
+export type { NotificationsChannelHandle } from './domain/notifications-channel.js'
 export type { GatewayChannelHandle } from './domain/gateway-channel.js'
 export type { TaskCompletionWaiter } from './domain/task/completion-waiter.js'
 export { runHeartbeatViaTasks } from './domain/task/heartbeat-task.js'

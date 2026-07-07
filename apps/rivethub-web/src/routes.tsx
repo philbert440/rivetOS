@@ -4,21 +4,41 @@
  * becomes the persistent sidebar; pages land in 4d-4h.
  */
 
+import { useEffect, type JSX } from 'react'
 import { Outlet, createRootRoute, createRoute } from '@tanstack/react-router'
 import { Sidebar } from './components/sidebar.js'
+import { Toasts } from './components/toasts.js'
 import { ChatPage } from './pages/chat.js'
 import { SettingsPage } from './pages/settings.js'
 import { PlaceholderPage } from './pages/placeholder.js'
+import { useConnection } from './stores/connection.js'
+import { useNotifications } from './stores/notifications.js'
 
-const rootRoute = createRootRoute({
-  component: () => (
+function RootLayout(): JSX.Element {
+  const baseUrl = useConnection((s) => s.baseUrl)
+  const token = useConnection((s) => s.token)
+  const connectNotifications = useNotifications((s) => s.connect)
+
+  // App-lifetime notifications socket (escalations etc.) — root-level so
+  // toasts fire on any page.
+  useEffect(() => {
+    connectNotifications(`${baseUrl}|${token ?? ''}`)
+    return () => useNotifications.getState().disconnect()
+  }, [baseUrl, token, connectNotifications])
+
+  return (
     <div className="flex h-full">
       <Sidebar />
       <main className="min-w-0 flex-1 overflow-y-auto">
         <Outlet />
       </main>
+      <Toasts />
     </div>
-  ),
+  )
+}
+
+const rootRoute = createRootRoute({
+  component: RootLayout,
 })
 
 const chatRoute = createRoute({

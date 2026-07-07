@@ -30,12 +30,16 @@ import {
   createEvaluationCoordinator,
   createChannelEscalationNotifier,
   createLogEscalationNotifier,
+  createGatewayEscalationNotifier,
+  composeEscalationNotifiers,
+  createNotificationsChannel,
   criteriaPolicyFromConfig,
   createCatalogApiRoute,
   createTaskHandler,
   InMemoryTaskStore,
   type TaskStore,
   type TaskCompletionWaiter,
+  type NotificationsChannelHandle,
   PgTaskStore,
   createChatLoopExecutor,
   createExecutorRegistry,
@@ -44,7 +48,7 @@ import {
   createSkillListTool,
   createSkillManageTool,
 } from '@rivetos/core'
-import type { DelegationRunsRecorder } from '@rivetos/core'
+import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
 import pg from 'pg'
 import type { GatewayRoute, MeshConfig, MeshRegistry } from '@rivetos/types'
 import { WikiIndex } from '@rivetos/memory-postgres'
@@ -53,9 +57,23 @@ import { logger } from '@rivetos/core'
 
 const log = logger('Boot:Agents')
 
+/** Compose the configured escalation notifier with the 4e gateway push. */
+function composeNotifiers(
+  notifications: NotificationsChannelHandle | undefined,
+  base: EscalationNotifier,
+): EscalationNotifier {
+  if (!notifications) return base
+  return composeEscalationNotifiers(
+    base,
+    createGatewayEscalationNotifier((frame) => notifications.broadcast(frame)),
+  )
+}
+
 export interface AgentToolsResult {
   /** Route families for the embedded gateway (G1+): mounted by registerGateway. */
   gatewayRoutes: GatewayRoute[]
+  /** Extra WS upgrade handlers for the gateway (4e notifications). */
+  gatewayUpgrades: NonNullable<NotificationsChannelHandle['upgrade']>[]
 }
 
 export async function registerAgentTools(
@@ -340,6 +358,18 @@ export async function registerAgentTools(
     subagentTaskStore = inMemoryStore
   }
 
+  // 4e: escalations push to connected RivetHub clients when the gateway is
+  // on. Created here (before registerGateway) and the upgrade handed through
+  // AgentToolsResult; broadcast composes with the configured channel/log
+  // notifier — /api/outcomes stays the durable inbox.
+  const notifications = config.den?.enabled === true ? createNotificationsChannel() : undefined
+  if (notifications) {
+    runtime.addShutdownHook(async () => {
+      await notifications.close()
+    })
+  }
+  const gatewayUpgrades = notifications ? [notifications.upgrade] : []
+
   if (tasksEnabled && pgUrl && pool && taskEngineStore) {
     // Phase 2d: verifier pass on completed evaluable tasks. Durable engine
     // only — the in-memory fallback has no waiter and nothing evaluable
@@ -354,18 +384,21 @@ export async function registerAgentTools(
             store: taskEngineStore,
             waiter: taskWaiter,
             runTask: (taskId) => runTaskRef.current?.(taskId) ?? Promise.resolve(),
-            escalation: evalSection.escalation?.channel
-              ? createChannelEscalationNotifier(
-                  (channelId, text) => runtime.broadcastToChannel(channelId, text),
-                  {
-                    channelId: evalSection.escalation.channel,
-                    gatewayBase:
-                      config.den?.enabled !== false
-                        ? `http://${config.mesh?.node_name ?? 'localhost'}:${String(config.den?.port ?? 5174)}`
-                        : undefined,
-                  },
-                )
-              : createLogEscalationNotifier(),
+            escalation: composeNotifiers(
+              notifications,
+              evalSection.escalation?.channel
+                ? createChannelEscalationNotifier(
+                    (channelId, text) => runtime.broadcastToChannel(channelId, text),
+                    {
+                      channelId: evalSection.escalation.channel,
+                      gatewayBase:
+                        config.den?.enabled !== false
+                          ? `http://${config.mesh?.node_name ?? 'localhost'}:${String(config.den?.port ?? 5174)}`
+                          : undefined,
+                    },
+                  )
+                : createLogEscalationNotifier(),
+            ),
             nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
             config: {
               maxRetries: evalSection.max_retries,
@@ -532,7 +565,7 @@ export async function registerAgentTools(
       meshRegistry: registry,
     }),
   )
-  return { gatewayRoutes }
+  return { gatewayRoutes, gatewayUpgrades }
 }
 
 // ---------------------------------------------------------------------------
