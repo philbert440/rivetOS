@@ -10,6 +10,7 @@ import { Sidebar } from './components/sidebar.js'
 import { Toasts } from './components/toasts.js'
 import { ChatPage } from './pages/chat.js'
 import { SettingsPage } from './pages/settings.js'
+import { TerminalPage } from './pages/terminal.js'
 import { PlaceholderPage } from './pages/placeholder.js'
 import { useConnection } from './stores/connection.js'
 import { useNotifications } from './stores/notifications.js'
@@ -50,7 +51,7 @@ const chatRoute = createRoute({
 const terminalRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/terminal',
-  component: () => <PlaceholderPage title="Terminal" phase="4f" />,
+  component: TerminalPage,
 })
 
 const tasksRoute = createRoute({
