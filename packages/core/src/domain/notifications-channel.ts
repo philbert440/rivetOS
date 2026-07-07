@@ -29,20 +29,43 @@ export interface NotificationsChannelHandle {
   close(): Promise<void>
 }
 
+const HEARTBEAT_MS = 30_000
+
 export function createNotificationsChannel(): NotificationsChannelHandle {
   const wss = new WebSocketServer({ noServer: true })
   const clients = new Set<WebSocket>()
+  const alive = new WeakMap<WebSocket, boolean>()
+  let closing = false
 
   wss.on('connection', (ws: WebSocket) => {
     clients.add(ws)
+    alive.set(ws, true)
+    ws.on('pong', () => alive.set(ws, true))
     ws.on('close', () => clients.delete(ws))
     ws.on('error', () => clients.delete(ws))
   })
 
+  // Escalations are low-frequency: without a sweep, a dropped tab would hold
+  // its FD until the next broadcast — possibly never (#300 review). Protocol
+  // pings only; nothing added to the wire contract.
+  const sweep = setInterval(() => {
+    for (const ws of clients) {
+      if (alive.get(ws) === false) {
+        ws.terminate()
+        clients.delete(ws)
+        continue
+      }
+      alive.set(ws, false)
+      ws.ping()
+    }
+  }, HEARTBEAT_MS)
+  sweep.unref()
+
   return {
     broadcast(frame: NotificationFrame): void {
+      if (closing) return
       const payload = JSON.stringify(frame)
-      for (const ws of clients) {
+      for (const ws of [...clients]) {
         if (ws.readyState !== 1) continue
         if (ws.bufferedAmount > MAX_BUFFERED) {
           ws.terminate()
@@ -63,6 +86,8 @@ export function createNotificationsChannel(): NotificationsChannelHandle {
       },
     },
     close: async () => {
+      closing = true
+      clearInterval(sweep)
       for (const ws of clients) ws.terminate()
       clients.clear()
       await new Promise<void>((resolve) => wss.close(() => resolve()))

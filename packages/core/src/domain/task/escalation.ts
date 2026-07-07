@@ -62,6 +62,11 @@ export function createChannelEscalationNotifier(
  * Escalate to connected RivetHub clients over the notifications WS (4e).
  * Ephemeral by design — /api/outcomes is the durable inbox — so this
  * composes with (never replaces) the log/channel notifier.
+ *
+ * Wire exposure: the frame carries the truncated task GOAL (operational
+ * text), not just metadata — on tokenless-LAN nodes any LAN client can read
+ * it (same trust boundary as tokenless /api/sessions). The full payload
+ * (criteria, refutation, artifacts) deliberately never rides this channel.
  */
 export function createGatewayEscalationNotifier(
   broadcast: (frame: NotificationFrame) => void,
@@ -93,7 +98,15 @@ export function createGatewayEscalationNotifier(
 export function composeEscalationNotifiers(...notifiers: EscalationNotifier[]): EscalationNotifier {
   return {
     async notify(payload: TaskEscalationPayload): Promise<void> {
-      await Promise.all(notifiers.map((n) => n.notify(payload).catch(() => undefined)))
+      await Promise.all(
+        notifiers.map((n) =>
+          n.notify(payload).catch((err: unknown) => {
+            log.debug(
+              `escalation notifier rejected: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          }),
+        ),
+      )
     },
   }
 }

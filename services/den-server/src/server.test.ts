@@ -24,6 +24,15 @@ async function start(
       prefix: string
       handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void
     }>
+    extraUpgrades?: Array<{
+      path: string
+      handle: (
+        req: import('node:http').IncomingMessage,
+        socket: import('node:stream').Duplex,
+        head: Buffer,
+        url: URL,
+      ) => void
+    }>
   } = {},
 ): Promise<{ den: DenServer; base: string; port: number }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
@@ -48,7 +57,7 @@ async function start(
       exitLingerMs: 60_000,
     },
   }
-  const den = createDenServer(config, { extraRoutes: opts.extraRoutes })
+  const den = createDenServer(config, { extraRoutes: opts.extraRoutes, extraUpgrades: opts.extraUpgrades })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
   const port = (den.server.address() as AddressInfo).port
@@ -262,6 +271,42 @@ describe('gateway route mounts (G0)', () => {
     })
     expect(ok.status).toBe(200)
     expect(await ok.json()).toEqual({ pong: true })
+  })
+
+  it('extraUpgrades WS mounts are rejected tokenless when a token is set (4e regression)', async () => {
+    // Upgrade dispatch must stay BEHIND authorized() — a refactor that moves
+    // it ahead would expose /api/notifications/ws on tokened nodes.
+    const seen: string[] = []
+    const upgrade = {
+      path: '/api/notifications/ws',
+      handle: (
+        _req: import('node:http').IncomingMessage,
+        socket: import('node:stream').Duplex,
+        _head: Buffer,
+        _url: URL,
+      ) => {
+        seen.push('handled')
+        socket.destroy()
+      },
+    }
+    const { base } = await start('sekret', 60_000, { extraUpgrades: [upgrade] })
+    const wsUrl = base.replace('http', 'ws') + '/api/notifications/ws'
+
+    const attempt = (url: string): Promise<'open' | 'rejected'> =>
+      new Promise((resolve) => {
+        const ws = new WebSocket(url)
+        ws.on('open', () => {
+          resolve('open')
+          ws.close()
+        })
+        ws.on('error', () => resolve('rejected'))
+      })
+
+    expect(await attempt(wsUrl)).toBe('rejected')
+    expect(seen).toEqual([])
+    // token via query param (the browser path) reaches the mount
+    expect(await attempt(`${wsUrl}?token=sekret`)).toBe('rejected') // handler destroys, but it WAS handled
+    expect(seen).toEqual(['handled'])
   })
 
   it('longest prefix wins and subpaths route to the mount', async () => {
