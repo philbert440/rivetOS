@@ -309,6 +309,13 @@ describe('gateway route mounts (G0)', () => {
     expect(seen).toEqual(['handled'])
   })
 
+  it('gateway mounts carry CORS headers (cross-node browser clients)', async () => {
+    const { base } = await start('', 60_000, { extraRoutes: [ping] })
+    const res = await fetch(`${base}/api/ping`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('access-control-allow-origin')).toBe('*')
+  })
+
   it('longest prefix wins and subpaths route to the mount', async () => {
     const deep = {
       prefix: '/api/ping/deep',
