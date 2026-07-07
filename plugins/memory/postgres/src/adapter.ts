@@ -18,6 +18,7 @@ import pg from 'pg'
 import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types'
 import { MemoryError } from '@rivetos/types'
 import { SearchEngine } from './search.js'
+import { WikiIndex } from './wiki/index-reader.js'
 import type { SearchEngineConfig } from './search.js'
 import { Expander } from './expand.js'
 
@@ -72,6 +73,9 @@ export interface PostgresMemoryConfig {
 export class PostgresMemory implements Memory {
   private pool: pg.Pool
   private searchEngine: SearchEngine
+  private wikiIndex: WikiIndex
+  /** Set false after the first missing-table error — 0005 not applied. */
+  private wikiAvailable = true
   private expander: Expander
   private connected = false
   private lastHealthCheck = 0
@@ -100,6 +104,10 @@ export class PostgresMemory implements Memory {
       : undefined
 
     this.searchEngine = new SearchEngine(this.pool, searchConfig)
+    this.wikiIndex = new WikiIndex(this.pool, {
+      embedEndpoint: searchConfig?.embedEndpoint ?? undefined,
+      embedModel: searchConfig?.embedModel,
+    })
     this.expander = new Expander(this.pool)
   }
 
@@ -301,7 +309,29 @@ export class PostgresMemory implements Memory {
       }
     }
 
-    // 2. Relevant results from hybrid search (uses scoring.ts formulas via SQL)
+    // 2. Wiki — curated "what is true now" (phase 3f). Highest signal per
+    // token, so it goes ABOVE raw hybrid search; currentState only (history
+    // stays behind the wiki_read tool / gateway). Degrades silently pre-0005.
+    if (this.wikiAvailable) {
+      try {
+        const wikiHits = await this.wikiIndex.searchTopics(query, { limit: 3 })
+        if (wikiHits.length > 0) {
+          sections.push('\n## Wiki (curated state)')
+          for (const hit of wikiHits) {
+            const body = hit.currentState.slice(0, 800)
+            seen.add(body.slice(0, 500)) // dedupe overlapping raw hits below
+            const line = `**${hit.title}** (wiki:${hit.slug})\n${body}`
+            tokenEstimate += Math.ceil(line.length / 4)
+            if (tokenEstimate > maxTokens) break
+            sections.push(line)
+          }
+        }
+      } catch {
+        this.wikiAvailable = false
+      }
+    }
+
+    // 3. Relevant results from hybrid search (uses scoring.ts formulas via SQL)
     const relevant = await this.searchEngine.search(query, {
       agent,
       limit: 10,
