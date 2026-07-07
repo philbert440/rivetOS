@@ -212,6 +212,10 @@ export default tseslint.config(
             '**/tests/**',
             '**/__tests__/**',
             '**/vitest.config.ts',
+            // Build-tool config like vitest.config: vite + its plugins are
+            // devDependencies, never runtime imports. scripts/ = build glue.
+            '**/vite.config.ts',
+            '**/scripts/**',
           ],
           // esbuild: build-time bundler used by build scripts (e.g. claude-cli's
           // scripts/bundle-rivet-memory.mjs), never imported by any runtime.
