@@ -41,7 +41,9 @@
   },
   "workspaces": [
     "packages/*",
-    "apps/*",
+    "apps/den",
+    "apps/site",
+    "apps/rivethub-web",
     "plugins/channels/*",
     "plugins/memory/*",
     "plugins/providers/*",
