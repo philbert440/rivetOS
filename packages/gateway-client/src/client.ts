@@ -17,6 +17,7 @@ import type {
   SessionPostReply,
   SessionPostRequest,
   SessionsListResponse,
+  ConversationsListResponse,
   SessionWsFrame,
   TaskCreateRequest,
   TaskKillResponse,
@@ -90,6 +91,13 @@ export class RivetGateway {
 
   listSessions(signal?: AbortSignal): Promise<SessionsListResponse> {
     return request(this.config, '/api/sessions', { signal })
+  }
+
+  /** Captured conversations from memory (seamless-modes harness-session
+   *  drawer) — durable, survives restarts, distinct from the process-local
+   *  /api/sessions ring. Empty when the store can't enumerate. */
+  listConversations(signal?: AbortSignal): Promise<ConversationsListResponse> {
+    return request(this.config, '/api/conversations', { signal })
   }
 
   sessionMessages(sessionId: string, signal?: AbortSignal): Promise<SessionMessagesResponse> {

@@ -30,6 +30,14 @@ export interface MemorySearchResult {
   createdAt: Date
 }
 
+/** One captured conversation, for the harness-session drawer (seamless modes). */
+export interface MemorySessionSummary {
+  /** the RIVETOS_SESSION_KEY the transcript is keyed on */
+  sessionId: string
+  lastActive: Date
+  messageCount: number
+}
+
 export interface Memory {
   /** Append a message/response/tool call to the transcript */
   append(entry: MemoryEntry): Promise<string>
@@ -49,6 +57,11 @@ export interface Memory {
 
   /** Restore session history from persistent storage */
   getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]>
+
+  /** List distinct captured conversations, most-recent first (seamless-modes
+   *  harness-session discovery). Optional: a store that can't enumerate
+   *  sessions simply omits it and discovery is empty. */
+  listSessions?(options?: { limit?: number }): Promise<MemorySessionSummary[]>
 
   /** Persist session settings (thinking level, visibility toggles) */
   saveSessionSettings?(sessionId: string, settings: Record<string, unknown>): Promise<void>

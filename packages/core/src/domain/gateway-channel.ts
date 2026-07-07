@@ -35,6 +35,7 @@ import type {
   SessionPostAccepted,
   SessionPostReply,
   SessionsListResponse,
+  ConversationsListResponse,
   SessionWsFrame,
   StreamEvent,
 } from '@rivetos/types'
@@ -112,6 +113,10 @@ type MemoryBackfill = {
     sessionId: string,
     options?: { limit?: number },
   ): Promise<Array<{ role: string; content: unknown }>>
+  /** Optional (seamless 5k): enumerate captured conversations for the drawer. */
+  listSessions?(options?: {
+    limit?: number
+  }): Promise<Array<{ sessionId: string; lastActive: Date; messageCount: number }>>
 }
 
 export function createGatewayChannel(opts?: {
@@ -331,13 +336,29 @@ export function createGatewayChannel(opts?: {
           const rest = url.pathname.slice('/api/conversations'.length).replace(/^\//, '')
           const [rawKey, sub] = rest.split('/')
           const key = decodeURIComponent(rawKey ?? '')
+          const limRaw = url.searchParams.get('limit')
+          const limN = limRaw ? Number.parseInt(limRaw, 10) : NaN
+          const limit = Number.isFinite(limN) && limN > 0 ? Math.min(limN, 1000) : 200
+
+          // GET /api/conversations — list captured conversations for the
+          // harness-session drawer (seamless 5k). Empty when the store can't
+          // enumerate (listSessions is optional on Memory).
+          if (req.method === 'GET' && key === '') {
+            const mem = opts?.getMemory?.()
+            const rows = (await mem?.listSessions?.({ limit })) ?? []
+            const conversations = rows.map((r) => ({
+              id: r.sessionId,
+              lastActive:
+                r.lastActive instanceof Date ? r.lastActive.getTime() : Number(r.lastActive),
+              messages: r.messageCount,
+            }))
+            return json(res, 200, { conversations } satisfies ConversationsListResponse)
+          }
+
           if (req.method !== 'GET' || !key || sub !== 'messages')
             return json(res, 404, { error: 'not found' })
           const mem = opts?.getMemory?.()
           if (!mem) return json(res, 200, { messages: [] } satisfies SessionMessagesResponse)
-          const limRaw = url.searchParams.get('limit')
-          const limN = limRaw ? Number.parseInt(limRaw, 10) : NaN
-          const limit = Number.isFinite(limN) && limN > 0 ? Math.min(limN, 1000) : 200
           const history = await mem.getSessionHistory(key, { limit })
           const messages = history
             .filter((m) => m.role === 'user' || m.role === 'assistant')

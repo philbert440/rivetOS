@@ -64,7 +64,7 @@ export type {
   ChannelPlugin,
   MemoryPlugin,
 } from './plugin.js'
-export type { Memory, MemoryEntry, MemorySearchResult } from './memory.js'
+export type { Memory, MemoryEntry, MemorySearchResult, MemorySessionSummary } from './memory.js'
 export type { Workspace, WorkspaceFile } from './workspace.js'
 export type {
   ContextConfig,

@@ -73,6 +73,21 @@ export interface SessionsListResponse {
   sessions: SessionSummary[]
 }
 
+/** GET /api/conversations — captured conversations from memory, for the
+ *  seamless-modes harness-session drawer (distinct from the process-local
+ *  /api/sessions ring: these are durable, and survive restarts). */
+export interface ConversationSummary {
+  /** the session_key the transcript is keyed on */
+  id: string
+  /** epoch ms of the last message */
+  lastActive: number
+  messages: number
+}
+
+export interface ConversationsListResponse {
+  conversations: ConversationSummary[]
+}
+
 export interface SessionMessagesResponse {
   messages: SessionMessage[]
 }
