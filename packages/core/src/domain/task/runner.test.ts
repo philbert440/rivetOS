@@ -15,6 +15,7 @@ import type {
 } from '@rivetos/types'
 import { InMemoryTaskStore, type NewTaskInput, type TaskStore } from './store.js'
 import { createExecutorRegistry, createTaskHandler, createTaskRunner } from './runner.js'
+import { createTaskCompletionWaiter } from './completion-waiter.js'
 
 const caps: HarnessExecutorCapabilities = {
   steerable: true,
@@ -345,3 +346,69 @@ describe('stranding interim (Appendix E)', () => {
     expect((await store.get(pinned.id))?.status).toBe('queued')
   })
 })
+
+describe('wiki contextRefs (3f)', () => {
+  it('resolves kind wiki eagerly into the spec context; red link noted', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const wikiDir = mkdtempSync(join(tmpdir(), 'wiki-runner-'))
+    mkdirSync(join(wikiDir, 'topics'), { recursive: true })
+    writeFileSync(
+      join(wikiDir, 'topics', 'gerty.md'),
+      '---\ntitle: GERTY\nslug: gerty\n---\n\n## Current state\n\npve3 serves qwen-27b.\n\n## History\n',
+    )
+    const executors = createExecutorRegistry()
+    let seenContext = ''
+    executors.register('chat-loop', {
+      name: 'probe',
+      capabilities: () => caps,
+      start: (spec) => {
+        seenContext = spec.resolvedContext
+        return {
+          events: (async function* () {
+            await Promise.resolve()
+          })(),
+          steer: () => Promise.resolve(),
+          kill: () => Promise.resolve(),
+          result: Promise.resolve({
+            verdict: 'completed' as const,
+            summary: 's',
+            artifacts: [],
+            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, turns: 1, wallClockMs: 1 },
+          }),
+        }
+      },
+    })
+    let handler: (taskId: string) => Promise<void>
+    const store = new InMemoryTaskStore((taskId) => {
+      void handler(taskId)
+    })
+    handler = createTaskHandler({
+      store,
+      executors,
+      nodeId: 'n',
+      wikiDir,
+      memory: { getContextForTurn: async () => 'mem-context' },
+    })
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 5 })
+    const row = await store.create({
+      goal: 'g',
+      executor: 'chat-loop',
+      agentId: 'a',
+      origin: 'api',
+      contextRefs: [
+        { kind: 'wiki', ref: 'gerty' },
+        { kind: 'wiki', ref: 'no-such-topic' },
+      ],
+    })
+    await waiter.wait(row.id, { deadlineMs: 5_000 })
+    await waiter.stop()
+    expect(seenContext).toContain('Wiki: GERTY (gerty)')
+    expect(seenContext).toContain('pve3 serves qwen-27b.')
+    expect(seenContext).toContain('no-such-topic')
+    expect(seenContext).toContain('red link')
+    expect(seenContext).toContain('mem-context')
+  })
+})
+
