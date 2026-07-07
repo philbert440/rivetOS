@@ -275,6 +275,21 @@ describe('term manager', () => {
     expect(manager.list()).toEqual([])
   })
 
+  it('respawn same session during linger: reaping the old pty keeps the new alias (#311)', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ exitLingerMs: 5000 })
+    const a = manager.spawn('shell', 80, 24, '', 'chat-foo')
+    procs[0].emitExit(0) // A exits, lingers
+    // spawn-or-get falls through (A is exited) and spawns B under the same key
+    const b = manager.spawn('shell', 80, 24, '', 'chat-foo')
+    expect(b.id).not.toBe(a.id)
+    expect(manager.ptyForSession('chat-foo')).toBe(b.id)
+    // A's linger reap must NOT delete the alias now pointing at the live B
+    vi.advanceTimersByTime(5000)
+    expect(manager.get(a.id)).toBeUndefined()
+    expect(manager.ptyForSession('chat-foo')).toBe(b.id)
+  })
+
   it('kill() on an exited-but-lingering record reaps it immediately', () => {
     const { manager, procs } = makeManager()
     const pty = manager.spawn('shell', 80, 24, '')
