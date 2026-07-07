@@ -184,11 +184,22 @@ describe('term manager', () => {
     grokResume.manager.spawn('grok', 80, 24, '', uuid)
     expect(grokResume.spawns[0].argv).toEqual(['grok', '--resume', uuid])
 
-    // a non-harness command / non-UUID id gets no flags
+    // hermes: --resume only (no sessionFlag). A new session (not in the
+    // store) gets NO flag — hermes can't pin an id; an existing one resumes,
+    // and hermes ids need not be UUIDs.
+    const hermesNew = makeManager({}, { sessionExists: () => false })
+    hermesNew.manager.spawn('hermes', 80, 24, '', uuid)
+    expect(hermesNew.spawns[0].argv).toEqual(['hermes'])
+    const hermesResume = makeManager({}, { sessionExists: () => true })
+    hermesResume.manager.spawn('hermes', 80, 24, '', 'sess_abc123')
+    expect(hermesResume.spawns[0].argv).toEqual(['hermes', '--resume', 'sess_abc123'])
+
+    // a non-harness command gets no flags; a claude non-UUID that isn't in the
+    // store gets no flag either (no --session-id on a non-UUID).
     const shell = makeManager({})
     shell.manager.spawn('shell', 80, 24, '', uuid)
     expect(shell.spawns[0].argv).toEqual(['bash', '-l'])
-    const nonUuid = makeManager({}, { sessionExists: () => true })
+    const nonUuid = makeManager({}, { sessionExists: () => false })
     nonUuid.manager.spawn('claude', 80, 24, '', 'chat-20260707-abcd')
     expect(nonUuid.spawns[0].argv).toEqual(['claude'])
   })
