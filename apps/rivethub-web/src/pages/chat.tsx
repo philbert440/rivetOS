@@ -147,9 +147,10 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
 
   // Cold-session durable backfill (seamless 5e): a harness conversation this
   // process didn't run through the chat-loop has an EMPTY ring — its committed
-  // transcript lives in memory. Fetch it only when the ring came back empty;
-  // live frames from the bridge then append on top (do NOT id-merge the two —
-  // this is cold first paint, replaced wholesale).
+  // transcript lives in memory. Fetch it only when the ring came back empty.
+  // seed() MERGES by id (append), so cold msgs are the base and any live
+  // bridge frame that raced in ahead is preserved, not clobbered (#315
+  // review); the index ids (`${key}:${i}`) never collide with live UUIDs.
   const ringEmpty = backfill.isSuccess && backfill.data.messages.length === 0
   const coldBackfill = useQuery({
     queryKey: ['conv-messages', baseUrl, token ?? '', props.sessionId, wsEpoch],
@@ -177,7 +178,8 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
   }, [])
 
   // Model change invalidates a running terminal (it's the wrong harness now):
-  // kill it so the next Terminal entry respawns with the chosen model.
+  // kill it so the next Terminal entry / chat send respawns with the chosen
+  // model.
   const agentSel = settings?.agent ?? ''
   useEffect(() => {
     const id = termPtyRef.current
@@ -186,6 +188,11 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
         .getState()
         .gateway.termKill(id)
         .catch(() => undefined)
+      // Clear the ref synchronously, not just the state (#315 review): until
+      // the next render re-mirrors termPtyId, ensurePty() would otherwise
+      // hand back the just-killed pty id and chat send would inject into a
+      // dead PTY → 409.
+      termPtyRef.current = undefined
       setTermPtyId(undefined)
       setMode('chat')
     }
