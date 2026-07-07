@@ -96,9 +96,19 @@ function makeGateway(baseUrl: string, token?: string): RivetGateway {
   return new RivetGateway({ baseUrl, token, authMode: token ? 'bearer' : 'none' })
 }
 
+/** The served origin only counts as a gateway when it's http(s) — under the
+ *  Tauri desktop shell it's tauri://localhost (no gateway there), so the app
+ *  starts unconfigured and prompts for a node (#4j smoke). */
+function defaultBaseUrl(): string {
+  const stored = localStorage.getItem(BASE_KEY)
+  if (stored) return normalize(stored)
+  const origin = normalize(window.location.origin)
+  return isValidGatewayUrl(origin) ? origin : ''
+}
+
 export const useConnection = create<ConnectionState>((set, get) => {
-  const baseUrl = normalize(localStorage.getItem(BASE_KEY) ?? window.location.origin)
-  migrateLegacyToken(baseUrl)
+  const baseUrl = defaultBaseUrl()
+  if (baseUrl) migrateLegacyToken(baseUrl)
   const token = tokenFor(baseUrl)
   return {
     baseUrl,
