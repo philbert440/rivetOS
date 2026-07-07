@@ -28,6 +28,30 @@ import { createHeader } from './header.js'
 import { renderMesh } from './mesh.js'
 import { serverHttp, withToken } from './net.js'
 
+/** Parent-app path when the den is served UNDER a base (e.g. `/den/` inside
+ *  RivetHub) — the "back home" target. `null` when the den is standalone
+ *  (base `/`), which has no parent to return to. */
+function homeParentHref(): string | null {
+  const base = import.meta.env.BASE_URL || '/'
+  if (base === '/') return null
+  return new URL('..', window.location.origin + base).pathname
+}
+
+// Wire the header [◀ HUB] button immediately — BEFORE boot(), so a den that
+// can't load (server down, no session yet, bad pack) still has a way back to
+// RivetHub instead of stranding the user (Phil's report: clicking Den with
+// no den to show left no path home). The button stays hidden when standalone.
+;(() => {
+  const href = homeParentHref()
+  const btn = document.getElementById('home-btn')
+  if (href && btn) {
+    btn.style.display = ''
+    btn.addEventListener('click', () => {
+      location.href = href
+    })
+  }
+})()
+
 async function boot() {
   // /mesh is a plain DOM route — no Pixi, no packs, no session feed. Every
   // other path (incl. a direct node visit) is the session grid, as always.
@@ -451,6 +475,18 @@ void boot().catch((err: unknown) => {
     'font-size:16px;padding:32px;text-align:center;white-space:pre-wrap;z-index:9999'
   const msg = err instanceof Error ? err.message : String(err)
   el.textContent = `den failed to start\n\n${msg}\n\n(check that den-server is running and the pack exists)`
+  // The error overlay (z-index 9999) covers the header, so give it its own
+  // way home when the den is served under RivetHub — a failed den must not be
+  // a dead end (Phil's report).
+  const home = homeParentHref()
+  if (home) {
+    const a = document.createElement('a')
+    a.href = home
+    a.textContent = '◀ back to RivetHub'
+    a.style.cssText =
+      'display:block;margin-top:24px;color:#34d399;text-decoration:none;font-weight:700'
+    el.appendChild(a)
+  }
   document.body.appendChild(el)
   console.error('den boot failed:', err)
 })
