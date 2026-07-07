@@ -1,16 +1,35 @@
 import { useState, type JSX } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import type { ThinkingLevel } from '@rivetos/types'
 import type { WsStatus } from '../stores/chat.js'
+import type { ChatSettings } from '../stores/chat-settings.js'
+import { EFFORTS } from '../stores/chat-settings.js'
 import { useConnection } from '../stores/connection.js'
+import { Select } from './select.js'
+import { modelOptions } from '../lib/model-options.js'
 
 export function Composer(props: {
   sessionId: string
   wsStatus: WsStatus
+  settingsKey: string
   agent?: string
+  effort: ThinkingLevel
+  onSetting: (patch: Partial<ChatSettings>) => void
 }): JSX.Element {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | undefined>()
   const connected = props.wsStatus === 'open'
+  const baseUrl = useConnection((s) => s.baseUrl)
+  const token = useConnection((s) => s.token)
+
+  // Model dropdown (Claude Code / grok Build / local + mesh) from the catalog.
+  const catalog = useQuery({
+    queryKey: ['catalog-agents', baseUrl, token ?? ''],
+    queryFn: ({ signal }) => useConnection.getState().gateway.catalogAgents(signal),
+    staleTime: 300_000,
+  })
+  const models = modelOptions(catalog.data?.agents ?? [])
 
   const send = async (): Promise<void> => {
     const body = text.trim()
@@ -19,12 +38,14 @@ export function Composer(props: {
     setSending(true) // lock: double-Enter must not fire duplicate turns
     setText('')
     try {
-      // Fire-and-forget; the reply (and the echo of this message) arrives on
-      // the sessions WS. Sending is gated on the socket being open so a send
-      // can't silently vanish while we're blind.
-      await useConnection
-        .getState()
-        .gateway.postMessage(props.sessionId, { text: body, agent: props.agent })
+      // Fire-and-forget; the reply (and this message's echo) arrive on the
+      // sessions WS. Model (agent) + effort (thinking) ride the request and
+      // persist per-conversation.
+      await useConnection.getState().gateway.postMessage(props.sessionId, {
+        text: body,
+        agent: props.agent,
+        thinking: props.effort,
+      })
     } catch (err) {
       setError((err as Error).message)
       setText(body) // give the draft back
@@ -34,7 +55,7 @@ export function Composer(props: {
   }
 
   return (
-    <div className="border-t border-line bg-panel/60 px-6 py-4">
+    <div className="border-t border-line bg-panel/60 px-6 py-3">
       {error && <div className="mb-2 font-mono text-xs text-red">✗ {error}</div>}
       <div className="flex items-end gap-3">
         <textarea
@@ -58,6 +79,25 @@ export function Composer(props: {
         >
           Send
         </button>
+      </div>
+      {/* Model + effort — Claude-app-style, in the messages area, persisted */}
+      <div className="mt-2 flex items-center gap-2">
+        <Select
+          value={props.agent ?? ''}
+          options={models}
+          onChange={(v) => props.onSetting({ agent: v })}
+          title="model / harness"
+          disabled={catalog.isError}
+        />
+        <Select
+          value={props.effort}
+          options={EFFORTS.map((e) => ({ value: e.value, label: e.label }))}
+          onChange={(v) => props.onSetting({ effort: v as ThinkingLevel })}
+          title="reasoning effort"
+        />
+        {catalog.isError && (
+          <span className="font-mono text-[11px] text-red">catalog unavailable</span>
+        )}
       </div>
     </div>
   )

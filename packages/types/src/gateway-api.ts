@@ -80,7 +80,11 @@ export interface SessionMessagesResponse {
 export interface SessionPostRequest {
   text: string
   userId?: string
+  /** Agent/harness for this turn (Claude Code, grok Build, a local agent). */
   agent?: string
+  /** Reasoning effort for this turn; falls back to the session's level.
+   *  RivetHub persists it per-conversation (Claude-app style). */
+  thinking?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
 }
 
 /** 202 from POST without `?wait` */
