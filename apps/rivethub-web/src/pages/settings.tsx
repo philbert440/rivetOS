@@ -35,7 +35,10 @@ export function SettingsPage(): JSX.Element {
   }
 
   const save = (): void => {
-    setConnection(draftUrl.trim().replace(/\/+$/, ''), draftToken.trim() || undefined)
+    const url = draftUrl.trim().replace(/\/+$/, '')
+    setConnection(url, draftToken.trim() || undefined)
+    // Saved endpoints join the switcher roster (name = host, editable later).
+    useConnection.getState().addNode({ name: new URL(url).host, baseUrl: url })
     // Drop every cached response from the previous endpoint/credential.
     void queryClient.invalidateQueries()
   }

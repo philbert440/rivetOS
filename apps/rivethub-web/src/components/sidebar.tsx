@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 import { Link } from '@tanstack/react-router'
-import { useConnection } from '../stores/connection.js'
+import { NodeSwitcher } from './node-switcher.js'
 
 const NAV = [
   { to: '/', label: 'Chat', icon: '💬' },
@@ -10,9 +10,6 @@ const NAV = [
 ] as const
 
 export function Sidebar(): JSX.Element {
-  const baseUrl = useConnection((s) => s.baseUrl)
-  const nodeLabel = baseUrl.replace(/^https?:\/\//, '')
-
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r border-line bg-panel/80">
       <div className="flex items-center gap-2 px-4 py-4">
@@ -47,10 +44,8 @@ export function Sidebar(): JSX.Element {
         </a>
       </div>
 
-      <div className="mt-auto border-t border-line px-4 py-3">
-        <div className="font-mono text-[11px] text-ink-dim" title={baseUrl}>
-          {nodeLabel}
-        </div>
+      <div className="mt-auto">
+        <NodeSwitcher />
       </div>
     </aside>
   )
