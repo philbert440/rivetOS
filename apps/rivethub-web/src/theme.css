@@ -1,0 +1,35 @@
+@import 'tailwindcss';
+
+/* Rivet brand — emerald on dark, DM Sans / JetBrains Mono, blueprint grid.
+   Tokens mirror the wiki UI (packages/core wiki-html.ts) and
+   philtompkins.com. */
+@theme {
+  --color-em: #34d399;
+  --color-em-dim: #10b981;
+  --color-bg: #0d1117;
+  --color-panel: #131a22;
+  --color-panel-2: #1a232e;
+  --color-line: #253041;
+  --color-ink: #e6edf3;
+  --color-ink-dim: #8b98a9;
+  --color-red: #f87171;
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  /* blueprint grid */
+  background-image:
+    linear-gradient(rgba(52, 211, 153, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(52, 211, 153, 0.045) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
