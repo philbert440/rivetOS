@@ -230,6 +230,15 @@ export async function registerAgentTools(
     // tags in mesh.json don't survive a restart. den.enabled here is what
     // makes den-node discovery (viewer /mesh.json) restart-proof.
     const denEnabled = config.den?.enabled === true
+    // Per-agent provider/model so REMOTE catalog entries (RivetHub node
+    // switcher + picker) show more than id@node (#272). Node-level
+    // providers/models stay for coarse capability queries.
+    const agentDetails: Record<string, { provider: string; model?: string }> = {}
+    for (const [id, a] of Object.entries(config.agents)) {
+      agentDetails[id] = a.model
+        ? { provider: a.provider, model: a.model }
+        : { provider: a.provider }
+    }
     const localNode = buildLocalNode({
       existingId: nodeName,
       name: nodeName,
@@ -241,7 +250,10 @@ export async function registerAgentTools(
         .map((a) => a.model)
         .filter((m): m is string => !!m),
       capabilities: denEnabled ? ['den'] : undefined,
-      metadata: denEnabled ? { denPort: config.den?.port ?? 5174 } : undefined,
+      metadata: {
+        ...(denEnabled ? { denPort: config.den?.port ?? 5174 } : {}),
+        agentDetails,
+      },
       version: '0.1.0',
     })
 

@@ -56,13 +56,30 @@ async function buildAgents(opts: CatalogApiOptions): Promise<CatalogAgent[]> {
   const nodes = await opts.meshRegistry.getNodes()
   const remote = nodes
     .filter((n) => n.status === 'online' && n.name !== opts.nodeName)
-    .flatMap((n) =>
-      n.agents.map((agentId): CatalogAgent => ({
-        id: agentId,
-        node: n.name,
-        local: false,
-      })),
-    )
+    .flatMap((n) => {
+      // Per-agent detail the node advertised in registration (#272); absent
+      // on older peers, in which case remote entries stay id@node.
+      const details = n.metadata?.agentDetails
+      const detailFor = (agentId: string): { provider: string; model?: string } | undefined => {
+        if (!details || typeof details !== 'object') return undefined
+        const d = (details as Record<string, unknown>)[agentId]
+        if (
+          !d ||
+          typeof d !== 'object' ||
+          typeof (d as { provider?: unknown }).provider !== 'string'
+        )
+          return undefined
+        const { provider, model } = d as { provider: string; model?: unknown }
+        return typeof model === 'string' ? { provider, model } : { provider }
+      }
+      const agentIds = Array.isArray(n.agents) ? n.agents : []
+      return agentIds.map((agentId): CatalogAgent => {
+        const d = detailFor(agentId)
+        return d
+          ? { id: agentId, node: n.name, local: false, provider: d.provider, model: d.model }
+          : { id: agentId, node: n.name, local: false }
+      })
+    })
   return [...local, ...remote]
 }
 
