@@ -129,6 +129,13 @@ export {
   taskResultFenceInstructions,
 } from './task-result.js'
 export type { ParsedTaskResult } from './task-result.js'
+export type {
+  WikiSourceRef,
+  WikiHistoryEntryWire,
+  WikiPageResponse,
+  WikiIndexEntry,
+  WikiIndexResponse,
+} from './wiki.js'
 // den event vocabulary — re-exported so executors emitting TaskEvent den
 // payloads don't need a direct @rivetos/den-protocol dependency.
 export type { AgentEventBody } from '@rivetos/den-protocol'
