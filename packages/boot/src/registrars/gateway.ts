@@ -55,6 +55,7 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     RIVETOS_DEN_PACKS_DIR:
       den.packs_dir?.trim() || join(installRoot, 'packages', 'den-packs', 'packs'),
   }
+  if (den.root_redirect?.trim()) env.RIVETOS_DEN_ROOT_REDIRECT = den.root_redirect.trim()
   if (terminal?.enabled === true) env.RIVETOS_DEN_TERM = '1'
   if (terminal?.open === true) env.RIVETOS_DEN_TERM_OPEN = '1'
   return env

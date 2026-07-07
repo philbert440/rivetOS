@@ -195,6 +195,8 @@ export interface DenSection {
   }
   /** Override for the SpritePack root served at /packs/ (default: <install>/packages/den-packs/packs) */
   packs_dir?: string
+  /** 302 target for GET / — '/wiki' makes the memory wiki the landing page (3e). */
+  root_redirect?: string
   /** Override for the built viewer app served at / (default: <install>/apps/den/dist) */
   static_dir?: string
 }

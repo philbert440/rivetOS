@@ -58,6 +58,7 @@ export const KNOWN_DEN_KEYS = new Set([
   'terminal',
   'packs_dir',
   'static_dir',
+  'root_redirect',
 ])
 
 export const KNOWN_DEN_TERMINAL_KEYS = new Set(['enabled', 'open'])
