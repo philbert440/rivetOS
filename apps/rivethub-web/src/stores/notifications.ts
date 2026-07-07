@@ -36,7 +36,11 @@ interface TauriGlobal {
 function nativeNotify(frame: NotificationFrame): void {
   const tauri = (globalThis as { __TAURI__?: TauriGlobal }).__TAURI__
   const api = tauri?.notification
-  if (!api || document.visibilityState === 'visible') return
+  // Skip the OS notification only when the window is truly foreground —
+  // visible AND focused — where the in-app toast already covers it. A
+  // visible-but-unfocused window (behind another, other monitor) still gets
+  // the native ping (#306 review: the visibilityState-only gate missed it).
+  if (!api || (document.visibilityState === 'visible' && document.hasFocus())) return
   void (async () => {
     let granted = await api.isPermissionGranted()
     if (!granted) granted = (await api.requestPermission()) === 'granted'
