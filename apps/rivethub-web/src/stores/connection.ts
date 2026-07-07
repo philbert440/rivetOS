@@ -37,8 +37,31 @@ interface ConnectionState {
 
 const normalize = (url: string): string => url.trim().replace(/\/+$/, '')
 
+/** Same guard den-server's denUrlFor applies: http(s) with a host, nothing
+ *  else — a poisoned roster/mesh entry must not re-point the app (#304). */
+export function isValidGatewayUrl(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.host !== ''
+  } catch {
+    return false
+  }
+}
+
+const ROSTER_MAX = 20
+
 function tokenFor(baseUrl: string): string | undefined {
   return sessionStorage.getItem(TOKEN_PREFIX + baseUrl) ?? undefined
+}
+
+/** One-time migration: pre-4h stored a single token under
+ *  'rivethub.gatewayToken'; adopt it for the active node (#304). */
+function migrateLegacyToken(baseUrl: string): void {
+  const legacy = sessionStorage.getItem('rivethub.gatewayToken')
+  if (legacy && !sessionStorage.getItem(TOKEN_PREFIX + baseUrl)) {
+    sessionStorage.setItem(TOKEN_PREFIX + baseUrl, legacy)
+  }
+  if (legacy) sessionStorage.removeItem('rivethub.gatewayToken')
 }
 
 function loadRoster(): RosterNode[] {
@@ -46,13 +69,20 @@ function loadRoster(): RosterNode[] {
     const raw = localStorage.getItem(ROSTER_KEY)
     const parsed: unknown = raw ? JSON.parse(raw) : []
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (n): n is RosterNode =>
-        typeof n === 'object' &&
-        n !== null &&
-        typeof (n as RosterNode).name === 'string' &&
-        typeof (n as RosterNode).baseUrl === 'string',
-    )
+    const seen = new Set<string>()
+    const nodes: RosterNode[] = []
+    for (const n of parsed) {
+      if (typeof n !== 'object' || n === null) continue
+      const { name, baseUrl } = n as RosterNode
+      if (typeof name !== 'string' || name.trim() === '') continue
+      if (typeof baseUrl !== 'string' || !isValidGatewayUrl(normalize(baseUrl))) continue
+      const url = normalize(baseUrl)
+      if (seen.has(url)) continue // legacy trailing-slash dupes collapse here
+      seen.add(url)
+      nodes.push({ name, baseUrl: url })
+      if (nodes.length >= ROSTER_MAX) break
+    }
+    return nodes
   } catch {
     return []
   }
@@ -68,6 +98,7 @@ function makeGateway(baseUrl: string, token?: string): RivetGateway {
 
 export const useConnection = create<ConnectionState>((set, get) => {
   const baseUrl = normalize(localStorage.getItem(BASE_KEY) ?? window.location.origin)
+  migrateLegacyToken(baseUrl)
   const token = tokenFor(baseUrl)
   return {
     baseUrl,
@@ -89,6 +120,10 @@ export const useConnection = create<ConnectionState>((set, get) => {
 
     switchTo(rawUrl: string): void {
       const nextBaseUrl = normalize(rawUrl)
+      // Defense in depth: only http(s) roster members are switchable — the
+      // UI already restricts this, the store enforces it (#304 review).
+      if (!isValidGatewayUrl(nextBaseUrl)) return
+      if (!get().roster.some((n) => n.baseUrl === nextBaseUrl)) return
       const nextToken = tokenFor(nextBaseUrl)
       localStorage.setItem(BASE_KEY, nextBaseUrl)
       set({
@@ -99,17 +134,21 @@ export const useConnection = create<ConnectionState>((set, get) => {
     },
 
     addNode(node: RosterNode): void {
+      if (!isValidGatewayUrl(normalize(node.baseUrl))) return
       const roster = [
         ...get().roster.filter((n) => normalize(n.baseUrl) !== normalize(node.baseUrl)),
         { name: node.name, baseUrl: normalize(node.baseUrl) },
-      ]
+      ].slice(-ROSTER_MAX)
       saveRoster(roster)
       set({ roster })
     },
 
     removeNode(rawUrl: string): void {
-      const roster = get().roster.filter((n) => normalize(n.baseUrl) !== normalize(rawUrl))
+      const url = normalize(rawUrl)
+      const roster = get().roster.filter((n) => normalize(n.baseUrl) !== url)
       saveRoster(roster)
+      // Removed node ⇒ its credential goes too (#304 review).
+      sessionStorage.removeItem(TOKEN_PREFIX + url)
       set({ roster })
     },
   }

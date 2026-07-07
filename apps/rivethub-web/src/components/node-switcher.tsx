@@ -1,5 +1,5 @@
-import { useState, type JSX } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useRef, useState, type JSX } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useConnection } from '../stores/connection.js'
 
 /**
@@ -10,7 +10,35 @@ import { useConnection } from '../stores/connection.js'
  */
 export function NodeSwitcher(): JSX.Element {
   const { baseUrl, roster, switchTo, addNode, removeNode } = useConnection()
+  const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  // Close on Escape / click-outside so the dropdown (and its mesh polling)
+  // can't linger across navigation (#304 review).
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    const onClick = (e: MouseEvent): void => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('mousedown', onClick)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('mousedown', onClick)
+    }
+  }, [open])
+
+  const doSwitch = (url: string): void => {
+    switchTo(url)
+    // belt-and-braces: query keys carry endpoint identity, but any future
+    // key that forgets must not serve node A's data as node B's (#304).
+    void queryClient.invalidateQueries()
+    setOpen(false)
+  }
 
   const mesh = useQuery({
     queryKey: ['mesh', baseUrl],
@@ -27,7 +55,7 @@ export function NodeSwitcher(): JSX.Element {
   const current = roster.find((n) => n.baseUrl === baseUrl)
 
   return (
-    <div className="relative border-t border-line">
+    <div ref={rootRef} className="relative border-t border-line">
       <button
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-panel-2"
@@ -47,10 +75,7 @@ export function NodeSwitcher(): JSX.Element {
           {roster.map((n) => (
             <div key={n.baseUrl} className="flex items-center">
               <button
-                onClick={() => {
-                  switchTo(n.baseUrl)
-                  setOpen(false)
-                }}
+                onClick={() => doSwitch(n.baseUrl)}
                 className={`flex-1 truncate rounded px-2 py-1.5 text-left font-mono text-xs ${
                   n.baseUrl === baseUrl ? 'text-em' : 'text-ink-dim hover:text-ink'
                 }`}
