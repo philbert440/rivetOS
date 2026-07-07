@@ -49,7 +49,7 @@ import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
 import { createTermWs } from './term/ws.js'
-import { listHarnessSessions } from './term/harness-sessions.js'
+import { listHarnessSessions, harnessSessionExists } from './term/harness-sessions.js'
 
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -301,6 +301,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           const room = state.rooms[s] as typeof initialRoomState | undefined
           return !!room && !room.ended
         },
+        sessionExists: harnessSessionExists,
         log: console.error,
       })
       return termManager

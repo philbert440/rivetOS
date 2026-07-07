@@ -42,6 +42,9 @@ export interface TermManagerDeps {
    *  emitted anything must not gain a phantom ended room, and one that ended
    *  cleanly must not end twice. Default: fire. */
   roomOpen?: (denSession: string) => boolean
+  /** Does this harness already have an on-disk session with this id? Decides
+   *  --resume vs --session-id on re-spawn (#318 review). Default: never. */
+  sessionExists?: (command: string, id: string) => boolean
   log: (msg: string) => void
   now?: () => number
 }
@@ -372,8 +375,16 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       const flags = HARNESS_FLAGS[key]
       let argv = entry.cmd
       if (flags) {
-        if (resume && UUID_RE.test(resume)) argv = [...entry.cmd, flags.resumeFlag, resume]
-        else if (session && UUID_RE.test(session)) argv = [...entry.cmd, flags.sessionFlag, session]
+        if (resume && UUID_RE.test(resume)) {
+          argv = [...entry.cmd, flags.resumeFlag, resume]
+        } else if (session && UUID_RE.test(session)) {
+          // Existing on-disk session (e.g. re-spawn after LRU eviction) →
+          // --resume it; a genuinely new conversation → --session-id to pin
+          // its id. Store existence is the ground truth, not the caller's
+          // hint (#318 review).
+          const exists = deps.sessionExists?.(key, session) ?? false
+          argv = [...entry.cmd, exists ? flags.resumeFlag : flags.sessionFlag, session]
+        }
       }
 
       const proc = deps.spawn(argv, { cwd, env, cols, rows })
