@@ -11,7 +11,7 @@ import { Toasts } from './components/toasts.js'
 import { ChatPage } from './pages/chat.js'
 import { SettingsPage } from './pages/settings.js'
 import { TerminalPage } from './pages/terminal.js'
-import { PlaceholderPage } from './pages/placeholder.js'
+import { TaskDetailPage, TasksPage } from './pages/tasks.js'
 import { useConnection } from './stores/connection.js'
 import { useNotifications } from './stores/notifications.js'
 
@@ -57,7 +57,13 @@ const terminalRoute = createRoute({
 const tasksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tasks',
-  component: () => <PlaceholderPage title="Tasks" phase="4g" />,
+  component: TasksPage,
+})
+
+const taskDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/tasks/$taskId',
+  component: TaskDetailPage,
 })
 
 const settingsRoute = createRoute({
@@ -70,5 +76,6 @@ export const routeTree = rootRoute.addChildren([
   chatRoute,
   terminalRoute,
   tasksRoute,
+  taskDetailRoute,
   settingsRoute,
 ])

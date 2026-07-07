@@ -2,7 +2,11 @@ import { useState, type JSX } from 'react'
 import type { WsStatus } from '../stores/chat.js'
 import { useConnection } from '../stores/connection.js'
 
-export function Composer(props: { sessionId: string; wsStatus: WsStatus }): JSX.Element {
+export function Composer(props: {
+  sessionId: string
+  wsStatus: WsStatus
+  agent?: string
+}): JSX.Element {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | undefined>()
@@ -18,7 +22,9 @@ export function Composer(props: { sessionId: string; wsStatus: WsStatus }): JSX.
       // Fire-and-forget; the reply (and the echo of this message) arrives on
       // the sessions WS. Sending is gated on the socket being open so a send
       // can't silently vanish while we're blind.
-      await useConnection.getState().gateway.postMessage(props.sessionId, { text: body })
+      await useConnection
+        .getState()
+        .gateway.postMessage(props.sessionId, { text: body, agent: props.agent })
     } catch (err) {
       setError((err as Error).message)
       setText(body) // give the draft back
