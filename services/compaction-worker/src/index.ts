@@ -28,6 +28,7 @@ import { compactConversationTask } from './tasks/compact-conversation.js'
 import { synthesizeToolCallTask } from './tasks/synthesize-tool-call.js'
 import { enqueueIdleTask } from './tasks/enqueue-idle.js'
 import { extractWikiTask } from './tasks/extract-wiki.js'
+import { enqueueWikiBackfillTask } from './tasks/enqueue-wiki-backfill.js'
 
 async function main(): Promise<void> {
   console.log('[CompactWorker] Starting...')
@@ -47,12 +48,19 @@ async function main(): Promise<void> {
       'synthesize-tool-call': synthesizeToolCallTask,
       'enqueue-idle': enqueueIdleTask,
       'extract-wiki': extractWikiTask,
+      'enqueue-wiki-backfill': enqueueWikiBackfillTask,
     },
     parsedCronItems: parseCronItems([
       {
         task: 'enqueue-idle',
         match: '*/5 * * * *',
         identifier: 'idle-enqueue',
+        options: { backfillPeriod: 0 },
+      },
+      {
+        task: 'enqueue-wiki-backfill',
+        match: '*/10 * * * *',
+        identifier: 'wiki-backfill',
         options: { backfillPeriod: 0 },
       },
     ]),
