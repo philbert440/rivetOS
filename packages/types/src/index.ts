@@ -207,6 +207,7 @@ export type {
   TaskSteerRequest,
   TaskSteerAccepted,
   TaskKillResponse,
+  TaskWaitTimeoutResponse,
   CatalogAgent,
   CatalogCommand,
   CatalogExecutorEntry,

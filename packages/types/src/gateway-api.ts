@@ -43,6 +43,9 @@ export interface GatewayClientConfig {
   baseUrl: string
   /** Bearer token; sent as `Authorization` on HTTP and `?token=` on WS. */
   token?: string
+  /** Self-describing auth posture; defaults to 'bearer' when token is set,
+   *  'none' otherwise. */
+  authMode?: GatewayAuthMode
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +175,16 @@ export interface TaskSteerAccepted {
 export interface TaskKillResponse {
   ok: true
   prior: TaskStatus | null
+}
+
+/**
+ * 504 body from POST /api/tasks?wait=1 when the deadline kills the run — the
+ * one error shape that carries a payload: the killed row when the store still
+ * has it.
+ */
+export interface TaskWaitTimeoutResponse {
+  error: string
+  task?: TaskWire
 }
 
 // ---------------------------------------------------------------------------

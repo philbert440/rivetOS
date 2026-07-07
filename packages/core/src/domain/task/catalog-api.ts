@@ -19,6 +19,7 @@ import type {
   CatalogCommand,
   CatalogSheet,
   GatewayRoute,
+  HarnessExecutor,
   MeshRegistry,
   Skill,
   Tool,
@@ -81,9 +82,10 @@ export function createCatalogApiRoute(opts: CatalogApiOptions): GatewayRoute {
         // Per-executor deadline: a hung listCommands() probe must degrade to
         // an empty manifest, never block the whole sheet (review follow-up).
         const COMMANDS_TIMEOUT_MS = 3_000
-        const commandsFor = async (executor: {
-          listCommands?: () => Promise<CatalogCommand[]>
-        }): Promise<CatalogCommand[]> => {
+        // No cast: HarnessExecutor.listCommands items are structurally
+        // CatalogCommand, so the wire contract is enforced end to end
+        // (#295 review).
+        const commandsFor = async (executor: HarnessExecutor): Promise<CatalogCommand[]> => {
           if (!executor.listCommands) return []
           return Promise.race([
             executor.listCommands().catch((): CatalogCommand[] => []),
@@ -96,9 +98,7 @@ export function createCatalogApiRoute(opts: CatalogApiOptions): GatewayRoute {
           opts.executors.entries().map(async ({ key, executor }) => ({
             key,
             capabilities: executor.capabilities(),
-            commands: await commandsFor(
-              executor as { listCommands?: () => Promise<CatalogCommand[]> },
-            ),
+            commands: await commandsFor(executor),
           })),
         )
 
