@@ -180,6 +180,14 @@ describe('RivetGateway HTTP', () => {
     expect((err as GatewayError).message).toBe('no task missing')
   })
 
+  it('wraps network failure into GatewayError status 0', async () => {
+    const gw = new RivetGateway({ baseUrl: 'http://127.0.0.1:1' })
+    const err = await gw.listSessions().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(GatewayError)
+    expect((err as GatewayError).status).toBe(0)
+    expect((err as GatewayError).message).toContain('unreachable')
+  })
+
   it('health() is true against the stub and false against a dead port', async () => {
     expect(await new RivetGateway({ baseUrl }).health()).toBe(true)
     expect(await new RivetGateway({ baseUrl: 'http://127.0.0.1:1' }).health()).toBe(false)

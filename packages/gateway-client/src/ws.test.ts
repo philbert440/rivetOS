@@ -81,6 +81,41 @@ describe('subscribe', () => {
     wss.close()
   })
 
+  it('a double close event does not stack reconnect timers', async () => {
+    let created = 0
+    const closeFns: ((e: never) => void)[] = []
+    const factory = (): WebSocketLike => {
+      created += 1
+      return {
+        readyState: 0,
+        send: () => {},
+        close: () => {},
+        addEventListener: (type, fn) => {
+          if (type === 'close') closeFns.push(fn)
+        },
+      }
+    }
+
+    const sub = subscribe({ baseUrl: 'http://127.0.0.1:9' }, {
+      path: '/ws',
+      maxBackoffMs: 50,
+      onFrame: () => {},
+      factory,
+    })
+    // First socket fires close TWICE (proxy half-close / error→close race).
+    closeFns[0](undefined as never)
+    closeFns[0](undefined as never)
+    await new Promise((r) => setTimeout(r, 400))
+    // One reconnect for two close events — not two.
+    expect(created).toBe(2)
+    sub.close()
+    // The orphaned-timer leak: nothing may connect after close().
+    closeFns[1]?.(undefined as never)
+    const after = created
+    await new Promise((r) => setTimeout(r, 400))
+    expect(created).toBe(after)
+  })
+
   it('close() stops reconnect attempts', async () => {
     let created = 0
     const factory = (): WebSocketLike => {

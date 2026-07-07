@@ -30,6 +30,12 @@ export interface RequestOptions {
   raw?: boolean
 }
 
+/**
+ * baseUrl must be an ORIGIN (`http://host:port`) — gateway paths are
+ * absolute, so any path prefix on baseUrl would be silently discarded by URL
+ * resolution. Reverse-proxying the gateway under a subpath is not supported;
+ * proxy a whole (sub)domain instead.
+ */
 export function buildUrl(
   baseUrl: string,
   path: string,
@@ -51,12 +57,23 @@ export async function request<T>(
   if (config.token) headers.authorization = `Bearer ${config.token}`
   if (opts.body !== undefined) headers['content-type'] = 'application/json'
 
-  const res = await fetch(buildUrl(config.baseUrl, path, opts.query), {
-    method: opts.method ?? 'GET',
-    headers,
-    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-    signal: opts.signal,
-  })
+  // Single error surface: network/DNS/TLS failures and malformed 2xx JSON
+  // also become GatewayError (status 0) so callers only ever catch one type.
+  // Deliberate exception: AbortError propagates untouched — an abort is the
+  // caller's own signal, not a gateway failure.
+  let res: Response
+  try {
+    res = await fetch(buildUrl(config.baseUrl, path, opts.query), {
+      method: opts.method ?? 'GET',
+      headers,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal: opts.signal,
+    })
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') throw err
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new GatewayError(0, `gateway unreachable: ${msg}`, undefined)
+  }
 
   if (!res.ok) {
     const body: unknown = await res
@@ -73,5 +90,9 @@ export async function request<T>(
   }
 
   if (opts.raw) return (await res.text()) as T
-  return (await res.json()) as T
+  try {
+    return (await res.json()) as T
+  } catch {
+    throw new GatewayError(0, `gateway returned non-JSON body on ${path}`, undefined)
+  }
 }
