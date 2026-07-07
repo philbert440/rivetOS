@@ -166,15 +166,24 @@ async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
  * Sync + cheap (a handful of existsSync); unknown harnesses → false.
  */
 export function harnessSessionExists(command: string, id: string): boolean {
-  if (command !== 'claude') return false
-  const dir = claudeProjectsDir()
-  let slugs: string[]
+  let dir: string
+  let hit: (top: string) => string
+  if (command === 'claude') {
+    dir = claudeProjectsDir()
+    hit = (slug) => join(dir, slug, `${id}.jsonl`)
+  } else if (command === 'grok') {
+    dir = grokSessionsDir()
+    hit = (cwd) => join(dir, cwd, id, 'summary.json')
+  } else {
+    return false
+  }
+  let tops: string[]
   try {
-    slugs = readdirSync(dir)
+    tops = readdirSync(dir)
   } catch {
     return false
   }
-  return slugs.some((slug) => existsSync(join(dir, slug, `${id}.jsonl`)))
+  return tops.some((t) => existsSync(hit(t)))
 }
 
 /**
