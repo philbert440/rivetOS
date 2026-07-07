@@ -34,6 +34,7 @@ import { buildLocalSessionContext } from '@rivetos/types'
 import type { TaskRow, TaskStore } from './store.js'
 import { TASK_JOB_NAME, taskJobName } from './store.js'
 import { buildRetryMessage } from './evaluation-coordinator.js'
+import { parseWikiPage } from '@rivetos/wiki-core'
 import { logger } from '../../logger.js'
 
 const log = logger('TaskRunner')
@@ -80,6 +81,8 @@ export interface TaskHandlerOptions {
   memory?: Pick<Memory, 'getContextForTurn'>
   /** Default working directory for task tools. */
   workspaceDir?: string
+  /** Wiki repo root for contextRefs kind 'wiki' (default /rivet-shared/wiki). */
+  wikiDir?: string
   /** Liveness heartbeat cadence while a task executes (default 30s). */
   heartbeatIntervalMs?: number
   /**
@@ -119,10 +122,43 @@ async function resolveContext(task: TaskRow, opts: TaskHandlerOptions): Promise<
     const refs = task.contextRefs
       .map((r) => `- ${r.kind}: ${r.ref}${r.note ? ` — ${r.note}` : ''}`)
       .join('\n')
-    return [`### Referenced context\n${refs}`, memoryContext].filter(Boolean).join('\n\n')
+    // Phase 3f: wiki refs resolve EAGERLY — the page's Current state is the
+    // curated context the requester explicitly asked for, so it goes in
+    // full (unlike other kinds, which stay pointers the agent can chase).
+    const wikiBlocks = (
+      await Promise.all(
+        task.contextRefs
+          .filter((r) => r.kind === 'wiki')
+          .map(async (r) => {
+            const page = await readWikiPage(opts.wikiDir ?? '/rivet-shared/wiki', r.ref)
+            return page
+              ? `#### Wiki: ${page.meta.title} (${page.meta.slug})\n${page.currentState}`
+              : `#### Wiki: ${r.ref}\n(no such page — a red link)`
+          }),
+      )
+    ).join('\n\n')
+    return [`### Referenced context\n${refs}`, wikiBlocks, memoryContext]
+      .filter(Boolean)
+      .join('\n\n')
   } catch (err: unknown) {
     log.warn(`Context resolution for task ${task.id} failed: ${(err as Error).message}`)
     return ''
+  }
+}
+
+const WIKI_SLUG_RE = /^[a-z0-9-]{1,80}$/
+
+async function readWikiPage(
+  wikiDir: string,
+  slug: string,
+): Promise<ReturnType<typeof parseWikiPage> | undefined> {
+  if (!WIKI_SLUG_RE.test(slug)) return undefined
+  try {
+    const { readFile } = await import('node:fs/promises')
+    const { join } = await import('node:path')
+    return parseWikiPage(await readFile(join(wikiDir, 'topics', `${slug}.md`), 'utf8'))
+  } catch {
+    return undefined
   }
 }
 

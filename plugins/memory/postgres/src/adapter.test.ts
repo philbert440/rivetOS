@@ -60,3 +60,40 @@ describeIf('PostgresMemory.getContextForTurn', () => {
     expect(recentSection).not.toContain('HEARTBEAT_OK')
   })
 })
+
+describeIf('getContextForTurn wiki section (3f)', () => {
+  const SLUG = `wiki-3f-test-${Date.now()}`
+  let memory: PostgresMemory
+
+  beforeAll(async () => {
+    memory = new PostgresMemory({ connectionString: PG_URL })
+    const pool = memory.getSearchEngine() // touch to init
+    void pool
+    // Seed a wiki topic directly (0005 applied on the test DB).
+    await (memory as unknown as { pool: import('pg').Pool }).pool.query(
+      `INSERT INTO ros_wiki_topics (slug, title, current_state, search_text)
+       VALUES ($1, $2, $3, $2 || ' ' || $3)
+       ON CONFLICT (slug) DO NOTHING`,
+      [SLUG, 'Wiki 3f Probe Topic', 'The probe topic current state: flurbnozzle protocol v9 lives here.'],
+    )
+  })
+
+  afterAll(async () => {
+    await (memory as unknown as { pool: import('pg').Pool }).pool.query(
+      'DELETE FROM ros_wiki_topics WHERE slug = $1',
+      [SLUG],
+    )
+    await memory.close()
+  })
+
+  it('injects the curated section and dedups the exact same text from raw hits', async () => {
+    const ctx = await memory.getContextForTurn('flurbnozzle protocol', 'wiki-3f-agent')
+    expect(ctx).toContain('## Wiki (curated state)')
+    expect(ctx).toContain(`wiki:${SLUG}`)
+    expect(ctx).toContain('flurbnozzle protocol v9')
+    // The same 300-char prefix must appear exactly once (dedup across sections).
+    const occurrences = ctx.split('flurbnozzle protocol v9 lives here').length - 1
+    expect(occurrences).toBe(1)
+  })
+})
+
