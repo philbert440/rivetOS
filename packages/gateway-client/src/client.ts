@@ -98,6 +98,15 @@ export class RivetGateway {
     })
   }
 
+  /** Durable backfill for a harness conversation (seamless modes): the
+   *  committed transcript from memory, for a cold/reconnecting client. Live
+   *  frames then arrive on the sessions WS. */
+  conversationMessages(key: string, signal?: AbortSignal): Promise<SessionMessagesResponse> {
+    return request(this.config, `/api/conversations/${encodeURIComponent(key)}/messages`, {
+      signal,
+    })
+  }
+
   /** Fire-and-forget turn; replies arrive on the sessions WS. */
   postMessage(sessionId: string, body: SessionPostRequest): Promise<SessionPostAccepted> {
     return request(this.config, `/api/sessions/${encodeURIComponent(sessionId)}/messages`, {

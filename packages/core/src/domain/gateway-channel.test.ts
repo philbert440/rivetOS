@@ -223,5 +223,68 @@ describe('emitFrame (seamless-modes push)', () => {
       messages: { id: string }[]
     }
     expect(msgs.messages.some((m) => m.id === 'm1')).toBe(true)
+
+describe('GET /api/conversations/:key/messages (seamless-modes backfill 5e)', () => {
+  async function startWithMemory(
+    history: Array<{ role: string; content: unknown }>,
+  ): Promise<string> {
+    const gw = createGatewayChannel({ getMemory: () => ({ getSessionHistory: async () => history }) })
+    await gw.channel.start()
+    const server: Server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const route = gw.routes.find((r) => url.pathname.startsWith(r.prefix))
+      void route?.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as AddressInfo).port
+    cleanups.push(async () => {
+      await gw.close()
+      await new Promise((r) => server.close(r))
+    })
+    return `http://127.0.0.1:${port}`
+  }
+
+  it('returns the durable transcript, user/assistant only, content flattened', async () => {
+    const base = await startWithMemory([
+      { role: 'system', content: 'sys prompt' },
+      { role: 'user', content: 'hello' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'hi ' },
+          { type: 'text', text: 'there' },
+        ],
+      },
+      { role: 'tool', content: 'tool junk' },
+    ])
+    const res = await fetch(`${base}/api/conversations/chat-abc/messages`)
+    expect(res.status).toBe(200)
+    const { messages } = (await res.json()) as {
+      messages: Array<{ id: string; role: string; text: string }>
+    }
+    expect(messages.map((m) => `${m.role}:${m.text}`)).toEqual(['user:hello', 'assistant:hi there'])
+    expect(messages[0].id).toBe('chat-abc:0')
+  })
+
+  it('empty when no memory is registered; 404 on a malformed path', async () => {
+    const gw = createGatewayChannel()
+    await gw.channel.start()
+    const server: Server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const route = gw.routes.find((r) => url.pathname.startsWith(r.prefix))
+      void route?.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as AddressInfo).port
+    cleanups.push(async () => {
+      await gw.close()
+      await new Promise((r) => server.close(r))
+    })
+    const base = `http://127.0.0.1:${port}`
+    const ok = (await (await fetch(`${base}/api/conversations/k/messages`)).json()) as {
+      messages: unknown[]
+    }
+    expect(ok.messages).toEqual([])
+    expect((await fetch(`${base}/api/conversations/k`)).status).toBe(404)
   })
 })

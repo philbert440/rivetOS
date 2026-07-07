@@ -74,6 +74,21 @@ function json(res: ServerResponse, code: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
+/** Flatten a memory Message.content (string | ContentPart[]) to display text
+ *  for the chat backfill — join the text parts, drop non-text parts. */
+function contentToText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content))
+    return content
+      .map((p) =>
+        p && typeof p === 'object' && typeof (p as { text?: unknown }).text === 'string'
+          ? (p as { text: string }).text
+          : '',
+      )
+      .join('')
+  return ''
+}
+
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
   const chunks: Buffer[] = []
   let size = 0
@@ -91,7 +106,20 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   return parsed as Record<string, unknown>
 }
 
-export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayChannelHandle {
+/** Just the memory slice the backfill route needs (seamless modes 5e). */
+type MemoryBackfill = {
+  getSessionHistory(
+    sessionId: string,
+    options?: { limit?: number },
+  ): Promise<Array<{ role: string; content: unknown }>>
+}
+
+export function createGatewayChannel(opts?: {
+  defaultAgent?: string
+  /** Lazy accessor for the durable transcript store — memory registers on the
+   *  runtime AFTER the channel is built, so read it at request time. */
+  getMemory?: () => MemoryBackfill | undefined
+}): GatewayChannelHandle {
   const sessions = new Map<string, { ring: RingMessage[]; lastActive: number }>()
   const subscribers = new Set<{ ws: WebSocket; session?: string }>()
   /** ?wait long-polls: resolved by the next assistant message per session. */
@@ -287,6 +315,43 @@ export function createGatewayChannel(opts?: { defaultAgent?: string }): GatewayC
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err)
           log.warn(`sessions api error: ${msg}`)
+          if (!res.headersSent) json(res, 500, { error: msg })
+        }
+      },
+    },
+    {
+      // Seamless modes (5e): durable backfill for a harness conversation —
+      // GET /api/conversations/:key/messages reads the memory transcript
+      // (the ring is process-local + live only; a cold or reconnecting client
+      // reads the committed history here, then the sessions WS streams live).
+      prefix: '/api/conversations',
+      handler: async (req, res) => {
+        try {
+          const url = new URL(req.url ?? '/', 'http://localhost')
+          const rest = url.pathname.slice('/api/conversations'.length).replace(/^\//, '')
+          const [rawKey, sub] = rest.split('/')
+          const key = decodeURIComponent(rawKey ?? '')
+          if (req.method !== 'GET' || !key || sub !== 'messages')
+            return json(res, 404, { error: 'not found' })
+          const mem = opts?.getMemory?.()
+          if (!mem) return json(res, 200, { messages: [] } satisfies SessionMessagesResponse)
+          const limRaw = url.searchParams.get('limit')
+          const limN = limRaw ? Number.parseInt(limRaw, 10) : NaN
+          const limit = Number.isFinite(limN) && limN > 0 ? Math.min(limN, 1000) : 200
+          const history = await mem.getSessionHistory(key, { limit })
+          const messages = history
+            .filter((m) => m.role === 'user' || m.role === 'assistant')
+            .map((m, i) => ({
+              id: `${key}:${String(i)}`,
+              sessionId: key,
+              role: m.role as 'user' | 'assistant',
+              text: contentToText(m.content),
+              ts: 0,
+            }))
+          return json(res, 200, { messages } satisfies SessionMessagesResponse)
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          log.warn(`conversations api error: ${msg}`)
           if (!res.headersSent) json(res, 500, { error: msg })
         }
       },
