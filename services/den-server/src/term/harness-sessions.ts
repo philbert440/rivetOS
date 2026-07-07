@@ -4,15 +4,16 @@
 // is how the RivetHub drawer lists conversations; opening one resumes the
 // harness's native session (claude --resume <id>).
 //
-// Supports Claude Code (~/.claude/projects/<cwd-slug>/<id>.jsonl) and grok
-// Build (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json). Other harnesses
-// (hermes) yield [] until their store format is added — the drawer just shows
-// nothing for them rather than breaking.
+// Supports Claude Code (~/.claude/projects/<slug>/<id>.jsonl), grok Build
+// (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json), and Hermes (a sqlite DB at
+// ~/.hermes/state.db). An unknown harness yields [] — the drawer just shows
+// nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { createRequire } from 'node:module'
 
 export interface HarnessSession {
   /** the harness's native session id (e.g. Claude Code's uuid) */
@@ -159,6 +160,101 @@ async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
   return out.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit)
 }
 
+// ---- Hermes: sessions live in a sqlite DB, not files (~/.hermes/state.db) ----
+
+/** ~/.hermes/state.db (respects HERMES_HOME). */
+function hermesDbPath(): string {
+  const base = process.env.HERMES_HOME?.trim() || join(homedir(), '.hermes')
+  return join(base, 'state.db')
+}
+
+interface SqliteRow {
+  [k: string]: unknown
+}
+interface SqliteStmt {
+  all(...params: unknown[]): SqliteRow[]
+  get(...params: unknown[]): SqliteRow | undefined
+}
+interface SqliteDb {
+  prepare(sql: string): SqliteStmt
+  close(): void
+}
+const require_ = createRequire(import.meta.url)
+
+/** Open the hermes DB read-only. Returns null if the file or node:sqlite
+ *  (Node ≥22.5, still experimental) is unavailable — the drawer degrades to
+ *  empty for hermes rather than erroring. */
+function openHermesDb(): SqliteDb | null {
+  const dbPath = hermesDbPath()
+  if (!existsSync(dbPath)) return null
+  try {
+    const { DatabaseSync } = require_('node:sqlite') as {
+      DatabaseSync: new (p: string, o?: { readOnly?: boolean }) => SqliteDb
+    }
+    return new DatabaseSync(dbPath, { readOnly: true })
+  } catch {
+    return null
+  }
+}
+
+/** hermes timestamps may be epoch ms, epoch seconds, or an ISO string. */
+function toEpochMs(v: unknown): number {
+  if (typeof v === 'number') return v > 1e12 ? v : v > 1e9 ? v * 1000 : v
+  if (typeof v === 'string') {
+    const t = Date.parse(v)
+    return Number.isFinite(t) ? t : 0
+  }
+  return 0
+}
+
+function listHermesSessions(limit: number): HarnessSession[] {
+  const db = openHermesDb()
+  if (!db) return []
+  try {
+    const rows = db
+      .prepare(
+        `SELECT s.id AS id, s.started_at AS started, s.ended_at AS ended,
+                (SELECT m.content FROM messages m
+                  WHERE m.session_id = s.id AND m.role = 'user'
+                  ORDER BY m.timestamp ASC LIMIT 1) AS title
+         FROM sessions s
+         ORDER BY COALESCE(s.ended_at, s.started_at) DESC
+         LIMIT ?`,
+      )
+      .all(limit)
+    return rows.map((r) => ({
+      id: String(r.id),
+      command: 'hermes',
+      title: (typeof r.title === 'string' ? r.title : '').trim().slice(0, 120) || String(r.id),
+      updatedAt: toEpochMs(r.ended ?? r.started),
+    }))
+  } catch {
+    return []
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function hermesSessionExists(id: string): boolean {
+  const db = openHermesDb()
+  if (!db) return false
+  try {
+    return !!db.prepare('SELECT 1 FROM sessions WHERE id = ? LIMIT 1').get(id)
+  } catch {
+    return false
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /**
  * Does a harness already have an on-disk session with this id? Store existence
  * is the ground truth for choosing --resume (continue) vs --session-id (pin a
@@ -166,6 +262,7 @@ async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
  * Sync + cheap (a handful of existsSync); unknown harnesses → false.
  */
 export function harnessSessionExists(command: string, id: string): boolean {
+  if (command === 'hermes') return hermesSessionExists(id) // sqlite lookup
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -202,7 +299,7 @@ export async function listHarnessSessions(
   const all: HarnessSession[] = []
   if (commands.includes('claude')) all.push(...(await listClaudeSessions(limit)))
   if (commands.includes('grok')) all.push(...(await listGrokSessions(limit)))
-  // hermes store format not yet wired — its node's drawer stays empty.
+  if (commands.includes('hermes')) all.push(...listHermesSessions(limit))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }

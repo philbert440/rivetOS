@@ -154,9 +154,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * with `resumeFlag <id>`. Ids must be valid UUIDs (Claude requires it for
  * --session-id), so RivetHub generates UUID conversation ids.
  */
-const HARNESS_FLAGS: Record<string, { sessionFlag: string; resumeFlag: string }> = {
+const HARNESS_FLAGS: Record<string, { sessionFlag?: string; resumeFlag: string }> = {
   claude: { sessionFlag: '--session-id', resumeFlag: '--resume' },
   grok: { sessionFlag: '--session-id', resumeFlag: '--resume' },
+  // Hermes can --resume an existing session but has NO flag to pin a NEW
+  // session's id — so no sessionFlag: a fresh hermes chat gets its own id
+  // (can't equal the join key), reopening resumes cleanly.
+  hermes: { resumeFlag: '--resume' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:
@@ -376,15 +380,20 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       const flags = HARNESS_FLAGS[key]
       let argv = entry.cmd
       if (flags) {
-        if (resume && UUID_RE.test(resume)) {
-          argv = [...entry.cmd, flags.resumeFlag, resume]
-        } else if (session && UUID_RE.test(session)) {
-          // Existing on-disk session (e.g. re-spawn after LRU eviction) →
-          // --resume it; a genuinely new conversation → --session-id to pin
-          // its id. Store existence is the ground truth, not the caller's
-          // hint (#318 review).
-          const exists = deps.sessionExists?.(key, session) ?? false
-          argv = [...entry.cmd, exists ? flags.resumeFlag : flags.sessionFlag, session]
+        // Prefer --resume: an explicit resume request, or a session that
+        // already exists in the harness's store (e.g. a re-spawn after LRU
+        // eviction — store existence is the ground truth, not the caller's
+        // hint, #318 review). --resume takes the id verbatim (hermes ids
+        // aren't UUIDs).
+        const resumeId =
+          resume || (session && deps.sessionExists?.(key, session) ? session : undefined)
+        if (resumeId) {
+          argv = [...entry.cmd, flags.resumeFlag, resumeId]
+        } else if (session && flags.sessionFlag && UUID_RE.test(session)) {
+          // A genuinely-new conversation pins its id (claude/grok — needs a
+          // UUID). Harnesses with no sessionFlag (hermes) can't pin: the fresh
+          // session gets the harness's own id.
+          argv = [...entry.cmd, flags.sessionFlag, session]
         }
       }
 
