@@ -1,0 +1,4 @@
+[submodule "apps/rivet-android"]
+	path = apps/rivet-android
+	url = https://github.com/philbert440/rivet-android
+	branch = rivet

@@ -272,6 +272,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 
 [Apache License 2.0](LICENSE)
 
+### License boundary — `apps/rivet-android`
+
+The Android client (`apps/rivet-android`) is a **git submodule** pointing at
+[philbert440/rivet-android](https://github.com/philbert440/rivet-android), a
+RikkaHub fork licensed **AGPL-3.0** — a different license than this
+repository. The boundary rules:
+
+- The submodule is Gradle-built and completely outside the nx graph, CI, and
+  npm workspaces of this repo.
+- Dependency direction is **one-way**: the Android app may consume this
+  repo's published artifacts and gateway APIs; **no code may be copied FROM
+  the AGPL submodule INTO this Apache-2.0 tree.**
+- RivetHub web/desktop reimplement the client UX against the same gateway
+  contracts (`@rivetos/types` gateway-api) — shared design, independent code.
+
 ---
 
 [rivetos.dev](https://rivetos.dev) · [GitHub](https://github.com/philbert440/rivetOS)
