@@ -173,7 +173,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   const reap = (r: PtyRecord): void => {
     clearTimers(r)
     records.delete(r.id)
-    bySession.delete(r.denSession)
+    // Only clear the session alias if it STILL points at this pty: a
+    // spawn-or-get after this pty exited (but before its linger reap) may
+    // have replaced the mapping with a live pty — reaping must not orphan it
+    // (#311 review).
+    if (bySession.get(r.denSession) === r.id) bySession.delete(r.denSession)
   }
 
   const escalate = (r: PtyRecord): void => {
@@ -273,7 +277,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // Re-entering Terminal (or chat inject) for a live conversation reuses
       // the same harness rather than spawning a second (seamless modes).
       if (session) {
-        if (!/^[a-zA-Z0-9:_.-]{1,120}$/.test(session))
+        // `task:` is the task engine's reserved conversation namespace
+        // (ros_conversations.session_key) — a seamless chat session must not
+        // collide with it (#311 review).
+        if (!/^[a-zA-Z0-9:_.-]{1,120}$/.test(session) || session.startsWith('task:'))
           throw new TermSpawnError('unknown-command', `invalid session id: ${session}`)
         const existingId = bySession.get(session)
         const existing = existingId ? records.get(existingId) : undefined
