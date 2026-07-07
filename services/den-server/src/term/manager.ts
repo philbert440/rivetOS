@@ -86,6 +86,12 @@ interface PtyRecord {
   detachTimer?: NodeJS.Timeout
   sigkillTimer?: NodeJS.Timeout
   reapTimer?: NodeJS.Timeout
+  /** Ready-gate (seamless 5g): a chat inject that arrives before the harness
+   *  TUI can accept stdin is dropped. We buffer injects until first output has
+   *  settled, then flush — so the FIRST chat turn to a fresh harness lands. */
+  ready: boolean
+  injectBuffer: string[]
+  readyTimer?: NodeJS.Timeout
 }
 
 export interface TermManager {
@@ -110,6 +116,9 @@ export interface TermManager {
   attach(id: string, cb: DataSubscriber, onExit?: ExitSubscriber): (() => void) | null
   scrollback(id: string): Buffer | undefined
   write(id: string, data: string | Buffer): boolean
+  /** Like write, but for chat injects: buffered until the harness TUI is
+   *  ready (first output settled) so the first turn isn't dropped (5g). */
+  inject(id: string, data: string | Buffer): boolean
   /** Resize the child and record the new dimensions (hello frames report them). */
   resize(id: string, cols: number, rows: number): boolean
   /** Flow control for saturated viewers — no-op on backends without pause. */
@@ -163,7 +172,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   }
 
   const clearTimers = (r: PtyRecord): void => {
-    for (const key of ['detachTimer', 'sigkillTimer', 'reapTimer'] as const) {
+    for (const key of ['detachTimer', 'sigkillTimer', 'reapTimer', 'readyTimer'] as const) {
       const t = r[key]
       if (t) clearTimeout(t)
       r[key] = undefined
@@ -290,9 +299,26 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       const key = rosterKey ?? roster.default
       const entry = roster.commands[key] as (typeof roster.commands)[string] | undefined
       if (!entry) throw new TermSpawnError('unknown-command', `unknown command: ${key}`)
-      const running = [...records.values()].filter((r) => r.state === 'running').length
-      if (running >= config.term.maxPtys)
-        throw new TermSpawnError('cap', `pty limit reached (${config.term.maxPtys})`)
+      const running = [...records.values()].filter((r) => r.state === 'running')
+      if (running.length >= config.term.maxPtys) {
+        // LRU pool (seamless 5g): at the cap, evict the least-recently-active
+        // UNATTACHED pty so a new conversation can spawn. The evicted
+        // conversation goes cold — its transcript is durable in memory and a
+        // later open respawns it (spawn-or-get). A pty someone is watching
+        // (attached) is never evicted; if every running pty is attached, the
+        // cap is real. Brief maxPtys+1 until the victim exits is acceptable
+        // for a soft cap.
+        const victim = running
+          .filter((r) => r.attached.size === 0)
+          .sort((a, b) => a.lastOutputTs - b.lastOutputTs)[0]
+        if (!victim)
+          throw new TermSpawnError(
+            'cap',
+            `pty limit reached (${config.term.maxPtys}); all attached`,
+          )
+        audit('kill', victim, { reason: 'lru-evict' })
+        escalate(victim)
+      }
 
       const id = `pty-${randomBytes(4).toString('hex')}`
       // The conversation join key IS the den session, so den (?session), the
@@ -332,11 +358,24 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         rows,
         lastOutputTs: now(),
         state: 'running',
+        ready: false,
+        injectBuffer: [],
       }
       records.set(id, r)
       bySession.set(denSession, id)
       proc.onData((data) => {
         r.lastOutputTs = now()
+        // Ready-gate: on the FIRST output, wait a short settle for the TUI to
+        // finish its initial render, then flush any buffered chat injects.
+        if (!r.ready && !r.readyTimer) {
+          r.readyTimer = setTimeout(() => {
+            r.readyTimer = undefined
+            r.ready = true
+            for (const d of r.injectBuffer) r.proc.write(d)
+            r.injectBuffer = []
+          }, config.term.injectReadyMs ?? 500)
+          r.readyTimer.unref?.()
+        }
         appendScrollback(r, data)
         for (const cb of r.attached) cb(data)
       })
@@ -407,6 +446,16 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       const r = records.get(id)
       if (!r || r.state !== 'running') return false
       r.proc.write(data)
+      return true
+    },
+
+    inject(id, data): boolean {
+      const r = records.get(id)
+      if (!r || r.state !== 'running') return false
+      // Ready-gate (5g): before the harness TUI is up, buffer instead of
+      // writing into the void; the onData settle timer flushes it.
+      if (r.ready) r.proc.write(data)
+      else r.injectBuffer.push(typeof data === 'string' ? data : data.toString())
       return true
     },
 

@@ -46,6 +46,11 @@ interface ChatState {
   active?: string
   seed: (sessionId: string, messages: SessionMessage[]) => void
   addDraft: (sessionId: string) => void
+  /** Seamless modes: show the user's turn immediately on a harness send. The
+   *  inject path has real latency (hook fire + first-boot ready-gate), so
+   *  unlike the chat-loop there's no instant echo. The real user frame (from
+   *  the harness UserPromptSubmit hook, via the bridge) supersedes it by text. */
+  addOptimisticUser: (sessionId: string, text: string) => void
   setActive: (sessionId: string) => void
   connect: (endpointKey: string) => void
   disconnect: () => void
@@ -115,6 +120,18 @@ export const useChat = create<ChatState>((set, get) => ({
       opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
     })),
 
+  addOptimisticUser: (sessionId, text) =>
+    set((s) => {
+      const msg: SessionMessage = {
+        id: `optim:${crypto.randomUUID()}`,
+        sessionId,
+        role: 'user',
+        text,
+        ts: Date.now(),
+      }
+      return { messages: { ...s.messages, [sessionId]: appendMessage(s.messages[sessionId], msg) } }
+    }),
+
   setActive: (sessionId) =>
     set((s) => ({
       active: sessionId,
@@ -140,14 +157,18 @@ export const useChat = create<ChatState>((set, get) => ({
         if (frame.kind === 'message') {
           const { kind: _kind, ...msg } = frame
           if (!isOpen(msg.sessionId)) return
-          set((s) => ({
-            messages: {
-              ...s.messages,
-              [msg.sessionId]: appendMessage(s.messages[msg.sessionId], msg),
-            },
-            // an assistant message ends the in-flight turn
-            live: msg.role === 'assistant' ? { ...s.live, [msg.sessionId]: undefined } : s.live,
-          }))
+          set((s) => {
+            let list = s.messages[msg.sessionId] ?? []
+            // the real user frame supersedes any optimistic bubble of the same
+            // text (seamless harness send — see addOptimisticUser)
+            if (msg.role === 'user')
+              list = list.filter((m) => !(m.id.startsWith('optim:') && m.text === msg.text))
+            return {
+              messages: { ...s.messages, [msg.sessionId]: appendMessage(list, msg) },
+              // an assistant message ends the in-flight turn
+              live: msg.role === 'assistant' ? { ...s.live, [msg.sessionId]: undefined } : s.live,
+            }
+          })
         } else {
           if (!isOpen(frame.session)) return
           set((s) => ({

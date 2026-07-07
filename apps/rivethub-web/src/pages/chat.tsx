@@ -232,7 +232,11 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
   // its den events stream the reply back via the bridge. This is what makes
   // chat↔terminal↔den one thread — the terminal shows the very harness the
   // chat is talking to, with full context.
+  const addOptimisticUser = useChat((s) => s.addOptimisticUser)
   const sendToHarness = async (body: string): Promise<void> => {
+    // Show the turn immediately — the inject echo (harness hook → bridge) has
+    // real latency, unlike the chat-loop's instant echo.
+    addOptimisticUser(props.sessionId, body)
     await ensurePty()
     await useConnection.getState().gateway.termInject({ session: props.sessionId, text: body })
   }

@@ -39,6 +39,9 @@ export interface DenTermConfig {
   /** How long an exited PTY record lingers (scrollback inspectable) before
    *  it is reaped (ms). */
   exitLingerMs: number
+  /** Grace after a fresh PTY's first output before buffered chat injects are
+   *  flushed — lets the harness TUI settle so the first turn isn't dropped. */
+  injectReadyMs: number
 }
 
 export interface DenConfig {
@@ -90,6 +93,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       scrollbackBytes: intEnv(env, 'RIVETOS_DEN_TERM_SCROLLBACK', 262_144),
       detachedTtlMs: intEnv(env, 'RIVETOS_DEN_TERM_DETACHED_TTL_MS', 1_800_000),
       exitLingerMs: intEnv(env, 'RIVETOS_DEN_TERM_EXIT_LINGER_MS', 60_000),
+      injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
     },
   }
 }
