@@ -145,6 +145,22 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
     if (backfill.data) seed(props.sessionId, backfill.data.messages)
   }, [backfill.data, props.sessionId])
 
+  // Cold-session durable backfill (seamless 5e): a harness conversation this
+  // process didn't run through the chat-loop has an EMPTY ring — its committed
+  // transcript lives in memory. Fetch it only when the ring came back empty;
+  // live frames from the bridge then append on top (do NOT id-merge the two —
+  // this is cold first paint, replaced wholesale).
+  const ringEmpty = backfill.isSuccess && backfill.data.messages.length === 0
+  const coldBackfill = useQuery({
+    queryKey: ['conv-messages', baseUrl, token ?? '', props.sessionId, wsEpoch],
+    queryFn: ({ signal }) =>
+      useConnection.getState().gateway.conversationMessages(props.sessionId, signal),
+    enabled: ringEmpty,
+  })
+  useEffect(() => {
+    if (coldBackfill.data?.messages.length) seed(props.sessionId, coldBackfill.data.messages)
+  }, [coldBackfill.data, props.sessionId])
+
   // Kill the session's terminal PTY when leaving this conversation — without
   // it, switching sessions orphans a PTY for the 30-min detach TTL and can
   // hit maxPtys after a few sessions (#310 review). Toggling Chat↔Terminal
@@ -175,28 +191,46 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
     }
   }, [agentSel])
 
-  // Switching to Terminal spawns the harness matching the chosen model once
-  // (the TUI side of this session); toggling back detaches but keeps the PTY
-  // for reattach. In-flight guard: a double-click can't spawn two.
+  // Ensure THE harness for this conversation exists (seamless join key):
+  // spawn-or-get a PTY whose denSession IS props.sessionId, so chat (inject +
+  // bridge), terminal (this PTY), and den (?session) are one live harness.
+  // Idempotent server-side; the client guard avoids UI churn on double calls.
+  const ensurePty = async (): Promise<string> => {
+    if (termPtyRef.current) return termPtyRef.current
+    const command = settings?.agent || undefined
+    const gw = useConnection.getState().gateway
+    // model id is the roster command when the node has one (e.g. 'claude'); an
+    // API-only agent has none → fall back to the node's default harness.
+    const p = command
+      ? await gw
+          .termSpawn({ command, session: props.sessionId })
+          .catch(() => gw.termSpawn({ session: props.sessionId }))
+      : await gw.termSpawn({ session: props.sessionId })
+    setTermPtyId(p.id)
+    termPtyRef.current = p.id
+    return p.id
+  }
+
+  // Switching to Terminal reveals the conversation's harness (spawn-or-get).
   const enterTerminal = (): void => {
     setMode('terminal')
     if (termPtyId || spawning) return
     setSpawning(true)
-    const command = settings?.agent || undefined
-    const gw = useConnection.getState().gateway
-    // The model id is the roster command when the node has one for it (e.g.
-    // 'claude' → Claude Code); if it doesn't (an API-only agent), fall back
-    // to the node's default harness rather than 404.
-    const spawn = command
-      ? gw.termSpawn({ command }).catch(() => gw.termSpawn({}))
-      : gw.termSpawn({})
-    void spawn
-      .then((p) => setTermPtyId(p.id))
+    void ensurePty()
       .catch((e: unknown) => setTermError((e as Error).message))
       .finally(() => setSpawning(false))
   }
 
-  const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/`
+  // Seamless chat send: a turn drives the SAME harness (inject into its PTY);
+  // its den events stream the reply back via the bridge. This is what makes
+  // chat↔terminal↔den one thread — the terminal shows the very harness the
+  // chat is talking to, with full context.
+  const sendToHarness = async (body: string): Promise<void> => {
+    await ensurePty()
+    await useConnection.getState().gateway.termInject({ session: props.sessionId, text: body })
+  }
+
+  const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(props.sessionId)}`
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
@@ -240,6 +274,7 @@ function ActiveSession(props: { sessionId: string }): JSX.Element {
             agent={settings?.agent || undefined}
             effort={settings?.effort ?? 'medium'}
             onSetting={(patch) => setSetting(settingsKey, patch)}
+            onSend={sendToHarness}
           />
         </>
       ) : termError ? (
