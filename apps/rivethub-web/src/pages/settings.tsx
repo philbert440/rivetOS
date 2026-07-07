@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useConnection } from '../stores/connection.js'
+import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
 import { RivetGateway } from '@rivetos/gateway-client'
 
 type ProbeState =
@@ -36,6 +36,10 @@ export function SettingsPage(): JSX.Element {
 
   const save = (): void => {
     const url = draftUrl.trim().replace(/\/+$/, '')
+    if (!isValidGatewayUrl(url)) {
+      setProbe({ kind: 'fail', message: 'invalid gateway URL (http(s)://host[:port] only)' })
+      return
+    }
     setConnection(url, draftToken.trim() || undefined)
     // Saved endpoints join the switcher roster (name = host, editable later).
     useConnection.getState().addNode({ name: new URL(url).host, baseUrl: url })
