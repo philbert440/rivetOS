@@ -57,9 +57,37 @@ describe('listHarnessSessions', () => {
     expect(sessions[0].updatedAt).toBeGreaterThan(sessions[1].updatedAt)
   })
 
+  it('lists grok sessions from summary.json, merged + sorted with claude', async () => {
+    fakeClaudeStore() // one claude session at mtime 2000
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-store-'))
+    dirs.push(grokBase)
+    const sess = join(grokBase, 'sessions', '%2Fhome%2Frivet', 'aaaa-1111')
+    mkdirSync(sess, { recursive: true })
+    writeFileSync(
+      join(sess, 'summary.json'),
+      JSON.stringify({
+        info: { id: 'aaaa-1111' },
+        session_summary: 'plan the migration',
+        updated_at: '2026-07-07T00:00:00.000Z', // newer than the claude one
+      }),
+    )
+    // a non-dir entry (grok's sqlite index) must be ignored
+    writeFileSync(join(grokBase, 'sessions', '%2Fhome%2Frivet', 'session_search.sqlite'), 'x')
+    process.env.GROK_HOME = grokBase
+
+    const sessions = await listHarnessSessions(['claude', 'grok'])
+    expect(sessions[0]).toMatchObject({ command: 'grok', id: 'aaaa-1111', title: 'plan the migration' })
+    expect(sessions.some((s) => s.command === 'claude')).toBe(true)
+    // sorted last-updated first across harnesses
+    expect(sessions[0].updatedAt).toBeGreaterThan(sessions[sessions.length - 1].updatedAt)
+    delete process.env.GROK_HOME
+  })
+
   it('empty when the harness has no store / is not a known harness', async () => {
     process.env.CLAUDE_CONFIG_DIR = join(tmpdir(), 'does-not-exist-' + String(process.pid))
-    expect(await listHarnessSessions(['claude'])).toEqual([])
-    expect(await listHarnessSessions(['grok', 'shell'])).toEqual([]) // no reader wired
+    process.env.GROK_HOME = join(tmpdir(), 'no-grok-' + String(process.pid))
+    expect(await listHarnessSessions(['claude', 'grok'])).toEqual([])
+    expect(await listHarnessSessions(['hermes', 'shell'])).toEqual([]) // no reader wired
+    delete process.env.GROK_HOME
   })
 })
