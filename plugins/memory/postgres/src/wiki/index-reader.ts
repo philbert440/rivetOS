@@ -191,9 +191,9 @@ export class WikiIndex {
          git_sha = EXCLUDED.git_sha,
          last_verified_at = EXCLUDED.last_verified_at,
          updated_at = now(),
-         -- content changed → re-embed
+         -- search surface changed (state OR title/aliases) → re-embed
          embed_status = CASE
-           WHEN ros_wiki_topics.current_state IS DISTINCT FROM EXCLUDED.current_state
+           WHEN ros_wiki_topics.search_text IS DISTINCT FROM EXCLUDED.search_text
              THEN NULL ELSE ros_wiki_topics.embed_status END`,
       [
         page.meta.slug,
