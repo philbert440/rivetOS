@@ -290,3 +290,62 @@ describe('GET /api/conversations/:key/messages (seamless-modes backfill 5e)', ()
     expect((await fetch(`${base}/api/conversations/k`)).status).toBe(404)
   })
 })
+
+describe('GET /api/conversations (list, seamless-modes 5k)', () => {
+  async function startWithList(
+    sessions: Array<{ sessionId: string; lastActive: Date; messageCount: number }>,
+  ): Promise<string> {
+    const gw = createGatewayChannel({
+      getMemory: () => ({ getSessionHistory: async () => [], listSessions: async () => sessions }),
+    })
+    await gw.channel.start()
+    const server: Server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const route = gw.routes.find((r) => url.pathname.startsWith(r.prefix))
+      void route?.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as AddressInfo).port
+    cleanups.push(async () => {
+      await gw.close()
+      await new Promise((r) => server.close(r))
+    })
+    return `http://127.0.0.1:${port}`
+  }
+
+  it('lists captured conversations, lastActive as epoch ms', async () => {
+    const base = await startWithList([
+      { sessionId: 'chat-a', lastActive: new Date(1000), messageCount: 4 },
+      { sessionId: 'chat-b', lastActive: new Date(2000), messageCount: 1 },
+    ])
+    const res = await fetch(`${base}/api/conversations`)
+    expect(res.status).toBe(200)
+    const { conversations } = (await res.json()) as {
+      conversations: Array<{ id: string; lastActive: number; messages: number }>
+    }
+    expect(conversations).toEqual([
+      { id: 'chat-a', lastActive: 1000, messages: 4 },
+      { id: 'chat-b', lastActive: 2000, messages: 1 },
+    ])
+  })
+
+  it('empty when the store cannot enumerate (no listSessions)', async () => {
+    const gw = createGatewayChannel({ getMemory: () => ({ getSessionHistory: async () => [] }) })
+    await gw.channel.start()
+    const server: Server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const route = gw.routes.find((r) => url.pathname.startsWith(r.prefix))
+      void route?.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as AddressInfo).port
+    cleanups.push(async () => {
+      await gw.close()
+      await new Promise((r) => server.close(r))
+    })
+    const { conversations } = (await (
+      await fetch(`http://127.0.0.1:${port}/api/conversations`)
+    ).json()) as { conversations: unknown[] }
+    expect(conversations).toEqual([])
+  })
+})

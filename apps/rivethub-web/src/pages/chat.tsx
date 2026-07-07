@@ -40,11 +40,22 @@ export function ChatPage(): JSX.Element {
     refetchInterval: 30_000,
     enabled: connected,
   })
+  // Durable harness sessions from memory (seamless 5k): conversations that
+  // survive restarts / were started outside this RivetHub process. Merged
+  // under the live ring so you can reopen any captured thread.
+  const conversationsQuery = useQuery({
+    queryKey: ['conversations', baseUrl, token ?? ''],
+    queryFn: ({ signal }) => useConnection.getState().gateway.listConversations(signal),
+    refetchInterval: 60_000,
+    enabled: connected,
+  })
 
   if (!connected) return <NotConnected />
 
   const known = sessionsQuery.data?.sessions.map((s) => s.id) ?? []
-  const sessions = [...chat.drafts.filter((d) => !known.includes(d)), ...known]
+  const captured = conversationsQuery.data?.conversations.map((c) => c.id) ?? []
+  // drafts first, then the live ring, then durable-only conversations — deduped
+  const sessions = [...new Set([...chat.drafts, ...known, ...captured])]
   const active = useChat((s) => s.active)
 
   return (

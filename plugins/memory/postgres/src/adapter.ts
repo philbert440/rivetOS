@@ -15,7 +15,13 @@
  */
 
 import pg from 'pg'
-import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types'
+import type {
+  Memory,
+  MemoryEntry,
+  MemorySearchResult,
+  MemorySessionSummary,
+  Message,
+} from '@rivetos/types'
 import { MemoryError } from '@rivetos/types'
 import { SearchEngine } from './search.js'
 import { WikiIndex } from './wiki/index-reader.js'
@@ -384,6 +390,35 @@ export class PostgresMemory implements Memory {
     return result.rows.reverse().map((r) => ({
       role: r.role as Message['role'],
       content: r.content,
+    }))
+  }
+
+  // -----------------------------------------------------------------------
+  // listSessions — enumerate captured conversations (harness-session drawer)
+  // -----------------------------------------------------------------------
+
+  async listSessions(options?: { limit?: number }): Promise<MemorySessionSummary[]> {
+    const limit = options?.limit ?? 100
+    const result = await this.pool.query<{
+      session_key: string
+      last_active: Date
+      message_count: string
+    }>(
+      `SELECT c.session_key,
+              MAX(m.created_at) AS last_active,
+              COUNT(m.id)       AS message_count
+       FROM ros_conversations c
+       JOIN ros_messages m ON m.conversation_id = c.id
+       WHERE c.active = true AND c.session_key IS NOT NULL
+       GROUP BY c.session_key
+       ORDER BY last_active DESC
+       LIMIT $1`,
+      [limit],
+    )
+    return result.rows.map((r) => ({
+      sessionId: r.session_key,
+      lastActive: r.last_active,
+      messageCount: Number(r.message_count),
     }))
   }
 
