@@ -50,8 +50,27 @@ export type AgentEventBody =
   | { type: 'thinking.end' }
   | { type: 'speech.stt'; active: boolean }
   | { type: 'message.user'; text: string }
-  | { type: 'message.agent'; text: string }
+  /** Assistant text block. On the FINAL block of a turn the adapter may attach
+   *  `usage`/`model`/`durationMs` (Claude Code reads them from its transcript);
+   *  the den reducer ignores them, but the RivetHub bridge threads them onto
+   *  the committed chat message. Interim blocks omit them. */
+  | {
+      type: 'message.agent'
+      text: string
+      usage?: TokenUsage
+      model?: string
+      durationMs?: number
+    }
   | { type: 'term.line'; text: string }
+
+/** Per-turn token accounting attachable to a final message.agent event.
+ *  `promptTokens` includes cached input; `cachedTokens` is its cache-read
+ *  portion. */
+export interface TokenUsage {
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+}
 
 /** Envelope common to every event. */
 export interface AgentEventMeta {
@@ -140,9 +159,31 @@ export function parseEvent(raw: unknown): AgentEvent | null {
       return typeof e.active === 'boolean' ? (raw as AgentEvent) : null
     case 'thinking.delta':
     case 'message.user':
-    case 'message.agent':
     case 'term.line':
       return str('text') ? (raw as AgentEvent) : null
+    case 'message.agent': {
+      if (!str('text')) return null
+      // optional turn stats — reject malformed rather than pass junk downstream
+      if (e.model !== undefined && typeof e.model !== 'string') return null
+      if (
+        e.durationMs !== undefined &&
+        (typeof e.durationMs !== 'number' || !Number.isFinite(e.durationMs))
+      )
+        return null
+      if (e.usage !== undefined) {
+        const u = e.usage as Record<string, unknown> | null
+        const num = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v)
+        if (
+          typeof u !== 'object' ||
+          u === null ||
+          !num(u.promptTokens) ||
+          !num(u.completionTokens) ||
+          !num(u.cachedTokens)
+        )
+          return null
+      }
+      return raw as AgentEvent
+    }
     default:
       return null
   }

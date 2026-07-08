@@ -146,7 +146,19 @@ async function main() {
         // claude-code transcript: assistant message with content blocks
         const content = j?.message?.content
         if (j.type !== 'assistant' || !Array.isArray(content)) continue
-        st.turnTokens = (st.turnTokens ?? 0) + (j.message?.usage?.output_tokens ?? 0)
+        // Token accounting for the turn: completion tokens SUM across the
+        // turn's assistant messages (also feeds the spinner); prompt/cached/
+        // model take the LAST message (final context size + the model used).
+        const u = j.message?.usage
+        if (u) {
+          st.turnTokens = (st.turnTokens ?? 0) + (u.output_tokens ?? 0)
+          st.turnPrompt =
+            (u.input_tokens ?? 0) +
+            (u.cache_read_input_tokens ?? 0) +
+            (u.cache_creation_input_tokens ?? 0)
+          st.turnCached = u.cache_read_input_tokens ?? 0
+        }
+        if (j.message?.model) st.turnModel = j.message.model
         for (const block of content) {
           if (block.type === 'thinking' && block.thinking) out.thinking += block.thinking
           if (block.type === 'text' && block.text) out.text = block.text
@@ -201,12 +213,33 @@ async function main() {
 
   // every discovered assistant text block goes to the chat stream, deduped —
   // mid-turn status notes (PreToolUse) as well as the final answer (Stop)
-  const emitAgentText = (text) => {
+  const emitAgentText = (text, stats) => {
     // keep newlines/indentation — the chat panel wraps and renders them now
     const t = String(text ?? '').replace(/\r/g, '').trim().slice(0, 2000)
     if (!t || t === st.lastSent) return
     st.lastSent = t
-    emit({ type: 'message.agent', text: t })
+    // `stats` (usage/model/durationMs) rides only the FINAL block of a turn —
+    // the RivetHub bridge threads it onto the committed chat message.
+    emit({ type: 'message.agent', text: t, ...(stats ?? {}) })
+  }
+
+  // Turn token stats for the final message.agent — Claude Code only (its
+  // transcript carries structured per-message usage; grok's ACP updates.jsonl
+  // does not, so grok turns just omit the nerd line). undefined when no usage
+  // was seen this turn.
+  const buildTurnStats = () => {
+    if (harness !== 'claude-code') return undefined
+    if (st.turnPrompt === undefined && !st.turnTokens) return undefined
+    const stats = {
+      usage: {
+        promptTokens: st.turnPrompt ?? 0,
+        completionTokens: st.turnTokens ?? 0,
+        cachedTokens: st.turnCached ?? 0,
+      },
+    }
+    if (st.turnModel) stats.model = st.turnModel
+    if (st.turnStart) stats.durationMs = Date.now() - st.turnStart
+    return stats
   }
 
   const termLine = (text) => {
@@ -255,6 +288,9 @@ async function main() {
       emit({ type: 'speech.stt', active: false }) // reducer lands on 'thinking'
       st.turnStart = Date.now()
       st.turnTokens = 0
+      st.turnPrompt = undefined
+      st.turnCached = 0
+      st.turnModel = undefined
       st.cog = COGS[Math.floor(Math.random() * COGS.length)]
       emitThinking('') // claude-code: put the spinner word in the bubble now
       break
@@ -332,7 +368,7 @@ async function main() {
       }
       if (harness !== 'claude-code') emitThinking(thinking) // no spinner flash right before the bubble closes
       emit({ type: 'thinking.end' })
-      emitAgentText(text)
+      emitAgentText(text, buildTurnStats())
       if (!text) {
         // grok: the final chunk lands only after this hook exits — hand off
         // to a detached flush pass
