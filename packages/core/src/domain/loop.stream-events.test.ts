@@ -111,15 +111,15 @@ describe('AgentLoop StreamEvent baseline', () => {
     assert.equal(result.response, 'Done.')
     assert.deepEqual(result.toolsUsed, ['shell'])
 
-    // Frozen baseline. Loop emits tool_start (with arg summary metadata) +
-    // tool_result for the tool, then the final text.
+    // Frozen baseline. Loop emits tool_start (tool name + arg summary) +
+    // tool_result (tool name in metadata) for the tool, then the final text.
     assert.deepEqual(events, [
       {
         type: 'tool_start',
         content: '🔧 shell',
-        metadata: { args: { command: 'echo hi' } },
+        metadata: { tool: 'shell', args: { command: 'echo hi' } },
       },
-      { type: 'tool_result', content: '✅ shell: hi' },
+      { type: 'tool_result', content: '✅ shell: hi', metadata: { tool: 'shell' } },
       { type: 'text', content: 'Done.' },
     ])
   })
@@ -155,15 +155,15 @@ describe('AgentLoop StreamEvent baseline', () => {
       {
         type: 'tool_start',
         content: '🔧 shell',
-        metadata: { args: { command: 'a' } },
+        metadata: { tool: 'shell', args: { command: 'a' } },
       },
-      { type: 'tool_result', content: '✅ shell: A' },
+      { type: 'tool_result', content: '✅ shell: A', metadata: { tool: 'shell' } },
       {
         type: 'tool_start',
         content: '🔧 search',
-        metadata: { args: { query: 'b' } },
+        metadata: { tool: 'search', args: { query: 'b' } },
       },
-      { type: 'tool_result', content: '✅ search: B' },
+      { type: 'tool_result', content: '✅ search: B', metadata: { tool: 'search' } },
       { type: 'text', content: 'OK' },
     ])
   })
