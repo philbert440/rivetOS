@@ -32,6 +32,7 @@
 // (evictTtlMs after session.end).
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { hostname } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
@@ -383,7 +384,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         return
       }
       if (url.pathname === '/healthz') {
-        json(res, 200, { ok: true, sessions: Object.keys(state.rooms).length })
+        // `name` = the node's hostname (e.g. rivet-grok) so the UI can show a
+        // human-readable node label instead of host:port. Unauthed, like the
+        // rest of /healthz.
+        json(res, 200, { ok: true, sessions: Object.keys(state.rooms).length, name: hostname() })
         return
       }
       // Static viewer + pack art are served WITHOUT auth: the SPA's own
