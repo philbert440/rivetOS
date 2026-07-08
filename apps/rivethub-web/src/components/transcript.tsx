@@ -1,5 +1,6 @@
 import { useEffect, useRef, type JSX, type ReactNode } from 'react'
-import type { SessionMessage } from '@rivetos/types'
+import { ArrowDown, ArrowUp, Clock3, Zap } from 'lucide-react'
+import type { MessageUsage, SessionMessage } from '@rivetos/types'
 import type { LiveTurn } from '../stores/chat.js'
 import { DenBot } from './den-bot.js'
 import { Markdown } from './markdown.js'
@@ -11,9 +12,47 @@ function stamp(ts: number): string | null {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-/** Avatar + name + timestamp row above a message (android web-ui pattern).
- *  Assistant is the den bot ("Rivet"); user is right-aligned. */
-function AvatarRow(props: { mine: boolean; ts?: number }): JSX.Element {
+function fmt(n: number): string {
+  return new Intl.NumberFormat().format(n)
+}
+
+/** The "nerd line" (android web-ui) — per-turn token stats under an assistant
+ *  message: prompt (with cached), completion, tokens/sec, duration. Rendered
+ *  only when the harness reported usage (Claude Code). */
+function NerdLine(props: { usage: MessageUsage; durationMs?: number }): JSX.Element {
+  const { promptTokens, completionTokens, cachedTokens } = props.usage
+  const secs = props.durationMs && props.durationMs > 0 ? props.durationMs / 1000 : 0
+  const tps = secs > 0 && completionTokens > 0 ? completionTokens / secs : 0
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 font-mono text-[10px] text-ink-dim/70">
+      <span className="inline-flex items-center gap-1" title="prompt tokens">
+        <ArrowUp className="size-3" />
+        {fmt(promptTokens)}
+        {cachedTokens > 0 ? ` (${fmt(cachedTokens)} cached)` : ''}
+      </span>
+      <span className="inline-flex items-center gap-1" title="completion tokens">
+        <ArrowDown className="size-3" />
+        {fmt(completionTokens)}
+      </span>
+      {tps > 0 && (
+        <span className="inline-flex items-center gap-1" title="tokens per second">
+          <Zap className="size-3" />
+          {tps.toFixed(1)} tok/s
+        </span>
+      )}
+      {secs > 0 && (
+        <span className="inline-flex items-center gap-1" title="turn duration">
+          <Clock3 className="size-3" />
+          {secs.toFixed(1)}s
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** Avatar + name + model + timestamp row above a message (android web-ui
+ *  pattern). Assistant is the den bot ("Rivet"); user is right-aligned. */
+function AvatarRow(props: { mine: boolean; ts?: number; model?: string }): JSX.Element {
   const time = props.ts !== undefined ? stamp(props.ts) : null
   if (props.mine) {
     return (
@@ -27,15 +66,25 @@ function AvatarRow(props: { mine: boolean; ts?: number }): JSX.Element {
     <div className="flex items-center gap-2 px-1">
       <DenBot decorative className="size-7 rounded-md bg-panel-2 p-0.5" />
       <span className="text-sm font-medium text-em">Rivet</span>
+      {props.model && (
+        <span className="truncate font-mono text-[10px] text-ink-dim" title={props.model}>
+          {props.model}
+        </span>
+      )}
       {time && <span className="font-mono text-[10px] text-ink-dim">{time}</span>}
     </div>
   )
 }
 
-function Row(props: { mine: boolean; ts?: number; children: ReactNode }): JSX.Element {
+function Row(props: {
+  mine: boolean
+  ts?: number
+  model?: string
+  children: ReactNode
+}): JSX.Element {
   return (
     <div className={`flex flex-col gap-1.5 ${props.mine ? 'items-end' : 'items-start'}`}>
-      <AvatarRow mine={props.mine} ts={props.ts} />
+      <AvatarRow mine={props.mine} ts={props.ts} model={props.model} />
       {props.children}
     </div>
   )
@@ -44,7 +93,7 @@ function Row(props: { mine: boolean; ts?: number; children: ReactNode }): JSX.El
 function Bubble(props: { msg: SessionMessage }): JSX.Element {
   const mine = props.msg.role === 'user'
   return (
-    <Row mine={mine} ts={props.msg.ts}>
+    <Row mine={mine} ts={props.msg.ts} model={mine ? undefined : props.msg.model}>
       {mine ? (
         // User text is plain — right-aligned bubble, no markdown.
         <div className="max-w-[85%] whitespace-pre-wrap rounded-lg border border-em-dim/40 bg-em-dim/10 px-4 py-2.5 text-sm">
@@ -54,6 +103,9 @@ function Bubble(props: { msg: SessionMessage }): JSX.Element {
         // Assistant is full-width, markdown-rendered (no bubble — android style).
         <div className="w-full px-1">
           <Markdown>{props.msg.text}</Markdown>
+          {props.msg.usage && (
+            <NerdLine usage={props.msg.usage} durationMs={props.msg.durationMs} />
+          )}
         </div>
       )}
     </Row>

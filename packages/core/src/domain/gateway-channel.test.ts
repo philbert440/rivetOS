@@ -189,6 +189,54 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
     expect(msgs.some((f) => f.kind === 'message' && f.role === 'user' && f.text === 'next')).toBe(true)
   })
 
+  it('threads turn stats (usage/model/durationMs) from the final block onto the committed message', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c3`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    gw.bridgeAgentEvent({ session: 'c3', type: 'message.agent', text: 'interim ' }) // no stats
+    gw.bridgeAgentEvent({
+      session: 'c3',
+      type: 'message.agent',
+      text: 'final',
+      usage: { promptTokens: 1200, completionTokens: 340, cachedTokens: 800 },
+      model: 'claude-opus-4-8',
+      durationMs: 4200,
+    })
+    gw.bridgeAgentEvent({ session: 'c3', type: 'session.end' }) // commit
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const assistant = got.filter((f) => f.kind === 'message' && f.role === 'assistant')
+    expect(assistant).toHaveLength(1)
+    const msg = assistant[0]
+    expect(msg.kind === 'message' && msg.text).toBe('interim final')
+    expect(msg.kind === 'message' && msg.usage).toEqual({
+      promptTokens: 1200,
+      completionTokens: 340,
+      cachedTokens: 800,
+    })
+    expect(msg.kind === 'message' && msg.model).toBe('claude-opus-4-8')
+    expect(msg.kind === 'message' && msg.durationMs).toBe(4200)
+  })
+
+  it('omits turn stats when the harness reports none', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c4`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+    gw.bridgeAgentEvent({ session: 'c4', type: 'message.agent', text: 'plain' })
+    gw.bridgeAgentEvent({ session: 'c4', type: 'session.end' })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+    const msg = got.find((f) => f.kind === 'message' && f.role === 'assistant')
+    expect(msg?.kind === 'message' && msg.usage).toBeUndefined()
+    expect(msg?.kind === 'message' && msg.model).toBeUndefined()
+  })
+
   it('skips task: sessions (task engine namespace)', async () => {
     const { gw, port } = await start()
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws`) // all sessions

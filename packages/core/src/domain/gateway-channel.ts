@@ -37,6 +37,7 @@ import type {
   SessionsListResponse,
   SessionWsFrame,
   StreamEvent,
+  MessageUsage,
 } from '@rivetos/types'
 import { logger } from '../logger.js'
 
@@ -161,6 +162,12 @@ export function createGatewayChannel(opts?: {
   // Seamless-modes bridge state: per-session accumulated assistant text,
   // flushed to ONE message frame at the turn boundary (see bridgeAgentEvent).
   const pendingAssistant = new Map<string, string>()
+  // Turn stats ride the FINAL message.agent block (Claude Code attaches them);
+  // stash until the assistant turn is committed, then attach to the frame.
+  const pendingStats = new Map<
+    string,
+    { usage?: MessageUsage; model?: string; durationMs?: number }
+  >()
 
   const emitFrame = (frame: SessionWsFrame): void => {
     if (frame.kind === 'message') {
@@ -396,6 +403,7 @@ export function createGatewayChannel(opts?: {
       const flushAssistant = (): void => {
         const text = pendingAssistant.get(sid)
         if (text) {
+          const stats = pendingStats.get(sid)
           emitFrame({
             kind: 'message',
             id: randomUUID(),
@@ -403,8 +411,14 @@ export function createGatewayChannel(opts?: {
             role: 'assistant',
             text,
             ts,
+            // turn stats (Claude Code): undefined for harnesses that don't
+            // report them — the client just omits the nerd line.
+            ...(stats?.usage ? { usage: stats.usage } : {}),
+            ...(stats?.model ? { model: stats.model } : {}),
+            ...(stats?.durationMs !== undefined ? { durationMs: stats.durationMs } : {}),
           })
           pendingAssistant.delete(sid)
+          pendingStats.delete(sid)
         }
       }
       switch (ev.type) {
@@ -419,11 +433,25 @@ export function createGatewayChannel(opts?: {
             ts,
           })
           break
-        case 'message.agent':
+        case 'message.agent': {
           // interim block: accumulate + stream (one committed bubble per turn)
           pendingAssistant.set(sid, (pendingAssistant.get(sid) ?? '') + str('text'))
           emitFrame({ kind: 'stream', session: sid, event: { type: 'text', content: str('text') } })
+          // the FINAL block of a turn may carry token stats (validated upstream
+          // by parseEvent) — stash them for the flush that commits this turn.
+          if (
+            (ev.usage && typeof ev.usage === 'object') ||
+            typeof ev.model === 'string' ||
+            typeof ev.durationMs === 'number'
+          ) {
+            const stats = pendingStats.get(sid) ?? {}
+            if (ev.usage && typeof ev.usage === 'object') stats.usage = ev.usage as MessageUsage
+            if (typeof ev.model === 'string') stats.model = ev.model
+            if (typeof ev.durationMs === 'number') stats.durationMs = ev.durationMs
+            pendingStats.set(sid, stats)
+          }
           break
+        }
         case 'thinking.delta':
           emitFrame({
             kind: 'stream',
