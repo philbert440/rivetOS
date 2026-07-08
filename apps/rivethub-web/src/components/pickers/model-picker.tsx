@@ -25,7 +25,15 @@ export function ModelPicker(props: {
   const current = props.options.find((o) => o.value === props.value)
 
   return (
-    <Popover open={open} onOpenChange={(o) => !props.disabled && setOpen(o)}>
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        // only block OPENING when disabled — a popover already open must stay
+        // closable via Escape / outside-click even if it becomes disabled.
+        if (o && props.disabled) return
+        setOpen(o)
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           variant="ghost"

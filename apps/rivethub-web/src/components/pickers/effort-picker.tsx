@@ -67,7 +67,14 @@ export function EffortPicker(props: {
   const CurrentIcon = current.icon
 
   return (
-    <Popover open={open} onOpenChange={(o) => !props.disabled && setOpen(o)}>
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        // only block OPENING when disabled — keep an open popover dismissable.
+        if (o && props.disabled) return
+        setOpen(o)
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           variant="ghost"

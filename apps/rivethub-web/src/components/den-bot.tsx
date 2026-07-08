@@ -10,11 +10,18 @@ import { cn } from '../lib/utils.js'
  * `pixelated` rendering keeps the sprite crisp at small sizes instead of
  * blurring the pixel art. Pass `className` for sizing (e.g. `size-9`).
  */
-export function DenBot(props: { className?: string; title?: string }): JSX.Element {
+export function DenBot(props: {
+  className?: string
+  title?: string
+  /** decorative: sits next to a visible label (e.g. the "Rivet" avatar row),
+   *  so hide it from screen readers to avoid a duplicate announcement. */
+  decorative?: boolean
+}): JSX.Element {
   return (
     <img
       src={denBotUrl}
-      alt="Rivet den bot"
+      alt={props.decorative ? '' : 'Rivet den bot'}
+      aria-hidden={props.decorative || undefined}
       title={props.title}
       draggable={false}
       className={cn('select-none object-contain [image-rendering:pixelated]', props.className)}
