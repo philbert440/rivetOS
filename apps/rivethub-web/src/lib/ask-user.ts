@@ -7,6 +7,8 @@
  * Missing/malformed args → empty array (never throws).
  */
 
+import { normalizeToolName } from './tool-titles.js'
+
 const ASK_TOOL_NAMES = new Set([
   'ask_user',
   'ask_user_question',
@@ -14,10 +16,7 @@ const ASK_TOOL_NAMES = new Set([
 ])
 
 export function isAskUserTool(name: string): boolean {
-  const n = name
-    .replace(/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\s✅❌🔧]+/u, '')
-    .trim()
-    .toLowerCase()
+  const n = normalizeToolName(name).toLowerCase().replace(/\s+/g, '_')
   return ASK_TOOL_NAMES.has(n) || n === 'askuserquestion'
 }
 
@@ -93,14 +92,16 @@ function dedupe(labels: string[]): string[] {
 }
 
 /**
- * From a live tool stack (newest last), return chips for the last ask-user
- * tool that still has extractable options.
+ * From a live tool stack (newest last), return chips for the last **running**
+ * ask-user tool with extractable options. Done/error tools do not show chips
+ * (avoids re-send after the question completed).
  */
 export function chipsFromLiveTools(
   tools: ReadonlyArray<{ name: string; args?: unknown; status: string }>,
 ): string[] {
   for (let i = tools.length - 1; i >= 0; i--) {
     const t = tools[i]
+    if (t.status !== 'running') continue
     if (!isAskUserTool(t.name)) continue
     const opts = extractAskUserOptions(t.args)
     if (opts.length) return opts

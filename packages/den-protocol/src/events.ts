@@ -44,7 +44,9 @@ export type AgentEventBody =
   /** Raw tool invocation. `tool` is the harness's tool name verbatim
    *  (e.g. 'Bash', 'WebSearch', 'mcp:rivetos:memory_search'). Adapters may
    *  suggest a coarse `activity`; the reducer otherwise derives one. */
-  | { type: 'tool.start'; tool: string; activity?: Activity }
+  /** Optional `args` are a summarized tool_input map for Hub titles/chips
+   *  (never required; unknown producers still emit name-only). */
+  | { type: 'tool.start'; tool: string; activity?: Activity; args?: Record<string, unknown> }
   | { type: 'tool.end'; tool?: string }
   | { type: 'thinking.delta'; text: string }
   | { type: 'thinking.end' }

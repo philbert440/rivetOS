@@ -122,7 +122,7 @@ function buildAiSdkTool(def: RivetosTool, binding: ToolMiddlewareBinding): ToolS
         binding.onStreamEvent({
           type: 'tool_start',
           content: `🔧 ${def.name}`,
-          metadata: { args: summarizeArgs(effectiveArgs) },
+          metadata: { tool: def.name, args: summarizeArgs(effectiveArgs) },
         })
       }
 
@@ -156,6 +156,7 @@ function buildAiSdkTool(def: RivetosTool, binding: ToolMiddlewareBinding): ToolS
         binding.onStreamEvent({
           type: 'tool_result',
           content: `${isError ? '❌' : '✅'} ${def.name}: ${text.slice(0, 200)}`,
+          metadata: { tool: def.name },
         })
       }
 

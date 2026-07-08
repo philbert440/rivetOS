@@ -56,7 +56,7 @@ describe('chipsFromLiveTools', () => {
       { name: 'Bash', status: 'done' },
       {
         name: 'AskUserQuestion',
-        status: 'done',
+        status: 'running',
         args: { questions: [{ options: [{ label: 'Go' }, { label: 'Stop' }] }] },
       },
     ])
@@ -65,5 +65,17 @@ describe('chipsFromLiveTools', () => {
 
   it('returns empty when no args (degrade)', () => {
     expect(chipsFromLiveTools([{ name: 'ask_user_question', status: 'running' }])).toEqual([])
+  })
+
+  it('hides chips once the ask tool is done', () => {
+    expect(
+      chipsFromLiveTools([
+        {
+          name: 'AskUserQuestion',
+          status: 'done',
+          args: { questions: [{ options: [{ label: 'Go' }] }] },
+        },
+      ]),
+    ).toEqual([])
   })
 })

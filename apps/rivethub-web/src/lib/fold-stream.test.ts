@@ -1,10 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { _resetToolSeqForTests, foldStream, type LiveTurn } from './fold-stream.js'
+import { describe, it, expect } from 'vitest'
+import { foldStream, type LiveTurn } from './fold-stream.js'
 import type { StreamEvent } from '@rivetos/types'
-
-beforeEach(() => {
-  _resetToolSeqForTests()
-})
 
 function ev(partial: StreamEvent): StreamEvent {
   return partial
@@ -84,5 +80,24 @@ describe('foldStream', () => {
     )
     expect(t?.tools[0].args).toEqual(args)
     expect(t?.tools[0].title).toBe('Asked a question')
+  })
+
+  it('matches tools-aisdk wire shapes (emoji + name: payload)', () => {
+    let t: LiveTurn | undefined
+    t = foldStream(t, ev({ type: 'tool_start', content: '🔧 shell', metadata: { tool: 'shell' } }))
+    t = foldStream(
+      t,
+      ev({ type: 'tool_result', content: '✅ shell: Error: not found in file' }),
+    )
+    // successful ✅ must not be error even if payload contains "Error:"
+    expect(t?.tools[0].status).toBe('done')
+    expect(t?.tools[0].name).toBe('shell')
+  })
+
+  it('marks ❌ tool_result as error without substring-matching "error"', () => {
+    let t: LiveTurn | undefined
+    t = foldStream(t, ev({ type: 'tool_start', content: 'Bash', metadata: { tool: 'Bash' } }))
+    t = foldStream(t, ev({ type: 'tool_result', content: '❌ Bash: boom' }))
+    expect(t?.tools[0].status).toBe('error')
   })
 })
