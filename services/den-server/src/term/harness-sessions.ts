@@ -211,6 +211,10 @@ function listHermesSessions(limit: number): HarnessSession[] {
   const db = openHermesDb()
   if (!db) return []
   try {
+    // Bounded by LIMIT (server caps at 500). The correlated title subquery
+    // runs once per returned session; hermes indexes messages(session_id,...),
+    // so this stays cheap — drawer latency scales with the LIMIT, not the
+    // whole transcript (#320 review).
     const rows = db
       .prepare(
         `SELECT s.id AS id, s.started_at AS started, s.ended_at AS ended,
