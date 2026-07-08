@@ -91,8 +91,10 @@ pub fn run() {
         )
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Show RivetHub", true, None::<&str>)?;
+            // no accelerator hint: the real binding is the global Ctrl+Shift+N
+            // (registered above); a "CmdOrCtrl+N" hint here would mislead.
             let new_window =
-                MenuItem::with_id(app, "new_window", "New Window", true, Some("CmdOrCtrl+N"))?;
+                MenuItem::with_id(app, "new_window", "New Window", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &new_window, &quit])?;
 

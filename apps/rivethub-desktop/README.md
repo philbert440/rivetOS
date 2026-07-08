@@ -31,9 +31,13 @@ and the generated `gen/` are gitignored.
 
 ## Native features
 
-- **Tray** — left-click summons/hides the window; right-click menu has Show
-  and Quit. Closing the window hides to tray (Quit is the deliberate exit).
-- **Global shortcut** — `Ctrl+Shift+R` toggles the window from anywhere.
+- **Tray** — left-click summons/hides the main window; right-click menu has
+  Show, New Window, and Quit. Closing the main window hides to tray (Quit is
+  the deliberate exit); additional windows close for real.
+- **Multi-window** — `Ctrl+Shift+N` (or the tray's New Window) opens another
+  RivetHub window over the same app; each has its own view (own active
+  conversation), sharing the node roster via localStorage.
+- **Global shortcut** — `Ctrl+Shift+R` toggles the main window from anywhere.
 - **Notifications** — the web app feature-detects `window.__TAURI__`
   (`withGlobalTauri`) and forwards escalation/task frames to the OS
   notification plugin when the window is hidden or unfocused; the in-app
@@ -43,4 +47,4 @@ and the generated `gen/` are gitignored.
 ## Not in v1
 
 Auto-update (needs signing/update-server infra — its own follow-up), custom
-protocol/deep links, multi-window.
+protocol/deep links.
