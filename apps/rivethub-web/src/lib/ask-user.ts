@@ -9,11 +9,7 @@
 
 import { normalizeToolName } from './tool-titles.js'
 
-const ASK_TOOL_NAMES = new Set([
-  'ask_user',
-  'ask_user_question',
-  'askuserquestion',
-])
+const ASK_TOOL_NAMES = new Set(['ask_user', 'ask_user_question', 'askuserquestion'])
 
 export function isAskUserTool(name: string): boolean {
   const n = normalizeToolName(name).toLowerCase().replace(/\s+/g, '_')

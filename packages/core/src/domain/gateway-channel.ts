@@ -535,7 +535,7 @@ function summarizeBridgeArgs(raw: unknown): Record<string, unknown> | undefined 
       summary[key] = value.slice(0, 200) + '…'
     } else if (Array.isArray(value)) {
       // keep arrays (ask-user choices) but cap depth lightly
-      summary[key] = value.slice(0, 20).map((item) => {
+      summary[key] = value.slice(0, 20).map((item: unknown): unknown => {
         if (typeof item === 'string' && item.length > 200) return item.slice(0, 200) + '…'
         if (item && typeof item === 'object' && !Array.isArray(item)) {
           const o = item as Record<string, unknown>
