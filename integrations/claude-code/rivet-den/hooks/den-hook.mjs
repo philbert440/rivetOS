@@ -291,6 +291,10 @@ async function main() {
       st.turnPrompt = undefined
       st.turnCached = 0
       st.turnModel = undefined
+      // reset the dedup guard per turn so a turn's final message.agent (which
+      // carries the token stats) can never be dropped as a duplicate of a
+      // PRIOR turn's text (grok review)
+      st.lastSent = ''
       st.cog = COGS[Math.floor(Math.random() * COGS.length)]
       emitThinking('') // claude-code: put the spinner word in the bubble now
       break
