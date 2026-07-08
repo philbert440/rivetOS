@@ -26,37 +26,68 @@ export interface LiveTurn {
   tools: LiveToolEntry[]
 }
 
-let toolSeq = 0
-
-function nextToolId(): string {
-  toolSeq += 1
-  return `tool-${toolSeq}`
-}
-
-/** Reset seq — tests only. */
-export function _resetToolSeqForTests(): void {
-  toolSeq = 0
-}
-
 function emptyTurn(): LiveTurn {
   return { text: '', reasoning: false, reasoningText: '', tools: [] }
+}
+
+function newToolId(): string {
+  try {
+    return crypto.randomUUID()
+  } catch {
+    return `tool-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  }
 }
 
 function argsFromEvent(event: StreamEvent): ToolArgs {
   const m = event.metadata
   if (!m || typeof m !== 'object') return undefined
   const args = (m as { args?: unknown }).args
-  if (args && typeof args === 'object') return args as Record<string, unknown>
+  if (args && typeof args === 'object' && !Array.isArray(args)) {
+    return args as Record<string, unknown>
+  }
+  if (typeof args === 'string' && args.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(args)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      return undefined
+    }
+  }
   return undefined
 }
 
-function toolNameFromEvent(event: StreamEvent): string {
+/**
+ * Resolve tool name from stream event.
+ * Wire shapes:
+ * - metadata.tool (bridge / preferred)
+ * - content "🔧 shell" / "shell"
+ * - content "✅ shell: result" / "❌ shell: err" (tools-aisdk)
+ */
+export function toolNameFromEvent(event: StreamEvent): string {
   const m = event.metadata
   if (m && typeof m === 'object') {
     const tool = (m as { tool?: unknown }).tool
     if (typeof tool === 'string' && tool.trim()) return normalizeToolName(tool)
   }
-  return normalizeToolName(event.content || 'tool')
+  let raw = (event.content || '').trim()
+  // strip leading emoji / status glyphs
+  raw = normalizeToolName(raw)
+  // strip "name: payload" tail used by tools-aisdk tool_result
+  const colon = raw.indexOf(':')
+  if (colon > 0) {
+    const head = raw.slice(0, colon).trim()
+    // only treat as name:payload if head looks like a bare tool id (no spaces)
+    if (head && !/\s/.test(head)) return head
+  }
+  return raw || 'tool'
+}
+
+/** True only for tools-aisdk-style error results (leading ❌), not substring "error". */
+export function isToolResultError(content: string): boolean {
+  const t = content.trim()
+  return t.startsWith('❌')
 }
 
 /**
@@ -83,7 +114,7 @@ export function foldStream(turn: LiveTurn | undefined, event: StreamEvent): Live
       const name = toolNameFromEvent(event)
       const args = argsFromEvent(event)
       const entry: LiveToolEntry = {
-        id: nextToolId(),
+        id: newToolId(),
         name,
         title: humanToolTitle(name, args),
         status: 'running',
@@ -114,18 +145,18 @@ export function foldStream(turn: LiveTurn | undefined, event: StreamEvent): Live
           }
         }
       }
-      const isError = /^❌|error/i.test(event.content || '')
+      const err = isToolResultError(event.content || '')
       if (idx >= 0) {
         tools[idx] = {
           ...tools[idx],
-          status: isError ? 'error' : 'done',
+          status: err ? 'error' : 'done',
         }
       } else {
         tools.push({
-          id: nextToolId(),
+          id: newToolId(),
           name,
           title: humanToolTitle(name),
-          status: isError ? 'error' : 'done',
+          status: err ? 'error' : 'done',
         })
       }
       return { ...base, activity: undefined, tools }

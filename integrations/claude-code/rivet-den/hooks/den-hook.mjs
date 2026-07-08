@@ -31,6 +31,32 @@ const DEN_URLS = (process.env.RIVET_DEN_URL ?? 'http://127.0.0.1:5174').split(',
 const TOKEN = process.env.RIVET_DEN_TOKEN ?? ''
 const NAME = process.env.RIVET_DEN_NAME ?? os.hostname()
 
+/** Cap tool_input fields for den/Hub (200-char strings; shallow). */
+function summarizeToolInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const out = {}
+  let n = 0
+  for (const [k, v] of Object.entries(input)) {
+    if (n++ > 40) break
+    if (typeof v === 'string') out[k] = v.length > 200 ? v.slice(0, 200) + '…' : v
+    else if (Array.isArray(v)) {
+      out[k] = v.slice(0, 20).map((item) => {
+        if (typeof item === 'string') return item.length > 200 ? item.slice(0, 200) + '…' : item
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          const o = {}
+          for (const [ik, iv] of Object.entries(item)) {
+            o[ik] = typeof iv === 'string' && iv.length > 200 ? iv.slice(0, 200) + '…' : iv
+          }
+          return o
+        }
+        return item
+      })
+    } else if (v !== undefined) out[k] = v
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+
 const args = process.argv.slice(2)
 const harness = args.includes('--harness') ? args[args.indexOf('--harness') + 1] : 'claude-code'
 const eventArg = args.find((a, i) => i > 0 && args[i - 1] !== '--harness' && !a.startsWith('--'))
@@ -375,7 +401,14 @@ async function main() {
         const tt = tailTranscript()
         emitThinking(tt.thinking)
         emitAgentText(tt.text)
-        emit({ type: 'tool.start', tool: toolName || 'unknown' })
+        // Optional summarized args for Hub titles + ask-user chips (bridge
+        // re-summarizes). Cap string values so Write bodies never flood den.
+        const args = summarizeToolInput(toolInput)
+        emit({
+          type: 'tool.start',
+          tool: toolName || 'unknown',
+          ...(args ? { args } : {}),
+        })
         if (isShellTool && toolInput.command) {
           termLine('$ ' + String(toolInput.command).replace(/\s+/g, ' '))
         }

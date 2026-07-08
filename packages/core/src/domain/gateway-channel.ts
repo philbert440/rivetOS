@@ -465,11 +465,14 @@ export function createGatewayChannel(opts?: {
         case 'tool.start': {
           // Optional args/input from harness adapters (when present) ride in
           // metadata so Hub can title tools and extract ask-user chips.
+          // Summarize (200-char strings) — never forward raw Write bodies /
+          // full secrets onto the all-sessions WS (tools-aisdk parity).
           // Missing args are fine — UI degrades to the tool name only.
           const toolName = str('tool')
           const rawArgs = ev.args ?? ev.input ?? ev.arguments
           const metadata: Record<string, unknown> = { tool: toolName }
-          if (rawArgs !== undefined && rawArgs !== null) metadata.args = rawArgs
+          const summarized = summarizeBridgeArgs(rawArgs)
+          if (summarized !== undefined) metadata.args = summarized
           emitFrame({
             kind: 'stream',
             session: sid,
@@ -512,4 +515,41 @@ export interface AgentEventForBridge {
   type: string
   ts?: number
   [k: string]: unknown
+}
+
+/** Cap string values so tool args on the sessions WS stay small (mirrors tools-aisdk). */
+function summarizeBridgeArgs(raw: unknown): Record<string, unknown> | undefined {
+  if (raw === undefined || raw === null) return undefined
+  let obj: unknown = raw
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw) as unknown
+    } catch {
+      return { value: raw.length > 200 ? raw.slice(0, 200) + '…' : raw }
+    }
+  }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return undefined
+  const summary: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.length > 200) {
+      summary[key] = value.slice(0, 200) + '…'
+    } else if (Array.isArray(value)) {
+      // keep arrays (ask-user choices) but cap depth lightly
+      summary[key] = value.slice(0, 20).map((item) => {
+        if (typeof item === 'string' && item.length > 200) return item.slice(0, 200) + '…'
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          const o = item as Record<string, unknown>
+          const out: Record<string, unknown> = {}
+          for (const [k, v] of Object.entries(o)) {
+            out[k] = typeof v === 'string' && v.length > 200 ? v.slice(0, 200) + '…' : v
+          }
+          return out
+        }
+        return item
+      })
+    } else {
+      summary[key] = value
+    }
+  }
+  return summary
 }
