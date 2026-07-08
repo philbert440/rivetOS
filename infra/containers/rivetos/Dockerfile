@@ -30,6 +30,7 @@ COPY scripts/ scripts/
 COPY packages/ packages/
 COPY plugins/ plugins/
 COPY apps/ apps/
+COPY services/ services/
 COPY bin/ bin/
 
 # Install workspace deps (skip postinstall — we'll run only what we need).
