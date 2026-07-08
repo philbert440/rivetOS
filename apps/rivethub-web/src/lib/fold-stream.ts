@@ -71,16 +71,18 @@ export function toolNameFromEvent(event: StreamEvent): string {
     const tool = (m as { tool?: unknown }).tool
     if (typeof tool === 'string' && tool.trim()) return normalizeToolName(tool)
   }
-  let raw = (event.content || '').trim()
-  // strip leading emoji / status glyphs
-  raw = normalizeToolName(raw)
-  // strip "name: payload" tail used by tools-aisdk tool_result
-  const colon = raw.indexOf(':')
-  if (colon > 0) {
-    const head = raw.slice(0, colon).trim()
-    // only treat as name:payload if head looks like a bare tool id (no spaces)
-    if (head && !/\s/.test(head)) return head
+  const original = (event.content || '').trim()
+  // tools-aisdk: "✅ shell: hi" / "❌ shell: boom" — only then strip name:payload
+  const statusPrefixed = /^[✅❌]/.test(original)
+  const raw = normalizeToolName(original)
+  if (statusPrefixed) {
+    const colon = raw.indexOf(':')
+    if (colon > 0) {
+      const head = raw.slice(0, colon).trim()
+      if (head && !/\s/.test(head)) return head
+    }
   }
+  // otherwise keep full name (MCP: mcp:rivetos:memory_search, den plain names)
   return raw || 'tool'
 }
 

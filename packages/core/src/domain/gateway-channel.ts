@@ -517,7 +517,24 @@ export interface AgentEventForBridge {
   [k: string]: unknown
 }
 
-/** Cap string values so tool args on the sessions WS stay small (mirrors tools-aisdk). */
+const BRIDGE_ARG_KEYS_MAX = 40
+const BRIDGE_ARG_STR_MAX = 200
+/** Deep enough for AskUserQuestion { questions: [{ options: [{ label }] }] }. */
+const BRIDGE_ARG_DEPTH_MAX = 5
+const SECRET_KEY_RE =
+  /^(?:.*(?:password|passwd|secret|token|api[_-]?key|authorization|auth|credential|private[_-]?key).*)$/i
+
+function capStr(s: string): string {
+  return s.length > BRIDGE_ARG_STR_MAX ? s.slice(0, BRIDGE_ARG_STR_MAX) + '…' : s
+}
+
+/**
+ * Cap + redact tool args for the sessions WS (all-subscribers).
+ * - secret-ish keys → "[redacted]"
+ * - strings length-capped
+ * - nested objects to depth 5, key count 40 (den-hook parity)
+ * - never pass through raw Write bodies / env blobs unredacted
+ */
 function summarizeBridgeArgs(raw: unknown): Record<string, unknown> | undefined {
   if (raw === undefined || raw === null) return undefined
   let obj: unknown = raw
@@ -525,31 +542,41 @@ function summarizeBridgeArgs(raw: unknown): Record<string, unknown> | undefined 
     try {
       obj = JSON.parse(raw) as unknown
     } catch {
-      return { value: raw.length > 200 ? raw.slice(0, 200) + '…' : raw }
+      return { value: capStr(raw) }
     }
   }
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return undefined
-  const summary: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-    if (typeof value === 'string' && value.length > 200) {
-      summary[key] = value.slice(0, 200) + '…'
-    } else if (Array.isArray(value)) {
-      // keep arrays (ask-user choices) but cap depth lightly
-      summary[key] = value.slice(0, 20).map((item: unknown): unknown => {
-        if (typeof item === 'string' && item.length > 200) return item.slice(0, 200) + '…'
-        if (item && typeof item === 'object' && !Array.isArray(item)) {
-          const o = item as Record<string, unknown>
-          const out: Record<string, unknown> = {}
-          for (const [k, v] of Object.entries(o)) {
-            out[k] = typeof v === 'string' && v.length > 200 ? v.slice(0, 200) + '…' : v
-          }
-          return out
-        }
-        return item
-      })
-    } else {
-      summary[key] = value
-    }
+  return summarizeBridgeValue(obj, 0) as Record<string, unknown>
+}
+
+function summarizeBridgeValue(value: unknown, depth: number): unknown {
+  if (value === null || value === undefined) return value
+  if (typeof value === 'string') return capStr(value)
+  if (typeof value === 'number' || typeof value === 'boolean') return value
+  if (depth >= BRIDGE_ARG_DEPTH_MAX) {
+    if (Array.isArray(value)) return `[array:${value.length}]`
+    if (typeof value === 'object') return '[omitted]'
+    return value
   }
-  return summary
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => summarizeBridgeValue(item, depth + 1))
+  }
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    let n = 0
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      if (n++ >= BRIDGE_ARG_KEYS_MAX) {
+        out['…'] = 'truncated'
+        break
+      }
+      if (SECRET_KEY_RE.test(key)) {
+        out[key] = '[redacted]'
+        continue
+      }
+      out[key] = summarizeBridgeValue(v, depth + 1)
+    }
+    return out
+  }
+  // unknown primitives (bigint/symbol) — don't Object-string them
+  return typeof value === 'bigint' ? value.toString() : '[omitted]'
 }

@@ -31,13 +31,20 @@ const DEN_URLS = (process.env.RIVET_DEN_URL ?? 'http://127.0.0.1:5174').split(',
 const TOKEN = process.env.RIVET_DEN_TOKEN ?? ''
 const NAME = process.env.RIVET_DEN_NAME ?? os.hostname()
 
-/** Cap tool_input fields for den/Hub (200-char strings; shallow). */
+const SECRET_KEY_RE =
+  /^(?:.*(?:password|passwd|secret|token|api[_-]?key|authorization|auth|credential|private[_-]?key).*)$/i
+
+/** Cap tool_input fields for den/Hub (200-char strings; secret keys redacted). */
 function summarizeToolInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
   const out = {}
   let n = 0
   for (const [k, v] of Object.entries(input)) {
     if (n++ > 40) break
+    if (SECRET_KEY_RE.test(k)) {
+      out[k] = '[redacted]'
+      continue
+    }
     if (typeof v === 'string') out[k] = v.length > 200 ? v.slice(0, 200) + '…' : v
     else if (Array.isArray(v)) {
       out[k] = v.slice(0, 20).map((item) => {
@@ -45,12 +52,23 @@ function summarizeToolInput(input) {
         if (item && typeof item === 'object' && !Array.isArray(item)) {
           const o = {}
           for (const [ik, iv] of Object.entries(item)) {
-            o[ik] = typeof iv === 'string' && iv.length > 200 ? iv.slice(0, 200) + '…' : iv
+            if (SECRET_KEY_RE.test(ik)) o[ik] = '[redacted]'
+            else o[ik] = typeof iv === 'string' && iv.length > 200 ? iv.slice(0, 200) + '…' : iv
           }
           return o
         }
         return item
       })
+    } else if (v !== undefined && typeof v === 'object') {
+      // nested plain object — one level only, cap strings
+      const o = {}
+      for (const [ik, iv] of Object.entries(v)) {
+        if (SECRET_KEY_RE.test(ik)) o[ik] = '[redacted]'
+        else if (typeof iv === 'string') o[ik] = iv.length > 200 ? iv.slice(0, 200) + '…' : iv
+        else if (typeof iv === 'number' || typeof iv === 'boolean' || iv === null) o[ik] = iv
+        else o[ik] = '[omitted]'
+      }
+      out[k] = o
     } else if (v !== undefined) out[k] = v
   }
   return Object.keys(out).length ? out : undefined

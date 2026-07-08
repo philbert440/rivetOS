@@ -67,15 +67,17 @@ describe('chipsFromLiveTools', () => {
     expect(chipsFromLiveTools([{ name: 'ask_user_question', status: 'running' }])).toEqual([])
   })
 
-  it('hides chips once the ask tool is done', () => {
+  it('keeps chips after ask tool is done (headless non-blocking ask)', () => {
+    // Seamless den: PreToolUse→PostToolUse often finishes immediately;
+    // chips are the next user turn, not a blocked tool_use.
     expect(
       chipsFromLiveTools([
         {
           name: 'AskUserQuestion',
           status: 'done',
-          args: { questions: [{ options: [{ label: 'Go' }] }] },
+          args: { questions: [{ options: [{ label: 'Go' }, { label: 'Stop' }] }] },
         },
       ]),
-    ).toEqual([])
+    ).toEqual(['Go', 'Stop'])
   })
 })
