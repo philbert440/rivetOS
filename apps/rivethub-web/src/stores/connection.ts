@@ -13,6 +13,9 @@
 
 import { create } from 'zustand'
 import { RivetGateway } from '@rivetos/gateway-client'
+import { isValidGatewayUrl } from '../lib/gateway-url.js'
+
+export { isValidGatewayUrl } from '../lib/gateway-url.js'
 
 const BASE_KEY = 'rivethub.baseUrl'
 const ROSTER_KEY = 'rivethub.roster'
@@ -36,17 +39,6 @@ interface ConnectionState {
 }
 
 const normalize = (url: string): string => url.trim().replace(/\/+$/, '')
-
-/** Same guard den-server's denUrlFor applies: http(s) with a host, nothing
- *  else — a poisoned roster/mesh entry must not re-point the app (#304). */
-export function isValidGatewayUrl(url: string): boolean {
-  try {
-    const u = new URL(url)
-    return (u.protocol === 'http:' || u.protocol === 'https:') && u.host !== ''
-  } catch {
-    return false
-  }
-}
 
 const ROSTER_MAX = 20
 
