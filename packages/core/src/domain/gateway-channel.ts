@@ -524,16 +524,33 @@ const BRIDGE_ARG_DEPTH_MAX = 5
 const SECRET_KEY_RE =
   /^(?:.*(?:password|passwd|secret|token|api[_-]?key|authorization|auth|credential|private[_-]?key).*)$/i
 
+/**
+ * Value-pattern redaction for free-text args (parity with den-hook redact()).
+ * Catches secrets embedded in ordinary keys like `command`.
+ */
+function redactValuePatterns(s: string): string {
+  return s
+    .replace(/\b(bearer|basic)\s+[\w+./=-]{8,}/gi, '$1 [redacted]')
+    .replace(
+      /\b([\w-]*(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]*\s*[=:]\s*)\S+/gi,
+      '$1[redacted]',
+    )
+    .replace(
+      /\b(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[a-z]-[\w-]{10,}|sk-[A-Za-z0-9_-]{16,}|eyJ[\w-]{8,}\.[\w-]+\.[\w-]+)\b/g,
+      '[redacted]',
+    )
+}
+
 function capStr(s: string): string {
-  return s.length > BRIDGE_ARG_STR_MAX ? s.slice(0, BRIDGE_ARG_STR_MAX) + '…' : s
+  const r = redactValuePatterns(s)
+  return r.length > BRIDGE_ARG_STR_MAX ? r.slice(0, BRIDGE_ARG_STR_MAX) + '…' : r
 }
 
 /**
  * Cap + redact tool args for the sessions WS (all-subscribers).
  * - secret-ish keys → "[redacted]"
- * - strings length-capped
+ * - string values run through value-pattern redact then length-capped
  * - nested objects to depth 5, key count 40 (den-hook parity)
- * - never pass through raw Write bodies / env blobs unredacted
  */
 function summarizeBridgeArgs(raw: unknown): Record<string, unknown> | undefined {
   if (raw === undefined || raw === null) return undefined
