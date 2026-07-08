@@ -292,8 +292,8 @@ function mergeHermesDenHooks(ctx: Ctx, root: string, hermesDir: string): void {
     (
       parseYaml(readFileSync(srcHooks, 'utf-8')) as {
         hooks?: Record<string, Array<{ command?: string }>>
-      }
-    ).hooks ?? {}
+      } | null
+    )?.hooks ?? {}
   const cfg = existsSync(cfgPath)
     ? ((parseYaml(readFileSync(cfgPath, 'utf-8')) as Record<string, unknown>) ?? {})
     : {}
