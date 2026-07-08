@@ -1,13 +1,75 @@
-import { memo, type JSX } from 'react'
+import { Children, isValidElement, memo, useState, type JSX, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '../lib/utils.js'
 
 /**
- * Markdown for assistant messages — the android web-ui renders full markdown;
- * rivethub used to print raw text. GFM (tables, strikethrough, task lists) on;
- * elements styled to the Rivet tokens. Code blocks are mono-on-panel; no heavy
- * syntax highlighter yet (keeps the bundle lean — a follow-up can add one).
+ * Flatten react-markdown children to plain text (fenced code body).
+ * Pure — unit-tested so copy always gets the real source string.
+ */
+export function textFromMarkdownChildren(node: ReactNode): string {
+  if (node == null || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textFromMarkdownChildren).join('')
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    return textFromMarkdownChildren(node.props.children)
+  }
+  return ''
+}
+
+/** language-* class from fenced blocks → short label for the chrome */
+export function languageLabel(className: string | undefined): string {
+  const m = /language-([\w+-]+)/.exec(className ?? '')
+  return m?.[1] ?? 'code'
+}
+
+/**
+ * Fenced code block with copy control (android web-ui pattern, light weight).
+ * Used as the `pre` component so the button wraps the whole fence, not each
+ * inline `code`.
+ */
+function FencedPre(props: { children?: ReactNode }): JSX.Element {
+  const [copied, setCopied] = useState(false)
+  const code = textFromMarkdownChildren(props.children).replace(/\n$/, '')
+
+  // Pull language from the nested <code class="language-…"> when present.
+  let lang = 'code'
+  Children.forEach(props.children, (child) => {
+    if (isValidElement<{ className?: string }>(child) && child.props.className) {
+      lang = languageLabel(child.props.className)
+    }
+  })
+
+  const copy = (): void => {
+    void navigator.clipboard.writeText(code).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  return (
+    <div className="group relative my-2 overflow-hidden rounded-md border border-line bg-panel">
+      <div className="flex items-center justify-between border-b border-line px-3 py-1">
+        <span className="font-mono text-[10px] text-ink-dim">{lang}</span>
+        <button
+          type="button"
+          onClick={copy}
+          className="font-mono text-[10px] text-ink-dim hover:text-em"
+          aria-label={copied ? 'copied' : 'copy code'}
+        >
+          {copied ? 'copied' : 'copy'}
+        </button>
+      </div>
+      <pre className="overflow-x-auto p-3 font-mono text-[13px] leading-relaxed text-ink">
+        {props.children}
+      </pre>
+    </div>
+  )
+}
+
+/**
+ * Markdown for assistant messages — GFM (tables, strikethrough, task lists);
+ * Rivet tokens; fenced blocks with language chrome + copy button.
  */
 const COMPONENTS: Components = {
   a: ({ className, ...props }) => (
@@ -35,11 +97,7 @@ const COMPONENTS: Components = {
       </code>
     )
   },
-  pre: ({ children }) => (
-    <pre className="my-2 overflow-x-auto rounded-md border border-line bg-panel p-3">
-      {children}
-    </pre>
-  ),
+  pre: ({ children }) => <FencedPre>{children}</FencedPre>,
   ul: ({ children }) => <ul className="my-1 list-disc space-y-0.5 pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="my-1 list-decimal space-y-0.5 pl-5">{children}</ol>,
   p: ({ children }) => <p className="my-1 first:mt-0 last:mb-0">{children}</p>,
