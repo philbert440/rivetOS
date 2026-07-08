@@ -176,23 +176,28 @@ describe('term manager', () => {
     reopen.manager.spawn('claude', 80, 24, '', uuid, uuid)
     expect(reopen.spawns[0].argv).toEqual(['claude', '--resume', uuid])
 
-    // grok gets the same flags (it also has --session-id/--resume)
+    // grok gets the same flags (it also has --session-id/--resume). The
+    // session/resume flag appends AFTER the roster's base argv, which now
+    // carries the auto-approve flags (--permission-mode bypassPermissions).
+    const grokBase = ['grok', '--permission-mode', 'bypassPermissions']
     const grokNew = makeManager({}, { sessionExists: () => false })
     grokNew.manager.spawn('grok', 80, 24, '', uuid)
-    expect(grokNew.spawns[0].argv).toEqual(['grok', '--session-id', uuid])
+    expect(grokNew.spawns[0].argv).toEqual([...grokBase, '--session-id', uuid])
     const grokResume = makeManager({}, { sessionExists: () => true })
     grokResume.manager.spawn('grok', 80, 24, '', uuid)
-    expect(grokResume.spawns[0].argv).toEqual(['grok', '--resume', uuid])
+    expect(grokResume.spawns[0].argv).toEqual([...grokBase, '--resume', uuid])
 
     // hermes: --resume only (no sessionFlag). A new session (not in the
-    // store) gets NO flag — hermes can't pin an id; an existing one resumes,
-    // and hermes ids need not be UUIDs.
+    // store) gets NO session flag — hermes can't pin an id; an existing one
+    // resumes, and hermes ids need not be UUIDs. Its base argv carries the
+    // auto-approve flags (--yolo --accept-hooks).
+    const hermesBase = ['hermes', '--yolo', '--accept-hooks']
     const hermesNew = makeManager({}, { sessionExists: () => false })
     hermesNew.manager.spawn('hermes', 80, 24, '', uuid)
-    expect(hermesNew.spawns[0].argv).toEqual(['hermes'])
+    expect(hermesNew.spawns[0].argv).toEqual(hermesBase)
     const hermesResume = makeManager({}, { sessionExists: () => true })
     hermesResume.manager.spawn('hermes', 80, 24, '', 'sess_abc123')
-    expect(hermesResume.spawns[0].argv).toEqual(['hermes', '--resume', 'sess_abc123'])
+    expect(hermesResume.spawns[0].argv).toEqual([...hermesBase, '--resume', 'sess_abc123'])
 
     // a non-harness command gets no flags; a claude non-UUID that isn't in the
     // store gets no flag either (no --session-id on a non-UUID).
