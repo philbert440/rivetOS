@@ -170,6 +170,33 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
     expect(got.some((f) => f.kind === 'message' && f.role === 'user')).toBe(true)
   })
 
+  it('forwards optional tool args on tool.start for Hub chips/titles', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-args`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    gw.bridgeAgentEvent({
+      session: 'c-args',
+      type: 'tool.start',
+      tool: 'AskUserQuestion',
+      args: { questions: [{ options: [{ label: 'A' }] }] },
+    })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const toolStart = got.find((f) => f.kind === 'stream' && f.event.type === 'tool_start')
+    expect(toolStart?.kind).toBe('stream')
+    if (toolStart?.kind === 'stream') {
+      expect(toolStart.event.content).toBe('AskUserQuestion')
+      expect(toolStart.event.metadata).toMatchObject({
+        tool: 'AskUserQuestion',
+        args: { questions: [{ options: [{ label: 'A' }] }] },
+      })
+    }
+  })
+
   it('commits the prior assistant turn when the next user turn starts', async () => {
     const { gw, port } = await start()
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c2`)

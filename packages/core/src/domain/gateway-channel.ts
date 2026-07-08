@@ -462,20 +462,34 @@ export function createGatewayChannel(opts?: {
             event: { type: 'reasoning', content: str('text') },
           })
           break
-        case 'tool.start':
+        case 'tool.start': {
+          // Optional args/input from harness adapters (when present) ride in
+          // metadata so Hub can title tools and extract ask-user chips.
+          // Missing args are fine — UI degrades to the tool name only.
+          const toolName = str('tool')
+          const rawArgs = ev.args ?? ev.input ?? ev.arguments
+          const metadata: Record<string, unknown> = { tool: toolName }
+          if (rawArgs !== undefined && rawArgs !== null) metadata.args = rawArgs
           emitFrame({
             kind: 'stream',
             session: sid,
-            event: { type: 'tool_start', content: str('tool') },
+            event: { type: 'tool_start', content: toolName, metadata },
           })
           break
-        case 'tool.end':
+        }
+        case 'tool.end': {
+          const toolName = str('tool')
           emitFrame({
             kind: 'stream',
             session: sid,
-            event: { type: 'tool_result', content: str('tool') },
+            event: {
+              type: 'tool_result',
+              content: toolName,
+              metadata: toolName ? { tool: toolName } : undefined,
+            },
           })
           break
+        }
         case 'session.end':
           flushAssistant() // commit the final assistant turn
           emitFrame({ kind: 'stream', session: sid, event: { type: 'done', content: '' } })
