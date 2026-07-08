@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronDown, Plus, Server } from 'lucide-react'
 import { cn } from '../../lib/utils.js'
 import { useConnection } from '../../stores/connection.js'
+import { prettifyNodeName, urlLabel, useNodeName } from '../../lib/node-name.js'
 import { Button } from '../ui/button.js'
 import {
   Popover,
@@ -12,11 +13,61 @@ import {
   PopoverTrigger,
 } from '../ui/popover.js'
 
+/** One saved-node row — resolves the node's human name from its /healthz
+ *  hostname, falling back to the roster name. Its own component so the
+ *  per-node name query is a hook (only mounted while the popover is open). */
+function SavedNodeRow(props: {
+  name: string
+  baseUrl: string
+  active: boolean
+  onSwitch: (url: string) => void
+}): JSX.Element {
+  const name = useNodeName(props.baseUrl) ?? props.name
+  return (
+    <button
+      type="button"
+      onClick={() => props.onSwitch(props.baseUrl)}
+      title={props.baseUrl}
+      className={cn(
+        'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors',
+        props.active ? 'bg-panel text-ink' : 'text-ink-dim hover:bg-panel hover:text-ink',
+      )}
+    >
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      {props.active && <Check className="size-3.5 shrink-0 text-em" />}
+    </button>
+  )
+}
+
+function DiscoveredNodeRow(props: {
+  meshName: string
+  denUrl: string
+  sessions: number | null
+  onAdd: (name: string, denUrl: string) => void
+}): JSX.Element {
+  const name = useNodeName(props.denUrl) ?? prettifyNodeName(props.meshName)
+  return (
+    <button
+      type="button"
+      onClick={() => props.onAdd(name, props.denUrl)}
+      title={`${props.denUrl} — click to save`}
+      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-ink-dim transition-colors hover:bg-panel hover:text-em"
+    >
+      <Plus className="size-3.5 shrink-0" />
+      <span className="min-w-0 flex-1 truncate">
+        {name}
+        {props.sessions !== null ? ` (${String(props.sessions)})` : ''}
+      </span>
+    </button>
+  )
+}
+
 /**
  * Node picker for the composer row — quick client-side re-point (never a
  * proxy), sharing the roster + mesh-discovery logic with the sidebar
  * NodeSwitcher via useConnection, so both stay in sync. Full node management
- * (remove / token) still lives in the sidebar switcher.
+ * (remove / token) still lives in the sidebar switcher. Node labels are the
+ * node's hostname (rivet-grok → Rivet-Grok) via /healthz, not host:port.
  */
 export function NodePicker(props: { disabled?: boolean }): JSX.Element {
   const { baseUrl, roster, switchTo, addNode } = useConnection()
@@ -32,6 +83,7 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
   })
 
   const current = roster.find((n) => n.baseUrl === baseUrl)
+  const currentName = useNodeName(baseUrl) ?? current?.name ?? urlLabel(baseUrl)
   const known = new Set(roster.map((n) => n.baseUrl))
   const discovered = (mesh.data?.nodes ?? []).filter(
     (n) => n.online && n.denUrl && !known.has(n.denUrl.replace(/\/+$/, '')),
@@ -63,9 +115,7 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
           className="h-8 rounded-full px-2.5 font-normal"
         >
           <Server className="size-3.5" />
-          <span className="max-w-40 truncate">
-            {current?.name ?? baseUrl.replace(/^https?:\/\//, '')}
-          </span>
+          <span className="max-w-40 truncate">{currentName}</span>
           <ChevronDown className="size-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>
@@ -74,24 +124,15 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
           <PopoverTitle>Node</PopoverTitle>
         </PopoverHeader>
         <div className="max-h-72 overflow-y-auto p-1.5">
-          {roster.map((n) => {
-            const active = n.baseUrl === baseUrl
-            return (
-              <button
-                key={n.baseUrl}
-                type="button"
-                onClick={() => doSwitch(n.baseUrl)}
-                title={n.baseUrl}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors',
-                  active ? 'bg-panel text-ink' : 'text-ink-dim hover:bg-panel hover:text-ink',
-                )}
-              >
-                <span className="min-w-0 flex-1 truncate">{n.name}</span>
-                {active && <Check className="size-3.5 shrink-0 text-em" />}
-              </button>
-            )
-          })}
+          {roster.map((n) => (
+            <SavedNodeRow
+              key={n.baseUrl}
+              name={n.name}
+              baseUrl={n.baseUrl}
+              active={n.baseUrl === baseUrl}
+              onSwitch={doSwitch}
+            />
+          ))}
           {roster.length === 0 && (
             <div className="px-2.5 py-2 text-xs text-ink-dim">no saved nodes</div>
           )}
@@ -102,19 +143,13 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
                 on the mesh
               </div>
               {discovered.map((n) => (
-                <button
+                <DiscoveredNodeRow
                   key={n.id}
-                  type="button"
-                  onClick={() => addNode({ name: n.name, baseUrl: n.denUrl })}
-                  title={`${n.denUrl} — click to save`}
-                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-ink-dim transition-colors hover:bg-panel hover:text-em"
-                >
-                  <Plus className="size-3.5 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate">
-                    {n.name}
-                    {n.sessions !== null ? ` (${String(n.sessions)})` : ''}
-                  </span>
-                </button>
+                  meshName={n.name}
+                  denUrl={n.denUrl}
+                  sessions={n.sessions}
+                  onAdd={(name, denUrl) => addNode({ name, baseUrl: denUrl })}
+                />
               ))}
             </>
           )}

@@ -52,9 +52,20 @@ export function defaultRoster(): TermRoster {
     cwd: homedir(),
     env: {},
     commands: {
+      // Harnesses run non-interactively (driven by chat inject / a PTY the
+      // viewer attaches to), so they must not block on approval prompts:
+      //   - grok:   bypassPermissions mode auto-approves tools + edits
+      //   - hermes: --yolo bypasses command approval, --accept-hooks
+      //             auto-approves config hooks (else it prompts, or exits
+      //             non-zero when it can't reach a TTY)
+      // claude trusts its cwd via ~/.claude.json and needs no flag here.
       claude: { label: 'Claude Code', cmd: ['claude'], room: true },
-      grok: { label: 'Grok Build', cmd: ['grok'], room: true },
-      hermes: { label: 'Hermes', cmd: ['hermes'], room: true },
+      grok: {
+        label: 'Grok Build',
+        cmd: ['grok', '--permission-mode', 'bypassPermissions'],
+        room: true,
+      },
+      hermes: { label: 'Hermes', cmd: ['hermes', '--yolo', '--accept-hooks'], room: true },
       shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
     },
   }

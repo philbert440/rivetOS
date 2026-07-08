@@ -100,9 +100,10 @@ export function Composer(props: {
           disabled={!connected || sending}
           className="px-2 pt-1"
         />
-        {/* Picker row (model · node · effort) + send — Claude-app style, in the
-            input shell, persisted per-conversation. */}
+        {/* Picker row (node · model · effort) + send — Claude-app style, in the
+            input shell, persisted per-conversation. Node sits leftmost. */}
         <div className="flex items-center gap-1">
+          <NodePicker />
           <ModelPicker
             value={props.agent ?? ''}
             options={models}
@@ -110,7 +111,6 @@ export function Composer(props: {
             disabled={catalog.isError}
             unavailable={catalog.isError}
           />
-          <NodePicker />
           <EffortPicker value={props.effort} onChange={(v) => props.onSetting({ effort: v })} />
           <div className="flex-1" />
           <button
