@@ -194,6 +194,7 @@ export type {
   GatewayClientConfig,
   SessionSummary,
   SessionMessage,
+  MessageUsage,
   SessionsListResponse,
   HarnessSession,
   HarnessSessionsResponse,

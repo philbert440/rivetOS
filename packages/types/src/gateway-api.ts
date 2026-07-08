@@ -60,6 +60,16 @@ export interface SessionSummary {
   messages: number
 }
 
+/** Per-turn token accounting for an assistant message, when the harness
+ *  reports it (Claude Code does, via its transcript). All counts are for the
+ *  whole turn (may span several tool rounds). `promptTokens` includes cached
+ *  input; `cachedTokens` is the cache-read portion of it. */
+export interface MessageUsage {
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+}
+
 export interface SessionMessage {
   id: string
   sessionId: string
@@ -67,6 +77,13 @@ export interface SessionMessage {
   text: string
   /** epoch ms */
   ts: number
+  /** Token usage for the turn — assistant messages only, harness-dependent
+   *  (absent when the harness doesn't report it). */
+  usage?: MessageUsage
+  /** Model that produced this message (e.g. 'claude-opus-4-8'), when known. */
+  model?: string
+  /** Wall-clock duration of the turn in ms, when known — powers tokens/sec. */
+  durationMs?: number
 }
 
 export interface SessionsListResponse {

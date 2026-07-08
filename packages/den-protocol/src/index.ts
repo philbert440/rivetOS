@@ -8,6 +8,7 @@ export {
   type AgentEvent,
   type AgentEventBody,
   type AgentEventMeta,
+  type TokenUsage,
 } from './events.js'
 
 export {
