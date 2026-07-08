@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import { Link } from '@tanstack/react-router'
 import { NodeSwitcher } from './node-switcher.js'
+import { DenBot } from './den-bot.js'
 
 const NAV = [
   { to: '/', label: 'Chat', icon: '💬' },
@@ -13,7 +14,7 @@ export function Sidebar(): JSX.Element {
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r border-line bg-panel/80">
       <div className="flex items-center gap-2 px-4 py-4">
-        <span className="text-xl">🔩</span>
+        <DenBot className="size-7" />
         <span className="font-mono text-sm font-semibold tracking-wide text-em">RivetHub</span>
       </div>
 

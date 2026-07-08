@@ -1,38 +1,76 @@
-import { useEffect, useRef, type JSX } from 'react'
+import { useEffect, useRef, type JSX, type ReactNode } from 'react'
 import type { SessionMessage } from '@rivetos/types'
 import type { LiveTurn } from '../stores/chat.js'
+import { DenBot } from './den-bot.js'
+import { Markdown } from './markdown.js'
+
+/** Time-only stamp; cold-backfilled messages carry ts:0 (timestamp lost on
+ *  memory backfill) — show nothing rather than 1970. */
+function stamp(ts: number): string | null {
+  if (!ts) return null
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+/** Avatar + name + timestamp row above a message (android web-ui pattern).
+ *  Assistant is the den bot ("Rivet"); user is right-aligned. */
+function AvatarRow(props: { mine: boolean; ts?: number }): JSX.Element {
+  const time = props.ts !== undefined ? stamp(props.ts) : null
+  if (props.mine) {
+    return (
+      <div className="flex items-center justify-end gap-2 px-1">
+        <span className="text-sm font-medium text-ink/90">You</span>
+        {time && <span className="font-mono text-[10px] text-ink-dim">{time}</span>}
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-center gap-2 px-1">
+      <DenBot className="size-7 rounded-md bg-panel-2 p-0.5" />
+      <span className="text-sm font-medium text-em">Rivet</span>
+      {time && <span className="font-mono text-[10px] text-ink-dim">{time}</span>}
+    </div>
+  )
+}
+
+function Row(props: { mine: boolean; ts?: number; children: ReactNode }): JSX.Element {
+  return (
+    <div className={`flex flex-col gap-1.5 ${props.mine ? 'items-end' : 'items-start'}`}>
+      <AvatarRow mine={props.mine} ts={props.ts} />
+      {props.children}
+    </div>
+  )
+}
 
 function Bubble(props: { msg: SessionMessage }): JSX.Element {
   const mine = props.msg.role === 'user'
   return (
-    <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`max-w-[75%] rounded-lg border px-4 py-2.5 text-sm whitespace-pre-wrap ${
-          mine ? 'border-em-dim/40 bg-em-dim/10' : 'border-line bg-panel'
-        }`}
-      >
-        {!mine && <div className="mb-1 font-mono text-[11px] text-em">🔩 rivet</div>}
-        {props.msg.text}
-        <div className="mt-1 text-right font-mono text-[10px] text-ink-dim">
-          {new Date(props.msg.ts).toLocaleTimeString()}
+    <Row mine={mine} ts={props.msg.ts}>
+      {mine ? (
+        // User text is plain — right-aligned bubble, no markdown.
+        <div className="max-w-[85%] whitespace-pre-wrap rounded-lg border border-em-dim/40 bg-em-dim/10 px-4 py-2.5 text-sm">
+          {props.msg.text}
         </div>
-      </div>
-    </div>
+      ) : (
+        // Assistant is full-width, markdown-rendered (no bubble — android style).
+        <div className="w-full px-1">
+          <Markdown>{props.msg.text}</Markdown>
+        </div>
+      )}
+    </Row>
   )
 }
 
 function LiveBubble(props: { turn: LiveTurn }): JSX.Element {
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[75%] rounded-lg border border-line bg-panel px-4 py-2.5 text-sm whitespace-pre-wrap">
-        <div className="mb-1 font-mono text-[11px] text-em">🔩 rivet</div>
-        {props.turn.text}
+    <Row mine={false}>
+      <div className="w-full px-1">
+        {props.turn.text && <Markdown>{props.turn.text}</Markdown>}
         <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-ink-dim">
           <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-em" />
           {props.turn.activity ?? (props.turn.reasoning ? 'thinking…' : 'writing…')}
         </div>
       </div>
-    </div>
+    </Row>
   )
 }
 
@@ -46,7 +84,7 @@ export function Transcript(props: { messages: SessionMessage[]; live?: LiveTurn 
   }, [count, liveLen])
 
   return (
-    <div className="flex flex-col gap-3 px-6 py-4">
+    <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">
       {props.messages.map((m) => (
         <Bubble key={m.id} msg={m} />
       ))}

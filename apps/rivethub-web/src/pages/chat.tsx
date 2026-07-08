@@ -14,6 +14,7 @@ import { useChatSettings } from '../stores/chat-settings.js'
 import { Transcript } from '../components/transcript.js'
 import { Composer } from '../components/composer.js'
 import { XtermAttach } from '../components/xterm-attach.js'
+import { DenBot } from '../components/den-bot.js'
 
 // A conversation id IS a UUID so it can be the harness's native session id
 // (claude --session-id requires a UUID). Then the join key, the harness's
@@ -351,7 +352,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
 function EmptyState(): JSX.Element {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2">
-      <div className="text-3xl">🔩</div>
+      <DenBot className="size-16 opacity-90" />
       <div className="text-sm text-ink-dim">Pick a conversation or start a new one.</div>
     </div>
   )

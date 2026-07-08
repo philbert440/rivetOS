@@ -1,12 +1,16 @@
-import { useState, type JSX } from 'react'
+import { useRef, useState, type JSX } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { ArrowUp } from 'lucide-react'
 import type { ThinkingLevel } from '@rivetos/types'
 import type { WsStatus } from '../stores/chat.js'
 import type { ChatSettings } from '../stores/chat-settings.js'
-import { EFFORTS } from '../stores/chat-settings.js'
 import { useConnection } from '../stores/connection.js'
-import { Select } from './select.js'
 import { modelOptions } from '../lib/model-options.js'
+import { cn } from '../lib/utils.js'
+import { Textarea } from './ui/textarea.js'
+import { EffortPicker } from './pickers/effort-picker.js'
+import { ModelPicker } from './pickers/model-picker.js'
+import { NodePicker } from './pickers/node-picker.js'
 
 export function Composer(props: {
   sessionId: string
@@ -24,6 +28,7 @@ export function Composer(props: {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | undefined>()
+  const taRef = useRef<HTMLTextAreaElement>(null)
   const connected = props.wsStatus === 'open'
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
@@ -66,50 +71,61 @@ export function Composer(props: {
     }
   }
 
+  const canSend = connected && !sending && text.trim().length > 0
+
   return (
-    <div className="border-t border-line bg-panel/60 px-6 py-3">
+    <div className="border-t border-line bg-panel/60 px-4 py-3">
       {error && <div className="mb-2 font-mono text-xs text-red">✗ {error}</div>}
-      <div className="flex items-end gap-3">
-        <textarea
+      <div
+        className={cn(
+          'flex flex-col gap-2 rounded-xl border border-line bg-panel p-2 transition-shadow',
+          'focus-within:border-em/60 focus-within:ring-1 focus-within:ring-em/30',
+          !connected && 'opacity-70',
+        )}
+      >
+        <Textarea
+          ref={taRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
               void send()
             }
           }}
-          rows={Math.min(6, Math.max(1, text.split('\n').length))}
-          placeholder={connected ? 'Message Rivet… (Enter to send)' : 'reconnecting…'}
+          rows={Math.min(8, Math.max(1, text.split('\n').length))}
+          placeholder={
+            connected ? 'Message Rivet… (Enter to send, Shift+Enter for newline)' : 'reconnecting…'
+          }
           disabled={!connected || sending}
-          className="flex-1 resize-none rounded border border-line bg-panel px-3 py-2.5 text-sm outline-none focus:border-em disabled:opacity-50"
+          className="px-2 pt-1"
         />
-        <button
-          onClick={() => void send()}
-          disabled={!connected || sending || !text.trim()}
-          className="rounded bg-em-dim px-4 py-2.5 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
-        >
-          Send
-        </button>
-      </div>
-      {/* Model + effort — Claude-app-style, in the messages area, persisted */}
-      <div className="mt-2 flex items-center gap-2">
-        <Select
-          value={props.agent ?? ''}
-          options={models}
-          onChange={(v) => props.onSetting({ agent: v })}
-          title="model / harness"
-          disabled={catalog.isError}
-        />
-        <Select
-          value={props.effort}
-          options={EFFORTS.map((e) => ({ value: e.value, label: e.label }))}
-          onChange={(v) => props.onSetting({ effort: v as ThinkingLevel })}
-          title="reasoning effort"
-        />
-        {catalog.isError && (
-          <span className="font-mono text-[11px] text-red">catalog unavailable</span>
-        )}
+        {/* Picker row (model · node · effort) + send — Claude-app style, in the
+            input shell, persisted per-conversation. */}
+        <div className="flex items-center gap-1">
+          <ModelPicker
+            value={props.agent ?? ''}
+            options={models}
+            onChange={(v) => props.onSetting({ agent: v })}
+            disabled={catalog.isError}
+            unavailable={catalog.isError}
+          />
+          <NodePicker />
+          <EffortPicker value={props.effort} onChange={(v) => props.onSetting({ effort: v })} />
+          <div className="flex-1" />
+          <button
+            onClick={() => void send()}
+            disabled={!canSend}
+            aria-label="send"
+            title="send"
+            className={cn(
+              'flex size-8 items-center justify-center rounded-full transition-colors',
+              canSend ? 'bg-em-dim text-bg hover:bg-em' : 'bg-panel-2 text-ink-dim',
+            )}
+          >
+            <ArrowUp className="size-4" />
+          </button>
+        </div>
       </div>
     </div>
   )
