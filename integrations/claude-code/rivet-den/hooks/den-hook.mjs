@@ -129,8 +129,16 @@ async function main() {
       const buf = Buffer.alloc(stat.size - st.offset)
       fs.readSync(fd, buf, 0, buf.length, st.offset)
       fs.closeSync(fd)
-      st.offset = stat.size
-      for (const line of buf.toString('utf8').split('\n')) {
+      // Consume only through the last COMPLETE (newline-terminated) line. The
+      // harness writes the transcript incrementally, so at Stop the final
+      // assistant line (which carries usage + the reply text) is often only
+      // half-written — advancing the offset to EOF would skip it forever, and
+      // the Stop poll re-reads to catch it. A trailing partial line stays put
+      // for the next read.
+      const lastNl = buf.lastIndexOf(0x0a)
+      if (lastNl < 0) return out // no complete line yet — leave offset untouched
+      st.offset += lastNl + 1
+      for (const line of buf.subarray(0, lastNl + 1).toString('utf8').split('\n')) {
         if (!line.trim()) continue
         let j
         try {
