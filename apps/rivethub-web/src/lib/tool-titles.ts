@@ -76,12 +76,7 @@ export function humanToolTitle(rawName: string, args?: ToolArgs): string {
   if (lower === 'write_file' || lower === 'create_file') {
     return `Wrote ${basename(str(args, 'path') ?? str(args, 'file_path')) ?? 'file'}`
   }
-  if (
-    lower === 'grep' ||
-    lower === 'glob' ||
-    lower === 'find_files' ||
-    lower === 'list_dir'
-  ) {
+  if (lower === 'grep' || lower === 'glob' || lower === 'find_files' || lower === 'list_dir') {
     const p = str(args, 'pattern') ?? str(args, 'query') ?? str(args, 'path') ?? ''
     return p ? `Searched: ${p}` : 'Searched files'
   }
