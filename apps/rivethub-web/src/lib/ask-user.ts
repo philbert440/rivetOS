@@ -13,7 +13,7 @@ const ASK_TOOL_NAMES = new Set(['ask_user', 'ask_user_question', 'askuserquestio
 
 export function isAskUserTool(name: string): boolean {
   const n = normalizeToolName(name).toLowerCase().replace(/\s+/g, '_')
-  return ASK_TOOL_NAMES.has(n) || n === 'askuserquestion'
+  return ASK_TOOL_NAMES.has(n)
 }
 
 function labelFromOption(opt: unknown): string | undefined {
@@ -88,16 +88,20 @@ function dedupe(labels: string[]): string[] {
 }
 
 /**
- * From a live tool stack (newest last), return chips for the last **running**
- * ask-user tool with extractable options. Done/error tools do not show chips
- * (avoids re-send after the question completed).
+ * From a live tool stack (newest last), return chips for the last ask-user
+ * tool that still has extractable options — whether running or done.
+ *
+ * Headless CLIs (Claude/Grok) auto-complete AskUserQuestion without blocking;
+ * chips are the *next user turn* (Android pattern). Restricting to `running`
+ * made chips flash and vanish on seamless den PreToolUse→PostToolUse.
+ * Cleared when the live turn ends (assistant message / done) or the user
+ * picks a chip (new user turn).
  */
 export function chipsFromLiveTools(
   tools: ReadonlyArray<{ name: string; args?: unknown; status: string }>,
 ): string[] {
   for (let i = tools.length - 1; i >= 0; i--) {
     const t = tools[i]
-    if (t.status !== 'running') continue
     if (!isAskUserTool(t.name)) continue
     const opts = extractAskUserOptions(t.args)
     if (opts.length) return opts

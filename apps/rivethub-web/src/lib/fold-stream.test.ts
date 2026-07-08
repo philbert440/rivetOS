@@ -100,4 +100,12 @@ describe('foldStream', () => {
     t = foldStream(t, ev({ type: 'tool_result', content: '❌ Bash: boom' }))
     expect(t?.tools[0].status).toBe('error')
   })
+
+  it('does not split MCP tool names on colon when metadata.tool is absent', () => {
+    const t = foldStream(
+      undefined,
+      ev({ type: 'tool_start', content: 'mcp:rivetos:memory_search' }),
+    )
+    expect(t?.tools[0].name).toBe('mcp:rivetos:memory_search')
+  })
 })

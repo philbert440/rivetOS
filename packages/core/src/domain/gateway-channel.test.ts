@@ -197,6 +197,40 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
     }
   })
 
+  it('summarizes nested args and redacts secret keys on tool.start', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-redact`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    const huge = 'x'.repeat(500)
+    gw.bridgeAgentEvent({
+      session: 'c-redact',
+      type: 'tool.start',
+      tool: 'Write',
+      args: {
+        api_key: 'sk-super-secret',
+        password: 'hunter2',
+        nested: { content: huge, token: 'abc' },
+      },
+    })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const toolStart = got.find((f) => f.kind === 'stream' && f.event.type === 'tool_start')
+    expect(toolStart?.kind).toBe('stream')
+    if (toolStart?.kind === 'stream') {
+      const args = toolStart.event.metadata?.args as Record<string, unknown>
+      expect(args.api_key).toBe('[redacted]')
+      expect(args.password).toBe('[redacted]')
+      const nested = args.nested as Record<string, unknown>
+      expect(nested.token).toBe('[redacted]')
+      expect(String(nested.content).endsWith('…')).toBe(true)
+      expect(String(nested.content).length).toBeLessThanOrEqual(201)
+    }
+  })
+
   it('commits the prior assistant turn when the next user turn starts', async () => {
     const { gw, port } = await start()
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c2`)

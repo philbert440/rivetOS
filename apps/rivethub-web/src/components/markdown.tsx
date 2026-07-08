@@ -1,4 +1,13 @@
-import { Children, isValidElement, memo, useState, type JSX, type ReactNode } from 'react'
+import {
+  Children,
+  isValidElement,
+  memo,
+  useEffect,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '../lib/utils.js'
@@ -23,16 +32,51 @@ export function languageLabel(className: string | undefined): string {
   return m?.[1] ?? 'code'
 }
 
+/** Copy text for LAN http:// (non-secure) Hubs where Clipboard API is blocked. */
+export function copyTextToClipboard(text: string): Promise<void> {
+  const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
+  if (clip && typeof clip.writeText === 'function') {
+    return clip.writeText(text).catch(() => fallbackCopy(text))
+  }
+  return fallbackCopy(text)
+}
+
+function fallbackCopy(text: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- intentional LAN fallback
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      if (ok) resolve()
+      else reject(new Error('copy failed'))
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)))
+    }
+  })
+}
+
 /**
  * Fenced code block with copy control (android web-ui pattern, light weight).
- * Used as the `pre` component so the button wraps the whole fence, not each
- * inline `code`.
  */
 function FencedPre(props: { children?: ReactNode }): JSX.Element {
   const [copied, setCopied] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const code = textFromMarkdownChildren(props.children).replace(/\n$/, '')
 
-  // Pull language from the nested <code class="language-…"> when present.
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== undefined) clearTimeout(timerRef.current)
+    }
+  }, [])
+
   let lang = 'code'
   Children.forEach(props.children, (child) => {
     if (isValidElement<{ className?: string }>(child) && child.props.className) {
@@ -41,10 +85,19 @@ function FencedPre(props: { children?: ReactNode }): JSX.Element {
   })
 
   const copy = (): void => {
-    void navigator.clipboard.writeText(code).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    })
+    void copyTextToClipboard(code)
+      .then(() => {
+        setFailed(false)
+        setCopied(true)
+        if (timerRef.current !== undefined) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => setCopied(false), 1500)
+      })
+      .catch(() => {
+        setCopied(false)
+        setFailed(true)
+        if (timerRef.current !== undefined) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => setFailed(false), 1500)
+      })
   }
 
   return (
@@ -55,9 +108,9 @@ function FencedPre(props: { children?: ReactNode }): JSX.Element {
           type="button"
           onClick={copy}
           className="font-mono text-[10px] text-ink-dim hover:text-em"
-          aria-label={copied ? 'copied' : 'copy code'}
+          aria-label={failed ? 'copy failed' : copied ? 'copied' : 'copy code'}
         >
-          {copied ? 'copied' : 'copy'}
+          {failed ? 'failed' : copied ? 'copied' : 'copy'}
         </button>
       </div>
       <pre className="overflow-x-auto p-3 font-mono text-[13px] leading-relaxed text-ink">
@@ -68,8 +121,7 @@ function FencedPre(props: { children?: ReactNode }): JSX.Element {
 }
 
 /**
- * Markdown for assistant messages — GFM (tables, strikethrough, task lists);
- * Rivet tokens; fenced blocks with language chrome + copy button.
+ * Markdown for assistant messages — GFM; Rivet tokens; fenced copy.
  */
 const COMPONENTS: Components = {
   a: ({ className, ...props }) => (
@@ -81,8 +133,6 @@ const COMPONENTS: Components = {
     />
   ),
   code: ({ className, children, ...props }) => {
-    // react-markdown flags inline vs block via the presence of a language-*
-    // class only on fenced blocks; inline code has no such class.
     const isBlock = /language-/.test(className ?? '')
     if (isBlock) {
       return (
