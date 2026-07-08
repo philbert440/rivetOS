@@ -4,6 +4,7 @@ import { Check, ChevronDown, Plus, Server } from 'lucide-react'
 import { cn } from '../../lib/utils.js'
 import { useConnection } from '../../stores/connection.js'
 import { prettifyNodeName, urlLabel, useNodeName } from '../../lib/node-name.js'
+import { performNodeSwitch } from '../../lib/switch-mode.js'
 import { Button } from '../ui/button.js'
 import {
   Popover,
@@ -63,16 +64,17 @@ function DiscoveredNodeRow(props: {
 }
 
 /**
- * Node picker for the composer row — quick client-side re-point (never a
- * proxy), sharing the roster + mesh-discovery logic with the sidebar
- * NodeSwitcher via useConnection, so both stay in sync. Full node management
- * (remove / token) still lives in the sidebar switcher. Node labels are the
- * node's hostname (rivet-grok → Rivet-Grok) via /healthz, not host:port.
+ * Node picker for the composer row — shares roster + mesh discovery with the
+ * sidebar NodeSwitcher. Browser: open peer hub origin in a **new tab** (live
+ * turn stays on this page). Tauri: re-point the gateway client. Full node
+ * management (remove / token) still lives in the sidebar switcher.
+ * Labels: hostname via /healthz.
  */
 export function NodePicker(props: { disabled?: boolean }): JSX.Element {
   const { baseUrl, roster, switchTo, addNode } = useConnection()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
+  const [switchError, setSwitchError] = useState<string | undefined>()
 
   const mesh = useQuery({
     queryKey: ['mesh', baseUrl],
@@ -90,10 +92,13 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
   )
 
   const doSwitch = (url: string): void => {
-    switchTo(url)
-    // query keys carry endpoint identity, but invalidate so no future key can
-    // serve node A's data as node B's (mirrors the sidebar switcher).
-    void queryClient.invalidateQueries()
+    const result = performNodeSwitch(url, switchTo)
+    if (!result) {
+      setSwitchError('invalid hub URL')
+      return
+    }
+    setSwitchError(undefined)
+    if (result.mode === 'repoint') void queryClient.invalidateQueries()
     setOpen(false)
   }
 
@@ -156,6 +161,11 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
           {mesh.isError && (
             <div className="px-2.5 py-1.5 font-mono text-[10px] text-ink-dim">
               mesh roster unavailable on this node
+            </div>
+          )}
+          {switchError && (
+            <div className="px-2.5 py-1.5 font-mono text-[10px] text-red" role="alert">
+              {switchError}
             </div>
           )}
         </div>

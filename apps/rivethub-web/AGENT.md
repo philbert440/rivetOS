@@ -24,11 +24,13 @@
 
 Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cleanly.
 
-### Track 2 — Hub-as-node (PR #330, stacked)
+### Track 2 — Hub-as-node navigation — **shipped** (PR #330)
 
-- Browser: `performNodeSwitch` → `location.assign(origin)` (origin = that node)
+- Browser: `performNodeSwitch` → `window.open(origin, '_blank')` new tab (current chat/turn stays put)
 - Tauri: still `switchTo` (local shell + API re-point)
-- Den embed at `/den/` preserved
+- Wired in sidebar `NodeSwitcher` + composer `NodePicker`
+- Den embed at Chat | Terminal | Den and `/den/` preserved
+- New tab is a **different origin** → that origin’s own `localStorage` roster + `sessionStorage` tokens (empty roster / re-auth is expected, not a bug)
 
 ## How to run / build
 
@@ -44,9 +46,9 @@ cd apps/rivethub-desktop && cargo tauri build   # or dev
 
 - `src/pages/chat.tsx` — seamless session, terminal/den modes
 - `src/components/transcript.tsx`, `composer.tsx`, `suggestion-chips.tsx`
-- `src/lib/fold-stream.ts`, `tool-titles.ts`, `ask-user.ts`
+- `src/lib/fold-stream.ts`, `tool-titles.ts`, `ask-user.ts`, `switch-mode.ts`, `gateway-url.ts`
 - `src/stores/chat.ts` — WS fold, LiveTurn
-- `src/stores/connection.ts`, `components/node-switcher.tsx` — multi-node
+- `src/stores/connection.ts`, `components/node-switcher.tsx`, `pickers/node-picker.tsx`
 - Core bridge: `packages/core/src/domain/gateway-channel.ts` (`bridgeAgentEvent`)
 
 ## Gotchas
@@ -56,3 +58,4 @@ cd apps/rivethub-desktop && cargo tauri build   # or dev
 - Headless CLI ask-tools don’t block; chips = next user turn (Android pattern).
 - CI secrets scan blocks real lab `10.4.x` IPs in tests — use `192.168.1.x`.
 - Tool `args` on sessions WS: `summarizeBridgeArgs` / den-hook `summarizeToolInput` run every string through value-pattern `redact()` (Bearer/sk-/AKIA/gh_/JWT + key=value) then length-cap — not just secret-named keys.
+- `isValidGatewayUrl` is origin-only (no userinfo/path/query/hash) to block poisoned roster open-nav.

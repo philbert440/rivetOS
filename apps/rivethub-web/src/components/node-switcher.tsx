@@ -2,17 +2,19 @@ import { useEffect, useRef, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useConnection } from '../stores/connection.js'
 import { urlLabel, useNodeName } from '../lib/node-name.js'
+import { performNodeSwitch } from '../lib/switch-mode.js'
 
 /**
- * 4h node switcher — client-side re-point, never a proxy. Roster persists
- * in localStorage; the mesh overview of the CURRENT node seeds discovery
- * (den-enabled peers advertise their denUrl). Switching endpoints resets
- * the chat/notification stores via their endpoint-identity watchers.
+ * 4h node switcher. Roster persists in localStorage; mesh overview of the
+ * CURRENT node seeds discovery (peers advertise denUrl = hub face).
+ * Browser: open peer hub origin in a new tab (this page keeps live chat).
+ * Tauri: API re-point via switchTo so the local shell stays put.
  */
 export function NodeSwitcher(): JSX.Element {
   const { baseUrl, roster, switchTo, addNode, removeNode } = useConnection()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
+  const [switchError, setSwitchError] = useState<string | undefined>()
   const rootRef = useRef<HTMLDivElement>(null)
 
   // Close on Escape / click-outside so the dropdown (and its mesh polling)
@@ -34,10 +36,14 @@ export function NodeSwitcher(): JSX.Element {
   }, [open])
 
   const doSwitch = (url: string): void => {
-    switchTo(url)
-    // belt-and-braces: query keys carry endpoint identity, but any future
-    // key that forgets must not serve node A's data as node B's (#304).
-    void queryClient.invalidateQueries()
+    const result = performNodeSwitch(url, switchTo)
+    if (!result) {
+      setSwitchError('invalid hub URL')
+      return
+    }
+    setSwitchError(undefined)
+    // repoint stays in-page — invalidate queries so no key serves node A as B.
+    if (result.mode === 'repoint') void queryClient.invalidateQueries()
     setOpen(false)
   }
 
@@ -118,6 +124,11 @@ export function NodeSwitcher(): JSX.Element {
           {mesh.isError && (
             <div className="mt-1 px-2 font-mono text-[10px] text-ink-dim">
               mesh roster unavailable on this node
+            </div>
+          )}
+          {switchError && (
+            <div className="mt-1 px-2 font-mono text-[10px] text-red" role="alert">
+              {switchError}
             </div>
           )}
           <div className="mt-2 border-t border-line px-2 pt-2 text-[10px] text-ink-dim">
