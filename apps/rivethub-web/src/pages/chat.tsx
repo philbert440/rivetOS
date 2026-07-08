@@ -15,6 +15,9 @@ import { Transcript } from '../components/transcript.js'
 import { Composer } from '../components/composer.js'
 import { XtermAttach } from '../components/xterm-attach.js'
 import { DenBot } from '../components/den-bot.js'
+import { ContextBar } from '../components/context-bar.js'
+import { Pencil } from 'lucide-react'
+import { useSessionNames } from '../stores/session-names.js'
 
 // A conversation id IS a UUID so it can be the harness's native session id
 // (claude --session-id requires a UUID). Then the join key, the harness's
@@ -78,6 +81,79 @@ export function ChatPage(): JSX.Element {
   )
 }
 
+/** One conversation row — shows the custom name (if set) over the derived
+ *  title, with inline rename (pencil on hover → input; Enter/blur saves, empty
+ *  clears, Escape cancels). Rename persists per node+session (localStorage). */
+function DrawerItem(props: {
+  item: { id: string; title: string; command?: string }
+  active: boolean
+  onSelect: () => void
+}): JSX.Element {
+  const baseUrl = useConnection((s) => s.baseUrl)
+  const key = `${baseUrl}::${props.item.id}`
+  const customName = useSessionNames((s) => s.byKey[key])
+  const setName = useSessionNames((s) => s.set)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+
+  if (editing) {
+    const commit = (): void => {
+      setName(key, draft)
+      setEditing(false)
+    }
+    return (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          commit()
+        }}
+        className="mb-1 flex items-center rounded bg-panel-2 px-3 py-1.5"
+      >
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setEditing(false) // cancel — no save on unmount
+          }}
+          onBlur={commit}
+          placeholder={props.item.title}
+          className="min-w-0 flex-1 bg-transparent text-xs text-ink outline-none"
+        />
+      </form>
+    )
+  }
+
+  return (
+    <div
+      className={`group mb-1 flex items-center rounded ${
+        props.active ? 'bg-panel-2' : 'hover:bg-panel-2'
+      }`}
+    >
+      <button
+        onClick={props.onSelect}
+        title={props.item.command ? `${props.item.command} · ${props.item.id}` : props.item.id}
+        className={`min-w-0 flex-1 truncate px-3 py-2 text-left text-xs ${
+          props.active ? 'text-em' : 'text-ink-dim group-hover:text-ink'
+        }`}
+      >
+        {customName ?? props.item.title}
+      </button>
+      <button
+        onClick={() => {
+          setDraft(customName ?? props.item.title)
+          setEditing(true)
+        }}
+        aria-label="rename conversation"
+        title="rename"
+        className="hidden shrink-0 px-2 py-2 text-ink-dim hover:text-em group-hover:block"
+      >
+        <Pencil className="size-3" />
+      </button>
+    </div>
+  )
+}
+
 function SessionDrawer(props: {
   items: { id: string; title: string; command?: string }[]
   active?: string
@@ -110,18 +186,12 @@ function SessionDrawer(props: {
       {props.error && <div className="px-3 py-2 font-mono text-xs text-red">{props.error}</div>}
       <div className="flex-1 overflow-y-auto px-2">
         {props.items.map((it) => (
-          <button
+          <DrawerItem
             key={it.id}
-            onClick={() => setActive(it.id)}
-            title={it.command ? `${it.command} · ${it.id}` : it.id}
-            className={`mb-1 block w-full truncate rounded px-3 py-2 text-left text-xs ${
-              it.id === props.active
-                ? 'bg-panel-2 text-em'
-                : 'text-ink-dim hover:bg-panel-2 hover:text-ink'
-            }`}
-          >
-            {it.title}
-          </button>
+            item={it}
+            active={it.id === props.active}
+            onSelect={() => setActive(it.id)}
+          />
         ))}
         {props.items.length === 0 && !props.error && (
           <div className="px-3 py-2 text-xs text-ink-dim">no conversations yet</div>
@@ -142,6 +212,9 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   termPtyRef.current = termPtyId
   const messages = useChat((s) => s.messages[props.sessionId]) ?? []
   const live = useChat((s) => s.live[props.sessionId])
+  // Context-fill: the newest assistant turn that reported usage. Its prompt
+  // tokens ARE the context sent that turn, so it drives the header bar.
+  const lastUsage = [...messages].reverse().find((m) => m.role === 'assistant' && m.usage)
   const wsStatus = useChat((s) => s.wsStatus)
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
@@ -283,11 +356,13 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
-      <div className="flex items-center justify-between border-b border-line bg-panel/40 px-4 py-1.5">
+      <div className="flex items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
         <span className="truncate font-mono text-xs text-ink-dim">{props.sessionId}</span>
+        {/* Context-fill bar — how full the model's window is (latest turn). */}
+        <ContextBar tokens={lastUsage?.usage?.promptTokens} model={lastUsage?.model} />
         {/* [Chat | Terminal | Den] — three views of ONE session; the bar
             stays visible so the den never takes over with no way back. */}
-        <span className="flex overflow-hidden rounded-md border border-line">
+        <span className="ml-auto flex shrink-0 overflow-hidden rounded-md border border-line">
           <button
             onClick={() => setMode('chat')}
             className={`px-2.5 py-1 font-mono text-[11px] ${mode === 'chat' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
