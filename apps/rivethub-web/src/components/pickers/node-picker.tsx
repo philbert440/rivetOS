@@ -46,7 +46,14 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
   }
 
   return (
-    <Popover open={open} onOpenChange={(o) => !props.disabled && setOpen(o)}>
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        // only block OPENING when disabled — keep an open popover dismissable.
+        if (o && props.disabled) return
+        setOpen(o)
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
