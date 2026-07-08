@@ -418,8 +418,11 @@ export function createGatewayChannel(opts?: {
             ...(stats?.durationMs !== undefined ? { durationMs: stats.durationMs } : {}),
           })
           pendingAssistant.delete(sid)
-          pendingStats.delete(sid)
         }
+        // clear stats on EVERY flush boundary, even with no committable text —
+        // a stray stats-only event must never bleed into the next turn (grok
+        // review).
+        pendingStats.delete(sid)
       }
       switch (ev.type) {
         case 'message.user':
