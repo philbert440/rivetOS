@@ -143,6 +143,35 @@ function marketplacePlugins(root: string): { marketplace: string; plugins: strin
 // per-TUI sync
 // ---------------------------------------------------------------------------
 
+/**
+ * When the rivetos marketplace is a `directory` source (the dev-tree testing
+ * workflow), Claude loads plugins from THAT tree — not the version cache — so a
+ * deploy's cache sync never reaches the live plugin, and a stale dev tree runs
+ * old hooks silently. Return that directory when it's a *different* tree than
+ * the deploy root, so sync can refresh it too. Null when github-sourced, when
+ * it points at the deploy root already, or when it's missing.
+ */
+function directoryMarketplaceDir(
+  claudeDir: string,
+  marketplace: string,
+  root: string,
+): string | null {
+  try {
+    const mk = JSON.parse(
+      readFileSync(join(claudeDir, 'plugins', 'known_marketplaces.json'), 'utf-8'),
+    ) as Record<string, { source?: { source?: string; path?: string }; installLocation?: string }>
+    const entry = mk[marketplace]
+    if (entry?.source?.source !== 'directory') return null
+    const dir = entry.source.path ?? entry.installLocation
+    if (!dir) return null
+    const resolved = resolve(dir)
+    if (resolved === resolve(root) || !existsSync(resolved)) return null
+    return resolved
+  } catch {
+    return null
+  }
+}
+
 function syncClaudeCode(ctx: Ctx, root: string, home: string): void {
   const claudeDir = join(home, '.claude')
   if (!existsSync(claudeDir)) {
@@ -166,6 +195,21 @@ function syncClaudeCode(ctx: Ctx, root: string, home: string): void {
         join(cacheBase, ver.name),
         `~/.claude/plugins/cache/${marketplace}/${plugin}/${ver.name}`,
       )
+    }
+  }
+  // A directory-source marketplace is the ACTUAL live plugin location (Claude
+  // ignores the cache for it). Refresh it from the deploy root so a deploy
+  // reaches the running hooks — otherwise the live plugin runs whatever stale
+  // commit that tree is pinned at (a silent, hard-to-spot trap).
+  const mktDir = directoryMarketplaceDir(claudeDir, marketplace, root)
+  if (mktDir) {
+    console.log(`  ↪ marketplace loads from ${mktDir} (directory source) — syncing it too`)
+    for (const plugin of plugins) {
+      const src = join(root, 'integrations', 'claude-code', plugin)
+      const dest = join(mktDir, 'integrations', 'claude-code', plugin)
+      if (!existsSync(src) || !existsSync(dest)) continue
+      any = true
+      syncManagedDir(ctx, src, dest, `${mktDir}/integrations/claude-code/${plugin}`)
     }
   }
   if (!any) console.log('  (no rivetos plugins installed in the Claude Code plugin cache)')
