@@ -34,7 +34,34 @@ const NAME = process.env.RIVET_DEN_NAME ?? os.hostname()
 const SECRET_KEY_RE =
   /^(?:.*(?:password|passwd|secret|token|api[_-]?key|authorization|auth|credential|private[_-]?key).*)$/i
 
-/** Cap tool_input fields for den/Hub (200-char strings; secret keys redacted). */
+/**
+ * Value-pattern redaction — same rules as termLine's redact() (hoisted so
+ * tool.start.args go through it, not only key-name checks). Catches secrets
+ * embedded in ordinary keys like `command`: "curl -H 'Bearer sk-…'".
+ */
+function redact(s) {
+  return String(s)
+    // Authorization / Bearer headers FIRST (the key=/: rule below would
+    // otherwise consume the word "Bearer" and leave the token standing)
+    .replace(/\b(bearer|basic)\s+[\w+./=-]{8,}/gi, '$1 [redacted]')
+    // KEY=value / key: value where the key names a credential
+    .replace(
+      /\b([\w-]*(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]*\s*[=:]\s*)\S+/gi,
+      '$1[redacted]',
+    )
+    // well-known token prefixes (AWS, GitHub, Slack, OpenAI/Stripe-style) + bare JWTs
+    .replace(
+      /\b(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[a-z]-[\w-]{10,}|sk-[A-Za-z0-9_-]{16,}|eyJ[\w-]{8,}\.[\w-]+\.[\w-]+)\b/g,
+      '[redacted]',
+    )
+}
+
+function capStr(s) {
+  const r = redact(s)
+  return r.length > 200 ? r.slice(0, 200) + '…' : r
+}
+
+/** Cap tool_input fields for den/Hub (value-pattern redact + secret keys). */
 function summarizeToolInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
   const out = {}
@@ -45,26 +72,27 @@ function summarizeToolInput(input) {
       out[k] = '[redacted]'
       continue
     }
-    if (typeof v === 'string') out[k] = v.length > 200 ? v.slice(0, 200) + '…' : v
+    if (typeof v === 'string') out[k] = capStr(v)
     else if (Array.isArray(v)) {
       out[k] = v.slice(0, 20).map((item) => {
-        if (typeof item === 'string') return item.length > 200 ? item.slice(0, 200) + '…' : item
+        if (typeof item === 'string') return capStr(item)
         if (item && typeof item === 'object' && !Array.isArray(item)) {
           const o = {}
           for (const [ik, iv] of Object.entries(item)) {
             if (SECRET_KEY_RE.test(ik)) o[ik] = '[redacted]'
-            else o[ik] = typeof iv === 'string' && iv.length > 200 ? iv.slice(0, 200) + '…' : iv
+            else if (typeof iv === 'string') o[ik] = capStr(iv)
+            else o[ik] = iv
           }
           return o
         }
         return item
       })
     } else if (v !== undefined && typeof v === 'object') {
-      // nested plain object — one level only, cap strings
+      // nested plain object — one level only
       const o = {}
       for (const [ik, iv] of Object.entries(v)) {
         if (SECRET_KEY_RE.test(ik)) o[ik] = '[redacted]'
-        else if (typeof iv === 'string') o[ik] = iv.length > 200 ? iv.slice(0, 200) + '…' : iv
+        else if (typeof iv === 'string') o[ik] = capStr(iv)
         else if (typeof iv === 'number' || typeof iv === 'boolean' || iv === null) o[ik] = iv
         else o[ik] = '[omitted]'
       }
@@ -253,15 +281,7 @@ async function main() {
   // best-effort, not a guarantee — the real control is who can reach the
   // den-server (see README).
   const TERM_OFF = (process.env.RIVET_DEN_TERM ?? '') === 'off'
-  const redact = (s) =>
-    s
-      // Authorization / Bearer headers FIRST (the key=/: rule below would
-      // otherwise consume the word "Bearer" and leave the token standing)
-      .replace(/\b(bearer|basic)\s+[\w+./=-]{8,}/gi, '$1 [redacted]')
-      // KEY=value / key: value where the key names a credential
-      .replace(/\b([\w-]*(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]*\s*[=:]\s*)\S+/gi, '$1[redacted]')
-      // well-known token prefixes (AWS, GitHub, Slack, OpenAI/Stripe-style) + bare JWTs
-      .replace(/\b(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[a-z]-[\w-]{10,}|sk-[A-Za-z0-9_-]{16,}|eyJ[\w-]{8,}\.[\w-]+\.[\w-]+)\b/g, '[redacted]')
+  // redact() is module-level (used by summarizeToolInput + termLine)
 
   // every discovered assistant text block goes to the chat stream, deduped —
   // mid-turn status notes (PreToolUse) as well as the final answer (Stop)
