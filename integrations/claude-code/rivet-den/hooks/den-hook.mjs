@@ -235,8 +235,65 @@ async function main() {
   // transcript carries structured per-message usage; grok's ACP updates.jsonl
   // does not, so grok turns just omit the nerd line). undefined when no usage
   // was seen this turn.
+  // Read this turn's token usage straight from the transcript region written
+  // since the turn began (st.turnByteStart, set at UserPromptSubmit). This is
+  // deliberately INDEPENDENT of the streaming tail's st.offset: the tail races
+  // the harness's incremental writes and often lands past the final assistant
+  // line without ever parsing its usage. A dedicated bounded read at Stop —
+  // when the turn's messages are fully written — is reliable. completion tokens
+  // are summed over the turn's assistant messages; prompt/cached/model come
+  // from the last one (final context + model). Claude Code only.
+  const readTurnUsage = () => {
+    if (harness !== 'claude-code') return
+    let file = p.transcript_path ?? p.transcriptPath
+    if (!file) return
+    try {
+      if (fs.statSync(file).isDirectory()) file = path.join(file, 'updates.jsonl')
+      const size = fs.statSync(file).size
+      const start = Math.min(st.turnByteStart ?? 0, size)
+      if (size <= start) return
+      const fd = fs.openSync(file, 'r')
+      const buf = Buffer.alloc(size - start)
+      fs.readSync(fd, buf, 0, buf.length, start)
+      fs.closeSync(fd)
+      let completion = 0
+      let prompt
+      let cached
+      let model
+      for (const line of buf.toString('utf8').split('\n')) {
+        if (!line.trim()) continue
+        let j
+        try {
+          j = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (j.type !== 'assistant') continue
+        const u = j.message?.usage
+        if (u) {
+          completion += u.output_tokens ?? 0
+          prompt =
+            (u.input_tokens ?? 0) +
+            (u.cache_read_input_tokens ?? 0) +
+            (u.cache_creation_input_tokens ?? 0)
+          cached = u.cache_read_input_tokens ?? 0
+        }
+        if (j.message?.model) model = j.message.model
+      }
+      if (prompt !== undefined) {
+        st.turnTokens = completion
+        st.turnPrompt = prompt
+        st.turnCached = cached
+        st.turnModel = model
+      }
+    } catch {
+      /* transcript unreadable — leave whatever the tail captured */
+    }
+  }
+
   const buildTurnStats = () => {
     if (harness !== 'claude-code') return undefined
+    readTurnUsage() // populate turn stats reliably from the transcript
     if (st.turnPrompt === undefined && !st.turnTokens) return undefined
     const stats = {
       usage: {
@@ -299,6 +356,10 @@ async function main() {
       st.turnPrompt = undefined
       st.turnCached = 0
       st.turnModel = undefined
+      // mark where this turn's transcript lines begin, so Stop can read the
+      // turn's usage directly (readTurnUsage) rather than relying on the
+      // streaming tail's offset, which races the harness's incremental writes.
+      st.turnByteStart = st.offset
       // reset the dedup guard per turn so a turn's final message.agent (which
       // carries the token stats) can never be dropped as a duplicate of a
       // PRIOR turn's text (grok review)
