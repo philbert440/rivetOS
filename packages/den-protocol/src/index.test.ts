@@ -45,6 +45,38 @@ describe('parseEvent', () => {
     expect(parseEvent({ v: 1, session: 's1', type: 'session.end', harness: {} })).toBeNull();
     expect(parseEvent({ v: 1, session: 's1', type: 'session.end', ts: 5, name: 'n' })).not.toBeNull();
   });
+
+  it('accepts message.agent turn stats and preserves them', () => {
+    const ev = parseEvent({
+      v: 1,
+      session: 's1',
+      type: 'message.agent',
+      text: 'done',
+      usage: { promptTokens: 100, completionTokens: 20, cachedTokens: 80 },
+      model: 'claude-opus-4-8',
+      durationMs: 1500,
+    });
+    expect(ev).not.toBeNull();
+    // parseEvent returns the raw object — extra fields must survive for the bridge
+    expect((ev as { usage?: unknown }).usage).toEqual({
+      promptTokens: 100,
+      completionTokens: 20,
+      cachedTokens: 80,
+    });
+    expect((ev as { model?: unknown }).model).toBe('claude-opus-4-8');
+    // a plain message.agent (no stats) is still valid
+    expect(parseEvent({ v: 1, session: 's1', type: 'message.agent', text: 'hi' })).not.toBeNull();
+  });
+
+  it('rejects malformed message.agent turn stats', () => {
+    const base = { v: 1, session: 's1', type: 'message.agent', text: 'x' } as const;
+    expect(parseEvent({ ...base, model: 42 })).toBeNull();
+    expect(parseEvent({ ...base, durationMs: 'slow' })).toBeNull();
+    expect(parseEvent({ ...base, durationMs: -5 })).toBeNull();
+    expect(parseEvent({ ...base, usage: { promptTokens: 1, completionTokens: 2 } })).toBeNull(); // missing cachedTokens
+    expect(parseEvent({ ...base, usage: { promptTokens: -1, completionTokens: 2, cachedTokens: 0 } })).toBeNull();
+    expect(parseEvent({ ...base, usage: 'lots' })).toBeNull();
+  });
 });
 
 describe('toolActivity fallback mapping', () => {

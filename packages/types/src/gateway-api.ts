@@ -60,10 +60,11 @@ export interface SessionSummary {
   messages: number
 }
 
-/** Per-turn token accounting for an assistant message, when the harness
- *  reports it (Claude Code does, via its transcript). All counts are for the
- *  whole turn (may span several tool rounds). `promptTokens` includes cached
- *  input; `cachedTokens` is the cache-read portion of it. */
+/** Token accounting for an assistant turn, when the harness reports it (Claude
+ *  Code does, via its transcript). `completionTokens` is summed across the
+ *  turn's requests (may span several tool rounds); `promptTokens` is the FINAL
+ *  request's input — the context size at turn end — and includes cached input;
+ *  `cachedTokens` is the cache-read portion of that. */
 export interface MessageUsage {
   promptTokens: number
   completionTokens: number

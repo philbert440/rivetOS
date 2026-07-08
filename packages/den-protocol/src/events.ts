@@ -63,9 +63,10 @@ export type AgentEventBody =
     }
   | { type: 'term.line'; text: string }
 
-/** Per-turn token accounting attachable to a final message.agent event.
- *  `promptTokens` includes cached input; `cachedTokens` is its cache-read
- *  portion. */
+/** Token accounting attachable to a final message.agent event.
+ *  `completionTokens` is summed over the turn; `promptTokens` is the final
+ *  request's input (context size at turn end), including cached input;
+ *  `cachedTokens` is the cache-read portion of that. */
 export interface TokenUsage {
   promptTokens: number
   completionTokens: number
@@ -165,20 +166,17 @@ export function parseEvent(raw: unknown): AgentEvent | null {
       if (!str('text')) return null
       // optional turn stats — reject malformed rather than pass junk downstream
       if (e.model !== undefined && typeof e.model !== 'string') return null
-      if (
-        e.durationMs !== undefined &&
-        (typeof e.durationMs !== 'number' || !Number.isFinite(e.durationMs))
-      )
-        return null
+      // durationMs / token counts must be finite and non-negative
+      const nonNeg = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v) && v >= 0
+      if (e.durationMs !== undefined && !nonNeg(e.durationMs)) return null
       if (e.usage !== undefined) {
         const u = e.usage as Record<string, unknown> | null
-        const num = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v)
         if (
           typeof u !== 'object' ||
           u === null ||
-          !num(u.promptTokens) ||
-          !num(u.completionTokens) ||
-          !num(u.cachedTokens)
+          !nonNeg(u.promptTokens) ||
+          !nonNeg(u.completionTokens) ||
+          !nonNeg(u.cachedTokens)
         )
           return null
       }
