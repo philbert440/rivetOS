@@ -231,6 +231,38 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
     }
   })
 
+  it('redacts secret *values* inside ordinary keys like command', async () => {
+    // The re-review blocker: key-name redaction alone still leaks
+    // `command: "curl -H 'Authorization: Bearer sk-…'"` onto the sessions WS.
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-val`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    gw.bridgeAgentEvent({
+      session: 'c-val',
+      type: 'tool.start',
+      tool: 'Bash',
+      args: {
+        command:
+          "curl -H 'Authorization: Bearer sk-abc1234567890live' https://api.example.com && export API_KEY=sk-live-xyz",
+      },
+    })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const toolStart = got.find((f) => f.kind === 'stream' && f.event.type === 'tool_start')
+    expect(toolStart?.kind).toBe('stream')
+    if (toolStart?.kind === 'stream') {
+      const args = toolStart.event.metadata?.args as Record<string, unknown>
+      const cmd = String(args.command)
+      expect(cmd).not.toContain('sk-abc1234567890live')
+      expect(cmd).not.toContain('sk-live-xyz')
+      expect(cmd.toLowerCase()).toContain('[redacted]')
+    }
+  })
+
   it('commits the prior assistant turn when the next user turn starts', async () => {
     const { gw, port } = await start()
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c2`)
