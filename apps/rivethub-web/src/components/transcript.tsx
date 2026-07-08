@@ -25,7 +25,7 @@ function AvatarRow(props: { mine: boolean; ts?: number }): JSX.Element {
   }
   return (
     <div className="flex items-center gap-2 px-1">
-      <DenBot className="size-7 rounded-md bg-panel-2 p-0.5" />
+      <DenBot decorative className="size-7 rounded-md bg-panel-2 p-0.5" />
       <span className="text-sm font-medium text-em">Rivet</span>
       {time && <span className="font-mono text-[10px] text-ink-dim">{time}</span>}
     </div>
