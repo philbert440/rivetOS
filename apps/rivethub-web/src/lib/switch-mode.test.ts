@@ -6,16 +6,17 @@ describe('switch-mode', () => {
     const g = {}
     expect(isTauriShell(g)).toBe(false)
     expect(nodeSwitchMode(g)).toBe('navigate')
-    const r = resolveNodeSwitch('http://10.4.20.5:5174/', g)
-    expect(r).toEqual({ mode: 'navigate', url: 'http://10.4.20.5:5174' })
+    // 192.168.1.x — documentation-safe; CI blocks real lab 10.x ranges
+    const r = resolveNodeSwitch('http://192.168.1.5:5174/', g)
+    expect(r).toEqual({ mode: 'navigate', url: 'http://192.168.1.5:5174' })
   })
 
   it('Tauri shell re-points without requiring full-page navigate', () => {
     const g = { __TAURI__: {} }
     expect(isTauriShell(g)).toBe(true)
     expect(nodeSwitchMode(g)).toBe('repoint')
-    const r = resolveNodeSwitch('http://10.4.20.9:5174', g)
+    const r = resolveNodeSwitch('http://192.168.1.9:5174', g)
     expect(r.mode).toBe('repoint')
-    expect(r.url).toBe('http://10.4.20.9:5174')
+    expect(r.url).toBe('http://192.168.1.9:5174')
   })
 })
