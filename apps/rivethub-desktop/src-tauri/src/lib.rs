@@ -1,19 +1,26 @@
 // RivetHub desktop shell (4j): webview over the bundled rivethub-web dist,
-// tray with show/hide + quit, global shortcut (Ctrl+Shift+R) to summon the
-// window, and native notifications — the web app feature-detects
-// window.__TAURI__ (withGlobalTauri) and forwards escalation frames to the
-// notification plugin when the window is hidden/unfocused. Close-to-tray:
-// the X button hides instead of exiting; Quit lives in the tray menu.
+// tray with show/hide + new-window + quit, global shortcuts (Ctrl+Shift+R to
+// summon the main window, Ctrl+Shift+N to open another), and native
+// notifications — the web app feature-detects window.__TAURI__
+// (withGlobalTauri) and forwards escalation frames to the notification plugin
+// when the window is hidden/unfocused. Close-to-tray: the main window's X
+// button hides instead of exiting (Quit lives in the tray menu); extra windows
+// close for real.
+
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager,
+    Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
-/// Left-click tray / global shortcut: hide when already front-and-center,
-/// otherwise summon.
+/// Monotonic suffix for additional window labels (main is "main").
+static WINDOW_SEQ: AtomicU32 = AtomicU32::new(1);
+
+/// Left-click tray / Ctrl+Shift+R: hide when already front-and-center,
+/// otherwise summon the main window.
 fn toggle_main(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let visible = win.is_visible().unwrap_or(false);
@@ -36,19 +43,47 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
+/// Open an additional RivetHub window — same bundled app, its own webview (so
+/// its own in-memory session view; the node roster in localStorage is shared).
+/// Extra windows get a unique label and close normally (only "main" hides to
+/// tray), so they can't pile up hidden.
+fn spawn_window(app: &tauri::AppHandle) {
+    let label = format!("win-{}", WINDOW_SEQ.fetch_add(1, Ordering::Relaxed));
+    match WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+        .title("RivetHub")
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(720.0, 480.0)
+        .build()
+    {
+        Ok(win) => {
+            let _ = win.set_focus();
+        }
+        Err(e) => eprintln!("RivetHub: failed to open a new window: {e}"),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts([Shortcut::new(
-                    Some(Modifiers::CONTROL | Modifiers::SHIFT),
-                    Code::KeyR,
-                )])
-                .expect("valid shortcut")
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
+                .with_shortcuts([
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR),
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyN),
+                ])
+                .expect("valid shortcuts")
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    // Ctrl+Shift+N → new window; the other registered shortcut
+                    // (Ctrl+Shift+R) toggles the main window.
+                    let new_window_sc =
+                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyN);
+                    if *shortcut == new_window_sc {
+                        spawn_window(app);
+                    } else {
                         toggle_main(app);
                     }
                 })
@@ -56,8 +91,10 @@ pub fn run() {
         )
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Show RivetHub", true, None::<&str>)?;
+            let new_window =
+                MenuItem::with_id(app, "new_window", "New Window", true, Some("CmdOrCtrl+N"))?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &new_window, &quit])?;
 
             TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().expect("bundled icon").clone())
@@ -66,6 +103,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main(app),
+                    "new_window" => spawn_window(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -84,10 +122,14 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // close-to-tray: Quit is a deliberate act (tray menu)
+            // close-to-tray for the MAIN window only (Quit is a deliberate act
+            // via the tray menu); additional windows close for real so they
+            // don't accumulate hidden.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+                if window.label() == "main" {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
             }
         })
         .run(tauri::generate_context!())
