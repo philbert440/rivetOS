@@ -25,6 +25,7 @@
  * are overwritten (by design — see issue #198 "out of scope").
  */
 
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
   existsSync,
   mkdirSync,
@@ -261,6 +262,63 @@ function syncHermes(ctx: Ctx, root: string, home: string): void {
       '~/.hermes/skills/memory-recall',
     )
   }
+  // rivet-den: the hook script is a managed file; its hooks: block is MERGED
+  // into the user-co-owned config.yaml (never clobbered — see mergeHermesDenHooks).
+  const denHook = join(root, 'integrations', 'hermes', 'rivet-den', 'hooks', 'hermes-den-hook.mjs')
+  if (existsSync(denHook)) {
+    copyFile(
+      ctx,
+      denHook,
+      join(hermesDir, 'agent-hooks', 'hermes-den-hook.mjs'),
+      '~/.hermes/agent-hooks/hermes-den-hook.mjs',
+    )
+    mergeHermesDenHooks(ctx, root, hermesDir)
+  }
+}
+
+/**
+ * Merge the rivet-den hook entries into ~/.hermes/config.yaml — additively and
+ * idempotently. config.yaml is user-co-owned, so we only ADD our
+ * hermes-den-hook.mjs entries (keyed by command) and leave everything else
+ * alone. Rewrites only when an entry is actually added (so a redeploy is a
+ * no-op); the first add does reformat the file via yaml round-trip (comments
+ * on the machine-managed config are not preserved).
+ */
+function mergeHermesDenHooks(ctx: Ctx, root: string, hermesDir: string): void {
+  const srcHooks = join(root, 'integrations', 'hermes', 'rivet-den', 'config.hooks.yaml')
+  if (!existsSync(srcHooks)) return
+  const cfgPath = join(hermesDir, 'config.yaml')
+  const denHooks =
+    (
+      parseYaml(readFileSync(srcHooks, 'utf-8')) as {
+        hooks?: Record<string, Array<{ command?: string }>>
+      }
+    ).hooks ?? {}
+  const cfg = existsSync(cfgPath)
+    ? ((parseYaml(readFileSync(cfgPath, 'utf-8')) as Record<string, unknown>) ?? {})
+    : {}
+  const hooks = (cfg.hooks ?? {}) as Record<string, Array<{ command?: string }>>
+  let changed = false
+  for (const [event, entries] of Object.entries(denHooks)) {
+    const list = hooks[event] ?? []
+    for (const e of entries) {
+      if (!list.some((x) => x.command === e.command)) {
+        list.push(e)
+        changed = true
+      }
+    }
+    hooks[event] = list
+  }
+  const label = '~/.hermes/config.yaml (rivet-den hooks)'
+  if (!changed) {
+    ctx.stats.unchanged++
+    return
+  }
+  console.log(`  ~ ${ctx.dryRun ? '(dry-run) ' : ''}${label}`)
+  ctx.stats.written.push(label)
+  if (ctx.dryRun) return
+  cfg.hooks = hooks
+  writeFileSync(cfgPath, stringifyYaml(cfg))
 }
 
 // ---------------------------------------------------------------------------
