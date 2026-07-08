@@ -1,7 +1,7 @@
-import { useEffect, useRef, type JSX, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, Clock3, Zap } from 'lucide-react'
 import type { MessageUsage, SessionMessage } from '@rivetos/types'
-import type { LiveTurn } from '../stores/chat.js'
+import type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 import { DenBot } from './den-bot.js'
 import { Markdown } from './markdown.js'
 
@@ -45,6 +45,54 @@ function NerdLine(props: { usage: MessageUsage; durationMs?: number }): JSX.Elem
           <Clock3 className="size-3" />
           {secs.toFixed(1)}s
         </span>
+      )}
+    </div>
+  )
+}
+
+function ToolStack(props: { tools: LiveToolEntry[] }): JSX.Element | null {
+  if (props.tools.length === 0) return null
+  return (
+    <div className="mb-2 space-y-1">
+      {props.tools.map((t) => (
+        <div
+          key={t.id}
+          className="flex items-center gap-2 rounded border border-line bg-bg/60 px-2 py-1 font-mono text-[11px] text-ink-dim"
+        >
+          <span
+            className={
+              t.status === 'running'
+                ? 'inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-em'
+                : t.status === 'error'
+                  ? 'inline-block h-1.5 w-1.5 rounded-full bg-red'
+                  : 'inline-block h-1.5 w-1.5 rounded-full bg-ink-dim'
+            }
+          />
+          <span className="truncate text-ink">{t.title}</span>
+          <span className="ml-auto shrink-0 text-[10px] opacity-70">{t.status}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ReasoningBlock(props: { text: string; open?: boolean }): JSX.Element | null {
+  const [open, setOpen] = useState(props.open ?? false)
+  if (!props.text.trim()) return null
+  return (
+    <div className="mb-2 rounded border border-line/80 bg-bg/40">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-2 py-1 font-mono text-[11px] text-ink-dim hover:text-ink"
+      >
+        <span>{open ? '▾' : '▸'}</span>
+        <span>thinking</span>
+      </button>
+      {open && (
+        <div className="border-t border-line/60 px-2 py-1.5 font-mono text-[11px] leading-relaxed text-ink-dim whitespace-pre-wrap">
+          {props.text}
+        </div>
       )}
     </div>
   )
@@ -113,13 +161,25 @@ function Bubble(props: { msg: SessionMessage }): JSX.Element {
 }
 
 function LiveBubble(props: { turn: LiveTurn }): JSX.Element {
+  const status =
+    props.turn.activity ??
+    (props.turn.reasoning
+      ? 'thinking…'
+      : props.turn.tools.some((t) => t.status === 'running')
+        ? 'working…'
+        : 'writing…')
   return (
     <Row mine={false}>
       <div className="w-full px-1">
-        {props.turn.text && <Markdown>{props.turn.text}</Markdown>}
+        <ReasoningBlock
+          text={props.turn.reasoningText}
+          open={props.turn.reasoning && !props.turn.text}
+        />
+        <ToolStack tools={props.turn.tools} />
+        {props.turn.text ? <Markdown>{props.turn.text}</Markdown> : null}
         <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-ink-dim">
           <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-em" />
-          {props.turn.activity ?? (props.turn.reasoning ? 'thinking…' : 'writing…')}
+          {status}
         </div>
       </div>
     </Row>
@@ -130,10 +190,12 @@ export function Transcript(props: { messages: SessionMessage[]; live?: LiveTurn 
   const endRef = useRef<HTMLDivElement>(null)
   const count = props.messages.length + (props.live ? 1 : 0)
   const liveLen = props.live?.text.length ?? 0
+  const toolN = props.live?.tools.length ?? 0
+  const reasonLen = props.live?.reasoningText.length ?? 0
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' })
-  }, [count, liveLen])
+  }, [count, liveLen, toolN, reasonLen])
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">

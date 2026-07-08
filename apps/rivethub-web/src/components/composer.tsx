@@ -11,6 +11,7 @@ import { Textarea } from './ui/textarea.js'
 import { EffortPicker } from './pickers/effort-picker.js'
 import { ModelPicker } from './pickers/model-picker.js'
 import { NodePicker } from './pickers/node-picker.js'
+import { SuggestionChips } from './suggestion-chips.js'
 
 export function Composer(props: {
   sessionId: string
@@ -24,6 +25,8 @@ export function Composer(props: {
    *  terminal, and den are one conversation. The reply streams back via the
    *  den→sessions-WS bridge. */
   onSend?: (text: string) => Promise<void>
+  /** Ask-user suggestion chips (labels). Empty/undefined hides the row. */
+  suggestions?: string[]
 }): JSX.Element {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
@@ -41,9 +44,9 @@ export function Composer(props: {
   })
   const models = modelOptions(catalog.data?.agents ?? [])
 
-  const send = async (): Promise<void> => {
-    const body = text.trim()
-    if (!body || sending) return
+  const sendBody = async (body: string): Promise<void> => {
+    const trimmed = body.trim()
+    if (!trimmed || sending) return
     setError(undefined)
     setSending(true) // lock: double-Enter must not fire duplicate turns
     setText('')
@@ -52,23 +55,27 @@ export function Composer(props: {
         // Seamless: drive the live harness (its den events stream the reply
         // back through the bridge). Model = the spawned harness; effort is a
         // per-harness default for now.
-        await props.onSend(body)
+        await props.onSend(trimmed)
       } else {
         // Fire-and-forget; the reply (and this message's echo) arrive on the
         // sessions WS. Model (agent) + effort (thinking) ride the request and
         // persist per-conversation.
         await useConnection.getState().gateway.postMessage(props.sessionId, {
-          text: body,
+          text: trimmed,
           agent: props.agent,
           thinking: props.effort,
         })
       }
     } catch (err) {
       setError((err as Error).message)
-      setText(body) // give the draft back
+      setText(trimmed) // give the draft back
     } finally {
       setSending(false)
     }
+  }
+
+  const send = async (): Promise<void> => {
+    await sendBody(text)
   }
 
   const canSend = connected && !sending && text.trim().length > 0
@@ -76,6 +83,11 @@ export function Composer(props: {
   return (
     <div className="border-t border-line bg-panel/60 px-4 py-3">
       {error && <div className="mb-2 font-mono text-xs text-red">✗ {error}</div>}
+      <SuggestionChips
+        options={props.suggestions ?? []}
+        disabled={!connected || sending}
+        onPick={(label) => void sendBody(label)}
+      />
       <div
         className={cn(
           'flex flex-col gap-2 rounded-xl border border-line bg-panel p-2 transition-shadow',
