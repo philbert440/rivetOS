@@ -78,6 +78,9 @@ async function main() {
       emit({ type: 'session.start', title: 'Hermes' })
       break
     case 'pre_llm_call': {
+      // Hermes fires pre_llm_call ONCE per turn (before the tool loop), so
+      // the dedup vs st.lastUser is belt-and-suspenders — it only matters if
+      // two consecutive turns have identical user text.
       const hist = extra.conversation_history ?? p.conversation_history ?? []
       const lastUser = [...hist].reverse().find((m) => m?.role === 'user')
       const text = lastUser ? asText(lastUser.content) : ''
