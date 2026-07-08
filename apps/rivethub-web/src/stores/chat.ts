@@ -15,17 +15,13 @@
  */
 
 import { create } from 'zustand'
-import type { SessionMessage, SessionWsFrame, StreamEvent } from '@rivetos/types'
+import type { SessionMessage, SessionWsFrame } from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
 import { isValidGatewayUrl, useConnection } from './connection.js'
+import { foldStream, type LiveTurn } from '../lib/fold-stream.js'
 
-export interface LiveTurn {
-  /** accumulated assistant text deltas for the in-flight turn */
-  text: string
-  /** last status/tool activity line, for the "working…" chip */
-  activity?: string
-  reasoning: boolean
-}
+export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
+export { foldStream } from '../lib/fold-stream.js'
 
 export type WsStatus = 'connecting' | 'open' | 'closed'
 
@@ -60,35 +56,6 @@ function appendMessage(list: SessionMessage[] | undefined, msg: SessionMessage):
   const prev = list ?? []
   if (prev.some((m) => m.id === msg.id)) return prev
   return [...prev, msg]
-}
-
-function foldStream(turn: LiveTurn | undefined, event: StreamEvent): LiveTurn | undefined {
-  const base: LiveTurn = turn ?? { text: '', reasoning: false }
-  switch (event.type) {
-    case 'text':
-      return { ...base, text: base.text + event.content, reasoning: false, activity: undefined }
-    case 'reasoning':
-      return { ...base, reasoning: true }
-    case 'tool_start':
-      return { ...base, activity: event.content || 'running a tool…' }
-    case 'tool_result':
-      return { ...base, activity: undefined }
-    case 'status':
-      return { ...base, activity: event.content }
-    case 'interrupt':
-      // Steer, not termination (AgentLoop emits this mid-turn): the turn
-      // continues, so keep the accumulated text (#299 review).
-      return { ...base, activity: 'steered — adjusting…' }
-    case 'error':
-      // Surface it; the runtime follows up with an error message frame,
-      // which clears the turn. If that frame is lost, the wsEpoch refetch
-      // path recovers on reconnect.
-      return { ...base, activity: `⚠ ${event.content || 'error'}` }
-    case 'done':
-      return undefined
-    default:
-      return base
-  }
 }
 
 let subscription: Subscription | undefined

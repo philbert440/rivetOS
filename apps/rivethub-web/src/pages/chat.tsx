@@ -14,6 +14,7 @@ import { useChatSettings } from '../stores/chat-settings.js'
 import { Transcript } from '../components/transcript.js'
 import { Composer } from '../components/composer.js'
 import { XtermAttach } from '../components/xterm-attach.js'
+import { chipsFromLiveTools } from '../lib/ask-user.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
 import { Pencil } from 'lucide-react'
@@ -418,6 +419,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
             effort={settings?.effort ?? 'medium'}
             onSetting={(patch) => setSetting(settingsKey, patch)}
             onSend={sendToHarness}
+            suggestions={chipsFromLiveTools(live?.tools ?? [])}
           />
         </>
       ) : mode === 'den' ? (
