@@ -95,9 +95,17 @@ function DrawerItem(props: {
   const setName = useSessionNames((s) => s.set)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  // Escape cancels; a blur can still fire as the input unmounts, so guard the
+  // commit so Escape never saves (grok review).
+  const cancelRef = useRef(false)
 
   if (editing) {
     const commit = (): void => {
+      if (cancelRef.current) {
+        cancelRef.current = false
+        setEditing(false)
+        return
+      }
       setName(key, draft)
       setEditing(false)
     }
@@ -114,7 +122,10 @@ function DrawerItem(props: {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Escape') setEditing(false) // cancel — no save on unmount
+            if (e.key === 'Escape') {
+              cancelRef.current = true
+              setEditing(false)
+            }
           }}
           onBlur={commit}
           placeholder={props.item.title}
@@ -146,7 +157,7 @@ function DrawerItem(props: {
         }}
         aria-label="rename conversation"
         title="rename"
-        className="hidden shrink-0 px-2 py-2 text-ink-dim hover:text-em group-hover:block"
+        className="hidden shrink-0 px-2 py-2 text-ink-dim hover:text-em group-hover:block group-focus-within:block focus:block"
       >
         <Pencil className="size-3" />
       </button>
@@ -212,9 +223,18 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   termPtyRef.current = termPtyId
   const messages = useChat((s) => s.messages[props.sessionId]) ?? []
   const live = useChat((s) => s.live[props.sessionId])
-  // Context-fill: the newest assistant turn that reported usage. Its prompt
-  // tokens ARE the context sent that turn, so it drives the header bar.
-  const lastUsage = [...messages].reverse().find((m) => m.role === 'assistant' && m.usage)
+  // Context-fill: the NEWEST assistant turn (walking back, skipping a trailing
+  // in-flight user turn). Its prompt tokens ARE the context sent that turn. We
+  // deliberately use the latest assistant's own usage — not the latest turn
+  // that happens to have usage — so a non-reporting/cold-backfilled last turn
+  // hides the bar rather than showing a stale older number (grok review).
+  let lastAssistant: (typeof messages)[number] | undefined
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') {
+      lastAssistant = messages[i]
+      break
+    }
+  }
   const wsStatus = useChat((s) => s.wsStatus)
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
@@ -359,7 +379,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
       <div className="flex items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
         <span className="truncate font-mono text-xs text-ink-dim">{props.sessionId}</span>
         {/* Context-fill bar — how full the model's window is (latest turn). */}
-        <ContextBar tokens={lastUsage?.usage?.promptTokens} model={lastUsage?.model} />
+        <ContextBar tokens={lastAssistant?.usage?.promptTokens} model={lastAssistant?.model} />
         {/* [Chat | Terminal | Den] — three views of ONE session; the bar
             stays visible so the den never takes over with no way back. */}
         <span className="ml-auto flex shrink-0 overflow-hidden rounded-md border border-line">
