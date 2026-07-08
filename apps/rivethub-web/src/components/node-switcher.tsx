@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useConnection } from '../stores/connection.js'
+import { urlLabel, useNodeName } from '../lib/node-name.js'
 
 /**
  * 4h node switcher — client-side re-point, never a proxy. Roster persists
@@ -53,6 +54,7 @@ export function NodeSwitcher(): JSX.Element {
     (n) => n.online && n.denUrl && !known.has(n.denUrl.replace(/\/+$/, '')),
   )
   const current = roster.find((n) => n.baseUrl === baseUrl)
+  const currentName = useNodeName(baseUrl) ?? current?.name ?? urlLabel(baseUrl)
 
   return (
     <div ref={rootRef} className="relative border-t border-line">
@@ -61,9 +63,7 @@ export function NodeSwitcher(): JSX.Element {
         className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-panel-2"
         title={baseUrl}
       >
-        <span className="truncate font-mono text-[11px] text-ink-dim">
-          {current?.name ?? baseUrl.replace(/^https?:\/\//, '')}
-        </span>
+        <span className="truncate font-mono text-[11px] text-ink-dim">{currentName}</span>
         <span className="font-mono text-[10px] text-ink-dim">{open ? '▾' : '▴'}</span>
       </button>
 
