@@ -342,6 +342,20 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
     ws.close()
     expect(got).toHaveLength(0)
   })
+
+  it('maps activity events to stream status (hermes / non-Claude progress)', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c5`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+    gw.bridgeAgentEvent({ session: 'c5', type: 'activity', activity: 'thinking' })
+    await new Promise((r) => setTimeout(r, 30))
+    ws.close()
+    const stream = got.find((f) => f.kind === 'stream')
+    expect(stream?.kind === 'stream' && stream.event.type).toBe('status')
+    expect(stream?.kind === 'stream' && stream.event.content).toBe('thinking')
+  })
 })
 
 describe('emitFrame (seamless-modes push)', () => {
