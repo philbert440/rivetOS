@@ -32,8 +32,11 @@ const EMPTY_MESSAGES: SessionMessage[] = []
  *  before deciding the harness isn't bridging and letting the queue flow. */
 const INJECT_LATCH_MS = 6_000
 /** A busy live turn with no frames for this long and no tool running is
- *  treated as ended (harnesses that never bridge done — see stale-release). */
-const STALE_TURN_MS = 30_000
+ *  treated as ended (harnesses that never bridge done — see stale-release).
+ *  Generous on purpose: the bridge is BLOCK-granular for claude (a long
+ *  no-tool generation is silent between blocks), so short windows
+ *  false-positive on healthy turns (grok review, PR #338). */
+const STALE_TURN_MS = 120_000
 
 // A conversation id IS a UUID so it can be the harness's native session id
 // (claude --session-id requires a UUID). Then the join key, the harness's
@@ -552,9 +555,12 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   // properly, but a harness that never bridges done (Hermes) would leave the
   // live slot busy forever and starve the queue. If no stream frame lands for
   // STALE_TURN_MS with no tool running (a silent long Bash is still a real
-  // turn), declare the turn over so queued messages flow.
+  // turn), declare the turn over so queued messages flow. Only armed while
+  // something is actually queued — releasing is for the pump, not the view,
+  // and a false positive on an idle queue would just kill a healthy bubble.
+  const hasQueued = outbound.some((o) => o.status === 'queued')
   useEffect(() => {
-    if (!live) return
+    if (!live || !hasQueued) return
     const timer = setInterval(() => {
       const s = useChat.getState()
       const L = s.live[props.sessionId]
@@ -570,7 +576,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
       }
     }, 5_000)
     return () => clearInterval(timer)
-  }, [live, props.sessionId, clearLive])
+  }, [live, hasQueued, props.sessionId, clearLive])
 
   const sendToHarness = (body: string): Promise<void> => {
     enqueueOutbound(props.sessionId, body)

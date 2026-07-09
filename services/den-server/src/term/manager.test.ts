@@ -367,6 +367,33 @@ describe('term manager', () => {
     expect(procs[0].writes).toEqual(['\x1b', '\x1b[200~do this instead\x1b[201~', '\r'])
   })
 
+  it('interrupt inject queues its Esc behind a prior turn in flight (grok review #338)', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ injectReadyMs: 10, injectSubmitDelayMs: 80 })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-int2')
+    procs[0].emitData('welcome')
+    vi.advanceTimersByTime(10) // ready
+    manager.inject(pty.id, 'A', true) // paste now, CR at +80, watermark +160
+    manager.inject(pty.id, 'B', true, true) // interrupt while A's chain pends
+    // Esc must NOT land between A's paste and its CR — that would wipe A's
+    // input (TUI Esc clears the composer) and its CR would submit nothing.
+    expect(procs[0].writes).toEqual(['\x1b[200~A\x1b[201~'])
+    vi.advanceTimersByTime(80)
+    expect(procs[0].writes).toEqual(['\x1b[200~A\x1b[201~', '\r'])
+    vi.advanceTimersByTime(80) // watermark: Esc after A's full chain
+    expect(procs[0].writes).toEqual(['\x1b[200~A\x1b[201~', '\r', '\x1b'])
+    vi.advanceTimersByTime(400) // settle → B's paste
+    expect(procs[0].writes).toEqual(['\x1b[200~A\x1b[201~', '\r', '\x1b', '\x1b[200~B\x1b[201~'])
+    vi.advanceTimersByTime(80)
+    expect(procs[0].writes).toEqual([
+      '\x1b[200~A\x1b[201~',
+      '\r',
+      '\x1b',
+      '\x1b[200~B\x1b[201~',
+      '\r',
+    ])
+  })
+
   it('kill/close cancels a pending submit CR (no write into a dead PTY)', () => {
     vi.useFakeTimers()
     const { manager, procs } = makeManager({ injectReadyMs: 10, injectSubmitDelayMs: 80 })
