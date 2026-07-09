@@ -1,7 +1,8 @@
 /**
- * Extract suggestion-chip labels from ask-user tool shapes.
+ * Extract ask-user prompts from ask-user tool shapes.
  * Supports:
- * - Claude AskUserQuestion: { questions: [{ options: [{ label }] }] }
+ * - Claude AskUserQuestion: { questions: [{ question, header, multiSelect,
+ *   options: [{ label, description }] }] }
  * - Grok ask_user_question: flat options/choices (strings or {label})
  * - RivetOS ask_user: { choices: string[] }
  * Missing/malformed args → empty array (never throws).
@@ -27,20 +28,64 @@ function labelFromOption(opt: unknown): string | undefined {
   return undefined
 }
 
-function labelsFromArray(arr: unknown): string[] {
+// ---------------------------------------------------------------------------
+// Structured extraction — the composer's ask card.
+
+export interface AskOption {
+  label: string
+  description?: string
+}
+
+export interface AskQuestion {
+  /** The question text itself (may be absent on bare option lists). */
+  question?: string
+  /** Claude's short chip label ("Auth method") — used as the answer prefix
+   *  when multiple questions are answered at once. */
+  header?: string
+  multiSelect: boolean
+  options: AskOption[]
+}
+
+function optionFrom(opt: unknown): AskOption | undefined {
+  const label = labelFromOption(opt)
+  if (!label) return undefined
+  if (opt && typeof opt === 'object') {
+    const d = (opt as Record<string, unknown>).description
+    if (typeof d === 'string' && d.trim()) return { label, description: d.trim() }
+  }
+  return { label }
+}
+
+function optionsFromArray(arr: unknown): AskOption[] {
   if (!Array.isArray(arr)) return []
-  const out: string[] = []
+  const seen = new Set<string>()
+  const out: AskOption[] = []
   for (const item of arr) {
-    const l = labelFromOption(item)
-    if (l) out.push(l)
+    const o = optionFrom(item)
+    if (!o || seen.has(o.label)) continue
+    seen.add(o.label)
+    out.push(o)
+    if (out.length >= 10) break
   }
   return out
 }
 
+function questionFrom(q: unknown): AskQuestion | undefined {
+  if (!q || typeof q !== 'object') return undefined
+  const qo = q as Record<string, unknown>
+  const options = [...optionsFromArray(qo.options), ...optionsFromArray(qo.choices)]
+  if (options.length === 0) return undefined
+  const question =
+    typeof qo.question === 'string' && qo.question.trim() ? qo.question.trim() : undefined
+  const header = typeof qo.header === 'string' && qo.header.trim() ? qo.header.trim() : undefined
+  return { question, header, multiSelect: qo.multiSelect === true, options }
+}
+
 /**
- * Parse tool args / metadata into chip labels. Safe on any unknown input.
+ * Parse tool args into structured ask questions. Safe on any unknown input;
+ * empty array when nothing extractable (caller falls back to nothing).
  */
-export function extractAskUserOptions(args: unknown): string[] {
+export function extractAskUserQuestions(args: unknown): AskQuestion[] {
   if (args == null) return []
   let root: unknown = args
   if (typeof args === 'string') {
@@ -53,58 +98,36 @@ export function extractAskUserOptions(args: unknown): string[] {
   if (typeof root !== 'object' || root === null) return []
   const obj = root as Record<string, unknown>
 
-  // Nested Claude shape
+  // Nested Claude shape — up to 4 questions per call.
   if (Array.isArray(obj.questions)) {
-    const nested: string[] = []
-    for (const q of obj.questions) {
-      if (!q || typeof q !== 'object') continue
-      const qo = q as Record<string, unknown>
-      nested.push(...labelsFromArray(qo.options))
-      nested.push(...labelsFromArray(qo.choices))
-    }
-    if (nested.length) return dedupe(nested)
+    const nested = obj.questions.map(questionFrom).filter((q): q is AskQuestion => q !== undefined)
+    if (nested.length) return nested.slice(0, 4)
   }
 
-  // Flat options / choices
-  const flat = [...labelsFromArray(obj.options), ...labelsFromArray(obj.choices)]
-  if (flat.length) return dedupe(flat)
-
-  // yes_no with no explicit options
-  if (obj.type === 'yes_no') return ['Yes', 'No']
-
+  // Flat single-question shapes (grok / rivetos / yes_no).
+  const flat = questionFrom(obj)
+  if (flat) return [flat]
+  if (obj.type === 'yes_no') {
+    const question =
+      typeof obj.question === 'string' && obj.question.trim() ? obj.question.trim() : undefined
+    return [{ question, multiSelect: false, options: [{ label: 'Yes' }, { label: 'No' }] }]
+  }
   return []
 }
 
-function dedupe(labels: string[]): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const l of labels) {
-    if (seen.has(l)) continue
-    seen.add(l)
-    out.push(l)
-    if (out.length >= 10) break
-  }
-  return out
-}
-
 /**
- * From a live tool stack (newest last), return chips for the last ask-user
- * tool that still has extractable options — whether running or done.
- *
- * Headless CLIs (Claude/Grok) auto-complete AskUserQuestion without blocking;
- * chips are the *next user turn* (Android pattern). Restricting to `running`
- * made chips flash and vanish on seamless den PreToolUse→PostToolUse.
- * Cleared when the live turn ends (assistant message / done) or the user
- * picks a chip (new user turn).
+ * From a live tool stack (newest last), the last ask-user tool's structured
+ * questions — running or done (headless CLIs auto-complete the tool; the
+ * answer is the next user turn).
  */
-export function chipsFromLiveTools(
+export function questionsFromLiveTools(
   tools: ReadonlyArray<{ name: string; args?: unknown; status: string }>,
-): string[] {
+): AskQuestion[] {
   for (let i = tools.length - 1; i >= 0; i--) {
     const t = tools[i]
     if (!isAskUserTool(t.name)) continue
-    const opts = extractAskUserOptions(t.args)
-    if (opts.length) return opts
+    const qs = extractAskUserQuestions(t.args)
+    if (qs.length) return qs
   }
   return []
 }

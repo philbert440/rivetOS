@@ -1,9 +1,10 @@
-import { useRef, useState, type JSX } from 'react'
+import { useEffect, useRef, useState, type JSX, type RefObject } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowUp } from 'lucide-react'
 import type { ThinkingLevel } from '@rivetos/types'
 import type { WsStatus } from '../stores/chat.js'
 import type { ChatSettings } from '../stores/chat-settings.js'
+import type { AskQuestion } from '../lib/ask-user.js'
 import { useConnection } from '../stores/connection.js'
 import { modelOptions } from '../lib/model-options.js'
 import { cn } from '../lib/utils.js'
@@ -11,7 +12,14 @@ import { Textarea } from './ui/textarea.js'
 import { EffortPicker } from './pickers/effort-picker.js'
 import { ModelPicker } from './pickers/model-picker.js'
 import { NodePicker } from './pickers/node-picker.js'
-import { SuggestionChips } from './suggestion-chips.js'
+import { AskUserCard } from './ask-user-card.js'
+
+/** Imperative surface for the parent (chat page): cancelling a queued message
+ *  recalls its text into the draft instead of discarding it. */
+export interface ComposerHandle {
+  /** Put text back into the draft, above whatever is already being typed. */
+  prepend(text: string): void
+}
 
 export function Composer(props: {
   sessionId: string
@@ -25,8 +33,10 @@ export function Composer(props: {
    *  terminal, and den are one conversation. The reply streams back via the
    *  den→sessions-WS bridge. */
   onSend?: (text: string) => Promise<void>
-  /** Ask-user suggestion chips (labels). Empty/undefined hides the row. */
-  suggestions?: string[]
+  /** Ask-user card content (agent prompted the user). Empty hides the card. */
+  ask?: AskQuestion[]
+  onDismissAsk?: () => void
+  handleRef?: RefObject<ComposerHandle | null>
 }): JSX.Element {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
@@ -35,6 +45,22 @@ export function Composer(props: {
   const connected = props.wsStatus === 'open'
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
+
+  // Cancel-recall: the parent pushes a cancelled queue item's text back into
+  // the draft (prepended, so an in-progress draft isn't clobbered).
+  const handleRef = props.handleRef
+  useEffect(() => {
+    if (!handleRef) return
+    handleRef.current = {
+      prepend: (t: string) => {
+        setText((prev) => (prev.trim() ? `${t}\n${prev}` : t))
+        taRef.current?.focus()
+      },
+    }
+    return () => {
+      handleRef.current = null
+    }
+  }, [handleRef])
 
   // Model dropdown (Claude Code / grok Build / local + mesh) from the catalog.
   const catalog = useQuery({
@@ -85,11 +111,17 @@ export function Composer(props: {
   return (
     <div className="border-t border-line bg-panel/60 px-4 py-3">
       {error && <div className="mb-2 font-mono text-xs text-red">✗ {error}</div>}
-      <SuggestionChips
-        options={props.suggestions ?? []}
-        disabled={!connected || sending}
-        onPick={(label) => void sendBody(label)}
-      />
+      {/* Ask card — pops from the top of the input when the agent asked a
+          question. Picking an option sends it as the next user turn; typing a
+          freeform reply below works too (the send retires the card). */}
+      {(props.ask?.length ?? 0) > 0 && (
+        <AskUserCard
+          questions={props.ask ?? []}
+          disabled={!connected || sending}
+          onAnswer={(label) => void sendBody(label)}
+          onDismiss={() => props.onDismissAsk?.()}
+        />
+      )}
       <div
         className={cn(
           'flex flex-col gap-2 rounded-xl border border-line bg-panel p-2 transition-shadow',

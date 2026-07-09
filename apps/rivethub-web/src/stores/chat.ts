@@ -19,6 +19,7 @@ import type { SessionMessage, SessionWsFrame } from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
 import { isValidGatewayUrl, useConnection } from './connection.js'
 import { foldStream, type LiveTurn } from '../lib/fold-stream.js'
+import { questionsFromLiveTools, type AskQuestion } from '../lib/ask-user.js'
 
 export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 export { foldStream } from '../lib/fold-stream.js'
@@ -40,6 +41,13 @@ interface ChatState {
   messages: Record<string, SessionMessage[] | undefined>
   /** sessions with a turn currently streaming */
   live: Record<string, LiveTurn | undefined>
+  /** ms timestamp of the last stream frame per session — the queue pump's
+   *  stale-turn release (a harness that never bridges done/turn.end) */
+  liveTs: Record<string, number | undefined>
+  /** ask-user prompt that survives its turn: stashed off the live tool stack
+   *  when the turn ends (done / assistant commit), shown as the composer's
+   *  ask card until the user answers or dismisses it */
+  ask: Record<string, AskQuestion[] | undefined>
   /** outbound send queue per session — shown in the transcript as queued/sending */
   outbound: Record<string, OutboundItem[] | undefined>
   /** sessions the user opened — the WS write gate */
@@ -85,6 +93,8 @@ interface ChatState {
   clearLive: (sessionId: string) => void
   /** True when live has real stream content (not just a pre-inject placeholder). */
   liveIsBusy: (sessionId: string) => boolean
+  /** Drop the pending ask card (user dismissed it / answered by other means). */
+  dismissAsk: (sessionId: string) => void
   /** Pass undefined to deselect (error-boundary recover, etc.). */
   setActive: (sessionId: string | undefined) => void
   connect: (endpointKey: string) => void
@@ -103,6 +113,8 @@ let currentEndpoint: string | undefined
 export const useChat = create<ChatState>((set, get) => ({
   messages: {},
   live: {},
+  liveTs: {},
+  ask: {},
   outbound: {},
   opened: [],
   wsStatus: 'closed',
@@ -141,6 +153,8 @@ export const useChat = create<ChatState>((set, get) => ({
         messages: { ...s.messages, [sessionId]: next },
         live: preserve ? s.live : { ...s.live, [sessionId]: undefined },
         outbound: preserve ? s.outbound : { ...s.outbound, [sessionId]: [] },
+        // hard resync rebuilds from disk — a stale ask card must not survive it
+        ask: preserve ? s.ask : { ...s.ask, [sessionId]: undefined },
       }
     }),
 
@@ -173,6 +187,8 @@ export const useChat = create<ChatState>((set, get) => ({
         ...s.outbound,
         [sessionId]: [...(s.outbound[sessionId] ?? []), { id, text, status: 'queued' }],
       },
+      // whatever the user sent IS the answer — retire the ask card
+      ask: { ...s.ask, [sessionId]: undefined },
     }))
     return id
   },
@@ -239,6 +255,8 @@ export const useChat = create<ChatState>((set, get) => ({
     return !!(L.text || L.tools.length > 0 || L.reasoningText)
   },
 
+  dismissAsk: (sessionId) => set((s) => ({ ask: { ...s.ask, [sessionId]: undefined } })),
+
   setActive: (sessionId) =>
     set((s) => {
       if (sessionId === undefined) return { active: undefined }
@@ -251,7 +269,16 @@ export const useChat = create<ChatState>((set, get) => ({
   connect: (endpointKey) => {
     subscription?.close()
     if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
-      set({ messages: {}, live: {}, outbound: {}, opened: [], drafts: [], active: undefined })
+      set({
+        messages: {},
+        live: {},
+        liveTs: {},
+        ask: {},
+        outbound: {},
+        opened: [],
+        drafts: [],
+        active: undefined,
+      })
     }
     currentEndpoint = endpointKey
     // No gateway configured (fresh desktop shell, or a bad URL): don't open
@@ -284,21 +311,43 @@ export const useChat = create<ChatState>((set, get) => ({
                 }
               }
             }
+            // an assistant message ends the in-flight turn; an ask-user tool
+            // from that turn outlives it as the composer's ask card (headless
+            // ask doesn't block — the answer is the next user turn). A user
+            // echo means the question got answered (here or in the TUI).
+            const endsTurn = msg.role === 'assistant'
+            const stashed = endsTurn
+              ? questionsFromLiveTools(s.live[msg.sessionId]?.tools ?? [])
+              : []
             return {
               messages: { ...s.messages, [msg.sessionId]: appendMessage(list, msg) },
               outbound:
                 outbound !== s.outbound[msg.sessionId]
                   ? { ...s.outbound, [msg.sessionId]: outbound }
                   : s.outbound,
-              // an assistant message ends the in-flight turn
-              live: msg.role === 'assistant' ? { ...s.live, [msg.sessionId]: undefined } : s.live,
+              live: endsTurn ? { ...s.live, [msg.sessionId]: undefined } : s.live,
+              ask:
+                msg.role === 'user'
+                  ? { ...s.ask, [msg.sessionId]: undefined }
+                  : stashed.length > 0
+                    ? { ...s.ask, [msg.sessionId]: stashed }
+                    : s.ask,
             }
           })
         } else {
           if (!isOpen(frame.session)) return
-          set((s) => ({
-            live: { ...s.live, [frame.session]: foldStream(s.live[frame.session], frame.event) },
-          }))
+          set((s) => {
+            const prev = s.live[frame.session]
+            const next = foldStream(prev, frame.event)
+            // `done` clears the slot — keep the turn's ask-user prompt alive
+            // as the pending ask card (cleared on answer/dismiss).
+            const stashed = next === undefined && prev ? questionsFromLiveTools(prev.tools) : []
+            return {
+              live: { ...s.live, [frame.session]: next },
+              liveTs: { ...s.liveTs, [frame.session]: Date.now() },
+              ask: stashed.length > 0 ? { ...s.ask, [frame.session]: stashed } : s.ask,
+            }
+          })
         }
       },
       undefined,

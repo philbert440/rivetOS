@@ -135,8 +135,10 @@ export interface TermManager {
   /** Like write, but for chat injects: buffered until the harness TUI is
    *  ready (first output settled) so the first turn isn't dropped (5g). When
    *  `submit`, the text and its CR are written as two separate PTY writes
-   *  (bracketed paste + delayed CR) so the harness actually sends the turn. */
-  inject(id: string, text: string, submit: boolean): boolean
+   *  (bracketed paste + delayed CR) so the harness actually sends the turn.
+   *  `interrupt` first sends Esc to cancel the harness's in-flight turn, then
+   *  pastes after a settle — RivetHub's "inject now" on a queued message. */
+  inject(id: string, text: string, submit: boolean, interrupt?: boolean): boolean
   /** Resize the child and record the new dimensions (hello frames report them). */
   resize(id: string, cols: number, rows: number): boolean
   /** Flow control for saturated viewers — no-op on backends without pause. */
@@ -162,6 +164,13 @@ const PASTE_START = '\x1b[200~'
 const PASTE_END = '\x1b[201~'
 const SUBMIT_CR = '\r'
 const DEFAULT_INJECT_SUBMIT_DELAY_MS = 80
+
+/** Interrupt-inject: a lone Esc cancels the harness's in-flight turn
+ *  (Claude/grok TUIs), then the paste waits out the TUI's cancel/teardown
+ *  redraw — pasting into that frame gets swallowed. An idle harness treats
+ *  the stray Esc as a no-op, so racing a turn that just finished is safe. */
+const INTERRUPT_ESC = '\x1b'
+const INTERRUPT_SETTLE_MS = 400
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -576,7 +585,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       return true
     },
 
-    inject(id, text, submit): boolean {
+    inject(id, text, submit, interrupt = false): boolean {
       const r = records.get(id)
       if (!r || r.state !== 'running') return false
       // Chat activity protects this pty from LRU eviction (#316 review): a
@@ -589,7 +598,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // Serialize against any in-flight turn so paste/CR pairs never
         // interleave (paste₁, paste₂, CR₁, CR₂) when two injects land within
         // one submit delay — parallel API clients or a UI without a send lock.
-        const startMs = Math.max(0, r.injectNextAtMs - now())
+        let startMs = Math.max(0, r.injectNextAtMs - now())
+        if (interrupt) {
+          // Esc lands immediately to cancel the in-flight turn; the paste
+          // holds for the TUI's cancel redraw on top of any serialization.
+          laterWrite(r, INTERRUPT_ESC, 0)
+          startMs = Math.max(startMs, INTERRUPT_SETTLE_MS)
+        }
         submitWrite(r, text, submit, startMs)
         r.injectNextAtMs = now() + startMs + (submit ? submitDelayMs * 2 : submitDelayMs)
         return true

@@ -663,7 +663,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           } catch {
             return json(res, 400, { error: 'invalid JSON' })
           }
-          const p = raw as { session?: unknown; text?: unknown; submit?: unknown }
+          const p = raw as {
+            session?: unknown
+            text?: unknown
+            submit?: unknown
+            interrupt?: unknown
+          }
           if (typeof p.session !== 'string' || p.session === '')
             return json(res, 400, { error: 'session (string) is required' })
           if (typeof p.text !== 'string')
@@ -671,7 +676,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           const ptyId = manager.ptyForSession(p.session)
           if (!ptyId) return json(res, 409, { error: 'no live harness for session' })
           const submit = p.submit !== false // default true
-          if (!manager.inject(ptyId, p.text, submit))
+          const interrupt = p.interrupt === true // Esc the in-flight turn first
+          if (!manager.inject(ptyId, p.text, submit, interrupt))
             return json(res, 409, { error: 'harness not writable' })
           return json(res, 202, { ok: true, ptyId })
         }
