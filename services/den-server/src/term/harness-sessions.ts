@@ -314,6 +314,36 @@ export async function listHarnessSessions(
 export interface HarnessTurn {
   role: 'user' | 'assistant'
   text: string
+  /** Claude Code stamps usage on assistant lines — preserve for context bar. */
+  usage?: { promptTokens: number; completionTokens: number; cachedTokens: number }
+  model?: string
+}
+
+/**
+ * Claude Code message.usage → MessageUsage. promptTokens includes cache
+ * (input + cache_read + cache_creation), matching den-hook readTurnUsage.
+ */
+function extractClaudeUsage(
+  msg: { usage?: unknown; model?: unknown } | undefined,
+): Pick<HarnessTurn, 'usage' | 'model'> {
+  const out: Pick<HarnessTurn, 'usage' | 'model'> = {}
+  if (typeof msg?.model === 'string' && msg.model.trim()) out.model = msg.model.trim()
+  const u = msg?.usage
+  if (!u || typeof u !== 'object') return out
+  const o = u as Record<string, unknown>
+  const input = typeof o.input_tokens === 'number' ? o.input_tokens : 0
+  const cacheRead = typeof o.cache_read_input_tokens === 'number' ? o.cache_read_input_tokens : 0
+  const cacheCreate =
+    typeof o.cache_creation_input_tokens === 'number' ? o.cache_creation_input_tokens : 0
+  const output = typeof o.output_tokens === 'number' ? o.output_tokens : 0
+  const prompt = input + cacheRead + cacheCreate
+  if (prompt <= 0 && output <= 0) return out
+  out.usage = {
+    promptTokens: prompt > 0 ? prompt : input,
+    completionTokens: output,
+    cachedTokens: cacheRead,
+  }
+  return out
 }
 
 export interface HarnessTranscript {
@@ -510,9 +540,16 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
       if (obj.isSidechain === true) return null
       if (obj.type !== 'user' && obj.type !== 'assistant') return null
       const role = obj.type
-      const msg = obj.message as { content?: unknown } | undefined
+      const msg = obj.message as { content?: unknown; usage?: unknown; model?: unknown } | undefined
       const text = extractTurnText(msg?.content, role)
-      return text ? { role, text } : null
+      if (!text) return null
+      const turn: HarnessTurn = { role, text }
+      if (role === 'assistant') {
+        const stats = extractClaudeUsage(msg)
+        if (stats.usage) turn.usage = stats.usage
+        if (stats.model) turn.model = stats.model
+      }
+      return turn
     })
     if (turns.length > 0) return { id, command: 'claude', turns }
   }

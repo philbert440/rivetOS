@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { SessionMessage } from '@rivetos/types'
+import type { HarnessTranscriptTurn, SessionMessage } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { useChat } from '../stores/chat.js'
@@ -26,6 +26,22 @@ import { useSessionNames } from '../stores/session-names.js'
 // on-disk store filename, and the drawer id are all the same value.
 function newSessionId(): string {
   return crypto.randomUUID()
+}
+
+/** Map harness transcript turns → SessionMessage (keeps Claude usage/model). */
+function messagesFromHarnessTurns(
+  sessionId: string,
+  turns: HarnessTranscriptTurn[],
+): SessionMessage[] {
+  return turns.map((t, i) => ({
+    id: `harness:${sessionId}:${String(i)}`,
+    sessionId,
+    role: t.role,
+    text: t.text,
+    ts: i + 1,
+    ...(t.usage ? { usage: t.usage } : {}),
+    ...(t.model ? { model: t.model } : {}),
+  }))
 }
 
 export function ChatPage(): JSX.Element {
@@ -233,18 +249,20 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   termPtyRef.current = termPtyId
   const messages = useChat((s) => s.messages[props.sessionId]) ?? []
   const live = useChat((s) => s.live[props.sessionId])
-  // Context-fill: the NEWEST assistant turn (walking back, skipping a trailing
-  // in-flight user turn). Its prompt tokens ARE the context sent that turn. We
-  // deliberately use the latest assistant's own usage — not the latest turn
-  // that happens to have usage — so a non-reporting/cold-backfilled last turn
-  // hides the bar rather than showing a stale older number (grok review).
+  // Context-fill: prefer the newest assistant turn that still carries usage
+  // (Claude live path + harness resync). Fall back to the latest assistant
+  // for model id; ContextBar estimates tokens when usage is absent.
   let lastAssistant: (typeof messages)[number] | undefined
+  let lastWithUsage: (typeof messages)[number] | undefined
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') {
-      lastAssistant = messages[i]
-      break
+    if (messages[i].role !== 'assistant') continue
+    if (!lastAssistant) lastAssistant = messages[i]
+    if (!lastWithUsage && (messages[i].usage?.promptTokens ?? 0) > 0) {
+      lastWithUsage = messages[i]
     }
+    if (lastAssistant && lastWithUsage) break
   }
+  const contextSource = lastWithUsage ?? lastAssistant
   const wsStatus = useChat((s) => s.wsStatus)
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
@@ -294,13 +312,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     if (!harnessTx.data?.turns.length) return
     if (live) return
     if (harnessTx.dataUpdatedAt === lastHarnessApply.current) return
-    const next: SessionMessage[] = harnessTx.data.turns.map((t, i) => ({
-      id: `harness:${props.sessionId}:${String(i)}`,
-      sessionId: props.sessionId,
-      role: t.role,
-      text: t.text,
-      ts: i + 1,
-    }))
+    const next = messagesFromHarnessTurns(props.sessionId, harnessTx.data.turns)
     const solid = (useChat.getState().messages[props.sessionId] ?? []).filter(
       (m) => !m.id.startsWith('optim:'),
     )
@@ -462,13 +474,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
       const transcript = await gw.harnessTranscript(props.sessionId)
       let next: SessionMessage[]
       if (transcript.turns.length > 0) {
-        next = transcript.turns.map((t, i) => ({
-          id: `harness:${props.sessionId}:${String(i)}`,
-          sessionId: props.sessionId,
-          role: t.role,
-          text: t.text,
-          ts: i + 1, // preserve order; harness store has no reliable per-turn ms
-        }))
+        next = messagesFromHarnessTurns(props.sessionId, transcript.turns)
       } else {
         // No on-disk store (fresh draft / unknown harness) — fall back to
         // durable memory + ring, still as a hard replace so dups/stuck live clear.
@@ -516,8 +522,8 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
         <span className="truncate font-mono text-xs text-ink-dim">{props.sessionId}</span>
         {/* Context-fill bar — reported usage when present; else estimate. */}
         <ContextBar
-          tokens={lastAssistant?.usage?.promptTokens}
-          model={lastAssistant?.model || settings?.agent}
+          tokens={contextSource?.usage?.promptTokens}
+          model={contextSource?.model || lastAssistant?.model || settings?.agent}
           transcriptTexts={messages.map((m) => m.text)}
         />
         {/* Resync from TUI — Android-style un-wedge (confirm first). */}

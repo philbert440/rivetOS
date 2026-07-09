@@ -388,6 +388,10 @@ export interface HarnessSessionsResponse {
 export interface HarnessTranscriptTurn {
   role: 'user' | 'assistant'
   text: string
+  /** Claude Code (and others that stamp usage on transcript lines). */
+  usage?: MessageUsage
+  /** Model id when present on the transcript line (e.g. claude-opus-4). */
+  model?: string
 }
 
 /** Hard-resync payload: rebuild chat UI from the on-disk harness transcript. */
