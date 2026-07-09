@@ -75,7 +75,8 @@ interface ChatState {
   beginLive: (sessionId: string, activity?: string) => void
   /** Drop the live slot (send failed, or explicit cancel). */
   clearLive: (sessionId: string) => void
-  setActive: (sessionId: string) => void
+  /** Pass undefined to deselect (error-boundary recover, etc.). */
+  setActive: (sessionId: string | undefined) => void
   connect: (endpointKey: string) => void
   disconnect: () => void
 }
@@ -203,10 +204,13 @@ export const useChat = create<ChatState>((set, get) => ({
     })),
 
   setActive: (sessionId) =>
-    set((s) => ({
-      active: sessionId,
-      opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
-    })),
+    set((s) => {
+      if (sessionId === undefined) return { active: undefined }
+      return {
+        active: sessionId,
+        opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
+      }
+    }),
 
   connect: (endpointKey) => {
     subscription?.close()
