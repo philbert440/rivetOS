@@ -17,19 +17,14 @@ const SECONDARY_NAV = [
 
 const SETTINGS = { to: '/settings', label: 'Settings', icon: '⚙' } as const
 
-function NavLink(props: {
-  to: string
-  label: string
-  icon: string
-  exact?: boolean
-}): JSX.Element {
+function NavLink(props: { to: string; label: string; icon: string }): JSX.Element {
   return (
     <Link
       to={props.to}
       className="rounded px-3 py-2 text-sm"
       activeProps={{ className: 'bg-panel-2 text-em' }}
       inactiveProps={{ className: 'text-ink-dim hover:bg-panel-2 hover:text-ink' }}
-      activeOptions={{ exact: props.exact ?? props.to === '/' }}
+      activeOptions={{ exact: props.to === '/' }}
     >
       <span className="mr-2 inline-block w-5 text-center font-mono">{props.icon}</span>
       {props.label}
