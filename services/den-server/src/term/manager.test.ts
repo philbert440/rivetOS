@@ -323,8 +323,11 @@ describe('term manager', () => {
     expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
     vi.advanceTimersByTime(80)
     expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~', '\r'])
-    // once ready, a later inject writes through immediately (same framing)
+    // a ready-path inject arriving right behind the prior turn serializes after
+    // its CR (+one gap) instead of racing its paste ahead — not immediate.
     manager.inject(pty.id, 'again', true)
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~', '\r'])
+    vi.advanceTimersByTime(80)
     expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~', '\r', '\x1b[200~again\x1b[201~'])
     vi.advanceTimersByTime(80)
     expect(procs[0].writes).toEqual([
@@ -333,6 +336,32 @@ describe('term manager', () => {
       '\x1b[200~again\x1b[201~',
       '\r',
     ])
+  })
+
+  it('ready-path injects serialize: two turns within one delay keep paste/CR pairs', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ injectReadyMs: 10, injectSubmitDelayMs: 80 })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-ser')
+    procs[0].emitData('welcome')
+    vi.advanceTimersByTime(10) // ready, empty buffer
+    // two submit injects back-to-back (parallel clients / no send lock)
+    manager.inject(pty.id, 'A', true)
+    manager.inject(pty.id, 'B', true)
+    vi.advanceTimersByTime(400) // drain the serialized chain
+    expect(procs[0].writes).toEqual(['\x1b[200~A\x1b[201~', '\r', '\x1b[200~B\x1b[201~', '\r'])
+  })
+
+  it('kill/close cancels a pending submit CR (no write into a dead PTY)', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ injectReadyMs: 10, injectSubmitDelayMs: 80 })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-kill')
+    procs[0].emitData('welcome')
+    vi.advanceTimersByTime(10)
+    manager.inject(pty.id, 'hi', true) // paste now, CR scheduled at +80
+    expect(procs[0].writes).toEqual(['\x1b[200~hi\x1b[201~'])
+    manager.close() // SIGHUP + clear timers before the CR fires
+    vi.advanceTimersByTime(200)
+    expect(procs[0].writes).toEqual(['\x1b[200~hi\x1b[201~']) // CR was canceled
   })
 
   it('inject ready-gate: multiple buffered turns flush in text→CR→text→CR order', () => {
@@ -345,12 +374,7 @@ describe('term manager', () => {
     vi.advanceTimersByTime(300) // settle → first turn's paste (staggered base 0)
     vi.advanceTimersByTime(400) // drain all staggered CR/paste timers
     // second turn's paste must not precede the first turn's submit CR
-    expect(procs[0].writes).toEqual([
-      '\x1b[200~one\x1b[201~',
-      '\r',
-      '\x1b[200~two\x1b[201~',
-      '\r',
-    ])
+    expect(procs[0].writes).toEqual(['\x1b[200~one\x1b[201~', '\r', '\x1b[200~two\x1b[201~', '\r'])
   })
 
   it('caps scrollback at the byte limit, dropping the oldest bytes', () => {

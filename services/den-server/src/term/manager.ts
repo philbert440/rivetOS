@@ -95,6 +95,14 @@ interface PtyRecord {
   ready: boolean
   injectBuffer: { text: string; submit: boolean }[]
   readyTimer?: NodeJS.Timeout
+  /** Pending delayed inject writes (paste/CR). Tracked so kill/close cancels
+   *  them — an untracked CR could otherwise fire into a shutting-down PTY. */
+  injectTimers: NodeJS.Timeout[]
+  /** Serialization watermark (ms, `now()` clock): the earliest a ready-path
+   *  inject may start so back-to-back turns keep text→CR→text→CR ordering
+   *  instead of interleaving pastes ahead of CRs (same guarantee as the
+   *  buffered flush). */
+  injectNextAtMs: number
   /** Max(lastOutputTs, last inject) — the LRU-eviction signal. Bumped on BOTH
    *  stdout AND chat inject so an actively-chatted (but unattached) harness
    *  isn't evicted between a send and its reply (#316 review). */
@@ -197,8 +205,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       fire()
       return
     }
-    const t = setTimeout(fire, atMs)
+    const t = setTimeout(() => {
+      const i = r.injectTimers.indexOf(t)
+      if (i >= 0) r.injectTimers.splice(i, 1)
+      fire()
+    }, atMs)
     t.unref?.()
+    r.injectTimers.push(t)
   }
 
   /** Write a chat inject to a live PTY. `submit` sends the turn: the text goes
@@ -244,6 +257,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       if (t) clearTimeout(t)
       r[key] = undefined
     }
+    // Cancel pending inject writes too — a delayed CR must not fire into a
+    // killed/closing PTY (close() SIGHUPs but leaves state 'running').
+    for (const t of r.injectTimers) clearTimeout(t)
+    r.injectTimers = []
   }
 
   const reap = (r: PtyRecord): void => {
@@ -455,6 +472,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         state: 'running',
         ready: false,
         injectBuffer: [],
+        injectTimers: [],
+        injectNextAtMs: 0,
         lastActivityTs: now(),
       }
       records.set(id, r)
@@ -475,10 +494,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             r.ready = true
             // Stagger so a multi-turn buffer flushes text→CR→text→CR in order
             // (each turn's paste + its own CR before the next turn's paste).
-            r.injectBuffer.forEach((d, i) =>
-              submitWrite(r, d.text, d.submit, i * submitDelayMs * 2),
-            )
+            const pending = r.injectBuffer
             r.injectBuffer = []
+            pending.forEach((d, i) => submitWrite(r, d.text, d.submit, i * submitDelayMs * 2))
+            // Continue the chain: a ready-path inject arriving right after the
+            // flush must queue behind the last staggered turn, not race it.
+            r.injectNextAtMs = now() + pending.length * submitDelayMs * 2
           }, config.term.injectReadyMs ?? 500)
           r.readyTimer.unref?.()
         }
@@ -565,7 +586,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // Ready-gate (5g): before the harness TUI is up, buffer instead of
       // writing into the void; the onData settle timer flushes it.
       if (r.ready) {
-        submitWrite(r, text, submit)
+        // Serialize against any in-flight turn so paste/CR pairs never
+        // interleave (paste₁, paste₂, CR₁, CR₂) when two injects land within
+        // one submit delay — parallel API clients or a UI without a send lock.
+        const startMs = Math.max(0, r.injectNextAtMs - now())
+        submitWrite(r, text, submit, startMs)
+        r.injectNextAtMs = now() + startMs + (submit ? submitDelayMs * 2 : submitDelayMs)
         return true
       }
       // Bounded buffer: a client can't grow memory by spamming inject before
