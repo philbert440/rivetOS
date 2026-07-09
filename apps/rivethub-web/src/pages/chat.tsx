@@ -556,9 +556,9 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
               Resync transcript?
             </h2>
             <p className="mb-4 text-sm text-ink-dim">
-              Rebuilds this chat from the on-disk terminal (TUI) session, dropping any chat-only
-              or stuck messages that diverged from it. Use this if the chat looks out of sync
-              with Terminal mode.
+              Rebuilds this chat from the on-disk terminal (TUI) session, dropping any chat-only or
+              stuck messages that diverged from it. Use this if the chat looks out of sync with
+              Terminal mode.
             </p>
             <div className="flex justify-end gap-2">
               <button

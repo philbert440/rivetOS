@@ -338,11 +338,12 @@ function extractTurnText(content: unknown, role: 'user' | 'assistant'): string |
     text = content
   } else if (Array.isArray(content)) {
     text = content
-      .map((b) =>
-        b && typeof b === 'object' && (b as { type?: unknown }).type === 'text'
-          ? String((b as { text?: unknown }).text ?? '')
-          : '',
-      )
+      .map((b) => {
+        if (!b || typeof b !== 'object') return ''
+        const block = b as { type?: unknown; text?: unknown }
+        if (block.type !== 'text' || typeof block.text !== 'string') return ''
+        return block.text
+      })
       .filter(Boolean)
       .join('\n')
   }
@@ -363,7 +364,9 @@ function extractTurnText(content: unknown, role: 'user' | 'assistant'): string |
   // grok wraps the actual user message in <user_query>…</user_query>
   if (role === 'user' && text.startsWith('<user_query>')) {
     const end = text.indexOf('</user_query>')
-    text = (end >= 0 ? text.slice('<user_query>'.length, end) : text.slice('<user_query>'.length)).trim()
+    text = (
+      end >= 0 ? text.slice('<user_query>'.length, end) : text.slice('<user_query>'.length)
+    ).trim()
     if (!text) return null
   }
   return text
@@ -505,9 +508,8 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
   if (claudePath) {
     const turns = await parseJsonlTurns(claudePath, (obj) => {
       if (obj.isSidechain === true) return null
-      const type = obj.type
-      if (type !== 'user' && type !== 'assistant') return null
-      const role = type as 'user' | 'assistant'
+      if (obj.type !== 'user' && obj.type !== 'assistant') return null
+      const role = obj.type
       const msg = obj.message as { content?: unknown } | undefined
       const text = extractTurnText(msg?.content, role)
       return text ? { role, text } : null
@@ -518,11 +520,11 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
   const grokPath = await findGrokChatHistory(id)
   if (grokPath) {
     const turns = await parseJsonlTurns(grokPath, (obj) => {
-      const type = typeof obj.type === 'string' ? obj.type : typeof obj.role === 'string' ? obj.role : ''
+      const type =
+        typeof obj.type === 'string' ? obj.type : typeof obj.role === 'string' ? obj.role : ''
       if (type !== 'user' && type !== 'assistant') return null
-      const role = type as 'user' | 'assistant'
-      const text = extractTurnText(obj.content, role)
-      return text ? { role, text } : null
+      const text = extractTurnText(obj.content, type)
+      return text ? { role: type, text } : null
     })
     if (turns.length > 0) return { id, command: 'grok', turns }
   }

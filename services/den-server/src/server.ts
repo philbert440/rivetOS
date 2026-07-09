@@ -435,8 +435,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // leaf paths; after /api/terminal/* → /term/* canonicalize, a nested
         // path would otherwise fall through to the SPA shell (HTML 200) and
         // RivetHub would see garbage instead of JSON.
-        const termApi =
-          url.pathname === '/term' || url.pathname.startsWith('/term/')
+        const termApi = url.pathname === '/term' || url.pathname.startsWith('/term/')
         if (
           config.staticDir &&
           !API_PATHS.has(url.pathname) &&
