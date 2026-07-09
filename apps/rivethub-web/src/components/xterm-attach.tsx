@@ -4,11 +4,17 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import type { TermExitFrame, TermHelloFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
+import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
 
 /**
  * Attach an xterm to a PTY over WS /api/terminal/ws. Framing per den-server
  * term/ws.ts: hello JSON, scrollback replay, live bytes, exit frame. Detach
  * on unmount — never kill; the manager's TTL owns the PTY (reattach replays).
+ *
+ * Color-query filtering (osc-filter.ts): harnesses emit OSC 11? on startup;
+ * xterm answers with rgb:0d0d/1111/1717 (#0d1117 theme bg) via onData → PTY
+ * stdin → visible garbage `]11;rgb:…` in the TUI. Strip queries on write and
+ * drop report replies on onData.
  */
 export function XtermAttach(props: { ptyId: string }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -57,11 +63,17 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
         }
         return
       }
-      term.write(new Uint8Array(event.data as ArrayBuffer))
+      // Drop color queries so attach/scrollback replay doesn't generate
+      // OSC rgb: replies that leak into the harness as fake keystrokes.
+      term.write(stripOscColorQueries(new Uint8Array(event.data as ArrayBuffer)))
     }
 
     const dataSub = term.onData((data) => {
-      if (ws.readyState === 1) ws.send(new TextEncoder().encode(data))
+      if (ws.readyState !== 1) return
+      // Belt-and-suspenders: if a color report still fires (live query path),
+      // do not forward it as PTY input — harnesses treat it as typed text.
+      if (isOscColorReport(data)) return
+      ws.send(new TextEncoder().encode(data))
     })
     let resizeTimer: ReturnType<typeof setTimeout> | undefined
     const resizeObserver = new ResizeObserver(() => {
