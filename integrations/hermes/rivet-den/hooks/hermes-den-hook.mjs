@@ -103,6 +103,12 @@ async function main() {
       const reply = asText(extra.assistant_response ?? p.assistant_response ?? '')
       emit({ type: 'thinking.end' })
       if (reply.trim()) emit({ type: 'message.agent', text: reply })
+      // post_llm_call fires ONCE per turn, after the tool loop produced the
+      // final response (Hermes hooks docs) — so it IS the turn boundary. The
+      // bridge commits the reply + emits done here, releasing RivetHub's send
+      // queue without waiting for the 120s stale-turn crutch. Emitted even on
+      // an empty reply: the turn is over either way.
+      emit({ type: 'turn.end' })
       break
     }
     case 'on_session_end':
