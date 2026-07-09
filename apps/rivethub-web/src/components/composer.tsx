@@ -46,15 +46,16 @@ export function Composer(props: {
 
   const sendBody = async (body: string): Promise<void> => {
     const trimmed = body.trim()
-    if (!trimmed || sending) return
+    // Seamless queue path: allow stacking while a prior turn is in flight
+    // (onSend enqueues and returns). Chat-loop path still serializes via sending.
+    if (!trimmed || (sending && !props.onSend)) return
     setError(undefined)
-    setSending(true) // lock: double-Enter must not fire duplicate turns
+    setSending(true)
     setText('')
     try {
       if (props.onSend) {
-        // Seamless: drive the live harness (its den events stream the reply
-        // back through the bridge). Model = the spawned harness; effort is a
-        // per-harness default for now.
+        // Enqueue + pump (returns immediately). Messages show as queued/sending
+        // in the transcript until the harness injects them.
         await props.onSend(trimmed)
       } else {
         // Fire-and-forget; the reply (and this message's echo) arrive on the
@@ -78,7 +79,8 @@ export function Composer(props: {
     await sendBody(text)
   }
 
-  const canSend = connected && !sending && text.trim().length > 0
+  // Seamless: never lock out Enter for a second queued message.
+  const canSend = connected && text.trim().length > 0 && (props.onSend ? true : !sending)
 
   return (
     <div className="border-t border-line bg-panel/60 px-4 py-3">

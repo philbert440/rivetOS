@@ -25,11 +25,23 @@ export { foldStream } from '../lib/fold-stream.js'
 
 export type WsStatus = 'connecting' | 'open' | 'closed'
 
+/** User turn waiting to be injected into the harness (or mid-inject). */
+export type OutboundStatus = 'queued' | 'sending'
+
+export interface OutboundItem {
+  /** Same id as the optimistic SessionMessage (`optim:…`). */
+  id: string
+  text: string
+  status: OutboundStatus
+}
+
 interface ChatState {
   /** transcripts keyed by sessionId; only sessions opened this visit */
   messages: Record<string, SessionMessage[] | undefined>
   /** sessions with a turn currently streaming */
   live: Record<string, LiveTurn | undefined>
+  /** outbound send queue per session — shown in the transcript as queued/sending */
+  outbound: Record<string, OutboundItem[] | undefined>
   /** sessions the user opened — the WS write gate */
   opened: string[]
   wsStatus: WsStatus
@@ -45,11 +57,15 @@ interface ChatState {
    *  turn state (Android resyncTranscriptToConversation). Does not merge. */
   replace: (sessionId: string, messages: SessionMessage[]) => void
   addDraft: (sessionId: string) => void
-  /** Seamless modes: show the user's turn immediately on a harness send. The
-   *  inject path has real latency (hook fire + first-boot ready-gate), so
-   *  unlike the chat-loop there's no instant echo. The real user frame (from
-   *  the harness UserPromptSubmit hook, via the bridge) supersedes it by text. */
-  addOptimisticUser: (sessionId: string, text: string) => void
+  /** Seamless modes: show the user's turn immediately. Returns optim id. */
+  addOptimisticUser: (sessionId: string, text: string, id?: string) => string
+  /** Enqueue a user turn (optimistic bubble + queue). Returns optim id. */
+  enqueueOutbound: (sessionId: string, text: string) => string
+  markOutboundSending: (sessionId: string, id: string) => void
+  /** Drop from queue after inject accepted (bubble stays until WS echo). */
+  dequeueOutbound: (sessionId: string, id: string) => void
+  /** Inject failed — remove queue entry + optimistic bubble. */
+  failOutbound: (sessionId: string, id: string) => void
   /**
    * Start (or keep) a live turn so the UI shows a typing/processing indicator
    * as soon as the user sends — before the harness's first den event arrives
@@ -76,6 +92,7 @@ let currentEndpoint: string | undefined
 export const useChat = create<ChatState>((set, get) => ({
   messages: {},
   live: {},
+  outbound: {},
   opened: [],
   wsStatus: 'closed',
   wsEpoch: 0,
@@ -97,6 +114,7 @@ export const useChat = create<ChatState>((set, get) => ({
     set((s) => ({
       messages: { ...s.messages, [sessionId]: [...msgs] },
       live: { ...s.live, [sessionId]: undefined },
+      outbound: { ...s.outbound, [sessionId]: [] },
     })),
 
   addDraft: (sessionId) =>
@@ -105,17 +123,62 @@ export const useChat = create<ChatState>((set, get) => ({
       opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
     })),
 
-  addOptimisticUser: (sessionId, text) =>
+  addOptimisticUser: (sessionId, text, id) => {
+    const msgId = id ?? `optim:${crypto.randomUUID()}`
     set((s) => {
       const msg: SessionMessage = {
-        id: `optim:${crypto.randomUUID()}`,
+        id: msgId,
         sessionId,
         role: 'user',
         text,
         ts: Date.now(),
       }
       return { messages: { ...s.messages, [sessionId]: appendMessage(s.messages[sessionId], msg) } }
-    }),
+    })
+    return msgId
+  },
+
+  enqueueOutbound: (sessionId, text) => {
+    const id = `optim:${crypto.randomUUID()}`
+    get().addOptimisticUser(sessionId, text, id)
+    set((s) => ({
+      outbound: {
+        ...s.outbound,
+        [sessionId]: [...(s.outbound[sessionId] ?? []), { id, text, status: 'queued' }],
+      },
+    }))
+    return id
+  },
+
+  markOutboundSending: (sessionId, id) =>
+    set((s) => ({
+      outbound: {
+        ...s.outbound,
+        [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
+          o.id === id ? { ...o, status: 'sending' as const } : o,
+        ),
+      },
+    })),
+
+  dequeueOutbound: (sessionId, id) =>
+    set((s) => ({
+      outbound: {
+        ...s.outbound,
+        [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
+      },
+    })),
+
+  failOutbound: (sessionId, id) =>
+    set((s) => ({
+      outbound: {
+        ...s.outbound,
+        [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
+      },
+      messages: {
+        ...s.messages,
+        [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
+      },
+    })),
 
   beginLive: (sessionId, activity = 'processing…') =>
     set((s) => {
@@ -148,7 +211,7 @@ export const useChat = create<ChatState>((set, get) => ({
   connect: (endpointKey) => {
     subscription?.close()
     if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
-      set({ messages: {}, live: {}, opened: [], drafts: [], active: undefined })
+      set({ messages: {}, live: {}, outbound: {}, opened: [], drafts: [], active: undefined })
     }
     currentEndpoint = endpointKey
     // No gateway configured (fresh desktop shell, or a bad URL): don't open
@@ -169,12 +232,24 @@ export const useChat = create<ChatState>((set, get) => ({
             // the real user frame supersedes ONE optimistic bubble of the same
             // text — remove only the first match so two identical turns
             // ("yes" then "yes") don't collapse to one (#316 review).
+            let outbound = s.outbound[msg.sessionId]
             if (msg.role === 'user') {
               const i = list.findIndex((m) => m.id.startsWith('optim:') && m.text === msg.text)
-              if (i >= 0) list = [...list.slice(0, i), ...list.slice(i + 1)]
+              if (i >= 0) {
+                const optimId = list[i].id
+                list = [...list.slice(0, i), ...list.slice(i + 1)]
+                // Real echo supersedes optim — drop matching outbound entry if any.
+                if (outbound?.some((o) => o.id === optimId)) {
+                  outbound = outbound.filter((o) => o.id !== optimId)
+                }
+              }
             }
             return {
               messages: { ...s.messages, [msg.sessionId]: appendMessage(list, msg) },
+              outbound:
+                outbound !== s.outbound[msg.sessionId]
+                  ? { ...s.outbound, [msg.sessionId]: outbound }
+                  : s.outbound,
               // an assistant message ends the in-flight turn
               live: msg.role === 'assistant' ? { ...s.live, [msg.sessionId]: undefined } : s.live,
             }

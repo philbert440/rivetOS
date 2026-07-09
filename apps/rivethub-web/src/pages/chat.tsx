@@ -423,40 +423,77 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
       .finally(() => setSpawning(false))
   }
 
-  // Seamless chat send: a turn drives the SAME harness (inject into its PTY);
-  // its den events stream the reply back via the bridge. This is what makes
-  // chat↔terminal↔den one thread — the terminal shows the very harness the
-  // chat is talking to, with full context.
-  const addOptimisticUser = useChat((s) => s.addOptimisticUser)
+  // Seamless chat send: enqueue + serial inject. The queue is visible in the
+  // transcript (queued / sending badges). We only inject the next turn when
+  // the previous agent turn is done (live cleared) so we don't type into a
+  // mid-reply TUI. Composer returns immediately so you can stack messages.
+  const enqueueOutbound = useChat((s) => s.enqueueOutbound)
+  const markOutboundSending = useChat((s) => s.markOutboundSending)
+  const dequeueOutbound = useChat((s) => s.dequeueOutbound)
+  const failOutbound = useChat((s) => s.failOutbound)
   const beginLive = useChat((s) => s.beginLive)
   const clearLive = useChat((s) => s.clearLive)
-  const sendToHarness = async (body: string): Promise<void> => {
-    // Show the turn immediately — the inject echo (harness hook → bridge) has
-    // real latency, unlike the chat-loop's instant echo.
-    addOptimisticUser(props.sessionId, body)
-    // Typing indicator right away: inject ready-gate + first hook can take
-    // seconds before any stream event lands. WS foldStream replaces this
-    // with thinking / tools / text as den events arrive; done clears it.
-    beginLive(props.sessionId, 'received — processing…')
+  const outbound = useChat((s) => s.outbound[props.sessionId] ?? [])
+  const pumping = useRef(false)
+
+  const injectOne = async (text: string): Promise<void> => {
     const gw = useConnection.getState().gateway
+    await ensurePty()
     try {
+      await gw.termInject({ session: props.sessionId, text })
+    } catch {
+      // The harness may have been LRU-evicted while we held a stale pty ref
+      // (#318 review): drop the ref, respawn (store-existence → --resume so
+      // context is kept), and retry once.
+      termPtyRef.current = undefined
+      setTermPtyId(undefined)
       await ensurePty()
+      await gw.termInject({ session: props.sessionId, text })
+    }
+  }
+
+  const pumpOutbound = async (): Promise<void> => {
+    if (pumping.current) return
+    const state = useChat.getState()
+    const q = state.outbound[props.sessionId] ?? []
+    if (q.some((o) => o.status === 'sending')) return
+    // Any live turn (including our pre-inject "working…" and real stream)
+    // means the harness is busy — wait for done/clear before the next inject.
+    if (state.live[props.sessionId]) return
+    const next = q.find((o) => o.status === 'queued')
+    if (!next) return
+
+    pumping.current = true
+    markOutboundSending(props.sessionId, next.id)
+    beginLive(props.sessionId, 'received — processing…')
+    try {
       beginLive(props.sessionId, 'working…')
-      try {
-        await gw.termInject({ session: props.sessionId, text: body })
-      } catch {
-        // The harness may have been LRU-evicted while we held a stale pty ref
-        // (#318 review): drop the ref, respawn (store-existence → --resume so
-        // context is kept), and retry once.
-        termPtyRef.current = undefined
-        setTermPtyId(undefined)
-        await ensurePty()
-        await gw.termInject({ session: props.sessionId, text: body })
-      }
+      await injectOne(next.text)
+      dequeueOutbound(props.sessionId, next.id)
+      // live stays set until stream `done` / assistant message — that
+      // transition re-triggers pump via the effect below.
     } catch (err) {
+      failOutbound(props.sessionId, next.id)
       clearLive(props.sessionId)
+      pumping.current = false
+      // Try the next queued message after a failure.
+      void pumpOutbound().catch(() => undefined)
       throw err
     }
+    pumping.current = false
+  }
+
+  // When a live turn ends (or the queue grows while idle), inject the next.
+  useEffect(() => {
+    if (live) return
+    void pumpOutbound().catch(() => undefined)
+  }, [live, outbound.length, props.sessionId])
+
+  const sendToHarness = (body: string): Promise<void> => {
+    enqueueOutbound(props.sessionId, body)
+    // Fire-and-forget pump — composer unlocks immediately so more turns queue.
+    void pumpOutbound().catch(() => undefined)
+    return Promise.resolve()
   }
 
   /**
@@ -605,8 +642,19 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
       {mode === 'chat' ? (
         <>
           <div className="flex-1 overflow-y-auto">
-            <Transcript messages={messages} live={live} />
+            <Transcript
+              messages={messages}
+              live={live}
+              outbound={Object.fromEntries(outbound.map((o) => [o.id, o.status]))}
+            />
           </div>
+          {outbound.some((o) => o.status === 'queued') && (
+            <div className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-ink-dim">
+              {outbound.filter((o) => o.status === 'queued').length} message
+              {outbound.filter((o) => o.status === 'queued').length === 1 ? '' : 's'} queued — will
+              send when Rivet finishes the current turn
+            </div>
+          )}
           <Composer
             sessionId={props.sessionId}
             wsStatus={wsStatus}
