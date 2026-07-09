@@ -138,14 +138,31 @@ function Row(props: {
   )
 }
 
-function Bubble(props: { msg: SessionMessage }): JSX.Element {
+function Bubble(props: {
+  msg: SessionMessage
+  /** Outbound queue status for optimistic user turns. */
+  outboundStatus?: 'queued' | 'sending'
+}): JSX.Element {
   const mine = props.msg.role === 'user'
   return (
     <Row mine={mine} ts={props.msg.ts} model={mine ? undefined : props.msg.model}>
       {mine ? (
         // User text is plain — right-aligned bubble, no markdown.
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-lg border border-em-dim/40 bg-em-dim/10 px-4 py-2.5 text-sm">
-          {props.msg.text}
+        <div className="max-w-[85%]">
+          <div
+            className={`whitespace-pre-wrap rounded-lg border px-4 py-2.5 text-sm ${
+              props.outboundStatus === 'queued'
+                ? 'border-line bg-panel-2/50 text-ink-dim'
+                : 'border-em-dim/40 bg-em-dim/10'
+            }`}
+          >
+            {props.msg.text}
+          </div>
+          {props.outboundStatus && (
+            <div className="mt-1 flex justify-end px-1 font-mono text-[10px] text-ink-dim">
+              {props.outboundStatus === 'queued' ? 'queued' : 'sending…'}
+            </div>
+          )}
         </div>
       ) : (
         // Assistant is full-width, markdown-rendered (no bubble — android style).
@@ -204,21 +221,27 @@ function LiveBubble(props: { turn: LiveTurn }): JSX.Element {
   )
 }
 
-export function Transcript(props: { messages: SessionMessage[]; live?: LiveTurn }): JSX.Element {
+export function Transcript(props: {
+  messages: SessionMessage[]
+  live?: LiveTurn
+  /** optim message id → outbound queue status */
+  outbound?: Record<string, 'queued' | 'sending'>
+}): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null)
   const count = props.messages.length + (props.live ? 1 : 0)
   const liveLen = props.live?.text.length ?? 0
   const toolN = props.live?.tools.length ?? 0
   const reasonLen = props.live?.reasoningText.length ?? 0
+  const outboundN = props.outbound ? Object.keys(props.outbound).length : 0
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' })
-  }, [count, liveLen, toolN, reasonLen])
+  }, [count, liveLen, toolN, reasonLen, outboundN])
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">
       {props.messages.map((m) => (
-        <Bubble key={m.id} msg={m} />
+        <Bubble key={m.id} msg={m} outboundStatus={props.outbound?.[m.id]} />
       ))}
       {props.live && <LiveBubble turn={props.live} />}
       <div ref={endRef} />
