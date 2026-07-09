@@ -50,7 +50,11 @@ import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
 import { createTermWs } from './term/ws.js'
-import { listHarnessSessions, harnessSessionExists } from './term/harness-sessions.js'
+import {
+  listHarnessSessions,
+  harnessSessionExists,
+  readHarnessTranscript,
+} from './term/harness-sessions.js'
 
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -606,6 +610,22 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           const limit = Number.isFinite(limN) && limN > 0 ? Math.min(limN, 500) : 100
           const sessions = await listHarnessSessions(Object.keys(roster.commands), limit)
           return json(res, 200, { sessions })
+        }
+
+        // GET /term/harness-sessions/:id/transcript — hard-resync source: the
+        // on-disk TUI conversation (claude/grok/hermes). Mirrors Android
+        // SessionTranscript; RivetHub chat UI rebuilds its transcript from this.
+        // Also accept the /api/terminal/... alias (canonicalize only rewrites
+        // exact paths, not nested ones).
+        {
+          const m = url.pathname.match(
+            /^\/(?:api\/terminal\/|term\/)harness-sessions\/([^/]+)\/transcript$/,
+          )
+          if (req.method === 'GET' && m) {
+            const id = decodeURIComponent(m[1] ?? '')
+            const transcript = await readHarnessTranscript(id)
+            return json(res, 200, transcript)
+          }
         }
 
         if (req.method === 'DELETE' && url.pathname === '/term') {
