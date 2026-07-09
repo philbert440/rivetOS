@@ -504,8 +504,14 @@ export function createGatewayChannel(opts?: {
           })
           break
         }
+        case 'turn.end':
         case 'session.end':
-          flushAssistant() // commit the final assistant turn
+          // Commit the accumulated reply as ONE assistant message, then tell
+          // clients the turn is over. turn.end (harness Stop hook) is the real
+          // boundary — before it existed the flush waited for the NEXT user
+          // turn, so RivetHub's live bubble never cleared and its send queue
+          // deadlocked after the first streamed reply.
+          flushAssistant()
           emitFrame({ kind: 'stream', session: sid, event: { type: 'done', content: '' } })
           break
       }

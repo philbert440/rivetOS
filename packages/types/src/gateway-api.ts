@@ -363,6 +363,9 @@ export interface TermInjectRequest {
   text: string
   /** append the harness's submit key (CR) after the text; default true */
   submit?: boolean
+  /** send Esc first to cancel the harness's in-flight turn, then paste after
+   *  a settle — "inject now" on a queued message; default false */
+  interrupt?: boolean
 }
 
 export interface TermInjectResponse {

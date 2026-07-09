@@ -31,6 +31,7 @@ they don't know.
 |------------------|--------------------------------------|------------------------------------------------------------------|
 | `session.start`  | `title`                              | reset room (log survives), set title                             |
 | `session.end`    | —                                    | activity → `sleeping`, `ended: true`; room then ignores all but a new `session.start` |
+| `turn.end`       | —                                    | one agent turn complete (Stop hook): activity → `idle`, clear thought; chat bridges commit the reply + emit `done` |
 | `task.plan`      | `tasks: string[]`                    | replace task list, activity → `writing_plan`                     |
 | `task.check`     | `index`                              | mark task done                                                   |
 | `activity`       | `activity`                           | set coarse activity directly, clears `tool`                      |

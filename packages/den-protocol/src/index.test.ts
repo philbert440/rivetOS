@@ -23,6 +23,7 @@ describe('parseEvent', () => {
     expect(parseEvent({ v: 1, session: 's1', type: 'tool.end' })).not.toBeNull();
     expect(parseEvent({ v: 1, session: 's1', type: 'speech.stt', active: true })).not.toBeNull();
     expect(parseEvent({ v: 1, session: 's1', type: 'task.plan', tasks: ['a', 'b'] })).not.toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'turn.end' })).not.toBeNull();
   });
 
   it('rejects malformed events', () => {
@@ -132,6 +133,18 @@ describe('reduceRoom', () => {
     // every chunk in the window must be one of the source words — no leading
     // partial word cut mid-stream
     for (const w of s.thought.trimEnd().split(' ')) expect(words).toContain(w);
+  });
+
+  it('turn.end settles the room to idle without ending it', () => {
+    let s = reduceRoom(initialRoomState, ev('s', { type: 'message.agent', text: 'done!' }));
+    expect(s.activity).toBe('speaking');
+    s = reduceRoom(s, ev('s', { type: 'turn.end' }));
+    expect(s.activity).toBe('idle');
+    expect(s.ended).toBe(false);
+    expect(s.log).toHaveLength(1); // the reply stays in the log
+    // a new turn still lands normally
+    s = reduceRoom(s, ev('s', { type: 'message.user', text: 'next' }));
+    expect(s.log).toHaveLength(2);
   });
 
   it('ignores unknown event types (additive-within-v1)', () => {

@@ -38,6 +38,10 @@ export type Harness = 'claude-code' | 'grok-build' | 'rivetos' | (string & {})
 export type AgentEventBody =
   | { type: 'session.start'; title: string }
   | { type: 'session.end' }
+  /** End of ONE agent turn (harness Stop hook) — the session stays alive.
+   *  Chat clients commit the streamed reply and release their send queue on
+   *  this; the room just goes idle. Distinct from session.end (harness exit). */
+  | { type: 'turn.end' }
   | { type: 'task.plan'; tasks: string[] }
   | { type: 'task.check'; index: number }
   | { type: 'activity'; activity: Activity }
@@ -134,6 +138,7 @@ export function parseEvent(raw: unknown): AgentEvent | null {
     case 'session.start':
       return str('title') ? (raw as AgentEvent) : null
     case 'session.end':
+    case 'turn.end':
     case 'thinking.end':
       return raw as AgentEvent
     case 'task.plan':

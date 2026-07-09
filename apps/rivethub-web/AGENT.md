@@ -36,6 +36,26 @@ Store: `useChat.replace`.
 
 Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cleanly.
 
+### Track 3 — Working send queue + ask card
+
+- **`turn.end` den event (protocol v1 additive):** den-hook emits it at Stop
+  (grok's detached `--flush` pass emits it after the late text); the bridge
+  flushes the assistant message + emits `done` there. Before this, `done` only
+  fired at session.end, so the live bubble never cleared and the queue
+  deadlocked after the first streamed reply.
+- **Queue pump:** post-inject latch poll (6s) replaces the 400ms settle —
+  the next queued turn only auto-injects at a real turn boundary. Stale-turn
+  release (30s, no frames, no running tool, content-bearing turns only)
+  covers harnesses that never bridge done (Hermes).
+- **inject** on a queued bubble = interrupt-inject: `/term/inject
+  {interrupt:true}` writes Esc, waits 400ms for the TUI cancel redraw, then
+  pastes. **cancel** recalls the text into the composer (ComposerHandle.prepend).
+- **Ask card** (`ask-user-card.tsx`) replaces suggestion chips: structured
+  `extractAskUserQuestions` (question/header/description/multiSelect), stashed
+  in `useChat.ask` when the turn ends so it survives the live clear; cleared on
+  user echo / send / dismiss / hard resync. Single-select answers on click;
+  multi-select / multi-question collects then sends `Header: label` lines.
+
 ### Track 2 — Hub-as-node navigation — **shipped** (PR #330)
 
 - Browser: `performNodeSwitch` → `window.open(origin, '_blank')` new tab (current chat/turn stays put)
@@ -56,8 +76,8 @@ cd apps/rivethub-desktop && cargo tauri build   # or dev
 
 ## Key files
 
-- `src/pages/chat.tsx` — seamless session, terminal/den modes
-- `src/components/transcript.tsx`, `composer.tsx`, `suggestion-chips.tsx`
+- `src/pages/chat.tsx` — seamless session, terminal/den modes, queue pump
+- `src/components/transcript.tsx`, `composer.tsx`, `ask-user-card.tsx`
 - `src/lib/fold-stream.ts`, `tool-titles.ts`, `ask-user.ts`, `switch-mode.ts`, `gateway-url.ts`
 - `src/stores/chat.ts` — WS fold, LiveTurn
 - `src/stores/connection.ts`, `components/node-switcher.tsx`, `pickers/node-picker.tsx`
@@ -67,7 +87,7 @@ cd apps/rivethub-desktop && cargo tauri build   # or dev
 
 - Tauri origin is not http(s) — desktop starts unconfigured until a node is set.
 - Seamless chat uses harness inject, not only `postMessage` chat-loop.
-- Headless CLI ask-tools don’t block; chips = next user turn (Android pattern).
+- Headless CLI ask-tools don’t block; the ask card's pick = next user turn (Android pattern).
 - CI secrets scan blocks real lab `10.4.x` IPs in tests — use `192.168.1.x`.
 - Tool `args` on sessions WS: `summarizeBridgeArgs` / den-hook `summarizeToolInput` run every string through value-pattern `redact()` (Bearer/sk-/AKIA/gh_/JWT + key=value) then length-cap — not just secret-named keys.
 - `isValidGatewayUrl` is origin-only (no userinfo/path/query/hash) to block poisoned roster open-nav.

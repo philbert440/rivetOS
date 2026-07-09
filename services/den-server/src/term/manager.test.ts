@@ -351,6 +351,22 @@ describe('term manager', () => {
     expect(procs[0].writes).toEqual(['\x1b[200~A\x1b[201~', '\r', '\x1b[200~B\x1b[201~', '\r'])
   })
 
+  it('interrupt inject: Esc lands immediately, paste waits out the settle', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ injectReadyMs: 10, injectSubmitDelayMs: 80 })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-int')
+    procs[0].emitData('welcome')
+    vi.advanceTimersByTime(10) // ready
+    manager.inject(pty.id, 'do this instead', true, true)
+    // the lone Esc cancels the in-flight turn NOW; nothing else yet
+    expect(procs[0].writes).toEqual(['\x1b'])
+    // paste holds for the TUI's cancel redraw (400ms settle), then CR
+    vi.advanceTimersByTime(400)
+    expect(procs[0].writes).toEqual(['\x1b', '\x1b[200~do this instead\x1b[201~'])
+    vi.advanceTimersByTime(80)
+    expect(procs[0].writes).toEqual(['\x1b', '\x1b[200~do this instead\x1b[201~', '\r'])
+  })
+
   it('kill/close cancels a pending submit CR (no write into a dead PTY)', () => {
     vi.useFakeTimers()
     const { manager, procs } = makeManager({ injectReadyMs: 10, injectSubmitDelayMs: 80 })
