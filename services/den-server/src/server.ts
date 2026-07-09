@@ -430,10 +430,18 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         const gatewayOwned = (opts.extraRoutes ?? []).some(
           (r) => url.pathname === r.prefix || url.pathname.startsWith(r.prefix + '/'),
         )
+        // /term and /term/* are always API (including nested routes like
+        // /term/harness-sessions/:id/transcript). API_PATHS only lists exact
+        // leaf paths; after /api/terminal/* → /term/* canonicalize, a nested
+        // path would otherwise fall through to the SPA shell (HTML 200) and
+        // RivetHub would see garbage instead of JSON.
+        const termApi =
+          url.pathname === '/term' || url.pathname.startsWith('/term/')
         if (
           config.staticDir &&
           !API_PATHS.has(url.pathname) &&
           !url.pathname.startsWith('/api/') &&
+          !termApi &&
           !gatewayOwned
         ) {
           if (serveStatic(res, config.staticDir, url.pathname)) return
