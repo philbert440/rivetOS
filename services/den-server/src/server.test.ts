@@ -468,7 +468,11 @@ describe('gateway API aliases (G2/G3/G6) + SPA carve-out', () => {
   it('GET /api/terminal/harness-sessions/:id/transcript is nested-aliased (not 404)', async () => {
     // Nested paths are NOT in the exact API_ALIASES map — canonicalize must
     // still rewrite /api/terminal/* → /term/* or RivetHub resync sees "not found".
-    const { base } = await start('', 60_000, { term: true })
+    // Also: static SPA must not swallow /term/* after that rewrite.
+    const staticDir = mkdtempSync(join(tmpdir(), 'den-static-tx-'))
+    dirs.push(staticDir)
+    writeFileSync(join(staticDir, 'index.html'), '<!doctype html>SPA')
+    const { base } = await start('', 60_000, { term: true, staticDir })
     const [a, b] = await Promise.all([
       fetch(`${base}/api/terminal/harness-sessions/no-such-session/transcript`),
       fetch(`${base}/term/harness-sessions/no-such-session/transcript`),
@@ -478,6 +482,8 @@ describe('gateway API aliases (G2/G3/G6) + SPA carve-out', () => {
     const body = (await a.json()) as { id: string; command: string; turns: unknown[] }
     expect(body).toMatchObject({ id: 'no-such-session', command: '', turns: [] })
     expect(await b.json()).toEqual(body)
+    // Must be JSON, not the SPA shell
+    expect(a.headers.get('content-type')).toMatch(/json/)
   })
 
   it('WS /api/events/ws behaves like /ws (snapshot on connect)', async () => {
