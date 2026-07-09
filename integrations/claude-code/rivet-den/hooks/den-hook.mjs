@@ -515,10 +515,17 @@ async function main() {
       emitAgentText(text, buildTurnStats())
       if (!text) {
         // grok: the final chunk lands only after this hook exits — hand off
-        // to a detached flush pass
+        // to a detached flush pass. The flush pass owns turn.end then, so the
+        // bridge commits the late text BEFORE the turn is marked done.
         const tp = p.transcript_path ?? p.transcriptPath
-        if (tp) spawn(process.execPath, [fileURLToPath(import.meta.url), '--flush', session, tp, '--harness', harness], { detached: true, stdio: 'ignore' }).unref()
+        if (tp) {
+          spawn(process.execPath, [fileURLToPath(import.meta.url), '--flush', session, tp, '--harness', harness], { detached: true, stdio: 'ignore' }).unref()
+          break
+        }
       }
+      // turn boundary: the chat bridge flushes the accumulated reply into one
+      // committed message and emits `done`, releasing RivetHub's send queue.
+      emit({ type: 'turn.end' })
       break
     }
     case 'Flush': {
@@ -528,6 +535,7 @@ async function main() {
         if (!text) await new Promise((r) => setTimeout(r, 500))
       }
       emitAgentText(text)
+      emit({ type: 'turn.end' }) // deferred from Stop (see above)
       break
     }
     case 'SessionEnd': {

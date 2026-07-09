@@ -79,6 +79,11 @@ export function reduceRoom(state: RoomState, ev: AgentEvent): RoomState {
       }
     case 'tool.end':
       return { ...state, tool: null, activity: 'thinking' }
+    case 'turn.end':
+      // reply complete, harness waiting for the next prompt — settle to idle
+      // (message.agent just set 'speaking'; without this the bot orates until
+      // the next event). Thought bubble clears; the log keeps the reply.
+      return { ...state, activity: 'idle', tool: null, thought: '' }
     case 'thinking.delta': {
       // spinner-style status lines ("✳ Architecting… (28s · …)") replace the
       // bubble wholesale; real streamed thinking appends as before

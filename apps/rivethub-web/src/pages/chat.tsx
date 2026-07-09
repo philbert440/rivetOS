@@ -13,10 +13,10 @@ import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { useChat, type OutboundItem } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 import { Transcript } from '../components/transcript.js'
-import { Composer } from '../components/composer.js'
+import { Composer, type ComposerHandle } from '../components/composer.js'
 import { XtermAttach } from '../components/xterm-attach.js'
 import { SessionErrorBoundary } from '../components/session-error-boundary.js'
-import { chipsFromLiveTools } from '../lib/ask-user.js'
+import { questionsFromLiveTools } from '../lib/ask-user.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
 import { Pencil, RefreshCw } from 'lucide-react'
@@ -27,6 +27,13 @@ import { useSessionNames } from '../stores/session-names.js'
  *  as a state change → infinite re-render → minified React crash on open. */
 const EMPTY_OUTBOUND: OutboundItem[] = []
 const EMPTY_MESSAGES: SessionMessage[] = []
+
+/** How long the queue pump waits for an injected turn's first stream frame
+ *  before deciding the harness isn't bridging and letting the queue flow. */
+const INJECT_LATCH_MS = 6_000
+/** A busy live turn with no frames for this long and no tool running is
+ *  treated as ended (harnesses that never bridge done — see stale-release). */
+const STALE_TURN_MS = 30_000
 
 // A conversation id IS a UUID so it can be the harness's native session id
 // (claude --session-id requires a UUID). Then the join key, the harness's
@@ -452,17 +459,36 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const clearLive = useChat((s) => s.clearLive)
   const liveIsBusy = useChat((s) => s.liveIsBusy)
   const outbound = useChat((s) => s.outbound[props.sessionId] ?? EMPTY_OUTBOUND)
+  const pendingAsk = useChat((s) => s.ask[props.sessionId])
+  const dismissAsk = useChat((s) => s.dismissAsk)
   const pumping = useRef(false)
+  const composerRef = useRef<ComposerHandle | null>(null)
 
-  const injectOne = async (text: string): Promise<void> => {
+  // Ask card content: the live turn's ask tool wins (question just streamed
+  // in); after the turn ends the store's stashed copy keeps the card up until
+  // answered. Dismiss also has to silence the LIVE source (the store stash is
+  // cleared, but live.tools still carries the tool), so a local flag covers
+  // it — reset whenever a different question shows up.
+  const [askDismissed, setAskDismissed] = useState(false)
+  const liveAsk = questionsFromLiveTools(live?.tools ?? [])
+  const askQuestions = liveAsk.length > 0 ? liveAsk : (pendingAsk ?? [])
+  const askKey = JSON.stringify(askQuestions)
+  useEffect(() => setAskDismissed(false), [askKey])
+  const onDismissAsk = (): void => {
+    setAskDismissed(true)
+    dismissAsk(props.sessionId)
+  }
+
+  const injectOne = async (text: string, interrupt = false): Promise<void> => {
     const gw = useConnection.getState().gateway
     await ensurePty()
     try {
-      await gw.termInject({ session: props.sessionId, text })
+      await gw.termInject({ session: props.sessionId, text, ...(interrupt ? { interrupt } : {}) })
     } catch {
       // The harness may have been LRU-evicted while we held a stale pty ref
       // (#318 review): drop the ref, respawn (store-existence → --resume so
-      // context is kept), and retry once.
+      // context is kept), and retry once. A fresh harness has no turn to
+      // interrupt, so the retry never sends Esc.
       termPtyRef.current = undefined
       setTermPtyId(undefined)
       await ensurePty()
@@ -470,7 +496,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     }
   }
 
-  const pumpOutbound = async (opts?: { forceId?: string }): Promise<void> => {
+  const pumpOutbound = async (opts?: { forceId?: string; interrupt?: boolean }): Promise<void> => {
     if (pumping.current) return
     const state = useChat.getState()
     const q = state.outbound[props.sessionId] ?? []
@@ -486,17 +512,20 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     markOutboundSending(props.sessionId, next.id)
     beginLive(props.sessionId, 'working…')
     try {
-      await injectOne(next.text)
+      await injectOne(next.text, opts?.interrupt === true)
       dequeueOutbound(props.sessionId, next.id)
-      // If the den never starts a real stream, drop the placeholder so the
-      // rest of the queue can drain (force + auto). A real stream re-blocks
-      // via liveIsBusy once tools/text land.
+      // Hold the pump until the harness's stream latches busy. The hook chain
+      // (UserPromptSubmit → den → bridge) is normally sub-second, but a big
+      // context can take seconds to first frame — draining the next queued
+      // message in that window double-injects into a working harness. Only if
+      // nothing EVER latches (no hooks / dead bridge) do we drop the
+      // placeholder and let the queue flow.
+      const deadline = Date.now() + INJECT_LATCH_MS
+      while (Date.now() < deadline && !useChat.getState().liveIsBusy(props.sessionId)) {
+        await new Promise((r) => setTimeout(r, 250))
+      }
       if (!useChat.getState().liveIsBusy(props.sessionId)) {
-        // brief settle so a slow first stream frame can still latch busy
-        await new Promise((r) => setTimeout(r, 400))
-        if (!useChat.getState().liveIsBusy(props.sessionId)) {
-          clearLive(props.sessionId)
-        }
+        clearLive(props.sessionId)
       }
     } catch (err) {
       failOutbound(props.sessionId, next.id)
@@ -519,6 +548,30 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     void pumpOutbound().catch(() => undefined)
   }, [live, outbound.length, props.sessionId])
 
+  // Stale-turn release: turn.end (Stop hook) now ends Claude/grok turns
+  // properly, but a harness that never bridges done (Hermes) would leave the
+  // live slot busy forever and starve the queue. If no stream frame lands for
+  // STALE_TURN_MS with no tool running (a silent long Bash is still a real
+  // turn), declare the turn over so queued messages flow.
+  useEffect(() => {
+    if (!live) return
+    const timer = setInterval(() => {
+      const s = useChat.getState()
+      const L = s.live[props.sessionId]
+      if (!L) return
+      // Placeholder-only turns are the pump's latch window, not ours — and
+      // liveTs may still be the PREVIOUS turn's last frame, which would
+      // release instantly.
+      if (!(L.text || L.tools.length > 0 || L.reasoningText)) return
+      const last = s.liveTs[props.sessionId] ?? 0
+      const toolRunning = L.tools.some((t) => t.status === 'running')
+      if (!toolRunning && last > 0 && Date.now() - last > STALE_TURN_MS) {
+        clearLive(props.sessionId)
+      }
+    }, 5_000)
+    return () => clearInterval(timer)
+  }, [live, props.sessionId, clearLive])
+
   const sendToHarness = (body: string): Promise<void> => {
     enqueueOutbound(props.sessionId, body)
     // Fire-and-forget pump — composer unlocks immediately so more turns queue.
@@ -527,11 +580,18 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   }
 
   const onInjectOutbound = (id: string): void => {
-    void pumpOutbound({ forceId: id }).catch(() => undefined)
+    // Inject NOW means now: Esc the in-flight turn so the harness drops what
+    // it's doing and picks this message up (idle harness: the Esc is a no-op).
+    const interrupt = useChat.getState().liveIsBusy(props.sessionId)
+    void pumpOutbound({ forceId: id, interrupt }).catch(() => undefined)
   }
 
   const onCancelOutbound = (id: string): void => {
+    // Recall, don't discard: the text goes back into the composer so it can
+    // be edited and re-sent (prepended above any draft already in progress).
+    const item = useChat.getState().outbound[props.sessionId]?.find((o) => o.id === id)
     cancelOutbound(props.sessionId, id)
+    if (item?.text) composerRef.current?.prepend(item.text)
     // If we cancelled the in-flight item, free the pump.
     if (!useChat.getState().outbound[props.sessionId]?.some((o) => o.status === 'sending')) {
       pumping.current = false
@@ -710,7 +770,9 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
             effort={settings?.effort ?? 'medium'}
             onSetting={(patch) => setSetting(settingsKey, patch)}
             onSend={sendToHarness}
-            suggestions={chipsFromLiveTools(live?.tools ?? [])}
+            handleRef={composerRef}
+            ask={askDismissed ? [] : askQuestions}
+            onDismissAsk={onDismissAsk}
           />
         </>
       ) : mode === 'den' ? (

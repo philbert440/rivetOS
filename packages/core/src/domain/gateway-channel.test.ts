@@ -170,6 +170,30 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
     expect(got.some((f) => f.kind === 'message' && f.role === 'user')).toBe(true)
   })
 
+  it('turn.end commits the reply and emits done — the session stays usable', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-turn`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    // turn 1: user → reply → Stop hook (turn.end), NOT session.end
+    gw.bridgeAgentEvent({ session: 'c-turn', type: 'message.user', text: 'q1', ts: 1 })
+    gw.bridgeAgentEvent({ session: 'c-turn', type: 'message.agent', text: 'a1' })
+    gw.bridgeAgentEvent({ session: 'c-turn', type: 'turn.end' })
+    // turn 2 on the SAME session — pendingAssistant must not bleed across
+    gw.bridgeAgentEvent({ session: 'c-turn', type: 'message.user', text: 'q2', ts: 2 })
+    gw.bridgeAgentEvent({ session: 'c-turn', type: 'message.agent', text: 'a2' })
+    gw.bridgeAgentEvent({ session: 'c-turn', type: 'turn.end' })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const assistant = got.filter((f) => f.kind === 'message' && f.role === 'assistant')
+    expect(assistant.map((f) => f.kind === 'message' && f.text)).toEqual(['a1', 'a2'])
+    // each turn.end tells clients the turn is over (releases the send queue)
+    expect(got.filter((f) => f.kind === 'stream' && f.event.type === 'done')).toHaveLength(2)
+  })
+
   it('forwards optional tool args on tool.start for Hub chips/titles', async () => {
     const { gw, port } = await start()
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-args`)
