@@ -337,7 +337,9 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
       return
     }
     lastHarnessApply.current = harnessTx.dataUpdatedAt
-    replace(props.sessionId, next)
+    // Keep inject queue + optimistic bubbles — wiping them made "queued"
+    // messages vanish whenever the TUI transcript refetched.
+    replace(props.sessionId, next, { preserveOutbound: true })
   }, [harnessTx.data, harnessTx.dataUpdatedAt, props.sessionId, live, replace])
 
   // HTTP ring backfill — only when the TUI store has nothing (fresh draft /
@@ -437,15 +439,18 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   }
 
   // Seamless chat send: enqueue + serial inject. The queue is visible in the
-  // transcript (queued / sending badges). We only inject the next turn when
-  // the previous agent turn is done (live cleared) so we don't type into a
-  // mid-reply TUI. Composer returns immediately so you can stack messages.
+  // transcript (queued / sending badges + inject/cancel). We only auto-inject
+  // the next turn when the previous agent turn is truly streaming (tools/text)
+  // — a pre-inject "working…" placeholder must not stall the queue forever
+  // (Hermes often never bridges a done event).
   const enqueueOutbound = useChat((s) => s.enqueueOutbound)
   const markOutboundSending = useChat((s) => s.markOutboundSending)
   const dequeueOutbound = useChat((s) => s.dequeueOutbound)
   const failOutbound = useChat((s) => s.failOutbound)
+  const cancelOutbound = useChat((s) => s.cancelOutbound)
   const beginLive = useChat((s) => s.beginLive)
   const clearLive = useChat((s) => s.clearLive)
+  const liveIsBusy = useChat((s) => s.liveIsBusy)
   const outbound = useChat((s) => s.outbound[props.sessionId] ?? EMPTY_OUTBOUND)
   const pumping = useRef(false)
 
@@ -465,26 +470,34 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     }
   }
 
-  const pumpOutbound = async (): Promise<void> => {
+  const pumpOutbound = async (opts?: { forceId?: string }): Promise<void> => {
     if (pumping.current) return
     const state = useChat.getState()
     const q = state.outbound[props.sessionId] ?? []
-    if (q.some((o) => o.status === 'sending')) return
-    // Any live turn (including our pre-inject "working…" and real stream)
-    // means the harness is busy — wait for done/clear before the next inject.
-    if (state.live[props.sessionId]) return
-    const next = q.find((o) => o.status === 'queued')
+    if (!opts?.forceId && q.some((o) => o.status === 'sending')) return
+    // Real stream in flight → wait (unless user force-injects a specific id).
+    if (!opts?.forceId && state.liveIsBusy(props.sessionId)) return
+    const next = opts?.forceId
+      ? q.find((o) => o.id === opts.forceId)
+      : q.find((o) => o.status === 'queued')
     if (!next) return
 
     pumping.current = true
     markOutboundSending(props.sessionId, next.id)
-    beginLive(props.sessionId, 'received — processing…')
+    beginLive(props.sessionId, 'working…')
     try {
-      beginLive(props.sessionId, 'working…')
       await injectOne(next.text)
       dequeueOutbound(props.sessionId, next.id)
-      // live stays set until stream `done` / assistant message — that
-      // transition re-triggers pump via the effect below.
+      // If the den never starts a real stream, drop the placeholder so the
+      // rest of the queue can drain (force + auto). A real stream re-blocks
+      // via liveIsBusy once tools/text land.
+      if (!useChat.getState().liveIsBusy(props.sessionId)) {
+        // brief settle so a slow first stream frame can still latch busy
+        await new Promise((r) => setTimeout(r, 400))
+        if (!useChat.getState().liveIsBusy(props.sessionId)) {
+          clearLive(props.sessionId)
+        }
+      }
     } catch (err) {
       failOutbound(props.sessionId, next.id)
       clearLive(props.sessionId)
@@ -494,11 +507,15 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
       throw err
     }
     pumping.current = false
+    // Drain further queued turns when not blocked by a real stream.
+    if (!useChat.getState().liveIsBusy(props.sessionId)) {
+      void pumpOutbound().catch(() => undefined)
+    }
   }
 
   // When a live turn ends (or the queue grows while idle), inject the next.
   useEffect(() => {
-    if (live) return
+    if (liveIsBusy(props.sessionId)) return
     void pumpOutbound().catch(() => undefined)
   }, [live, outbound.length, props.sessionId])
 
@@ -507,6 +524,19 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     // Fire-and-forget pump — composer unlocks immediately so more turns queue.
     void pumpOutbound().catch(() => undefined)
     return Promise.resolve()
+  }
+
+  const onInjectOutbound = (id: string): void => {
+    void pumpOutbound({ forceId: id }).catch(() => undefined)
+  }
+
+  const onCancelOutbound = (id: string): void => {
+    cancelOutbound(props.sessionId, id)
+    // If we cancelled the in-flight item, free the pump.
+    if (!useChat.getState().outbound[props.sessionId]?.some((o) => o.status === 'sending')) {
+      pumping.current = false
+      void pumpOutbound().catch(() => undefined)
+    }
   }
 
   /**
@@ -573,7 +603,9 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
         {/* Context-fill bar — reported usage when present; else estimate. */}
         <ContextBar
           tokens={contextSource?.usage?.promptTokens}
-          model={contextSource?.model || lastAssistant?.model || settings?.agent}
+          model={
+            contextSource?.model || lastAssistant?.model || settings?.agent || props.harnessCommand
+          }
           transcriptTexts={messages.map((m) => m.text)}
         />
         {/* Resync from TUI — Android-style un-wedge (confirm first). */}
@@ -659,13 +691,15 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
               messages={messages}
               live={live}
               outbound={Object.fromEntries(outbound.map((o) => [o.id, o.status]))}
+              onInjectOutbound={onInjectOutbound}
+              onCancelOutbound={onCancelOutbound}
             />
           </div>
           {outbound.some((o) => o.status === 'queued') && (
             <div className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-ink-dim">
               {outbound.filter((o) => o.status === 'queued').length} message
               {outbound.filter((o) => o.status === 'queued').length === 1 ? '' : 's'} queued — will
-              send when Rivet finishes the current turn
+              send when Rivet finishes the current turn (or use inject on the bubble)
             </div>
           )}
           <Composer

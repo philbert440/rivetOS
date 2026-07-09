@@ -142,6 +142,8 @@ function Bubble(props: {
   msg: SessionMessage
   /** Outbound queue status for optimistic user turns. */
   outboundStatus?: 'queued' | 'sending'
+  onInject?: (id: string) => void
+  onCancel?: (id: string) => void
 }): JSX.Element {
   const mine = props.msg.role === 'user'
   return (
@@ -159,8 +161,28 @@ function Bubble(props: {
             {props.msg.text}
           </div>
           {props.outboundStatus && (
-            <div className="mt-1 flex justify-end px-1 font-mono text-[10px] text-ink-dim">
-              {props.outboundStatus === 'queued' ? 'queued' : 'sending…'}
+            <div className="mt-1 flex items-center justify-end gap-2 px-1 font-mono text-[10px] text-ink-dim">
+              <span>{props.outboundStatus === 'queued' ? 'queued' : 'sending…'}</span>
+              {props.outboundStatus === 'queued' && props.onInject && (
+                <button
+                  type="button"
+                  onClick={() => props.onInject?.(props.msg.id)}
+                  className="text-em hover:underline"
+                  title="Inject this message into the harness now"
+                >
+                  inject
+                </button>
+              )}
+              {props.onCancel && (
+                <button
+                  type="button"
+                  onClick={() => props.onCancel?.(props.msg.id)}
+                  className="text-ink-dim hover:text-red hover:underline"
+                  title="Remove from the send queue"
+                >
+                  cancel
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -226,6 +248,10 @@ export function Transcript(props: {
   live?: LiveTurn
   /** optim message id → outbound queue status */
   outbound?: Record<string, 'queued' | 'sending'>
+  /** Force-inject a queued bubble now (bypass busy wait). */
+  onInjectOutbound?: (id: string) => void
+  /** Drop a queued/sending bubble without sending. */
+  onCancelOutbound?: (id: string) => void
 }): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null)
   const count = props.messages.length + (props.live ? 1 : 0)
@@ -241,7 +267,13 @@ export function Transcript(props: {
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">
       {props.messages.map((m) => (
-        <Bubble key={m.id} msg={m} outboundStatus={props.outbound?.[m.id]} />
+        <Bubble
+          key={m.id}
+          msg={m}
+          outboundStatus={props.outbound?.[m.id]}
+          onInject={props.outbound?.[m.id] ? props.onInjectOutbound : undefined}
+          onCancel={props.outbound?.[m.id] ? props.onCancelOutbound : undefined}
+        />
       ))}
       {props.live && <LiveBubble turn={props.live} />}
       <div ref={endRef} />
