@@ -45,11 +45,15 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
   deadlocked after the first streamed reply.
 - **Queue pump:** post-inject latch poll (6s) replaces the 400ms settle —
   the next queued turn only auto-injects at a real turn boundary. Stale-turn
-  release (30s, no frames, no running tool, content-bearing turns only)
-  covers harnesses that never bridge done (Hermes).
+  release (120s, no frames, no running tool, content-bearing turns, ONLY when
+  something is queued) covers harnesses that never bridge done (Hermes) —
+  generous because the bridge is block-granular for claude (long no-tool
+  generations are silent).
 - **inject** on a queued bubble = interrupt-inject: `/term/inject
-  {interrupt:true}` writes Esc, waits 400ms for the TUI cancel redraw, then
-  pastes. **cancel** recalls the text into the composer (ComposerHandle.prepend).
+  {interrupt:true}` writes Esc (behind the paste/CR serialization watermark —
+  never between a prior turn's paste and its CR), waits 400ms for the TUI
+  cancel redraw, then pastes. **cancel** recalls the text into the composer
+  (ComposerHandle.prepend).
 - **Ask card** (`ask-user-card.tsx`) replaces suggestion chips: structured
   `extractAskUserQuestions` (question/header/description/multiSelect), stashed
   in `useChat.ask` when the turn ends so it survives the live clear; cleared on
