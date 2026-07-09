@@ -9,6 +9,7 @@ import { Outlet, createRootRoute, createRoute } from '@tanstack/react-router'
 import { Sidebar } from './components/sidebar.js'
 import { Toasts } from './components/toasts.js'
 import { ChatPage } from './pages/chat.js'
+import { FilesPage } from './pages/files.js'
 import { SettingsPage } from './pages/settings.js'
 import { TerminalPage } from './pages/terminal.js'
 import { TaskDetailPage, TasksPage } from './pages/tasks.js'
@@ -54,6 +55,12 @@ const terminalRoute = createRoute({
   component: TerminalPage,
 })
 
+const filesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/files',
+  component: FilesPage,
+})
+
 const tasksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tasks',
@@ -75,6 +82,7 @@ const settingsRoute = createRoute({
 export const routeTree = rootRoute.addChildren([
   chatRoute,
   terminalRoute,
+  filesRoute,
   tasksRoute,
   taskDetailRoute,
   settingsRoute,

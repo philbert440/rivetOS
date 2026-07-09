@@ -10,7 +10,11 @@
 - Talks to RivetOS gateway (`@rivetos/gateway-client`, `@rivetos/types`).
 - Seamless modes: chat inject → harness PTY → den events → `bridgeAgentEvent` → sessions WS.
 
-## Status (2026-07-08)
+## Status (2026-07-09)
+
+### Sidebar rail order
+Top → Chat, Terminal, Den ↗, separator, Files, Tasks. Bottom → Settings, then node switcher.
+**Files** = browser for `/rivet-shared` (shared collab mount). Stub page at `/files` until gateway list/read is wired; not personal `~/.rivetos` workspace.
 
 ### Track 1 — Rich chat — **shipped** (PR #329)
 
