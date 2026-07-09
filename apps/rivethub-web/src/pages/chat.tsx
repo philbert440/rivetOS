@@ -258,41 +258,94 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const settings = useChatSettings((s) => s.byKey[settingsKey])
   const setSetting = useChatSettings((s) => s.set)
 
-  // HTTP backfill on first open, on endpoint/credential change, and after
-  // every reconnect (wsEpoch) — frames dropped during an outage only come
-  // back through the ring.
+  // ---- Auto-sync from TUI on open (Android soft/hard open path) ------------
+  // The on-disk harness store is the canonical conversation for seamless
+  // modes. Every time we open this session (mount) or return to Chat mode
+  // after Terminal/Den, pull that transcript and hard-replace the chat UI so
+  // it can't stay stuck on a divergent cache. Manual ↻ still does the same
+  // with a confirm + fallback messaging.
+  const harnessKey = ['harness-transcript', baseUrl, token ?? '', props.sessionId, wsEpoch] as const
+  const harnessTx = useQuery({
+    queryKey: harnessKey,
+    queryFn: ({ signal }) =>
+      useConnection.getState().gateway.harnessTranscript(props.sessionId, signal),
+    // Short stale: reopening or Chat↔Terminal should pick up TUI turns soon;
+    // not zero so rapid drawer clicks don't stampede the node.
+    staleTime: 15_000,
+    gcTime: 30 * 60_000,
+  })
+  const harnessHasTurns = (harnessTx.data?.turns.length ?? 0) > 0
+
+  // Returning to Chat after typing in Terminal — invalidate so we re-pull TUI.
+  const prevModeRef = useRef(mode)
+  useEffect(() => {
+    if (prevModeRef.current !== 'chat' && mode === 'chat') {
+      void queryClient.invalidateQueries({ queryKey: [...harnessKey] })
+    }
+    prevModeRef.current = mode
+  }, [mode, baseUrl, token, props.sessionId, wsEpoch, queryClient])
+
+  // Apply each harness fetch at most once (dataUpdatedAt). Skip while a live
+  // turn is streaming. If the UI already has *more* solid turns than the
+  // store (reply just finished, disk not flushed yet), leave the UI alone —
+  // manual ↻ or the next open/refetch will reconcile.
+  const lastHarnessApply = useRef(0)
+  useEffect(() => {
+    if (!harnessTx.data?.turns.length) return
+    if (live) return
+    if (harnessTx.dataUpdatedAt === lastHarnessApply.current) return
+    const next: SessionMessage[] = harnessTx.data.turns.map((t, i) => ({
+      id: `harness:${props.sessionId}:${String(i)}`,
+      sessionId: props.sessionId,
+      role: t.role,
+      text: t.text,
+      ts: i + 1,
+    }))
+    const solid = (useChat.getState().messages[props.sessionId] ?? []).filter(
+      (m) => !m.id.startsWith('optim:'),
+    )
+    if (solid.length > next.length) {
+      // Mark applied so we don't keep re-trying this stale snapshot on every
+      // live clear; a later invalidate (mode return / manual) gets a new
+      // dataUpdatedAt.
+      lastHarnessApply.current = harnessTx.dataUpdatedAt
+      return
+    }
+    lastHarnessApply.current = harnessTx.dataUpdatedAt
+    replace(props.sessionId, next)
+  }, [harnessTx.data, harnessTx.dataUpdatedAt, props.sessionId, live, replace])
+
+  // HTTP ring backfill — only when the TUI store has nothing (fresh draft /
+  // API agent / node without a harness file). seed() MERGES so live WS frames
+  // that raced in are kept.
   const backfill = useQuery({
     queryKey: ['session-messages', baseUrl, token ?? '', props.sessionId, wsEpoch],
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.sessionMessages(props.sessionId, signal),
-    // Load-once: the live transcript is kept current by the WS store, so the
-    // HTTP seed only needs to run once per (session, epoch). Cache it so
-    // re-opening a conversation shows instantly instead of a blank refetch.
+    enabled: harnessTx.isSuccess && !harnessHasTurns,
     staleTime: 5 * 60_000,
     gcTime: 30 * 60_000,
   })
   useEffect(() => {
+    if (harnessHasTurns) return
     if (backfill.data) seed(props.sessionId, backfill.data.messages)
-  }, [backfill.data, props.sessionId])
+  }, [backfill.data, props.sessionId, harnessHasTurns, seed])
 
-  // Cold-session durable backfill (seamless 5e): a harness conversation this
-  // process didn't run through the chat-loop has an EMPTY ring — its committed
-  // transcript lives in memory. Fetch it only when the ring came back empty.
-  // seed() MERGES by id (append), so cold msgs are the base and any live
-  // bridge frame that raced in ahead is preserved, not clobbered (#315
-  // review); the index ids (`${key}:${i}`) never collide with live UUIDs.
+  // Cold-session durable backfill (seamless 5e): empty ring + empty TUI →
+  // memory conversation. Same enable gate as ring.
   const ringEmpty = backfill.isSuccess && backfill.data.messages.length === 0
   const coldBackfill = useQuery({
     queryKey: ['conv-messages', baseUrl, token ?? '', props.sessionId, wsEpoch],
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.conversationMessages(props.sessionId, signal),
-    enabled: ringEmpty,
+    enabled: harnessTx.isSuccess && !harnessHasTurns && ringEmpty,
     staleTime: 5 * 60_000,
     gcTime: 30 * 60_000,
   })
   useEffect(() => {
+    if (harnessHasTurns) return
     if (coldBackfill.data?.messages.length) seed(props.sessionId, coldBackfill.data.messages)
-  }, [coldBackfill.data, props.sessionId])
+  }, [coldBackfill.data, props.sessionId, harnessHasTurns, seed])
 
   // Leaving a conversation does NOT kill its harness: detach only. Switching
   // away mid-turn must not abort the harness — the reply keeps streaming to
@@ -384,16 +437,17 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   }
 
   /**
-   * Hard-resync from the on-disk TUI store (Android resyncCliTranscript).
-   * Drops the chat UI transcript + live turn and rebuilds from harness
-   * jsonl/sqlite. Falls back to memory conversationMessages if the store
-   * has no turns yet. Destructive to optimistic/chat-only bubbles — confirm first.
+   * Manual hard-resync (Android resyncCliTranscript). Same source as the
+   * auto-open path, but forces a refetch and always replaces (even mid-live)
+   * so a stuck turn can be cleared. Confirm first.
    */
   const resyncFromTui = async (): Promise<void> => {
     setResyncing(true)
     setResyncMsg(undefined)
     try {
       const gw = useConnection.getState().gateway
+      // Bust the auto-open cache so we re-read the store from disk.
+      await queryClient.invalidateQueries({ queryKey: [...harnessKey] })
       const transcript = await gw.harnessTranscript(props.sessionId)
       let next: SessionMessage[]
       if (transcript.turns.length > 0) {
@@ -419,13 +473,15 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
         next = [...byId.values()].sort((a, b) => a.ts - b.ts)
       }
       replace(props.sessionId, next)
-      // Drop cached backfills so the next open doesn't re-seed stale merges.
       void queryClient.invalidateQueries({
         queryKey: ['session-messages', baseUrl, token ?? '', props.sessionId],
       })
       void queryClient.invalidateQueries({
         queryKey: ['conv-messages', baseUrl, token ?? '', props.sessionId],
       })
+      // Put the forced result back into the auto-open cache so we don't
+      // immediately re-fetch and flash.
+      queryClient.setQueryData([...harnessKey], transcript)
       setResyncMsg(
         transcript.turns.length > 0
           ? `resynced ${String(next.length)} turn(s) from ${transcript.command || 'tui'}`
