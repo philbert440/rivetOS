@@ -198,6 +198,8 @@ export type {
   SessionsListResponse,
   HarnessSession,
   HarnessSessionsResponse,
+  HarnessTranscriptTurn,
+  HarnessTranscriptResponse,
   SessionMessagesResponse,
   SessionPostRequest,
   SessionPostAccepted,

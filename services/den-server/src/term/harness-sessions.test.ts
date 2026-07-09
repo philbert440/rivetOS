@@ -2,12 +2,18 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { listHarnessSessions, harnessSessionExists } from './harness-sessions.js'
+import {
+  listHarnessSessions,
+  harnessSessionExists,
+  readHarnessTranscript,
+} from './harness-sessions.js'
 
 const dirs: string[] = []
 afterEach(() => {
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
   delete process.env.CLAUDE_CONFIG_DIR
+  delete process.env.GROK_HOME
+  delete process.env.HERMES_HOME
 })
 
 function fakeClaudeStore(): string {
@@ -134,5 +140,71 @@ describe('listHarnessSessions', () => {
     expect(await listHarnessSessions(['shell'])).toEqual([]) // no reader wired
     delete process.env.GROK_HOME
     delete process.env.HERMES_HOME
+  })
+})
+
+describe('readHarnessTranscript', () => {
+  it('reads Claude user/assistant turns and skips sidechains + wrappers', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-tx-'))
+    dirs.push(base)
+    const id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      [
+        JSON.stringify({ type: 'user', message: { content: '<user_info>noise</user_info>' } }),
+        JSON.stringify({ type: 'user', message: { content: 'hello claude' } }),
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'hi there' }, { type: 'thinking', text: 'x' }] },
+        }),
+        JSON.stringify({
+          type: 'user',
+          isSidechain: true,
+          message: { content: 'sidechain skip me' },
+        }),
+        JSON.stringify({ type: 'user', message: { content: 'second turn' } }),
+      ].join('\n') + '\n',
+    )
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    const t = await readHarnessTranscript(id)
+    expect(t.command).toBe('claude')
+    expect(t.turns).toEqual([
+      { role: 'user', text: 'hello claude' },
+      { role: 'assistant', text: 'hi there' },
+      { role: 'user', text: 'second turn' },
+    ])
+  })
+
+  it('reads Grok chat_history and unwraps <user_query>', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'grok-tx-'))
+    dirs.push(base)
+    const id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    const sess = join(base, 'sessions', '%2Fhome%2Frivet', id)
+    mkdirSync(sess, { recursive: true })
+    writeFileSync(
+      join(sess, 'chat_history.jsonl'),
+      [
+        JSON.stringify({ type: 'user', content: '<user_info>env</user_info>' }),
+        JSON.stringify({ type: 'user', content: '<user_query>plan the migrate</user_query>' }),
+        JSON.stringify({ type: 'assistant', content: 'ok, planning' }),
+      ].join('\n') + '\n',
+    )
+    process.env.GROK_HOME = base
+
+    const t = await readHarnessTranscript(id)
+    expect(t.command).toBe('grok')
+    expect(t.turns).toEqual([
+      { role: 'user', text: 'plan the migrate' },
+      { role: 'assistant', text: 'ok, planning' },
+    ])
+  })
+
+  it('returns empty for unknown session ids', async () => {
+    process.env.CLAUDE_CONFIG_DIR = join(tmpdir(), 'none-' + String(process.pid))
+    const t = await readHarnessTranscript('zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz')
+    expect(t).toEqual({ id: 'zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz', command: '', turns: [] })
   })
 })
