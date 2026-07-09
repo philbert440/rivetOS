@@ -46,7 +46,7 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
 - **Queue pump:** post-inject latch poll (6s) replaces the 400ms settle —
   the next queued turn only auto-injects at a real turn boundary. Stale-turn
   release (120s, no frames, no running tool, content-bearing turns, ONLY when
-  something is queued) covers harnesses that never bridge done (Hermes) —
+  something is queued) covers any harness that never bridges done (Hermes now emits turn.end on post_llm_call, so this is a generic backstop) —
   generous because the bridge is block-granular for claude (long no-tool
   generations are silent).
 - **inject** on a queued bubble = interrupt-inject: `/term/inject
