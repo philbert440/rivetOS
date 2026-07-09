@@ -93,7 +93,7 @@ interface PtyRecord {
    *  TUI can accept stdin is dropped. We buffer injects until first output has
    *  settled, then flush — so the FIRST chat turn to a fresh harness lands. */
   ready: boolean
-  injectBuffer: string[]
+  injectBuffer: { text: string; submit: boolean }[]
   readyTimer?: NodeJS.Timeout
   /** Max(lastOutputTs, last inject) — the LRU-eviction signal. Bumped on BOTH
    *  stdout AND chat inject so an actively-chatted (but unattached) harness
@@ -125,8 +125,10 @@ export interface TermManager {
   scrollback(id: string): Buffer | undefined
   write(id: string, data: string | Buffer): boolean
   /** Like write, but for chat injects: buffered until the harness TUI is
-   *  ready (first output settled) so the first turn isn't dropped (5g). */
-  inject(id: string, data: string | Buffer): boolean
+   *  ready (first output settled) so the first turn isn't dropped (5g). When
+   *  `submit`, the text and its CR are written as two separate PTY writes
+   *  (bracketed paste + delayed CR) so the harness actually sends the turn. */
+  inject(id: string, text: string, submit: boolean): boolean
   /** Resize the child and record the new dimensions (hello frames report them). */
   resize(id: string, cols: number, rows: number): boolean
   /** Flow control for saturated viewers — no-op on backends without pause. */
@@ -143,6 +145,15 @@ const SIGKILL_DELAY_MS = 3000
 /** Max chat injects buffered before a fresh harness is ready (#316 review) —
  *  a real turn is a handful; well beyond that is a client spamming. */
 const INJECT_BUFFER_MAX = 32
+
+/** Bracketed-paste markers (DEC 2004). A chat turn is written between them so
+ *  the harness TUI treats multi-line text as one literal block, then the
+ *  submit CR is written separately — a CR fused onto the same write is
+ *  swallowed by the TUI's paste heuristic as a newline (does not submit). */
+const PASTE_START = '\x1b[200~'
+const PASTE_END = '\x1b[201~'
+const SUBMIT_CR = '\r'
+const DEFAULT_INJECT_SUBMIT_DELAY_MS = 80
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -175,6 +186,31 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   const bySession = new Map<string, string>()
   const auditFile = join(config.stateDir, 'term-audit.log')
   mkdirSync(config.stateDir, { recursive: true })
+
+  const submitDelayMs = config.term.injectSubmitDelayMs ?? DEFAULT_INJECT_SUBMIT_DELAY_MS
+
+  const laterWrite = (r: PtyRecord, data: string, atMs: number): void => {
+    const fire = (): void => {
+      if (r.state === 'running') r.proc.write(data)
+    }
+    if (atMs <= 0) {
+      fire()
+      return
+    }
+    const t = setTimeout(fire, atMs)
+    t.unref?.()
+  }
+
+  /** Write a chat inject to a live PTY. `submit` sends the turn: the text goes
+   *  in one bracketed-paste write, then the CR in a separate delayed write so
+   *  the harness TUI registers it as an Enter keystroke and not a pasted
+   *  newline. `submit:false` writes the text verbatim (partial input). `startMs`
+   *  staggers a queued flush so multiple buffered turns keep text→CR→text→CR
+   *  ordering instead of interleaving all pastes ahead of all CRs. */
+  const submitWrite = (r: PtyRecord, text: string, submit: boolean, startMs = 0): void => {
+    laterWrite(r, submit ? `${PASTE_START}${text}${PASTE_END}` : text, startMs)
+    if (submit) laterWrite(r, SUBMIT_CR, startMs + submitDelayMs)
+  }
 
   const audit = (
     action: 'spawn' | 'kill' | 'exit',
@@ -437,7 +473,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
               return
             }
             r.ready = true
-            for (const d of r.injectBuffer) r.proc.write(d)
+            // Stagger so a multi-turn buffer flushes text→CR→text→CR in order
+            // (each turn's paste + its own CR before the next turn's paste).
+            r.injectBuffer.forEach((d, i) =>
+              submitWrite(r, d.text, d.submit, i * submitDelayMs * 2),
+            )
             r.injectBuffer = []
           }, config.term.injectReadyMs ?? 500)
           r.readyTimer.unref?.()
@@ -515,7 +555,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       return true
     },
 
-    inject(id, data): boolean {
+    inject(id, text, submit): boolean {
       const r = records.get(id)
       if (!r || r.state !== 'running') return false
       // Chat activity protects this pty from LRU eviction (#316 review): a
@@ -525,13 +565,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // Ready-gate (5g): before the harness TUI is up, buffer instead of
       // writing into the void; the onData settle timer flushes it.
       if (r.ready) {
-        r.proc.write(data)
+        submitWrite(r, text, submit)
         return true
       }
       // Bounded buffer: a client can't grow memory by spamming inject before
       // the harness is ready (#316 review).
       if (r.injectBuffer.length >= INJECT_BUFFER_MAX) return false
-      r.injectBuffer.push(typeof data === 'string' ? data : data.toString())
+      r.injectBuffer.push({ text, submit })
       return true
     },
 

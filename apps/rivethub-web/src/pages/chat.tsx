@@ -74,7 +74,12 @@ export function ChatPage(): JSX.Element {
         error={harnessQuery.isError ? harnessQuery.error.message : undefined}
       />
       {active ? (
-        <ActiveSession sessionId={active} harnessCommand={activeHarness?.command} />
+        // Keyed by session id: switching conversations must fully remount so
+        // the view (chat/terminal/den), the attached PTY, and the transcript
+        // all belong to the newly-selected session. Without the key React
+        // reuses the instance and a Terminal-mode switch keeps showing the
+        // previous conversation's PTY (stale mode/termPtyId).
+        <ActiveSession key={active} sessionId={active} harnessCommand={activeHarness?.command} />
       ) : (
         <EmptyState />
       )}
@@ -254,6 +259,11 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     queryKey: ['session-messages', baseUrl, token ?? '', props.sessionId, wsEpoch],
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.sessionMessages(props.sessionId, signal),
+    // Load-once: the live transcript is kept current by the WS store, so the
+    // HTTP seed only needs to run once per (session, epoch). Cache it so
+    // re-opening a conversation shows instantly instead of a blank refetch.
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
   })
   useEffect(() => {
     if (backfill.data) seed(props.sessionId, backfill.data.messages)
@@ -271,6 +281,8 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.conversationMessages(props.sessionId, signal),
     enabled: ringEmpty,
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
   })
   useEffect(() => {
     if (coldBackfill.data?.messages.length) seed(props.sessionId, coldBackfill.data.messages)

@@ -42,6 +42,11 @@ export interface DenTermConfig {
   /** Grace after a fresh PTY's first output before buffered chat injects are
    *  flushed — lets the harness TUI settle so the first turn isn't dropped. */
   injectReadyMs: number
+  /** Delay between writing a chat inject's text and its submit CR. The two
+   *  must be separate PTY writes: harness TUIs (claude/grok) run paste
+   *  detection, and a CR fused onto multi-line/long text is absorbed as a
+   *  literal newline in the composer instead of submitting the turn. */
+  injectSubmitDelayMs?: number
 }
 
 export interface DenConfig {
@@ -94,6 +99,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       detachedTtlMs: intEnv(env, 'RIVETOS_DEN_TERM_DETACHED_TTL_MS', 1_800_000),
       exitLingerMs: intEnv(env, 'RIVETOS_DEN_TERM_EXIT_LINGER_MS', 60_000),
       injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
+      injectSubmitDelayMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_SUBMIT_DELAY_MS', 80),
     },
   }
 }

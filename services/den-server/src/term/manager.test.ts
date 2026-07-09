@@ -277,7 +277,7 @@ describe('term manager', () => {
     makeReady(procs[1])
     vi.advanceTimersByTime(10)
     // a is older, but the user just chatted it → inject bumps its activity
-    manager.inject(a.id, 'still here\r')
+    manager.inject(a.id, 'still here', true)
     void b
     // now b is the least-recently-active → b is evicted, a is protected
     expect(manager.spawn('shell', 80, 24, '').state).toBe('running')
@@ -303,25 +303,54 @@ describe('term manager', () => {
     const { manager } = makeManager({ injectReadyMs: 500 })
     const pty = manager.spawn('claude', 80, 24, '', 'chat-cap')
     // 32 buffered ok, 33rd rejected (no output yet → never ready)
-    for (let i = 0; i < 32; i++) expect(manager.inject(pty.id, `${String(i)}\r`)).toBe(true)
-    expect(manager.inject(pty.id, 'overflow\r')).toBe(false)
+    for (let i = 0; i < 32; i++) expect(manager.inject(pty.id, String(i), true)).toBe(true)
+    expect(manager.inject(pty.id, 'overflow', true)).toBe(false)
   })
 
   it('inject ready-gate (5g): buffers until first output settles, then flushes', () => {
     vi.useFakeTimers()
-    const { manager, procs } = makeManager({ injectReadyMs: 300 })
+    const { manager, procs } = makeManager({ injectReadyMs: 300, injectSubmitDelayMs: 80 })
     const pty = manager.spawn('claude', 80, 24, '', 'chat-r')
     // inject before any output → buffered, not written
-    expect(manager.inject(pty.id, 'hello\r')).toBe(true)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
     expect(procs[0].writes).toEqual([])
     // first output starts the settle timer; still buffered until it fires
     procs[0].emitData('welcome to claude')
     expect(procs[0].writes).toEqual([])
     vi.advanceTimersByTime(300)
-    expect(procs[0].writes).toEqual(['hello\r']) // flushed after settle
-    // once ready, a later inject writes through immediately
-    manager.inject(pty.id, 'again\r')
-    expect(procs[0].writes).toEqual(['hello\r', 'again\r'])
+    // flushed after settle: text as one bracketed-paste write, then the submit
+    // CR as a SEPARATE delayed write (a fused CR is swallowed as a newline).
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+    vi.advanceTimersByTime(80)
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~', '\r'])
+    // once ready, a later inject writes through immediately (same framing)
+    manager.inject(pty.id, 'again', true)
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~', '\r', '\x1b[200~again\x1b[201~'])
+    vi.advanceTimersByTime(80)
+    expect(procs[0].writes).toEqual([
+      '\x1b[200~hello\x1b[201~',
+      '\r',
+      '\x1b[200~again\x1b[201~',
+      '\r',
+    ])
+  })
+
+  it('inject ready-gate: multiple buffered turns flush in text→CR→text→CR order', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ injectReadyMs: 300, injectSubmitDelayMs: 80 })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-multi')
+    expect(manager.inject(pty.id, 'one', true)).toBe(true)
+    expect(manager.inject(pty.id, 'two', true)).toBe(true)
+    procs[0].emitData('welcome')
+    vi.advanceTimersByTime(300) // settle → first turn's paste (staggered base 0)
+    vi.advanceTimersByTime(400) // drain all staggered CR/paste timers
+    // second turn's paste must not precede the first turn's submit CR
+    expect(procs[0].writes).toEqual([
+      '\x1b[200~one\x1b[201~',
+      '\r',
+      '\x1b[200~two\x1b[201~',
+      '\r',
+    ])
   })
 
   it('caps scrollback at the byte limit, dropping the oldest bytes', () => {
