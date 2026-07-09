@@ -1,27 +1,24 @@
 /**
  * Model → max context window (tokens), for the header's context-fill bar.
- * Matched by substring on the model id so variants resolve without an exact
- * entry. The `[1m]` long-context variants aren't distinguishable from the model
- * id alone (they're a launch flag), so we default to the standard window; a
- * node that runs the 1M variant can be handled by adding an override.
+ * Matched by substring on the model / agent / harness id so variants resolve
+ * without an exact entry.
+ *
+ * Mesh defaults (2026-07): Claude Code 1M, grok Build 500k, local 262_144.
  */
 const WINDOWS: Array<{ match: RegExp; tokens: number }> = [
-  { match: /fable/i, tokens: 1_000_000 },
-  { match: /opus/i, tokens: 200_000 },
-  { match: /sonnet/i, tokens: 200_000 },
-  { match: /haiku/i, tokens: 200_000 },
-  { match: /gpt-4|gpt4|o1|o3/i, tokens: 128_000 },
+  // Claude Code / Anthropic — 1M context on current mesh deploys
+  { match: /claude|anthropic|opus|sonnet|haiku/i, tokens: 1_000_000 },
   // xAI grok family (API + Build harness ids)
-  { match: /grok/i, tokens: 256_000 },
-  // Common local / open-weight models on the mesh
-  { match: /qwen/i, tokens: 128_000 },
-  { match: /deepseek/i, tokens: 128_000 },
-  { match: /llama|mistral|mixtral|phi-|gemma|yi-/i, tokens: 128_000 },
-  { match: /hermes/i, tokens: 128_000 },
-  { match: /local|vllm/i, tokens: 32_768 },
+  { match: /grok/i, tokens: 500_000 },
+  // Local node / llama-server / vllm — 256k natively (262_144)
+  { match: /local|vllm|llama-server|llama_server/i, tokens: 262_144 },
+  // Other open-weight families commonly served locally at 256k
+  { match: /qwen|deepseek|llama|mistral|mixtral|phi-|gemma|yi-|hermes|fable/i, tokens: 262_144 },
+  { match: /gpt-4|gpt4|o1|o3/i, tokens: 128_000 },
 ]
 
-const DEFAULT_WINDOW = 200_000
+/** When model is unknown, prefer local window over the old 200k Claude default. */
+const DEFAULT_WINDOW = 262_144
 
 /** Max context window for a model id; DEFAULT_WINDOW when unknown. */
 export function contextWindowFor(model: string | undefined): number {
@@ -30,7 +27,7 @@ export function contextWindowFor(model: string | undefined): number {
   return DEFAULT_WINDOW
 }
 
-/** Compact token count: 18_432 → "18.4k", 1_000_000 → "1M". */
+/** Compact token count: 18_432 → "18.4k", 1_000_000 → "1M", 262_144 → "262k". */
 export function compactTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 100_000 ? 0 : 1)}k`

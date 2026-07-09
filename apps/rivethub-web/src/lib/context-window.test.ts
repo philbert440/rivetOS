@@ -6,16 +6,29 @@ import {
 } from './context-window.js'
 
 describe('contextWindowFor', () => {
-  it('matches known families', () => {
-    expect(contextWindowFor('claude-opus-4')).toBe(200_000)
-    expect(contextWindowFor('grok-4')).toBe(256_000)
-    expect(contextWindowFor('qwen2.5-27b')).toBe(128_000)
-    expect(contextWindowFor('local-vllm')).toBe(32_768)
+  it('matches Claude at 1M', () => {
+    expect(contextWindowFor('claude')).toBe(1_000_000)
+    expect(contextWindowFor('claude-opus-4')).toBe(1_000_000)
+    expect(contextWindowFor('claude-sonnet-4')).toBe(1_000_000)
+    expect(contextWindowFor('anthropic')).toBe(1_000_000)
   })
 
-  it('defaults when unknown', () => {
-    expect(contextWindowFor(undefined)).toBe(200_000)
-    expect(contextWindowFor('mystery-model')).toBe(200_000)
+  it('matches grok at 500k', () => {
+    expect(contextWindowFor('grok')).toBe(500_000)
+    expect(contextWindowFor('grok-4')).toBe(500_000)
+    expect(contextWindowFor('grok-fast')).toBe(500_000)
+  })
+
+  it('matches local at 262_144', () => {
+    expect(contextWindowFor('local')).toBe(262_144)
+    expect(contextWindowFor('local-vllm')).toBe(262_144)
+    expect(contextWindowFor('llama-server')).toBe(262_144)
+    expect(contextWindowFor('qwen2.5-27b')).toBe(262_144)
+  })
+
+  it('defaults to local window when unknown', () => {
+    expect(contextWindowFor(undefined)).toBe(262_144)
+    expect(contextWindowFor('mystery-model')).toBe(262_144)
   })
 })
 
@@ -37,6 +50,8 @@ describe('compactTokens', () => {
   it('formats k and M', () => {
     expect(compactTokens(500)).toBe('500')
     expect(compactTokens(18_400)).toBe('18.4k')
+    expect(compactTokens(262_144)).toBe('262k')
+    expect(compactTokens(500_000)).toBe('500k')
     expect(compactTokens(1_000_000)).toBe('1M')
   })
 })

@@ -54,8 +54,14 @@ interface ChatState {
   active?: string
   seed: (sessionId: string, messages: SessionMessage[]) => void
   /** Hard-resync: replace the session transcript wholesale and clear live
-   *  turn state (Android resyncTranscriptToConversation). Does not merge. */
-  replace: (sessionId: string, messages: SessionMessage[]) => void
+   *  turn state (Android resyncTranscriptToConversation). Does not merge.
+   *  `preserveOutbound` keeps the inject queue + its optimistic bubbles
+   *  (auto-sync from TUI must not wipe messages the user just queued). */
+  replace: (
+    sessionId: string,
+    messages: SessionMessage[],
+    opts?: { preserveOutbound?: boolean },
+  ) => void
   addDraft: (sessionId: string) => void
   /** Seamless modes: show the user's turn immediately. Returns optim id. */
   addOptimisticUser: (sessionId: string, text: string, id?: string) => string
@@ -64,8 +70,10 @@ interface ChatState {
   markOutboundSending: (sessionId: string, id: string) => void
   /** Drop from queue after inject accepted (bubble stays until WS echo). */
   dequeueOutbound: (sessionId: string, id: string) => void
-  /** Inject failed — remove queue entry + optimistic bubble. */
+  /** Inject failed / user cancel — remove queue entry + optimistic bubble. */
   failOutbound: (sessionId: string, id: string) => void
+  /** User cancel alias for a queued/sending item. */
+  cancelOutbound: (sessionId: string, id: string) => void
   /**
    * Start (or keep) a live turn so the UI shows a typing/processing indicator
    * as soon as the user sends — before the harness's first den event arrives
@@ -75,6 +83,8 @@ interface ChatState {
   beginLive: (sessionId: string, activity?: string) => void
   /** Drop the live slot (send failed, or explicit cancel). */
   clearLive: (sessionId: string) => void
+  /** True when live has real stream content (not just a pre-inject placeholder). */
+  liveIsBusy: (sessionId: string) => boolean
   /** Pass undefined to deselect (error-boundary recover, etc.). */
   setActive: (sessionId: string | undefined) => void
   connect: (endpointKey: string) => void
@@ -111,12 +121,28 @@ export const useChat = create<ChatState>((set, get) => ({
       return { messages: { ...s.messages, [sessionId]: merged } }
     }),
 
-  replace: (sessionId, msgs) =>
-    set((s) => ({
-      messages: { ...s.messages, [sessionId]: [...msgs] },
-      live: { ...s.live, [sessionId]: undefined },
-      outbound: { ...s.outbound, [sessionId]: [] },
-    })),
+  replace: (sessionId, msgs, opts) =>
+    set((s) => {
+      const preserve = opts?.preserveOutbound === true
+      const outbound = s.outbound[sessionId] ?? []
+      let next = [...msgs]
+      if (preserve && outbound.length > 0) {
+        // Keep optimistic bubbles for still-queued/sending turns so auto-sync
+        // from the TUI store doesn't erase the inject queue mid-compose.
+        const existing = s.messages[sessionId] ?? []
+        const byId = new Map(next.map((m) => [m.id, m] as const))
+        for (const o of outbound) {
+          const bubble = existing.find((m) => m.id === o.id)
+          if (bubble) byId.set(bubble.id, bubble)
+        }
+        next = [...byId.values()].sort((a, b) => a.ts - b.ts)
+      }
+      return {
+        messages: { ...s.messages, [sessionId]: next },
+        live: preserve ? s.live : { ...s.live, [sessionId]: undefined },
+        outbound: preserve ? s.outbound : { ...s.outbound, [sessionId]: [] },
+      }
+    }),
 
   addDraft: (sessionId) =>
     set((s) => ({
@@ -181,6 +207,8 @@ export const useChat = create<ChatState>((set, get) => ({
       },
     })),
 
+  cancelOutbound: (sessionId, id) => get().failOutbound(sessionId, id),
+
   beginLive: (sessionId, activity = 'processing…') =>
     set((s) => {
       // Don't clobber an already-streaming turn (tool stack / partial text).
@@ -202,6 +230,14 @@ export const useChat = create<ChatState>((set, get) => ({
     set((s) => ({
       live: { ...s.live, [sessionId]: undefined },
     })),
+
+  liveIsBusy: (sessionId) => {
+    const L = get().live[sessionId]
+    if (!L) return false
+    // Placeholder activity alone is not "busy" — many harnesses never bridge
+    // a done event, and that used to stall the inject queue forever.
+    return !!(L.text || L.tools.length > 0 || L.reasoningText)
+  },
 
   setActive: (sessionId) =>
     set((s) => {
