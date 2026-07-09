@@ -10,16 +10,23 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { HarnessTranscriptTurn, SessionMessage } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
-import { useChat } from '../stores/chat.js'
+import { useChat, type OutboundItem } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 import { Transcript } from '../components/transcript.js'
 import { Composer } from '../components/composer.js'
 import { XtermAttach } from '../components/xterm-attach.js'
+import { SessionErrorBoundary } from '../components/session-error-boundary.js'
 import { chipsFromLiveTools } from '../lib/ask-user.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
 import { Pencil, RefreshCw } from 'lucide-react'
 import { useSessionNames } from '../stores/session-names.js'
+
+/** Stable empty array for zustand selectors — `?? []` inside a selector
+ *  allocates a new [] every run when the key is missing, which zustand treats
+ *  as a state change → infinite re-render → minified React crash on open. */
+const EMPTY_OUTBOUND: OutboundItem[] = []
+const EMPTY_MESSAGES: SessionMessage[] = []
 
 // A conversation id IS a UUID so it can be the harness's native session id
 // (claude --session-id requires a UUID). Then the join key, the harness's
@@ -81,6 +88,7 @@ export function ChatPage(): JSX.Element {
   const harnessItems = harness.map((s) => ({ id: s.id, title: s.title, command: s.command }))
   const items = [...draftItems, ...harnessItems]
   const active = useChat((s) => s.active)
+  const setActive = useChat((s) => s.setActive)
   const activeHarness = active ? harnessById.get(active) : undefined
 
   return (
@@ -96,7 +104,11 @@ export function ChatPage(): JSX.Element {
         // all belong to the newly-selected session. Without the key React
         // reuses the instance and a Terminal-mode switch keeps showing the
         // previous conversation's PTY (stale mode/termPtyId).
-        <ActiveSession key={active} sessionId={active} harnessCommand={activeHarness?.command} />
+        // Error boundary: a render crash must not trap the whole shell —
+        // "back to conversations" clears selection without quitting.
+        <SessionErrorBoundary key={active} sessionId={active} onClose={() => setActive(undefined)}>
+          <ActiveSession sessionId={active} harnessCommand={activeHarness?.command} />
+        </SessionErrorBoundary>
       ) : (
         <EmptyState />
       )}
@@ -247,7 +259,8 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   // (state is captured stale in an unmount-only effect) — #310 review.
   const termPtyRef = useRef<string | undefined>(undefined)
   termPtyRef.current = termPtyId
-  const messages = useChat((s) => s.messages[props.sessionId]) ?? []
+  // Selectors must return stable references when empty (see EMPTY_* above).
+  const messages = useChat((s) => s.messages[props.sessionId] ?? EMPTY_MESSAGES)
   const live = useChat((s) => s.live[props.sessionId])
   // Context-fill: prefer the newest assistant turn that still carries usage
   // (Claude live path + harness resync). Fall back to the latest assistant
@@ -433,7 +446,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const failOutbound = useChat((s) => s.failOutbound)
   const beginLive = useChat((s) => s.beginLive)
   const clearLive = useChat((s) => s.clearLive)
-  const outbound = useChat((s) => s.outbound[props.sessionId] ?? [])
+  const outbound = useChat((s) => s.outbound[props.sessionId] ?? EMPTY_OUTBOUND)
   const pumping = useRef(false)
 
   const injectOne = async (text: string): Promise<void> => {
