@@ -382,9 +382,13 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     const inj = await post(base, '/term/inject', { session: 'chat-x', text: 'hello world' })
     expect(inj.status).toBe(202)
     expect(((await inj.json()) as { ptyId: string }).ptyId).toMatch(/^pty-/)
-    // it reached the (only) fake pty, submit key appended
-    expect(fakeProcs[0].writes).toContain('hello world\r')
-    // submit:false omits the CR
+    // it reached the (only) fake pty: text as one bracketed-paste write...
+    expect(fakeProcs[0].writes).toContain('\x1b[200~hello world\x1b[201~')
+    // ...then the submit CR as a SEPARATE delayed write (fused CR is swallowed
+    // by the harness paste heuristic as a newline instead of submitting).
+    await new Promise((r) => setTimeout(r, 120)) // injectSubmitDelayMs:80 + slack
+    expect(fakeProcs[0].writes).toContain('\r')
+    // submit:false writes the text verbatim (no paste wrap, no CR)
     await post(base, '/term/inject', { session: 'chat-x', text: 'raw', submit: false })
     expect(fakeProcs[0].writes).toContain('raw')
   })
