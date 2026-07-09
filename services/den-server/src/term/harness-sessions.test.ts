@@ -157,7 +157,16 @@ describe('readHarnessTranscript', () => {
         JSON.stringify({ type: 'user', message: { content: 'hello claude' } }),
         JSON.stringify({
           type: 'assistant',
-          message: { content: [{ type: 'text', text: 'hi there' }, { type: 'thinking', text: 'x' }] },
+          message: {
+            model: 'claude-opus-4',
+            content: [{ type: 'text', text: 'hi there' }, { type: 'thinking', text: 'x' }],
+            usage: {
+              input_tokens: 1000,
+              output_tokens: 40,
+              cache_read_input_tokens: 200,
+              cache_creation_input_tokens: 50,
+            },
+          },
         }),
         JSON.stringify({
           type: 'user',
@@ -173,7 +182,13 @@ describe('readHarnessTranscript', () => {
     expect(t.command).toBe('claude')
     expect(t.turns).toEqual([
       { role: 'user', text: 'hello claude' },
-      { role: 'assistant', text: 'hi there' },
+      {
+        role: 'assistant',
+        text: 'hi there',
+        model: 'claude-opus-4',
+        // prompt = input + cache_read + cache_creation (den-hook parity)
+        usage: { promptTokens: 1250, completionTokens: 40, cachedTokens: 200 },
+      },
       { role: 'user', text: 'second turn' },
     ])
   })
