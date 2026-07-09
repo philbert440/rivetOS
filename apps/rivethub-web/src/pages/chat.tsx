@@ -288,20 +288,12 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     if (coldBackfill.data?.messages.length) seed(props.sessionId, coldBackfill.data.messages)
   }, [coldBackfill.data, props.sessionId])
 
-  // Kill the session's terminal PTY when leaving this conversation — without
-  // it, switching sessions orphans a PTY for the 30-min detach TTL and can
-  // hit maxPtys after a few sessions (#310 review). Toggling Chat↔Terminal
-  // does NOT unmount ActiveSession, so it keeps the PTY for reattach.
-  useEffect(() => {
-    return () => {
-      const id = termPtyRef.current
-      if (id)
-        void useConnection
-          .getState()
-          .gateway.termKill(id)
-          .catch(() => undefined)
-    }
-  }, [])
+  // Leaving a conversation does NOT kill its harness: detach only. Switching
+  // away mid-turn must not abort the harness — the reply keeps streaming to
+  // the chat via the bridge, and reopening reattaches the same live PTY. The
+  // key on <ActiveSession> already resets this view's mode/termPtyId; the PTY
+  // is cleaned up by XtermAttach's detach (WS close → detached TTL) and the
+  // manager's LRU pool at maxPtys (#316), not by a kill-on-leave.
 
   // Model change invalidates a running terminal (it's the wrong harness now):
   // kill it so the next Terminal entry / chat send respawns with the chosen
