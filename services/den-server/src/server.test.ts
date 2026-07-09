@@ -388,8 +388,10 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     // by the harness paste heuristic as a newline instead of submitting).
     await new Promise((r) => setTimeout(r, 120)) // injectSubmitDelayMs:80 + slack
     expect(fakeProcs[0].writes).toContain('\r')
-    // submit:false writes the text verbatim (no paste wrap, no CR)
+    // submit:false writes the text verbatim (no paste wrap, no CR). It still
+    // serializes behind the prior turn's chain, so allow the stagger to drain.
     await post(base, '/term/inject', { session: 'chat-x', text: 'raw', submit: false })
+    await new Promise((r) => setTimeout(r, 120))
     expect(fakeProcs[0].writes).toContain('raw')
   })
 
