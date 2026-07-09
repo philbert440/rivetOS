@@ -251,10 +251,7 @@ export class RivetGateway {
   }
 
   /** On-disk harness transcript for hard-resync of the chat UI from TUI state. */
-  harnessTranscript(
-    sessionId: string,
-    signal?: AbortSignal,
-  ): Promise<HarnessTranscriptResponse> {
+  harnessTranscript(sessionId: string, signal?: AbortSignal): Promise<HarnessTranscriptResponse> {
     return request(
       this.config,
       `/api/terminal/harness-sessions/${encodeURIComponent(sessionId)}/transcript`,
