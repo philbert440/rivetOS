@@ -161,13 +161,18 @@ function Bubble(props: { msg: SessionMessage }): JSX.Element {
 }
 
 function LiveBubble(props: { turn: LiveTurn }): JSX.Element {
+  const hasTools = props.turn.tools.some((t) => t.status === 'running')
   const status =
     props.turn.activity ??
     (props.turn.reasoning
       ? 'thinking…'
-      : props.turn.tools.some((t) => t.status === 'running')
+      : hasTools
         ? 'working…'
-        : 'writing…')
+        : props.turn.text
+          ? 'writing…'
+          : 'processing…')
+  // Cursor only while tokens are still arriving (or waiting for first bytes).
+  const showCursor = !props.turn.text || props.turn.reasoning || hasTools || !!props.turn.activity
   return (
     <Row mine={false}>
       <div className="w-full px-1">
@@ -176,10 +181,23 @@ function LiveBubble(props: { turn: LiveTurn }): JSX.Element {
           open={props.turn.reasoning && !props.turn.text}
         />
         <ToolStack tools={props.turn.tools} />
-        {props.turn.text ? <Markdown>{props.turn.text}</Markdown> : null}
-        <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-ink-dim">
-          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-em" />
-          {status}
+        {props.turn.text ? (
+          <div className="relative">
+            <Markdown>{props.turn.text}</Markdown>
+            {showCursor && (
+              <span
+                className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-em align-text-bottom"
+                aria-hidden
+              />
+            )}
+          </div>
+        ) : null}
+        <div className="mt-1.5 flex items-center gap-2 font-mono text-[11px] text-ink-dim">
+          <span className="relative flex size-2">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-em opacity-60" />
+            <span className="relative inline-flex size-2 rounded-full bg-em" />
+          </span>
+          <span>{status}</span>
         </div>
       </div>
     </Row>

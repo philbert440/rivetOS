@@ -462,6 +462,17 @@ export function createGatewayChannel(opts?: {
             event: { type: 'reasoning', content: str('text') },
           })
           break
+        case 'activity': {
+          // Hermes/den activity labels ("thinking", "writing_plan", …) → status
+          // line on the live bubble so non-Claude harnesses show progress too.
+          const label = str('activity') || str('text') || 'working…'
+          emitFrame({
+            kind: 'stream',
+            session: sid,
+            event: { type: 'status', content: label },
+          })
+          break
+        }
         case 'tool.start': {
           // Optional args/input from harness adapters (when present) ride in
           // metadata so Hub can title tools and extract ask-user chips.

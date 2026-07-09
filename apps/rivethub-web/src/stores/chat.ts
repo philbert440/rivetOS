@@ -50,6 +50,15 @@ interface ChatState {
    *  unlike the chat-loop there's no instant echo. The real user frame (from
    *  the harness UserPromptSubmit hook, via the bridge) supersedes it by text. */
   addOptimisticUser: (sessionId: string, text: string) => void
+  /**
+   * Start (or keep) a live turn so the UI shows a typing/processing indicator
+   * as soon as the user sends — before the harness's first den event arrives
+   * (inject ready-gate + first tool can take seconds). Stream events from the
+   * WS fold on top via foldStream; clearLive / done clears the slot.
+   */
+  beginLive: (sessionId: string, activity?: string) => void
+  /** Drop the live slot (send failed, or explicit cancel). */
+  clearLive: (sessionId: string) => void
   setActive: (sessionId: string) => void
   connect: (endpointKey: string) => void
   disconnect: () => void
@@ -107,6 +116,28 @@ export const useChat = create<ChatState>((set, get) => ({
       }
       return { messages: { ...s.messages, [sessionId]: appendMessage(s.messages[sessionId], msg) } }
     }),
+
+  beginLive: (sessionId, activity = 'processing…') =>
+    set((s) => {
+      // Don't clobber an already-streaming turn (tool stack / partial text).
+      const existing = s.live[sessionId]
+      if (existing && (existing.text || existing.tools.length > 0 || existing.reasoningText)) {
+        return s
+      }
+      return {
+        live: {
+          ...s.live,
+          [sessionId]: existing
+            ? { ...existing, activity: activity || existing.activity }
+            : { text: '', reasoning: false, reasoningText: '', tools: [], activity },
+        },
+      }
+    }),
+
+  clearLive: (sessionId) =>
+    set((s) => ({
+      live: { ...s.live, [sessionId]: undefined },
+    })),
 
   setActive: (sessionId) =>
     set((s) => ({

@@ -416,23 +416,34 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   // chat↔terminal↔den one thread — the terminal shows the very harness the
   // chat is talking to, with full context.
   const addOptimisticUser = useChat((s) => s.addOptimisticUser)
+  const beginLive = useChat((s) => s.beginLive)
+  const clearLive = useChat((s) => s.clearLive)
   const sendToHarness = async (body: string): Promise<void> => {
     // Show the turn immediately — the inject echo (harness hook → bridge) has
     // real latency, unlike the chat-loop's instant echo.
     addOptimisticUser(props.sessionId, body)
+    // Typing indicator right away: inject ready-gate + first hook can take
+    // seconds before any stream event lands. WS foldStream replaces this
+    // with thinking / tools / text as den events arrive; done clears it.
+    beginLive(props.sessionId, 'received — processing…')
     const gw = useConnection.getState().gateway
-    await ensurePty()
     try {
-      await gw.termInject({ session: props.sessionId, text: body })
-    } catch (err) {
-      // The harness may have been LRU-evicted while we held a stale pty ref
-      // (#318 review): drop the ref, respawn (store-existence → --resume so
-      // context is kept), and retry once.
-      termPtyRef.current = undefined
-      setTermPtyId(undefined)
       await ensurePty()
-      await gw.termInject({ session: props.sessionId, text: body })
-      void err
+      beginLive(props.sessionId, 'working…')
+      try {
+        await gw.termInject({ session: props.sessionId, text: body })
+      } catch {
+        // The harness may have been LRU-evicted while we held a stale pty ref
+        // (#318 review): drop the ref, respawn (store-existence → --resume so
+        // context is kept), and retry once.
+        termPtyRef.current = undefined
+        setTermPtyId(undefined)
+        await ensurePty()
+        await gw.termInject({ session: props.sessionId, text: body })
+      }
+    } catch (err) {
+      clearLive(props.sessionId)
+      throw err
     }
   }
 
@@ -503,8 +514,12 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     <div className="relative flex min-w-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
         <span className="truncate font-mono text-xs text-ink-dim">{props.sessionId}</span>
-        {/* Context-fill bar — how full the model's window is (latest turn). */}
-        <ContextBar tokens={lastAssistant?.usage?.promptTokens} model={lastAssistant?.model} />
+        {/* Context-fill bar — reported usage when present; else estimate. */}
+        <ContextBar
+          tokens={lastAssistant?.usage?.promptTokens}
+          model={lastAssistant?.model || settings?.agent}
+          transcriptTexts={messages.map((m) => m.text)}
+        />
         {/* Resync from TUI — Android-style un-wedge (confirm first). */}
         <button
           type="button"
