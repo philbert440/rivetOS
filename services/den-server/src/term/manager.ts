@@ -600,10 +600,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // one submit delay — parallel API clients or a UI without a send lock.
         let startMs = Math.max(0, r.injectNextAtMs - now())
         if (interrupt) {
-          // Esc lands immediately to cancel the in-flight turn; the paste
-          // holds for the TUI's cancel redraw on top of any serialization.
-          laterWrite(r, INTERRUPT_ESC, 0)
-          startMs = Math.max(startMs, INTERRUPT_SETTLE_MS)
+          // Esc respects the serialization watermark: landing between a prior
+          // turn's paste and its CR would wipe that turn's input (the TUI
+          // clears its composer on Esc) and the CR would submit nothing
+          // (grok review, PR #338). After the chain: cancel, settle, paste.
+          laterWrite(r, INTERRUPT_ESC, startMs)
+          startMs += INTERRUPT_SETTLE_MS
         }
         submitWrite(r, text, submit, startMs)
         r.injectNextAtMs = now() + startMs + (submit ? submitDelayMs * 2 : submitDelayMs)
