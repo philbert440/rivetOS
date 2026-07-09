@@ -115,6 +115,10 @@ async function main() {
     // the hook can never see it — this re-reads once the writer unblocks
     await new Promise((r) => setTimeout(r, 1500))
     p = { session_id: args[1], transcript_path: args[2], hook_event_name: 'Flush' }
+    // when the Stop that spawned us happened — a newer prompt means a new
+    // turn is already running and this pass must not emit into it
+    const i = args.indexOf('--stop-ts')
+    if (i >= 0) p.stop_ts = Number(args[i + 1]) || 0
   } else {
     let raw = ''
     for await (const chunk of process.stdin) raw += chunk
@@ -516,10 +520,12 @@ async function main() {
       if (!text) {
         // grok: the final chunk lands only after this hook exits — hand off
         // to a detached flush pass. The flush pass owns turn.end then, so the
-        // bridge commits the late text BEFORE the turn is marked done.
+        // bridge commits the late text BEFORE the turn is marked done. It
+        // carries this Stop's timestamp so it can tell if a NEWER turn began
+        // during its 1.5s sleep (grok review, PR #338 residual race).
         const tp = p.transcript_path ?? p.transcriptPath
         if (tp) {
-          spawn(process.execPath, [fileURLToPath(import.meta.url), '--flush', session, tp, '--harness', harness], { detached: true, stdio: 'ignore' }).unref()
+          spawn(process.execPath, [fileURLToPath(import.meta.url), '--flush', session, tp, '--harness', harness, '--stop-ts', String(Date.now())], { detached: true, stdio: 'ignore' }).unref()
           break
         }
       }
@@ -529,6 +535,11 @@ async function main() {
       break
     }
     case 'Flush': {
+      // A prompt submitted during our detached sleep means a NEW turn is
+      // running: the stale reply must not bleed into its accumulator, and a
+      // turn.end here would clear its live view mid-stream. The new turn's
+      // own Stop owns both. (st.turnStart is stamped by UserPromptSubmit.)
+      if (p.stop_ts && st.turnStart > p.stop_ts) break
       let text = ''
       for (let i = 0; i < 4 && !text; i++) {
         text = tailTranscript().text
