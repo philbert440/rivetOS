@@ -374,8 +374,20 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     '/api/terminal/ws': '/term',
   }
   const canonicalize = (url: URL): void => {
+    // Exact aliases first — special cases like /api/terminal/ws → /term (not
+    // /term/ws) must win over the nested rewrite below.
     const alias = API_ALIASES[url.pathname]
-    if (alias) url.pathname = alias
+    if (alias) {
+      url.pathname = alias
+      return
+    }
+    // Nested /api/terminal/* → /term/* so routes like
+    // /api/terminal/harness-sessions/:id/transcript reach the term block
+    // (which only matches paths under /term/). Without this, the client
+    // gets a bare 404 "not found".
+    if (url.pathname.startsWith('/api/terminal/')) {
+      url.pathname = `/term/${url.pathname.slice('/api/terminal/'.length)}`
+    }
   }
 
   const server = createServer((req, res) => {
@@ -613,14 +625,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         }
 
         // GET /term/harness-sessions/:id/transcript — hard-resync source: the
-        // on-disk TUI conversation (claude/grok/hermes). Mirrors Android
-        // SessionTranscript; RivetHub chat UI rebuilds its transcript from this.
-        // Also accept the /api/terminal/... alias (canonicalize only rewrites
-        // exact paths, not nested ones).
+        // on-disk TUI conversation (claude/grok/hermes). Client hits the
+        // /api/terminal/... alias; canonicalize rewrites it under /term/.
         {
-          const m = url.pathname.match(
-            /^\/(?:api\/terminal\/|term\/)harness-sessions\/([^/]+)\/transcript$/,
-          )
+          const m = url.pathname.match(/^\/term\/harness-sessions\/([^/]+)\/transcript$/)
           if (req.method === 'GET' && m) {
             const id = decodeURIComponent(m[1] ?? '')
             const transcript = await readHarnessTranscript(id)
