@@ -384,6 +384,20 @@ export interface HarnessSessionsResponse {
   sessions: HarnessSession[]
 }
 
+/** One turn from GET /api/terminal/harness-sessions/:id/transcript (TUI store). */
+export interface HarnessTranscriptTurn {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+/** Hard-resync payload: rebuild chat UI from the on-disk harness transcript. */
+export interface HarnessTranscriptResponse {
+  id: string
+  /** Which harness produced the turns, or '' if none found. */
+  command: string
+  turns: HarnessTranscriptTurn[]
+}
+
 export interface PtyInfo {
   id: string
   denSession: string

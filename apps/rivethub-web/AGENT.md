@@ -16,6 +16,11 @@
 Top → Chat, Terminal, Den ↗, separator, Files, Tasks. Bottom → Settings, then node switcher.
 **Files** = browser for `/rivet-shared` (shared collab mount). Stub page at `/files` until gateway list/read is wired; not personal `~/.rivetos` workspace.
 
+### Chat resync from TUI (Android parity)
+Header ↻ button → confirm → hard-replace transcript from
+`GET /api/terminal/harness-sessions/:id/transcript` (claude jsonl / grok chat_history / hermes sqlite).
+Falls back to memory+ring if the store is empty. Store method: `useChat.replace`.
+
 ### Track 1 — Rich chat — **shipped** (PR #329)
 
 | Area | State |

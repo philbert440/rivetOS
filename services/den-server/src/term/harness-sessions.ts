@@ -307,3 +307,228 @@ export async function listHarnessSessions(
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
+
+// ---- Transcript read (resync chat UI from on-disk TUI store) ---------------
+
+/** One user/assistant turn pulled from a harness session store. */
+export interface HarnessTurn {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+export interface HarnessTranscript {
+  /** session id that was requested */
+  id: string
+  /** which harness store produced the turns (or '' if none found) */
+  command: string
+  turns: HarnessTurn[]
+}
+
+/** Cap full transcript reads — multi-MB jsonl is real; chat UI only needs turns. */
+const TRANSCRIPT_MAX_BYTES = 8 * 1024 * 1024
+
+/**
+ * Pull display text out of a message content value (string or content blocks).
+ * Keeps `text` blocks; drops thinking / tool_use / tool_result. Returns null
+ * for turns with no human-visible text.
+ */
+function extractTurnText(content: unknown, role: 'user' | 'assistant'): string | null {
+  let text = ''
+  if (typeof content === 'string') {
+    text = content
+  } else if (Array.isArray(content)) {
+    text = content
+      .map((b) =>
+        b && typeof b === 'object' && (b as { type?: unknown }).type === 'text'
+          ? String((b as { text?: unknown }).text ?? '')
+          : '',
+      )
+      .filter(Boolean)
+      .join('\n')
+  }
+  text = text.trim()
+  if (!text) return null
+  // Skip harness-injected wrappers that aren't real conversational content
+  // (mirrors Android SessionTranscript.extractText).
+  if (
+    role === 'user' &&
+    (text.startsWith('<command-') ||
+      text.startsWith('<local-command') ||
+      text.startsWith('<system-reminder') ||
+      text.startsWith('<user_info') ||
+      text.startsWith('Caveat:'))
+  ) {
+    return null
+  }
+  // grok wraps the actual user message in <user_query>…</user_query>
+  if (role === 'user' && text.startsWith('<user_query>')) {
+    const end = text.indexOf('</user_query>')
+    text = (end >= 0 ? text.slice('<user_query>'.length, end) : text.slice('<user_query>'.length)).trim()
+    if (!text) return null
+  }
+  return text
+}
+
+async function parseJsonlTurns(
+  file: string,
+  pick: (obj: Record<string, unknown>) => HarnessTurn | null,
+): Promise<HarnessTurn[]> {
+  let raw: string
+  try {
+    const s = await stat(file)
+    if (s.size > TRANSCRIPT_MAX_BYTES) {
+      // Read the tail so we still get recent turns rather than failing hard.
+      const fh = await open(file, 'r')
+      try {
+        const start = Math.max(0, s.size - TRANSCRIPT_MAX_BYTES)
+        const buf = Buffer.alloc(s.size - start)
+        await fh.read(buf, 0, buf.length, start)
+        raw = buf.toString('utf8')
+        // Drop partial first line after a mid-file seek.
+        if (start > 0) {
+          const nl = raw.indexOf('\n')
+          if (nl >= 0) raw = raw.slice(nl + 1)
+        }
+      } finally {
+        await fh.close()
+      }
+    } else {
+      raw = await readFile(file, 'utf8')
+    }
+  } catch {
+    return []
+  }
+  const out: HarnessTurn[] = []
+  for (const line of raw.split('\n')) {
+    const t = line.trim()
+    if (!t.startsWith('{')) continue
+    let obj: Record<string, unknown>
+    try {
+      obj = JSON.parse(t) as Record<string, unknown>
+    } catch {
+      continue
+    }
+    const turn = pick(obj)
+    if (turn) out.push(turn)
+  }
+  return out
+}
+
+async function findClaudeJsonl(id: string): Promise<string | undefined> {
+  const dir = claudeProjectsDir()
+  let slugs: string[]
+  try {
+    slugs = await readdir(dir)
+  } catch {
+    return undefined
+  }
+  // Prefer the most recently modified match if the id appears under multiple cwd slugs.
+  let best: { path: string; mtime: number } | undefined
+  for (const slug of slugs) {
+    const path = join(dir, slug, `${id}.jsonl`)
+    try {
+      const s = await stat(path)
+      if (s.isFile() && (!best || s.mtimeMs > best.mtime)) best = { path, mtime: s.mtimeMs }
+    } catch {
+      /* miss */
+    }
+  }
+  return best?.path
+}
+
+async function findGrokChatHistory(id: string): Promise<string | undefined> {
+  const dir = grokSessionsDir()
+  let cwdDirs: string[]
+  try {
+    cwdDirs = await readdir(dir)
+  } catch {
+    return undefined
+  }
+  let best: { path: string; mtime: number } | undefined
+  for (const cwd of cwdDirs) {
+    const path = join(dir, cwd, id, 'chat_history.jsonl')
+    try {
+      const s = await stat(path)
+      if (s.isFile() && (!best || s.mtimeMs > best.mtime)) best = { path, mtime: s.mtimeMs }
+    } catch {
+      /* miss */
+    }
+  }
+  return best?.path
+}
+
+function readHermesTurns(id: string): HarnessTurn[] {
+  const db = openHermesDb()
+  if (!db) return []
+  try {
+    const rows = db
+      .prepare(
+        `SELECT role, content FROM messages
+         WHERE session_id = ? AND role IN ('user', 'assistant')
+         ORDER BY timestamp ASC`,
+      )
+      .all(id)
+    const out: HarnessTurn[] = []
+    for (const r of rows) {
+      const role = r.role === 'assistant' ? 'assistant' : r.role === 'user' ? 'user' : null
+      if (!role) continue
+      const text = extractTurnText(r.content, role)
+      if (text) out.push({ role, text })
+    }
+    return out
+  } catch {
+    return []
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * Read the on-disk harness transcript for a session id (Claude jsonl / Grok
+ * chat_history / Hermes sqlite). This is the canonical TUI conversation state
+ * used to hard-resync the RivetHub chat UI when it has diverged (Android
+ * SessionTranscript + resyncTranscriptToConversation pattern).
+ *
+ * Tries Claude → Grok → Hermes and returns the first non-empty transcript
+ * (session ids are UUIDs per harness; collisions across harnesses are rare).
+ */
+export async function readHarnessTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) {
+    return { id, command: '', turns: [] }
+  }
+
+  const claudePath = await findClaudeJsonl(id)
+  if (claudePath) {
+    const turns = await parseJsonlTurns(claudePath, (obj) => {
+      if (obj.isSidechain === true) return null
+      const type = obj.type
+      if (type !== 'user' && type !== 'assistant') return null
+      const role = type as 'user' | 'assistant'
+      const msg = obj.message as { content?: unknown } | undefined
+      const text = extractTurnText(msg?.content, role)
+      return text ? { role, text } : null
+    })
+    if (turns.length > 0) return { id, command: 'claude', turns }
+  }
+
+  const grokPath = await findGrokChatHistory(id)
+  if (grokPath) {
+    const turns = await parseJsonlTurns(grokPath, (obj) => {
+      const type = typeof obj.type === 'string' ? obj.type : typeof obj.role === 'string' ? obj.role : ''
+      if (type !== 'user' && type !== 'assistant') return null
+      const role = type as 'user' | 'assistant'
+      const text = extractTurnText(obj.content, role)
+      return text ? { role, text } : null
+    })
+    if (turns.length > 0) return { id, command: 'grok', turns }
+  }
+
+  const hermes = readHermesTurns(id)
+  if (hermes.length > 0) return { id, command: 'hermes', turns: hermes }
+
+  return { id, command: '', turns: [] }
+}

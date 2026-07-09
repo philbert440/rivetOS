@@ -41,6 +41,9 @@ interface ChatState {
   /** the open conversation */
   active?: string
   seed: (sessionId: string, messages: SessionMessage[]) => void
+  /** Hard-resync: replace the session transcript wholesale and clear live
+   *  turn state (Android resyncTranscriptToConversation). Does not merge. */
+  replace: (sessionId: string, messages: SessionMessage[]) => void
   addDraft: (sessionId: string) => void
   /** Seamless modes: show the user's turn immediately on a harness send. The
    *  inject path has real latency (hook fire + first-boot ready-gate), so
@@ -80,6 +83,12 @@ export const useChat = create<ChatState>((set, get) => ({
       merged.sort((a, b) => a.ts - b.ts)
       return { messages: { ...s.messages, [sessionId]: merged } }
     }),
+
+  replace: (sessionId, msgs) =>
+    set((s) => ({
+      messages: { ...s.messages, [sessionId]: [...msgs] },
+      live: { ...s.live, [sessionId]: undefined },
+    })),
 
   addDraft: (sessionId) =>
     set((s) => ({

@@ -31,6 +31,7 @@ import type {
 import type {
   TermConfigResponse,
   HarnessSessionsResponse,
+  HarnessTranscriptResponse,
   TermInjectRequest,
   TermInjectResponse,
   TermListResponse,
@@ -247,6 +248,18 @@ export class RivetGateway {
    *  with { session, resume: <id> }. */
   harnessSessions(signal?: AbortSignal): Promise<HarnessSessionsResponse> {
     return request(this.config, '/api/terminal/harness-sessions', { signal })
+  }
+
+  /** On-disk harness transcript for hard-resync of the chat UI from TUI state. */
+  harnessTranscript(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<HarnessTranscriptResponse> {
+    return request(
+      this.config,
+      `/api/terminal/harness-sessions/${encodeURIComponent(sessionId)}/transcript`,
+      { signal },
+    )
   }
 
   termSpawn(body: TermSpawnRequest = {}): Promise<TermSpawnResponse> {

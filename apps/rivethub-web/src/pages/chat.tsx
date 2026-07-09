@@ -6,7 +6,8 @@
  */
 
 import { useEffect, useRef, useState, type JSX } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type { SessionMessage } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { useChat } from '../stores/chat.js'
@@ -17,7 +18,7 @@ import { XtermAttach } from '../components/xterm-attach.js'
 import { chipsFromLiveTools } from '../lib/ask-user.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
-import { Pencil } from 'lucide-react'
+import { Pencil, RefreshCw } from 'lucide-react'
 import { useSessionNames } from '../stores/session-names.js'
 
 // A conversation id IS a UUID so it can be the harness's native session id
@@ -223,6 +224,9 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
   const [spawning, setSpawning] = useState(false)
+  const [resyncConfirm, setResyncConfirm] = useState(false)
+  const [resyncing, setResyncing] = useState(false)
+  const [resyncMsg, setResyncMsg] = useState<string | undefined>()
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
   // (state is captured stale in an unmount-only effect) — #310 review.
   const termPtyRef = useRef<string | undefined>(undefined)
@@ -244,6 +248,8 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const wsStatus = useChat((s) => s.wsStatus)
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
+  const replace = useChat((s) => s.replace)
+  const queryClient = useQueryClient()
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
 
@@ -377,17 +383,86 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     }
   }
 
+  /**
+   * Hard-resync from the on-disk TUI store (Android resyncCliTranscript).
+   * Drops the chat UI transcript + live turn and rebuilds from harness
+   * jsonl/sqlite. Falls back to memory conversationMessages if the store
+   * has no turns yet. Destructive to optimistic/chat-only bubbles — confirm first.
+   */
+  const resyncFromTui = async (): Promise<void> => {
+    setResyncing(true)
+    setResyncMsg(undefined)
+    try {
+      const gw = useConnection.getState().gateway
+      const transcript = await gw.harnessTranscript(props.sessionId)
+      let next: SessionMessage[]
+      if (transcript.turns.length > 0) {
+        next = transcript.turns.map((t, i) => ({
+          id: `harness:${props.sessionId}:${String(i)}`,
+          sessionId: props.sessionId,
+          role: t.role,
+          text: t.text,
+          ts: i + 1, // preserve order; harness store has no reliable per-turn ms
+        }))
+      } else {
+        // No on-disk store (fresh draft / unknown harness) — fall back to
+        // durable memory + ring, still as a hard replace so dups/stuck live clear.
+        const [ring, cold] = await Promise.all([
+          gw.sessionMessages(props.sessionId).catch(() => ({ messages: [] as SessionMessage[] })),
+          gw
+            .conversationMessages(props.sessionId)
+            .catch(() => ({ messages: [] as SessionMessage[] })),
+        ])
+        const byId = new Map<string, SessionMessage>()
+        for (const m of cold.messages) byId.set(m.id, m)
+        for (const m of ring.messages) byId.set(m.id, m)
+        next = [...byId.values()].sort((a, b) => a.ts - b.ts)
+      }
+      replace(props.sessionId, next)
+      // Drop cached backfills so the next open doesn't re-seed stale merges.
+      void queryClient.invalidateQueries({
+        queryKey: ['session-messages', baseUrl, token ?? '', props.sessionId],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ['conv-messages', baseUrl, token ?? '', props.sessionId],
+      })
+      setResyncMsg(
+        transcript.turns.length > 0
+          ? `resynced ${String(next.length)} turn(s) from ${transcript.command || 'tui'}`
+          : next.length > 0
+            ? `resynced ${String(next.length)} turn(s) from memory/ring`
+            : 'no transcript found on this node',
+      )
+    } catch (err) {
+      setResyncMsg((err as Error).message)
+    } finally {
+      setResyncing(false)
+      setResyncConfirm(false)
+    }
+  }
+
   const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(props.sessionId)}`
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
+    <div className="relative flex min-w-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
         <span className="truncate font-mono text-xs text-ink-dim">{props.sessionId}</span>
         {/* Context-fill bar — how full the model's window is (latest turn). */}
         <ContextBar tokens={lastAssistant?.usage?.promptTokens} model={lastAssistant?.model} />
+        {/* Resync from TUI — Android-style un-wedge (confirm first). */}
+        <button
+          type="button"
+          onClick={() => setResyncConfirm(true)}
+          disabled={resyncing}
+          title="Resync chat from the terminal session transcript"
+          aria-label="Resync transcript"
+          className="ml-auto shrink-0 rounded border border-line px-2 py-1 text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
+        >
+          <RefreshCw className={`size-3.5 ${resyncing ? 'animate-spin' : ''}`} />
+        </button>
         {/* [Chat | Terminal | Den] — three views of ONE session; the bar
             stays visible so the den never takes over with no way back. */}
-        <span className="ml-auto flex shrink-0 overflow-hidden rounded-md border border-line">
+        <span className="flex shrink-0 overflow-hidden rounded-md border border-line">
           <button
             onClick={() => setMode('chat')}
             className={`px-2.5 py-1 font-mono text-[11px] ${mode === 'chat' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
@@ -409,6 +484,46 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
           </button>
         </span>
       </div>
+      {resyncMsg && (
+        <div className="border-b border-line bg-panel-2/40 px-4 py-1 font-mono text-[11px] text-ink-dim">
+          {resyncMsg}
+        </div>
+      )}
+      {resyncConfirm && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg/70 p-4">
+          <div
+            role="dialog"
+            aria-labelledby="resync-title"
+            className="w-full max-w-md rounded-lg border border-line bg-panel p-4 shadow-lg"
+          >
+            <h2 id="resync-title" className="mb-2 font-mono text-sm font-semibold text-em">
+              Resync transcript?
+            </h2>
+            <p className="mb-4 text-sm text-ink-dim">
+              Rebuilds this chat from the on-disk terminal (TUI) session, dropping any chat-only
+              or stuck messages that diverged from it. Use this if the chat looks out of sync
+              with Terminal mode.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setResyncConfirm(false)}
+                className="rounded border border-line px-3 py-1.5 text-sm text-ink-dim hover:text-ink"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void resyncFromTui()}
+                disabled={resyncing}
+                className="rounded border border-em bg-em-dim/20 px-3 py-1.5 text-sm text-em hover:bg-em-dim/40 disabled:opacity-50"
+              >
+                {resyncing ? 'Resyncing…' : 'Resync'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {mode === 'chat' ? (
         <>
