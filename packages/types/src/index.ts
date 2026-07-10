@@ -238,4 +238,9 @@ export type {
   TermHelloFrame,
   TermExitFrame,
   TermControlFrame,
+  DenSessionInfo,
+  DenSessionsResponse,
+  FileEntry,
+  FilesListResponse,
+  FilesUploadResponse,
 } from './gateway-api.js'

@@ -59,14 +59,32 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
   const env: Record<string, string> = {
     RIVETOS_DEN_HOST: den.host?.trim() || '127.0.0.1',
     RIVETOS_DEN_PORT: String(den.port ?? 5174),
-    RIVETOS_DEN_STATIC_DIR: den.static_dir?.trim() || join(installRoot, 'apps', 'den', 'dist'),
+    RIVETOS_DEN_STATIC_DIR: den.static_dir?.trim() || defaultStaticDir(installRoot),
     RIVETOS_DEN_PACKS_DIR:
       den.packs_dir?.trim() || join(installRoot, 'packages', 'den-packs', 'packs'),
   }
   if (den.root_redirect?.trim()) env.RIVETOS_DEN_ROOT_REDIRECT = den.root_redirect.trim()
+  if (den.files_root !== undefined) env.RIVETOS_DEN_FILES_ROOT = den.files_root.trim()
+  // files_open defaults to the terminal posture: a node the operator already
+  // opted into tokenless trusted-LAN terminals gets the files browser too.
+  if (den.files_open === true || (den.files_open === undefined && terminal?.open === true))
+    env.RIVETOS_DEN_FILES_OPEN = '1'
   if (terminal?.enabled === true) env.RIVETOS_DEN_TERM = '1'
   if (terminal?.open === true) env.RIVETOS_DEN_TERM_OPEN = '1'
   return env
+}
+
+/**
+ * Hub-first static default: when the node has a built RivetHub, serve it at
+ * / (the den viewer rides nested at /den/ via copy-den.mjs). The bare den
+ * viewer is only the root when no hub dist exists. Before this, nodes
+ * without an explicit static_dir served the den viewer full-screen — a
+ * node-switch from another hub landed there with no way back into the hub.
+ */
+function defaultStaticDir(installRoot: string): string {
+  const hub = join(installRoot, 'apps', 'rivethub-web', 'dist')
+  if (existsSync(join(hub, 'index.html'))) return hub
+  return join(installRoot, 'apps', 'den', 'dist')
 }
 
 export interface GatewayStart {

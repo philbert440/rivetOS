@@ -38,7 +38,8 @@ import type {
   TermSpawnRequest,
   TermSpawnResponse,
 } from '@rivetos/types'
-import { request, type QueryValue } from './http.js'
+import type { DenSessionsResponse, FilesListResponse, FilesUploadResponse } from '@rivetos/types'
+import { GatewayError, request, type QueryValue } from './http.js'
 import {
   subscribe,
   type Subscription,
@@ -292,6 +293,75 @@ export class RivetGateway {
     if (attach.session) u.searchParams.set('session', attach.session)
     if (this.config.token) u.searchParams.set('token', this.config.token)
     return u.toString()
+  }
+
+  /** Live den session roster from the node's event reducer (sidebar Den
+   *  list) — every session that has emitted den events, recency-ordered. */
+  denSessions(signal?: AbortSignal): Promise<DenSessionsResponse> {
+    return request(this.config, '/api/events/sessions', { signal })
+  }
+
+  // -- files (shared filestore, fenced to the node's files root) --------------
+
+  filesList(path: string, signal?: AbortSignal): Promise<FilesListResponse> {
+    return request(this.config, '/api/files/list', { query: { path }, signal })
+  }
+
+  /** Browser download/open URL for one file. Token rides ?token= (same
+   *  pattern as terminalWsUrl — an <a href>/window.open can't carry a
+   *  bearer header). */
+  fileDownloadUrl(path: string): string {
+    const u = new URL(
+      '/api/files/download',
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    )
+    u.searchParams.set('path', path)
+    if (this.config.token) u.searchParams.set('token', this.config.token)
+    return u.toString()
+  }
+
+  /** Upload raw bytes as `<dir>/<name>` under the files root. No-clobber by
+   *  default; pass overwrite to replace. Bypasses request(): the body is
+   *  binary, not JSON. */
+  async filesUpload(
+    dir: string,
+    name: string,
+    body: Blob | ArrayBuffer,
+    opts: { overwrite?: boolean; signal?: AbortSignal } = {},
+  ): Promise<FilesUploadResponse> {
+    const u = new URL(
+      '/api/files/upload',
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    )
+    u.searchParams.set('dir', dir)
+    u.searchParams.set('name', name)
+    if (opts.overwrite) u.searchParams.set('overwrite', '1')
+    const headers: Record<string, string> = { 'content-type': 'application/octet-stream' }
+    if (this.config.token) headers.authorization = `Bearer ${this.config.token}`
+    let res: Response
+    try {
+      res = await fetch(u.toString(), {
+        method: 'POST',
+        headers,
+        body,
+        signal: opts.signal,
+      })
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') throw err
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new GatewayError(0, `gateway unreachable: ${msg}`, undefined)
+    }
+    const parsed: unknown = await res.json().catch(() => undefined)
+    if (!res.ok) {
+      const message =
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        typeof (parsed as { error?: unknown }).error === 'string'
+          ? (parsed as { error: string }).error
+          : `gateway ${res.status} on /api/files/upload`
+      throw new GatewayError(res.status, message, parsed)
+    }
+    return parsed as FilesUploadResponse
   }
 
   // -- notifications (4e — server route lands with the escalation WS) --------

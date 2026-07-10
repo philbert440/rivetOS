@@ -10,11 +10,15 @@
 - Talks to RivetOS gateway (`@rivetos/gateway-client`, `@rivetos/types`).
 - Seamless modes: chat inject → harness PTY → den events → `bridgeAgentEvent` → sessions WS.
 
-## Status (2026-07-09)
+## Status (2026-07-10)
 
-### Sidebar rail order
-Top → Chat, Terminal, Den ↗, separator, Files, Tasks. Bottom → Settings, then node switcher.
-**Files** = browser for `/rivet-shared` (shared collab mount). Stub page at `/files` until gateway list/read is wired; not personal `~/.rivetos` workspace.
+### Sidebar pages (2026-07-10)
+Rail is now Terminal, Conversations (route `/`), Den (in-app `/dens`), separator, Files, Tasks. "Conversations" is the rail label only — the per-conversation toggle stays [Terminal | Chat | Den].
+
+- **Terminal** (`/terminal`) lands on the node's open-PTY list (click to attach); the tab bar remains the quick switcher.
+- **Den** (`/dens`) lists the node's live den sessions (`GET /api/events/sessions` → `gateway.denSessions()`), embedded viewer iframe on pick. Replaced the old `/den/` link-out.
+- **Files** (`/files`) = drag-and-drop browser for the node's files root (`/rivet-shared` default). Server: den-server `src/files.ts` (`/api/files/list|download|upload`, path+symlink fenced, 1 GiB cap, no-clobber unless `overwrite=1`); config `den.files_root` / `RIVETOS_DEN_FILES_ROOT` ('' disables).
+- **Node-switch den trap fixed in boot**: default den static_dir is hub-first (`apps/rivethub-web/dist` when built, else den viewer) — peers without an explicit `static_dir` used to serve full-screen den at `/` with no way back.
 
 ### Chat resync from TUI (Android parity)
 **Auto on open:** opening a conversation (and returning Chat←Terminal/Den) pulls

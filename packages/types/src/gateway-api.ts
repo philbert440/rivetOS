@@ -517,3 +517,53 @@ export type NotificationFrame =
       ts: number
     }
   | { kind: 'task.done'; taskId: string; status: TaskStatus; ts: number }
+
+// ---------------------------------------------------------------------------
+// GET /api/events/sessions — the den's live session roster (reducer state).
+// ---------------------------------------------------------------------------
+
+/** One den session as reported by the den event reducer. */
+export interface DenSessionInfo {
+  id: string
+  /** display name (falls back to the id server-side) */
+  name: string
+  /** harness that emitted the events (e.g. 'claude', 'grok') */
+  harness?: string
+  /** epoch ms of the most recent event */
+  lastEventTs?: number
+  /** id of a local PTY currently linked to this session, when one exists */
+  pty?: string
+}
+
+export interface DenSessionsResponse {
+  sessions: DenSessionInfo[]
+}
+
+// ---------------------------------------------------------------------------
+// /api/files/* — shared filestore browser (path-fenced to the node's
+// configured files root, `/rivet-shared` by default).
+// ---------------------------------------------------------------------------
+
+export interface FileEntry {
+  name: string
+  type: 'file' | 'dir'
+  /** bytes; 0 for dirs */
+  size: number
+  /** epoch ms */
+  mtime: number
+}
+
+export interface FilesListResponse {
+  /** normalized path relative to the files root ('' = root) */
+  path: string
+  /** absolute root on the node, for display (e.g. '/rivet-shared') */
+  root: string
+  entries: FileEntry[]
+}
+
+export interface FilesUploadResponse {
+  ok: true
+  /** root-relative path of the written file */
+  path: string
+  bytes: number
+}
