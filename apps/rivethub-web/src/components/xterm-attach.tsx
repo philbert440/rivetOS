@@ -7,6 +7,7 @@ import type { TermExitFrame, TermHelloFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
 import { copyTextToClipboard, readTextFromClipboard } from '../lib/clipboard.js'
+import { openExternal } from '../lib/open-external.js'
 
 /**
  * Attach an xterm to a PTY over WS /api/terminal/ws. Framing per den-server
@@ -38,10 +39,10 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
-    // Clickable URLs in TUI output (PR links, dashboards). Explicit handler
-    // with noopener; under the Tauri shell window.open routes to the system
-    // browser via the webview's navigation policy.
-    term.loadAddon(new WebLinksAddon((_e, uri) => window.open(uri, '_blank', 'noopener')))
+    // Clickable URLs in TUI output (PR links, dashboards) — openExternal
+    // routes through the Tauri opener IPC in the shell (window.open is a
+    // silent no-op there) and plain window.open in browsers.
+    term.loadAddon(new WebLinksAddon((_e, uri) => openExternal(uri)))
 
     // Terminal-convention clipboard: Ctrl+Shift+C copies the selection,
     // Ctrl+Shift+V pastes (Tauri IPC / Clipboard API — lib/clipboard.ts).

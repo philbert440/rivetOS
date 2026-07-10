@@ -13,6 +13,7 @@ import remarkGfm from 'remark-gfm'
 // Copy helper lives in lib/clipboard.ts (Tauri IPC → navigator.clipboard →
 // execCommand). Re-exported below for existing imports of this module.
 import { copyTextToClipboard } from '../lib/clipboard.js'
+import { openExternal } from '../lib/open-external.js'
 import { cn } from '../lib/utils.js'
 
 export { copyTextToClipboard }
@@ -99,11 +100,20 @@ function FencedPre(props: { children?: ReactNode }): JSX.Element {
  * Markdown for assistant messages — GFM; Rivet tokens; fenced copy.
  */
 const COMPONENTS: Components = {
-  a: ({ className, ...props }) => (
+  a: ({ className, href, ...props }) => (
     <a
       {...props}
+      href={href}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={(e) => {
+        // Tauri shell: window.open/target=_blank are silent no-ops — route
+        // through the opener IPC. Browsers fall through to normal behavior.
+        if (href) {
+          e.preventDefault()
+          openExternal(href)
+        }
+      }}
       className={cn('text-em underline underline-offset-2 hover:text-em-dim', className)}
     />
   ),

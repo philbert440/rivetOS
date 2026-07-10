@@ -77,6 +77,9 @@ pub fn run() {
         // LAN http:// origin, where the browser Clipboard API doesn't exist
         // (non-secure context) — copy/paste rides this plugin instead.
         .plugin(tauri_plugin_clipboard_manager::init())
+        // External links: WebKitGTK drops window.open/new-window requests, so
+        // the web app routes link clicks through this plugin's IPC.
+        .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_shortcuts([
