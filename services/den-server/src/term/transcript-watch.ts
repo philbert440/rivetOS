@@ -158,10 +158,13 @@ export function createTranscriptWatcher(
       return
     }
     s.parsing = true
+    // A consumed-but-unemitted sync must not be lost to an exception — the
+    // client would stall until the next disk change (grok re-review).
+    let pendingSnapshot = false
     try {
       do {
         s.dirty = false
-        const wantSnapshot = s.wantSnapshot
+        pendingSnapshot = s.wantSnapshot
         s.wantSnapshot = false
         // Hot path: parse the resolved store directly (no per-parse scan of
         // every project slug). An empty parse where we previously had turns
@@ -171,10 +174,19 @@ export function createTranscriptWatcher(
           : await readHarnessTranscript(session)
         if (s.store && t.turns.length === 0 && s.sigs.length > 0) {
           t = await readHarnessTranscript(session)
+          // Rotation: re-point the watch at wherever the turns now live so
+          // hot parses stop paying the full scan (grok re-review).
+          if (t.turns.length > 0 && isLive(session, s)) {
+            const ref = await resolveHarnessStore(session)
+            if (ref && isLive(session, s)) {
+              s.fsWatcher?.close()
+              startFileWatch(session, s, ref)
+            }
+          }
         }
         if (!isLive(session, s)) return
         const sigs = t.turns.map((turn) => JSON.stringify(turn))
-        if (wantSnapshot) {
+        if (pendingSnapshot) {
           s.sigs = sigs
           s.command = t.command
           s.rev += 1
@@ -190,9 +202,12 @@ export function createTranscriptWatcher(
         } else {
           emitDelta(session, s, sigs, t.turns, t.command)
         }
+        pendingSnapshot = false
       } while (stillDirty(session))
     } catch {
-      // unreadable mid-write — the next change/safety poll retries
+      // unreadable mid-write — the next change/safety poll retries; restore
+      // a consumed sync request so it isn't silently dropped
+      if (pendingSnapshot) s.wantSnapshot = true
     } finally {
       s.parsing = false
     }
