@@ -658,7 +658,11 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
       ? messages.slice(0, -1)
       : messages
 
-  const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(props.sessionId)}`
+  // ?token= rides along for token-gated gateways — an iframe can't carry a
+  // bearer header (den viewer net.ts keeps it across routes).
+  const denUrl =
+    `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(props.sessionId)}` +
+    (token ? `&token=${encodeURIComponent(token)}` : '')
 
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">

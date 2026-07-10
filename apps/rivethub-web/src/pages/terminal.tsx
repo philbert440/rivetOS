@@ -87,10 +87,47 @@ export function TerminalPage(): JSX.Element {
       {attached ? (
         <XtermAttach key={`${endpointKey}|${attached}`} ptyId={attached} />
       ) : (
-        <div className="flex flex-1 items-center justify-center text-sm text-ink-dim">
-          Spawn or pick a terminal above.
-        </div>
+        <PtyList ptys={list.data?.ptys ?? []} onSelect={setAttached} />
       )}
+    </div>
+  )
+}
+
+/** Landing view: every open terminal session on the node, click to attach.
+ *  (The tab bar above stays the quick switcher once one is attached.) */
+function PtyList(props: { ptys: PtyInfo[]; onSelect: (id: string) => void }): JSX.Element {
+  if (props.ptys.length === 0)
+    return (
+      <div className="flex flex-1 items-center justify-center text-sm text-ink-dim">
+        No open terminals on this node — spawn one above.
+      </div>
+    )
+  return (
+    <div className="flex-1 overflow-y-auto p-4">
+      <div className="mb-2 font-mono text-xs text-ink-dim">
+        open terminals · {props.ptys.length}
+      </div>
+      <div className="flex max-w-2xl flex-col gap-1.5">
+        {props.ptys.map((p) => (
+          <button
+            key={p.id}
+            onClick={() => props.onSelect(p.id)}
+            className="flex items-baseline gap-3 rounded border border-line bg-panel/40 px-3 py-2 text-left hover:border-em"
+          >
+            <span
+              className={`font-mono text-sm ${p.state === 'running' ? 'text-em' : 'text-ink-dim line-through'}`}
+            >
+              {p.command}
+            </span>
+            <span className="truncate font-mono text-[11px] text-ink-dim">{p.denSession}</span>
+            <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-dim">
+              {p.state === 'exited'
+                ? `exited${p.exitCode != null ? ` (${String(p.exitCode)})` : ''}`
+                : `${String(p.attached)} attached`}
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
