@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { TermExitFrame, TermHelloFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
@@ -29,10 +30,17 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
     const term = new Terminal({
       fontFamily: "'JetBrains Mono', monospace",
       fontSize: 13,
+      // Harness output is chatty — the 1000-line default loses the top of a
+      // single long tool run. 5k lines is still trivial memory-wise.
+      scrollback: 5000,
       theme: { background: '#0d1117', foreground: '#e6edf3', cursor: '#34d399' },
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
+    // Clickable URLs in TUI output (PR links, dashboards). Explicit handler
+    // with noopener; under the Tauri shell window.open routes to the system
+    // browser via the webview's navigation policy.
+    term.loadAddon(new WebLinksAddon((_e, uri) => window.open(uri, '_blank', 'noopener')))
     term.open(host)
     fit.fit()
 

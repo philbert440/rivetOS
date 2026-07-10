@@ -94,6 +94,13 @@ export function SettingsPage(): JSX.Element {
         )}
         {probe.kind === 'fail' && <span className="text-red">✗ {probe.message}</span>}
       </div>
+
+      {/* Build stamp — the desktop shell bakes this dist in at build time, so
+          this line is how you tell whether a binary has gone stale. */}
+      <div className="mt-10 border-t border-line pt-3 font-mono text-[11px] text-ink-dim">
+        RivetHub v{__BUILD_INFO__.version} · dist {__BUILD_INFO__.sha} · built{' '}
+        {__BUILD_INFO__.builtAt}
+      </div>
     </div>
   )
 }
