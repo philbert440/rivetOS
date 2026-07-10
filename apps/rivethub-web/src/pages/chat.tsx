@@ -752,15 +752,14 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
 
       {mode === 'chat' ? (
         <>
-          <div className="flex-1 overflow-y-auto">
-            <Transcript
-              messages={messages}
-              live={live}
-              outbound={Object.fromEntries(outbound.map((o) => [o.id, o.status]))}
-              onInjectOutbound={onInjectOutbound}
-              onCancelOutbound={onCancelOutbound}
-            />
-          </div>
+          {/* Transcript owns its scroll container (stick-to-bottom lives there). */}
+          <Transcript
+            messages={messages}
+            live={live}
+            outbound={Object.fromEntries(outbound.map((o) => [o.id, o.status]))}
+            onInjectOutbound={onInjectOutbound}
+            onCancelOutbound={onCancelOutbound}
+          />
           {outbound.some((o) => o.status === 'queued') && (
             <div className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-ink-dim">
               {outbound.filter((o) => o.status === 'queued').length} message
