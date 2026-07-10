@@ -297,7 +297,6 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const [mode, setMode] = useState<'chat' | 'terminal' | 'den'>('terminal')
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
-  const [spawning, setSpawning] = useState(false)
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
   // (state is captured stale in an unmount-only effect) — #310 review.
   const termPtyRef = useRef<string | undefined>(undefined)
@@ -421,7 +420,19 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   // spawn-or-get a PTY whose denSession IS props.sessionId, so chat (inject +
   // bridge), terminal (this PTY), and den (?session) are one live harness.
   // Idempotent server-side; the client guard avoids UI churn on double calls.
-  const ensurePty = async (): Promise<string> => {
+  // Single-flight: the spawn effect, chat sends, and StrictMode double-mounts
+  // can all call ensurePty concurrently — they must share ONE spawn request,
+  // not race two past the termPtyRef check (grok review, PR #349).
+  const ptyPromiseRef = useRef<Promise<string> | null>(null)
+  const ensurePty = (): Promise<string> => {
+    if (termPtyRef.current) return Promise.resolve(termPtyRef.current)
+    ptyPromiseRef.current ??= doEnsurePty().finally(() => {
+      ptyPromiseRef.current = null
+    })
+    return ptyPromiseRef.current
+  }
+
+  const doEnsurePty = async (): Promise<string> => {
     if (termPtyRef.current) return termPtyRef.current
     const gw = useConnection.getState().gateway
     // A harness session (already in the store) resumes; a fresh conversation
@@ -445,16 +456,35 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
 
   // Terminal mode (including on open — it's the default) reveals the
   // conversation's harness: spawn-or-get whenever terminal is active with no
-  // PTY. Also covers respawn after a model change killed the old one.
+  // PTY. The gate ref is the mutex (state is async — grok review, PR #349):
+  // 'inflight' blocks re-entry, 'failed' parks the effect so a broken node
+  // doesn't retry-loop; clicking Terminal is the manual retry (spawnNonce
+  // re-arms the effect even when mode is already 'terminal').
+  const spawnGate = useRef<'idle' | 'inflight' | 'failed'>('idle')
+  const [spawnNonce, setSpawnNonce] = useState(0)
   useEffect(() => {
-    if (mode !== 'terminal' || termPtyId || spawning) return
-    setSpawning(true)
+    if (mode !== 'terminal' || termPtyId) return
+    if (spawnGate.current !== 'idle') return
+    spawnGate.current = 'inflight'
+    setTermError(undefined) // a stale error must not mask this attempt
     void ensurePty()
-      .catch((e: unknown) => setTermError((e as Error).message))
-      .finally(() => setSpawning(false))
-  }, [mode, termPtyId, spawning, props.sessionId])
+      .then(() => {
+        spawnGate.current = 'idle'
+        setTermError(undefined)
+      })
+      .catch((e: unknown) => {
+        spawnGate.current = 'failed'
+        setTermError((e as Error).message)
+      })
+  }, [mode, termPtyId, spawnNonce, props.sessionId])
 
-  const enterTerminal = (): void => setMode('terminal')
+  const enterTerminal = (): void => {
+    if (spawnGate.current === 'failed') {
+      spawnGate.current = 'idle'
+      setSpawnNonce((n) => n + 1)
+    }
+    setMode('terminal')
+  }
 
   // Seamless chat send: enqueue + serial inject. The queue is visible in the
   // transcript (queued / sending badges + inject/cancel). We only auto-inject
@@ -708,8 +738,9 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
           className="min-h-0 flex-1 border-0 bg-bg"
         />
       ) : termError ? (
-        <div className="flex flex-1 items-center justify-center font-mono text-sm text-red">
-          {termError}
+        <div className="flex flex-1 flex-col items-center justify-center gap-1">
+          <span className="font-mono text-sm text-red">{termError}</span>
+          <span className="text-xs text-ink-dim">click Terminal to retry</span>
         </div>
       ) : termPtyId ? (
         <XtermAttach key={`${baseUrl}|${termPtyId}`} ptyId={termPtyId} />
