@@ -66,7 +66,7 @@ export async function maybeRedirectToRemoteUi(): Promise<'redirecting' | 'stay'>
   const target = storedRemoteUi(localStorage)
   if (!target || localOverride) return 'stay'
 
-  let probeOk = false
+  let probeOk: boolean
   try {
     const res = await fetch(`${target}/healthz`, { signal: AbortSignal.timeout(1500) })
     probeOk = res.ok
