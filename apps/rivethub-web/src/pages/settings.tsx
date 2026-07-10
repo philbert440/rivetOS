@@ -2,6 +2,7 @@ import { useState, type JSX } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
 import { RivetGateway } from '@rivetos/gateway-client'
+import { BUILD_INFO } from '../lib/build-info.js'
 
 type ProbeState =
   | { kind: 'idle' }
@@ -98,8 +99,7 @@ export function SettingsPage(): JSX.Element {
       {/* Build stamp — the desktop shell bakes this dist in at build time, so
           this line is how you tell whether a binary has gone stale. */}
       <div className="mt-10 border-t border-line pt-3 font-mono text-[11px] text-ink-dim">
-        RivetHub v{__BUILD_INFO__.version} · dist {__BUILD_INFO__.sha} · built{' '}
-        {__BUILD_INFO__.builtAt}
+        RivetHub v{BUILD_INFO.version} · dist {BUILD_INFO.sha} · built {BUILD_INFO.builtAt}
       </div>
     </div>
   )
