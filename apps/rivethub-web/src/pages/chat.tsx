@@ -283,7 +283,9 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     if (!lastWithUsage && (messages[i].usage?.promptTokens ?? 0) > 0) {
       lastWithUsage = messages[i]
     }
-    if (lastAssistant && lastWithUsage) break
+    // lastAssistant is necessarily set by this point (the first assistant
+    // row assigns it), so lastWithUsage alone decides whether we're done.
+    if (lastWithUsage) break
   }
   const contextSource = lastWithUsage ?? lastAssistant
   const wsStatus = useChat((s) => s.wsStatus)
