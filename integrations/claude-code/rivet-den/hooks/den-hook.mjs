@@ -415,7 +415,12 @@ async function main() {
     case 'UserPromptSubmit': {
       if (p.prompt) {
         const text = String(p.prompt).replace(/<\/?user_query>/g, '').replace(/\r/g, '').trim().slice(0, 2000)
-        if (text) emit({ type: 'message.user', text })
+        // Harness-injected wrappers (task notifications, reminders, command
+        // echoes) fire this hook too — they are NOT something the user typed
+        // and must never reach the chat as a user bubble (mirrors the
+        // transcript parser's filter in den-server harness-sessions.ts).
+        const isWrapper = /^(<command-|<local-command|<system-reminder|<task-notification|<user_info|Caveat:)/.test(text)
+        if (text && !isWrapper) emit({ type: 'message.user', text })
       }
       emit({ type: 'speech.stt', active: true })
       emit({ type: 'speech.stt', active: false }) // reducer lands on 'thinking'
