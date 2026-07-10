@@ -126,8 +126,14 @@ function ReasoningBlock(props: { text: string; open?: boolean }): JSX.Element | 
 }
 
 /** Avatar + name + model + timestamp row above a message (android web-ui
- *  pattern). Assistant is the den bot ("Rivet"); user is right-aligned. */
-function AvatarRow(props: { mine: boolean; ts?: number; model?: string }): JSX.Element {
+ *  pattern). Assistant is the den bot ("Rivet"); user is right-aligned.
+ *  `accent` colors the bot per harness (claude clay / grok grey / emerald). */
+function AvatarRow(props: {
+  mine: boolean
+  ts?: number
+  model?: string
+  accent?: string
+}): JSX.Element {
   const time = props.ts !== undefined ? stamp(props.ts) : null
   if (props.mine) {
     return (
@@ -139,8 +145,17 @@ function AvatarRow(props: { mine: boolean; ts?: number; model?: string }): JSX.E
   }
   return (
     <div className="flex items-center gap-2 px-1">
-      <DenBot decorative className="size-7 rounded-md bg-panel-2 p-0.5" />
-      <span className="text-sm font-medium text-em">Rivet</span>
+      <DenBot
+        decorative
+        className="size-7 rounded-md bg-panel-2 p-0.5"
+        style={props.accent ? { boxShadow: `inset 0 0 0 1px ${props.accent}` } : undefined}
+      />
+      <span
+        className="text-sm font-medium"
+        style={{ color: props.accent ?? 'var(--color-em, #34d399)' }}
+      >
+        Rivet
+      </span>
       {props.model && (
         <span className="truncate font-mono text-[10px] text-ink-dim" title={props.model}>
           {props.model}
@@ -155,11 +170,12 @@ function Row(props: {
   mine: boolean
   ts?: number
   model?: string
+  accent?: string
   children: ReactNode
 }): JSX.Element {
   return (
     <div className={`flex flex-col gap-1.5 ${props.mine ? 'items-end' : 'items-start'}`}>
-      <AvatarRow mine={props.mine} ts={props.ts} model={props.model} />
+      <AvatarRow mine={props.mine} ts={props.ts} model={props.model} accent={props.accent} />
       {props.children}
     </div>
   )
@@ -167,6 +183,7 @@ function Row(props: {
 
 function Bubble(props: {
   msg: SessionMessage
+  accent?: string
   /** Outbound queue status for optimistic user turns. */
   outboundStatus?: 'queued' | 'sending'
   onInject?: (id: string) => void
@@ -174,7 +191,12 @@ function Bubble(props: {
 }): JSX.Element {
   const mine = props.msg.role === 'user'
   return (
-    <Row mine={mine} ts={props.msg.ts} model={mine ? undefined : props.msg.model}>
+    <Row
+      mine={mine}
+      ts={props.msg.ts}
+      model={mine ? undefined : props.msg.model}
+      accent={mine ? undefined : props.accent}
+    >
       {mine ? (
         // User text is plain — right-aligned bubble, no markdown.
         <div className="max-w-[85%]">
@@ -234,7 +256,7 @@ function Bubble(props: {
   )
 }
 
-function LiveBubble(props: { turn: LiveTurn }): JSX.Element {
+function LiveBubble(props: { turn: LiveTurn; accent?: string }): JSX.Element {
   const hasTools = props.turn.tools.some((t) => t.status === 'running')
   const status =
     props.turn.activity ??
@@ -248,7 +270,7 @@ function LiveBubble(props: { turn: LiveTurn }): JSX.Element {
   // Cursor only while tokens are still arriving (or waiting for first bytes).
   const showCursor = !props.turn.text || props.turn.reasoning || hasTools || !!props.turn.activity
   return (
-    <Row mine={false}>
+    <Row mine={false} accent={props.accent}>
       <div className="w-full px-1">
         <ReasoningBlock
           text={props.turn.reasoningText}
@@ -292,6 +314,8 @@ export function Transcript(props: {
   onInjectOutbound?: (id: string) => void
   /** Drop a queued/sending bubble without sending. */
   onCancelOutbound?: (id: string) => void
+  /** per-harness bot accent (claude clay / grok grey / local emerald) */
+  accent?: string
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
@@ -332,6 +356,7 @@ export function Transcript(props: {
         <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">
           {props.messages.map((m) => (
             <Bubble
+              accent={props.accent}
               key={m.id}
               msg={m}
               outboundStatus={props.outbound?.[m.id]}
@@ -339,7 +364,7 @@ export function Transcript(props: {
               onCancel={props.outbound?.[m.id] ? props.onCancelOutbound : undefined}
             />
           ))}
-          {props.live && <LiveBubble turn={props.live} />}
+          {props.live && <LiveBubble turn={props.live} accent={props.accent} />}
           <div ref={endRef} />
         </div>
       </div>
