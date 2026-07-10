@@ -85,6 +85,10 @@ export interface SessionMessage {
   model?: string
   /** Wall-clock duration of the turn in ms, when known — powers tokens/sec. */
   durationMs?: number
+  /** Thinking trace for the turn (harness-transcript sourced, tail-capped). */
+  thinking?: string
+  /** Tools the turn invoked, in call order (harness-transcript sourced). */
+  tools?: HarnessTranscriptTool[]
 }
 
 export interface SessionsListResponse {
@@ -116,9 +120,43 @@ export interface SessionPostReply {
   message: SessionMessage
 }
 
-/** Frames on WS /api/sessions/ws (server → client only). */
+/**
+ * Server-materialized transcript push (seamless modes v2). The gateway
+ * watches the harness's on-disk store for sessions a client subscribed to
+ * (see SessionWsClientMessage), reparses on change, and pushes versioned
+ * turn deltas — the store file is the single source of truth, so chat can
+ * never drift from the TUI. `from` is the splice index into the turn array;
+ * a frame with from=0 is a full snapshot (always sent first after a watch).
+ */
+export interface TranscriptWsFrame {
+  kind: 'transcript'
+  session: string
+  /** Monotonic per-session revision. A delta (from>0) applies iff it is the
+   *  next rev the client expects; otherwise re-watch to get a snapshot. */
+  rev: number
+  from: number
+  /** turns[from..] after the change */
+  turns: HarnessTranscriptTurn[]
+  /** total turn count after the change (guards splice misalignment) */
+  total: number
+  /** which harness store produced the turns ('' = none found yet) */
+  command: string
+}
+
+/** Frames on WS /api/sessions/ws (server → client). */
 export type SessionWsFrame =
-  ({ kind: 'message' } & SessionMessage) | { kind: 'stream'; session: string; event: StreamEvent }
+  | ({ kind: 'message' } & SessionMessage)
+  | { kind: 'stream'; session: string; event: StreamEvent }
+  | TranscriptWsFrame
+  /** a harness store changed somewhere — refetch the session drawer */
+  | { kind: 'sessions-dirty' }
+
+/** Client → server control messages on WS /api/sessions/ws. `sync` re-emits
+ *  a full snapshot for an already-watched session (delta-gap recovery). */
+export interface SessionWsClientMessage {
+  type: 'watch' | 'unwatch' | 'sync'
+  session: string
+}
 
 // ---------------------------------------------------------------------------
 // /api/tasks
@@ -387,10 +425,24 @@ export interface HarnessSessionsResponse {
   sessions: HarnessSession[]
 }
 
+/** One tool invocation recorded on an assistant transcript turn. */
+export interface HarnessTranscriptTool {
+  /** Harness tool name verbatim (e.g. 'Bash', 'mcp:rivetos:memory_search'). */
+  name: string
+  /** 'running' until the store records the matching tool result. */
+  status: 'running' | 'done' | 'error'
+  /** Summarized tool input (primitives only, strings capped) for titles. */
+  args?: Record<string, unknown>
+}
+
 /** One turn from GET /api/terminal/harness-sessions/:id/transcript (TUI store). */
 export interface HarnessTranscriptTurn {
   role: 'user' | 'assistant'
   text: string
+  /** Accumulated thinking text for the turn (tail-capped server-side). */
+  thinking?: string
+  /** Tools the turn invoked, in call order (Claude Code stores only). */
+  tools?: HarnessTranscriptTool[]
   /** Claude Code (and others that stamp usage on transcript lines). */
   usage?: MessageUsage
   /** Model id when present on the transcript line (e.g. claude-opus-4). */

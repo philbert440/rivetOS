@@ -106,12 +106,19 @@ export function foldStream(turn: LiveTurn | undefined, event: StreamEvent): Live
         reasoning: false,
         activity: undefined,
       }
-    case 'reasoning':
+    case 'reasoning': {
+      const chunk = event.content || ''
+      // Claude's den hook can't read real thinking text, so it sends spinner
+      // status lines ("✳ Wrangling… (28s · ↓ 4.8k tokens)") — each REPLACES
+      // the previous one (den reducer parity) instead of accumulating into
+      // a wall of stale spinner snapshots.
+      const spinner = /^[✳✢✻✽·] /.test(chunk)
       return {
         ...base,
         reasoning: true,
-        reasoningText: base.reasoningText + (event.content || ''),
+        reasoningText: spinner ? chunk : base.reasoningText + chunk,
       }
+    }
     case 'tool_start': {
       const name = toolNameFromEvent(event)
       const args = argsFromEvent(event)

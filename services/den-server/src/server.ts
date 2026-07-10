@@ -56,6 +56,10 @@ import {
   readHarnessTranscript,
 } from './term/harness-sessions.js'
 
+// Push-based transcript sync (seamless modes v2) — constructed by the boot
+// registrar and handed to the gateway channel, so it rides this export path.
+export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcript-watch.js'
+
 const MIME: Record<string, string> = {
   '.html': 'text/html',
   '.js': 'text/javascript',

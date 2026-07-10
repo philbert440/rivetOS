@@ -17,6 +17,17 @@ describe('foldStream', () => {
     expect(t?.reasoning).toBe(false)
   })
 
+  it('spinner-style reasoning lines replace, not accumulate (claude den hook)', () => {
+    let t: LiveTurn | undefined
+    t = foldStream(t, ev({ type: 'reasoning', content: '\u2733 Wrangling\u2026 (0s \u00b7 \u2193 0 tokens)' }))
+    t = foldStream(t, ev({ type: 'reasoning', content: '\u2722 Wrangling\u2026 (5s \u00b7 \u2193 120 tokens)' }))
+    expect(t?.reasoningText).toBe('\u2722 Wrangling\u2026 (5s \u00b7 \u2193 120 tokens)')
+    // real thinking text still appends
+    t = foldStream(undefined, ev({ type: 'reasoning', content: 'first ' }))
+    t = foldStream(t, ev({ type: 'reasoning', content: 'second' }))
+    expect(t?.reasoningText).toBe('first second')
+  })
+
   it('builds a multi-entry tool stack with running→done', () => {
     let t: LiveTurn | undefined
     t = foldStream(
