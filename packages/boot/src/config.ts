@@ -197,8 +197,12 @@ export interface DenSection {
   packs_dir?: string
   /** 302 target for GET / — '/wiki' makes the memory wiki the landing page (3e). */
   root_redirect?: string
-  /** Override for the built viewer app served at / (default: <install>/apps/den/dist) */
+  /** Override for the built viewer app served at / (default: RivetHub dist
+   *  when built — <install>/apps/rivethub-web/dist — else <install>/apps/den/dist) */
   static_dir?: string
+  /** Shared filestore root for /api/files/* (default '/rivet-shared';
+   *  empty string disables the routes). */
+  files_root?: string
 }
 
 // ---------------------------------------------------------------------------

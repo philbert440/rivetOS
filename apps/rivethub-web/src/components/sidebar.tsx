@@ -9,7 +9,8 @@ import { DenBot } from './den-bot.js'
  *  starting place; each view after it is a step more immersive. */
 const PRIMARY_NAV = [
   { to: '/terminal', label: 'Terminal', icon: '›_' },
-  { to: '/', label: 'Chat', icon: '💬' },
+  { to: '/', label: 'Conversations', icon: '💬' },
+  { to: '/dens', label: 'Den', icon: '▦' },
 ] as const
 
 /** Workspace tools — below the separator. */
@@ -68,15 +69,6 @@ export function Sidebar(): JSX.Element {
         {PRIMARY_NAV.map((item) => (
           <NavLink key={item.to} {...item} />
         ))}
-
-        {/* Den is a link-out to the node's own /den/ (v1 cut — no in-app embed route). */}
-        <a
-          href="/den/"
-          className="rounded px-3 py-2 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink"
-        >
-          <span className="mr-2 inline-block w-5 text-center font-mono">▦</span>
-          Den ↗
-        </a>
 
         <div className="my-2 border-t border-line" role="separator" />
 

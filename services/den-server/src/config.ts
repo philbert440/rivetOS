@@ -73,6 +73,9 @@ export interface DenConfig {
   meshCacheMs: number
   /** Local PTY terminals (opt-in; see term/). */
   term: DenTermConfig
+  /** Shared filestore root for /api/files/* (browse/download/upload).
+   *  Empty string disables the routes entirely. */
+  filesRoot: string
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
@@ -101,5 +104,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
       injectSubmitDelayMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_SUBMIT_DELAY_MS', 80),
     },
+    filesRoot: env.RIVETOS_DEN_FILES_ROOT ?? '/rivet-shared',
   }
 }

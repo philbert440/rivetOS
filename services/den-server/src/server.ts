@@ -55,6 +55,7 @@ import {
   harnessSessionExists,
   readHarnessTranscript,
 } from './term/harness-sessions.js'
+import { createFilesRoutes } from './files.js'
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
@@ -91,6 +92,9 @@ const API_PATHS = new Set([
   '/term/list',
   '/term/inject',
   '/term/harness-sessions',
+  '/files/list',
+  '/files/download',
+  '/files/upload',
 ])
 
 const CORS = {
@@ -320,6 +324,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // semantics: gated or disabled terminals destroy the upgrade)
   const termWs = createTermWs({ manager: ensureManager, enabled: () => termEnabled })
 
+  // Shared filestore browser (/files/*, aliased /api/files/*) — fenced to
+  // config.filesRoot; empty root = routes off.
+  const filesRoutes = config.filesRoot
+    ? createFilesRoutes({ root: config.filesRoot, log: console.error })
+    : null
+
   // sessions gain a `pty: '<id>'` marker while a local PTY is linked to them
   // (extra field — viewers that don't know it ignore it)
   const decorateSessions = (
@@ -391,6 +401,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     // gets a bare 404 "not found".
     if (url.pathname.startsWith('/api/terminal/')) {
       url.pathname = `/term/${url.pathname.slice('/api/terminal/'.length)}`
+    }
+    // /api/files/* → /files/* (RivetHub shared-filestore browser).
+    if (url.pathname.startsWith('/api/files/')) {
+      url.pathname = `/files/${url.pathname.slice('/api/files/'.length)}`
     }
   }
 
@@ -479,6 +493,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           await route.handler(req, res)
           return
         }
+      }
+
+      // Shared filestore (behind the bearer gate; CORS headers match den's own)
+      if (url.pathname.startsWith('/files/')) {
+        if (!filesRoutes) return json(res, 503, { error: 'files browser disabled on this node' })
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (filesRoutes.handle(req, res, url)) return
+        return json(res, 404, { error: 'not found' })
       }
 
       if (req.method === 'POST' && (url.pathname === '/event' || url.pathname === '/events')) {
