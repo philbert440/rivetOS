@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, Clock3, Zap } from 'lucide-react'
 import type { HarnessTranscriptTool, MessageUsage, SessionMessage } from '@rivetos/types'
 import type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 import { humanToolTitle, type ToolArgs } from '../lib/tool-titles.js'
+import { formatSpinnerMeta, parseSpinnerMeta } from '../lib/spinner-meta.js'
 import { DenBot } from './den-bot.js'
 import { Markdown } from './markdown.js'
 
@@ -83,8 +84,27 @@ function ToolStack(props: { tools: LiveToolEntry[] }): JSX.Element | null {
   )
 }
 
+/** Claude spinner lines freeze between hook events — tick their elapsed time
+ *  locally so "(0s · ↓ 0 tokens)" doesn't sit dead while a long thinking
+ *  stretch fires no hooks. Non-spinner text passes through untouched. */
+function useSpinnerTick(text: string): string {
+  const meta = parseSpinnerMeta(text)
+  const receivedAt = useRef({ key: '', at: 0 })
+  if (receivedAt.current.key !== text) receivedAt.current = { key: text, at: Date.now() }
+  const [, setTick] = useState(0)
+  const ticking = meta !== null
+  useEffect(() => {
+    if (!ticking) return
+    const t = setInterval(() => setTick((n) => n + 1), 1_000)
+    return () => clearInterval(t)
+  }, [ticking, text])
+  if (!meta) return text
+  return formatSpinnerMeta(meta, Math.floor((Date.now() - receivedAt.current.at) / 1000))
+}
+
 function ReasoningBlock(props: { text: string; open?: boolean }): JSX.Element | null {
   const [open, setOpen] = useState(props.open ?? false)
+  const display = useSpinnerTick(props.text)
   if (!props.text.trim()) return null
   return (
     <div className="mb-2 rounded border border-line/80 bg-bg/40">
@@ -98,7 +118,7 @@ function ReasoningBlock(props: { text: string; open?: boolean }): JSX.Element | 
       </button>
       {open && (
         <div className="border-t border-line/60 px-2 py-1.5 font-mono text-[11px] leading-relaxed text-ink-dim whitespace-pre-wrap">
-          {props.text}
+          {display}
         </div>
       )}
     </div>
