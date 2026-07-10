@@ -65,6 +65,13 @@ fn spawn_window(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Single instance: launching the AppImage again must summon the
+        // existing window, not spawn a second tray + a shortcut-registration
+        // fight. Registered FIRST so the second process exits before any
+        // other plugin initializes (plugin docs requirement).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(app);
+        }))
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -90,6 +97,29 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            // Registration can fail silently when another app owns the
+            // combo (the plugin swallows per-shortcut conflicts) — summon
+            // just "doesn't work" with no signal. Verify and at least say so.
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                for (combo, label) in [
+                    (
+                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR),
+                        "Ctrl+Shift+R (summon)",
+                    ),
+                    (
+                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyN),
+                        "Ctrl+Shift+N (new window)",
+                    ),
+                ] {
+                    if !app.global_shortcut().is_registered(combo) {
+                        eprintln!(
+                            "RivetHub: global shortcut {label} was NOT registered — \
+                             another application probably owns it"
+                        );
+                    }
+                }
+            }
             let show = MenuItem::with_id(app, "show", "Show RivetHub", true, None::<&str>)?;
             // no accelerator hint: the real binding is the global Ctrl+Shift+N
             // (registered above); a "CmdOrCtrl+N" hint here would mislead.
