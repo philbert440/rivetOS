@@ -170,6 +170,29 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
     expect(got.some((f) => f.kind === 'message' && f.role === 'user')).toBe(true)
   })
 
+  it('harness-injected wrappers never bubble as user messages', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-wrap`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    gw.bridgeAgentEvent({
+      session: 'c-wrap',
+      type: 'message.user',
+      text: '<task-notification>\n<task-id>x</task-id>\n</task-notification>',
+      ts: 1,
+    })
+    gw.bridgeAgentEvent({ session: 'c-wrap', type: 'message.user', text: 'Caveat: local noise' })
+    gw.bridgeAgentEvent({ session: 'c-wrap', type: 'message.user', text: 'real question', ts: 2 })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const users = got.filter((f) => f.kind === 'message' && f.role === 'user')
+    expect(users).toHaveLength(1)
+    expect(users[0].kind === 'message' && users[0].text).toBe('real question')
+  })
+
   it('turn.end commits the reply and emits done — the session stays usable', async () => {
     const { gw, port } = await start()
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-turn`)

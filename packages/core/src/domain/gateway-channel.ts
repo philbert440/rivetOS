@@ -472,17 +472,30 @@ export function createGatewayChannel(opts?: {
         pendingStats.delete(sid)
       }
       switch (ev.type) {
-        case 'message.user':
+        case 'message.user': {
           flushAssistant() // a new user turn commits the prior assistant turn
+          // Backstop for older den hooks: harness-injected wrappers (task
+          // notifications, reminders, command echoes) are not user speech —
+          // never bubble them into chat (same prefix list as the transcript
+          // parser in den-server harness-sessions.ts).
+          const text = str('text')
+          if (
+            /^(<command-|<local-command|<system-reminder|<task-notification|<user_info|Caveat:)/.test(
+              text,
+            )
+          ) {
+            break
+          }
           emitFrame({
             kind: 'message',
             id: randomUUID(),
             sessionId: sid,
             role: 'user',
-            text: str('text'),
+            text,
             ts,
           })
           break
+        }
         case 'message.agent': {
           // interim block: accumulate + stream (one committed bubble per turn)
           pendingAssistant.set(sid, (pendingAssistant.get(sid) ?? '') + str('text'))
