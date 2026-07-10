@@ -48,7 +48,24 @@ and the generated `gen/` are gitignored.
   toast still covers the focused case. No Tauri dependency leaks into the web
   package.
 
+## Thin shell: the binary no longer goes stale
+
+Once a node is configured, the bundled app **redirects itself to that node's
+live-served UI** (den-server serves rivethub-web) whenever the node answers
+`/healthz` — so web updates ride `rivetos update --mesh` and this binary only
+needs rebuilding when the native layer (tray/shortcuts/notifications) changes.
+The bundled dist demotes to a first-run / node-down fallback.
+
+- The capability grants the notification/event IPC to remote LAN origins
+  (`http://*:*`), so escalation notifications and the tray unread mirror keep
+  working after the cutover.
+- Escape hatch: launch with `?local=1` on the URL (or clear
+  `rivethub.remoteUi` from the bundled origin's localStorage) to stay on the
+  bundled dist while debugging a broken node deploy.
+- Same-origin serving means the redirected app is auto-configured for that
+  node; other nodes re-add to the roster once (per-origin storage).
+
 ## Not in v1
 
-Auto-update (needs signing/update-server infra — its own follow-up), custom
-protocol/deep links.
+Auto-update of the native shell itself (needs signing/update-server infra —
+its own follow-up), custom protocol/deep links.

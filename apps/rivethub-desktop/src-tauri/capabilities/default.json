@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "RivetHub windows (main + additional win-*): native notifications; shortcuts are registered Rust-side",
+  "description": "RivetHub windows (main + additional win-*): native notifications; shortcuts are registered Rust-side. Remote urls: the thin shell navigates to the configured node's live-served UI (LAN http), and that origin still needs the notification/event IPC.",
   "windows": ["main", "win-*"],
+  "remote": {
+    "urls": ["http://*:*", "https://*:*"]
+  },
   "permissions": [
     "core:default",
     "notification:default"

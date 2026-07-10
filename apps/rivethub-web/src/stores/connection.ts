@@ -14,6 +14,7 @@
 import { create } from 'zustand'
 import { RivetGateway } from '@rivetos/gateway-client'
 import { isValidGatewayUrl } from '../lib/gateway-url.js'
+import { isBundledOrigin, rememberRemoteUi } from '../lib/remote-ui.js'
 
 export { isValidGatewayUrl } from '../lib/gateway-url.js'
 
@@ -103,6 +104,18 @@ function defaultBaseUrl(): string {
   return isValidGatewayUrl(origin) ? origin : ''
 }
 
+/** Thin-shell cutover (desktop): a bundled-origin window that just got a
+ *  node configured navigates to that node's live-served UI. Remember the
+ *  target (bundled-origin storage) so the next launch boots straight there;
+ *  same-origin serving means the redirected app is auto-configured. No-op in
+ *  the browser (origin is already a gateway). */
+function cutOverToRemoteUi(baseUrl: string): void {
+  if (!isBundledOrigin(window.location.origin, window.location.protocol)) return
+  if (!isValidGatewayUrl(baseUrl)) return
+  rememberRemoteUi(localStorage, baseUrl)
+  window.location.replace(`${baseUrl}/`)
+}
+
 export const useConnection = create<ConnectionState>((set, get) => {
   const baseUrl = defaultBaseUrl()
   if (baseUrl) migrateLegacyToken(baseUrl)
@@ -123,6 +136,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
         token: nextToken,
         gateway: makeGateway(nextBaseUrl, nextToken),
       })
+      cutOverToRemoteUi(nextBaseUrl)
     },
 
     switchTo(rawUrl: string): void {
@@ -138,6 +152,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
         token: nextToken,
         gateway: makeGateway(nextBaseUrl, nextToken),
       })
+      cutOverToRemoteUi(nextBaseUrl)
     },
 
     addNode(node: RosterNode): void {
