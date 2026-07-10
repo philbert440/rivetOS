@@ -17,18 +17,21 @@ export interface ChatSettings {
 const KEY = 'rivethub.chatSettings'
 const DEFAULT: ChatSettings = { agent: '', effort: 'medium' }
 
-function load(): Record<string, ChatSettings> {
+function load(): Record<string, ChatSettings | undefined> {
   try {
     const raw = localStorage.getItem(KEY)
     const parsed: unknown = raw ? JSON.parse(raw) : {}
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, ChatSettings>) : {}
+    return parsed && typeof parsed === 'object'
+      ? (parsed as Record<string, ChatSettings | undefined>)
+      : {}
   } catch {
     return {}
   }
 }
 
 interface SettingsState {
-  byKey: Record<string, ChatSettings>
+  /** values are `| undefined` — see session-names.ts */
+  byKey: Record<string, ChatSettings | undefined>
   get: (key: string) => ChatSettings
   set: (key: string, patch: Partial<ChatSettings>) => void
 }
