@@ -681,13 +681,7 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
 
   const grokPath = await findGrokChatHistory(id)
   if (grokPath) {
-    const turns = await parseJsonlTurns(grokPath, (obj) => {
-      const type =
-        typeof obj.type === 'string' ? obj.type : typeof obj.role === 'string' ? obj.role : ''
-      if (type !== 'user' && type !== 'assistant') return null
-      const text = extractTurnText(obj.content, type)
-      return text ? { role: type, text } : null
-    })
+    const turns = await parseJsonlTurns(grokPath, grokPickTurn)
     if (turns.length > 0) return { id, command: 'grok', turns }
   }
 
@@ -695,6 +689,33 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
   if (hermes.length > 0) return { id, command: 'hermes', turns: hermes }
 
   return { id, command: '', turns: [] }
+}
+
+function grokPickTurn(obj: Record<string, unknown>): HarnessTurn | null {
+  const type =
+    typeof obj.type === 'string' ? obj.type : typeof obj.role === 'string' ? obj.role : ''
+  if (type !== 'user' && type !== 'assistant') return null
+  const text = extractTurnText(obj.content, type)
+  return text ? { role: type, text } : null
+}
+
+/**
+ * Parse a transcript from an ALREADY-RESOLVED store ref — the watcher's hot
+ * path. Skips the per-parse store scan (findClaudeJsonl walks every project
+ * slug) that readHarnessTranscript pays on each call; rotation/vanish is the
+ * caller's job (an empty parse of a previously non-empty store → re-resolve).
+ */
+export async function readHarnessStoreAt(
+  ref: HarnessStoreRef,
+  id: string,
+): Promise<HarnessTranscript> {
+  if (ref.command === 'claude') {
+    return { id, command: 'claude', turns: claudeTurnsFromLines(await parseJsonlObjects(ref.path)) }
+  }
+  if (ref.command === 'grok') {
+    return { id, command: 'grok', turns: await parseJsonlTurns(ref.path, grokPickTurn) }
+  }
+  return { id, command: 'hermes', turns: readHermesTurns(id) }
 }
 
 // ---- Store resolution for the transcript watcher ---------------------------

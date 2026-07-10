@@ -22,7 +22,13 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import type { SessionWsFrame, TranscriptWsFrame } from '@rivetos/types'
-import { harnessStoreDirs, readHarnessTranscript, resolveHarnessStore } from './harness-sessions.js'
+import {
+  harnessStoreDirs,
+  readHarnessStoreAt,
+  readHarnessTranscript,
+  resolveHarnessStore,
+  type HarnessStoreRef,
+} from './harness-sessions.js'
 
 /** Quiet window after a store change before reparsing — harnesses append in
  *  bursts (one line per content block). */
@@ -51,12 +57,17 @@ interface Watched {
   /** per-turn JSON signatures of the last emitted parse — diffing basis */
   sigs: string[]
   command: string
-  file?: string
+  /** resolved store ref — the parse hot path skips the store scan with it */
+  store?: HarnessStoreRef
   fsWatcher?: FSWatcher
   debounce?: NodeJS.Timeout
   resolvePoll?: NodeJS.Timeout
   parsing: boolean
   dirty: boolean
+  /** next parse pass must emit a from=0 snapshot (late watch / client sync) —
+   *  snapshots ride the SAME serialized parse loop as deltas, so rev advances
+   *  once per disk state and frames can't interleave (grok review). */
+  wantSnapshot: boolean
   lastSize: number
   lastMtime: number
 }
@@ -134,6 +145,11 @@ export function createTranscriptWatcher(
     return !closed && !!s && s.dirty
   }
 
+  /** True while this exact state object is still the session's live entry —
+   *  an unwatch (or unwatch→rewatch) during an awaited read must not emit
+   *  frames for the torn-down subscription (grok review). */
+  const isLive = (session: string, s: Watched): boolean => !closed && watched.get(session) === s
+
   const parseAndEmit = async (session: string): Promise<void> => {
     const s = watched.get(session)
     if (!s || closed) return
@@ -145,9 +161,35 @@ export function createTranscriptWatcher(
     try {
       do {
         s.dirty = false
-        const t = await readHarnessTranscript(session)
+        const wantSnapshot = s.wantSnapshot
+        s.wantSnapshot = false
+        // Hot path: parse the resolved store directly (no per-parse scan of
+        // every project slug). An empty parse where we previously had turns
+        // means rotation/vanish — fall back to a full resolve-and-read once.
+        let t = s.store
+          ? await readHarnessStoreAt(s.store, session)
+          : await readHarnessTranscript(session)
+        if (s.store && t.turns.length === 0 && s.sigs.length > 0) {
+          t = await readHarnessTranscript(session)
+        }
+        if (!isLive(session, s)) return
         const sigs = t.turns.map((turn) => JSON.stringify(turn))
-        emitDelta(session, s, sigs, t.turns, t.command)
+        if (wantSnapshot) {
+          s.sigs = sigs
+          s.command = t.command
+          s.rev += 1
+          emit({
+            kind: 'transcript',
+            session,
+            rev: s.rev,
+            from: 0,
+            turns: t.turns,
+            total: t.turns.length,
+            command: t.command,
+          })
+        } else {
+          emitDelta(session, s, sigs, t.turns, t.command)
+        }
       } while (stillDirty(session))
     } catch {
       // unreadable mid-write — the next change/safety poll retries
@@ -166,31 +208,38 @@ export function createTranscriptWatcher(
     }, debounceMs)
   }
 
-  const startFileWatch = (session: string, s: Watched, file: string): void => {
-    s.file = file
+  /** Back to square one: no watched file, resolve poll looking for one.
+   *  Used by the fs error handler AND the safety poll's ENOENT branch —
+   *  both must end in the same state or the session orphans (grok review). */
+  const dropToResolution = (session: string, s: Watched): void => {
+    s.fsWatcher?.close()
+    s.fsWatcher = undefined
+    s.store = undefined
+    if (!closed && watched.get(session) === s) {
+      s.resolvePoll ??= setInterval(() => void tryResolve(session), resolvePollMs)
+    }
+  }
+
+  const startFileWatch = (session: string, s: Watched, ref: HarnessStoreRef): void => {
+    s.store = ref
     try {
-      s.fsWatcher = watch(file, () => scheduleParse(session))
-      s.fsWatcher.on('error', () => {
-        // file rotated/removed — drop to re-resolution; safety poll rebuilds
-        s.fsWatcher?.close()
-        s.fsWatcher = undefined
-        s.file = undefined
-      })
+      s.fsWatcher = watch(ref.path, () => scheduleParse(session))
+      s.fsWatcher.on('error', () => dropToResolution(session, s))
     } catch {
-      s.file = undefined // safety poll + resolve poll take over
+      dropToResolution(session, s)
     }
   }
 
   const tryResolve = async (session: string): Promise<void> => {
     const s = watched.get(session)
-    if (!s || closed || s.file) return
+    if (!s || closed || s.store) return
     const ref = await resolveHarnessStore(session)
-    if (!ref) return
+    if (!ref || !isLive(session, s)) return
     if (s.resolvePoll) {
       clearInterval(s.resolvePoll)
       s.resolvePoll = undefined
     }
-    startFileWatch(session, s, ref.path)
+    startFileWatch(session, s, ref)
     void parseAndEmit(session)
   }
 
@@ -199,10 +248,11 @@ export function createTranscriptWatcher(
   const safety = setInterval(() => {
     if (closed) return
     for (const [session, s] of watched) {
-      if (!s.file) {
+      const file = s.store?.path
+      if (!file) {
         continue // resolve poll owns unresolved sessions
       }
-      void stat(s.file).then(
+      void stat(file).then(
         (st) => {
           if (st.size !== s.lastSize || st.mtimeMs !== s.lastMtime) {
             s.lastSize = st.size
@@ -210,38 +260,20 @@ export function createTranscriptWatcher(
             scheduleParse(session)
           }
         },
-        () => {
-          // store file vanished — rotate back to resolution
-          s.fsWatcher?.close()
-          s.fsWatcher = undefined
-          s.file = undefined
-          s.resolvePoll ??= setInterval(() => void tryResolve(session), resolvePollMs)
-        },
+        () => dropToResolution(session, s), // store file vanished
       )
     }
   }, safetyPollMs)
   safety.unref()
 
-  // Full-snapshot re-emit: late subscribers and delta-gap recovery. Reparses
-  // from disk (not the sig cache — sigs don't hold the turns) and realigns
-  // every subscriber's rev.
+  // Full-snapshot re-emit: late subscribers and delta-gap recovery. Rides
+  // the SAME serialized parse loop as deltas (wantSnapshot) so rev advances
+  // exactly once per disk state and frames never interleave (grok review).
   const emitSnapshot = (session: string): void => {
-    void readHarnessTranscript(session).then((t) => {
-      const s = watched.get(session)
-      if (!s || closed) return
-      s.sigs = t.turns.map((turn) => JSON.stringify(turn))
-      s.command = t.command
-      s.rev += 1
-      emit({
-        kind: 'transcript',
-        session,
-        rev: s.rev,
-        from: 0,
-        turns: t.turns,
-        total: t.turns.length,
-        command: t.command,
-      })
-    })
+    const s = watched.get(session)
+    if (!s || closed) return
+    s.wantSnapshot = true
+    void parseAndEmit(session) // if a pass is running, this marks dirty
   }
 
   return {
@@ -261,15 +293,16 @@ export function createTranscriptWatcher(
         command: '',
         parsing: false,
         dirty: false,
+        wantSnapshot: false,
         lastSize: -1,
         lastMtime: -1,
       }
       watched.set(session, s)
       void resolveHarnessStore(session).then((ref) => {
         const cur = watched.get(session)
-        if (!cur || closed) return
+        if (cur !== s || closed) return
         if (ref) {
-          startFileWatch(session, cur, ref.path)
+          startFileWatch(session, cur, ref)
         } else {
           // no store yet (fresh draft) — emit an explicit empty snapshot so
           // the client knows the store state, then poll for the file

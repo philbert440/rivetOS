@@ -162,20 +162,21 @@ function applyTranscriptFrame(s: ChatState, frame: TranscriptWsFrame): Partial<C
 
   const mapped = messagesFromHarnessTurns(sid, turns)
   // Reconcile optimistic bubbles against the NEW turns only (frame.turns):
-  // the just-committed user turn always sits in the changed window.
+  // the just-committed user turn always sits in the changed window. Only
+  // bubbles with NO outbound entry are eligible — queued means not injected
+  // yet (a matching store turn is a TUI-typed twin), and sending means the
+  // pump hasn't observed success/failure, so eating the bubble early could
+  // leave a failed inject with no retry cue (grok review).
   const existing = s.messages[sid] ?? []
   const optimBubbles = existing.filter((m) => m.id.startsWith('optim:'))
-  let outbound = s.outbound[sid] ?? []
+  const outbound = s.outbound[sid] ?? []
   const newUserTexts = frame.turns.filter((t) => t.role === 'user').map((t) => t.text)
   const keptBubbles: SessionMessage[] = []
   for (const bubble of optimBubbles) {
     const hit = newUserTexts.indexOf(bubble.text)
-    const queueItem = outbound.find((o) => o.id === bubble.id)
-    // Still queued = not injected yet — a matching store turn is a TUI-typed
-    // twin, not this bubble's commit. Everything else with a match is done.
-    if (hit >= 0 && queueItem?.status !== 'queued') {
+    const inQueue = outbound.some((o) => o.id === bubble.id)
+    if (hit >= 0 && !inQueue) {
       newUserTexts.splice(hit, 1)
-      if (queueItem) outbound = outbound.filter((o) => o.id !== bubble.id)
     } else {
       keptBubbles.push(bubble)
     }
@@ -186,7 +187,6 @@ function applyTranscriptFrame(s: ChatState, frame: TranscriptWsFrame): Partial<C
       [sid]: { rev: frame.rev, turns, command: frame.command },
     },
     messages: { ...s.messages, [sid]: [...mapped, ...keptBubbles] },
-    outbound: outbound === s.outbound[sid] ? s.outbound : { ...s.outbound, [sid]: outbound },
   }
 }
 

@@ -141,6 +141,35 @@ describe('createTranscriptWatcher', () => {
     expect(transcripts(frames).length).toBe(count) // no new frames after unwatch
   })
 
+  it('recovers a deleted-then-recreated store via re-resolution (rotation)', async () => {
+    const { dir } = claudeStore()
+    const id = 'aaaaaaaa-0000-0000-0000-000000000006'
+    const file = join(dir, `${id}.jsonl`)
+    writeFileSync(file, userLine('before rotation'))
+
+    const frames: SessionWsFrame[] = []
+    watcher = createTranscriptWatcher((f) => frames.push(f), FAST)
+    watcher.watch(id)
+    const snap = await until(() => transcripts(frames).find((f) => f.command === 'claude'))
+
+    // Rotate: delete the store, then recreate it with new content. The fs
+    // watcher errors / the safety poll ENOENTs — both must land back on the
+    // resolve poll (grok review: the error path used to orphan the session).
+    rmSync(file)
+    await new Promise((r) => setTimeout(r, 250))
+    writeFileSync(file, userLine('after rotation') + assistantLine('recovered'))
+    const recovered = await until(
+      () =>
+        transcripts(frames).find(
+          (f) => f.rev > snap.rev && f.turns.some((t) => t.text === 'recovered'),
+        ),
+      5_000,
+    )
+    expect(recovered.turns.some((t) => t.text === 'after rotation' || t.text === 'recovered')).toBe(
+      true,
+    )
+  })
+
   it('store-dir changes emit a debounced sessions-dirty for the drawer', async () => {
     const { dir } = claudeStore()
     const frames: SessionWsFrame[] = []

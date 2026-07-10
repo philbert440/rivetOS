@@ -334,9 +334,19 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     return () => useChat.getState().unwatchTranscript(props.sessionId)
   }, [props.sessionId])
   const transcript = useChat((s) => s.transcripts[props.sessionId])
-  // Snapshot received and the node has no store for this session → fall back
-  // to ring/memory (API-only agents, fresh drafts).
-  const storeEmpty = transcript !== undefined && transcript.turns.length === 0
+  const storeHasTurns = (transcript?.turns.length ?? 0) > 0
+  // Backfill gate: the store snapshot came back empty (API-only agents, fresh
+  // drafts) — or no transcript frame arrived within a grace window (slow WS /
+  // old server), where waiting forever would blank a ring-backed session.
+  const [txGraceUp, setTxGraceUp] = useState(false)
+  useEffect(() => {
+    setTxGraceUp(false)
+    const t = setTimeout(() => setTxGraceUp(true), 2_500)
+    return () => clearTimeout(t)
+  }, [props.sessionId, wsEpoch])
+  const storeEmpty =
+    (transcript !== undefined && transcript.turns.length === 0) ||
+    (transcript === undefined && txGraceUp)
 
   // HTTP ring backfill — only when the TUI store has nothing (fresh draft /
   // API agent / node without a harness file). seed() MERGES so live WS frames
@@ -350,9 +360,9 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     gcTime: 30 * 60_000,
   })
   useEffect(() => {
-    if (!storeEmpty) return
+    if (storeHasTurns) return
     if (backfill.data) seed(props.sessionId, backfill.data.messages)
-  }, [backfill.data, props.sessionId, storeEmpty, seed])
+  }, [backfill.data, props.sessionId, storeHasTurns, seed])
 
   // Cold-session durable backfill (seamless 5e): empty ring + empty TUI →
   // memory conversation. Same enable gate as ring.
@@ -366,9 +376,9 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     gcTime: 30 * 60_000,
   })
   useEffect(() => {
-    if (!storeEmpty) return
+    if (storeHasTurns) return
     if (coldBackfill.data?.messages.length) seed(props.sessionId, coldBackfill.data.messages)
-  }, [coldBackfill.data, props.sessionId, storeEmpty, seed])
+  }, [coldBackfill.data, props.sessionId, storeHasTurns, seed])
 
   // Leaving a conversation does NOT kill its harness: detach only. Switching
   // away mid-turn must not abort the harness — the reply keeps streaming to
