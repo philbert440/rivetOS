@@ -73,6 +73,10 @@ pub fn run() {
             show_main(app);
         }))
         .plugin(tauri_plugin_notification::init())
+        // Clipboard over IPC: the thin shell serves the UI from the node's
+        // LAN http:// origin, where the browser Clipboard API doesn't exist
+        // (non-secure context) — copy/paste rides this plugin instead.
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_shortcuts([

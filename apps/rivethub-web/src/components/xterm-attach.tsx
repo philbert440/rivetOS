@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { TermExitFrame, TermHelloFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
+import { copyTextToClipboard, readTextFromClipboard } from '../lib/clipboard.js'
 
 /**
  * Attach an xterm to a PTY over WS /api/terminal/ws. Framing per den-server
@@ -41,6 +42,30 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
     // with noopener; under the Tauri shell window.open routes to the system
     // browser via the webview's navigation policy.
     term.loadAddon(new WebLinksAddon((_e, uri) => window.open(uri, '_blank', 'noopener')))
+
+    // Terminal-convention clipboard: Ctrl+Shift+C copies the selection,
+    // Ctrl+Shift+V pastes (Tauri IPC / Clipboard API — lib/clipboard.ts).
+    // Plain Ctrl+C stays SIGINT and plain Ctrl+V stays a native paste event
+    // into xterm's hidden textarea — neither is intercepted here.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown' || !e.ctrlKey || !e.shiftKey) return true
+      if (e.code === 'KeyC') {
+        const sel = term.getSelection()
+        if (!sel) return true // nothing selected — let the browser have it
+        void copyTextToClipboard(sel).catch(() => undefined)
+        e.preventDefault()
+        return false
+      }
+      if (e.code === 'KeyV') {
+        void readTextFromClipboard().then((text) => {
+          if (text) term.paste(text)
+        })
+        e.preventDefault()
+        return false
+      }
+      return true
+    })
+
     term.open(host)
     fit.fit()
 

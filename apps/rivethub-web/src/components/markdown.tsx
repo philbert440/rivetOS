@@ -10,7 +10,12 @@ import {
 } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+// Copy helper lives in lib/clipboard.ts (Tauri IPC → navigator.clipboard →
+// execCommand). Re-exported below for existing imports of this module.
+import { copyTextToClipboard } from '../lib/clipboard.js'
 import { cn } from '../lib/utils.js'
+
+export { copyTextToClipboard }
 
 /**
  * Flatten react-markdown children to plain text (fenced code body).
@@ -30,36 +35,6 @@ export function textFromMarkdownChildren(node: ReactNode): string {
 export function languageLabel(className: string | undefined): string {
   const m = /language-([\w+-]+)/.exec(className ?? '')
   return m?.[1] ?? 'code'
-}
-
-/** Copy text for LAN http:// (non-secure) Hubs where Clipboard API is blocked. */
-export function copyTextToClipboard(text: string): Promise<void> {
-  const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
-  if (clip && typeof clip.writeText === 'function') {
-    return clip.writeText(text).catch(() => fallbackCopy(text))
-  }
-  return fallbackCopy(text)
-}
-
-function fallbackCopy(text: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    try {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.setAttribute('readonly', '')
-      ta.style.position = 'fixed'
-      ta.style.left = '-9999px'
-      document.body.appendChild(ta)
-      ta.select()
-      // eslint-disable-next-line @typescript-eslint/no-deprecated -- intentional LAN fallback
-      const ok = document.execCommand('copy')
-      document.body.removeChild(ta)
-      if (ok) resolve()
-      else reject(new Error('copy failed'))
-    } catch (e) {
-      reject(e instanceof Error ? e : new Error(String(e)))
-    }
-  })
 }
 
 /**
