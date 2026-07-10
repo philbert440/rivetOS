@@ -185,11 +185,126 @@ describe('readHarnessTranscript', () => {
       {
         role: 'assistant',
         text: 'hi there',
+        thinking: 'x', // thinking blocks ride the turn now (text variant tolerated)
         model: 'claude-opus-4',
         // prompt = input + cache_read + cache_creation (den-hook parity)
         usage: { promptTokens: 1250, completionTokens: 40, cachedTokens: 200 },
       },
       { role: 'user', text: 'second turn' },
+    ])
+  })
+
+  it('folds one Claude turn from many store lines: tools, results, summed usage', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-fold-'))
+    dirs.push(base)
+    const id = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    const usage = (out: number, inp: number) => ({
+      input_tokens: inp,
+      output_tokens: out,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    })
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      [
+        JSON.stringify({ type: 'user', message: { content: 'run the tests' } }),
+        // block 1: a tool_use line (no text yet)
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            model: 'claude-opus-4',
+            content: [
+              { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'npm test' } },
+            ],
+            usage: usage(10, 500),
+          },
+        }),
+        // its result rides a user-role line — status update, NOT a user turn
+        JSON.stringify({
+          type: 'user',
+          message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' }] },
+        }),
+        // block 2: a failing tool
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{ type: 'tool_use', id: 'tu_2', name: 'Edit', input: {} }],
+            usage: usage(5, 600),
+          },
+        }),
+        JSON.stringify({
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'tu_2', is_error: true, content: 'boom' },
+            ],
+          },
+        }),
+        // final text block carries the reply + final context size
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'tests pass, edit failed' }],
+            usage: usage(25, 700),
+          },
+        }),
+        JSON.stringify({ type: 'user', message: { content: 'thanks' } }),
+      ].join('\n') + '\n',
+    )
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    const t = await readHarnessTranscript(id)
+    expect(t.turns).toEqual([
+      { role: 'user', text: 'run the tests' },
+      {
+        role: 'assistant',
+        text: 'tests pass, edit failed',
+        tools: [
+          { name: 'Bash', status: 'done', args: { command: 'npm test' } },
+          { name: 'Edit', status: 'error' },
+        ],
+        model: 'claude-opus-4',
+        // output SUMMED across the turn's lines; prompt from the LAST line
+        usage: { promptTokens: 700, completionTokens: 40, cachedTokens: 0 },
+      },
+      { role: 'user', text: 'thanks' },
+    ])
+  })
+
+  it('filters harness-injected wrappers: task-notification, isMeta, compact summary', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-filter-'))
+    dirs.push(base)
+    const id = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      [
+        JSON.stringify({
+          type: 'user',
+          isCompactSummary: true,
+          message: { content: 'This session is being continued from a previous conversation…' },
+        }),
+        JSON.stringify({ type: 'user', message: { content: 'real question' } }),
+        JSON.stringify({
+          type: 'user',
+          message: { content: '<task-notification>\n<task-id>a1b2</task-id>\n</task-notification>' },
+        }),
+        JSON.stringify({ type: 'user', isMeta: true, message: { content: 'meta noise' } }),
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'real answer' }] },
+        }),
+      ].join('\n') + '\n',
+    )
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    const t = await readHarnessTranscript(id)
+    expect(t.turns).toEqual([
+      { role: 'user', text: 'real question' },
+      { role: 'assistant', text: 'real answer' },
     ])
   })
 

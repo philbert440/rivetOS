@@ -15,10 +15,16 @@
  */
 
 import { create } from 'zustand'
-import type { SessionMessage, SessionWsFrame } from '@rivetos/types'
+import type {
+  HarnessTranscriptTurn,
+  SessionMessage,
+  SessionWsFrame,
+  TranscriptWsFrame,
+} from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
 import { isValidGatewayUrl, useConnection } from './connection.js'
 import { foldStream, type LiveTurn } from '../lib/fold-stream.js'
+import { messagesFromHarnessTurns } from '../lib/harness-turns.js'
 import { questionsFromLiveTools, type AskQuestion } from '../lib/ask-user.js'
 
 export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
@@ -36,9 +42,24 @@ export interface OutboundItem {
   status: OutboundStatus
 }
 
+/** Server-pushed harness transcript state for a watched session. */
+export interface TranscriptState {
+  rev: number
+  turns: HarnessTranscriptTurn[]
+  /** '' = no on-disk store found (fresh draft / API-only session) */
+  command: string
+}
+
 interface ChatState {
   /** transcripts keyed by sessionId; only sessions opened this visit */
   messages: Record<string, SessionMessage[] | undefined>
+  /** Push-synced harness store transcripts (seamless modes v2). When a
+   *  session has one with a non-'' command, the store file is the single
+   *  source of truth for solid messages — bridge message commits stop
+   *  appending and only keep their side effects (live clear, ask stash). */
+  transcripts: Record<string, TranscriptState | undefined>
+  /** bumped on every sessions-dirty frame — the drawer refetches on change */
+  sessionsDirty: number
   /** sessions with a turn currently streaming */
   live: Record<string, LiveTurn | undefined>
   /** ms timestamp of the last stream frame per session — the queue pump's
@@ -97,6 +118,10 @@ interface ChatState {
   dismissAsk: (sessionId: string) => void
   /** Pass undefined to deselect (error-boundary recover, etc.). */
   setActive: (sessionId: string | undefined) => void
+  /** Subscribe to pushed transcript frames for a session (refcounted
+   *  server-side per socket; re-sent automatically on reconnect). */
+  watchTranscript: (sessionId: string) => void
+  unwatchTranscript: (sessionId: string) => void
   connect: (endpointKey: string) => void
   disconnect: () => void
 }
@@ -109,9 +134,66 @@ function appendMessage(list: SessionMessage[] | undefined, msg: SessionMessage):
 
 let subscription: Subscription | undefined
 let currentEndpoint: string | undefined
+/** Sessions with an active transcript watch — re-sent on every reconnect
+ *  (server-side subscriptions die with the socket). */
+const watchedSessions = new Set<string>()
+
+/**
+ * Apply a pushed transcript frame: splice the turn array at frame.from,
+ * rebuild solid messages from the result, and reconcile the optimistic
+ * outbound bubbles (a user turn the store now carries supersedes its
+ * optimistic copy — first match only, so two identical queued turns don't
+ * collapse). live/ask state is untouched: the live overlay clears through
+ * the bridge's commit/done paths, and the view hides the in-flight solid
+ * turn while a live turn is busy.
+ */
+function applyTranscriptFrame(s: ChatState, frame: TranscriptWsFrame): Partial<ChatState> | null {
+  const sid = frame.session
+  const cur = s.transcripts[sid]
+  let turns: HarnessTranscriptTurn[]
+  if (frame.from === 0) {
+    turns = frame.turns // full snapshot — always applicable
+  } else if (cur && frame.rev === cur.rev + 1 && cur.turns.length >= frame.from) {
+    turns = [...cur.turns.slice(0, frame.from), ...frame.turns]
+  } else {
+    return null // missed a delta — caller requests a snapshot
+  }
+  if (turns.length !== frame.total) return null
+
+  const mapped = messagesFromHarnessTurns(sid, turns)
+  // Reconcile optimistic bubbles against the NEW turns only (frame.turns):
+  // the just-committed user turn always sits in the changed window. Only
+  // bubbles with NO outbound entry are eligible — queued means not injected
+  // yet (a matching store turn is a TUI-typed twin), and sending means the
+  // pump hasn't observed success/failure, so eating the bubble early could
+  // leave a failed inject with no retry cue (grok review).
+  const existing = s.messages[sid] ?? []
+  const optimBubbles = existing.filter((m) => m.id.startsWith('optim:'))
+  const outbound = s.outbound[sid] ?? []
+  const newUserTexts = frame.turns.filter((t) => t.role === 'user').map((t) => t.text)
+  const keptBubbles: SessionMessage[] = []
+  for (const bubble of optimBubbles) {
+    const hit = newUserTexts.indexOf(bubble.text)
+    const inQueue = outbound.some((o) => o.id === bubble.id)
+    if (hit >= 0 && !inQueue) {
+      newUserTexts.splice(hit, 1)
+    } else {
+      keptBubbles.push(bubble)
+    }
+  }
+  return {
+    transcripts: {
+      ...s.transcripts,
+      [sid]: { rev: frame.rev, turns, command: frame.command },
+    },
+    messages: { ...s.messages, [sid]: [...mapped, ...keptBubbles] },
+  }
+}
 
 export const useChat = create<ChatState>((set, get) => ({
   messages: {},
+  transcripts: {},
+  sessionsDirty: 0,
   live: {},
   liveTs: {},
   ask: {},
@@ -266,11 +348,27 @@ export const useChat = create<ChatState>((set, get) => ({
       }
     }),
 
+  watchTranscript: (sessionId) => {
+    set((s) => ({
+      opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
+    }))
+    watchedSessions.add(sessionId)
+    subscription?.send({ type: 'watch', session: sessionId })
+    // not-open sends are fine — the onStatus('open') hook re-sends the set
+  },
+
+  unwatchTranscript: (sessionId) => {
+    watchedSessions.delete(sessionId)
+    subscription?.send({ type: 'unwatch', session: sessionId })
+  },
+
   connect: (endpointKey) => {
     subscription?.close()
     if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
+      watchedSessions.clear() // session ids are only meaningful per gateway
       set({
         messages: {},
+        transcripts: {},
         live: {},
         liveTs: {},
         ask: {},
@@ -291,6 +389,23 @@ export const useChat = create<ChatState>((set, get) => ({
     subscription = gateway.watchSessions(
       (frame: SessionWsFrame) => {
         const isOpen = (id: string): boolean => get().opened.includes(id)
+        if (frame.kind === 'sessions-dirty') {
+          // a harness store changed somewhere — the drawer refetches on this
+          set((s) => ({ sessionsDirty: s.sessionsDirty + 1 }))
+          return
+        }
+        if (frame.kind === 'transcript') {
+          if (!isOpen(frame.session)) return
+          const patch = applyTranscriptFrame(get(), frame)
+          if (patch) {
+            set(patch)
+          } else {
+            // missed a delta (reconnect gap / out-of-order) — ask the server
+            // for a fresh full snapshot on this same subscription
+            subscription?.send({ type: 'sync', session: frame.session })
+          }
+          return
+        }
         if (frame.kind === 'message') {
           const { kind: _kind, ...msg } = frame
           if (!isOpen(msg.sessionId)) return
@@ -319,8 +434,17 @@ export const useChat = create<ChatState>((set, get) => ({
             const stashed = endsTurn
               ? questionsFromLiveTools(s.live[msg.sessionId]?.tools ?? [])
               : []
+            // Store-backed sessions (push-synced transcript): the store file
+            // owns solid messages, so bridge commits don't append — they'd
+            // duplicate the turn the next transcript frame carries. Their
+            // side effects (optimistic supersede, live clear, ask stash)
+            // still apply.
+            const storeBacked = !!s.transcripts[msg.sessionId]?.command
             return {
-              messages: { ...s.messages, [msg.sessionId]: appendMessage(list, msg) },
+              messages: {
+                ...s.messages,
+                [msg.sessionId]: storeBacked ? list : appendMessage(list, msg),
+              },
               outbound:
                 outbound !== s.outbound[msg.sessionId]
                   ? { ...s.outbound, [msg.sessionId]: outbound }
@@ -358,6 +482,12 @@ export const useChat = create<ChatState>((set, get) => ({
             // unreliable (frames during the gap are gone) — clear live and
             // signal consumers to refetch backfill.
             set((s) => ({ wsStatus: status, live: {}, wsEpoch: s.wsEpoch + 1 }))
+            // Server-side transcript subscriptions died with the old socket;
+            // re-watch everything open. The server answers each watch with a
+            // full snapshot, which also heals any frames lost in the gap.
+            for (const sid of watchedSessions) {
+              subscription?.send({ type: 'watch', session: sid })
+            }
           } else {
             set({ wsStatus: status })
           }
