@@ -9,18 +9,23 @@ import { create } from 'zustand'
 const KEY = 'rivethub.sessionNames'
 const MAX = 500
 
-function load(): Record<string, string> {
+function load(): Record<string, string | undefined> {
   try {
     const raw = localStorage.getItem(KEY)
     const parsed: unknown = raw ? JSON.parse(raw) : {}
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {}
+    return parsed && typeof parsed === 'object'
+      ? (parsed as Record<string, string | undefined>)
+      : {}
   } catch {
     return {}
   }
 }
 
 interface SessionNamesState {
-  byKey: Record<string, string>
+  /** values are `| undefined` because bare index access IS undefined for a
+   *  missing key — keeps callers' fallback chains honest under
+   *  no-unnecessary-condition */
+  byKey: Record<string, string | undefined>
   /** Custom name for a node+session, or undefined. */
   get: (key: string) => string | undefined
   /** Set (trimmed) or clear (empty string clears the override). */

@@ -128,7 +128,7 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &new_window, &quit])?;
 
-            TrayIconBuilder::with_id("main-tray")
+            let tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().expect("bundled icon").clone())
                 .tooltip("RivetHub")
                 .menu(&menu)
@@ -151,6 +151,27 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Unread mirror: the web app emits `rivethub:unread` whenever its
+            // escalation inbox count changes (feature-detected — browsers
+            // no-op). Close-to-tray is the default lifecycle, so the tray
+            // tooltip is the only always-present "something is waiting" cue.
+            {
+                use tauri::Listener;
+                let tray = tray.clone();
+                app.listen_any("rivethub:unread", move |event| {
+                    let count = serde_json::from_str::<serde_json::Value>(event.payload())
+                        .ok()
+                        .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+                        .unwrap_or(0);
+                    let tip = if count == 0 {
+                        "RivetHub".to_string()
+                    } else {
+                        format!("RivetHub — {count} unread")
+                    };
+                    let _ = tray.set_tooltip(Some(&tip));
+                });
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

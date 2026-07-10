@@ -31,9 +31,7 @@ export function Toasts(): JSX.Element {
   // Red chrome is for bad news only — a completed task.done must not look
   // like an error (#303 review).
   const severity = (frame: NotificationFrame): 'red' | 'em' =>
-    frame.kind === 'escalation' || (frame.kind === 'task.done' && frame.status !== 'completed')
-      ? 'red'
-      : 'em'
+    frame.kind === 'escalation' || frame.status !== 'completed' ? 'red' : 'em'
 
   return (
     <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-96 flex-col gap-2">

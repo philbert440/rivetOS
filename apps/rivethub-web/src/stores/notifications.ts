@@ -31,6 +31,9 @@ interface TauriGlobal {
     requestPermission(): Promise<string>
     sendNotification(opts: { title: string; body: string }): void
   }
+  event?: {
+    emit(event: string, payload?: unknown): Promise<void>
+  }
 }
 
 function nativeNotify(frame: NotificationFrame): void {
@@ -51,6 +54,14 @@ function nativeNotify(frame: NotificationFrame): void {
         : { title: `Rivet task ${frame.status}`, body: frame.taskId },
     )
   })()
+}
+
+/** Mirror the unread count to the desktop shell's tray (feature-detected —
+ *  no-op in the browser). The tray is the only surface a hidden-to-tray app
+ *  has, so it must know when something is waiting. */
+function emitUnreadToShell(count: number): void {
+  const tauri = (globalThis as { __TAURI__?: TauriGlobal }).__TAURI__
+  void tauri?.event?.emit('rivethub:unread', { count }).catch(() => undefined)
 }
 
 interface NotificationsState {
@@ -83,6 +94,7 @@ export const useNotifications = create<NotificationsState>((set) => ({
     clearTimers()
     if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
       set({ entries: [], unread: 0 })
+      emitUnreadToShell(0)
     }
     currentEndpoint = endpointKey
     // Skip the socket when no http(s) gateway is configured (desktop shell
@@ -93,10 +105,13 @@ export const useNotifications = create<NotificationsState>((set) => ({
       nativeNotify(frame)
       counter += 1
       const id = `n-${String(counter)}`
-      set((s) => ({
-        entries: [{ id, frame, toast: true }, ...s.entries].slice(0, INBOX_MAX),
-        unread: s.unread + 1,
-      }))
+      set((s) => {
+        emitUnreadToShell(s.unread + 1)
+        return {
+          entries: [{ id, frame, toast: true }, ...s.entries].slice(0, INBOX_MAX),
+          unread: s.unread + 1,
+        }
+      })
       const timer = setTimeout(() => {
         timers.delete(timer)
         set((s) => ({
@@ -117,5 +132,8 @@ export const useNotifications = create<NotificationsState>((set) => ({
   dismissToast: (id) =>
     set((s) => ({ entries: s.entries.map((e) => (e.id === id ? { ...e, toast: false } : e)) })),
 
-  markAllRead: () => set({ unread: 0 }),
+  markAllRead: () => {
+    emitUnreadToShell(0)
+    set({ unread: 0 })
+  },
 }))
