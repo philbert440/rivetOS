@@ -45,20 +45,28 @@ function newSessionId(): string {
   return crypto.randomUUID()
 }
 
-/** Map harness transcript turns → SessionMessage (keeps Claude usage/model). */
+/** Map harness transcript turns → SessionMessage (keeps Claude usage/model).
+ *  Turns with no text yet (tool/thinking-only, mid-turn) are dropped until
+ *  the transcript view renders tool stacks on solid messages. */
 function messagesFromHarnessTurns(
   sessionId: string,
   turns: HarnessTranscriptTurn[],
 ): SessionMessage[] {
-  return turns.map((t, i) => ({
-    id: `harness:${sessionId}:${String(i)}`,
-    sessionId,
-    role: t.role,
-    text: t.text,
-    ts: i + 1,
-    ...(t.usage ? { usage: t.usage } : {}),
-    ...(t.model ? { model: t.model } : {}),
-  }))
+  return turns
+    .map((t, i) =>
+      t.text
+        ? {
+            id: `harness:${sessionId}:${String(i)}`,
+            sessionId,
+            role: t.role,
+            text: t.text,
+            ts: i + 1,
+            ...(t.usage ? { usage: t.usage } : {}),
+            ...(t.model ? { model: t.model } : {}),
+          }
+        : undefined,
+    )
+    .filter((m): m is SessionMessage => m !== undefined)
 }
 
 export function ChatPage(): JSX.Element {

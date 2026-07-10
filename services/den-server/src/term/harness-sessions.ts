@@ -14,6 +14,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
+import type { HarnessTranscriptTool, HarnessTranscriptTurn } from '@rivetos/types'
 
 export interface HarnessSession {
   /** the harness's native session id (e.g. Claude Code's uuid) */
@@ -310,14 +311,10 @@ export async function listHarnessSessions(
 
 // ---- Transcript read (resync chat UI from on-disk TUI store) ---------------
 
-/** One user/assistant turn pulled from a harness session store. */
-export interface HarnessTurn {
-  role: 'user' | 'assistant'
-  text: string
-  /** Claude Code stamps usage on assistant lines — preserve for context bar. */
-  usage?: { promptTokens: number; completionTokens: number; cachedTokens: number }
-  model?: string
-}
+/** One user/assistant turn pulled from a harness session store. The wire
+ *  shape (@rivetos/types HarnessTranscriptTurn) IS the parse shape — one
+ *  source of truth for server and clients. */
+export type HarnessTurn = HarnessTranscriptTurn
 
 /**
  * Claude Code message.usage → MessageUsage. promptTokens includes cache
@@ -380,12 +377,15 @@ function extractTurnText(content: unknown, role: 'user' | 'assistant'): string |
   text = text.trim()
   if (!text) return null
   // Skip harness-injected wrappers that aren't real conversational content
-  // (mirrors Android SessionTranscript.extractText).
+  // (mirrors Android SessionTranscript.extractText). <task-notification> is
+  // Claude Code's background-task completion notice — it reads like tool
+  // output and must never render as something the user typed.
   if (
     role === 'user' &&
     (text.startsWith('<command-') ||
       text.startsWith('<local-command') ||
       text.startsWith('<system-reminder') ||
+      text.startsWith('<task-notification') ||
       text.startsWith('<user_info') ||
       text.startsWith('Caveat:'))
   ) {
@@ -402,10 +402,7 @@ function extractTurnText(content: unknown, role: 'user' | 'assistant'): string |
   return text
 }
 
-async function parseJsonlTurns(
-  file: string,
-  pick: (obj: Record<string, unknown>) => HarnessTurn | null,
-): Promise<HarnessTurn[]> {
+async function parseJsonlObjects(file: string): Promise<Record<string, unknown>[]> {
   let raw: string
   try {
     const s = await stat(file)
@@ -431,20 +428,162 @@ async function parseJsonlTurns(
   } catch {
     return []
   }
-  const out: HarnessTurn[] = []
+  const out: Record<string, unknown>[] = []
   for (const line of raw.split('\n')) {
     const t = line.trim()
     if (!t.startsWith('{')) continue
-    let obj: Record<string, unknown>
     try {
-      obj = JSON.parse(t) as Record<string, unknown>
+      out.push(JSON.parse(t) as Record<string, unknown>)
     } catch {
-      continue
+      // mid-write partial line (the harness appends incrementally) — skip
     }
+  }
+  return out
+}
+
+async function parseJsonlTurns(
+  file: string,
+  pick: (obj: Record<string, unknown>) => HarnessTurn | null,
+): Promise<HarnessTurn[]> {
+  const out: HarnessTurn[] = []
+  for (const obj of await parseJsonlObjects(file)) {
     const turn = pick(obj)
     if (turn) out.push(turn)
   }
   return out
+}
+
+/** Keep the recent end of a long thinking trace — the UI collapses it anyway
+ *  and whole traces can run to tens of KB per turn. */
+const THINKING_TAIL_CHARS = 8_000
+
+/** Summarize tool input for turn display: primitives only, strings capped —
+ *  titles need hints (file_path, command), never payloads or secrets. Local
+ *  twin of the live bridge's summarizeBridgeArgs (core is not a dependency
+ *  of den-server, and the cap policy must match the wire's expectations). */
+function summarizeTurnArgs(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const out: Record<string, unknown> = {}
+  let keys = 0
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (keys >= 12) break
+    if (typeof v === 'string') {
+      out[k] = v.length > 200 ? v.slice(0, 200) + '…' : v
+    } else if (typeof v === 'number' || typeof v === 'boolean') {
+      out[k] = v
+    } else {
+      continue
+    }
+    keys++
+  }
+  return keys > 0 ? out : undefined
+}
+
+/**
+ * Fold Claude Code store lines into LOGICAL turns. One agent turn spans many
+ * store lines — one 'assistant' line per committed content block, with
+ * 'user'-role tool_result lines interleaved. Only a REAL user text message
+ * ends the assistant turn; everything between two user messages coalesces
+ * into ONE assistant turn carrying its text, thinking tail, and tool stack
+ * (matching what the live bridge streams, so a resynced transcript and a
+ * watched-live one look identical).
+ */
+function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[] {
+  const turns: HarnessTurn[] = []
+  // tool_use id → entry on the current turn; results arrive on later lines
+  let toolsById = new Map<string, HarnessTranscriptTool>()
+  let cur: HarnessTurn | null = null
+  let outputTokens = 0
+  let thinking = ''
+
+  const finishAssistant = (): void => {
+    if (cur) {
+      if (thinking) {
+        cur.thinking =
+          thinking.length > THINKING_TAIL_CHARS
+            ? '…' + thinking.slice(-THINKING_TAIL_CHARS)
+            : thinking
+      }
+      if (cur.tools && cur.tools.length === 0) delete cur.tools
+      if (cur.usage) cur.usage.completionTokens = outputTokens
+      // a turn with no visible content at all (blocks not flushed yet) is noise
+      if (cur.text || cur.thinking || cur.tools) turns.push(cur)
+    }
+    cur = null
+    outputTokens = 0
+    thinking = ''
+    toolsById = new Map()
+  }
+
+  for (const obj of lines) {
+    if (obj.isSidechain === true || obj.isMeta === true || obj.isCompactSummary === true) continue
+    if (obj.type !== 'user' && obj.type !== 'assistant') continue
+    const msg = obj.message as { content?: unknown; usage?: unknown; model?: unknown } | undefined
+    const content = msg?.content
+
+    if (obj.type === 'user') {
+      // Tool results ride user-role lines: they update the pending tool's
+      // status but must never render as something the user typed.
+      if (Array.isArray(content)) {
+        for (const b of content) {
+          if (!b || typeof b !== 'object') continue
+          const block = b as { type?: unknown; tool_use_id?: unknown; is_error?: unknown }
+          if (block.type !== 'tool_result') continue
+          const entry =
+            typeof block.tool_use_id === 'string' ? toolsById.get(block.tool_use_id) : undefined
+          if (entry) entry.status = block.is_error === true ? 'error' : 'done'
+        }
+      }
+      const text = extractTurnText(content, 'user')
+      if (text) {
+        finishAssistant()
+        turns.push({ role: 'user', text })
+      }
+      continue
+    }
+
+    // assistant line — extend the current turn
+    cur ??= { role: 'assistant', text: '', tools: [] }
+    const blocks = Array.isArray(content)
+      ? content
+      : typeof content === 'string'
+        ? [{ type: 'text', text: content }]
+        : []
+    for (const b of blocks) {
+      if (!b || typeof b !== 'object') continue
+      const block = b as {
+        type?: unknown
+        text?: unknown
+        thinking?: unknown
+        id?: unknown
+        name?: unknown
+        input?: unknown
+      }
+      if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+        cur.text = cur.text ? cur.text + '\n\n' + block.text.trim() : block.text.trim()
+      } else if (block.type === 'thinking') {
+        // stores write the trace as `thinking`; tolerate `text` variants
+        const t = typeof block.thinking === 'string' ? block.thinking : block.text
+        if (typeof t === 'string') thinking += t
+      } else if (block.type === 'tool_use' && typeof block.name === 'string') {
+        const entry: HarnessTranscriptTool = { name: block.name, status: 'running' }
+        const args = summarizeTurnArgs(block.input)
+        if (args) entry.args = args
+        if (typeof block.id === 'string') toolsById.set(block.id, entry)
+        cur.tools?.push(entry)
+      }
+    }
+    // usage: output tokens SUM across the turn's lines; prompt/cached/model
+    // take the last line that carries them (final context size, den-hook parity)
+    const stats = extractClaudeUsage(msg)
+    if (stats.usage) {
+      outputTokens += stats.usage.completionTokens
+      cur.usage = stats.usage
+    }
+    if (stats.model) cur.model = stats.model
+  }
+  finishAssistant()
+  return turns
 }
 
 async function findClaudeJsonl(id: string): Promise<string | undefined> {
@@ -536,21 +675,7 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
 
   const claudePath = await findClaudeJsonl(id)
   if (claudePath) {
-    const turns = await parseJsonlTurns(claudePath, (obj) => {
-      if (obj.isSidechain === true) return null
-      if (obj.type !== 'user' && obj.type !== 'assistant') return null
-      const role = obj.type
-      const msg = obj.message as { content?: unknown; usage?: unknown; model?: unknown } | undefined
-      const text = extractTurnText(msg?.content, role)
-      if (!text) return null
-      const turn: HarnessTurn = { role, text }
-      if (role === 'assistant') {
-        const stats = extractClaudeUsage(msg)
-        if (stats.usage) turn.usage = stats.usage
-        if (stats.model) turn.model = stats.model
-      }
-      return turn
-    })
+    const turns = claudeTurnsFromLines(await parseJsonlObjects(claudePath))
     if (turns.length > 0) return { id, command: 'claude', turns }
   }
 

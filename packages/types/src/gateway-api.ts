@@ -387,10 +387,24 @@ export interface HarnessSessionsResponse {
   sessions: HarnessSession[]
 }
 
+/** One tool invocation recorded on an assistant transcript turn. */
+export interface HarnessTranscriptTool {
+  /** Harness tool name verbatim (e.g. 'Bash', 'mcp:rivetos:memory_search'). */
+  name: string
+  /** 'running' until the store records the matching tool result. */
+  status: 'running' | 'done' | 'error'
+  /** Summarized tool input (primitives only, strings capped) for titles. */
+  args?: Record<string, unknown>
+}
+
 /** One turn from GET /api/terminal/harness-sessions/:id/transcript (TUI store). */
 export interface HarnessTranscriptTurn {
   role: 'user' | 'assistant'
   text: string
+  /** Accumulated thinking text for the turn (tail-capped server-side). */
+  thinking?: string
+  /** Tools the turn invoked, in call order (Claude Code stores only). */
+  tools?: HarnessTranscriptTool[]
   /** Claude Code (and others that stamp usage on transcript lines). */
   usage?: MessageUsage
   /** Model id when present on the transcript line (e.g. claude-opus-4). */
