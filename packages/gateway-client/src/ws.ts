@@ -32,6 +32,9 @@ export interface SubscriptionOptions<TFrame> {
 
 export interface Subscription {
   close(): void
+  /** Send a control message (e.g. transcript watch/unwatch). Returns false
+   *  when the socket isn't open — callers re-send on the next 'open'. */
+  send(data: unknown): boolean
 }
 
 const defaultFactory: WebSocketFactory = (url) => {
@@ -116,6 +119,15 @@ export function subscribe<TFrame>(
       closed = true
       if (timer) clearTimeout(timer)
       ws?.close(1000)
+    },
+    send(data: unknown): boolean {
+      if (closed || !ws || ws.readyState !== 1) return false
+      try {
+        ws.send(JSON.stringify(data))
+        return true
+      } catch {
+        return false
+      }
     },
   }
 }

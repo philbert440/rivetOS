@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, Clock3, Zap } from 'lucide-react'
-import type { MessageUsage, SessionMessage } from '@rivetos/types'
+import type { HarnessTranscriptTool, MessageUsage, SessionMessage } from '@rivetos/types'
 import type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
+import { humanToolTitle, type ToolArgs } from '../lib/tool-titles.js'
 import { DenBot } from './den-bot.js'
 import { Markdown } from './markdown.js'
+
+/** Transcript-sourced tool → the live stack's entry shape (same renderer). */
+function toLiveTool(t: HarnessTranscriptTool, id: string): LiveToolEntry {
+  const args: ToolArgs = t.args
+  return { id, name: t.name, title: humanToolTitle(t.name, args), status: t.status, args }
+}
 
 /** Time-only stamp; cold-backfilled messages carry ts:0 (timestamp lost on
  *  memory backfill) — show nothing rather than 1970. */
@@ -188,8 +195,16 @@ function Bubble(props: {
         </div>
       ) : (
         // Assistant is full-width, markdown-rendered (no bubble — android style).
+        // Harness-transcript messages carry the turn's thinking trace and tool
+        // stack (collapsed/inline) so a synced chat looks like the live one did.
         <div className="w-full px-1">
-          <Markdown>{props.msg.text}</Markdown>
+          {props.msg.thinking && <ReasoningBlock text={props.msg.thinking} />}
+          {props.msg.tools && props.msg.tools.length > 0 && (
+            <ToolStack
+              tools={props.msg.tools.map((t, i) => toLiveTool(t, `${props.msg.id}:${String(i)}`))}
+            />
+          )}
+          {props.msg.text && <Markdown>{props.msg.text}</Markdown>}
           {props.msg.usage && (
             <NerdLine usage={props.msg.usage} durationMs={props.msg.durationMs} />
           )}

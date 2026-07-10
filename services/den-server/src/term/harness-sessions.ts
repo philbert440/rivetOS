@@ -696,3 +696,32 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
 
   return { id, command: '', turns: [] }
 }
+
+// ---- Store resolution for the transcript watcher ---------------------------
+
+export interface HarnessStoreRef {
+  command: 'claude' | 'grok' | 'hermes'
+  /** The file to watch for changes (jsonl / chat_history / sqlite db). */
+  path: string
+}
+
+/**
+ * Resolve which on-disk store file backs a session id — the watch target for
+ * push-based transcript sync. Same probe order as readHarnessTranscript.
+ */
+export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const claudePath = await findClaudeJsonl(id)
+  if (claudePath) return { command: 'claude', path: claudePath }
+  const grokPath = await findGrokChatHistory(id)
+  if (grokPath) return { command: 'grok', path: grokPath }
+  if (hermesSessionExists(id)) return { command: 'hermes', path: hermesDbPath() }
+  return undefined
+}
+
+/** Store roots that exist on this node — watched (recursively) for the
+ *  drawer's sessions-dirty signal. */
+export function harnessStoreDirs(): string[] {
+  const candidates = [claudeProjectsDir(), grokSessionsDir(), join(hermesDbPath(), '..')]
+  return candidates.filter((d) => existsSync(d))
+}

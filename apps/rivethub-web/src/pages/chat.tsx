@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { HarnessTranscriptTurn, SessionMessage } from '@rivetos/types'
+import type { SessionMessage } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { useChat, type OutboundItem } from '../stores/chat.js'
@@ -19,7 +19,7 @@ import { SessionErrorBoundary } from '../components/session-error-boundary.js'
 import { questionsFromLiveTools } from '../lib/ask-user.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
-import { Pencil, RefreshCw } from 'lucide-react'
+import { Pencil } from 'lucide-react'
 import { useSessionNames } from '../stores/session-names.js'
 
 /** Stable empty array for zustand selectors — `?? []` inside a selector
@@ -45,30 +45,6 @@ function newSessionId(): string {
   return crypto.randomUUID()
 }
 
-/** Map harness transcript turns → SessionMessage (keeps Claude usage/model).
- *  Turns with no text yet (tool/thinking-only, mid-turn) are dropped until
- *  the transcript view renders tool stacks on solid messages. */
-function messagesFromHarnessTurns(
-  sessionId: string,
-  turns: HarnessTranscriptTurn[],
-): SessionMessage[] {
-  return turns
-    .map((t, i) =>
-      t.text
-        ? {
-            id: `harness:${sessionId}:${String(i)}`,
-            sessionId,
-            role: t.role,
-            text: t.text,
-            ts: i + 1,
-            ...(t.usage ? { usage: t.usage } : {}),
-            ...(t.model ? { model: t.model } : {}),
-          }
-        : undefined,
-    )
-    .filter((m): m is SessionMessage => m !== undefined)
-}
-
 export function ChatPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
@@ -85,13 +61,22 @@ export function ChatPage(): JSX.Element {
   // The drawer lists the node's harness sessions straight from their on-disk
   // stores — node+harness specific by construction (the store is local disk,
   // so it never holds another node's sessions). Ids are the harness's native
-  // session ids; opening one resumes it.
+  // session ids; opening one resumes it. Refresh is push-driven: the server
+  // watches the store dirs and emits sessions-dirty; the slow interval is
+  // only a safety net for missed events.
+  const queryClient = useQueryClient()
+  const sessionsDirty = useChat((s) => s.sessionsDirty)
   const harnessQuery = useQuery({
     queryKey: ['harness-sessions', baseUrl, token ?? ''],
     queryFn: ({ signal }) => useConnection.getState().gateway.harnessSessions(signal),
-    refetchInterval: 30_000,
+    refetchInterval: 120_000,
     enabled: connected,
   })
+  useEffect(() => {
+    if (sessionsDirty > 0) {
+      void queryClient.invalidateQueries({ queryKey: ['harness-sessions', baseUrl, token ?? ''] })
+    }
+  }, [sessionsDirty, baseUrl, token, queryClient])
 
   if (!connected) return <NotConnected />
 
@@ -304,9 +289,6 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
   const [spawning, setSpawning] = useState(false)
-  const [resyncConfirm, setResyncConfirm] = useState(false)
-  const [resyncing, setResyncing] = useState(false)
-  const [resyncMsg, setResyncMsg] = useState<string | undefined>()
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
   // (state is captured stale in an unmount-only effect) — #310 review.
   const termPtyRef = useRef<string | undefined>(undefined)
@@ -333,8 +315,6 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const wsStatus = useChat((s) => s.wsStatus)
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
-  const replace = useChat((s) => s.replace)
-  const queryClient = useQueryClient()
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
 
@@ -343,58 +323,20 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const settings = useChatSettings((s) => s.byKey[settingsKey])
   const setSetting = useChatSettings((s) => s.set)
 
-  // ---- Auto-sync from TUI on open (Android soft/hard open path) ------------
-  // The on-disk harness store is the canonical conversation for seamless
-  // modes. Every time we open this session (mount) or return to Chat mode
-  // after Terminal/Den, pull that transcript and hard-replace the chat UI so
-  // it can't stay stuck on a divergent cache. Manual ↻ still does the same
-  // with a confirm + fallback messaging.
-  const harnessKey = ['harness-transcript', baseUrl, token ?? '', props.sessionId, wsEpoch] as const
-  const harnessTx = useQuery({
-    queryKey: harnessKey,
-    queryFn: ({ signal }) =>
-      useConnection.getState().gateway.harnessTranscript(props.sessionId, signal),
-    // Short stale: reopening or Chat↔Terminal should pick up TUI turns soon;
-    // not zero so rapid drawer clicks don't stampede the node.
-    staleTime: 15_000,
-    gcTime: 30 * 60_000,
-  })
-  const harnessHasTurns = (harnessTx.data?.turns.length ?? 0) > 0
-
-  // Returning to Chat after typing in Terminal — invalidate so we re-pull TUI.
-  const prevModeRef = useRef(mode)
+  // ---- Push-synced transcript (seamless modes v2) ---------------------------
+  // The on-disk harness store is the canonical conversation. Subscribing here
+  // makes the server watch that file and push turn deltas over the sessions
+  // WS — the store applies them (stores/chat.ts), so this view just renders.
+  // Reconnects re-watch automatically (store's onStatus hook); no pull-on-
+  // navigate heuristics and no manual resync button anymore.
   useEffect(() => {
-    if (prevModeRef.current !== 'chat' && mode === 'chat') {
-      void queryClient.invalidateQueries({ queryKey: [...harnessKey] })
-    }
-    prevModeRef.current = mode
-  }, [mode, baseUrl, token, props.sessionId, wsEpoch, queryClient])
-
-  // Apply each harness fetch at most once (dataUpdatedAt). Skip while a live
-  // turn is streaming. If the UI already has *more* solid turns than the
-  // store (reply just finished, disk not flushed yet), leave the UI alone —
-  // manual ↻ or the next open/refetch will reconcile.
-  const lastHarnessApply = useRef(0)
-  useEffect(() => {
-    if (!harnessTx.data?.turns.length) return
-    if (live) return
-    if (harnessTx.dataUpdatedAt === lastHarnessApply.current) return
-    const next = messagesFromHarnessTurns(props.sessionId, harnessTx.data.turns)
-    const solid = (useChat.getState().messages[props.sessionId] ?? []).filter(
-      (m) => !m.id.startsWith('optim:'),
-    )
-    if (solid.length > next.length) {
-      // Mark applied so we don't keep re-trying this stale snapshot on every
-      // live clear; a later invalidate (mode return / manual) gets a new
-      // dataUpdatedAt.
-      lastHarnessApply.current = harnessTx.dataUpdatedAt
-      return
-    }
-    lastHarnessApply.current = harnessTx.dataUpdatedAt
-    // Keep inject queue + optimistic bubbles — wiping them made "queued"
-    // messages vanish whenever the TUI transcript refetched.
-    replace(props.sessionId, next, { preserveOutbound: true })
-  }, [harnessTx.data, harnessTx.dataUpdatedAt, props.sessionId, live, replace])
+    useChat.getState().watchTranscript(props.sessionId)
+    return () => useChat.getState().unwatchTranscript(props.sessionId)
+  }, [props.sessionId])
+  const transcript = useChat((s) => s.transcripts[props.sessionId])
+  // Snapshot received and the node has no store for this session → fall back
+  // to ring/memory (API-only agents, fresh drafts).
+  const storeEmpty = transcript !== undefined && transcript.turns.length === 0
 
   // HTTP ring backfill — only when the TUI store has nothing (fresh draft /
   // API agent / node without a harness file). seed() MERGES so live WS frames
@@ -403,14 +345,14 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     queryKey: ['session-messages', baseUrl, token ?? '', props.sessionId, wsEpoch],
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.sessionMessages(props.sessionId, signal),
-    enabled: harnessTx.isSuccess && !harnessHasTurns,
+    enabled: storeEmpty,
     staleTime: 5 * 60_000,
     gcTime: 30 * 60_000,
   })
   useEffect(() => {
-    if (harnessHasTurns) return
+    if (!storeEmpty) return
     if (backfill.data) seed(props.sessionId, backfill.data.messages)
-  }, [backfill.data, props.sessionId, harnessHasTurns, seed])
+  }, [backfill.data, props.sessionId, storeEmpty, seed])
 
   // Cold-session durable backfill (seamless 5e): empty ring + empty TUI →
   // memory conversation. Same enable gate as ring.
@@ -419,14 +361,14 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     queryKey: ['conv-messages', baseUrl, token ?? '', props.sessionId, wsEpoch],
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.conversationMessages(props.sessionId, signal),
-    enabled: harnessTx.isSuccess && !harnessHasTurns && ringEmpty,
+    enabled: storeEmpty && ringEmpty,
     staleTime: 5 * 60_000,
     gcTime: 30 * 60_000,
   })
   useEffect(() => {
-    if (harnessHasTurns) return
+    if (!storeEmpty) return
     if (coldBackfill.data?.messages.length) seed(props.sessionId, coldBackfill.data.messages)
-  }, [coldBackfill.data, props.sessionId, harnessHasTurns, seed])
+  }, [coldBackfill.data, props.sessionId, storeEmpty, seed])
 
   // Leaving a conversation does NOT kill its harness: detach only. Switching
   // away mid-turn must not abort the harness — the reply keeps streaming to
@@ -649,60 +591,20 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     }
   }
 
-  /**
-   * Manual hard-resync (Android resyncCliTranscript). Same source as the
-   * auto-open path, but forces a refetch and always replaces (even mid-live)
-   * so a stuck turn can be cleared. Confirm first.
-   */
-  const resyncFromTui = async (): Promise<void> => {
-    setResyncing(true)
-    setResyncMsg(undefined)
-    try {
-      const gw = useConnection.getState().gateway
-      // Bust the auto-open cache so we re-read the store from disk.
-      await queryClient.invalidateQueries({ queryKey: [...harnessKey] })
-      const transcript = await gw.harnessTranscript(props.sessionId)
-      let next: SessionMessage[]
-      if (transcript.turns.length > 0) {
-        next = messagesFromHarnessTurns(props.sessionId, transcript.turns)
-      } else {
-        // No on-disk store (fresh draft / unknown harness) — fall back to
-        // durable memory + ring, still as a hard replace so dups/stuck live clear.
-        const [ring, cold] = await Promise.all([
-          gw.sessionMessages(props.sessionId).catch(() => ({ messages: [] as SessionMessage[] })),
-          gw
-            .conversationMessages(props.sessionId)
-            .catch(() => ({ messages: [] as SessionMessage[] })),
-        ])
-        const byId = new Map<string, SessionMessage>()
-        for (const m of cold.messages) byId.set(m.id, m)
-        for (const m of ring.messages) byId.set(m.id, m)
-        next = [...byId.values()].sort((a, b) => a.ts - b.ts)
-      }
-      replace(props.sessionId, next)
-      void queryClient.invalidateQueries({
-        queryKey: ['session-messages', baseUrl, token ?? '', props.sessionId],
-      })
-      void queryClient.invalidateQueries({
-        queryKey: ['conv-messages', baseUrl, token ?? '', props.sessionId],
-      })
-      // Put the forced result back into the auto-open cache so we don't
-      // immediately re-fetch and flash.
-      queryClient.setQueryData([...harnessKey], transcript)
-      setResyncMsg(
-        transcript.turns.length > 0
-          ? `resynced ${String(next.length)} turn(s) from ${transcript.command || 'tui'}`
-          : next.length > 0
-            ? `resynced ${String(next.length)} turn(s) from memory/ring`
-            : 'no transcript found on this node',
-      )
-    } catch (err) {
-      setResyncMsg((err as Error).message)
-    } finally {
-      setResyncing(false)
-      setResyncConfirm(false)
-    }
-  }
+  // While a live turn streams, the store may already carry its partial solid
+  // turn (blocks flush to disk as they commit) — hide that last in-flight
+  // assistant message so the live bubble (which renders the same content
+  // plus the streaming cursor) is its only representation. It reappears the
+  // moment the live slot clears.
+  const liveBusy = useChat((s) => {
+    const L = s.live[props.sessionId]
+    return !!(L && (L.text || L.tools.length > 0 || L.reasoningText))
+  })
+  const lastMsg = messages.at(-1)
+  const shownMessages =
+    liveBusy && lastMsg?.role === 'assistant' && lastMsg.id.startsWith('harness:')
+      ? messages.slice(0, -1)
+      : messages
 
   const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(props.sessionId)}`
 
@@ -718,17 +620,6 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
           }
           transcriptTexts={messages.map((m) => m.text)}
         />
-        {/* Resync from TUI — Android-style un-wedge (confirm first). */}
-        <button
-          type="button"
-          onClick={() => setResyncConfirm(true)}
-          disabled={resyncing}
-          title="Resync chat from the terminal session transcript"
-          aria-label="Resync transcript"
-          className="ml-auto shrink-0 rounded border border-line px-2 py-1 text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
-        >
-          <RefreshCw className={`size-3.5 ${resyncing ? 'animate-spin' : ''}`} />
-        </button>
         {/* [Chat | Terminal | Den] — three views of ONE session; the bar
             stays visible so the den never takes over with no way back. */}
         <span className="flex shrink-0 overflow-hidden rounded-md border border-line">
@@ -753,52 +644,11 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
           </button>
         </span>
       </div>
-      {resyncMsg && (
-        <div className="border-b border-line bg-panel-2/40 px-4 py-1 font-mono text-[11px] text-ink-dim">
-          {resyncMsg}
-        </div>
-      )}
-      {resyncConfirm && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg/70 p-4">
-          <div
-            role="dialog"
-            aria-labelledby="resync-title"
-            className="w-full max-w-md rounded-lg border border-line bg-panel p-4 shadow-lg"
-          >
-            <h2 id="resync-title" className="mb-2 font-mono text-sm font-semibold text-em">
-              Resync transcript?
-            </h2>
-            <p className="mb-4 text-sm text-ink-dim">
-              Rebuilds this chat from the on-disk terminal (TUI) session, dropping any chat-only or
-              stuck messages that diverged from it. Use this if the chat looks out of sync with
-              Terminal mode.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setResyncConfirm(false)}
-                className="rounded border border-line px-3 py-1.5 text-sm text-ink-dim hover:text-ink"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void resyncFromTui()}
-                disabled={resyncing}
-                className="rounded border border-em bg-em-dim/20 px-3 py-1.5 text-sm text-em hover:bg-em-dim/40 disabled:opacity-50"
-              >
-                {resyncing ? 'Resyncing…' : 'Resync'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {mode === 'chat' ? (
         <>
           {/* Transcript owns its scroll container (stick-to-bottom lives there). */}
           <Transcript
-            messages={messages}
+            messages={shownMessages}
             live={live}
             outbound={Object.fromEntries(outbound.map((o) => [o.id, o.status]))}
             onInjectOutbound={onInjectOutbound}

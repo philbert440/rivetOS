@@ -206,6 +206,8 @@ export type {
   SessionPostAccepted,
   SessionPostReply,
   SessionWsFrame,
+  SessionWsClientMessage,
+  TranscriptWsFrame,
   TaskWire,
   TaskCreateRequest,
   TaskResponse,
