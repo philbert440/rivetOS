@@ -39,8 +39,11 @@ export function DensPage(): JSX.Element {
     return <div className="p-8 font-mono text-sm text-red">{sessions.error.message}</div>
 
   const list = sessions.data?.sessions ?? []
+  // ?token= rides along for token-gated gateways (den viewer net.ts keeps it
+  // across routes); iframes can't carry a bearer header.
   const denUrl = (id: string): string =>
-    `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(id)}`
+    `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(id)}` +
+    (token ? `&token=${encodeURIComponent(token)}` : '')
 
   return (
     <div className="flex h-full">

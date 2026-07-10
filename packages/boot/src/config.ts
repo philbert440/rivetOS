@@ -203,6 +203,9 @@ export interface DenSection {
   /** Shared filestore root for /api/files/* (default '/rivet-shared';
    *  empty string disables the routes). */
   files_root?: string
+  /** Explicit opt-out of the tokenless files security gate (trusted LAN
+   *  only). Defaults to terminal.open when unset. */
+  files_open?: boolean
 }
 
 // ---------------------------------------------------------------------------

@@ -33,12 +33,17 @@ import type { FileEntry } from '@rivetos/types'
  *  images; a runaway body must not fill the shared volume. */
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024 // 1 GiB
 
+/** In-flight upload temp names (`.<name>.part-<pid>-<ts>`) — hidden from
+ *  listings; they become real files only via the rename on completion. */
+const UPLOAD_TMP = /^\..*\.part-\d+-\d+$/
+
 /** Inline-viewable types open in the browser tab; everything else downloads. */
 const INLINE_MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
   '.md': 'text/plain; charset=utf-8',
   '.json': 'application/json',
-  '.html': 'text/html; charset=utf-8',
+  // .html/.svg are deliberately NOT inline: same-origin active content would
+  // make the shared mount a stored-XSS surface for the gateway origin.
   '.css': 'text/plain; charset=utf-8',
   '.js': 'text/plain; charset=utf-8',
   '.ts': 'text/plain; charset=utf-8',
@@ -52,7 +57,6 @@ const INLINE_MIME: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
-  '.svg': 'image/svg+xml',
   '.webp': 'image/webp',
   '.pdf': 'application/pdf',
   '.mp4': 'video/mp4',
@@ -118,10 +122,17 @@ export function createFilesRoutes(opts: {
       if (!abs) return json(res, 403, { error: 'path escapes the files root' })
       if (!existsSync(abs) || !statSync(abs).isDirectory())
         return json(res, 404, { error: 'no such directory' })
+      // Symlink fence: a symlinked DIR inside the mount must not walk the
+      // listing out of the root (the lexical check above can't see links).
+      const dir = realpathSync(abs)
+      if (dir !== root && !dir.startsWith(root + sep))
+        return json(res, 403, { error: 'path escapes the files root' })
       const entries: FileEntry[] = []
-      for (const name of readdirSync(abs)) {
+      for (const name of readdirSync(dir)) {
+        // in-flight upload temp files are an implementation detail
+        if (UPLOAD_TMP.test(name)) continue
         try {
-          const st = statSync(join(abs, name))
+          const st = statSync(join(dir, name))
           entries.push({
             name,
             type: st.isDirectory() ? 'dir' : 'file',
@@ -151,15 +162,18 @@ export function createFilesRoutes(opts: {
       const real = realpathSync(abs)
       if (real !== root && !real.startsWith(root + sep))
         return json(res, 403, { error: 'path escapes the files root' })
-      const st = statSync(abs)
+      // stat + stream the REAL path — never re-derefence `abs` after the
+      // fence check (a link swap between check and open would win the race)
+      const st = statSync(real)
       const mime = INLINE_MIME[extname(abs).toLowerCase()]
       const name = abs.slice(abs.lastIndexOf(sep) + 1)
       res.writeHead(200, {
         'Content-Type': mime ?? 'application/octet-stream',
         'Content-Length': st.size,
+        'X-Content-Type-Options': 'nosniff',
         'Content-Disposition': `${mime ? 'inline' : 'attachment'}; filename="${encodeURIComponent(name)}"`,
       })
-      createReadStream(abs).pipe(res)
+      createReadStream(real).pipe(res)
       return true
     }
 
@@ -168,10 +182,14 @@ export function createFilesRoutes(opts: {
       const dirRel = url.searchParams.get('dir') ?? ''
       const name = safeName(url.searchParams.get('name') ?? '')
       if (!name) return json(res, 422, { error: 'invalid file name' })
-      const dirAbs = resolveFenced(root, dirRel)
-      if (!dirAbs) return json(res, 403, { error: 'path escapes the files root' })
-      if (!existsSync(dirAbs) || !statSync(dirAbs).isDirectory())
+      const lexAbs = resolveFenced(root, dirRel)
+      if (!lexAbs) return json(res, 403, { error: 'path escapes the files root' })
+      if (!existsSync(lexAbs) || !statSync(lexAbs).isDirectory())
         return json(res, 404, { error: 'no such directory' })
+      // Symlink fence on the target dir — same reasoning as /files/list.
+      const dirAbs = realpathSync(lexAbs)
+      if (dirAbs !== root && !dirAbs.startsWith(root + sep))
+        return json(res, 403, { error: 'path escapes the files root' })
       const target = join(dirAbs, name)
       const overwrite = url.searchParams.get('overwrite') === '1'
       if (existsSync(target)) {
@@ -194,14 +212,28 @@ export function createFilesRoutes(opts: {
         if (!res.headersSent) json(res, status, { error })
         req.destroy()
       }
+      const rawLen = req.headers['content-length']
+      const expected = rawLen !== undefined ? parseInt(rawLen, 10) : null
       req.on('data', (chunk: Buffer) => {
         bytes += chunk.length
         if (bytes > MAX_UPLOAD_BYTES) abort(413, 'upload exceeds 1 GiB cap')
       })
       req.on('error', () => abort(400, 'upload stream failed'))
+      // premature disconnect can surface as a bare 'close' with no 'error' —
+      // never rename a partial body into place
+      req.on('close', () => {
+        if (!req.complete) abort(400, 'upload aborted mid-stream')
+      })
       out.on('error', (err) => abort(500, `write failed: ${err.message}`))
       out.on('finish', () => {
         if (failed) return
+        // the rename is the commit point: only a fully-received body
+        // (message complete, and matching Content-Length when one was sent)
+        // may take the real name — especially under overwrite=1
+        if (!req.complete || (expected !== null && bytes !== expected)) {
+          abort(400, 'upload truncated')
+          return
+        }
         try {
           renameSync(tmp, target)
         } catch (err) {

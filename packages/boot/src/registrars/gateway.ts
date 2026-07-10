@@ -65,6 +65,10 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
   }
   if (den.root_redirect?.trim()) env.RIVETOS_DEN_ROOT_REDIRECT = den.root_redirect.trim()
   if (den.files_root !== undefined) env.RIVETOS_DEN_FILES_ROOT = den.files_root.trim()
+  // files_open defaults to the terminal posture: a node the operator already
+  // opted into tokenless trusted-LAN terminals gets the files browser too.
+  if (den.files_open === true || (den.files_open === undefined && terminal?.open === true))
+    env.RIVETOS_DEN_FILES_OPEN = '1'
   if (terminal?.enabled === true) env.RIVETOS_DEN_TERM = '1'
   if (terminal?.open === true) env.RIVETOS_DEN_TERM_OPEN = '1'
   return env

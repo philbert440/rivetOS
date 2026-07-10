@@ -1,7 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createServer, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs'
+import { connect, type AddressInfo } from 'node:net'
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  readFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createFilesRoutes, resolveFenced, safeName } from './files.js'
@@ -44,7 +53,9 @@ describe('files routes', () => {
     mkdirSync(join(root, 'plans'))
     writeFileSync(join(root, 'plans', 'a.md'), 'hello')
     writeFileSync(join(root, 'top.txt'), 'top')
+    writeFileSync(join(root, 'page.html'), '<script>alert(1)</script>')
     symlinkSync('/etc/hostname', join(root, 'leak.txt'))
+    symlinkSync('/etc', join(root, 'evil'), 'dir')
     const routes = createFilesRoutes({ root })
     server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://localhost')
@@ -67,8 +78,11 @@ describe('files routes', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as { path: string; entries: { name: string; type: string }[] }
     expect(body.path).toBe('')
-    expect(body.entries[0]).toMatchObject({ name: 'plans', type: 'dir' })
-    expect(body.entries.map((e) => e.name)).toContain('top.txt')
+    const names = body.entries.map((e) => e.name)
+    expect(body.entries.find((e) => e.name === 'plans')).toMatchObject({ type: 'dir' })
+    expect(names).toContain('top.txt')
+    // dirs sort before files
+    expect(names.indexOf('plans')).toBeLessThan(names.indexOf('top.txt'))
   })
 
   it('lists a subdirectory and 403s an escape', async () => {
@@ -87,6 +101,50 @@ describe('files routes', () => {
 
   it('refuses downloading through a symlink that leaves the root', async () => {
     expect((await fetch(`${base}/files/download?path=leak.txt`)).status).toBe(403)
+  })
+
+  it('refuses listing/uploading through a symlinked dir that leaves the root', async () => {
+    expect((await fetch(`${base}/files/list?path=evil`)).status).toBe(403)
+    expect(
+      (await fetch(`${base}/files/upload?dir=evil&name=x.txt`, { method: 'POST', body: 'x' }))
+        .status,
+    ).toBe(403)
+  })
+
+  it('never serves HTML inline (stored-XSS fence)', async () => {
+    const res = await fetch(`${base}/files/download?path=page.html`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/octet-stream')
+    expect(res.headers.get('content-disposition')).toContain('attachment')
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+  })
+
+  it('never renames a truncated body into place, and leaves no temp litter', async () => {
+    const port = (server.address() as AddressInfo).port
+    await new Promise<void>((resolve) => {
+      const sock = connect(port, '127.0.0.1', () => {
+        // declare 10 bytes, send 3, hang up mid-body
+        sock.write(
+          'POST /files/upload?dir=plans&name=trunc.txt HTTP/1.1\r\n' +
+            'Host: t\r\nContent-Length: 10\r\n\r\nabc',
+        )
+        setTimeout(() => {
+          sock.destroy()
+          resolve()
+        }, 150)
+      })
+    })
+    await new Promise((r) => setTimeout(r, 150))
+    expect(existsSync(join(root, 'plans', 'trunc.txt'))).toBe(false)
+    expect(readdirSync(join(root, 'plans')).some((n) => n.includes('.part-'))).toBe(false)
+  })
+
+  it('hides in-flight upload temp names from listings', async () => {
+    writeFileSync(join(root, 'plans', '.x.txt.part-123-456'), 'partial')
+    const res = await fetch(`${base}/files/list?path=plans`)
+    const body = (await res.json()) as { entries: { name: string }[] }
+    expect(body.entries.some((e) => e.name.includes('.part-'))).toBe(false)
+    rmSync(join(root, 'plans', '.x.txt.part-123-456'))
   })
 
   it('uploads, no-clobbers, then overwrites with the flag', async () => {

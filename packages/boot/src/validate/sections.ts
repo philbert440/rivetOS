@@ -724,6 +724,13 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
       message: '"den.files_root" must be a string path ("" disables the files browser)',
     })
   }
+  if (den.files_open !== undefined && typeof den.files_open !== 'boolean') {
+    issues.push({
+      severity: 'error',
+      path: `${path}.files_open`,
+      message: '"den.files_open" must be a boolean',
+    })
+  }
 
   // SECURITY GATE — token required when terminals are exposed off loopback.
   // Only enforced when den.enabled (a disabled section deploys nothing);
