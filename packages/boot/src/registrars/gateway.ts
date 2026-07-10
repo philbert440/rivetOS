@@ -22,7 +22,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { logger, createGatewayChannel, type Runtime } from '@rivetos/core'
-import type { GatewayRoute } from '@rivetos/types'
+import type { GatewayRoute, SessionWsFrame } from '@rivetos/types'
 
 /** WS upgrade handler shape den-server accepts (same as the channel's). */
 interface GatewayUpgrade {
@@ -85,18 +85,30 @@ export async function registerGateway(
 
   // Dynamic import: boot compiles to CJS, den-server is ESM (same pattern as
   // the claude-cli executor registration).
-  const { createDenServer } = await import('@rivetos/den-server/server')
+  const { createDenServer, createTranscriptWatcher } = await import('@rivetos/den-server/server')
   const { loadConfig: loadDenConfig } = await import('@rivetos/den-server/config')
 
   // G5: the gateway channel — RivetHub chat into the normal turn pipeline.
   // Registered like any other channel; its routes + WS ride the gateway.
+  // Seamless modes v2: the transcript hooks close over the watcher declared
+  // just below (safe — they only run once the server is listening); the
+  // watcher's frames flow back out through this same channel's WS.
   const gatewayChannel = createGatewayChannel({
     // Seamless modes (5e): durable chat backfill reads the memory transcript;
     // memory registers on the runtime after this, so pass a lazy accessor.
     getMemory: () => runtime.getMemory(),
+    transcript: {
+      watch: (sid) => transcriptWatcher.watch(sid),
+      unwatch: (sid) => transcriptWatcher.unwatch(sid),
+      sync: (sid) => transcriptWatcher.sync(sid),
+    },
   })
+  const transcriptWatcher = createTranscriptWatcher((frame: SessionWsFrame) =>
+    gatewayChannel.emitFrame(frame),
+  )
   runtime.registerChannel(gatewayChannel.channel)
   runtime.addShutdownHook(async () => {
+    transcriptWatcher.close()
     await gatewayChannel.close()
   })
 

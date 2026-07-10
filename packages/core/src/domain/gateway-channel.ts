@@ -115,11 +115,23 @@ type MemoryBackfill = {
   ): Promise<Array<{ role: string; content: unknown }>>
 }
 
+/** Push-based transcript sync (seamless modes v2): the den server's store
+ *  watcher, refcounted per WS-subscribed session. */
+export interface TranscriptWatchHooks {
+  watch(session: string): void
+  unwatch(session: string): void
+  /** Re-emit a full snapshot (client lost a delta). No refcount change. */
+  sync(session: string): void
+}
+
 export function createGatewayChannel(opts?: {
   defaultAgent?: string
   /** Lazy accessor for the durable transcript store — memory registers on the
    *  runtime AFTER the channel is built, so read it at request time. */
   getMemory?: () => MemoryBackfill | undefined
+  /** When present, clients can send {type:'watch'|'unwatch', session} on the
+   *  sessions WS to subscribe to pushed transcript frames. */
+  transcript?: TranscriptWatchHooks
 }): GatewayChannelHandle {
   const sessions = new Map<string, { ring: RingMessage[]; lastActive: number }>()
   const subscribers = new Set<{ ws: WebSocket; session?: string }>()
@@ -136,10 +148,12 @@ export function createGatewayChannel(opts?: {
     return s
   }
 
-  const broadcast = (frame: SessionWsFrame, sessionId: string): void => {
+  /** sessionId undefined = deliver to every subscriber (drawer signals). */
+  const broadcast = (frame: SessionWsFrame, sessionId: string | undefined): void => {
     const payload = JSON.stringify(frame)
     for (const sub of subscribers) {
-      if (sub.ws.readyState !== 1 || (sub.session && sub.session !== sessionId)) continue
+      if (sub.ws.readyState !== 1) continue
+      if (sessionId !== undefined && sub.session && sub.session !== sessionId) continue
       if (sub.ws.bufferedAmount > MAX_BUFFERED) {
         sub.ws.terminate()
         subscribers.delete(sub)
@@ -179,6 +193,8 @@ export function createGatewayChannel(opts?: {
         s.lastActive = msg.ts
       }
       broadcast(frame, frame.sessionId)
+    } else if (frame.kind === 'sessions-dirty') {
+      broadcast(frame, undefined) // drawer signal — every subscriber
     } else {
       broadcast(frame, frame.session)
     }
@@ -371,8 +387,39 @@ export function createGatewayChannel(opts?: {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const sub = { ws, session: url.searchParams.get('session') ?? undefined }
     subscribers.add(sub)
-    ws.on('close', () => subscribers.delete(sub))
-    ws.on('error', () => subscribers.delete(sub))
+    // Per-socket transcript subscriptions (watch/unwatch control messages).
+    // Refcounted against the den server's store watcher; everything this
+    // socket watched is released when it goes away.
+    const watchedBySocket = new Set<string>()
+    const release = (): void => {
+      subscribers.delete(sub)
+      for (const sid of watchedBySocket) opts?.transcript?.unwatch(sid)
+      watchedBySocket.clear()
+    }
+    if (opts?.transcript) {
+      const transcript = opts.transcript
+      ws.on('message', (data: Buffer | string) => {
+        let msg: unknown
+        try {
+          msg = JSON.parse(typeof data === 'string' ? data : data.toString('utf8'))
+        } catch {
+          return // tolerate junk — never kill the socket over a bad frame
+        }
+        const m = msg as { type?: unknown; session?: unknown }
+        if (typeof m.session !== 'string' || !m.session || m.session.length > 256) return
+        if (m.type === 'watch' && !watchedBySocket.has(m.session)) {
+          watchedBySocket.add(m.session)
+          transcript.watch(m.session)
+        } else if (m.type === 'unwatch' && watchedBySocket.has(m.session)) {
+          watchedBySocket.delete(m.session)
+          transcript.unwatch(m.session)
+        } else if (m.type === 'sync' && watchedBySocket.has(m.session)) {
+          transcript.sync(m.session)
+        }
+      })
+    }
+    ws.on('close', release)
+    ws.on('error', release)
   })
 
   return {
