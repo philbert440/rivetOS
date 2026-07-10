@@ -549,6 +549,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         reap(r)
         return true
       }
+      // Unlink the den session NOW, not at exit: a respawn racing this kill
+      // (model change) must get a NEW pty from spawn-or-get, never the dying
+      // one — SIGHUP→SIGKILL can take seconds (grok review, PR #349).
+      if (bySession.get(r.denSession) === r.id) bySession.delete(r.denSession)
       audit('kill', r, { reason: 'request' })
       escalate(r)
       return true
