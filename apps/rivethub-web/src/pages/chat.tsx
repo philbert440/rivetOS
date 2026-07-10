@@ -210,6 +210,9 @@ function DrawerItem(props: {
   )
 }
 
+/** Drawer shows a filter box once the list stops being glanceable. */
+const DRAWER_FILTER_MIN = 6
+
 function SessionDrawer(props: {
   items: { id: string; title: string; command?: string }[]
   active?: string
@@ -218,6 +221,23 @@ function SessionDrawer(props: {
   const setActive = useChat((s) => s.setActive)
   const addDraft = useChat((s) => s.addDraft)
   const wsStatus = useChat((s) => s.wsStatus)
+  const baseUrl = useConnection((s) => s.baseUrl)
+  const names = useSessionNames((s) => s.byKey)
+  const [filter, setFilter] = useState('')
+
+  // Filter on what the user actually SEES: custom name first, then the
+  // derived title, then the raw id (so pasting a session uuid works too).
+  const q = filter.trim().toLowerCase()
+  const items = q
+    ? props.items.filter((it) => {
+        const custom = names[`${baseUrl}::${it.id}`] ?? ''
+        return (
+          custom.toLowerCase().includes(q) ||
+          it.title.toLowerCase().includes(q) ||
+          it.id.toLowerCase().includes(q)
+        )
+      })
+    : props.items
 
   return (
     <div className="flex w-60 shrink-0 flex-col border-r border-line bg-panel/40">
@@ -239,9 +259,20 @@ function SessionDrawer(props: {
           + new
         </button>
       </div>
+      {(props.items.length >= DRAWER_FILTER_MIN || q) && (
+        <div className="px-3 pb-2">
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="filter…"
+            aria-label="filter conversations"
+            className="w-full rounded border border-line bg-panel px-2 py-1 text-xs text-ink outline-none placeholder:text-ink-dim/60 focus:border-em"
+          />
+        </div>
+      )}
       {props.error && <div className="px-3 py-2 font-mono text-xs text-red">{props.error}</div>}
       <div className="flex-1 overflow-y-auto px-2">
-        {props.items.map((it) => (
+        {items.map((it) => (
           <DrawerItem
             key={it.id}
             item={it}
@@ -249,6 +280,9 @@ function SessionDrawer(props: {
             onSelect={() => setActive(it.id)}
           />
         ))}
+        {items.length === 0 && q && (
+          <div className="px-3 py-2 text-xs text-ink-dim">no matches for “{filter.trim()}”</div>
+        )}
         {props.items.length === 0 && !props.error && (
           <div className="px-3 py-2 text-xs text-ink-dim">no conversations yet</div>
         )}
