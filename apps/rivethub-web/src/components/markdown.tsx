@@ -108,8 +108,10 @@ const COMPONENTS: Components = {
       rel="noopener noreferrer"
       onClick={(e) => {
         // Tauri shell: window.open/target=_blank are silent no-ops — route
-        // through the opener IPC. Browsers fall through to normal behavior.
-        if (href) {
+        // http(s) through the opener IPC. Everything else (mailto:, relative
+        // anchors) keeps default behavior; preventDefault only when we
+        // actually take over, or those become dead clicks (grok review).
+        if (href && /^https?:\/\//i.test(href)) {
           e.preventDefault()
           openExternal(href)
         }
