@@ -243,6 +243,11 @@ function LiveBubble(props: { turn: LiveTurn }): JSX.Element {
   )
 }
 
+/** How close to the bottom (px) still counts as "at the bottom" — generous
+ *  enough that a stray wheel tick doesn't unpin, small enough that reading
+ *  one message up stays put. */
+const NEAR_BOTTOM_PX = 120
+
 export function Transcript(props: {
   messages: SessionMessage[]
   live?: LiveTurn
@@ -253,30 +258,66 @@ export function Transcript(props: {
   /** Drop a queued/sending bubble without sending. */
   onCancelOutbound?: (id: string) => void
 }): JSX.Element {
+  const scrollRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
+  // Stick-to-bottom: auto-scroll ONLY while the user is already at (or near)
+  // the bottom. Scrolling up to reread during a streaming reply must not be
+  // yanked back down on every frame — that was the old behavior. The ref
+  // mirrors the state so the content effect reads the current value without
+  // re-arming on every pin flip.
+  const [pinned, setPinned] = useState(true)
+  const pinnedRef = useRef(true)
   const count = props.messages.length + (props.live ? 1 : 0)
   const liveLen = props.live?.text.length ?? 0
   const toolN = props.live?.tools.length ?? 0
   const reasonLen = props.live?.reasoningText.length ?? 0
   const outboundN = props.outbound ? Object.keys(props.outbound).length : 0
 
-  useEffect(() => {
+  const onScroll = (): void => {
+    const el = scrollRef.current
+    if (!el) return
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
+    pinnedRef.current = nearBottom
+    setPinned(nearBottom)
+  }
+
+  const jumpToLatest = (): void => {
+    pinnedRef.current = true
+    setPinned(true)
     endRef.current?.scrollIntoView({ block: 'end' })
+  }
+
+  useEffect(() => {
+    if (pinnedRef.current) endRef.current?.scrollIntoView({ block: 'end' })
   }, [count, liveLen, toolN, reasonLen, outboundN])
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">
-      {props.messages.map((m) => (
-        <Bubble
-          key={m.id}
-          msg={m}
-          outboundStatus={props.outbound?.[m.id]}
-          onInject={props.outbound?.[m.id] ? props.onInjectOutbound : undefined}
-          onCancel={props.outbound?.[m.id] ? props.onCancelOutbound : undefined}
-        />
-      ))}
-      {props.live && <LiveBubble turn={props.live} />}
-      <div ref={endRef} />
+    <div className="relative min-h-0 flex-1">
+      <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
+        <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">
+          {props.messages.map((m) => (
+            <Bubble
+              key={m.id}
+              msg={m}
+              outboundStatus={props.outbound?.[m.id]}
+              onInject={props.outbound?.[m.id] ? props.onInjectOutbound : undefined}
+              onCancel={props.outbound?.[m.id] ? props.onCancelOutbound : undefined}
+            />
+          ))}
+          {props.live && <LiveBubble turn={props.live} />}
+          <div ref={endRef} />
+        </div>
+      </div>
+      {!pinned && (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-em-dim/50 bg-panel px-3 py-1.5 font-mono text-[11px] text-em shadow-lg shadow-bg/50 hover:bg-em-dim/20"
+        >
+          <ArrowDown className="size-3.5" />
+          latest
+        </button>
+      )}
     </div>
   )
 }
