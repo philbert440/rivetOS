@@ -17,6 +17,7 @@ import { Composer, type ComposerHandle } from '../components/composer.js'
 import { XtermAttach } from '../components/xterm-attach.js'
 import { SessionErrorBoundary } from '../components/session-error-boundary.js'
 import { questionsFromLiveTools } from '../lib/ask-user.js'
+import { harnessAccent } from '../lib/harness-colors.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
 import { Pencil } from 'lucide-react'
@@ -182,11 +183,17 @@ function DrawerItem(props: {
       <button
         onClick={props.onSelect}
         title={props.item.command ? `${props.item.command} · ${props.item.id}` : props.item.id}
-        className={`min-w-0 flex-1 truncate px-3 py-2 text-left text-xs ${
+        className={`flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-xs ${
           props.active ? 'text-em' : 'text-ink-dim group-hover:text-ink'
         }`}
       >
-        {customName ?? props.item.title}
+        {/* harness accent: claude clay / grok grey / local emerald */}
+        <span
+          className="size-1.5 shrink-0 rounded-full"
+          style={{ background: harnessAccent(props.item.command) }}
+          aria-hidden
+        />
+        <span className="min-w-0 truncate">{customName ?? props.item.title}</span>
       </button>
       <button
         onClick={() => {
@@ -285,7 +292,9 @@ function SessionDrawer(props: {
 }
 
 function ActiveSession(props: { sessionId: string; harnessCommand?: string }): JSX.Element {
-  const [mode, setMode] = useState<'chat' | 'terminal' | 'den'>('chat')
+  // Terminal is the starting place — chat and den are progressively more
+  // immersive views of the same live harness.
+  const [mode, setMode] = useState<'chat' | 'terminal' | 'den'>('terminal')
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
   const [spawning, setSpawning] = useState(false)
@@ -401,10 +410,10 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
       // Clear the ref synchronously, not just the state (#315 review): until
       // the next render re-mirrors termPtyId, ensurePty() would otherwise
       // hand back the just-killed pty id and chat send would inject into a
-      // dead PTY → 409.
+      // dead PTY → 409. Mode stays put — the terminal spawn effect respawns
+      // with the newly chosen model if terminal is showing.
       termPtyRef.current = undefined
       setTermPtyId(undefined)
-      setMode('chat')
     }
   }, [agentSel])
 
@@ -434,15 +443,18 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     return p.id
   }
 
-  // Switching to Terminal reveals the conversation's harness (spawn-or-get).
-  const enterTerminal = (): void => {
-    setMode('terminal')
-    if (termPtyId || spawning) return
+  // Terminal mode (including on open — it's the default) reveals the
+  // conversation's harness: spawn-or-get whenever terminal is active with no
+  // PTY. Also covers respawn after a model change killed the old one.
+  useEffect(() => {
+    if (mode !== 'terminal' || termPtyId || spawning) return
     setSpawning(true)
     void ensurePty()
       .catch((e: unknown) => setTermError((e as Error).message))
       .finally(() => setSpawning(false))
-  }
+  }, [mode, termPtyId, spawning, props.sessionId])
+
+  const enterTerminal = (): void => setMode('terminal')
 
   // Seamless chat send: enqueue + serial inject. The queue is visible in the
   // transcript (queued / sending badges + inject/cancel). We only auto-inject
@@ -630,20 +642,21 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
           }
           transcriptTexts={messages.map((m) => m.text)}
         />
-        {/* [Chat | Terminal | Den] — three views of ONE session; the bar
-            stays visible so the den never takes over with no way back. */}
+        {/* [Terminal | Chat | Den] — three views of ONE session, ordered by
+            immersion (terminal is home); the bar stays visible so the den
+            never takes over with no way back. */}
         <span className="flex shrink-0 overflow-hidden rounded-md border border-line">
           <button
-            onClick={() => setMode('chat')}
-            className={`px-2.5 py-1 font-mono text-[11px] ${mode === 'chat' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
-          >
-            Chat
-          </button>
-          <button
             onClick={enterTerminal}
-            className={`border-l border-line px-2.5 py-1 font-mono text-[11px] ${mode === 'terminal' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
+            className={`px-2.5 py-1 font-mono text-[11px] ${mode === 'terminal' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
           >
             Terminal
+          </button>
+          <button
+            onClick={() => setMode('chat')}
+            className={`border-l border-line px-2.5 py-1 font-mono text-[11px] ${mode === 'chat' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
+          >
+            Chat
           </button>
           <button
             onClick={() => setMode('den')}
@@ -659,6 +672,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
           {/* Transcript owns its scroll container (stick-to-bottom lives there). */}
           <Transcript
             messages={shownMessages}
+            accent={harnessAccent(props.harnessCommand ?? settings?.agent)}
             live={live}
             outbound={Object.fromEntries(outbound.map((o) => [o.id, o.status]))}
             onInjectOutbound={onInjectOutbound}

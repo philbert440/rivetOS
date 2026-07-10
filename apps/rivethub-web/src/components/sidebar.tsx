@@ -5,10 +5,11 @@ import { useNotifications } from '../stores/notifications.js'
 import { NodeSwitcher } from './node-switcher.js'
 import { DenBot } from './den-bot.js'
 
-/** Primary session views — top of the rail. */
+/** Primary session views — top of the rail. Terminal leads: it's the
+ *  starting place; each view after it is a step more immersive. */
 const PRIMARY_NAV = [
-  { to: '/', label: 'Chat', icon: '💬' },
   { to: '/terminal', label: 'Terminal', icon: '›_' },
+  { to: '/', label: 'Chat', icon: '💬' },
 ] as const
 
 /** Workspace tools — below the separator. */

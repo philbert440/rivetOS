@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import type { CSSProperties, JSX } from 'react'
 import denBotUrl from '../assets/den-bot.png'
 import { cn } from '../lib/utils.js'
 
@@ -13,6 +13,8 @@ import { cn } from '../lib/utils.js'
 export function DenBot(props: {
   className?: string
   title?: string
+  /** inline style pass-through — the chat avatar rings it per-harness */
+  style?: CSSProperties
   /** decorative: sits next to a visible label (e.g. the "Rivet" avatar row),
    *  so hide it from screen readers to avoid a duplicate announcement. */
   decorative?: boolean
@@ -24,6 +26,7 @@ export function DenBot(props: {
       aria-hidden={props.decorative || undefined}
       title={props.title}
       draggable={false}
+      style={props.style}
       className={cn('select-none object-contain [image-rendering:pixelated]', props.className)}
     />
   )
