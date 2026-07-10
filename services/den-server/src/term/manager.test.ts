@@ -154,6 +154,20 @@ describe('term manager', () => {
     expect(spawns.length).toBe(1)
   })
 
+  it('kill() unlinks the den session immediately — a racing respawn gets a NEW pty', () => {
+    const { manager, spawns } = makeManager({})
+    const a = manager.spawn('claude', 80, 24, '127.0.0.1', 'chat-kill-race')
+    expect(manager.ptyForSession('chat-kill-race')).toBe(a.id)
+
+    // kill requested but the child hasn't exited yet (SIGHUP->SIGKILL window):
+    // spawn-or-get must not hand back the dying pty (grok review, PR #349)
+    manager.kill(a.id)
+    expect(manager.ptyForSession('chat-kill-race')).toBeUndefined()
+    const b = manager.spawn('claude', 80, 24, '127.0.0.1', 'chat-kill-race')
+    expect(b.id).not.toBe(a.id)
+    expect(spawns.length).toBe(2)
+  })
+
   it('rejects a malformed session id', () => {
     const { manager } = makeManager({})
     expect(() => manager.spawn('claude', 80, 24, '', 'bad session id!')).toThrow(/invalid session/)

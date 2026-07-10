@@ -737,13 +737,15 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
           title="den"
           className="min-h-0 flex-1 border-0 bg-bg"
         />
+      ) : termPtyId ? (
+        // a live PTY always wins — a stale spawn error (recovered via a chat
+        // send's ensurePty) must never mask a working terminal (grok review)
+        <XtermAttach key={`${baseUrl}|${termPtyId}`} ptyId={termPtyId} />
       ) : termError ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1">
           <span className="font-mono text-sm text-red">{termError}</span>
           <span className="text-xs text-ink-dim">click Terminal to retry</span>
         </div>
-      ) : termPtyId ? (
-        <XtermAttach key={`${baseUrl}|${termPtyId}`} ptyId={termPtyId} />
       ) : (
         <div className="flex flex-1 items-center justify-center text-sm text-ink-dim">
           spawning terminal…
