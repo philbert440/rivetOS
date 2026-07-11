@@ -61,6 +61,22 @@ export const KNOWN_DEN_KEYS = new Set([
   'root_redirect',
   'files_root',
   'files_open',
+  'devices',
+])
+
+export const KNOWN_DEN_DEVICES_KEYS = new Set([
+  'enabled',
+  'relay_ssh',
+  'relay_sudo',
+  'wg_interface',
+  'pool',
+  'wg_endpoint',
+  'wg_public_key',
+  'allowed_ips',
+  'home_subnet',
+  'shared_host',
+  'shared_export',
+  'gateway_url',
 ])
 
 export const KNOWN_DEN_TERMINAL_KEYS = new Set(['enabled', 'open'])

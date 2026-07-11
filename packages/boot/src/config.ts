@@ -206,6 +206,35 @@ export interface DenSection {
   /** Explicit opt-out of the tokenless files security gate (trusted LAN
    *  only). Defaults to terminal.open when unset. */
   files_open?: boolean
+  /** Mesh device enrollment (Settings → Devices). Off unless `enabled`.
+   *  Only the node that fronts the WireGuard relay should turn this on. */
+  devices?: {
+    enabled?: boolean
+    /** ssh target for the relay, e.g. "rivet@10.0.0.4". Blank = record
+     *  devices but don't touch the relay (peers added by hand). */
+    relay_ssh?: string
+    /** Prefix relay wg commands with `sudo -n` (ssh user has passwordless
+     *  sudo but isn't root). */
+    relay_sudo?: boolean
+    /** WireGuard interface on the relay (default wg0). */
+    wg_interface?: string
+    /** Device address pool, inclusive "A.B.C.D-A.B.C.E". */
+    pool?: string
+    /** Relay public endpoint (host:port) — embedded in the QR. */
+    wg_endpoint?: string
+    /** Relay WireGuard public key — embedded in the QR. */
+    wg_public_key?: string
+    /** AllowedIPs the enrolled device routes into the tunnel (mesh subnet). */
+    allowed_ips?: string
+    /** Home-LAN IPv4 prefix where the device's tunnel auto-idles. */
+    home_subnet?: string
+    /** Shared NFS host + export embedded in the QR for the device. */
+    shared_host?: string
+    shared_export?: string
+    /** Externally reachable den base URL for the QR (blank = the web client
+     *  substitutes the origin it reached this node at). */
+    gateway_url?: string
+  }
 }
 
 // ---------------------------------------------------------------------------

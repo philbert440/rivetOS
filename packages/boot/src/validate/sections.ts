@@ -16,6 +16,7 @@ import {
   REMOVED_MEMORY_POSTGRES_KEYS,
   KNOWN_DEN_KEYS,
   KNOWN_DEN_TERMINAL_KEYS,
+  KNOWN_DEN_DEVICES_KEYS,
   KNOWN_TASKS_KEYS,
   KNOWN_TASKS_EVAL_KEYS,
   DEN_LOOPBACK_HOSTS,
@@ -702,6 +703,56 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
       }
       terminalEnabled = terminal.enabled === true
       terminalOpen = terminal.open === true
+    }
+  }
+
+  if (den.devices !== undefined) {
+    if (typeof den.devices !== 'object' || Array.isArray(den.devices) || den.devices === null) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.devices`,
+        message: '"den.devices" must be an object (e.g. { enabled: true })',
+      })
+    } else {
+      const devices = den.devices as Record<string, unknown>
+      for (const key of Object.keys(devices)) {
+        if (!KNOWN_DEN_DEVICES_KEYS.has(key)) {
+          issues.push({
+            severity: 'warning',
+            path: `${path}.devices.${key}`,
+            message: `Unknown den.devices key "${key}"`,
+          })
+        }
+      }
+      for (const boolKey of ['enabled', 'relay_sudo'] as const) {
+        if (devices[boolKey] !== undefined && typeof devices[boolKey] !== 'boolean') {
+          issues.push({
+            severity: 'error',
+            path: `${path}.devices.${boolKey}`,
+            message: `"den.devices.${boolKey}" must be a boolean`,
+          })
+        }
+      }
+      for (const strKey of [
+        'relay_ssh',
+        'wg_interface',
+        'pool',
+        'wg_endpoint',
+        'wg_public_key',
+        'allowed_ips',
+        'home_subnet',
+        'shared_host',
+        'shared_export',
+        'gateway_url',
+      ] as const) {
+        if (devices[strKey] !== undefined && typeof devices[strKey] !== 'string') {
+          issues.push({
+            severity: 'error',
+            path: `${path}.devices.${strKey}`,
+            message: `"den.devices.${strKey}" must be a string`,
+          })
+        }
+      }
     }
   }
 
