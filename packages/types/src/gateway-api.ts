@@ -567,3 +567,58 @@ export interface FilesUploadResponse {
   path: string
   bytes: number
 }
+
+// -- mesh device enrollment (Settings → Devices; den-server devices.ts) ------
+
+export interface MeshDevice {
+  id: string
+  name: string
+  publicKey: string
+  address: string
+  createdAt: number
+  enrolledAt: number | null
+  /** Unix ms of the peer's last WireGuard handshake; null = never/unknown. */
+  lastHandshake: number | null
+}
+
+export interface MeshDevicePending {
+  id: string
+  name: string
+  address: string
+  expiresAt: number
+}
+
+export interface DeviceEnrollConfig {
+  sharedHost: string
+  sharedExport: string
+  pgUrl: string
+  embedUrl: string
+  wgEndpoint: string
+  wgPeerPublicKey: string
+  wgAddress: string
+  wgAllowedIps: string
+  homeSubnet: string
+}
+
+/** The QR payload the desktop renders; the phone scans + redeems `token`. */
+export interface DeviceEnrollQr {
+  v: 1
+  kind: 'rivet-mesh-enroll'
+  gateway: string
+  token: string
+  config: DeviceEnrollConfig
+}
+
+export interface DevicesListResponse {
+  devices: MeshDevice[]
+  pending: MeshDevicePending[]
+  relayConfigured: boolean
+}
+
+export interface DeviceOpenResponse {
+  id: string
+  name: string
+  address: string
+  expiresAt: number
+  qr: DeviceEnrollQr
+}

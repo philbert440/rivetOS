@@ -56,6 +56,7 @@ import {
   readHarnessTranscript,
 } from './term/harness-sessions.js'
 import { createFilesRoutes } from './files.js'
+import { createDevicesRoutes } from './devices.js'
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
@@ -353,6 +354,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       return pty ? { ...s, pty } : s
     })
 
+  // Mesh device enrollment (Settings → Devices). Bearer-gated except the
+  // one-time-token enroll redemption, which is matched before the gate.
+  const devicesRoutes = config.devices?.enabled
+    ? createDevicesRoutes({
+        config: config.devices,
+        stateDir: config.stateDir,
+        gatewayUrl: config.devices.gatewayUrl,
+        log: console.error,
+      })
+    : null
+
   const authorized = (req: IncomingMessage, url: URL): boolean => {
     if (!config.token) return true
     const header = req.headers.authorization ?? ''
@@ -486,6 +498,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           }
         }
       }
+      // Enrollment redemption authenticates with its own one-time token — the
+      // device has no bearer yet. Everything else under /api/devices stays
+      // behind the gate below.
+      if (devicesRoutes && url.pathname === '/api/devices/enroll') {
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (await devicesRoutes.handleEnroll(req, res, url)) return
+      }
       if (!authorized(req, url)) {
         json(res, 401, { error: 'unauthorized' })
         return
@@ -506,6 +525,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           await route.handler(req, res)
           return
         }
+      }
+
+      // Mesh devices (behind the bearer gate)
+      if (url.pathname === '/api/devices' || url.pathname.startsWith('/api/devices/')) {
+        if (!devicesRoutes)
+          return json(res, 503, { error: 'device enrollment disabled on this node' })
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (await devicesRoutes.handle(req, res, url)) return
+        return json(res, 404, { error: 'not found' })
       }
 
       // Shared filestore (behind the bearer gate; CORS headers match den's own)
