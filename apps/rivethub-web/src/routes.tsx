@@ -11,6 +11,7 @@ import { Toasts } from './components/toasts.js'
 import { ChatPage } from './pages/chat.js'
 import { DensPage } from './pages/dens.js'
 import { FilesPage } from './pages/files.js'
+import { MemoryPage } from './pages/memory.js'
 import { SettingsPage } from './pages/settings.js'
 import { TerminalPage } from './pages/terminal.js'
 import { TaskDetailPage, TasksPage } from './pages/tasks.js'
@@ -62,6 +63,12 @@ const densRoute = createRoute({
   component: DensPage,
 })
 
+const memoryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/memory',
+  component: MemoryPage,
+})
+
 const filesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/files',
@@ -90,6 +97,7 @@ export const routeTree = rootRoute.addChildren([
   chatRoute,
   terminalRoute,
   densRoute,
+  memoryRoute,
   filesRoute,
   tasksRoute,
   taskDetailRoute,

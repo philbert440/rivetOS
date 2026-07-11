@@ -15,6 +15,7 @@ const PRIMARY_NAV = [
 
 /** Workspace tools — below the separator. */
 const SECONDARY_NAV = [
+  { to: '/memory', label: 'Memory', icon: '◈' },
   { to: '/files', label: 'Files', icon: '▤' },
   { to: '/tasks', label: 'Tasks', icon: '☑' },
 ] as const
