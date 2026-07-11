@@ -274,16 +274,20 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 
 ### License boundary — `apps/rivet-android`
 
-The Android client (`apps/rivet-android`) is a **git submodule** pointing at
-[philbert440/rivet-android](https://github.com/philbert440/rivet-android), a
-RikkaHub fork licensed **AGPL-3.0** — a different license than this
-repository. The boundary rules:
+The Android client (`apps/rivet-android`) is **vendored source** — a RikkaHub
+fork licensed **AGPL-3.0**, a different license than the rest of this
+repository (Apache-2.0). Its `LICENSE` lives in that directory and governs it.
+The boundary rules:
 
-- The submodule is Gradle-built and completely outside the nx graph, CI, and
-  npm workspaces of this repo.
+- It is **Gradle-built, not npm/nx-built**: a minimal `package.json` (no JS
+  dependencies) registers it in the nx graph for DDD tags and boundary
+  enforcement only. Its real targets are `apk`/`apk-release`/`check`/`verify`
+  (gradle wrappers) — deliberately not `build`/`test`/`lint`, so CI's
+  Android-SDK-less nx sweeps skip it. Builds happen where an SDK lives, same
+  posture as `apps/rivethub-desktop`.
 - Dependency direction is **one-way**: the Android app may consume this
   repo's published artifacts and gateway APIs; **no code may be copied FROM
-  the AGPL submodule INTO this Apache-2.0 tree.**
+  the AGPL-licensed `apps/rivet-android/` tree INTO the Apache-2.0 tree.**
 - RivetHub web/desktop reimplement the client UX against the same gateway
   contracts (`@rivetos/types` gateway-api) — shared design, independent code.
 

@@ -10,7 +10,7 @@
 #       (cloned from the dev.rivet.app entries) so the google-services plugin accepts
 #       the .friend applicationId suffix.
 #
-# Runs on any Linux with GNU tar (phildesk WSL, CT115). Root not needed: the app
+# Runs on any Linux with GNU tar (the build host). Root not needed: the app
 # extracts with busybox tar as a non-root uid, so ownership inside the tar is ignored —
 # only paths and permission bits matter.
 #

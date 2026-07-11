@@ -11,7 +11,7 @@ access + mesh membership + on-device agents, all in one APK. The point (vs. a st
 client) is embodiment — Rivet that can *see and drive the phone* and run *real agents*
 on-device, not just chat.
 
-- Project root (on **phildesk**, Windows side): `C:\Users\philb\Desktop\rivet-control-center`
+- Project root (on **phildesk**, Windows side): `<project-root>` (on the Windows side of the build machine)
 - Edits happen **over SSH**: `ssh rivet@<phildesk-host> '<cmd>'` (file tools run on rivet-claude, not phildesk). Pipe through `grep -v "preserving permissions"` to mute drvfs chmod noise.
 - Native Kotlin/Compose, Gradle 9.4.1, KSP/Room, Koin. minSdk 26, **targetSdk 37**.
   `applicationId dev.rivet.app` (`.debug`), namespace `dev.rivet.*`. AGPL-v3 (personal-use free tier).
@@ -33,8 +33,7 @@ carrying all the Phase 0 sanitization. Key points for anyone working here:
 - `material3/material-color-utilities/` is now **vendored source** (was a nested git
   submodule); `material3/build.gradle.kts` adds `material-color-utilities/kotlin` as a
   srcDir. Don't re-add it as a submodule.
-- Signing keystore stays OUT of the tree (`/home/rivet/rivet-android-keys/debug.keystore`
-  on ct115, copied to the build host's `~/.android/`).
+- Signing keystore stays OUT of the tree (kept on the build host, copied to its `~/.android/`).
 - The standalone `rivet-android` GitHub repo is being archived; the monorepo is canonical.
 
 ## Update (2026-07-11) — Phase 0: config-first sanitization (branch `phase0-sanitize`)
@@ -779,8 +778,8 @@ confirm + future `rivet-phone-local` remain. The `## /rivet-shared PLAN` below i
   files owned 1000 (mesh rivet 2000 couldn't read) — wrapper now claims `?uid=2000&gid=2000` (libnfs honors
   it) → 2000 on both paths.
 - **WireGuard mesh VPN** — in-app `VpnService` (wireguard-android GoBackend) → **rivet-prod Azure relay**
-  (static `52.165.186.200:33050`, peer `0PXOBM…gdE4=`) → home mesh. **Auto-OFF on the home subnet**
-  (`RIVET_HOME_SUBNET=10.4.20.`), UP when away (NetworkCallback reconcile in `RivetRuntimeService`).
+  (static `<relay-endpoint>`, peer `<relay-pubkey>`) → home mesh. **Auto-OFF on the home subnet**
+  (`RIVET_HOME_SUBNET=<home-subnet-prefix>`), UP when away (NetworkCallback reconcile in `RivetRuntimeService`).
   Verified on+off wifi end-to-end. Root cause of the hunt = **Azure NSG silently dropped inbound UDP**
   → fixed with NSG rule `Allow-WireGuard-33050` on `AdapifyProd2nsg839`. Relay does SNAT(→`<peer-mesh-ip>`)
   + least-priv ufw route (datahub:5432 + pve3:9402 ONLY — verified blocks other mesh hosts). datahub
@@ -869,7 +868,7 @@ in rivet-shared/plans"). Estimated ~½–1 session.
 - **Export:** `nfs://<datahub-host>/rivet-shared`, **NFSv4.2** active, 49G (22G free), port **2049**. Mesh
   nodes kernel-mount `vers=4.2,proto=tcp,sec=sys`.
 - **datahub `/etc/exports` ACL:** `<phildesk-host>` (host, all_squash anonuid/gid=2000) + `<lan-subnet>`
-  (no_root_squash). **Does NOT include `10.4.22.x`** (the relay SNAT identity) and **has no `insecure`**.
+  (no_root_squash). **Does NOT include `<mesh-subnet>`** (the relay SNAT identity) and **has no `insecure`**.
 - **libnfs:** Ubuntu noble arm64 `libnfs14` + `libnfs-utils` `5.0.2-1build1`, glibc-only (deb-extract-safe,
   same pattern as git/tzdata). Tools: `nfs-ls`, `nfs-cat`, `nfs-cp`. URL: `nfs://<datahub-host>/rivet-shared/
   path?version=4`. Debs: `http://ports.ubuntu.com/pool/main/libn/libnfs/libnfs14_5.0.2-1build1_arm64.deb`
