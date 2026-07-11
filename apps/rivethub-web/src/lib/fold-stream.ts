@@ -4,6 +4,7 @@
 
 import type { StreamEvent } from '@rivetos/types'
 import { humanToolTitle, normalizeToolName, type ToolArgs } from './tool-titles.js'
+import { uuidv4 } from './uuid.js'
 
 export interface LiveToolEntry {
   id: string
@@ -31,11 +32,7 @@ function emptyTurn(): LiveTurn {
 }
 
 function newToolId(): string {
-  try {
-    return crypto.randomUUID()
-  } catch {
-    return `tool-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-  }
+  return uuidv4()
 }
 
 function argsFromEvent(event: StreamEvent): ToolArgs {
