@@ -53,11 +53,13 @@ function QrCard({ open, onDone }: { open: DeviceOpenResponse; onDone: () => void
         <>
           <canvas ref={canvasRef} className="mx-auto rounded bg-white p-1" />
           <p className="mt-3 text-sm text-ink">
-            Scan with RivetHub on the phone: <span className="font-mono">Settings → Node &amp; Mesh → Scan from desktop</span>
+            Scan with RivetHub on the phone:{' '}
+            <span className="font-mono">Settings → Node &amp; Mesh → Scan from desktop</span>
           </p>
           <p className="mt-1 text-xs text-ink-dim">
             {open.name} · will get <span className="font-mono">{open.address}</span> · expires in{' '}
-            {Math.ceil(remaining / 60_000)}m · contains mesh credentials — keep it on your screen only
+            {Math.ceil(remaining / 60_000)}m · contains mesh credentials — keep it on your screen
+            only
           </p>
         </>
       )}
@@ -106,7 +108,7 @@ export function DevicesSection(): JSX.Element | null {
 
   if (!connected) return null
   // 503 = enrollment not enabled on this node — keep Settings uncluttered.
-  if (list.isError && /disabled/.test((list.error as Error).message)) return null
+  if (list.isError && /disabled/.test(list.error.message)) return null
 
   const devices = list.data?.devices ?? []
   const pending = list.data?.pending ?? []
@@ -126,8 +128,8 @@ export function DevicesSection(): JSX.Element | null {
       </p>
 
       {list.isLoading && <p className="text-sm text-ink-dim">Loading…</p>}
-      {list.isError && !/disabled/.test((list.error as Error).message) && (
-        <p className="text-sm text-red-400">{(list.error as Error).message}</p>
+      {list.isError && !/disabled/.test(list.error.message) && (
+        <p className="text-sm text-red-400">{list.error.message}</p>
       )}
 
       {devices.length > 0 && (
@@ -137,7 +139,8 @@ export function DevicesSection(): JSX.Element | null {
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm text-ink">{d.name}</div>
                 <div className="truncate font-mono text-xs text-ink-dim">
-                  {d.address} · {d.publicKey.slice(0, 12)}… · handshake {fmtHandshake(d.lastHandshake)}
+                  {d.address} · {d.publicKey.slice(0, 12)}… · handshake{' '}
+                  {fmtHandshake(d.lastHandshake)}
                 </div>
               </div>
               <button
@@ -179,7 +182,7 @@ export function DevicesSection(): JSX.Element | null {
           {add.isPending ? 'Minting…' : 'Add device'}
         </button>
       </div>
-      {add.isError && <p className="mt-2 text-sm text-red-400">{(add.error as Error).message}</p>}
+      {add.isError && <p className="mt-2 text-sm text-red-400">{add.error.message}</p>}
 
       {openEnroll && <QrCard open={openEnroll} onDone={() => setOpenEnroll(null)} />}
     </section>

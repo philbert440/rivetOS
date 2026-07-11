@@ -117,17 +117,22 @@ const sshExec = (target: string, args: string[]): Promise<string> =>
 /** wg-over-ssh driver. Inputs are validated (WG key / IPv4 shapes) before
  *  they reach a command line, so the ssh argv carries no caller-controlled
  *  shell metacharacters. */
-export function createSshRelayDriver(cfg: {
-  relaySsh: string
-  wgInterface: string
-}): RelayDriver {
+export function createSshRelayDriver(cfg: { relaySsh: string; wgInterface: string }): RelayDriver {
   const iface = cfg.wgInterface
   if (!/^[\w.-]+$/.test(iface)) throw new Error(`bad wg interface name: ${iface}`)
   return {
     async addPeer(publicKey, address) {
       if (!WG_KEY.test(publicKey)) throw new Error('bad public key')
       if (!IPV4.test(address)) throw new Error('bad address')
-      await sshExec(cfg.relaySsh, ['wg', 'set', iface, 'peer', publicKey, 'allowed-ips', `${address}/32`])
+      await sshExec(cfg.relaySsh, [
+        'wg',
+        'set',
+        iface,
+        'peer',
+        publicKey,
+        'allowed-ips',
+        `${address}/32`,
+      ])
       await sshExec(cfg.relaySsh, ['wg-quick', 'save', iface])
     },
     async removePeer(publicKey) {
@@ -187,10 +192,8 @@ function saveRegistry(file: string, reg: Registry): void {
 // ---------------------------------------------------------------------------
 // address pool: "A.B.C.D-A.B.C.E" inclusive; skip taken
 
-const ip2n = (ip: string): number =>
-  ip.split('.').reduce((acc, o) => acc * 256 + Number(o), 0)
-const n2ip = (n: number): string =>
-  [24, 16, 8, 0].map((s) => (n >> s) & 255).join('.')
+const ip2n = (ip: string): number => ip.split('.').reduce((acc, o) => acc * 256 + Number(o), 0)
+const n2ip = (n: number): string => [24, 16, 8, 0].map((s) => (n >> s) & 255).join('.')
 
 export function allocateAddress(pool: string, taken: Set<string>): string | null {
   const m = pool.match(/^(\d+\.\d+\.\d+\.\d+)\s*-\s*(\d+\.\d+\.\d+\.\d+)$/)
@@ -300,7 +303,8 @@ export function createDevicesRoutes(opts: {
         }
         const devices = reg.devices.map((d) => ({
           ...d,
-          lastHandshake: d.publicKey && handshakes[d.publicKey] ? handshakes[d.publicKey] : d.lastHandshake,
+          lastHandshake:
+            d.publicKey && handshakes[d.publicKey] ? handshakes[d.publicKey] : d.lastHandshake,
         }))
         json(res, 200, {
           devices,
@@ -319,7 +323,9 @@ export function createDevicesRoutes(opts: {
           return true
         }
         const name =
-          typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 64) : 'device'
+          typeof body.name === 'string' && body.name.trim()
+            ? body.name.trim().slice(0, 64)
+            : 'device'
         const reg = loadRegistry(file)
         sweep(reg)
         const taken = new Set([
@@ -421,7 +427,10 @@ export function createDevicesRoutes(opts: {
       reg.pending = reg.pending.filter((p) => p !== pending)
       const device: MeshDevice = {
         id: pending.id,
-        name: typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 64) : pending.name,
+        name:
+          typeof body.name === 'string' && body.name.trim()
+            ? body.name.trim().slice(0, 64)
+            : pending.name,
         publicKey,
         address: pending.address,
         createdAt: pending.expiresAt - ENROLL_TTL_MS,
@@ -430,8 +439,14 @@ export function createDevicesRoutes(opts: {
       }
       reg.devices.push(device)
       saveRegistry(file, reg)
-      log(`[devices] enrolled "${device.name}" (${device.address})${driver ? '' : ' [relay driver off — add peer manually]'}`)
-      json(res, 200, { ok: true, device: { id: device.id, name: device.name, address: device.address }, config: enrollConfig(pending.address) })
+      log(
+        `[devices] enrolled "${device.name}" (${device.address})${driver ? '' : ' [relay driver off — add peer manually]'}`,
+      )
+      json(res, 200, {
+        ok: true,
+        device: { id: device.id, name: device.name, address: device.address },
+        config: enrollConfig(pending.address),
+      })
       return true
     },
   }

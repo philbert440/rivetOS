@@ -529,7 +529,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
       // Mesh devices (behind the bearer gate)
       if (url.pathname === '/api/devices' || url.pathname.startsWith('/api/devices/')) {
-        if (!devicesRoutes) return json(res, 503, { error: 'device enrollment disabled on this node' })
+        if (!devicesRoutes)
+          return json(res, 503, { error: 'device enrollment disabled on this node' })
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await devicesRoutes.handle(req, res, url)) return
         return json(res, 404, { error: 'not found' })

@@ -74,7 +74,9 @@ async function call(
   body?: unknown,
   pre = false,
 ): Promise<{ status: number; body: any }> {
-  const req = Readable.from(body === undefined ? [] : [JSON.stringify(body)]) as unknown as IncomingMessage
+  const req = Readable.from(
+    body === undefined ? [] : [JSON.stringify(body)],
+  ) as unknown as IncomingMessage
   req.method = method
   req.headers = {}
   let status = 0
@@ -90,7 +92,9 @@ async function call(
     setHeader() {},
   } as unknown as ServerResponse
   const url = new URL(`http://x${path}`)
-  const handled = pre ? await routes.handleEnroll(req, res, url) : await routes.handle(req, res, url)
+  const handled = pre
+    ? await routes.handleEnroll(req, res, url)
+    : await routes.handle(req, res, url)
   expect(handled).toBe(true)
   return { status, body: raw ? JSON.parse(raw) : null }
 }
@@ -111,7 +115,9 @@ describe('allocateAddress', () => {
   it('allocates the first free address in the range', () => {
     expect(allocateAddress('10.0.0.1-10.0.0.3', new Set())).toBe('10.0.0.1')
     expect(allocateAddress('10.0.0.1-10.0.0.3', new Set(['10.0.0.1']))).toBe('10.0.0.2')
-    expect(allocateAddress('10.0.0.1-10.0.0.3', new Set(['10.0.0.1', '10.0.0.2', '10.0.0.3']))).toBeNull()
+    expect(
+      allocateAddress('10.0.0.1-10.0.0.3', new Set(['10.0.0.1', '10.0.0.2', '10.0.0.3'])),
+    ).toBeNull()
   })
   it('rejects malformed pools', () => {
     expect(allocateAddress('', new Set())).toBeNull()
@@ -176,13 +182,31 @@ describe('devices routes', () => {
     const { routes } = makeRoutes(fakeDriver(), nowRef)
     const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
 
-    const badKey = await call(routes, 'POST', '/api/devices/enroll', { token: open.body.qr.token, publicKey: 'nope' }, true)
+    const badKey = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: 'nope' },
+      true,
+    )
     expect(badKey.status).toBe(400)
-    const badToken = await call(routes, 'POST', '/api/devices/enroll', { token: 'wrong', publicKey: PUBKEY }, true)
+    const badToken = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: 'wrong', publicKey: PUBKEY },
+      true,
+    )
     expect(badToken.status).toBe(403)
 
     nowRef.t += 11 * 60 * 1000 // past the 10-minute TTL
-    const expired = await call(routes, 'POST', '/api/devices/enroll', { token: open.body.qr.token, publicKey: PUBKEY }, true)
+    const expired = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
     expect(expired.status).toBe(403)
   })
 
@@ -199,7 +223,13 @@ describe('devices routes', () => {
   it('enrollment succeeds without a relay driver (manual peer add)', async () => {
     const { routes } = makeRoutes(null)
     const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
-    const enroll = await call(routes, 'POST', '/api/devices/enroll', { token: open.body.qr.token, publicKey: PUBKEY }, true)
+    const enroll = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
     expect(enroll.status).toBe(200)
     const list = await call(routes, 'GET', '/api/devices')
     expect(list.body.relayConfigured).toBe(false)
@@ -212,7 +242,13 @@ describe('devices routes', () => {
     }
     const { routes } = makeRoutes(driver)
     const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
-    await call(routes, 'POST', '/api/devices/enroll', { token: open.body.qr.token, publicKey: PUBKEY }, true)
+    await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
     const list = await call(routes, 'GET', '/api/devices')
     const revoke = await call(routes, 'DELETE', `/api/devices/${list.body.devices[0].id}`)
     expect(revoke.status).toBe(502)
