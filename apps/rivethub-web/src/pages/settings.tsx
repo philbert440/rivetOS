@@ -4,6 +4,7 @@ import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
 import { RivetGateway } from '@rivetos/gateway-client'
 import { isValidWikiUrl, useWikiSettings } from '../stores/wiki-settings.js'
 import { BUILD_INFO } from '../lib/build-info.js'
+import { DevicesSection } from '../components/devices-section.js'
 
 type ProbeState =
   | { kind: 'idle' }
@@ -134,6 +135,8 @@ export function SettingsPage(): JSX.Element {
           {wikiNotice}
         </span>
       </div>
+
+      <DevicesSection />
 
       {/* Build stamp — the desktop shell bakes this dist in at build time, so
           this line is how you tell whether a binary has gone stale. */}
