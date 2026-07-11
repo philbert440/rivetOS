@@ -10,6 +10,18 @@ import { type JSX } from 'react'
 import { useConnection } from '../stores/connection.js'
 import { useWikiSettings } from '../stores/wiki-settings.js'
 
+export function buildSrc(url: string, baseUrl: string, token?: string): string {
+  if (!token || !baseUrl) return url
+  try {
+    const wiki = new URL(url)
+    if (wiki.origin !== new URL(baseUrl).origin) return url
+    wiki.searchParams.set('token', token)
+    return wiki.toString()
+  } catch {
+    return url
+  }
+}
+
 export function MemoryPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
@@ -26,9 +38,9 @@ export function MemoryPage(): JSX.Element {
 
   // ?token= only helps when the wiki is served by the active (token-gated)
   // gateway; iframes can't carry a bearer header. A standalone wiki node is
-  // tokenless by posture, and a foreign token would just leak.
-  const sameGateway = baseUrl && url.startsWith(baseUrl)
-  const src = token && sameGateway ? `${url}?token=${encodeURIComponent(token)}` : url
+  // tokenless by posture, and a foreign token would just leak. Origins must
+  // match exactly — a prefix check would treat :51 as :5174 (PR review).
+  const src = buildSrc(url, baseUrl, token)
 
   return (
     <iframe key={src} src={src} title="memory wiki" className="h-full w-full border-0 bg-panel" />
