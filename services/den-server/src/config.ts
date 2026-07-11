@@ -80,6 +80,27 @@ export interface DenConfig {
    *  gate for /api/files/* — same trusted-LAN posture as term.open. Without
    *  it, tokenless non-loopback nodes get files routes refused, not exposed. */
   filesOpen: boolean
+  /** Mesh device enrollment (/api/devices/*, Settings → Devices). */
+  devices: DenDevicesConfig
+}
+
+export interface DenDevicesConfig {
+  /** RIVETOS_DEN_DEVICES=1 enables the routes. */
+  enabled: boolean
+  relaySsh: string
+  wgInterface: string
+  pool: string
+  wgEndpoint: string
+  wgPublicKey: string
+  allowedIps: string
+  homeSubnet: string
+  sharedHost: string
+  sharedExport: string
+  pgUrl: string
+  embedUrl: string
+  /** Externally reachable den base URL embedded in enrollment QRs. Empty =
+   *  the web client substitutes its own origin. */
+  gatewayUrl: string
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
@@ -110,5 +131,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     },
     filesRoot: env.RIVETOS_DEN_FILES_ROOT ?? '/rivet-shared',
     filesOpen: truthyEnv(env.RIVETOS_DEN_FILES_OPEN),
+    devices: {
+      enabled: truthyEnv(env.RIVETOS_DEN_DEVICES),
+      relaySsh: env.RIVETOS_DEN_DEVICES_RELAY_SSH ?? '',
+      wgInterface: env.RIVETOS_DEN_DEVICES_WG_IFACE ?? 'wg0',
+      pool: env.RIVETOS_DEN_DEVICES_POOL ?? '',
+      wgEndpoint: env.RIVETOS_DEN_DEVICES_WG_ENDPOINT ?? '',
+      wgPublicKey: env.RIVETOS_DEN_DEVICES_WG_PUBKEY ?? '',
+      allowedIps: env.RIVETOS_DEN_DEVICES_ALLOWED_IPS ?? '',
+      homeSubnet: env.RIVETOS_DEN_DEVICES_HOME_SUBNET ?? '',
+      sharedHost: env.RIVETOS_DEN_DEVICES_SHARED_HOST ?? '',
+      sharedExport: env.RIVETOS_DEN_DEVICES_SHARED_EXPORT ?? '/rivet-shared',
+      pgUrl: env.RIVETOS_PG_URL ?? '',
+      embedUrl: env.RIVETOS_EMBED_URL ?? '',
+      gatewayUrl: env.RIVETOS_DEN_DEVICES_GATEWAY_URL ?? '',
+    },
   }
 }

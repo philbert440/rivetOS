@@ -243,4 +243,10 @@ export type {
   FileEntry,
   FilesListResponse,
   FilesUploadResponse,
+  MeshDevice,
+  MeshDevicePending,
+  DeviceEnrollConfig,
+  DeviceEnrollQr,
+  DevicesListResponse,
+  DeviceOpenResponse,
 } from './gateway-api.js'
