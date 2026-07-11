@@ -33,6 +33,7 @@ void _devicesWireLock
 const CONFIG: DevicesConfig = {
   enabled: true,
   relaySsh: '',
+  relaySudo: false,
   wgInterface: 'wg0',
   pool: '192.0.2.10-192.0.2.12',
   wgEndpoint: 'relay.example:51820',

@@ -71,6 +71,31 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     env.RIVETOS_DEN_FILES_OPEN = '1'
   if (terminal?.enabled === true) env.RIVETOS_DEN_TERM = '1'
   if (terminal?.open === true) env.RIVETOS_DEN_TERM_OPEN = '1'
+  // Mesh device enrollment (Settings → Devices). pgUrl/embedUrl for the QR
+  // come from the runtime's own RIVETOS_PG_URL/EMBED_URL (den-server reads
+  // those directly), so they aren't repeated here.
+  const devices = den.devices
+  if (devices?.enabled === true) {
+    env.RIVETOS_DEN_DEVICES = '1'
+    if (devices.relay_ssh?.trim()) env.RIVETOS_DEN_DEVICES_RELAY_SSH = devices.relay_ssh.trim()
+    if (devices.relay_sudo === true) env.RIVETOS_DEN_DEVICES_RELAY_SUDO = '1'
+    if (devices.wg_interface?.trim()) env.RIVETOS_DEN_DEVICES_WG_IFACE = devices.wg_interface.trim()
+    if (devices.pool?.trim()) env.RIVETOS_DEN_DEVICES_POOL = devices.pool.trim()
+    if (devices.wg_endpoint?.trim())
+      env.RIVETOS_DEN_DEVICES_WG_ENDPOINT = devices.wg_endpoint.trim()
+    if (devices.wg_public_key?.trim())
+      env.RIVETOS_DEN_DEVICES_WG_PUBKEY = devices.wg_public_key.trim()
+    if (devices.allowed_ips?.trim())
+      env.RIVETOS_DEN_DEVICES_ALLOWED_IPS = devices.allowed_ips.trim()
+    if (devices.home_subnet?.trim())
+      env.RIVETOS_DEN_DEVICES_HOME_SUBNET = devices.home_subnet.trim()
+    if (devices.shared_host?.trim())
+      env.RIVETOS_DEN_DEVICES_SHARED_HOST = devices.shared_host.trim()
+    if (devices.shared_export?.trim())
+      env.RIVETOS_DEN_DEVICES_SHARED_EXPORT = devices.shared_export.trim()
+    if (devices.gateway_url?.trim())
+      env.RIVETOS_DEN_DEVICES_GATEWAY_URL = devices.gateway_url.trim()
+  }
   return env
 }
 

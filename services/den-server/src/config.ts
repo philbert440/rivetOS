@@ -89,6 +89,7 @@ export interface DenDevicesConfig {
   /** RIVETOS_DEN_DEVICES=1 enables the routes. */
   enabled: boolean
   relaySsh: string
+  relaySudo: boolean
   wgInterface: string
   pool: string
   wgEndpoint: string
@@ -135,6 +136,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     devices: {
       enabled: truthyEnv(env.RIVETOS_DEN_DEVICES),
       relaySsh: env.RIVETOS_DEN_DEVICES_RELAY_SSH ?? '',
+      relaySudo: truthyEnv(env.RIVETOS_DEN_DEVICES_RELAY_SUDO),
       wgInterface: env.RIVETOS_DEN_DEVICES_WG_IFACE ?? 'wg0',
       pool: env.RIVETOS_DEN_DEVICES_POOL ?? '',
       wgEndpoint: env.RIVETOS_DEN_DEVICES_WG_ENDPOINT ?? '',
