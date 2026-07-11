@@ -102,7 +102,10 @@ export interface RelayDriver {
 }
 
 const WG_KEY = /^[A-Za-z0-9+/]{42,44}=$/
-const IPV4 = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
+const isIpv4 = (s: string): boolean => {
+  const parts = s.split('.')
+  return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)
+}
 
 const sshExec = (target: string, args: string[]): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -123,7 +126,7 @@ export function createSshRelayDriver(cfg: { relaySsh: string; wgInterface: strin
   return {
     async addPeer(publicKey, address) {
       if (!WG_KEY.test(publicKey)) throw new Error('bad public key')
-      if (!IPV4.test(address)) throw new Error('bad address')
+      if (!isIpv4(address)) throw new Error('bad address')
       await sshExec(cfg.relaySsh, [
         'wg',
         'set',
@@ -183,10 +186,33 @@ function loadRegistry(file: string): Registry {
 }
 
 function saveRegistry(file: string, reg: Registry): void {
-  mkdirSync(dirname(file), { recursive: true })
+  // Registry holds live enrollment tokens in the clear; keep it owner-only.
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   const tmp = `${file}.tmp-${process.pid}`
-  writeFileSync(tmp, JSON.stringify(reg, null, 2))
+  writeFileSync(tmp, JSON.stringify(reg, null, 2), { mode: 0o600 })
   renameSync(tmp, file)
+}
+
+/**
+ * Serialize every registry read-modify-write. den-server is single-process,
+ * so a promise-chain mutex closes the TOCTOU races an unlocked load→mutate→
+ * save exposes: concurrent Add-device dual-claiming a free address, and an
+ * enroll redemption interleaving with a revoke of the same pending. Each
+ * critical section re-reads the registry under the lock, so no caller acts on
+ * a stale snapshot. The lock is held across the (slow) relay ssh calls too —
+ * enrollment is a rare, operator-driven action, and serializing it is far
+ * cheaper than reconciling a half-applied relay + registry state.
+ */
+function makeMutex(): <T>(fn: () => T | Promise<T>) => Promise<T> {
+  let tail: Promise<unknown> = Promise.resolve()
+  return <T>(fn: () => T | Promise<T>): Promise<T> => {
+    const run = tail.then(fn, fn)
+    tail = run.then(
+      () => {},
+      () => {},
+    )
+    return run
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +281,7 @@ export function createDevicesRoutes(opts: {
   const log = opts.log ?? (() => {})
   const now = opts.now ?? Date.now
   const file = join(opts.stateDir, 'mesh-devices.json')
+  const withLock = makeMutex()
   const driver =
     opts.driver !== undefined
       ? opts.driver
@@ -326,39 +353,45 @@ export function createDevicesRoutes(opts: {
           typeof body.name === 'string' && body.name.trim()
             ? body.name.trim().slice(0, 64)
             : 'device'
-        const reg = loadRegistry(file)
-        sweep(reg)
-        const taken = new Set([
-          ...reg.devices.map((d) => d.address),
-          ...reg.pending.map((p) => p.address),
-        ])
-        const address = allocateAddress(config.pool, taken)
-        if (!address) {
+        // Allocate + persist the pending under the lock so two concurrent Adds
+        // can't hand out the same free address in their QRs.
+        const result = await withLock(() => {
+          const reg = loadRegistry(file)
+          sweep(reg)
+          const taken = new Set([
+            ...reg.devices.map((d) => d.address),
+            ...reg.pending.map((p) => p.address),
+          ])
+          const address = allocateAddress(config.pool, taken)
+          if (!address) return null
+          const pending: PendingEnroll = {
+            id: randomUUID(),
+            name,
+            token: randomBytes(24).toString('base64url'),
+            address,
+            expiresAt: now() + ENROLL_TTL_MS,
+          }
+          reg.pending.push(pending)
+          saveRegistry(file, reg)
+          return pending
+        })
+        if (!result) {
           json(res, 409, { error: 'address pool exhausted (or RIVETOS_DEN_DEVICES_POOL unset)' })
           return true
         }
-        const pending: PendingEnroll = {
-          id: randomUUID(),
-          name,
-          token: randomBytes(24).toString('base64url'),
-          address,
-          expiresAt: now() + ENROLL_TTL_MS,
-        }
-        reg.pending.push(pending)
-        saveRegistry(file, reg)
         const qr: DeviceEnrollQr = {
           v: 1,
           kind: 'rivet-mesh-enroll',
           gateway: opts.gatewayUrl,
-          token: pending.token,
-          config: enrollConfig(address),
+          token: result.token,
+          config: enrollConfig(result.address),
         }
-        log(`[devices] enrollment opened for "${name}" (${address}, expires in 10m)`)
+        log(`[devices] enrollment opened for "${name}" (${result.address}, expires in 10m)`)
         json(res, 200, {
-          id: pending.id,
+          id: result.id,
           name,
-          address,
-          expiresAt: pending.expiresAt,
+          address: result.address,
+          expiresAt: result.expiresAt,
           qr,
         })
         return true
@@ -366,27 +399,30 @@ export function createDevicesRoutes(opts: {
 
       const idMatch = url.pathname.match(/^\/api\/devices\/([\w-]+)$/)
       if (req.method === 'DELETE' && idMatch) {
-        const reg = loadRegistry(file)
-        sweep(reg)
-        const dev = reg.devices.find((d) => d.id === idMatch[1])
-        const pend = reg.pending.find((p) => p.id === idMatch[1])
-        if (!dev && !pend) {
-          json(res, 404, { error: 'unknown device' })
-          return true
-        }
-        if (dev && dev.publicKey && driver) {
-          try {
-            await driver.removePeer(dev.publicKey)
-          } catch (e) {
-            json(res, 502, { error: `relay revoke failed: ${(e as Error).message}` })
-            return true
+        const id = idMatch[1]
+        const outcome = await withLock(async () => {
+          const reg = loadRegistry(file)
+          sweep(reg)
+          const dev = reg.devices.find((d) => d.id === id)
+          const pend = reg.pending.find((p) => p.id === id)
+          if (!dev && !pend) return { status: 404 as const, error: 'unknown device' }
+          // Pull the relay peer BEFORE dropping the registry row, still under
+          // the lock so an in-flight enroll of the same pending can't re-land
+          // the device after we've revoked it.
+          if (dev?.publicKey && driver) {
+            try {
+              await driver.removePeer(dev.publicKey)
+            } catch (e) {
+              return { status: 502 as const, error: `relay revoke failed: ${(e as Error).message}` }
+            }
           }
-        }
-        reg.devices = reg.devices.filter((d) => d.id !== idMatch[1])
-        reg.pending = reg.pending.filter((p) => p.id !== idMatch[1])
-        saveRegistry(file, reg)
-        log(`[devices] revoked ${dev?.name ?? pend?.name ?? idMatch[1]}`)
-        json(res, 200, { ok: true })
+          reg.devices = reg.devices.filter((d) => d.id !== id)
+          reg.pending = reg.pending.filter((p) => p.id !== id)
+          saveRegistry(file, reg)
+          log(`[devices] revoked ${dev?.name ?? pend?.name ?? id}`)
+          return { status: 200 as const }
+        })
+        json(res, outcome.status, outcome.status === 200 ? { ok: true } : { error: outcome.error })
         return true
       }
 
@@ -409,44 +445,61 @@ export function createDevicesRoutes(opts: {
         json(res, 400, { error: 'token and a valid WireGuard publicKey are required' })
         return true
       }
-      const reg = loadRegistry(file)
-      sweep(reg)
-      const pending = reg.pending.find((p) => tokenEqual(p.token, token))
-      if (!pending) {
-        json(res, 403, { error: 'invalid or expired enrollment token' })
-        return true
-      }
-      if (driver) {
-        try {
-          await driver.addPeer(publicKey, pending.address)
-        } catch (e) {
-          json(res, 502, { error: `relay registration failed: ${(e as Error).message}` })
-          return true
+      const name =
+        typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 64) : null
+
+      // Whole redemption runs under the lock: match token → burn pending
+      // (single-use holds even against a simultaneous replay) → register the
+      // relay peer → record the device. On relay failure the pending is
+      // restored so the same QR can be retried.
+      const outcome = await withLock(async () => {
+        const reg = loadRegistry(file)
+        sweep(reg)
+        const pending = reg.pending.find((p) => tokenEqual(p.token, token))
+        if (!pending) return { status: 403 as const, error: 'invalid or expired enrollment token' }
+        if (reg.devices.some((d) => d.publicKey === publicKey))
+          return { status: 409 as const, error: 'this device is already enrolled' }
+
+        // Burn first so a concurrent replay of the same token 403s.
+        reg.pending = reg.pending.filter((p) => p !== pending)
+        saveRegistry(file, reg)
+
+        if (driver) {
+          try {
+            await driver.addPeer(publicKey, pending.address)
+          } catch (e) {
+            reg.pending.push(pending) // restore for retry with the same QR
+            saveRegistry(file, reg)
+            return {
+              status: 502 as const,
+              error: `relay registration failed: ${(e as Error).message}`,
+            }
+          }
         }
-      }
-      reg.pending = reg.pending.filter((p) => p !== pending)
-      const device: MeshDevice = {
-        id: pending.id,
-        name:
-          typeof body.name === 'string' && body.name.trim()
-            ? body.name.trim().slice(0, 64)
-            : pending.name,
-        publicKey,
-        address: pending.address,
-        createdAt: pending.expiresAt - ENROLL_TTL_MS,
-        enrolledAt: now(),
-        lastHandshake: null,
-      }
-      reg.devices.push(device)
-      saveRegistry(file, reg)
-      log(
-        `[devices] enrolled "${device.name}" (${device.address})${driver ? '' : ' [relay driver off — add peer manually]'}`,
-      )
-      json(res, 200, {
-        ok: true,
-        device: { id: device.id, name: device.name, address: device.address },
-        config: enrollConfig(pending.address),
+        const device: MeshDevice = {
+          id: pending.id,
+          name: name ?? pending.name,
+          publicKey,
+          address: pending.address,
+          createdAt: pending.expiresAt - ENROLL_TTL_MS,
+          enrolledAt: now(),
+          lastHandshake: null,
+        }
+        reg.devices.push(device)
+        saveRegistry(file, reg)
+        log(
+          `[devices] enrolled "${device.name}" (${device.address})${driver ? '' : ' [relay driver off — add peer manually]'}`,
+        )
+        return {
+          status: 200 as const,
+          device: { id: device.id, name: device.name, address: device.address },
+          config: enrollConfig(pending.address),
+        }
       })
+
+      if (outcome.status === 200)
+        json(res, 200, { ok: true, device: outcome.device, config: outcome.config })
+      else json(res, outcome.status, { error: outcome.error })
       return true
     },
   }

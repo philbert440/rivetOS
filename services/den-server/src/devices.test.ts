@@ -235,6 +235,68 @@ describe('devices routes', () => {
     expect(list.body.relayConfigured).toBe(false)
   })
 
+  it('rejects a second enroll with an already-registered public key', async () => {
+    const { routes } = makeRoutes()
+    const a = await call(routes, 'POST', '/api/devices', { name: 'a' })
+    await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: a.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    const b = await call(routes, 'POST', '/api/devices', { name: 'b' })
+    const dup = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: b.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(dup.status).toBe(409)
+  })
+
+  it('concurrent Add-device calls never hand out the same address', async () => {
+    // Pool is 3 wide (.10-.12); fire 5 at once — the extra two must 409, and
+    // no address may be handed out twice (the point of the allocation lock).
+    const { routes } = makeRoutes()
+    const results = await Promise.all(
+      Array.from({ length: 5 }, (_, i) => call(routes, 'POST', '/api/devices', { name: `d${i}` })),
+    )
+    const addrs = results.filter((r) => r.status === 200).map((r) => r.body.address)
+    expect(addrs).toHaveLength(3)
+    expect(new Set(addrs).size).toBe(3) // all distinct
+    expect(results.filter((r) => r.status === 409)).toHaveLength(2)
+  })
+
+  it('restores the pending token when relay registration fails (retry works)', async () => {
+    const driver = fakeDriver()
+    let fail = true
+    driver.addPeer = async (pk, addr) => {
+      if (fail) throw new Error('relay down')
+      driver.added.push(`${pk} ${addr}`)
+    }
+    const { routes } = makeRoutes(driver)
+    const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
+    const firstTry = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(firstTry.status).toBe(502)
+    fail = false
+    const retry = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(retry.status).toBe(200) // same QR still valid after the failure
+  })
+
   it('revoke surfaces relay failure as 502 and keeps the device', async () => {
     const driver = fakeDriver()
     driver.removePeer = async () => {
