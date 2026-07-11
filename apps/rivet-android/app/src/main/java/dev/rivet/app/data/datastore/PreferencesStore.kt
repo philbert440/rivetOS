@@ -156,6 +156,9 @@ class SettingsStore(
         // 备份提醒
         val BACKUP_REMINDER_CONFIG = stringPreferencesKey("backup_reminder_config")
 
+        // Node & Mesh coordinates (user-entered; scan-to-join writes here)
+        val MESH_CONFIG = stringPreferencesKey("mesh_config")
+
         // 统计
         val LAUNCH_COUNT = intPreferencesKey("launch_count")
 
@@ -249,6 +252,9 @@ class SettingsStore(
                 } ?: BackupReminderConfig(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
+                meshConfig = preferences[MESH_CONFIG]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: MeshConfig(),
             )
         }
         .map {
@@ -411,6 +417,7 @@ class SettingsStore(
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
+            preferences[MESH_CONFIG] = JsonInstant.encodeToString(settings.meshConfig)
         }
     }
 
