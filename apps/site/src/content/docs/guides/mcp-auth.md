@@ -87,6 +87,12 @@ Certs cannot be used to impersonate another agent.
 
 ## Bootstrap Path (the one place `mesh.secret` still lives)
 
+> ⚠️ **DESIGN PROPOSAL — NOT IMPLEMENTED.** The `datahub:/enroll` CSR flow
+> below describes the intended auto-enrollment path; no code implements it
+> today. Nodes are provisioned with certs out of band (`provision-ct.sh`).
+> This section is the target design, not current behavior — don't script
+> against `datahub:/enroll` yet.
+
 1. New node spins up with `mesh.secret` in its env.
 2. First call to `datahub:/enroll` uses `mesh.secret` as the bearer.
 3. DataHub signs the CSR with the intermediate, returns cert + CA chain.

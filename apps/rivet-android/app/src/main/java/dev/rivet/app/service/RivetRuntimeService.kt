@@ -1,0 +1,381 @@
+package dev.rivet.app.service
+
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Build
+import android.os.IBinder
+import android.os.PowerManager
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import dev.rivet.app.R
+import dev.rivet.app.RIVET_RUNTIME_NOTIFICATION_CHANNEL_ID
+import dev.rivet.app.data.datastore.RIVET_BRIDGE_PORT
+import dev.rivet.app.data.datastore.RIVET_SSH_PORT
+import dev.rivet.app.data.datastore.SettingsStore
+import dev.rivet.app.net.RivetVpn
+import dev.rivet.app.runtime.RivetRuntime
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import org.koin.android.ext.android.inject
+
+/**
+ * Foreground service that owns the on-device agent runtime: it launches the proot+node
+ * bridge (Claude/Grok on loopback :8765) and keeps it alive across crashes and doze.
+ * The actual scaffold + launch recipe lives in [RivetRuntime]; this is just lifecycle.
+ *
+ * Modeled on [WebServerService] (specialUse FGS). START_STICKY so Android revives it.
+ */
+class RivetRuntimeService : Service() {
+
+    companion object {
+        const val ACTION_START = "dev.rivet.app.action.RIVET_RUNTIME_START"
+        const val ACTION_STOP = "dev.rivet.app.action.RIVET_RUNTIME_STOP"
+        const val ACTION_SSH_START = "dev.rivet.app.action.RIVET_SSH_START"
+        const val ACTION_SSH_STOP = "dev.rivet.app.action.RIVET_SSH_STOP"
+        const val ACTION_VPN_START = "dev.rivet.app.action.RIVET_VPN_START"
+        const val ACTION_VPN_STOP = "dev.rivet.app.action.RIVET_VPN_STOP"
+        const val NOTIFICATION_ID = 2002
+        private const val TAG = "RivetRuntimeService"
+
+        /** Turn the on-device SSH server on/off. Ensures the runtime service is up first. */
+        fun setSsh(context: Context, enabled: Boolean) {
+            val intent = Intent(context, RivetRuntimeService::class.java).apply {
+                action = if (enabled) ACTION_SSH_START else ACTION_SSH_STOP
+            }
+            context.startForegroundService(intent)
+        }
+
+        /** Bring the in-app mesh VPN tunnel up/down. VPN consent must already be granted. */
+        fun setVpn(context: Context, enabled: Boolean) {
+            val intent = Intent(context, RivetRuntimeService::class.java).apply {
+                action = if (enabled) ACTION_VPN_START else ACTION_VPN_STOP
+            }
+            context.startForegroundService(intent)
+        }
+    }
+
+    private val settingsStore: SettingsStore by inject()
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile private var shouldRun = false
+    @Volatile private var process: Process? = null
+    private var superviseJob: Job? = null
+
+    // --- dropbear SSH (track B) -------------------------------------------------------
+    @Volatile private var sshShouldRun = false
+    @Volatile private var sshProcess: Process? = null
+    private var sshJob: Job? = null
+    private var sshWakeLock: PowerManager.WakeLock? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopSsh()
+                stopVpn()
+                stopRuntime()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+
+            ACTION_SSH_START -> {
+                startForegroundCompat(buildNotification("Starting the on-device runtime…"))
+                startRuntime()
+                startSsh()
+            }
+
+            ACTION_SSH_STOP -> {
+                startForegroundCompat(buildNotification("Claude + Grok bridge on 127.0.0.1:$RIVET_BRIDGE_PORT"))
+                startRuntime()
+                stopSsh()
+            }
+
+            ACTION_VPN_START -> {
+                startForegroundCompat(buildNotification("Starting the on-device runtime…"))
+                startRuntime()
+                startVpn()
+            }
+
+            ACTION_VPN_STOP -> {
+                startForegroundCompat(buildNotification("Starting the on-device runtime…"))
+                startRuntime()
+                stopVpn()
+            }
+
+            else -> {
+                // ACTION_START or null (sticky restart)
+                startForegroundCompat(buildNotification("Starting the on-device runtime…"))
+                startRuntime()
+                // Resume SSH + mesh VPN across a sticky restart if the user had them on.
+                if (settingsStore.sshEnabledNow()) startSsh()
+                if (settingsStore.vpnEnabledNow()) startVpn()
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun startRuntime() {
+        if (superviseJob?.isActive == true) return
+        shouldRun = true
+        superviseJob = serviceScope.launch { supervise() }
+    }
+
+    /** Launch the bridge; relaunch with exponential backoff if it dies while we should run. */
+    private suspend fun supervise() {
+        var backoffMs = 1_000L
+        while (shouldRun) {
+            if (!RivetRuntime.isRootfsReady(this)) {
+                updateNotification(buildNotification("Installing the on-device runtime (first run, ~1 min)…"))
+            }
+            val notReady = RivetRuntime.prepare(this)
+            if (notReady != null) {
+                Log.w(TAG, "runtime not ready: $notReady")
+                updateNotification(buildNotification("Runtime setup failed — retrying… ($notReady)"))
+                delay(15_000)
+                continue
+            }
+
+            val cmd = RivetRuntime.bridgeCommand(this)
+            val startedAt = System.currentTimeMillis()
+            try {
+                val p = ProcessBuilder(cmd.argv)
+                    .directory(cmd.workingDir)
+                    .redirectErrorStream(true)
+                    .apply { environment().putAll(cmd.env) }
+                    .start()
+                process = p
+                updateNotification(buildNotification("Claude + Grok bridge on 127.0.0.1:$RIVET_BRIDGE_PORT"))
+                Log.i(TAG, "bridge launched via proot")
+
+                val drain = serviceScope.launch {
+                    runCatching {
+                        p.inputStream.bufferedReader().forEachLine { Log.i("RivetBridge", it) }
+                    }
+                }
+                val code = p.waitFor()
+                drain.cancel()
+                Log.w(TAG, "bridge exited code=$code")
+            } catch (t: Throwable) {
+                Log.e(TAG, "bridge launch failed", t)
+            } finally {
+                process = null
+            }
+
+            if (!shouldRun) break
+
+            // Reset backoff if the process had been up for a healthy while.
+            if (System.currentTimeMillis() - startedAt > 30_000) backoffMs = 1_000L
+            updateNotification(buildNotification("Bridge stopped — restarting…"))
+            delay(backoffMs)
+            backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
+        }
+    }
+
+    private fun stopRuntime() {
+        shouldRun = false
+        superviseJob?.cancel()
+        superviseJob = null
+        process?.destroyForcibly()
+        process = null
+    }
+
+    // --- dropbear SSH supervision (track B) -------------------------------------------
+
+    private fun startSsh() {
+        if (sshJob?.isActive == true) return
+        sshShouldRun = true
+        acquireSshWakeLock()
+        sshJob = serviceScope.launch { superviseSsh() }
+    }
+
+    /** Keep dropbear alive across crashes + doze (a partial wakelock holds CPU so the listener runs). */
+    private suspend fun superviseSsh() {
+        var backoffMs = 1_000L
+        while (sshShouldRun) {
+            // prepare() is idempotent + sets up the native dropbear host key / authorized_keys
+            // (ensureNativeSsh), so an app update can enable SSH without a full rootfs re-extract.
+            val notReady = RivetRuntime.prepare(this)
+            if (notReady != null) {
+                Log.w(TAG, "ssh: runtime not ready: $notReady")
+                delay(5_000)
+                continue
+            }
+            val cmd = RivetRuntime.sshCommand(this)
+            val startedAt = System.currentTimeMillis()
+            try {
+                val p = ProcessBuilder(cmd.argv)
+                    .directory(cmd.workingDir)
+                    .redirectErrorStream(true)
+                    .apply { environment().putAll(cmd.env) }
+                    .start()
+                sshProcess = p
+                updateNotification(buildNotification("SSH on :$RIVET_SSH_PORT · Claude + Grok bridge on :$RIVET_BRIDGE_PORT"))
+                Log.i(TAG, "dropbear launched on :$RIVET_SSH_PORT")
+                val drain = serviceScope.launch {
+                    runCatching { p.inputStream.bufferedReader().forEachLine { Log.i("RivetDropbear", it) } }
+                }
+                val code = p.waitFor()
+                drain.cancel()
+                Log.w(TAG, "dropbear exited code=$code")
+            } catch (t: Throwable) {
+                Log.e(TAG, "dropbear launch failed", t)
+            } finally {
+                sshProcess = null
+            }
+            if (!sshShouldRun) break
+            if (System.currentTimeMillis() - startedAt > 30_000) backoffMs = 1_000L
+            delay(backoffMs)
+            backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
+        }
+    }
+
+    private fun stopSsh() {
+        sshShouldRun = false
+        sshJob?.cancel()
+        sshJob = null
+        sshProcess?.destroyForcibly()
+        sshProcess = null
+        releaseSshWakeLock()
+    }
+
+    private fun acquireSshWakeLock() {
+        if (sshWakeLock?.isHeld == true) return
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        sshWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RivetHub:ssh").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseSshWakeLock() {
+        runCatching { if (sshWakeLock?.isHeld == true) sshWakeLock?.release() }
+        sshWakeLock = null
+    }
+
+    // --- mesh VPN (in-app WireGuard via GoBackend) ------------------------------------
+    // The tunnel auto-engages only when OFF the home network: on the home/mesh subnet the phone
+    // already reaches datahub directly, and tunneling the mesh subnet there overlaps the very subnet
+    // it's sitting on. So `vpnEnabled` is the user's intent ("use mesh when away") and we reconcile
+    // desired-vs-actual on every connectivity change.
+    @Volatile private var netCallback: ConnectivityManager.NetworkCallback? = null
+
+    private fun startVpn() {
+        registerNetCallback()
+        serviceScope.launch { reconcileVpn() }
+    }
+
+    private fun stopVpn() {
+        unregisterNetCallback()
+        serviceScope.launch { RivetVpn.down(this@RivetRuntimeService) }
+    }
+
+    /** Match the tunnel to intent (vpnEnabled) AND network (off-home only). Idempotent. */
+    private suspend fun reconcileVpn() {
+        val want = settingsStore.vpnEnabledNow() && !RivetVpn.isOnHomeNetwork(this)
+        val isUp = RivetVpn.status.value == RivetVpn.Status.UP
+        when {
+            want && !isUp -> {
+                RivetVpn.up(this)
+                // Surface the real outcome (incl. failure) — off-home memory rides this tunnel.
+                updateNotification(buildNotification(when (RivetVpn.status.value) {
+                    RivetVpn.Status.UP -> "Mesh VPN up (away) · bridge on :$RIVET_BRIDGE_PORT"
+                    RivetVpn.Status.ERROR -> "Mesh VPN error (away) — mesh unreachable, check relay"
+                    else -> "Mesh VPN connecting (away)…"
+                }))
+            }
+            !want && isUp -> {
+                RivetVpn.down(this)
+                val text = if (RivetVpn.status.value == RivetVpn.Status.DOWN)
+                    "Mesh VPN idle (home WiFi — direct) · bridge on :$RIVET_BRIDGE_PORT"
+                else "Mesh VPN: failed to disengage (state ${RivetVpn.status.value})"
+                updateNotification(buildNotification(text))
+            }
+        }
+    }
+
+    /** Watch wifi/cellular transitions so we engage/disengage the tunnel when home↔away changes. */
+    private fun registerNetCallback() {
+        if (netCallback != null) return
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { serviceScope.launch { reconcileVpn() } }
+            override fun onLost(network: Network) { serviceScope.launch { reconcileVpn() } }
+        }
+        netCallback = cb
+        val req = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+            .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+            .build()
+        runCatching { cm.registerNetworkCallback(req, cb) }
+    }
+
+    private fun unregisterNetCallback() {
+        netCallback?.let { cb -> runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) } }
+        netCallback = null
+    }
+
+    override fun onDestroy() {
+        stopSsh()
+        stopVpn()
+        stopRuntime()
+        serviceScope.cancel()
+        super.onDestroy()
+    }
+
+    // --- notifications ----------------------------------------------------------------
+
+    private fun startForegroundCompat(notification: android.app.Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun updateNotification(notification: android.app.Notification) {
+        val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+        nm.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun buildLaunchPendingIntent() = PendingIntent.getActivity(
+        this,
+        0,
+        packageManager.getLaunchIntentForPackage(packageName),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
+
+    private fun buildNotification(text: String): android.app.Notification {
+        val stopIntent = Intent(this, RivetRuntimeService::class.java).apply { action = ACTION_STOP }
+        val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
+        return NotificationCompat.Builder(this, RIVET_RUNTIME_NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.small_icon)
+            .setContentTitle("Rivet runtime")
+            .setContentText(text)
+            .setContentIntent(buildLaunchPendingIntent())
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .addAction(0, "Stop", stopPendingIntent)
+            .build()
+    }
+}

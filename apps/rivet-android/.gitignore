@@ -1,0 +1,22 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.cursor
+.history
+.kotlin
+build/
+*.apk
+*.log
+
+# Bundled on-device rootfs (binaries + Phil's creds) — staged on the build machine, never committed
+app/src/main/assets/rivet-rootfs.bin
+# Friend-flavor sanitized rootfs — produced by scripts/sanitize-rootfs.sh, never committed
+app/src/friend/assets/rivet-rootfs.bin
+overlay-src/net-tools/node_modules/
