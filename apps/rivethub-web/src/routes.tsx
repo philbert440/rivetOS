@@ -11,7 +11,7 @@ import { Toasts } from './components/toasts.js'
 import { ChatPage } from './pages/chat.js'
 import { DensPage } from './pages/dens.js'
 import { FilesPage } from './pages/files.js'
-import { MemoryPage } from './pages/memory.js'
+import { MemoryFrame, MemoryPage } from './pages/memory.js'
 import { SettingsPage } from './pages/settings.js'
 import { TerminalPage } from './pages/terminal.js'
 import { TaskDetailPage, TasksPage } from './pages/tasks.js'
@@ -35,6 +35,8 @@ function RootLayout(): JSX.Element {
       <Sidebar />
       <main className="min-w-0 flex-1 overflow-y-auto">
         <Outlet />
+        {/* Keep-alive wiki iframe — see pages/memory.tsx. */}
+        <MemoryFrame />
       </main>
       <Toasts />
     </div>
