@@ -1,0 +1,50 @@
+#!/bin/sh
+# rivet-shared — userspace access to the mesh /rivet-shared NFS export via libnfs.
+# No kernel mount (works unrooted under proot). NFSv4, single port 2049.
+# Subcommands: ls/cat/stat <path> | get <remote> <local> | put <local> <remote>
+# Config via env (host comes from the app's Node & Mesh settings; no default is baked in):
+#   RIVET_SHARED_HOST (required)  RIVET_SHARED_EXPORT (/rivet-shared)  RIVET_SHARED_NFSVERS (4)
+#   RIVET_SHARED_UID/GID (2000) — claimed to the server so writes land as the shared `rivet`
+#   identity on BOTH paths: home WiFi hits the no_all_squash LAN export (which honors the
+#   claimed uid), away hits the all_squash->2000 relay export. Without this, on-WiFi writes would
+#   land as the proot guest uid 1000 and the mesh rivet (2000) couldn't read them.
+set -eu
+RS_HOST="${RIVET_SHARED_HOST:-}"
+[ -n "$RS_HOST" ] || { echo "rivet-shared: RIVET_SHARED_HOST not set (configure Settings -> Node & Mesh)" >&2; exit 1; }
+RS_EXPORT="${RIVET_SHARED_EXPORT:-/rivet-shared}"
+RS_VER="${RIVET_SHARED_NFSVERS:-4}"
+RS_UID="${RIVET_SHARED_UID:-2000}"
+RS_GID="${RIVET_SHARED_GID:-2000}"
+RS_DIR=/opt/rivet-shared
+export LD_LIBRARY_PATH="${RS_DIR}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+_url() {
+  p="${1#/}"                                   # strip a leading slash so we don't double it
+  printf 'nfs://%s%s/%s?version=%s&uid=%s&gid=%s' "$RS_HOST" "$RS_EXPORT" "$p" "$RS_VER" "$RS_UID" "$RS_GID"
+}
+
+usage() {
+  cat >&2 <<EOF
+usage: rivet-shared <cmd> ...
+  ls   [path]            list a directory (default: share root)
+  cat  <path>            print a file to stdout
+  stat <path>            stat a file/dir
+  get  <remote> <local>  download  remote -> local
+  put  <local> <remote>  upload    local  -> remote
+target: nfs://$RS_HOST$RS_EXPORT (v$RS_VER, as uid $RS_UID)
+note: no delete (libnfs-utils has no rm); remove files mesh-side.
+EOF
+  exit 2
+}
+
+[ $# -ge 1 ] || usage
+cmd="$1"; shift
+case "$cmd" in
+  ls)   exec "${RS_DIR}/bin/nfs-ls"   "$(_url "${1:-}")" ;;
+  cat)  [ $# -ge 1 ] || usage; exec "${RS_DIR}/bin/nfs-cat"  "$(_url "$1")" ;;
+  stat) [ $# -ge 1 ] || usage; exec "${RS_DIR}/bin/nfs-stat" "$(_url "$1")" ;;
+  get)  [ $# -ge 2 ] || usage; exec "${RS_DIR}/bin/nfs-cp" "$(_url "$1")" "$2" ;;
+  put)  [ $# -ge 2 ] || usage; exec "${RS_DIR}/bin/nfs-cp" "$1" "$(_url "$2")" ;;
+  -h|--help|help) usage ;;
+  *)    echo "rivet-shared: unknown command '$cmd'" >&2; usage ;;
+esac

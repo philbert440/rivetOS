@@ -44,6 +44,7 @@
     "apps/den",
     "apps/site",
     "apps/rivethub-web",
+    "apps/rivet-android",
     "plugins/channels/*",
     "plugins/memory/*",
     "plugins/providers/*",

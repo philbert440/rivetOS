@@ -1,0 +1,258 @@
+--- a/src/default_options.h	2024-10-22 14:30:00.000000000 +0000
++++ b/src/default_options.h	2026-06-10 16:29:41.026367964 +0000
+@@ -46,7 +46,7 @@
+    vulnerabilities becomes harder. Re-exec causes slightly more memory use
+    per connection.
+    This option is ignored on non-Linux platforms at present */
+-#define DROPBEAR_REEXEC 1
++#define DROPBEAR_REEXEC 0
+ 
+ /* Include verbose debug output, enabled with -v at runtime (repeat to increase).
+  * define which level of debug output you compile in
+@@ -228,7 +228,7 @@
+ 
+ /* Authentication Types - at least one required.
+    RFC Draft requires pubkey auth, and recommends password */
+-#define DROPBEAR_SVR_PASSWORD_AUTH 1
++#define DROPBEAR_SVR_PASSWORD_AUTH 0
+ 
+ /* Note: PAM auth is quite simple and only works for PAM modules which just do
+  * a simple "Login: " "Password: " (you can edit the strings in svr-authpam.c).
+@@ -249,7 +249,7 @@
+ /* Set this to 0 if your system does not have multiple user support.
+    (Linux kernel CONFIG_MULTIUSER option)
+    The resulting binary will not run on a normal system. */
+-#define DROPBEAR_SVR_MULTIUSER 1
++#define DROPBEAR_SVR_MULTIUSER 0
+ 
+ /* Client authentication options */
+ #define DROPBEAR_CLI_PASSWORD_AUTH 1
+--- a/src/dbutil.c	2024-10-22 14:30:00.000000000 +0000
++++ b/src/dbutil.c	2026-06-10 15:43:59.680033510 +0000
+@@ -788,3 +788,20 @@
+ 	}
+ 	return ret;
+ }
++
++/* --- Rivet: Android has no /etc/passwd; synthesize the login user from env.
++ * Linked with -Wl,--wrap=getpwnam,--wrap=getpwuid so dropbear's lookups hit these. */
++#include <pwd.h>
++static struct passwd rivet__pw;
++static struct passwd *rivet__fill(void) {
++    rivet__pw.pw_name = (char *)"rivet";
++    rivet__pw.pw_passwd = (char *)"!!";
++    rivet__pw.pw_uid = getuid();
++    rivet__pw.pw_gid = getgid();
++    rivet__pw.pw_gecos = (char *)"Rivet";
++    { char *d = getenv("RIVET_PW_DIR");   rivet__pw.pw_dir   = d ? d : (char *)"/"; }
++    { char *s = getenv("RIVET_PW_SHELL"); rivet__pw.pw_shell = s ? s : (char *)"/bin/sh"; }
++    return &rivet__pw;
++}
++struct passwd *__wrap_getpwnam(const char *name) { (void)name; return rivet__fill(); }
++struct passwd *__wrap_getpwuid(uid_t uid) { (void)uid; return rivet__fill(); }
+--- a/src/svr-auth.c	2024-10-22 14:30:00.000000000 +0000
++++ b/src/svr-auth.c	2026-06-10 15:43:59.680277260 +0000
+@@ -313,6 +313,12 @@
+ 		usershell = "/bin/sh";
+ 	}
+ 
++	/* Rivet/Android: no /etc/passwd or /etc/shells, and the login shell is the
++	 * app-controlled proot wrapper — there's nothing meaningful to validate against,
++	 * so accept it. (getusershell's default list would reject our shell.) */
++	(void)usershell;
++	goto goodshell;
++
+ 	/* check the shell is valid. If /etc/shells doesn't exist, getusershell()
+ 	 * should return some standard shells like "/bin/sh" and "/bin/csh" (this
+ 	 * is platform-specific) */
+--- a/src/sshpty.c	2024-10-22 14:30:00.000000000 +0000
++++ b/src/sshpty.c	2026-06-10 16:01:19.910645902 +0000
+@@ -269,71 +269,22 @@
+ 	void *old;
+ #endif /* USE_VHANGUP */
+ 
+-	/* Solaris has a problem with TIOCNOTTY for a bg process, so
+-	 * we disable the signal which would STOP the process - matt */
+ 	signal(SIGTTOU, SIG_IGN);
+ 
+-	/* First disconnect from the old controlling tty. */
+-#ifdef TIOCNOTTY
+-	fd = open(_PATH_TTY, O_RDWR | O_NOCTTY);
+-	if (fd >= 0) {
+-		(void) ioctl(fd, TIOCNOTTY, NULL);
+-		close(fd);
+-	}
+-#endif /* TIOCNOTTY */
++	/* Rivet/Android: Android's devpts doesn't support TIOCSCTTY or the /dev/tty
++	 * (TIOCNOTTY) disconnect dance — they throw I/O errors. Match how Termux's
++	 * terminal-emulator does it: become a session leader (setsid), then open the
++	 * slave pts WITHOUT O_NOCTTY, which auto-assigns it as the controlling tty.
++	 * Re-open as our session's stdio-backing fd. */
+ 	if (setsid() < 0) {
+-		dropbear_log(LOG_ERR,
+-			"setsid: %.100s", strerror(errno));
++		dropbear_log(LOG_ERR, "setsid: %.100s", strerror(errno));
+ 	}
+-
+-	/*
+-	 * Verify that we are successfully disconnected from the controlling
+-	 * tty.
+-	 */
+-	fd = open(_PATH_TTY, O_RDWR | O_NOCTTY);
+-	if (fd >= 0) {
+-		dropbear_log(LOG_ERR,
+-				"Failed to disconnect from controlling tty.\n");
+-		close(fd);
+-	}
+-	/* Make it our controlling tty. */
+-#ifdef TIOCSCTTY
+-	if (ioctl(*ttyfd, TIOCSCTTY, NULL) < 0) {
+-		dropbear_log(LOG_ERR,
+-			"ioctl(TIOCSCTTY): %.100s", strerror(errno));
+-	}
+-#endif /* TIOCSCTTY */
+-#ifdef HAVE_NEWS4
+-	if (setpgrp(0,0) < 0) {
+-		dropbear_log(LOG_ERR,
+-			error("SETPGRP %s",strerror(errno)));
+-	}
+-#endif /* HAVE_NEWS4 */
+-#ifdef USE_VHANGUP
+-	old = mysignal(SIGHUP, SIG_IGN);
+-	vhangup();
+-	mysignal(SIGHUP, old);
+-#endif /* USE_VHANGUP */
+ 	fd = open(tty_name, O_RDWR);
+ 	if (fd < 0) {
+-		dropbear_log(LOG_ERR,
+-			"%.100s: %.100s", tty_name, strerror(errno));
++		dropbear_log(LOG_ERR, "%.100s: %.100s", tty_name, strerror(errno));
+ 	} else {
+-#ifdef USE_VHANGUP
+ 		close(*ttyfd);
+ 		*ttyfd = fd;
+-#else /* USE_VHANGUP */
+-		close(fd);
+-#endif /* USE_VHANGUP */
+-	}
+-	/* Verify that we now have a controlling tty. */
+-	fd = open(_PATH_TTY, O_WRONLY);
+-	if (fd < 0) {
+-		dropbear_log(LOG_ERR,
+-			"open /dev/tty failed - could not set controlling tty: %.100s",
+-		    strerror(errno));
+-	} else {
+-		close(fd);
+ 	}
+ }
+ 
+@@ -384,31 +335,21 @@
+ 	 * this varies depending on the devpts mount options */
+ 	if (st.st_uid != pw->pw_uid || !(st.st_gid == gid || st.st_gid == pw->pw_gid)) {
+ 		if (chown(tty_name, pw->pw_uid, gid) < 0) {
+-			if (errno == EROFS &&
+-			    (st.st_uid == pw->pw_uid || st.st_uid == 0)) {
+-				dropbear_log(LOG_ERR,
+-					"chown(%.100s, %u, %u) failed: %.100s",
+-						tty_name, (unsigned int)pw->pw_uid, (unsigned int)gid,
+-						strerror(errno));
+-			} else {
+-				dropbear_exit("chown(%.100s, %u, %u) failed: %.100s",
+-				    tty_name, (unsigned int)pw->pw_uid, (unsigned int)gid,
+-				    strerror(errno));
+-			}
++			/* proot: a non-root app uid can't chown a system pts; the pty still works
++			 * (devpts already owns it to us), so warn rather than exit. */
++			dropbear_log(LOG_ERR,
++				"chown(%.100s, %u, %u) failed: %.100s",
++					tty_name, (unsigned int)pw->pw_uid, (unsigned int)gid,
++					strerror(errno));
+ 		}
+ 	}
+ 
+ 	if ((st.st_mode & (S_IRWXU|S_IRWXG|S_IRWXO)) != mode) {
+ 		if (chmod(tty_name, mode) < 0) {
+-			if (errno == EROFS &&
+-			    (st.st_mode & (S_IRGRP | S_IROTH)) == 0) {
+-				dropbear_log(LOG_ERR,
+-					"chmod(%.100s, 0%o) failed: %.100s",
+-					tty_name, mode, strerror(errno));
+-			} else {
+-				dropbear_exit("chmod(%.100s, 0%o) failed: %.100s",
+-				    tty_name, mode, strerror(errno));
+-			}
++			/* proot: can't chmod a system pts; non-fatal (see chown above). */
++			dropbear_log(LOG_ERR,
++				"chmod(%.100s, 0%o) failed: %.100s",
++				tty_name, mode, strerror(errno));
+ 		}
+ 	}
+ }
+--- a/src/svr-chansession.c	2024-10-22 14:30:00.000000000 +0000
++++ b/src/svr-chansession.c	2026-06-10 16:01:19.917810242 +0000
+@@ -833,9 +833,18 @@
+ 		}
+ 		
+ 		/* redirect stdin/stdout/stderr */
+-		close(chansess->master);
+-
++		/* Rivet/Android: re-open the slave pts to claim the controlling tty
++		 * (see sshpty.c) BEFORE closing the master. On Android's devpts the
++		 * /dev/pts/N node is only resolvable by name while a master fd is held
++		 * in this process; closing master first makes the re-open ENOENT. */
+ 		pty_make_controlling_tty(&chansess->slave, chansess->tty);
++
++		/* Rivet/Android: the child now owns /dev/pts/N as its controlling tty.
++		 * Closing the pty master here delivers a SIGHUP to this session; ignore
++		 * it across the close, then restore default disposition before exec so
++		 * the user's shell still hangs up normally on real disconnect. */
++		signal(SIGHUP, SIG_IGN);
++		close(chansess->master);
+ 		
+ 		if ((dup2(chansess->slave, STDIN_FILENO) < 0) ||
+ 			(dup2(chansess->slave, STDOUT_FILENO) < 0)) {
+@@ -846,9 +855,9 @@
+ 		/* write the utmp/wtmp login record - must be after changing the
+ 		 * terminal used for stdout with the dup2 above, otherwise
+ 		 * the wtmp login will not be recorded */
+-		li = chansess_login_alloc(chansess);
+-		login_login(li);
+-		login_free_entry(li);
++		/* Rivet/Android: bionic has no working utmp/wtmp; skip the login
++		 * record (chansess_login_alloc/login_login can fault). */
++		(void)li;
+ 
+ 		/* Can now dup2 stderr. Messages from login_login() have gone
+ 		to the parent stderr */
+@@ -893,6 +902,7 @@
+ 		}
+ #endif /* DO_MOTD */
+ 
++		signal(SIGHUP, SIG_DFL);
+ 		execchild(chansess);
+ 		/* not reached */
+ 
+--- a/src/common-session.c	2024-10-22 14:30:00.000000000 +0000
++++ b/src/common-session.c	2026-06-10 16:33:46.729818699 +0000
+@@ -69,16 +69,11 @@
+ 	update_channel_prio();
+ 
+ #if !DROPBEAR_SVR_MULTIUSER
+-	/* A sanity check to prevent an accidental configuration option
+-	   leaving multiuser systems exposed */
+-	{
+-		int ret;
+-		errno = 0;
+-		ret = getgroups(0, NULL);
+-		if (!(ret == -1 && errno == ENOSYS)) {
+-			dropbear_exit("Non-multiuser Dropbear requires a non-multiuser kernel");
+-		}
+-	}
++	/* Rivet/Android: the upstream sanity check exits here unless the kernel
++	   lacks multiuser support, to stop an accidental MULTIUSER=0 from exposing a
++	   real multiuser host. We run MULTIUSER=0 *deliberately*: a single fixed app
++	   uid that cannot switch users (Android seccomp SIGSYS-kills set*uid/gid),
++	   on a normal (multiuser) kernel. So the check is skipped on purpose. */
+ #endif
+ 
+ 	now = monotonic_now();
