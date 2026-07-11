@@ -80,8 +80,9 @@ export interface DenConfig {
    *  gate for /api/files/* — same trusted-LAN posture as term.open. Without
    *  it, tokenless non-loopback nodes get files routes refused, not exposed. */
   filesOpen: boolean
-  /** Mesh device enrollment (/api/devices/*, Settings → Devices). */
-  devices: DenDevicesConfig
+  /** Mesh device enrollment (/api/devices/*, Settings → Devices). Optional
+   *  so hand-built test configs predating the feature stay valid. */
+  devices?: DenDevicesConfig
 }
 
 export interface DenDevicesConfig {

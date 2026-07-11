@@ -356,7 +356,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
   // Mesh device enrollment (Settings → Devices). Bearer-gated except the
   // one-time-token enroll redemption, which is matched before the gate.
-  const devicesRoutes = config.devices.enabled
+  const devicesRoutes = config.devices?.enabled
     ? createDevicesRoutes({
         config: config.devices,
         stateDir: config.stateDir,
