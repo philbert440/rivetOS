@@ -5,11 +5,11 @@ import { useNotifications } from '../stores/notifications.js'
 import { NodeSwitcher } from './node-switcher.js'
 import { DenBot } from './den-bot.js'
 
-/** Primary session views — top of the rail. Terminal leads: it's the
- *  starting place; each view after it is a step more immersive. */
+/** Primary session views — top of the rail. Conversations leads: it's the
+ *  most-used view; each view after it is a step more immersive. */
 const PRIMARY_NAV = [
-  { to: '/terminal', label: 'Terminal', icon: '›_' },
   { to: '/', label: 'Conversations', icon: '💬' },
+  { to: '/terminal', label: 'Terminal', icon: '›_' },
   { to: '/dens', label: 'Den', icon: '▦' },
 ] as const
 
