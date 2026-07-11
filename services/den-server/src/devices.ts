@@ -36,6 +36,9 @@ export interface DevicesConfig {
   /** Relay ssh target, e.g. "rivet@relay-host". Empty = driver disabled
    *  (enrollment still records devices; peers must be added by hand). */
   relaySsh: string
+  /** Prefix relay `wg`/`wg-quick` commands with `sudo -n` — the ssh user
+   *  usually isn't root but has passwordless sudo (wg needs CAP_NET_ADMIN). */
+  relaySudo: boolean
   /** WireGuard interface name on the relay. */
   wgInterface: string
   /** Device address pool, "A.B.C.D-A.B.C.E" inclusive range. */
@@ -120,31 +123,32 @@ const sshExec = (target: string, args: string[]): Promise<string> =>
 /** wg-over-ssh driver. Inputs are validated (WG key / IPv4 shapes) before
  *  they reach a command line, so the ssh argv carries no caller-controlled
  *  shell metacharacters. */
-export function createSshRelayDriver(cfg: { relaySsh: string; wgInterface: string }): RelayDriver {
+export function createSshRelayDriver(cfg: {
+  relaySsh: string
+  wgInterface: string
+  sudo?: boolean
+}): RelayDriver {
   const iface = cfg.wgInterface
   if (!/^[\w.-]+$/.test(iface)) throw new Error(`bad wg interface name: ${iface}`)
+  // `sudo -n`: fail fast rather than hang if passwordless sudo isn't granted.
+  const wrap = (argv: string[]): string[] => (cfg.sudo ? ['sudo', '-n', ...argv] : argv)
   return {
     async addPeer(publicKey, address) {
       if (!WG_KEY.test(publicKey)) throw new Error('bad public key')
       if (!isIpv4(address)) throw new Error('bad address')
-      await sshExec(cfg.relaySsh, [
-        'wg',
-        'set',
-        iface,
-        'peer',
-        publicKey,
-        'allowed-ips',
-        `${address}/32`,
-      ])
-      await sshExec(cfg.relaySsh, ['wg-quick', 'save', iface])
+      await sshExec(
+        cfg.relaySsh,
+        wrap(['wg', 'set', iface, 'peer', publicKey, 'allowed-ips', `${address}/32`]),
+      )
+      await sshExec(cfg.relaySsh, wrap(['wg-quick', 'save', iface]))
     },
     async removePeer(publicKey) {
       if (!WG_KEY.test(publicKey)) throw new Error('bad public key')
-      await sshExec(cfg.relaySsh, ['wg', 'set', iface, 'peer', publicKey, 'remove'])
-      await sshExec(cfg.relaySsh, ['wg-quick', 'save', iface])
+      await sshExec(cfg.relaySsh, wrap(['wg', 'set', iface, 'peer', publicKey, 'remove']))
+      await sshExec(cfg.relaySsh, wrap(['wg-quick', 'save', iface]))
     },
     async handshakes() {
-      const out = await sshExec(cfg.relaySsh, ['wg', 'show', iface, 'latest-handshakes'])
+      const out = await sshExec(cfg.relaySsh, wrap(['wg', 'show', iface, 'latest-handshakes']))
       const map: Record<string, number> = {}
       for (const line of out.split('\n')) {
         const [key, ts] = line.trim().split(/\s+/)
@@ -286,7 +290,11 @@ export function createDevicesRoutes(opts: {
     opts.driver !== undefined
       ? opts.driver
       : config.relaySsh
-        ? createSshRelayDriver({ relaySsh: config.relaySsh, wgInterface: config.wgInterface })
+        ? createSshRelayDriver({
+            relaySsh: config.relaySsh,
+            wgInterface: config.wgInterface,
+            sudo: config.relaySudo,
+          })
         : null
 
   const json = (res: ServerResponse, status: number, body: unknown): void => {
