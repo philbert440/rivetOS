@@ -1,0 +1,43 @@
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:aapt="http://schemas.android.com/aapt">
+
+  <!-- Rivet loading spinner: a face-on hex nut that ratchets one flat (60°) per tick.
+       Hex symmetry makes the 60° end-state identical to 0°, so the infinite repeat is
+       seamless. Tinted to colorScheme.primary at runtime (see RivetLoadingIndicator). -->
+  <aapt:attr name="android:drawable">
+    <vector
+      android:width="24dp"
+      android:height="24dp"
+      android:viewportWidth="24"
+      android:viewportHeight="24">
+      <group
+        android:name="nut"
+        android:pivotX="12"
+        android:pivotY="12">
+        <!-- hexagon with a round bore, evenOdd -->
+        <path
+          android:fillColor="#34D399"
+          android:fillType="evenOdd"
+          android:pathData="M12,2.6 L20.14,7.3 V16.7 L12,21.4 L3.86,16.7 V7.3 Z M12,8.1 a3.9,3.9 0 1,1 0,7.8 a3.9,3.9 0 1,1 0,-7.8 Z" />
+      </group>
+    </vector>
+  </aapt:attr>
+
+  <target android:name="nut">
+    <aapt:attr name="android:animation">
+      <objectAnimator
+        android:duration="900"
+        android:propertyName="rotation"
+        android:repeatCount="infinite">
+        <!-- ratchet: pause, snap past the next flat, settle back onto it -->
+        <propertyValuesHolder android:propertyName="rotation">
+          <keyframe android:fraction="0.0" android:value="0" />
+          <keyframe android:fraction="0.4" android:value="0" />
+          <keyframe android:fraction="0.62" android:value="67" />
+          <keyframe android:fraction="0.78" android:value="60" />
+          <keyframe android:fraction="1.0" android:value="60" />
+        </propertyValuesHolder>
+      </objectAnimator>
+    </aapt:attr>
+  </target>
+</animated-vector>

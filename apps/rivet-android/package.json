@@ -1,0 +1,43 @@
+{
+  "name": "@rivetos/rivet-android",
+  "version": "0.0.0",
+  "private": true,
+  "description": "RivetHub for Android — native Kotlin client + on-device RivetOS node. Built with Gradle, not npm; this manifest exists only to register the project in the nx graph (DDD tags + boundaries). No JS dependencies. Real work runs under gradle-wrapping targets (apk/check/verify) deliberately NOT named build/test/lint, so CI's SDK-less nx sweeps skip it — same 'builds live where an SDK lives' posture as the Tauri desktop shell.",
+  "nx": {
+    "tags": ["scope:app", "type:app", "domain:interfaces"],
+    "targets": {
+      "apk": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "./gradlew :app:assemblePhilDebug",
+          "cwd": "apps/rivet-android"
+        },
+        "cache": false
+      },
+      "apk-release": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "./gradlew :app:assemblePhilRelease",
+          "cwd": "apps/rivet-android"
+        },
+        "cache": false
+      },
+      "check": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "./gradlew testPhilDebugUnitTest",
+          "cwd": "apps/rivet-android"
+        },
+        "cache": false
+      },
+      "verify": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "./gradlew :app:lintPhilDebug",
+          "cwd": "apps/rivet-android"
+        },
+        "cache": false
+      }
+    }
+  }
+}
