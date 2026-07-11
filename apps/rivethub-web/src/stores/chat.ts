@@ -24,6 +24,7 @@ import type {
 import type { Subscription } from '@rivetos/gateway-client'
 import { isValidGatewayUrl, useConnection } from './connection.js'
 import { foldStream, type LiveTurn } from '../lib/fold-stream.js'
+import { uuidv4 } from '../lib/uuid.js'
 import { messagesFromHarnessTurns } from '../lib/harness-turns.js'
 import { questionsFromLiveTools, type AskQuestion } from '../lib/ask-user.js'
 
@@ -247,7 +248,7 @@ export const useChat = create<ChatState>((set, get) => ({
     })),
 
   addOptimisticUser: (sessionId, text, id) => {
-    const msgId = id ?? `optim:${crypto.randomUUID()}`
+    const msgId = id ?? `optim:${uuidv4()}`
     set((s) => {
       const msg: SessionMessage = {
         id: msgId,
@@ -262,7 +263,7 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   enqueueOutbound: (sessionId, text) => {
-    const id = `optim:${crypto.randomUUID()}`
+    const id = `optim:${uuidv4()}`
     get().addOptimisticUser(sessionId, text, id)
     set((s) => ({
       outbound: {

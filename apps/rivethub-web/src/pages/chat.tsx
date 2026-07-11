@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { SessionMessage } from '@rivetos/types'
+import { uuidv4 } from '../lib/uuid.js'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { useChat, type OutboundItem } from '../stores/chat.js'
@@ -43,7 +44,7 @@ const STALE_TURN_MS = 120_000
 // (claude --session-id requires a UUID). Then the join key, the harness's
 // on-disk store filename, and the drawer id are all the same value.
 function newSessionId(): string {
-  return crypto.randomUUID()
+  return uuidv4()
 }
 
 export function ChatPage(): JSX.Element {
