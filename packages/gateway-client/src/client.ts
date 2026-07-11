@@ -27,6 +27,8 @@ import type {
   WikiGapsResponse,
   WikiIndexResponse,
   WikiPageResponse,
+  DevicesListResponse,
+  DeviceOpenResponse,
 } from '@rivetos/types'
 import type {
   TermConfigResponse,
@@ -230,6 +232,27 @@ export class RivetGateway {
   wikiRaw(slug: string, signal?: AbortSignal): Promise<string> {
     return request(this.config, `/api/wiki/${encodeURIComponent(slug)}/raw`, {
       raw: true,
+      signal,
+    })
+  }
+
+  // -- mesh devices (Settings → Devices) --------------------------------------
+
+  devicesList(signal?: AbortSignal): Promise<DevicesListResponse> {
+    return request(this.config, '/api/devices', { signal })
+  }
+
+  deviceAdd(name: string, signal?: AbortSignal): Promise<DeviceOpenResponse> {
+    return request(this.config, '/api/devices', {
+      method: 'POST',
+      body: { name },
+      signal,
+    })
+  }
+
+  deviceRevoke(id: string, signal?: AbortSignal): Promise<{ ok: true }> {
+    return request(this.config, `/api/devices/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
       signal,
     })
   }
