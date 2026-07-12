@@ -47,6 +47,15 @@ test('CIDR is judged over its whole range, not just the network address', () => 
   assert.deepEqual(rules('192.0.2.0/24'), [])
 })
 
+test('0.0.0.0/0 wildcard stays clean, but a sibling real subnet still blocks', () => {
+  // 0.0.0.0/0 is ubiquitous & carries no infra info (WG AllowedIPs, default
+  // route). Endpoints land in different ignorable islands so it reads clean —
+  // intentional. Scanning is per-token, so a real subnet on the same line is
+  // still caught independently (no masking).
+  assert.deepEqual(rules('AllowedIPs = 0.0.0.0/0'), [])
+  assert.ok(rules('AllowedIPs = 0.0.0.0/0, 10.9.8.0/24').includes('private-ip'))
+})
+
 test('ignores loopback / link-local / this-host / well-known DNS', () => {
   assert.deepEqual(rules('127.0.0.1 169.254.1.1 0.0.0.0 8.8.8.8 1.1.1.1'), [])
 })

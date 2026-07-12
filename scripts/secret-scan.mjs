@@ -124,6 +124,11 @@ function scanLine(line) {
     if (!octetsValid(ip)) continue
     // Judge the WHOLE covered range: a CIDR is example/ignorable only if BOTH
     // endpoints are — so 10.0.0.0/8 (broadcast 10.255.255.255) is NOT clean.
+    // NB: a wildcard like 0.0.0.0/0 reads clean (both ends ignorable) — that's
+    // intentional; it carries no infra info and is ubiquitous (WG AllowedIPs,
+    // default route). Scanning is per-token, so a real subnet alongside it is
+    // still flagged on its own. Private classification uses the base address so
+    // 0.0.0.0/0 is never mislabeled private.
     const [lo, hi] = cidrRange(m[0])
     const bothIgnorable = isIgnorableIp(n2ip(lo)) && isIgnorableIp(n2ip(hi))
     const bothExample = isExampleIp(n2ip(lo)) && isExampleIp(n2ip(hi))
