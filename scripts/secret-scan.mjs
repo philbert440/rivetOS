@@ -43,7 +43,22 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024
 // IP classification
 
 const ip2n = (ip) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0)
+const n2ip = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.')
 const inRange = (n, a, b) => n >= ip2n(a) && n <= ip2n(b)
+
+/** [networkAddr, broadcastAddr] a token covers. A bare IP is a /32 (itself).
+ *  Used so a wide CIDR (10.0.0.0/8) is judged over its WHOLE range, not just
+ *  its network address sitting in an example /24. */
+function cidrRange(token) {
+  const [ip, p] = token.split('/')
+  const base = ip2n(ip)
+  if (p === undefined) return [base, base]
+  const prefix = Number(p)
+  if (!(prefix >= 0 && prefix <= 32)) return [base, base]
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0
+  const net = (base & mask) >>> 0
+  return [net, (net | (~mask >>> 0)) >>> 0]
+}
 
 /** Documentation/example ranges that are always fine. RFC5737 is the real
  *  answer; the RFC1918 example blocks are deliberately NARROW /24s (not whole
@@ -106,7 +121,13 @@ function scanLine(line) {
 
   for (const m of line.matchAll(IPV4)) {
     const ip = m[0].split('/')[0]
-    if (!octetsValid(ip) || isIgnorableIp(ip) || isExampleIp(ip)) continue
+    if (!octetsValid(ip)) continue
+    // Judge the WHOLE covered range: a CIDR is example/ignorable only if BOTH
+    // endpoints are — so 10.0.0.0/8 (broadcast 10.255.255.255) is NOT clean.
+    const [lo, hi] = cidrRange(m[0])
+    const bothIgnorable = isIgnorableIp(n2ip(lo)) && isIgnorableIp(n2ip(hi))
+    const bothExample = isExampleIp(n2ip(lo)) && isExampleIp(n2ip(hi))
+    if (bothIgnorable || bothExample) continue
     const n = ip2n(ip)
     const isPrivate =
       inRange(n, '10.0.0.0', '10.255.255.255') ||
@@ -237,6 +258,11 @@ function trackedFiles() {
 }
 
 // Paths the scanner ignores (its own denylist of hashes, lockfiles, vendored).
+// Skip by extension/path ONLY (deterministic + auditable). We deliberately do
+// NOT content-sniff for binary: a NUL-prefixed *text* file would then be
+// silently skipped (an evasion path). Anything not skipped here is scanned; a
+// genuine binary that slips through fails closed (its shape rules trip) until
+// its extension/path is added below.
 const SKIP = [
   /^scripts\/secret-denylist\.json$/,
   /^scripts\/secret-scan\.(mjs|test\.mjs)$/, // the scanner + its fixtures ARE detection patterns/constants
@@ -244,16 +270,12 @@ const SKIP = [
   /(^|\/)node_modules\//,
   /(^|\/)\.nx\//,
   /(^|\/)dist\//,
-  /\.(png|jpg|jpeg|gif|webp|ico|svg|pdf|zip|gz|woff2?|so|a|dll|dylib|jar|class|keystore|jks|bin|wasm)$/i,
+  /(^|\/)__pycache__\//, // compiled python
+  /(^|\/)prebuilt\//, // native prebuilt binaries (e.g. dropbear ELF, no extension)
+  /(^|\/)simple_dict\/idf\.utf8$/, // large IDF dictionary data blob
+  /\.(png|jpg|jpeg|gif|webp|ico|svg|pdf|zip|gz|woff2?|ttf|otf|mp3|wav|ogg|mp4|m4a|webm|so|a|dll|dylib|jar|class|keystore|jks|bin|wasm|pyc|pyo)$/i,
 ]
 const skip = (f) => SKIP.some((re) => re.test(f))
-
-/** Binary-content guard: a NUL byte in the first 8KB → treat as binary, skip. */
-function isBinary(buf) {
-  const n = Math.min(buf.length, 8192)
-  for (let i = 0; i < n; i++) if (buf[i] === 0) return true
-  return false
-}
 
 /** A PR can weaken crown-jewel protection by deleting hashes from the denylist
  *  in the same change that introduces the plaintext (generic public-ip only
@@ -330,24 +352,30 @@ function main() {
       )
       process.exit(1)
     }
-    let unreadable = 0
+    // Anything we can't fully scan FAILS CLOSED (a leak must not hide behind an
+    // unreadable/oversize/NUL-prefixed file). Expected binaries belong in SKIP.
+    let unscannable = 0
     for (const file of trackedFiles()) {
       if (skip(file)) continue
       let buf
       try {
         buf = readFileSync(file)
       } catch {
-        unreadable++
-        console.error(`  unreadable (not scanned): ${file}`)
+        unscannable++
+        console.error(`  UNREADABLE (fail closed): ${file}`)
         continue
       }
-      if (isBinary(buf)) continue
-      const text = buf.length > MAX_FILE_BYTES ? buf.subarray(0, MAX_FILE_BYTES).toString('utf8') : buf.toString('utf8')
-      if (buf.length > MAX_FILE_BYTES) console.error(`  large file, scanned first ${MAX_FILE_BYTES} bytes: ${file}`)
-      for (const f of scanText(text, { denyHashes })) findings.push({ ...f, file })
+      if (buf.length > MAX_FILE_BYTES) {
+        unscannable++
+        console.error(`  OVERSIZE >${MAX_FILE_BYTES}B (fail closed — split, or add to SKIP if a data blob): ${file}`)
+        continue
+      }
+      for (const f of scanText(buf.toString('utf8'), { denyHashes })) findings.push({ ...f, file })
     }
     const bad = report(findings, 'tracked files')
-    if (bad || unreadable > 0) process.exit(1)
+    if (unscannable > 0)
+      console.error(`\n❌ secret-scan: ${unscannable} tracked file(s) could not be safely scanned (see above).`)
+    if (bad || unscannable > 0) process.exit(1)
   } else if (mode === '--text') {
     const text = readFileSync(0, 'utf8') // stdin
     findings = scanText(text, { denyHashes }).map((f) => ({ ...f, file: '<input>' }))

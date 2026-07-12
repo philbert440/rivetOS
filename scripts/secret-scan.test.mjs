@@ -36,6 +36,17 @@ test('example allowlists are NARROW /24s — real RFC1918 outside them blocks', 
   assert.equal(sev('192.168.2.1', 'private-ip'), 'block')
 })
 
+test('CIDR is judged over its whole range, not just the network address', () => {
+  // a wide block whose network sits in an example /24 must NOT read as clean
+  assert.equal(sev('10.0.0.0/8', 'private-ip'), 'block')
+  assert.equal(sev('192.168.0.0/16', 'private-ip'), 'block')
+  assert.equal(sev('172.16.0.0/12', 'private-ip'), 'block')
+  // blocks fully inside an example /24 (or the 192.168.0-1 /23) stay clean
+  assert.deepEqual(rules('10.0.0.0/24'), [])
+  assert.deepEqual(rules('192.168.0.0/23'), [])
+  assert.deepEqual(rules('192.0.2.0/24'), [])
+})
+
 test('ignores loopback / link-local / this-host / well-known DNS', () => {
   assert.deepEqual(rules('127.0.0.1 169.254.1.1 0.0.0.0 8.8.8.8 1.1.1.1'), [])
 })
