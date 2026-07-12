@@ -525,6 +525,70 @@ private fun RivetNodeControls(navController: Navigator, drawerOpen: Boolean) {
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
+            // Full RivetOS monorepo self-provision (Phase 5 prereq). Standalone den stays up
+            // until dist/rivetos.js exists; this row only kicks the FGS provision action.
+            val provisionStatus by RivetRuntime.provisionProgress.collectAsStateWithLifecycle(
+                initialValue = null,
+            )
+            var fullRuntimeReady by remember {
+                mutableStateOf(RivetRuntime.isFullRuntimeProvisioned(context))
+            }
+            // Re-check when the drawer opens or provision progress clears (done / failed).
+            LaunchedEffect(drawerOpen, provisionStatus) {
+                if (drawerOpen) {
+                    fullRuntimeReady = RivetRuntime.isFullRuntimeProvisioned(context)
+                }
+            }
+            val isProvisioning = provisionStatus != null || RivetRuntime.isProvisioning()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (!fullRuntimeReady && !isProvisioning) {
+                            Modifier.onClick { RivetRuntimeService.startProvision(context) }
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    imageVector = HugeIcons.Sparkles,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = if (fullRuntimeReady) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = when {
+                            fullRuntimeReady -> "Node runtime ready"
+                            isProvisioning -> "Provisioning node runtime…"
+                            else -> "Provision node runtime"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = when {
+                            fullRuntimeReady -> "full RivetOS · plugins + chat"
+                            isProvisioning ->
+                                "${provisionStatus ?: "working…"} · ~15 min · keep app open"
+                            else -> "~15 min · downloads + builds RivetOS"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
             // Standalone root terminal — a proot bash shell not tied to any conversation.
             Row(
                 modifier = Modifier
