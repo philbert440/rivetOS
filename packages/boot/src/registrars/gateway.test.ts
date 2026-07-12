@@ -30,12 +30,16 @@ describe('buildGatewayEnv — device enrollment', () => {
           wg_public_key: 'r'.repeat(43) + '=',
           allowed_ips: '10.0.0.0/24',
           home_subnet: '10.0.0.',
+          relay_forward_src: '10.0.0.32/27',
+          relay_forward_dest: '10.0.0.0/24',
           shared_host: 'hub.local',
         },
       }),
       '/opt/rivetos',
     )
     expect(env.RIVETOS_DEN_DEVICES).toBe('1')
+    expect(env.RIVETOS_DEN_DEVICES_FWD_SRC).toBe('10.0.0.32/27')
+    expect(env.RIVETOS_DEN_DEVICES_FWD_DEST).toBe('10.0.0.0/24')
     expect(env.RIVETOS_DEN_DEVICES_RELAY_SSH).toBe('rivet@10.0.0.4')
     expect(env.RIVETOS_DEN_DEVICES_RELAY_SUDO).toBe('1')
     expect(env.RIVETOS_DEN_DEVICES_POOL).toBe('10.0.0.32-10.0.0.63')
