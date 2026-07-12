@@ -1,0 +1,9 @@
+# Security-sensitive: the secret scanner IS the primary leak gate, and CI runs
+# it from the PR head — a change here can weaken the gate that reviews it. The
+# hashed denylist must not shrink without an explicit, reviewed reason (CI also
+# checks for removed entries vs origin/main). Require owner review on all three.
+/scripts/secret-scan.mjs        @philbert440
+/scripts/secret-denylist.json   @philbert440
+/scripts/git-hooks/             @philbert440
+/.github/workflows/pipeline.yml @philbert440
+/.github/CODEOWNERS             @philbert440
