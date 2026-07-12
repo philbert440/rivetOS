@@ -165,7 +165,15 @@ class RivetRuntimeService : Service() {
                     onRunning = null,
                     onRestarting = null,
                     setProcess = { denProcess = it },
-                    command = { RivetRuntime.denCommand(this@RivetRuntimeService) },
+                    // Full runtime when provisioned (chat + den gateway); else standalone den bundle.
+                    // Same RivetDen slot — never both (they collide on :5174).
+                    command = {
+                        if (RivetRuntime.isFullRuntimeProvisioned(this@RivetRuntimeService)) {
+                            RivetRuntime.fullRuntimeCommand(this@RivetRuntimeService)
+                        } else {
+                            RivetRuntime.denCommand(this@RivetRuntimeService)
+                        }
+                    },
                 )
             }
         }
