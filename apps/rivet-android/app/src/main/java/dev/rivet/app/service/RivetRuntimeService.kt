@@ -22,6 +22,7 @@ import dev.rivet.app.data.datastore.RIVET_SSH_PORT
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.net.RivetVpn
 import dev.rivet.app.runtime.RivetRuntime
+import dev.rivet.app.runtime.RuntimeCommand
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,7 +34,8 @@ import org.koin.android.ext.android.inject
 
 /**
  * Foreground service that owns the on-device agent runtime: it launches the proot+node
- * bridge (Claude/Grok on loopback :8765) and keeps it alive across crashes and doze.
+ * bridge (Claude/Grok on loopback :8765) and the den-server gateway (rivethub-web + den
+ * API/WS on loopback :5174), and keeps both alive across crashes and doze.
  * The actual scaffold + launch recipe lives in [RivetRuntime]; this is just lifecycle.
  *
  * Modeled on [WebServerService] (specialUse FGS). START_STICKY so Android revives it.
@@ -73,7 +75,9 @@ class RivetRuntimeService : Service() {
 
     @Volatile private var shouldRun = false
     @Volatile private var process: Process? = null
-    private var superviseJob: Job? = null
+    @Volatile private var denProcess: Process? = null
+    private var bridgeJob: Job? = null
+    private var denJob: Job? = null
 
     // --- dropbear SSH (track B) -------------------------------------------------------
     @Volatile private var sshShouldRun = false
@@ -129,28 +133,74 @@ class RivetRuntimeService : Service() {
         return START_STICKY
     }
 
+    /**
+     * Supervise the bridge (:8765) and den-server (:5174) as parallel coroutines.
+     * Both wait on [RivetRuntime.prepare] (overlays extracted) before first launch.
+     */
     private fun startRuntime() {
-        if (superviseJob?.isActive == true) return
         shouldRun = true
-        superviseJob = serviceScope.launch { supervise() }
+        if (bridgeJob?.isActive != true) {
+            bridgeJob = serviceScope.launch {
+                supervise(
+                    name = "bridge",
+                    logTag = "RivetBridge",
+                    ownsSetupNotification = true,
+                    onRunning = {
+                        updateNotification(buildNotification("Claude + Grok bridge on 127.0.0.1:$RIVET_BRIDGE_PORT"))
+                    },
+                    onRestarting = {
+                        updateNotification(buildNotification("Bridge stopped — restarting…"))
+                    },
+                    setProcess = { process = it },
+                    command = { RivetRuntime.bridgeCommand(this@RivetRuntimeService) },
+                )
+            }
+        }
+        if (denJob?.isActive != true) {
+            denJob = serviceScope.launch {
+                supervise(
+                    name = "den",
+                    logTag = "RivetDen",
+                    ownsSetupNotification = false,
+                    onRunning = null,
+                    onRestarting = null,
+                    setProcess = { denProcess = it },
+                    command = { RivetRuntime.denCommand(this@RivetRuntimeService) },
+                )
+            }
+        }
     }
 
-    /** Launch the bridge; relaunch with exponential backoff if it dies while we should run. */
-    private suspend fun supervise() {
+    /**
+     * Shared supervise loop: prepare → launch → drain stdout to logcat → exponential
+     * backoff on exit (1s→30s, reset after 30s healthy). Copied from the original bridge
+     * supervisor so den gets identical keep-alive behavior.
+     */
+    private suspend fun supervise(
+        name: String,
+        logTag: String,
+        ownsSetupNotification: Boolean,
+        onRunning: (() -> Unit)?,
+        onRestarting: (() -> Unit)?,
+        setProcess: (Process?) -> Unit,
+        command: () -> RuntimeCommand,
+    ) {
         var backoffMs = 1_000L
         while (shouldRun) {
-            if (!RivetRuntime.isRootfsReady(this)) {
+            if (ownsSetupNotification && !RivetRuntime.isRootfsReady(this)) {
                 updateNotification(buildNotification("Installing the on-device runtime (first run, ~1 min)…"))
             }
             val notReady = RivetRuntime.prepare(this)
             if (notReady != null) {
-                Log.w(TAG, "runtime not ready: $notReady")
-                updateNotification(buildNotification("Runtime setup failed — retrying… ($notReady)"))
+                Log.w(TAG, "$name: runtime not ready: $notReady")
+                if (ownsSetupNotification) {
+                    updateNotification(buildNotification("Runtime setup failed — retrying… ($notReady)"))
+                }
                 delay(15_000)
                 continue
             }
 
-            val cmd = RivetRuntime.bridgeCommand(this)
+            val cmd = command()
             val startedAt = System.currentTimeMillis()
             try {
                 val p = ProcessBuilder(cmd.argv)
@@ -158,29 +208,29 @@ class RivetRuntimeService : Service() {
                     .redirectErrorStream(true)
                     .apply { environment().putAll(cmd.env) }
                     .start()
-                process = p
-                updateNotification(buildNotification("Claude + Grok bridge on 127.0.0.1:$RIVET_BRIDGE_PORT"))
-                Log.i(TAG, "bridge launched via proot")
+                setProcess(p)
+                onRunning?.invoke()
+                Log.i(TAG, "$name launched via proot")
 
                 val drain = serviceScope.launch {
                     runCatching {
-                        p.inputStream.bufferedReader().forEachLine { Log.i("RivetBridge", it) }
+                        p.inputStream.bufferedReader().forEachLine { Log.i(logTag, it) }
                     }
                 }
                 val code = p.waitFor()
                 drain.cancel()
-                Log.w(TAG, "bridge exited code=$code")
+                Log.w(TAG, "$name exited code=$code")
             } catch (t: Throwable) {
-                Log.e(TAG, "bridge launch failed", t)
+                Log.e(TAG, "$name launch failed", t)
             } finally {
-                process = null
+                setProcess(null)
             }
 
             if (!shouldRun) break
 
             // Reset backoff if the process had been up for a healthy while.
             if (System.currentTimeMillis() - startedAt > 30_000) backoffMs = 1_000L
-            updateNotification(buildNotification("Bridge stopped — restarting…"))
+            onRestarting?.invoke()
             delay(backoffMs)
             backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
         }
@@ -188,10 +238,14 @@ class RivetRuntimeService : Service() {
 
     private fun stopRuntime() {
         shouldRun = false
-        superviseJob?.cancel()
-        superviseJob = null
+        bridgeJob?.cancel()
+        bridgeJob = null
+        denJob?.cancel()
+        denJob = null
         process?.destroyForcibly()
         process = null
+        denProcess?.destroyForcibly()
+        denProcess = null
     }
 
     // --- dropbear SSH supervision (track B) -------------------------------------------
