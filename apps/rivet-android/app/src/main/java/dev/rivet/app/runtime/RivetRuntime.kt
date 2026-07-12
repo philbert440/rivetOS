@@ -136,11 +136,131 @@ object RivetRuntime {
 
     /**
      * True when the full RivetOS monorepo runtime is present in the rootfs
-     * (`/home/rivet/rivetos/dist/rivetos.js`). Provisioning (clone/build) is out of band;
-     * the app only detects and launches what's already there.
+     * (`/home/rivet/rivetos/dist/rivetos.js`). Until then the standalone den bundle is used;
+     * after [provisionFullRuntime] (or a hand-provisioned monorepo) the full runtime launches.
      */
     fun isFullRuntimeProvisioned(context: Context): Boolean =
         File(rootfsDir(context), "home/rivet/rivetos/dist/rivetos.js").exists()
+
+    /** Non-null while [provisionFullRuntime] is running (short status for UI / notification). */
+    private val _provisionProgress = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val provisionProgress: kotlinx.coroutines.flow.StateFlow<String?> = _provisionProgress
+
+    /** True while a provision job holds the concurrency lock. */
+    fun isProvisioning(): Boolean = provisioning.get()
+
+    // Only one provision at a time (UI tap + sticky service restart must not double-clone).
+    private val provisioning = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var provisionProcess: Process? = null
+
+    /**
+     * Clone + build the full RivetOS monorepo inside the rootfs so [isFullRuntimeProvisioned]
+     * becomes true. Runs under proot as the `rivet` guest (same recipe as [denCommand] /
+     * [fullRuntimeCommand]). Host-side writes the shell script, then ProcessBuilder streams
+     * stdout to [onProgress] and logcat (`RivetProvision`).
+     *
+     * Idempotent: an existing clone is pulled and rebuilt. Concurrent calls are rejected
+     * (returns false). Takes ~15 min on-device (clone, npm ci, nx build of ~39 projects, bundle).
+     *
+     * Must be invoked from a foreground service ([RivetRuntimeService] ACTION_PROVISION) so
+     * Android does not kill the long-running process.
+     *
+     * @return true when `dist/rivetos.js` exists after a zero exit code.
+     */
+    fun provisionFullRuntime(context: Context, onProgress: (String) -> Unit): Boolean {
+        if (!provisioning.compareAndSet(false, true)) {
+            val msg = "Already provisioning — ignoring concurrent request"
+            Log.w(PROVISION_TAG, msg)
+            onProgress(msg)
+            return false
+        }
+        try {
+            if (!isRootfsReady(context)) {
+                val msg = "Rootfs not ready — cannot provision"
+                Log.e(PROVISION_TAG, msg)
+                onProgress(msg)
+                return false
+            }
+            // Ensure den config exists before the monorepo is ready to start.
+            ensureFullRuntimeConfig(context)
+
+            val scriptHost = File(rootfsDir(context), "home/rivet/.rivet-provision.sh")
+            scriptHost.parentFile?.mkdirs()
+            scriptHost.writeText(PROVISION_SCRIPT)
+            scriptHost.setExecutable(true)
+
+            fun progress(line: String) {
+                Log.i(PROVISION_TAG, line)
+                onProgress(line)
+                // Short status for notification / drawer (keep last non-blank line snippet).
+                val short = when {
+                    line.contains("clone", ignoreCase = true) ||
+                        line.contains("Cloning", ignoreCase = true) ||
+                        line.contains("pull", ignoreCase = true) -> "downloading…"
+                    line.contains("npm ci", ignoreCase = true) ||
+                        line.contains("added", ignoreCase = true) -> "installing…"
+                    line.contains("nx", ignoreCase = true) ||
+                        line.contains("build", ignoreCase = true) ||
+                        line.contains("Compil", ignoreCase = true) -> "building…"
+                    line.contains("bundle", ignoreCase = true) -> "bundling…"
+                    line.contains("done", ignoreCase = true) -> "finishing…"
+                    else -> _provisionProgress.value ?: "starting…"
+                }
+                _provisionProgress.value = short
+            }
+
+            progress("Provisioning full RivetOS runtime…")
+            _provisionProgress.value = "starting…"
+
+            val argv = listOf(prootBinary(context)) + prootArgvTail(context) +
+                listOf("/bin/bash", "/home/rivet/.rivet-provision.sh")
+            val env = baseEnv(context) + mapOf(
+                // Minimal rootfs has no CA store; public repo, content SHA-verified by git.
+                "GIT_SSL_NO_VERIFY" to "true",
+                // npm/nx need a writable cache under the guest home.
+                "npm_config_cache" to "/home/rivet/.npm",
+                "NX_DAEMON" to "false",
+            )
+            val p = ProcessBuilder(argv)
+                .directory(hostHome(context))
+                .redirectErrorStream(true)
+                .apply { environment().putAll(env) }
+                .start()
+            provisionProcess = p
+
+            p.inputStream.bufferedReader().forEachLine { line ->
+                if (line.isNotBlank()) progress(line)
+            }
+            val code = p.waitFor()
+            val ok = code == 0 && isFullRuntimeProvisioned(context)
+            if (ok) {
+                progress("Provision complete — full runtime ready")
+                _provisionProgress.value = null
+            } else {
+                val msg = "Provision failed (exit=$code, built=${isFullRuntimeProvisioned(context)})"
+                Log.e(PROVISION_TAG, msg)
+                onProgress(msg)
+                _provisionProgress.value = null
+            }
+            return ok
+        } catch (t: Throwable) {
+            Log.e(PROVISION_TAG, "provisionFullRuntime failed", t)
+            onProgress("Provision error: ${t.message}")
+            _provisionProgress.value = null
+            return false
+        } finally {
+            provisionProcess = null
+            provisioning.set(false)
+        }
+    }
+
+    /** Best-effort kill of an in-flight provision proot process (service stop / destroy). */
+    fun cancelProvision() {
+        runCatching { provisionProcess?.destroyForcibly() }
+        provisionProcess = null
+        _provisionProgress.value = null
+        // Leave provisioning flag to the finally block of provisionFullRuntime if still running.
+    }
 
     /**
      * Host-side write of the full-runtime config into the rootfs if absent. App owns the
@@ -806,6 +926,39 @@ object RivetRuntime {
 
     /** Loopback port for the den-server gateway (rivethub-web + den API/WS). */
     const val DEN_PORT = 5174
+
+    private const val PROVISION_TAG = "RivetProvision"
+
+    /**
+     * In-rootfs provision script (proven end-to-end on device).
+     * - GIT_SSL_NO_VERIFY: minimal rootfs has no CA store; public repo.
+     * - npm ci --ignore-scripts: no C++ toolchain; keeps optional prebuilt @esbuild/@nx arm64.
+     * - Exit codes checked via set -e (do not pipe to tail before testing $?).
+     */
+    private val PROVISION_SCRIPT = """
+        |#!/bin/bash
+        |set -e
+        |export GIT_SSL_NO_VERIFY=true
+        |git config --global http.sslVerify false
+        |cd /home/rivet
+        |if [ -d rivetos/.git ]; then
+        |  echo "RivetProvision: existing clone — pulling…"
+        |  cd rivetos
+        |  git pull --ff-only || true
+        |else
+        |  echo "RivetProvision: cloning rivetOS monorepo…"
+        |  git clone --depth 1 https://github.com/philbert440/rivetOS rivetos
+        |  cd rivetos
+        |fi
+        |echo "RivetProvision: npm ci (ignore-scripts, keep optional prebuilts)…"
+        |npm ci --ignore-scripts --no-audit --no-fund
+        |echo "RivetProvision: nx build (exclude container-rivetos,site)…"
+        |npx nx run-many -t build --exclude container-rivetos,site --parallel=2
+        |echo "RivetProvision: npm run bundle → dist/rivetos.js…"
+        |npm run bundle
+        |test -f dist/rivetos.js
+        |echo "RivetProvision: done — dist/rivetos.js ready"
+        |""".trimMargin()
 }
 
 /** A ready-to-launch native command: argv + extra env + the host cwd to start it in. */

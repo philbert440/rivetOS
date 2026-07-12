@@ -49,6 +49,8 @@ class RivetRuntimeService : Service() {
         const val ACTION_SSH_STOP = "dev.rivet.app.action.RIVET_SSH_STOP"
         const val ACTION_VPN_START = "dev.rivet.app.action.RIVET_VPN_START"
         const val ACTION_VPN_STOP = "dev.rivet.app.action.RIVET_VPN_STOP"
+        /** Clone + build the full RivetOS monorepo in the rootfs (~15 min). */
+        const val ACTION_PROVISION = "dev.rivet.app.action.RIVET_RUNTIME_PROVISION"
         const val NOTIFICATION_ID = 2002
         private const val TAG = "RivetRuntimeService"
 
@@ -67,6 +69,17 @@ class RivetRuntimeService : Service() {
             }
             context.startForegroundService(intent)
         }
+
+        /**
+         * Start (or resume) the runtime service and kick off full-runtime self-provisioning.
+         * Long-running (~15 min); must stay under this FGS so Android does not kill it.
+         */
+        fun startProvision(context: Context) {
+            val intent = Intent(context, RivetRuntimeService::class.java).apply {
+                action = ACTION_PROVISION
+            }
+            context.startForegroundService(intent)
+        }
     }
 
     private val settingsStore: SettingsStore by inject()
@@ -78,12 +91,16 @@ class RivetRuntimeService : Service() {
     @Volatile private var denProcess: Process? = null
     private var bridgeJob: Job? = null
     private var denJob: Job? = null
+    private var provisionJob: Job? = null
 
     // --- dropbear SSH (track B) -------------------------------------------------------
     @Volatile private var sshShouldRun = false
     @Volatile private var sshProcess: Process? = null
     private var sshJob: Job? = null
     private var sshWakeLock: PowerManager.WakeLock? = null
+
+    // Partial wakelock for the ~15 min provision so doze doesn't freeze npm/nx.
+    private var provisionWakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -92,6 +109,7 @@ class RivetRuntimeService : Service() {
             ACTION_STOP -> {
                 stopSsh()
                 stopVpn()
+                stopProvision()
                 stopRuntime()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -121,6 +139,15 @@ class RivetRuntimeService : Service() {
                 stopVpn()
             }
 
+            ACTION_PROVISION -> {
+                startForegroundCompat(buildNotification("Provisioning node runtime — starting…"))
+                // Keep bridge + standalone den up during provision (no regression while building).
+                startRuntime()
+                if (settingsStore.sshEnabledNow()) startSsh()
+                if (settingsStore.vpnEnabledNow()) startVpn()
+                startProvision()
+            }
+
             else -> {
                 // ACTION_START or null (sticky restart)
                 startForegroundCompat(buildNotification("Starting the on-device runtime…"))
@@ -131,6 +158,71 @@ class RivetRuntimeService : Service() {
             }
         }
         return START_STICKY
+    }
+
+    /**
+     * Run [RivetRuntime.provisionFullRuntime] on a service coroutine. Updates the FGS
+     * notification with progress. On success, restarts the den supervise job so it re-evaluates
+     * [RivetRuntime.isFullRuntimeProvisioned] and launches the full monorepo runtime.
+     */
+    private fun startProvision() {
+        if (provisionJob?.isActive == true || RivetRuntime.isProvisioning()) {
+            Log.i(TAG, "provision already in flight — ignoring")
+            updateNotification(buildNotification("Provisioning node runtime — ${RivetRuntime.provisionProgress.value ?: "in progress…"}"))
+            return
+        }
+        acquireProvisionWakeLock()
+        provisionJob = serviceScope.launch {
+            try {
+                val ok = RivetRuntime.provisionFullRuntime(this@RivetRuntimeService) { line ->
+                    val short = RivetRuntime.provisionProgress.value ?: "working…"
+                    updateNotification(buildNotification("Provisioning node runtime — $short"))
+                    // line already logged by RivetRuntime under RivetProvision
+                }
+                if (ok) {
+                    Log.i(TAG, "provision succeeded — restarting den for full runtime")
+                    updateNotification(buildNotification("Full runtime ready — restarting den…"))
+                    restartDen()
+                    updateNotification(buildNotification("Full RivetOS runtime on 127.0.0.1:${RivetRuntime.DEN_PORT}"))
+                } else {
+                    updateNotification(buildNotification("Provision failed — see logcat RivetProvision"))
+                }
+            } finally {
+                releaseProvisionWakeLock()
+            }
+        }
+    }
+
+    /** Cancel the den supervise slot and relaunch so command() re-picks full vs standalone. */
+    private fun restartDen() {
+        denJob?.cancel()
+        denJob = null
+        denProcess?.destroyForcibly()
+        denProcess = null
+        // startRuntime only starts den if denJob is not active.
+        startRuntime()
+    }
+
+    private fun acquireProvisionWakeLock() {
+        if (provisionWakeLock?.isHeld == true) return
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        provisionWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RivetHub:provision").apply {
+            setReferenceCounted(false)
+            // ~20 min cap (build is ~15 min); auto-release if something goes wrong.
+            acquire(20 * 60 * 1000L)
+        }
+    }
+
+    private fun releaseProvisionWakeLock() {
+        runCatching { if (provisionWakeLock?.isHeld == true) provisionWakeLock?.release() }
+        provisionWakeLock = null
+    }
+
+    private fun stopProvision() {
+        provisionJob?.cancel()
+        provisionJob = null
+        RivetRuntime.cancelProvision()
+        releaseProvisionWakeLock()
     }
 
     /**
@@ -395,6 +487,7 @@ class RivetRuntimeService : Service() {
     override fun onDestroy() {
         stopSsh()
         stopVpn()
+        stopProvision()
         stopRuntime()
         serviceScope.cancel()
         super.onDestroy()
