@@ -37,31 +37,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check for private IPs (non-RFC 5737 examples)
-        run: |
-          echo "Scanning for private/internal IP addresses in tracked files..."
-          echo "Allowed example ranges: 192.168.x.x, 10.0.0.x, 172.16.x.x, 192.0.2.x, 198.51.100.x, 203.0.113.x"
-          echo ""
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-          FOUND=0
+      - name: Self-test the scanner
+        run: node --test scripts/secret-scan.test.mjs
 
-          if git grep -n 'http[s]*://10\.[1-9][0-9]*\.' -- ':!.github/' ':!node_modules/' ':!.nx/' ':!memory/' ':!.secrets/' 2>/dev/null; then
-            echo "::error::Found non-example 10.x.x.x IPs (possible infrastructure leak)"
-            FOUND=1
-          fi
+      - name: Scan tracked files (private IPs / WG keys / .lan / denylist)
+        run: node scripts/secret-scan.mjs --tracked
 
-          if git grep -n '[^0-9]10\.[1-9][0-9]*\.[0-9]*\.[0-9]' -- ':!.github/' ':!node_modules/' ':!.nx/' ':!memory/' ':!.secrets/' 2>/dev/null; then
-            echo "::error::Found non-example 10.x.x.x IPs (possible infrastructure leak)"
-            FOUND=1
-          fi
-
-          if [ "$FOUND" -eq 1 ]; then
-            echo ""
-            echo "Use 192.168.1.x for examples. See RFC 5737 for documentation ranges."
-            exit 1
-          fi
-
-          echo "✅ No private IP leaks found"
+      # PR prose is invisible to a file scan — a real leak (#361 leaked an
+      # internal IP in the description) hides here. Scan title+body too.
+      - name: Scan PR title + body
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/secret-scan.mjs --text
 
       - name: Check for API keys and tokens
         run: |
