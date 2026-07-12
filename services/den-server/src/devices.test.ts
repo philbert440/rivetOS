@@ -7,6 +7,7 @@ import { Readable } from 'node:stream'
 import {
   allocateAddress,
   createDevicesRoutes,
+  isCidr,
   type DevicesConfig,
   type RelayDriver,
 } from './devices.js'
@@ -55,25 +56,31 @@ function fakeDriver(): RelayDriver & {
   added: string[]
   removed: string[]
   forwards: string[]
+  seq: string[]
 } {
   const added: string[] = []
   const removed: string[] = []
   const forwards: string[] = []
+  const seq: string[] = [] // ordered op log across all methods
   return {
     added,
     removed,
     forwards,
+    seq,
     async addPeer(pk, addr) {
       added.push(`${pk} ${addr}`)
+      seq.push('addPeer')
     },
     async removePeer(pk) {
       removed.push(pk)
+      seq.push('removePeer')
     },
     async handshakes() {
       return { [PUBKEY]: 1_700_000_000_000 }
     },
     async ensureForward(src, dest) {
       forwards.push(`${src} -> ${dest}`)
+      seq.push('ensureForward')
     },
   }
 }
@@ -134,6 +141,24 @@ describe('allocateAddress', () => {
   it('rejects malformed pools', () => {
     expect(allocateAddress('', new Set())).toBeNull()
     expect(allocateAddress('10.0.0.0/24', new Set())).toBeNull()
+  })
+})
+
+describe('isCidr', () => {
+  it('accepts valid IPv4 CIDRs', () => {
+    expect(isCidr('10.4.22.32/27')).toBe(true)
+    expect(isCidr('10.4.20.0/24')).toBe(true)
+    expect(isCidr('0.0.0.0/0')).toBe(true)
+    expect(isCidr('192.168.1.5/32')).toBe(true)
+  })
+  it('rejects bare IPs, bad prefixes, ranges, and junk', () => {
+    expect(isCidr('10.4.22.32')).toBe(false) // no prefix
+    expect(isCidr('10.4.22.32/33')).toBe(false) // prefix > 32
+    expect(isCidr('10.4.22.32-10.4.22.63')).toBe(false) // range, not CIDR
+    expect(isCidr('10.4.22.256/24')).toBe(false) // octet > 255
+    expect(isCidr('10.4.22.32/24/8')).toBe(false) // extra slash
+    expect(isCidr('; rm -rf/24')).toBe(false) // injection shape
+    expect(isCidr('')).toBe(false)
   })
 })
 
@@ -206,8 +231,43 @@ describe('devices routes', () => {
     }
     // forward ensured exactly once despite two enrollments
     expect(driver.forwards).toEqual(['192.0.2.0/24 -> 198.51.100.0/24'])
-    // and it ran before the peer was added
-    expect(driver.added.length).toBe(2)
+    // and the very first op was the forward rule, before any peer add
+    expect(driver.seq).toEqual(['ensureForward', 'addPeer', 'addPeer'])
+  })
+
+  it('a failed forward rule does not sink the enroll, and a later enroll retries', async () => {
+    const driver = fakeDriver()
+    let failForward = true
+    driver.ensureForward = async (src, dest) => {
+      driver.forwards.push(`${src} -> ${dest}`)
+      driver.seq.push('ensureForward')
+      if (failForward) throw new Error('ufw down')
+    }
+    const { routes } = makeRoutes(driver)
+
+    const a = await call(routes, 'POST', '/api/devices', { name: 'a' })
+    const enrollA = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: a.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    // enroll still succeeds and the peer is added despite the forward failure
+    expect(enrollA.status).toBe(200)
+    expect(driver.added).toHaveLength(1)
+
+    // next enroll retries the rule (the once-guard reset on failure)
+    failForward = false
+    const b = await call(routes, 'POST', '/api/devices', { name: 'b' })
+    await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: b.body.qr.token, publicKey: 'B'.repeat(43) + '=' },
+      true,
+    )
+    expect(driver.forwards).toHaveLength(2) // attempted again
   })
 
   it('skips the forward rule when src/dest are unset', async () => {

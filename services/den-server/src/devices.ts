@@ -122,7 +122,7 @@ const isIpv4 = (s: string): boolean => {
   const parts = s.split('.')
   return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)
 }
-const isCidr = (s: string): boolean => {
+export const isCidr = (s: string): boolean => {
   const [ip, prefix, ...rest] = s.split('/')
   return (
     rest.length === 0 &&
@@ -183,6 +183,9 @@ export function createSshRelayDriver(cfg: {
       if (!isCidr(dest)) throw new Error('bad forward dest CIDR')
       // `ufw route allow` is idempotent — a duplicate spec is a no-op ("Skipping
       // adding existing rule"). Safe to run on every process start / first enroll.
+      // NB: sshExec joins argv into a remote command string the relay's shell
+      // re-splits, so every token must be a single shell word — the comment is
+      // hyphenated (not "rivet mesh device pool"), else ufw sees stray args.
       await sshExec(
         cfg.relaySsh,
         wrap([
@@ -194,7 +197,7 @@ export function createSshRelayDriver(cfg: {
           'to',
           dest,
           'comment',
-          'rivet mesh device pool',
+          'rivet-mesh-device-pool',
         ]),
       )
     },
