@@ -154,7 +154,7 @@ INFO [AgentChannel] Received mesh delegation peer.cn=ct110 from opus → grok: S
 TLS handshake failures log at `WARN`:
 
 ```
-WARN [AgentChannel] TLS handshake failed from 192.168.10.112: peer did not return a certificate
+WARN [AgentChannel] TLS handshake failed from 192.0.2.112: peer did not return a certificate
 ```
 
 ---

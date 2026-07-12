@@ -1,0 +1,11 @@
+#!/bin/sh
+# Secret / private-network guard — runs on the STAGED diff before the commit is
+# recorded, so a leak is caught before it ever leaves the machine (CI only
+# catches it after it's already public). Installed via the root `prepare`
+# script setting core.hooksPath=scripts/git-hooks.
+#
+# Bypass (rare, e.g. an intentional example): git commit --no-verify
+node "$(git rev-parse --show-toplevel)/scripts/secret-scan.mjs" --staged || {
+  echo "pre-commit: blocked by secret-scan (see above). Override with --no-verify only if certain." >&2
+  exit 1
+}
