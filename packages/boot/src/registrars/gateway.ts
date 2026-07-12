@@ -105,6 +105,13 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
       env.RIVETOS_DEN_DEVICES_SHARED_EXPORT = devices.shared_export.trim()
     if (devices.gateway_url?.trim())
       env.RIVETOS_DEN_DEVICES_GATEWAY_URL = devices.gateway_url.trim()
+    // Per-device datahub roles: prefer config, else process env (so ops can
+    // inject the secret without putting it in config.yaml).
+    const pgAdmin =
+      devices.pg_admin_url?.trim() || process.env.RIVETOS_DEN_DEVICES_PG_ADMIN_URL?.trim()
+    if (pgAdmin) env.RIVETOS_DEN_DEVICES_PG_ADMIN_URL = pgAdmin
+    if (devices.pg_device_group?.trim())
+      env.RIVETOS_DEN_DEVICES_PG_DEVICE_GROUP = devices.pg_device_group.trim()
   }
   return env
 }
