@@ -177,14 +177,21 @@ object RivetRuntime {
 
     /**
      * Full RivetOS runtime (`rivetos start -c config.yaml`) on loopback [DEN_PORT] —
-     * same proot identity/env/cwd as [denCommand], but runs the monorepo entrypoint so
-     * chat (`/api/sessions`, gateway WS) works. Den settings come from config.yaml only
-     * (no RIVETOS_DEN_* env). Caller uses the same RivetDen supervise slot as the
-     * standalone den — never both at once (port collision).
+     * same proot identity/env as [denCommand], but starts with cwd = monorepo root
+     * (`/home/rivet/rivetos`) so workspace-mode plugin discovery finds `nx.json` +
+     * `node_modules` (walking up from process.cwd()). Without that, discovery yields
+     * 0 plugins and providers like claude-cli never register. Shared [prootArgvTail]
+     * keeps guest `-w /home/rivet`; we `cd` into the monorepo via a login shell then
+     * `exec` node so signals/supervision stay clean. Den settings come from
+     * config.yaml only (no RIVETOS_DEN_* env). Caller uses the same RivetDen
+     * supervise slot as the standalone den — never both at once (port collision).
      */
     fun fullRuntimeCommand(context: Context): RuntimeCommand {
         val argv = listOf(prootBinary(context)) + prootArgvTail(context) +
-            listOf("/usr/local/bin/node", FULL_RUNTIME_JS, "start", "-c", FULL_RUNTIME_CONFIG)
+            listOf(
+                "/bin/bash", "-lc",
+                "cd /home/rivet/rivetos && exec /usr/local/bin/node dist/rivetos.js start -c $FULL_RUNTIME_CONFIG",
+            )
         val env = baseEnv(context)
         return RuntimeCommand(argv, env, hostHome(context))
     }
