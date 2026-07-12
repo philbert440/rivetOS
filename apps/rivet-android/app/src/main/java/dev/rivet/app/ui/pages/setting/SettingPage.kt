@@ -28,6 +28,7 @@ import me.rerere.hugeicons.stroke.Clapping01
 import me.rerere.hugeicons.stroke.Database02
 import me.rerere.hugeicons.stroke.Developer
 import me.rerere.hugeicons.stroke.ImageUpload
+import me.rerere.hugeicons.stroke.LookTop
 import me.rerere.hugeicons.stroke.McpServer
 import me.rerere.hugeicons.stroke.Megaphone01
 import me.rerere.hugeicons.stroke.ServerStack01
@@ -124,6 +125,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                     modifier = Modifier.padding(horizontal = 8.dp),
                     title = { Text("Chat") },
                 ) {
+                    item(
+                        onClick = { navController.navigate(Screen.Assistant) },
+                        leadingContent = { Icon(HugeIcons.LookTop, null) },
+                        supportingContent = { Text("Manage assistants used by native chat") },
+                        headlineContent = { Text(stringResource(R.string.assistant_page_title)) },
+                    )
                     item(
                         onClick = { navController.navigate(Screen.SettingModels) },
                         leadingContent = { Icon(HugeIcons.AiMagic, null) },

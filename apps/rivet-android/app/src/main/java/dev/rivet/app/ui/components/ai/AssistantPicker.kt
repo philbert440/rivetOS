@@ -100,6 +100,31 @@ fun AssistantPicker(
     }
 }
 
+/**
+ * Bottom-sheet assistant selector without the drawer [NavigationDrawerItem].
+ * Used when the drawer header slot is the node switcher (assistants stay reachable
+ * from Settings / the chat menu).
+ */
+@Composable
+fun AssistantPickerSheet(
+    settings: Settings,
+    onUpdateSettings: (Settings) -> Unit,
+    onDismiss: () -> Unit,
+    onAfterSelect: (Settings) -> Unit = {},
+) {
+    val state = rememberAssistantState(settings, onUpdateSettings)
+    AssistantPickerSheet(
+        settings = settings,
+        currentAssistant = state.currentAssistant,
+        onAssistantSelected = { assistant ->
+            state.setSelectAssistant(assistant)
+            onAfterSelect(settings.copy(assistantId = assistant.id))
+            onDismiss()
+        },
+        onDismiss = onDismiss,
+    )
+}
+
 @Composable
 private fun AssistantPickerSheet(
     settings: Settings,

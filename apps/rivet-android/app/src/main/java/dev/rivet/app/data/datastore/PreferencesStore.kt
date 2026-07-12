@@ -159,6 +159,10 @@ class SettingsStore(
         // Node & Mesh coordinates (user-entered; scan-to-join writes here)
         val MESH_CONFIG = stringPreferencesKey("mesh_config")
 
+        // Native node switcher roster (drawer): saved peers + active den URL
+        val NODE_ROSTER = stringPreferencesKey("node_roster")
+        val ACTIVE_NODE_DEN_URL = stringPreferencesKey("active_node_den_url")
+
         // 统计
         val LAUNCH_COUNT = intPreferencesKey("launch_count")
 
@@ -255,6 +259,12 @@ class SettingsStore(
                 meshConfig = preferences[MESH_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: MeshConfig(),
+                nodeRoster = preferences[NODE_ROSTER]?.let {
+                    runCatching { JsonInstant.decodeFromString<List<RosterNode>>(it) }.getOrNull()
+                }?.takeIf { it.isNotEmpty() } ?: NodeRosterDefaults.seed(),
+                activeNodeDenUrl = preferences[ACTIVE_NODE_DEN_URL]
+                    ?.takeIf { it.isNotBlank() }
+                    ?: NodeRosterDefaults.localDenUrl(),
             )
         }
         .map {
@@ -418,6 +428,8 @@ class SettingsStore(
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
             preferences[MESH_CONFIG] = JsonInstant.encodeToString(settings.meshConfig)
+            preferences[NODE_ROSTER] = JsonInstant.encodeToString(settings.nodeRoster)
+            preferences[ACTIVE_NODE_DEN_URL] = settings.activeNodeDenUrl
         }
     }
 
@@ -590,10 +602,55 @@ data class Settings(
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
     val meshConfig: MeshConfig = MeshConfig(),
+    /** Saved RivetOS nodes for the drawer node switcher (name + den/hub URL). */
+    val nodeRoster: List<RosterNode> = emptyList(),
+    /** Active node's den/hub base URL (e.g. http://127.0.0.1:5174). */
+    val activeNodeDenUrl: String = "",
 ) {
     companion object {
         // 构造一个用于初始化的settings, 但它不能用于保存，防止使用初始值存储
         fun dummy() = Settings(init = true)
+    }
+
+    fun activeNode(): RosterNode? =
+        nodeRoster.firstOrNull { it.denUrl == activeNodeDenUrl }
+            ?: nodeRoster.firstOrNull()
+}
+
+/**
+ * One entry in the native node switcher roster — which RivetOS node (hub) the drawer
+ * points at. Mirrors desktop `rivethub.roster` (`{ name, baseUrl }`) with denUrl naming
+ * so it's clear this is the hub face on :5174 (or a peer's den).
+ */
+@Serializable
+data class RosterNode(
+    val name: String,
+    val denUrl: String,
+)
+
+/** Seed + helpers for [Settings.nodeRoster] / [Settings.activeNodeDenUrl]. */
+object NodeRosterDefaults {
+    const val LOCAL_NAME = "This device"
+
+    fun localDenUrl(): String = "http://127.0.0.1:${dev.rivet.app.runtime.RivetRuntime.DEN_PORT}"
+
+    fun localNode(): RosterNode = RosterNode(name = LOCAL_NAME, denUrl = localDenUrl())
+
+    fun seed(): List<RosterNode> = listOf(localNode())
+
+    fun isLocalNode(node: RosterNode): Boolean = isLocalDenUrl(node.denUrl)
+
+    fun isLocalDenUrl(url: String): Boolean {
+        val n = normalizeDenUrl(url)
+        val port = dev.rivet.app.runtime.RivetRuntime.DEN_PORT
+        return n == "http://127.0.0.1:$port" || n == "http://localhost:$port"
+    }
+
+    fun normalizeDenUrl(url: String): String = url.trim().trimEnd('/')
+
+    fun buildDenUrl(host: String, port: Int): String {
+        val h = host.trim().removePrefix("http://").removePrefix("https://").trimEnd('/')
+        return normalizeDenUrl("http://$h:$port")
     }
 }
 
