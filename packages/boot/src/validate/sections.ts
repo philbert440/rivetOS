@@ -746,6 +746,8 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
         'shared_host',
         'shared_export',
         'gateway_url',
+        'pg_admin_url',
+        'pg_device_group',
       ] as const) {
         if (devices[strKey] !== undefined && typeof devices[strKey] !== 'string') {
           issues.push({
