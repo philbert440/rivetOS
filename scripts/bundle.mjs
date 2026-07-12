@@ -28,6 +28,12 @@ await build({
   platform: 'node',
   target: 'node22',
   format: 'esm',
+  // CJS deps in the graph use dynamic require('node:path') etc. ESM output has
+  // no require unless we inject one — without this the prod container dies on boot
+  // with "Dynamic require of \"node:path\" is not supported".
+  banner: {
+    js: "import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);",
+  },
   outfile: resolve(outdir, 'rivetos.js'),
   sourcemap: true,
   // Preserve `import.meta.url` semantics; esbuild handles ESM dynamic resolution.
