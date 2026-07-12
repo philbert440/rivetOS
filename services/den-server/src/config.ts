@@ -100,9 +100,20 @@ export interface DenDevicesConfig {
   sharedExport: string
   pgUrl: string
   embedUrl: string
+  /** Device pool CIDR + home-LAN CIDR for the relay's pool→LAN forward rule.
+   *  Both empty = relay forwarding is managed by hand. */
+  relayForwardSrc: string
+  relayForwardDest: string
   /** Externally reachable den base URL embedded in enrollment QRs. Empty =
    *  the web client substitutes its own origin. */
   gatewayUrl: string
+  /**
+   * CREATEROLE datahub admin URL for per-device role mint/drop. Empty =
+   * feature off (shared pgUrl in QR). Env: RIVETOS_DEN_DEVICES_PG_ADMIN_URL.
+   */
+  pgAdminUrl: string
+  /** Group role device roles inherit (default rivet_device). */
+  pgDeviceGroup: string
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
@@ -147,7 +158,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       sharedExport: env.RIVETOS_DEN_DEVICES_SHARED_EXPORT ?? '/rivet-shared',
       pgUrl: env.RIVETOS_PG_URL ?? '',
       embedUrl: env.RIVETOS_EMBED_URL ?? '',
+      relayForwardSrc: env.RIVETOS_DEN_DEVICES_FWD_SRC ?? '',
+      relayForwardDest: env.RIVETOS_DEN_DEVICES_FWD_DEST ?? '',
       gatewayUrl: env.RIVETOS_DEN_DEVICES_GATEWAY_URL ?? '',
+      pgAdminUrl: env.RIVETOS_DEN_DEVICES_PG_ADMIN_URL ?? '',
+      pgDeviceGroup: env.RIVETOS_DEN_DEVICES_PG_DEVICE_GROUP ?? 'rivet_device',
     },
   }
 }

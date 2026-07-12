@@ -228,12 +228,27 @@ export interface DenSection {
     allowed_ips?: string
     /** Home-LAN IPv4 prefix where the device's tunnel auto-idles. */
     home_subnet?: string
+    /** Device pool CIDR the relay forwards to the LAN. Paired with
+     *  relay_forward_dest — both set turns on the relay's pool→LAN firewall
+     *  allow (else forwarding is managed by hand). */
+    relay_forward_src?: string
+    /** Home-LAN CIDR the device pool may reach. */
+    relay_forward_dest?: string
     /** Shared NFS host + export embedded in the QR for the device. */
     shared_host?: string
     shared_export?: string
     /** Externally reachable den base URL for the QR (blank = the web client
      *  substitutes the origin it reached this node at). */
     gateway_url?: string
+    /**
+     * CREATEROLE (not superuser) datahub admin URL for minting/dropping
+     * per-device Postgres roles. Empty/unset = feature off (shared
+     * RIVETOS_PG_URL still embedded in QRs). Env override:
+     * RIVETOS_DEN_DEVICES_PG_ADMIN_URL. Never ship this in builds or QRs.
+     */
+    pg_admin_url?: string
+    /** Group role device roles inherit (default rivet_device). */
+    pg_device_group?: string
   }
 }
 

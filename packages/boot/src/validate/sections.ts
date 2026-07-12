@@ -741,9 +741,13 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
         'wg_public_key',
         'allowed_ips',
         'home_subnet',
+        'relay_forward_src',
+        'relay_forward_dest',
         'shared_host',
         'shared_export',
         'gateway_url',
+        'pg_admin_url',
+        'pg_device_group',
       ] as const) {
         if (devices[strKey] !== undefined && typeof devices[strKey] !== 'string') {
           issues.push({

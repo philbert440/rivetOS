@@ -95,12 +95,23 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
       env.RIVETOS_DEN_DEVICES_ALLOWED_IPS = devices.allowed_ips.trim()
     if (devices.home_subnet?.trim())
       env.RIVETOS_DEN_DEVICES_HOME_SUBNET = devices.home_subnet.trim()
+    if (devices.relay_forward_src?.trim())
+      env.RIVETOS_DEN_DEVICES_FWD_SRC = devices.relay_forward_src.trim()
+    if (devices.relay_forward_dest?.trim())
+      env.RIVETOS_DEN_DEVICES_FWD_DEST = devices.relay_forward_dest.trim()
     if (devices.shared_host?.trim())
       env.RIVETOS_DEN_DEVICES_SHARED_HOST = devices.shared_host.trim()
     if (devices.shared_export?.trim())
       env.RIVETOS_DEN_DEVICES_SHARED_EXPORT = devices.shared_export.trim()
     if (devices.gateway_url?.trim())
       env.RIVETOS_DEN_DEVICES_GATEWAY_URL = devices.gateway_url.trim()
+    // Per-device datahub roles: prefer config, else process env (so ops can
+    // inject the secret without putting it in config.yaml).
+    const pgAdmin =
+      devices.pg_admin_url?.trim() || process.env.RIVETOS_DEN_DEVICES_PG_ADMIN_URL?.trim()
+    if (pgAdmin) env.RIVETOS_DEN_DEVICES_PG_ADMIN_URL = pgAdmin
+    if (devices.pg_device_group?.trim())
+      env.RIVETOS_DEN_DEVICES_PG_DEVICE_GROUP = devices.pg_device_group.trim()
   }
   return env
 }

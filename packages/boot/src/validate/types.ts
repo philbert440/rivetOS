@@ -74,9 +74,13 @@ export const KNOWN_DEN_DEVICES_KEYS = new Set([
   'wg_public_key',
   'allowed_ips',
   'home_subnet',
+  'relay_forward_src',
+  'relay_forward_dest',
   'shared_host',
   'shared_export',
   'gateway_url',
+  'pg_admin_url',
+  'pg_device_group',
 ])
 
 export const KNOWN_DEN_TERMINAL_KEYS = new Set(['enabled', 'open'])

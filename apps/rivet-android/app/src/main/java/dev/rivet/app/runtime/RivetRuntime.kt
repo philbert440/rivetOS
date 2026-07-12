@@ -95,6 +95,9 @@ object RivetRuntime {
         ensureMemoryPlugin(context)
         ensureRivetShared(context)
         ensureNetTools(context)
+        ensureDenServer(context)
+        ensureRivethubWeb(context)
+        ensureFullRuntimeConfig(context)
         return@synchronized null
     }
 
@@ -106,6 +109,90 @@ object RivetRuntime {
         val argv = listOf(prootBinary(context)) + prootArgvTail(context) +
             listOf("/usr/local/bin/node", "/home/rivet/rivet-bridge/rivet-bridge-server-v2.js")
         val env = baseEnv(context) + ("RIVET_BRIDGE_PORT" to RIVET_BRIDGE_PORT.toString())
+        return RuntimeCommand(argv, env, hostHome(context))
+    }
+
+    /**
+     * The real RivetOS den-server gateway (rivethub-web static + den API/WS) on loopback
+     * [DEN_PORT]. Pure proot+node launch of the pre-bundled esbuild file; no token (loopback
+     * only). Terminal routes stay off this increment (no arm64 pty.node — den-server returns
+     * 503 for those). Caller supervises via [RivetRuntimeService] alongside the :8765 bridge.
+     *
+     * Prefer [fullRuntimeCommand] when [isFullRuntimeProvisioned] — the full runtime is a
+     * superset (same gateway + core chat channel). This standalone path remains the fallback.
+     */
+    fun denCommand(context: Context): RuntimeCommand {
+        val argv = listOf(prootBinary(context)) + prootArgvTail(context) +
+            listOf("/usr/local/bin/node", "/home/rivet/rivet-den/den-server.bundle.mjs")
+        val env = baseEnv(context) + mapOf(
+            "RIVETOS_DEN_PORT" to DEN_PORT.toString(),
+            "RIVETOS_DEN_HOST" to "127.0.0.1",
+            "RIVETOS_DEN_STATIC_DIR" to "/home/rivet/rivethub-web/dist",
+            "RIVETOS_DEN_STATE_DIR" to "/home/rivet/.rivetos/den",
+            // Deliberately no RIVETOS_DEN_TERM — terminals off until arm64 pty.node lands.
+        )
+        return RuntimeCommand(argv, env, hostHome(context))
+    }
+
+    /**
+     * True when the full RivetOS monorepo runtime is present in the rootfs
+     * (`/home/rivet/rivetos/dist/rivetos.js`). Provisioning (clone/build) is out of band;
+     * the app only detects and launches what's already there.
+     */
+    fun isFullRuntimeProvisioned(context: Context): Boolean =
+        File(rootfsDir(context), "home/rivet/rivetos/dist/rivetos.js").exists()
+
+    /**
+     * Host-side write of the full-runtime config into the rootfs if absent. App owns the
+     * rootfs files (same pattern as resolv.conf / agent context). Den port + static_dir
+     * live here so [fullRuntimeCommand] does not need RIVETOS_DEN_* env overrides.
+     */
+    fun ensureFullRuntimeConfig(context: Context) {
+        try {
+            val cfg = File(rootfsDir(context), "home/rivet/config.yaml")
+            if (cfg.exists()) return
+            cfg.parentFile?.mkdirs()
+            // Exact content (host-side write; config.yaml drives den host/port/static_dir).
+            cfg.writeText(
+                "runtime:\n" +
+                    "  workspace: /home/rivet/.rivetos/workspace\n" +
+                    "  default_agent: rivet\n" +
+                    "agents:\n" +
+                    "  rivet:\n" +
+                    "    provider: claude-cli\n" +
+                    "providers:\n" +
+                    "  claude-cli:\n" +
+                    "    model: claude-opus-4-8\n" +
+                    "den:\n" +
+                    "  enabled: true\n" +
+                    "  host: 127.0.0.1\n" +
+                    "  port: 5174\n" +
+                    "  static_dir: /home/rivet/rivethub-web/dist\n"
+            )
+            Log.i(TAG, "wrote full-runtime config at ${cfg.absolutePath}")
+        } catch (t: Throwable) {
+            Log.e(TAG, "ensureFullRuntimeConfig failed", t)
+        }
+    }
+
+    /**
+     * Full RivetOS runtime (`rivetos start -c config.yaml`) on loopback [DEN_PORT] —
+     * same proot identity/env as [denCommand], but starts with cwd = monorepo root
+     * (`/home/rivet/rivetos`) so workspace-mode plugin discovery finds `nx.json` +
+     * `node_modules` (walking up from process.cwd()). Without that, discovery yields
+     * 0 plugins and providers like claude-cli never register. Shared [prootArgvTail]
+     * keeps guest `-w /home/rivet`; we `cd` into the monorepo via a login shell then
+     * `exec` node so signals/supervision stay clean. Den settings come from
+     * config.yaml only (no RIVETOS_DEN_* env). Caller uses the same RivetDen
+     * supervise slot as the standalone den — never both at once (port collision).
+     */
+    fun fullRuntimeCommand(context: Context): RuntimeCommand {
+        val argv = listOf(prootBinary(context)) + prootArgvTail(context) +
+            listOf(
+                "/bin/bash", "-lc",
+                "cd /home/rivet/rivetos && exec /usr/local/bin/node dist/rivetos.js start -c $FULL_RUNTIME_CONFIG",
+            )
+        val env = baseEnv(context)
         return RuntimeCommand(argv, env, hostHome(context))
     }
 
@@ -442,6 +529,63 @@ object RivetRuntime {
     }
 
     /**
+     * Install the den-server esbuild bundle (`home/rivet/rivet-den/den-server.bundle.mjs`).
+     * Pure extract — no proot register step (same shape as [ensureRivetShared]). Gated on
+     * [DEN_OVERLAY_REV]; bump to re-extract on the next launch.
+     */
+    private fun ensureDenServer(context: Context) {
+        try {
+            val rootfs = rootfsDir(context)
+            val marker = File(rootfs, "opt/.rivet-den-rev")
+            if (marker.exists() && runCatching { marker.readText().trim() }.getOrNull() == DEN_OVERLAY_REV) return
+            val busybox = File(context.applicationInfo.nativeLibraryDir, "libbusybox.so")
+            if (!busybox.exists()) { Log.w(TAG, "busybox jniLib missing — skip den-server"); return }
+            val tmp = File(context.filesDir, "den-overlay.bin")
+            context.assets.open(DEN_OVERLAY_ASSET).use { input ->
+                tmp.outputStream().use { input.copyTo(it, 1 shl 20) }
+            }
+            val ex = ProcessBuilder(busybox.absolutePath, "tar", "-xzf", tmp.absolutePath, "-C", rootfs.absolutePath)
+                .redirectErrorStream(true).start()
+            val exOut = ex.inputStream.bufferedReader().readText(); val exCode = ex.waitFor()
+            tmp.delete()
+            if (exCode != 0) { Log.e(TAG, "den overlay extract failed ($exCode): ${exOut.take(200)}"); return }
+            marker.parentFile?.mkdirs()
+            marker.writeText(DEN_OVERLAY_REV)
+            Log.i(TAG, "den-server provisioned (rev $DEN_OVERLAY_REV)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "ensureDenServer failed", t)
+        }
+    }
+
+    /**
+     * Install rivethub-web static build (`home/rivet/rivethub-web/dist/`). Pure extract —
+     * same shape as [ensureRivetShared]. Gated on [WEB_OVERLAY_REV]; bump to re-extract.
+     */
+    private fun ensureRivethubWeb(context: Context) {
+        try {
+            val rootfs = rootfsDir(context)
+            val marker = File(rootfs, "opt/.rivet-web-rev")
+            if (marker.exists() && runCatching { marker.readText().trim() }.getOrNull() == WEB_OVERLAY_REV) return
+            val busybox = File(context.applicationInfo.nativeLibraryDir, "libbusybox.so")
+            if (!busybox.exists()) { Log.w(TAG, "busybox jniLib missing — skip rivethub-web"); return }
+            val tmp = File(context.filesDir, "web-overlay.bin")
+            context.assets.open(WEB_OVERLAY_ASSET).use { input ->
+                tmp.outputStream().use { input.copyTo(it, 1 shl 20) }
+            }
+            val ex = ProcessBuilder(busybox.absolutePath, "tar", "-xzf", tmp.absolutePath, "-C", rootfs.absolutePath)
+                .redirectErrorStream(true).start()
+            val exOut = ex.inputStream.bufferedReader().readText(); val exCode = ex.waitFor()
+            tmp.delete()
+            if (exCode != 0) { Log.e(TAG, "web overlay extract failed ($exCode): ${exOut.take(200)}"); return }
+            marker.parentFile?.mkdirs()
+            marker.writeText(WEB_OVERLAY_REV)
+            Log.i(TAG, "rivethub-web provisioned (rev $WEB_OVERLAY_REV)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "ensureRivethubWeb failed", t)
+        }
+    }
+
+    /**
      * First-run install: extract the bundled Ubuntu rootfs (node + claude + grok + creds)
      * from the APK asset into app-data via the busybox `tar` jniLib. Idempotent — only runs
      * when [isRootfsReady] is false, so a reinstall that wipes app-data self-heals on next
@@ -648,6 +792,20 @@ object RivetRuntime {
     // Gzipped tar of curl + iputils-ping + iproute2 (/usr/bin, /usr/sbin, shared libs, /etc/iproute2).
     private const val NET_TOOLS_OVERLAY_ASSET = "rivet-net-tools-overlay.bin"
     private const val NET_TOOLS_OVERLAY_REV = "1"
+    // Gzipped tar of den-server.bundle.mjs → home/rivet/rivet-den/. Same .bin/noCompress trick.
+    private const val DEN_OVERLAY_ASSET = "rivet-den-overlay.bin"
+    private const val DEN_OVERLAY_REV = "1"
+    // Gzipped tar of rivethub-web dist → home/rivet/rivethub-web/dist/. Same .bin/noCompress trick.
+    private const val WEB_OVERLAY_ASSET = "rivet-web-overlay.bin"
+    private const val WEB_OVERLAY_REV = "1"
+
+    /** Guest path to the full RivetOS monorepo entrypoint (when provisioned in-rootfs). */
+    const val FULL_RUNTIME_JS = "/home/rivet/rivetos/dist/rivetos.js"
+    /** Guest path to the full-runtime config written by [ensureFullRuntimeConfig]. */
+    const val FULL_RUNTIME_CONFIG = "/home/rivet/config.yaml"
+
+    /** Loopback port for the den-server gateway (rivethub-web + den API/WS). */
+    const val DEN_PORT = 5174
 }
 
 /** A ready-to-launch native command: argv + extra env + the host cwd to start it in. */

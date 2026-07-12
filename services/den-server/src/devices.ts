@@ -5,7 +5,8 @@
  * renders from that response, applies the embedded mesh config, and redeems
  * the token with its WireGuard public key (POST /api/devices/enroll). The
  * server registers the peer on the relay and the device is on the mesh.
- * Revocation (DELETE /api/devices/:id) removes the relay peer.
+ * Revocation (DELETE /api/devices/:id) removes the relay peer and, when
+ * configured, the device's datahub Postgres role.
  *
  *   GET    /api/devices              list devices (+ last handshake)
  *   POST   /api/devices              {name} → {id, enrollToken, address,
@@ -14,11 +15,17 @@
  *                                    ONE-TIME-TOKEN AUTH — the only route in
  *                                    this family outside the bearer gate (the
  *                                    enrolling device has no bearer yet).
- *   DELETE /api/devices/<id>         revoke (remove relay peer + registry)
+ *   DELETE /api/devices/<id>         revoke (remove relay peer + registry
+ *                                    + datahub role when present)
  *
  * The relay driver is `wg set` over ssh to the operator-configured relay
  * host; a save command persists the peer set across relay restarts. Tests
  * inject a fake driver.
+ *
+ * Per-device datahub credentials (opt-in): when `pgAdminUrl` is set, enroll
+ * mints a `rivet_dev_<id>` role (member of group `rivet_device`) and embeds
+ * that URL in the QR instead of the shared `pgUrl`. Empty admin URL leaves
+ * the shared-credential path unchanged. See `DEVICE_GROUP_GRANTS_SQL`.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -26,6 +33,7 @@ import { execFile } from 'node:child_process'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import pg from 'pg'
 
 // ---------------------------------------------------------------------------
 // config
@@ -51,11 +59,26 @@ export interface DevicesConfig {
   allowedIps: string
   /** Home-LAN IPv4 prefix hint for the device (tunnel auto-idle). */
   homeSubnet: string
+  /** Device pool as a CIDR for the relay's forwarding allow rule. Empty =
+   *  don't manage forwarding (operator does it by hand). Paired with
+   *  relayForwardDest. */
+  relayForwardSrc: string
+  /** Home-LAN CIDR the pool is allowed to reach through the relay. Empty =
+   *  don't manage forwarding. */
+  relayForwardDest: string
   /** Mesh coordinates embedded in the QR for the device's own settings. */
   sharedHost: string
   sharedExport: string
   pgUrl: string
   embedUrl: string
+  /**
+   * CREATEROLE (not superuser) datahub admin URL for minting/dropping
+   * per-device roles. Empty = feature off (shared `pgUrl` in QR unchanged).
+   * Env: RIVETOS_DEN_DEVICES_PG_ADMIN_URL. Never ships in builds or QRs.
+   */
+  pgAdminUrl: string
+  /** Group role device roles inherit (default `rivet_device`). */
+  pgDeviceGroup: string
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +93,11 @@ export interface MeshDevice {
   enrolledAt: number | null
   /** Unix ms of the peer's last WireGuard handshake; null = never/unknown. */
   lastHandshake: number | null
+  /**
+   * Per-device datahub Postgres role (`rivet_dev_<id>`), when minted.
+   * Stored so revoke can DROP ROLE; password is never persisted.
+   */
+  pgRole?: string
 }
 
 export interface DeviceEnrollConfig {
@@ -102,12 +130,233 @@ export interface RelayDriver {
   removePeer(publicKey: string): Promise<void>
   /** pubkey → unix-ms of latest handshake (0/absent = never). */
   handshakes(): Promise<Record<string, number>>
+  /** Ensure the relay forwards the device pool (src CIDR) to the home LAN
+   *  (dest CIDR). Cryptokey routing lets an enrolled device onto the relay,
+   *  but the relay's own firewall still has to forward its TCP into the LAN —
+   *  without this a device can ping home hosts but reach no service. Idempotent;
+   *  optional so test/fake drivers can omit it. */
+  ensureForward?(src: string, dest: string): Promise<void>
+}
+
+// ---------------------------------------------------------------------------
+// datahub admin driver (per-device Postgres roles)
+//
+// Group role `rivet_device` is an ops one-time setup. Device roles inherit it.
+// Exact grants — derived from ON-DEVICE capture + recall only (phone code):
+//
+// CAPTURE (integrations/grok/rivet-memory/capture/src/grok-memory-capture.ts
+//   is the sole memory code that runs on the phone):
+//   - SELECT/INSERT ros_conversations (find-or-create)
+//   - SELECT/INSERT ros_messages (append transcript rows)
+//   - UPDATE ros_conversations ONLY (touch updated_at; finalize active=false)
+//     — the only `UPDATE ros_*` the phone issues (~lines 677 / 684)
+//
+// RECALL (on-device SELECT paths):
+//   - SELECT ros_messages, ros_summaries (FTS / trigram / vector)
+//   - SELECT ros_summary_sources (expand joins)
+//   - SELECT ros_conversations (browse/stats joins)
+//
+// access_count / last_accessed_at bumps on ros_messages and ros_summaries are
+// maintained SERVER-SIDE by RivetOS workers (see integrations/hermes/rivet-
+// memory/recall.py and schema.py: "counters maintained by RivetOS") — never
+// by the device. Do NOT grant the device group UPDATE on those tables.
+//
+// No sequences: PKs are UUID DEFAULT gen_random_uuid() (0001_baseline.sql).
+// No DDL, no DELETE/TRUNCATE, no other schemas/DBs.
+//
+// Trigger note: AFTER INSERT on ros_messages runs notify_embedding_queue()
+// which calls graphile_worker.add_job (invoker rights). Ops may need
+// EXECUTE on that function (or SECURITY DEFINER) for capture INSERT to
+// succeed — confirm on non-prod before enabling on the live datahub.
+//
+// Tables (public schema): ros_conversations, ros_messages, ros_summaries,
+// ros_summary_sources.
+
+/** Ops bootstrap SQL for the `rivet_device` group (run once as table owner). */
+export const DEVICE_GROUP_GRANTS_SQL = `
+-- Per-device least-privilege group. Device roles: GRANT rivet_device TO rivet_dev_*.
+-- Validate against a NON-PROD role before enabling on the live datahub.
+CREATE ROLE rivet_device NOLOGIN;
+
+GRANT CONNECT ON DATABASE :dbname TO rivet_device;  -- replace :dbname with the datahub database (e.g. phil_memory)
+GRANT USAGE ON SCHEMA public TO rivet_device;
+
+-- Capture + recall tables (on-device SQL only — see devices.ts header).
+GRANT SELECT, INSERT ON
+  ros_conversations,
+  ros_messages
+  TO rivet_device;
+GRANT SELECT ON
+  ros_summaries,
+  ros_summary_sources
+  TO rivet_device;
+
+-- Sole on-device UPDATE: grok-memory-capture.ts touch/finalize on ros_conversations.
+-- No UPDATE on ros_messages / ros_summaries (access counters are server-side).
+GRANT UPDATE ON
+  ros_conversations
+  TO rivet_device;
+`.trim()
+
+export interface DatahubAdminDriver {
+  /**
+   * Idempotent: create (or rotate password of) `rivet_dev_<deviceId>`, grant
+   * group membership, return a per-device postgres URL with a fresh password.
+   */
+  ensureDeviceRole(deviceId: string): Promise<{ url: string; role: string }>
+  /**
+   * NOLOGIN → terminate backends → DROP OWNED BY → DROP ROLE IF EXISTS.
+   * Idempotent when the role is already gone.
+   */
+  dropDeviceRole(deviceId: string): Promise<void>
+}
+
+/** Strict role-identifier allowlist: starts with a letter, then [a-z0-9_]. */
+const PG_IDENT = /^[a-z][a-z0-9_]*$/
+
+/**
+ * Map a device UUID to a Postgres role name. Only [a-z0-9_] survive;
+ * rejects inputs that would produce an unsafe or empty identifier.
+ */
+export function deviceRoleName(deviceId: string): string {
+  if (typeof deviceId !== 'string' || !deviceId.trim()) {
+    throw new Error('deviceId required for role name')
+  }
+  const sanitized = deviceId
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  if (!sanitized || !/^[a-z0-9_]+$/.test(sanitized)) {
+    throw new Error(`deviceId yields unsafe role suffix: ${deviceId}`)
+  }
+  const role = `rivet_dev_${sanitized}`
+  if (!PG_IDENT.test(role) || role.length > 63) {
+    throw new Error(`role name rejected by allowlist: ${role}`)
+  }
+  return role
+}
+
+/** Quote a pre-validated identifier for interpolation (never raw input). */
+function pgIdent(name: string): string {
+  if (!PG_IDENT.test(name)) throw new Error(`refusing unsafe pg identifier: ${name}`)
+  return `"${name}"`
+}
+
+/** Escape a string literal for password clauses (identifiers can't bind). */
+function pgLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
+/**
+ * Build a device connection URL from the admin URL's host/db, substituting
+ * the device role + password. Never returns the admin credentials.
+ */
+export function buildDevicePgUrl(adminUrl: string, role: string, password: string): string {
+  const u = new URL(adminUrl)
+  u.username = role
+  u.password = password
+  // URL.password encodes special chars; pg clients accept the encoded form.
+  return u.toString()
+}
+
+export function createPgDatahubAdminDriver(cfg: {
+  adminUrl: string
+  groupRole: string
+  log?: (msg: string) => void
+}): DatahubAdminDriver {
+  const log = cfg.log ?? (() => {})
+  const group = cfg.groupRole.trim() || 'rivet_device'
+  if (!PG_IDENT.test(group)) throw new Error(`bad pg device group role: ${group}`)
+
+  const withClient = async <T>(fn: (client: pg.Client) => Promise<T>): Promise<T> => {
+    const client = new pg.Client({
+      connectionString: cfg.adminUrl,
+      connectionTimeoutMillis: 10_000,
+    })
+    await client.connect()
+    try {
+      return await fn(client)
+    } finally {
+      await client.end().catch(() => {})
+    }
+  }
+
+  return {
+    async ensureDeviceRole(deviceId) {
+      const role = deviceRoleName(deviceId)
+      const password = randomBytes(24).toString('base64url')
+      const roleId = pgIdent(role)
+      const groupId = pgIdent(group)
+      const passLit = pgLiteral(password)
+
+      await withClient(async (client) => {
+        // CREATE ROLE / ALTER ROLE cannot bind identifiers or passwords as
+        // $params; both pieces are built only from allowlisted / generated values.
+        const exists = await client.query<{ exists: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS exists`,
+          [role],
+        )
+        if (exists.rows[0]?.exists) {
+          await client.query(`ALTER ROLE ${roleId} LOGIN PASSWORD ${passLit}`)
+        } else {
+          await client.query(`CREATE ROLE ${roleId} LOGIN PASSWORD ${passLit}`)
+        }
+        await client.query(`GRANT ${groupId} TO ${roleId}`)
+      })
+
+      const url = buildDevicePgUrl(cfg.adminUrl, role, password)
+      log(`[devices] ensured datahub role ${role}`)
+      return { url, role }
+    },
+
+    async dropDeviceRole(deviceId) {
+      const role = deviceRoleName(deviceId)
+      const roleId = pgIdent(role)
+
+      await withClient(async (client) => {
+        const exists = await client.query<{ exists: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS exists`,
+          [role],
+        )
+        if (!exists.rows[0]?.exists) return
+
+        // Sequence: NOLOGIN → terminate backends → DROP OWNED BY → DROP ROLE.
+        await client.query(`ALTER ROLE ${roleId} NOLOGIN`)
+        await client.query(
+          `SELECT pg_terminate_backend(pid)
+             FROM pg_stat_activity
+            WHERE usename = $1 AND pid <> pg_backend_pid()`,
+          [role],
+        )
+        // DROP OWNED BY must run in each DB the role may have privileges in;
+        // we only connect to the memory DB (admin URL). Expected no-op for
+        // device roles that never owned objects.
+        await client.query(`DROP OWNED BY ${roleId}`)
+        await client.query(`DROP ROLE IF EXISTS ${roleId}`)
+      })
+      log(`[devices] dropped datahub role ${role}`)
+    },
+  }
 }
 
 const WG_KEY = /^[A-Za-z0-9+/]{42,44}=$/
 const isIpv4 = (s: string): boolean => {
   const parts = s.split('.')
   return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)
+}
+/** IPv4 CIDR: dotted-quad + /0..32. Rejects bare IPs, ranges, oversize
+ *  octets, extra slashes, and non-numeric junk (so the value is safe to
+ *  pass as a single ssh/ufw argv token). */
+export const isCidr = (s: string): boolean => {
+  const [ip, prefix, ...rest] = s.split('/')
+  return (
+    rest.length === 0 &&
+    isIpv4(ip) &&
+    typeof prefix === 'string' &&
+    /^\d{1,2}$/.test(prefix) &&
+    Number(prefix) <= 32
+  )
 }
 
 const sshExec = (target: string, args: string[]): Promise<string> =>
@@ -156,6 +405,29 @@ export function createSshRelayDriver(cfg: {
       }
       return map
     },
+    async ensureForward(src, dest) {
+      if (!isCidr(src)) throw new Error('bad forward source CIDR')
+      if (!isCidr(dest)) throw new Error('bad forward dest CIDR')
+      // `ufw route allow` is idempotent — a duplicate spec is a no-op ("Skipping
+      // adding existing rule"). Safe to run on every process start / first enroll.
+      // NB: sshExec joins argv into a remote command string the relay's shell
+      // re-splits, so every token must be a single shell word — the comment is
+      // hyphenated (not "rivet mesh device pool"), else ufw sees stray args.
+      await sshExec(
+        cfg.relaySsh,
+        wrap([
+          'ufw',
+          'route',
+          'allow',
+          'from',
+          src,
+          'to',
+          dest,
+          'comment',
+          'rivet-mesh-device-pool',
+        ]),
+      )
+    },
   }
 }
 
@@ -170,6 +442,8 @@ interface PendingEnroll {
   token: string
   address: string
   expiresAt: number
+  /** Set when a per-device datahub role was minted for this pending QR. */
+  pgRole?: string
 }
 
 interface Registry {
@@ -278,6 +552,8 @@ export function createDevicesRoutes(opts: {
    *  override with its own origin when it renders the QR). */
   gatewayUrl: string
   driver?: RelayDriver | null
+  /** Injected in tests; production builds from config.pgAdminUrl when set. */
+  datahubAdmin?: DatahubAdminDriver | null
   log?: (msg: string) => void
   now?: () => number
 }): DevicesRoutes {
@@ -296,6 +572,36 @@ export function createDevicesRoutes(opts: {
             sudo: config.relaySudo,
           })
         : null
+  const datahubAdmin =
+    opts.datahubAdmin !== undefined
+      ? opts.datahubAdmin
+      : config.pgAdminUrl.trim()
+        ? createPgDatahubAdminDriver({
+            adminUrl: config.pgAdminUrl.trim(),
+            groupRole: config.pgDeviceGroup || 'rivet_device',
+            log,
+          })
+        : null
+
+  // Ensure the relay's pool→LAN forwarding rule exactly once per process,
+  // lazily on the first enroll (the relay is reachable by then). A failure
+  // here shouldn't sink the enroll — the peer add is what matters; log and
+  // move on, the operator can add the ufw rule by hand.
+  let forwardEnsured = false
+  const ensureForwardOnce = async (): Promise<void> => {
+    if (forwardEnsured || !driver?.ensureForward) return
+    if (!config.relayForwardSrc || !config.relayForwardDest) return
+    forwardEnsured = true // set before the await so concurrent enrolls don't double-run
+    try {
+      await driver.ensureForward(config.relayForwardSrc, config.relayForwardDest)
+      log(
+        `[devices] relay forwarding ensured: ${config.relayForwardSrc} → ${config.relayForwardDest}`,
+      )
+    } catch (e) {
+      forwardEnsured = false // let a later enroll retry
+      log(`[devices] relay forwarding rule failed (add it manually): ${(e as Error).message}`)
+    }
+  }
 
   const json = (res: ServerResponse, status: number, body: unknown): void => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -306,10 +612,10 @@ export function createDevicesRoutes(opts: {
     reg.pending = reg.pending.filter((p) => p.expiresAt > now())
   }
 
-  const enrollConfig = (address: string): DeviceEnrollConfig => ({
+  const enrollConfig = (address: string, pgUrl: string): DeviceEnrollConfig => ({
     sharedHost: config.sharedHost,
     sharedExport: config.sharedExport,
-    pgUrl: config.pgUrl,
+    pgUrl,
     embedUrl: config.embedUrl,
     wgEndpoint: config.wgEndpoint,
     wgPeerPublicKey: config.wgPublicKey,
@@ -317,6 +623,27 @@ export function createDevicesRoutes(opts: {
     wgAllowedIps: config.allowedIps,
     homeSubnet: config.homeSubnet,
   })
+
+  /**
+   * When the admin driver is configured: mint a per-device role and return
+   * its URL. On failure (datahub down, etc.) log and return empty pgUrl —
+   * mesh enroll still proceeds (decision 1). Never falls back to shared creds.
+   * When the driver is off: shared config.pgUrl (feature opt-in).
+   */
+  const resolvePgForDevice = async (
+    deviceId: string,
+  ): Promise<{ pgUrl: string; pgRole?: string }> => {
+    if (!datahubAdmin) return { pgUrl: config.pgUrl }
+    try {
+      const { url, role } = await datahubAdmin.ensureDeviceRole(deviceId)
+      return { pgUrl: url, pgRole: role }
+    } catch (e) {
+      log(
+        `[devices] datahub role mint failed for ${deviceId}: ${(e as Error).message} — enrolling without pgUrl`,
+      )
+      return { pgUrl: '' }
+    }
+  }
 
   return {
     async handle(req, res, url) {
@@ -362,8 +689,10 @@ export function createDevicesRoutes(opts: {
             ? body.name.trim().slice(0, 64)
             : 'device'
         // Allocate + persist the pending under the lock so two concurrent Adds
-        // can't hand out the same free address in their QRs.
-        const result = await withLock(() => {
+        // can't hand out the same free address in their QRs. Role minting is
+        // also under the lock so the registry always records pgRole with the
+        // pending that carries that role's QR password.
+        const result = await withLock(async () => {
           const reg = loadRegistry(file)
           sweep(reg)
           const taken = new Set([
@@ -372,16 +701,19 @@ export function createDevicesRoutes(opts: {
           ])
           const address = allocateAddress(config.pool, taken)
           if (!address) return null
+          const id = randomUUID()
+          const { pgUrl, pgRole } = await resolvePgForDevice(id)
           const pending: PendingEnroll = {
-            id: randomUUID(),
+            id,
             name,
             token: randomBytes(24).toString('base64url'),
             address,
             expiresAt: now() + ENROLL_TTL_MS,
+            ...(pgRole ? { pgRole } : {}),
           }
           reg.pending.push(pending)
           saveRegistry(file, reg)
-          return pending
+          return { pending, pgUrl }
         })
         if (!result) {
           json(res, 409, { error: 'address pool exhausted (or RIVETOS_DEN_DEVICES_POOL unset)' })
@@ -391,15 +723,19 @@ export function createDevicesRoutes(opts: {
           v: 1,
           kind: 'rivet-mesh-enroll',
           gateway: opts.gatewayUrl,
-          token: result.token,
-          config: enrollConfig(result.address),
+          token: result.pending.token,
+          config: enrollConfig(result.pending.address, result.pgUrl),
         }
-        log(`[devices] enrollment opened for "${name}" (${result.address}, expires in 10m)`)
+        log(
+          `[devices] enrollment opened for "${name}" (${result.pending.address}, expires in 10m)${
+            result.pending.pgRole ? ` role=${result.pending.pgRole}` : ''
+          }`,
+        )
         json(res, 200, {
-          id: result.id,
+          id: result.pending.id,
           name,
-          address: result.address,
-          expiresAt: result.expiresAt,
+          address: result.pending.address,
+          expiresAt: result.pending.expiresAt,
           qr,
         })
         return true
@@ -422,6 +758,18 @@ export function createDevicesRoutes(opts: {
               await driver.removePeer(dev.publicKey)
             } catch (e) {
               return { status: 502 as const, error: `relay revoke failed: ${(e as Error).message}` }
+            }
+          }
+          const pgRole = dev?.pgRole ?? pend?.pgRole
+          if (pgRole && datahubAdmin) {
+            try {
+              // drop by device id (role name is derived deterministically)
+              await datahubAdmin.dropDeviceRole(id)
+            } catch (e) {
+              return {
+                status: 502 as const,
+                error: `datahub role revoke failed: ${(e as Error).message}`,
+              }
             }
           }
           reg.devices = reg.devices.filter((d) => d.id !== id)
@@ -474,6 +822,7 @@ export function createDevicesRoutes(opts: {
 
         if (driver) {
           try {
+            await ensureForwardOnce()
             await driver.addPeer(publicKey, pending.address)
           } catch (e) {
             reg.pending.push(pending) // restore for retry with the same QR
@@ -484,6 +833,20 @@ export function createDevicesRoutes(opts: {
             }
           }
         }
+
+        // Re-ensure so the enroll response carries a working password. The
+        // phone prefers this config over the QR (see MeshEnroll.kt). If mint
+        // fails, omit pgUrl rather than shipping the shared credential.
+        let pgUrl: string
+        let pgRole = pending.pgRole
+        if (datahubAdmin) {
+          const minted = await resolvePgForDevice(pending.id)
+          pgUrl = minted.pgUrl
+          pgRole = minted.pgRole ?? pgRole
+        } else {
+          pgUrl = config.pgUrl
+        }
+
         const device: MeshDevice = {
           id: pending.id,
           name: name ?? pending.name,
@@ -492,16 +855,19 @@ export function createDevicesRoutes(opts: {
           createdAt: pending.expiresAt - ENROLL_TTL_MS,
           enrolledAt: now(),
           lastHandshake: null,
+          ...(pgRole ? { pgRole } : {}),
         }
         reg.devices.push(device)
         saveRegistry(file, reg)
         log(
-          `[devices] enrolled "${device.name}" (${device.address})${driver ? '' : ' [relay driver off — add peer manually]'}`,
+          `[devices] enrolled "${device.name}" (${device.address})${driver ? '' : ' [relay driver off — add peer manually]'}${
+            pgRole ? ` role=${pgRole}` : ''
+          }`,
         )
         return {
           status: 200 as const,
           device: { id: device.id, name: device.name, address: device.address },
-          config: enrollConfig(pending.address),
+          config: enrollConfig(pending.address, pgUrl),
         }
       })
 
