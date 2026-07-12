@@ -7,6 +7,7 @@ import { Readable } from 'node:stream'
 import {
   allocateAddress,
   createDevicesRoutes,
+  isCidr,
   type DevicesConfig,
   type RelayDriver,
 } from './devices.js'
@@ -40,6 +41,8 @@ const CONFIG: DevicesConfig = {
   wgPublicKey: 'r'.repeat(43) + '=',
   allowedIps: '198.51.100.0/24',
   homeSubnet: '198.51.100.',
+  relayForwardSrc: '192.0.2.0/24',
+  relayForwardDest: '198.51.100.0/24',
   sharedHost: 'hub.example',
   sharedExport: '/rivet-shared',
   pgUrl: 'postgres://u:p@hub.example:5432/db',
@@ -49,20 +52,35 @@ const CONFIG: DevicesConfig = {
 
 const PUBKEY = 'A'.repeat(43) + '='
 
-function fakeDriver(): RelayDriver & { added: string[]; removed: string[] } {
+function fakeDriver(): RelayDriver & {
+  added: string[]
+  removed: string[]
+  forwards: string[]
+  seq: string[]
+} {
   const added: string[] = []
   const removed: string[] = []
+  const forwards: string[] = []
+  const seq: string[] = [] // ordered op log across all methods
   return {
     added,
     removed,
+    forwards,
+    seq,
     async addPeer(pk, addr) {
       added.push(`${pk} ${addr}`)
+      seq.push('addPeer')
     },
     async removePeer(pk) {
       removed.push(pk)
+      seq.push('removePeer')
     },
     async handshakes() {
       return { [PUBKEY]: 1_700_000_000_000 }
+    },
+    async ensureForward(src, dest) {
+      forwards.push(`${src} -> ${dest}`)
+      seq.push('ensureForward')
     },
   }
 }
@@ -126,6 +144,23 @@ describe('allocateAddress', () => {
   })
 })
 
+describe('isCidr', () => {
+  it('accepts valid IPv4 CIDRs', () => {
+    expect(isCidr('10.0.0.0/24')).toBe(true)
+    expect(isCidr('0.0.0.0/0')).toBe(true)
+    expect(isCidr('192.0.2.0/24')).toBe(true)
+  })
+  it('rejects bare IPs, bad prefixes, ranges, and junk', () => {
+    expect(isCidr('10.0.0.1')).toBe(false) // no prefix
+    expect(isCidr('10.0.0.0/33')).toBe(false) // prefix > 32
+    expect(isCidr('10.0.0.1-10.0.0.9')).toBe(false) // range, not CIDR
+    expect(isCidr('10.0.0.256/24')).toBe(false) // octet > 255
+    expect(isCidr('10.0.0.0/24/8')).toBe(false) // extra slash
+    expect(isCidr('; rm -rf/24')).toBe(false) // injection shape
+    expect(isCidr('')).toBe(false)
+  })
+})
+
 describe('devices routes', () => {
   it('full lifecycle: open → enroll → list → revoke', async () => {
     const driver = fakeDriver()
@@ -176,6 +211,84 @@ describe('devices routes', () => {
     expect(driver.removed).toEqual([PUBKEY])
     const after = await call(routes, 'GET', '/api/devices')
     expect(after.body.devices).toHaveLength(0)
+  })
+
+  it('ensures the relay forward rule once, before the first peer add', async () => {
+    const driver = fakeDriver()
+    const { routes } = makeRoutes(driver)
+
+    // two enrollments
+    for (const name of ['a', 'b']) {
+      const open = await call(routes, 'POST', '/api/devices', { name })
+      await call(
+        routes,
+        'POST',
+        '/api/devices/enroll',
+        { token: open.body.qr.token, publicKey: name === 'a' ? PUBKEY : 'B'.repeat(43) + '=' },
+        true,
+      )
+    }
+    // forward ensured exactly once despite two enrollments
+    expect(driver.forwards).toEqual(['192.0.2.0/24 -> 198.51.100.0/24'])
+    // and the very first op was the forward rule, before any peer add
+    expect(driver.seq).toEqual(['ensureForward', 'addPeer', 'addPeer'])
+  })
+
+  it('a failed forward rule does not sink the enroll, and a later enroll retries', async () => {
+    const driver = fakeDriver()
+    let failForward = true
+    driver.ensureForward = async (src, dest) => {
+      driver.forwards.push(`${src} -> ${dest}`)
+      driver.seq.push('ensureForward')
+      if (failForward) throw new Error('ufw down')
+    }
+    const { routes } = makeRoutes(driver)
+
+    const a = await call(routes, 'POST', '/api/devices', { name: 'a' })
+    const enrollA = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: a.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    // enroll still succeeds and the peer is added despite the forward failure
+    expect(enrollA.status).toBe(200)
+    expect(driver.added).toHaveLength(1)
+
+    // next enroll retries the rule (the once-guard reset on failure)
+    failForward = false
+    const b = await call(routes, 'POST', '/api/devices', { name: 'b' })
+    await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: b.body.qr.token, publicKey: 'B'.repeat(43) + '=' },
+      true,
+    )
+    expect(driver.forwards).toHaveLength(2) // attempted again
+  })
+
+  it('skips the forward rule when src/dest are unset', async () => {
+    const driver = fakeDriver()
+    const stateDir = mkdtempSync(join(tmpdir(), 'devices-test-'))
+    const routes = createDevicesRoutes({
+      config: { ...CONFIG, relayForwardSrc: '', relayForwardDest: '' },
+      stateDir,
+      gatewayUrl: CONFIG.gatewayUrl,
+      driver,
+      now: () => 1_000_000,
+    })
+    const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
+    await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(driver.forwards).toEqual([])
+    expect(driver.added.length).toBe(1)
   })
 
   it('rejects bad enroll payloads and expired tokens', async () => {

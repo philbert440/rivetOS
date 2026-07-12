@@ -74,6 +74,8 @@ export const KNOWN_DEN_DEVICES_KEYS = new Set([
   'wg_public_key',
   'allowed_ips',
   'home_subnet',
+  'relay_forward_src',
+  'relay_forward_dest',
   'shared_host',
   'shared_export',
   'gateway_url',
