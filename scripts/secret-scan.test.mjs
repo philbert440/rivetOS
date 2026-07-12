@@ -1,7 +1,7 @@
 // Run: node --test scripts/secret-scan.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { scanText, _internals } from './secret-scan.mjs'
+import { scanText, loadDenyHashes, _internals } from './secret-scan.mjs'
 
 const rules = (text, opts) => scanText(text, opts).map((f) => f.rule)
 
@@ -40,8 +40,14 @@ test('flags WireGuard/base64 key shape', () => {
   assert.ok(rules('key ' + 'Z'.repeat(43) + '=').includes('wg-key'))
 })
 
-test('flags internal .lan hostnames', () => {
+test('flags internal .lan hostnames but not .lan inside a longer domain', () => {
   assert.deepEqual(rules('ssh box.lan'), ['lan-host'])
+  assert.deepEqual(rules('visit foo.lan.com/path'), []) // .lan not the final label
+})
+
+test('denylist loads and is non-empty (crown-jewel protection is live)', () => {
+  const deny = loadDenyHashes()
+  assert.ok(deny.size >= 1, 'secret-denylist.json must contain sha256 entries')
 })
 
 test('rejects invalid octets (not an IP)', () => {

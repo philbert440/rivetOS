@@ -73,7 +73,8 @@ const octetsValid = (ip) =>
 
 const IPV4 = /\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g
 const WG_KEY = /\b[A-Za-z0-9+/]{43}=(?![A-Za-z0-9+/=])/g
-const LAN_HOST = /\b[a-z0-9][a-z0-9-]*\.lan\b/gi
+// `.lan` as the final label only — the (?!\.) stops `foo.lan.com` false hits.
+const LAN_HOST = /\b[a-z0-9][a-z0-9-]*\.lan\b(?!\.)/gi
 
 /** Return an array of {rule, match, severity} findings for one line of text.
  *  severity 'block' fails the scan; 'warn' prints but doesn't fail (generic
@@ -123,14 +124,15 @@ function scanLine(line) {
 // ---------------------------------------------------------------------------
 // hashed denylist — exact crown-jewel strings, matched without storing them
 
-function loadDenyHashes() {
-  if (!existsSync(DENYLIST_FILE)) return new Set()
-  try {
-    const j = JSON.parse(readFileSync(DENYLIST_FILE, 'utf8'))
-    return new Set(j.sha256 ?? [])
-  } catch {
-    return new Set()
-  }
+// Fail CLOSED: a missing/corrupt/empty denylist must error, never silently
+// disable crown-jewel protection. (Tests pass their own hashes and don't call
+// this.) Exported so a self-test can assert it stays populated.
+export function loadDenyHashes() {
+  if (!existsSync(DENYLIST_FILE)) throw new Error(`denylist missing: ${DENYLIST_FILE}`)
+  const j = JSON.parse(readFileSync(DENYLIST_FILE, 'utf8')) // throw on corrupt = fail closed
+  const hashes = (j.sha256 ?? []).filter((h) => /^[0-9a-f]{64}$/.test(h))
+  if (!hashes.length) throw new Error(`denylist has no valid sha256 entries: ${DENYLIST_FILE}`)
+  return new Set(hashes)
 }
 const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex')
 
