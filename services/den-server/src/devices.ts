@@ -142,24 +142,24 @@ export interface RelayDriver {
 // datahub admin driver (per-device Postgres roles)
 //
 // Group role `rivet_device` is an ops one-time setup. Device roles inherit it.
-// Exact grants — derived from on-device capture + recall SQL (see sources):
+// Exact grants — derived from ON-DEVICE capture + recall only (phone code):
 //
-// CAPTURE (integrations/grok/rivet-memory/capture, hermes schema.py,
-//   plugins/memory/postgres adapter.append):
+// CAPTURE (integrations/grok/rivet-memory/capture/src/grok-memory-capture.ts
+//   is the sole memory code that runs on the phone):
 //   - SELECT/INSERT ros_conversations (find-or-create)
 //   - SELECT/INSERT ros_messages (append transcript rows)
-//   - UPDATE ros_conversations (touch updated_at; finalize active=false)
-//     NOTE: design template said SELECT/INSERT only; capture *requires* UPDATE
-//     on ros_conversations for finalize/touch — validate on non-prod.
+//   - UPDATE ros_conversations ONLY (touch updated_at; finalize active=false)
+//     — the only `UPDATE ros_*` the phone issues (~lines 677 / 684)
 //
-// RECALL (plugins/memory/postgres search.ts + expand.ts + tools/*;
-//   hermes recall.py / tools.py):
+// RECALL (on-device SELECT paths):
 //   - SELECT ros_messages, ros_summaries (FTS / trigram / vector)
 //   - SELECT ros_summary_sources (expand joins)
 //   - SELECT ros_conversations (browse/stats joins)
-//   - UPDATE ros_messages, ros_summaries (access_count bump on hit)
-//     NOTE: access bumps also need UPDATE; hermes docs claim workers own
-//     those columns but memory-postgres search.bumpAccess writes them.
+//
+// access_count / last_accessed_at bumps on ros_messages and ros_summaries are
+// maintained SERVER-SIDE by RivetOS workers (see integrations/hermes/rivet-
+// memory/recall.py and schema.py: "counters maintained by RivetOS") — never
+// by the device. Do NOT grant the device group UPDATE on those tables.
 //
 // No sequences: PKs are UUID DEFAULT gen_random_uuid() (0001_baseline.sql).
 // No DDL, no DELETE/TRUNCATE, no other schemas/DBs.
@@ -178,10 +178,10 @@ export const DEVICE_GROUP_GRANTS_SQL = `
 -- Validate against a NON-PROD role before enabling on the live datahub.
 CREATE ROLE rivet_device NOLOGIN;
 
-GRANT CONNECT ON DATABASE current_database() TO rivet_device;  -- substitute real DB name
+GRANT CONNECT ON DATABASE :dbname TO rivet_device;  -- replace :dbname with the datahub database (e.g. phil_memory)
 GRANT USAGE ON SCHEMA public TO rivet_device;
 
--- Capture + recall tables (derived from plugin SQL — see devices.ts header).
+-- Capture + recall tables (on-device SQL only — see devices.ts header).
 GRANT SELECT, INSERT ON
   ros_conversations,
   ros_messages
@@ -191,12 +191,10 @@ GRANT SELECT ON
   ros_summary_sources
   TO rivet_device;
 
--- Required by actual capture/recall code (finalize/touch + access bumps).
--- Design's SELECT/INSERT-only template is insufficient for these paths.
+-- Sole on-device UPDATE: grok-memory-capture.ts touch/finalize on ros_conversations.
+-- No UPDATE on ros_messages / ros_summaries (access counters are server-side).
 GRANT UPDATE ON
-  ros_conversations,
-  ros_messages,
-  ros_summaries
+  ros_conversations
   TO rivet_device;
 `.trim()
 
