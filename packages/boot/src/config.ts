@@ -240,6 +240,15 @@ export interface DenSection {
     /** Externally reachable den base URL for the QR (blank = the web client
      *  substitutes the origin it reached this node at). */
     gateway_url?: string
+    /**
+     * CREATEROLE (not superuser) datahub admin URL for minting/dropping
+     * per-device Postgres roles. Empty/unset = feature off (shared
+     * RIVETOS_PG_URL still embedded in QRs). Env override:
+     * RIVETOS_DEN_DEVICES_PG_ADMIN_URL. Never ship this in builds or QRs.
+     */
+    pg_admin_url?: string
+    /** Group role device roles inherit (default rivet_device). */
+    pg_device_group?: string
   }
 }
 

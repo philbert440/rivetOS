@@ -8,6 +8,8 @@ import {
   allocateAddress,
   createDevicesRoutes,
   isCidr,
+  deviceRoleName,
+  type DatahubAdminDriver,
   type DevicesConfig,
   type RelayDriver,
 } from './devices.js'
@@ -47,7 +49,8 @@ const CONFIG: DevicesConfig = {
   sharedExport: '/rivet-shared',
   pgUrl: 'postgres://u:p@hub.example:5432/db',
   embedUrl: 'http://hub.example:9402',
-  gatewayUrl: 'http://node.example:5174',
+  pgAdminUrl: '',
+  pgDeviceGroup: 'rivet_device',
 }
 
 const PUBKEY = 'A'.repeat(43) + '='
@@ -85,6 +88,38 @@ function fakeDriver(): RelayDriver & {
   }
 }
 
+function fakeDatahubAdmin(
+  opts: { failEnsure?: boolean; failDrop?: boolean } = {},
+): DatahubAdminDriver & {
+  ensured: string[]
+  dropped: string[]
+  seq: string[]
+} {
+  const ensured: string[] = []
+  const dropped: string[] = []
+  const seq: string[] = []
+  return {
+    ensured,
+    dropped,
+    seq,
+    async ensureDeviceRole(deviceId) {
+      seq.push(`ensure:${deviceId}`)
+      if (opts.failEnsure) throw new Error('datahub unreachable')
+      ensured.push(deviceId)
+      const role = deviceRoleName(deviceId)
+      return {
+        url: `postgres://${role}:secret@192.0.2.50:5432/phil_memory`,
+        role,
+      }
+    },
+    async dropDeviceRole(deviceId) {
+      seq.push(`drop:${deviceId}`)
+      if (opts.failDrop) throw new Error('datahub drop failed')
+      dropped.push(deviceId)
+    },
+  }
+}
+
 /** Drive a routes handler without a real HTTP server. */
 async function call(
   routes: ReturnType<typeof createDevicesRoutes>,
@@ -118,13 +153,19 @@ async function call(
   return { status, body: raw ? JSON.parse(raw) : null }
 }
 
-function makeRoutes(driver: RelayDriver | null = fakeDriver(), nowRef = { t: 1_000_000 }) {
+function makeRoutes(
+  driver: RelayDriver | null = fakeDriver(),
+  nowRef = { t: 1_000_000 },
+  datahubAdmin: DatahubAdminDriver | null = null,
+  config: DevicesConfig = CONFIG,
+) {
   const stateDir = mkdtempSync(join(tmpdir(), 'devices-test-'))
   const routes = createDevicesRoutes({
-    config: CONFIG,
+    config,
     stateDir,
-    gatewayUrl: CONFIG.gatewayUrl,
+    gatewayUrl: 'http://node.example:5174',
     driver,
+    datahubAdmin,
     now: () => nowRef.t,
   })
   return { routes, stateDir }
@@ -430,5 +471,148 @@ describe('devices routes', () => {
     expect(revoke.status).toBe(502)
     const after = await call(routes, 'GET', '/api/devices')
     expect(after.body.devices).toHaveLength(1)
+  })
+
+  it('enroll mints a per-device role and puts its URL in the QR', async () => {
+    const admin = fakeDatahubAdmin()
+    const driver = fakeDriver()
+    const { routes, stateDir } = makeRoutes(driver, { t: 1_000_000 }, admin)
+
+    const open = await call(routes, 'POST', '/api/devices', { name: 'pixel' })
+    expect(open.status).toBe(200)
+    expect(admin.ensured).toHaveLength(1)
+    const deviceId = open.body.id as string
+    expect(admin.ensured[0]).toBe(deviceId)
+    const expectedRole = deviceRoleName(deviceId)
+    expect(open.body.qr.config.pgUrl).toBe(
+      `postgres://${expectedRole}:secret@192.0.2.50:5432/phil_memory`,
+    )
+    expect(open.body.qr.config.pgUrl).not.toBe(CONFIG.pgUrl)
+
+    const enroll = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(enroll.status).toBe(200)
+    // Re-ensure at redeem so the enroll response has a working password
+    // (Android prefers response config over QR).
+    expect(admin.ensured).toHaveLength(2)
+    expect(enroll.body.config.pgUrl).toContain(expectedRole)
+    expect(enroll.body.config.pgUrl).not.toBe(CONFIG.pgUrl)
+
+    const reg = JSON.parse(readFileSync(join(stateDir, 'mesh-devices.json'), 'utf8'))
+    expect(reg.devices[0].pgRole).toBe(expectedRole)
+    expect(admin.seq.filter((s) => s.startsWith('ensure:'))).toHaveLength(2)
+  })
+
+  it('admin driver unset keeps shared pgUrl and makes no role calls', async () => {
+    const admin = fakeDatahubAdmin()
+    // Explicit null: feature off even if we pass a stub that would record calls
+    // if wired — routes built without datahubAdmin.
+    const { routes, stateDir } = makeRoutes(fakeDriver(), { t: 1_000_000 }, null)
+    const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
+    expect(open.body.qr.config.pgUrl).toBe(CONFIG.pgUrl)
+    const enroll = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(enroll.status).toBe(200)
+    expect(enroll.body.config.pgUrl).toBe(CONFIG.pgUrl)
+    expect(admin.ensured).toHaveLength(0)
+    expect(admin.dropped).toHaveLength(0)
+    const reg = JSON.parse(readFileSync(join(stateDir, 'mesh-devices.json'), 'utf8'))
+    expect(reg.devices[0].pgRole).toBeUndefined()
+  })
+
+  it('minting failure still enrolls without pgUrl (no shared fallback)', async () => {
+    const admin = fakeDatahubAdmin({ failEnsure: true })
+    const { routes, stateDir } = makeRoutes(fakeDriver(), { t: 1_000_000 }, admin)
+    const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
+    expect(open.status).toBe(200)
+    expect(open.body.qr.config.pgUrl).toBe('')
+    expect(open.body.qr.config.pgUrl).not.toBe(CONFIG.pgUrl)
+
+    const enroll = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(enroll.status).toBe(200)
+    expect(enroll.body.config.pgUrl).toBe('')
+    const reg = JSON.parse(readFileSync(join(stateDir, 'mesh-devices.json'), 'utf8'))
+    expect(reg.devices[0].pgRole).toBeUndefined()
+    expect(admin.seq.some((s) => s.startsWith('ensure:'))).toBe(true)
+  })
+
+  it('revoke drops the datahub role', async () => {
+    const admin = fakeDatahubAdmin()
+    const driver = fakeDriver()
+    const { routes } = makeRoutes(driver, { t: 1_000_000 }, admin)
+    const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
+    await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    const list = await call(routes, 'GET', '/api/devices')
+    const id = list.body.devices[0].id as string
+    expect(list.body.devices[0].pgRole).toBe(deviceRoleName(id))
+
+    const revoke = await call(routes, 'DELETE', `/api/devices/${id}`)
+    expect(revoke.status).toBe(200)
+    expect(driver.removed).toEqual([PUBKEY])
+    expect(admin.dropped).toEqual([id])
+    expect(admin.seq).toContain(`drop:${id}`)
+  })
+
+  it('revoke surfaces datahub role drop failure as 502 and keeps the device', async () => {
+    const admin = fakeDatahubAdmin({ failDrop: true })
+    const { routes } = makeRoutes(fakeDriver(), { t: 1_000_000 }, admin)
+    const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
+    await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    const list = await call(routes, 'GET', '/api/devices')
+    const revoke = await call(routes, 'DELETE', `/api/devices/${list.body.devices[0].id}`)
+    expect(revoke.status).toBe(502)
+    expect(revoke.body.error).toMatch(/datahub role revoke failed/)
+    const after = await call(routes, 'GET', '/api/devices')
+    expect(after.body.devices).toHaveLength(1)
+  })
+})
+
+describe('deviceRoleName', () => {
+  it('derives a stable allowlisted role from a UUID', () => {
+    expect(deviceRoleName('019e5f82-f0e5-7d41-a38c-4eefced7e570')).toBe(
+      'rivet_dev_019e5f82_f0e5_7d41_a38c_4eefced7e570',
+    )
+  })
+
+  it('rejects junk that cannot form a safe role name', () => {
+    expect(() => deviceRoleName('')).toThrow(/required|unsafe/)
+    expect(() => deviceRoleName('!!!')).toThrow(/unsafe|rejected/)
+    expect(() => deviceRoleName('---')).toThrow(/unsafe|rejected/)
+  })
+
+  it('strips non-allowlisted characters rather than interpolating them', () => {
+    // Path / SQL metacharacters must not survive into the role identifier.
+    const role = deviceRoleName('../../Etc/Passwd')
+    expect(role).toBe('rivet_dev_etc_passwd')
+    expect(role).toMatch(/^[a-z][a-z0-9_]*$/)
+    expect(role).not.toMatch(/[./';-]/)
   })
 })

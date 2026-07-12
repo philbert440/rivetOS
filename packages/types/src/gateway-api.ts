@@ -579,6 +579,12 @@ export interface MeshDevice {
   enrolledAt: number | null
   /** Unix ms of the peer's last WireGuard handshake; null = never/unknown. */
   lastHandshake: number | null
+  /**
+   * Per-device datahub Postgres role name (`rivet_dev_<id>`), when the
+   * enrolling node minted one. Present so revoke can DROP ROLE; never holds
+   * the password (delivered once via the QR / enroll response).
+   */
+  pgRole?: string
 }
 
 export interface MeshDevicePending {
