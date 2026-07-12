@@ -58,6 +58,7 @@ import me.rerere.hugeicons.HugeIcons
 import dev.rivet.app.data.datastore.RIVET_SSH_PORT
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.net.RivetVpn
+import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.service.RivetRuntimeService
 import me.rerere.hugeicons.stroke.ChartColumn
 import me.rerere.hugeicons.stroke.Code
@@ -506,6 +507,71 @@ private fun RivetNodeControls(navController: Navigator, drawerOpen: Boolean) {
         Column {
             // Node health at a glance — polls only while the drawer is open; tap to re-poll.
             NodeStatusStrip(active = drawerOpen)
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+            // Full RivetOS monorepo self-provision (Phase 5 prereq / #374). Standalone den
+            // stays up until dist/rivetos.js exists; this row only kicks the FGS provision
+            // action. Hub access is via NodeSwitcher above (no duplicate Hub row — #377).
+            val provisionStatus by RivetRuntime.provisionProgress.collectAsStateWithLifecycle(
+                initialValue = null,
+            )
+            var fullRuntimeReady by remember {
+                mutableStateOf(RivetRuntime.isFullRuntimeProvisioned(context))
+            }
+            // Re-check when the drawer opens or provision progress clears (done / failed).
+            LaunchedEffect(drawerOpen, provisionStatus) {
+                if (drawerOpen) {
+                    fullRuntimeReady = RivetRuntime.isFullRuntimeProvisioned(context)
+                }
+            }
+            val isProvisioning = provisionStatus != null || RivetRuntime.isProvisioning()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (!fullRuntimeReady && !isProvisioning) {
+                            Modifier.onClick { RivetRuntimeService.startProvision(context) }
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    imageVector = HugeIcons.Sparkles,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = if (fullRuntimeReady) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = when {
+                            fullRuntimeReady -> "Node runtime ready"
+                            isProvisioning -> "Provisioning node runtime…"
+                            else -> "Provision node runtime"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = when {
+                            fullRuntimeReady -> "full RivetOS · plugins + chat"
+                            isProvisioning ->
+                                "${provisionStatus ?: "working…"} · ~15 min · keep app open"
+                            else -> "~15 min · downloads + builds RivetOS"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
