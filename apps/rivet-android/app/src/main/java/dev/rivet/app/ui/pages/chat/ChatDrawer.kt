@@ -58,10 +58,12 @@ import me.rerere.hugeicons.HugeIcons
 import dev.rivet.app.data.datastore.RIVET_SSH_PORT
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.net.RivetVpn
+import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.service.RivetRuntimeService
 import me.rerere.hugeicons.stroke.ChartColumn
 import me.rerere.hugeicons.stroke.Code
 import me.rerere.hugeicons.stroke.Connect
+import me.rerere.hugeicons.stroke.Earth
 import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.InLove
 import me.rerere.hugeicons.stroke.LanguageCircle
@@ -448,6 +450,7 @@ fun ChatDrawerContent(
 
 /**
  * Drawer controls for the on-device Rivet runtime, separate from chat sessions:
+ *  - **Hub** — embedded WebView of the full local runtime (chat + den + node switcher),
  *  - a standalone root **Terminal** (a proot bash shell, not tied to any conversation), and
  *  - the **SSH server** toggle (dropbear via [RivetRuntimeService], persisted across restarts).
  * Room here for mesh-node status next (track D).
@@ -483,6 +486,42 @@ private fun RivetNodeControls(navController: Navigator, drawerOpen: Boolean) {
         Column {
             // Node health at a glance — polls only while the drawer is open; tap to re-poll.
             NodeStatusStrip(active = drawerOpen)
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+            // Hub — full on-device runtime (Phase 3): chat + den + drawer node switcher.
+            // Additive: native chat stays as fallback; retiring it is a later increment.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onClick {
+                        navController.navigate(
+                            Screen.WebView(url = "http://127.0.0.1:${RivetRuntime.DEN_PORT}")
+                        )
+                    }
+                    .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    imageVector = HugeIcons.Earth,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Hub",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "local runtime · :${RivetRuntime.DEN_PORT}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
