@@ -31,22 +31,43 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import me.rerere.hugeicons.stroke.MoreVertical
+import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.ui.components.nav.BackButton
+import dev.rivet.app.ui.components.webview.RivetHubBridge
 import dev.rivet.app.ui.components.webview.WebView
 import dev.rivet.app.ui.components.webview.rememberWebViewState
 import dev.rivet.app.ui.theme.JetbrainsMono
 import dev.rivet.app.utils.base64Decode
 
+/** True when this WebView is the on-device hub gateway (full runtime on :5174). */
+private fun isLocalHubUrl(url: String): Boolean {
+    if (url.isEmpty()) return false
+    val port = RivetRuntime.DEN_PORT
+    return url.contains("127.0.0.1:$port") || url.contains("localhost:$port")
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WebViewPage(url: String, content: String) {
+    val context = LocalContext.current
+    val hubBridge = remember(context) {
+        RivetHubBridge(context.applicationContext)
+    }
+    val hubShell = isLocalHubUrl(url)
+    val hubInterfaces = remember(hubShell, hubBridge) {
+        if (hubShell) mapOf("RivetHubBridge" to hubBridge) else emptyMap()
+    }
+    val hubInject = if (hubShell) RivetHubBridge.TAURI_SHIM_JS else null
+
     val state = if (url.isNotEmpty()) {
         rememberWebViewState(
             url = url,
+            interfaces = hubInterfaces,
+            injectOnPageFinished = hubInject,
             settings = {
                 builtInZoomControls = true
                 displayZoomControls = false
