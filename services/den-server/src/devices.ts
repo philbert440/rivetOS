@@ -270,7 +270,10 @@ export function createPgDatahubAdminDriver(cfg: {
   if (!PG_IDENT.test(group)) throw new Error(`bad pg device group role: ${group}`)
 
   const withClient = async <T>(fn: (client: pg.Client) => Promise<T>): Promise<T> => {
-    const client = new pg.Client({ connectionString: cfg.adminUrl, connectionTimeoutMillis: 10_000 })
+    const client = new pg.Client({
+      connectionString: cfg.adminUrl,
+      connectionTimeoutMillis: 10_000,
+    })
     await client.connect()
     try {
       return await fn(client)
@@ -834,7 +837,7 @@ export function createDevicesRoutes(opts: {
         // Re-ensure so the enroll response carries a working password. The
         // phone prefers this config over the QR (see MeshEnroll.kt). If mint
         // fails, omit pgUrl rather than shipping the shared credential.
-        let pgUrl = ''
+        let pgUrl: string
         let pgRole = pending.pgRole
         if (datahubAdmin) {
           const minted = await resolvePgForDevice(pending.id)
