@@ -40,6 +40,8 @@ const CONFIG: DevicesConfig = {
   wgPublicKey: 'r'.repeat(43) + '=',
   allowedIps: '198.51.100.0/24',
   homeSubnet: '198.51.100.',
+  relayForwardSrc: '192.0.2.0/24',
+  relayForwardDest: '198.51.100.0/24',
   sharedHost: 'hub.example',
   sharedExport: '/rivet-shared',
   pgUrl: 'postgres://u:p@hub.example:5432/db',
@@ -49,12 +51,18 @@ const CONFIG: DevicesConfig = {
 
 const PUBKEY = 'A'.repeat(43) + '='
 
-function fakeDriver(): RelayDriver & { added: string[]; removed: string[] } {
+function fakeDriver(): RelayDriver & {
+  added: string[]
+  removed: string[]
+  forwards: string[]
+} {
   const added: string[] = []
   const removed: string[] = []
+  const forwards: string[] = []
   return {
     added,
     removed,
+    forwards,
     async addPeer(pk, addr) {
       added.push(`${pk} ${addr}`)
     },
@@ -63,6 +71,9 @@ function fakeDriver(): RelayDriver & { added: string[]; removed: string[] } {
     },
     async handshakes() {
       return { [PUBKEY]: 1_700_000_000_000 }
+    },
+    async ensureForward(src, dest) {
+      forwards.push(`${src} -> ${dest}`)
     },
   }
 }
@@ -176,6 +187,49 @@ describe('devices routes', () => {
     expect(driver.removed).toEqual([PUBKEY])
     const after = await call(routes, 'GET', '/api/devices')
     expect(after.body.devices).toHaveLength(0)
+  })
+
+  it('ensures the relay forward rule once, before the first peer add', async () => {
+    const driver = fakeDriver()
+    const { routes } = makeRoutes(driver)
+
+    // two enrollments
+    for (const name of ['a', 'b']) {
+      const open = await call(routes, 'POST', '/api/devices', { name })
+      await call(
+        routes,
+        'POST',
+        '/api/devices/enroll',
+        { token: open.body.qr.token, publicKey: name === 'a' ? PUBKEY : 'B'.repeat(43) + '=' },
+        true,
+      )
+    }
+    // forward ensured exactly once despite two enrollments
+    expect(driver.forwards).toEqual(['192.0.2.0/24 -> 198.51.100.0/24'])
+    // and it ran before the peer was added
+    expect(driver.added.length).toBe(2)
+  })
+
+  it('skips the forward rule when src/dest are unset', async () => {
+    const driver = fakeDriver()
+    const stateDir = mkdtempSync(join(tmpdir(), 'devices-test-'))
+    const routes = createDevicesRoutes({
+      config: { ...CONFIG, relayForwardSrc: '', relayForwardDest: '' },
+      stateDir,
+      gatewayUrl: CONFIG.gatewayUrl,
+      driver,
+      now: () => 1_000_000,
+    })
+    const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
+    await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(driver.forwards).toEqual([])
+    expect(driver.added.length).toBe(1)
   })
 
   it('rejects bad enroll payloads and expired tokens', async () => {

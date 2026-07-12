@@ -228,6 +228,12 @@ export interface DenSection {
     allowed_ips?: string
     /** Home-LAN IPv4 prefix where the device's tunnel auto-idles. */
     home_subnet?: string
+    /** Device pool CIDR (e.g. "10.4.22.32/27") the relay forwards to the LAN.
+     *  Paired with relay_forward_dest — both set turns on the relay's
+     *  pool→LAN firewall allow (else forwarding is managed by hand). */
+    relay_forward_src?: string
+    /** Home-LAN CIDR (e.g. "10.4.20.0/24") the device pool may reach. */
+    relay_forward_dest?: string
     /** Shared NFS host + export embedded in the QR for the device. */
     shared_host?: string
     shared_export?: string

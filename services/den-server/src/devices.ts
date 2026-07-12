@@ -51,6 +51,13 @@ export interface DevicesConfig {
   allowedIps: string
   /** Home-LAN IPv4 prefix hint for the device (tunnel auto-idle). */
   homeSubnet: string
+  /** Device pool as a CIDR (e.g. "10.4.22.32/27") for the relay's
+   *  forwarding allow rule. Empty = don't manage forwarding (operator does
+   *  it by hand). Paired with relayForwardDest. */
+  relayForwardSrc: string
+  /** Home-LAN CIDR (e.g. "10.4.20.0/24") the pool is allowed to reach through
+   *  the relay. Empty = don't manage forwarding. */
+  relayForwardDest: string
   /** Mesh coordinates embedded in the QR for the device's own settings. */
   sharedHost: string
   sharedExport: string
@@ -102,12 +109,27 @@ export interface RelayDriver {
   removePeer(publicKey: string): Promise<void>
   /** pubkey → unix-ms of latest handshake (0/absent = never). */
   handshakes(): Promise<Record<string, number>>
+  /** Ensure the relay forwards the device pool (src CIDR) to the home LAN
+   *  (dest CIDR). Cryptokey routing lets an enrolled device onto the relay,
+   *  but the relay's own firewall still has to forward its TCP into the LAN —
+   *  without this a device can ping home hosts but reach no service. Idempotent;
+   *  optional so test/fake drivers can omit it. */
+  ensureForward?(src: string, dest: string): Promise<void>
 }
 
 const WG_KEY = /^[A-Za-z0-9+/]{42,44}=$/
 const isIpv4 = (s: string): boolean => {
   const parts = s.split('.')
   return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)
+}
+const isCidr = (s: string): boolean => {
+  const [ip, prefix, ...rest] = s.split('/')
+  return (
+    rest.length === 0 &&
+    isIpv4(ip) &&
+    /^\d{1,2}$/.test(prefix) &&
+    Number(prefix) <= 32
+  )
 }
 
 const sshExec = (target: string, args: string[]): Promise<string> =>
@@ -155,6 +177,26 @@ export function createSshRelayDriver(cfg: {
         if (key && WG_KEY.test(key)) map[key] = Number(ts) * 1000
       }
       return map
+    },
+    async ensureForward(src, dest) {
+      if (!isCidr(src)) throw new Error('bad forward source CIDR')
+      if (!isCidr(dest)) throw new Error('bad forward dest CIDR')
+      // `ufw route allow` is idempotent — a duplicate spec is a no-op ("Skipping
+      // adding existing rule"). Safe to run on every process start / first enroll.
+      await sshExec(
+        cfg.relaySsh,
+        wrap([
+          'ufw',
+          'route',
+          'allow',
+          'from',
+          src,
+          'to',
+          dest,
+          'comment',
+          'rivet mesh device pool',
+        ]),
+      )
     },
   }
 }
@@ -296,6 +338,24 @@ export function createDevicesRoutes(opts: {
             sudo: config.relaySudo,
           })
         : null
+
+  // Ensure the relay's pool→LAN forwarding rule exactly once per process,
+  // lazily on the first enroll (the relay is reachable by then). A failure
+  // here shouldn't sink the enroll — the peer add is what matters; log and
+  // move on, the operator can add the ufw rule by hand.
+  let forwardEnsured = false
+  const ensureForwardOnce = async (): Promise<void> => {
+    if (forwardEnsured || !driver?.ensureForward) return
+    if (!config.relayForwardSrc || !config.relayForwardDest) return
+    forwardEnsured = true // set before the await so concurrent enrolls don't double-run
+    try {
+      await driver.ensureForward(config.relayForwardSrc, config.relayForwardDest)
+      log(`[devices] relay forwarding ensured: ${config.relayForwardSrc} → ${config.relayForwardDest}`)
+    } catch (e) {
+      forwardEnsured = false // let a later enroll retry
+      log(`[devices] relay forwarding rule failed (add it manually): ${(e as Error).message}`)
+    }
+  }
 
   const json = (res: ServerResponse, status: number, body: unknown): void => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -474,6 +534,7 @@ export function createDevicesRoutes(opts: {
 
         if (driver) {
           try {
+            await ensureForwardOnce()
             await driver.addPeer(publicKey, pending.address)
           } catch (e) {
             reg.pending.push(pending) // restore for retry with the same QR
