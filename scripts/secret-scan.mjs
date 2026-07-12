@@ -13,6 +13,11 @@
 // This repo is PUBLIC. Everything below uses RFC5737 documentation ranges
 // (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) as the *only* allowed
 // example IPs — real infra addresses/subnets/keys must never land here.
+//
+// IMPORTANT (public CI): findings are REDACTED in CI (GITHUB_ACTIONS/CI env) —
+// Actions logs are world-readable, so printing a caught WG key or crown-jewel
+// IP would re-leak it. CI shows rule + location + an 8-char hash; run the hook
+// locally to see the full value you need to fix.
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync, existsSync } from 'node:fs'
@@ -22,9 +27,17 @@ import { dirname, join } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DENYLIST_FILE = join(HERE, 'secret-denylist.json')
+const DENYLIST_REPO_PATH = 'scripts/secret-denylist.json'
 
 // Inline suppression: append this token to a line to allow it (rare, audited).
+// It suppresses the SHAPE rules on that line — it never suppresses a `denylist`
+// (crown-jewel) hit, and its use is surfaced as a `suppressed` warning so the
+// bypass is auditable in review.
 const ALLOW_PRAGMA = 'secret-scan-allow'
+
+// Redact match values in CI logs (world-readable) — see header note.
+const REDACT = !!(process.env.CI || process.env.GITHUB_ACTIONS)
+const MAX_FILE_BYTES = 5 * 1024 * 1024
 
 // ---------------------------------------------------------------------------
 // IP classification
@@ -32,17 +45,19 @@ const ALLOW_PRAGMA = 'secret-scan-allow'
 const ip2n = (ip) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0)
 const inRange = (n, a, b) => n >= ip2n(a) && n <= ip2n(b)
 
-/** Documentation/example ranges that are always fine (RFC5737 + a couple of
- *  canonical private examples the repo already used for fixtures). */
+/** Documentation/example ranges that are always fine. RFC5737 is the real
+ *  answer; the RFC1918 example blocks are deliberately NARROW /24s (not whole
+ *  /16s) so real home/lab/docker addressing like 192.168.5.x or 10.4.x still
+ *  hits the private-ip BLOCK path — prefer RFC5737 for new fixtures. */
 function isExampleIp(ip) {
   const n = ip2n(ip)
   return (
     inRange(n, '192.0.2.0', '192.0.2.255') || // RFC5737 TEST-NET-1
     inRange(n, '198.51.100.0', '198.51.100.255') || // RFC5737 TEST-NET-2
     inRange(n, '203.0.113.0', '203.0.113.255') || // RFC5737 TEST-NET-3
-    inRange(n, '192.168.0.0', '192.168.255.255') || // canonical LAN example
-    inRange(n, '10.0.0.0', '10.0.255.255') || // 10.0.x — allowed example block
-    inRange(n, '172.16.0.0', '172.16.255.255') // 172.16.x — allowed example block
+    inRange(n, '192.168.0.0', '192.168.1.255') || // 192.168.0-1.x example only
+    inRange(n, '10.0.0.0', '10.0.0.255') || // 10.0.0.x example only
+    inRange(n, '172.16.0.0', '172.16.0.255') // 172.16.0.x example only
   )
 }
 
@@ -72,14 +87,19 @@ const octetsValid = (ip) =>
 // rules
 
 const IPV4 = /\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g
+// ULA (fc00::/7 → fc../fd..) and link-local (fe80::) internal IPv6. Requires ≥2
+// colon groups so it doesn't fire on stray hex.
+const IPV6_INTERNAL = /\b(?:f[cd][0-9a-f]{2}|fe80)(?::[0-9a-f]{0,4}){2,}\b/gi
+// A standard-base64 32-byte value (== a WireGuard key). NOTE: this also matches
+// any other 32-byte base64 blob (raw sha256, other keys) — a known FP class;
+// use `secret-scan-allow` for audited fixtures. Kept BLOCK because a real key
+// leak is worse than an occasional pragma.
 const WG_KEY = /\b[A-Za-z0-9+/]{43}=(?![A-Za-z0-9+/=])/g
 // `.lan` as the final label only — the (?!\.) stops `foo.lan.com` false hits.
 const LAN_HOST = /\b[a-z0-9][a-z0-9-]*\.lan\b(?!\.)/gi
 
-/** Return an array of {rule, match, severity} findings for one line of text.
- *  severity 'block' fails the scan; 'warn' prints but doesn't fail (generic
- *  public IPs are noisy — DNS servers, vendor ranges, canonical examples — so
- *  they warn; our *actual* public IPs are hard-blocked by the hashed denylist). */
+/** Shape-rule findings for one line. Returns [] when the allow pragma is present
+ *  (pragma suppresses SHAPE rules only — the denylist runs regardless). */
 function scanLine(line) {
   if (line.includes(ALLOW_PRAGMA)) return []
   const out = []
@@ -108,13 +128,10 @@ function scanLine(line) {
           },
     )
   }
+  for (const m of line.matchAll(IPV6_INTERNAL))
+    out.push({ rule: 'ipv6-internal', severity: 'block', match: m[0], hint: 'internal IPv6 (ULA/link-local)' })
   for (const m of line.matchAll(WG_KEY))
-    out.push({
-      rule: 'wg-key',
-      severity: 'block',
-      match: m[0],
-      hint: 'WireGuard/base64 key shape',
-    })
+    out.push({ rule: 'wg-key', severity: 'block', match: m[0], hint: 'WireGuard/base64 key shape' })
   for (const m of line.matchAll(LAN_HOST))
     out.push({ rule: 'lan-host', severity: 'block', match: m[0], hint: 'internal .lan hostname' })
 
@@ -124,37 +141,41 @@ function scanLine(line) {
 // ---------------------------------------------------------------------------
 // hashed denylist — exact crown-jewel strings, matched without storing them
 
+const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex')
+
+/** Parse a denylist JSON blob → lowercased 64-hex Set. Accepts A-F (folds to
+ *  lowercase) so a hand-edited entry can't silently drop. */
+function parseDenyHashes(json) {
+  return new Set((json.sha256 ?? []).map((h) => String(h).toLowerCase()).filter((h) => /^[0-9a-f]{64}$/.test(h)))
+}
+
 // Fail CLOSED: a missing/corrupt/empty denylist must error, never silently
 // disable crown-jewel protection. (Tests pass their own hashes and don't call
 // this.) Exported so a self-test can assert it stays populated.
 export function loadDenyHashes() {
   if (!existsSync(DENYLIST_FILE)) throw new Error(`denylist missing: ${DENYLIST_FILE}`)
-  const j = JSON.parse(readFileSync(DENYLIST_FILE, 'utf8')) // throw on corrupt = fail closed
-  const hashes = (j.sha256 ?? []).filter((h) => /^[0-9a-f]{64}$/.test(h))
-  if (!hashes.length) throw new Error(`denylist has no valid sha256 entries: ${DENYLIST_FILE}`)
-  return new Set(hashes)
+  const hashes = parseDenyHashes(JSON.parse(readFileSync(DENYLIST_FILE, 'utf8'))) // throw on corrupt = fail closed
+  if (!hashes.size) throw new Error(`denylist has no valid sha256 entries: ${DENYLIST_FILE}`)
+  return hashes
 }
-const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex')
 
-/** Tokens we hash-check: IPs (with/without CIDR), base64 keys, .lan hosts. */
+/** Tokens hash-checked: IPs (bare + CIDR), base64 keys, .lan hosts (lowercased
+ *  so Box.LAN matches a box.lan entry). NOT gated by the allow pragma — crown
+ *  jewels can never be pragma-bypassed. */
 function denylistHits(line, denyHashes) {
-  if (!denyHashes.size || line.includes(ALLOW_PRAGMA)) return []
+  if (!denyHashes.size) return []
   const tokens = new Set()
   for (const m of line.matchAll(IPV4)) {
     tokens.add(m[0]) // 203.0.113.7/24
     tokens.add(m[0].split('/')[0]) // 203.0.113.7
   }
+  for (const m of line.matchAll(IPV6_INTERNAL)) tokens.add(m[0].toLowerCase())
   for (const m of line.matchAll(WG_KEY)) tokens.add(m[0])
-  for (const m of line.matchAll(LAN_HOST)) tokens.add(m[0])
+  for (const m of line.matchAll(LAN_HOST)) tokens.add(m[0].toLowerCase())
   const out = []
   for (const t of tokens)
     if (denyHashes.has(sha256(t)))
-      out.push({
-        rule: 'denylist',
-        severity: 'block',
-        match: t,
-        hint: 'exact known-sensitive value',
-      })
+      out.push({ rule: 'denylist', severity: 'block', match: t, hint: 'exact known-sensitive value' })
   return out
 }
 
@@ -165,29 +186,47 @@ export function scanText(text, { denyHashes = new Set() } = {}) {
   const findings = []
   const lines = text.split('\n')
   for (let i = 0; i < lines.length; i++) {
-    for (const f of scanLine(lines[i])) findings.push({ ...f, line: i + 1 })
-    for (const f of denylistHits(lines[i], denyHashes)) findings.push({ ...f, line: i + 1 })
+    const line = lines[i]
+    for (const f of scanLine(line)) findings.push({ ...f, line: i + 1 })
+    // Surface pragma use as an auditable warning (it silences shape rules).
+    if (line.includes(ALLOW_PRAGMA))
+      findings.push({ rule: 'suppressed', severity: 'warn', match: '', hint: `${ALLOW_PRAGMA} used`, line: i + 1 })
+    for (const f of denylistHits(line, denyHashes)) findings.push({ ...f, line: i + 1 })
   }
   return findings
 }
 
 // Exported for unit tests.
-export const _internals = { isExampleIp, isIgnorableIp, scanLine, sha256 }
+export const _internals = { isExampleIp, isIgnorableIp, octetsValid, scanLine, denylistHits, sha256 }
 
 // ---------------------------------------------------------------------------
 // modes (only run when invoked as a CLI, not when imported by tests)
 
+/** Added lines from the staged diff, with REAL file line numbers parsed from
+ *  the @@ hunk headers (-U0 → each added line advances the +side counter). */
 function stagedAddedLines() {
-  // Added lines in the staged diff, prefixed with their file for reporting.
   const diff = execFileSync('git', ['diff', '--cached', '--unified=0', '--no-color'], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   })
   const blocks = []
   let file = ''
+  let lineNo = 0
   for (const line of diff.split('\n')) {
-    if (line.startsWith('+++ b/')) file = line.slice(6)
-    else if (line.startsWith('+') && !line.startsWith('+++')) blocks.push({ file, text: line.slice(1) })
+    if (line.startsWith('+++ b/')) {
+      file = line.slice(6)
+      continue
+    }
+    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)/)
+    if (hunk) {
+      lineNo = Number(hunk[1])
+      continue
+    }
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      blocks.push({ file, text: line.slice(1), line: lineNo })
+      lineNo++
+    }
+    // '-' and header lines don't advance the +side counter.
   }
   return blocks
 }
@@ -201,7 +240,6 @@ function trackedFiles() {
 const SKIP = [
   /^scripts\/secret-denylist\.json$/,
   /^scripts\/secret-scan\.(mjs|test\.mjs)$/, // the scanner + its fixtures ARE detection patterns/constants
-
   /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/,
   /(^|\/)node_modules\//,
   /(^|\/)\.nx\//,
@@ -210,13 +248,40 @@ const SKIP = [
 ]
 const skip = (f) => SKIP.some((re) => re.test(f))
 
-/** Binary-content guard: a NUL byte in the first 8KB → treat as binary, skip.
- *  Catches unlisted binary extensions so we never scan (or false-positive on)
- *  compiled blobs. */
+/** Binary-content guard: a NUL byte in the first 8KB → treat as binary, skip. */
 function isBinary(buf) {
   const n = Math.min(buf.length, 8192)
   for (let i = 0; i < n; i++) if (buf[i] === 0) return true
   return false
+}
+
+/** A PR can weaken crown-jewel protection by deleting hashes from the denylist
+ *  in the same change that introduces the plaintext (generic public-ip only
+ *  warns). Compare against origin/main and fail if any hash was removed. Returns
+ *  null when main's copy can't be read (shallow clone / new file) — caller warns
+ *  and leans on CODEOWNERS. */
+function denylistRemovedVsMain(current) {
+  let mainJson
+  try {
+    mainJson = execFileSync('git', ['show', `origin/main:${DENYLIST_REPO_PATH}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+  } catch {
+    return null
+  }
+  return removedHashes(parseDenyHashes(JSON.parse(mainJson)), current)
+}
+
+/** Pure core of the tamper check: baseline hashes present but no longer in
+ *  current = a removal (must be blocked). Exported for tests. */
+export const removedHashes = (baseline, current) => [...baseline].filter((h) => !current.has(h))
+
+/** Match value shown in output — redacted (8-char hash) in CI to avoid
+ *  re-leaking a caught secret into world-readable logs. */
+function shown(f) {
+  if (!f.match) return ''
+  return REDACT ? `<redacted:${sha256(f.match).slice(0, 8)}>` : f.match
 }
 
 /** @returns true if any BLOCK-severity finding was reported (→ nonzero exit). */
@@ -227,15 +292,16 @@ function report(findings, where) {
   if (warns.length) {
     console.error(`\n⚠️  secret-scan: ${warns.length} warning(s) in ${where} (non-blocking):`)
     for (const f of warns)
-      console.error(`  ${f.file ?? ''}:${f.line}  [${f.rule}] ${f.match}  — ${f.hint}`)
+      console.error(`  ${f.file ?? ''}:${f.line}  [${f.rule}] ${shown(f)}  — ${f.hint}`)
   }
   if (blocks.length) {
     console.error(`\n❌ secret-scan: ${blocks.length} blocking finding(s) in ${where}:\n`)
     for (const f of blocks)
-      console.error(`  ${f.file ?? ''}:${f.line}  [${f.rule}] ${f.match}  — ${f.hint}`)
+      console.error(`  ${f.file ?? ''}:${f.line}  [${f.rule}] ${shown(f)}  — ${f.hint}`)
     console.error(
       `\nThis repo is PUBLIC. Use RFC5737 example IPs (192.0.2.x / 198.51.100.x / 203.0.113.x).\n` +
-        `Real value that must ship? append "${ALLOW_PRAGMA}" to the line (audited).\n`,
+        (REDACT ? 'Values redacted in CI — run the pre-commit hook locally to see them.\n' : '') +
+        `Real value that must ship? append "${ALLOW_PRAGMA}" to the line (audited; never bypasses the denylist).\n`,
     )
   }
   return blocks.length > 0
@@ -247,24 +313,41 @@ function main() {
   let findings = []
 
   if (mode === '--staged') {
-    for (const { file, text } of stagedAddedLines()) {
+    for (const { file, text, line } of stagedAddedLines()) {
       if (skip(file)) continue
-      for (const f of scanText(text, { denyHashes })) findings.push({ ...f, file, line: '+' })
+      for (const f of scanText(text, { denyHashes })) findings.push({ ...f, file, line })
     }
     if (report(findings, 'staged changes')) process.exit(1)
   } else if (mode === '--tracked') {
+    // Integrity: no crown-jewel hash may disappear vs origin/main.
+    const removed = denylistRemovedVsMain(denyHashes)
+    if (removed === null)
+      console.error('⚠️  secret-scan: could not compare denylist against origin/main (CODEOWNERS is the backstop)')
+    else if (removed.length) {
+      console.error(
+        `\n❌ secret-scan: ${removed.length} denylist entr(y/ies) REMOVED vs origin/main — ` +
+          `crown-jewel protection must not shrink without an explicit, reviewed reason.\n`,
+      )
+      process.exit(1)
+    }
+    let unreadable = 0
     for (const file of trackedFiles()) {
       if (skip(file)) continue
       let buf
       try {
         buf = readFileSync(file)
       } catch {
+        unreadable++
+        console.error(`  unreadable (not scanned): ${file}`)
         continue
       }
       if (isBinary(buf)) continue
-      for (const f of scanText(buf.toString('utf8'), { denyHashes })) findings.push({ ...f, file })
+      const text = buf.length > MAX_FILE_BYTES ? buf.subarray(0, MAX_FILE_BYTES).toString('utf8') : buf.toString('utf8')
+      if (buf.length > MAX_FILE_BYTES) console.error(`  large file, scanned first ${MAX_FILE_BYTES} bytes: ${file}`)
+      for (const f of scanText(text, { denyHashes })) findings.push({ ...f, file })
     }
-    if (report(findings, 'tracked files')) process.exit(1)
+    const bad = report(findings, 'tracked files')
+    if (bad || unreadable > 0) process.exit(1)
   } else if (mode === '--text') {
     const text = readFileSync(0, 'utf8') // stdin
     findings = scanText(text, { denyHashes }).map((f) => ({ ...f, file: '<input>' }))

@@ -220,13 +220,13 @@ fun SettingMeshPage() {
                         MeshTextField(
                             value = mesh.wgAddress,
                             label = "This device's address",
-                            placeholder = "e.g. 192.168.99.6/32",
+                            placeholder = "e.g. 192.0.2.6/32",
                             onSave = { v -> update { it.copy(wgAddress = v) } },
                         )
                         MeshTextField(
                             value = mesh.wgAllowedIps,
                             label = "Allowed IPs (mesh subnet)",
-                            placeholder = "e.g. 192.168.99.0/24",
+                            placeholder = "e.g. 192.0.2.0/24",
                             onSave = { v -> update { it.copy(wgAllowedIps = v) } },
                         )
                         MeshTextField(

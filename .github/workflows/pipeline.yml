@@ -37,6 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Fetch main (denylist-tamper baseline)
+        run: git fetch --no-tags --depth=1 origin main || echo "no origin/main yet — CODEOWNERS is the backstop"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22

@@ -74,7 +74,7 @@
     "compose:down": "docker compose -f infra/docker/rivetos/docker-compose.yml down",
     "clean": "find packages plugins -path '*/src/*.d.ts' -delete && find packages plugins -path '*/src/*.d.ts.map' -delete && echo 'Cleaned build artifacts from src/'",
     "lint:boundaries": "node scripts/boundary-probe.mjs",
-    "prepare": "git config core.hooksPath scripts/git-hooks || true",
+    "prepare": "node scripts/install-hooks.mjs",
     "scan:secrets": "node scripts/secret-scan.mjs --tracked"
   },
   "bugs": {
