@@ -97,6 +97,7 @@ object RivetRuntime {
         ensureNetTools(context)
         ensureDenServer(context)
         ensureRivethubWeb(context)
+        ensureFullRuntimeConfig(context)
         return@synchronized null
     }
 
@@ -116,6 +117,9 @@ object RivetRuntime {
      * [DEN_PORT]. Pure proot+node launch of the pre-bundled esbuild file; no token (loopback
      * only). Terminal routes stay off this increment (no arm64 pty.node — den-server returns
      * 503 for those). Caller supervises via [RivetRuntimeService] alongside the :8765 bridge.
+     *
+     * Prefer [fullRuntimeCommand] when [isFullRuntimeProvisioned] — the full runtime is a
+     * superset (same gateway + core chat channel). This standalone path remains the fallback.
      */
     fun denCommand(context: Context): RuntimeCommand {
         val argv = listOf(prootBinary(context)) + prootArgvTail(context) +
@@ -127,6 +131,61 @@ object RivetRuntime {
             "RIVETOS_DEN_STATE_DIR" to "/home/rivet/.rivetos/den",
             // Deliberately no RIVETOS_DEN_TERM — terminals off until arm64 pty.node lands.
         )
+        return RuntimeCommand(argv, env, hostHome(context))
+    }
+
+    /**
+     * True when the full RivetOS monorepo runtime is present in the rootfs
+     * (`/home/rivet/rivetos/dist/rivetos.js`). Provisioning (clone/build) is out of band;
+     * the app only detects and launches what's already there.
+     */
+    fun isFullRuntimeProvisioned(context: Context): Boolean =
+        File(rootfsDir(context), "home/rivet/rivetos/dist/rivetos.js").exists()
+
+    /**
+     * Host-side write of the full-runtime config into the rootfs if absent. App owns the
+     * rootfs files (same pattern as resolv.conf / agent context). Den port + static_dir
+     * live here so [fullRuntimeCommand] does not need RIVETOS_DEN_* env overrides.
+     */
+    fun ensureFullRuntimeConfig(context: Context) {
+        try {
+            val cfg = File(rootfsDir(context), "home/rivet/config.yaml")
+            if (cfg.exists()) return
+            cfg.parentFile?.mkdirs()
+            // Exact content (host-side write; config.yaml drives den host/port/static_dir).
+            cfg.writeText(
+                "runtime:\n" +
+                    "  workspace: /home/rivet/.rivetos/workspace\n" +
+                    "  default_agent: rivet\n" +
+                    "agents:\n" +
+                    "  rivet:\n" +
+                    "    provider: claude-cli\n" +
+                    "providers:\n" +
+                    "  claude-cli:\n" +
+                    "    model: claude-opus-4-8\n" +
+                    "den:\n" +
+                    "  enabled: true\n" +
+                    "  host: 127.0.0.1\n" +
+                    "  port: 5174\n" +
+                    "  static_dir: /home/rivet/rivethub-web/dist\n"
+            )
+            Log.i(TAG, "wrote full-runtime config at ${cfg.absolutePath}")
+        } catch (t: Throwable) {
+            Log.e(TAG, "ensureFullRuntimeConfig failed", t)
+        }
+    }
+
+    /**
+     * Full RivetOS runtime (`rivetos start -c config.yaml`) on loopback [DEN_PORT] —
+     * same proot identity/env/cwd as [denCommand], but runs the monorepo entrypoint so
+     * chat (`/api/sessions`, gateway WS) works. Den settings come from config.yaml only
+     * (no RIVETOS_DEN_* env). Caller uses the same RivetDen supervise slot as the
+     * standalone den — never both at once (port collision).
+     */
+    fun fullRuntimeCommand(context: Context): RuntimeCommand {
+        val argv = listOf(prootBinary(context)) + prootArgvTail(context) +
+            listOf("/usr/local/bin/node", FULL_RUNTIME_JS, "start", "-c", FULL_RUNTIME_CONFIG)
+        val env = baseEnv(context)
         return RuntimeCommand(argv, env, hostHome(context))
     }
 
@@ -732,6 +791,11 @@ object RivetRuntime {
     // Gzipped tar of rivethub-web dist → home/rivet/rivethub-web/dist/. Same .bin/noCompress trick.
     private const val WEB_OVERLAY_ASSET = "rivet-web-overlay.bin"
     private const val WEB_OVERLAY_REV = "1"
+
+    /** Guest path to the full RivetOS monorepo entrypoint (when provisioned in-rootfs). */
+    const val FULL_RUNTIME_JS = "/home/rivet/rivetos/dist/rivetos.js"
+    /** Guest path to the full-runtime config written by [ensureFullRuntimeConfig]. */
+    const val FULL_RUNTIME_CONFIG = "/home/rivet/config.yaml"
 
     /** Loopback port for the den-server gateway (rivethub-web + den API/WS). */
     const val DEN_PORT = 5174
