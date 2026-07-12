@@ -58,15 +58,14 @@ import me.rerere.hugeicons.HugeIcons
 import dev.rivet.app.data.datastore.RIVET_SSH_PORT
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.net.RivetVpn
-import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.service.RivetRuntimeService
 import me.rerere.hugeicons.stroke.ChartColumn
 import me.rerere.hugeicons.stroke.Code
 import me.rerere.hugeicons.stroke.Connect
-import me.rerere.hugeicons.stroke.Earth
 import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.InLove
 import me.rerere.hugeicons.stroke.LanguageCircle
+import me.rerere.hugeicons.stroke.LookTop
 import me.rerere.hugeicons.stroke.PencilEdit01
 import me.rerere.hugeicons.stroke.Search01
 import me.rerere.hugeicons.stroke.Settings03
@@ -78,7 +77,8 @@ import dev.rivet.app.data.datastore.Settings
 import dev.rivet.app.data.model.Assistant
 import dev.rivet.app.data.model.Conversation
 import dev.rivet.app.data.repository.ConversationRepository
-import dev.rivet.app.ui.components.ai.AssistantPicker
+import dev.rivet.app.ui.components.ai.AssistantPickerSheet
+import dev.rivet.app.ui.components.node.NodeSwitcher
 import dev.rivet.app.ui.components.ui.BackupReminderCard
 import dev.rivet.app.ui.components.ui.Greeting
 import dev.rivet.app.ui.components.ui.Tooltip
@@ -150,6 +150,8 @@ fun ChatDrawerContent(
 
     // Menu popup 状态
     var showMenuPopup by remember { mutableStateOf(false) }
+    // Assistants moved out of the drawer header slot — still reachable from the menu.
+    var showAssistantPicker by remember { mutableStateOf(false) }
 
     ModalDrawerSheet(
         modifier = Modifier.width(300.dp)
@@ -257,23 +259,12 @@ fun ChatDrawerContent(
                 }
             )
 
-            // 助手选择器
-            AssistantPicker(
+            // Node switcher (replaces the drawer assistant-profile picker — Phil's ask).
+            // Assistants remain chat-config; selection lives in Settings / the menu below.
+            NodeSwitcher(
                 settings = settings,
-                onUpdateSettings = {
-                    vm.updateSettings(it)
-                    scope.launch {
-                        val id = if (context.readBooleanPreference("create_new_conversation_on_start", true)) {
-                            Uuid.random()
-                        } else {
-                            repo.getConversationsOfAssistant(it.assistantId)
-                                .first()
-                                .firstOrNull()
-                                ?.id ?: Uuid.random()
-                        }
-                        navigateToChatPage(navigator = navController, chatId = id)
-                    }
-                },
+                onUpdateSettings = { vm.updateSettings(it) },
+                navController = navController,
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -300,6 +291,14 @@ fun ChatDrawerContent(
                         expanded = showMenuPopup,
                         onDismissRequest = { showMenuPopup = false }
                     ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.assistant_page_title)) },
+                            leadingIcon = { Icon(HugeIcons.LookTop, null) },
+                            onClick = {
+                                showMenuPopup = false
+                                showAssistantPicker = true
+                            }
+                        )
                         if (settings.developerMode) {
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.chat_page_menu_image_generation)) },
@@ -401,6 +400,28 @@ fun ChatDrawerContent(
         )
     }
 
+    // Assistant selection (formerly the drawer header picker; now menu/settings entry).
+    if (showAssistantPicker) {
+        AssistantPickerSheet(
+            settings = settings,
+            onUpdateSettings = { vm.updateSettings(it) },
+            onDismiss = { showAssistantPicker = false },
+            onAfterSelect = { updated ->
+                scope.launch {
+                    val id = if (context.readBooleanPreference("create_new_conversation_on_start", true)) {
+                        Uuid.random()
+                    } else {
+                        repo.getConversationsOfAssistant(updated.assistantId)
+                            .first()
+                            .firstOrNull()
+                            ?.id ?: Uuid.random()
+                    }
+                    navigateToChatPage(navigator = navController, chatId = id)
+                }
+            },
+        )
+    }
+
     // 移动到助手 Bottom Sheet
     if (showMoveToAssistantSheet) {
         ModalBottomSheet(
@@ -450,10 +471,9 @@ fun ChatDrawerContent(
 
 /**
  * Drawer controls for the on-device Rivet runtime, separate from chat sessions:
- *  - **Hub** — embedded WebView of the full local runtime (chat + den + node switcher),
  *  - a standalone root **Terminal** (a proot bash shell, not tied to any conversation), and
  *  - the **SSH server** toggle (dropbear via [RivetRuntimeService], persisted across restarts).
- * Room here for mesh-node status next (track D).
+ * Hub access is the drawer [NodeSwitcher] (select local node → WebView :5174).
  */
 @Composable
 private fun RivetNodeControls(navController: Navigator, drawerOpen: Boolean) {
@@ -486,42 +506,6 @@ private fun RivetNodeControls(navController: Navigator, drawerOpen: Boolean) {
         Column {
             // Node health at a glance — polls only while the drawer is open; tap to re-poll.
             NodeStatusStrip(active = drawerOpen)
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-            // Hub — full on-device runtime (Phase 3): chat + den + drawer node switcher.
-            // Additive: native chat stays as fallback; retiring it is a later increment.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onClick {
-                        navController.navigate(
-                            Screen.WebView(url = "http://127.0.0.1:${RivetRuntime.DEN_PORT}")
-                        )
-                    }
-                    .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Icon(
-                    imageVector = HugeIcons.Earth,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Hub",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "local runtime · :${RivetRuntime.DEN_PORT}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
