@@ -57,7 +57,7 @@
       android:configChanges="keyboardHidden|orientation|screenSize"
       android:exported="true"
       android:importantForAutofill="noExcludeDescendants"
-      android:theme="@style/Theme.Rivethub"
+      android:theme="@style/Theme.Rivethub.Splash"
       android:windowSoftInputMode="adjustResize">
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />
