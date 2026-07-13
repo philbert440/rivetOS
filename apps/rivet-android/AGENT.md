@@ -36,6 +36,7 @@ nx apk @rivetos/rivet-android
 - Chat follows node via `NodeChatBackend`: local → `http://127.0.0.1:8765/v1` (bridge); remote → `{denUrl}/v1`.
 - `activeNodeDenUrl` and Rivet provider `baseUrl` always move together.
 - Terminal: local proot PTY · remote den WS. Chip for any Rivet agent session; resync is local-only.
+- **Remote drawer list** = den `GET /api/terminal/harness-sessions` (node+harness scoped). Open imports transcript via `/harness-sessions/:id/transcript` into Room with **session id = conversation id** so Terminal escalate resumes the same join key.
 
 **Runtime:** proot/busybox/dropbear jniLibs · bridge `:8765` · optional full runtime den `:5174` · a11y control `:9876` · mesh config in Settings (no `RIVET_*` BuildConfig secrets).
 

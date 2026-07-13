@@ -233,8 +233,13 @@ fun ChatDrawerContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                onClick = {
-                    navigateToChatPage(navController, it.id)
+                onClick = { conv ->
+                    // Remote node: import harness transcript first so the chat
+                    // view + Terminal escalate share the node session id.
+                    scope.launch {
+                        val id = drawerVm.prepareOpenConversation(conv)
+                        navigateToChatPage(navController, id)
+                    }
                 },
                 onRegenerateTitle = {
                     vm.generateTitle(it, true)
