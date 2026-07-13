@@ -648,9 +648,7 @@ export function createDevicesRoutes(opts: {
   const log = opts.log ?? (() => {})
   const now = opts.now ?? Date.now
   const file =
-    opts.rosterPath?.trim() ||
-    config.rosterPath?.trim() ||
-    join(opts.stateDir, 'mesh-devices.json')
+    opts.rosterPath?.trim() || config.rosterPath.trim() || join(opts.stateDir, 'mesh-devices.json')
   const lockPath = `${file}.lock`
   const processMutex = makeMutex()
   /** In-process mutex, then cross-node file lock, then re-read inside fn. */
