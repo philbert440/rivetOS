@@ -78,7 +78,9 @@ import dev.rivet.app.data.ai.SessionTranscript
 import dev.rivet.app.data.ai.SessionTurn
 import dev.rivet.app.data.datastore.DEFAULT_AUTO_MODEL_ID
 import dev.rivet.app.data.datastore.NodeChatBackend
+import dev.rivet.app.data.datastore.NodeRosterDefaults
 import dev.rivet.app.data.datastore.RIVET_GROK_MODEL_ID
+import dev.rivet.app.data.datastore.Settings
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.data.datastore.findModelById
@@ -95,6 +97,7 @@ import dev.rivet.app.data.model.replaceRegexes
 import dev.rivet.app.data.model.toMessageNode
 import dev.rivet.app.data.repository.ConversationRepository
 import dev.rivet.app.data.repository.MemoryRepository
+import dev.rivet.app.ui.pages.terminal.DenHarnessClient
 import dev.rivet.app.ui.pages.terminal.TerminalSessionStore
 import dev.rivet.app.web.BadRequestException
 import dev.rivet.app.web.NotFoundException
@@ -312,6 +315,133 @@ class ChatService(
                 newConversation = true
             ).updateCurrentMessages(assistant.presetMessages)
             updateConversation(conversationId, newConversation)
+        }
+        // Remote node: hydrate/refresh from the node's harness store so the
+        // native UI shows the same history as Terminal / RivetHub web.
+        maybeImportHarnessTranscript(conversationId)
+    }
+
+    /**
+     * Pull harness sessions for the active remote den (empty on local / errors).
+     * Used by the drawer so conversation list is node-scoped.
+     */
+    suspend fun listRemoteHarnessSessions(): List<DenHarnessClient.Session> =
+        withContext(Dispatchers.IO) {
+            val settings = settingsStore.settingsFlowRaw.first()
+            val den = settings.activeNodeDenUrl.ifBlank { return@withContext emptyList() }
+            if (NodeRosterDefaults.isLocalDenUrl(den)) return@withContext emptyList()
+            DenHarnessClient.tryList(den)
+        }
+
+    /**
+     * Import (or refresh) a remote harness session into Room and the live
+     * conversation flow. Conversation id **is** the harness session id so
+     * Terminal escalate / den spawn-or-get share one join key.
+     *
+     * @return the imported conversation, or null if den unreachable / unknown id
+     */
+    suspend fun importHarnessSession(
+        sessionId: String,
+        titleHint: String? = null,
+        commandHint: String? = null,
+    ): Conversation? = withContext(Dispatchers.IO) {
+        val settings = settingsStore.settingsFlowRaw.first()
+        val den = settings.activeNodeDenUrl.ifBlank { return@withContext null }
+        if (NodeRosterDefaults.isLocalDenUrl(den)) return@withContext null
+        val convUuid = parseHarnessSessionUuid(sessionId) ?: return@withContext null
+        val tx = DenHarnessClient.tryTranscript(den, sessionId) ?: return@withContext null
+        val command = tx.command.ifBlank { commandHint.orEmpty() }.ifBlank { "grok" }
+        val assistant = settings.getCurrentAssistant()
+        val modelId = modelUuidForHarnessCommand(command)
+        val nodes = tx.turns.mapNotNull { turn ->
+            val role = turn.role.lowercase()
+            val text = turn.text
+            if (text.isBlank()) return@mapNotNull null
+            val msg = when (role) {
+                "assistant" -> UIMessage.assistant(text).copy(modelId = modelId)
+                "user" -> UIMessage.user(text)
+                else -> return@mapNotNull null
+            }
+            msg.toMessageNode()
+        }
+        val title = titleHint?.takeIf { it.isNotBlank() }
+            ?: tx.turns.firstOrNull { it.role.equals("user", true) && it.text.isNotBlank() }
+                ?.text?.trim()?.take(80)
+            ?: sessionId.take(8)
+        val updatedAt = java.time.Instant.now()
+        val conversation = Conversation(
+            id = convUuid,
+            assistantId = assistant.id,
+            title = title,
+            messageNodes = nodes,
+            createAt = updatedAt,
+            updateAt = updatedAt,
+            newConversation = false,
+        )
+        getOrCreateSession(convUuid)
+        updateConversation(convUuid, conversation)
+        val exists = conversationRepo.existsConversationById(convUuid)
+        if (exists) conversationRepo.updateConversation(conversation)
+        else conversationRepo.insertConversation(conversation)
+        // Point the Rivet picker at this harness's agent so Terminal escalate
+        // maps to the right roster command.
+        selectHarnessModel(settings, command)
+        Log.i(TAG, "imported harness $sessionId ($command) turns=${nodes.size}")
+        conversation
+    }
+
+    /** Best-effort refresh when opening a conversation on a remote node. */
+    private suspend fun maybeImportHarnessTranscript(conversationId: Uuid) {
+        val settings = settingsStore.settingsFlowRaw.first()
+        val den = settings.activeNodeDenUrl
+        if (den.isBlank() || NodeRosterDefaults.isLocalDenUrl(den)) return
+        // Only refresh if the den actually has this session (avoid wiping a
+        // phone-local draft that happens to share a UUID).
+        val sessions = DenHarnessClient.tryList(den)
+        val hit = sessions.firstOrNull { it.id.equals(conversationId.toString(), ignoreCase = true) }
+            ?: return
+        importHarnessSession(hit.id, hit.title, hit.command)
+    }
+
+    private fun modelUuidForHarnessCommand(command: String): Uuid =
+        when (command.lowercase()) {
+            "claude" -> DEFAULT_AUTO_MODEL_ID
+            "grok", "grok-fast" -> RIVET_GROK_MODEL_ID
+            else -> NodeChatBackend.stableAgentModelId(command)
+        }
+
+    private suspend fun selectHarnessModel(settings: Settings, command: String) {
+        val key = when (command.lowercase()) {
+            "claude" -> listOf("rivet-claude", "claude")
+            "grok", "grok-fast" -> listOf("rivet-grok", "grok", "grok-fast")
+            "hermes" -> listOf("hermes", "rivet-hermes")
+            else -> listOf(command)
+        }
+        val model = settings.providers
+            .flatMap { it.models }
+            .firstOrNull { m -> key.any { k -> m.modelId.equals(k, ignoreCase = true) } }
+            ?: return
+        if (settings.chatModelId == model.id) return
+        settingsStore.update { it.copy(chatModelId = model.id) }
+    }
+
+    companion object {
+        /** Harness session ids for claude/grok are UUIDs; others map deterministically. */
+        fun parseHarnessSessionUuid(id: String): Uuid? {
+            val t = id.trim()
+            if (t.isEmpty()) return null
+            return try {
+                Uuid.parse(t)
+            } catch (_: Exception) {
+                try {
+                    Uuid.parse(
+                        java.util.UUID.nameUUIDFromBytes("harness:$t".toByteArray())
+                            .toString(),
+                    )
+                } catch (_: Exception) {
+                    null
+                }
+            }
         }
     }
 
