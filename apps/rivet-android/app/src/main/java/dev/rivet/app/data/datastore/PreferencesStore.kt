@@ -602,9 +602,12 @@ data class Settings(
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
     val meshConfig: MeshConfig = MeshConfig(),
-    /** Saved RivetOS nodes for the drawer node switcher (name + den/hub URL). */
+    /** Saved RivetOS nodes for the drawer node switcher (name + den URL). */
     val nodeRoster: List<RosterNode> = emptyList(),
-    /** Active node's den/hub base URL (e.g. http://127.0.0.1:5174). */
+    /**
+     * Active node's den base URL (e.g. http://127.0.0.1:5174). Native chat repoints the
+     * Rivet provider from this — local → bridge :8765/v1, remote → {denUrl}/v1.
+     */
     val activeNodeDenUrl: String = "",
 ) {
     companion object {
