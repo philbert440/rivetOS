@@ -13,8 +13,10 @@ val DEFAULT_AUTO_MODEL_ID = Uuid.parse("b7055fb4-39f9-4042-a88a-0d80ed76cf08")
 // CLI turns synced back into a thread with the correct agent.
 val RIVET_GROK_MODEL_ID = Uuid.parse("a1b2c3d4-0002-4002-8002-000000000002")
 
-// The on-device Rivet bridge provider. Chat requests through this provider get a
-// `x-rivet-conversation` header so the bridge maps them to one persistent CLI session.
+// The Rivet agent-session provider (stable id). Chat requests through this provider get
+// `x-rivet-conversation` headers so the backend maps them to one persistent agent session.
+// Its baseUrl is repointed when the user switches nodes (local bridge ↔ remote den `/v1`);
+// see [NodeChatBackend].
 val RIVET_BRIDGE_PROVIDER_ID = Uuid.parse("a8d2d463-e8c0-41f2-b89e-f5eb8e716cce")
 
 // Loopback bridge auth token + port. RivetRuntimeService writes this token into the
@@ -22,6 +24,10 @@ val RIVET_BRIDGE_PROVIDER_ID = Uuid.parse("a8d2d463-e8c0-41f2-b89e-f5eb8e716cce"
 // Loopback-only (127.0.0.1), so a fixed per-build token is acceptable.
 const val RIVET_BRIDGE_TOKEN = "1fi9y47WZqA64RjU8L9ROWzL"
 const val RIVET_BRIDGE_PORT = 8765
+
+/** @see NodeChatBackend.isAgentSessionProvider */
+fun isAgentSessionProvider(provider: dev.rivet.ai.provider.ProviderSetting?): Boolean =
+    NodeChatBackend.isAgentSessionProvider(provider)
 
 // Port for the app-managed dropbear SSH server (track B). Key-only auth (the rootfs
 // ships ~/.ssh/authorized_keys), runs as the non-root `rivet` user under proot. Toggled
@@ -39,7 +45,7 @@ val DEFAULT_PROVIDERS = listOf(
     ProviderSetting.OpenAI(
         id = RIVET_BRIDGE_PROVIDER_ID,
         name = "Rivet",
-        baseUrl = "http://127.0.0.1:$RIVET_BRIDGE_PORT/v1",
+        baseUrl = NodeChatBackend.LOCAL_BRIDGE_BASE_URL,
         apiKey = RIVET_BRIDGE_TOKEN,
         enabled = true,
         builtIn = true,

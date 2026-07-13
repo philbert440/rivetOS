@@ -19,7 +19,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.rivet.app.data.datastore.RIVET_BRIDGE_PORT
+import dev.rivet.app.data.datastore.NodeChatBackend
+import dev.rivet.app.data.datastore.NodeRosterDefaults
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.device.RivetAccessibilityService
 import dev.rivet.app.net.RivetVpn
@@ -28,6 +29,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import org.koin.compose.koinInject
 import java.net.HttpURLConnection
@@ -39,9 +41,9 @@ import java.net.URL
  * Compact node-health row for the drawer: one dot per subsystem, polled on a 20s ticker
  * ONLY while the drawer is open ([active]) — zero background battery cost. Tap re-polls.
  *
- *  - **agent**: the LLM bridge answering GET :8765/health (unauthenticated). The bridge only
- *    runs if the proot runtime is up, so this doubles as the runtime check (the service
- *    exposes no cheap process-alive state — deliberately folded rather than inventing IPC).
+ *  - **agent**: the ACTIVE chat backend — local bridge `GET :8765/health`, or remote den
+ *    `GET {denUrl}/healthz`. Follows [Settings.activeNodeDenUrl] so the strip matches what
+ *    native chat is talking to.
  *  - **a11y**: device control — the accessibility-service binding state, read in-process
  *    (the ControlServer lives inside that service), so it reacts instantly to the toggle.
  *  - **mesh**: WireGuard tunnel state straight from [RivetVpn] (no polling needed); the
@@ -55,7 +57,7 @@ fun NodeStatusStrip(
 ) {
     val context = LocalContext.current
 
-    var bridgeUp by remember { mutableStateOf<Boolean?>(null) }
+    var agentUp by remember { mutableStateOf<Boolean?>(null) }
     var datahubUp by remember { mutableStateOf<Boolean?>(null) }
     var onHomeWifi by remember { mutableStateOf(false) }
     var pollNonce by remember { mutableIntStateOf(0) }
@@ -64,20 +66,23 @@ fun NodeStatusStrip(
     val vpnEnabled by settingsStore.vpnEnabledFlow.collectAsStateWithLifecycle(initialValue = false)
     val vpnStatus by RivetVpn.status.collectAsStateWithLifecycle(initialValue = RivetVpn.Status.DOWN)
     val a11yUp by RivetAccessibilityService.connected.collectAsStateWithLifecycle()
+    val activeDenUrl by settingsStore.settingsFlow
+        .map { it.activeNodeDenUrl.ifBlank { NodeRosterDefaults.localDenUrl() } }
+        .collectAsStateWithLifecycle(initialValue = NodeRosterDefaults.localDenUrl())
 
-    LaunchedEffect(active, pollNonce) {
+    LaunchedEffect(active, pollNonce, activeDenUrl) {
         if (!active) return@LaunchedEffect
         while (isActive) {
             coroutineScope {
-                val bridge = async(Dispatchers.IO) {
-                    httpReachable("http://127.0.0.1:$RIVET_BRIDGE_PORT/health")
+                val agent = async(Dispatchers.IO) {
+                    httpReachable(NodeChatBackend.agentHealthUrlForNode(activeDenUrl))
                 }
                 val datahub = async(Dispatchers.IO) {
                     dev.rivet.app.net.MeshRuntimeConfig.current.sharedHost
                         .takeIf { it.isNotBlank() }?.let { tcpReachable(it, 5432) }
                 }
                 val home = async(Dispatchers.IO) { RivetVpn.isOnHomeNetwork(context) }
-                bridgeUp = bridge.await()
+                agentUp = agent.await()
                 datahubUp = datahub.await()
                 onHomeWifi = home.await()
             }
@@ -100,8 +105,8 @@ fun NodeStatusStrip(
     ) {
         StatusDot(
             label = "agent",
-            filled = bridgeUp == true,
-            color = when (bridgeUp) { true -> up; false -> down; null -> idle },
+            filled = agentUp == true,
+            color = when (agentUp) { true -> up; false -> down; null -> idle },
         )
         StatusDot(
             label = "a11y",

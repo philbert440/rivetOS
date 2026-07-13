@@ -1,6 +1,5 @@
 package dev.rivet.app.ui.components.node
 
-import android.net.Uri
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -37,37 +36,46 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.dokar.sonner.ToastType
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.ServerStack01
-import dev.rivet.app.Screen
+import dev.rivet.ai.provider.ProviderManager
+import dev.rivet.app.data.datastore.NodeChatBackend
 import dev.rivet.app.data.datastore.NodeRosterDefaults
 import dev.rivet.app.data.datastore.RosterNode
 import dev.rivet.app.data.datastore.Settings
+import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.runtime.RivetRuntime
-import dev.rivet.app.ui.context.Navigator
+import dev.rivet.app.ui.context.LocalToaster
 import kotlinx.coroutines.launch
+import org.koin.compose.koinInject
 
 /**
- * Drawer slot that was previously [dev.rivet.app.ui.components.ai.AssistantPicker].
+ * Drawer slot for the active RivetOS node.
  *
- * Shows the **active RivetOS node** (name + den URL). Tap opens a bottom sheet to
- * switch / add / remove nodes. Selecting ANY node opens the **local** hub
- * WebView (`127.0.0.1:5174`) with `?node=<targetDenUrl>` so the hub re-points
- * its gateway — never loads a remote origin's dist over the mesh.
+ * Selecting a node **repoints the native Rivet chat provider** (`baseUrl` + model list)
+ * at that node's OpenAI-compat `/v1` (local bridge for this device). The hub WebView is
+ * never opened as a switch destination — native chat is the UI.
  *
- * Mirrors desktop `NodeSwitcher` + `useConnection` roster (`{name, baseUrl}`).
+ * Mirrors desktop `NodeSwitcher` roster (`{name, baseUrl}`) without loading remote dist.
+ *
+ * Writes go through [NodeChatBackend.switchNode] (store-relative + mutex) so
+ * `activeNodeDenUrl` and Rivet `baseUrl` always move together and the last switch wins.
  */
 @Composable
 fun NodeSwitcher(
     settings: Settings,
     onUpdateSettings: (Settings) -> Unit,
-    navController: Navigator,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
+    val toaster = LocalToaster.current
+    val providerManager = koinInject<ProviderManager>()
+    val settingsStore = koinInject<SettingsStore>()
     var showSheet by remember { mutableStateOf(false) }
+    var switching by remember { mutableStateOf(false) }
 
     val roster = remember(settings.nodeRoster) {
         settings.nodeRoster.ifEmpty { NodeRosterDefaults.seed() }
@@ -107,22 +115,41 @@ fun NodeSwitcher(
         NodeSwitcherSheet(
             roster = roster,
             activeDenUrl = active.denUrl,
+            switching = switching,
             onSelect = { node ->
+                if (switching) return@NodeSwitcherSheet
                 val url = NodeRosterDefaults.normalizeDenUrl(node.denUrl)
                 val nextRoster = ensureLocalSeeded(roster)
-                onUpdateSettings(
-                    settings.copy(
-                        nodeRoster = nextRoster,
-                        activeNodeDenUrl = url,
-                    )
-                )
+                // Full settings (incl. active + provider) land after a successful repoint
+                // so a dead node never wipes chat config. switching stays true until the
+                // store write completes (not just until probe returns).
                 showSheet = false
+                switching = true
                 scope.launch {
-                    // Always load the LOCAL hub; pass target as ?node= so the
-                    // web client re-points its gateway (never remote dist).
-                    val local = NodeRosterDefaults.localDenUrl()
-                    val hubUrl = "$local?node=${Uri.encode(url)}"
-                    navController.navigate(Screen.WebView(url = hubUrl))
+                    try {
+                        NodeChatBackend.switchNode(
+                            settingsStore = settingsStore,
+                            denUrl = url,
+                            listModels = { probe ->
+                                providerManager.getProviderByType(probe).listModels(probe)
+                            },
+                            transform = { current ->
+                                current.copy(nodeRoster = nextRoster)
+                            },
+                        )
+                        toaster.show(
+                            message = "Chat → ${node.name}",
+                            type = ToastType.Success,
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        toaster.show(
+                            message = "Can't reach ${node.name}: ${e.message ?: "unreachable"}",
+                            type = ToastType.Error,
+                        )
+                    } finally {
+                        switching = false
+                    }
                 }
             },
             onAdd = { node ->
@@ -132,6 +159,7 @@ fun NodeSwitcher(
                 if (next.none { NodeRosterDefaults.normalizeDenUrl(it.denUrl) == url }) {
                     next.add(node.copy(denUrl = url))
                 }
+                // Roster-only; do not change active/provider unless active was blank.
                 onUpdateSettings(
                     settings.copy(
                         nodeRoster = next,
@@ -145,19 +173,43 @@ fun NodeSwitcher(
                 val next = ensureLocalSeeded(roster).filter {
                     NodeRosterDefaults.normalizeDenUrl(it.denUrl) != url
                 }
-                val nextActive = if (
+                val wasActive =
                     NodeRosterDefaults.normalizeDenUrl(settings.activeNodeDenUrl) == url
-                ) {
-                    NodeRosterDefaults.localDenUrl()
-                } else {
-                    settings.activeNodeDenUrl
+                if (!wasActive) {
+                    onUpdateSettings(settings.copy(nodeRoster = next))
+                    return@NodeSwitcherSheet
                 }
-                onUpdateSettings(
-                    settings.copy(
-                        nodeRoster = next,
-                        activeNodeDenUrl = nextActive,
-                    )
-                )
+                // Removing the active remote node — fall back to local chat backend.
+                // activeNodeDenUrl + Rivet baseUrl always move together (even on probe fail).
+                switching = true
+                scope.launch {
+                    try {
+                        NodeChatBackend.switchNode(
+                            settingsStore = settingsStore,
+                            denUrl = NodeRosterDefaults.localDenUrl(),
+                            listModels = { probe ->
+                                providerManager.getProviderByType(probe).listModels(probe)
+                            },
+                            transform = { current ->
+                                current.copy(nodeRoster = next)
+                            },
+                        )
+                        toaster.show(
+                            message = "Chat → ${NodeRosterDefaults.LOCAL_NAME}",
+                            type = ToastType.Success,
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        // Drop peer + force local active AND bridge baseUrl (atomic).
+                        NodeChatBackend.removeActiveFallbackLocal(settingsStore, url)
+                        toaster.show(
+                            message = "Removed peer; local agent refresh failed: ${e.message}",
+                            type = ToastType.Error,
+                        )
+                    } finally {
+                        switching = false
+                    }
+                }
             },
             onDismiss = { showSheet = false },
         )
@@ -168,6 +220,7 @@ fun NodeSwitcher(
 private fun NodeSwitcherSheet(
     roster: List<RosterNode>,
     activeDenUrl: String,
+    switching: Boolean,
     onSelect: (RosterNode) -> Unit,
     onAdd: (RosterNode) -> Unit,
     onRemove: (RosterNode) -> Unit,
@@ -199,7 +252,7 @@ private fun NodeSwitcherSheet(
                 modifier = Modifier.padding(bottom = 4.dp),
             )
             Text(
-                text = "Pick which RivetOS node the local hub talks to. Selecting re-points the gateway (keeps this device's UI).",
+                text = "Pick which RivetOS node native chat talks to. Selecting re-points the Rivet provider (local bridge or remote den /v1) — no WebView.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -218,6 +271,7 @@ private fun NodeSwitcherSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .combinedClickable(
+                                enabled = !switching,
                                 onClick = { onSelect(node) },
                                 onLongClick = {
                                     if (!isLocal) nodeToRemove = node
@@ -229,6 +283,7 @@ private fun NodeSwitcherSheet(
                         RadioButton(
                             selected = selected,
                             onClick = { onSelect(node) },
+                            enabled = !switching,
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -246,7 +301,10 @@ private fun NodeSwitcherSheet(
                             )
                         }
                         if (!isLocal) {
-                            IconButton(onClick = { nodeToRemove = node }) {
+                            IconButton(
+                                onClick = { nodeToRemove = node },
+                                enabled = !switching,
+                            ) {
                                 Icon(
                                     HugeIcons.Delete01,
                                     contentDescription = "Remove ${node.name}",
@@ -265,6 +323,7 @@ private fun NodeSwitcherSheet(
                 TextButton(
                     onClick = { showAddForm = true },
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = !switching,
                 ) {
                     Icon(
                         HugeIcons.Add01,

@@ -77,7 +77,7 @@ import dev.rivet.app.data.ai.transformers.TimeReminderTransformer
 import dev.rivet.app.data.ai.SessionTranscript
 import dev.rivet.app.data.ai.SessionTurn
 import dev.rivet.app.data.datastore.DEFAULT_AUTO_MODEL_ID
-import dev.rivet.app.data.datastore.RIVET_BRIDGE_PROVIDER_ID
+import dev.rivet.app.data.datastore.NodeChatBackend
 import dev.rivet.app.data.datastore.RIVET_GROK_MODEL_ID
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.runtime.RivetRuntime
@@ -325,12 +325,12 @@ class ChatService(
 
         val job = appScope.launch {
             try {
-                // Bridge conversations: an in-flight turn is a live CLI run on the shared
-                // session — queue behind it instead of cancelling it. Cancelling only kills
-                // the GUI stream (the CLI keeps running and writing the session file), which
-                // leaves an empty assistant bubble and wedges the thread out of sync.
+                // Agent-session conversations (local bridge or remote den /v1): an in-flight
+                // turn is a live agent run on a shared session — queue behind it instead of
+                // cancelling it. Cancelling only kills the GUI stream (the agent keeps
+                // running), which leaves an empty assistant bubble and wedges the thread.
                 // Other providers keep the original replace semantics.
-                if (previousJob?.isActive == true && !isBridgeConversation(conversationId)) {
+                if (previousJob?.isActive == true && !isAgentSessionConversation(conversationId)) {
                     previousJob.cancel()
                 }
                 runCatching { previousJob?.join() }
@@ -362,20 +362,20 @@ class ChatService(
                 addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
             }
         }
-        // cancelPrevious=false: for bridge conversations the previous job must keep running
-        // (the new job queues behind it above); for others we cancel inside the job instead.
+        // cancelPrevious=false: for agent-session conversations the previous job must keep
+        // running (the new job queues behind it above); for others we cancel inside the job.
         session.setJob(job, cancelPrevious = false)
     }
 
-    // True when this conversation's model goes through the Rivet CLI bridge — its turns
-    // are real agent runs on a shared on-disk session, never safe to cancel-and-replace.
-    private suspend fun isBridgeConversation(conversationId: Uuid): Boolean {
+    // True when this conversation's model goes through the Rivet agent-session provider
+    // (local bridge or remote den /v1) — turns are real agent runs, never cancel-and-replace.
+    private suspend fun isAgentSessionConversation(conversationId: Uuid): Boolean {
         val settings = settingsStore.settingsFlow.first()
         val conversation = sessions[conversationId]?.state?.value
         val assistant = conversation?.let { settings.getAssistantById(it.assistantId) }
             ?: settings.getCurrentAssistant()
         val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId) ?: return false
-        return model.findProvider(settings.providers)?.id == RIVET_BRIDGE_PROVIDER_ID
+        return NodeChatBackend.isAgentSessionProvider(model.findProvider(settings.providers))
     }
 
     private fun preprocessUserInputParts(parts: List<UIMessagePart>, assistant: Assistant): List<UIMessagePart> {

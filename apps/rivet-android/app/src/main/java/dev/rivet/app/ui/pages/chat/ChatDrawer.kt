@@ -265,7 +265,6 @@ fun ChatDrawerContent(
             NodeSwitcher(
                 settings = settings,
                 onUpdateSettings = { vm.updateSettings(it) },
-                navController = navController,
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -474,7 +473,7 @@ fun ChatDrawerContent(
  * Drawer controls for the on-device Rivet runtime, separate from chat sessions:
  *  - a standalone root **Terminal** (a proot bash shell, not tied to any conversation), and
  *  - the **SSH server** toggle (dropbear via [RivetRuntimeService], persisted across restarts).
- * Hub access is the drawer [NodeSwitcher] (select local node → WebView :5174).
+ * Node selection is the drawer [NodeSwitcher] (repoints native chat provider, no WebView).
  */
 @Composable
 private fun RivetNodeControls(navController: Navigator, drawerOpen: Boolean) {
@@ -512,7 +511,7 @@ private fun RivetNodeControls(navController: Navigator, drawerOpen: Boolean) {
 
             // Full RivetOS monorepo self-provision (Phase 5 prereq / #374). Standalone den
             // stays up until dist/rivetos.js exists; this row only kicks the FGS provision
-            // action. Hub access is via NodeSwitcher above (no duplicate Hub row — #377).
+            // action. Node selection is via NodeSwitcher above (native chat, no WebView).
             val provisionStatus by RivetRuntime.provisionProgress.collectAsStateWithLifecycle(
                 initialValue = null,
             )
