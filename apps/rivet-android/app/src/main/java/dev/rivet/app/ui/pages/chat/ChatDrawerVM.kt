@@ -19,12 +19,16 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlin.uuid.Uuid
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -37,8 +41,22 @@ class ChatDrawerVM(
 ) : ViewModel() {
 
     /**
+     * Bumped to re-fetch remote harness list (drawer open, pull-style refresh).
+     * Combined with a safety poll so phone stays aligned with desktop injects.
+     */
+    private val remoteListEpoch = MutableStateFlow(0L)
+
+    /** Call when the chat drawer becomes visible so the list is not a one-shot snapshot. */
+    fun refreshRemoteList() {
+        remoteListEpoch.update { it + 1 }
+    }
+
+    /**
      * Local node → Room paging (phone-owned chats).
      * Remote node → den harness sessions (node+harness scoped history).
+     *
+     * Remote list re-fetches on node change, [refreshRemoteList], and every
+     * [REMOTE_LIST_POLL_MS] (desktop drawer uses sessions-dirty + 120s safety).
      */
     val conversations: Flow<PagingData<ConversationListItem>> =
         settingsStore.settingsFlow
@@ -56,33 +74,40 @@ class ChatDrawerVM(
                                 .withDateSeparators()
                         }
                 } else {
-                    flow {
-                        // den is only used to trigger refresh on node change; fetch uses
-                        // ChatService → activeNodeDenUrl.
-                        @Suppress("UNUSED_VARIABLE")
-                        val _den = den
-                        val sessions = chatService.listRemoteHarnessSessions()
-                        val items = sessions.mapNotNull { s ->
-                            val id = ChatService.parseHarnessSessionUuid(s.id) ?: return@mapNotNull null
-                            val updated = if (s.updatedAt > 0) {
-                                Instant.ofEpochMilli(s.updatedAt)
-                            } else {
-                                Instant.now()
+                    // den is only used to trigger refresh on node change; fetch uses
+                    // ChatService → activeNodeDenUrl.
+                    @Suppress("UNUSED_VARIABLE")
+                    val _den = den
+                    combine(
+                        remoteListEpoch,
+                        remotePollTicks(),
+                    ) { epoch, tick -> epoch to tick }
+                        .flatMapLatest {
+                            flow {
+                                val sessions = chatService.listRemoteHarnessSessions()
+                                val items = sessions.mapNotNull { s ->
+                                    val id = ChatService.parseHarnessSessionUuid(s.id)
+                                        ?: return@mapNotNull null
+                                    val updated = if (s.updatedAt > 0) {
+                                        Instant.ofEpochMilli(s.updatedAt)
+                                    } else {
+                                        Instant.now()
+                                    }
+                                    Conversation(
+                                        id = id,
+                                        assistantId = assistantId,
+                                        title = s.title.ifBlank { "${s.command} · ${s.id.take(8)}" },
+                                        messageNodes = emptyList(),
+                                        createAt = updated,
+                                        updateAt = updated,
+                                    )
+                                }
+                                emit(
+                                    PagingData.from(items.map { ConversationListItem.Item(it) })
+                                        .withDateSeparators(),
+                                )
                             }
-                            Conversation(
-                                id = id,
-                                assistantId = assistantId,
-                                title = s.title.ifBlank { "${s.command} · ${s.id.take(8)}" },
-                                messageNodes = emptyList(),
-                                createAt = updated,
-                                updateAt = updated,
-                            )
                         }
-                        emit(
-                            PagingData.from(items.map { ConversationListItem.Item(it) })
-                                .withDateSeparators(),
-                        )
-                    }
                 }
             }
             .cachedIn(viewModelScope)
@@ -108,8 +133,23 @@ class ChatDrawerVM(
         val imported = chatService.importHarnessSession(
             sessionId = conversation.id.toString(),
             titleHint = conversation.title,
+            force = true,
         )
         return imported?.id ?: conversation.id
+    }
+
+    /** Emits immediately, then every [REMOTE_LIST_POLL_MS]. */
+    private fun remotePollTicks(): Flow<Long> = flow {
+        var n = 0L
+        while (true) {
+            emit(n++)
+            delay(REMOTE_LIST_POLL_MS)
+        }
+    }
+
+    companion object {
+        /** Safety poll when remote (web drawer: sessions-dirty + 120s). */
+        private const val REMOTE_LIST_POLL_MS = 30_000L
     }
 
     private fun getDateLabel(date: LocalDate): String {

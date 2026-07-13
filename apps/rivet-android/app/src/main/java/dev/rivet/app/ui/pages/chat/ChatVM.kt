@@ -12,17 +12,20 @@ import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import dev.rivet.ai.provider.Model
 import dev.rivet.ai.ui.UIMessage
 import dev.rivet.ai.ui.UIMessagePart
 import dev.rivet.ai.ui.isEmptyInputMessage
 import dev.rivet.app.R
+import dev.rivet.app.data.datastore.NodeRosterDefaults
 import dev.rivet.app.data.datastore.Settings
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.data.datastore.getAssistantById
@@ -89,8 +92,26 @@ class ChatVM(
             applyLastUsedModel()
         }
 
+        // Remote: keep the open thread aligned with the node's harness store
+        // while RivetHub desktop continues the same session. Soft sync only
+        // (skips when already matching / generation active). Local CLI mirror
+        // still runs via ON_RESUME + menu resync — not this poll.
+        viewModelScope.launch {
+            while (isActive) {
+                delay(REMOTE_HARNESS_SYNC_MS)
+                val den = settingsStore.settingsFlowRaw.first().activeNodeDenUrl
+                if (den.isBlank() || NodeRosterDefaults.isLocalDenUrl(den)) continue
+                chatService.syncTranscriptToConversation(_conversationId)
+            }
+        }
+
         // 记住对话ID, 方便下次启动恢复
         context.writeStringPreference("lastConversationId", _conversationId.toString())
+    }
+
+    companion object {
+        /** Poll interval for remote harness hard-source while a chat is open. */
+        private const val REMOTE_HARNESS_SYNC_MS = 15_000L
     }
 
     /**

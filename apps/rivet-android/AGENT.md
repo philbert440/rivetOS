@@ -37,6 +37,7 @@ nx apk @rivetos/rivet-android
 - `activeNodeDenUrl` and Rivet provider `baseUrl` always move together.
 - Terminal: local proot PTY · remote den WS. Chip for any Rivet agent session; resync is local-only.
 - **Remote drawer list** = den `GET /api/terminal/harness-sessions` (node+harness scoped). Open imports transcript via `/harness-sessions/:id/transcript` into Room with **session id = conversation id** so Terminal escalate resumes the same join key.
+- **Remote sync (phone ↔ desktop):** harness store is SoT for remote threads. Drawer re-fetches on open + 30s poll. Open chat soft-reimports on resume, every 15s, and on menu Resync (force). Skips rewrite when already aligned / mid-generation. Still dual-path for *send* (phone `/v1` vs desktop inject) — live WS + inject send is follow-up.
 
 **Runtime:** proot/busybox/dropbear jniLibs · bridge `:8765` · optional full runtime den `:5174` · a11y control `:9876` · mesh config in Settings (no `RIVET_*` BuildConfig secrets).
 
