@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import dev.rivet.ai.core.MessageRole
@@ -366,8 +367,32 @@ class SettingsStore(
         .distinctUntilChanged()
         .toMutableStateFlow(scope, Settings.dummy())
 
+    /**
+     * Serializes full-settings read-modify-write so concurrent [update] lambdas each see
+     * the previous write (last writer wins consistently). Node switches also use this via
+     * [NodeChatBackend.switchNode].
+     */
+    private val updateMutex = kotlinx.coroutines.sync.Mutex()
+
     suspend fun update(settings: Settings) {
-        if(settings.init) {
+        updateMutex.withLock {
+            writeUnlocked(settings)
+        }
+    }
+
+    /**
+     * Store-relative update: [fn] runs under [updateMutex] against the latest
+     * [settingsFlow] value, then the result is persisted. Prefer this over capturing a
+     * composition-time [Settings] snapshot when multiple writers can race.
+     */
+    suspend fun update(fn: (Settings) -> Settings) {
+        updateMutex.withLock {
+            writeUnlocked(fn(settingsFlow.value))
+        }
+    }
+
+    private suspend fun writeUnlocked(settings: Settings) {
+        if (settings.init) {
             Log.w(TAG, "Cannot update dummy settings")
             return
         }
@@ -431,10 +456,6 @@ class SettingsStore(
             preferences[NODE_ROSTER] = JsonInstant.encodeToString(settings.nodeRoster)
             preferences[ACTIVE_NODE_DEN_URL] = settings.activeNodeDenUrl
         }
-    }
-
-    suspend fun update(fn: (Settings) -> Settings) {
-        update(fn(settingsFlow.value))
     }
 
     /**

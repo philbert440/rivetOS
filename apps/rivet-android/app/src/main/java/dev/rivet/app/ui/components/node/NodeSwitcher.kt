@@ -46,6 +46,7 @@ import dev.rivet.app.data.datastore.NodeChatBackend
 import dev.rivet.app.data.datastore.NodeRosterDefaults
 import dev.rivet.app.data.datastore.RosterNode
 import dev.rivet.app.data.datastore.Settings
+import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.ui.context.LocalToaster
 import kotlinx.coroutines.launch
@@ -59,6 +60,9 @@ import org.koin.compose.koinInject
  * never opened as a switch destination — native chat is the UI.
  *
  * Mirrors desktop `NodeSwitcher` roster (`{name, baseUrl}`) without loading remote dist.
+ *
+ * Writes go through [NodeChatBackend.switchNode] (store-relative + mutex) so
+ * `activeNodeDenUrl` and Rivet `baseUrl` always move together and the last switch wins.
  */
 @Composable
 fun NodeSwitcher(
@@ -69,6 +73,7 @@ fun NodeSwitcher(
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     val providerManager = koinInject<ProviderManager>()
+    val settingsStore = koinInject<SettingsStore>()
     var showSheet by remember { mutableStateOf(false) }
     var switching by remember { mutableStateOf(false) }
 
@@ -115,20 +120,23 @@ fun NodeSwitcher(
                 if (switching) return@NodeSwitcherSheet
                 val url = NodeRosterDefaults.normalizeDenUrl(node.denUrl)
                 val nextRoster = ensureLocalSeeded(roster)
-                // Optimistic roster seed only; full settings (incl. active + provider) land
-                // after a successful repoint so a dead node never wipes chat config.
+                // Full settings (incl. active + provider) land after a successful repoint
+                // so a dead node never wipes chat config. switching stays true until the
+                // store write completes (not just until probe returns).
                 showSheet = false
                 switching = true
                 scope.launch {
                     try {
-                        val withRoster = settings.copy(nodeRoster = nextRoster)
-                        val next = NodeChatBackend.repointProvider(
-                            settings = withRoster,
+                        NodeChatBackend.switchNode(
+                            settingsStore = settingsStore,
                             denUrl = url,
-                        ) { probe ->
-                            providerManager.getProviderByType(probe).listModels(probe)
-                        }
-                        onUpdateSettings(next)
+                            listModels = { probe ->
+                                providerManager.getProviderByType(probe).listModels(probe)
+                            },
+                            transform = { current ->
+                                current.copy(nodeRoster = nextRoster)
+                            },
+                        )
                         toaster.show(
                             message = "Chat → ${node.name}",
                             type = ToastType.Success,
@@ -151,6 +159,7 @@ fun NodeSwitcher(
                 if (next.none { NodeRosterDefaults.normalizeDenUrl(it.denUrl) == url }) {
                     next.add(node.copy(denUrl = url))
                 }
+                // Roster-only; do not change active/provider unless active was blank.
                 onUpdateSettings(
                     settings.copy(
                         nodeRoster = next,
@@ -171,30 +180,28 @@ fun NodeSwitcher(
                     return@NodeSwitcherSheet
                 }
                 // Removing the active remote node — fall back to local chat backend.
+                // activeNodeDenUrl + Rivet baseUrl always move together (even on probe fail).
                 switching = true
                 scope.launch {
                     try {
-                        val withRoster = settings.copy(nodeRoster = next)
-                        val nextSettings = NodeChatBackend.repointProvider(
-                            settings = withRoster,
+                        NodeChatBackend.switchNode(
+                            settingsStore = settingsStore,
                             denUrl = NodeRosterDefaults.localDenUrl(),
-                        ) { probe ->
-                            providerManager.getProviderByType(probe).listModels(probe)
-                        }
-                        onUpdateSettings(nextSettings)
+                            listModels = { probe ->
+                                providerManager.getProviderByType(probe).listModels(probe)
+                            },
+                            transform = { current ->
+                                current.copy(nodeRoster = next)
+                            },
+                        )
                         toaster.show(
                             message = "Chat → ${NodeRosterDefaults.LOCAL_NAME}",
                             type = ToastType.Success,
                         )
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        // Still drop the peer from the roster; leave provider as-is.
-                        onUpdateSettings(
-                            settings.copy(
-                                nodeRoster = next,
-                                activeNodeDenUrl = NodeRosterDefaults.localDenUrl(),
-                            )
-                        )
+                        // Drop peer + force local active AND bridge baseUrl (atomic).
+                        NodeChatBackend.removeActiveFallbackLocal(settingsStore, url)
                         toaster.show(
                             message = "Removed peer; local agent refresh failed: ${e.message}",
                             type = ToastType.Error,
