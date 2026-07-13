@@ -576,11 +576,7 @@ export async function withRosterFileLock<T>(
         const parts = content.trim().split(/\s+/)
         const observedToken = parts[0]
         const ts = Number(parts[1])
-        if (
-          observedToken &&
-          Number.isFinite(ts) &&
-          Date.now() - ts > FILE_LOCK_STALE_MS
-        ) {
+        if (observedToken && Number.isFinite(ts) && Date.now() - ts > FILE_LOCK_STALE_MS) {
           const again = readFileSync(lockPath, 'utf8')
           if (again === content) {
             const stalePath = `${lockPath}.stale-${process.pid}-${randomUUID()}`
@@ -870,7 +866,7 @@ export function createDevicesRoutes(opts: {
         // Roster is authoritative: drop the row under the lock first, then
         // best-effort removePeer / dropDeviceRole outside the lock. A failed
         // SSH leaves a lingering relay peer (logged); that is acceptable.
-        const outcome = await withLock(async () => {
+        const outcome = await withLock(() => {
           const reg = loadRegistry(file)
           sweep(reg)
           const dev = reg.devices.find((d) => d.id === id)
@@ -906,9 +902,7 @@ export function createDevicesRoutes(opts: {
           try {
             await datahubAdmin.dropDeviceRole(id)
           } catch (e) {
-            log(
-              `[devices] datahub role drop failed after roster revoke: ${(e as Error).message}`,
-            )
+            log(`[devices] datahub role drop failed after roster revoke: ${(e as Error).message}`)
           }
         }
         json(res, 200, { ok: true })
@@ -978,7 +972,7 @@ export function createDevicesRoutes(opts: {
         pgUrl = config.pgUrl
       }
 
-      const outcome = await withLock(async () => {
+      const outcome = await withLock(() => {
         const reg = loadRegistry(file)
         sweep(reg)
         // Re-validate under the lock: concurrent enroll may have burned the
