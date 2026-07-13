@@ -78,7 +78,9 @@ import dev.rivet.app.data.ai.SessionTranscript
 import dev.rivet.app.data.ai.SessionTurn
 import dev.rivet.app.data.datastore.DEFAULT_AUTO_MODEL_ID
 import dev.rivet.app.data.datastore.NodeChatBackend
+import dev.rivet.app.data.datastore.NodeRosterDefaults
 import dev.rivet.app.data.datastore.RIVET_GROK_MODEL_ID
+import dev.rivet.app.data.datastore.Settings
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.data.datastore.findModelById
@@ -95,6 +97,7 @@ import dev.rivet.app.data.model.replaceRegexes
 import dev.rivet.app.data.model.toMessageNode
 import dev.rivet.app.data.repository.ConversationRepository
 import dev.rivet.app.data.repository.MemoryRepository
+import dev.rivet.app.ui.pages.terminal.DenHarnessClient
 import dev.rivet.app.ui.pages.terminal.TerminalSessionStore
 import dev.rivet.app.web.BadRequestException
 import dev.rivet.app.web.NotFoundException
@@ -312,6 +315,215 @@ class ChatService(
                 newConversation = true
             ).updateCurrentMessages(assistant.presetMessages)
             updateConversation(conversationId, newConversation)
+        }
+        // Remote node: hydrate/refresh from the node's harness store so the
+        // native UI shows the same history as Terminal / RivetHub web.
+        maybeImportHarnessTranscript(conversationId)
+    }
+
+    /**
+     * Pull harness sessions for the active remote den (empty on local / errors).
+     * Used by the drawer so conversation list is node-scoped.
+     */
+    suspend fun listRemoteHarnessSessions(): List<DenHarnessClient.Session> =
+        withContext(Dispatchers.IO) {
+            val settings = settingsStore.settingsFlowRaw.first()
+            val den = settings.activeNodeDenUrl.ifBlank { return@withContext emptyList() }
+            if (NodeRosterDefaults.isLocalDenUrl(den)) return@withContext emptyList()
+            DenHarnessClient.tryList(den)
+        }
+
+    /**
+     * Import (or refresh) a remote harness session into Room and the live
+     * conversation flow. Conversation id **is** the harness session id so
+     * Terminal escalate / den spawn-or-get share one join key.
+     *
+     * When [force] is false and the live thread already matches the harness
+     * turn text (same length + aligned roles/text), skips the rewrite so a
+     * background poll does not thrash Compose/Room.
+     *
+     * @return the imported conversation, or null if den unreachable / unknown id
+     */
+    suspend fun importHarnessSession(
+        sessionId: String,
+        titleHint: String? = null,
+        commandHint: String? = null,
+        force: Boolean = true,
+    ): Conversation? = withContext(Dispatchers.IO) {
+        val settings = settingsStore.settingsFlowRaw.first()
+        val den = settings.activeNodeDenUrl.ifBlank { return@withContext null }
+        if (NodeRosterDefaults.isLocalDenUrl(den)) return@withContext null
+        val convUuid = parseHarnessSessionUuid(sessionId) ?: return@withContext null
+        val tx = DenHarnessClient.tryTranscript(den, sessionId) ?: return@withContext null
+        val command = tx.command.ifBlank { commandHint.orEmpty() }.ifBlank { "grok" }
+        val assistant = settings.getCurrentAssistant()
+        val modelId = modelUuidForHarnessCommand(command)
+        val nodes = tx.turns.mapNotNull { turn ->
+            val role = turn.role.lowercase()
+            val text = turn.text
+            if (text.isBlank()) return@mapNotNull null
+            val msg = when (role) {
+                "assistant" -> UIMessage.assistant(text).copy(modelId = modelId)
+                "user" -> UIMessage.user(text)
+                else -> return@mapNotNull null
+            }
+            msg.toMessageNode()
+        }
+        val title = titleHint?.takeIf { it.isNotBlank() }
+            ?: tx.turns.firstOrNull { it.role.equals("user", true) && it.text.isNotBlank() }
+                ?.text?.trim()?.take(80)
+            ?: sessionId.take(8)
+
+        getOrCreateSession(convUuid)
+        val existing = getConversationFlow(convUuid).value
+        if (!force && harnessContentMatches(existing, nodes)) {
+            // Still ensure the model picker tracks the harness agent.
+            selectHarnessModel(settings, command)
+            return@withContext existing
+        }
+
+        val updatedAt = java.time.Instant.now()
+        val conversation = Conversation(
+            id = convUuid,
+            assistantId = assistant.id,
+            title = title,
+            messageNodes = nodes,
+            createAt = existing.createAt.takeUnless { existing.messageNodes.isEmpty() } ?: updatedAt,
+            updateAt = updatedAt,
+            newConversation = false,
+        )
+        updateConversation(convUuid, conversation)
+        val exists = conversationRepo.existsConversationById(convUuid)
+        if (exists) conversationRepo.updateConversation(conversation)
+        else conversationRepo.insertConversation(conversation)
+        // Point the Rivet picker at this harness's agent so Terminal escalate
+        // maps to the right roster command.
+        selectHarnessModel(settings, command)
+        Log.i(TAG, "imported harness $sessionId ($command) turns=${nodes.size} force=$force")
+        conversation
+    }
+
+    /**
+     * Best-effort refresh when a remote conversation is open / resumed.
+     *
+     * - [force] true → full replace from harness (open-from-drawer, menu Resync).
+     * - [force] false → append-only merge of new harness turns (desktop injects while
+     *   phone is open). Never deletes phone-only /v1 turns; use force for hard reconcile.
+     */
+    private suspend fun maybeImportHarnessTranscript(conversationId: Uuid, force: Boolean = false) {
+        val settings = settingsStore.settingsFlowRaw.first()
+        val den = settings.activeNodeDenUrl
+        if (den.isBlank() || NodeRosterDefaults.isLocalDenUrl(den)) return
+        // Don't clobber an in-flight /v1 turn mid-stream.
+        if (this.sessions[conversationId]?.getJob()?.isActive == true) return
+        // Only touch sessions the den actually owns (avoid wiping a phone draft UUID).
+        val remoteSessions = DenHarnessClient.tryList(den)
+        val hit = remoteSessions.firstOrNull {
+            it.id.equals(conversationId.toString(), ignoreCase = true)
+        } ?: return
+        if (force) {
+            importHarnessSession(hit.id, hit.title, hit.command, force = true)
+            return
+        }
+        // Soft path: fetch transcript and append turns that cleanly extend the thread.
+        val tx = DenHarnessClient.tryTranscript(den, hit.id) ?: return
+        val command = tx.command.ifBlank { hit.command }.ifBlank { "grok" }
+        val modelId = modelUuidForHarnessCommand(command)
+        val turns = tx.turns.mapNotNull { turn ->
+            val role = when (turn.role.lowercase()) {
+                "user" -> MessageRole.USER
+                "assistant" -> MessageRole.ASSISTANT
+                else -> return@mapNotNull null
+            }
+            val text = turn.text
+            if (text.isBlank()) null else SessionTurn(role, text)
+        }
+        if (turns.isEmpty()) return
+        val conv = getConversationFlow(conversationId).value
+        if (harnessContentMatches(conv, turns)) {
+            selectHarnessModel(settings, command)
+            return
+        }
+        val merged = mergeTranscriptTurns(conv.currentMessages, turns, modelId) ?: return
+        if (merged.size <= conv.currentMessages.size) return
+        saveConversation(conversationId, conv.updateCurrentMessages(merged))
+        selectHarnessModel(settings, command)
+        Log.i(
+            TAG,
+            "remote soft-sync $conversationId: +${merged.size - conv.currentMessages.size} " +
+                "from harness ($command)",
+        )
+    }
+
+    /** True when [existing] already mirrors harness [turns] (role + text). */
+    private fun harnessContentMatches(existing: Conversation, turns: List<SessionTurn>): Boolean {
+        val cur = existing.currentMessages
+        if (cur.size != turns.size) return false
+        for (i in cur.indices) {
+            if (cur[i].role != turns[i].role) return false
+            if (!transcriptTextAligns(cur[i].toText(), turns[i].text)) return false
+        }
+        return true
+    }
+
+    /** True when [existing] already mirrors harness message nodes (role + text). */
+    private fun harnessContentMatches(existing: Conversation, nodes: List<MessageNode>): Boolean {
+        val cur = existing.currentMessages
+        if (cur.size != nodes.size) return false
+        for (i in cur.indices) {
+            val a = cur[i]
+            val b = nodes[i].messages.firstOrNull() ?: return false
+            if (a.role != b.role) return false
+            if (!transcriptTextAligns(a.toText(), b.toText())) return false
+        }
+        return true
+    }
+
+    /** Active node is a remote den (not this device). */
+    private suspend fun isRemoteActiveNode(): Boolean {
+        val den = settingsStore.settingsFlowRaw.first().activeNodeDenUrl
+        return den.isNotBlank() && !NodeRosterDefaults.isLocalDenUrl(den)
+    }
+
+    private fun modelUuidForHarnessCommand(command: String): Uuid =
+        when (command.lowercase()) {
+            "claude" -> DEFAULT_AUTO_MODEL_ID
+            "grok", "grok-fast" -> RIVET_GROK_MODEL_ID
+            else -> NodeChatBackend.stableAgentModelId(command)
+        }
+
+    private suspend fun selectHarnessModel(settings: Settings, command: String) {
+        val key = when (command.lowercase()) {
+            "claude" -> listOf("rivet-claude", "claude")
+            "grok", "grok-fast" -> listOf("rivet-grok", "grok", "grok-fast")
+            "hermes" -> listOf("hermes", "rivet-hermes")
+            else -> listOf(command)
+        }
+        val model = settings.providers
+            .flatMap { it.models }
+            .firstOrNull { m -> key.any { k -> m.modelId.equals(k, ignoreCase = true) } }
+            ?: return
+        if (settings.chatModelId == model.id) return
+        settingsStore.update { it.copy(chatModelId = model.id) }
+    }
+
+    companion object {
+        /** Harness session ids for claude/grok are UUIDs; others map deterministically. */
+        fun parseHarnessSessionUuid(id: String): Uuid? {
+            val t = id.trim()
+            if (t.isEmpty()) return null
+            return try {
+                Uuid.parse(t)
+            } catch (_: Exception) {
+                try {
+                    Uuid.parse(
+                        java.util.UUID.nameUUIDFromBytes("harness:$t".toByteArray())
+                            .toString(),
+                    )
+                } catch (_: Exception) {
+                    null
+                }
+            }
         }
     }
 
@@ -1129,12 +1341,19 @@ class ChatService(
     }
 
     /**
-     * Mirror turns the user did in the in-app CLI (claude --resume) back into the chat thread,
-     * so the GUI reflects the unified session. SAFE: append-only, and bails if the transcript
-     * doesn't cleanly align with the existing thread (never edits or deletes messages).
+     * Mirror turns from the source of truth back into the chat thread.
+     *
+     * - **Local node:** on-device CLI transcripts (claude/grok under proot) — append-only.
+     * - **Remote node:** den harness store (`GET …/harness-sessions/:id/transcript`) — the same
+     *   source RivetHub desktop uses. Soft re-import (skip when already aligned); skipped while
+     *   a generation job is active so we don't clobber an in-flight /v1 stream.
      */
     suspend fun syncTranscriptToConversation(conversationId: Uuid) {
         runCatching {
+            if (isRemoteActiveNode()) {
+                maybeImportHarnessTranscript(conversationId, force = false)
+                return
+            }
             val convIdStr = conversationId.toString()
             // A thread can be escalated to either agent, so read whichever transcript exists.
             // claude keys its session file by the conversationId; grok by its own captured id
@@ -1215,6 +1434,19 @@ class ChatService(
      */
     suspend fun resyncTranscriptToConversation(conversationId: Uuid) {
         runCatching {
+            // Remote: harness store is the single source of truth (desktop parity). Full replace.
+            if (isRemoteActiveNode()) {
+                val imported = importHarnessSession(
+                    sessionId = conversationId.toString(),
+                    force = true,
+                )
+                if (imported == null) {
+                    Log.i(TAG, "resync: no remote harness transcript for $conversationId")
+                } else {
+                    Log.i(TAG, "resync remote harness $conversationId turns=${imported.messageNodes.size}")
+                }
+                return
+            }
             val convIdStr = conversationId.toString()
             val candidates = buildList {
                 val claude = SessionTranscript.claudeTranscript(context, convIdStr)
