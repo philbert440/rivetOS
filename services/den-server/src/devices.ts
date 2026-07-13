@@ -31,7 +31,17 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { execFile } from 'node:child_process'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 import pg from 'pg'
 
@@ -69,6 +79,11 @@ export interface DevicesConfig {
   /** Mesh coordinates embedded in the QR for the device's own settings. */
   sharedHost: string
   sharedExport: string
+  /**
+   * Absolute path to the shared mesh-devices roster. Empty = per-node
+   * `<stateDir>/mesh-devices.json`. Env: RIVETOS_DEN_DEVICES_ROSTER.
+   */
+  rosterPath: string
   pgUrl: string
   embedUrl: string
   /**
@@ -432,7 +447,8 @@ export function createSshRelayDriver(cfg: {
 }
 
 // ---------------------------------------------------------------------------
-// registry (JSON file in stateDir; small, rewrite-on-change)
+// registry (JSON file — shared roster when RIVETOS_DEN_DEVICES_ROSTER is set,
+// else per-node stateDir/mesh-devices.json; small, rewrite-on-change)
 
 interface PendingEnroll {
   id: string
@@ -452,6 +468,12 @@ interface Registry {
 }
 
 const ENROLL_TTL_MS = 10 * 60 * 1000
+/** Break orphaned `<roster>.lock` files left by a crashed process (NFS-safe
+ *  O_EXCL locks have no automatic release). Critical sections are roster
+ *  RMW only (sub-second); SSH/PG work runs outside the file lock, so this
+ *  stale window is a crash backstop and should essentially never fire. */
+const FILE_LOCK_STALE_MS = 60_000
+const FILE_LOCK_MAX_ATTEMPTS = 200
 
 function loadRegistry(file: string): Registry {
   if (!existsSync(file)) return { devices: [], pending: [] }
@@ -466,20 +488,16 @@ function loadRegistry(file: string): Registry {
 function saveRegistry(file: string, reg: Registry): void {
   // Registry holds live enrollment tokens in the clear; keep it owner-only.
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  const tmp = `${file}.tmp-${process.pid}`
+  const tmp = `${file}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`
   writeFileSync(tmp, JSON.stringify(reg, null, 2), { mode: 0o600 })
   renameSync(tmp, file)
 }
 
 /**
- * Serialize every registry read-modify-write. den-server is single-process,
- * so a promise-chain mutex closes the TOCTOU races an unlocked load→mutate→
- * save exposes: concurrent Add-device dual-claiming a free address, and an
- * enroll redemption interleaving with a revoke of the same pending. Each
- * critical section re-reads the registry under the lock, so no caller acts on
- * a stale snapshot. The lock is held across the (slow) relay ssh calls too —
- * enrollment is a rare, operator-driven action, and serializing it is far
- * cheaper than reconciling a half-applied relay + registry state.
+ * In-process promise-chain mutex. Serializes roster RMW in one den-server
+ * process (dual Add claiming the same address, concurrent enroll commits).
+ * Nest the file lock under this so one process does not thrash the lock file.
+ * Slow work (relay SSH, datahub) runs outside both locks.
  */
 function makeMutex(): <T>(fn: () => T | Promise<T>) => Promise<T> {
   let tail: Promise<unknown> = Promise.resolve()
@@ -491,6 +509,97 @@ function makeMutex(): <T>(fn: () => T | Promise<T>) => Promise<T> {
     )
     return run
   }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Unlink `<roster>.lock` only when it still carries our ownership token.
+ * Prevents a late release from deleting a lock reclaimed/stolen by another
+ * waiter after a (theoretical) stale reclaim race.
+ */
+function releaseLockIfOwned(lockPath: string, token: string): void {
+  try {
+    const content = readFileSync(lockPath, 'utf8')
+    const owned = content.trim().split(/\s+/)[0]
+    if (owned === token) unlinkSync(lockPath)
+  } catch {
+    // Gone or unreadable — not ours to remove.
+  }
+}
+
+/**
+ * Cross-process / cross-node advisory lock on `<rosterPath>.lock` via
+ * O_CREAT|O_EXCL (works on NFS without flock). Payload is
+ * `${pid}-${uuid} ${ts}` — release only unlinks when that token still
+ * matches; stale reclaim uses rename of the observed payload so two waiters
+ * cannot both "reclaim" the same orphan. Nested under the in-process mutex.
+ * Hold only for load→mutate→save of the roster (not across SSH).
+ */
+export async function withRosterFileLock<T>(
+  lockPath: string,
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 })
+  for (let attempt = 0; attempt < FILE_LOCK_MAX_ATTEMPTS; attempt++) {
+    let fd: number | undefined
+    const token = `${process.pid}-${randomUUID()}`
+    const payload = `${token} ${Date.now()}\n`
+    try {
+      fd = openSync(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600)
+      writeFileSync(fd, payload)
+      try {
+        return await fn()
+      } finally {
+        try {
+          closeSync(fd)
+        } catch {
+          /* ignore */
+        }
+        fd = undefined
+        releaseLockIfOwned(lockPath, token)
+      }
+    } catch (e) {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd)
+        } catch {
+          /* ignore */
+        }
+        releaseLockIfOwned(lockPath, token)
+      }
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+      // Stale-lock recovery: crashed holder left the file behind.
+      // Re-check content then rename (not unlink) so only one waiter wins.
+      try {
+        const content = readFileSync(lockPath, 'utf8')
+        const parts = content.trim().split(/\s+/)
+        const observedToken = parts[0]
+        const ts = Number(parts[1])
+        if (observedToken && Number.isFinite(ts) && Date.now() - ts > FILE_LOCK_STALE_MS) {
+          const again = readFileSync(lockPath, 'utf8')
+          if (again === content) {
+            const stalePath = `${lockPath}.stale-${process.pid}-${randomUUID()}`
+            try {
+              renameSync(lockPath, stalePath)
+              try {
+                unlinkSync(stalePath)
+              } catch {
+                /* ignore */
+              }
+              continue
+            } catch {
+              // Another waiter already renamed it — fall through to backoff.
+            }
+          }
+        }
+      } catch {
+        // Unreadable or already gone — retry acquire.
+      }
+      await sleep(10 + Math.random() * 20 * Math.min(attempt + 1, 10))
+    }
+  }
+  throw new Error(`timeout acquiring roster lock: ${lockPath}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -548,6 +657,11 @@ export interface DevicesRoutes {
 export function createDevicesRoutes(opts: {
   config: DevicesConfig
   stateDir: string
+  /**
+   * Override roster file path (tests / advanced). When unset, uses
+   * config.rosterPath if set, else `<stateDir>/mesh-devices.json`.
+   */
+  rosterPath?: string
   /** The externally reachable den base URL to embed in the QR (client can
    *  override with its own origin when it renders the QR). */
   gatewayUrl: string
@@ -560,8 +674,13 @@ export function createDevicesRoutes(opts: {
   const { config } = opts
   const log = opts.log ?? (() => {})
   const now = opts.now ?? Date.now
-  const file = join(opts.stateDir, 'mesh-devices.json')
-  const withLock = makeMutex()
+  const file =
+    opts.rosterPath?.trim() || config.rosterPath.trim() || join(opts.stateDir, 'mesh-devices.json')
+  const lockPath = `${file}.lock`
+  const processMutex = makeMutex()
+  /** In-process mutex, then cross-node file lock, then re-read inside fn. */
+  const withLock = <T>(fn: () => T | Promise<T>): Promise<T> =>
+    processMutex(() => withRosterFileLock(lockPath, fn))
   const driver =
     opts.driver !== undefined
       ? opts.driver
@@ -744,41 +863,49 @@ export function createDevicesRoutes(opts: {
       const idMatch = url.pathname.match(/^\/api\/devices\/([\w-]+)$/)
       if (req.method === 'DELETE' && idMatch) {
         const id = idMatch[1]
-        const outcome = await withLock(async () => {
+        // Roster is authoritative: drop the row under the lock first, then
+        // best-effort removePeer / dropDeviceRole outside the lock. A failed
+        // SSH leaves a lingering relay peer (logged); that is acceptable.
+        const outcome = await withLock(() => {
           const reg = loadRegistry(file)
           sweep(reg)
           const dev = reg.devices.find((d) => d.id === id)
           const pend = reg.pending.find((p) => p.id === id)
           if (!dev && !pend) return { status: 404 as const, error: 'unknown device' }
-          // Pull the relay peer BEFORE dropping the registry row, still under
-          // the lock so an in-flight enroll of the same pending can't re-land
-          // the device after we've revoked it.
-          if (dev?.publicKey && driver) {
-            try {
-              await driver.removePeer(dev.publicKey)
-            } catch (e) {
-              return { status: 502 as const, error: `relay revoke failed: ${(e as Error).message}` }
-            }
-          }
+          const publicKey = dev?.publicKey
           const pgRole = dev?.pgRole ?? pend?.pgRole
-          if (pgRole && datahubAdmin) {
-            try {
-              // drop by device id (role name is derived deterministically)
-              await datahubAdmin.dropDeviceRole(id)
-            } catch (e) {
-              return {
-                status: 502 as const,
-                error: `datahub role revoke failed: ${(e as Error).message}`,
-              }
-            }
-          }
+          const label = dev?.name ?? pend?.name ?? id
           reg.devices = reg.devices.filter((d) => d.id !== id)
           reg.pending = reg.pending.filter((p) => p.id !== id)
           saveRegistry(file, reg)
-          log(`[devices] revoked ${dev?.name ?? pend?.name ?? id}`)
-          return { status: 200 as const }
+          log(`[devices] revoked ${label}`)
+          return {
+            status: 200 as const,
+            publicKey,
+            pgRole,
+          }
         })
-        json(res, outcome.status, outcome.status === 200 ? { ok: true } : { error: outcome.error })
+        if (outcome.status === 404) {
+          json(res, 404, { error: outcome.error })
+          return true
+        }
+        if (outcome.publicKey && driver) {
+          try {
+            await driver.removePeer(outcome.publicKey)
+          } catch (e) {
+            log(
+              `[devices] relay removePeer failed after roster revoke (lingering peer): ${(e as Error).message}`,
+            )
+          }
+        }
+        if (outcome.pgRole && datahubAdmin) {
+          try {
+            await datahubAdmin.dropDeviceRole(id)
+          } catch (e) {
+            log(`[devices] datahub role drop failed after roster revoke: ${(e as Error).message}`)
+          }
+        }
+        json(res, 200, { ok: true })
         return true
       }
 
@@ -804,49 +931,62 @@ export function createDevicesRoutes(opts: {
       const name =
         typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 64) : null
 
-      // Whole redemption runs under the lock: match token → burn pending
-      // (single-use holds even against a simultaneous replay) → register the
-      // relay peer → record the device. On relay failure the pending is
-      // restored so the same QR can be retried.
-      const outcome = await withLock(async () => {
+      // SSH first (outside the file lock), then commit pending→device under
+      // the lock. If relay registration fails the roster is untouched so the
+      // same QR can be retried and no phantom device appears.
+      const regPeek = loadRegistry(file)
+      sweep(regPeek)
+      const pendingPeek = regPeek.pending.find((p) => tokenEqual(p.token, token))
+      if (!pendingPeek) {
+        json(res, 403, { error: 'invalid or expired enrollment token' })
+        return true
+      }
+      if (regPeek.devices.some((d) => d.publicKey === publicKey)) {
+        json(res, 409, { error: 'this device is already enrolled' })
+        return true
+      }
+
+      if (driver) {
+        try {
+          await ensureForwardOnce()
+          await driver.addPeer(publicKey, pendingPeek.address)
+        } catch (e) {
+          json(res, 502, {
+            error: `relay registration failed: ${(e as Error).message}`,
+          })
+          return true
+        }
+      }
+
+      // Re-ensure so the enroll response carries a working password. The phone
+      // prefers this config over the QR (see MeshEnroll.kt). Outside the lock
+      // — mint is slow network I/O. If mint fails, omit pgUrl rather than
+      // shipping the shared credential.
+      let pgUrl: string
+      let pgRole = pendingPeek.pgRole
+      if (datahubAdmin) {
+        const minted = await resolvePgForDevice(pendingPeek.id)
+        pgUrl = minted.pgUrl
+        pgRole = minted.pgRole ?? pgRole
+      } else {
+        pgUrl = config.pgUrl
+      }
+
+      const outcome = await withLock(() => {
         const reg = loadRegistry(file)
         sweep(reg)
+        // Re-validate under the lock: concurrent enroll may have burned the
+        // token, or revoke may have dropped the pending.
         const pending = reg.pending.find((p) => tokenEqual(p.token, token))
-        if (!pending) return { status: 403 as const, error: 'invalid or expired enrollment token' }
+        if (!pending) {
+          if (reg.devices.some((d) => d.publicKey === publicKey))
+            return { status: 409 as const, error: 'this device is already enrolled' }
+          return { status: 403 as const, error: 'invalid or expired enrollment token' }
+        }
         if (reg.devices.some((d) => d.publicKey === publicKey))
           return { status: 409 as const, error: 'this device is already enrolled' }
 
-        // Burn first so a concurrent replay of the same token 403s.
         reg.pending = reg.pending.filter((p) => p !== pending)
-        saveRegistry(file, reg)
-
-        if (driver) {
-          try {
-            await ensureForwardOnce()
-            await driver.addPeer(publicKey, pending.address)
-          } catch (e) {
-            reg.pending.push(pending) // restore for retry with the same QR
-            saveRegistry(file, reg)
-            return {
-              status: 502 as const,
-              error: `relay registration failed: ${(e as Error).message}`,
-            }
-          }
-        }
-
-        // Re-ensure so the enroll response carries a working password. The
-        // phone prefers this config over the QR (see MeshEnroll.kt). If mint
-        // fails, omit pgUrl rather than shipping the shared credential.
-        let pgUrl: string
-        let pgRole = pending.pgRole
-        if (datahubAdmin) {
-          const minted = await resolvePgForDevice(pending.id)
-          pgUrl = minted.pgUrl
-          pgRole = minted.pgRole ?? pgRole
-        } else {
-          pgUrl = config.pgUrl
-        }
-
         const device: MeshDevice = {
           id: pending.id,
           name: name ?? pending.name,

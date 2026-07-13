@@ -78,6 +78,7 @@ export const KNOWN_DEN_DEVICES_KEYS = new Set([
   'relay_forward_dest',
   'shared_host',
   'shared_export',
+  'roster_path',
   'gateway_url',
   'pg_admin_url',
   'pg_device_group',

@@ -1,10 +1,14 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 afterEach(() => vi.unstubAllEnvs())
-import { buildGatewayEnv } from './gateway.js'
+import { buildGatewayEnv, resolveDevicesRosterPath } from './gateway.js'
 import type { RivetConfig } from '../config.js'
 
-const base = (den: NonNullable<RivetConfig['den']>): RivetConfig => ({ den }) as RivetConfig
+const base = (den: NonNullable<RivetConfig['den']>, mesh?: RivetConfig['mesh']): RivetConfig =>
+  ({ den, ...(mesh ? { mesh } : {}) }) as RivetConfig
 
 describe('buildGatewayEnv — device enrollment', () => {
   it('emits nothing when devices is absent or disabled', () => {
@@ -117,5 +121,57 @@ describe('buildGatewayEnv — device enrollment', () => {
     )
     expect(env.RIVETOS_DEN_DEVICES_PG_ADMIN_URL).toBeUndefined()
     expect(env.RIVETOS_DEN_DEVICES_PG_DEVICE_GROUP).toBeUndefined()
+  })
+
+  it('forwards explicit devices.roster_path as RIVETOS_DEN_DEVICES_ROSTER', () => {
+    const env = buildGatewayEnv(
+      base({
+        devices: {
+          enabled: true,
+          pool: '10.0.0.1-10.0.0.9',
+          roster_path: '/custom/mesh-devices.json',
+        },
+      }),
+      '/opt/rivetos',
+    )
+    expect(env.RIVETOS_DEN_DEVICES_ROSTER).toBe('/custom/mesh-devices.json')
+  })
+
+  it('defaults roster to <shared_export>/mesh/mesh-devices.json when set', () => {
+    const shared = mkdtempSync(join(tmpdir(), 'gw-shared-'))
+    try {
+      const env = buildGatewayEnv(
+        base({
+          devices: {
+            enabled: true,
+            pool: '10.0.0.1-10.0.0.9',
+            shared_export: shared,
+          },
+        }),
+        '/opt/rivetos',
+      )
+      expect(env.RIVETOS_DEN_DEVICES_ROSTER).toBe(join(shared, 'mesh', 'mesh-devices.json'))
+    } finally {
+      rmSync(shared, { recursive: true, force: true })
+    }
+  })
+
+  it('defaults roster under mesh.storage_dir when mesh is enabled and no shared_export', () => {
+    const path = resolveDevicesRosterPath(
+      {
+        den: { devices: { enabled: true, pool: '10.0.0.1-10.0.0.9' } },
+        mesh: { enabled: true, storage_dir: '/rivet-shared', tls: true, node_name: 'n1' },
+      } as RivetConfig,
+      { enabled: true, pool: '10.0.0.1-10.0.0.9' },
+    )
+    expect(path).toBe('/rivet-shared/mesh/mesh-devices.json')
+  })
+
+  it('omits roster env when no shared mount is configured (per-node stateDir fallback)', () => {
+    const env = buildGatewayEnv(
+      base({ devices: { enabled: true, pool: '10.0.0.1-10.0.0.9' } }),
+      '/opt/rivetos',
+    )
+    expect(env.RIVETOS_DEN_DEVICES_ROSTER).toBeUndefined()
   })
 })

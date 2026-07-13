@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -47,6 +47,7 @@ const CONFIG: DevicesConfig = {
   relayForwardDest: '198.51.100.0/24',
   sharedHost: 'hub.example',
   sharedExport: '/rivet-shared',
+  rosterPath: '',
   pgUrl: 'postgres://u:p@hub.example:5432/db',
   embedUrl: 'http://hub.example:9402',
   pgAdminUrl: '',
@@ -424,6 +425,79 @@ describe('devices routes', () => {
     expect(results.filter((r) => r.status === 409)).toHaveLength(2)
   })
 
+  it('two route instances sharing a roster file get distinct addresses under concurrent add', async () => {
+    // Simulates two mesh nodes (separate den-server processes) writing the
+    // same shared roster — file lock must serialize allocateAddress.
+    const sharedDir = mkdtempSync(join(tmpdir(), 'devices-shared-'))
+    const rosterPath = join(sharedDir, 'mesh', 'mesh-devices.json')
+    const makeNode = (label: string) => {
+      const stateDir = mkdtempSync(join(tmpdir(), `devices-node-${label}-`))
+      return createDevicesRoutes({
+        config: CONFIG,
+        stateDir,
+        rosterPath,
+        gatewayUrl: `http://${label}.example:5174`,
+        driver: fakeDriver(),
+        now: () => 1_000_000,
+      })
+    }
+    const nodeA = makeNode('a')
+    const nodeB = makeNode('b')
+    const results = await Promise.all([
+      call(nodeA, 'POST', '/api/devices', { name: 'from-a' }),
+      call(nodeB, 'POST', '/api/devices', { name: 'from-b' }),
+      call(nodeA, 'POST', '/api/devices', { name: 'from-a2' }),
+    ])
+    const ok = results.filter((r) => r.status === 200)
+    expect(ok).toHaveLength(3)
+    const addrs = ok.map((r) => r.body.address as string)
+    expect(new Set(addrs).size).toBe(3)
+    // Single shared registry file — not per-node stateDir copies.
+    const reg = JSON.parse(readFileSync(rosterPath, 'utf8'))
+    expect(reg.pending).toHaveLength(3)
+    expect(new Set(reg.pending.map((p: { address: string }) => p.address)).size).toBe(3)
+  })
+
+  it('revoke of a device added on another node (shared roster) succeeds', async () => {
+    const sharedDir = mkdtempSync(join(tmpdir(), 'devices-shared-rev-'))
+    const rosterPath = join(sharedDir, 'mesh', 'mesh-devices.json')
+    const makeNode = (label: string, driver: RelayDriver | null = fakeDriver()) => {
+      const stateDir = mkdtempSync(join(tmpdir(), `devices-node-${label}-`))
+      return createDevicesRoutes({
+        config: CONFIG,
+        stateDir,
+        rosterPath,
+        gatewayUrl: `http://${label}.example:5174`,
+        driver,
+        now: () => 1_000_000,
+      })
+    }
+    const driverA = fakeDriver()
+    const driverB = fakeDriver()
+    const nodeA = makeNode('a', driverA)
+    const nodeB = makeNode('b', driverB)
+
+    const open = await call(nodeA, 'POST', '/api/devices', { name: 'phone' })
+    expect(open.status).toBe(200)
+    const enroll = await call(
+      nodeA,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(enroll.status).toBe(200)
+    const id = enroll.body.device.id as string
+
+    // Revoke from the other node — same shared roster, no 404.
+    const revoke = await call(nodeB, 'DELETE', `/api/devices/${id}`)
+    expect(revoke.status).toBe(200)
+    expect(driverB.removed).toEqual([PUBKEY])
+
+    const listA = await call(nodeA, 'GET', '/api/devices')
+    expect(listA.body.devices).toHaveLength(0)
+  })
+
   it('restores the pending token when relay registration fails (retry works)', async () => {
     const driver = fakeDriver()
     let fail = true
@@ -452,7 +526,51 @@ describe('devices routes', () => {
     expect(retry.status).toBe(200) // same QR still valid after the failure
   })
 
-  it('revoke surfaces relay failure as 502 and keeps the device', async () => {
+  it('SSH enroll failure does not leave the file lock held or create a phantom roster entry', async () => {
+    // Blocking review fix: lock is not held across SSH; a failed addPeer must
+    // leave roster untouched (pending still valid, no device) and the lock
+    // file gone so a later add can acquire immediately.
+    const sharedDir = mkdtempSync(join(tmpdir(), 'devices-ssh-fail-'))
+    const rosterPath = join(sharedDir, 'mesh', 'mesh-devices.json')
+    const lockPath = `${rosterPath}.lock`
+    const driver = fakeDriver()
+    driver.addPeer = async () => {
+      throw new Error('ssh timeout')
+    }
+    const stateDir = mkdtempSync(join(tmpdir(), 'devices-ssh-fail-node-'))
+    const routes = createDevicesRoutes({
+      config: CONFIG,
+      stateDir,
+      rosterPath,
+      gatewayUrl: 'http://node.example:5174',
+      driver,
+      now: () => 1_000_000,
+    })
+
+    const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
+    expect(open.status).toBe(200)
+    const enroll = await call(
+      routes,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(enroll.status).toBe(502)
+    expect(existsSync(lockPath)).toBe(false)
+
+    const reg = JSON.parse(readFileSync(rosterPath, 'utf8'))
+    expect(reg.devices).toHaveLength(0)
+    expect(reg.pending).toHaveLength(1)
+    expect(reg.pending[0].token).toBe(open.body.qr.token)
+
+    // Lock is free — a subsequent allocate must succeed.
+    const open2 = await call(routes, 'POST', '/api/devices', { name: 'q' })
+    expect(open2.status).toBe(200)
+    expect(existsSync(lockPath)).toBe(false)
+  })
+
+  it('revoke succeeds even when relay removePeer fails (roster is authoritative)', async () => {
     const driver = fakeDriver()
     driver.removePeer = async () => {
       throw new Error('ssh down')
@@ -468,9 +586,9 @@ describe('devices routes', () => {
     )
     const list = await call(routes, 'GET', '/api/devices')
     const revoke = await call(routes, 'DELETE', `/api/devices/${list.body.devices[0].id}`)
-    expect(revoke.status).toBe(502)
+    expect(revoke.status).toBe(200)
     const after = await call(routes, 'GET', '/api/devices')
-    expect(after.body.devices).toHaveLength(1)
+    expect(after.body.devices).toHaveLength(0)
   })
 
   it('enroll mints a per-device role and puts its URL in the QR', async () => {
@@ -575,7 +693,7 @@ describe('devices routes', () => {
     expect(admin.seq).toContain(`drop:${id}`)
   })
 
-  it('revoke surfaces datahub role drop failure as 502 and keeps the device', async () => {
+  it('revoke succeeds even when datahub role drop fails (roster is authoritative)', async () => {
     const admin = fakeDatahubAdmin({ failDrop: true })
     const { routes } = makeRoutes(fakeDriver(), { t: 1_000_000 }, admin)
     const open = await call(routes, 'POST', '/api/devices', { name: 'p' })
@@ -588,10 +706,9 @@ describe('devices routes', () => {
     )
     const list = await call(routes, 'GET', '/api/devices')
     const revoke = await call(routes, 'DELETE', `/api/devices/${list.body.devices[0].id}`)
-    expect(revoke.status).toBe(502)
-    expect(revoke.body.error).toMatch(/datahub role revoke failed/)
+    expect(revoke.status).toBe(200)
     const after = await call(routes, 'GET', '/api/devices')
-    expect(after.body.devices).toHaveLength(1)
+    expect(after.body.devices).toHaveLength(0)
   })
 })
 

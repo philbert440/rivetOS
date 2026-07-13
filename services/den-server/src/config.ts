@@ -98,6 +98,12 @@ export interface DenDevicesConfig {
   homeSubnet: string
   sharedHost: string
   sharedExport: string
+  /**
+   * Absolute path to the mesh-devices roster JSON (shared across nodes).
+   * Empty = per-node `<stateDir>/mesh-devices.json`. Env:
+   * RIVETOS_DEN_DEVICES_ROSTER.
+   */
+  rosterPath: string
   pgUrl: string
   embedUrl: string
   /** Device pool CIDR + home-LAN CIDR for the relay's pool→LAN forward rule.
@@ -156,6 +162,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       homeSubnet: env.RIVETOS_DEN_DEVICES_HOME_SUBNET ?? '',
       sharedHost: env.RIVETOS_DEN_DEVICES_SHARED_HOST ?? '',
       sharedExport: env.RIVETOS_DEN_DEVICES_SHARED_EXPORT ?? '/rivet-shared',
+      rosterPath: env.RIVETOS_DEN_DEVICES_ROSTER ?? '',
       pgUrl: env.RIVETOS_PG_URL ?? '',
       embedUrl: env.RIVETOS_EMBED_URL ?? '',
       relayForwardSrc: env.RIVETOS_DEN_DEVICES_FWD_SRC ?? '',
