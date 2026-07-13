@@ -7,13 +7,13 @@ import {
 } from './switch-mode.js'
 
 describe('switch-mode', () => {
-  it('browser (no __TAURI__) resolves peer hub origin for new-tab open', () => {
+  it('browser (no __TAURI__) always resolves as repoint', () => {
     const g = {}
     expect(isTauriShell(g)).toBe(false)
-    expect(nodeSwitchMode(g)).toBe('navigate')
+    expect(nodeSwitchMode(g)).toBe('repoint')
     // 192.168.1.x — documentation-safe; CI blocks real lab 10.x ranges
     const r = resolveNodeSwitch('http://192.168.1.5:5174/', g)
-    expect(r).toEqual({ mode: 'navigate', url: 'http://192.168.1.5:5174' })
+    expect(r).toEqual({ mode: 'repoint', url: 'http://192.168.1.5:5174' })
   })
 
   it('canonicalizes path away (den path is not a hub origin)', () => {
@@ -21,7 +21,7 @@ describe('switch-mode', () => {
     expect(resolveNodeSwitch('http://192.168.1.5:5174?x=1', {})).toBeNull()
   })
 
-  it('Tauri shell re-points without requiring full-page navigate', () => {
+  it('Tauri shell also re-points (same mode as browser)', () => {
     const g = { __TAURI__: {} }
     expect(isTauriShell(g)).toBe(true)
     expect(nodeSwitchMode(g)).toBe('repoint')
@@ -29,7 +29,7 @@ describe('switch-mode', () => {
     expect(r).toEqual({ mode: 'repoint', url: 'http://192.168.1.9:5174' })
   })
 
-  it('performNodeSwitch opens peer hub in a new tab and does not call switchTo', () => {
+  it('performNodeSwitch always re-points via switchTo (never navigate)', () => {
     const switchTo = vi.fn()
     const navigate = vi.fn()
     const r = performNodeSwitch('http://192.168.1.5:5174/', switchTo, {
@@ -37,12 +37,12 @@ describe('switch-mode', () => {
       navigate,
       currentOrigin: 'http://192.168.1.1:5174',
     })
-    expect(r?.mode).toBe('navigate')
-    expect(navigate).toHaveBeenCalledWith('http://192.168.1.5:5174')
-    expect(switchTo).not.toHaveBeenCalled()
+    expect(r?.mode).toBe('repoint')
+    expect(switchTo).toHaveBeenCalledWith('http://192.168.1.5:5174')
+    expect(navigate).not.toHaveBeenCalled()
   })
 
-  it('same-origin browser switch is a no-op (no duplicate tab)', () => {
+  it('same-origin peer still re-points (no special navigate no-op)', () => {
     const switchTo = vi.fn()
     const navigate = vi.fn()
     const r = performNodeSwitch('http://192.168.1.5:5174', switchTo, {
@@ -50,9 +50,9 @@ describe('switch-mode', () => {
       navigate,
       currentOrigin: 'http://192.168.1.5:5174',
     })
-    expect(r?.mode).toBe('navigate')
+    expect(r?.mode).toBe('repoint')
+    expect(switchTo).toHaveBeenCalledWith('http://192.168.1.5:5174')
     expect(navigate).not.toHaveBeenCalled()
-    expect(switchTo).not.toHaveBeenCalled()
   })
 
   it('performNodeSwitch re-points in Tauri without navigating', () => {

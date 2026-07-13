@@ -7,8 +7,8 @@ import { performNodeSwitch } from '../lib/switch-mode.js'
 /**
  * 4h node switcher. Roster persists in localStorage; mesh overview of the
  * CURRENT node seeds discovery (peers advertise denUrl = hub face).
- * Browser: open peer hub origin in a new tab (this page keeps live chat).
- * Tauri: API re-point via switchTo so the local shell stays put.
+ * Always re-points the gateway via switchTo — local/bundled UI stays put
+ * whether browser, Tauri, or Android WebView.
  */
 export function NodeSwitcher(): JSX.Element {
   const { baseUrl, roster, switchTo, addNode, removeNode } = useConnection()

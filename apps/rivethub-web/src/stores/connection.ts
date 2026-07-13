@@ -8,13 +8,14 @@
  * baseUrl persist in localStorage; tokens live in sessionStorage keyed per
  * node (never bundled, gone when the tab dies). Switching nodes re-points
  * the RivetGateway — chat/notification stores watch the endpoint identity
- * and reset themselves (per-gateway session ids, #299).
+ * and reset themselves (per-gateway session ids, #299). The UI dist never
+ * leaves the local origin; only the gateway baseUrl changes.
  */
 
 import { create } from 'zustand'
 import { RivetGateway } from '@rivetos/gateway-client'
 import { isValidGatewayUrl } from '../lib/gateway-url.js'
-import { isBundledOrigin, rememberRemoteUi } from '../lib/remote-ui.js'
+import { rememberRemoteUi } from '../lib/remote-ui.js'
 
 export { isValidGatewayUrl } from '../lib/gateway-url.js'
 
@@ -104,18 +105,6 @@ function defaultBaseUrl(): string {
   return isValidGatewayUrl(origin) ? origin : ''
 }
 
-/** Thin-shell cutover (desktop): a bundled-origin window that just got a
- *  node configured navigates to that node's live-served UI. Remember the
- *  target (bundled-origin storage) so the next launch boots straight there;
- *  same-origin serving means the redirected app is auto-configured. No-op in
- *  the browser (origin is already a gateway). */
-function cutOverToRemoteUi(baseUrl: string): void {
-  if (!isBundledOrigin(window.location.origin, window.location.protocol)) return
-  if (!isValidGatewayUrl(baseUrl)) return
-  rememberRemoteUi(localStorage, baseUrl)
-  window.location.replace(`${baseUrl}/`)
-}
-
 export const useConnection = create<ConnectionState>((set, get) => {
   const baseUrl = defaultBaseUrl()
   if (baseUrl) migrateLegacyToken(baseUrl)
@@ -131,12 +120,13 @@ export const useConnection = create<ConnectionState>((set, get) => {
       localStorage.setItem(BASE_KEY, nextBaseUrl)
       if (nextToken) sessionStorage.setItem(TOKEN_PREFIX + nextBaseUrl, nextToken)
       else sessionStorage.removeItem(TOKEN_PREFIX + nextBaseUrl)
+      // Persist last-active for bundled-shell boot adoption (no navigation).
+      if (isValidGatewayUrl(nextBaseUrl)) rememberRemoteUi(localStorage, nextBaseUrl)
       set({
         baseUrl: nextBaseUrl,
         token: nextToken,
         gateway: makeGateway(nextBaseUrl, nextToken),
       })
-      cutOverToRemoteUi(nextBaseUrl)
     },
 
     switchTo(rawUrl: string): void {
@@ -147,12 +137,12 @@ export const useConnection = create<ConnectionState>((set, get) => {
       if (!get().roster.some((n) => n.baseUrl === nextBaseUrl)) return
       const nextToken = tokenFor(nextBaseUrl)
       localStorage.setItem(BASE_KEY, nextBaseUrl)
+      if (isValidGatewayUrl(nextBaseUrl)) rememberRemoteUi(localStorage, nextBaseUrl)
       set({
         baseUrl: nextBaseUrl,
         token: nextToken,
         gateway: makeGateway(nextBaseUrl, nextToken),
       })
-      cutOverToRemoteUi(nextBaseUrl)
     },
 
     addNode(node: RosterNode): void {

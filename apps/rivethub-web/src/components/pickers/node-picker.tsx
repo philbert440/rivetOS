@@ -65,10 +65,9 @@ function DiscoveredNodeRow(props: {
 
 /**
  * Node picker for the composer row — shares roster + mesh discovery with the
- * sidebar NodeSwitcher. Browser: open peer hub origin in a **new tab** (live
- * turn stays on this page). Tauri: re-point the gateway client. Full node
- * management (remove / token) still lives in the sidebar switcher.
- * Labels: hostname via /healthz.
+ * sidebar NodeSwitcher. Always re-points the gateway client so the local UI
+ * stays put. Full node management (remove / token) still lives in the
+ * sidebar switcher. Labels: hostname via /healthz.
  */
 export function NodePicker(props: { disabled?: boolean }): JSX.Element {
   const { baseUrl, roster, switchTo, addNode } = useConnection()
