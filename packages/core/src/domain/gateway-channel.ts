@@ -53,6 +53,22 @@ const MAX_BUFFERED = 1024 * 1024
 // wire shape.
 type RingMessage = SessionMessage
 
+/** Input for a programmatic turn (OpenAI /v1/chat/completions and tests). */
+export interface GatewayTurnInput {
+  sessionId: string
+  text: string
+  agent?: string
+  thinking?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  userId?: string
+  /** Live StreamEvents for this session while the turn runs. */
+  onStream?: (event: StreamEvent) => void
+  /** Max ms to wait for the assistant reply (default 120s, cap 600s). */
+  timeoutMs?: number
+}
+
+export type GatewayTurnResult =
+  { ok: true; message: SessionMessage } | { ok: false; status: number; error: string }
+
 export interface GatewayChannelHandle {
   channel: Channel
   routes: GatewayRoute[]
@@ -67,6 +83,13 @@ export interface GatewayChannelHandle {
    *  Stateful: coalesces per-block assistant text into one committed message
    *  per turn; skips `task:` sessions. Wire to den-server's onAgentEvent. */
   bridgeAgentEvent(ev: AgentEventForBridge): void
+  /**
+   * Run one user turn through the same pipeline as
+   * `POST /api/sessions/:id/messages?wait=1` — records the user message,
+   * fires the channel handler, waits for the assistant reply, and optionally
+   * forwards StreamEvents via `onStream`. Used by OpenAI `/v1/chat/completions`.
+   */
+  submitTurn(input: GatewayTurnInput): Promise<GatewayTurnResult>
   close(): Promise<void>
 }
 
@@ -137,7 +160,15 @@ export function createGatewayChannel(opts?: {
   const subscribers = new Set<{ ws: WebSocket; session?: string }>()
   /** ?wait long-polls: resolved by the next assistant message per session. */
   const waiters = new Map<string, Array<(m: RingMessage) => void>>()
+  /** Per-session stream listeners (OpenAI SSE + programmatic turns). */
+  const streamListeners = new Set<{ session: string; fn: (event: StreamEvent) => void }>()
   let onMessageHandler: ((message: InboundMessage) => Promise<void>) | undefined
+
+  const notifyStream = (sessionId: string, event: StreamEvent): void => {
+    for (const l of streamListeners) {
+      if (l.session === sessionId) l.fn(event)
+    }
+  }
 
   const session = (id: string): { ring: RingMessage[]; lastActive: number } => {
     let s = sessions.get(id)
@@ -186,17 +217,27 @@ export function createGatewayChannel(opts?: {
   const emitFrame = (frame: SessionWsFrame): void => {
     if (frame.kind === 'message') {
       const s = session(frame.sessionId)
-      if (!s.ring.some((m) => m.id === frame.id)) {
-        const { kind: _k, ...msg } = frame
+      const { kind: _k, ...msg } = frame
+      let inserted = false
+      if (!s.ring.some((m) => m.id === msg.id)) {
         s.ring.push(msg)
         if (s.ring.length > RING_MAX) s.ring.splice(0, s.ring.length - RING_MAX)
         s.lastActive = msg.ts
+        inserted = true
       }
       broadcast(frame, frame.sessionId)
+      // Harness bridge commits assistant turns via emitFrame (not channel.send);
+      // resolve ?wait / submitTurn waiters the same way channel.send does.
+      if (inserted && msg.role === 'assistant') {
+        const pending = waiters.get(msg.sessionId)
+        const resolve = pending?.shift()
+        if (resolve) resolve(msg)
+      }
     } else if (frame.kind === 'sessions-dirty') {
       broadcast(frame, undefined) // drawer signal — every subscriber
     } else {
       broadcast(frame, frame.session)
+      if (frame.kind === 'stream') notifyStream(frame.session, frame.event)
     }
   }
 
@@ -225,6 +266,7 @@ export function createGatewayChannel(opts?: {
     },
     onStreamEvent(message: InboundMessage, event: StreamEvent): void {
       broadcast({ kind: 'stream', session: message.channelId, event }, message.channelId)
+      notifyStream(message.channelId, event)
     },
     onMessage(handler): void {
       onMessageHandler = handler
@@ -435,6 +477,68 @@ export function createGatewayChannel(opts?: {
     // ring message frames so a late client's backfill sees them. Exposed for
     // tests + the bridge below.
     emitFrame,
+    async submitTurn(input: GatewayTurnInput): Promise<GatewayTurnResult> {
+      if (!onMessageHandler) return { ok: false, status: 503, error: 'channel not started' }
+      const text = input.text.trim()
+      if (!text) return { ok: false, status: 400, error: 'text (string) is required' }
+
+      const THINK = ['off', 'low', 'medium', 'high', 'xhigh'] as const
+      const thinking =
+        input.thinking && (THINK as readonly string[]).includes(input.thinking)
+          ? input.thinking
+          : undefined
+      const inbound: InboundMessage = {
+        id: randomUUID(),
+        userId: input.userId ?? 'gateway-user',
+        channelId: input.sessionId,
+        chatType: 'direct',
+        text,
+        platform: 'gateway',
+        agent: input.agent ?? opts?.defaultAgent,
+        ...(thinking ? { metadata: { thinking } } : {}),
+        timestamp: Math.floor(Date.now() / 1000),
+      }
+      record(input.sessionId, 'user', text)
+
+      const listener = input.onStream ? { session: input.sessionId, fn: input.onStream } : undefined
+      if (listener) streamListeners.add(listener)
+
+      const waitMs =
+        input.timeoutMs !== undefined && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0
+          ? Math.min(input.timeoutMs, MAX_WAIT_MS)
+          : DEFAULT_WAIT_MS
+      const replyPromise = new Promise<RingMessage | undefined>((resolve) => {
+        const list = waiters.get(input.sessionId) ?? []
+        waiters.set(input.sessionId, list)
+        const timer = setTimeout(() => {
+          const idx = list.indexOf(done)
+          if (idx >= 0) list.splice(idx, 1)
+          resolve(undefined)
+        }, waitMs)
+        timer.unref()
+        function done(m: RingMessage): void {
+          clearTimeout(timer)
+          resolve(m)
+        }
+        list.push(done)
+      })
+
+      void onMessageHandler(inbound).catch((err: unknown) => {
+        log.warn(`gateway turn failed: ${(err as Error).message}`)
+        void channel.send({
+          channelId: input.sessionId,
+          text: `⚠️ turn failed: ${(err as Error).message}`,
+        })
+      })
+
+      try {
+        const reply = await replyPromise
+        if (!reply) return { ok: false, status: 504, error: 'no reply before deadline' }
+        return { ok: true, message: reply }
+      } finally {
+        if (listener) streamListeners.delete(listener)
+      }
+    },
     // Seamless modes (5d): bridge a live harness AgentEvent into the chat
     // view. STATEFUL by design (#313 review): message.agent fires per text
     // block, not once — so interim blocks stream as text deltas and coalesce
