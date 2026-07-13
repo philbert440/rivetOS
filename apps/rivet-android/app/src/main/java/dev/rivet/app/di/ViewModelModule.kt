@@ -10,11 +10,9 @@ import dev.rivet.app.ui.pages.developer.DeveloperVM
 import dev.rivet.app.ui.pages.favorite.FavoriteVM
 import dev.rivet.app.ui.pages.search.SearchVM
 import dev.rivet.app.ui.pages.history.HistoryVM
-import dev.rivet.app.ui.pages.stats.StatsVM
 import dev.rivet.app.ui.pages.imggen.ImgGenVM
 import dev.rivet.app.ui.pages.setting.SettingVM
 import dev.rivet.app.ui.pages.share.handler.ShareHandlerVM
-import dev.rivet.app.ui.pages.translator.TranslatorVM
 import org.koin.core.module.dsl.viewModel
 import org.koin.core.module.dsl.viewModelOf
 import org.koin.dsl.module
@@ -45,7 +43,6 @@ val viewModelModule = module {
             skillManager = get(),
         )
     }
-    viewModelOf(::TranslatorVM)
     viewModel<ShareHandlerVM> {
         ShareHandlerVM(
             text = it.get(),
@@ -57,5 +54,4 @@ val viewModelModule = module {
     viewModelOf(::DeveloperVM)
     viewModelOf(::FavoriteVM)
     viewModelOf(::SearchVM)
-    viewModelOf(::StatsVM)
 }
