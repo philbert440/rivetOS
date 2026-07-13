@@ -1,5 +1,6 @@
 package dev.rivet.app.ui.components.node
 
+import android.net.Uri
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -52,8 +53,9 @@ import kotlinx.coroutines.launch
  * Drawer slot that was previously [dev.rivet.app.ui.components.ai.AssistantPicker].
  *
  * Shows the **active RivetOS node** (name + den URL). Tap opens a bottom sheet to
- * switch / add / remove nodes. Selecting a node marks it active and opens that
- * node's hub via [Screen.WebView] — local → `127.0.0.1:5174`, peer → their den URL.
+ * switch / add / remove nodes. Selecting ANY node opens the **local** hub
+ * WebView (`127.0.0.1:5174`) with `?node=<targetDenUrl>` so the hub re-points
+ * its gateway — never loads a remote origin's dist over the mesh.
  *
  * Mirrors desktop `NodeSwitcher` + `useConnection` roster (`{name, baseUrl}`).
  */
@@ -116,7 +118,11 @@ fun NodeSwitcher(
                 )
                 showSheet = false
                 scope.launch {
-                    navController.navigate(Screen.WebView(url = url))
+                    // Always load the LOCAL hub; pass target as ?node= so the
+                    // web client re-points its gateway (never remote dist).
+                    val local = NodeRosterDefaults.localDenUrl()
+                    val hubUrl = "$local?node=${Uri.encode(url)}"
+                    navController.navigate(Screen.WebView(url = hubUrl))
                 }
             },
             onAdd = { node ->
@@ -193,7 +199,7 @@ private fun NodeSwitcherSheet(
                 modifier = Modifier.padding(bottom = 4.dp),
             )
             Text(
-                text = "Pick which RivetOS node this drawer points at. Selecting opens that node's hub.",
+                text = "Pick which RivetOS node the local hub talks to. Selecting re-points the gateway (keeps this device's UI).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

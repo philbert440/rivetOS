@@ -64,13 +64,12 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
   user echo / send / dismiss / hard resync. Single-select answers on click;
   multi-select / multi-question collects then sends `Header: label` lines.
 
-### Track 2 — Hub-as-node navigation — **shipped** (PR #330)
+### Track 2 — Hub-as-node navigation — **shipped** (PR #330, seamless remote in #378)
 
-- Browser: `performNodeSwitch` → `window.open(origin, '_blank')` new tab (current chat/turn stays put)
-- Tauri: still `switchTo` (local shell + API re-point)
+- All shells (browser, Tauri, Android WebView): `performNodeSwitch` → `switchTo` — **always repoint** the gateway; local/bundled dist stays put (never navigate to a peer’s served UI)
+- Android drawer: deep-link `http://127.0.0.1:5174/?node=<denUrl>` → `applyBootNodeParam` (repoint + roster; preserves per-node token when `?token=` absent)
 - Wired in sidebar `NodeSwitcher` + composer `NodePicker`
 - Den embed at Chat | Terminal | Den and `/den/` preserved
-- New tab is a **different origin** → that origin’s own `localStorage` roster + `sessionStorage` tokens (empty roster / re-auth is expected, not a bug)
 
 ## How to run / build
 
