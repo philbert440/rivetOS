@@ -62,10 +62,10 @@ export function shouldRedirect(_opts: {
  * `'redirecting'` remains in the return type for call-site compatibility
  * but is never produced.
  */
-export async function maybeRedirectToRemoteUi(
+export function maybeRedirectToRemoteUi(
   apply?: (baseUrl: string) => void,
 ): Promise<'redirecting' | 'stay'> {
-  if (typeof window === 'undefined') return 'stay'
+  if (typeof window === 'undefined') return Promise.resolve('stay')
 
   const bundled = isBundledOrigin(window.location.origin, window.location.protocol)
   const localOverride = new URLSearchParams(window.location.search).has('local')
@@ -78,5 +78,5 @@ export async function maybeRedirectToRemoteUi(
     apply(target)
   }
 
-  return 'stay'
+  return Promise.resolve('stay')
 }

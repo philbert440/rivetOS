@@ -47,8 +47,7 @@ export function applyBootNodeParam(
     replaceState?: (url: string) => void
   },
 ): boolean {
-  const search =
-    opts?.search ?? (typeof location !== 'undefined' ? location.search : '')
+  const search = opts?.search ?? (typeof location !== 'undefined' ? location.search : '')
   const parsed = parseBootNodeParam(search)
   if (!parsed) return false
 
