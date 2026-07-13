@@ -255,8 +255,19 @@ fun TerminalPage(
     }
 
     // Remote: open on a background dispatcher (HTTP spawn + WS). Local: sync acquire as before.
+    // When the session key changes (active node switch / different launch argv), drop the previous
+    // remote WS + FIFO bridge so it is not orphaned for the process lifetime.
     var handle by remember { mutableStateOf<TerminalHandle?>(null) }
+    var previousSessionKey by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(key, restartKey, waitingForTurn, readyTick, isLocal, activeDenUrl) {
+        val prevKey = previousSessionKey
+        if (prevKey != null && prevKey != key) {
+            // Detach-only close (WS + local FIFO). Does not DELETE the remote den PTY.
+            withContext(Dispatchers.IO) { TerminalSessionStore.drop(prevKey) }
+            if (handle?.key == prevKey) handle = null
+        }
+        previousSessionKey = key
+
         if (waitingForTurn) {
             handle = null
             return@LaunchedEffect

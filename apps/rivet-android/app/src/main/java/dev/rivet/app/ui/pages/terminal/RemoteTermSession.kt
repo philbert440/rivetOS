@@ -12,7 +12,10 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -44,6 +47,13 @@ internal class RemoteTermSession private constructor(
     private var inStream: FileInputStream? = null
     private var outStream: FileOutputStream? = null
 
+    /**
+     * True while [open] is still waiting for the first WS frame. Failures in this phase
+     * surface as thrown IOExceptions rather than mid-session UI finish events.
+     */
+    @Volatile
+    private var awaitingFirstByte = false
+
     /** Inline error for the UI when the remote node is unreachable (not a crash). */
     @Volatile
     var errorMessage: String? = null
@@ -51,7 +61,8 @@ internal class RemoteTermSession private constructor(
 
     fun close() {
         if (!closed.compareAndSet(false, true)) return
-        runCatching { webSocket?.close(1000, "client close") }
+        // cancel() aborts immediately (incl. connect-in-flight); close() alone can linger.
+        runCatching { webSocket?.cancel() }
         webSocket = null
         runCatching { handle.session.finishIfRunning() }
         runCatching { inStream?.close() }
@@ -97,6 +108,9 @@ internal class RemoteTermSession private constructor(
                     val n = inStream?.read(buf) ?: -1
                     if (n < 0) break
                     if (n == 0) continue
+                    // Drop OSC color *reports* (xterm answers to 10/11/12 queries) so they
+                    // never hit the remote harness as typed garbage — web XtermAttach parity.
+                    if (OscFilter.isOscColorReport(buf, 0, n)) continue
                     val ws = webSocket ?: break
                     if (!den.sendBytes(ws, buf, 0, n)) break
                 }
@@ -106,7 +120,15 @@ internal class RemoteTermSession private constructor(
         }
     }
 
-    private fun attachWebSocket() {
+    /**
+     * Open the WS and block until the first server frame (hello JSON or binary scrollback),
+     * or fail with a clear error. Reachable-but-hung dens must not leave the UI spinning.
+     */
+    private fun attachWebSocketAwaitFirstByte(timeoutMs: Long) {
+        val firstByte = CountDownLatch(1)
+        var openFailure: Throwable? = null
+        awaitingFirstByte = true
+
         val ws = den.connect(
             ptyId,
             object : DenTermClient.Listener {
@@ -116,17 +138,25 @@ internal class RemoteTermSession private constructor(
                     if (lastCols >= 20 && lastRows >= 5) {
                         den.sendResize(socket, lastCols, lastRows)
                     }
+                    // Do not count TCP/WS open as first byte — wait for den hello/binary.
                 }
 
                 override fun onText(text: String) {
                     onWsText(text)
+                    firstByte.countDown()
                 }
 
                 override fun onBinary(data: ByteArray) {
                     onWsBinary(data)
+                    firstByte.countDown()
                 }
 
                 override fun onClosed(code: Int, reason: String) {
+                    if (awaitingFirstByte) {
+                        openFailure = IOException("Remote terminal closed before data (code=$code)")
+                        firstByte.countDown()
+                        return
+                    }
                     if (closed.get()) return
                     Log.i(TAG, "remote ws closed code=$code reason=$reason")
                     mainHandler.post {
@@ -136,6 +166,11 @@ internal class RemoteTermSession private constructor(
                 }
 
                 override fun onFailure(error: Throwable) {
+                    if (awaitingFirstByte) {
+                        openFailure = error
+                        firstByte.countDown()
+                        return
+                    }
                     if (closed.get()) return
                     fail(
                         "Remote terminal unreachable: ${error.message ?: error.javaClass.simpleName}",
@@ -145,12 +180,43 @@ internal class RemoteTermSession private constructor(
             },
         )
         webSocket = ws
+
+        val gotFirst = try {
+            firstByte.await(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        awaitingFirstByte = false
+
+        if (!gotFirst) {
+            val msg =
+                "Remote terminal timed out waiting for data (${timeoutMs / 1000}s). " +
+                    "The node is reachable but its den did not send a terminal frame."
+            errorMessage = msg
+            close()
+            throw IOException(msg)
+        }
+        openFailure?.let { err ->
+            val msg =
+                "Remote terminal unreachable: ${err.message ?: err.javaClass.simpleName}"
+            errorMessage = msg
+            close()
+            throw IOException(msg, err)
+        }
+        if (closed.get()) {
+            throw IOException(errorMessage ?: "Remote terminal failed during connect")
+        }
     }
 
     private fun onWsBinary(data: ByteArray) {
         if (closed.get() || data.isEmpty()) return
+        // Strip OSC 10/11/12 color *queries* before they hit the local emulator
+        // (web XtermAttach parity — prevents rgb: report echo garbage).
+        val filtered = OscFilter.stripOscColorQueries(data)
+        if (filtered.isEmpty()) return
         try {
-            outStream?.write(data)
+            outStream?.write(filtered)
             outStream?.flush()
         } catch (e: Exception) {
             if (!closed.get()) Log.w(TAG, "outFifo write failed: ${e.message}")
@@ -184,10 +250,13 @@ internal class RemoteTermSession private constructor(
 
     companion object {
         private const val TAG = "RemoteTermSession"
+        /** Wait this long after WS open for hello/binary before failing the spinner. */
+        private const val FIRST_BYTE_TIMEOUT_MS = 15_000L
 
         /**
          * Spawn/attach a remote den PTY and wire it into a local [TerminalHandle] via FIFOs.
-         * Throws [java.io.IOException] with a user-facing message on failure.
+         * Throws [IOException] with a user-facing message on failure (including hung den /
+         * first-byte timeout). Uses the process-shared OkHttp client — no per-open leak.
          */
         fun open(
             context: Context,
@@ -200,10 +269,11 @@ internal class RemoteTermSession private constructor(
             cols: Int = 80,
             rows: Int = 24,
         ): RemoteTermSession {
-            val den = DenTermClient(denUrl, token)
+            // Shared OkHttp pool — never construct a fresh client per open.
+            val den = DenTermClient(denUrl, token, DenTermClient.sharedClient())
             val cfg = runCatching { den.termConfig() }.getOrNull()
             if (cfg != null && !cfg.enabled) {
-                throw java.io.IOException("Terminal is disabled on this node")
+                throw IOException("Terminal is disabled on this node")
             }
 
             val spawnReq = DenTermClient.spawnRequestFor(launchCommand, conversationId)
@@ -227,7 +297,7 @@ internal class RemoteTermSession private constructor(
 
             val bridgeDir = File(context.cacheDir, "remote-term/${UUID.randomUUID()}")
             if (!bridgeDir.mkdirs()) {
-                throw java.io.IOException("Could not create terminal bridge directory")
+                throw IOException("Could not create terminal bridge directory")
             }
             val inFifo = File(bridgeDir, "in")
             val outFifo = File(bridgeDir, "out")
@@ -236,7 +306,7 @@ internal class RemoteTermSession private constructor(
                 Os.mkfifo(outFifo.absolutePath, 384)
             } catch (e: Exception) {
                 bridgeDir.deleteRecursively()
-                throw java.io.IOException("Could not create terminal pipes: ${e.message}", e)
+                throw IOException("Could not create terminal pipes: ${e.message}", e)
             }
 
             // Relay: remote bytes from outFifo → PTY stdout; keystrokes → inFifo.
@@ -264,8 +334,13 @@ internal class RemoteTermSession private constructor(
             )
             remote.lastCols = cols
             remote.lastRows = rows
-            remote.startFifoBridges()
-            remote.attachWebSocket()
+            try {
+                remote.startFifoBridges()
+                remote.attachWebSocketAwaitFirstByte(FIRST_BYTE_TIMEOUT_MS)
+            } catch (e: Exception) {
+                remote.close()
+                throw if (e is IOException) e else IOException(e.message ?: "Remote terminal failed", e)
+            }
             return remote
         }
 

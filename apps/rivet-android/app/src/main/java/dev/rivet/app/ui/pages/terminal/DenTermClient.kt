@@ -24,13 +24,29 @@ import java.util.concurrent.TimeUnit
  * - Client → server: binary keystrokes; JSON `{type:resize,cols,rows}` / `{type:kill}`
  *
  * HTTP spawn/list use the same base URL. Tokenless is the normal LAN-mesh case.
+ *
+ * Uses a **process-level shared** [OkHttpClient] (connection pool + dispatcher). REST calls use a
+ * derived builder with finite read/call timeouts so a hung den cannot infinite-spin the UI;
+ * WebSocket keeps `readTimeout(0)` for long-lived streams.
  */
 internal class DenTermClient(
     private val denBaseUrl: String,
     private val token: String? = null,
     client: OkHttpClient? = null,
 ) {
-    private val http: OkHttpClient = client ?: defaultClient()
+    /** Long-lived WS client (shared pool; infinite read). */
+    private val wsHttp: OkHttpClient = client ?: sharedClient()
+
+    /**
+     * REST client: same pool/dispatcher as [wsHttp], finite read + call timeout so
+     * reachable-but-hung dens fail the connect spinner instead of blocking forever.
+     */
+    private val restHttp: OkHttpClient =
+        wsHttp.newBuilder()
+            .readTimeout(HTTP_READ_TIMEOUT_SEC, TimeUnit.SECONDS)
+            .callTimeout(HTTP_CALL_TIMEOUT_SEC, TimeUnit.SECONDS)
+            .pingInterval(0, TimeUnit.MILLISECONDS) // not needed for short REST
+            .build()
 
     private val base: String = denBaseUrl.trim().trimEnd('/')
 
@@ -148,7 +164,7 @@ internal class DenTermClient(
         listener: Listener,
     ): WebSocket {
         val req = Request.Builder().url(terminalWsUrl(ptyId)).build()
-        return http.newWebSocket(req, object : WebSocketListener() {
+        return wsHttp.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 listener.onOpen()
             }
@@ -197,7 +213,7 @@ internal class DenTermClient(
 
     private fun getJson(path: String): JSONObject {
         val req = authorized(Request.Builder().url(base + path).get()).build()
-        http.newCall(req).execute().use { resp ->
+        restHttp.newCall(req).execute().use { resp ->
             val body = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) {
                 throw IOException("GET $path → HTTP ${resp.code}: ${body.take(200)}")
@@ -213,7 +229,7 @@ internal class DenTermClient(
                 .url(base + path)
                 .post(body.toString().toRequestBody(media)),
         ).build()
-        http.newCall(req).execute().use { resp ->
+        restHttp.newCall(req).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             val json = runCatching { JSONObject(text.ifBlank { "{}" }) }.getOrElse { JSONObject() }
             if (!resp.isSuccessful && !json.has("error")) {
@@ -234,15 +250,36 @@ internal class DenTermClient(
 
     companion object {
         private const val TAG = "DenTermClient"
+        private const val HTTP_READ_TIMEOUT_SEC = 15L
+        private const val HTTP_CALL_TIMEOUT_SEC = 20L
+        private const val CONNECT_TIMEOUT_SEC = 15L
 
-        fun defaultClient(): OkHttpClient =
-            OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(0, TimeUnit.MILLISECONDS) // WS is long-lived; den pings keep it alive
-                .writeTimeout(30, TimeUnit.SECONDS)
-                .pingInterval(30, TimeUnit.SECONDS)
-                .retryOnConnectionFailure(true)
-                .build()
+        /**
+         * Single process-level client. Shared connection pool + dispatcher across all remote
+         * terminal sessions so open/drop/reconnect cycles cannot leak OkHttp thread pools.
+         * Do **not** shut this down on session close.
+         */
+        @Volatile
+        private var shared: OkHttpClient? = null
+
+        fun sharedClient(): OkHttpClient {
+            shared?.let { return it }
+            synchronized(this) {
+                shared?.let { return it }
+                val c = OkHttpClient.Builder()
+                    .connectTimeout(CONNECT_TIMEOUT_SEC, TimeUnit.SECONDS)
+                    .readTimeout(0, TimeUnit.MILLISECONDS) // WS is long-lived; den pings keep it alive
+                    .writeTimeout(30, TimeUnit.SECONDS)
+                    .pingInterval(30, TimeUnit.SECONDS)
+                    .retryOnConnectionFailure(true)
+                    .build()
+                shared = c
+                return c
+            }
+        }
+
+        /** @deprecated Use [sharedClient]; kept name for call-site clarity in older drafts. */
+        fun defaultClient(): OkHttpClient = sharedClient()
 
         /**
          * Map an Android local launch argv onto den roster spawn fields.
