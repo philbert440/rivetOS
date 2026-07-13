@@ -94,6 +94,10 @@ class RivetHubApp : Application() {
             }
         }
 
+        // Upgrade path: pre-repoint NodeSwitcher wrote activeNodeDenUrl without moving
+        // Rivet baseUrl — soft-align so drawer and chat agree on cold start.
+        reconcileNodeChatBackend()
+
         // Start WebServer if enabled in settings
         startWebServerIfEnabled()
 
@@ -104,6 +108,23 @@ class RivetHubApp : Application() {
         incrementLaunchCount()
 
         // Composer.setDiagnosticStackTraceMode(ComposeStackTraceMode.Auto)
+    }
+
+    private fun reconcileNodeChatBackend() {
+        get<AppScope>().launch {
+            runCatching {
+                val store = get<SettingsStore>()
+                val current = store.settingsFlowRaw.first()
+                val fixed = dev.rivet.app.data.datastore.NodeChatBackend
+                    .reconcileActiveNodeBaseUrl(current)
+                if (fixed != current) {
+                    store.update(fixed)
+                    Log.i(TAG, "reconcileNodeChatBackend: aligned Rivet baseUrl to active node")
+                }
+            }.onFailure {
+                Log.e(TAG, "reconcileNodeChatBackend failed", it)
+            }
+        }
     }
 
     private fun incrementLaunchCount() {

@@ -69,6 +69,7 @@ import dev.rivet.app.service.ChatError
 import dev.rivet.app.ui.components.ai.ChatInput
 import androidx.compose.ui.platform.LocalContext
 import dev.rivet.app.Screen
+import dev.rivet.app.data.datastore.RIVET_BRIDGE_PORT
 import dev.rivet.app.data.datastore.RIVET_BRIDGE_PROVIDER_ID
 import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.ui.context.LocalNavController
@@ -542,7 +543,11 @@ private fun TopBar(
             val escalateContext = LocalContext.current
             val actionModel = settings.getCurrentChatModel()
             val actionProvider = actionModel?.findProvider(providers = settings.providers, checkOverwrite = false)
-            if (actionProvider?.id == RIVET_BRIDGE_PROVIDER_ID) {
+            // Terminal escalate only for the local on-device bridge (remote den has no local CLI).
+            val localBridge = actionProvider is dev.rivet.ai.provider.ProviderSetting.OpenAI &&
+                actionProvider.id == RIVET_BRIDGE_PROVIDER_ID &&
+                actionProvider.baseUrl.contains("127.0.0.1:$RIVET_BRIDGE_PORT")
+            if (localBridge) {
                 // The chat⇄terminal handoff is the headline feature — a labeled chip, not a
                 // bare icon. Same behavior: resume this exact CLI session in the terminal.
                 AssistChip(

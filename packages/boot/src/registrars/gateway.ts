@@ -21,7 +21,7 @@ import type { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { logger, createGatewayChannel, type Runtime } from '@rivetos/core'
+import { logger, createGatewayChannel, createOpenAICompatRoute, type Runtime } from '@rivetos/core'
 import type { GatewayRoute, SessionWsFrame } from '@rivetos/types'
 
 /** WS upgrade handler shape den-server accepts (same as the channel's). */
@@ -199,6 +199,7 @@ export async function registerGateway(
   // just below (safe — they only run once the server is listening); the
   // watcher's frames flow back out through this same channel's WS.
   const gatewayChannel = createGatewayChannel({
+    defaultAgent: config.runtime.default_agent,
     // Seamless modes (5e): durable chat backfill reads the memory transcript;
     // memory registers on the runtime after this, so pass a lazy accessor.
     getMemory: () => runtime.getMemory(),
@@ -217,6 +218,21 @@ export async function registerGateway(
     await gatewayChannel.close()
   })
 
+  // OpenAI-compatible /v1/* — same host/port/auth/CORS as /api/* so Android
+  // (and any OpenAI client) can treat this node as a drop-in backend. Model
+  // ids are agent ids from the local router (same registry catalog/agents uses).
+  const openaiRoute = createOpenAICompatRoute({
+    listAgents: () =>
+      Promise.resolve(
+        runtime
+          .getRouter()
+          .getAgents()
+          .map((a) => ({ id: a.id })),
+      ),
+    gateway: gatewayChannel,
+    defaultAgent: config.runtime.default_agent,
+  })
+
   const env = buildGatewayEnv(config, installRoot)
   const denConfig = loadDenConfig({ ...env })
   // Token semantics UNCHANGED from the standalone server: den.token from
@@ -232,7 +248,7 @@ export async function registerGateway(
       : (config.den.token?.trim() ?? '')
 
   const den = createDenServer(denConfig, {
-    extraRoutes: [...extraRoutes, ...gatewayChannel.routes],
+    extraRoutes: [...extraRoutes, ...gatewayChannel.routes, openaiRoute],
     extraUpgrades: [gatewayChannel.upgrade, ...extraUpgrades],
     // Seamless modes (5d): bridge live harness AgentEvents into the chat WS
     // so a PTY conversation's chat view streams (thinking/tool indicators +
