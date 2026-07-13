@@ -207,7 +207,9 @@ export interface DenSection {
    *  only). Defaults to terminal.open when unset. */
   files_open?: boolean
   /** Mesh device enrollment (Settings → Devices). Off unless `enabled`.
-   *  Only the node that fronts the WireGuard relay should turn this on. */
+   *  With a shared roster (default when a shared export mount is present),
+   *  any mesh node can add/revoke; each node still needs relay_ssh to mutate
+   *  WireGuard peers. */
   devices?: {
     enabled?: boolean
     /** ssh target for the relay, e.g. "rivet@10.0.0.4". Blank = record
@@ -237,6 +239,13 @@ export interface DenSection {
     /** Shared NFS host + export embedded in the QR for the device. */
     shared_host?: string
     shared_export?: string
+    /**
+     * Absolute path to the shared mesh-devices roster JSON. When unset, boot
+     * defaults to `<sharedExport>/mesh/mesh-devices.json` if a shared export
+     * mount is configured; otherwise den-server keeps the per-node
+     * `<stateDir>/mesh-devices.json`. Env: RIVETOS_DEN_DEVICES_ROSTER.
+     */
+    roster_path?: string
     /** Externally reachable den base URL for the QR (blank = the web client
      *  substitutes the origin it reached this node at). */
     gateway_url?: string

@@ -47,6 +47,7 @@ const CONFIG: DevicesConfig = {
   relayForwardDest: '198.51.100.0/24',
   sharedHost: 'hub.example',
   sharedExport: '/rivet-shared',
+  rosterPath: '',
   pgUrl: 'postgres://u:p@hub.example:5432/db',
   embedUrl: 'http://hub.example:9402',
   pgAdminUrl: '',
@@ -422,6 +423,79 @@ describe('devices routes', () => {
     expect(addrs).toHaveLength(3)
     expect(new Set(addrs).size).toBe(3) // all distinct
     expect(results.filter((r) => r.status === 409)).toHaveLength(2)
+  })
+
+  it('two route instances sharing a roster file get distinct addresses under concurrent add', async () => {
+    // Simulates two mesh nodes (separate den-server processes) writing the
+    // same shared roster — file lock must serialize allocateAddress.
+    const sharedDir = mkdtempSync(join(tmpdir(), 'devices-shared-'))
+    const rosterPath = join(sharedDir, 'mesh', 'mesh-devices.json')
+    const makeNode = (label: string) => {
+      const stateDir = mkdtempSync(join(tmpdir(), `devices-node-${label}-`))
+      return createDevicesRoutes({
+        config: CONFIG,
+        stateDir,
+        rosterPath,
+        gatewayUrl: `http://${label}.example:5174`,
+        driver: fakeDriver(),
+        now: () => 1_000_000,
+      })
+    }
+    const nodeA = makeNode('a')
+    const nodeB = makeNode('b')
+    const results = await Promise.all([
+      call(nodeA, 'POST', '/api/devices', { name: 'from-a' }),
+      call(nodeB, 'POST', '/api/devices', { name: 'from-b' }),
+      call(nodeA, 'POST', '/api/devices', { name: 'from-a2' }),
+    ])
+    const ok = results.filter((r) => r.status === 200)
+    expect(ok).toHaveLength(3)
+    const addrs = ok.map((r) => r.body.address as string)
+    expect(new Set(addrs).size).toBe(3)
+    // Single shared registry file — not per-node stateDir copies.
+    const reg = JSON.parse(readFileSync(rosterPath, 'utf8'))
+    expect(reg.pending).toHaveLength(3)
+    expect(new Set(reg.pending.map((p: { address: string }) => p.address)).size).toBe(3)
+  })
+
+  it('revoke of a device added on another node (shared roster) succeeds', async () => {
+    const sharedDir = mkdtempSync(join(tmpdir(), 'devices-shared-rev-'))
+    const rosterPath = join(sharedDir, 'mesh', 'mesh-devices.json')
+    const makeNode = (label: string, driver: RelayDriver | null = fakeDriver()) => {
+      const stateDir = mkdtempSync(join(tmpdir(), `devices-node-${label}-`))
+      return createDevicesRoutes({
+        config: CONFIG,
+        stateDir,
+        rosterPath,
+        gatewayUrl: `http://${label}.example:5174`,
+        driver,
+        now: () => 1_000_000,
+      })
+    }
+    const driverA = fakeDriver()
+    const driverB = fakeDriver()
+    const nodeA = makeNode('a', driverA)
+    const nodeB = makeNode('b', driverB)
+
+    const open = await call(nodeA, 'POST', '/api/devices', { name: 'phone' })
+    expect(open.status).toBe(200)
+    const enroll = await call(
+      nodeA,
+      'POST',
+      '/api/devices/enroll',
+      { token: open.body.qr.token, publicKey: PUBKEY },
+      true,
+    )
+    expect(enroll.status).toBe(200)
+    const id = enroll.body.device.id as string
+
+    // Revoke from the other node — same shared roster, no 404.
+    const revoke = await call(nodeB, 'DELETE', `/api/devices/${id}`)
+    expect(revoke.status).toBe(200)
+    expect(driverB.removed).toEqual([PUBKEY])
+
+    const listA = await call(nodeA, 'GET', '/api/devices')
+    expect(listA.body.devices).toHaveLength(0)
   })
 
   it('restores the pending token when relay registration fails (retry works)', async () => {

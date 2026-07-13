@@ -31,7 +31,17 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { execFile } from 'node:child_process'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 import pg from 'pg'
 
@@ -69,6 +79,11 @@ export interface DevicesConfig {
   /** Mesh coordinates embedded in the QR for the device's own settings. */
   sharedHost: string
   sharedExport: string
+  /**
+   * Absolute path to the shared mesh-devices roster. Empty = per-node
+   * `<stateDir>/mesh-devices.json`. Env: RIVETOS_DEN_DEVICES_ROSTER.
+   */
+  rosterPath: string
   pgUrl: string
   embedUrl: string
   /**
@@ -432,7 +447,8 @@ export function createSshRelayDriver(cfg: {
 }
 
 // ---------------------------------------------------------------------------
-// registry (JSON file in stateDir; small, rewrite-on-change)
+// registry (JSON file — shared roster when RIVETOS_DEN_DEVICES_ROSTER is set,
+// else per-node stateDir/mesh-devices.json; small, rewrite-on-change)
 
 interface PendingEnroll {
   id: string
@@ -452,6 +468,11 @@ interface Registry {
 }
 
 const ENROLL_TTL_MS = 10 * 60 * 1000
+/** Break orphaned `<roster>.lock` files left by a crashed process (NFS-safe
+ *  O_EXCL locks have no automatic release). Enroll holds the lock across
+ *  relay ssh, which is rare and should finish well under a minute. */
+const FILE_LOCK_STALE_MS = 60_000
+const FILE_LOCK_MAX_ATTEMPTS = 200
 
 function loadRegistry(file: string): Registry {
   if (!existsSync(file)) return { devices: [], pending: [] }
@@ -466,20 +487,16 @@ function loadRegistry(file: string): Registry {
 function saveRegistry(file: string, reg: Registry): void {
   // Registry holds live enrollment tokens in the clear; keep it owner-only.
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  const tmp = `${file}.tmp-${process.pid}`
+  const tmp = `${file}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`
   writeFileSync(tmp, JSON.stringify(reg, null, 2), { mode: 0o600 })
   renameSync(tmp, file)
 }
 
 /**
- * Serialize every registry read-modify-write. den-server is single-process,
- * so a promise-chain mutex closes the TOCTOU races an unlocked load→mutate→
- * save exposes: concurrent Add-device dual-claiming a free address, and an
- * enroll redemption interleaving with a revoke of the same pending. Each
- * critical section re-reads the registry under the lock, so no caller acts on
- * a stale snapshot. The lock is held across the (slow) relay ssh calls too —
- * enrollment is a rare, operator-driven action, and serializing it is far
- * cheaper than reconciling a half-applied relay + registry state.
+ * In-process promise-chain mutex. Closes TOCTOU races for concurrent handlers
+ * in one den-server process (dual Add claiming the same address, enroll vs
+ * revoke of the same pending). Held across slow relay ssh — enrollment is
+ * rare; serializing is cheaper than half-applied relay + registry state.
  */
 function makeMutex(): <T>(fn: () => T | Promise<T>) => Promise<T> {
   let tail: Promise<unknown> = Promise.resolve()
@@ -491,6 +508,71 @@ function makeMutex(): <T>(fn: () => T | Promise<T>) => Promise<T> {
     )
     return run
   }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Cross-process / cross-node advisory lock on `<rosterPath>.lock` via
+ * O_CREAT|O_EXCL (works on NFS without flock). Retry with jittered backoff;
+ * reclaim locks whose written timestamp is older than FILE_LOCK_STALE_MS.
+ * Nested under the in-process mutex so a single process does not thrash the
+ * lock file. Critical sections re-read the roster inside both locks.
+ */
+export async function withRosterFileLock<T>(
+  lockPath: string,
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 })
+  for (let attempt = 0; attempt < FILE_LOCK_MAX_ATTEMPTS; attempt++) {
+    let fd: number | undefined
+    try {
+      fd = openSync(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600)
+      writeFileSync(fd, `${process.pid} ${Date.now()}\n`)
+      try {
+        return await fn()
+      } finally {
+        try {
+          closeSync(fd)
+        } catch {
+          /* ignore */
+        }
+        fd = undefined
+        try {
+          unlinkSync(lockPath)
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch (e) {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd)
+        } catch {
+          /* ignore */
+        }
+        try {
+          unlinkSync(lockPath)
+        } catch {
+          /* ignore */
+        }
+      }
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+      // Stale-lock recovery: crashed holder left the file behind.
+      try {
+        const content = readFileSync(lockPath, 'utf8')
+        const ts = Number(content.trim().split(/\s+/)[1])
+        if (Number.isFinite(ts) && Date.now() - ts > FILE_LOCK_STALE_MS) {
+          unlinkSync(lockPath)
+          continue
+        }
+      } catch {
+        // Unreadable or already gone — retry acquire.
+      }
+      await sleep(10 + Math.random() * 20 * Math.min(attempt + 1, 10))
+    }
+  }
+  throw new Error(`timeout acquiring roster lock: ${lockPath}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -548,6 +630,11 @@ export interface DevicesRoutes {
 export function createDevicesRoutes(opts: {
   config: DevicesConfig
   stateDir: string
+  /**
+   * Override roster file path (tests / advanced). When unset, uses
+   * config.rosterPath if set, else `<stateDir>/mesh-devices.json`.
+   */
+  rosterPath?: string
   /** The externally reachable den base URL to embed in the QR (client can
    *  override with its own origin when it renders the QR). */
   gatewayUrl: string
@@ -560,8 +647,15 @@ export function createDevicesRoutes(opts: {
   const { config } = opts
   const log = opts.log ?? (() => {})
   const now = opts.now ?? Date.now
-  const file = join(opts.stateDir, 'mesh-devices.json')
-  const withLock = makeMutex()
+  const file =
+    opts.rosterPath?.trim() ||
+    config.rosterPath?.trim() ||
+    join(opts.stateDir, 'mesh-devices.json')
+  const lockPath = `${file}.lock`
+  const processMutex = makeMutex()
+  /** In-process mutex, then cross-node file lock, then re-read inside fn. */
+  const withLock = <T>(fn: () => T | Promise<T>): Promise<T> =>
+    processMutex(() => withRosterFileLock(lockPath, fn))
   const driver =
     opts.driver !== undefined
       ? opts.driver
