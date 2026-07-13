@@ -12,7 +12,7 @@ import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { routeTree } from './routes.js'
 import { applyBootNodeParam } from './lib/boot-node-param.js'
 import { maybeRedirectToRemoteUi } from './lib/remote-ui.js'
-import { useConnection } from './stores/connection.js'
+import { tokenFor, useConnection } from './stores/connection.js'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 15_000, retry: 1 } },
@@ -35,11 +35,13 @@ if (!rootEl) throw new Error('missing #root element')
 // 3) Mount React.
 void maybeRedirectToRemoteUi((baseUrl) => {
   const { baseUrl: current, setConnection } = useConnection.getState()
-  if (!current) setConnection(baseUrl)
+  // Preserve any saved bearer for this node (setConnection clears when token omitted).
+  if (!current) setConnection(baseUrl, tokenFor(baseUrl))
 }).then(() => {
   applyBootNodeParam({
     setConnection: (url, token) => useConnection.getState().setConnection(url, token),
     addNode: (node) => useConnection.getState().addNode(node),
+    tokenFor,
   })
   createRoot(rootEl).render(
     <StrictMode>

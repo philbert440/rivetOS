@@ -44,8 +44,9 @@ const normalize = (url: string): string => url.trim().replace(/\/+$/, '')
 
 const ROSTER_MAX = 20
 
-function tokenFor(baseUrl: string): string | undefined {
-  return sessionStorage.getItem(TOKEN_PREFIX + baseUrl) ?? undefined
+/** Per-node bearer from sessionStorage (gone when the tab dies). */
+export function tokenFor(baseUrl: string): string | undefined {
+  return sessionStorage.getItem(TOKEN_PREFIX + normalize(baseUrl)) ?? undefined
 }
 
 /** One-time migration: pre-4h stored a single token under
@@ -147,9 +148,13 @@ export const useConnection = create<ConnectionState>((set, get) => {
 
     addNode(node: RosterNode): void {
       if (!isValidGatewayUrl(normalize(node.baseUrl))) return
+      const url = normalize(node.baseUrl)
+      // Keep a friendly roster name if already present — ?node= boot re-adds
+      // with host:port every time and must not clobber a user/mesh label.
+      const existing = get().roster.find((n) => normalize(n.baseUrl) === url)
       const roster = [
-        ...get().roster.filter((n) => normalize(n.baseUrl) !== normalize(node.baseUrl)),
-        { name: node.name, baseUrl: normalize(node.baseUrl) },
+        ...get().roster.filter((n) => normalize(n.baseUrl) !== url),
+        { name: existing?.name ?? node.name, baseUrl: url },
       ].slice(-ROSTER_MAX)
       saveRoster(roster)
       set({ roster })

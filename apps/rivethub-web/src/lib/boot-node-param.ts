@@ -5,6 +5,8 @@
  *   Android:  navigate → `http://127.0.0.1:5174/?node=<urlencoded denUrl>`
  *   Hub:      setConnection(denUrl) + roster add, then strip query params.
  *
+ * When `?token=` is absent, the existing per-node sessionStorage bearer is
+ * preserved (same as switchTo) — Android drawer selects never pass a token.
  * Never navigates the document; only repoints the gateway client.
  */
 
@@ -13,6 +15,11 @@ import { gatewayOrigin } from './gateway-url.js'
 export interface BootNodeHandlers {
   setConnection: (baseUrl: string, token?: string) => void
   addNode: (node: { name: string; baseUrl: string }) => void
+  /**
+   * Look up a previously-stored bearer for this node. Required so `?node=`
+   * without `?token=` does not wipe sessionStorage via setConnection.
+   */
+  tokenFor: (baseUrl: string) => string | undefined
 }
 
 /**
@@ -38,6 +45,9 @@ export function parseBootNodeParam(search: string): {
  * Apply boot `?node=` (and optional `?token=`), add to roster, strip params
  * from the address bar via history.replaceState. No-op when param absent
  * or invalid. Returns true when a connection was set.
+ *
+ * Token policy: only an explicit `?token=` overwrites the stored bearer.
+ * Otherwise `tokenFor(baseUrl)` is passed so setConnection does not wipe.
  */
 export function applyBootNodeParam(
   handlers: BootNodeHandlers,
@@ -51,7 +61,9 @@ export function applyBootNodeParam(
   const parsed = parseBootNodeParam(search)
   if (!parsed) return false
 
-  handlers.setConnection(parsed.baseUrl, parsed.token)
+  // Explicit ?token= wins; otherwise preserve the saved per-node bearer.
+  const token = parsed.token !== undefined ? parsed.token : handlers.tokenFor(parsed.baseUrl)
+  handlers.setConnection(parsed.baseUrl, token)
   let host: string
   try {
     host = new URL(parsed.baseUrl).host
