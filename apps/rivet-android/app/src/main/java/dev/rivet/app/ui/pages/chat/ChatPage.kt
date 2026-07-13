@@ -69,6 +69,7 @@ import dev.rivet.app.service.ChatError
 import dev.rivet.app.ui.components.ai.ChatInput
 import androidx.compose.ui.platform.LocalContext
 import dev.rivet.app.Screen
+import dev.rivet.app.data.datastore.NodeRosterDefaults
 import dev.rivet.app.data.datastore.RIVET_BRIDGE_PORT
 import dev.rivet.app.data.datastore.isAgentSessionProvider
 import dev.rivet.app.runtime.RivetRuntime
@@ -78,6 +79,7 @@ import dev.rivet.app.ui.context.Navigator
 import dev.rivet.app.ui.hooks.ChatInputState
 import dev.rivet.app.ui.hooks.EditStateContent
 import dev.rivet.app.ui.hooks.useEditState
+import dev.rivet.app.ui.pages.terminal.TerminalEscalate
 import dev.rivet.app.utils.base64Decode
 import dev.rivet.app.utils.navigateToChatPage
 import androidx.lifecycle.Lifecycle
@@ -551,20 +553,25 @@ private fun TopBar(
             if (agentSession && actionModel != null) {
                 // The chat⇄terminal handoff is the headline feature — a labeled chip, not a
                 // bare icon. Resume this exact CLI/agent session in the terminal when possible.
+                // Remote den models are `grok`/`claude` (not only local `rivet-*` aliases).
                 AssistChip(
                     onClick = {
                         val convId = conversation.id.toString()
                         val hasTurns = conversation.messageNodes.isNotEmpty()
-                        val launch = when {
-                            // bypassPermissions (we run as the non-root rivet user, so claude accepts it).
-                            actionModel.modelId == "rivet-claude" && hasTurns ->
-                                listOf("claude", "--resume", convId, "--dangerously-skip-permissions")
-                            // grok 0.2.33: resume by its captured session id, else a fresh grok.
-                            actionModel.modelId == "rivet-grok" && hasTurns ->
+                        val activeDen = settings.activeNodeDenUrl
+                            .ifBlank { NodeRosterDefaults.localDenUrl() }
+                        val isLocal = NodeRosterDefaults.isLocalDenUrl(activeDen)
+                        val launch = TerminalEscalate.launchCommand(
+                            modelId = actionModel.modelId,
+                            conversationId = convId,
+                            hasTurns = hasTurns,
+                            isLocalNode = isLocal,
+                            localGrokSessionId = if (isLocal) {
                                 RivetRuntime.grokSessionId(escalateContext, convId)
-                                    ?.let { listOf("grok", "--resume", it) } ?: listOf("grok")
-                            else -> listOf("/bin/bash", "-l")
-                        }
+                            } else {
+                                null
+                            },
+                        )
                         navController.navigate(
                             Screen.Terminal(
                                 title = "${actionModel.displayName} · ${conversation.title.ifBlank { "session" }}",

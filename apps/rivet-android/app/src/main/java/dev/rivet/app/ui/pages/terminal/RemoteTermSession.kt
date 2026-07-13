@@ -310,19 +310,25 @@ internal class RemoteTermSession private constructor(
             }
 
             // Relay: remote bytes from outFifo → PTY stdout; keystrokes → inFifo.
+            // Termux TerminalSession constructs a MainThreadHandler — it MUST be created
+            // on the main looper. open() is invoked from Dispatchers.IO (TerminalPage) so
+            // network spawn stays off-main; hop to main only for this constructor.
             val shellCmd =
                 "cat '${outFifo.absolutePath}' & cat > '${inFifo.absolutePath}'; wait"
-            val client = RivetTerminalClient()
-            val session = TerminalSession(
-                "/system/bin/sh",
-                bridgeDir.absolutePath,
-                arrayOf("sh", "-c", shellCmd),
-                arrayOf("TERM=xterm-256color", "COLORTERM=truecolor"),
-                4000,
-                client,
-            )
-            val handle = TerminalHandle(key, session, client, title, conversationId)
-            client.handle = handle
+            val handle = runOnMainBlocking {
+                val client = RivetTerminalClient()
+                val session = TerminalSession(
+                    "/system/bin/sh",
+                    bridgeDir.absolutePath,
+                    arrayOf("sh", "-c", shellCmd),
+                    arrayOf("TERM=xterm-256color", "COLORTERM=truecolor"),
+                    4000,
+                    client,
+                )
+                TerminalHandle(key, session, client, title, conversationId).also {
+                    client.handle = it
+                }
+            }
 
             val remote = RemoteTermSession(
                 handle = handle,
@@ -342,6 +348,33 @@ internal class RemoteTermSession private constructor(
                 throw if (e is IOException) e else IOException(e.message ?: "Remote terminal failed", e)
             }
             return remote
+        }
+
+        /**
+         * Run [block] on the main looper (blocking the caller). Termux's
+         * [TerminalSession] requires this; network I/O stays on the caller's thread.
+         */
+        private fun <T> runOnMainBlocking(block: () -> T): T {
+            if (Looper.myLooper() == Looper.getMainLooper()) return block()
+            val latch = CountDownLatch(1)
+            val box = arrayOfNulls<Any>(1)
+            var error: Throwable? = null
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    @Suppress("UNCHECKED_CAST")
+                    box[0] = block() as Any?
+                } catch (t: Throwable) {
+                    error = t
+                } finally {
+                    latch.countDown()
+                }
+            }
+            if (!latch.await(30, TimeUnit.SECONDS)) {
+                throw IOException("Timed out waiting for main thread to create terminal session")
+            }
+            error?.let { throw it }
+            @Suppress("UNCHECKED_CAST")
+            return box[0] as T
         }
 
         /** Pick a roster key that exists on the node when possible. */
