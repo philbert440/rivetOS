@@ -44,7 +44,8 @@ function json(res: ServerResponse, code: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
-async function buildAgents(opts: CatalogApiOptions): Promise<CatalogAgent[]> {
+/** Same agent sheet `/api/catalog/agents` serves — OpenAI `/v1/models` reuses this. */
+export async function buildCatalogAgents(opts: CatalogApiOptions): Promise<CatalogAgent[]> {
   const local = opts.router.getAgents().map((a): CatalogAgent => ({
     id: a.id,
     provider: a.provider,
@@ -92,7 +93,7 @@ export function createCatalogApiRoute(opts: CatalogApiOptions): GatewayRoute {
         const url = new URL(req.url ?? '/', 'http://localhost')
         const sub = url.pathname.slice('/api/catalog'.length).replace(/^\//, '')
 
-        const agents = await buildAgents(opts)
+        const agents = await buildCatalogAgents(opts)
         if (sub === 'agents') return json(res, 200, { agents } satisfies CatalogAgentsResponse)
         if (sub !== '') return json(res, 404, { error: `no catalog section "${sub}"` })
 
