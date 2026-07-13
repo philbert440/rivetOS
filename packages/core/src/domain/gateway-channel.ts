@@ -84,10 +84,14 @@ export interface GatewayChannelHandle {
    *  per turn; skips `task:` sessions. Wire to den-server's onAgentEvent. */
   bridgeAgentEvent(ev: AgentEventForBridge): void
   /**
-   * Run one user turn through the same pipeline as
-   * `POST /api/sessions/:id/messages?wait=1` — records the user message,
-   * fires the channel handler, waits for the assistant reply, and optionally
+   * Run one user turn through the gateway channel pipeline — records the user
+   * message, fires the channel handler, waits for the **turn** to finish
+   * (handler settled — not the first mid-turn `channel.send`), and optionally
    * forwards StreamEvents via `onStream`. Used by OpenAI `/v1/chat/completions`.
+   *
+   * Mid-turn sends (StreamManager partials on channels without `edit`, tool
+   * logs, error bubbles) must not complete the wait; the committed final
+   * assistant message after the handler returns is the result.
    */
   submitTurn(input: GatewayTurnInput): Promise<GatewayTurnResult>
   close(): Promise<void>
@@ -498,7 +502,9 @@ export function createGatewayChannel(opts?: {
         ...(thinking ? { metadata: { thinking } } : {}),
         timestamp: Math.floor(Date.now() / 1000),
       }
-      record(input.sessionId, 'user', text)
+      // Capture the user-message id so we can pick the *last* assistant after
+      // this turn — not a StreamManager mid-turn partial that arrives first.
+      const userMsg = record(input.sessionId, 'user', text)
 
       const listener = input.onStream ? { session: input.sessionId, fn: input.onStream } : undefined
       if (listener) streamListeners.add(listener)
@@ -507,32 +513,36 @@ export function createGatewayChannel(opts?: {
         input.timeoutMs !== undefined && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0
           ? Math.min(input.timeoutMs, MAX_WAIT_MS)
           : DEFAULT_WAIT_MS
-      const replyPromise = new Promise<RingMessage | undefined>((resolve) => {
-        const list = waiters.get(input.sessionId) ?? []
-        waiters.set(input.sessionId, list)
-        const timer = setTimeout(() => {
-          const idx = list.indexOf(done)
-          if (idx >= 0) list.splice(idx, 1)
-          resolve(undefined)
-        }, waitMs)
-        timer.unref()
-        function done(m: RingMessage): void {
-          clearTimeout(timer)
-          resolve(m)
-        }
-        list.push(done)
-      })
 
-      void onMessageHandler(inbound).catch((err: unknown) => {
+      // Completion = turn handler settled (genuine end-of-turn), NOT the first
+      // channel.send. Gateway has no edit(), so StreamManager's first partial
+      // text / tool-log is a mid-turn send; resolving waiters on that truncated
+      // the OpenAI SSE stream and dropped later deltas (PR #381 review).
+      const turnDone = onMessageHandler(inbound).catch(async (err: unknown) => {
         log.warn(`gateway turn failed: ${(err as Error).message}`)
-        void channel.send({
+        await channel.send({
           channelId: input.sessionId,
           text: `⚠️ turn failed: ${(err as Error).message}`,
         })
       })
 
       try {
-        const reply = await replyPromise
+        const outcome = await Promise.race([
+          turnDone.then(() => 'done' as const),
+          new Promise<'timeout'>((resolve) => {
+            const timer = setTimeout(() => resolve('timeout'), waitMs)
+            timer.unref()
+          }),
+        ])
+        if (outcome === 'timeout') {
+          return { ok: false, status: 504, error: 'no reply before deadline' }
+        }
+
+        const ring = session(input.sessionId).ring
+        const userIdx = ring.findIndex((m) => m.id === userMsg.id)
+        const after = userIdx >= 0 ? ring.slice(userIdx + 1) : ring
+        // Final committed assistant wins over mid-turn partials / tool logs.
+        const reply = [...after].reverse().find((m) => m.role === 'assistant')
         if (!reply) return { ok: false, status: 504, error: 'no reply before deadline' }
         return { ok: true, message: reply }
       } finally {

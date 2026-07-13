@@ -398,7 +398,10 @@ export function createOpenAICompatRoute(opts: OpenAICompatOptions): GatewayRoute
         log.warn(`openai compat error: ${msg}`)
         if (!res.headersSent) json(res, 500, { error: { message: msg } })
         else {
+          // Mid-stream failure: still terminate the OpenAI SSE sequence with
+          // [DONE] so clients do not hang waiting for a final frame.
           try {
+            res.write('data: [DONE]\n\n')
             res.end()
           } catch {
             /* ignore */

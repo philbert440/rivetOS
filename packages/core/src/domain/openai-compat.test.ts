@@ -237,6 +237,87 @@ describe('POST /v1/chat/completions (stream)', () => {
     const last = parsed[parsed.length - 1]
     expect(last?.choices[0]?.finish_reason).toBe('stop')
   })
+
+  it('does not terminate SSE on mid-turn channel.send — streams all later deltas then one [DONE]', async () => {
+    // Regression for PR #381: gateway has no edit(), so StreamManager's first
+    // partial text is a mid-turn send. submitTurn must wait for the real
+    // end-of-turn (handler settled / done), not that intermediate send —
+    // otherwise later deltas are dropped and the client sees a truncated reply.
+    const gw = createGatewayChannel({ defaultAgent: 'claude' })
+    gw.channel.onMessage(async (message) => {
+      const emit = gw.channel.onStreamEvent?.bind(gw.channel)
+      // Mid-turn send (StreamManager first partial / tool log) — must NOT end SSE.
+      await gw.channel.send({
+        channelId: message.channelId,
+        text: 'partial',
+      })
+      await new Promise((r) => setTimeout(r, 15))
+      emit?.(message, { type: 'text', content: 'hel' })
+      await new Promise((r) => setTimeout(r, 10))
+      emit?.(message, { type: 'text', content: 'lo' })
+      emit?.(message, { type: 'text', content: ' world' })
+      emit?.(message, { type: 'done', content: '' })
+      // Final committed assistant message (turn-handler final send).
+      await gw.channel.send({
+        channelId: message.channelId,
+        text: 'hello world',
+      })
+    })
+    await gw.channel.start()
+
+    const route = createOpenAICompatRoute({
+      listAgents: async () => [{ id: 'claude' }],
+      gateway: gw,
+      defaultAgent: 'claude',
+    })
+    const server: Server = createServer((req, res) => {
+      void route.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    cleanups.push(async () => {
+      await gw.close()
+      await new Promise((r) => server.close(r))
+    })
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude',
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+    expect(res.status).toBe(200)
+    const raw = await res.text()
+    const frames = raw
+      .split('\n\n')
+      .map((b) => b.trim())
+      .filter(Boolean)
+
+    // Exactly one terminal [DONE], and it is the last frame.
+    expect(frames.filter((f) => f === 'data: [DONE]')).toHaveLength(1)
+    expect(frames[frames.length - 1]).toBe('data: [DONE]')
+
+    const contents = frames
+      .slice(0, -1)
+      .map((f) => {
+        expect(f.startsWith('data: ')).toBe(true)
+        return JSON.parse(f.slice(6)) as {
+          choices: Array<{ delta: { content?: string }; finish_reason: string | null }>
+        }
+      })
+      .map((p) => p.choices[0]?.delta?.content)
+      .filter((c): c is string => typeof c === 'string' && c.length > 0)
+
+    // All post-send deltas must arrive (old bug: stream ended after "partial" send).
+    expect(contents).toEqual(['hel', 'lo', ' world'])
+    const lastChunk = JSON.parse(frames[frames.length - 2]!.slice(6)) as {
+      choices: Array<{ finish_reason: string | null }>
+    }
+    expect(lastChunk.choices[0]?.finish_reason).toBe('stop')
+  })
 })
 
 describe('x-rivet-conversation pins the session', () => {
