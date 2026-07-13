@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { logger, createGatewayChannel, type Runtime } from '@rivetos/core'
 import type { GatewayRoute, SessionWsFrame } from '@rivetos/types'
@@ -46,6 +46,40 @@ export function ensureGatewayToken(file: string = GATEWAY_TOKEN_FILE): string {
   writeFileSync(file, token + '\n', { mode: 0o600 })
   log.info(`Generated gateway token at ${file}`)
   return token
+}
+
+/**
+ * Shared export mount used for mesh.json / filestore elsewhere in boot.
+ * Prefer devices.shared_export, then den.files_root, then mesh.storage_dir
+ * (default /rivet-shared when mesh is enabled). Empty = no shared mount.
+ */
+function resolveSharedExport(
+  config: RivetConfig,
+  devices: NonNullable<NonNullable<RivetConfig['den']>['devices']>,
+): string {
+  const den = config.den ?? {}
+  if (devices.shared_export?.trim()) return devices.shared_export.trim()
+  if (typeof den.files_root === 'string' && den.files_root.trim() !== '') {
+    return den.files_root.trim()
+  }
+  if (config.mesh?.storage_dir?.trim()) return config.mesh.storage_dir.trim()
+  if (config.mesh?.enabled === true) return '/rivet-shared'
+  return ''
+}
+
+/**
+ * Roster path for mesh device add/revoke. Explicit devices.roster_path wins;
+ * else `<sharedExport>/mesh/mesh-devices.json` when a shared mount is known;
+ * else undefined so den-server keeps per-node stateDir (single-node default).
+ */
+export function resolveDevicesRosterPath(
+  config: RivetConfig,
+  devices: NonNullable<NonNullable<RivetConfig['den']>['devices']>,
+): string | undefined {
+  if (devices.roster_path?.trim()) return devices.roster_path.trim()
+  const shared = resolveSharedExport(config, devices)
+  if (!shared) return undefined
+  return join(shared, 'mesh', 'mesh-devices.json')
 }
 
 /**
@@ -105,6 +139,17 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
       env.RIVETOS_DEN_DEVICES_SHARED_EXPORT = devices.shared_export.trim()
     if (devices.gateway_url?.trim())
       env.RIVETOS_DEN_DEVICES_GATEWAY_URL = devices.gateway_url.trim()
+    // Shared roster so any mesh node can add/revoke against one file.
+    // Explicit roster_path wins; else default under the shared export mount.
+    const rosterPath = resolveDevicesRosterPath(config, devices)
+    if (rosterPath) {
+      try {
+        mkdirSync(dirname(rosterPath), { recursive: true })
+      } catch {
+        // Mount may not be ready at boot; den-server mkdir's again on write.
+      }
+      env.RIVETOS_DEN_DEVICES_ROSTER = rosterPath
+    }
     // Per-device datahub roles: prefer config, else process env (so ops can
     // inject the secret without putting it in config.yaml).
     const pgAdmin =
