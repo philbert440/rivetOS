@@ -38,7 +38,7 @@ import dev.rivet.app.data.ai.transformers.onGenerationFinish
 import dev.rivet.app.data.ai.transformers.transforms
 import dev.rivet.app.data.ai.transformers.visualTransforms
 import dev.rivet.app.data.ai.tools.buildMemoryTools
-import dev.rivet.app.data.datastore.RIVET_BRIDGE_PROVIDER_ID
+import dev.rivet.app.data.datastore.NodeChatBackend
 import dev.rivet.app.data.datastore.Settings
 import dev.rivet.app.data.datastore.findModelById
 import dev.rivet.app.data.datastore.findProvider
@@ -410,12 +410,11 @@ class GenerationHandler(
             customHeaders = buildList {
                 addAll(assistant.customHeaders)
                 addAll(model.customHeaders)
-                // Rivet bridge: tag chat turns with the conversation UUID so they map to a
-                // single persistent CLI session (claude --session-id / grok session). Only for
-                // the bridge provider, and only for real conversations — the app's internal
-                // title/translate calls pass no conversationId, so the bridge runs them as
-                // header-less one-shots (no junk sessions spawned).
-                if (provider.id == RIVET_BRIDGE_PROVIDER_ID && conversationId != null) {
+                // Rivet agent session (local bridge or remote den /v1): tag chat turns with
+                // the conversation UUID so they map to one persistent agent session. Only for
+                // the Rivet provider, and only for real conversations — internal title/translate
+                // calls pass no conversationId and run as header-less one-shots.
+                if (NodeChatBackend.isAgentSessionProvider(provider) && conversationId != null) {
                     add(CustomHeader("x-rivet-conversation", conversationId.toString()))
                     if (!conversationTitle.isNullOrBlank()) {
                         add(CustomHeader("x-rivet-title", conversationTitle))
