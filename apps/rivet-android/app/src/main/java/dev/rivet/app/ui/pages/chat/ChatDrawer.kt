@@ -116,6 +116,12 @@ fun ChatDrawerContent(
         initialFirstVisibleItemScrollOffset = drawerVm.scrollOffset,
     )
 
+    // Remote harness list is push-less on Android; re-fetch when the drawer
+    // opens so desktop injects / new node sessions appear without force-stop.
+    LaunchedEffect(drawerOpen) {
+        if (drawerOpen) drawerVm.refreshRemoteList()
+    }
+
     LaunchedEffect(conversationListState) {
         snapshotFlow {
             conversationListState.firstVisibleItemIndex to
@@ -233,8 +239,13 @@ fun ChatDrawerContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                onClick = {
-                    navigateToChatPage(navController, it.id)
+                onClick = { conv ->
+                    // Remote node: import harness transcript first so the chat
+                    // view + Terminal escalate share the node session id.
+                    scope.launch {
+                        val id = drawerVm.prepareOpenConversation(conv)
+                        navigateToChatPage(navController, id)
+                    }
                 },
                 onRegenerateTitle = {
                     vm.generateTitle(it, true)
