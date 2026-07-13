@@ -70,7 +70,7 @@ import dev.rivet.app.ui.components.ai.ChatInput
 import androidx.compose.ui.platform.LocalContext
 import dev.rivet.app.Screen
 import dev.rivet.app.data.datastore.RIVET_BRIDGE_PORT
-import dev.rivet.app.data.datastore.RIVET_BRIDGE_PROVIDER_ID
+import dev.rivet.app.data.datastore.isAgentSessionProvider
 import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.ui.context.LocalNavController
 import dev.rivet.app.ui.context.LocalToaster
@@ -537,19 +537,20 @@ private fun TopBar(
             }
         },
         actions = {
-            // Escalate to an in-app terminal — for Rivet bridge chats, drop into the same
-            // on-device rootfs (resume the claude session, or a shell) that backs this chat.
+            // Escalate to an in-app terminal for Rivet agent sessions (any active node).
+            // TerminalPage routes local → proot PTY, remote → den WS (#382).
             val navController = LocalNavController.current
             val escalateContext = LocalContext.current
             val actionModel = settings.getCurrentChatModel()
             val actionProvider = actionModel?.findProvider(providers = settings.providers, checkOverwrite = false)
-            // Terminal escalate only for the local on-device bridge (remote den has no local CLI).
-            val localBridge = actionProvider is dev.rivet.ai.provider.ProviderSetting.OpenAI &&
-                actionProvider.id == RIVET_BRIDGE_PROVIDER_ID &&
+            val agentSession = isAgentSessionProvider(actionProvider)
+            // Resync rewrites the GUI transcript from the local CLI session file — local only.
+            val localBridge = agentSession &&
+                actionProvider is dev.rivet.ai.provider.ProviderSetting.OpenAI &&
                 actionProvider.baseUrl.contains("127.0.0.1:$RIVET_BRIDGE_PORT")
-            if (localBridge) {
+            if (agentSession) {
                 // The chat⇄terminal handoff is the headline feature — a labeled chip, not a
-                // bare icon. Same behavior: resume this exact CLI session in the terminal.
+                // bare icon. Resume this exact CLI/agent session in the terminal when possible.
                 AssistChip(
                     onClick = {
                         val convId = conversation.id.toString()
@@ -583,6 +584,8 @@ private fun TopBar(
                         )
                     },
                 )
+            }
+            if (localBridge) {
                 // Un-wedge a thread that diverged from the CLI transcript (the append-only
                 // mirror can't recover). Destructive to chat-only edits → confirm first.
                 IconButton(onClick = { showResyncConfirm = true }) {

@@ -60,12 +60,10 @@ import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.net.RivetVpn
 import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.service.RivetRuntimeService
-import me.rerere.hugeicons.stroke.ChartColumn
 import me.rerere.hugeicons.stroke.Code
 import me.rerere.hugeicons.stroke.Connect
 import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.InLove
-import me.rerere.hugeicons.stroke.LanguageCircle
 import me.rerere.hugeicons.stroke.LookTop
 import me.rerere.hugeicons.stroke.PencilEdit01
 import me.rerere.hugeicons.stroke.Search01
@@ -309,14 +307,6 @@ fun ChatDrawerContent(
                                 }
                             )
                         }
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.chat_page_menu_ai_translator)) },
-                            leadingIcon = { Icon(HugeIcons.LanguageCircle, null) },
-                            onClick = {
-                                showMenuPopup = false
-                                navController.navigate(Screen.Translator)
-                            }
-                        )
                     }
                 }
 
@@ -331,20 +321,6 @@ fun ChatDrawerContent(
                         navController.navigate(Screen.Favorite)
                     },
                 )
-
-                if (settings.developerMode) {
-                    DrawerAction(
-                        icon = {
-                            Icon(HugeIcons.ChartColumn, "Stats")
-                        },
-                        label = {
-                            Text("Stats")
-                        },
-                        onClick = {
-                            navController.navigate(Screen.Stats)
-                        },
-                    )
-                }
 
                 Spacer(Modifier.weight(1f))
 

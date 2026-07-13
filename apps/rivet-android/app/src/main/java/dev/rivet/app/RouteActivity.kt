@@ -111,9 +111,7 @@ import dev.rivet.app.ui.pages.setting.SettingSpeechPage
 import dev.rivet.app.ui.pages.setting.SettingWebPage
 import dev.rivet.app.ui.pages.setting.SettingMeshPage
 import dev.rivet.app.ui.pages.share.handler.ShareHandlerPage
-import dev.rivet.app.ui.pages.stats.StatsPage
 import dev.rivet.app.ui.pages.terminal.TerminalPage
-import dev.rivet.app.ui.pages.translator.TranslatorPage
 import dev.rivet.app.ui.pages.webview.WebViewPage
 import dev.rivet.app.ui.theme.LocalDarkMode
 import dev.rivet.app.ui.theme.RivethubTheme
@@ -366,10 +364,6 @@ class RouteActivity : ComponentActivity() {
                                 AssistantExtensionsPage(key.id)
                             }
 
-                            entry<Screen.Translator> {
-                                TranslatorPage()
-                            }
-
                             entry<Screen.Setting> {
                                 SettingPage()
                             }
@@ -461,10 +455,6 @@ class RouteActivity : ComponentActivity() {
 
                             entry<Screen.MessageSearch> {
                                 SearchPage()
-                            }
-
-                            entry<Screen.Stats> {
-                                StatsPage()
                             }
 
                             entry<Screen.Terminal> { key ->
@@ -566,9 +556,6 @@ sealed interface Screen : NavKey {
     data class AssistantInjections(val id: String) : Screen
 
     @Serializable
-    data object Translator : Screen
-
-    @Serializable
     data object Setting : Screen
 
     @Serializable
@@ -636,9 +623,6 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object MessageSearch : Screen
-
-    @Serializable
-    data object Stats : Screen
 
     @Serializable
     data class Terminal(
