@@ -366,6 +366,43 @@ describe('gateway route mounts (G0)', () => {
     const body = (await (await fetch(`${base}/sessions`)).json()) as { sessions: unknown[] }
     expect(body.sessions).toHaveLength(1)
   })
+
+  it('OpenAI /v1 mounts honor the bearer gate and CORS', async () => {
+    const v1 = {
+      prefix: '/v1',
+      handler: (
+        req: import('node:http').IncomingMessage,
+        res: import('node:http').ServerResponse,
+      ) => {
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        if (url.pathname === '/v1/models') {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              object: 'list',
+              data: [{ id: 'claude', object: 'model', owned_by: 'rivetos' }],
+            }),
+          )
+          return
+        }
+        res.writeHead(404).end()
+      },
+    }
+    const { base } = await start('sekret', 60_000, { extraRoutes: [v1] })
+    expect((await fetch(`${base}/v1/models`)).status).toBe(401)
+    const ok = await fetch(`${base}/v1/models`, {
+      headers: { authorization: 'Bearer sekret' },
+    })
+    expect(ok.status).toBe(200)
+    expect(ok.headers.get('access-control-allow-origin')).toBe('*')
+    expect(await ok.json()).toMatchObject({ object: 'list' })
+
+    // OPTIONS preflight advertises the bridge conversation header
+    const pre = await fetch(`${base}/v1/models`, { method: 'OPTIONS' })
+    expect(pre.status).toBe(204)
+    const allow = pre.headers.get('access-control-allow-headers') ?? ''
+    expect(allow.toLowerCase()).toContain('x-rivet-conversation')
+  })
 })
 
 describe('POST /term/inject (seamless modes 5c)', () => {

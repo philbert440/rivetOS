@@ -104,16 +104,29 @@ export {
   formatEscalation,
 } from './domain/task/escalation.js'
 export type { EscalationNotifier, TaskEscalationPayload } from './domain/task/escalation.js'
-export { createCatalogApiRoute } from './domain/task/catalog-api.js'
+export { createCatalogApiRoute, buildCatalogAgents } from './domain/task/catalog-api.js'
 export { createOutcomesApiRoute } from './domain/task/outcomes-api.js'
 export { createWikiApiRoute } from './domain/wiki/wiki-api.js'
 export type { WikiIndexLike, WikiApiOptions } from './domain/wiki/wiki-api.js'
 export { createWikiHtmlRoute, renderMarkdown } from './domain/wiki/wiki-html.js'
 export { createGatewayChannel } from './domain/gateway-channel.js'
-export type { AgentEventForBridge } from './domain/gateway-channel.js'
+export type {
+  AgentEventForBridge,
+  GatewayTurnInput,
+  GatewayTurnResult,
+} from './domain/gateway-channel.js'
 export { createNotificationsChannel } from './domain/notifications-channel.js'
 export type { NotificationsChannelHandle } from './domain/notifications-channel.js'
 export type { GatewayChannelHandle } from './domain/gateway-channel.js'
+export {
+  createOpenAICompatRoute,
+  lastUserText,
+  normalizeConversationId,
+  resolveConversationId,
+  streamEventToChunkParts,
+  uuidFromString,
+} from './domain/openai-compat.js'
+export type { OpenAICompatOptions } from './domain/openai-compat.js'
 export type { TaskCompletionWaiter } from './domain/task/completion-waiter.js'
 export { runHeartbeatViaTasks } from './domain/task/heartbeat-task.js'
 export type { TaskBackedSubagentManagerConfig } from './domain/task/subagent-task-manager.js'

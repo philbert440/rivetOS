@@ -22,6 +22,8 @@
 //   WS   /ws?session=<id>       snapshot + live events (no filter = all)
 //   GET  /healthz               liveness (never auth-gated)
 //   GET  /packs/*, /*           static packs + built viewer, when configured
+//   GET  /v1/models             OpenAI list (agent id = model id; gateway mount)
+//   POST /v1/chat/completions   OpenAI chat (SSE or JSON; gateway mount)
 //
 // Auth: when config.token is set, every endpoint except /healthz requires
 // `Authorization: Bearer <token>` (WS: same header, or ?token= for browsers).
@@ -101,7 +103,9 @@ const API_PATHS = new Set([
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'content-type, authorization',
+  // x-rivet-conversation / x-rivet-title: OpenAI /v1 bridge conventions (Android)
+  'Access-Control-Allow-Headers':
+    'content-type, authorization, x-rivet-conversation, x-rivet-title',
 }
 
 interface Client {
