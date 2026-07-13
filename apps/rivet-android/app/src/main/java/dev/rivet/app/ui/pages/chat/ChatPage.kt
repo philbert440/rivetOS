@@ -543,12 +543,12 @@ private fun TopBar(
             val escalateContext = LocalContext.current
             val actionModel = settings.getCurrentChatModel()
             val actionProvider = actionModel?.findProvider(providers = settings.providers, checkOverwrite = false)
-            val agentSession = isAgentSessionProvider(actionProvider)
+            val agentSession = actionModel != null && isAgentSessionProvider(actionProvider)
             // Resync rewrites the GUI transcript from the local CLI session file — local only.
             val localBridge = agentSession &&
                 actionProvider is dev.rivet.ai.provider.ProviderSetting.OpenAI &&
                 actionProvider.baseUrl.contains("127.0.0.1:$RIVET_BRIDGE_PORT")
-            if (agentSession) {
+            if (agentSession && actionModel != null) {
                 // The chat⇄terminal handoff is the headline feature — a labeled chip, not a
                 // bare icon. Resume this exact CLI/agent session in the terminal when possible.
                 AssistChip(
