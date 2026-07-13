@@ -44,14 +44,14 @@ describe('storedRemoteUi / rememberRemoteUi', () => {
 })
 
 describe('shouldRedirect', () => {
-  const base = {
-    bundled: true,
-    localOverride: false,
-    target: 'http://192.168.1.10:5174',
-    probeOk: true,
-  }
-  it('redirects only when bundled + target + probe ok + no override', () => {
-    expect(shouldRedirect(base)).toBe(true)
+  it('never redirects — repoint-only (local dist always stays)', () => {
+    const base = {
+      bundled: true,
+      localOverride: false,
+      target: 'http://192.168.1.10:5174',
+      probeOk: true,
+    }
+    expect(shouldRedirect(base)).toBe(false)
     expect(shouldRedirect({ ...base, bundled: false })).toBe(false)
     expect(shouldRedirect({ ...base, localOverride: true })).toBe(false)
     expect(shouldRedirect({ ...base, target: undefined })).toBe(false)

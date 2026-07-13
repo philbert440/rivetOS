@@ -1,18 +1,14 @@
 /**
- * Thin-shell cutover: the desktop shell bundles a dist at build time, which
- * goes stale invisibly (mesh deploys don't rebuild the Tauri binary). Fix:
- * the BUNDLED app redirects itself to the configured node's live-served UI
- * (den-server serves rivethub-web) whenever that node is reachable — web
- * updates then ride `rivetos update --mesh`, and the bundled dist demotes to
- * a first-run / node-down fallback.
+ * Last-active node persistence for the thin/bundled shell.
  *
- * The fallback logic deliberately lives HERE, not in the shell: a client-side
- * probe + `location.replace` is trivially testable and keeps the shell dumb.
- * Only relevant under a non-http origin (tauri://localhost); browsers are
- * already served by a node and never redirect.
+ * Historically the desktop shell redirected (`location.replace`) to the
+ * configured node's live-served dist so updates rode mesh deploy. That is
+ * gone: the local/bundled UI always stays put and only the gateway baseUrl
+ * is repointed (see connection store + switch-mode).
  *
- * Escape hatch: `?local=1` skips the redirect (debugging a broken node dist
- * from the bundled app).
+ * `rivethub.remoteUi` is still written so a stored last-active can be adopted
+ * at boot without a full-page navigation. Escape hatch `?local=1` skips
+ * adopting a stored remote target (debugging).
  */
 
 import { isValidGatewayUrl } from './gateway-url.js'
@@ -28,7 +24,7 @@ export function isBundledOrigin(origin: string, protocol: string): boolean {
   return !isValidGatewayUrl(origin)
 }
 
-/** The node UI url the bundled shell should boot into, if any. */
+/** The node the bundled shell last pointed at, if any. */
 export function storedRemoteUi(storage: Pick<Storage, 'getItem'>): string | undefined {
   const raw = storage.getItem(REMOTE_UI_KEY)
   if (!raw) return undefined
@@ -36,45 +32,51 @@ export function storedRemoteUi(storage: Pick<Storage, 'getItem'>): string | unde
   return isValidGatewayUrl(url) ? url : undefined
 }
 
-/** Remember (under the BUNDLED origin's storage) which node UI to boot into. */
+/** Remember which node was last active (no navigation). */
 export function rememberRemoteUi(storage: Pick<Storage, 'setItem'>, url: string): void {
   const clean = url.trim().replace(/\/+$/, '')
   if (isValidGatewayUrl(clean)) storage.setItem(REMOTE_UI_KEY, clean)
 }
 
 /**
- * Pure decision: redirect only when bundled, not escape-hatched, a valid
- * target is stored, and the probe says the node is up.
+ * Pure decision helper (tests / call sites). Always false now — we never
+ * full-page redirect to a remote dist.
  */
-export function shouldRedirect(opts: {
+export function shouldRedirect(_opts: {
   bundled: boolean
   localOverride: boolean
   target: string | undefined
   probeOk: boolean
 }): boolean {
-  return opts.bundled && !opts.localOverride && opts.target !== undefined && opts.probeOk
+  return false
 }
 
 /**
- * Boot-time hook, awaited before React mounts. Returns 'redirecting' when a
- * navigation to the node UI has been issued (caller should NOT mount).
+ * Boot-time hook, awaited before React mounts.
+ *
+ * Never navigates away from the local/bundled dist. If a last-active remote
+ * is stored and the connection store has not already adopted it (empty
+ * baseUrl under a bundled origin), repoints via setConnection and stays.
+ * Always returns `'stay'` so the caller mounts React.
+ *
+ * `'redirecting'` remains in the return type for call-site compatibility
+ * but is never produced.
  */
-export async function maybeRedirectToRemoteUi(): Promise<'redirecting' | 'stay'> {
+export function maybeRedirectToRemoteUi(
+  apply?: (baseUrl: string) => void,
+): Promise<'redirecting' | 'stay'> {
+  if (typeof window === 'undefined') return Promise.resolve('stay')
+
   const bundled = isBundledOrigin(window.location.origin, window.location.protocol)
-  if (!bundled) return 'stay'
   const localOverride = new URLSearchParams(window.location.search).has('local')
   const target = storedRemoteUi(localStorage)
-  if (!target || localOverride) return 'stay'
 
-  let probeOk: boolean
-  try {
-    const res = await fetch(`${target}/healthz`, { signal: AbortSignal.timeout(1500) })
-    probeOk = res.ok
-  } catch {
-    probeOk = false // node down → stay on the bundled fallback
+  // Persist last-active into the connection store when bundled and empty —
+  // defaultBaseUrl() already reads rivethub.baseUrl; this covers the legacy
+  // rivethub.remoteUi-only case without a document navigation.
+  if (bundled && !localOverride && target && apply) {
+    apply(target)
   }
 
-  if (!shouldRedirect({ bundled, localOverride, target, probeOk })) return 'stay'
-  window.location.replace(`${target}/`)
-  return 'redirecting'
+  return Promise.resolve('stay')
 }
