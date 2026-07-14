@@ -376,7 +376,7 @@ class ChatService(
 
         getOrCreateSession(convUuid)
         val existing = getConversationFlow(convUuid).value
-        if (!force && harnessContentMatches(existing, nodes)) {
+        if (!force && harnessNodesMatch(existing, nodes)) {
             // Still ensure the model picker tracks the harness agent.
             selectHarnessModel(settings, command)
             return@withContext existing
@@ -440,7 +440,7 @@ class ChatService(
         }
         if (turns.isEmpty()) return
         val conv = getConversationFlow(conversationId).value
-        if (harnessContentMatches(conv, turns)) {
+        if (harnessTurnsMatch(conv, turns)) {
             selectHarnessModel(settings, command)
             return
         }
@@ -456,7 +456,7 @@ class ChatService(
     }
 
     /** True when [existing] already mirrors harness [turns] (role + text). */
-    private fun harnessContentMatches(existing: Conversation, turns: List<SessionTurn>): Boolean {
+    private fun harnessTurnsMatch(existing: Conversation, turns: List<SessionTurn>): Boolean {
         val cur = existing.currentMessages
         if (cur.size != turns.size) return false
         for (i in cur.indices) {
@@ -467,7 +467,7 @@ class ChatService(
     }
 
     /** True when [existing] already mirrors harness message nodes (role + text). */
-    private fun harnessContentMatches(existing: Conversation, nodes: List<MessageNode>): Boolean {
+    private fun harnessNodesMatch(existing: Conversation, nodes: List<MessageNode>): Boolean {
         val cur = existing.currentMessages
         if (cur.size != nodes.size) return false
         for (i in cur.indices) {
