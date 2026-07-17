@@ -60,6 +60,8 @@ If `accessibility_connected` is false, UI/screenshot/action calls return **503**
 
 **capabilities (rich actions):** `clipboard: true`; `wait: true`; `node_actions: ["click","long_click","focus","set_text","scroll_forward","scroll_backward","select"]`; nested `actions.gestures` / `actions.text_modes` / `actions.clipboard_ops` for feature-detect.
 
+**capabilities.globals** (also nested under `actions.globals`): wire names accepted by `{"type":"global","action":…}`, filtered to the device API. Always includes `BACK`, `HOME`, `RECENTS`, `NOTIFICATIONS`, `QUICK_SETTINGS`, `POWER_DIALOG`. On API 28+: also `LOCK_SCREEN`, `TAKE_SCREENSHOT` (system UI screenshot — distinct from `GET /screenshot`). On API 31+: also `DISMISS_NOTIFICATION_SHADE`. Unknown names and below-min-API globals return `ok:false` / `error: action_failed` (HTTP 200).
+
 ### Control modes (kill-switch)
 
 ```sh
@@ -252,7 +254,7 @@ Action types:
 | `drag` | `x1`, `y1`, `x2`, `y2`, optional `durationMs` (default 300), `wait`, `timeoutMs` | Single stroke drag |
 | `scroll` | `direction` (`up`\|`down`\|`left`\|`right`), optional `nodeId`, optional `durationMs`, `wait`, `timeoutMs` | Prefer `ACTION_SCROLL_*` on node; else coordinate swipe |
 | `text` | `text`, optional `mode` (`replace`\|`append`, default **replace**) | SET_TEXT on focused/first editable field |
-| `global` | `action`: `BACK` \| `HOME` \| `RECENTS` \| `NOTIFICATIONS` \| `QUICK_SETTINGS` | Global a11y action |
+| `global` | `action`: `BACK` \| `HOME` \| `RECENTS` \| `NOTIFICATIONS` \| `QUICK_SETTINGS` \| `POWER_DIALOG` \| `LOCK_SCREEN` (API 28+) \| `TAKE_SCREENSHOT` (API 28+, system UI) \| `DISMISS_NOTIFICATION_SHADE` (API 31+) | `performGlobalAction`; feature-detect via `capabilities.globals` |
 | `node_click` | `text`, optional `package` | Tap first node whose text/contentDescription contains substring (case-insensitive) |
 | **`node_action`** | **`nodeId`**, **`action`**, optional **`text`** (for `set_text`) | Re-resolve + `performAction` (see below) |
 | `clipboard` | `op`: `get`\|`set`; `text` required for `set` | Read/write system clipboard (no a11y required) |

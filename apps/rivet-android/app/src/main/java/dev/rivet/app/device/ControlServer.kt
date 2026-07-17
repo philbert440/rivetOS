@@ -150,6 +150,7 @@ class ControlServer(private val context: Context) {
             buildCapabilitiesJson(
                 screenshotSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R,
                 execEnabled = dev.rivet.app.BuildConfig.DEBUG,
+                sdkInt = Build.VERSION.SDK_INT,
             ),
         )
         // Best-effort display metrics; omit on failure.
@@ -553,15 +554,9 @@ class ControlServer(private val context: Context) {
                     )
                 }
                 "global" -> {
-                    val code = when (req.getString("action").uppercase()) {
-                        "BACK" -> AccessibilityServiceGlobals.BACK
-                        "HOME" -> AccessibilityServiceGlobals.HOME
-                        "RECENTS" -> AccessibilityServiceGlobals.RECENTS
-                        "NOTIFICATIONS" -> AccessibilityServiceGlobals.NOTIFICATIONS
-                        "QUICK_SETTINGS" -> AccessibilityServiceGlobals.QUICK_SETTINGS
-                        else -> -1
-                    }
-                    val ok = if (code >= 0) acc.performGlobal(code) else false
+                    // Unknown name or SDK-gated global on old device → ok:false (same path as before).
+                    val code = resolveGlobalAction(req.getString("action"), Build.VERSION.SDK_INT)
+                    val ok = if (code != null) acc.performGlobal(code) else false
                     mapNonGestureActionToHttp(type, ok)
                 }
                 "node_click" -> {
@@ -656,10 +651,4 @@ class ControlServer(private val context: Context) {
     }
 }
 
-private object AccessibilityServiceGlobals {
-    const val BACK = android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK
-    const val HOME = android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME
-    const val RECENTS = android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS
-    const val NOTIFICATIONS = android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS
-    const val QUICK_SETTINGS = android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS
-}
+// Global action constants + mapping live in GlobalActions.kt (JVM-testable).
