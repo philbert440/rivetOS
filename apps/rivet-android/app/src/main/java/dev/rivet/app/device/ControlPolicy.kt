@@ -39,14 +39,17 @@ enum class ControlEndpoint {
     EXEC,
     MODE,
     WAIT,
+    /** GET /audit — read-only ring buffer; token-guarded; allowed in all modes. */
+    AUDIT,
 }
 
 /**
  * Pure mode gate: endpoint × mode → allowed.
  * Matrix from Fidelity T1.1b; `/exec` treated like an action (blocked in eyes/parked).
+ * `/audit` is diagnostic read-only — allowed in all modes (still token-guarded at HTTP layer).
  */
 fun isEndpointAllowed(endpoint: ControlEndpoint, mode: ControlMode): Boolean = when (endpoint) {
-    ControlEndpoint.STATUS, ControlEndpoint.NOTIFY, ControlEndpoint.MODE -> true
+    ControlEndpoint.STATUS, ControlEndpoint.NOTIFY, ControlEndpoint.MODE, ControlEndpoint.AUDIT -> true
     ControlEndpoint.UI, ControlEndpoint.SCREENSHOT -> mode != ControlMode.PARKED
     ControlEndpoint.ACTION, ControlEndpoint.EXEC, ControlEndpoint.WAIT -> mode == ControlMode.FULL
 }
@@ -369,6 +372,9 @@ fun buildCapabilitiesJson(
         .put("notifications_read", false)
         .put("exec", execEnabled)
         .put("modes", JSONArray().put("full").put("eyes").put("parked"))
+        // PR8 safety surface — feature-detect rather than assuming from docs alone
+        .put("safety", true)
+        .put("audit", true)
 }
 
 /** Map AccessibilityService.takeScreenshot platform error codes → stable error strings. */
