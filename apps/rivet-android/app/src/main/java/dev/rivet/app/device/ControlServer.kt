@@ -12,7 +12,6 @@ import dev.rivet.app.utils.sendNotification
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.io.PrintWriter
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -64,12 +63,11 @@ class ControlServer(private val context: Context) {
         socket.use { s ->
             try {
                 val reader = BufferedReader(InputStreamReader(s.getInputStream()))
-                val writer = PrintWriter(s.getOutputStream(), true)
                 val requestLine = reader.readLine() ?: return
                 val parts = requestLine.split(" ")
                 if (parts.size < 2) return
                 val method = parts[0]
-                val path = parts[1].substringBefore("?")
+                val (path, query) = parseUrl(parts[1])
 
                 var line: String
                 var contentLength = 0
@@ -92,34 +90,26 @@ class ControlServer(private val context: Context) {
                 val devToken = dev.rivet.app.BuildConfig.DEBUG && token == dev.rivet.app.data.datastore.RIVET_BRIDGE_TOKEN
                 val authed = path == "/status" || token == DeviceControl.getControlToken(context) || devToken
                 val response = when {
-                    !authed -> jsonError(401, "missing or invalid X-Rivet-Token")
-                    method == "GET" && path == "/status" -> handleStatus()
-                    method == "GET" && path == "/ui" -> handleUi()
-                    method == "POST" && path == "/action" -> handleAction(body)
-                    method == "POST" && path == "/notify" -> handleNotify(body)
+                    !authed -> errorResponse(401, "unauthorized", "missing or invalid X-Rivet-Token")
+                    method == "GET" && path == "/status" -> handleStatus(query)
+                    method == "GET" && path == "/ui" -> handleUi(query)
+                    method == "POST" && path == "/action" -> handleAction(body, query)
+                    method == "POST" && path == "/notify" -> handleNotify(body, query)
                     // /exec runs arbitrary argv under our uid — a diagnostic spike. DEBUG-only so
                     // release builds carry no arbitrary-exec endpoint at all (defense in depth on
                     // top of the loopback bind + token guard).
-                    method == "POST" && path == "/exec" && dev.rivet.app.BuildConfig.DEBUG -> handleExec(body)
-                    else -> jsonError(404, "not found: $path")
+                    method == "POST" && path == "/exec" && dev.rivet.app.BuildConfig.DEBUG -> handleExec(body, query)
+                    else -> errorResponse(404, "not_found", "not found: $path")
                 }
-                val code = JSONObject(response).optInt("code", if (response.contains("\"ok\": false")) 400 else 200)
-                val statusText = when (code) {
-                    200 -> "200 OK"; 401 -> "401 Unauthorized"; 404 -> "404 Not Found"
-                    503 -> "503 Service Unavailable"; else -> "400 Bad Request"
-                }
-                writer.print("HTTP/1.1 $statusText\r\n")
-                writer.print("Content-Type: application/json\r\n")
-                writer.print("Content-Length: ${response.toByteArray().size}\r\n\r\n")
-                writer.print(response)
-                writer.flush()
+                writeResponse(s.getOutputStream(), response)
             } catch (e: Exception) {
                 Log.e(DeviceControl.TAG, "client error", e)
             }
         }
     }
 
-    private fun handleStatus(): String {
+    @Suppress("UNUSED_PARAMETER")
+    private fun handleStatus(query: Map<String, String>): HttpResponse {
         val acc = RivetAccessibilityService.getInstance()
         val json = JSONObject()
         json.put("ok", true)
@@ -134,16 +124,23 @@ class ControlServer(private val context: Context) {
         runCatching { json.put("wg_public_key", dev.rivet.app.net.RivetVpn.publicKeyBase64(context)) }
         json.put("wg_status", dev.rivet.app.net.RivetVpn.status.value.name)
         json.put("timestamp", System.currentTimeMillis())
-        return json.toString(2)
+        return jsonResponse(200, json)
     }
 
-    private fun handleUi(): String {
-        val acc = RivetAccessibilityService.getInstance() ?: return jsonError(503, "accessibility service not connected")
-        return try { acc.dumpUiTree().toString(2) } catch (e: Exception) { jsonError(500, "dump failed: ${e.message}") }
+    @Suppress("UNUSED_PARAMETER")
+    private fun handleUi(query: Map<String, String>): HttpResponse {
+        val acc = RivetAccessibilityService.getInstance()
+            ?: return errorResponse(503, "a11y_disconnected", "accessibility service not connected")
+        return try {
+            jsonResponse(200, acc.dumpUiTree())
+        } catch (e: Exception) {
+            errorResponse(500, "internal_error", "dump failed: ${e.message}")
+        }
     }
 
     /** SPIKE: run an arbitrary argv under RivetHub's uid. Loopback + token-guarded. */
-    private fun handleExec(body: String): String {
+    @Suppress("UNUSED_PARAMETER")
+    private fun handleExec(body: String, query: Map<String, String>): HttpResponse {
         return try {
             val req = JSONObject(body)
             val arr = req.getJSONArray("cmd")
@@ -153,13 +150,14 @@ class ControlServer(private val context: Context) {
             }
             val cwd = if (req.has("cwd")) req.getString("cwd") else null
             val timeoutMs = req.optLong("timeoutMs", 20000)
-            DeviceControl.runExec(cmd, env, cwd, timeoutMs).put("code", 200).toString(2)
+            jsonResponse(200, DeviceControl.runExec(cmd, env, cwd, timeoutMs).put("code", 200))
         } catch (e: Exception) {
-            jsonError(400, "bad exec: ${e.message}")
+            errorResponse(400, "bad_request", "bad exec: ${e.message}")
         }
     }
 
-    private fun handleNotify(body: String): String {
+    @Suppress("UNUSED_PARAMETER")
+    private fun handleNotify(body: String, query: Map<String, String>): HttpResponse {
         return try {
             val req = JSONObject(body)
             val title = req.getString("title")
@@ -200,21 +198,28 @@ class ControlServer(private val context: Context) {
                 contentIntent = pendingIntent
             }
 
-            JSONObject()
-                .put("ok", posted)
-                .put("notification_id", notificationId)
-                .put("posted", posted)
-                .put("reason", if (posted) null else "notification permission not granted")
-                .put("executed_at", System.currentTimeMillis())
-                .toString(2)
+            jsonResponse(
+                200,
+                JSONObject()
+                    .put("ok", posted)
+                    .put("notification_id", notificationId)
+                    .put("posted", posted)
+                    .put("reason", if (posted) null else "notification permission not granted")
+                    .put("executed_at", System.currentTimeMillis()),
+            )
         } catch (e: Exception) {
-            jsonError(400, "bad notify: ${e.message}")
+            errorResponse(400, "bad_request", "bad notify: ${e.message}")
         }
     }
 
-    private fun handleAction(body: String): String {
+    @Suppress("UNUSED_PARAMETER")
+    private fun handleAction(body: String, query: Map<String, String>): HttpResponse {
         val acc = RivetAccessibilityService.getInstance()
-            ?: return jsonError(503, "accessibility service not connected — enable it in Settings")
+            ?: return errorResponse(
+                503,
+                "a11y_disconnected",
+                "accessibility service not connected — enable it in Settings",
+            )
         return try {
             val req = JSONObject(body)
             val ok = when (val type = req.optString("type", "")) {
@@ -246,14 +251,14 @@ class ControlServer(private val context: Context) {
                 }
                 else -> false
             }.also { /* type captured above */ }
-            JSONObject().put("ok", ok).put("executed_at", System.currentTimeMillis()).toString(2)
+            jsonResponse(
+                200,
+                JSONObject().put("ok", ok).put("executed_at", System.currentTimeMillis()),
+            )
         } catch (e: Exception) {
-            jsonError(400, "bad action: ${e.message}")
+            errorResponse(400, "bad_request", "bad action: ${e.message}")
         }
     }
-
-    private fun jsonError(code: Int, message: String): String =
-        JSONObject().put("ok", false).put("error", message).put("code", code).toString(2)
 }
 
 private object AccessibilityServiceGlobals {

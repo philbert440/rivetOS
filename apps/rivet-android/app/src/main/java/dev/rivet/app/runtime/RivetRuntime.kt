@@ -524,6 +524,8 @@ object RivetRuntime {
      *  - the device-control token + port at ~/.rivet/control.json INSIDE the rootfs — refreshed
      *    every launch. proot binds only /dev,/proc,/sys (no /sdcard), so the agents can't read the
      *    app's exported /sdcard/rivet/control.json; they need it here. Same token ControlServer checks.
+     *  - ~/.rivet/device-control.md — always overwritten from the APK asset (canonical control API
+     *    docs; same cadence as control.json so Fidelity updates reach agents without clobbering home CLAUDE/GROK).
      */
     private fun installAgentContext(context: Context) {
         try {
@@ -532,6 +534,9 @@ object RivetRuntime {
                 File(dir, "control.json").writeText(
                     "{\"port\":${DeviceControl.CONTROL_PORT},\"token\":\"${DeviceControl.getControlToken(context)}\"}\n"
                 )
+                context.assets.open("device-control.md").use { input ->
+                    File(dir, "device-control.md").outputStream().use { input.copyTo(it) }
+                }
             }
             for (name in listOf("CLAUDE.md", "GROK.md")) {
                 val dst = File(home, name)
