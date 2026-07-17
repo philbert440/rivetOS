@@ -95,6 +95,79 @@ class RivetAccessibilityService : AccessibilityService() {
 
     fun getCurrentPackage(): String? = lastPackage
 
+    /**
+     * Lightweight visible-node snapshot for POST /wait.
+     * Does **not** update [nodeIndex] or take the gesture lock.
+     * Walks the same preferred root as dumps (hard-capped); only **visible** nodes
+     * contribute text/contentDescription labels.
+     */
+    fun snapshotForWait(maxDepth: Int = 12): WaitSnapshot {
+        val root = preferredRoot()
+        val packageName = lastPackage ?: try {
+            root?.packageName?.toString()
+        } catch (_: Throwable) {
+            null
+        }
+        val nodes = ArrayList<WaitNodeLabels>(32)
+        if (root != null) {
+            collectWaitLabels(root, depth = 0, maxDepth = maxDepth, out = nodes)
+        }
+        return WaitSnapshot(nodes = nodes, currentPackage = packageName)
+    }
+
+    /**
+     * DFS collect of visible node labels only. Recycles children; does not recycle [node].
+     * Caps at [NODE_HARD_CAP] labels (same order of magnitude as full dumps).
+     */
+    private fun collectWaitLabels(
+        node: AccessibilityNodeInfo,
+        depth: Int,
+        maxDepth: Int,
+        out: MutableList<WaitNodeLabels>,
+    ) {
+        if (out.size >= NODE_HARD_CAP) return
+        if (depth > maxDepth) return
+
+        val visible = try {
+            node.isVisibleToUser
+        } catch (_: Throwable) {
+            false
+        }
+        if (visible) {
+            val text = try {
+                node.text?.toString() ?: ""
+            } catch (_: Throwable) {
+                ""
+            }
+            val contentDescription = try {
+                node.contentDescription?.toString() ?: ""
+            } catch (_: Throwable) {
+                ""
+            }
+            out.add(WaitNodeLabels(text = text, contentDescription = contentDescription))
+        }
+
+        if (depth >= maxDepth) return
+        val childCount = try {
+            node.childCount
+        } catch (_: Throwable) {
+            0
+        }
+        for (i in 0 until childCount) {
+            if (out.size >= NODE_HARD_CAP) return
+            val child = try {
+                node.getChild(i)
+            } catch (_: Throwable) {
+                null
+            } ?: continue
+            try {
+                collectWaitLabels(child, depth + 1, maxDepth, out)
+            } finally {
+                safeRecycle(child)
+            }
+        }
+    }
+
     /** Prefer fresh active-window root; [lastRoot] is event cache only. */
     private fun preferredRoot(): AccessibilityNodeInfo? =
         try {

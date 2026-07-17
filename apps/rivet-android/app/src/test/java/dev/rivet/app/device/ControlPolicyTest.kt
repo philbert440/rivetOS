@@ -59,6 +59,7 @@ class ControlPolicyTest {
         assertTrue(isEndpointAllowed(ControlEndpoint.SCREENSHOT, m))
         assertFalse(isEndpointAllowed(ControlEndpoint.ACTION, m))
         assertFalse(isEndpointAllowed(ControlEndpoint.EXEC, m))
+        assertFalse(isEndpointAllowed(ControlEndpoint.WAIT, m))
         assertTrue(isEndpointAllowed(ControlEndpoint.NOTIFY, m))
     }
 
@@ -311,7 +312,7 @@ class ControlPolicyTest {
         // PR3a+PR3b: node_id true, filters true
         assertTrue(cap.getJSONObject("ui").getBoolean("node_id"))
         assertTrue(cap.getJSONObject("ui").getBoolean("filters"))
-        assertFalse(cap.getBoolean("wait"))
+        assertTrue(cap.getBoolean("wait"))
         assertTrue(cap.getBoolean("clipboard"))
         assertFalse(cap.getBoolean("exec"))
         assertEquals(3, cap.getJSONArray("modes").length())

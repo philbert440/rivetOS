@@ -37,6 +37,7 @@ import kotlin.concurrent.thread
  *                   double_tap|drag|scroll|clipboard|launch|intent}
  *   POST /notify   {title, body?, url?, id?} post a high-priority agent alert notification
  *   POST /mode     {mode: full|eyes|parked}
+ *   POST /wait     {text?, package?, gone?, timeoutMs?, intervalMs?} poll until condition or timeout
  *   POST /exec      -- {cmd:[..], env:{..}, cwd, timeoutMs} run argv under our uid (control path)
  */
 class ControlServer(private val context: Context) {
@@ -44,6 +45,7 @@ class ControlServer(private val context: Context) {
     private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
     private val screenshotLimiter = ScreenshotRateLimiter()
+    private val waitLimiter = WaitConcurrencyLimiter()
 
     fun start() {
         thread(isDaemon = true, name = "RivetControlServer") {
@@ -106,6 +108,7 @@ class ControlServer(private val context: Context) {
                     method == "POST" && path == "/action" -> handleAction(body, query)
                     method == "POST" && path == "/notify" -> handleNotify(body, query)
                     method == "POST" && path == "/mode" -> handleMode(body, query)
+                    method == "POST" && path == "/wait" -> handleWait(body, query)
                     // /exec runs arbitrary argv under our uid — a diagnostic spike. DEBUG-only so
                     // release builds carry no arbitrary-exec endpoint at all (defense in depth on
                     // top of the loopback bind + token guard).
@@ -247,6 +250,87 @@ class ControlServer(private val context: Context) {
             )
         } catch (e: Exception) {
             errorResponse(400, "bad_request", "bad mode: ${e.message}")
+        }
+    }
+
+    /**
+     * POST /wait — bounded poll of the a11y tree until text/package/gone holds or timeout.
+     * Does **not** take the gesture single-flight lock. Concurrency capped at [WAIT_MAX_CONCURRENT].
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun handleWait(body: String, query: Map<String, String>): HttpResponse {
+        modeGate(ControlEndpoint.WAIT)?.let { return it }
+
+        val params = try {
+            when (val p = parseWaitBody(JSONObject(if (body.isBlank()) "{}" else body))) {
+                is ParseWaitResult.BadRequest ->
+                    return errorResponse(400, "bad_request", p.message)
+                is ParseWaitResult.Ok -> p.params
+            }
+        } catch (e: Exception) {
+            return errorResponse(400, "bad_request", "bad wait body: ${e.message}")
+        }
+
+        // Fail fast without taking a concurrent slot when a11y is already unbound.
+        if (RivetAccessibilityService.getInstance() == null) {
+            return errorResponse(
+                503,
+                "a11y_disconnected",
+                "accessibility service not connected",
+            )
+        }
+
+        val acquired = waitLimiter.tryAcquire()
+        if (!acquired.allowed) {
+            val retryMs = acquired.retryAfterMs.coerceAtLeast(1L)
+            val retrySec = retryAfterSeconds(retryMs)
+            return errorResponse(
+                code = 429,
+                error = "rate_limited",
+                message = "wait concurrent limit exceeded (max $WAIT_MAX_CONCURRENT)",
+                extra = JSONObject().put("retry_after_ms", retryMs),
+                headers = mapOf("Retry-After" to retrySec.toString()),
+            )
+        }
+
+        try {
+            val startMs = System.currentTimeMillis()
+            while (true) {
+                val acc = RivetAccessibilityService.getInstance()
+                    ?: return errorResponse(
+                        503,
+                        "a11y_disconnected",
+                        "accessibility service not connected",
+                    )
+
+                val snapshot = acc.snapshotForWait()
+                val matched = evaluateWaitCondition(snapshot, params)
+                val waitedMs = (System.currentTimeMillis() - startMs).coerceAtLeast(0L)
+                if (matched != null) {
+                    return waitSuccessResponse(
+                        matched = matched,
+                        waitedMs = waitedMs,
+                        currentPackage = snapshot.currentPackage,
+                    )
+                }
+                if (waitedMs >= params.timeoutMs) {
+                    return waitTimeoutResponse(waitedMs)
+                }
+                val remaining = params.timeoutMs - waitedMs
+                val sleepMs = minOf(params.intervalMs, remaining).coerceAtLeast(0L)
+                if (sleepMs > 0L) {
+                    try {
+                        Thread.sleep(sleepMs)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return waitTimeoutResponse(
+                            (System.currentTimeMillis() - startMs).coerceAtLeast(0L),
+                        )
+                    }
+                }
+            }
+        } finally {
+            waitLimiter.release()
         }
     }
 
