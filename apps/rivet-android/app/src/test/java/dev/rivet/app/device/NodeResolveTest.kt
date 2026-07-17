@@ -243,12 +243,22 @@ class NodeResolveTest {
     }
 
     @Test
-    fun `limit below hard cap is respected`() {
+    fun `limit is emission-only walk always hard-capped`() {
+        // PR3b: buildNodeDump ignores limit for the walk so NodeIndex stays complete.
         val leaves = List(50) { MockNode() }
         val root = MockNode(children = leaves)
         val dump = buildNodeDump(root, maxDepth = 12, limit = 10)
-        assertEquals(10, dump.nodes.size)
-        assertTrue(dump.truncated)
+        assertEquals(51, dump.nodes.size) // root + 50 leaves
+        assertFalse(dump.truncated)
+        val (emitted, emitTrunc) = selectEmittedNodes(
+            dump.nodes,
+            UiDumpFormat.FLAT,
+            UiDumpFilters(visibleOnly = false),
+            limit = 10,
+        )
+        assertEquals(10, emitted.size)
+        assertTrue(emitTrunc)
+        assertEquals(51, dump.byId.size)
     }
 
     @Test
@@ -257,6 +267,8 @@ class NodeResolveTest {
         assertEquals(NODE_HARD_CAP, effectiveNodeLimit(-1))
         assertEquals(NODE_HARD_CAP, effectiveNodeLimit(9999))
         assertEquals(42, effectiveNodeLimit(42))
+        assertEquals(Int.MAX_VALUE, effectiveEmitLimit(0))
+        assertEquals(10, effectiveEmitLimit(10))
     }
 
     // ---- HTTP envelope for node_action -------------------------------------

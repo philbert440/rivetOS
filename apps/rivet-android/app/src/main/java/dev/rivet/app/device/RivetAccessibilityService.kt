@@ -15,7 +15,6 @@ import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
@@ -105,33 +104,32 @@ class RivetAccessibilityService : AccessibilityService() {
         }
 
     /**
-     * Flat UI dump with per-dump `id` / `pid` / `depth` / `path`, hard-capped at [NODE_HARD_CAP].
-     * Builds and stores a [NodeIndex] for subsequent [resolve] / [nodeClick].
+     * UI dump with per-dump `id` / `pid` / `depth` / `path`, hard-capped walk at [NODE_HARD_CAP].
+     * Builds and stores a full [NodeIndex] (all walked nodes) for [resolve] / [nodeClick].
+     * Formats / filters / fields / emit [limit] are projections only — ids stay stable.
      *
      * Root policy: prefer fresh [rootInActiveWindow]; fall back to [lastRoot] only if null.
-     *
-     * @param limit max nodes to emit; ≤0 means hard cap only ([NODE_HARD_CAP]).
      */
     fun dumpUiTree(
+        format: UiDumpFormat = UiDumpFormat.FLAT,
         includeBounds: Boolean = true,
         maxDepth: Int = 12,
         limit: Int = 0,
+        filters: UiDumpFilters = UiDumpFilters(),
+        fields: Set<String>? = null,
     ): JSONObject {
         val root = preferredRoot()
-        val json = JSONObject()
-        json.put("package", lastPackage ?: root?.packageName?.toString() ?: "unknown")
-        json.put("timestamp", System.currentTimeMillis())
-        val nodes = JSONArray()
+        val packageName = lastPackage ?: root?.packageName?.toString() ?: "unknown"
+        val timestamp = System.currentTimeMillis()
         val byId = LinkedHashMap<String, NodeRef>()
-        var truncated = false
+        val walked = ArrayList<FlatDumpNode>(64)
+        var walkTruncated = false
         if (root != null) {
-            val cap = effectiveNodeLimit(limit)
             val state = DumpCollectState(
-                out = nodes,
+                walked = walked,
                 byId = byId,
                 maxDepth = maxDepth,
-                includeBounds = includeBounds,
-                cap = cap,
+                cap = NODE_HARD_CAP,
             )
             collectNodes(
                 node = root,
@@ -140,35 +138,44 @@ class RivetAccessibilityService : AccessibilityService() {
                 parentId = null,
                 state = state,
             )
-            truncated = state.truncated
+            walkTruncated = state.truncated
         }
-        json.put("nodes", nodes)
-        json.put("truncated", truncated)
 
+        val dump = DumpBuildResult(nodes = walked, byId = byId, truncated = walkTruncated)
         val index = NodeIndex(
-            dumpId = System.currentTimeMillis(),
+            dumpId = timestamp,
             createdElapsedMs = SystemClock.elapsedRealtime(),
             ttlMs = NODE_INDEX_TTL_MS,
             byId = byId,
         )
         nodeIndex = index
-        json.put("dumpId", index.dumpId)
-        return json
+
+        return projectUiDump(
+            dump = dump,
+            format = format,
+            filters = filters,
+            limit = limit,
+            includeBounds = includeBounds,
+            fields = fields,
+            packageName = packageName,
+            timestamp = timestamp,
+            dumpId = index.dumpId,
+        )
     }
 
     private class DumpCollectState(
-        val out: JSONArray,
+        val walked: MutableList<FlatDumpNode>,
         val byId: MutableMap<String, NodeRef>,
         val maxDepth: Int,
-        val includeBounds: Boolean,
         val cap: Int,
         var nextId: Int = 0,
         var truncated: Boolean = false,
     )
 
     /**
-     * DFS collect with sequential ids. Recycles children after visiting; does not recycle [node]
-     * (caller owns root; intermediates from getChild are recycled in the loop finally).
+     * DFS collect with sequential ids into pure [FlatDumpNode] records + [NodeRef] index.
+     * Recycles children after visiting; does not recycle [node] (caller owns root).
+     * Always walks up to [NODE_HARD_CAP] — emission filters applied in [projectUiDump].
      */
     private fun collectNodes(
         node: AccessibilityNodeInfo,
@@ -177,7 +184,7 @@ class RivetAccessibilityService : AccessibilityService() {
         parentId: String?,
         state: DumpCollectState,
     ) {
-        if (state.out.length() >= state.cap) {
+        if (state.walked.size >= state.cap) {
             state.truncated = true
             return
         }
@@ -190,37 +197,43 @@ class RivetAccessibilityService : AccessibilityService() {
         val text = try { node.text?.toString() ?: "" } catch (_: Throwable) { "" }
         val contentDescription = try { node.contentDescription?.toString() ?: "" } catch (_: Throwable) { "" }
         val packageName = try { node.packageName?.toString() ?: "" } catch (_: Throwable) { "" }
+        val hint = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                node.hintText?.toString() ?: ""
+            } else {
+                ""
+            }
+        } catch (_: Throwable) {
+            ""
+        }
         val r = Rect()
         try { node.getBoundsInScreen(r) } catch (_: Throwable) { }
         val bounds = NodeBounds(r.left, r.top, r.right, r.bottom)
-
-        val obj = JSONObject()
-        obj.put("id", id)
-        if (parentId != null) obj.put("pid", parentId) else obj.put("pid", JSONObject.NULL)
-        obj.put("depth", depth)
-        obj.put("path", path.joinToString("/"))
-        obj.put("class", className)
-        obj.put("text", text)
-        obj.put("contentDescription", contentDescription)
-        obj.put("viewId", viewId)
-        obj.put("package", packageName)
-        obj.put("clickable", try { node.isClickable } catch (_: Throwable) { false })
-        obj.put("focusable", try { node.isFocusable } catch (_: Throwable) { false })
-        obj.put("focused", try { node.isFocused } catch (_: Throwable) { false })
-        obj.put("scrollable", try { node.isScrollable } catch (_: Throwable) { false })
-        obj.put("enabled", try { node.isEnabled } catch (_: Throwable) { false })
-        obj.put("checked", try { node.isChecked } catch (_: Throwable) { false })
-        obj.put("selected", try { node.isSelected } catch (_: Throwable) { false })
-        obj.put("visible", try { node.isVisibleToUser } catch (_: Throwable) { false })
-        if (state.includeBounds) {
-            val b = JSONObject()
-            b.put("left", r.left); b.put("top", r.top); b.put("right", r.right); b.put("bottom", r.bottom)
-            b.put("width", r.width()); b.put("height", r.height())
-            obj.put("bounds", b)
-        }
-        state.out.put(obj)
         // Copy path so later mutations of the walk array cannot alias into the index.
         val pathCopy = path.copyOf()
+        val flat = FlatDumpNode(
+            id = id,
+            pid = parentId,
+            depth = depth,
+            path = pathCopy,
+            className = className,
+            viewId = viewId,
+            text = text,
+            contentDescription = contentDescription,
+            packageName = packageName,
+            bounds = bounds,
+            clickable = try { node.isClickable } catch (_: Throwable) { false },
+            editable = try { node.isEditable } catch (_: Throwable) { false },
+            focusable = try { node.isFocusable } catch (_: Throwable) { false },
+            focused = try { node.isFocused } catch (_: Throwable) { false },
+            scrollable = try { node.isScrollable } catch (_: Throwable) { false },
+            enabled = try { node.isEnabled } catch (_: Throwable) { false },
+            checked = try { node.isChecked } catch (_: Throwable) { false },
+            selected = try { node.isSelected } catch (_: Throwable) { false },
+            visible = try { node.isVisibleToUser } catch (_: Throwable) { false },
+            hint = hint,
+        )
+        state.walked.add(flat)
         state.byId[id] = NodeRef(
             id = id,
             path = pathCopy,
@@ -237,7 +250,7 @@ class RivetAccessibilityService : AccessibilityService() {
         if (depth >= state.maxDepth) return
         val childCount = try { node.childCount } catch (_: Throwable) { 0 }
         for (i in 0 until childCount) {
-            if (state.out.length() >= state.cap) {
+            if (state.walked.size >= state.cap) {
                 state.truncated = true
                 return
             }

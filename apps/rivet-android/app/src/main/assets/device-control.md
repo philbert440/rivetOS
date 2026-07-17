@@ -30,7 +30,7 @@ Desktop debugging: `adb forward tcp:9876 tcp:9876`.
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | GET | `/status` | none | Health + `mode`, `capabilities`, optional `display`, WG |
-| GET | `/ui` | token | Flat a11y `nodes[]` with **nodeId**; blocked when `parked` |
+| GET | `/ui` | token | A11y dump (`format=flat|tree|compact` + filters) with **nodeId**; blocked when `parked` |
 | GET | `/screenshot` | token | Scaled JPEG; default `dest=file` → `~/.rivet/screenshots/last.jpg` |
 | POST | `/action` | token | click, swipe, text, global, node_click, **node_action**, launch, intent; `full` only |
 | POST | `/notify` | token | High-priority agent alert notification (all modes) |
@@ -55,8 +55,7 @@ Useful fields:
 If `accessibility_connected` is false, UI/screenshot/action calls return **503**
 (`error: a11y_disconnected`) until Rivet Accessibility is enabled.
 
-**PR3a capabilities.ui:** `node_id: true`, `formats: ["flat"]`, `filters: false`
-(still — filters/compact arrive in a later PR).
+**capabilities.ui:** `node_id: true`, `formats: ["flat","tree","compact"]`, `filters: true`.
 
 ### Control modes (kill-switch)
 
@@ -141,34 +140,60 @@ and local multimodal attach; use base64 sparingly.
 ```sh
 curl -s -H "X-Rivet-Token: $TOKEN" 127.0.0.1:9876/ui
 
-# Optional PR3a query params
+# Agent-preferred compact view (server default remains flat)
 curl -s -H "X-Rivet-Token: $TOKEN" \
-  '127.0.0.1:9876/ui?maxDepth=12&bounds=1&limit=0'
+  '127.0.0.1:9876/ui?format=compact'
+
+# Tree + filters example
+curl -s -H "X-Rivet-Token: $TOKEN" \
+  '127.0.0.1:9876/ui?format=tree&clickable=1&limit=50'
 ```
 
 | Query | Default | Description |
 |-------|---------|-------------|
+| `format` | `flat` | `flat` \| `tree` \| `compact` (unknown → **400** `bad_request`) |
 | `maxDepth` | `12` | Depth cap (root depth = 0) |
 | `bounds` | `1` | Include bounds objects when `1` |
-| `limit` | `0` | Soft max nodes; **0** means hard-cap only. Always hard-capped at **500** |
+| `limit` | `0` | Max **emitted** nodes after filters; **0** = no emit limit. Walk always hard-capped at **500** |
+| `fields` | (all) | Comma-separated field allowlist; **`id` always kept** |
+| `clickable` | | `1` / `true` → emit only clickable nodes |
+| `editable` | | `1` / `true` → emit only editable nodes |
+| `text` | | Case-insensitive **contains** on `text` or `contentDescription` |
+| `textExact` | | Exact match on `text` or `contentDescription` |
+| `textRegex` | | Regex `find` on `text` or `contentDescription`; **max length 64**; invalid / too long → **400** `bad_request` |
+| `viewId` | | Case-insensitive **contains** on `viewId` |
+| `package` | | **Equals** package name |
+| `class` | | Case-insensitive **contains** on class name |
+| `visible` | `1` | When `1`, drop nodes with `visible=false` from emission |
 
-Flat list of nodes. Each node now includes:
+**Formats** (same DFS ids from a single walk; `NodeIndex` always indexes the full hard-capped tree so `phone node nX` works even if the node was filtered out of the response):
+
+| format | Shape | Notes |
+|--------|-------|-------|
+| `flat` (server default) | `nodes[]` flat list | Full walk (minus emission filters); compat |
+| `tree` | nested `children[]` under each node | Hierarchy among **emitted** nodes (orphans reparented to nearest emitted ancestor) |
+| `compact` | flat `nodes[]` of **interesting** nodes only | Interesting = clickable **or** editable **or** scrollable **or** non-empty text/contentDescription. **Agent-preferred** via skill; server default stays `flat` |
+
+Filters and compact only affect **which nodes are emitted**. The underlying walk still builds ids `n0…nN` up to hard cap **500** and stores them in `NodeIndex`.
+
+Each node may include:
 
 | Field | Meaning |
 |-------|---------|
-| `id` | Ephemeral id for this dump: `n0` … `nN` (DFS order) |
+| `id` | Ephemeral id for this dump: `n0` … `nN` (DFS order) — always present |
 | `pid` | Parent id, or JSON `null` for the root |
 | `depth` | Depth from root |
 | `path` | Child-index path from root, e.g. `"0/2/1"` (empty string for root) |
-| `class`, `text`, `contentDescription`, `viewId`, `package` | As before |
-| flags | `clickable`, `focusable`, `focused`, `scrollable`, `enabled`, `checked`, `selected`, `visible` |
-| `bounds` | When `bounds=1` |
+| `class`, `text`, `contentDescription`, `hint`, `viewId`, `package` | Labels / identity |
+| flags | `clickable`, `editable`, `focusable`, `focused`, `scrollable`, `enabled`, `checked`, `selected`, `visible` |
+| `bounds` | When `bounds=1` (and not stripped by `fields`) |
+| `children` | Only in `format=tree` |
 
-Top-level also: `truncated` (true if hard cap / limit stopped the walk), `dumpId`,
+Top-level also: `format`, `truncated` (true if hard cap or emit `limit` cut nodes), `dumpId`,
 `package`, `timestamp`.
 
-**Hard cap:** at most **500** nodes per dump. If the tree is larger, `truncated: true`
-and later nodes are omitted.
+**Hard cap:** at most **500** nodes walked per dump (regardless of `limit` / filters). If the tree
+is larger, `truncated: true` and later nodes are not indexed.
 
 **nodeId lifetime (critical):**
 
@@ -178,7 +203,7 @@ and later nodes are omitted.
 - After TTL expiry, UI change, or path/identity mismatch → `stale_node` — **re-dump `/ui`**
   and pick a fresh id.
 
-Prefer screenshot + tree together for Compose-heavy UIs.
+Prefer screenshot + **`format=compact`** for agent loops on Compose-heavy UIs.
 
 ### POST `/action`
 
