@@ -320,10 +320,31 @@ class ControlServer(private val context: Context) {
             )
         return try {
             val req = JSONObject(body)
-            val ok = when (val type = req.optString("type", "")) {
-                "click" -> acc.tap(req.getInt("x"), req.getInt("y"))
-                "swipe" -> acc.swipe(req.getInt("x1"), req.getInt("y1"), req.getInt("x2"), req.getInt("y2"), req.optLong("duration", 280))
-                "text" -> acc.typeText(req.getString("text"))
+            val type = req.optString("type", "")
+            val waitParams = parseActionWaitParams(req)
+            when (type) {
+                "click" -> {
+                    val outcome = acc.tap(
+                        x = req.getInt("x"),
+                        y = req.getInt("y"),
+                        wait = waitParams.wait,
+                        timeoutMs = waitParams.timeoutMs,
+                    )
+                    mapGestureOutcomeToHttp(type, waitParams.wait, outcome)
+                }
+                "swipe" -> {
+                    val outcome = acc.swipe(
+                        x1 = req.getInt("x1"),
+                        y1 = req.getInt("y1"),
+                        x2 = req.getInt("x2"),
+                        y2 = req.getInt("y2"),
+                        durationMs = req.optLong("duration", 280),
+                        wait = waitParams.wait,
+                        timeoutMs = waitParams.timeoutMs,
+                    )
+                    mapGestureOutcomeToHttp(type, waitParams.wait, outcome)
+                }
+                "text" -> mapNonGestureActionToHttp(type, acc.typeText(req.getString("text")))
                 "global" -> {
                     val code = when (req.getString("action").uppercase()) {
                         "BACK" -> AccessibilityServiceGlobals.BACK
@@ -333,26 +354,39 @@ class ControlServer(private val context: Context) {
                         "QUICK_SETTINGS" -> AccessibilityServiceGlobals.QUICK_SETTINGS
                         else -> -1
                     }
-                    if (code >= 0) acc.performGlobal(code) else false
+                    val ok = if (code >= 0) acc.performGlobal(code) else false
+                    mapNonGestureActionToHttp(type, ok)
                 }
-                "node_click" -> acc.clickNodeContainingText(req.getString("text"), req.optString("package", null))
+                "node_click" -> mapNonGestureActionToHttp(
+                    type,
+                    acc.clickNodeContainingText(req.getString("text"), req.optString("package", null)),
+                )
                 "launch" -> {
                     val intent = context.packageManager.getLaunchIntentForPackage(req.getString("package"))
-                    if (intent != null) { intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); context.startActivity(intent); true } else false
+                    val ok = if (intent != null) {
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                        true
+                    } else {
+                        false
+                    }
+                    mapNonGestureActionToHttp(type, ok)
                 }
                 "intent" -> {
                     val i = Intent(req.optString("action", Intent.ACTION_VIEW))
                     if (req.has("data")) i.data = Uri.parse(req.getString("data"))
                     if (req.has("package")) i.setPackage(req.getString("package"))
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    try { context.startActivity(i); true } catch (e: Exception) { false }
+                    val ok = try {
+                        context.startActivity(i)
+                        true
+                    } catch (_: Exception) {
+                        false
+                    }
+                    mapNonGestureActionToHttp(type, ok)
                 }
-                else -> false
-            }.also { /* type captured above */ }
-            jsonResponse(
-                200,
-                JSONObject().put("ok", ok).put("executed_at", System.currentTimeMillis()),
-            )
+                else -> errorResponse(400, "bad_request", "unknown action type: $type")
+            }
         } catch (e: Exception) {
             errorResponse(400, "bad_request", "bad action: ${e.message}")
         }

@@ -44,6 +44,9 @@ class RivetAccessibilityService : AccessibilityService() {
     private var lastPackage: String? = null
     private var server: ControlServer? = null
 
+    /** Single-flight FIFO queue for waited gestures (depth [GESTURE_MAX_QUEUE_DEPTH]). */
+    private val gestureQueue = GestureFlightQueue()
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -121,18 +124,206 @@ class RivetAccessibilityService : AccessibilityService() {
         }
     }
 
-    fun tap(x: Int, y: Int, durationMs: Long = 60): Boolean {
+    /**
+     * Tap at screen coordinates.
+     * @param wait true (default) → [dispatchGestureAwait] with completion; false → fire-and-forget
+     *   (no gesture lock; [GestureResult.accepted] only is meaningful).
+     */
+    fun tap(
+        x: Int,
+        y: Int,
+        durationMs: Long = 60,
+        wait: Boolean = true,
+        timeoutMs: Long = GESTURE_DEFAULT_TIMEOUT_MS,
+    ): GestureAwaitOutcome {
         val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs)).build()
-        return dispatchGesture(gesture, null, null)
+        return if (wait) {
+            dispatchGestureAwait(gesture, timeoutMs)
+        } else {
+            fireAndForgetGesture(gesture)
+        }
     }
 
-    fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long = 250): Boolean {
-        val path = Path().apply { moveTo(x1.toFloat(), y1.toFloat()); lineTo(x2.toFloat(), y2.toFloat()) }
+    /**
+     * Swipe between screen coordinates.
+     * @param wait true (default) → [dispatchGestureAwait]; false → fire-and-forget.
+     */
+    fun swipe(
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        durationMs: Long = 250,
+        wait: Boolean = true,
+        timeoutMs: Long = GESTURE_DEFAULT_TIMEOUT_MS,
+    ): GestureAwaitOutcome {
+        val path = Path().apply {
+            moveTo(x1.toFloat(), y1.toFloat())
+            lineTo(x2.toFloat(), y2.toFloat())
+        }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs)).build()
-        return dispatchGesture(gesture, null, null)
+        return if (wait) {
+            dispatchGestureAwait(gesture, timeoutMs)
+        } else {
+            fireAndForgetGesture(gesture)
+        }
+    }
+
+    private fun fireAndForgetGesture(gesture: GestureDescription): GestureAwaitOutcome {
+        val accepted = try {
+            dispatchGesture(gesture, null, null)
+        } catch (t: Throwable) {
+            Log.e(DeviceControl.TAG, "dispatchGesture fire-and-forget failed: ${t.message}")
+            false
+        }
+        return GestureAwaitOutcome.Done(
+            GestureResult(
+                accepted = accepted,
+                completed = false,
+                cancelled = false,
+                timedOut = false,
+                durationMs = 0L,
+            ),
+        )
+    }
+
+    /**
+     * Dispatch a gesture and wait for [GestureResultCallback] completion/cancel or timeout.
+     * Serializes through [gestureQueue] (single-flight, FIFO, depth [GESTURE_MAX_QUEUE_DEPTH]).
+     * Queue wait time is deducted from [timeoutMs].
+     *
+     * Non-gesture actions must not call this (they do not take the lock).
+     */
+    fun dispatchGestureAwait(
+        gesture: GestureDescription,
+        timeoutMs: Long = GESTURE_DEFAULT_TIMEOUT_MS,
+    ): GestureAwaitOutcome {
+        val start = System.currentTimeMillis()
+        val budget = timeoutMs.coerceIn(1L, GESTURE_MAX_TIMEOUT_MS)
+        when (val enter = gestureQueue.tryEnter(budget)) {
+            is GestureFlightQueue.EnterResult.Busy -> return GestureAwaitOutcome.Busy
+            is GestureFlightQueue.EnterResult.TimedOut -> {
+                return GestureAwaitOutcome.Done(
+                    GestureResult(
+                        accepted = false,
+                        completed = false,
+                        cancelled = false,
+                        timedOut = true,
+                        durationMs = System.currentTimeMillis() - start,
+                    ),
+                )
+            }
+            is GestureFlightQueue.EnterResult.Acquired -> {
+                try {
+                    val remaining = enter.remainingTimeoutMs
+                    if (remaining <= 0L) {
+                        return GestureAwaitOutcome.Done(
+                            GestureResult(
+                                accepted = false,
+                                completed = false,
+                                cancelled = false,
+                                timedOut = true,
+                                durationMs = System.currentTimeMillis() - start,
+                            ),
+                        )
+                    }
+                    return GestureAwaitOutcome.Done(
+                        dispatchGestureWithCallback(gesture, remaining, start),
+                    )
+                } finally {
+                    gestureQueue.leave()
+                }
+            }
+        }
+    }
+
+    private fun dispatchGestureWithCallback(
+        gesture: GestureDescription,
+        remainingMs: Long,
+        startMs: Long,
+    ): GestureResult {
+        val completedRef = AtomicReference<Boolean?>(null)
+        val latch = CountDownLatch(1)
+        val accepted = try {
+            dispatchGesture(
+                gesture,
+                object : GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        completedRef.compareAndSet(null, true)
+                        latch.countDown()
+                    }
+
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        completedRef.compareAndSet(null, false)
+                        latch.countDown()
+                    }
+                },
+                null,
+            )
+        } catch (t: Throwable) {
+            Log.e(DeviceControl.TAG, "dispatchGesture failed: ${t.message}")
+            return GestureResult(
+                accepted = false,
+                completed = false,
+                cancelled = false,
+                timedOut = false,
+                durationMs = System.currentTimeMillis() - startMs,
+            )
+        }
+
+        if (!accepted) {
+            return GestureResult(
+                accepted = false,
+                completed = false,
+                cancelled = false,
+                timedOut = false,
+                durationMs = System.currentTimeMillis() - startMs,
+            )
+        }
+
+        val finished = try {
+            latch.await(remainingMs, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+
+        val duration = System.currentTimeMillis() - startMs
+        if (!finished) {
+            return GestureResult(
+                accepted = true,
+                completed = false,
+                cancelled = false,
+                timedOut = true,
+                durationMs = duration,
+            )
+        }
+        return when (completedRef.get()) {
+            true -> GestureResult(
+                accepted = true,
+                completed = true,
+                cancelled = false,
+                timedOut = false,
+                durationMs = duration,
+            )
+            false -> GestureResult(
+                accepted = true,
+                completed = false,
+                cancelled = true,
+                timedOut = false,
+                durationMs = duration,
+            )
+            null -> GestureResult(
+                accepted = true,
+                completed = false,
+                cancelled = false,
+                timedOut = true,
+                durationMs = duration,
+            )
+        }
     }
 
     fun typeText(text: String): Boolean {
