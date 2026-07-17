@@ -27,6 +27,7 @@ object DeviceControl {
 
     private const val PREFS = "rivet_device"
     private const val KEY_TOKEN = "control_token"
+    private const val KEY_MODE = "control_mode"
     private const val MAX_EXEC_TIMEOUT_MS = 120_000L      // cap a single /exec run at 2 min
     private const val MAX_EXEC_OUTPUT = 512 * 1024        // bound captured stdout/stderr at 512 KB each
 
@@ -38,6 +39,26 @@ object DeviceControl {
         val token = Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
         prefs.edit().putString(KEY_TOKEN, token).apply()
         return token
+    }
+
+    /**
+     * Control kill-switch: `full` | `eyes` | `parked` (default `full`).
+     * Persisted in SharedPreferences [PREFS] under [KEY_MODE].
+     */
+    fun getControlMode(context: Context): String {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_MODE, "full") ?: "full"
+        return if (ControlMode.parse(raw) != null) raw.lowercase() else "full"
+    }
+
+    /** Persist mode; [mode] must be full|eyes|parked (caller validates for API 400). */
+    fun setControlMode(context: Context, mode: String) {
+        val normalized = mode.lowercase()
+        require(ControlMode.parse(normalized) != null) { "invalid control mode: $mode" }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_MODE, normalized)
+            .apply()
     }
 
     /**

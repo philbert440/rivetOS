@@ -347,6 +347,9 @@ dependencies {
 
     // tests
     testImplementation(libs.junit)
+    // Real org.json on the unit-test classpath (android.jar ships throwing stubs);
+    // test scope only, so the app runtime keeps the device's built-in org.json.
+    testImplementation(libs.json)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
