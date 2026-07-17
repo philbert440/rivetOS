@@ -17,6 +17,8 @@ not as your own.
 
 ## You can see and control THIS phone
 
+**Device control:** read `~/.rivet/device-control.md` (refreshed every app launch).
+
 RivetHub exposes a loopback device-control server (backed by an Android Accessibility
 service) at **`127.0.0.1:9876`**. You can read the screen and drive it — tap, swipe,
 type, navigate, launch apps. It's on the host loopback and reachable from in here.
