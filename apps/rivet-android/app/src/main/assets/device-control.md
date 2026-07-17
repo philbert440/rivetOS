@@ -32,7 +32,7 @@ Desktop debugging: `adb forward tcp:9876 tcp:9876`.
 | GET | `/status` | none | Health + `mode`, `capabilities`, optional `display`, WG |
 | GET | `/ui` | token | A11y dump (`format=flat|tree|compact` + filters) with **nodeId**; blocked when `parked` |
 | GET | `/screenshot` | token | Scaled JPEG; default `dest=file` → `~/.rivet/screenshots/last.jpg` |
-| POST | `/action` | token | click, swipe, text, global, node_click, **node_action**, launch, intent; `full` only |
+| POST | `/action` | token | click, swipe, long_press, double_tap, drag, scroll, text, global, node_click, **node_action**, clipboard, launch, intent; `full` only |
 | POST | `/notify` | token | High-priority agent alert notification (all modes) |
 | POST | `/mode` | token | Set `full` \| `eyes` \| `parked` |
 | POST | `/exec` | token | **DEBUG builds only** — blocked in eyes/parked |
@@ -56,6 +56,8 @@ If `accessibility_connected` is false, UI/screenshot/action calls return **503**
 (`error: a11y_disconnected`) until Rivet Accessibility is enabled.
 
 **capabilities.ui:** `node_id: true`, `formats: ["flat","tree","compact"]`, `filters: true`.
+
+**capabilities (rich actions):** `clipboard: true`; `node_actions: ["click","long_click","focus","set_text","scroll_forward","scroll_backward","select"]`; nested `actions.gestures` / `actions.text_modes` / `actions.clipboard_ops` for feature-detect.
 
 ### Control modes (kill-switch)
 
@@ -216,9 +218,19 @@ curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
 curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"type":"click","x":540,"y":1200,"wait":false}' 127.0.0.1:9876/action
 
-# Node-targeted click (PR3a MVP — preferred over coordinate hunting when you have an id)
+# Node-targeted click (preferred over coordinate hunting when you have an id)
 curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"type":"node_action","nodeId":"n17","action":"click"}' 127.0.0.1:9876/action
+
+# Long-press (coordinates or nodeId)
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"long_press","x":540,"y":1200}' 127.0.0.1:9876/action
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"long_press","nodeId":"n17"}' 127.0.0.1:9876/action
+
+# Clipboard
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"clipboard","op":"get"}' 127.0.0.1:9876/action
 ```
 
 Common body fields (gestures):
@@ -233,25 +245,81 @@ Action types:
 | type | Body fields | Behavior |
 |------|-------------|----------|
 | `click` | `x`, `y`, optional `wait`, `timeoutMs` | Tap at pixel coordinates |
-| `swipe` | `x1`, `y1`, `x2`, `y2`, `duration` (default 280), optional `wait`, `timeoutMs` | Swipe / scroll |
-| `text` | `text` | Type into the focused field (replaces contents) |
+| `swipe` | `x1`, `y1`, `x2`, `y2`, `duration` (default 280), optional `wait`, `timeoutMs` | Swipe |
+| `long_press` | `x`,`y` **or** `nodeId`; optional `durationMs` / `duration` (≥600 on coords); `wait`, `timeoutMs` | See long_press policy below |
+| `double_tap` | `x`, `y`, optional `wait`, `timeoutMs` | Two short strokes at the same point |
+| `drag` | `x1`, `y1`, `x2`, `y2`, optional `durationMs` (default 300), `wait`, `timeoutMs` | Single stroke drag |
+| `scroll` | `direction` (`up`\|`down`\|`left`\|`right`), optional `nodeId`, optional `durationMs`, `wait`, `timeoutMs` | Prefer `ACTION_SCROLL_*` on node; else coordinate swipe |
+| `text` | `text`, optional `mode` (`replace`\|`append`, default **replace**) | SET_TEXT on focused/first editable field |
 | `global` | `action`: `BACK` \| `HOME` \| `RECENTS` \| `NOTIFICATIONS` \| `QUICK_SETTINGS` | Global a11y action |
 | `node_click` | `text`, optional `package` | Tap first node whose text/contentDescription contains substring (case-insensitive) |
-| **`node_action`** | **`nodeId`**, **`action`** | **Re-resolve by id + path; MVP `action` is `click` only** |
+| **`node_action`** | **`nodeId`**, **`action`**, optional **`text`** (for `set_text`) | Re-resolve + `performAction` (see below) |
+| `clipboard` | `op`: `get`\|`set`; `text` required for `set` | Read/write system clipboard (no a11y required) |
 | `launch` | `package` | Launch app by package name |
 | `intent` | `action`, optional `data`, optional `package` | `startActivity` with intent |
 
-#### `node_action` (MVP click)
+#### `long_press` policy (node vs stroke)
+
+| Input | Behavior |
+|-------|----------|
+| **`nodeId` present** (non-empty) | Resolve node → prefer `ACTION_LONG_CLICK`. If that returns false and bounds are usable → center-point long-press **stroke ≥ 600 ms** via the waited gesture path. Response `type` is `long_press` (with `nodeId` + `action: long_click`). |
+| **Coordinates only** (`x`, `y`) | Single stroke hold, duration **≥ 600 ms** (request `durationMs`/`duration` clamped up to min 600). PR2 gesture envelope. |
+
+Do not pass both when you mean node-targeted; `nodeId` wins if non-empty.
+
+#### `scroll`
+
+```json
+{"type":"scroll","direction":"down"}
+{"type":"scroll","direction":"down","nodeId":"n42"}
+```
+
+1. With `nodeId`: resolve; try directional `ACTION_SCROLL_UP/DOWN/LEFT/RIGHT`, then `ACTION_SCROLL_FORWARD/BACKWARD` (down/right → forward; up/left → backward).
+2. If performAction fails: swipe inside node bounds (finger opposite content motion).
+3. Without `nodeId`: swipe near screen center. Gesture path returns the PR2 envelope (`type: scroll`); successful performAction returns `{ok, type:scroll, nodeId, action:scroll_<dir>, completed, durationMs, …}`.
+
+#### `text` modes
+
+```json
+{"type":"text","text":"hello"}
+{"type":"text","mode":"append","text":" world"}
+```
+
+| `mode` | Behavior |
+|--------|----------|
+| `replace` (default) | `ACTION_SET_TEXT` with `text` only |
+| `append` | Read current field text, SET_TEXT with `current + text` |
+
+Unknown `mode` → **400** `bad_request`.
+
+#### `clipboard`
+
+```json
+{"type":"clipboard","op":"get"}
+{"type":"clipboard","op":"set","text":"copied"}
+```
+
+- **get** → `{ok:true, type:clipboard, op:get, text:"…", executed_at}`
+- **set** → `{ok:true, type:clipboard, op:set, executed_at}` (`text` required)
+- Does **not** require accessibility; does **not** take the gesture lock. Still mode-gated (`full` only).
+
+#### `node_action` (rich)
 
 ```json
 {"type":"node_action","nodeId":"n17","action":"click"}
+{"type":"node_action","nodeId":"n3","action":"set_text","text":"hello"}
+{"type":"node_action","nodeId":"n9","action":"long_click"}
+{"type":"node_action","nodeId":"n12","action":"scroll_forward"}
 ```
 
-| Field | MVP | Notes |
-|-------|-----|--------|
-| `type` | `node_action` | Reserved; richer actions land later |
-| `nodeId` | required | From the **latest** `/ui` dump within TTL |
-| `action` | `click` only | Other values → **400** `bad_request` |
+| Field | Required | Notes |
+|-------|----------|--------|
+| `type` | yes | `node_action` |
+| `nodeId` | yes | From the **latest** `/ui` dump within TTL |
+| `action` | yes | `click` \| `long_click` \| `focus` \| `set_text` \| `scroll_forward` \| `scroll_backward` \| `select` |
+| `text` | for `set_text` | SET_TEXT argument |
+
+Unknown `action` → **400** `bad_request`.
 
 **CLI mapping (future `phone` CLI):**
 
@@ -265,8 +333,7 @@ phone node n17
 1. Mode gate (blocked in eyes/parked → 403 `forbidden_mode`).
 2. Resolve `nodeId` against the last dump’s index (15s TTL, path walk + identity).
 3. On resolve failure: **`stale_node`** (HTTP **400**) or **`a11y_disconnected`** (HTTP **503**).
-4. On success: `ACTION_CLICK`; if that returns false and the node has bounds, center-point
-   gesture tap via the PR2 waited gesture path.
+4. On success: `performAction` for the mapped `ACTION_*`. For **`click`** / **`long_click`**, if performAction returns false and the node has bounds → center-point gesture (tap / ≥600 ms long-press) via the waited gesture path.
 5. Success envelope:
 
 ```json
@@ -287,7 +354,7 @@ phone node n17
 **`stale_node` recovery:** re-call `GET /ui`, read a fresh `id`, act immediately — do not retry
 the old id.
 
-**Gesture envelope** (`click` / `swipe`) — `capabilities.gesture_wait` is **true**:
+**Gesture envelope** (`click` / `swipe` / `long_press` coords / `double_tap` / `drag` / `scroll` swipe) — `capabilities.gesture_wait` is **true**:
 
 ```json
 {
@@ -330,12 +397,15 @@ than **4** callers are already waiting, the new request is rejected immediately:
 | Not accepted | 200 | `action_failed` | `accepted:false` |
 | Queue full | **429** | `busy` | — |
 
-**Non-gesture** types (`text`, `global`, `node_click`, `launch`, `intent`) keep a simpler
-shape: `{"ok": <bool>, "type": "<type>", "executed_at": <ms>}` (plus `error: action_failed`
-when `ok` is false). They do **not** take the gesture lock.
+**Non-gesture** types (`text`, `global`, `node_click`, `launch`, `intent`, `clipboard`, and
+`node_action` / `scroll` when only `performAction` runs) keep a simpler or node envelope and
+do **not** take the gesture lock.
 
 **`node_action`** uses the richer envelope above (`nodeId`, `action`, `completed` /
-`durationMs`). A center-tap **fallback** may take the gesture lock (and can return `busy`).
+`durationMs`). Click / long_click **fallback** may take the gesture lock (and can return `busy`).
+
+**Gesture types** that always use the single-flight queue when waited: `click`, `swipe`,
+`long_press` (coords), `double_tap`, `drag`, and `scroll` swipe fallback.
 
 Blocked in `eyes` and `parked` (403 `forbidden_mode`).
 
@@ -404,8 +474,10 @@ Expected capture failures such as `secure_window` use HTTP **200** with
 ## Driving the UI well (hard-won)
 
 - Prefer **screenshot (`dest=file`) + `/ui`** for Compose-heavy screens.
-- Prefer **`node_action` click** when you have a fresh `id` from the same-turn dump;
-  fall back to coordinates only when needed.
+- Prefer **`node_action`** (click / long_click / scroll_* / set_text / …) when you have a fresh
+  `id` from the same-turn dump; fall back to coordinates only when needed.
+- Use **`long_press` with `nodeId`** when possible (ACTION_LONG_CLICK); coordinate long_press
+  holds ≥600 ms.
 - **Never cache `nodeId`** across turns — 15s TTL and tree churn will yield `stale_node`.
 - Most **Jetpack Compose** controls are unlabeled (merged semantics) → find
   `clickable` bounds / use nodeId re-resolve with bounds-center identity; confirm with a shot.

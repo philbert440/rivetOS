@@ -312,8 +312,17 @@ class ControlPolicyTest {
         assertTrue(cap.getJSONObject("ui").getBoolean("node_id"))
         assertTrue(cap.getJSONObject("ui").getBoolean("filters"))
         assertFalse(cap.getBoolean("wait"))
+        assertTrue(cap.getBoolean("clipboard"))
         assertFalse(cap.getBoolean("exec"))
         assertEquals(3, cap.getJSONArray("modes").length())
+        // Rich actions capability hints
+        val nodeActions = cap.getJSONArray("node_actions")
+        assertTrue(nodeActions.length() >= 7)
+        assertEquals("click", nodeActions.getString(0))
+        val actions = cap.getJSONObject("actions")
+        assertTrue(actions.getJSONArray("gestures").length() >= 6)
+        assertTrue(actions.getJSONArray("text_modes").toString().contains("append"))
+        assertTrue(actions.getJSONArray("clipboard_ops").toString().contains("get"))
     }
 
     @Test
