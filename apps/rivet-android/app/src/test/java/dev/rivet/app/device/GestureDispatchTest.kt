@@ -187,9 +187,9 @@ class GestureDispatchTest {
         val q = GestureFlightQueue(maxWaiters = 4)
         val free = q.tryEnter(0L)
         assertTrue(free is GestureFlightQueue.EnterResult.Acquired)
-        // Slot now held; a second zero-budget entry must not block or park.
+        // Slot now held; a second zero-budget entry bounces Busy without parking.
         val held = q.tryEnter(0L)
-        assertFalse(held is GestureFlightQueue.EnterResult.Acquired)
+        assertTrue(held is GestureFlightQueue.EnterResult.Busy)
         assertEquals(0, q.waiterCount())
         q.leave()
         // Released → zero-budget entry acquires again.

@@ -78,6 +78,11 @@ class GestureFlightQueue(
                 held = true
                 return EnterResult.Acquired(remainingTimeoutMs = remaining(start, budget))
             }
+            // Zero budget (fire-and-forget): never park — bounce immediately rather than
+            // transiently enqueue-and-remove.
+            if (budget == 0L) {
+                return EnterResult.Busy
+            }
             // Would exceed queue depth → busy (do not wait).
             if (waiters.size >= maxWaiters) {
                 return EnterResult.Busy
