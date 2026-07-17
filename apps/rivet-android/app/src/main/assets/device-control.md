@@ -33,6 +33,7 @@ Desktop debugging: `adb forward tcp:9876 tcp:9876`.
 | GET | `/ui` | token | A11y dump (`format=flat|tree|compact` + filters) with **nodeId**; blocked when `parked` |
 | GET | `/screenshot` | token | Scaled JPEG; default `dest=file` → `~/.rivet/screenshots/last.jpg` |
 | POST | `/action` | token | click, swipe, long_press, double_tap, drag, scroll, text, global, node_click, **node_action**, clipboard, launch, intent; `full` only |
+| POST | `/wait` | token | Poll until text / package / gone; `full` only; max **5** concurrent |
 | POST | `/notify` | token | High-priority agent alert notification (all modes) |
 | POST | `/mode` | token | Set `full` \| `eyes` \| `parked` |
 | POST | `/exec` | token | **DEBUG builds only** — blocked in eyes/parked |
@@ -57,7 +58,7 @@ If `accessibility_connected` is false, UI/screenshot/action calls return **503**
 
 **capabilities.ui:** `node_id: true`, `formats: ["flat","tree","compact"]`, `filters: true`.
 
-**capabilities (rich actions):** `clipboard: true`; `node_actions: ["click","long_click","focus","set_text","scroll_forward","scroll_backward","select"]`; nested `actions.gestures` / `actions.text_modes` / `actions.clipboard_ops` for feature-detect.
+**capabilities (rich actions):** `clipboard: true`; `wait: true`; `node_actions: ["click","long_click","focus","set_text","scroll_forward","scroll_backward","select"]`; nested `actions.gestures` / `actions.text_modes` / `actions.clipboard_ops` for feature-detect.
 
 ### Control modes (kill-switch)
 
@@ -66,11 +67,11 @@ curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"mode":"parked"}' 127.0.0.1:9876/mode
 ```
 
-| Mode | `/status` | `/ui` | `/screenshot` | `/action` | `/notify` | `/exec` |
-|------|-----------|-------|---------------|-----------|-----------|---------|
-| `full` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (DEBUG) |
-| `eyes` | ✓ | ✓ | ✓ | **403** | ✓ | **403** |
-| `parked` | ✓ | **403** | **403** | **403** | ✓ | **403** |
+| Mode | `/status` | `/ui` | `/screenshot` | `/action` | `/wait` | `/notify` | `/exec` |
+|------|-----------|-------|---------------|-----------|---------|-----------|---------|
+| `full` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (DEBUG) |
+| `eyes` | ✓ | ✓ | ✓ | **403** | **403** | ✓ | **403** |
+| `parked` | ✓ | **403** | **403** | **403** | **403** | ✓ | **403** |
 
 - Default: `full` (persisted in app prefs).
 - Response on block: HTTP **403**, `error: forbidden_mode`.
@@ -409,6 +410,87 @@ do **not** take the gesture lock.
 
 Blocked in `eyes` and `parked` (403 `forbidden_mode`).
 
+### POST `/wait`
+
+Poll the live accessibility tree until a condition holds or timeout. Use this after an
+action when the next step depends on UI state (spinner gone, button appears, package
+changed). Does **not** take the gesture single-flight lock.
+
+```sh
+# Wait until a visible node contains "Continue" (case-insensitive)
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"text":"Continue","timeoutMs":8000}' 127.0.0.1:9876/wait
+
+# Wait until foreground package equals
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"package":"com.android.settings"}' 127.0.0.1:9876/wait
+
+# Wait until "Loading" is no longer visible on any node
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"gone":"Loading","timeoutMs":15000,"intervalMs":200}' 127.0.0.1:9876/wait
+```
+
+| Body field | Default | Description |
+|------------|---------|-------------|
+| `text` | — | Wait until a **visible** node's `text` or `contentDescription` **contains** this substring (case-insensitive; same as `/ui?text=`) |
+| `package` | — | Wait until `current_package` **equals** this string |
+| `gone` | — | Wait until **no** visible node matches the given text (inverse of `text`) |
+| `timeoutMs` | `8000` | Total poll budget; clamped to **1…30000** |
+| `intervalMs` | `250` | Sleep between polls; **min 50** |
+
+**At least one** of `text` | `package` | `gone` is required (non-empty). Multiple conditions
+are **OR**'d: success when any holds. If several hold on the same poll, `matched` priority is
+`text` → `package` → `gone`.
+
+**Success** (HTTP 200):
+
+```json
+{
+  "ok": true,
+  "matched": "text",
+  "waitedMs": 512,
+  "current_package": "com.example.app"
+}
+```
+
+`matched` is one of `text` | `package` | `gone`.
+
+**Timeout** (HTTP **200**, `ok:false` — branch on JSON, not transport status):
+
+```json
+{
+  "ok": false,
+  "error": "timed_out",
+  "message": "wait condition not met before timeout",
+  "waitedMs": 8000,
+  "code": 200
+}
+```
+
+**Concurrency:** at most **5** simultaneous `/wait` calls. A 6th gets HTTP **429**
+`error: rate_limited` with `retry_after_ms` and `Retry-After` (seconds). This is a
+concurrent-slot limit (not the screenshot token bucket); same stable `error` string so
+agents can retry with backoff.
+
+Blocked in `eyes` and `parked` (403 `forbidden_mode`). Requires accessibility connected
+(else **503** `a11y_disconnected`).
+
+**Agent pattern (act → wait → verify):**
+
+```sh
+# 1) Act
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"node_action","nodeId":"n12","action":"click"}' 127.0.0.1:9876/action
+
+# 2) Wait for UI to settle
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"gone":"Loading","text":"Done","timeoutMs":10000}' 127.0.0.1:9876/wait
+
+# 3) Verify (shot and/or compact ui)
+curl -s -H "X-Rivet-Token: $TOKEN" '127.0.0.1:9876/screenshot?dest=file'
+curl -s -H "X-Rivet-Token: $TOKEN" '127.0.0.1:9876/ui?format=compact'
+```
+
 ### POST `/notify`
 
 ```sh
@@ -454,7 +536,7 @@ Stable `error` strings:
 | `not_found` | 404 | unknown path |
 | `bad_request` | 400 | malformed body/query |
 | `stale_node` | 400 | nodeId expired or re-resolve failed — re-dump `/ui` |
-| `rate_limited` | 429 | screenshot token-bucket limit (+ `retry_after_ms`) — **not** gesture queue |
+| `rate_limited` | 429 | screenshot token-bucket **or** `/wait` concurrent-slot limit (+ `retry_after_ms`) — **not** gesture queue |
 | `busy` | 429 | gesture single-flight queue full (`message: gesture_busy`) |
 | `unsupported` | 501 | screenshot on API &lt; 30 |
 | `a11y_disconnected` | 503 | accessibility service not bound |
@@ -462,7 +544,7 @@ Stable `error` strings:
 | `secure_window` | 200 / `ok:false` | secure flag blocks capture |
 | `invalid_display` | 400 | bad display id |
 | `interval_interval` | 429 | platform screenshot interval throttle |
-| `timed_out` | 200 / `ok:false` | screenshot or gesture latch timeout |
+| `timed_out` | 200 / `ok:false` | screenshot, gesture latch, or `/wait` poll timeout |
 | `action_failed` | 200 / `ok:false` | gesture cancelled / not accepted / non-gesture false |
 | `internal_error` | 500 | unexpected failure |
 
@@ -478,6 +560,8 @@ Expected capture failures such as `secure_window` use HTTP **200** with
   `id` from the same-turn dump; fall back to coordinates only when needed.
 - Use **`long_press` with `nodeId`** when possible (ACTION_LONG_CLICK); coordinate long_press
   holds ≥600 ms.
+- After act: **`POST /wait`** for text / package / gone, then re-shot / re-dump — do not
+  assume the tree is ready on the next line of the script.
 - **Never cache `nodeId`** across turns — 15s TTL and tree churn will yield `stale_node`.
 - Most **Jetpack Compose** controls are unlabeled (merged semantics) → find
   `clickable` bounds / use nodeId re-resolve with bounds-center identity; confirm with a shot.
