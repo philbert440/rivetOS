@@ -1,0 +1,25 @@
+{
+  "name": "@rivetos/kimi-rivet-memory-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Capture worker for the Kimi Code CLI rivet-memory integration. Spools hook payloads and writes them into the shared RivetOS memory store under agent='rivet-kimi'.",
+  "license": "Apache-2.0",
+  "main": "dist/kimi-memory-capture.js",
+  "bin": {
+    "kimi-rivet-memory-capture": "dist/kimi-memory-capture.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx test/smoke.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/pg": "^8.20.0"
+  }
+}
