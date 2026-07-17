@@ -351,7 +351,7 @@ fun buildCapabilitiesJson(screenshotSupported: Boolean, execEnabled: Boolean): J
         .put("ui", ui)
         .put("actions", actions)
         .put("node_actions", nodeActionsCapabilityArray())
-        .put("wait", false)
+        .put("wait", true)
         .put("clipboard", true)
         .put("notifications_read", false)
         .put("exec", execEnabled)
