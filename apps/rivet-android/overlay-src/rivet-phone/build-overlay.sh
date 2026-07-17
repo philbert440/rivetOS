@@ -15,7 +15,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 OUT="$REPO/app/src/main/assets/rivet-phone-overlay.bin"
-REV="${RIVET_PHONE_OVERLAY_REV:-1}"
+REV="${RIVET_PHONE_OVERLAY_REV:-2}"
 
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p \

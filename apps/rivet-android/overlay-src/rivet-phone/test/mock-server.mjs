@@ -12,6 +12,11 @@
  *   MOCK_MODE          initial mode: full|eyes|parked (default full)
  *   MOCK_SCREENSHOT_SUPPORTED  "true"|"false" (default true)
  *   MOCK_MODES_ENABLED "true"|"false" — if false, omit modes from capabilities (default true)
+ *   MOCK_WAIT_ENABLED  "true"|"false" (default true) — capabilities.wait
+ *   MOCK_CLIPBOARD_ENABLED "true"|"false" (default true) — capabilities.clipboard
+ *   MOCK_NODE_ACTIONS_ENABLED "true"|"false" (default true) — capabilities.node_actions
+ *   MOCK_WAIT_MATCH    if "false", /wait always times out (default match)
+ *   MOCK_CLIPBOARD_TEXT initial clipboard text for get (default "mock-clip-text")
  *
  * Query override: ?force_error=busy etc. on any path.
  *
@@ -32,9 +37,14 @@ const SHOT_DIR =
   path.join(os.tmpdir(), "rivet-mock-screenshots");
 const SHOT_SUPPORTED = process.env.MOCK_SCREENSHOT_SUPPORTED !== "false";
 const MODES_ENABLED = process.env.MOCK_MODES_ENABLED !== "false";
+const WAIT_ENABLED = process.env.MOCK_WAIT_ENABLED !== "false";
+const CLIPBOARD_ENABLED = process.env.MOCK_CLIPBOARD_ENABLED !== "false";
+const NODE_ACTIONS_ENABLED = process.env.MOCK_NODE_ACTIONS_ENABLED !== "false";
+const WAIT_MATCH = process.env.MOCK_WAIT_MATCH !== "false";
 
 let mode = process.env.MOCK_MODE || "full";
 let forceError = process.env.MOCK_FORCE_ERROR || "";
+let clipboardText = process.env.MOCK_CLIPBOARD_TEXT || "mock-clip-text";
 
 // Minimal valid-ish JPEG (1x1 pixel) — enough for copyFile tests
 const TINY_JPEG = Buffer.from(
@@ -117,10 +127,17 @@ function actionEnvelope(type, overrides = {}) {
 function modeBlocks(pathName, method) {
   if (pathName === "/status" || pathName === "/notify" || pathName === "/mode") return false;
   if (mode === "parked") {
-    if (pathName === "/ui" || pathName === "/screenshot" || pathName === "/action") return true;
+    if (
+      pathName === "/ui" ||
+      pathName === "/screenshot" ||
+      pathName === "/action" ||
+      pathName === "/wait"
+    ) {
+      return true;
+    }
   }
   if (mode === "eyes") {
-    if (pathName === "/action") return true;
+    if (pathName === "/action" || pathName === "/wait") return true;
   }
   return false;
 }
@@ -165,6 +182,16 @@ const FLAT_NODES = [
 function compactNodes() {
   return FLAT_NODES.filter((n) => n.clickable || n.editable || (n.text && n.text.length > 0));
 }
+
+const NODE_ACTIONS = new Set([
+  "click",
+  "long_click",
+  "focus",
+  "set_text",
+  "scroll_forward",
+  "scroll_backward",
+  "select",
+]);
 
 async function handle(req, res) {
   const { path: urlPath, query } = parseUrl(req.url || "/");
@@ -228,8 +255,9 @@ async function handle(req, res) {
         },
         gesture_wait: true,
         ui: { formats: ["flat", "tree", "compact"], node_id: true, filters: true },
-        wait: false,
-        clipboard: false,
+        wait: WAIT_ENABLED,
+        clipboard: CLIPBOARD_ENABLED,
+        node_actions: NODE_ACTIONS_ENABLED,
         notifications_read: false,
         exec: false,
       };
@@ -335,6 +363,51 @@ async function handle(req, res) {
       return write(res, err(400, "bad_request", `dest=${dest} not supported in mock`));
     }
 
+    if (method === "POST" && urlPath === "/wait") {
+      if (!WAIT_ENABLED) {
+        return write(res, err(501, "unsupported", "wait not available on this build"));
+      }
+      let body;
+      try {
+        body = await readBody(req);
+      } catch {
+        return write(res, err(400, "bad_request", "invalid JSON body"));
+      }
+      if (!body.text && !body.package && !body.gone) {
+        return write(
+          res,
+          err(400, "bad_request", "wait requires at least one of text|package|gone"),
+        );
+      }
+      if (!WAIT_MATCH) {
+        return write(
+          res,
+          json(200, {
+            ok: false,
+            error: "timed_out",
+            message: "condition not met before timeout",
+            waitedMs: body.timeoutMs ?? 15_000,
+          }),
+        );
+      }
+      const matched =
+        body.text || body.package || body.gone
+          ? body.text
+            ? `text:${body.text}`
+            : body.package
+              ? `package:${body.package}`
+              : `gone:${body.gone}`
+          : "ok";
+      return write(
+        res,
+        json(200, {
+          ok: true,
+          matched,
+          waitedMs: 42,
+        }),
+      );
+    }
+
     if (method === "POST" && urlPath === "/action") {
       let body;
       try {
@@ -364,18 +437,21 @@ async function handle(req, res) {
             ),
           );
         case "text":
-          return write(res, json(200, actionEnvelope("text", { text: body.text })));
+          return write(
+            res,
+            json(
+              200,
+              actionEnvelope("text", {
+                text: body.text,
+                mode: body.mode || "replace",
+              }),
+            ),
+          );
         case "global":
           return write(res, json(200, actionEnvelope("global", { action: body.action })));
         case "node_click":
           return write(res, json(200, actionEnvelope("node_click", { text: body.text })));
-        case "node_action":
-          if (body.action && body.action !== "click") {
-            return write(
-              res,
-              err(400, "bad_request", `node_action action=${body.action} not in MVP mock`),
-            );
-          }
+        case "node_action": {
           if (!body.nodeId) {
             return write(res, err(400, "bad_request", "node_action requires nodeId"));
           }
@@ -383,13 +459,105 @@ async function handle(req, res) {
           if (body.nodeId === "n_stale") {
             return write(res, err(400, "stale_node", "nodeId expired or failed re-resolve"));
           }
+          const action = body.action || "click";
+          if (!NODE_ACTIONS.has(action)) {
+            return write(res, err(400, "bad_request", `unknown node_action action=${action}`));
+          }
+          if (action !== "click" && !NODE_ACTIONS_ENABLED) {
+            return write(
+              res,
+              err(501, "unsupported", `node_action action=${action} not available`),
+            );
+          }
+          if (action === "set_text" && body.text === undefined) {
+            return write(res, err(400, "bad_request", "set_text requires text"));
+          }
           return write(
             res,
             json(
               200,
               actionEnvelope("node_action", {
                 nodeId: body.nodeId,
-                action: "click",
+                action,
+                ...(body.text !== undefined ? { text: body.text } : {}),
+              }),
+            ),
+          );
+        }
+        case "clipboard": {
+          if (!CLIPBOARD_ENABLED) {
+            return write(res, err(501, "unsupported", "clipboard not available on this build"));
+          }
+          const op = body.op;
+          if (op === "get") {
+            return write(
+              res,
+              json(200, {
+                ok: true,
+                type: "clipboard",
+                op: "get",
+                text: clipboardText,
+                completed: true,
+              }),
+            );
+          }
+          if (op === "set") {
+            if (body.text === undefined) {
+              return write(res, err(400, "bad_request", "clipboard set requires text"));
+            }
+            clipboardText = String(body.text);
+            return write(
+              res,
+              json(200, actionEnvelope("clipboard", { op: "set", text: clipboardText })),
+            );
+          }
+          return write(res, err(400, "bad_request", "clipboard requires op get|set"));
+        }
+        case "long_press":
+          if (body.x === undefined || body.y === undefined) {
+            return write(res, err(400, "bad_request", "long_press requires x,y"));
+          }
+          return write(
+            res,
+            json(
+              200,
+              actionEnvelope("long_press", {
+                x: body.x,
+                y: body.y,
+                durationMs: body.durationMs ?? 600,
+              }),
+            ),
+          );
+        case "double_tap":
+          if (body.x === undefined || body.y === undefined) {
+            return write(res, err(400, "bad_request", "double_tap requires x,y"));
+          }
+          return write(
+            res,
+            json(200, actionEnvelope("double_tap", { x: body.x, y: body.y })),
+          );
+        case "drag":
+          return write(
+            res,
+            json(
+              200,
+              actionEnvelope("drag", {
+                x1: body.x1,
+                y1: body.y1,
+                x2: body.x2,
+                y2: body.y2,
+                durationMs: body.durationMs ?? 300,
+              }),
+            ),
+          );
+        case "scroll":
+          return write(
+            res,
+            json(
+              200,
+              actionEnvelope("scroll", {
+                direction: body.direction,
+                ...(body.nodeId ? { nodeId: body.nodeId } : {}),
               }),
             ),
           );

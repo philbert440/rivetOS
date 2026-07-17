@@ -966,7 +966,7 @@ object RivetRuntime {
     private const val WEB_OVERLAY_REV = "1"
     // Gzipped tar of the `phone` CLI + device-control skill → /opt/rivet-phone + /usr/local/bin/phone.
     private const val RIVET_PHONE_OVERLAY_ASSET = "rivet-phone-overlay.bin"
-    private const val RIVET_PHONE_OVERLAY_REV = "1"
+    private const val RIVET_PHONE_OVERLAY_REV = "2"
 
     /** Guest path to the full RivetOS monorepo entrypoint (when provisioned in-rootfs). */
     const val FULL_RUNTIME_JS = "/home/rivet/rivetos/dist/rivetos.js"
