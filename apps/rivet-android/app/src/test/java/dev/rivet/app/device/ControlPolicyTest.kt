@@ -304,7 +304,9 @@ class ControlPolicyTest {
         assertEquals(30, cap.getJSONObject("screenshot").getInt("minApi"))
         assertTrue(cap.getBoolean("gesture_wait"))
         assertEquals("flat", cap.getJSONObject("ui").getJSONArray("formats").getString(0))
-        assertFalse(cap.getJSONObject("ui").getBoolean("node_id"))
+        // PR3a: node_id true
+        assertTrue(cap.getJSONObject("ui").getBoolean("node_id"))
+        assertFalse(cap.getJSONObject("ui").getBoolean("filters"))
         assertFalse(cap.getBoolean("wait"))
         assertFalse(cap.getBoolean("exec"))
         assertEquals(3, cap.getJSONArray("modes").length())

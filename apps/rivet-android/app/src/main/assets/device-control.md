@@ -30,9 +30,9 @@ Desktop debugging: `adb forward tcp:9876 tcp:9876`.
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | GET | `/status` | none | Health + `mode`, `capabilities`, optional `display`, WG |
-| GET | `/ui` | token | Flat a11y `nodes[]` (maxDepth 12); blocked when `parked` |
+| GET | `/ui` | token | Flat a11y `nodes[]` with **nodeId**; blocked when `parked` |
 | GET | `/screenshot` | token | Scaled JPEG; default `dest=file` → `~/.rivet/screenshots/last.jpg` |
-| POST | `/action` | token | click, swipe, text, global, node_click, launch, intent; `full` only |
+| POST | `/action` | token | click, swipe, text, global, node_click, **node_action**, launch, intent; `full` only |
 | POST | `/notify` | token | High-priority agent alert notification (all modes) |
 | POST | `/mode` | token | Set `full` \| `eyes` \| `parked` |
 | POST | `/exec` | token | **DEBUG builds only** — blocked in eyes/parked |
@@ -54,6 +54,9 @@ Useful fields:
 
 If `accessibility_connected` is false, UI/screenshot/action calls return **503**
 (`error: a11y_disconnected`) until Rivet Accessibility is enabled.
+
+**PR3a capabilities.ui:** `node_id: true`, `formats: ["flat"]`, `filters: false`
+(still — filters/compact arrive in a later PR).
 
 ### Control modes (kill-switch)
 
@@ -137,11 +140,45 @@ and local multimodal attach; use base64 sparingly.
 
 ```sh
 curl -s -H "X-Rivet-Token: $TOKEN" 127.0.0.1:9876/ui
+
+# Optional PR3a query params
+curl -s -H "X-Rivet-Token: $TOKEN" \
+  '127.0.0.1:9876/ui?maxDepth=12&bounds=1&limit=0'
 ```
 
-Flat list of nodes with `text`, `contentDescription`, `bounds`, `clickable`, etc.
-No hierarchy, no stable `nodeId` yet (`capabilities.ui.node_id` is false until a
-later PR). Prefer screenshot + tree together for Compose-heavy UIs.
+| Query | Default | Description |
+|-------|---------|-------------|
+| `maxDepth` | `12` | Depth cap (root depth = 0) |
+| `bounds` | `1` | Include bounds objects when `1` |
+| `limit` | `0` | Soft max nodes; **0** means hard-cap only. Always hard-capped at **500** |
+
+Flat list of nodes. Each node now includes:
+
+| Field | Meaning |
+|-------|---------|
+| `id` | Ephemeral id for this dump: `n0` … `nN` (DFS order) |
+| `pid` | Parent id, or JSON `null` for the root |
+| `depth` | Depth from root |
+| `path` | Child-index path from root, e.g. `"0/2/1"` (empty string for root) |
+| `class`, `text`, `contentDescription`, `viewId`, `package` | As before |
+| flags | `clickable`, `focusable`, `focused`, `scrollable`, `enabled`, `checked`, `selected`, `visible` |
+| `bounds` | When `bounds=1` |
+
+Top-level also: `truncated` (true if hard cap / limit stopped the walk), `dumpId`,
+`package`, `timestamp`.
+
+**Hard cap:** at most **500** nodes per dump. If the tree is larger, `truncated: true`
+and later nodes are omitted.
+
+**nodeId lifetime (critical):**
+
+- Ids are **per-dump only** (not stable across screens or time).
+- Server keeps a `NodeIndex` for **15 seconds** after the dump (elapsedRealtime TTL).
+- **Dump → act in the same turn.** Never cache `nodeId` across unrelated steps.
+- After TTL expiry, UI change, or path/identity mismatch → `stale_node` — **re-dump `/ui`**
+  and pick a fresh id.
+
+Prefer screenshot + tree together for Compose-heavy UIs.
 
 ### POST `/action`
 
@@ -153,6 +190,10 @@ curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
 # Fire-and-forget (accepted only; no completion wait)
 curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"type":"click","x":540,"y":1200,"wait":false}' 127.0.0.1:9876/action
+
+# Node-targeted click (PR3a MVP — preferred over coordinate hunting when you have an id)
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"node_action","nodeId":"n17","action":"click"}' 127.0.0.1:9876/action
 ```
 
 Common body fields (gestures):
@@ -171,8 +212,55 @@ Action types:
 | `text` | `text` | Type into the focused field (replaces contents) |
 | `global` | `action`: `BACK` \| `HOME` \| `RECENTS` \| `NOTIFICATIONS` \| `QUICK_SETTINGS` | Global a11y action |
 | `node_click` | `text`, optional `package` | Tap first node whose text/contentDescription contains substring (case-insensitive) |
+| **`node_action`** | **`nodeId`**, **`action`** | **Re-resolve by id + path; MVP `action` is `click` only** |
 | `launch` | `package` | Launch app by package name |
 | `intent` | `action`, optional `data`, optional `package` | `startActivity` with intent |
+
+#### `node_action` (MVP click)
+
+```json
+{"type":"node_action","nodeId":"n17","action":"click"}
+```
+
+| Field | MVP | Notes |
+|-------|-----|--------|
+| `type` | `node_action` | Reserved; richer actions land later |
+| `nodeId` | required | From the **latest** `/ui` dump within TTL |
+| `action` | `click` only | Other values → **400** `bad_request` |
+
+**CLI mapping (future `phone` CLI):**
+
+```text
+phone node n17
+  → POST /action {"type":"node_action","nodeId":"n17","action":"click"}
+```
+
+**Server behavior:**
+
+1. Mode gate (blocked in eyes/parked → 403 `forbidden_mode`).
+2. Resolve `nodeId` against the last dump’s index (15s TTL, path walk + identity).
+3. On resolve failure: **`stale_node`** (HTTP **400**) or **`a11y_disconnected`** (HTTP **503**).
+4. On success: `ACTION_CLICK`; if that returns false and the node has bounds, center-point
+   gesture tap via the PR2 waited gesture path.
+5. Success envelope:
+
+```json
+{
+  "ok": true,
+  "type": "node_action",
+  "nodeId": "n17",
+  "action": "click",
+  "completed": true,
+  "accepted": true,
+  "cancelled": false,
+  "timedOut": false,
+  "durationMs": 8,
+  "executed_at": 0
+}
+```
+
+**`stale_node` recovery:** re-call `GET /ui`, read a fresh `id`, act immediately — do not retry
+the old id.
 
 **Gesture envelope** (`click` / `swipe`) — `capabilities.gesture_wait` is **true**:
 
@@ -221,6 +309,9 @@ than **4** callers are already waiting, the new request is rejected immediately:
 shape: `{"ok": <bool>, "type": "<type>", "executed_at": <ms>}` (plus `error: action_failed`
 when `ok` is false). They do **not** take the gesture lock.
 
+**`node_action`** uses the richer envelope above (`nodeId`, `action`, `completed` /
+`durationMs`). A center-tap **fallback** may take the gesture lock (and can return `busy`).
+
 Blocked in `eyes` and `parked` (403 `forbidden_mode`).
 
 ### POST `/notify`
@@ -267,6 +358,7 @@ Stable `error` strings:
 | `forbidden_mode` | 403 | control mode blocks this endpoint |
 | `not_found` | 404 | unknown path |
 | `bad_request` | 400 | malformed body/query |
+| `stale_node` | 400 | nodeId expired or re-resolve failed — re-dump `/ui` |
 | `rate_limited` | 429 | screenshot token-bucket limit (+ `retry_after_ms`) — **not** gesture queue |
 | `busy` | 429 | gesture single-flight queue full (`message: gesture_busy`) |
 | `unsupported` | 501 | screenshot on API &lt; 30 |
@@ -287,8 +379,11 @@ Expected capture failures such as `secure_window` use HTTP **200** with
 ## Driving the UI well (hard-won)
 
 - Prefer **screenshot (`dest=file`) + `/ui`** for Compose-heavy screens.
+- Prefer **`node_action` click** when you have a fresh `id` from the same-turn dump;
+  fall back to coordinates only when needed.
+- **Never cache `nodeId`** across turns — 15s TTL and tree churn will yield `stale_node`.
 - Most **Jetpack Compose** controls are unlabeled (merged semantics) → find
-  `clickable` bounds, not text labels; confirm with a shot when unsure.
+  `clickable` bounds / use nodeId re-resolve with bounds-center identity; confirm with a shot.
 - The **soft keyboard reflows coordinates** every keystroke → fill one field, re-dump
   `/ui`, then continue; never batch taps on stale coordinates.
 - Keyboard covering a button: one `BACK` often dismisses just the keyboard → re-dump

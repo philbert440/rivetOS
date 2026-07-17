@@ -7,6 +7,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
@@ -40,9 +41,20 @@ class RivetAccessibilityService : AccessibilityService() {
         val connected: StateFlow<Boolean> = _connected.asStateFlow()
     }
 
+    /**
+     * Event-cache root only — not authoritative for nodeId resolve.
+     * Dumps prefer [rootInActiveWindow] first and fall back here if fresh root is null.
+     */
     private var lastRoot: AccessibilityNodeInfo? = null
     private var lastPackage: String? = null
     private var server: ControlServer? = null
+
+    /**
+     * Per-dump node index for Resolve(nodeId). Replaced atomically on each successful dump.
+     * Concurrent resolve holds a local snapshot of this reference at start.
+     */
+    @Volatile
+    private var nodeIndex: NodeIndex? = null
 
     /** Single-flight FIFO queue for waited gestures (depth [GESTURE_MAX_QUEUE_DEPTH]). */
     private val gestureQueue = GestureFlightQueue()
@@ -64,6 +76,7 @@ class RivetAccessibilityService : AccessibilityService() {
         instance = null
         _connected.value = false
         server?.stop(); server = null
+        nodeIndex = null
         Log.w(DeviceControl.TAG, "Accessibility UNBOUND — device access off")
         return super.onUnbind(intent)
     }
@@ -83,44 +96,278 @@ class RivetAccessibilityService : AccessibilityService() {
 
     fun getCurrentPackage(): String? = lastPackage
 
-    fun dumpUiTree(includeBounds: Boolean = true, maxDepth: Int = 12): JSONObject {
-        val root = lastRoot ?: rootInActiveWindow
+    /** Prefer fresh active-window root; [lastRoot] is event cache only. */
+    private fun preferredRoot(): AccessibilityNodeInfo? =
+        try {
+            rootInActiveWindow ?: lastRoot
+        } catch (_: Throwable) {
+            lastRoot
+        }
+
+    /**
+     * Flat UI dump with per-dump `id` / `pid` / `depth` / `path`, hard-capped at [NODE_HARD_CAP].
+     * Builds and stores a [NodeIndex] for subsequent [resolve] / [nodeClick].
+     *
+     * Root policy: prefer fresh [rootInActiveWindow]; fall back to [lastRoot] only if null.
+     *
+     * @param limit max nodes to emit; ≤0 means hard cap only ([NODE_HARD_CAP]).
+     */
+    fun dumpUiTree(
+        includeBounds: Boolean = true,
+        maxDepth: Int = 12,
+        limit: Int = 0,
+    ): JSONObject {
+        val root = preferredRoot()
         val json = JSONObject()
         json.put("package", lastPackage ?: root?.packageName?.toString() ?: "unknown")
         json.put("timestamp", System.currentTimeMillis())
         val nodes = JSONArray()
-        if (root != null) collectNodes(root, nodes, 0, maxDepth, includeBounds)
+        val byId = LinkedHashMap<String, NodeRef>()
+        var truncated = false
+        if (root != null) {
+            val cap = effectiveNodeLimit(limit)
+            val state = DumpCollectState(
+                out = nodes,
+                byId = byId,
+                maxDepth = maxDepth,
+                includeBounds = includeBounds,
+                cap = cap,
+            )
+            collectNodes(
+                node = root,
+                depth = 0,
+                path = intArrayOf(),
+                parentId = null,
+                state = state,
+            )
+            truncated = state.truncated
+        }
         json.put("nodes", nodes)
+        json.put("truncated", truncated)
+
+        val index = NodeIndex(
+            dumpId = System.currentTimeMillis(),
+            createdElapsedMs = SystemClock.elapsedRealtime(),
+            ttlMs = NODE_INDEX_TTL_MS,
+            byId = byId,
+        )
+        nodeIndex = index
+        json.put("dumpId", index.dumpId)
         return json
     }
 
-    private fun collectNodes(node: AccessibilityNodeInfo, out: JSONArray, depth: Int, maxDepth: Int, includeBounds: Boolean) {
-        if (depth > maxDepth) return
+    private class DumpCollectState(
+        val out: JSONArray,
+        val byId: MutableMap<String, NodeRef>,
+        val maxDepth: Int,
+        val includeBounds: Boolean,
+        val cap: Int,
+        var nextId: Int = 0,
+        var truncated: Boolean = false,
+    )
+
+    /**
+     * DFS collect with sequential ids. Recycles children after visiting; does not recycle [node]
+     * (caller owns root; intermediates from getChild are recycled in the loop finally).
+     */
+    private fun collectNodes(
+        node: AccessibilityNodeInfo,
+        depth: Int,
+        path: IntArray,
+        parentId: String?,
+        state: DumpCollectState,
+    ) {
+        if (state.out.length() >= state.cap) {
+            state.truncated = true
+            return
+        }
+        if (depth > state.maxDepth) return
+
+        val id = "n${state.nextId}"
+        state.nextId++
+        val className = try { node.className?.toString() ?: "" } catch (_: Throwable) { "" }
+        val viewId = try { node.viewIdResourceName ?: "" } catch (_: Throwable) { "" }
+        val text = try { node.text?.toString() ?: "" } catch (_: Throwable) { "" }
+        val contentDescription = try { node.contentDescription?.toString() ?: "" } catch (_: Throwable) { "" }
+        val packageName = try { node.packageName?.toString() ?: "" } catch (_: Throwable) { "" }
+        val r = Rect()
+        try { node.getBoundsInScreen(r) } catch (_: Throwable) { }
+        val bounds = NodeBounds(r.left, r.top, r.right, r.bottom)
+
         val obj = JSONObject()
-        obj.put("class", node.className?.toString() ?: "")
-        obj.put("text", node.text?.toString() ?: "")
-        obj.put("contentDescription", node.contentDescription?.toString() ?: "")
-        obj.put("viewId", node.viewIdResourceName ?: "")
-        obj.put("clickable", node.isClickable)
-        obj.put("focusable", node.isFocusable)
-        obj.put("focused", node.isFocused)
-        obj.put("scrollable", node.isScrollable)
-        obj.put("enabled", node.isEnabled)
-        obj.put("checked", node.isChecked)
-        obj.put("selected", node.isSelected)
-        obj.put("visible", node.isVisibleToUser)
-        if (includeBounds) {
-            val r = Rect(); node.getBoundsInScreen(r)
+        obj.put("id", id)
+        if (parentId != null) obj.put("pid", parentId) else obj.put("pid", JSONObject.NULL)
+        obj.put("depth", depth)
+        obj.put("path", path.joinToString("/"))
+        obj.put("class", className)
+        obj.put("text", text)
+        obj.put("contentDescription", contentDescription)
+        obj.put("viewId", viewId)
+        obj.put("package", packageName)
+        obj.put("clickable", try { node.isClickable } catch (_: Throwable) { false })
+        obj.put("focusable", try { node.isFocusable } catch (_: Throwable) { false })
+        obj.put("focused", try { node.isFocused } catch (_: Throwable) { false })
+        obj.put("scrollable", try { node.isScrollable } catch (_: Throwable) { false })
+        obj.put("enabled", try { node.isEnabled } catch (_: Throwable) { false })
+        obj.put("checked", try { node.isChecked } catch (_: Throwable) { false })
+        obj.put("selected", try { node.isSelected } catch (_: Throwable) { false })
+        obj.put("visible", try { node.isVisibleToUser } catch (_: Throwable) { false })
+        if (state.includeBounds) {
             val b = JSONObject()
             b.put("left", r.left); b.put("top", r.top); b.put("right", r.right); b.put("bottom", r.bottom)
             b.put("width", r.width()); b.put("height", r.height())
             obj.put("bounds", b)
         }
-        out.put(obj)
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            collectNodes(child, out, depth + 1, maxDepth, includeBounds)
-            child.recycle()
+        state.out.put(obj)
+        // Copy path so later mutations of the walk array cannot alias into the index.
+        val pathCopy = path.copyOf()
+        state.byId[id] = NodeRef(
+            id = id,
+            path = pathCopy,
+            className = className,
+            viewId = viewId,
+            text = text,
+            contentDescription = contentDescription,
+            packageName = packageName,
+            boundsCenterX = bounds.centerX,
+            boundsCenterY = bounds.centerY,
+            bounds = bounds,
+        )
+
+        if (depth >= state.maxDepth) return
+        val childCount = try { node.childCount } catch (_: Throwable) { 0 }
+        for (i in 0 until childCount) {
+            if (state.out.length() >= state.cap) {
+                state.truncated = true
+                return
+            }
+            val child = try { node.getChild(i) } catch (_: Throwable) { null } ?: continue
+            try {
+                collectNodes(
+                    node = child,
+                    depth = depth + 1,
+                    path = path + i,
+                    parentId = id,
+                    state = state,
+                )
+            } finally {
+                safeRecycle(child)
+            }
+            if (state.truncated) return
+        }
+    }
+
+    /**
+     * Resolve [nodeId] against the current [nodeIndex] on a **fresh** [rootInActiveWindow]
+     * (no lastRoot fallback).
+     *
+     * [ServiceResolveResult.Found.owned] is true when the returned node is a path child
+     * the caller must recycle; false when it is the window root (must not recycle).
+     */
+    fun resolve(nodeId: String): ServiceResolveResult {
+        val index = nodeIndex
+        val now = SystemClock.elapsedRealtime()
+        if (index == null || now - index.createdElapsedMs > index.ttlMs) {
+            return ServiceResolveResult.StaleNode
+        }
+        val ref = index.byId[nodeId] ?: return ServiceResolveResult.StaleNode
+
+        val root = try {
+            rootInActiveWindow
+        } catch (t: Throwable) {
+            Log.e(DeviceControl.TAG, "rootInActiveWindow failed", t)
+            null
+        } ?: return ServiceResolveResult.A11yDisconnected
+
+        // Walk path; recycle only owned intermediates (never the window root).
+        var current: AccessibilityNodeInfo = root
+        var owned = false
+        try {
+            for (childIndex in ref.path) {
+                val child = try {
+                    current.getChild(childIndex)
+                } catch (_: Throwable) {
+                    null
+                }
+                if (child == null) {
+                    if (owned) safeRecycle(current)
+                    return ServiceResolveResult.StaleNode
+                }
+                if (owned) safeRecycle(current)
+                current = child
+                owned = true
+            }
+
+            val live = AccessibilityResolvableNode(current)
+            if (!identityAccepts(ref, live)) {
+                if (owned) safeRecycle(current)
+                return ServiceResolveResult.StaleNode
+            }
+            return ServiceResolveResult.Found(node = current, ref = ref, owned = owned)
+        } catch (t: Throwable) {
+            if (owned) safeRecycle(current)
+            Log.e(DeviceControl.TAG, "resolve walk failed", t)
+            return ServiceResolveResult.StaleNode
+        }
+    }
+
+    /**
+     * Resolve [nodeId] and click: prefer [AccessibilityNodeInfo.ACTION_CLICK]; if that returns
+     * false and the node has non-empty bounds, fall back to a waited center-point tap via
+     * [dispatchGestureAwait]. Recycles owned resolved nodes when done.
+     */
+    fun nodeClick(
+        nodeId: String,
+        timeoutMs: Long = GESTURE_DEFAULT_TIMEOUT_MS,
+    ): NodeClickOutcome {
+        when (val resolved = resolve(nodeId)) {
+            is ServiceResolveResult.StaleNode -> return NodeClickOutcome.StaleNode
+            is ServiceResolveResult.A11yDisconnected -> return NodeClickOutcome.A11yDisconnected
+            is ServiceResolveResult.Found -> {
+                val node = resolved.node
+                var stillOwned = resolved.owned
+                try {
+                    val start = System.currentTimeMillis()
+                    val clicked = try {
+                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    } catch (t: Throwable) {
+                        Log.e(DeviceControl.TAG, "ACTION_CLICK failed: ${t.message}")
+                        false
+                    }
+                    if (clicked) {
+                        return NodeClickOutcome.PerformClickOk(
+                            durationMs = System.currentTimeMillis() - start,
+                        )
+                    }
+                    val r = Rect()
+                    try {
+                        node.getBoundsInScreen(r)
+                    } catch (_: Throwable) {
+                    }
+                    if (r.width() <= 0 || r.height() <= 0) {
+                        return NodeClickOutcome.ClickFailed
+                    }
+                    val cx = r.centerX()
+                    val cy = r.centerY()
+                    // Release owned node before gesture wait so we don't hold it across the latch.
+                    if (stillOwned) {
+                        safeRecycle(node)
+                        stillOwned = false
+                    }
+                    return NodeClickOutcome.GestureFallback(
+                        tap(cx, cy, wait = true, timeoutMs = timeoutMs),
+                    )
+                } finally {
+                    if (stillOwned) safeRecycle(node)
+                }
+            }
+        }
+    }
+
+    private fun safeRecycle(node: AccessibilityNodeInfo) {
+        try {
+            node.recycle()
+        } catch (_: Throwable) {
         }
     }
 
@@ -327,7 +574,7 @@ class RivetAccessibilityService : AccessibilityService() {
     }
 
     fun typeText(text: String): Boolean {
-        val root = lastRoot ?: rootInActiveWindow ?: return false
+        val root = preferredRoot() ?: return false
         var target = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         if (target == null || !target.isFocused) target = findFirstEditable(root)
         if (target == null) return false
@@ -347,7 +594,7 @@ class RivetAccessibilityService : AccessibilityService() {
     }
 
     fun clickNodeContainingText(text: String, packageFilter: String? = null): Boolean {
-        val root = lastRoot ?: rootInActiveWindow ?: return false
+        val root = preferredRoot() ?: return false
         val target = findNodeContainingText(root, text, packageFilter)
         return target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
     }
@@ -519,4 +766,73 @@ class RivetAccessibilityService : AccessibilityService() {
             }
         }
     }
+}
+
+/** Service-layer resolve result; [Found.node] must be recycled by the caller only if [Found.owned]. */
+sealed class ServiceResolveResult {
+    data class Found(
+        val node: AccessibilityNodeInfo,
+        val ref: NodeRef,
+        /** True when [node] is a getChild result (must recycle). False for the window root. */
+        val owned: Boolean,
+    ) : ServiceResolveResult()
+    data object StaleNode : ServiceResolveResult()
+    data object A11yDisconnected : ServiceResolveResult()
+}
+
+/**
+ * [ResolvableNode] adapter over a live [AccessibilityNodeInfo] (read-only identity fields).
+ * Does not own or recycle the node.
+ */
+private class AccessibilityResolvableNode(
+    private val node: AccessibilityNodeInfo,
+) : ResolvableNode {
+    override val childCount: Int
+        get() = try {
+            node.childCount
+        } catch (_: Throwable) {
+            0
+        }
+
+    override fun getChild(i: Int): ResolvableNode? = null // path already walked; identity only
+
+    override val className: String
+        get() = try {
+            node.className?.toString() ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+    override val viewId: String
+        get() = try {
+            node.viewIdResourceName ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+    override val text: String
+        get() = try {
+            node.text?.toString() ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+    override val contentDescription: String
+        get() = try {
+            node.contentDescription?.toString() ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+    override val packageName: String
+        get() = try {
+            node.packageName?.toString() ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+    override val bounds: NodeBounds
+        get() {
+            val r = Rect()
+            try {
+                node.getBoundsInScreen(r)
+            } catch (_: Throwable) {
+            }
+            return NodeBounds(r.left, r.top, r.right, r.bottom)
+        }
 }

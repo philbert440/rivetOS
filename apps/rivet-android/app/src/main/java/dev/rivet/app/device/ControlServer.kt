@@ -31,7 +31,7 @@ import kotlin.concurrent.thread
  *   GET  /status
  *   GET  /ui
  *   GET  /screenshot
- *   POST /action   {type: click|swipe|text|global|node_click|launch|intent}
+ *   POST /action   {type: click|swipe|text|global|node_click|node_action|launch|intent}
  *   POST /notify   {title, body?, url?, id?} post a high-priority agent alert notification
  *   POST /mode     {mode: full|eyes|parked}
  *   POST /exec      -- {cmd:[..], env:{..}, cwd, timeoutMs} run argv under our uid (control path)
@@ -166,13 +166,20 @@ class ControlServer(private val context: Context) {
         return jsonResponse(200, json)
     }
 
-    @Suppress("UNUSED_PARAMETER")
     private fun handleUi(query: Map<String, String>): HttpResponse {
         modeGate(ControlEndpoint.UI)?.let { return it }
         val acc = RivetAccessibilityService.getInstance()
             ?: return errorResponse(503, "a11y_disconnected", "accessibility service not connected")
+        // PR3a query params; unknown params (format/filters — PR3b) ignored gracefully.
+        val maxDepth = query["maxDepth"]?.toIntOrNull()?.coerceIn(0, 64) ?: 12
+        val includeBounds = when (query["bounds"]?.lowercase()) {
+            null, "", "1", "true", "yes" -> true
+            "0", "false", "no" -> false
+            else -> true
+        }
+        val limit = query["limit"]?.toIntOrNull() ?: 0
         return try {
-            jsonResponse(200, acc.dumpUiTree())
+            jsonResponse(200, acc.dumpUiTree(includeBounds = includeBounds, maxDepth = maxDepth, limit = limit))
         } catch (e: Exception) {
             errorResponse(500, "internal_error", "dump failed: ${e.message}")
         }
@@ -361,6 +368,22 @@ class ControlServer(private val context: Context) {
                     type,
                     acc.clickNodeContainingText(req.getString("text"), req.optString("package", null)),
                 )
+                "node_action" -> {
+                    val nodeId = req.optString("nodeId", "").trim()
+                    if (nodeId.isEmpty()) {
+                        return errorResponse(400, "bad_request", "nodeId is required")
+                    }
+                    val action = req.optString("action", "")
+                    if (action != "click") {
+                        return errorResponse(
+                            400,
+                            "bad_request",
+                            "action must be \"click\" (richer node actions not yet supported)",
+                        )
+                    }
+                    val outcome = acc.nodeClick(nodeId, timeoutMs = waitParams.timeoutMs)
+                    mapNodeActionClickToHttp(nodeId, outcome)
+                }
                 "launch" -> {
                     val intent = context.packageManager.getLaunchIntentForPackage(req.getString("package"))
                     val ok = if (intent != null) {
