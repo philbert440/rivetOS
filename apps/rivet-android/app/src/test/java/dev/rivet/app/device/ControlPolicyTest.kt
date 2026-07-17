@@ -324,6 +324,36 @@ class ControlPolicyTest {
         assertTrue(actions.getJSONArray("gestures").length() >= 6)
         assertTrue(actions.getJSONArray("text_modes").toString().contains("append"))
         assertTrue(actions.getJSONArray("clipboard_ops").toString().contains("get"))
+        // Expanded globals (default sdkInt=37 → full surface)
+        val globals = cap.getJSONArray("globals")
+        assertEquals(9, globals.length())
+        assertEquals("BACK", globals.getString(0))
+        assertTrue(globals.toString().contains("POWER_DIALOG"))
+        assertTrue(globals.toString().contains("LOCK_SCREEN"))
+        assertTrue(globals.toString().contains("TAKE_SCREENSHOT"))
+        assertTrue(globals.toString().contains("DISMISS_NOTIFICATION_SHADE"))
+        assertEquals(globals.toString(), actions.getJSONArray("globals").toString())
+    }
+
+    @Test
+    fun `buildCapabilitiesJson globals filtered by sdkInt`() {
+        val low = buildCapabilitiesJson(
+            screenshotSupported = false,
+            execEnabled = false,
+            sdkInt = 26,
+        )
+        assertEquals(6, low.getJSONArray("globals").length())
+        assertFalse(low.getJSONArray("globals").toString().contains("LOCK_SCREEN"))
+
+        val mid = buildCapabilitiesJson(
+            screenshotSupported = true,
+            execEnabled = false,
+            sdkInt = 28,
+        )
+        assertEquals(7, mid.getJSONArray("globals").length())
+        assertTrue(mid.getJSONArray("globals").toString().contains("LOCK_SCREEN"))
+        assertFalse(mid.getJSONArray("globals").toString().contains("TAKE_SCREENSHOT"))
+        assertFalse(mid.getJSONArray("globals").toString().contains("DISMISS_NOTIFICATION_SHADE"))
     }
 
     @Test

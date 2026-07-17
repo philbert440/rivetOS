@@ -320,8 +320,18 @@ fun sha256Hex(bytes: ByteArray): String {
     return sb.toString()
 }
 
-/** Build nested capabilities object for GET /status (schema 1 / PR1b surface). */
-fun buildCapabilitiesJson(screenshotSupported: Boolean, execEnabled: Boolean): JSONObject {
+/**
+ * Build nested capabilities object for GET /status (schema 1 / PR1b surface).
+ *
+ * @param sdkInt device Build.VERSION.SDK_INT; filters `globals` to actions whose
+ *   constants exist at that API (LOCK_SCREEN/TAKE_SCREENSHOT ≥28,
+ *   DISMISS_NOTIFICATION_SHADE ≥31). Tests default to 37 (compileSdk full surface).
+ */
+fun buildCapabilitiesJson(
+    screenshotSupported: Boolean,
+    execEnabled: Boolean,
+    sdkInt: Int = 37,
+): JSONObject {
     val shot = JSONObject()
         .put("supported", screenshotSupported)
         .put("minApi", 30)
@@ -330,6 +340,7 @@ fun buildCapabilitiesJson(screenshotSupported: Boolean, execEnabled: Boolean): J
         .put("formats", JSONArray().put("flat").put("tree").put("compact"))
         .put("node_id", true)
         .put("filters", true)
+    val globals = globalsCapabilityArray(sdkInt)
     val actions = JSONObject()
         .put(
             "gestures",
@@ -342,6 +353,7 @@ fun buildCapabilitiesJson(screenshotSupported: Boolean, execEnabled: Boolean): J
                 .put("scroll"),
         )
         .put("node_actions", nodeActionsCapabilityArray())
+        .put("globals", globals)
         .put("text_modes", JSONArray().put("replace").put("append"))
         .put("clipboard_ops", JSONArray().put("get").put("set"))
     return JSONObject()
@@ -351,6 +363,7 @@ fun buildCapabilitiesJson(screenshotSupported: Boolean, execEnabled: Boolean): J
         .put("ui", ui)
         .put("actions", actions)
         .put("node_actions", nodeActionsCapabilityArray())
+        .put("globals", globals)
         .put("wait", true)
         .put("clipboard", true)
         .put("notifications_read", false)
