@@ -58,7 +58,7 @@ Action types (`POST /action`):
 - `{"type":"click","x":X,"y":Y}` — tap at pixel coords (tap the center of a node's `bounds`)
 - `{"type":"swipe","x1":,"y1":,"x2":,"y2":,"duration":280}` — swipe / scroll
 - `{"type":"text","text":"hello"}` — type into the focused field (replaces its contents)
-- `{"type":"global","action":"BACK|HOME|RECENTS|NOTIFICATIONS|QUICK_SETTINGS"}`
+- `{"type":"global","action":"BACK|HOME|RECENTS|NOTIFICATIONS|QUICK_SETTINGS|POWER_DIALOG|LOCK_SCREEN|TAKE_SCREENSHOT|DISMISS_NOTIFICATION_SHADE"}` — see `device-control.md` / `capabilities.globals` for API gates
 - `{"type":"node_click","text":"Settings"}` — tap the first node whose text contains this
 - `{"type":"launch","package":"com.android.settings"}` — open an app
 - `{"type":"intent","action":"android.intent.action.VIEW","data":"https://…","package":"…"}`
