@@ -333,7 +333,7 @@ fun buildCapabilitiesJson(screenshotSupported: Boolean, execEnabled: Boolean): J
     return JSONObject()
         .put("schema", 1)
         .put("screenshot", shot)
-        .put("gesture_wait", false)
+        .put("gesture_wait", true)
         .put("ui", ui)
         .put("wait", false)
         .put("clipboard", false)
