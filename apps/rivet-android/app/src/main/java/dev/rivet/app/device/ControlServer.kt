@@ -4,13 +4,16 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import dev.rivet.app.AGENT_ALERT_NOTIFICATION_CHANNEL_ID
 import dev.rivet.app.RouteActivity
+import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.utils.sendNotification
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -27,14 +30,17 @@ import kotlin.concurrent.thread
  * Endpoints:
  *   GET  /status
  *   GET  /ui
+ *   GET  /screenshot
  *   POST /action   {type: click|swipe|text|global|node_click|launch|intent}
  *   POST /notify   {title, body?, url?, id?} post a high-priority agent alert notification
+ *   POST /mode     {mode: full|eyes|parked}
  *   POST /exec      -- {cmd:[..], env:{..}, cwd, timeoutMs} run argv under our uid (control path)
  */
 class ControlServer(private val context: Context) {
 
     private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
+    private val screenshotLimiter = ScreenshotRateLimiter()
 
     fun start() {
         thread(isDaemon = true, name = "RivetControlServer") {
@@ -93,8 +99,10 @@ class ControlServer(private val context: Context) {
                     !authed -> errorResponse(401, "unauthorized", "missing or invalid X-Rivet-Token")
                     method == "GET" && path == "/status" -> handleStatus(query)
                     method == "GET" && path == "/ui" -> handleUi(query)
+                    method == "GET" && path == "/screenshot" -> handleScreenshot(query)
                     method == "POST" && path == "/action" -> handleAction(body, query)
                     method == "POST" && path == "/notify" -> handleNotify(body, query)
+                    method == "POST" && path == "/mode" -> handleMode(body, query)
                     // /exec runs arbitrary argv under our uid — a diagnostic spike. DEBUG-only so
                     // release builds carry no arbitrary-exec endpoint at all (defense in depth on
                     // top of the loopback bind + token guard).
@@ -108,16 +116,47 @@ class ControlServer(private val context: Context) {
         }
     }
 
+    private fun currentMode(): ControlMode =
+        ControlMode.parse(DeviceControl.getControlMode(context)) ?: ControlMode.FULL
+
+    private fun modeGate(endpoint: ControlEndpoint): HttpResponse? {
+        val mode = currentMode()
+        if (!isEndpointAllowed(endpoint, mode)) {
+            return forbiddenModeResponse(mode, endpoint)
+        }
+        return null
+    }
+
     @Suppress("UNUSED_PARAMETER")
     private fun handleStatus(query: Map<String, String>): HttpResponse {
         val acc = RivetAccessibilityService.getInstance()
+        val mode = currentMode()
         val json = JSONObject()
         json.put("ok", true)
         json.put("package", context.packageName)
         json.put("accessibility_connected", acc != null)
         json.put("current_package", acc?.getCurrentPackage())
         json.put("port", DeviceControl.CONTROL_PORT)
-        json.put("version", "0.1.0")
+        json.put("version", "0.2.0")
+        json.put("mode", mode.wire)
+        json.put(
+            "capabilities",
+            buildCapabilitiesJson(
+                screenshotSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R,
+                execEnabled = dev.rivet.app.BuildConfig.DEBUG,
+            ),
+        )
+        // Best-effort display metrics; omit on failure.
+        runCatching {
+            val dm = context.resources.displayMetrics
+            json.put(
+                "display",
+                JSONObject()
+                    .put("width", dm.widthPixels)
+                    .put("height", dm.heightPixels)
+                    .put("densityDpi", dm.densityDpi),
+            )
+        }
         // Mesh VPN: surface this device's WG public key (generated + persisted on first read) so the
         // relay peer on rivet-prod can be configured, plus the live tunnel status. Private key never leaves.
         json.put("wg_configured", dev.rivet.app.net.RivetVpn.isConfigured)
@@ -129,6 +168,7 @@ class ControlServer(private val context: Context) {
 
     @Suppress("UNUSED_PARAMETER")
     private fun handleUi(query: Map<String, String>): HttpResponse {
+        modeGate(ControlEndpoint.UI)?.let { return it }
         val acc = RivetAccessibilityService.getInstance()
             ?: return errorResponse(503, "a11y_disconnected", "accessibility service not connected")
         return try {
@@ -138,9 +178,65 @@ class ControlServer(private val context: Context) {
         }
     }
 
+    @Suppress("UNUSED_PARAMETER")
+    private fun handleScreenshot(query: Map<String, String>): HttpResponse {
+        return runScreenshotRoute(
+            mode = currentMode(),
+            query = query,
+            limiter = screenshotLimiter,
+            capture = { params ->
+                val acc = RivetAccessibilityService.getInstance()
+                    ?: return@runScreenshotRoute ScreenshotOutcome.Error(
+                        "a11y_disconnected",
+                        "accessibility service not connected",
+                    )
+                acc.takeScaledScreenshot(
+                    scale = params.scale,
+                    quality = params.quality,
+                    displayId = params.displayId,
+                    timeoutMs = params.timeoutMs,
+                )
+            },
+            writeFile = { bytes ->
+                try {
+                    val hostFile = File(
+                        RivetRuntime.rootfsDir(context),
+                        "home/rivet/.rivet/screenshots/last.jpg",
+                    )
+                    hostFile.parentFile?.mkdirs()
+                    hostFile.writeBytes(bytes)
+                    true
+                } catch (t: Throwable) {
+                    Log.e(DeviceControl.TAG, "last.jpg write failed: ${t.message}")
+                    false
+                }
+            },
+        )
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    private fun handleMode(body: String, query: Map<String, String>): HttpResponse {
+        // Always allowed (even parked) so the kill-switch can be released.
+        return try {
+            val req = JSONObject(body)
+            val mode = req.getString("mode").lowercase()
+            if (ControlMode.parse(mode) == null) {
+                return errorResponse(400, "bad_request", "mode must be full|eyes|parked")
+            }
+            DeviceControl.setControlMode(context, mode)
+            jsonResponse(
+                200,
+                JSONObject().put("ok", true).put("mode", mode),
+            )
+        } catch (e: Exception) {
+            errorResponse(400, "bad_request", "bad mode: ${e.message}")
+        }
+    }
+
     /** SPIKE: run an arbitrary argv under RivetHub's uid. Loopback + token-guarded. */
     @Suppress("UNUSED_PARAMETER")
     private fun handleExec(body: String, query: Map<String, String>): HttpResponse {
+        modeGate(ControlEndpoint.EXEC)?.let { return it }
         return try {
             val req = JSONObject(body)
             val arr = req.getJSONArray("cmd")
@@ -158,6 +254,7 @@ class ControlServer(private val context: Context) {
 
     @Suppress("UNUSED_PARAMETER")
     private fun handleNotify(body: String, query: Map<String, String>): HttpResponse {
+        // /notify always allowed in all modes (agent alerts still useful when parked).
         return try {
             val req = JSONObject(body)
             val title = req.getString("title")
@@ -214,6 +311,7 @@ class ControlServer(private val context: Context) {
 
     @Suppress("UNUSED_PARAMETER")
     private fun handleAction(body: String, query: Map<String, String>): HttpResponse {
+        modeGate(ControlEndpoint.ACTION)?.let { return it }
         val acc = RivetAccessibilityService.getInstance()
             ?: return errorResponse(
                 503,
