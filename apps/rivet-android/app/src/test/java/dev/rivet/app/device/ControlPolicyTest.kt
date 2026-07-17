@@ -303,10 +303,14 @@ class ControlPolicyTest {
         assertTrue(cap.getJSONObject("screenshot").getBoolean("supported"))
         assertEquals(30, cap.getJSONObject("screenshot").getInt("minApi"))
         assertTrue(cap.getBoolean("gesture_wait"))
-        assertEquals("flat", cap.getJSONObject("ui").getJSONArray("formats").getString(0))
-        // PR3a: node_id true
+        val formats = cap.getJSONObject("ui").getJSONArray("formats")
+        assertEquals(3, formats.length())
+        assertEquals("flat", formats.getString(0))
+        assertEquals("tree", formats.getString(1))
+        assertEquals("compact", formats.getString(2))
+        // PR3a+PR3b: node_id true, filters true
         assertTrue(cap.getJSONObject("ui").getBoolean("node_id"))
-        assertFalse(cap.getJSONObject("ui").getBoolean("filters"))
+        assertTrue(cap.getJSONObject("ui").getBoolean("filters"))
         assertFalse(cap.getBoolean("wait"))
         assertFalse(cap.getBoolean("exec"))
         assertEquals(3, cap.getJSONArray("modes").length())
