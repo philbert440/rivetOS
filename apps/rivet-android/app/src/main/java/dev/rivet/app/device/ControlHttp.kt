@@ -60,15 +60,36 @@ fun jsonResponse(code: Int, obj: JSONObject, pretty: Boolean = true): HttpRespon
 /**
  * Canonical error JSON: `{ok:false, error:<stable>, message:<human>, code:<int>}`.
  * Stable [error] strings for current endpoints: unauthorized, not_found, bad_request,
- * a11y_disconnected, internal_error.
+ * a11y_disconnected, internal_error, forbidden_mode, rate_limited, unsupported, …
+ *
+ * Optional [extra] fields (e.g. `retry_after_ms`) and response [headers] (e.g. Retry-After).
  */
-fun errorResponse(code: Int, error: String, message: String): HttpResponse {
+fun errorResponse(
+    code: Int,
+    error: String,
+    message: String,
+    extra: JSONObject? = null,
+    headers: Map<String, String> = emptyMap(),
+): HttpResponse {
     val obj = JSONObject()
         .put("ok", false)
         .put("error", error)
         .put("message", message)
         .put("code", code)
-    return jsonResponse(code, obj)
+    if (extra != null) {
+        val keys = extra.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            obj.put(k, extra.get(k))
+        }
+    }
+    val text = obj.toString(2)
+    return HttpResponse(
+        code = code,
+        contentType = "application/json; charset=utf-8",
+        body = text.toByteArray(StandardCharsets.UTF_8),
+        headers = headers,
+    )
 }
 
 /**

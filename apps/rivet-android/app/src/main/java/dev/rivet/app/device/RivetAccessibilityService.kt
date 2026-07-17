@@ -2,10 +2,13 @@ package dev.rivet.app.device
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,6 +16,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The "eyes + hands" of Rivet on the phone. Once enabled in Settings -> Accessibility,
@@ -169,4 +176,156 @@ class RivetAccessibilityService : AccessibilityService() {
     }
 
     fun performGlobal(action: Int): Boolean = performGlobalAction(action)
+
+    /**
+     * Capture a scaled JPEG screenshot via [takeScreenshot] (API 30+).
+     * Ordered bitmap path from Fidelity T1.1 — never logs image bytes.
+     * Blocks the calling worker thread up to [timeoutMs] (default 5s, cap 15s).
+     */
+    fun takeScaledScreenshot(
+        scale: Float,
+        quality: Int,
+        displayId: Int = Display.DEFAULT_DISPLAY,
+        timeoutMs: Long = SCREENSHOT_DEFAULT_TIMEOUT_MS,
+    ): ScreenshotOutcome {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return ScreenshotOutcome.Unsupported
+        }
+        val cappedTimeout = timeoutMs.coerceIn(1L, SCREENSHOT_MAX_TIMEOUT_MS)
+        val resultRef = AtomicReference<ScreenshotOutcome?>(null)
+        val latch = CountDownLatch(1)
+
+        try {
+            takeScreenshot(
+                displayId,
+                mainExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        try {
+                            resultRef.set(encodeScreenshot(screenshot, scale, quality))
+                        } catch (t: Throwable) {
+                            // Do not log screenshot bytes — message only.
+                            Log.e(DeviceControl.TAG, "screenshot encode failed: ${t.message}")
+                            resultRef.set(
+                                ScreenshotOutcome.Error(
+                                    "internal_error",
+                                    "screenshot encode failed: ${t.message}",
+                                ),
+                            )
+                        } finally {
+                            latch.countDown()
+                        }
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        val (err, msg) = mapTakeScreenshotErrorCode(errorCode)
+                        resultRef.set(ScreenshotOutcome.Error(err, msg))
+                        latch.countDown()
+                    }
+                },
+            )
+        } catch (t: Throwable) {
+            Log.e(DeviceControl.TAG, "takeScreenshot threw: ${t.message}")
+            return ScreenshotOutcome.Error(
+                "internal_error",
+                "takeScreenshot failed: ${t.message}",
+            )
+        }
+
+        val completed = try {
+            latch.await(cappedTimeout, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+
+        if (!completed) {
+            return ScreenshotOutcome.Error(
+                "timed_out",
+                "screenshot timed out after ${cappedTimeout}ms",
+            )
+        }
+        return resultRef.get()
+            ?: ScreenshotOutcome.Error("internal_error", "screenshot produced no result")
+    }
+
+    /**
+     * Hardware buffer → software copy → scale → JPEG.
+     * Closes the HardwareBuffer in finally; recycles intermediate bitmaps.
+     */
+    private fun encodeScreenshot(
+        screenshot: ScreenshotResult,
+        scale: Float,
+        quality: Int,
+    ): ScreenshotOutcome {
+        val buf = screenshot.hardwareBuffer
+            ?: return ScreenshotOutcome.Error("internal_error", "null hardware buffer")
+        var hw: Bitmap? = null
+        var sw: Bitmap? = null
+        var scaled: Bitmap? = null
+        try {
+            hw = Bitmap.wrapHardwareBuffer(buf, screenshot.colorSpace)
+                ?: return ScreenshotOutcome.Error("internal_error", "wrapHardwareBuffer returned null")
+            sw = hw.copy(Bitmap.Config.ARGB_8888, false)
+                ?: return ScreenshotOutcome.Error("internal_error", "bitmap software copy failed")
+            hw.recycle()
+            hw = null
+
+            val w = sw.width
+            val h = sw.height
+            if (w <= 0 || h <= 0) {
+                return ScreenshotOutcome.Error("internal_error", "invalid bitmap size ${w}x${h}")
+            }
+            val maxEdge = maxOf(w, h).toFloat()
+            val scaleEff = minOf(scale, SCREENSHOT_MAX_EDGE / maxEdge)
+            val tw = maxOf(1, (w * scaleEff).toInt())
+            val th = maxOf(1, (h * scaleEff).toInt())
+            scaled = if (tw == w && th == h) {
+                // Transfer ownership to scaled; avoid double-recycle in finally.
+                val same = sw
+                sw = null
+                same
+            } else {
+                Bitmap.createScaledBitmap(sw, tw, th, true).also {
+                    if (it !== sw) {
+                        sw.recycle()
+                    }
+                    sw = null
+                }
+            }
+            val baos = ByteArrayOutputStream()
+            val ok = scaled!!.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), baos)
+            if (!ok) {
+                return ScreenshotOutcome.Error("internal_error", "JPEG compress failed")
+            }
+            val bytes = baos.toByteArray()
+            val outW = scaled!!.width
+            val outH = scaled!!.height
+            scaled!!.recycle()
+            scaled = null
+            return ScreenshotOutcome.Success(
+                bytes = bytes,
+                width = outW,
+                height = outH,
+                scaleApplied = scaleEff,
+            )
+        } finally {
+            try {
+                scaled?.recycle()
+            } catch (_: Throwable) {
+            }
+            try {
+                sw?.recycle()
+            } catch (_: Throwable) {
+            }
+            try {
+                hw?.recycle()
+            } catch (_: Throwable) {
+            }
+            try {
+                buf.close()
+            } catch (_: Throwable) {
+            }
+        }
+    }
 }
