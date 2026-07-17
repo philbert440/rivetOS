@@ -120,6 +120,10 @@ assert_exit_json_ok "text" phone text 'hello'
 assert_exit_json_ok "text --append" phone text --append 'more'
 assert_exit_json_ok "global BACK" phone global BACK
 assert_exit_json_ok "global HOME" phone global HOME
+assert_exit_json_ok "global POWER_DIALOG" phone global POWER_DIALOG
+assert_exit_json_ok "global LOCK_SCREEN" phone global LOCK_SCREEN
+assert_exit_json_ok "global TAKE_SCREENSHOT" phone global TAKE_SCREENSHOT
+assert_exit_json_ok "global DISMISS_NOTIFICATION_SHADE" phone global DISMISS_NOTIFICATION_SHADE
 assert_exit_json_ok "click-text" phone click-text 'Settings'
 assert_exit_json_ok "click-text package" phone click-text 'Settings' --package com.android.settings
 assert_exit_json_ok "node click" phone node n1
@@ -139,6 +143,8 @@ assert_exit_json_ok "clipboard get" phone clipboard get
 assert_exit_json_ok "clipboard set" phone clipboard set 'hello clip'
 assert_exit_json_ok "launch" phone launch com.android.settings
 assert_exit_json_ok "intent" phone intent --action VIEW --data 'https://example.com'
+assert_exit_json_ok "intent --confirm sensitive" phone intent --action SENDTO --data 'sms:+15551234' --confirm
+assert_exit 1 "intent sensitive without --confirm needs_confirm" phone intent --action SENDTO --data 'sms:+15551234'
 assert_exit_json_ok "notify" phone notify --title 'Test' --body 'Body' --url 'https://example.com'
 assert_exit 0 "help" phone help
 

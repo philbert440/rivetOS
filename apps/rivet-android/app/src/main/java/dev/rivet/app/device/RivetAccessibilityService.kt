@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -58,6 +59,14 @@ class RivetAccessibilityService : AccessibilityService() {
     /** Single-flight FIFO queue for waited gestures (depth [GESTURE_MAX_QUEUE_DEPTH]). */
     private val gestureQueue = GestureFlightQueue()
 
+    /**
+     * Off-main executor for the screenshot callback so the hardware→software copy, scale,
+     * and JPEG compress never run on the UI thread (kept jank-free during screenshot bursts).
+     * Single thread — screenshots are already serialized/rate-limited upstream.
+     */
+    private val screenshotExecutor =
+        Executors.newSingleThreadExecutor { r -> Thread(r, "rivet-screenshot").apply { isDaemon = true } }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -76,6 +85,7 @@ class RivetAccessibilityService : AccessibilityService() {
         _connected.value = false
         server?.stop(); server = null
         nodeIndex = null
+        screenshotExecutor.shutdown()
         Log.w(DeviceControl.TAG, "Accessibility UNBOUND — device access off")
         return super.onUnbind(intent)
     }
@@ -735,11 +745,30 @@ class RivetAccessibilityService : AccessibilityService() {
     }
 
     private fun fireAndForgetGesture(gesture: GestureDescription): GestureAwaitOutcome {
+        // Take the single-flight slot non-blocking. dispatchGesture cancels any gesture
+        // already running, so a fire-and-forget must not start while a waited (or another
+        // fire-and-forget) gesture holds the slot — return Busy instead of cancelling it.
+        // The slot is held until the gesture's own callback fires; we return immediately
+        // without awaiting it, preserving fire-and-forget latency.
+        if (gestureQueue.tryEnter(0L) !is GestureFlightQueue.EnterResult.Acquired) {
+            return GestureAwaitOutcome.Busy
+        }
         val accepted = try {
-            dispatchGesture(gesture, null, null)
+            dispatchGesture(
+                gesture,
+                object : GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) = gestureQueue.leave()
+                    override fun onCancelled(gestureDescription: GestureDescription?) = gestureQueue.leave()
+                },
+                null,
+            )
         } catch (t: Throwable) {
             Log.e(DeviceControl.TAG, "dispatchGesture fire-and-forget failed: ${t.message}")
             false
+        }
+        if (!accepted) {
+            // Dispatch rejected/threw → no callback will fire; release the slot now.
+            gestureQueue.leave()
         }
         return GestureAwaitOutcome.Done(
             GestureResult(
@@ -961,7 +990,7 @@ class RivetAccessibilityService : AccessibilityService() {
         try {
             takeScreenshot(
                 displayId,
-                mainExecutor,
+                screenshotExecutor,
                 object : TakeScreenshotCallback {
                     override fun onSuccess(screenshot: ScreenshotResult) {
                         try {

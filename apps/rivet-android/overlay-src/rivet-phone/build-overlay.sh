@@ -8,14 +8,18 @@
 #   opt/rivet-phone/skills/device-control/SKILL.md
 #   opt/register-phone.sh
 #   usr/local/bin/phone -> /opt/rivet-phone/bin/phone
-#   opt/.rivet-phone-rev
+#
+# The rev marker (opt/.rivet-phone-rev) is deliberately NOT baked into the tar — it is written
+# by RivetRuntime.ensureRivetPhone ONLY after register-phone.sh succeeds. Baking it would stamp
+# success at extract time, so a single failed registration would wedge the install forever
+# (marker == rev → every later launch skips re-provisioning).
 #
 # After running, bump RIVET_PHONE_OVERLAY_REV in RivetRuntime.kt so it re-provisions on next launch.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 OUT="$REPO/app/src/main/assets/rivet-phone-overlay.bin"
-REV="${RIVET_PHONE_OVERLAY_REV:-2}"
+REV="${RIVET_PHONE_OVERLAY_REV:-3}"
 
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p \
@@ -34,7 +38,6 @@ chmod +x \
   "$work/overlay/opt/register-phone.sh"
 
 ln -sf /opt/rivet-phone/bin/phone "$work/overlay/usr/local/bin/phone"
-printf '%s\n' "$REV" > "$work/overlay/opt/.rivet-phone-rev"
 
 mkdir -p "$(dirname "$OUT")"
 tar -czf "$OUT" -C "$work/overlay" .
