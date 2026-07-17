@@ -328,7 +328,7 @@ fun buildCapabilitiesJson(screenshotSupported: Boolean, execEnabled: Boolean): J
         .put("dest", JSONArray().put("file").put("json").put("raw"))
     val ui = JSONObject()
         .put("formats", JSONArray().put("flat"))
-        .put("node_id", false)
+        .put("node_id", true) // PR3a
         .put("filters", false)
     return JSONObject()
         .put("schema", 1)
