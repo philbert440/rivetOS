@@ -563,7 +563,15 @@ async function handle(req, res) {
           );
         case "launch":
           return write(res, json(200, actionEnvelope("launch", { package: body.package })));
-        case "intent":
+        case "intent": {
+          // Mirror pr8 SafetyPolicy: sensitive intents (sms/tel here) need confirm:true.
+          const sensitive = /^(sms|tel|smsto|mms):/i.test(body.data || "");
+          if (sensitive && body.confirm !== true) {
+            return write(
+              res,
+              json(200, { ok: false, type: "intent", error: "needs_confirm", executed_at: 1 }),
+            );
+          }
           return write(
             res,
             json(
@@ -572,9 +580,11 @@ async function handle(req, res) {
                 action: body.action,
                 data: body.data,
                 package: body.package,
+                ...(body.confirm === true ? { confirm: true } : {}),
               }),
             ),
           );
+        }
         default:
           return write(res, err(400, "bad_request", `unknown action type: ${type}`));
       }

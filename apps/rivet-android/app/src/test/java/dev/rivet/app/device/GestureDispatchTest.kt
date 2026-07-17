@@ -180,6 +180,25 @@ class GestureDispatchTest {
     }
 
     @Test
+    fun `tryEnter zero budget is non-blocking — acquires when free, yields when held`() {
+        // Fire-and-forget gestures enter with a 0 budget so they never park: they either
+        // grab the free slot or bounce (→ HTTP 429 busy) rather than cancelling an in-flight
+        // waited gesture. This pins that non-blocking contract.
+        val q = GestureFlightQueue(maxWaiters = 4)
+        val free = q.tryEnter(0L)
+        assertTrue(free is GestureFlightQueue.EnterResult.Acquired)
+        // Slot now held; a second zero-budget entry must not block or park.
+        val held = q.tryEnter(0L)
+        assertFalse(held is GestureFlightQueue.EnterResult.Acquired)
+        assertEquals(0, q.waiterCount())
+        q.leave()
+        // Released → zero-budget entry acquires again.
+        val reacquired = q.tryEnter(0L)
+        assertTrue(reacquired is GestureFlightQueue.EnterResult.Acquired)
+        q.leave()
+    }
+
+    @Test
     fun `queue depth overflow returns busy without waiting`() {
         val q = GestureFlightQueue(maxWaiters = 4)
         val hold = CountDownLatch(1)

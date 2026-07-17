@@ -94,6 +94,7 @@ phone swipe X1 Y1 X2 Y2 [--duration 280]
 phone text 'hello'                       # replace
 phone text --append 'more'               # append into focused field
 phone global BACK|HOME|RECENTS|NOTIFICATIONS|QUICK_SETTINGS
+             |POWER_DIALOG|LOCK_SCREEN|TAKE_SCREENSHOT|DISMISS_NOTIFICATION_SHADE
 phone click-text 'Settings' [--package P]
 phone node NODE_ID [--action click|long_click|focus|set_text|
                     scroll_forward|scroll_backward|select] [--text S]
@@ -106,7 +107,7 @@ phone wait [--text S] [--package P] [--gone S] [--timeout MS] [--interval MS]
 phone clipboard get
 phone clipboard set 'text'
 phone launch PACKAGE
-phone intent --action VIEW --data URL [--package P]
+phone intent --action VIEW --data URL [--package P] [--confirm]
 phone notify --title T [--body B] [--url U]
 phone help
 ```
@@ -128,16 +129,18 @@ summaries may appear on stderr.
 1. **NEVER** `rivet-shared put` anything under `~/.rivet/screenshots/` (or any screenshot
    bytes/base64). Screenshots stay on-device. Mesh exfil is forbidden.
 2. **Ask Phil before** SMS / share / payments / posting / anything outward-facing or hard
-   to undo. MVP still *allows* `intent`/`launch` at the server (including `sms:`); the
-   constraint is **you** — do not fire them silently.
+   to undo. The server's SafetyPolicy now returns `needs_confirm` for those intent surfaces;
+   re-send with `phone intent … --confirm` **only after Phil approves** — the flag is your
+   attestation that a human OK'd it, not a bypass to click past.
 3. Do not log or paste full screenshot base64 into chat or memory unless Phil needs it.
 4. Prefer `phone shot` → path (`last.jpg`) over `dest=json` base64.
 
-## Deferred (later Fidelity PR — exit 2 if invoked)
+## Surface status
 
-Do **not** invent workarounds that pretend future surface exists. The former
-deferred set (wait, clipboard, text --append, rich node actions, long-press,
-drag, double-tap) is **shipped** in PR6b — use the commands above.
+The full command set above is **shipped** — wait, clipboard, text --append, rich node
+actions, long-press, drag, double-tap, the expanded globals, and `intent --confirm` are
+all live. Do not invent workarounds that pretend other surface exists; if a command isn't
+listed above, it isn't there.
 
 ## Failure cheatsheet
 

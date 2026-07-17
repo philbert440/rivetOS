@@ -43,6 +43,10 @@ const GLOBAL_ACTIONS = new Set([
   "RECENTS",
   "NOTIFICATIONS",
   "QUICK_SETTINGS",
+  "POWER_DIALOG",
+  "LOCK_SCREEN",
+  "TAKE_SCREENSHOT",
+  "DISMISS_NOTIFICATION_SHADE",
 ]);
 
 const NODE_ACTIONS = new Set([
@@ -78,6 +82,7 @@ Usage:
   phone text 'hello'                 # replace (mode=replace)
   phone text --append 'more'         # append into focused field
   phone global BACK|HOME|RECENTS|NOTIFICATIONS|QUICK_SETTINGS
+                     |POWER_DIALOG|LOCK_SCREEN|TAKE_SCREENSHOT|DISMISS_NOTIFICATION_SHADE
   phone click-text 'Settings' [--package P]
   phone node NODE_ID [--action click|long_click|focus|set_text|
                        scroll_forward|scroll_backward|select] [--text S]
@@ -90,7 +95,7 @@ Usage:
   phone clipboard get
   phone clipboard set 'text'
   phone launch PACKAGE
-  phone intent --action VIEW --data URL [--package P]
+  phone intent --action VIEW --data URL [--package P] [--confirm]
   phone notify --title T [--body B] [--url U]
   phone help
 
@@ -162,6 +167,7 @@ function parseArgs(argv) {
     "quiet",
     "help",
     "append",
+    "confirm",
   ]);
   const valueFlags = new Map([
     ["timeout", "timeout"],
@@ -639,7 +645,7 @@ async function cmdGlobal(port, token, flags, positionals) {
   const action = (positionals[0] || "").toUpperCase();
   if (!GLOBAL_ACTIONS.has(action)) {
     die(
-      `usage: phone global BACK|HOME|RECENTS|NOTIFICATIONS|QUICK_SETTINGS (got '${positionals[0] || ""}')`,
+      `usage: phone global BACK|HOME|RECENTS|NOTIFICATIONS|QUICK_SETTINGS|POWER_DIALOG|LOCK_SCREEN|TAKE_SCREENSHOT|DISMISS_NOTIFICATION_SHADE (got '${positionals[0] || ""}')`,
     );
   }
   await call(
@@ -900,6 +906,9 @@ async function cmdIntent(port, token, flags) {
     data: flags.data,
   };
   if (flags.package) body.package = flags.package;
+  // SafetyPolicy gates SMS/share/pay/install intents behind confirm:true; without --confirm
+  // the server replies needs_confirm and the CLI surfaces that message.
+  if (flags.confirm) body.confirm = true;
   await call(
     port,
     token,
