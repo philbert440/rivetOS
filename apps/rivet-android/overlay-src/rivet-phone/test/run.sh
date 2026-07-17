@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dev-only harness: mock ControlServer + exercise every MVP phone subcommand and exit codes.
+# Dev-only harness: mock ControlServer + exercise every phone subcommand and exit codes.
 # Usage: bash apps/rivet-android/overlay-src/rivet-phone/test/run.sh
 set -eu
 
@@ -24,6 +24,9 @@ export MOCK_MODE="full"
 export MOCK_FORCE_ERROR=""
 export MOCK_SCREENSHOT_SUPPORTED="true"
 export MOCK_MODES_ENABLED="true"
+export MOCK_WAIT_ENABLED="true"
+export MOCK_CLIPBOARD_ENABLED="true"
+export MOCK_NODE_ACTIONS_ENABLED="true"
 
 node "$MOCK_MJS" &
 MOCK_PID=$!
@@ -89,9 +92,9 @@ assert_exit_json_ok() {
   fi
 }
 
-echo "=== phone CLI MVP harness (mock 127.0.0.1:$PORT) ==="
+echo "=== phone CLI harness (mock 127.0.0.1:$PORT) ==="
 
-# ── MVP subcommands ──────────────────────────────────────────────────────────
+# ── MVP + PR6b subcommands ───────────────────────────────────────────────────
 assert_exit_json_ok "status" phone status
 assert_exit_json_ok "mode full" phone mode full
 assert_exit_json_ok "mode eyes" phone mode eyes
@@ -114,11 +117,26 @@ assert_exit_json_ok "shot dest=json" phone shot --dest json
 assert_exit_json_ok "tap" phone tap 100 200
 assert_exit_json_ok "swipe" phone swipe 100 800 100 200 --duration 200
 assert_exit_json_ok "text" phone text 'hello'
+assert_exit_json_ok "text --append" phone text --append 'more'
 assert_exit_json_ok "global BACK" phone global BACK
 assert_exit_json_ok "global HOME" phone global HOME
 assert_exit_json_ok "click-text" phone click-text 'Settings'
 assert_exit_json_ok "click-text package" phone click-text 'Settings' --package com.android.settings
 assert_exit_json_ok "node click" phone node n1
+assert_exit_json_ok "node long_click" phone node n1 --action long_click
+assert_exit_json_ok "node set_text" phone node n2 --action set_text --text 'typed'
+assert_exit_json_ok "node focus" phone node n2 --action focus
+assert_exit_json_ok "node scroll_forward" phone node n0 --action scroll_forward
+assert_exit_json_ok "long-press coords" phone long-press 100 200 --duration 500
+assert_exit_json_ok "long-press --node" phone long-press --node n1
+assert_exit_json_ok "double-tap" phone double-tap 100 200
+assert_exit_json_ok "drag" phone drag 10 20 300 400 --duration 250
+assert_exit_json_ok "scroll down" phone scroll down
+assert_exit_json_ok "scroll up --node" phone scroll up --node n0
+assert_exit_json_ok "wait --text" phone wait --text Settings
+assert_exit_json_ok "wait --package" phone wait --package com.android.settings --timeout 5000
+assert_exit_json_ok "clipboard get" phone clipboard get
+assert_exit_json_ok "clipboard set" phone clipboard set 'hello clip'
 assert_exit_json_ok "launch" phone launch com.android.settings
 assert_exit_json_ok "intent" phone intent --action VIEW --data 'https://example.com'
 assert_exit_json_ok "notify" phone notify --title 'Test' --body 'Body' --url 'https://example.com'
@@ -131,11 +149,11 @@ echo "--- exit-code paths ---"
 assert_exit 2 "usage: no args" phone
 assert_exit 2 "usage: tap missing args" phone tap
 assert_exit 2 "usage: bad global" phone global NOPE
-assert_exit 2 "deferred wait" phone wait text foo
-assert_exit 2 "deferred clipboard" phone clipboard get
-assert_exit 2 "deferred long-press" phone long-press 1 2
-assert_exit 2 "deferred text --append" phone text --append 'x'
-assert_exit 2 "deferred node --action long_click" phone node n1 --action long_click
+assert_exit 2 "usage: wait no condition" phone wait
+assert_exit 2 "usage: clipboard bad op" phone clipboard
+assert_exit 2 "usage: set_text missing --text" phone node n1 --action set_text
+assert_exit 2 "usage: long-press missing coords" phone long-press
+assert_exit 2 "usage: scroll bad dir" phone scroll diagonal
 assert_exit 2 "unknown subcommand" phone frobnicate
 
 # mode forbidden on action → 1
@@ -164,6 +182,21 @@ mock_force "busy"
 assert_exit 3 "busy → exit 3" phone tap 1 2
 mock_force "none"
 
+# wait timeout path (secondary mock with MOCK_WAIT_MATCH=false)
+WAIT_PORT_FILE="$work/port-wait-to"
+MOCK_PORT_FILE="$WAIT_PORT_FILE" MOCK_PID_FILE="$work/pid-wait-to" \
+  MOCK_TOKEN="$MOCK_TOKEN" MOCK_WAIT_MATCH="false" \
+  node "$MOCK_MJS" &
+WAIT_TO_PID=$!
+for _ in $(seq 1 50); do
+  if [[ -f "$WAIT_PORT_FILE" ]]; then break; fi
+  sleep 0.05
+done
+WPORT="$(cat "$WAIT_PORT_FILE")"
+printf '{"port":%s,"token":"%s"}\n' "$WPORT" "$MOCK_TOKEN" > "$work/control-wait-to.json"
+assert_exit 1 "wait timed_out → exit 1" env RIVET_CONTROL_JSON="$work/control-wait-to.json" node "$PHONE_MJS" wait --text Never
+kill "$WAIT_TO_PID" 2>/dev/null || true
+wait "$WAIT_TO_PID" 2>/dev/null || true
 
 # unauthorized → 1 (/status is unauthenticated; probe a token route)
 bad_cfg="$work/bad-control.json"
@@ -208,6 +241,29 @@ printf '{"port":%s,"token":"%s"}\n' "$MPORT" "$MOCK_TOKEN" > "$work/control-nomo
 assert_exit 1 "mode unsupported" env RIVET_CONTROL_JSON="$work/control-nomode.json" node "$PHONE_MJS" mode parked
 kill "$MODE_PID" 2>/dev/null || true
 wait "$MODE_PID" 2>/dev/null || true
+
+# PR6b feature-detect-absent: wait/clipboard/node_actions false → exit 1
+FEAT_PORT_FILE="$work/port4"
+MOCK_PORT_FILE="$FEAT_PORT_FILE" MOCK_PID_FILE="$work/pid4" \
+  MOCK_TOKEN="$MOCK_TOKEN" \
+  MOCK_WAIT_ENABLED="false" \
+  MOCK_CLIPBOARD_ENABLED="false" \
+  MOCK_NODE_ACTIONS_ENABLED="false" \
+  node "$MOCK_MJS" &
+FEAT_PID=$!
+for _ in $(seq 1 50); do
+  if [[ -f "$FEAT_PORT_FILE" ]]; then break; fi
+  sleep 0.05
+done
+FPORT="$(cat "$FEAT_PORT_FILE")"
+printf '{"port":%s,"token":"%s"}\n' "$FPORT" "$MOCK_TOKEN" > "$work/control-nofeat.json"
+assert_exit 1 "wait feature-detect absent" env RIVET_CONTROL_JSON="$work/control-nofeat.json" node "$PHONE_MJS" wait --text X
+assert_exit 1 "clipboard feature-detect absent" env RIVET_CONTROL_JSON="$work/control-nofeat.json" node "$PHONE_MJS" clipboard get
+assert_exit 1 "rich node feature-detect absent" env RIVET_CONTROL_JSON="$work/control-nofeat.json" node "$PHONE_MJS" node n1 --action long_click
+# plain click still works without node_actions
+assert_exit_json_ok "node click without node_actions cap" env RIVET_CONTROL_JSON="$work/control-nofeat.json" node "$PHONE_MJS" node n1
+kill "$FEAT_PID" 2>/dev/null || true
+wait "$FEAT_PID" 2>/dev/null || true
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""

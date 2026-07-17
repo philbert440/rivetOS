@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * phone — RivetHub device-control CLI (Fidelity MVP).
+ * phone — RivetHub device-control CLI (Fidelity + PR6b surface).
  *
  * Reads ~/.rivet/control.json (or RIVET_CONTROL_JSON path override), talks HTTP
  * to 127.0.0.1:<port> with X-Rivet-Token, pretty-prints JSON responses.
@@ -8,7 +8,7 @@
  * Exit codes:
  *   0 — ok:true / 2xx success
  *   1 — ok:false, HTTP error (401/403/stale_node/…), connection refused
- *   2 — usage error or deferred/unknown subcommand
+ *   2 — usage error or unknown subcommand
  *   3 — error:"busy" (gesture queue full)
  *
  * Output: pretty JSON on stdout by default. Pass --quiet to suppress body on
@@ -31,14 +31,10 @@ const EXIT_BUSY = 3;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const HOST = "127.0.0.1";
 
+/** Subcommands that are intentionally not shipped yet (exit 2). */
 const DEFERRED = new Set([
-  "wait",
-  "clipboard",
-  "long-press",
-  "long_press",
-  "drag",
-  "double-tap",
-  "double_tap",
+  // PR6b shipped wait/clipboard/long-press/double-tap/drag/scroll/rich node.
+  // Keep the set for future deferred surface.
 ]);
 
 const GLOBAL_ACTIONS = new Set([
@@ -49,6 +45,18 @@ const GLOBAL_ACTIONS = new Set([
   "QUICK_SETTINGS",
 ]);
 
+const NODE_ACTIONS = new Set([
+  "click",
+  "long_click",
+  "focus",
+  "set_text",
+  "scroll_forward",
+  "scroll_backward",
+  "select",
+]);
+
+const SCROLL_DIRS = new Set(["up", "down", "left", "right"]);
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 function die(msg, code = EXIT_USAGE) {
@@ -57,7 +65,7 @@ function die(msg, code = EXIT_USAGE) {
 }
 
 function usage(exit = EXIT_USAGE) {
-  process.stdout.write(`phone — RivetHub device-control CLI (MVP)
+  process.stdout.write(`phone — RivetHub device-control CLI
 
 Usage:
   phone status
@@ -67,17 +75,27 @@ Usage:
   phone shot [-o path] [--scale 0.4] [--quality 70] [--dest file|json]
   phone tap X Y
   phone swipe X1 Y1 X2 Y2 [--duration 280]
-  phone text 'hello'                 # replace-only in MVP
+  phone text 'hello'                 # replace (mode=replace)
+  phone text --append 'more'         # append into focused field
   phone global BACK|HOME|RECENTS|NOTIFICATIONS|QUICK_SETTINGS
   phone click-text 'Settings' [--package P]
-  phone node NODE_ID                 # click only → node_action
+  phone node NODE_ID [--action click|long_click|focus|set_text|
+                       scroll_forward|scroll_backward|select] [--text S]
+  phone long-press X Y [--duration 600]
+  phone long-press --node NODE_ID
+  phone double-tap X Y
+  phone drag X1 Y1 X2 Y2 [--duration 300]
+  phone scroll <up|down|left|right> [--node NODE_ID]
+  phone wait [--text S] [--package P] [--gone S] [--timeout MS] [--interval MS]
+  phone clipboard get
+  phone clipboard set 'text'
   phone launch PACKAGE
   phone intent --action VIEW --data URL [--package P]
   phone notify --title T [--body B] [--url U]
   phone help
 
 Global flags:
-  --timeout MS   HTTP timeout (default ${DEFAULT_TIMEOUT_MS})
+  --timeout MS   HTTP timeout (default ${DEFAULT_TIMEOUT_MS}); also wait timeoutMs
   --json         pretty-print JSON (default)
   --quiet        suppress JSON body; keep one-line summary on stderr
 
@@ -86,8 +104,6 @@ Config: ~/.rivet/control.json  ({"port":9876,"token":"…"})
 Base URL: http://${HOST}:<port>  (loopback only)
 
 Full reference: ~/.rivet/device-control.md
-Deferred (later Fidelity PR): wait, clipboard, text --append, long-press,
-  rich node actions (long_click/scroll/…).
 `);
   process.exit(exit);
 }
@@ -125,11 +141,12 @@ function loadControl() {
 
 /**
  * Minimal argv parser: global flags anywhere; returns { flags, positionals }.
- * Boolean flags: --clickable, --editable, --json, --quiet, --help, -h
+ * Boolean flags: --clickable, --editable, --json, --quiet, --help, -h, --append
  * Value flags: --timeout, --format, --scale, --quality, --dest, -o/--output,
  *              --package, --text, --limit, --max-depth, --duration,
  *              --action, --data, --title, --body, --url, --class, --view-id,
- *              --fields, --visible, --text-exact, --text-regex
+ *              --fields, --visible, --text-exact, --text-regex, --gone,
+ *              --interval, --node
  */
 function parseArgs(argv) {
   const flags = {
@@ -144,7 +161,7 @@ function parseArgs(argv) {
     "json",
     "quiet",
     "help",
-    "append", // deferred for text; detected and rejected in cmdText
+    "append",
   ]);
   const valueFlags = new Map([
     ["timeout", "timeout"],
@@ -174,6 +191,9 @@ function parseArgs(argv) {
     ["textExact", "textExact"],
     ["text-regex", "textRegex"],
     ["textRegex", "textRegex"],
+    ["gone", "gone"],
+    ["interval", "interval"],
+    ["node", "node"],
   ]);
 
   for (let i = 0; i < argv.length; i++) {
@@ -200,10 +220,19 @@ function parseArgs(argv) {
         const dest = valueFlags.get(key);
         const val = inline !== undefined ? inline : argv[++i];
         if (val === undefined) die(`missing value for --${key}`);
-        if (dest === "timeout" || dest === "limit" || dest === "maxDepth" || dest === "duration" || dest === "quality") {
+        if (
+          dest === "timeout" ||
+          dest === "limit" ||
+          dest === "maxDepth" ||
+          dest === "duration" ||
+          dest === "quality" ||
+          dest === "interval"
+        ) {
           const n = Number(val);
           if (!Number.isFinite(n)) die(`--${key} expects a number`);
           flags[dest] = n;
+          if (dest === "timeout") flags._timeoutExplicit = true;
+          if (dest === "interval") flags._intervalExplicit = true;
         } else if (dest === "scale") {
           const n = Number(val);
           if (!Number.isFinite(n)) die(`--scale expects a number`);
@@ -311,7 +340,7 @@ async function call(port, token, method, urlPath, opts, flags, summaryFn) {
   try {
     res = await request(port, token, method, urlPath, {
       ...opts,
-      timeoutMs: flags.timeout,
+      timeoutMs: opts.timeoutMs ?? flags.timeout,
     });
   } catch (err) {
     if (isConnectionRefused(err)) {
@@ -350,9 +379,39 @@ function expandIntentAction(action) {
 
 function deferredMessage(cmd) {
   return (
-    `'${cmd}' is not in the Fidelity MVP CLI surface — it lands in a later Fidelity PR ` +
-    `(wait/clipboard/rich node_action/long-press). See ~/.rivet/device-control.md and phone help.`
+    `'${cmd}' is not in the phone CLI surface yet — see ~/.rivet/device-control.md and phone help.`
   );
+}
+
+/**
+ * Lenient capability check.
+ * - If /status has no capabilities object → allow (older builds).
+ * - If capabilities is present and the named field is explicitly false → block.
+ * - If capabilities has other known keys but this key is absent → block.
+ * - Otherwise allow.
+ */
+function requireCapability(caps, key, label) {
+  if (!caps || typeof caps !== "object") return;
+  const known = [
+    "wait",
+    "clipboard",
+    "node_actions",
+    "modes",
+    "gesture_wait",
+    "screenshot",
+    "ui",
+    "notifications_read",
+    "exec",
+  ];
+  const hasAnyKnown = known.some((k) => Object.prototype.hasOwnProperty.call(caps, k));
+  if (!hasAnyKnown) return;
+  const present = Object.prototype.hasOwnProperty.call(caps, key);
+  if (caps[key] === false || (!present && hasAnyKnown)) {
+    die(
+      `${label} needs a newer RivetHub build (capabilities.${key} not available)`,
+      EXIT_ERR,
+    );
+  }
 }
 
 // ─── status cache for feature-detect ────────────────────────────────────────
@@ -547,18 +606,30 @@ async function cmdSwipe(port, token, flags, positionals) {
 }
 
 async function cmdText(port, token, flags, positionals) {
-  // MVP: replace only. --append is deferred.
-  if (flags.append || positionals.includes("--append")) {
-    die(deferredMessage("text --append"), EXIT_USAGE);
+  if (flags.append) {
+    // phone text --append 'more'  → text is first positional
+    const text = positionals[0];
+    if (text === undefined) die("usage: phone text --append 'more'");
+    await call(
+      port,
+      token,
+      "POST",
+      "/action",
+      { body: { type: "text", mode: "append", text } },
+      flags,
+      (res) => (res.json?.ok ? `text append (${text.length} chars)` : undefined),
+    );
+    return;
   }
   const text = positionals[0];
-  if (text === undefined) die("usage: phone text 'hello'");
+  if (text === undefined) die("usage: phone text 'hello'  |  phone text --append 'more'");
+  // replace: include mode:replace for explicitness (server accepts omit as replace)
   await call(
     port,
     token,
     "POST",
     "/action",
-    { body: { type: "text", text } },
+    { body: { type: "text", mode: "replace", text } },
     flags,
     (res) => (res.json?.ok ? `text ok (${text.length} chars)` : undefined),
   );
@@ -600,19 +671,208 @@ async function cmdClickText(port, token, flags, positionals) {
 
 async function cmdNode(port, token, flags, positionals) {
   const nodeId = positionals[0];
-  if (!nodeId) die("usage: phone node NODE_ID");
-  // MVP click only. --action long_click etc. deferred.
-  if (flags.action && flags.action !== "click") {
-    die(deferredMessage(`node --action ${flags.action}`), EXIT_USAGE);
+  if (!nodeId) {
+    die(
+      "usage: phone node NODE_ID [--action click|long_click|focus|set_text|scroll_forward|scroll_backward|select] [--text S]",
+    );
   }
+  const action = flags.action || "click";
+  if (!NODE_ACTIONS.has(action)) {
+    die(
+      `usage: phone node NODE_ID --action <click|long_click|focus|set_text|scroll_forward|scroll_backward|select> (got '${action}')`,
+    );
+  }
+  if (action === "set_text" && flags.textFilter === undefined) {
+    die("usage: phone node NODE_ID --action set_text --text S");
+  }
+
+  // Feature-detect rich node actions when action is not plain click.
+  if (action !== "click") {
+    const st = await fetchStatus(port, token, flags.timeout);
+    requireCapability(st.json?.capabilities, "node_actions", "rich node actions");
+  }
+
+  const body = { type: "node_action", nodeId, action };
+  if (flags.textFilter !== undefined) body.text = flags.textFilter;
+
   await call(
     port,
     token,
     "POST",
     "/action",
-    { body: { type: "node_action", nodeId, action: "click" } },
+    { body },
     flags,
-    (res) => (res.json?.ok ? `node ${nodeId} click` : undefined),
+    (res) => (res.json?.ok ? `node ${nodeId} ${action}` : undefined),
+  );
+}
+
+async function cmdLongPress(port, token, flags, positionals) {
+  // phone long-press --node NX  → node_action long_click
+  if (flags.node) {
+    const st = await fetchStatus(port, token, flags.timeout);
+    requireCapability(st.json?.capabilities, "node_actions", "rich node actions");
+    await call(
+      port,
+      token,
+      "POST",
+      "/action",
+      { body: { type: "node_action", nodeId: flags.node, action: "long_click" } },
+      flags,
+      (res) => (res.json?.ok ? `long-press node ${flags.node}` : undefined),
+    );
+    return;
+  }
+  if (positionals.length < 2) die("usage: phone long-press X Y [--duration 600]  |  phone long-press --node NODE_ID");
+  const x = Number(positionals[0]);
+  const y = Number(positionals[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) die("long-press: X Y must be numbers");
+  const durationMs = flags.duration !== undefined ? flags.duration : 600;
+  await call(
+    port,
+    token,
+    "POST",
+    "/action",
+    { body: { type: "long_press", x, y, durationMs } },
+    flags,
+    (res) =>
+      res.json?.ok ? `long-press ${x},${y} completed=${res.json.completed}` : undefined,
+  );
+}
+
+async function cmdDoubleTap(port, token, flags, positionals) {
+  if (positionals.length < 2) die("usage: phone double-tap X Y");
+  const x = Number(positionals[0]);
+  const y = Number(positionals[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) die("double-tap: X Y must be numbers");
+  await call(
+    port,
+    token,
+    "POST",
+    "/action",
+    { body: { type: "double_tap", x, y } },
+    flags,
+    (res) =>
+      res.json?.ok ? `double-tap ${x},${y} completed=${res.json.completed}` : undefined,
+  );
+}
+
+async function cmdDrag(port, token, flags, positionals) {
+  if (positionals.length < 4) die("usage: phone drag X1 Y1 X2 Y2 [--duration 300]");
+  const x1 = Number(positionals[0]);
+  const y1 = Number(positionals[1]);
+  const x2 = Number(positionals[2]);
+  const y2 = Number(positionals[3]);
+  if (![x1, y1, x2, y2].every(Number.isFinite)) die("drag: coordinates must be numbers");
+  const durationMs = flags.duration !== undefined ? flags.duration : 300;
+  await call(
+    port,
+    token,
+    "POST",
+    "/action",
+    { body: { type: "drag", x1, y1, x2, y2, durationMs } },
+    flags,
+    (res) =>
+      res.json?.ok
+        ? `drag ${x1},${y1}→${x2},${y2} completed=${res.json.completed}`
+        : undefined,
+  );
+}
+
+async function cmdScroll(port, token, flags, positionals) {
+  const direction = (positionals[0] || "").toLowerCase();
+  if (!SCROLL_DIRS.has(direction)) {
+    die("usage: phone scroll <up|down|left|right> [--node NODE_ID]");
+  }
+  const body = { type: "scroll", direction };
+  if (flags.node) body.nodeId = flags.node;
+  await call(
+    port,
+    token,
+    "POST",
+    "/action",
+    { body },
+    flags,
+    (res) =>
+      res.json?.ok
+        ? `scroll ${direction}${flags.node ? ` node=${flags.node}` : ""} completed=${res.json.completed}`
+        : undefined,
+  );
+}
+
+async function cmdWait(port, token, flags) {
+  const st = await fetchStatus(port, token, flags.timeout);
+  requireCapability(st.json?.capabilities, "wait", "phone wait");
+
+  const body = {};
+  if (flags.textFilter !== undefined) body.text = flags.textFilter;
+  if (flags.package !== undefined) body.package = flags.package;
+  if (flags.gone !== undefined) body.gone = flags.gone;
+  if (flags._timeoutExplicit) body.timeoutMs = flags.timeout;
+  if (flags._intervalExplicit) body.intervalMs = flags.interval;
+
+  if (!body.text && !body.package && !body.gone) {
+    die("usage: phone wait [--text S] [--package P] [--gone S] [--timeout MS] [--interval MS]\n  at least one of --text / --package / --gone is required");
+  }
+
+  // HTTP timeout must cover wait timeoutMs (default server wait can be long).
+  const httpTimeout = body.timeoutMs
+    ? Math.max(flags.timeout, body.timeoutMs + 2000)
+    : flags.timeout;
+
+  await call(
+    port,
+    token,
+    "POST",
+    "/wait",
+    { body, timeoutMs: httpTimeout },
+    flags,
+    (res) => {
+      if (res.json?.ok) {
+        return `wait matched=${res.json.matched} waitedMs=${res.json.waitedMs}`;
+      }
+      if (res.json?.error === "timed_out") return `wait timed_out`;
+      return undefined;
+    },
+  );
+}
+
+async function cmdClipboard(port, token, flags, positionals) {
+  const st = await fetchStatus(port, token, flags.timeout);
+  requireCapability(st.json?.capabilities, "clipboard", "phone clipboard");
+
+  const op = (positionals[0] || "").toLowerCase();
+  if (op !== "get" && op !== "set") {
+    die("usage: phone clipboard get  |  phone clipboard set 'text'");
+  }
+  if (op === "get") {
+    await call(
+      port,
+      token,
+      "POST",
+      "/action",
+      { body: { type: "clipboard", op: "get" } },
+      flags,
+      (res) => {
+        // Prefer surfacing .text for agents (also in JSON body).
+        if (res.json?.ok && res.json.text !== undefined) {
+          return `clipboard get text=${JSON.stringify(res.json.text)}`;
+        }
+        return res.json?.ok ? "clipboard get" : undefined;
+      },
+    );
+    return;
+  }
+  // set
+  const text = positionals[1];
+  if (text === undefined) die("usage: phone clipboard set 'text'");
+  await call(
+    port,
+    token,
+    "POST",
+    "/action",
+    { body: { type: "clipboard", op: "set", text } },
+    flags,
+    (res) => (res.json?.ok ? `clipboard set (${text.length} chars)` : undefined),
   );
 }
 
@@ -687,11 +947,6 @@ async function main() {
     die(deferredMessage(cmd), EXIT_USAGE);
   }
 
-  // text --append as sub-flag after text
-  if (cmd === "text" && positionals.includes("--append")) {
-    die(deferredMessage("text --append"), EXIT_USAGE);
-  }
-
   const rest = positionals.slice(1);
   const { port, token } = loadControl();
 
@@ -719,6 +974,20 @@ async function main() {
       return cmdClickText(port, token, flags, rest);
     case "node":
       return cmdNode(port, token, flags, rest);
+    case "long-press":
+    case "long_press":
+      return cmdLongPress(port, token, flags, rest);
+    case "double-tap":
+    case "double_tap":
+      return cmdDoubleTap(port, token, flags, rest);
+    case "drag":
+      return cmdDrag(port, token, flags, rest);
+    case "scroll":
+      return cmdScroll(port, token, flags, rest);
+    case "wait":
+      return cmdWait(port, token, flags);
+    case "clipboard":
+      return cmdClipboard(port, token, flags, rest);
     case "launch":
       return cmdLaunch(port, token, flags, rest);
     case "intent":
@@ -729,8 +998,7 @@ async function main() {
       return cmdHelp();
     default:
       die(
-        `unknown subcommand '${cmd}'. Run 'phone help' for MVP surface.\n` +
-          (DEFERRED.has(cmd) ? deferredMessage(cmd) : `If this is wait/clipboard/long-press — lands in a later Fidelity PR.`),
+        `unknown subcommand '${cmd}'. Run 'phone help' for the supported surface.`,
         EXIT_USAGE,
       );
   }

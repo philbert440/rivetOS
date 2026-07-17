@@ -10,7 +10,7 @@ metadata:
   short-description: "phone CLI — see + drive this Android device"
 ---
 
-# Device control (Fidelity MVP)
+# Device control (Fidelity MVP + PR6b)
 
 You are on Phil's personal phone inside RivetHub proot. Control the screen with
 the **`phone`** CLI (not hand-rolled curl unless debugging). Canonical docs:
@@ -49,6 +49,20 @@ phone shot
 Coordinate fallback when needed: `phone tap X Y` using center of a node's `bounds`.
 Text search fallback: `phone click-text 'Settings' [--package P]`.
 
+### Wait (act → wait → verify)
+
+After an action that should change the UI (launch, tap, intent), prefer
+**`phone wait --text '…'`** (or `--package` / `--gone`) instead of blind sleeps
+or busy-polling `phone ui`. Pattern: **act → wait → verify** with shot/ui.
+Example: `phone launch com.android.settings` then `phone wait --package com.android.settings --timeout 8000`,
+then `phone ui --format compact --clickable`. On timeout the CLI exits 1 with
+`error:"timed_out"`. Feature-detect via `capabilities.wait` when present.
+
+Clipboard (`phone clipboard get|set`), text append (`phone text --append`), rich
+node actions (`phone node nX --action long_click|set_text|…`), and coordinate
+gestures (`long-press`, `double-tap`, `drag`, `scroll`) are available on current
+builds when the matching capability flag is true.
+
 ## Modes (kill switch)
 
 | Mode | See UI | Screenshot | Actuate | Notify |
@@ -68,7 +82,7 @@ phone mode full     # normal automation
   Do not retry the same action in a loop. Switch mode only if Phil asked.
 - Feature-detect: if `capabilities.modes` is missing, modes may not be on this build.
 
-## MVP commands
+## Commands
 
 ```text
 phone status
@@ -77,10 +91,20 @@ phone ui [--format flat|tree|compact] [--clickable] [--editable] [--text S] [--p
 phone shot [-o path] [--scale 0.4] [--quality 70] [--dest file|json]   # default dest=file
 phone tap X Y
 phone swipe X1 Y1 X2 Y2 [--duration 280]
-phone text 'hello'                       # replace-only
+phone text 'hello'                       # replace
+phone text --append 'more'               # append into focused field
 phone global BACK|HOME|RECENTS|NOTIFICATIONS|QUICK_SETTINGS
 phone click-text 'Settings' [--package P]
-phone node NODE_ID                       # click only
+phone node NODE_ID [--action click|long_click|focus|set_text|
+                    scroll_forward|scroll_backward|select] [--text S]
+phone long-press X Y [--duration 600]
+phone long-press --node NODE_ID
+phone double-tap X Y
+phone drag X1 Y1 X2 Y2 [--duration 300]
+phone scroll <up|down|left|right> [--node NODE_ID]
+phone wait [--text S] [--package P] [--gone S] [--timeout MS] [--interval MS]
+phone clipboard get
+phone clipboard set 'text'
 phone launch PACKAGE
 phone intent --action VIEW --data URL [--package P]
 phone notify --title T [--body B] [--url U]
@@ -95,8 +119,8 @@ summaries may appear on stderr.
 | Code | Meaning | Agent response |
 |------|---------|----------------|
 | **0** | Success (`ok:true` / 2xx) | Continue |
-| **1** | Error: `ok:false`, HTTP 4xx/5xx, auth, mode gate, `stale_node`, connection refused | Read JSON `error`; for `stale_node` re-dump; for `forbidden_mode` stop; for connection refused ask Phil to enable accessibility |
-| **2** | Usage error or **deferred** subcommand | Fix args, or do not use deferred commands |
+| **1** | Error: `ok:false`, HTTP 4xx/5xx, auth, mode gate, `stale_node`, connection refused, capability missing, wait timed_out | Read JSON `error`; for `stale_node` re-dump; for `forbidden_mode` stop; for connection refused ask Phil to enable accessibility |
+| **2** | Usage error | Fix args |
 | **3** | `error:"busy"` (gesture queue full) | Brief backoff (~200–500ms), **retry once**; if still busy, re-dump and reconsider |
 
 ## Privacy (non-negotiable)
@@ -111,16 +135,9 @@ summaries may appear on stderr.
 
 ## Deferred (later Fidelity PR — exit 2 if invoked)
 
-Do **not** invent workarounds that pretend these exist:
-
-- `phone wait …`
-- `phone clipboard …`
-- `phone text --append`
-- `phone node … --action long_click|scroll|…`
-- `phone long-press`, `phone drag`, …
-
-If you need wait: poll with `phone ui` / `phone shot` yourself with short sleeps.
-If you need append-text: read field → compose full string → `phone text` replace.
+Do **not** invent workarounds that pretend future surface exists. The former
+deferred set (wait, clipboard, text --append, rich node actions, long-press,
+drag, double-tap) is **shipped** in PR6b — use the commands above.
 
 ## Failure cheatsheet
 
@@ -134,19 +151,29 @@ If you need append-text: read field → compose full string → `phone text` rep
 | 429 `rate_limited` | Honor `retry_after_ms`; slow down shots. |
 | 501 `unsupported` | Screenshot API &lt; 30 — use tree only. |
 | `capabilities.screenshot.supported=false` | Same — tree-only navigation. |
+| `capabilities.wait` / `clipboard` / `node_actions` false | Needs a newer RivetHub build for that feature. |
 | Gesture `cancelled` / `timedOut` | Retry once or re-dump; user may have touched the screen. |
+| wait `timed_out` | Re-dump UI; adjust condition or timeout; do not spin forever. |
 
 ## Examples
 
 ```sh
 # Open Settings and tap a row by node id
 phone launch com.android.settings
+phone wait --package com.android.settings --timeout 8000
 phone ui --format compact --clickable --text Network
 phone node n12
 
 # Type into focused field (then re-dump — keyboard reflow)
 phone text 'hello@example.com'
 phone ui --format compact --editable
+
+# Append more text without wiping the field
+phone text --append ' more'
+
+# Long-press a node, then clipboard
+phone long-press --node n3
+phone clipboard get
 
 # Observe-only while Phil demos
 phone mode eyes
