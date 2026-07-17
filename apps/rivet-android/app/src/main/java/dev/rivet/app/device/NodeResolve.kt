@@ -158,12 +158,14 @@ fun resolveNode(
 }
 
 /**
- * Identity accept after path walk (class must match always).
+ * Identity accept after path walk (package and class must match always — a window
+ * switch within the index TTL can put a same-shaped node of another app at the same path).
  * - non-empty viewId → viewId must equal
  * - else non-empty text and/or contentDescription → each non-empty field must equal (case-sensitive)
  * - else Compose unlabeled: bounds center within [COMPOSE_BOUNDS_MATCH_PX] Euclidean of stored center
  */
 fun identityAccepts(ref: NodeRef, node: ResolvableNode): Boolean {
+    if (ref.packageName != node.packageName) return false
     if (ref.className != node.className) return false
 
     if (ref.viewId.isNotEmpty()) {

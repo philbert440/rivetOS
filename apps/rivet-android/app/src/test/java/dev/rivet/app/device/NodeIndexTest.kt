@@ -288,7 +288,7 @@ class NodeIndexTest {
             viewId = "id/a",
             text = "A",
             contentDescription = "",
-            packageName = "p",
+            packageName = "com.example",
             boundsCenterX = 0,
             boundsCenterY = 0,
             bounds = NodeBounds(0, 0, 1, 1),
@@ -306,6 +306,41 @@ class NodeIndexTest {
             text = "A",
         )
         assertFalse(identityAccepts(ref, differentViewId))
+    }
+
+    @Test
+    fun `identityAccepts rejects package mismatch even when everything else matches`() {
+        // A window switch within the index TTL can put an identically-shaped node of
+        // another app at the same tree path; package must gate before the bounds fallback.
+        val ref = NodeRef(
+            id = "n1",
+            path = intArrayOf(0),
+            className = "android.widget.FrameLayout",
+            viewId = "",
+            text = "",
+            contentDescription = "",
+            packageName = "com.example",
+            boundsCenterX = 50,
+            boundsCenterY = 50,
+            bounds = NodeBounds(0, 0, 100, 100),
+        )
+        val sameShapeOtherApp = MockNode(
+            className = "android.widget.FrameLayout",
+            viewId = "",
+            text = "",
+            packageName = "com.evil.other",
+            bounds = NodeBounds(0, 0, 100, 100),
+        )
+        assertFalse(identityAccepts(ref, sameShapeOtherApp))
+
+        val sameShapeSameApp = MockNode(
+            className = "android.widget.FrameLayout",
+            viewId = "",
+            text = "",
+            packageName = "com.example",
+            bounds = NodeBounds(0, 0, 100, 100),
+        )
+        assertTrue(identityAccepts(ref, sameShapeSameApp))
     }
 
     // ---- HTTP mapping ------------------------------------------------------
