@@ -146,25 +146,80 @@ later PR). Prefer screenshot + tree together for Compose-heavy UIs.
 ### POST `/action`
 
 ```sh
+# Default: wait for gesture completion (click / swipe)
 curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"type":"click","x":540,"y":1200}' 127.0.0.1:9876/action
+
+# Fire-and-forget (accepted only; no completion wait)
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"click","x":540,"y":1200,"wait":false}' 127.0.0.1:9876/action
 ```
+
+Common body fields (gestures):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `wait` | **`true`** | `true` → wait for `GestureResultCallback` completion/cancel; `false` → fire-and-forget |
+| `timeoutMs` | `3000` | Total budget for queue wait + gesture latch; **capped at 10000** |
 
 Action types:
 
 | type | Body fields | Behavior |
 |------|-------------|----------|
-| `click` | `x`, `y` | Tap at pixel coordinates |
-| `swipe` | `x1`, `y1`, `x2`, `y2`, `duration` (default 280) | Swipe / scroll |
+| `click` | `x`, `y`, optional `wait`, `timeoutMs` | Tap at pixel coordinates |
+| `swipe` | `x1`, `y1`, `x2`, `y2`, `duration` (default 280), optional `wait`, `timeoutMs` | Swipe / scroll |
 | `text` | `text` | Type into the focused field (replaces contents) |
 | `global` | `action`: `BACK` \| `HOME` \| `RECENTS` \| `NOTIFICATIONS` \| `QUICK_SETTINGS` | Global a11y action |
 | `node_click` | `text`, optional `package` | Tap first node whose text/contentDescription contains substring (case-insensitive) |
 | `launch` | `package` | Launch app by package name |
 | `intent` | `action`, optional `data`, optional `package` | `startActivity` with intent |
 
-Success body shape: `{"ok": <bool>, "executed_at": <ms>}`. Gesture `ok` means the
-platform accepted the gesture for dispatch — not that the finger completed
-(`capabilities.gesture_wait` is false until a later PR).
+**Gesture envelope** (`click` / `swipe`) — `capabilities.gesture_wait` is **true**:
+
+```json
+{
+  "ok": true,
+  "accepted": true,
+  "completed": true,
+  "cancelled": false,
+  "timedOut": false,
+  "type": "click",
+  "durationMs": 72,
+  "executed_at": 0
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `accepted` | Platform accepted the gesture for dispatch |
+| `completed` | `onCompleted` fired (finger finished) |
+| `cancelled` | `onCancelled` — user touch interrupt or system cancel |
+| `timedOut` | Latch expired before completed/cancelled |
+| `ok` | When `wait:true` → **`ok` ≡ `completed`**. When `wait:false` → **`ok` ≡ `accepted`**. |
+
+**Completed vs cancelled:** `cancelled:true` means another touch or the system aborted the gesture.
+Retry **once**, or re-dump `/ui` / screenshot and re-plan — do not hammer the same coordinates.
+
+**Busy (queue full):** waited gestures serialize through a single-flight lock (FIFO). If more
+than **4** callers are already waiting, the new request is rejected immediately:
+
+- HTTP **429**, `error: busy`, `message: gesture_busy` (body `code: 429`)
+- This is **not** `rate_limited` (that string is reserved for token-bucket limits on
+  screenshots / future request-rate limits)
+- Guidance: brief backoff (e.g. 100–300 ms) and retry **once**
+
+**Other gesture failures** still use HTTP **200** with `ok:false` so agents branch on JSON:
+
+| Condition | HTTP | `error` | Flags |
+|-----------|------|---------|--------|
+| Cancelled | 200 | `action_failed` | `cancelled:true` |
+| Timed out | 200 | `timed_out` | `timedOut:true` |
+| Not accepted | 200 | `action_failed` | `accepted:false` |
+| Queue full | **429** | `busy` | — |
+
+**Non-gesture** types (`text`, `global`, `node_click`, `launch`, `intent`) keep a simpler
+shape: `{"ok": <bool>, "type": "<type>", "executed_at": <ms>}` (plus `error: action_failed`
+when `ok` is false). They do **not** take the gesture lock.
 
 Blocked in `eyes` and `parked` (403 `forbidden_mode`).
 
@@ -212,14 +267,16 @@ Stable `error` strings:
 | `forbidden_mode` | 403 | control mode blocks this endpoint |
 | `not_found` | 404 | unknown path |
 | `bad_request` | 400 | malformed body/query |
-| `rate_limited` | 429 | screenshot token-bucket limit (+ `retry_after_ms`) |
+| `rate_limited` | 429 | screenshot token-bucket limit (+ `retry_after_ms`) — **not** gesture queue |
+| `busy` | 429 | gesture single-flight queue full (`message: gesture_busy`) |
 | `unsupported` | 501 | screenshot on API &lt; 30 |
 | `a11y_disconnected` | 503 | accessibility service not bound |
 | `no_accessibility_access` | 503 | platform denied screenshot access |
 | `secure_window` | 200 / `ok:false` | secure flag blocks capture |
 | `invalid_display` | 400 | bad display id |
 | `interval_interval` | 429 | platform screenshot interval throttle |
-| `timed_out` | 200 / `ok:false` | screenshot latch timeout |
+| `timed_out` | 200 / `ok:false` | screenshot or gesture latch timeout |
+| `action_failed` | 200 / `ok:false` | gesture cancelled / not accepted / non-gesture false |
 | `internal_error` | 500 | unexpected failure |
 
 Expected capture failures such as `secure_window` use HTTP **200** with
@@ -236,7 +293,8 @@ Expected capture failures such as `secure_window` use HTTP **200** with
   `/ui`, then continue; never batch taps on stale coordinates.
 - Keyboard covering a button: one `BACK` often dismisses just the keyboard → re-dump
   → tap. Count `BACK`s — three in a row can leave the app into system UI.
-- Tap dispatch is occasionally absorbed — retry once.
+- Gesture `ok` with default `wait:true` means **completed** — if `cancelled`, retry once
+  or re-dump; if `busy` (429), brief backoff and retry once; if `timed_out`, re-shot/re-dump.
 - This is a **personal phone**. Private things stay private; ask before outward-facing
   or hard-to-undo actions (messages, posts, irreversible device changes). Never upload
   screenshots off-device via mesh.

@@ -297,12 +297,12 @@ class ControlPolicyTest {
     }
 
     @Test
-    fun `buildCapabilitiesJson schema 1 pr1b surface`() {
+    fun `buildCapabilitiesJson schema 1 with gesture_wait`() {
         val cap = buildCapabilitiesJson(screenshotSupported = true, execEnabled = false)
         assertEquals(1, cap.getInt("schema"))
         assertTrue(cap.getJSONObject("screenshot").getBoolean("supported"))
         assertEquals(30, cap.getJSONObject("screenshot").getInt("minApi"))
-        assertFalse(cap.getBoolean("gesture_wait"))
+        assertTrue(cap.getBoolean("gesture_wait"))
         assertEquals("flat", cap.getJSONObject("ui").getJSONArray("formats").getString(0))
         assertFalse(cap.getJSONObject("ui").getBoolean("node_id"))
         assertFalse(cap.getBoolean("wait"))
