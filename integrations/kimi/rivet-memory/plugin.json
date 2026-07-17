@@ -1,0 +1,30 @@
+{
+  "name": "rivet-memory",
+  "version": "0.1.0",
+  "description": "RivetOS persistent cross-agent memory for Kimi Code CLI. Includes elite memory-recall discipline, quick commands, memory-researcher subagent, MCP tools, and automatic capture via Kimi hooks.",
+  "keywords": [
+    "memory",
+    "recall",
+    "discipline",
+    "rivetos",
+    "mcp",
+    "cross-agent",
+    "kimi-code",
+    "capture"
+  ],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "license": "MIT",
+  "author": {
+    "name": "RivetOS"
+  },
+  "kimi": {
+    "minVersion": "0.1.0",
+    "provides": ["skills", "commands", "mcp", "agents", "hooks"],
+    "install": {
+      "skills": "skills/",
+      "commands": "commands/",
+      "mcp": "mcp.json"
+    }
+  }
+}

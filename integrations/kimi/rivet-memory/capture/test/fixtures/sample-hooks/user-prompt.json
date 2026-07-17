@@ -1,0 +1,6 @@
+{
+  "session_id": "kimi-fixture-session-001",
+  "cwd": "/home/rivet/project",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "what did we do yesterday about the memory capture work?"
+}
