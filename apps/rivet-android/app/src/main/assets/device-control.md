@@ -30,9 +30,10 @@ Desktop debugging: `adb forward tcp:9876 tcp:9876`.
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | GET | `/status` | none | Health + `mode`, `capabilities`, optional `display`, WG |
-| GET | `/ui` | token | A11y dump (`format=flat|tree|compact` + filters) with **nodeId**; blocked when `parked` |
+| GET | `/ui` | token | A11y dump (`format=flat|tree|compact` + filters) with **nodeId**; blocked when `parked`; **10/s** soft limit |
 | GET | `/screenshot` | token | Scaled JPEG; default `dest=file` → `~/.rivet/screenshots/last.jpg` |
-| POST | `/action` | token | click, swipe, long_press, double_tap, drag, scroll, text, global, node_click, **node_action**, clipboard, launch, intent; `full` only |
+| GET | `/audit` | token | Last **200** actions (newest first); no pixels; all modes |
+| POST | `/action` | token | click, swipe, long_press, double_tap, drag, scroll, text, global, node_click, **node_action**, clipboard, launch, intent; `full` only; **20/s** soft limit; **SafetyPolicy** on intent |
 | POST | `/wait` | token | Poll until text / package / gone; `full` only; max **5** concurrent |
 | POST | `/notify` | token | High-priority agent alert notification (all modes) |
 | POST | `/mode` | token | Set `full` \| `eyes` \| `parked` |
@@ -62,6 +63,8 @@ If `accessibility_connected` is false, UI/screenshot/action calls return **503**
 
 **capabilities.globals** (also nested under `actions.globals`): wire names accepted by `{"type":"global","action":…}`, filtered to the device API. Always includes `BACK`, `HOME`, `RECENTS`, `NOTIFICATIONS`, `QUICK_SETTINGS`, `POWER_DIALOG`. On API 28+: also `LOCK_SCREEN`, `TAKE_SCREENSHOT` (system UI screenshot — distinct from `GET /screenshot`). On API 31+: also `DISMISS_NOTIFICATION_SHADE`. Unknown names and below-min-API globals return `ok:false` / `error: action_failed` (HTTP 200).
 
+**capabilities.safety / capabilities.audit:** both `true`. SafetyPolicy gates dangerous intents (see below); `GET /audit` is available.
+
 ### Control modes (kill-switch)
 
 ```sh
@@ -69,11 +72,11 @@ curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"mode":"parked"}' 127.0.0.1:9876/mode
 ```
 
-| Mode | `/status` | `/ui` | `/screenshot` | `/action` | `/wait` | `/notify` | `/exec` |
-|------|-----------|-------|---------------|-----------|---------|-----------|---------|
-| `full` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (DEBUG) |
-| `eyes` | ✓ | ✓ | ✓ | **403** | **403** | ✓ | **403** |
-| `parked` | ✓ | **403** | **403** | **403** | **403** | ✓ | **403** |
+| Mode | `/status` | `/ui` | `/screenshot` | `/action` | `/wait` | `/audit` | `/notify` | `/exec` |
+|------|-----------|-------|---------------|-----------|---------|----------|-----------|---------|
+| `full` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (DEBUG) |
+| `eyes` | ✓ | ✓ | ✓ | **403** | **403** | ✓ | ✓ | **403** |
+| `parked` | ✓ | **403** | **403** | **403** | **403** | ✓ | ✓ | **403** |
 
 - Default: `full` (persisted in app prefs).
 - Response on block: HTTP **403**, `error: forbidden_mode`.
@@ -210,6 +213,46 @@ is larger, `truncated: true` and later nodes are not indexed.
 
 Prefer screenshot + **`format=compact`** for agent loops on Compose-heavy UIs.
 
+**Rate limit:** **10/s** soft sliding window. Over limit → HTTP **429** `error: rate_limited`
+with `retry_after_ms` and `Retry-After` (seconds).
+
+### GET `/audit`
+
+Token-guarded ring buffer of the last **200** control **actions** (not screenshots).
+Newest first. Allowed in all modes (read-only diagnostic).
+
+```sh
+curl -s -H "X-Rivet-Token: $TOKEN" 127.0.0.1:9876/audit
+```
+
+```json
+{
+  "ok": true,
+  "capacity": 200,
+  "count": 12,
+  "entries": [
+    {
+      "timestamp": 0,
+      "type": "intent",
+      "action": "android.intent.action.VIEW",
+      "target": "scheme=sms",
+      "outcome": "needs_confirm",
+      "mode": "full",
+      "confirmed": false
+    }
+  ]
+}
+```
+
+| Field | Notes |
+|-------|--------|
+| `type` | Action type (`click`, `intent`, `node_action`, …) |
+| `action` | Sub-action when present (intent action, node action name, …) |
+| `target` | **Redacted** summary: package / uri **scheme** / nodeId / coords / `text_len=N` — never SMS body, clipboard text, or pixels |
+| `outcome` | `ok` \| error string (`needs_confirm`, `denied`, `action_failed`, `busy`, …) |
+| `mode` | Control mode at request time |
+| `confirmed` | `true` when the request overrode NeedConfirm with `"confirm": true` |
+
 ### POST `/action`
 
 ```sh
@@ -258,8 +301,52 @@ Action types:
 | `node_click` | `text`, optional `package` | Tap first node whose text/contentDescription contains substring (case-insensitive) |
 | **`node_action`** | **`nodeId`**, **`action`**, optional **`text`** (for `set_text`) | Re-resolve + `performAction` (see below) |
 | `clipboard` | `op`: `get`\|`set`; `text` required for `set` | Read/write system clipboard (no a11y required) |
-| `launch` | `package` | Launch app by package name |
-| `intent` | `action`, optional `data`, optional `package` | `startActivity` with intent |
+| `launch` | `package` | Launch app by package name (allowed + audited) |
+| `intent` | `action`, optional `data`, optional `package`, optional **`confirm`** | `startActivity` with intent — **SafetyPolicy** may require confirm (see below) |
+
+#### SafetyPolicy (behavior change — SMS / share / pay)
+
+**This tightens the earlier MVP stance** where `intent` (including `sms:` / `smsto:` /
+`mms:`) was unrestricted. Dangerous surfaces now need an explicit confirmation flag.
+
+Gate order on `/action`: **mode → rate limit → SafetyPolicy → dispatch → audit**.
+
+| Surface | Verdict | Notes |
+|---------|---------|--------|
+| `intent` data scheme `sms:` / `smsto:` / `mms:` / `mmsto:` | **NeedConfirm** | Default; re-send with `"confirm": true` after user approval |
+| `intent` `ACTION_SENDTO` (no scheme) | **NeedConfirm** | Common SMS path |
+| `intent` data scheme `tel:` | **Allow** | Dial allowed; still audited |
+| `intent` `ACTION_SEND` / `ACTION_SEND_MULTIPLE` / share | **NeedConfirm** | Outbound share |
+| Payment / wallet intents & schemes (`upi:`, pay actions, …) | **NeedConfirm** | Heuristic |
+| Package install / uninstall intents, `.apk`, `package:` URI | **NeedConfirm** | Installer surface |
+| Destructive system intents (`FACTORY_RESET`, `MASTER_CLEAR`, …) | **Deny** | **Not** overridable by `confirm` |
+| `launch` by package, clicks, gestures, text, … | **Allow** | Mode gate still applies |
+| Everything else | **Allow** | |
+
+**Override:** include `"confirm": true` on the same action body to convert **NeedConfirm →
+Allow**. The audit log records `confirmed: true`. **Deny is never overridable.**
+
+```sh
+# Blocked until confirmed (HTTP 200, ok:false)
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"intent","action":"android.intent.action.VIEW","data":"sms:5551234"}' \
+  127.0.0.1:9876/action
+# → {"ok":false,"error":"needs_confirm","requires_confirm":true,"reason":"sms",…}
+
+# After Phil approves — re-issue with confirm
+curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"intent","action":"android.intent.action.VIEW","data":"sms:5551234","confirm":true}' \
+  127.0.0.1:9876/action
+```
+
+| Policy result | HTTP | `error` | Body extras |
+|---------------|------|---------|-------------|
+| NeedConfirm (no confirm) | **200** | `needs_confirm` | `requires_confirm: true`, `reason` |
+| Deny | **403** | `denied` | `reason` |
+| Allow (incl. after confirm) | dispatch as usual | — | audit `confirmed` when override used |
+
+**Agent rule:** ask the user before SMS / share / pay / install; only set `confirm:true`
+after explicit approval. Do not auto-confirm in a loop.
 
 #### `long_press` policy (node vs stroke)
 
@@ -334,10 +421,12 @@ phone node n17
 **Server behavior:**
 
 1. Mode gate (blocked in eyes/parked → 403 `forbidden_mode`).
-2. Resolve `nodeId` against the last dump’s index (15s TTL, path walk + identity).
-3. On resolve failure: **`stale_node`** (HTTP **400**) or **`a11y_disconnected`** (HTTP **503**).
-4. On success: `performAction` for the mapped `ACTION_*`. For **`click`** / **`long_click`**, if performAction returns false and the node has bounds → center-point gesture (tap / ≥600 ms long-press) via the waited gesture path.
-5. Success envelope:
+2. Rate limit (20/s on `/action`).
+3. SafetyPolicy (intent surfaces may return `needs_confirm` / `denied` before resolve).
+4. Resolve `nodeId` against the last dump’s index (15s TTL, path walk + identity).
+5. On resolve failure: **`stale_node`** (HTTP **400**) or **`a11y_disconnected`** (HTTP **503**).
+6. On success: `performAction` for the mapped `ACTION_*`. For **`click`** / **`long_click`**, if performAction returns false and the node has bounds → center-point gesture (tap / ≥600 ms long-press) via the waited gesture path.
+7. Success envelope:
 
 ```json
 {
@@ -387,9 +476,11 @@ Retry **once**, or re-dump `/ui` / screenshot and re-plan — do not hammer the 
 than **4** callers are already waiting, the new request is rejected immediately:
 
 - HTTP **429**, `error: busy`, `message: gesture_busy` (body `code: 429`)
-- This is **not** `rate_limited` (that string is reserved for token-bucket limits on
-  screenshots / future request-rate limits)
+- This is **not** `rate_limited` (that string is reserved for token-bucket / concurrent-slot limits)
 - Guidance: brief backoff (e.g. 100–300 ms) and retry **once**
+
+**Request rate limit:** `/action` is soft-capped at **20/s**. Over limit → HTTP **429**
+`error: rate_limited` with `retry_after_ms` (same shape as screenshot / `/ui` / `/wait`).
 
 **Other gesture failures** still use HTTP **200** with `ok:false` so agents branch on JSON:
 
@@ -535,10 +626,12 @@ Stable `error` strings:
 |---------|------|---------|
 | `unauthorized` | 401 | bad/missing token |
 | `forbidden_mode` | 403 | control mode blocks this endpoint |
+| `denied` | 403 | SafetyPolicy hard deny (not confirm-overridable) |
 | `not_found` | 404 | unknown path |
 | `bad_request` | 400 | malformed body/query |
 | `stale_node` | 400 | nodeId expired or re-resolve failed — re-dump `/ui` |
-| `rate_limited` | 429 | screenshot token-bucket **or** `/wait` concurrent-slot limit (+ `retry_after_ms`) — **not** gesture queue |
+| `needs_confirm` | 200 / `ok:false` | SafetyPolicy NeedConfirm — re-send with `"confirm": true` after user approval (`requires_confirm: true`) |
+| `rate_limited` | 429 | `/screenshot` token-bucket, `/action` 20/s, `/ui` 10/s, or `/wait` concurrent slots (+ `retry_after_ms`) — **not** gesture queue |
 | `busy` | 429 | gesture single-flight queue full (`message: gesture_busy`) |
 | `unsupported` | 501 | screenshot on API &lt; 30 |
 | `a11y_disconnected` | 503 | accessibility service not bound |
@@ -574,5 +667,7 @@ Expected capture failures such as `secure_window` use HTTP **200** with
 - Gesture `ok` with default `wait:true` means **completed** — if `cancelled`, retry once
   or re-dump; if `busy` (429), brief backoff and retry once; if `timed_out`, re-shot/re-dump.
 - This is a **personal phone**. Private things stay private; ask before outward-facing
-  or hard-to-undo actions (messages, posts, irreversible device changes). Never upload
-  screenshots off-device via mesh.
+  or hard-to-undo actions (messages, posts, irreversible device changes). **SMS / share /
+  pay / install intents require `confirm:true` after user approval** (SafetyPolicy).
+  Never upload screenshots off-device via mesh.
+- Use **`GET /audit`** to review recent actions (schemes / packages only — no message bodies).

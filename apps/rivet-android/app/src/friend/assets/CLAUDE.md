@@ -51,7 +51,7 @@ Action types:
 - `{"type":"global","action":"BACK|HOME|RECENTS|NOTIFICATIONS|QUICK_SETTINGS|POWER_DIALOG|LOCK_SCREEN|TAKE_SCREENSHOT|DISMISS_NOTIFICATION_SHADE"}` — see `device-control.md` / `capabilities.globals` for API gates
 - `{"type":"node_click","text":"Settings"}` — tap the first node whose text contains this
 - `{"type":"launch","package":"com.android.settings"}` — open an app
-- `{"type":"intent","action":"android.intent.action.VIEW","data":"https://…","package":"…"}`
+- `{"type":"intent","action":"android.intent.action.VIEW","data":"https://…","package":"…"}` — SMS/share/pay/install need `"confirm":true` after user approval (`needs_confirm`); see `device-control.md`
 
 ## Driving the UI well (hard-won — read before you flail)
 - **No screenshot endpoint yet** — you navigate the a11y tree from `/ui`, not pixels.

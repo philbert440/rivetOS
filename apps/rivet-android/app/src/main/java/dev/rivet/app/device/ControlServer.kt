@@ -33,8 +33,9 @@ import kotlin.concurrent.thread
  *   GET  /status
  *   GET  /ui
  *   GET  /screenshot
+ *   GET  /audit    last 200 actions (token; no pixels)
  *   POST /action   {type: click|swipe|text|global|node_click|node_action|long_press|
- *                   double_tap|drag|scroll|clipboard|launch|intent}
+ *                   double_tap|drag|scroll|clipboard|launch|intent, confirm?}
  *   POST /notify   {title, body?, url?, id?} post a high-priority agent alert notification
  *   POST /mode     {mode: full|eyes|parked}
  *   POST /wait     {text?, package?, gone?, timeoutMs?, intervalMs?} poll until condition or timeout
@@ -46,6 +47,8 @@ class ControlServer(private val context: Context) {
     private val executor = Executors.newCachedThreadPool()
     private val screenshotLimiter = ScreenshotRateLimiter()
     private val waitLimiter = WaitConcurrencyLimiter()
+    private val rateLimits = RateLimitRegistry()
+    private val auditLog = AuditLog()
 
     fun start() {
         thread(isDaemon = true, name = "RivetControlServer") {
@@ -105,6 +108,7 @@ class ControlServer(private val context: Context) {
                     method == "GET" && path == "/status" -> handleStatus(query)
                     method == "GET" && path == "/ui" -> handleUi(query)
                     method == "GET" && path == "/screenshot" -> handleScreenshot(query)
+                    method == "GET" && path == "/audit" -> handleAudit(query)
                     method == "POST" && path == "/action" -> handleAction(body, query)
                     method == "POST" && path == "/notify" -> handleNotify(body, query)
                     method == "POST" && path == "/mode" -> handleMode(body, query)
@@ -175,6 +179,11 @@ class ControlServer(private val context: Context) {
 
     private fun handleUi(query: Map<String, String>): HttpResponse {
         modeGate(ControlEndpoint.UI)?.let { return it }
+        // Soft rate limit 10/s (PR8 registry); before a11y work.
+        val limited = rateLimits.tryAcquire("ui")
+        if (!limited.allowed) {
+            return rateLimitedResponse("ui rate limit exceeded", limited.retryAfterMs)
+        }
         val acc = RivetAccessibilityService.getInstance()
             ?: return errorResponse(503, "a11y_disconnected", "accessibility service not connected")
         val parsed = when (val p = parseUiQuery(query)) {
@@ -197,6 +206,21 @@ class ControlServer(private val context: Context) {
         } catch (e: Exception) {
             errorResponse(500, "internal_error", "dump failed: ${e.message}")
         }
+    }
+
+    /**
+     * GET /audit — newest-first ring of last [AUDIT_RING_CAPACITY] actions.
+     * Token-guarded (auth already checked). Allowed in all modes. No pixel payloads.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun handleAudit(query: Map<String, String>): HttpResponse {
+        modeGate(ControlEndpoint.AUDIT)?.let { return it }
+        val body = JSONObject()
+            .put("ok", true)
+            .put("entries", auditLog.toJsonArray())
+            .put("capacity", AUDIT_RING_CAPACITY)
+            .put("count", auditLog.size)
+        return jsonResponse(200, body)
     }
 
     @Suppress("UNUSED_PARAMETER")
@@ -413,12 +437,96 @@ class ControlServer(private val context: Context) {
 
     @Suppress("UNUSED_PARAMETER")
     private fun handleAction(body: String, query: Map<String, String>): HttpResponse {
+        // Gate order: mode → rate limit → safety → dispatch → audit
         modeGate(ControlEndpoint.ACTION)?.let { return it }
+
+        val limited = rateLimits.tryAcquire("action")
+        if (!limited.allowed) {
+            return rateLimitedResponse("action rate limit exceeded", limited.retryAfterMs)
+        }
+
+        val mode = currentMode()
         return try {
-            val req = JSONObject(body)
+            val req = JSONObject(if (body.isBlank()) "{}" else body)
             val type = req.optString("type", "")
             val waitParams = parseActionWaitParams(req)
+            val confirm = req.optBoolean("confirm", false)
+            val desc = SafetyPolicy.descriptorFromActionJson(req)
+            val verdict = SafetyPolicy.evaluate(desc, confirm = confirm)
 
+            when (verdict) {
+                is SafetyVerdict.NeedConfirm -> {
+                    val res = SafetyPolicy.needsConfirmResponse(verdict.reason)
+                    recordActionAudit(
+                        req = req,
+                        type = type.ifBlank { "unknown" },
+                        outcome = "needs_confirm",
+                        mode = mode.wire,
+                        confirmed = false,
+                        action = desc.action,
+                    )
+                    return res
+                }
+                is SafetyVerdict.Deny -> {
+                    val res = SafetyPolicy.deniedResponse(verdict.reason)
+                    recordActionAudit(
+                        req = req,
+                        type = type.ifBlank { "unknown" },
+                        outcome = "denied",
+                        mode = mode.wire,
+                        confirmed = false,
+                        action = desc.action,
+                    )
+                    return res
+                }
+                is SafetyVerdict.Allow -> {
+                    // proceed; confirmed flag recorded after dispatch
+                    val confirmed = verdict.confirmed
+                    val response = dispatchAction(req, type, waitParams)
+                    recordActionAudit(
+                        req = req,
+                        type = type.ifBlank { "unknown" },
+                        outcome = auditOutcomeFromHttp(response),
+                        mode = mode.wire,
+                        confirmed = confirmed,
+                        action = desc.action,
+                    )
+                    response
+                }
+            }
+        } catch (e: Exception) {
+            errorResponse(400, "bad_request", "bad action: ${e.message}")
+        }
+    }
+
+    private fun recordActionAudit(
+        req: JSONObject,
+        type: String,
+        outcome: String,
+        mode: String,
+        confirmed: Boolean,
+        action: String?,
+    ) {
+        auditLog.record(
+            type = type,
+            action = action,
+            target = auditTargetSummary(req, type),
+            outcome = outcome,
+            mode = mode,
+            confirmed = confirmed,
+        )
+    }
+
+    /**
+     * Dispatch a single action after mode/rate/safety gates.
+     * Returns the HTTP envelope; caller records audit.
+     */
+    private fun dispatchAction(
+        req: JSONObject,
+        type: String,
+        waitParams: ActionWaitParams,
+    ): HttpResponse {
+        return try {
             // Clipboard is Context-only (no a11y required) and never takes the gesture lock.
             if (type == "clipboard") {
                 return handleClipboard(req)

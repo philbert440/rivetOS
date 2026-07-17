@@ -23,7 +23,7 @@ class ControlPolicyTest {
     fun `mode matrix matches plan T1_1b for all endpoints x modes`() {
         // Expected allowed set from plan + /exec like action + /mode always + /status/notify always
         fun expected(ep: ControlEndpoint, mode: ControlMode): Boolean = when (ep) {
-            ControlEndpoint.STATUS, ControlEndpoint.NOTIFY, ControlEndpoint.MODE -> true
+            ControlEndpoint.STATUS, ControlEndpoint.NOTIFY, ControlEndpoint.MODE, ControlEndpoint.AUDIT -> true
             ControlEndpoint.UI, ControlEndpoint.SCREENSHOT -> mode != ControlMode.PARKED
             ControlEndpoint.ACTION, ControlEndpoint.EXEC, ControlEndpoint.WAIT -> mode == ControlMode.FULL
         }
@@ -50,6 +50,7 @@ class ControlPolicyTest {
         assertTrue(isEndpointAllowed(ControlEndpoint.STATUS, m))
         assertTrue(isEndpointAllowed(ControlEndpoint.NOTIFY, m))
         assertTrue(isEndpointAllowed(ControlEndpoint.MODE, m))
+        assertTrue(isEndpointAllowed(ControlEndpoint.AUDIT, m))
     }
 
     @Test
@@ -333,6 +334,9 @@ class ControlPolicyTest {
         assertTrue(globals.toString().contains("TAKE_SCREENSHOT"))
         assertTrue(globals.toString().contains("DISMISS_NOTIFICATION_SHADE"))
         assertEquals(globals.toString(), actions.getJSONArray("globals").toString())
+        // PR8 safety + audit hints
+        assertTrue(cap.getBoolean("safety"))
+        assertTrue(cap.getBoolean("audit"))
     }
 
     @Test
