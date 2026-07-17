@@ -10,7 +10,9 @@ import androidx.core.app.NotificationCompat
 import dev.rivet.app.AGENT_ALERT_NOTIFICATION_CHANNEL_ID
 import dev.rivet.app.RouteActivity
 import dev.rivet.app.runtime.RivetRuntime
+import dev.rivet.app.utils.readClipboardText
 import dev.rivet.app.utils.sendNotification
+import dev.rivet.app.utils.writeClipboardText
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.File
@@ -31,7 +33,8 @@ import kotlin.concurrent.thread
  *   GET  /status
  *   GET  /ui
  *   GET  /screenshot
- *   POST /action   {type: click|swipe|text|global|node_click|node_action|launch|intent}
+ *   POST /action   {type: click|swipe|text|global|node_click|node_action|long_press|
+ *                   double_tap|drag|scroll|clipboard|launch|intent}
  *   POST /notify   {title, body?, url?, id?} post a high-priority agent alert notification
  *   POST /mode     {mode: full|eyes|parked}
  *   POST /exec      -- {cmd:[..], env:{..}, cwd, timeoutMs} run argv under our uid (control path)
@@ -326,16 +329,22 @@ class ControlServer(private val context: Context) {
     @Suppress("UNUSED_PARAMETER")
     private fun handleAction(body: String, query: Map<String, String>): HttpResponse {
         modeGate(ControlEndpoint.ACTION)?.let { return it }
-        val acc = RivetAccessibilityService.getInstance()
-            ?: return errorResponse(
-                503,
-                "a11y_disconnected",
-                "accessibility service not connected — enable it in Settings",
-            )
         return try {
             val req = JSONObject(body)
             val type = req.optString("type", "")
             val waitParams = parseActionWaitParams(req)
+
+            // Clipboard is Context-only (no a11y required) and never takes the gesture lock.
+            if (type == "clipboard") {
+                return handleClipboard(req)
+            }
+
+            val acc = RivetAccessibilityService.getInstance()
+                ?: return errorResponse(
+                    503,
+                    "a11y_disconnected",
+                    "accessibility service not connected — enable it in Settings",
+                )
             when (type) {
                 "click" -> {
                     val outcome = acc.tap(
@@ -358,7 +367,107 @@ class ControlServer(private val context: Context) {
                     )
                     mapGestureOutcomeToHttp(type, waitParams.wait, outcome)
                 }
-                "text" -> mapNonGestureActionToHttp(type, acc.typeText(req.getString("text")))
+                "long_press" -> {
+                    val nodeId = req.optString("nodeId", "").trim()
+                    if (nodeId.isNotEmpty()) {
+                        // Prefer ACTION_LONG_CLICK on resolved node; gesture fallback inside.
+                        val outcome = acc.nodeAction(
+                            nodeId,
+                            "long_click",
+                            timeoutMs = waitParams.timeoutMs,
+                        )
+                        mapNodeActionToHttp(
+                            nodeId = nodeId,
+                            action = "long_click",
+                            outcome = outcome,
+                            responseType = "long_press",
+                        )
+                    } else {
+                        val outcome = acc.longPress(
+                            x = req.getInt("x"),
+                            y = req.getInt("y"),
+                            durationMs = if (req.has("durationMs")) {
+                                req.getLong("durationMs")
+                            } else if (req.has("duration")) {
+                                req.getLong("duration")
+                            } else {
+                                LONG_PRESS_MIN_DURATION_MS
+                            },
+                            wait = waitParams.wait,
+                            timeoutMs = waitParams.timeoutMs,
+                        )
+                        mapGestureOutcomeToHttp(type, waitParams.wait, outcome)
+                    }
+                }
+                "double_tap" -> {
+                    val outcome = acc.doubleTap(
+                        x = req.getInt("x"),
+                        y = req.getInt("y"),
+                        wait = waitParams.wait,
+                        timeoutMs = waitParams.timeoutMs,
+                    )
+                    mapGestureOutcomeToHttp(type, waitParams.wait, outcome)
+                }
+                "drag" -> {
+                    val outcome = acc.drag(
+                        x1 = req.getInt("x1"),
+                        y1 = req.getInt("y1"),
+                        x2 = req.getInt("x2"),
+                        y2 = req.getInt("y2"),
+                        durationMs = req.optLong("durationMs", req.optLong("duration", DRAG_DEFAULT_DURATION_MS)),
+                        wait = waitParams.wait,
+                        timeoutMs = waitParams.timeoutMs,
+                    )
+                    mapGestureOutcomeToHttp(type, waitParams.wait, outcome)
+                }
+                "scroll" -> {
+                    val directionRaw = if (req.has("direction")) req.optString("direction") else ""
+                    val direction = ScrollDirection.parse(directionRaw)
+                        ?: return errorResponse(
+                            400,
+                            "bad_request",
+                            "direction must be up|down|left|right",
+                        )
+                    val nodeId = req.optString("nodeId", "").trim().takeIf { it.isNotEmpty() }
+                    val outcome = acc.scroll(
+                        direction = direction,
+                        nodeId = nodeId,
+                        durationMs = req.optLong(
+                            "durationMs",
+                            req.optLong("duration", SCROLL_SWIPE_DEFAULT_DURATION_MS),
+                        ),
+                        wait = waitParams.wait,
+                        timeoutMs = waitParams.timeoutMs,
+                    )
+                    // performAction success → node-style envelope; gesture → PR2 envelope
+                    when (outcome) {
+                        is NodeActionOutcome.PerformOk,
+                        is NodeActionOutcome.StaleNode,
+                        is NodeActionOutcome.A11yDisconnected,
+                        is NodeActionOutcome.ActionFailed,
+                        -> mapNodeActionToHttp(
+                            nodeId = nodeId ?: "",
+                            action = "scroll_${direction.wire}",
+                            outcome = outcome,
+                            responseType = "scroll",
+                        )
+                        is NodeActionOutcome.GestureFallback ->
+                            mapGestureOutcomeToHttp("scroll", waitParams.wait, outcome.outcome)
+                    }
+                }
+                "text" -> {
+                    val modeRaw = if (req.has("mode")) req.optString("mode") else null
+                    val mode = parseTextMode(modeRaw)
+                        ?: return errorResponse(
+                            400,
+                            "bad_request",
+                            "mode must be replace|append",
+                        )
+                    mapNonGestureActionToHttp(
+                        type,
+                        acc.typeText(req.getString("text"), mode = mode),
+                    )
+                }
                 "global" -> {
                     val code = when (req.getString("action").uppercase()) {
                         "BACK" -> AccessibilityServiceGlobals.BACK
@@ -371,25 +480,37 @@ class ControlServer(private val context: Context) {
                     val ok = if (code >= 0) acc.performGlobal(code) else false
                     mapNonGestureActionToHttp(type, ok)
                 }
-                "node_click" -> mapNonGestureActionToHttp(
-                    type,
-                    acc.clickNodeContainingText(req.getString("text"), req.optString("package", null)),
-                )
+                "node_click" -> {
+                    val pkg = if (req.has("package")) req.optString("package") else null
+                    mapNonGestureActionToHttp(
+                        type,
+                        acc.clickNodeContainingText(req.getString("text"), pkg),
+                    )
+                }
                 "node_action" -> {
                     val nodeId = req.optString("nodeId", "").trim()
                     if (nodeId.isEmpty()) {
                         return errorResponse(400, "bad_request", "nodeId is required")
                     }
-                    val action = req.optString("action", "")
-                    if (action != "click") {
+                    val action = req.optString("action", "").trim()
+                    if (mapNodeActionNameToActionId(action) == null) {
                         return errorResponse(
                             400,
                             "bad_request",
-                            "action must be \"click\" (richer node actions not yet supported)",
+                            "action must be one of: ${NODE_ACTION_NAMES.joinToString("|")}",
                         )
                     }
-                    val outcome = acc.nodeClick(nodeId, timeoutMs = waitParams.timeoutMs)
-                    mapNodeActionClickToHttp(nodeId, outcome)
+                    if (nodeActionRequiresText(action) && !req.has("text")) {
+                        return errorResponse(400, "bad_request", "text is required for set_text")
+                    }
+                    val text = if (req.has("text")) req.getString("text") else null
+                    val outcome = acc.nodeAction(
+                        nodeId = nodeId,
+                        action = action,
+                        text = text,
+                        timeoutMs = waitParams.timeoutMs,
+                    )
+                    mapNodeActionToHttp(nodeId, action, outcome)
                 }
                 "launch" -> {
                     val intent = context.packageManager.getLaunchIntentForPackage(req.getString("package"))
@@ -419,6 +540,34 @@ class ControlServer(private val context: Context) {
             }
         } catch (e: Exception) {
             errorResponse(400, "bad_request", "bad action: ${e.message}")
+        }
+    }
+
+    private fun handleClipboard(req: JSONObject): HttpResponse {
+        val op = req.optString("op", "").lowercase()
+        return when (op) {
+            "get" -> {
+                val text = try {
+                    context.readClipboardText()
+                } catch (t: Throwable) {
+                    Log.e(DeviceControl.TAG, "clipboard get failed: ${t.message}")
+                    ""
+                }
+                clipboardGetResponse(text)
+            }
+            "set" -> {
+                if (!req.has("text")) {
+                    return errorResponse(400, "bad_request", "text is required for clipboard set")
+                }
+                try {
+                    context.writeClipboardText(req.getString("text"))
+                } catch (t: Throwable) {
+                    Log.e(DeviceControl.TAG, "clipboard set failed: ${t.message}")
+                    return mapNonGestureActionToHttp("clipboard", false)
+                }
+                clipboardSetResponse()
+            }
+            else -> errorResponse(400, "bad_request", "op must be get|set")
         }
     }
 }

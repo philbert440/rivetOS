@@ -677,85 +677,17 @@ sealed class NodeClickOutcome {
 }
 
 /**
- * Map [NodeClickOutcome] to the PR2-style action envelope with `type: node_action`.
+ * Map [NodeClickOutcome] to the action envelope with `type: node_action`.
+ * Delegates to [mapNodeActionToHttp] with `action=click` (richer actions use that entry point).
  */
 fun mapNodeActionClickToHttp(
     nodeId: String,
     outcome: NodeClickOutcome,
     executedAt: Long = System.currentTimeMillis(),
-): HttpResponse {
-    when (outcome) {
-        is NodeClickOutcome.StaleNode -> {
-            return errorResponse(
-                code = 400,
-                error = "stale_node",
-                message = "nodeId expired or failed re-resolve; re-dump /ui and retry",
-            )
-        }
-        is NodeClickOutcome.A11yDisconnected -> {
-            return errorResponse(
-                code = 503,
-                error = "a11y_disconnected",
-                message = "accessibility service not connected — enable it in Settings",
-            )
-        }
-        is NodeClickOutcome.ClickFailed -> {
-            val body = JSONObject()
-                .put("ok", false)
-                .put("type", "node_action")
-                .put("nodeId", nodeId)
-                .put("action", "click")
-                .put("completed", false)
-                .put("durationMs", 0L)
-                .put("executed_at", executedAt)
-                .put("error", "action_failed")
-            return jsonResponse(200, body)
-        }
-        is NodeClickOutcome.PerformClickOk -> {
-            val body = JSONObject()
-                .put("ok", true)
-                .put("type", "node_action")
-                .put("nodeId", nodeId)
-                .put("action", "click")
-                .put("completed", true)
-                .put("durationMs", outcome.durationMs)
-                .put("executed_at", executedAt)
-            return jsonResponse(200, body)
-        }
-        is NodeClickOutcome.GestureFallback -> {
-            when (val g = outcome.outcome) {
-                is GestureAwaitOutcome.Busy -> {
-                    return errorResponse(
-                        code = 429,
-                        error = "busy",
-                        message = "gesture_busy",
-                    )
-                }
-                is GestureAwaitOutcome.Done -> {
-                    val r = g.result
-                    val ok = r.completed
-                    val body = JSONObject()
-                        .put("ok", ok)
-                        .put("accepted", r.accepted)
-                        .put("completed", r.completed)
-                        .put("cancelled", r.cancelled)
-                        .put("timedOut", r.timedOut)
-                        .put("type", "node_action")
-                        .put("nodeId", nodeId)
-                        .put("action", "click")
-                        .put("durationMs", r.durationMs)
-                        .put("executed_at", executedAt)
-                    if (!ok) {
-                        when {
-                            r.cancelled -> body.put("error", "action_failed")
-                            r.timedOut -> body.put("error", "timed_out")
-                            !r.accepted -> body.put("error", "action_failed")
-                            else -> body.put("error", "action_failed")
-                        }
-                    }
-                    return jsonResponse(200, body)
-                }
-            }
-        }
-    }
-}
+): HttpResponse = mapNodeActionToHttp(
+    nodeId = nodeId,
+    action = "click",
+    outcome = outcome.toNodeActionOutcome(),
+    executedAt = executedAt,
+    responseType = "node_action",
+)
