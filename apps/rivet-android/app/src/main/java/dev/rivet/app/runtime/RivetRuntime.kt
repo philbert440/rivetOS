@@ -97,6 +97,7 @@ object RivetRuntime {
         ensureNetTools(context)
         ensureDenServer(context)
         ensureRivethubWeb(context)
+        ensureRivetPhone(context)
         ensureFullRuntimeConfig(context)
         return@synchronized null
     }
@@ -654,6 +655,46 @@ object RivetRuntime {
     }
 
     /**
+     * Provision the `phone` device-control CLI + skill overlay
+     * ([RIVET_PHONE_OVERLAY_ASSET] = /opt/rivet-phone/{bin,lib,skills} + /usr/local/bin/phone
+     * symlink + register-phone.sh). Extract, then run register-phone.sh inside the rootfs to
+     * install the device-control skill into ~/.grok/skills + ~/.claude/skills. Same extract +
+     * proot-register shape as [ensureMemoryPlugin]. Gated on [RIVET_PHONE_OVERLAY_REV].
+     */
+    private fun ensureRivetPhone(context: Context) {
+        try {
+            val rootfs = rootfsDir(context)
+            val marker = File(rootfs, "opt/.rivet-phone-rev")
+            if (marker.exists() && runCatching { marker.readText().trim() }.getOrNull() == RIVET_PHONE_OVERLAY_REV) return
+            val busybox = File(context.applicationInfo.nativeLibraryDir, "libbusybox.so")
+            if (!busybox.exists()) { Log.w(TAG, "busybox jniLib missing — skip rivet-phone"); return }
+            val tmp = File(context.filesDir, "rivet-phone-overlay.bin")
+            context.assets.open(RIVET_PHONE_OVERLAY_ASSET).use { input ->
+                tmp.outputStream().use { input.copyTo(it, 1 shl 20) }
+            }
+            val ex = ProcessBuilder(busybox.absolutePath, "tar", "-xzf", tmp.absolutePath, "-C", rootfs.absolutePath)
+                .redirectErrorStream(true).start()
+            val exOut = ex.inputStream.bufferedReader().readText(); val exCode = ex.waitFor()
+            tmp.delete()
+            if (exCode != 0) { Log.e(TAG, "rivet-phone overlay extract failed ($exCode): ${exOut.take(200)}"); return }
+            // Install the device-control skill into ~/.grok/skills + ~/.claude/skills (idempotent). One-shot proot.
+            val argv = listOf(prootBinary(context)) + prootArgvTail(context) + listOf("/bin/bash", "/opt/register-phone.sh")
+            val p = ProcessBuilder(argv).directory(hostHome(context)).redirectErrorStream(true)
+                .apply { environment().putAll(baseEnv(context)) }.start()
+            val out = p.inputStream.bufferedReader().readText(); val code = p.waitFor()
+            if (code == 0) {
+                marker.parentFile?.mkdirs()
+                marker.writeText(RIVET_PHONE_OVERLAY_REV)
+                Log.i(TAG, "rivet-phone provisioned (rev $RIVET_PHONE_OVERLAY_REV): ${out.trim().takeLast(80)}")
+            } else {
+                Log.w(TAG, "rivet-phone register exit=$code: ${out.take(200)}")
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "ensureRivetPhone failed", t)
+        }
+    }
+
+    /**
      * Install the den-server esbuild bundle (`home/rivet/rivet-den/den-server.bundle.mjs`).
      * Pure extract — no proot register step (same shape as [ensureRivetShared]). Gated on
      * [DEN_OVERLAY_REV]; bump to re-extract on the next launch.
@@ -923,6 +964,9 @@ object RivetRuntime {
     // Gzipped tar of rivethub-web dist → home/rivet/rivethub-web/dist/. Same .bin/noCompress trick.
     private const val WEB_OVERLAY_ASSET = "rivet-web-overlay.bin"
     private const val WEB_OVERLAY_REV = "1"
+    // Gzipped tar of the `phone` CLI + device-control skill → /opt/rivet-phone + /usr/local/bin/phone.
+    private const val RIVET_PHONE_OVERLAY_ASSET = "rivet-phone-overlay.bin"
+    private const val RIVET_PHONE_OVERLAY_REV = "1"
 
     /** Guest path to the full RivetOS monorepo entrypoint (when provisioned in-rootfs). */
     const val FULL_RUNTIME_JS = "/home/rivet/rivetos/dist/rivetos.js"
