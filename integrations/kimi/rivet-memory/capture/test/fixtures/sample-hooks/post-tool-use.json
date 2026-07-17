@@ -1,0 +1,8 @@
+{
+  "session_id": "kimi-fixture-session-001",
+  "cwd": "/home/rivet/project",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "ls -la" },
+  "tool_output": "total 0\ndrwxr-xr-x 2 rivet rivet 40 Jan 1 00:00 .\n"
+}

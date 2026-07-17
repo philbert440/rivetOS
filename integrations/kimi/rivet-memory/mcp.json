@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "rivetos": {
+      "command": "/opt/rivetos/integrations/kimi/rivet-memory/bin/rivet-memory-mcp.sh"
+    }
+  }
+}

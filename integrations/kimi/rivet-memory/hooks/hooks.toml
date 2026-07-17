@@ -1,0 +1,41 @@
+# RivetOS rivet-memory capture hooks for Kimi Code CLI.
+# Append this fragment into $KIMI_CODE_HOME/config.toml (or ~/.kimi-code/config.toml).
+# Event names per kimi-code hooks (Beta). Timeout 8s; launcher always exits 0.
+#
+# Override RIVETOS_ROOT in the environment if RivetOS is not at /opt/rivetos.
+# Paths below use /opt/rivetos — setup-kimi-rivet-memory.sh rewrites them on --apply.
+
+[[hooks]]
+event = "SessionStart"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh SessionStart"
+timeout = 8
+
+[[hooks]]
+event = "SessionEnd"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh SessionEnd"
+timeout = 8
+
+[[hooks]]
+event = "UserPromptSubmit"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh UserPromptSubmit"
+timeout = 8
+
+[[hooks]]
+event = "PostToolUse"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh PostToolUse"
+timeout = 8
+
+[[hooks]]
+event = "PostToolUseFailure"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh PostToolUseFailure"
+timeout = 8
+
+[[hooks]]
+event = "Stop"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh Stop"
+timeout = 8
+
+[[hooks]]
+event = "PreCompact"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh PreCompact"
+timeout = 8

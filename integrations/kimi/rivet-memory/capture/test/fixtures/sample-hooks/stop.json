@@ -1,0 +1,7 @@
+{
+  "session_id": "kimi-fixture-session-001",
+  "cwd": "/home/rivet/project",
+  "hook_event_name": "Stop",
+  "reason": "end_turn",
+  "response": "Yesterday we started the kimi rivet-memory integration and mirrored the grok capture pattern."
+}

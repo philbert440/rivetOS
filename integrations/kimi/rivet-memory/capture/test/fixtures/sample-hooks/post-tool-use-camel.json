@@ -1,0 +1,8 @@
+{
+  "sessionId": "kimi-fixture-session-001",
+  "cwd": "/home/rivet/project",
+  "hookEventName": "PostToolUse",
+  "toolName": "ReadFile",
+  "toolInput": { "path": "/tmp/example.txt" },
+  "toolOutput": "hello from camelCase payload"
+}
