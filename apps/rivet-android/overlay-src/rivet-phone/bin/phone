@@ -1,0 +1,4 @@
+#!/bin/sh
+# phone — trampoline into the Node device-control CLI.
+# Installed at /opt/rivet-phone/bin/phone; PATH via /usr/local/bin/phone.
+exec node /opt/rivet-phone/lib/phone.mjs "$@"
