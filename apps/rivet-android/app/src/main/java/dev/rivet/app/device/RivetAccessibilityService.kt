@@ -333,24 +333,63 @@ class RivetAccessibilityService : AccessibilityService() {
         nodeId: String,
         timeoutMs: Long = GESTURE_DEFAULT_TIMEOUT_MS,
     ): NodeClickOutcome {
+        return when (val o = nodeAction(nodeId, "click", text = null, timeoutMs = timeoutMs)) {
+            is NodeActionOutcome.PerformOk -> NodeClickOutcome.PerformClickOk(o.durationMs)
+            is NodeActionOutcome.GestureFallback -> NodeClickOutcome.GestureFallback(o.outcome)
+            is NodeActionOutcome.StaleNode -> NodeClickOutcome.StaleNode
+            is NodeActionOutcome.A11yDisconnected -> NodeClickOutcome.A11yDisconnected
+            is NodeActionOutcome.ActionFailed -> NodeClickOutcome.ClickFailed
+        }
+    }
+
+    /**
+     * Resolve [nodeId] and perform a rich node action via [AccessibilityNodeInfo.performAction].
+     * - `click` / `long_click`: on performAction false + usable bounds, gesture fallback
+     *   (center tap / center long-press stroke).
+     * - Other actions: performAction only (no gesture lock).
+     * Always recycles owned resolved nodes; releases before any gesture wait.
+     */
+    fun nodeAction(
+        nodeId: String,
+        action: String,
+        text: String? = null,
+        timeoutMs: Long = GESTURE_DEFAULT_TIMEOUT_MS,
+    ): NodeActionOutcome {
+        val actionId = mapNodeActionNameToActionId(action)
+            ?: return NodeActionOutcome.ActionFailed
         when (val resolved = resolve(nodeId)) {
-            is ServiceResolveResult.StaleNode -> return NodeClickOutcome.StaleNode
-            is ServiceResolveResult.A11yDisconnected -> return NodeClickOutcome.A11yDisconnected
+            is ServiceResolveResult.StaleNode -> return NodeActionOutcome.StaleNode
+            is ServiceResolveResult.A11yDisconnected -> return NodeActionOutcome.A11yDisconnected
             is ServiceResolveResult.Found -> {
                 val node = resolved.node
                 var stillOwned = resolved.owned
                 try {
                     val start = System.currentTimeMillis()
-                    val clicked = try {
-                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    val ok = try {
+                        when (action.lowercase()) {
+                            "set_text" -> {
+                                val args = Bundle()
+                                args.putCharSequence(
+                                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                                    text ?: "",
+                                )
+                                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                            }
+                            else -> node.performAction(actionId)
+                        }
                     } catch (t: Throwable) {
-                        Log.e(DeviceControl.TAG, "ACTION_CLICK failed: ${t.message}")
+                        Log.e(DeviceControl.TAG, "performAction($action) failed: ${t.message}")
                         false
                     }
-                    if (clicked) {
-                        return NodeClickOutcome.PerformClickOk(
+                    if (ok) {
+                        return NodeActionOutcome.PerformOk(
                             durationMs = System.currentTimeMillis() - start,
                         )
+                    }
+                    // Gesture fallback only for click / long_click.
+                    val kind = action.lowercase()
+                    if (kind != "click" && kind != "long_click") {
+                        return NodeActionOutcome.ActionFailed
                     }
                     val r = Rect()
                     try {
@@ -358,22 +397,212 @@ class RivetAccessibilityService : AccessibilityService() {
                     } catch (_: Throwable) {
                     }
                     if (r.width() <= 0 || r.height() <= 0) {
-                        return NodeClickOutcome.ClickFailed
+                        return NodeActionOutcome.ActionFailed
                     }
                     val cx = r.centerX()
                     val cy = r.centerY()
-                    // Release owned node before gesture wait so we don't hold it across the latch.
                     if (stillOwned) {
                         safeRecycle(node)
                         stillOwned = false
                     }
-                    return NodeClickOutcome.GestureFallback(
-                        tap(cx, cy, wait = true, timeoutMs = timeoutMs),
-                    )
+                    val gestureOutcome = if (kind == "long_click") {
+                        longPress(cx, cy, wait = true, timeoutMs = timeoutMs)
+                    } else {
+                        tap(cx, cy, wait = true, timeoutMs = timeoutMs)
+                    }
+                    return NodeActionOutcome.GestureFallback(gestureOutcome)
                 } finally {
                     if (stillOwned) safeRecycle(node)
                 }
             }
+        }
+    }
+
+    /**
+     * Long-press at screen coordinates (stroke ≥ [LONG_PRESS_MIN_DURATION_MS]).
+     * Uses [dispatchGestureAwait] when [wait] is true.
+     */
+    fun longPress(
+        x: Int,
+        y: Int,
+        durationMs: Long = LONG_PRESS_MIN_DURATION_MS,
+        wait: Boolean = true,
+        timeoutMs: Long = GESTURE_DEFAULT_TIMEOUT_MS,
+    ): GestureAwaitOutcome {
+        val hold = longPressDurationMs(durationMs)
+        val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, hold))
+            .build()
+        return if (wait) {
+            dispatchGestureAwait(gesture, timeoutMs)
+        } else {
+            fireAndForgetGesture(gesture)
+        }
+    }
+
+    /**
+     * Double-tap at screen coordinates: two short strokes with [DOUBLE_TAP_GAP_MS] offset.
+     */
+    fun doubleTap(
+        x: Int,
+        y: Int,
+        wait: Boolean = true,
+        timeoutMs: Long = GESTURE_DEFAULT_TIMEOUT_MS,
+    ): GestureAwaitOutcome {
+        val path1 = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+        val path2 = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path1, 0, DOUBLE_TAP_STROKE_MS))
+            .addStroke(
+                GestureDescription.StrokeDescription(path2, DOUBLE_TAP_GAP_MS, DOUBLE_TAP_STROKE_MS),
+            )
+            .build()
+        return if (wait) {
+            dispatchGestureAwait(gesture, timeoutMs)
+        } else {
+            fireAndForgetGesture(gesture)
+        }
+    }
+
+    /**
+     * Drag (single stroke) from (x1,y1) to (x2,y2).
+     */
+    fun drag(
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        durationMs: Long = DRAG_DEFAULT_DURATION_MS,
+        wait: Boolean = true,
+        timeoutMs: Long = GESTURE_DEFAULT_TIMEOUT_MS,
+    ): GestureAwaitOutcome {
+        val dur = durationMs.coerceAtLeast(1L)
+        val path = Path().apply {
+            moveTo(x1.toFloat(), y1.toFloat())
+            lineTo(x2.toFloat(), y2.toFloat())
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, dur))
+            .build()
+        return if (wait) {
+            dispatchGestureAwait(gesture, timeoutMs)
+        } else {
+            fireAndForgetGesture(gesture)
+        }
+    }
+
+    /**
+     * Scroll in [direction]. When [nodeId] is set: resolve + prefer directional
+     * ACTION_SCROLL_* / FORWARD|BACKWARD; else coordinate swipe (node bounds or screen center).
+     * performAction path does not take the gesture lock; swipe fallback does.
+     */
+    fun scroll(
+        direction: ScrollDirection,
+        nodeId: String? = null,
+        durationMs: Long = SCROLL_SWIPE_DEFAULT_DURATION_MS,
+        wait: Boolean = true,
+        timeoutMs: Long = GESTURE_DEFAULT_TIMEOUT_MS,
+    ): NodeActionOutcome {
+        val id = nodeId?.trim()?.takeIf { it.isNotEmpty() }
+        if (id != null) {
+            when (val resolved = resolve(id)) {
+                is ServiceResolveResult.StaleNode -> return NodeActionOutcome.StaleNode
+                is ServiceResolveResult.A11yDisconnected -> return NodeActionOutcome.A11yDisconnected
+                is ServiceResolveResult.Found -> {
+                    val node = resolved.node
+                    var stillOwned = resolved.owned
+                    try {
+                        val start = System.currentTimeMillis()
+                        if (tryScrollPerformAction(node, direction)) {
+                            return NodeActionOutcome.PerformOk(
+                                durationMs = System.currentTimeMillis() - start,
+                            )
+                        }
+                        val r = Rect()
+                        try {
+                            node.getBoundsInScreen(r)
+                        } catch (_: Throwable) {
+                        }
+                        if (r.width() <= 0 || r.height() <= 0) {
+                            return NodeActionOutcome.ActionFailed
+                        }
+                        val span = scrollSpanFromBounds(r.width(), r.height())
+                        val seg = scrollDirectionToSwipe(
+                            direction,
+                            r.centerX(),
+                            r.centerY(),
+                            span,
+                        )
+                        if (stillOwned) {
+                            safeRecycle(node)
+                            stillOwned = false
+                        }
+                        return NodeActionOutcome.GestureFallback(
+                            swipe(
+                                x1 = seg.x1,
+                                y1 = seg.y1,
+                                x2 = seg.x2,
+                                y2 = seg.y2,
+                                durationMs = durationMs.coerceAtLeast(1L),
+                                wait = wait,
+                                timeoutMs = timeoutMs,
+                            ),
+                        )
+                    } finally {
+                        if (stillOwned) safeRecycle(node)
+                    }
+                }
+            }
+        }
+
+        // Coordinate-only: swipe near screen center (gesture path).
+        val dm = try {
+            resources.displayMetrics
+        } catch (_: Throwable) {
+            null
+        }
+        val cx = (dm?.widthPixels ?: 1080) / 2
+        val cy = (dm?.heightPixels ?: 2400) / 2
+        val span = scrollSpanFromBounds(dm?.widthPixels ?: 1080, dm?.heightPixels ?: 2400)
+        val seg = scrollDirectionToSwipe(direction, cx, cy, span)
+        return NodeActionOutcome.GestureFallback(
+            swipe(
+                x1 = seg.x1,
+                y1 = seg.y1,
+                x2 = seg.x2,
+                y2 = seg.y2,
+                durationMs = durationMs.coerceAtLeast(1L),
+                wait = wait,
+                timeoutMs = timeoutMs,
+            ),
+        )
+    }
+
+    /**
+     * Prefer API 23+ directional scroll actions; fall back to FORWARD/BACKWARD.
+     */
+    private fun tryScrollPerformAction(
+        node: AccessibilityNodeInfo,
+        direction: ScrollDirection,
+    ): Boolean {
+        val directionalId = when (direction) {
+            ScrollDirection.UP -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id
+            ScrollDirection.DOWN -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id
+            ScrollDirection.LEFT -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id
+            ScrollDirection.RIGHT -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id
+        }
+        try {
+            if (node.performAction(directionalId)) return true
+        } catch (t: Throwable) {
+            Log.e(DeviceControl.TAG, "directional scroll failed: ${t.message}")
+        }
+        val fb = scrollDirectionToForwardBackward(direction)
+        return try {
+            node.performAction(fb)
+        } catch (t: Throwable) {
+            Log.e(DeviceControl.TAG, "forward/backward scroll failed: ${t.message}")
+            false
         }
     }
 
@@ -586,13 +815,23 @@ class RivetAccessibilityService : AccessibilityService() {
         }
     }
 
-    fun typeText(text: String): Boolean {
+    /**
+     * Type into the focused (or first editable) field.
+     * @param mode `replace` (default) overwrites; `append` concatenates onto current text.
+     */
+    fun typeText(text: String, mode: String = "replace"): Boolean {
         val root = preferredRoot() ?: return false
         var target = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         if (target == null || !target.isFocused) target = findFirstEditable(root)
         if (target == null) return false
+        val current = try {
+            target.text?.toString() ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+        val payload = resolveTextPayload(mode, current, text)
         val args = Bundle()
-        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, payload)
         return target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
     }
 
