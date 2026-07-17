@@ -170,16 +170,23 @@ class ControlServer(private val context: Context) {
         modeGate(ControlEndpoint.UI)?.let { return it }
         val acc = RivetAccessibilityService.getInstance()
             ?: return errorResponse(503, "a11y_disconnected", "accessibility service not connected")
-        // PR3a query params; unknown params (format/filters — PR3b) ignored gracefully.
-        val maxDepth = query["maxDepth"]?.toIntOrNull()?.coerceIn(0, 64) ?: 12
-        val includeBounds = when (query["bounds"]?.lowercase()) {
-            null, "", "1", "true", "yes" -> true
-            "0", "false", "no" -> false
-            else -> true
+        val parsed = when (val p = parseUiQuery(query)) {
+            is ParseUiQueryResult.BadRequest ->
+                return errorResponse(400, "bad_request", p.message)
+            is ParseUiQueryResult.Ok -> p.query
         }
-        val limit = query["limit"]?.toIntOrNull() ?: 0
         return try {
-            jsonResponse(200, acc.dumpUiTree(includeBounds = includeBounds, maxDepth = maxDepth, limit = limit))
+            jsonResponse(
+                200,
+                acc.dumpUiTree(
+                    format = parsed.format,
+                    includeBounds = parsed.includeBounds,
+                    maxDepth = parsed.maxDepth,
+                    limit = parsed.limit,
+                    filters = parsed.filters,
+                    fields = parsed.fields,
+                ),
+            )
         } catch (e: Exception) {
             errorResponse(500, "internal_error", "dump failed: ${e.message}")
         }
