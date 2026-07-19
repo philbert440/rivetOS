@@ -26,6 +26,11 @@ import { restartViaSystemd, assertSafeArg, resolveSshUser } from '../lib/ssh.js'
 import type { UpdateOptions, NodeUpdateResult } from './update/types.js'
 import { gitUpdateNodeAsync, npmUpdateNodeAsync, waitForHealth } from './update/remote-nodes.js'
 import { retireDenUnitLocal, verifyGatewayLocal } from './update/den-deploy.js'
+import {
+  detectDeployment as resolveDeployment,
+  findRootOwnedBlockers,
+  type DeploymentMode,
+} from './update/detect-deployment.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
@@ -108,7 +113,10 @@ function showHelp(): void {
     --no-restart       Pull/install only, don't restart
     --prebuilt         Pull pre-built images from GHCR instead of building (docker)
     --mesh             Rolling update across all agents
-    --bare-metal       Force bare-metal mode (skip all Docker logic)
+    --bare-metal       Force bare-metal mode (skip all Docker logic).
+                       Without this, mode is auto-detected: systemd unit →
+                       bare-metal; docker only if the daemon is reachable.
+                       Compose file presence alone no longer selects docker.
     --npm              Use npm install -g @rivetos/cli@<channel> instead of git pull
     --channel <tag>    npm dist-tag or version (default: beta) — implies --npm
     --ssh-user <user>  SSH user for remote nodes (default: rivet)
@@ -275,6 +283,7 @@ export default async function update(): Promise<void> {
 
   // Step 3: Detect deployment mode and handle accordingly
   const deployment = await detectDeployment(opts.bareMetal)
+  warnRootOwnedIfNeeded(ROOT)
 
   if (deployment === 'docker') {
     // Safety check: verify user data volumes/mounts exist before rebuild
@@ -282,11 +291,18 @@ export default async function update(): Promise<void> {
 
     if (!opts.prebuilt) {
       console.log('\nRebuilding containers from source...')
-      exec('docker compose -f infra/docker/rivetos/docker-compose.yml build', { quiet: false })
+      // Must fail hard — silent docker failures previously printed false success.
+      execOrFail(
+        'docker compose -f infra/docker/rivetos/docker-compose.yml build',
+        'docker compose build',
+      )
       console.log('  ✅ Containers rebuilt')
     } else {
       console.log('\nPulling pre-built images...')
-      exec('docker compose -f infra/docker/rivetos/docker-compose.yml pull', { quiet: false })
+      execOrFail(
+        'docker compose -f infra/docker/rivetos/docker-compose.yml pull',
+        'docker compose pull',
+      )
       console.log('  ✅ Images pulled')
     }
   } else if (deployment === 'bare-metal') {
@@ -306,7 +322,10 @@ export default async function update(): Promise<void> {
   if (opts.restart) {
     if (deployment === 'docker') {
       console.log('\nRestarting containers (data volumes preserved)...')
-      exec('docker compose -f infra/docker/rivetos/docker-compose.yml up -d', { quiet: false })
+      execOrFail(
+        'docker compose -f infra/docker/rivetos/docker-compose.yml up -d',
+        'docker compose up',
+      )
       console.log('  ✅ Containers restarted — workspace & database untouched')
     } else if (deployment === 'manual' || deployment === 'bare-metal') {
       // Bare-metal: restart via systemd or signal
@@ -690,10 +709,10 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         const composeFlags = '-f infra/docker/rivetos/docker-compose.yml'
         if (!localOpts.prebuilt) {
           await verifyDataPersistence()
-          exec(`docker compose ${composeFlags} build`, { quiet: false })
+          execOrThrow(`docker compose ${composeFlags} build`, 'docker compose build')
         }
         if (localOpts.restart) {
-          exec(`docker compose ${composeFlags} up -d`, { quiet: false })
+          execOrThrow(`docker compose ${composeFlags} up -d`, 'docker compose up')
         }
       } else if (deployment === 'bare-metal') {
         console.log('    Building...')
@@ -761,41 +780,25 @@ function isLocalAddress(host: string): boolean {
   return false
 }
 
-async function detectDeployment(forceBareMetal = false): Promise<string> {
-  if (forceBareMetal) {
-    return 'bare-metal'
-  }
+/**
+ * Detect local deployment mode for update. See update/detect-deployment.ts
+ * for the footgun history (compose file ≠ docker install).
+ */
+async function detectDeployment(forceBareMetal = false): Promise<DeploymentMode> {
+  const result = await resolveDeployment({ forceBareMetal, root: ROOT })
+  console.log(`  Mode: ${result.mode} (${result.reason})`)
+  return result.mode
+}
 
-  // Check for rivet.config.yaml deployment section
-  const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
-  try {
-    const { parse: parseYaml } = await import('yaml')
-    const raw = await readFile(configPath, 'utf-8')
-    const config = parseYaml(raw) as { deployment?: { target?: string } }
-    if (config.deployment?.target) {
-      return config.deployment.target
-    }
-  } catch {
-    // No config or parse error
-  }
-
-  // Check for systemd service (bare-metal/Proxmox/VM deployment).
-  // Takes priority over the in-repo Compose file, which is present on
-  // bare-metal installs too.
-  try {
-    await access('/etc/systemd/system/rivetos.service')
-    return 'bare-metal'
-  } catch {
-    // No systemd service
-  }
-
-  // Check for the unified Compose stack in the repo
-  try {
-    await access(resolve(ROOT, 'infra/docker/rivetos/docker-compose.yml'))
-    return 'docker'
-  } catch {
-    // No compose file
-  }
-
-  return 'bare-metal'
+/** Surface the root-owned checkout footgun before npm/nx hit EACCES. */
+function warnRootOwnedIfNeeded(root: string): void {
+  const blockers = findRootOwnedBlockers(root)
+  if (blockers.length === 0) return
+  console.warn(
+    `  ⚠️  Root-owned paths under install (${blockers.join(', ')}) — updates may fail with EACCES.`,
+  )
+  console.warn(
+    '     Fix: sudo chown -R "$(whoami):$(whoami)" ' +
+      blockers.map((p) => resolve(root, p)).join(' '),
+  )
 }
