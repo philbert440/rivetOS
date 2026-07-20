@@ -159,15 +159,79 @@ export function checkSshReachable(host: string, requestedUser = 'rivet'): boolea
 /**
  * Restart a local systemd unit, trying direct `systemctl` then `sudo systemctl`.
  * Returns true if either succeeded. Never throws.
+ *
+ * `timeoutMs` defaults to 30s for the primary rivetos unit. Datahub workers
+ * (compactor/embedder) often need longer — pass 90_000 for those.
  */
-export function restartViaSystemd(unit = 'rivetos'): boolean {
+export function restartViaSystemd(unit = 'rivetos', timeoutMs = 30_000): boolean {
+  if (!isSafeArg(unit)) return false
   for (const cmd of [`systemctl restart ${unit}`, `sudo systemctl restart ${unit}`]) {
     try {
-      execSync(cmd, { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] })
+      execSync(cmd, { encoding: 'utf-8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'] })
       return true
     } catch {
       // try next
     }
   }
   return false
+}
+
+/**
+ * Discover enabled local rivet-* worker units (embedder, compactor, …),
+ * excluding the primary rivetos.service. Mirrors remote-nodes discoverRivetWorkers
+ * so a bare-metal update on datahub/local restarts co-located workers too.
+ */
+export function discoverLocalRivetWorkers(): string[] {
+  try {
+    const out = execSync(
+      "systemctl list-unit-files 'rivet-*.service' --state=enabled --no-legend --no-pager 2>/dev/null | awk '{print $1}'",
+      { encoding: 'utf-8', timeout: 10_000, stdio: ['pipe', 'pipe', 'pipe'] },
+    ).trim()
+    if (!out) return []
+    return out
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && s !== 'rivetos.service' && isSafeArg(s))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Restart every co-located enabled rivet-* worker after the primary service.
+ * Does not throw. Returns units that report active afterwards.
+ *
+ * Restart timeout is 90s (compactor often exceeds 30s). is-active is the
+ * source of truth when systemctl restart blocks longer than our client timeout.
+ */
+export function restartLocalRivetWorkers(): { restarted: string[]; failed: string[] } {
+  const workers = discoverLocalRivetWorkers()
+  const restarted: string[] = []
+  const failed: string[] = []
+  if (workers.length === 0) return { restarted, failed }
+
+  for (const unit of workers) {
+    // Best-effort restart; slow units may exceed the client timeout while
+    // still completing server-side.
+    restartViaSystemd(unit, 90_000)
+  }
+
+  for (const unit of workers) {
+    let state = ''
+    for (const cmd of [`systemctl is-active ${unit}`, `sudo systemctl is-active ${unit}`]) {
+      try {
+        state = execSync(cmd, {
+          encoding: 'utf-8',
+          timeout: 10_000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim()
+        break
+      } catch {
+        // try next
+      }
+    }
+    if (state === 'active') restarted.push(unit)
+    else failed.push(unit)
+  }
+  return { restarted, failed }
 }
