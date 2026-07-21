@@ -83,6 +83,7 @@ describe('parseDenSettings', () => {
       port: 5175,
       token: 'den-secret',
       termEnabled: true,
+      termOpen: false,
       staticDir: '/srv/den/dist',
       packsDir: '/opt/rivetos/packages/den-packs/packs',
     })
@@ -123,17 +124,18 @@ function stubQuiet(opts: {
   })
 }
 
-const DEN_YAML = 'den:\n  enabled: true\n  host: 0.0.0.0\n  port: 5174\n'
+/** Minimal den section for control-flow tests (distinct name from full DEN_YAML fixture above). */
+const DEN_YAML_MINIMAL = 'den:\n  enabled: true\n  host: 0.0.0.0\n  port: 5174\n'
 
 describe('retireDenUnitRemote', () => {
   it('no-ops when the unit is neither active nor enabled', async () => {
-    stubQuiet({ configYaml: DEN_YAML })
+    stubQuiet({ configYaml: DEN_YAML_MINIMAL })
     await retireDenUnitRemote('192.0.2.10', 'node-a', 'rivet')
     expect(sshExecMock).not.toHaveBeenCalled()
   })
 
   it('disables an active unit before the rivetos restart', async () => {
-    stubQuiet({ configYaml: DEN_YAML, unitActive: 'active' })
+    stubQuiet({ configYaml: DEN_YAML_MINIMAL, unitActive: 'active' })
     await retireDenUnitRemote('192.0.2.10', 'node-a', 'rivet')
     expect(sshExecMock).toHaveBeenCalledWith(
       '192.0.2.10',
@@ -152,12 +154,12 @@ describe('verifyGatewayRemote', () => {
   })
 
   it('reports deployed on a healthy embedded gateway', async () => {
-    stubQuiet({ configYaml: DEN_YAML, unitActive: 'inactive' })
+    stubQuiet({ configYaml: DEN_YAML_MINIMAL, unitActive: 'inactive' })
     expect(await verifyGatewayRemote('192.0.2.10', 'node-a', 'rivet')).toBe('deployed')
   })
 
   it('FAILS when /healthz answers but the retired unit is still active (false-green guard)', async () => {
-    stubQuiet({ configYaml: DEN_YAML, unitActive: 'active' })
+    stubQuiet({ configYaml: DEN_YAML_MINIMAL, unitActive: 'active' })
     expect(await verifyGatewayRemote('192.0.2.10', 'node-a', 'rivet')).toBe('failed')
   })
 })

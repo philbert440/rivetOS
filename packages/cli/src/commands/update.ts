@@ -22,7 +22,12 @@ import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
 import { loadMeshFile, type MeshNode } from '../lib/mesh-file.js'
-import { restartViaSystemd, assertSafeArg, resolveSshUser } from '../lib/ssh.js'
+import {
+  restartViaSystemd,
+  restartLocalRivetWorkers,
+  assertSafeArg,
+  resolveSshUser,
+} from '../lib/ssh.js'
 import type { UpdateOptions, NodeUpdateResult } from './update/types.js'
 import { gitUpdateNodeAsync, npmUpdateNodeAsync, waitForHealth } from './update/remote-nodes.js'
 import { retireDenUnitLocal, verifyGatewayLocal } from './update/den-deploy.js'
@@ -328,13 +333,24 @@ export default async function update(): Promise<void> {
       )
       console.log('  ✅ Containers restarted — workspace & database untouched')
     } else if (deployment === 'manual' || deployment === 'bare-metal') {
-      // Bare-metal: restart via systemd or signal
+      // Bare-metal: restart primary unit, then any co-located rivet-* workers
+      // (datahub embedder/compactor etc.). Remote mesh path already does this;
+      // local single-node updates used to leave workers on stale code.
       console.log('\nRestarting service...')
       if (restartViaSystemd()) {
         console.log('  ✅ Service restarted')
       } else {
         console.log(
           '  ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
+        )
+      }
+      const workers = restartLocalRivetWorkers()
+      if (workers.restarted.length > 0) {
+        console.log(`  ✅ Workers restarted: ${workers.restarted.join(', ')}`)
+      }
+      if (workers.failed.length > 0) {
+        console.log(
+          `  ⚠️  Workers not active after restart: ${workers.failed.join(', ')} — check systemctl status`,
         )
       }
     }
@@ -687,6 +703,13 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
             '    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
           )
         }
+        const workers = restartLocalRivetWorkers()
+        if (workers.restarted.length > 0) {
+          console.log(`    ✅ Workers restarted: ${workers.restarted.join(', ')}`)
+        }
+        if (workers.failed.length > 0) {
+          console.log(`    ⚠️  Workers not active after restart: ${workers.failed.join(', ')}`)
+        }
       }
       await verifyGatewayLocal(localOpts.restart)
       console.log('  ✅ Local node updated')
@@ -738,6 +761,13 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
             console.log(
               '    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
             )
+          }
+          const workers = restartLocalRivetWorkers()
+          if (workers.restarted.length > 0) {
+            console.log(`    ✅ Workers restarted: ${workers.restarted.join(', ')}`)
+          }
+          if (workers.failed.length > 0) {
+            console.log(`    ⚠️  Workers not active after restart: ${workers.failed.join(', ')}`)
           }
         }
 
