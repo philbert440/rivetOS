@@ -708,9 +708,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
           console.log(`    ✅ Workers restarted: ${workers.restarted.join(', ')}`)
         }
         if (workers.failed.length > 0) {
-          console.log(
-            `    ⚠️  Workers not active after restart: ${workers.failed.join(', ')}`,
-          )
+          console.log(`    ⚠️  Workers not active after restart: ${workers.failed.join(', ')}`)
         }
       }
       await verifyGatewayLocal(localOpts.restart)
@@ -769,9 +767,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
             console.log(`    ✅ Workers restarted: ${workers.restarted.join(', ')}`)
           }
           if (workers.failed.length > 0) {
-            console.log(
-              `    ⚠️  Workers not active after restart: ${workers.failed.join(', ')}`,
-            )
+            console.log(`    ⚠️  Workers not active after restart: ${workers.failed.join(', ')}`)
           }
         }
 
