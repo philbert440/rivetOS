@@ -54,8 +54,8 @@ Access tracking: when a message or summary is returned in search results, its `a
 
 | Tool | Description |
 |------|-------------|
-| `memory_search` | Unified search across messages and summaries. Auto-expands top summary hits to children/source messages. Supports FTS, trigram, and regex modes. Agent/date filters, optional LLM synthesis. |
-| `memory_browse` | Chronological message browsing. For reviewing sessions and catching up on activity. |
+| `memory_search` | Unified search across messages and summaries. Auto-expands top summary hits to children/source messages. Supports FTS, trigram, and regex modes. Agent/date filters, optional `window=` shortcuts, optional LLM synthesis. |
+| `memory_browse` | Chronological message browsing. For reviewing sessions and catching up on activity. Prefer `window=today\|yesterday\|this_morning\|this_week\|last_24h` for time-bounded questions (local-TZ midnight → UTC; Hermes parity). |
 | `memory_stats` | System health diagnostics. Embedding queue depth, unsummarized message counts, compaction status, summary tree depth, embedding coverage. |
 
 ## Config (in config.yaml)

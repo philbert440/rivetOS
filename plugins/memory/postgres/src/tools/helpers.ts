@@ -155,6 +155,105 @@ export interface ExpandedSummary {
 export const MS_PER_DAY = 86_400_000
 
 // ---------------------------------------------------------------------------
+// Time-window shortcuts (parity with Hermes rivet-memory v0.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Named `window=` values for memory_browse / memory_search.
+ * Resolve to UTC ISO bounds anchored at the process local timezone midnight,
+ * so agents avoid the "UTC midnight = previous evening local" trap.
+ */
+export const WINDOW_CHOICES = [
+  'today',
+  'yesterday',
+  'this_morning',
+  'this_week',
+  'last_24h',
+] as const
+
+export type WindowChoice = (typeof WINDOW_CHOICES)[number]
+
+export function isWindowChoice(value: string): value is WindowChoice {
+  return (WINDOW_CHOICES as readonly string[]).includes(value)
+}
+
+/**
+ * Convert a window name to `(since, before)` UTC ISO timestamps.
+ *
+ * Anchoring uses the process local timezone (or the local TZ of `now` when
+ * injected for tests). Matches Hermes `resolve_window` semantics:
+ * - today / this_morning → local midnight → now
+ * - yesterday → local yesterday midnight → local today midnight
+ * - this_week → local Monday midnight → now (ISO week, Mon=start)
+ * - last_24h → rolling 24h from now
+ *
+ * Returns `{ since: null, before: null }` for unrecognized names so callers
+ * can fall through without hard-failing.
+ */
+export function resolveWindow(
+  window: string,
+  now: Date = new Date(),
+): { since: string | null; before: string | null } {
+  const startOfLocalDay = (d: Date): Date => {
+    const x = new Date(d.getTime())
+    x.setHours(0, 0, 0, 0)
+    return x
+  }
+
+  const todayLocal = startOfLocalDay(now)
+
+  if (window === 'today' || window === 'this_morning') {
+    // "this morning" shares today's lower bound; agents narrow the result set.
+    return { since: todayLocal.toISOString(), before: null }
+  }
+  if (window === 'yesterday') {
+    const yest = new Date(todayLocal.getTime())
+    yest.setDate(yest.getDate() - 1)
+    return {
+      since: yest.toISOString(),
+      before: todayLocal.toISOString(),
+    }
+  }
+  if (window === 'this_week') {
+    // ISO week — Monday start. JS getDay(): 0=Sun..6=Sat.
+    const monday = new Date(todayLocal.getTime())
+    const day = monday.getDay()
+    const daysFromMonday = day === 0 ? 6 : day - 1
+    monday.setDate(monday.getDate() - daysFromMonday)
+    return { since: monday.toISOString(), before: null }
+  }
+  if (window === 'last_24h') {
+    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+    return { since: since.toISOString(), before: null }
+  }
+  return { since: null, before: null }
+}
+
+/**
+ * Apply `window=` when neither explicit `since` nor `before` was supplied.
+ * Explicit bounds always win (Hermes parity).
+ */
+export function applyWindowArgs(args: {
+  window?: unknown
+  since?: unknown
+  before?: unknown
+}): { since: string | undefined; before: string | undefined } {
+  const explicitSince = typeof args.since === 'string' && args.since ? args.since : undefined
+  const explicitBefore = typeof args.before === 'string' && args.before ? args.before : undefined
+  if (explicitSince || explicitBefore) {
+    return { since: explicitSince, before: explicitBefore }
+  }
+  if (typeof args.window === 'string' && args.window) {
+    const { since, before } = resolveWindow(args.window)
+    return {
+      since: since ?? undefined,
+      before: before ?? undefined,
+    }
+  }
+  return { since: undefined, before: undefined }
+}
+
+// ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
