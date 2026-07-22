@@ -117,17 +117,16 @@ export function createBrowseTool(pool: pg.Pool): Tool {
           return `[${ts}] ${r.agent}/${r.role}${tool}\n${content}${truncationHint(r.metadata, r.id)}`
         })
 
-        let header =
-          `## Messages (${String(result.rows.length)} returned, ${order === 'DESC' ? 'newest' : 'oldest'} first)`
+        let header = `## Messages (${String(result.rows.length)} returned, ${order === 'DESC' ? 'newest' : 'oldest'} first)`
         if (typeof args.window === 'string' && args.window && (since || before)) {
-          header += `\n_window="${args.window}"` +
+          header +=
+            `\n_window="${args.window}"` +
             (since ? ` since=${since}` : '') +
             (before ? ` before=${before}` : '') +
             '_'
         }
         if (hitLimit) {
-          header +=
-            `\n_Hit limit=${String(limit)}. Flip order, raise limit (max 200), or narrow since/before/window._`
+          header += `\n_Hit limit=${String(limit)}. Flip order, raise limit (max 200), or narrow since/before/window._`
         }
 
         return header + '\n\n' + lines.join('\n\n---\n\n')

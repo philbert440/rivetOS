@@ -170,7 +170,9 @@ export const memoryBrowseInputSchema = {
   before: z
     .string()
     .optional()
-    .describe('Show messages before this time (ISO UTC timestamp). Same UTC gotcha as since. Prefer window=.'),
+    .describe(
+      'Show messages before this time (ISO UTC timestamp). Same UTC gotcha as since. Prefer window=.',
+    ),
   window: z
     .enum(['today', 'yesterday', 'this_morning', 'this_week', 'last_24h'])
     .optional()

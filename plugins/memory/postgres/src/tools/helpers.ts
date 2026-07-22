@@ -233,11 +233,10 @@ export function resolveWindow(
  * Apply `window=` when neither explicit `since` nor `before` was supplied.
  * Explicit bounds always win (Hermes parity).
  */
-export function applyWindowArgs(args: {
-  window?: unknown
-  since?: unknown
-  before?: unknown
-}): { since: string | undefined; before: string | undefined } {
+export function applyWindowArgs(args: { window?: unknown; since?: unknown; before?: unknown }): {
+  since: string | undefined
+  before: string | undefined
+} {
   const explicitSince = typeof args.since === 'string' && args.since ? args.since : undefined
   const explicitBefore = typeof args.before === 'string' && args.before ? args.before : undefined
   if (explicitSince || explicitBefore) {
