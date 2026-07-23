@@ -4,7 +4,13 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { applyWindowArgs, isWindowChoice, resolveWindow, WINDOW_CHOICES } from './helpers.js'
+import {
+  applyWindowArgs,
+  isWindowChoice,
+  normalizeWindowInput,
+  resolveWindow,
+  WINDOW_CHOICES,
+} from './helpers.js'
 
 /** Local-midnight of the calendar day containing `d` (process TZ). */
 function localMidnight(d: Date): Date {
@@ -30,6 +36,22 @@ describe('WINDOW_CHOICES', () => {
   })
 })
 
+describe('normalizeWindowInput', () => {
+  it('maps spaced / hyphenated forms onto snake_case choices', () => {
+    expect(normalizeWindowInput('this morning')).toBe('this_morning')
+    expect(normalizeWindowInput('this week')).toBe('this_week')
+    expect(normalizeWindowInput('last 24h')).toBe('last_24h')
+    expect(normalizeWindowInput('last 24 hours')).toBe('last_24h')
+    expect(normalizeWindowInput('last-24h')).toBe('last_24h')
+    expect(normalizeWindowInput('  TODAY  ')).toBe('today')
+  })
+
+  it('returns null for empty input', () => {
+    expect(normalizeWindowInput('')).toBeNull()
+    expect(normalizeWindowInput('   ')).toBeNull()
+  })
+})
+
 describe('resolveWindow', () => {
   // Fixed instant — local calendar day depends on process TZ, so expected
   // bounds are computed with the same local helpers the implementation uses.
@@ -43,6 +65,10 @@ describe('resolveWindow', () => {
 
   it('this_morning shares today lower bound', () => {
     expect(resolveWindow('this_morning', now)).toEqual(resolveWindow('today', now))
+  })
+
+  it('normalizes spaced this morning', () => {
+    expect(resolveWindow('this morning', now)).toEqual(resolveWindow('this_morning', now))
   })
 
   it('yesterday → [local-yesterday-00:00, local-today-00:00)', () => {
@@ -71,8 +97,14 @@ describe('resolveWindow', () => {
     expect(since).toBe(new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString())
   })
 
-  it('unknown window → (null, null)', () => {
-    expect(resolveWindow('not_a_real_window', now)).toEqual({ since: null, before: null })
+  it('unknown window throws with valid choices listed', () => {
+    expect(() => resolveWindow('not_a_real_window', now)).toThrow(/Unknown window/)
+    expect(() => resolveWindow('not_a_real_window', now)).toThrow(/today/)
+    expect(() => resolveWindow('not_a_real_window', now)).toThrow(/last_24h/)
+  })
+
+  it('empty window throws', () => {
+    expect(() => resolveWindow('   ', now)).toThrow(/Invalid window/)
   })
 
   it('returns ISO-8601 UTC strings', () => {
@@ -113,5 +145,15 @@ describe('applyWindowArgs', () => {
       since: '2026-06-01T12:00:00.000Z',
     })
     expect(out).toEqual({ since: '2026-06-01T12:00:00.000Z', before: undefined })
+  })
+
+  it('unknown window throws (does not silently drop the filter)', () => {
+    expect(() => applyWindowArgs({ window: 'last_week' })).toThrow(/Unknown window/)
+  })
+
+  it('accepts natural-language spaced window after normalize', () => {
+    const out = applyWindowArgs({ window: 'this morning' })
+    expect(out.since).toBeTruthy()
+    expect(out.before).toBeUndefined()
   })
 })
