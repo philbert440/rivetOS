@@ -74,7 +74,14 @@ export function createBrowseTool(pool: pg.Pool): Tool {
         pi++
       }
 
-      const { since, before } = applyWindowArgs(args)
+      let since: string | undefined
+      let before: string | undefined
+      try {
+        ;({ since, before } = applyWindowArgs(args))
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        return `Browse failed: ${msg}`
+      }
 
       if (since) {
         conditions.push(`m.created_at >= $${String(pi)}`)
