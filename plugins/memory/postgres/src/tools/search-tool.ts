@@ -6,7 +6,7 @@ import type { Tool } from '@rivetos/types'
 import type { SearchEngine, SearchHit } from '../search.js'
 import type { Expander } from '../expand.js'
 import type { ExpandedSummary, MemoryToolsConfig } from './helpers.js'
-import { fmtDate, queryLlm, MS_PER_DAY } from './helpers.js'
+import { applyWindowArgs, fmtDate, queryLlm, MS_PER_DAY, WINDOW_CHOICES } from './helpers.js'
 
 export function createSearchTool(
   searchEngine: SearchEngine,
@@ -41,11 +41,20 @@ export function createSearchTool(
         agent: { type: 'string', description: 'Filter by agent (opus, grok, etc.)' },
         since: {
           type: 'string',
-          description: 'Only return results after this date (ISO timestamp, e.g. 2025-01-15)',
+          description:
+            'Only return results after this date (ISO UTC timestamp). Prefer window= for local-day bounds.',
         },
         before: {
           type: 'string',
-          description: 'Only return results before this date (ISO timestamp, e.g. 2025-06-01)',
+          description:
+            'Only return results before this date (ISO UTC timestamp). Prefer window= for local-day bounds.',
+        },
+        window: {
+          type: 'string',
+          enum: [...WINDOW_CHOICES],
+          description:
+            'Shortcut for time-bounded filters (today, yesterday, this_morning, this_week, last_24h). ' +
+            'Resolves in the SERVER local timezone. Used only when neither since nor before is provided.',
         },
         expand: {
           type: 'boolean',
@@ -65,8 +74,7 @@ export function createSearchTool(
       const scope = (args.scope as string | undefined) ?? 'both'
       const limit = Math.min(Math.max((args.limit as number | undefined) ?? 10, 1), 50)
       const agent = args.agent as string | undefined
-      const since = args.since as string | undefined
-      const before = args.before as string | undefined
+      const { since, before } = applyWindowArgs(args)
       const shouldExpand = args.expand !== false // default true
       const shouldSynthesize = args.synthesize === true
 
@@ -80,7 +88,27 @@ export function createSearchTool(
         before,
       })
 
-      if (results.length === 0) return 'No results found.'
+      if (results.length === 0) {
+        // Hermes parity: when a date window was applied, point agents at browse
+        // instead of leaving them stuck on empty FTS over a time range.
+        if (since || before) {
+          const parts: string[] = []
+          if (typeof args.window === 'string' && args.window) {
+            parts.push(`window="${args.window}"`)
+          } else {
+            if (since) parts.push(`since="${since}"`)
+            if (before) parts.push(`before="${before}"`)
+          }
+          const windowStr = parts.join(', ')
+          return (
+            `No results found for query "${query}" with ${windowStr}.\n\n` +
+            `For chronological browsing of a date window without a topic filter, ` +
+            `call \`memory_browse(${windowStr})\` instead — that returns every message ` +
+            `in the window, no FTS match required.`
+          )
+        }
+        return 'No results found.'
+      }
 
       // 2. Separate summaries from messages
       const summaryHits = results.filter((r) => r.type === 'summary')
