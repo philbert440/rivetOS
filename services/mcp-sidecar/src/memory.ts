@@ -82,7 +82,8 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         'Browse RivetOS conversation messages chronologically. Unlike memory_search ' +
         '(which ranks by relevance), this returns messages in time order. Use to ' +
         'review what happened in a session, catch up on recent activity, or read a ' +
-        'specific conversation by ID.',
+        'specific conversation by ID. For time-bounded questions ("today", "yesterday", ' +
+        '"this morning"), prefer window= over raw since/before so local midnights convert correctly to UTC.',
     }),
     adaptRivetTool(find('memory_stats'), memoryStatsInputSchema, {
       name: `${prefix}memory_stats`,
@@ -131,11 +132,21 @@ export const memorySearchInputSchema = {
   since: z
     .string()
     .optional()
-    .describe('Only return results after this date (ISO timestamp, e.g. 2025-01-15)'),
+    .describe(
+      'Only return results after this date (ISO UTC timestamp). Prefer window= for local-day bounds.',
+    ),
   before: z
     .string()
     .optional()
-    .describe('Only return results before this date (ISO timestamp, e.g. 2025-06-01)'),
+    .describe(
+      'Only return results before this date (ISO UTC timestamp). Prefer window= for local-day bounds.',
+    ),
+  window: z
+    .enum(['today', 'yesterday', 'this_morning', 'this_week', 'last_24h'])
+    .optional()
+    .describe(
+      'Shortcut for time-bounded filters — resolves in the SERVER local timezone. Used only when neither since nor before is provided.',
+    ),
   expand: z
     .boolean()
     .optional()
@@ -153,11 +164,21 @@ export const memoryBrowseInputSchema = {
   since: z
     .string()
     .optional()
-    .describe('Show messages after this time (ISO timestamp, e.g. 2025-03-15T10:00:00Z)'),
+    .describe(
+      'Show messages after this time (ISO UTC timestamp). Bare dates are UTC midnight (= previous evening US local). Prefer window=.',
+    ),
   before: z
     .string()
     .optional()
-    .describe('Show messages before this time (ISO timestamp, e.g. 2025-03-16)'),
+    .describe(
+      'Show messages before this time (ISO UTC timestamp). Same UTC gotcha as since. Prefer window=.',
+    ),
+  window: z
+    .enum(['today', 'yesterday', 'this_morning', 'this_week', 'last_24h'])
+    .optional()
+    .describe(
+      'Shortcut for time-bounded windows — resolves to (since, before) in the SERVER local timezone, no TZ math required. Used only when neither since nor before is provided.',
+    ),
   agent: z.string().optional().describe('Filter by agent (opus, grok, etc.)'),
   limit: z
     .number()
