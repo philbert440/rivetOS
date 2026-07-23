@@ -178,6 +178,49 @@ export function isWindowChoice(value: string): value is WindowChoice {
 }
 
 /**
+ * Normalize free-form window strings agents commonly invent:
+ * spaces/hyphens → underscores, lower-case, strip punctuation noise.
+ * Also maps a few natural-language synonyms onto WINDOW_CHOICES.
+ *
+ * Returns null when the input is empty after cleanup.
+ */
+export function normalizeWindowInput(raw: string): string | null {
+  let s = raw.trim().toLowerCase()
+  if (!s) return null
+
+  // Common multi-word / hyphen forms → snake_case tokens first.
+  s = s
+    .replace(/\blast\s*24\s*(?:h(?:ours?)?)?\b/g, 'last_24h')
+    .replace(/\blast\s+day\b/g, 'last_24h')
+    .replace(/\bthis\s+morning\b/g, 'this_morning')
+    .replace(/\bthis\s+week\b/g, 'this_week')
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+
+  if (!s) return null
+
+  // Synonyms that still differ after cleanup.
+  const aliases: Record<string, WindowChoice> = {
+    last24h: 'last_24h',
+    last_24_hours: 'last_24h',
+    last_24hours: 'last_24h',
+    last_day: 'last_24h',
+    past_24h: 'last_24h',
+    morning: 'this_morning',
+    week: 'this_week',
+  }
+  if (aliases[s]) return aliases[s]
+  return s
+}
+
+/** Human-readable list of valid window= values for error messages. */
+export function formatWindowChoices(): string {
+  return WINDOW_CHOICES.map((c) => `"${c}"`).join(', ')
+}
+
+/**
  * Convert a window name to `(since, before)` UTC ISO timestamps.
  *
  * Anchoring uses the process local timezone (or the local TZ of `now` when
@@ -187,13 +230,27 @@ export function isWindowChoice(value: string): value is WindowChoice {
  * - this_week → local Monday midnight → now (ISO week, Mon=start)
  * - last_24h → rolling 24h from now
  *
- * Returns `{ since: null, before: null }` for unrecognized names so callers
- * can fall through without hard-failing.
+ * Unknown names after {@link normalizeWindowInput} throw — silent no-op was
+ * a daily-use footgun (agents thought they time-bounded, got full history).
  */
 export function resolveWindow(
   window: string,
   now: Date = new Date(),
 ): { since: string | null; before: string | null } {
+  const normalized = normalizeWindowInput(window)
+  if (!normalized) {
+    throw new Error(
+      `Invalid window="" — expected one of: ${formatWindowChoices()}`,
+    )
+  }
+  if (!isWindowChoice(normalized)) {
+    throw new Error(
+      `Unknown window="${window}"` +
+        (normalized !== window.trim().toLowerCase() ? ` (normalized to "${normalized}")` : '') +
+        `. Expected one of: ${formatWindowChoices()}`,
+    )
+  }
+
   const startOfLocalDay = (d: Date): Date => {
     const x = new Date(d.getTime())
     x.setHours(0, 0, 0, 0)
@@ -202,11 +259,11 @@ export function resolveWindow(
 
   const todayLocal = startOfLocalDay(now)
 
-  if (window === 'today' || window === 'this_morning') {
+  if (normalized === 'today' || normalized === 'this_morning') {
     // "this morning" shares today's lower bound; agents narrow the result set.
     return { since: todayLocal.toISOString(), before: null }
   }
-  if (window === 'yesterday') {
+  if (normalized === 'yesterday') {
     const yest = new Date(todayLocal.getTime())
     yest.setDate(yest.getDate() - 1)
     return {
@@ -214,7 +271,7 @@ export function resolveWindow(
       before: todayLocal.toISOString(),
     }
   }
-  if (window === 'this_week') {
+  if (normalized === 'this_week') {
     // ISO week — Monday start. JS getDay(): 0=Sun..6=Sat.
     const monday = new Date(todayLocal.getTime())
     const day = monday.getDay()
@@ -222,16 +279,20 @@ export function resolveWindow(
     monday.setDate(monday.getDate() - daysFromMonday)
     return { since: monday.toISOString(), before: null }
   }
-  if (window === 'last_24h') {
+  if (normalized === 'last_24h') {
     const since = new Date(now.getTime() - 24 * 60 * 60 * 1000)
     return { since: since.toISOString(), before: null }
   }
-  return { since: null, before: null }
+  // Exhaustiveness guard — isWindowChoice already filtered.
+  throw new Error(`Unknown window="${window}". Expected one of: ${formatWindowChoices()}`)
 }
 
 /**
  * Apply `window=` when neither explicit `since` nor `before` was supplied.
  * Explicit bounds always win (Hermes parity).
+ *
+ * Throws on unknown `window` values (see {@link resolveWindow}) so tools
+ * surface a clear error instead of silently dropping the time filter.
  */
 export function applyWindowArgs(args: { window?: unknown; since?: unknown; before?: unknown }): {
   since: string | undefined

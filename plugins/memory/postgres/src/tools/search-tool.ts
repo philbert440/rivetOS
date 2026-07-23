@@ -74,7 +74,14 @@ export function createSearchTool(
       const scope = (args.scope as string | undefined) ?? 'both'
       const limit = Math.min(Math.max((args.limit as number | undefined) ?? 10, 1), 50)
       const agent = args.agent as string | undefined
-      const { since, before } = applyWindowArgs(args)
+      let since: string | undefined
+      let before: string | undefined
+      try {
+        ;({ since, before } = applyWindowArgs(args))
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        return `Search failed: ${msg}`
+      }
       const shouldExpand = args.expand !== false // default true
       const shouldSynthesize = args.synthesize === true
 
