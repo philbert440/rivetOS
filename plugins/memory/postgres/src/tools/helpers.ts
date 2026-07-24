@@ -211,7 +211,11 @@ export function normalizeWindowInput(raw: string): string | null {
     morning: 'this_morning',
     week: 'this_week',
   }
-  if (aliases[s]) return aliases[s]
+  // Prefer explicit key list over `aliases[s]` truthiness — without
+  // noUncheckedIndexedAccess, indexed access is typed as always-defined.
+  for (const [key, value] of Object.entries(aliases)) {
+    if (key === s) return value
+  }
   return s
 }
 
@@ -239,9 +243,7 @@ export function resolveWindow(
 ): { since: string | null; before: string | null } {
   const normalized = normalizeWindowInput(window)
   if (!normalized) {
-    throw new Error(
-      `Invalid window="" — expected one of: ${formatWindowChoices()}`,
-    )
+    throw new Error(`Invalid window="" — expected one of: ${formatWindowChoices()}`)
   }
   if (!isWindowChoice(normalized)) {
     throw new Error(
@@ -259,32 +261,39 @@ export function resolveWindow(
 
   const todayLocal = startOfLocalDay(now)
 
-  if (normalized === 'today' || normalized === 'this_morning') {
-    // "this morning" shares today's lower bound; agents narrow the result set.
-    return { since: todayLocal.toISOString(), before: null }
-  }
-  if (normalized === 'yesterday') {
-    const yest = new Date(todayLocal.getTime())
-    yest.setDate(yest.getDate() - 1)
-    return {
-      since: yest.toISOString(),
-      before: todayLocal.toISOString(),
+  switch (normalized) {
+    case 'today':
+    case 'this_morning':
+      // "this morning" shares today's lower bound; agents narrow the result set.
+      return { since: todayLocal.toISOString(), before: null }
+    case 'yesterday': {
+      const yest = new Date(todayLocal.getTime())
+      yest.setDate(yest.getDate() - 1)
+      return {
+        since: yest.toISOString(),
+        before: todayLocal.toISOString(),
+      }
+    }
+    case 'this_week': {
+      // ISO week — Monday start. JS getDay(): 0=Sun..6=Sat.
+      const monday = new Date(todayLocal.getTime())
+      const day = monday.getDay()
+      const daysFromMonday = day === 0 ? 6 : day - 1
+      monday.setDate(monday.getDate() - daysFromMonday)
+      return { since: monday.toISOString(), before: null }
+    }
+    case 'last_24h': {
+      const since = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+      return { since: since.toISOString(), before: null }
+    }
+    default: {
+      // Exhaustiveness — isWindowChoice already filtered.
+      const _exhaustive: never = normalized
+      throw new Error(
+        `Unknown window="${String(_exhaustive)}". Expected one of: ${formatWindowChoices()}`,
+      )
     }
   }
-  if (normalized === 'this_week') {
-    // ISO week — Monday start. JS getDay(): 0=Sun..6=Sat.
-    const monday = new Date(todayLocal.getTime())
-    const day = monday.getDay()
-    const daysFromMonday = day === 0 ? 6 : day - 1
-    monday.setDate(monday.getDate() - daysFromMonday)
-    return { since: monday.toISOString(), before: null }
-  }
-  if (normalized === 'last_24h') {
-    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000)
-    return { since: since.toISOString(), before: null }
-  }
-  // Exhaustiveness guard — isWindowChoice already filtered.
-  throw new Error(`Unknown window="${window}". Expected one of: ${formatWindowChoices()}`)
 }
 
 /**
