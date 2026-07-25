@@ -10,6 +10,7 @@ import type { TaskStatus, TaskWire } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
+import { Select } from '../components/select.js'
 import { criteriaFromLines, taskAgentOptions } from '../lib/task-create.js'
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
@@ -69,18 +70,16 @@ export function TasksPage(): JSX.Element {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-mono text-lg font-semibold text-em">Tasks</h1>
         <div className="flex items-center gap-2">
-          <select
+          <Select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as TaskStatus | '')}
-            className="rounded border border-line bg-panel px-2 py-1 font-mono text-xs"
-          >
-            <option value="">all statuses</option>
-            {Object.keys(STATUS_COLORS).map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+            title="status filter"
+            label="Status"
+            onChange={(v) => setStatusFilter(v as TaskStatus | '')}
+            options={[
+              { value: '', label: 'all statuses' },
+              ...Object.keys(STATUS_COLORS).map((s) => ({ value: s, label: s })),
+            ]}
+          />
           <button
             type="button"
             onClick={() => setShowCreate((v) => !v)}
@@ -216,19 +215,21 @@ function TaskCreateForm(props: {
       />
 
       <label className="mb-1 block text-xs text-ink-dim">Agent</label>
-      <select
-        value={effectiveAgent}
-        onChange={(e) => setAgentId(e.target.value)}
-        disabled={agents.length === 0}
-        className="mb-3 w-full rounded border border-line bg-bg px-3 py-2 font-mono text-sm outline-none focus:border-em disabled:opacity-50"
-      >
-        {agents.length === 0 && <option value="">loading agents…</option>}
-        {agents.map((a) => (
-          <option key={a.value} value={a.value}>
-            {a.label}
-          </option>
-        ))}
-      </select>
+      <div className="mb-3">
+        <Select
+          value={effectiveAgent}
+          title="agent"
+          label="Agent"
+          disabled={agents.length === 0}
+          className="h-9 w-full min-w-0 font-mono text-sm"
+          onChange={setAgentId}
+          options={
+            agents.length === 0
+              ? [{ value: '', label: 'loading agents…' }]
+              : agents.map((a) => ({ value: a.value, label: a.label }))
+          }
+        />
+      </div>
 
       <label className="mb-1 block text-xs text-ink-dim">
         Acceptance criteria (optional — one per line)

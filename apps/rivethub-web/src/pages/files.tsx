@@ -10,6 +10,7 @@ import type { FileEntry } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
+import { Select } from '../components/select.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
 
@@ -312,15 +313,17 @@ export function FilesPage(): JSX.Element {
           placeholder="Filter…"
           className="w-40 rounded border border-line bg-panel px-2 py-1 text-xs outline-none focus:border-em"
         />
-        <select
+        <Select
           value={sort}
-          onChange={(e) => setSort(e.target.value as SortKey)}
-          className="rounded border border-line bg-panel px-2 py-1 font-mono text-xs"
-        >
-          <option value="name">sort: name</option>
-          <option value="mtime">sort: mtime</option>
-          <option value="size">sort: size</option>
-        </select>
+          title="sort"
+          label="Sort"
+          onChange={(v) => setSort(v as SortKey)}
+          options={[
+            { value: 'name', label: 'sort: name' },
+            { value: 'mtime', label: 'sort: mtime' },
+            { value: 'size', label: 'sort: size' },
+          ]}
+        />
         <button
           type="button"
           disabled={busy}
