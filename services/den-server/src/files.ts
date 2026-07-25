@@ -1,14 +1,18 @@
 /**
  * Shared filestore routes (/files/*, aliased at /api/files/*) — a browse/
- * download/upload surface over ONE operator-configured root (`/rivet-shared`
- * by default). Path-fenced: every request path is resolved and must stay
- * under the root; symlinks that point outside are refused on download so the
- * fence holds against link-outs, not just `..`.
+ * download/upload/mutate surface over ONE operator-configured root
+ * (`/rivet-shared` by default). Path-fenced: every request path is resolved
+ * and must stay under the root; symlinks that point outside are refused so
+ * the fence holds against link-outs, not just `..`.
  *
- *   GET  /files/list?path=<rel>                dir listing (dirs first)
- *   GET  /files/download?path=<rel>            stream one file
- *   POST /files/upload?dir=<rel>&name=<file>   raw-body write (no-clobber
- *        [&overwrite=1]                        unless overwrite)
+ *   GET    /files/list?path=<rel>                dir listing (dirs first)
+ *   GET    /files/download?path=<rel>            stream one file
+ *   POST   /files/upload?dir=<rel>&name=<file>   raw-body write (no-clobber
+ *          [&overwrite=1]                        unless overwrite)
+ *   POST   /files/mkdir?dir=<rel>&name=<dir>     create empty directory
+ *   POST   /files/rename?from=<rel>&to=<rel>     rename/move within root
+ *   DELETE /files/delete?path=<rel>              delete file or empty dir
+ *          [&recursive=1]                        (recursive for non-empty dirs)
  *
  * Auth rides the server's existing bearer gate — these handlers assume the
  * caller already passed it.
@@ -20,13 +24,14 @@ import {
   createWriteStream,
   existsSync,
   lstatSync,
+  mkdirSync,
   readdirSync,
   realpathSync,
   renameSync,
   rmSync,
   statSync,
 } from 'node:fs'
-import { extname, join, resolve, sep } from 'node:path'
+import { dirname, extname, join, resolve, sep } from 'node:path'
 import type { FileEntry } from '@rivetos/types'
 
 /** Hard upload ceiling — the mount is for plans and project files, not disk
@@ -247,6 +252,122 @@ export function createFilesRoutes(opts: {
       })
       req.pipe(out)
       return true
+    }
+
+    if (req.method === 'POST' && url.pathname === '/files/mkdir') {
+      if (gate(res)) return true
+      const dirRel = url.searchParams.get('dir') ?? ''
+      const name = safeName(url.searchParams.get('name') ?? '')
+      if (!name) return json(res, 422, { error: 'invalid directory name' })
+      const lexParent = resolveFenced(root, dirRel)
+      if (!lexParent) return json(res, 403, { error: 'path escapes the files root' })
+      if (!existsSync(lexParent) || !statSync(lexParent).isDirectory())
+        return json(res, 404, { error: 'no such directory' })
+      const parent = realpathSync(lexParent)
+      if (parent !== root && !parent.startsWith(root + sep))
+        return json(res, 403, { error: 'path escapes the files root' })
+      const target = join(parent, name)
+      if (existsSync(target)) return json(res, 409, { error: `${name} already exists` })
+      try {
+        mkdirSync(target, { mode: 0o755 })
+      } catch (err) {
+        return json(res, 500, { error: `mkdir failed: ${(err as Error).message}` })
+      }
+      const relOut = target.slice(root.length + 1)
+      log(`[files] mkdir ${relOut}`)
+      return json(res, 200, { ok: true, path: relOut })
+    }
+
+    if (req.method === 'POST' && url.pathname === '/files/rename') {
+      if (gate(res)) return true
+      const fromRel = url.searchParams.get('from') ?? ''
+      const toRel = url.searchParams.get('to') ?? ''
+      if (!fromRel || !toRel) return json(res, 422, { error: 'from and to are required' })
+      if (fromRel === toRel) return json(res, 422, { error: 'from and to are the same path' })
+      const fromLex = resolveFenced(root, fromRel)
+      const toLex = resolveFenced(root, toRel)
+      if (!fromLex || !toLex) return json(res, 403, { error: 'path escapes the files root' })
+      if (fromLex === root || toLex === root)
+        return json(res, 403, { error: 'cannot rename the files root' })
+      if (!existsSync(fromLex)) return json(res, 404, { error: 'no such path' })
+      // Fence the real source (symlinks must not point outside)
+      const fromReal = realpathSync(fromLex)
+      if (fromReal !== root && !fromReal.startsWith(root + sep))
+        return json(res, 403, { error: 'path escapes the files root' })
+      // Destination parent must exist and stay inside the root
+      const toParentLex = dirname(toLex)
+      if (!existsSync(toParentLex) || !statSync(toParentLex).isDirectory())
+        return json(res, 404, { error: 'destination directory does not exist' })
+      const toParent = realpathSync(toParentLex)
+      if (toParent !== root && !toParent.startsWith(root + sep))
+        return json(res, 403, { error: 'path escapes the files root' })
+      // Leaf name of destination must be a single safe segment
+      const toName = toLex.slice(toLex.lastIndexOf(sep) + 1)
+      if (!safeName(toName)) return json(res, 422, { error: 'invalid destination name' })
+      const dest = join(toParent, toName)
+      // No overwrite — client must delete first. Avoids clobber races.
+      if (existsSync(dest)) return json(res, 409, { error: 'destination already exists' })
+      // Refuse moving a directory into itself / a descendant
+      if (fromReal === dest || dest.startsWith(fromReal + sep))
+        return json(res, 422, { error: 'cannot move a directory into itself' })
+      try {
+        renameSync(fromReal, dest)
+      } catch (err) {
+        return json(res, 500, { error: `rename failed: ${(err as Error).message}` })
+      }
+      const relOut = dest.slice(root.length + 1)
+      log(`[files] rename ${fromRel} → ${relOut}`)
+      return json(res, 200, { ok: true, path: relOut })
+    }
+
+    if (req.method === 'DELETE' && url.pathname === '/files/delete') {
+      if (gate(res)) return true
+      const rel = url.searchParams.get('path') ?? ''
+      if (!rel) return json(res, 422, { error: 'path is required' })
+      const abs = resolveFenced(root, rel)
+      if (!abs) return json(res, 403, { error: 'path escapes the files root' })
+      if (abs === root) return json(res, 403, { error: 'cannot delete the files root' })
+      if (!existsSync(abs)) return json(res, 404, { error: 'no such path' })
+      const lst = lstatSync(abs)
+      // Symlink that points outside: refuse (don't follow into host FS)
+      if (lst.isSymbolicLink()) {
+        let real: string
+        try {
+          real = realpathSync(abs)
+        } catch {
+          // dangling link inside mount — ok to remove the link itself
+          try {
+            rmSync(abs, { force: true })
+          } catch (err) {
+            return json(res, 500, { error: `delete failed: ${(err as Error).message}` })
+          }
+          log(`[files] delete dangling-link ${rel}`)
+          return json(res, 200, { ok: true, path: rel })
+        }
+        if (real !== root && !real.startsWith(root + sep))
+          return json(res, 403, { error: 'path escapes the files root' })
+      } else {
+        const real = realpathSync(abs)
+        if (real !== root && !real.startsWith(root + sep))
+          return json(res, 403, { error: 'path escapes the files root' })
+      }
+      const recursive = url.searchParams.get('recursive') === '1'
+      try {
+        if (lst.isDirectory() && !lst.isSymbolicLink()) {
+          // Node's rmSync requires recursive:true for directories (even empty).
+          // Gate non-empty dirs on the client's recursive flag first.
+          const kids = readdirSync(abs)
+          if (kids.length > 0 && !recursive)
+            return json(res, 409, { error: 'directory not empty (pass recursive=1)' })
+          rmSync(abs, { recursive: true, force: false })
+        } else {
+          rmSync(abs, { force: true })
+        }
+      } catch (err) {
+        return json(res, 500, { error: `delete failed: ${(err as Error).message}` })
+      }
+      log(`[files] delete ${rel}${recursive ? ' (recursive)' : ''}`)
+      return json(res, 200, { ok: true, path: rel })
     }
 
     return false

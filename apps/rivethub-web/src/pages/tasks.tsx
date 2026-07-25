@@ -1,15 +1,16 @@
 /**
- * Tasks (4g) — list + detail over /api/tasks. The escalation toast's
- * /tasks/<id> href lands here. Read-first with steer/kill actions; task
- * CREATE stays in chat/API for v1 (design doc cut).
+ * Tasks (4g) — list + detail + create over /api/tasks. Escalation toasts
+ * land on /tasks/<id>. Create is first-class in Hub (not chat-only).
  */
 
 import { useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from '@tanstack/react-router'
 import type { TaskStatus, TaskWire } from '@rivetos/types'
+import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
+import { criteriaFromLines, taskAgentOptions } from '../lib/task-create.js'
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
   queued: 'text-ink-dim',
@@ -43,7 +44,9 @@ export function TasksPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [statusFilter, setStatusFilter] = useState<TaskStatus | ''>('')
+  const [showCreate, setShowCreate] = useState(false)
   const connected = useGatewayReady()
 
   const tasks = useQuery({
@@ -63,21 +66,41 @@ export function TasksPage(): JSX.Element {
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-8">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-mono text-lg font-semibold text-em">Tasks</h1>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as TaskStatus | '')}
-          className="rounded border border-line bg-panel px-2 py-1 font-mono text-xs"
-        >
-          <option value="">all statuses</option>
-          {Object.keys(STATUS_COLORS).map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as TaskStatus | '')}
+            className="rounded border border-line bg-panel px-2 py-1 font-mono text-xs"
+          >
+            <option value="">all statuses</option>
+            {Object.keys(STATUS_COLORS).map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setShowCreate((v) => !v)}
+            className="rounded bg-em-dim px-3 py-1.5 text-sm font-medium text-bg hover:bg-em"
+          >
+            {showCreate ? 'Close' : 'New task'}
+          </button>
+        </div>
       </div>
+
+      {showCreate && (
+        <TaskCreateForm
+          onCreated={(id) => {
+            setShowCreate(false)
+            void queryClient.invalidateQueries({ queryKey: ['tasks', baseUrl, token ?? ''] })
+            void navigate({ to: '/tasks/$taskId', params: { taskId: id } })
+          }}
+          onCancel={() => setShowCreate(false)}
+        />
+      )}
 
       {tasks.isError && <div className="font-mono text-sm text-red">{tasks.error.message}</div>}
 
@@ -106,9 +129,137 @@ export function TasksPage(): JSX.Element {
         {tasks.data?.tasks.length === 0 && (
           <li className="text-sm text-ink-dim">
             no tasks{statusFilter ? ` (${statusFilter})` : ''}
+            {!showCreate && (
+              <>
+                {' '}
+                —{' '}
+                <button
+                  type="button"
+                  className="text-em hover:underline"
+                  onClick={() => setShowCreate(true)}
+                >
+                  create one
+                </button>
+              </>
+            )}
           </li>
         )}
       </ul>
+    </div>
+  )
+}
+
+function TaskCreateForm(props: {
+  onCreated: (taskId: string) => void
+  onCancel: () => void
+}): JSX.Element {
+  const baseUrl = useConnection((s) => s.baseUrl)
+  const token = useConnection((s) => s.token)
+  const [goal, setGoal] = useState('')
+  const [agentId, setAgentId] = useState('')
+  const [criteriaText, setCriteriaText] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | undefined>()
+
+  const catalog = useQuery({
+    queryKey: ['catalog-agents', baseUrl, token ?? ''],
+    queryFn: ({ signal }) => useConnection.getState().gateway.catalogAgents(signal),
+    staleTime: 60_000,
+  })
+
+  const agents = taskAgentOptions(catalog.data?.agents ?? [])
+  // Seed default agent once catalog loads
+  const effectiveAgent = agentId || agents[0]?.value || ''
+
+  const submit = async (): Promise<void> => {
+    const g = goal.trim()
+    if (!g) {
+      setError('goal is required')
+      return
+    }
+    if (!effectiveAgent) {
+      setError('pick an agent (catalog empty — is the node connected?)')
+      return
+    }
+    setError(undefined)
+    setSubmitting(true)
+    try {
+      const criteria = criteriaFromLines(criteriaText)
+      const res = await useConnection.getState().gateway.createTask({
+        goal: g,
+        agentId: effectiveAgent,
+        acceptanceCriteria: criteria.length > 0 ? criteria : undefined,
+        requestedBy: 'rivethub',
+      })
+      props.onCreated(res.task.id)
+    } catch (err) {
+      const msg =
+        err instanceof GatewayError ? err.message : err instanceof Error ? err.message : String(err)
+      setError(msg)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="mb-6 rounded border border-line bg-panel p-4">
+      <div className="mb-3 font-mono text-xs font-semibold text-em">New task</div>
+
+      <label className="mb-1 block text-xs text-ink-dim">Goal</label>
+      <textarea
+        value={goal}
+        onChange={(e) => setGoal(e.target.value)}
+        rows={3}
+        placeholder="What should the agent do?"
+        className="mb-3 w-full resize-y rounded border border-line bg-bg px-3 py-2 text-sm outline-none focus:border-em"
+        autoFocus
+      />
+
+      <label className="mb-1 block text-xs text-ink-dim">Agent</label>
+      <select
+        value={effectiveAgent}
+        onChange={(e) => setAgentId(e.target.value)}
+        disabled={agents.length === 0}
+        className="mb-3 w-full rounded border border-line bg-bg px-3 py-2 font-mono text-sm outline-none focus:border-em disabled:opacity-50"
+      >
+        {agents.length === 0 && <option value="">loading agents…</option>}
+        {agents.map((a) => (
+          <option key={a.value} value={a.value}>
+            {a.label}
+          </option>
+        ))}
+      </select>
+
+      <label className="mb-1 block text-xs text-ink-dim">
+        Acceptance criteria (optional — one per line)
+      </label>
+      <textarea
+        value={criteriaText}
+        onChange={(e) => setCriteriaText(e.target.value)}
+        rows={2}
+        placeholder="e.g. tests pass&#10;docs updated"
+        className="mb-3 w-full resize-y rounded border border-line bg-bg px-3 py-2 font-mono text-xs outline-none focus:border-em"
+      />
+
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={submitting || !goal.trim()}
+          className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
+        >
+          {submitting ? 'Creating…' : 'Create'}
+        </button>
+        <button
+          type="button"
+          onClick={props.onCancel}
+          disabled={submitting}
+          className="rounded border border-line px-3 py-2 text-sm text-ink-dim hover:border-em hover:text-ink disabled:opacity-40"
+        >
+          Cancel
+        </button>
+        {error && <span className="font-mono text-xs text-red">✗ {error}</span>}
+      </div>
     </div>
   )
 }

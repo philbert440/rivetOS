@@ -568,6 +568,13 @@ export interface FilesUploadResponse {
   bytes: number
 }
 
+/** mkdir / rename / delete success body */
+export interface FilesMutateResponse {
+  ok: true
+  /** root-relative path of the created / final / deleted entry */
+  path: string
+}
+
 // -- mesh device enrollment (Settings → Devices; den-server devices.ts) ------
 
 export interface MeshDevice {

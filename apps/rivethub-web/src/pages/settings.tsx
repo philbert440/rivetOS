@@ -2,7 +2,8 @@ import { useState, type JSX } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
 import { RivetGateway } from '@rivetos/gateway-client'
-import { isValidWikiUrl, useWikiSettings } from '../stores/wiki-settings.js'
+import { isValidWikiBase } from '../lib/wiki-base.js'
+import { useWikiSettings } from '../stores/wiki-settings.js'
 import { BUILD_INFO } from '../lib/build-info.js'
 import { DevicesSection } from '../components/devices-section.js'
 
@@ -18,8 +19,8 @@ export function SettingsPage(): JSX.Element {
   const [draftUrl, setDraftUrl] = useState(baseUrl)
   const [draftToken, setDraftToken] = useState(token ?? '')
   const [probe, setProbe] = useState<ProbeState>({ kind: 'idle' })
-  const { wikiUrl, setWikiUrl } = useWikiSettings()
-  const [draftWiki, setDraftWiki] = useState(wikiUrl)
+  const { wikiBaseUrl, setWikiBaseUrl } = useWikiSettings()
+  const [draftWiki, setDraftWiki] = useState(wikiBaseUrl)
   const [wikiNotice, setWikiNotice] = useState('')
 
   const test = async (): Promise<void> => {
@@ -102,32 +103,41 @@ export function SettingsPage(): JSX.Element {
       </div>
 
       <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
-        Memory wiki
+        Memory wiki (datahub)
       </h2>
+      <p className="mb-3 text-xs text-ink-dim">
+        Datahub holds the mesh memory wiki (summaries as topic pages). Hub reads{' '}
+        <span className="font-mono">/api/wiki</span> on this origin — not an iframe of{' '}
+        <span className="font-mono">/wiki</span>. Blank = discover datahub from the mesh roster of
+        the connected node.
+      </p>
       <label className="mb-1 block text-xs text-ink-dim">
-        Wiki URL (the node that serves /wiki for the mesh; blank = this node's /wiki)
+        Datahub gateway origin (http(s)://host[:port] only)
       </label>
       <input
         value={draftWiki}
         onChange={(e) => setDraftWiki(e.target.value)}
-        placeholder="http://datahub-host/wiki"
+        placeholder="http://datahub-host"
         className="mb-3 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
       />
       <div className="flex items-center gap-3">
         <button
           onClick={() => {
-            const url = draftWiki.trim().replace(/\/+$/, '')
-            if (url && !isValidWikiUrl(url)) {
-              setWikiNotice('✗ invalid wiki URL (http(s) only)')
+            const raw = draftWiki.trim()
+            if (raw && !isValidWikiBase(raw)) {
+              setWikiNotice('✗ invalid origin (http(s)://host[:port] only; /wiki path is stripped)')
               return
             }
-            setWikiUrl(url)
-            setDraftWiki(url)
-            setWikiNotice(url ? '✓ saved' : '✓ cleared — using this node’s /wiki')
+            setWikiBaseUrl(raw)
+            const saved = useWikiSettings.getState().wikiBaseUrl
+            setDraftWiki(saved)
+            setWikiNotice(
+              saved ? '✓ saved datahub origin' : '✓ cleared — will discover datahub from mesh',
+            )
           }}
           className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em"
         >
-          Save wiki URL
+          Save datahub URL
         </button>
         <span
           className={`font-mono text-sm ${wikiNotice.startsWith('✗') ? 'text-red' : 'text-em'}`}
