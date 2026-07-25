@@ -279,7 +279,7 @@ ${meta.entities.length > 0 ? `<tr><th>Entities</th><td>${meta.entities.map((e) =
     p.history.length > 4
       ? `<p><a href="/wiki/${esc(meta.slug)}?view=history">Full history (${String(p.history.length)} entries) →</a></p>`
       : ''
-  const citations = (p.citations ?? []).slice(0, 20)
+  const citations = p.citations.slice(0, 20)
   const citationsBlock =
     citations.length > 0
       ? `<h2>Citations</h2>

@@ -11,12 +11,7 @@
  */
 
 import type pg from 'pg'
-import {
-  findStemMatch,
-  normalizeSlug,
-  type WikiCitation,
-  type WikiPage,
-} from '@rivetos/wiki-core'
+import { findStemMatch, normalizeSlug, type WikiCitation, type WikiPage } from '@rivetos/wiki-core'
 
 export interface WikiTopicRow {
   slug: string
