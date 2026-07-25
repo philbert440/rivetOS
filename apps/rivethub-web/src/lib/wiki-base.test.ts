@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   datahubBaseFromMesh,
+  headingId,
   isValidWikiBase,
   normalizeWikiBase,
+  tocFromMarkdown,
   wikiLinksToMarkdown,
 } from './wiki-base.js'
 
@@ -83,5 +85,17 @@ describe('wikiLinksToMarkdown', () => {
 
   it('leaves non-wiki text alone', () => {
     expect(wikiLinksToMarkdown('no links here')).toBe('no links here')
+  })
+})
+
+describe('tocFromMarkdown / headingId', () => {
+  it('collects ## and ### headings with ids', () => {
+    const md = '# Title\n\n## Current state\n\ntext\n\n### Nested bit\n\n## History\n'
+    expect(tocFromMarkdown(md)).toEqual([
+      { level: 2, text: 'Current state', id: 'current-state' },
+      { level: 3, text: 'Nested bit', id: 'nested-bit' },
+      { level: 2, text: 'History', id: 'history' },
+    ])
+    expect(headingId('Hello World!')).toBe('hello-world')
   })
 })

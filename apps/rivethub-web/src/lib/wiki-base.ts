@@ -52,3 +52,46 @@ export function datahubBaseFromMesh(nodes: readonly MeshDenNode[]): string | nul
 export function wikiLinksToMarkdown(md: string): string {
   return md.replace(/\[\[([a-z0-9-]{1,80})\]\]/g, '[$1](/memory/$1)')
 }
+
+/** Stable heading id for in-article anchors / TOC. */
+export function headingId(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 80)
+}
+
+export interface TocEntry {
+  level: 2 | 3
+  text: string
+  id: string
+}
+
+/** Extract ## / ### headings for a table of contents. */
+export function tocFromMarkdown(md: string): TocEntry[] {
+  const out: TocEntry[] = []
+  for (const line of md.split('\n')) {
+    const m = /^(#{2,3})\s+(.+?)\s*$/.exec(line)
+    if (!m) continue
+    const level = m[1].length === 2 ? 2 : 3
+    const text = m[2].replace(/#+\s*$/, '').trim()
+    if (!text) continue
+    out.push({ level, text, id: headingId(text) })
+  }
+  return out
+}
+
+export function stalenessLabel(lastVerified?: string): {
+  kind: 'fresh' | 'aging' | 'stale' | 'never'
+  label: string
+} {
+  if (!lastVerified) return { kind: 'never', label: 'never verified' }
+  const days = Math.floor((Date.now() - Date.parse(lastVerified)) / 86_400_000)
+  if (!Number.isFinite(days)) return { kind: 'never', label: 'never verified' }
+  if (days > 30) return { kind: 'stale', label: `${String(days)}d stale` }
+  if (days > 7) return { kind: 'aging', label: `${String(days)}d` }
+  return { kind: 'fresh', label: 'current' }
+}

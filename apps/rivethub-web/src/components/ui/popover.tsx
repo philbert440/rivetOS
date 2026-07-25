@@ -43,8 +43,14 @@ export function PopoverHeader({
   return <div className={cn('flex flex-col gap-1', className)}>{children}</div>
 }
 
-export function PopoverTitle({ children }: { children: ReactNode }): ReactNode {
-  return <div className="text-sm font-medium text-ink">{children}</div>
+export function PopoverTitle({
+  children,
+  className,
+}: {
+  children: ReactNode
+  className?: string
+}): ReactNode {
+  return <div className={cn('text-sm font-medium text-ink', className)}>{children}</div>
 }
 
 export function PopoverDescription({ children }: { children: ReactNode }): ReactNode {
