@@ -330,6 +330,31 @@ export function fmtDate(d: Date | null): string {
   return d?.toISOString().split('T')[0] ?? '?'
 }
 
+/**
+ * Format a timestamp in the process local timezone with a short zone label
+ * (e.g. `2026-05-23 13:34:38 EDT`).
+ *
+ * `memory_browse` used to render `toISOString().slice(...)` — UTC wall-clock
+ * with the `Z` stripped — so agents routinely mis-read 00:10 UTC as "early
+ * local morning" when the real local time was the previous evening. Hermes
+ * rivet-memory already labels local TZ; this is the same fix for the
+ * in-process / MCP postgres tools path.
+ */
+export function fmtLocalTs(d: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const y = d.getFullYear()
+  const mo = pad(d.getMonth() + 1)
+  const day = pad(d.getDate())
+  const h = pad(d.getHours())
+  const mi = pad(d.getMinutes())
+  const s = pad(d.getSeconds())
+  const tz =
+    new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
+      .formatToParts(d)
+      .find((p) => p.type === 'timeZoneName')?.value ?? ''
+  return tz ? `${y}-${mo}-${day} ${h}:${mi}:${s} ${tz}` : `${y}-${mo}-${day} ${h}:${mi}:${s}`
+}
+
 export function timeSince(d: Date): string {
   const ms = Date.now() - d.getTime()
   if (ms < 60_000) return 'just now'
