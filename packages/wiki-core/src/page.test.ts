@@ -153,3 +153,44 @@ describe('normalizeSlug', () => {
     expect(normalizeSlug('a'.repeat(120))).toHaveLength(80)
   })
 })
+
+describe('citations (memory v6)', () => {
+  it('applyPatch appends citations; serialize/parse round-trips the table', () => {
+    const base = parseWikiPage(SAMPLE)
+    const patched = applyPatch(base, {
+      action: 'update',
+      slug: base.meta.slug,
+      addCitations: [
+        {
+          summaryId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+          date: '2026-07-25',
+          kind: 'leaf',
+          note: 'leaf batch on task engine',
+        },
+      ],
+      verifiedAt: '2026-07-25T00:00:00Z',
+    })
+    expect(patched.citations).toHaveLength(1)
+    const md = serializeWikiPage(patched)
+    expect(md).toContain('## Citations')
+    expect(md).toContain('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+    const round = parseWikiPage(md)
+    expect(round.citations[0]).toMatchObject({
+      summaryId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      date: '2026-07-25',
+      kind: 'leaf',
+      note: 'leaf batch on task engine',
+    })
+    // second apply with same id dedupes
+    const again = applyPatch(round, {
+      action: 'update',
+      slug: base.meta.slug,
+      addCitations: [
+        { summaryId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', note: 'dup' },
+        { summaryId: '11111111-2222-3333-4444-555555555555', kind: 'leaf' },
+      ],
+      verifiedAt: '2026-07-26T00:00:00Z',
+    })
+    expect(again.citations).toHaveLength(2)
+  })
+})

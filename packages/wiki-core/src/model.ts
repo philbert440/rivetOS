@@ -1,11 +1,13 @@
 /**
- * Memory wiki page model (phase 3a) — the shared contract between the
- * extraction worker (writes), the gateway wiki API (reads), and the MCP
- * tools. One markdown file per topic under /rivet-shared/wiki/topics/:
- * YAML frontmatter, a single replaceable "## Current state" section, and an
- * append-only dated "## History".
+ * Memory wiki page model (phase 3a + memory v6 durable topics).
  *
- * Design: /rivet-shared/plans/phase-3-memory-wiki-design.md (§1).
+ * Shared contract between the extraction worker (writes), the gateway wiki
+ * API (reads), and the MCP tools. One markdown file per durable topic under
+ * /rivet-shared/wiki/topics/: YAML frontmatter, replaceable "## Current
+ * state", append-only "## History", and "## Citations" (leaf summary refs).
+ *
+ * Design: /rivet-shared/plans/phase-3-memory-wiki-design.md (§1),
+ *         /rivet-shared/plans/memory-v6-durable-topics.md
  * Auto-merge everywhere (Phil 2026-07-07): prior Current state — human or
  * automated — archives to History on update; nothing is frozen.
  */
@@ -19,6 +21,21 @@ export interface WikiSource {
   conversationId?: string
   /** Time span the sourced content covers (ISO). */
   span?: { earliest: string; latest: string }
+}
+
+/**
+ * Leaf (or branch/root) summary cited as evidence for this durable topic.
+ * Rendered under ## Citations; PG ros_wiki_citations is the index mirror.
+ */
+export interface WikiCitation {
+  /** ros_summaries.id (UUID). */
+  summaryId: string
+  /** YYYY-MM-DD when known. */
+  date?: string
+  /** leaf | branch | root */
+  kind?: string
+  /** Short human label for the contribution. */
+  note?: string
 }
 
 export interface WikiFrontmatter {
@@ -49,9 +66,11 @@ export interface WikiPage {
   currentState: string
   /** Newest-first dated entries under "## History". */
   history: WikiHistoryEntry[]
+  /** Leaf/branch summary citations (memory v6) — newest-first. */
+  citations: WikiCitation[]
   /** Body text before the first "##" heading — preserved verbatim. */
   preamble?: string
-  /** Sections other than Current state/History — preserved verbatim. */
+  /** Sections other than Current state/History/Citations — preserved. */
   extraSections?: Array<{ heading: string; body: string }>
 }
 
@@ -72,6 +91,8 @@ export interface WikiPatch {
   currentState?: string
   historyEntry?: WikiHistoryEntry
   addSources?: WikiSource[]
+  /** Append leaf citations (deduped by summaryId). */
+  addCitations?: WikiCitation[]
   /** ISO timestamp stamped into lastVerified. */
   verifiedAt: string
 }

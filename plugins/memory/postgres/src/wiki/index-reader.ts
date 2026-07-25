@@ -1,17 +1,22 @@
 /**
- * WikiIndex (phase 3b) — the PG index over the git-backed wiki.
+ * WikiIndex (phase 3b + memory v6) — the PG index over the git-backed wiki.
  *
  * Content canonical form is markdown in /rivet-shared/wiki (single writer:
  * the datahub compaction worker); this class is the search/provenance layer
  * every node reads — hybrid topic search for context injection (3f), topic
  * lookups for the gateway (3e), identity resolution + upserts for the
- * extractor (3c), extraction idempotency markers.
+ * extractor (3c/v6), extraction idempotency markers.
  *
- * Design: /rivet-shared/plans/phase-3-memory-wiki-design.md (§1–2, §5).
+ * Design: phase-3-memory-wiki-design.md, memory-v6-durable-topics.md
  */
 
 import type pg from 'pg'
-import type { WikiPage } from '@rivetos/wiki-core'
+import {
+  findStemMatch,
+  normalizeSlug,
+  type WikiCitation,
+  type WikiPage,
+} from '@rivetos/wiki-core'
 
 export interface WikiTopicRow {
   slug: string
@@ -47,8 +52,25 @@ export interface ExtractionMark {
   error?: string
 }
 
+export type ResolveReason = 'exact' | 'alias' | 'redirect' | 'entity' | 'stem' | 'search' | 'none'
+
+export interface TopicResolution {
+  /** Canonical topic when identity matched an existing page. */
+  match?: WikiTopicRow
+  reason: ResolveReason
+  /** Runner-up candidates for the extraction prompt. */
+  candidates: WikiTopicHit[]
+}
+
 /** RRF constant — matches SearchEngine's tighter-than-canonical smoothing. */
 const RRF_K = 20
+
+/**
+ * Minimum fused RRF score to treat top search hit as identity match.
+ * Single top-1 hit from one retriever ≈ 1/(20+1) ≈ 0.0476; require a bit more
+ * signal (or multi-retriever agreement) before forcing a merge.
+ */
+export const RESOLVE_SEARCH_SCORE_MIN = 0.06
 
 export class WikiIndex {
   constructor(
@@ -67,9 +89,10 @@ export class WikiIndex {
   }
 
   async getTopic(slug: string): Promise<WikiTopicRow | undefined> {
+    const resolved = await this.followRedirect(normalizeSlug(slug))
     const { rows } = await this.pool.query<PgTopicRow>(
       'SELECT * FROM ros_wiki_topics WHERE slug = $1',
-      [slug],
+      [resolved],
     )
     return rows[0] ? toRow(rows[0]) : undefined
   }
@@ -155,21 +178,172 @@ export class WikiIndex {
   }
 
   /**
-   * Topic-identity resolution for the extractor (3c): exact slug → alias →
-   * best fuzzy candidates. Returns match plus runner-up candidates so the
-   * extraction prompt can disambiguate instead of creating near-duplicates.
+   * Legacy helper (phase 3c): exact slug → alias, plus fuzzy candidates.
+   * Prefer resolveTopicIdentity for extraction create-gates.
    */
   async resolveTopic(
     slugOrTitle: string,
   ): Promise<{ exact?: WikiTopicRow; candidates: WikiTopicHit[] }> {
-    const exactRes = await this.pool.query<PgTopicRow>(
-      'SELECT * FROM ros_wiki_topics WHERE slug = $1 OR $1 = ANY(aliases) LIMIT 1',
-      [slugOrTitle],
-    )
-    const candidates = await this.searchTopics(slugOrTitle, { limit: 3 })
+    const r = await this.resolveTopicIdentity(slugOrTitle)
     return {
-      exact: exactRes.rows[0] ? toRow(exactRes.rows[0]) : undefined,
-      candidates: candidates.filter((c) => c.slug !== exactRes.rows[0]?.slug),
+      exact: r.match,
+      candidates: r.candidates,
+    }
+  }
+
+  /**
+   * Durable topic identity (memory v6):
+   * exact slug → redirect → alias → entity overlap → stem parent/child →
+   * high-score search. Fuzzy candidates always returned for the prompt.
+   */
+  async resolveTopicIdentity(
+    slugOrTitle: string,
+    opts?: { entities?: string[]; title?: string },
+  ): Promise<TopicResolution> {
+    const slug = normalizeSlug(slugOrTitle)
+    const searchQuery = [slugOrTitle, opts?.title, ...(opts?.entities ?? [])]
+      .filter(Boolean)
+      .join(' ')
+      .slice(0, 400)
+
+    const candidates = await this.searchTopics(searchQuery || slugOrTitle, { limit: 5 })
+
+    // 1. Exact slug
+    {
+      const { rows } = await this.pool.query<PgTopicRow>(
+        'SELECT * FROM ros_wiki_topics WHERE slug = $1 LIMIT 1',
+        [slug],
+      )
+      if (rows[0]) {
+        return {
+          match: toRow(rows[0]),
+          reason: 'exact',
+          candidates: candidates.filter((c) => c.slug !== rows[0].slug),
+        }
+      }
+    }
+
+    // 2. Redirect table (post-consolidation)
+    {
+      const to = await this.followRedirect(slug)
+      if (to !== slug) {
+        const { rows } = await this.pool.query<PgTopicRow>(
+          'SELECT * FROM ros_wiki_topics WHERE slug = $1 LIMIT 1',
+          [to],
+        )
+        if (rows[0]) {
+          return {
+            match: toRow(rows[0]),
+            reason: 'redirect',
+            candidates: candidates.filter((c) => c.slug !== rows[0].slug),
+          }
+        }
+      }
+    }
+
+    // 3. Alias
+    {
+      const { rows } = await this.pool.query<PgTopicRow>(
+        'SELECT * FROM ros_wiki_topics WHERE $1 = ANY(aliases) LIMIT 1',
+        [slug],
+      )
+      if (rows[0]) {
+        return {
+          match: toRow(rows[0]),
+          reason: 'alias',
+          candidates: candidates.filter((c) => c.slug !== rows[0].slug),
+        }
+      }
+    }
+
+    // 4. Entity overlap
+    if (opts?.entities && opts.entities.length > 0) {
+      const { rows } = await this.pool.query<PgTopicRow>(
+        `SELECT * FROM ros_wiki_topics
+         WHERE entities && $1::text[]
+         ORDER BY cardinality(entities & $1::text[]) DESC, updated_at DESC
+         LIMIT 3`,
+        [opts.entities],
+      )
+      if (rows[0]) {
+        return {
+          match: toRow(rows[0]),
+          reason: 'entity',
+          candidates: candidates.filter((c) => c.slug !== rows[0].slug),
+        }
+      }
+    }
+
+    // 5. Stem parent/child among inventory (prefix variants)
+    {
+      const { rows } = await this.pool.query<{ slug: string }>(
+        `SELECT slug FROM ros_wiki_topics
+         WHERE slug = $1
+            OR slug LIKE $1 || '-%'
+            OR $1 LIKE slug || '-%'
+         ORDER BY length(slug) ASC
+         LIMIT 50`,
+        [slug],
+      )
+      const stem = findStemMatch(
+        slug,
+        rows.map((r) => r.slug),
+      )
+      if (stem) {
+        const { rows: full } = await this.pool.query<PgTopicRow>(
+          'SELECT * FROM ros_wiki_topics WHERE slug = $1 LIMIT 1',
+          [stem],
+        )
+        if (full[0]) {
+          return {
+            match: toRow(full[0]),
+            reason: 'stem',
+            candidates: candidates.filter((c) => c.slug !== full[0].slug),
+          }
+        }
+      }
+    }
+
+    // 6. Strong search hit
+    if (candidates[0] && candidates[0].score >= RESOLVE_SEARCH_SCORE_MIN) {
+      const top = candidates[0]
+      // Prefer stem agreement between proposed slug and top hit
+      const stemHit = findStemMatch(slug, [top.slug])
+      if (stemHit === top.slug || candidates[0].score >= RESOLVE_SEARCH_SCORE_MIN * 1.5) {
+        return {
+          match: top,
+          reason: 'search',
+          candidates: candidates.slice(1),
+        }
+      }
+    }
+
+    return { reason: 'none', candidates }
+  }
+
+  /**
+   * Force create→update onto a resolved canonical slug; returns the slug to
+   * write and the action the writer should use.
+   */
+  async gateTopicWrite(
+    proposedSlug: string,
+    action: 'create' | 'update',
+    opts?: { entities?: string[]; title?: string },
+  ): Promise<{ slug: string; action: 'create' | 'update'; reason: ResolveReason }> {
+    const resolution = await this.resolveTopicIdentity(proposedSlug, opts)
+    if (resolution.match) {
+      return {
+        slug: resolution.match.slug,
+        action: 'update',
+        reason: resolution.reason,
+      }
+    }
+    // No match: allow create only when the LLM asked for create, else create
+    // the proposed slug anyway (first writer for that subject).
+    return {
+      slug: normalizeSlug(proposedSlug),
+      action: action === 'create' ? 'create' : 'create',
+      reason: 'none',
     }
   }
 
@@ -232,6 +406,67 @@ export class WikiIndex {
     }
   }
 
+  /** Record leaf citations (memory v6) — idempotent. Degrades if 0006 missing. */
+  async recordCitations(slug: string, citations: WikiCitation[]): Promise<void> {
+    for (const c of citations) {
+      if (!c.summaryId) continue
+      try {
+        await this.pool.query(
+          `INSERT INTO ros_wiki_citations (topic_slug, summary_id, kind, note)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (topic_slug, summary_id) DO UPDATE SET
+             kind = COALESCE(EXCLUDED.kind, ros_wiki_citations.kind),
+             note = COALESCE(EXCLUDED.note, ros_wiki_citations.note)`,
+          [slug, c.summaryId, c.kind ?? null, c.note ?? null],
+        )
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/ros_wiki_citations/i.test(msg)) return // 0006 not applied
+        throw err
+      }
+    }
+  }
+
+  async setRedirect(fromSlug: string, toSlug: string): Promise<void> {
+    const from = normalizeSlug(fromSlug)
+    const to = normalizeSlug(toSlug)
+    if (from === '' || to === '' || from === to) return
+    try {
+      await this.pool.query(
+        `INSERT INTO ros_wiki_redirects (from_slug, to_slug)
+         VALUES ($1,$2)
+         ON CONFLICT (from_slug) DO UPDATE SET to_slug = EXCLUDED.to_slug`,
+        [from, to],
+      )
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/ros_wiki_redirects/i.test(msg)) return
+      throw err
+    }
+  }
+
+  async deleteTopic(slug: string): Promise<void> {
+    await this.pool.query('DELETE FROM ros_wiki_topics WHERE slug = $1', [normalizeSlug(slug)])
+  }
+
+  /** Follow redirect chain (max 5 hops). */
+  async followRedirect(slug: string): Promise<string> {
+    let cur = normalizeSlug(slug)
+    for (let i = 0; i < 5; i++) {
+      try {
+        const { rows } = await this.pool.query<{ to_slug: string }>(
+          'SELECT to_slug FROM ros_wiki_redirects WHERE from_slug = $1',
+          [cur],
+        )
+        if (!rows[0]) return cur
+        cur = rows[0].to_slug
+      } catch {
+        return cur
+      }
+    }
+    return cur
+  }
+
   /** Extraction idempotency: has this summary been processed? */
   async extractionDone(summaryId: string): Promise<boolean> {
     const { rows } = await this.pool.query<{ status: string }>(
@@ -268,13 +503,6 @@ export class WikiIndex {
    * Gap surfacing (Phil 2026-07-07): red links — entities referenced by
    * pages that have no page of their own — plus stalest pages. Cheap index
    * queries for the landing view (3e).
-   *
-   * Red link ≡ entity held by exactly ONE topic (another topic sharing it
-   * counts as coverage) with no article slug of its own. Aggregate-first:
-   * the old per-reference NOT EXISTS over ANY(entities) rescanned the
-   * whole table per entity ref (~11s at 4k topics); grouping first makes
-   * it one scan + hash agg (~30ms), same result set (verified row-for-row
-   * in prod).
    */
   async gaps(opts?: { staleLimit?: number }): Promise<{
     redLinks: Array<{ entity: string; referencedBy: string[] }>
@@ -311,6 +539,14 @@ export class WikiIndex {
       redLinks: red.map((r) => ({ entity: r.entity, referencedBy: r.referenced_by })),
       stalest: stale.map(toRow),
     }
+  }
+
+  /** All slugs (for consolidation clustering). */
+  async listAllSlugs(): Promise<string[]> {
+    const { rows } = await this.pool.query<{ slug: string }>(
+      'SELECT slug FROM ros_wiki_topics ORDER BY slug',
+    )
+    return rows.map((r) => r.slug)
   }
 
   private async vectorCandidates(

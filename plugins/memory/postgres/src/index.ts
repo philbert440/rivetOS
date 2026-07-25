@@ -188,7 +188,7 @@ export const manifest: PluginManifest = {
   },
 }
 
-export { WikiIndex } from './wiki/index-reader.js'
+export { WikiIndex, RESOLVE_SEARCH_SCORE_MIN } from './wiki/index-reader.js'
 export {
   WIKI_EXTRACT_SYSTEM_PROMPT,
   WIKI_EXTRACT_MAX_TOKENS,
@@ -203,4 +203,6 @@ export type {
   WikiTopicHit,
   WikiIndexConfig,
   ExtractionMark,
+  TopicResolution,
+  ResolveReason,
 } from './wiki/index-reader.js'
