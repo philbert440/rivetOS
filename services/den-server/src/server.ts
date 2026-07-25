@@ -98,6 +98,9 @@ const API_PATHS = new Set([
   '/files/list',
   '/files/download',
   '/files/upload',
+  '/files/mkdir',
+  '/files/rename',
+  '/files/delete',
 ])
 
 const CORS = {
@@ -483,11 +486,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // path would otherwise fall through to the SPA shell (HTML 200) and
         // RivetHub would see garbage instead of JSON.
         const termApi = url.pathname === '/term' || url.pathname.startsWith('/term/')
+        // Same as term: nested /files/* must not fall through to the SPA shell.
+        const filesApi = url.pathname === '/files' || url.pathname.startsWith('/files/')
         if (
           config.staticDir &&
           !API_PATHS.has(url.pathname) &&
           !url.pathname.startsWith('/api/') &&
           !termApi &&
+          !filesApi &&
           !gatewayOwned
         ) {
           if (serveStatic(res, config.staticDir, url.pathname)) return

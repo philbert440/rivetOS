@@ -17,7 +17,9 @@ Rail is now Terminal, Conversations (route `/`), Den (in-app `/dens`), separator
 
 - **Terminal** (`/terminal`) lands on the node's open-PTY list (click to attach); the tab bar remains the quick switcher.
 - **Den** (`/dens`) lists the node's live den sessions (`GET /api/events/sessions` → `gateway.denSessions()`), embedded viewer iframe on pick. Replaced the old `/den/` link-out.
-- **Files** (`/files`) = drag-and-drop browser for the node's files root (`/rivet-shared` default). Server: den-server `src/files.ts` (`/api/files/list|download|upload`, path+symlink fenced, 1 GiB cap, no-clobber unless `overwrite=1`); config `den.files_root` / `RIVETOS_DEN_FILES_ROOT` ('' disables).
+- **Memory** (`/memory`, `/memory/$slug`) = **native** Hub UI over datahub `GET /api/wiki` (index/search/gaps/page). **No iframe** of `/wiki`. Datahub is the wiki host (human-readable memory summaries); Settings stores datahub gateway **origin** (`rivethub.wikiUrl`, legacy `…/wiki` paths stripped). Blank Settings → mesh-discover a node named datahub via the connected node's `/api/mesh`. `[[slug]]` links → in-app `/memory/$slug`.
+- **Tasks** (`/tasks`, `/tasks/$taskId`) = list/filter, detail (steer/kill), and **in-UI create** (goal + agent from catalog local+mesh + optional criteria lines → `POST /api/tasks`; navigates to detail). Create is no longer chat-only.
+- **Files** (`/files`) = full browser for the node's files root (`/rivet-shared` default): list/filter/sort, multi-select, text/image preview, mkdir/rename/delete, copy path/URL, DnD upload (current dir or onto a folder), drag row onto folder to move. Server: den-server `src/files.ts` (`list|download|upload|mkdir|rename|delete`, path+symlink fenced, 1 GiB upload cap, no-clobber unless `overwrite=1`, recursive delete opt-in); config `den.files_root` / `RIVETOS_DEN_FILES_ROOT` ('' disables).
 - **Node-switch den trap fixed in boot**: default den static_dir is hub-first (`apps/rivethub-web/dist` when built, else den viewer) — peers without an explicit `static_dir` used to serve full-screen den at `/` with no way back.
 
 ### Chat resync from TUI (Android parity)
@@ -84,7 +86,12 @@ cd apps/rivethub-desktop && cargo tauri build   # or dev
 ## Key files
 
 - `src/pages/chat.tsx` — seamless session, terminal/den modes, queue pump
-- `src/components/transcript.tsx`, `composer.tsx`, `ask-user-card.tsx`
+- `src/pages/memory.tsx` — native wiki home + topic (article/history/raw)
+- `src/pages/tasks.tsx` — list + create form + detail
+- `src/lib/task-create.ts` — criteria lines + agent options (local+mesh)
+- `src/lib/wiki-base.ts`, `wiki-client.ts` — datahub origin, mesh discovery, `[[slug]]`
+- `src/stores/wiki-settings.ts` — datahub origin (not iframe URL)
+- `src/components/transcript.tsx`, `composer.tsx`, `ask-user-card.tsx`, `wiki-markdown.tsx`
 - `src/lib/fold-stream.ts`, `tool-titles.ts`, `ask-user.ts`, `switch-mode.ts`, `gateway-url.ts`
 - `src/stores/chat.ts` — WS fold, LiveTurn
 - `src/stores/connection.ts`, `components/node-switcher.tsx`, `pickers/node-picker.tsx`
