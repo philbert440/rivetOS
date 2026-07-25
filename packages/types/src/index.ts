@@ -243,6 +243,7 @@ export type {
   FileEntry,
   FilesListResponse,
   FilesUploadResponse,
+  FilesMutateResponse,
   MeshDevice,
   MeshDevicePending,
   DeviceEnrollConfig,

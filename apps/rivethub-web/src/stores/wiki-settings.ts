@@ -1,36 +1,34 @@
 /**
- * Memory-wiki endpoint override, persisted. The wiki lives on ONE node (the
- * datahub serves /wiki for the whole mesh), so unlike everything else in the
- * app it should not follow the node switcher — an explicit URL set here wins;
- * unset falls back to the active gateway's /wiki.
+ * Datahub gateway for the Memory wiki.
+ *
+ * Wiki is memory-DB summaries in human-readable topic form; it lives on
+ * **datahub**, independent of the chat-node switcher. Store the datahub
+ * gateway origin (http(s)://host[:port]); Hub calls `/api/wiki` there.
+ *
+ * Legacy iframe values (`…/wiki`) are normalized on load.
  */
 
 import { create } from 'zustand'
+import { normalizeWikiBase } from '../lib/wiki-base.js'
 
 const KEY = 'rivethub.wikiUrl'
 
 interface WikiSettingsState {
-  /** Full URL of the wiki root, e.g. http://datahub-host/wiki. '' = unset. */
-  wikiUrl: string
-  setWikiUrl: (url: string) => void
+  /** Datahub gateway origin, e.g. http://datahub-host. '' = unset. */
+  wikiBaseUrl: string
+  setWikiBaseUrl: (url: string) => void
 }
 
-/** http(s) URL, origin + optional path — same shape the iframe src needs. */
-export function isValidWikiUrl(url: string): boolean {
-  try {
-    const u = new URL(url)
-    return u.protocol === 'http:' || u.protocol === 'https:'
-  } catch {
-    return false
-  }
+function loadStored(): string {
+  return normalizeWikiBase(localStorage.getItem(KEY) ?? '')
 }
 
 export const useWikiSettings = create<WikiSettingsState>((set) => ({
-  wikiUrl: localStorage.getItem(KEY) ?? '',
-  setWikiUrl(raw: string): void {
-    const url = raw.trim().replace(/\/+$/, '')
+  wikiBaseUrl: loadStored(),
+  setWikiBaseUrl(raw: string): void {
+    const url = normalizeWikiBase(raw)
     if (url) localStorage.setItem(KEY, url)
     else localStorage.removeItem(KEY)
-    set({ wikiUrl: url })
+    set({ wikiBaseUrl: url })
   },
 }))

@@ -11,7 +11,7 @@ import { Toasts } from './components/toasts.js'
 import { ChatPage } from './pages/chat.js'
 import { DensPage } from './pages/dens.js'
 import { FilesPage } from './pages/files.js'
-import { MemoryFrame, MemoryPage } from './pages/memory.js'
+import { MemoryPage, MemoryTopicPage } from './pages/memory.js'
 import { SettingsPage } from './pages/settings.js'
 import { TerminalPage } from './pages/terminal.js'
 import { TaskDetailPage, TasksPage } from './pages/tasks.js'
@@ -35,8 +35,6 @@ function RootLayout(): JSX.Element {
       <Sidebar />
       <main className="min-w-0 flex-1 overflow-y-auto">
         <Outlet />
-        {/* Keep-alive wiki iframe — see pages/memory.tsx. */}
-        <MemoryFrame />
       </main>
       <Toasts />
     </div>
@@ -71,6 +69,12 @@ const memoryRoute = createRoute({
   component: MemoryPage,
 })
 
+const memoryTopicRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/memory/$slug',
+  component: MemoryTopicPage,
+})
+
 const filesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/files',
@@ -100,6 +104,7 @@ export const routeTree = rootRoute.addChildren([
   terminalRoute,
   densRoute,
   memoryRoute,
+  memoryTopicRoute,
   filesRoute,
   tasksRoute,
   taskDetailRoute,

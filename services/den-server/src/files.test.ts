@@ -183,4 +183,65 @@ describe('files routes', () => {
         .status,
     ).toBe(404)
   })
+
+  it('mkdir creates a directory and 409s on clash', async () => {
+    const res = await fetch(`${base}/files/mkdir?dir=&name=docs`, { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { path: string }).path).toBe('docs')
+    expect(existsSync(join(root, 'docs'))).toBe(true)
+    expect((await fetch(`${base}/files/mkdir?dir=&name=docs`, { method: 'POST' })).status).toBe(
+      409,
+    )
+    expect(
+      (await fetch(`${base}/files/mkdir?dir=&name=..`, { method: 'POST' })).status,
+    ).toBe(422)
+  })
+
+  it('rename moves within the root and refuses overwrite/escape', async () => {
+    writeFileSync(join(root, 'docs', 'note.txt'), 'n')
+    const ok = await fetch(`${base}/files/rename?from=docs/note.txt&to=docs/renamed.txt`, {
+      method: 'POST',
+    })
+    expect(ok.status).toBe(200)
+    expect(existsSync(join(root, 'docs', 'renamed.txt'))).toBe(true)
+    expect(existsSync(join(root, 'docs', 'note.txt'))).toBe(false)
+
+    writeFileSync(join(root, 'docs', 'other.txt'), 'o')
+    expect(
+      (
+        await fetch(`${base}/files/rename?from=docs/other.txt&to=docs/renamed.txt`, {
+          method: 'POST',
+        })
+      ).status,
+    ).toBe(409)
+    expect(
+      (await fetch(`${base}/files/rename?from=docs/renamed.txt&to=../etc/passwd`, {
+        method: 'POST',
+      })).status,
+    ).toBe(403)
+  })
+
+  it('delete removes files; empty dirs; recursive non-empty', async () => {
+    writeFileSync(join(root, 'docs', 'gone.txt'), 'x')
+    expect(
+      (await fetch(`${base}/files/delete?path=docs/gone.txt`, { method: 'DELETE' })).status,
+    ).toBe(200)
+    expect(existsSync(join(root, 'docs', 'gone.txt'))).toBe(false)
+
+    mkdirSync(join(root, 'empty'))
+    expect((await fetch(`${base}/files/delete?path=empty`, { method: 'DELETE' })).status).toBe(
+      200,
+    )
+
+    mkdirSync(join(root, 'full'))
+    writeFileSync(join(root, 'full', 'a.txt'), 'a')
+    expect((await fetch(`${base}/files/delete?path=full`, { method: 'DELETE' })).status).toBe(409)
+    expect(
+      (await fetch(`${base}/files/delete?path=full&recursive=1`, { method: 'DELETE' })).status,
+    ).toBe(200)
+    expect(existsSync(join(root, 'full'))).toBe(false)
+
+    expect((await fetch(`${base}/files/delete?path=`, { method: 'DELETE' })).status).toBe(422)
+    expect((await fetch(`${base}/files/delete?path=..`, { method: 'DELETE' })).status).toBe(403)
+  })
 })

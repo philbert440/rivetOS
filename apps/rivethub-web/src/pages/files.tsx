@@ -1,16 +1,17 @@
 /**
- * Files — drag-and-drop browser for the shared collab mount (`/rivet-shared`
- * by default; the node's den files root). List/navigate via
- * /api/files/list, click a file to open/download, drop files anywhere on
- * the page to upload into the current directory.
+ * Files — full browser over the node's files root (`/rivet-shared` default).
+ * List/navigate, multi-select, preview, mkdir/rename/delete, drag-and-drop
+ * upload into the current dir, and drag rows onto folders to move.
  */
 
-import { useRef, useState, type DragEvent, type JSX } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { FileEntry } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
+import { copyTextToClipboard } from '../lib/clipboard.js'
+import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
 
 function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${String(bytes)} B`
@@ -24,16 +25,22 @@ function fmtMtime(ms: number): string {
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
 }
 
+type SortKey = 'name' | 'mtime' | 'size'
+type Notice = { kind: 'ok' | 'err'; text: string }
+
 export function FilesPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
   const connected = useGatewayReady()
   const queryClient = useQueryClient()
   const [path, setPath] = useState('')
+  const [filter, setFilter] = useState('')
+  const [sort, setSort] = useState<SortKey>('name')
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [previewPath, setPreviewPath] = useState<string | undefined>()
   const [dragging, setDragging] = useState(false)
-  const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | undefined>()
-  // dragenter/dragleave fire for every child crossed; only a zero depth is
-  // a real exit from the page.
+  const [notice, setNotice] = useState<Notice | undefined>()
+  const [busy, setBusy] = useState(false)
   const dragDepth = useRef(0)
 
   const listing = useQuery({
@@ -42,22 +49,48 @@ export function FilesPage(): JSX.Element {
     enabled: connected,
   })
 
+  // Clear selection when navigating
+  useEffect(() => {
+    setSelected(new Set())
+    setPreviewPath(undefined)
+  }, [path])
+
+  const refresh = useCallback(async (): Promise<void> => {
+    await queryClient.invalidateQueries({ queryKey: ['files', baseUrl, token ?? '', path] })
+  }, [queryClient, baseUrl, token, path])
+
+  const showNotice = (n: Notice): void => setNotice(n)
+
+  const entries = useMemo(() => {
+    const raw = listing.data?.entries ?? []
+    const q = filter.trim().toLowerCase()
+    const list = q ? raw.filter((e) => e.name.toLowerCase().includes(q)) : [...raw]
+    list.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
+      if (sort === 'name') return a.name.localeCompare(b.name)
+      if (sort === 'size') return a.size - b.size || a.name.localeCompare(b.name)
+      return b.mtime - a.mtime || a.name.localeCompare(b.name)
+    })
+    return list
+  }, [listing.data?.entries, filter, sort])
+
   if (!connected) return <NotConnected />
 
-  const upload = async (files: FileList): Promise<void> => {
-    const gateway = useConnection.getState().gateway
+  const gateway = () => useConnection.getState().gateway
+
+  const upload = async (files: FileList | File[]): Promise<void> => {
+    setBusy(true)
     let ok = 0
     const errors: string[] = []
     for (const file of Array.from(files)) {
       try {
-        await gateway.filesUpload(path, file.name, file)
+        await gateway().filesUpload(path, file.name, file)
         ok += 1
       } catch (err) {
         if (err instanceof GatewayError && err.status === 409) {
-          // exists → ask once, then replace
           if (window.confirm(`${file.name} already exists — overwrite?`)) {
             try {
-              await gateway.filesUpload(path, file.name, file, { overwrite: true })
+              await gateway().filesUpload(path, file.name, file, { overwrite: true })
               ok += 1
               continue
             } catch (err2) {
@@ -70,50 +103,195 @@ export function FilesPage(): JSX.Element {
         errors.push(`${file.name}: ${(err as Error).message}`)
       }
     }
-    await queryClient.invalidateQueries({ queryKey: ['files', baseUrl, token ?? '', path] })
-    setNotice(
+    await refresh()
+    setBusy(false)
+    showNotice(
       errors.length > 0
         ? { kind: 'err', text: errors.join(' · ') }
         : { kind: 'ok', text: `uploaded ${String(ok)} file${ok === 1 ? '' : 's'}` },
     )
   }
 
-  const onDrop = (e: DragEvent): void => {
-    e.preventDefault()
-    dragDepth.current = 0
-    setDragging(false)
-    if (e.dataTransfer.files.length > 0) void upload(e.dataTransfer.files)
+  const mkdir = async (): Promise<void> => {
+    const name = window.prompt('New folder name')
+    if (!name?.trim()) return
+    setBusy(true)
+    try {
+      await gateway().filesMkdir(path, name.trim())
+      await refresh()
+      showNotice({ kind: 'ok', text: `created ${name.trim()}/` })
+    } catch (err) {
+      showNotice({ kind: 'err', text: (err as Error).message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const renameOne = async (entry: FileEntry): Promise<void> => {
+    const next = window.prompt('Rename to', entry.name)
+    if (!next?.trim() || next.trim() === entry.name) return
+    const from = joinRel(path, entry.name)
+    const to = joinRel(path, next.trim())
+    setBusy(true)
+    try {
+      await gateway().filesRename(from, to)
+      setSelected((s) => {
+        const n = new Set(s)
+        n.delete(entry.name)
+        return n
+      })
+      if (previewPath === from) setPreviewPath(to)
+      await refresh()
+      showNotice({ kind: 'ok', text: `renamed → ${next.trim()}` })
+    } catch (err) {
+      showNotice({ kind: 'err', text: (err as Error).message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const deleteSelected = async (): Promise<void> => {
+    const names = [...selected]
+    if (names.length === 0) return
+    if (!window.confirm(`Delete ${String(names.length)} item(s)?`)) return
+    setBusy(true)
+    const errors: string[] = []
+    for (const name of names) {
+      const rel = joinRel(path, name)
+      const entry = (listing.data?.entries ?? []).find((e) => e.name === name)
+      try {
+        await gateway().filesDelete(rel)
+      } catch (err) {
+        if (
+          err instanceof GatewayError &&
+          err.status === 409 &&
+          entry?.type === 'dir' &&
+          window.confirm(`${name}/ is not empty — delete recursively?`)
+        ) {
+          try {
+            await gateway().filesDelete(rel, { recursive: true })
+            continue
+          } catch (err2) {
+            errors.push(`${name}: ${(err2 as Error).message}`)
+            continue
+          }
+        }
+        errors.push(`${name}: ${(err as Error).message}`)
+      }
+    }
+    setSelected(new Set())
+    if (
+      previewPath &&
+      names.some(
+        (n) => previewPath === joinRel(path, n) || previewPath.startsWith(joinRel(path, n) + '/'),
+      )
+    ) {
+      setPreviewPath(undefined)
+    }
+    await refresh()
+    setBusy(false)
+    showNotice(
+      errors.length > 0
+        ? { kind: 'err', text: errors.join(' · ') }
+        : { kind: 'ok', text: `deleted ${String(names.length - errors.length)}` },
+    )
+  }
+
+  const moveOntoDir = async (srcName: string, destDirName: string): Promise<void> => {
+    if (srcName === destDirName) return
+    const from = joinRel(path, srcName)
+    const to = joinRel(joinRel(path, destDirName), srcName)
+    setBusy(true)
+    try {
+      await gateway().filesRename(from, to)
+      setSelected(new Set())
+      await refresh()
+      showNotice({ kind: 'ok', text: `moved ${srcName} → ${destDirName}/` })
+    } catch (err) {
+      showNotice({ kind: 'err', text: (err as Error).message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const copyPaths = async (): Promise<void> => {
+    const lines = [...selected].map((n) => joinRel(path, n))
+    if (lines.length === 0) return
+    try {
+      await copyTextToClipboard(lines.join('\n'))
+      showNotice({ kind: 'ok', text: 'path(s) copied' })
+    } catch {
+      showNotice({ kind: 'err', text: 'copy failed' })
+    }
+  }
+
+  const copyUrls = async (): Promise<void> => {
+    const gw = gateway()
+    const lines = [...selected]
+      .map((n) => {
+        const e = (listing.data?.entries ?? []).find((x) => x.name === n)
+        if (!e || e.type !== 'file') return null
+        return gw.fileDownloadUrl(joinRel(path, n))
+      })
+      .filter((x): x is string => !!x)
+    if (lines.length === 0) {
+      showNotice({ kind: 'err', text: 'select file(s) to copy download URLs' })
+      return
+    }
+    try {
+      await copyTextToClipboard(lines.join('\n'))
+      showNotice({ kind: 'ok', text: 'URL(s) copied' })
+    } catch {
+      showNotice({ kind: 'err', text: 'copy failed' })
+    }
   }
 
   const crumbs = path === '' ? [] : path.split('/')
-  const entries = listing.data?.entries ?? []
+  const rootLabel = listing.data?.root ?? '/rivet-shared'
+  const allNames = entries.map((e) => e.name)
+  const allSelected = allNames.length > 0 && allNames.every((n) => selected.has(n))
+
+  const onDropFiles = (e: DragEvent): void => {
+    e.preventDefault()
+    dragDepth.current = 0
+    setDragging(false)
+    // Internal move uses application/x-rivet-file; OS files use dataTransfer.files
+    const internal = e.dataTransfer.getData('application/x-rivet-file')
+    if (internal) return // handled on folder row
+    if (e.dataTransfer.files.length > 0) void upload(e.dataTransfer.files)
+  }
 
   return (
     <div
       className="relative flex h-full flex-col"
       onDragEnter={(e) => {
         e.preventDefault()
-        dragDepth.current += 1
-        setDragging(true)
+        if ([...e.dataTransfer.types].includes('Files')) {
+          dragDepth.current += 1
+          setDragging(true)
+        }
       }}
       onDragLeave={() => {
         dragDepth.current = Math.max(0, dragDepth.current - 1)
         if (dragDepth.current === 0) setDragging(false)
       }}
       onDragOver={(e) => e.preventDefault()}
-      onDrop={onDrop}
+      onDrop={onDropFiles}
     >
-      <div className="flex items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 font-mono text-xs">
+      {/* Breadcrumbs */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 font-mono text-xs">
         <button
+          type="button"
           onClick={() => setPath('')}
           className={crumbs.length === 0 ? 'text-em' : 'text-ink-dim hover:text-ink'}
         >
-          {listing.data?.root ?? '/rivet-shared'}
+          {rootLabel}
         </button>
         {crumbs.map((seg, i) => (
           <span key={crumbs.slice(0, i + 1).join('/')} className="flex items-center gap-1">
             <span className="text-ink-dim">/</span>
             <button
+              type="button"
               onClick={() => setPath(crumbs.slice(0, i + 1).join('/'))}
               className={i === crumbs.length - 1 ? 'text-em' : 'text-ink-dim hover:text-ink'}
             >
@@ -121,7 +299,84 @@ export function FilesPage(): JSX.Element {
             </button>
           </span>
         ))}
-        <span className="ml-auto text-ink-dim">drop files here to upload</span>
+        <span className="ml-auto text-ink-dim">
+          drop files to upload · drag onto a folder to move
+        </span>
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2">
+        <input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter…"
+          className="w-40 rounded border border-line bg-panel px-2 py-1 text-xs outline-none focus:border-em"
+        />
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as SortKey)}
+          className="rounded border border-line bg-panel px-2 py-1 font-mono text-xs"
+        >
+          <option value="name">sort: name</option>
+          <option value="mtime">sort: mtime</option>
+          <option value="size">sort: size</option>
+        </select>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void mkdir()}
+          className="rounded border border-line px-2 py-1 text-xs hover:border-em disabled:opacity-40"
+        >
+          New folder
+        </button>
+        <button
+          type="button"
+          disabled={busy || selected.size !== 1}
+          onClick={() => {
+            const name = [...selected][0]
+            const entry = (listing.data?.entries ?? []).find((e) => e.name === name)
+            if (entry) void renameOne(entry)
+          }}
+          className="rounded border border-line px-2 py-1 text-xs hover:border-em disabled:opacity-40"
+        >
+          Rename
+        </button>
+        <button
+          type="button"
+          disabled={busy || selected.size === 0}
+          onClick={() => void deleteSelected()}
+          className="rounded border border-red/40 px-2 py-1 text-xs text-red hover:border-red disabled:opacity-40"
+        >
+          Delete
+        </button>
+        <button
+          type="button"
+          disabled={selected.size === 0}
+          onClick={() => void copyPaths()}
+          className="rounded border border-line px-2 py-1 text-xs hover:border-em disabled:opacity-40"
+        >
+          Copy path
+        </button>
+        <button
+          type="button"
+          disabled={selected.size === 0}
+          onClick={() => void copyUrls()}
+          className="rounded border border-line px-2 py-1 text-xs hover:border-em disabled:opacity-40"
+        >
+          Copy URL
+        </button>
+        <label className="cursor-pointer rounded border border-line px-2 py-1 text-xs hover:border-em">
+          Upload…
+          <input
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files?.length) void upload(e.target.files)
+              e.target.value = ''
+            }}
+          />
+        </label>
       </div>
 
       {notice && (
@@ -129,50 +384,176 @@ export function FilesPage(): JSX.Element {
           className={`border-b border-line px-4 py-1.5 font-mono text-xs ${notice.kind === 'ok' ? 'text-em' : 'text-red'}`}
         >
           {notice.text}
-          <button onClick={() => setNotice(undefined)} className="ml-3 text-ink-dim hover:text-ink">
+          <button
+            type="button"
+            onClick={() => setNotice(undefined)}
+            className="ml-3 text-ink-dim hover:text-ink"
+          >
             ✕
           </button>
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto px-4 py-2">
-        {listing.isError ? (
-          <div className="py-6 font-mono text-sm text-red">{listing.error.message}</div>
-        ) : entries.length === 0 && !listing.isLoading ? (
-          <div className="py-6 text-sm text-ink-dim">Empty directory.</div>
-        ) : (
-          <table className="w-full max-w-4xl border-collapse text-sm">
-            <tbody>
-              {path !== '' && (
-                <tr>
-                  <td colSpan={3} className="py-1">
-                    <button
-                      onClick={() => setPath(crumbs.slice(0, -1).join('/'))}
-                      className="font-mono text-ink-dim hover:text-ink"
-                    >
-                      ../
-                    </button>
-                  </td>
+      <div className="flex min-h-0 flex-1">
+        {/* Listing */}
+        <div className="min-w-0 flex-1 overflow-y-auto px-4 py-2">
+          {listing.isError ? (
+            <div className="py-6 font-mono text-sm text-red">{listing.error.message}</div>
+          ) : entries.length === 0 && !listing.isLoading ? (
+            <div className="py-6 text-sm text-ink-dim">
+              {filter ? 'No matches.' : 'Empty directory — drop files here or use Upload.'}
+            </div>
+          ) : (
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-line text-left font-mono text-[10px] text-ink-dim">
+                  <th className="w-8 py-1 pr-2">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={() => {
+                        setSelected(allSelected ? new Set() : new Set(allNames))
+                      }}
+                      aria-label="select all"
+                    />
+                  </th>
+                  <th className="py-1">name</th>
+                  <th className="w-24 py-1 text-right">size</th>
+                  <th className="w-36 py-1 text-right">modified</th>
                 </tr>
-              )}
-              {entries.map((e) => (
-                <FileRow
-                  key={e.name}
-                  entry={e}
-                  onOpen={() => {
-                    const child = path === '' ? e.name : `${path}/${e.name}`
-                    if (e.type === 'dir') setPath(child)
-                    else
-                      window.open(
-                        useConnection.getState().gateway.fileDownloadUrl(child),
-                        '_blank',
-                        'noopener,noreferrer',
-                      )
-                  }}
-                />
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {path !== '' && (
+                  <tr className="border-b border-line/40">
+                    <td />
+                    <td colSpan={3} className="py-1">
+                      <button
+                        type="button"
+                        onClick={() => setPath(parentRel(path))}
+                        className="font-mono text-ink-dim hover:text-ink"
+                      >
+                        ../
+                      </button>
+                    </td>
+                  </tr>
+                )}
+                {entries.map((e) => {
+                  const child = joinRel(path, e.name)
+                  const isSel = selected.has(e.name)
+                  return (
+                    <tr
+                      key={e.name}
+                      className={`border-b border-line/40 hover:bg-panel-2/50 ${isSel ? 'bg-panel-2/40' : ''}`}
+                      draggable
+                      onDragStart={(ev) => {
+                        ev.dataTransfer.setData('application/x-rivet-file', e.name)
+                        ev.dataTransfer.effectAllowed = 'move'
+                      }}
+                      onDragOver={
+                        e.type === 'dir'
+                          ? (ev) => {
+                              ev.preventDefault()
+                              ev.dataTransfer.dropEffect = 'move'
+                            }
+                          : undefined
+                      }
+                      onDrop={
+                        e.type === 'dir'
+                          ? (ev) => {
+                              ev.preventDefault()
+                              ev.stopPropagation()
+                              const src = ev.dataTransfer.getData('application/x-rivet-file')
+                              if (src) void moveOntoDir(src, e.name)
+                              else if (ev.dataTransfer.files.length > 0) {
+                                // Drop OS files into this subdirectory via upload-to-path
+                                const dir = child
+                                void (async () => {
+                                  setBusy(true)
+                                  let ok = 0
+                                  for (const file of Array.from(ev.dataTransfer.files)) {
+                                    try {
+                                      await gateway().filesUpload(dir, file.name, file)
+                                      ok += 1
+                                    } catch (err) {
+                                      showNotice({ kind: 'err', text: (err as Error).message })
+                                    }
+                                  }
+                                  await refresh()
+                                  setBusy(false)
+                                  if (ok)
+                                    showNotice({
+                                      kind: 'ok',
+                                      text: `uploaded ${String(ok)} into ${e.name}/`,
+                                    })
+                                })()
+                              }
+                            }
+                          : undefined
+                      }
+                    >
+                      <td className="py-1.5 pr-2">
+                        <input
+                          type="checkbox"
+                          checked={isSel}
+                          onChange={() => {
+                            setSelected((prev) => {
+                              const n = new Set(prev)
+                              if (n.has(e.name)) n.delete(e.name)
+                              else n.add(e.name)
+                              return n
+                            })
+                          }}
+                          aria-label={`select ${e.name}`}
+                        />
+                      </td>
+                      <td className="py-1.5 pr-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (e.type === 'dir') setPath(child)
+                            else setPreviewPath(child)
+                          }}
+                          onDoubleClick={() => {
+                            if (e.type === 'file') {
+                              window.open(
+                                gateway().fileDownloadUrl(child),
+                                '_blank',
+                                'noopener,noreferrer',
+                              )
+                            }
+                          }}
+                          className="flex items-center gap-2 text-left"
+                        >
+                          <span className="w-4 text-center font-mono text-ink-dim">
+                            {e.type === 'dir' ? '▸' : '·'}
+                          </span>
+                          <span className={e.type === 'dir' ? 'text-em' : 'text-ink'}>
+                            {e.name}
+                            {e.type === 'dir' ? '/' : ''}
+                          </span>
+                        </button>
+                      </td>
+                      <td className="w-24 py-1.5 pr-4 text-right font-mono text-xs text-ink-dim">
+                        {e.type === 'file' ? fmtSize(e.size) : ''}
+                      </td>
+                      <td className="w-36 py-1.5 text-right font-mono text-xs text-ink-dim">
+                        {fmtMtime(e.mtime)}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Preview pane */}
+        {previewPath && (
+          <PreviewPane
+            path={previewPath}
+            onClose={() => setPreviewPath(undefined)}
+            downloadUrl={gateway().fileDownloadUrl(previewPath)}
+          />
         )}
       </div>
 
@@ -187,27 +568,83 @@ export function FilesPage(): JSX.Element {
   )
 }
 
-function FileRow(props: { entry: FileEntry; onOpen: () => void }): JSX.Element {
-  const { entry } = props
+function PreviewPane(props: {
+  path: string
+  downloadUrl: string
+  onClose: () => void
+}): JSX.Element {
+  const name = baseName(props.path)
+  const [text, setText] = useState<string | undefined>()
+  const [err, setErr] = useState<string | undefined>()
+  const [loading, setLoading] = useState(true)
+  // We don't have size here cheaply — fetch and let kind decide after HEAD isn't available.
+  // Use name heuristics; text fetch is capped by server stream (we still limit read).
+  const kind = previewKind(name, 100_000) // assume under cap for kind; re-check after fetch
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setText(undefined)
+    setErr(undefined)
+    if (kind === 'image') {
+      setLoading(false)
+      return
+    }
+    if (kind === 'none') {
+      setLoading(false)
+      setErr('No in-app preview for this type — use download.')
+      return
+    }
+    void fetch(props.downloadUrl)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${String(res.status)}`)
+        const body = await res.text()
+        if (body.length > 1024 * 1024) throw new Error('file too large to preview')
+        if (!cancelled) setText(body)
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setErr(e instanceof Error ? e.message : String(e))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [props.downloadUrl, kind])
+
   return (
-    <tr className="border-b border-line/40 hover:bg-panel-2/50">
-      <td className="py-1.5 pr-4">
-        <button onClick={props.onOpen} className="flex items-center gap-2 text-left">
-          <span className="w-4 text-center font-mono text-ink-dim">
-            {entry.type === 'dir' ? '▸' : '·'}
-          </span>
-          <span className={entry.type === 'dir' ? 'text-em' : 'text-ink'}>
-            {entry.name}
-            {entry.type === 'dir' ? '/' : ''}
-          </span>
+    <aside className="flex w-[min(28rem,45%)] shrink-0 flex-col border-l border-line bg-panel/60">
+      <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-em">{props.path}</span>
+        <a
+          href={props.downloadUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-mono text-[11px] text-ink-dim hover:text-em"
+        >
+          open
+        </a>
+        <button type="button" onClick={props.onClose} className="text-ink-dim hover:text-ink">
+          ✕
         </button>
-      </td>
-      <td className="w-24 py-1.5 pr-4 text-right font-mono text-xs text-ink-dim">
-        {entry.type === 'file' ? fmtSize(entry.size) : ''}
-      </td>
-      <td className="w-36 py-1.5 text-right font-mono text-xs text-ink-dim">
-        {fmtMtime(entry.mtime)}
-      </td>
-    </tr>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        {loading && <div className="text-sm text-ink-dim">loading…</div>}
+        {err && <div className="font-mono text-xs text-red">{err}</div>}
+        {kind === 'image' && !loading && (
+          <img
+            src={props.downloadUrl}
+            alt={name}
+            className="max-w-full rounded border border-line"
+          />
+        )}
+        {text !== undefined && (
+          <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-ink">
+            {text}
+          </pre>
+        )}
+      </div>
+    </aside>
   )
 }

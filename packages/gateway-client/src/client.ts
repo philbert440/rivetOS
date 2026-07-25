@@ -40,7 +40,12 @@ import type {
   TermSpawnRequest,
   TermSpawnResponse,
 } from '@rivetos/types'
-import type { DenSessionsResponse, FilesListResponse, FilesUploadResponse } from '@rivetos/types'
+import type {
+  DenSessionsResponse,
+  FilesListResponse,
+  FilesUploadResponse,
+  FilesMutateResponse,
+} from '@rivetos/types'
 import { GatewayError, request, type QueryValue } from './http.js'
 import {
   subscribe,
@@ -385,6 +390,36 @@ export class RivetGateway {
       throw new GatewayError(res.status, message, parsed)
     }
     return parsed as FilesUploadResponse
+  }
+
+  /** Create an empty directory under `dir` named `name`. */
+  filesMkdir(dir: string, name: string, signal?: AbortSignal): Promise<FilesMutateResponse> {
+    return request(this.config, '/api/files/mkdir', {
+      method: 'POST',
+      query: { dir, name },
+      signal,
+    })
+  }
+
+  /** Rename or move within the files root (`from` / `to` are root-relative). */
+  filesRename(from: string, to: string, signal?: AbortSignal): Promise<FilesMutateResponse> {
+    return request(this.config, '/api/files/rename', {
+      method: 'POST',
+      query: { from, to },
+      signal,
+    })
+  }
+
+  /** Delete a file or directory. Non-empty dirs need `recursive: true`. */
+  filesDelete(
+    path: string,
+    opts: { recursive?: boolean; signal?: AbortSignal } = {},
+  ): Promise<FilesMutateResponse> {
+    return request(this.config, '/api/files/delete', {
+      method: 'DELETE',
+      query: { path, recursive: opts.recursive ? 1 : undefined },
+      signal: opts.signal,
+    })
   }
 
   // -- notifications (4e — server route lands with the escalation WS) --------
