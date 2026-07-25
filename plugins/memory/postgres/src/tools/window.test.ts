@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyWindowArgs,
+  fmtLocalTs,
   isWindowChoice,
   normalizeWindowInput,
   resolveWindow,
@@ -110,6 +111,37 @@ describe('resolveWindow', () => {
   it('returns ISO-8601 UTC strings', () => {
     const { since } = resolveWindow('today', now)
     expect(since).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z$/)
+  })
+})
+
+describe('fmtLocalTs', () => {
+  // Fixed UTC instant. Local wall-clock depends on process TZ; we assert the
+  // contract that agents need: date+time plus a zone label so UTC is never
+  // mistaken for local (the old browse format was unlabeled UTC).
+  const utcInstant = new Date('2026-07-15T19:30:00.000Z')
+
+  it('renders YYYY-MM-DD HH:MM:SS with a timezone suffix', () => {
+    const s = fmtLocalTs(utcInstant)
+    expect(s).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\b/)
+    // At least three space-separated tokens: date, time, zone (zone may be
+    // multi-word like "GMT+2" in some locales; require a non-digit tail).
+    expect(s.length).toBeGreaterThan('YYYY-MM-DD HH:MM:SS'.length)
+    const unlabeledUtc = utcInstant.toISOString().replace('T', ' ').slice(0, 19)
+    // Either the local wall-clock differs from UTC, or we appended a label
+    // onto the UTC wall-clock — never return bare unlabeled UTC.
+    if (s.startsWith(unlabeledUtc)) {
+      expect(s.length).toBeGreaterThan(unlabeledUtc.length)
+      expect(s.slice(unlabeledUtc.length).trim().length).toBeGreaterThan(0)
+    }
+  })
+
+  it('matches process-local calendar fields', () => {
+    const s = fmtLocalTs(utcInstant)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const expectedPrefix =
+      `${String(utcInstant.getFullYear())}-${pad(utcInstant.getMonth() + 1)}-${pad(utcInstant.getDate())} ` +
+      `${pad(utcInstant.getHours())}:${pad(utcInstant.getMinutes())}:${pad(utcInstant.getSeconds())}`
+    expect(s.startsWith(expectedPrefix)).toBe(true)
   })
 })
 

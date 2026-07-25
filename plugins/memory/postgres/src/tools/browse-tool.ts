@@ -4,7 +4,13 @@
 
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
-import { applyWindowArgs, truncationHint, WINDOW_CHOICES, type MessageRow } from './helpers.js'
+import {
+  applyWindowArgs,
+  fmtLocalTs,
+  truncationHint,
+  WINDOW_CHOICES,
+  type MessageRow,
+} from './helpers.js'
 
 export function createBrowseTool(pool: pg.Pool): Tool {
   return {
@@ -114,24 +120,49 @@ export function createBrowseTool(pool: pg.Pool): Tool {
       try {
         const result = await pool.query<MessageRow>(sql, params)
 
-        if (result.rows.length === 0) return 'No messages found.'
+        const filterNote = (): string => {
+          if (typeof args.window === 'string' && args.window && (since || before)) {
+            return (
+              `\n_window="${args.window}"` +
+              (since ? ` since=${since}` : '') +
+              (before ? ` before=${before}` : '') +
+              '_'
+            )
+          }
+          if (since || before) {
+            return (
+              '\n_' +
+              [since ? `since=${since}` : null, before ? `before=${before}` : null]
+                .filter(Boolean)
+                .join(' ') +
+              '_'
+            )
+          }
+          return ''
+        }
+
+        if (result.rows.length === 0) {
+          // Echo filters + next-step hints so agents don't conclude "memory is
+          // empty" when the window/agent filter was just too tight.
+          return (
+            'No messages found.' +
+            filterNote() +
+            '\n_Try a wider window, drop agent/conversation filters, flip order, or use memory_search for topic recall._'
+          )
+        }
 
         const hitLimit = result.rows.length >= limit
         const lines = result.rows.map((r) => {
-          const ts = r.created_at.toISOString().replace('T', ' ').slice(0, 19)
+          // Local-TZ + short zone label (Hermes parity) — never bare UTC
+          // without a suffix; that misread wastes whole recall turns.
+          const ts = fmtLocalTs(r.created_at)
           const tool = r.tool_name ? ` [tool: ${r.tool_name}]` : ''
           const content = r.content.length > 500 ? r.content.slice(0, 500) + '…' : r.content
           return `[${ts}] ${r.agent}/${r.role}${tool}\n${content}${truncationHint(r.metadata, r.id)}`
         })
 
         let header = `## Messages (${String(result.rows.length)} returned, ${order === 'DESC' ? 'newest' : 'oldest'} first)`
-        if (typeof args.window === 'string' && args.window && (since || before)) {
-          header +=
-            `\n_window="${args.window}"` +
-            (since ? ` since=${since}` : '') +
-            (before ? ` before=${before}` : '') +
-            '_'
-        }
+        header += filterNote()
         if (hitLimit) {
           header += `\n_Hit limit=${String(limit)}. Flip order, raise limit (max 200), or narrow since/before/window._`
         }
