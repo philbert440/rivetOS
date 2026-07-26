@@ -33,6 +33,18 @@ export interface HeartbeatTaskOptions {
   deliver: (hbConfig: HeartbeatConfig, response: string) => Promise<void>
   /** Criteria policy (phase 2b) — heartbeats are skip-listed by default. */
   criteriaPolicy?: CriteriaPolicy
+  /**
+   * Pin the heartbeat row to this node (mesh `node_name` / hostname).
+   *
+   * Required on multi-node fleets: unpinned rows enqueue under the global
+   * `run-task` job and any node's worker can claim them. Claim then fails
+   * (or chat-loop bombs) when the agent is not registered on the winner —
+   * the 2026-07-26 fleet failure mode (~59% of heartbeat rows). The API
+   * path already applies G4 `resolveAffinity`; heartbeats must do the same
+   * pin. Prefer the scheduling node: the crontab only fires when the agent
+   * is local to this runtime.
+   */
+  nodeAffinity?: string
 }
 
 /** Create the heartbeat task row and wait for its terminal state. */
@@ -55,6 +67,8 @@ export async function runHeartbeatViaTasks(
     spec: { promptMode: 'heartbeat' },
     budget: { maxWallClockMs: opts.turnTimeoutMs },
     maxAttempts: 1,
+    // Per-node job name (`run-task:<node>`) + claim guard — see options.
+    nodeAffinity: opts.nodeAffinity,
   })
 
   const terminal = await opts.waiter.wait(row.id, {
