@@ -98,7 +98,13 @@ describe('runHeartbeatViaTasks', () => {
     const deliver = vi.fn(async () => {})
 
     const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
-    await runHeartbeatViaTasks(hb, { store, waiter, turnTimeoutMs: 5_000, deliver })
+    await runHeartbeatViaTasks(hb, {
+      store,
+      waiter,
+      turnTimeoutMs: 5_000,
+      deliver,
+      nodeAffinity: 'test-node',
+    })
     await waiter.stop()
 
     expect(deliver).toHaveBeenCalledWith(hb, 'all quiet')
@@ -108,14 +114,43 @@ describe('runHeartbeatViaTasks', () => {
     expect(rows[0].status).toBe('completed')
     expect(rows[0].spec.promptMode).toBe('heartbeat')
     expect(rows[0].maxAttempts).toBe(1)
+    expect(rows[0].nodeAffinity).toBe('test-node')
+    expect(rows[0].claimedBy).toBe('test-node')
     expect(executor.specs[0].promptMode).toBe('heartbeat')
+  })
+
+  it('foreign node cannot claim a pinned heartbeat row (fleet race guard)', async () => {
+    // Create-only path: pin then exercise the store claim guard used by the
+    // runner (same CAS as production — unpinned heartbeats were the 2026-07-26
+    // failure mode where ct116 claimed ct114's agent work).
+    const store = new InMemoryTaskStore()
+    const row = await store.create({
+      goal: hb.prompt,
+      executor: 'chat-loop',
+      agentId: hb.agent,
+      origin: 'heartbeat',
+      requestedBy: 'system:heartbeat',
+      spec: { promptMode: 'heartbeat' },
+      maxAttempts: 1,
+      nodeAffinity: 'ct114',
+    })
+    expect(row.nodeAffinity).toBe('ct114')
+    expect(await store.claim(row.id, 'ct116')).toBeUndefined()
+    const claimed = await store.claim(row.id, 'ct114')
+    expect(claimed?.claimedBy).toBe('ct114')
   })
 
   it('failed run: no delivery, row records the failure', async () => {
     const store = wire(fakeExecutor({ verdict: 'failed' }))
     const deliver = vi.fn(async () => {})
     const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
-    await runHeartbeatViaTasks(hb, { store, waiter, turnTimeoutMs: 5_000, deliver })
+    await runHeartbeatViaTasks(hb, {
+      store,
+      waiter,
+      turnTimeoutMs: 5_000,
+      deliver,
+      nodeAffinity: 'test-node',
+    })
     await waiter.stop()
     expect(deliver).not.toHaveBeenCalled()
     expect((await store.list())[0].status).toBe('failed')
@@ -127,7 +162,13 @@ describe('runHeartbeatViaTasks', () => {
     const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
     // Deadline = turnTimeoutMs + 60s; use a negative bound so the wait is
     // already expired while the fake turn hangs.
-    await runHeartbeatViaTasks(hb, { store, waiter, turnTimeoutMs: -61_000, deliver })
+    await runHeartbeatViaTasks(hb, {
+      store,
+      waiter,
+      turnTimeoutMs: -61_000,
+      deliver,
+      nodeAffinity: 'test-node',
+    })
     await waiter.stop()
     expect(deliver).not.toHaveBeenCalled()
     const row = (await store.list())[0]
