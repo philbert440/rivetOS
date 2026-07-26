@@ -1,8 +1,11 @@
 /**
- * extract-wiki task (phase 3c) — mine one leaf summary into topic-page
- * patches. New consumer of compaction output: enqueued after each leaf
- * insert (and by the 3h backfill), gated on WIKI_EXTRACTION, idempotent on
- * summary_id, per-slug write serialization via the single WikiWriter.
+ * extract-wiki task (phase 3c / memory v6) — mine one leaf summary into
+ * durable topic-page patches. New consumer of compaction output: enqueued
+ * after each leaf insert (and by backfill), gated on WIKI_EXTRACTION,
+ * idempotent on summary_id, per-slug write serialization via WikiWriter.
+ *
+ * Memory v6: hard identity gate (entity/stem/alias/search) so session-shaped
+ * slugs fold into canonical durable topics; every apply cites the source leaf.
  *
  * Skip rules (marked 'skipped', never retried): extraction already done,
  * summary below WIKI_MIN_SUMMARY_CHARS, heartbeat conversations, non-leaf
@@ -93,12 +96,13 @@ export const extractWikiTask: Task = async (payload, helpers) => {
   if (summary.session_key?.startsWith('heartbeat:')) return skip('heartbeat conversation')
 
   try {
-    // Candidate pages for identity resolution — search on the summary text.
-    const hits = await index.searchTopics(summary.content.slice(0, 500), { limit: 3 })
+    // Candidate durable topics for the prompt (search + will re-resolve per patch).
+    const hits = await index.searchTopics(summary.content.slice(0, 500), { limit: 5 })
     const candidates: ExtractionCandidate[] = hits.map((h) => ({
       slug: h.slug,
       title: h.title,
       aliases: h.aliases,
+      entities: h.entities,
       currentState: h.currentState,
     }))
 
@@ -133,14 +137,48 @@ export const extractWikiTask: Task = async (payload, helpers) => {
     const touched: string[] = []
     let lastSha: string | undefined
     for (const patch of patches) {
-      // Identity resolution: an alias/exact match redirects the patch onto
-      // the existing slug so the LLM can't mint near-duplicates.
-      const resolved = await index.resolveTopic(patch.slug)
-      const slug = resolved.exact?.slug ?? patch.slug
-      const applied = await writer.apply({ ...patch, slug }, { summaryId })
+      // Hard identity gate: fold session-shaped creates into canonical topics.
+      const gated = await index.gateTopicWrite(patch.slug, patch.action, {
+        entities: patch.addEntities,
+        title: patch.title,
+      })
+      if (gated.slug !== patch.slug || gated.action !== patch.action) {
+        helpers.logger.info(
+          `extract-wiki: resolve ${patch.slug}/${patch.action} → ${gated.slug}/${gated.action} (${gated.reason})`,
+        )
+      }
+
+      const citation = {
+        summaryId,
+        date: summaryDate,
+        kind: 'leaf' as const,
+        note: patch.historyEntry?.title || patch.title || patch.slug,
+      }
+
+      const applied = await writer.apply(
+        {
+          ...patch,
+          slug: gated.slug,
+          action: gated.action,
+          // Keep proposed slug as alias when we redirected onto a parent.
+          addAliases: [
+            ...(patch.addAliases ?? []),
+            ...(gated.slug !== patch.slug ? [patch.slug] : []),
+          ],
+          addCitations: [citation],
+          addSources: [
+            {
+              kind: 'summary',
+              ids: [summaryId],
+              conversationId: summary.conversation_id ?? undefined,
+            },
+          ],
+        },
+        { summaryId },
+      )
       await index.upsertTopic(applied.page, applied.gitSha)
       await index.recordProvenance(
-        slug,
+        gated.slug,
         [
           {
             kind: 'summary',
@@ -150,7 +188,8 @@ export const extractWikiTask: Task = async (payload, helpers) => {
         ],
         applied.gitSha,
       )
-      touched.push(slug)
+      await index.recordCitations(gated.slug, [citation])
+      touched.push(gated.slug)
       lastSha = applied.gitSha
     }
 

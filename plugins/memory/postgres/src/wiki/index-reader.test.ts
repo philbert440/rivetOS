@@ -32,8 +32,13 @@ describeIf('WikiIndex (PG)', () => {
     await pool.query(
       'CREATE TABLE ros_summaries (id UUID PRIMARY KEY DEFAULT gen_random_uuid())',
     )
-    const sql = readFileSync(resolve(__dirname, '../schema/migrations/0005_wiki.sql'), 'utf8')
-    await pool.query(sql)
+    const sql5 = readFileSync(resolve(__dirname, '../schema/migrations/0005_wiki.sql'), 'utf8')
+    await pool.query(sql5)
+    const sql6 = readFileSync(
+      resolve(__dirname, '../schema/migrations/0006_wiki_durable_topics.sql'),
+      'utf8',
+    )
+    await pool.query(sql6)
     index = new WikiIndex(pool)
     expect(await index.isReady()).toBe(true)
   }, 30_000)
@@ -106,6 +111,28 @@ describeIf('WikiIndex (PG)', () => {
 
     const resolved = await index.resolveTopic('pve3-llm')
     expect(resolved.exact?.slug).toBe('gerty-vllm-stack')
+
+    // memory v6: stem child folds onto parent; create gated to update
+    await index.upsertTopic(
+      applyPatch(undefined, {
+        action: 'create',
+        slug: 'deckard-40b',
+        title: 'Deckard 40B',
+        addEntities: ['model:deckard-40b'],
+        currentState: 'Serves on pve3:8003.',
+        verifiedAt: '2026-07-07T00:00:00Z',
+      }),
+    )
+    const stem = await index.resolveTopicIdentity('deckard-40b-awq-grid-search')
+    expect(stem.match?.slug).toBe('deckard-40b')
+    expect(stem.reason).toBe('stem')
+    const gated = await index.gateTopicWrite('deckard-40b-awq-grid-search', 'create')
+    expect(gated).toMatchObject({ slug: 'deckard-40b', action: 'update', reason: 'stem' })
+    const byEntity = await index.resolveTopicIdentity('some-new-slug', {
+      entities: ['model:deckard-40b'],
+    })
+    expect(byEntity.match?.slug).toBe('deckard-40b')
+    expect(byEntity.reason).toBe('entity')
   })
 
   it('provenance + extraction idempotency roundtrip', async () => {

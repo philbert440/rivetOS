@@ -72,8 +72,9 @@ describe('formatExtractionPrompt', () => {
       agent: 'rivet',
       candidates: [{ slug: 'a', title: 'A', aliases: ['aa'], currentState: 'state' }],
     })
-    expect(withC).toContain('### a — A (aliases: aa)')
+    expect(withC).toContain('### a — A')
+    expect(withC).toContain('aliases: aa')
     const without = formatExtractionPrompt({ summary: 's', summaryDate: '2026-07-07', candidates: [] })
-    expect(without).toContain('no matching pages yet')
+    expect(without).toContain('no matching durable topics yet')
   })
 })
