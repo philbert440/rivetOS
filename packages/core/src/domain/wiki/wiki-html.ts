@@ -279,6 +279,21 @@ ${meta.entities.length > 0 ? `<tr><th>Entities</th><td>${meta.entities.map((e) =
     p.history.length > 4
       ? `<p><a href="/wiki/${esc(meta.slug)}?view=history">Full history (${String(p.history.length)} entries) →</a></p>`
       : ''
+  const citations = p.citations.slice(0, 20)
+  const citationsBlock =
+    citations.length > 0
+      ? `<h2>Citations</h2>
+<p class="muted">Leaf summaries that contributed to this durable topic.</p>
+<table class="citations"><thead><tr><th>Date</th><th>Kind</th><th>Summary</th><th>Note</th></tr></thead>
+<tbody>
+${citations
+  .map(
+    (c) =>
+      `<tr><td>${esc(c.date ?? '—')}</td><td>${esc(c.kind ?? 'leaf')}</td><td><code>${esc(c.summaryId)}</code></td><td>${esc(c.note ?? '')}</td></tr>`,
+  )
+  .join('\n')}
+</tbody></table>`
+      : ''
   const categories =
     meta.tags.length > 0
       ? `<nav class="catbar">Categories: ${meta.tags.map((t) => `<a href="/wiki/_all?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join(' · ')}</nav>`
@@ -288,6 +303,7 @@ ${renderMarkdown(p.currentState, ctx)}
 <h2>Recent history</h2>
 ${history || '<p class="muted">(none yet)</p>'}
 ${more}
+${citationsBlock}
 ${categories}`
 }
 

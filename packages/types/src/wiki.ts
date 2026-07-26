@@ -18,6 +18,14 @@ export interface WikiHistoryEntryWire {
   body: string
 }
 
+/** Leaf/branch summary cited as evidence on a durable topic (memory v6). */
+export interface WikiCitationWire {
+  summaryId: string
+  date?: string
+  kind?: string
+  note?: string
+}
+
 export interface WikiPageResponse {
   slug: string
   title: string
@@ -27,6 +35,8 @@ export interface WikiPageResponse {
   /** The "## Current state" section only — UI renders without markdown surgery. */
   currentState: string
   history: WikiHistoryEntryWire[]
+  /** Leaf summary citations (memory v6 durable topics). */
+  citations: WikiCitationWire[]
   /** Full file, verbatim. */
   markdown: string
   sources: WikiSourceRef[]

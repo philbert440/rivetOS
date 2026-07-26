@@ -55,6 +55,14 @@ beforeAll(() => {
       },
       currentState: TOPIC.currentState,
       history: [{ date: '2026-07-06', title: 'Cutover', body: '- shipped' }],
+      citations: [
+        {
+          summaryId: '8f3a0000-0000-0000-0000-000000000001',
+          date: '2026-07-06',
+          kind: 'leaf',
+          note: 'cutover leaf',
+        },
+      ],
     }),
   )
 })

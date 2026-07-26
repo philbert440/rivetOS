@@ -7,6 +7,7 @@
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
   normalizeSlug,
+  type WikiCitation,
   type WikiFrontmatter,
   type WikiHistoryEntry,
   type WikiPage,
@@ -16,6 +17,8 @@ import {
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/
 // Accept em-dash, en-dash, or ASCII hyphen between date and title.
 const HISTORY_HEADING_RE = /^### (\d{4}-\d{2}-\d{2})(?:\s+[—–-]\s+(.*))?$/
+
+const CORE_HEADINGS = new Set(['current state', 'history', 'citations'])
 
 export class WikiParseError extends Error {
   constructor(detail: string) {
@@ -36,14 +39,14 @@ export function parseWikiPage(input: string): WikiPage {
   const { preamble, sections } = splitSections(body)
   const current = sections.find((s) => s.heading.toLowerCase() === 'current state')
   const history = sections.find((s) => s.heading.toLowerCase() === 'history')
-  const extras = sections.filter(
-    (s) => !['current state', 'history'].includes(s.heading.toLowerCase()),
-  )
+  const citationsSec = sections.find((s) => s.heading.toLowerCase() === 'citations')
+  const extras = sections.filter((s) => !CORE_HEADINGS.has(s.heading.toLowerCase()))
 
   return {
     meta,
     currentState: (current?.body ?? '').trim(),
     history: history ? parseHistory(history.body) : [],
+    citations: citationsSec ? parseCitations(citationsSec.body) : [],
     ...(preamble.trim() !== '' ? { preamble: preamble.trim() } : {}),
     ...(extras.length > 0
       ? { extraSections: extras.map((s) => ({ heading: s.heading, body: s.body.trim() })) }
@@ -65,6 +68,25 @@ export function serializeWikiPage(page: WikiPage): string {
   const history = page.history
     .map((h) => `### ${h.date}${h.title ? ` — ${h.title}` : ''}\n\n${h.body.trim()}\n`)
     .join('\n')
+  const citations = page.citations ?? []
+  const citationBlock =
+    citations.length === 0
+      ? ''
+      : [
+          '',
+          '## Citations',
+          '',
+          '| Date | Kind | Summary | Note |',
+          '|------|------|---------|------|',
+          ...citations.map((c) => {
+            const date = c.date ?? ''
+            const kind = c.kind ?? 'leaf'
+            const note = (c.note ?? '').replace(/\|/g, '\\|')
+            return `| ${date} | ${kind} | \`${c.summaryId}\` | ${note} |`
+          }),
+          '',
+        ].join('\n')
+
   return [
     `---\n${stringifyYaml(meta).trimEnd()}\n---`,
     ...(page.preamble ? ['', page.preamble] : []),
@@ -76,6 +98,7 @@ export function serializeWikiPage(page: WikiPage): string {
     '## History',
     '',
     history.trimEnd(),
+    citationBlock,
     ...(page.extraSections ?? []).flatMap((s) => ['', `## ${s.heading}`, '', s.body]),
     '',
   ].join('\n')
@@ -102,7 +125,11 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
         },
         currentState: '',
         history: [],
+        citations: [],
       }
+
+  // Older pages parsed before citations field — normalize.
+  if (!page.citations) page.citations = []
 
   if (patch.title) page.meta.title = patch.title
   page.meta.aliases = union(page.meta.aliases, patch.addAliases)
@@ -134,7 +161,83 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
     if (!dup) page.history.unshift({ ...h, body: h.body.trim() })
   }
 
+  for (const c of patch.addCitations ?? []) {
+    if (!c.summaryId) continue
+    const dup = page.citations.find((x) => x.summaryId === c.summaryId)
+    if (!dup) {
+      page.citations.unshift({
+        summaryId: c.summaryId,
+        ...(c.date ? { date: c.date } : {}),
+        ...(c.kind ? { kind: c.kind } : {}),
+        ...(c.note ? { note: c.note } : {}),
+      })
+    }
+  }
+
   return page
+}
+
+/**
+ * Merge loser pages into a canonical durable topic (consolidation).
+ * Keeps canonical current_state if non-empty; otherwise takes the longest
+ * loser state. Unions meta; prepends loser history + citations (deduped).
+ */
+export function mergePages(canonical: WikiPage, losers: WikiPage[]): WikiPage {
+  const out: WikiPage = structuredClone(canonical)
+  if (!out.citations) out.citations = []
+  for (const loser of losers) {
+    if (loser.meta.slug === out.meta.slug) continue
+    out.meta.aliases = union(out.meta.aliases, [
+      loser.meta.slug,
+      ...loser.meta.aliases,
+      loser.meta.title,
+    ])
+    out.meta.tags = union(out.meta.tags, loser.meta.tags)
+    out.meta.entities = union(out.meta.entities, loser.meta.entities)
+    for (const src of loser.meta.sources) {
+      const key = (x: { ids: string[] }): string => JSON.stringify([...x.ids].sort())
+      const dup = out.meta.sources.find((s) => s.kind === src.kind && key(s) === key(src))
+      if (!dup) out.meta.sources.push(src)
+    }
+    if (out.currentState.trim() === '' && loser.currentState.trim() !== '') {
+      out.currentState = loser.currentState.trim()
+    } else if (
+      loser.currentState.trim() !== '' &&
+      loser.currentState.trim() !== out.currentState.trim() &&
+      loser.currentState.length > out.currentState.length * 1.25
+    ) {
+      // Prefer richer standing state when clearly denser; archive the prior.
+      out.history.unshift({
+        date: (out.meta.lastVerified ?? new Date().toISOString()).slice(0, 10),
+        title: 'Superseded current state (consolidation)',
+        body: out.currentState.trim(),
+      })
+      out.currentState = loser.currentState.trim()
+    } else if (
+      loser.currentState.trim() !== '' &&
+      loser.currentState.trim() !== out.currentState.trim()
+    ) {
+      out.history.unshift({
+        date: (loser.meta.lastVerified ?? new Date().toISOString()).slice(0, 10),
+        title: `Merged from ${loser.meta.slug}`,
+        body: loser.currentState.trim(),
+      })
+    }
+    for (const h of loser.history) {
+      const dup = out.history.find(
+        (e) => e.date === h.date && e.title === h.title && e.body.trim() === h.body.trim(),
+      )
+      if (!dup) out.history.push({ ...h, body: h.body.trim() })
+    }
+    for (const c of loser.citations ?? []) {
+      if (!out.citations.find((x) => x.summaryId === c.summaryId)) {
+        out.citations.push(c)
+      }
+    }
+  }
+  // History: newest first by date string (YYYY-MM-DD sorts lexically).
+  out.history.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +327,57 @@ function parseHistory(body: string): WikiHistoryEntry[] {
   return entries
 }
 
+/** Parse markdown citation table or bullet fallback. */
+export function parseCitations(body: string): WikiCitation[] {
+  const out: WikiCitation[] = []
+  const seen = new Set<string>()
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim()
+    // Table row: | date | kind | `uuid` | note |
+    const table = /^\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]*)\|$/.exec(trimmed)
+    if (table) {
+      const dateCell = table[1].trim()
+      const kindCell = table[2].trim()
+      const sumCell = table[3].trim()
+      const noteCell = table[4].trim()
+      if (/^date$/i.test(dateCell) || /^-+$/.test(dateCell.replace(/\s/g, ''))) continue
+      const idMatch = /`([0-9a-f-]{36})`/i.exec(sumCell) ?? /([0-9a-f-]{36})/i.exec(sumCell)
+      if (!idMatch) continue
+      const summaryId = idMatch[1].toLowerCase()
+      if (seen.has(summaryId)) continue
+      seen.add(summaryId)
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(dateCell) ? dateCell : undefined
+      const kind = kindCell && !/^kind$/i.test(kindCell) ? kindCell : undefined
+      const note = noteCell || undefined
+      out.push({
+        summaryId,
+        ...(date ? { date } : {}),
+        ...(kind ? { kind } : {}),
+        ...(note ? { note } : {}),
+      })
+      continue
+    }
+    // Bullet: - `uuid` — note  or  - uuid (leaf, 2026-07-25)
+    const bullet = /`([0-9a-f-]{36})`/i.exec(trimmed) ?? /\b([0-9a-f-]{36})\b/i.exec(trimmed)
+    if (bullet && /^[-*]/.test(trimmed)) {
+      const summaryId = bullet[1].toLowerCase()
+      if (seen.has(summaryId)) continue
+      seen.add(summaryId)
+      const date = /\b(\d{4}-\d{2}-\d{2})\b/.exec(trimmed)?.[1]
+      const kind = /\b(leaf|branch|root)\b/i.exec(trimmed)?.[1]?.toLowerCase()
+      const noteMatch = /[—–-]\s+(.+)$/.exec(trimmed)
+      out.push({
+        summaryId,
+        ...(date ? { date } : {}),
+        ...(kind ? { kind } : {}),
+        ...(noteMatch ? { note: noteMatch[1].trim() } : {}),
+      })
+    }
+  }
+  return out
+}
+
 function union(base: string[], add?: string[]): string[] {
   if (!add?.length) return base
-  return [...new Set([...base, ...add])]
+  return [...new Set([...base, ...add.filter((x) => x && x.trim() !== '')])]
 }

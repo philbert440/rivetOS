@@ -152,6 +152,12 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
           entities: page.meta.entities,
           currentState: page.currentState,
           history: page.history,
+          citations: page.citations.map((c) => ({
+            summaryId: c.summaryId,
+            date: c.date,
+            kind: c.kind,
+            note: c.note,
+          })),
           markdown,
           sources: page.meta.sources.map((s) => ({
             kind: s.kind,
