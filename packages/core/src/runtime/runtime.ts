@@ -81,6 +81,8 @@ export class Runtime {
   private heartbeatScheduler?: HeartbeatScheduler
   private heartbeatTaskStore?: TaskStore
   private heartbeatTaskWaiter?: import('../domain/task/completion-waiter.js').TaskCompletionWaiter
+  /** Mesh node id used as heartbeat `nodeAffinity` (G4 parity with /api/tasks). */
+  private heartbeatNodeAffinity?: string
   private healthServer?: HealthServer
   private reconnectionManager: ReconnectionManager
   private shutdownHooks: Array<() => Promise<void>> = []
@@ -181,13 +183,19 @@ export class Runtime {
    * Heartbeat runs are ros_tasks rows (steps (f)/(g2a) — the legacy inline
    * path is deleted). Boot calls this before start() when the task engine
    * is live; without it heartbeats warn and skip until migration.
+   *
+   * @param nodeAffinity — this node's mesh name (or hostname). Pins heartbeat
+   *   rows so foreign mesh workers cannot claim them. Omit only in single-node
+   *   / test setups where the global `run-task` queue is safe.
    */
   setHeartbeatTaskStore(
     store: TaskStore,
     waiter: import('../domain/task/completion-waiter.js').TaskCompletionWaiter,
+    nodeAffinity?: string,
   ): void {
     this.heartbeatTaskStore = store
     this.heartbeatTaskWaiter = waiter
+    this.heartbeatNodeAffinity = nodeAffinity
   }
 
   getMemory(): Memory | undefined {
@@ -360,6 +368,7 @@ export class Runtime {
       waiter,
       turnTimeoutMs: this.config.turnTimeout ? this.config.turnTimeout * 1000 : 1_800_000,
       deliver: (cfg, response) => this.deliverHeartbeatOutput(cfg, response),
+      nodeAffinity: this.heartbeatNodeAffinity,
     })
   }
 

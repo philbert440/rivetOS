@@ -449,7 +449,17 @@ export async function registerAgentTools(
       await taskRunner.stop()
     })
     // Cutover step (f): heartbeat runs are durable ros_tasks rows.
-    if (taskWaiter) runtime.setHeartbeatTaskStore(taskEngineStore, taskWaiter)
+    // Pin heartbeats to this node (same name the task runner listens on) so
+    // foreign mesh workers cannot claim them — G4 affinity parity with
+    // POST /api/tasks (2026-07-26 fleet failure: unpinned heartbeats raced
+    // on the global run-task queue and failed where the agent was missing).
+    if (taskWaiter) {
+      runtime.setHeartbeatTaskStore(
+        taskEngineStore,
+        taskWaiter,
+        config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
+      )
+    }
     log.info('Task engine started — subagent tools, delegation audit + heartbeats are task-backed')
   } else if (tasksEnabled && pgUrl) {
     log.info('Task engine degraded — ros_tasks missing; subagent tools run in-memory')
