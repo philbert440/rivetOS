@@ -11,6 +11,7 @@
  *   - extract-wiki             — durable topic patches from leaf summaries (WIKI_EXTRACTION)
  *   - enqueue-wiki-backfill    — cron — queue unextracted leaves for wiki mining
  *   - consolidate-wiki         — memory v6: merge near-duplicate topics into durable parents
+ *   - recompile-wiki           — memory v7: rebuild Wikipedia-style Summary+Article from history
  *
  * Environment:
  *   RIVETOS_PG_URL              required
@@ -33,6 +34,7 @@ import { enqueueIdleTask } from './tasks/enqueue-idle.js'
 import { extractWikiTask } from './tasks/extract-wiki.js'
 import { enqueueWikiBackfillTask } from './tasks/enqueue-wiki-backfill.js'
 import { consolidateWikiTask } from './tasks/consolidate-wiki.js'
+import { recompileWikiTask } from './tasks/recompile-wiki.js'
 
 async function main(): Promise<void> {
   console.log('[CompactWorker] Starting...')
@@ -54,6 +56,7 @@ async function main(): Promise<void> {
       'extract-wiki': extractWikiTask,
       'enqueue-wiki-backfill': enqueueWikiBackfillTask,
       'consolidate-wiki': consolidateWikiTask,
+      'recompile-wiki': recompileWikiTask,
     },
     parsedCronItems: parseCronItems([
       {

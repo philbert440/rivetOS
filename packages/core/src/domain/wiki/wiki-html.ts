@@ -298,8 +298,23 @@ ${citations
     meta.tags.length > 0
       ? `<nav class="catbar">Categories: ${meta.tags.map((t) => `<a href="/wiki/_all?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join(' · ')}</nav>`
       : ''
+  const article = (p.article ?? '').trim()
+  const articleBlock =
+    article !== ''
+      ? `<h2>Article</h2>
+${renderMarkdown(article, ctx)}`
+      : ''
+  const seeAlso = [...new Set([...(p.seeAlso ?? []), ...(p.meta.related ?? [])])].filter(Boolean)
+  const seeAlsoBlock =
+    seeAlso.length > 0
+      ? `<h2>See also</h2>
+<ul class="seealso">${seeAlso.map((s) => `<li>${wikiLink(s, ctx)}</li>`).join('')}</ul>`
+      : ''
+
   return `${infobox}
 ${renderMarkdown(p.currentState, ctx)}
+${articleBlock}
+${seeAlsoBlock}
 <h2>Recent history</h2>
 ${history || '<p class="muted">(none yet)</p>'}
 ${more}

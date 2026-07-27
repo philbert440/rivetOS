@@ -191,11 +191,14 @@ export const manifest: PluginManifest = {
 export { WikiIndex, RESOLVE_SEARCH_SCORE_MIN } from './wiki/index-reader.js'
 export {
   WIKI_EXTRACT_SYSTEM_PROMPT,
+  WIKI_RECOMPILE_SYSTEM_PROMPT,
   WIKI_EXTRACT_MAX_TOKENS,
   WIKI_MIN_SUMMARY_CHARS,
   WIKI_PIPELINE_VERSION,
   formatExtractionPrompt,
+  formatRecompilePrompt,
   parseWikiPatches,
+  parseRecompileResult,
 } from './wiki/prompts.js'
 export type { ExtractionCandidate } from './wiki/prompts.js'
 export type {
