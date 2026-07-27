@@ -313,17 +313,21 @@ export class PostgresMemory implements Memory {
       }
     }
 
-    // 2. Wiki — curated "what is true now" (phase 3f). Highest signal per
-    // token, so it goes ABOVE raw hybrid search; currentState only (history
-    // stays behind the wiki_read tool / gateway). Degrades silently pre-0005.
+    // 2. Wiki — curated "what is true now" (phase 3f / memory v7). Highest
+    // signal per token, so it goes ABOVE raw hybrid search. Inject Summary
+    // (lead) plus a short Article excerpt when present; history stays behind
+    // wiki_read. Degrades silently pre-0005.
     if (this.wikiAvailable) {
       try {
         const wikiHits = await this.wikiIndex.searchTopics(query, { limit: 3 })
         if (wikiHits.length > 0) {
           sections.push('\n## Wiki (curated state)')
           for (const hit of wikiHits) {
-            const body = hit.currentState.slice(0, 800)
-            seen.add(dedupKey(body))
+            const summary = hit.currentState.slice(0, 1200)
+            const article = hit.article.trim()
+            const articleSlice = article !== '' ? `\n${article.slice(0, 800)}` : ''
+            const body = `${summary}${articleSlice}`
+            seen.add(dedupKey(summary))
             const line = `**${hit.title}** (wiki:${hit.slug})\n${body}`
             tokenEstimate += Math.ceil(line.length / 4)
             if (tokenEstimate > maxTokens) break

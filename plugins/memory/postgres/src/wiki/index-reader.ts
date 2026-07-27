@@ -11,7 +11,13 @@
  */
 
 import type pg from 'pg'
-import { findStemMatch, normalizeSlug, type WikiCitation, type WikiPage } from '@rivetos/wiki-core'
+import {
+  buildWikiSearchText,
+  findStemMatch,
+  normalizeSlug,
+  type WikiCitation,
+  type WikiPage,
+} from '@rivetos/wiki-core'
 
 export interface WikiTopicRow {
   slug: string
@@ -19,7 +25,12 @@ export interface WikiTopicRow {
   aliases: string[]
   tags: string[]
   entities: string[]
+  /** Lead / Summary (## Summary or legacy Current state). */
   currentState: string
+  /** Wikipedia-style body (## Article) — memory v7; empty when 0007 not applied. */
+  article: string
+  /** Explicit related slugs (v7). */
+  related: string[]
   historyCount: number
   gitSha: string | null
   lastVerifiedAt?: string
@@ -344,39 +355,86 @@ export class WikiIndex {
 
   /** Upsert the index row from a parsed page (extractor, post-commit). */
   async upsertTopic(page: WikiPage, gitSha?: string): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO ros_wiki_topics
-         (slug, title, aliases, tags, entities, current_state, search_text,
-          history_count, git_sha, last_verified_at, updated_at, embed_status)
-       VALUES ($1,$2,$3,$4,$5,$6,$10,$7,$8,$9, now(), NULL)
-       ON CONFLICT (slug) DO UPDATE SET
-         title = EXCLUDED.title,
-         aliases = EXCLUDED.aliases,
-         tags = EXCLUDED.tags,
-         entities = EXCLUDED.entities,
-         current_state = EXCLUDED.current_state,
-         search_text = EXCLUDED.search_text,
-         history_count = EXCLUDED.history_count,
-         git_sha = EXCLUDED.git_sha,
-         last_verified_at = EXCLUDED.last_verified_at,
-         updated_at = now(),
-         -- search surface changed (state OR title/aliases) → re-embed
-         embed_status = CASE
-           WHEN ros_wiki_topics.search_text IS DISTINCT FROM EXCLUDED.search_text
-             THEN NULL ELSE ros_wiki_topics.embed_status END`,
-      [
-        page.meta.slug,
-        page.meta.title,
-        page.meta.aliases,
-        page.meta.tags,
-        page.meta.entities,
-        page.currentState,
-        page.history.length,
-        gitSha ?? null,
-        page.meta.lastVerified ?? null,
-        `${page.meta.title} ${page.meta.aliases.join(' ')} ${page.currentState}`,
-      ],
-    )
+    // Lean search/embed surface (lead + short article excerpt) — full article
+    // lives in the markdown file / article column, not the embedding centroid.
+    const article = page.article
+    const related = page.meta.related.length > 0 ? page.meta.related : page.seeAlso
+    const searchText = buildWikiSearchText(page)
+
+    // Prefer v7 columns (article, related); fall back if 0007 not applied yet.
+    try {
+      await this.pool.query(
+        `INSERT INTO ros_wiki_topics
+           (slug, title, aliases, tags, entities, current_state, article, related, search_text,
+            history_count, git_sha, last_verified_at, updated_at, embed_status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now(), NULL)
+         ON CONFLICT (slug) DO UPDATE SET
+           title = EXCLUDED.title,
+           aliases = EXCLUDED.aliases,
+           tags = EXCLUDED.tags,
+           entities = EXCLUDED.entities,
+           current_state = EXCLUDED.current_state,
+           article = EXCLUDED.article,
+           related = EXCLUDED.related,
+           search_text = EXCLUDED.search_text,
+           history_count = EXCLUDED.history_count,
+           git_sha = EXCLUDED.git_sha,
+           last_verified_at = EXCLUDED.last_verified_at,
+           updated_at = now(),
+           embed_status = CASE
+             WHEN ros_wiki_topics.search_text IS DISTINCT FROM EXCLUDED.search_text
+               THEN NULL ELSE ros_wiki_topics.embed_status END`,
+        [
+          page.meta.slug,
+          page.meta.title,
+          page.meta.aliases,
+          page.meta.tags,
+          page.meta.entities,
+          page.currentState,
+          article,
+          related,
+          searchText,
+          page.history.length,
+          gitSha ?? null,
+          page.meta.lastVerified ?? null,
+        ],
+      )
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/column .*article|column .*related/i.test(msg)) throw err
+      await this.pool.query(
+        `INSERT INTO ros_wiki_topics
+           (slug, title, aliases, tags, entities, current_state, search_text,
+            history_count, git_sha, last_verified_at, updated_at, embed_status)
+         VALUES ($1,$2,$3,$4,$5,$6,$10,$7,$8,$9, now(), NULL)
+         ON CONFLICT (slug) DO UPDATE SET
+           title = EXCLUDED.title,
+           aliases = EXCLUDED.aliases,
+           tags = EXCLUDED.tags,
+           entities = EXCLUDED.entities,
+           current_state = EXCLUDED.current_state,
+           search_text = EXCLUDED.search_text,
+           history_count = EXCLUDED.history_count,
+           git_sha = EXCLUDED.git_sha,
+           last_verified_at = EXCLUDED.last_verified_at,
+           updated_at = now(),
+           embed_status = CASE
+             WHEN ros_wiki_topics.search_text IS DISTINCT FROM EXCLUDED.search_text
+               THEN NULL ELSE ros_wiki_topics.embed_status END`,
+        [
+          page.meta.slug,
+          page.meta.title,
+          page.meta.aliases,
+          page.meta.tags,
+          page.meta.entities,
+          page.currentState,
+          page.history.length,
+          gitSha ?? null,
+          page.meta.lastVerified ?? null,
+          searchText,
+        ],
+      )
+    }
   }
 
   /** Record provenance rows (idempotent on the composite PK). */
@@ -589,6 +647,8 @@ interface PgTopicRow {
   tags: string[]
   entities: string[]
   current_state: string
+  article?: string | null
+  related?: string[] | null
   history_count: number
   git_sha: string | null
   last_verified_at: Date | null
@@ -604,6 +664,8 @@ function toRow(r: PgTopicRow): WikiTopicRow {
     tags: r.tags,
     entities: r.entities,
     currentState: r.current_state,
+    article: r.article ?? '',
+    related: r.related ?? [],
     historyCount: r.history_count,
     gitSha: r.git_sha,
     lastVerifiedAt: r.last_verified_at?.toISOString(),

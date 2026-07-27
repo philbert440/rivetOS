@@ -140,10 +140,15 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
         // GET /api/wiki/:slug — parsed page + index metadata
         const page = parseWikiPage(markdown)
         const row = await opts.index.getTopic(slug).catch(() => undefined)
-        const related = await opts.index
-          .searchTopics(page.meta.title, { limit: 4 })
+        // Related: explicit seeAlso/related first, then title search fill.
+        const explicit = [
+          ...new Set([...(page.seeAlso ?? []), ...(page.meta.related ?? [])]),
+        ].filter((s) => s && s !== slug)
+        const searched = await opts.index
+          .searchTopics(page.meta.title, { limit: 6 })
           .then((hits) => hits.map((h) => h.slug).filter((s) => s !== slug))
-          .catch(() => [])
+          .catch(() => [] as string[])
+        const related = [...new Set([...explicit, ...searched])].slice(0, 12)
         return json(res, 200, {
           slug: page.meta.slug,
           title: page.meta.title,
@@ -151,6 +156,8 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
           tags: page.meta.tags,
           entities: page.meta.entities,
           currentState: page.currentState,
+          article: page.article ?? '',
+          seeAlso: page.seeAlso ?? [],
           history: page.history,
           citations: page.citations.map((c) => ({
             summaryId: c.summaryId,

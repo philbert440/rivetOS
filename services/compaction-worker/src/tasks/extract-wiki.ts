@@ -6,6 +6,7 @@
  *
  * Memory v6: hard identity gate (entity/stem/alias/search) so session-shaped
  * slugs fold into canonical durable topics; every apply cites the source leaf.
+ * Memory v7: Wikipedia-style Summary/Article patches (pipeline v3).
  *
  * Skip rules (marked 'skipped', never retried): extraction already done,
  * summary below WIKI_MIN_SUMMARY_CHARS, heartbeat conversations, non-leaf
@@ -104,6 +105,7 @@ export const extractWikiTask: Task = async (payload, helpers) => {
       aliases: h.aliases,
       entities: h.entities,
       currentState: h.currentState,
+      article: h.article,
     }))
 
     const summaryDate = (summary.latest_at ?? summary.created_at).toISOString().slice(0, 10)
