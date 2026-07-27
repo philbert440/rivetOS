@@ -324,9 +324,8 @@ export class PostgresMemory implements Memory {
           sections.push('\n## Wiki (curated state)')
           for (const hit of wikiHits) {
             const summary = hit.currentState.slice(0, 1200)
-            const article = (hit.article ?? '').trim()
-            const articleSlice =
-              article !== '' ? `\n${article.slice(0, 800)}` : ''
+            const article = hit.article.trim()
+            const articleSlice = article !== '' ? `\n${article.slice(0, 800)}` : ''
             const body = `${summary}${articleSlice}`
             seen.add(dedupKey(summary))
             const line = `**${hit.title}** (wiki:${hit.slug})\n${body}`

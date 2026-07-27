@@ -152,7 +152,7 @@ export const recompileWikiTask: Task = async (payload, helpers) => {
           slug,
           action: 'update',
         },
-        { summaryId: '00000000-0000-0000-0000-0000000000v7' },
+        { summaryId: '00000000-0000-0000-0000-000000000007' },
       )
       await index.upsertTopic(applied.page, applied.gitSha)
       ok++

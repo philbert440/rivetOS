@@ -37,6 +37,15 @@ const CORE_HEADINGS = new Set([
 /** Refuse full Summary rewrite shorter than this fraction of the prior. */
 export const SUMMARY_SHRINK_FLOOR = 0.6
 
+/**
+ * Hard ceiling on Summary lead length. Overflow spills to History so injection
+ * (front-truncated) and embeddings stay dense.
+ */
+export const SUMMARY_MAX_CHARS = 2400
+
+/** Article excerpt kept in search_text for FTS/embed (not full body). */
+export const SEARCH_ARTICLE_EXCERPT_CHARS = 1200
+
 export class WikiParseError extends Error {
   constructor(detail: string) {
     super(`invalid wiki page: ${detail}`)
@@ -86,7 +95,9 @@ export function parseWikiPage(input: string): WikiPage {
 }
 
 export function serializeWikiPage(page: WikiPage): string {
-  const related = union(page.meta.related ?? [], page.seeAlso ?? [])
+  const related = union(page.meta.related || [], page.seeAlso || []).filter(
+    (s) => s !== page.meta.slug,
+  )
   const meta: Record<string, unknown> = {
     ...(page.meta.extra ?? {}),
     title: page.meta.title,
@@ -101,7 +112,7 @@ export function serializeWikiPage(page: WikiPage): string {
   const history = page.history
     .map((h) => `### ${h.date}${h.title ? ` — ${h.title}` : ''}\n\n${h.body.trim()}\n`)
     .join('\n')
-  const citations = page.citations ?? []
+  const citations = page.citations || []
   const citationBlock =
     citations.length === 0
       ? ''
@@ -120,17 +131,13 @@ export function serializeWikiPage(page: WikiPage): string {
           '',
         ].join('\n')
 
-  const article = (page.article ?? '').trim()
-  const articleBlock =
-    article === ''
-      ? ''
-      : ['', '## Article', '', article, ''].join('\n')
+  const article = (page.article || '').trim()
+  const articleBlock = article === '' ? '' : ['', '## Article', '', article, ''].join('\n')
 
-  const seeAlso = related
   const seeAlsoBlock =
-    seeAlso.length === 0
+    related.length === 0
       ? ''
-      : ['', '## See also', '', ...seeAlso.map((s) => `- [[${s}]]`), ''].join('\n')
+      : ['', '## See also', '', ...related.map((s) => `- [[${s}]]`), ''].join('\n')
 
   return [
     `---\n${stringifyYaml(meta).trimEnd()}\n---`,
@@ -181,16 +188,12 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
         seeAlso: [],
       }
 
-  if (!page.citations) page.citations = []
-  if (!page.article) page.article = ''
-  if (!page.seeAlso) page.seeAlso = []
-  if (!page.meta.related) page.meta.related = []
-
   if (patch.title) page.meta.title = patch.title
   page.meta.aliases = union(page.meta.aliases, patch.addAliases)
   page.meta.tags = union(page.meta.tags, patch.addTags)
   page.meta.entities = union(page.meta.entities, patch.addEntities)
-  page.meta.related = union(page.meta.related, patch.addRelated)
+  const relatedAdds = (patch.addRelated ?? []).map(normalizeSlug).filter(Boolean)
+  page.meta.related = union(page.meta.related, relatedAdds)
   page.meta.lastVerified = patch.verifiedAt
   for (const src of patch.addSources ?? []) {
     const key = (x: { ids: string[] }): string => JSON.stringify([...x.ids].sort())
@@ -198,13 +201,18 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
     if (!dup) page.meta.sources.push(src)
   }
 
+  const day = patch.verifiedAt.slice(0, 10)
+
   // --- Summary (currentState) ---
   if (patch.summaryDelta !== undefined && patch.summaryDelta.trim() !== '') {
-    page.currentState = mergeSummaryText(page.currentState, patch.summaryDelta.trim())
+    page.currentState = mergeSummaryText(
+      page.currentState,
+      demoteH2Headings(patch.summaryDelta.trim()),
+    )
   }
 
   if (patch.currentState !== undefined && patch.currentState.trim() !== page.currentState.trim()) {
-    const next = patch.currentState.trim()
+    const next = demoteH2Headings(patch.currentState.trim())
     const prev = page.currentState.trim()
     const wouldShrink =
       prev !== '' &&
@@ -213,12 +221,14 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
       !patch.allowShrink
 
     if (wouldShrink) {
-      // Refuse thrash: fold short rewrite into the longer standing lead.
-      page.currentState = mergeSummaryText(prev, next)
+      // Refuse thrash: fold only when under the hard ceiling; else drop thrash.
+      if (prev.length < SUMMARY_MAX_CHARS) {
+        page.currentState = mergeSummaryText(prev, next)
+      }
     } else if (next !== prev) {
       if (prev !== '') {
         page.history.unshift({
-          date: patch.verifiedAt.slice(0, 10),
+          date: day,
           title: 'Superseded current state',
           body: prev,
         })
@@ -227,13 +237,28 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
     }
   }
 
-  // --- Article ---
-  if (patch.article !== undefined && patch.article.trim() !== page.article.trim()) {
-    const next = patch.article.trim()
-    if (page.article.trim() !== '' && next !== page.article.trim()) {
-      // Archive prior article only when doing a full replace that changes it.
+  // Cap lead; spill overflow so injection/embed stay dense.
+  {
+    const capped = capSummary(page.currentState)
+    page.currentState = capped.kept
+    if (capped.overflow) {
       page.history.unshift({
-        date: patch.verifiedAt.slice(0, 10),
+        date: day,
+        title: 'Summary overflow (v7 cap)',
+        body: capped.overflow,
+      })
+    }
+  }
+
+  // --- Article ---
+  if (
+    patch.article !== undefined &&
+    demoteH2Headings(patch.article.trim()) !== page.article.trim()
+  ) {
+    const next = demoteH2Headings(patch.article.trim())
+    if (page.article.trim() !== '' && next !== page.article.trim()) {
+      page.history.unshift({
+        date: day,
         title: 'Superseded article',
         body: page.article.trim(),
       })
@@ -241,7 +266,11 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
     page.article = next
   }
   if (patch.articlePatches?.length) {
-    page.article = applyArticlePatches(page.article, patch.articlePatches)
+    const demoted = patch.articlePatches.map((p) => ({
+      ...p,
+      body: demoteH2Headings(p.body),
+    }))
+    page.article = applyArticlePatches(page.article, demoted)
   }
 
   if (patch.historyEntry) {
@@ -265,10 +294,10 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
     }
   }
 
-  // Harvest [[links]] from Summary + Article into seeAlso / related.
-  const links = extractWikiLinks(`${page.currentState}\n${page.article}`)
-  page.meta.related = union(page.meta.related, links)
-  page.seeAlso = union(page.seeAlso, page.meta.related)
+  // Harvest [[links]]; drop self-links.
+  const links = extractWikiLinks(`${page.currentState}\n${page.article}`).filter((s) => s !== slug)
+  page.meta.related = union(page.meta.related, links).filter((s) => s !== slug)
+  page.seeAlso = union(page.seeAlso, page.meta.related).filter((s) => s !== slug)
 
   return page
 }
@@ -280,10 +309,11 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
  */
 export function mergePages(canonical: WikiPage, losers: WikiPage[]): WikiPage {
   const out: WikiPage = structuredClone(canonical)
-  if (!out.citations) out.citations = []
-  if (!out.article) out.article = ''
-  if (!out.seeAlso) out.seeAlso = []
-  if (!out.meta.related) out.meta.related = []
+  // Normalize fields on pages that predate v7 (or partial clones in tests).
+  out.article = out.article || ''
+  out.seeAlso = out.seeAlso || []
+  out.citations = out.citations || []
+  out.meta.related = out.meta.related || []
 
   for (const loser of losers) {
     if (loser.meta.slug === out.meta.slug) continue
@@ -294,7 +324,7 @@ export function mergePages(canonical: WikiPage, losers: WikiPage[]): WikiPage {
     ])
     out.meta.tags = union(out.meta.tags, loser.meta.tags)
     out.meta.entities = union(out.meta.entities, loser.meta.entities)
-    out.meta.related = union(out.meta.related, loser.meta.related ?? [], loser.seeAlso ?? [])
+    out.meta.related = union(out.meta.related, loser.meta.related, loser.seeAlso)
     for (const src of loser.meta.sources) {
       const key = (x: { ids: string[] }): string => JSON.stringify([...x.ids].sort())
       const dup = out.meta.sources.find((s) => s.kind === src.kind && key(s) === key(src))
@@ -324,7 +354,6 @@ export function mergePages(canonical: WikiPage, losers: WikiPage[]): WikiPage {
         title: `Merged from ${loser.meta.slug}`,
         body: loser.currentState.trim(),
       })
-      // Also fold into summary so standing facts aren't only in history.
       out.currentState = mergeSummaryText(out.currentState, loser.currentState.trim())
     }
 
@@ -332,7 +361,7 @@ export function mergePages(canonical: WikiPage, losers: WikiPage[]): WikiPage {
     const loserArticle = (loser.article ?? '').trim()
     if (loserArticle) {
       if (out.article.trim() === '') {
-        out.article = loserArticle
+        out.article = demoteH2Headings(loserArticle)
       } else if (loserArticle !== out.article.trim()) {
         if (loserArticle.length > out.article.length * 1.25) {
           out.history.unshift({
@@ -340,9 +369,9 @@ export function mergePages(canonical: WikiPage, losers: WikiPage[]): WikiPage {
             title: 'Superseded article (consolidation)',
             body: out.article.trim(),
           })
-          out.article = loserArticle
+          out.article = demoteH2Headings(loserArticle)
         } else {
-          out.article = mergeArticleBodies(out.article, loserArticle)
+          out.article = mergeArticleBodies(out.article, demoteH2Headings(loserArticle))
         }
       }
     }
@@ -360,10 +389,19 @@ export function mergePages(canonical: WikiPage, losers: WikiPage[]): WikiPage {
     }
   }
   out.history.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
-  out.seeAlso = union(out.seeAlso, out.meta.related)
-  const links = extractWikiLinks(`${out.currentState}\n${out.article}`)
-  out.meta.related = union(out.meta.related, links)
-  out.seeAlso = union(out.seeAlso, out.meta.related)
+  const capped = capSummary(out.currentState)
+  out.currentState = capped.kept
+  if (capped.overflow) {
+    out.history.unshift({
+      date: (out.meta.lastVerified ?? new Date().toISOString()).slice(0, 10),
+      title: 'Summary overflow (v7 cap)',
+      body: capped.overflow,
+    })
+  }
+  const self = out.meta.slug
+  const links = extractWikiLinks(`${out.currentState}\n${out.article}`).filter((s) => s !== self)
+  out.meta.related = union(out.meta.related, links).filter((s) => s !== self)
+  out.seeAlso = union(out.seeAlso, out.meta.related).filter((s) => s !== self)
   return out
 }
 
@@ -382,6 +420,46 @@ export function mergeSummaryText(existing: string, delta: string): string {
   if (b.includes(a) && b.length > a.length) return b
   // Append as new paragraph when not already subsumed.
   return `${a}\n\n${b}`
+}
+
+/** Cap lead length; return overflow for History spill. */
+export function capSummary(
+  text: string,
+  maxChars = SUMMARY_MAX_CHARS,
+): { kept: string; overflow: string } {
+  const t = text.trim()
+  if (t.length <= maxChars) return { kept: t, overflow: '' }
+  // Keep the definitional start of the lead; spill the tail.
+  let cut = maxChars
+  const nl = t.lastIndexOf('\n\n', maxChars)
+  if (nl > maxChars * 0.5) cut = nl
+  return { kept: t.slice(0, cut).trimEnd(), overflow: t.slice(cut).trim() }
+}
+
+/**
+ * Demote bare `##` headings to `###` outside fences so LLM article bodies
+ * that use H2 don't get split out of ## Article by parseWikiPage.
+ */
+export function demoteH2Headings(markdown: string): string {
+  let inFence = false
+  return markdown
+    .split('\n')
+    .map((line) => {
+      if (/^```/.test(line.trim())) inFence = !inFence
+      // ## Foo → ### Foo  (but not ### already, and not ####)
+      if (!inFence && /^## (?!#)/.test(line)) return `#${line}`
+      return line
+    })
+    .join('\n')
+}
+
+/** Lean search/embed surface: title + aliases + lead + short article excerpt. */
+export function buildWikiSearchText(page: WikiPage): string {
+  const art = (page.article || '').trim().slice(0, SEARCH_ARTICLE_EXCERPT_CHARS)
+  const related = (page.meta.related || []).join(' ')
+  return [page.meta.title, page.meta.aliases.join(' '), page.currentState, art, related]
+    .join(' ')
+    .slice(0, 8_000)
 }
 
 /** Split ## Article body into ### subsections (+ optional lead before first ###). */
@@ -427,7 +505,7 @@ export function joinArticleSections(lead: string, sections: WikiArticleSection[]
 }
 
 export function applyArticlePatches(article: string, patches: WikiArticlePatch[]): string {
-  let { lead, sections } = splitArticleSections(article)
+  const { lead, sections } = splitArticleSections(article)
   for (const p of patches) {
     const heading = p.heading.trim()
     if (!heading) continue
@@ -444,7 +522,8 @@ export function applyArticlePatches(article: string, patches: WikiArticlePatch[]
       const prev = sections[idx].body
       sections[idx] = {
         heading: sections[idx].heading,
-        body: prev.trim() === '' || prev.includes(body) ? prev || body : `${prev.trim()}\n\n${body}`,
+        body:
+          prev.trim() === '' || prev.includes(body) ? prev || body : `${prev.trim()}\n\n${body}`,
       }
     }
   }

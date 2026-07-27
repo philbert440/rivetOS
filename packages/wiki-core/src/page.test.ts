@@ -2,10 +2,13 @@ import { describe, it, expect } from 'vitest'
 import {
   applyArticlePatches,
   applyPatch,
+  capSummary,
+  demoteH2Headings,
   extractWikiLinks,
   normalizeSlug,
   parseWikiPage,
   serializeWikiPage,
+  SUMMARY_MAX_CHARS,
   WikiParseError,
 } from './index.js'
 import type { WikiPage } from './index.js'
@@ -260,6 +263,60 @@ vLLM on :8003.
     expect(page.article).toContain('datahub')
     expect(page.seeAlso).toEqual(expect.arrayContaining(['datahub', 'ros-tasks']))
     expect(extractWikiLinks(page.article)).toContain('datahub')
+  })
+
+  it('demotes ## inside article so parse does not truncate; caps summary growth', () => {
+    const demoted = demoteH2Headings('### Role\n\nA.\n\n## Configuration\n\nPort 8003.')
+    expect(demoted).toContain('### Configuration')
+    expect(demoted).not.toMatch(/^## Configuration/m)
+
+    const page = applyPatch(parseWikiPage(SAMPLE), {
+      action: 'update',
+      slug: 'rivetos-task-engine',
+      article: '### Role\n\nA thing.\n\n## Configuration\n\nPort 8003.\n\n### Ops\n\nRestart.',
+      verifiedAt: '2026-07-12T00:00:00Z',
+    })
+    // Full article retained after demote + round-trip
+    const round = parseWikiPage(serializeWikiPage(page))
+    expect(round.article).toContain('### Configuration')
+    expect(round.article).toContain('Port 8003')
+    expect(round.article).toContain('### Ops')
+
+    // Thrash against a maxed lead does not grow unboundedly
+    const fat = 'Lead. '.repeat(Math.ceil(SUMMARY_MAX_CHARS / 6))
+    let p = applyPatch(parseWikiPage(SAMPLE), {
+      action: 'update',
+      slug: 'rivetos-task-engine',
+      currentState: fat,
+      allowShrink: true,
+      verifiedAt: '2026-07-13T00:00:00Z',
+    })
+    expect(p.currentState.length).toBeLessThanOrEqual(SUMMARY_MAX_CHARS)
+    for (let i = 0; i < 12; i++) {
+      p = applyPatch(p, {
+        action: 'update',
+        slug: 'rivetos-task-engine',
+        currentState: `tiny thrash ${i}`,
+        verifiedAt: `2026-07-14T${String(i).padStart(2, '0')}:00:00.000Z`,
+      })
+    }
+    expect(p.currentState.length).toBeLessThanOrEqual(SUMMARY_MAX_CHARS)
+
+    const { kept, overflow } = capSummary('a'.repeat(3000), 100)
+    expect(kept.length).toBeLessThanOrEqual(100)
+    expect(overflow.length).toBeGreaterThan(0)
+  })
+
+  it('filters self-links and normalizes addRelated', () => {
+    const page = applyPatch(parseWikiPage(SAMPLE), {
+      action: 'update',
+      slug: 'rivetos-task-engine',
+      article: 'See [[rivetos-task-engine]] and [[datahub]].',
+      addRelated: ['Raw Host!', 'datahub'],
+      verifiedAt: '2026-07-12T00:00:00Z',
+    })
+    expect(page.seeAlso).not.toContain('rivetos-task-engine')
+    expect(page.seeAlso).toEqual(expect.arrayContaining(['datahub', 'raw-host']))
   })
 })
 

@@ -11,7 +11,13 @@
  */
 
 import type pg from 'pg'
-import { findStemMatch, normalizeSlug, type WikiCitation, type WikiPage } from '@rivetos/wiki-core'
+import {
+  buildWikiSearchText,
+  findStemMatch,
+  normalizeSlug,
+  type WikiCitation,
+  type WikiPage,
+} from '@rivetos/wiki-core'
 
 export interface WikiTopicRow {
   slug: string
@@ -349,17 +355,11 @@ export class WikiIndex {
 
   /** Upsert the index row from a parsed page (extractor, post-commit). */
   async upsertTopic(page: WikiPage, gitSha?: string): Promise<void> {
-    const article = page.article ?? ''
-    const related = page.meta.related ?? page.seeAlso ?? []
-    const searchText = [
-      page.meta.title,
-      page.meta.aliases.join(' '),
-      page.currentState,
-      article,
-      related.join(' '),
-    ]
-      .join(' ')
-      .slice(0, 50_000)
+    // Lean search/embed surface (lead + short article excerpt) — full article
+    // lives in the markdown file / article column, not the embedding centroid.
+    const article = page.article
+    const related = page.meta.related.length > 0 ? page.meta.related : page.seeAlso
+    const searchText = buildWikiSearchText(page)
 
     // Prefer v7 columns (article, related); fall back if 0007 not applied yet.
     try {

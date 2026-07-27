@@ -92,7 +92,7 @@ export const consolidateWikiTask: Task = async (payload, helpers) => {
     // Every existing page that is not the canonical file becomes a loser
     // (including when we synthesize a new parent slug at the cluster key).
     const losers = slugs.filter((s) => s !== canonicalSlug)
-    if (losers.length === 0 && slugs.includes(canonicalSlug)) continue
+    if (losers.length === 0) continue
 
     helpers.logger.info(
       `consolidate-wiki: cluster ${key} → ${canonicalSlug} (+${losers.length} merges): ${slugs.join(', ')}`,
@@ -108,6 +108,12 @@ export const consolidateWikiTask: Task = async (payload, helpers) => {
     for (const s of slugs) {
       const p = await writer.readPage(s)
       if (p) pages.push(p)
+    }
+    // pickCanonical may invent a stem parent not in the cluster list — still
+    // fold any existing on-disk page at that path so we don't clobber history.
+    if (!pages.some((p) => p.meta.slug === canonicalSlug)) {
+      const orphan = await writer.readPage(canonicalSlug)
+      if (orphan) pages.push(orphan)
     }
     if (pages.length === 0) continue
 

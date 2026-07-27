@@ -287,7 +287,11 @@ export function parseRecompileResult(
     typeof he.date === 'string' &&
     /^\d{4}-\d{2}-\d{2}$/.test(he.date) &&
     typeof he.body === 'string'
-      ? { date: he.date, title: typeof he.title === 'string' ? he.title : 'Article recompile (v7)', body: he.body }
+      ? {
+          date: he.date,
+          title: typeof he.title === 'string' ? he.title : 'Article recompile (v7)',
+          body: he.body,
+        }
       : {
           date: verifiedAt.slice(0, 10),
           title: 'Article recompile (v7)',
