@@ -113,12 +113,21 @@ SEARCH_SCHEMA = {
             },
             "window": {
                 "type": "string",
-                "enum": ["today", "yesterday", "this_morning", "this_week", "last_24h"],
+                "enum": [
+                    "today",
+                    "yesterday",
+                    "this_morning",
+                    "this_week",
+                    "last_24h",
+                    "last_7d",
+                    "last_14d",
+                ],
                 "description": (
                     "Shortcut for time-bounded queries — resolves to a "
                     "(since, before) range in the SERVER'S LOCAL TIMEZONE, "
-                    "no TZ math required. Overrides explicit since/before "
-                    "only when neither is provided."
+                    "no TZ math required. last_7d/last_14d are rolling "
+                    "(prefer over this_week early in the week). Overrides "
+                    "explicit since/before only when neither is provided."
                 ),
             },
             "expand": {
@@ -159,13 +168,23 @@ BROWSE_SCHEMA = {
             },
             "window": {
                 "type": "string",
-                "enum": ["today", "yesterday", "this_morning", "this_week", "last_24h"],
+                "enum": [
+                    "today",
+                    "yesterday",
+                    "this_morning",
+                    "this_week",
+                    "last_24h",
+                    "last_7d",
+                    "last_14d",
+                ],
                 "description": (
                     "Shortcut for time-bounded windows — resolves to (since, "
                     "before) in the SERVER'S LOCAL TIMEZONE, no TZ math "
                     "required. Overrides explicit since/before only when "
                     "neither is provided. Prefer this for \"today\" / "
-                    "\"yesterday\" / \"this morning\" / \"this week\" / \"last 24h\"."
+                    "\"yesterday\" / \"this morning\" / \"this week\" / "
+                    "\"last 24h\" / \"last 7 days\" (last_7d) / "
+                    "\"last 14 days\" (last_14d)."
                 ),
             },
             "agent": {"type": "string", "description": "Filter by agent."},
@@ -251,6 +270,11 @@ _WINDOW_HINTS = (
     (re.compile(r"(?:^|\W)yesterday(?:['’]?s)?(?=\W|$)", re.I), "yesterday"),
     (re.compile(r"\bthis\s+week\b|since\s+monday\b", re.I), "this_week"),
     (re.compile(r"\blast\s+(?:24\s*h|24\s*hours|day)\b", re.I), "last_24h"),
+    # Rolling multi-day — order matters: "two weeks" before bare "week".
+    (re.compile(r"\b(?:last|past)\s+two\s+weeks?\b", re.I), "last_14d"),
+    (re.compile(r"\b(?:last|past)\s*(?:14|fourteen)\s*d(?:ays?)?\b", re.I), "last_14d"),
+    (re.compile(r"\b(?:last|past)\s*(?:7|seven)\s*d(?:ays?)?\b", re.I), "last_7d"),
+    (re.compile(r"\b(?:last|past)\s+weeks?\b", re.I), "last_7d"),
 )
 
 
@@ -490,9 +514,10 @@ class RivetMemoryProvider(MemoryProvider):
             "(rivet-claude, rivet-hermes, opus, grok). Three tools:\n"
             "  - `rivet_memory_browse` — chronological; use FIRST for any "
             "time-bounded question. Pair with "
-            "`window=today|yesterday|this_morning|this_week|last_24h` for the "
-            "right local-TZ → UTC math (skip manual ISO dates — Postgres "
-            "reads bare dates as UTC midnight, not local).\n"
+            "`window=today|yesterday|this_morning|this_week|last_24h|last_7d|last_14d` "
+            "for the right local-TZ → UTC math (skip manual ISO dates — Postgres "
+            "reads bare dates as UTC midnight, not local). Prefer last_7d over "
+            "this_week early in the week when the calendar week is still short.\n"
             "  - `rivet_memory_search` — relevance-ranked FTS + semantic; use for "
             "topic questions. Use `query=\"foo OR bar OR baz\"` for a multi-"
             "angle sweep in one call (websearch syntax: `OR`, `\"phrase\"`, "

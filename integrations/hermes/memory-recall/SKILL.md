@@ -42,8 +42,13 @@ local midnight — no offset arithmetic on your end.
 - "this morning" → `rivet_memory_browse(window="this_morning")`
 - "yesterday" → `rivet_memory_browse(window="yesterday")`
 - "today" / "earlier today" → `rivet_memory_browse(window="today")`
-- "this week" → `rivet_memory_browse(window="this_week")`
+- "this week" (calendar Mon→now) → `rivet_memory_browse(window="this_week")`
+- "last week" / "past 7 days" / "recent work" → `rivet_memory_browse(window="last_7d")` (rolling)
+- "past two weeks" / "last 14 days" → `rivet_memory_browse(window="last_14d")` (rolling)
 - "last 24 hours" / "recently" → `rivet_memory_browse(window="last_24h")`
+
+Prefer **`last_7d` over `this_week` early in the week** (Mon/Tue): calendar
+`this_week` starts Monday midnight and is nearly empty then.
 
 For windows the enum doesn't cover, fall back to explicit `since`/`before`
 ISO timestamps — but pass full UTC datetimes (`"2026-05-23T04:00:00Z"`), not

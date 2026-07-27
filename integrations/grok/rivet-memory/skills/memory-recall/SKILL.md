@@ -21,7 +21,12 @@ Any prompt that pins a timeframe ("this morning", "yesterday", "today", "earlier
 
 **Use the enhanced `window=` parameter whenever available** (from Hermes v0.3+):
 
-- `window="this_morning" | "yesterday" | "today" | "this_week" | "last_24h"`
+- `window="this_morning" | "yesterday" | "today" | "this_week" | "last_24h" | "last_7d" | "last_14d"`
+
+Rolling `last_7d` / `last_14d` cover "last week" / "recent work" without
+calendar-week edge cases — **prefer them over `this_week` on Mon/Tue** when
+the ISO week has barely started. Aliases like `last week` normalize to
+`last_7d`.
 
 This is the preferred path because it correctly handles local timezone boundaries without you doing math.
 

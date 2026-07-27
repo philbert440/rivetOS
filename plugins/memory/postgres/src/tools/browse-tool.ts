@@ -43,7 +43,8 @@ export function createBrowseTool(pool: pg.Pool): Tool {
           type: 'string',
           enum: [...WINDOW_CHOICES],
           description:
-            'Shortcut for time-bounded windows (today, yesterday, this_morning, this_week, last_24h). ' +
+            'Shortcut for time-bounded windows (today, yesterday, this_morning, this_week, last_24h, last_7d, last_14d). ' +
+            'last_7d/last_14d are rolling (prefer over this_week early in the week). ' +
             'Resolves to (since, before) in the SERVER local timezone — no TZ math required. ' +
             'Used only when neither since nor before is provided.',
         },

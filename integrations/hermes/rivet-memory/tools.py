@@ -33,8 +33,56 @@ from typing import Any, Dict, List, Optional, Tuple
 # compute a (since, before) UTC range from the server's local timezone so the
 # caller doesn't have to do TZ math. "today" / "yesterday" / "this_morning"
 # anchor to local midnight; "this_week" to local Monday; "last_24h" is a
-# rolling 24h window from now.
-WINDOW_CHOICES = ("today", "yesterday", "this_morning", "this_week", "last_24h")
+# rolling 24h window from now; "last_7d" / "last_14d" are rolling multi-day
+# ranges (prefer over this_week early in the week when calendar week is short).
+WINDOW_CHOICES = (
+    "today",
+    "yesterday",
+    "this_morning",
+    "this_week",
+    "last_24h",
+    "last_7d",
+    "last_14d",
+)
+
+# Free-form aliases agents invent → canonical WINDOW_CHOICES entry.
+_WINDOW_ALIASES = {
+    "last_week": "last_7d",
+    "past_week": "last_7d",
+    "last7d": "last_7d",
+    "last_7_days": "last_7d",
+    "past_7d": "last_7d",
+    "last14d": "last_14d",
+    "last_14_days": "last_14d",
+    "past_14d": "last_14d",
+    "last_two_weeks": "last_14d",
+    "past_two_weeks": "last_14d",
+    "last24h": "last_24h",
+    "last_24_hours": "last_24h",
+    "last_day": "last_24h",
+}
+
+
+def _normalize_window(window: str) -> str:
+    """Lower-case / snake_case cleanup + synonym map onto WINDOW_CHOICES."""
+    s = window.strip().lower()
+    if not s:
+        return s
+    s = (
+        s.replace("last 24 hours", "last_24h")
+        .replace("last 24h", "last_24h")
+        .replace("last 7 days", "last_7d")
+        .replace("last 14 days", "last_14d")
+        .replace("past 7 days", "last_7d")
+        .replace("past 14 days", "last_14d")
+        .replace("last week", "last_7d")
+        .replace("past week", "last_7d")
+        .replace("last two weeks", "last_14d")
+        .replace("this morning", "this_morning")
+        .replace("this week", "this_week")
+    )
+    s = "_".join(s.replace("-", " ").split())
+    return _WINDOW_ALIASES.get(s, s)
 
 
 def resolve_window(window: str) -> Tuple[Optional[str], Optional[str]]:
@@ -47,6 +95,7 @@ def resolve_window(window: str) -> Tuple[Optional[str], Optional[str]]:
     Returns (None, None) for an unrecognized window so the caller can fall
     back to other filters without erroring.
     """
+    window = _normalize_window(window)
     now_local = datetime.now().astimezone()
     today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -65,10 +114,15 @@ def resolve_window(window: str) -> Tuple[Optional[str], Optional[str]]:
         return (today_local.astimezone(timezone.utc).isoformat(), None)
     if window == "this_week":
         # ISO week — Monday is 0. weekday() returns 0=Mon..6=Sun.
+        # On Mon/Tue this is almost empty — prefer last_7d for "recent work".
         monday = today_local - timedelta(days=today_local.weekday())
         return (monday.astimezone(timezone.utc).isoformat(), None)
     if window == "last_24h":
         return ((now_local - timedelta(hours=24)).astimezone(timezone.utc).isoformat(), None)
+    if window == "last_7d":
+        return ((now_local - timedelta(days=7)).astimezone(timezone.utc).isoformat(), None)
+    if window == "last_14d":
+        return ((now_local - timedelta(days=14)).astimezone(timezone.utc).isoformat(), None)
     return (None, None)
 
 from .client import RivetMemoryClient

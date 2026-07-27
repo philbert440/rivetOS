@@ -21,18 +21,22 @@ function localMidnight(d: Date): Date {
 }
 
 describe('WINDOW_CHOICES', () => {
-  it('lists the Hermes-parity enum values', () => {
+  it('lists the Hermes-parity enum values plus rolling multi-day windows', () => {
     expect(WINDOW_CHOICES).toEqual([
       'today',
       'yesterday',
       'this_morning',
       'this_week',
       'last_24h',
+      'last_7d',
+      'last_14d',
     ])
   })
 
   it('isWindowChoice accepts only known values', () => {
     expect(isWindowChoice('today')).toBe(true)
+    expect(isWindowChoice('last_7d')).toBe(true)
+    expect(isWindowChoice('last_14d')).toBe(true)
     expect(isWindowChoice('not_a_real_window')).toBe(false)
   })
 })
@@ -45,6 +49,11 @@ describe('normalizeWindowInput', () => {
     expect(normalizeWindowInput('last 24 hours')).toBe('last_24h')
     expect(normalizeWindowInput('last-24h')).toBe('last_24h')
     expect(normalizeWindowInput('  TODAY  ')).toBe('today')
+    expect(normalizeWindowInput('last 7 days')).toBe('last_7d')
+    expect(normalizeWindowInput('last-7d')).toBe('last_7d')
+    expect(normalizeWindowInput('past 14 days')).toBe('last_14d')
+    expect(normalizeWindowInput('last week')).toBe('last_7d')
+    expect(normalizeWindowInput('last two weeks')).toBe('last_14d')
   })
 
   it('returns null for empty input', () => {
@@ -98,10 +107,28 @@ describe('resolveWindow', () => {
     expect(since).toBe(new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString())
   })
 
+  it('last_7d → rolling 7×24h from now', () => {
+    const { since, before } = resolveWindow('last_7d', now)
+    expect(before).toBeNull()
+    expect(since).toBe(new Date(now.getTime() - 7 * 86_400_000).toISOString())
+  })
+
+  it('last_14d → rolling 14×24h from now', () => {
+    const { since, before } = resolveWindow('last_14d', now)
+    expect(before).toBeNull()
+    expect(since).toBe(new Date(now.getTime() - 14 * 86_400_000).toISOString())
+  })
+
+  it('last_week aliases to rolling last_7d (not calendar previous week)', () => {
+    expect(resolveWindow('last_week', now)).toEqual(resolveWindow('last_7d', now))
+    expect(resolveWindow('past week', now)).toEqual(resolveWindow('last_7d', now))
+  })
+
   it('unknown window throws with valid choices listed', () => {
     expect(() => resolveWindow('not_a_real_window', now)).toThrow(/Unknown window/)
     expect(() => resolveWindow('not_a_real_window', now)).toThrow(/today/)
     expect(() => resolveWindow('not_a_real_window', now)).toThrow(/last_24h/)
+    expect(() => resolveWindow('not_a_real_window', now)).toThrow(/last_7d/)
   })
 
   it('empty window throws', () => {
@@ -180,7 +207,16 @@ describe('applyWindowArgs', () => {
   })
 
   it('unknown window throws (does not silently drop the filter)', () => {
-    expect(() => applyWindowArgs({ window: 'last_week' })).toThrow(/Unknown window/)
+    expect(() => applyWindowArgs({ window: 'not_a_real_window' })).toThrow(/Unknown window/)
+  })
+
+  it('accepts last_week as rolling last_7d alias', () => {
+    const out = applyWindowArgs({ window: 'last_week' })
+    expect(out.since).toBeTruthy()
+    expect(out.before).toBeUndefined()
+    const age = Date.now() - new Date(out.since!).getTime()
+    expect(age).toBeGreaterThan(6.5 * 86_400_000)
+    expect(age).toBeLessThan(7.5 * 86_400_000)
   })
 
   it('accepts natural-language spaced window after normalize', () => {

@@ -239,6 +239,9 @@ def test_hint_window_picks_specific_window_when_possible():
     assert _hint_window("yesterday's standup") == "yesterday"
     assert _hint_window("anything this week") == "this_week"
     assert _hint_window("last 24 hours of turns") == "last_24h"
+    assert _hint_window("what did we do last week") == "last_7d"
+    assert _hint_window("past 14 days of work") == "last_14d"
+    assert _hint_window("last two weeks of work") == "last_14d"
     # Generic time cue falls back to today.
     assert _hint_window("what did we do today") == "today"
     assert _hint_window("recently we discussed") == "today"
@@ -246,6 +249,7 @@ def test_hint_window_picks_specific_window_when_possible():
 
 def test_resolve_window_returns_utc_iso_bounds():
     from rivet_memory.tools import resolve_window
+    from datetime import datetime, timezone
 
     since, before = resolve_window("today")
     assert since is not None and since.endswith("+00:00") or since.endswith("Z")
@@ -257,6 +261,19 @@ def test_resolve_window_returns_utc_iso_bounds():
 
     since, before = resolve_window("last_24h")
     assert since is not None and before is None
+
+    since, before = resolve_window("last_7d")
+    assert since is not None and before is None
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(since)
+    assert 6.5 * 86400 < age.total_seconds() < 7.5 * 86400
+
+    since, before = resolve_window("last_14d")
+    assert since is not None and before is None
+
+    # Alias: last_week → rolling last_7d
+    since_alias, before_alias = resolve_window("last_week")
+    since_7d, before_7d = resolve_window("last_7d")
+    assert since_alias == since_7d and before_alias == before_7d
 
     since, before = resolve_window("not_a_real_window")
     assert since is None and before is None

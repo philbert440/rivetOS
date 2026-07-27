@@ -142,10 +142,18 @@ export const memorySearchInputSchema = {
       'Only return results before this date (ISO UTC timestamp). Prefer window= for local-day bounds.',
     ),
   window: z
-    .enum(['today', 'yesterday', 'this_morning', 'this_week', 'last_24h'])
+    .enum([
+      'today',
+      'yesterday',
+      'this_morning',
+      'this_week',
+      'last_24h',
+      'last_7d',
+      'last_14d',
+    ])
     .optional()
     .describe(
-      'Shortcut for time-bounded filters — resolves in the SERVER local timezone. Used only when neither since nor before is provided.',
+      'Shortcut for time-bounded filters — resolves in the SERVER local timezone. last_7d/last_14d are rolling (prefer over this_week early in the week). Used only when neither since nor before is provided.',
     ),
   expand: z
     .boolean()
@@ -174,10 +182,18 @@ export const memoryBrowseInputSchema = {
       'Show messages before this time (ISO UTC timestamp). Same UTC gotcha as since. Prefer window=.',
     ),
   window: z
-    .enum(['today', 'yesterday', 'this_morning', 'this_week', 'last_24h'])
+    .enum([
+      'today',
+      'yesterday',
+      'this_morning',
+      'this_week',
+      'last_24h',
+      'last_7d',
+      'last_14d',
+    ])
     .optional()
     .describe(
-      'Shortcut for time-bounded windows — resolves to (since, before) in the SERVER local timezone, no TZ math required. Used only when neither since nor before is provided.',
+      'Shortcut for time-bounded windows — resolves to (since, before) in the SERVER local timezone, no TZ math required. last_7d/last_14d are rolling (prefer over this_week early in the week). Used only when neither since nor before is provided.',
     ),
   agent: z.string().optional().describe('Filter by agent (opus, grok, etc.)'),
   limit: z

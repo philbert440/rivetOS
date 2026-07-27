@@ -169,6 +169,11 @@ export const WINDOW_CHOICES = [
   'this_morning',
   'this_week',
   'last_24h',
+  // Rolling multi-day ranges (not calendar weeks). Critical on Mon/Tue when
+  // this_week is almost empty — "what did we do last week / recently" needs
+  // these instead of inventing since= bare dates (UTC midnight trap).
+  'last_7d',
+  'last_14d',
 ] as const
 
 export type WindowChoice = (typeof WINDOW_CHOICES)[number]
@@ -192,6 +197,14 @@ export function normalizeWindowInput(raw: string): string | null {
   s = s
     .replace(/\blast\s*24\s*(?:h(?:ours?)?)?\b/g, 'last_24h')
     .replace(/\blast\s+day\b/g, 'last_24h')
+    .replace(/\blast\s*(?:7|seven)\s*d(?:ays?)?\b/g, 'last_7d')
+    .replace(/\blast\s*(?:14|fourteen)\s*d(?:ays?)?\b/g, 'last_14d')
+    .replace(/\bpast\s*(?:7|seven)\s*d(?:ays?)?\b/g, 'last_7d')
+    .replace(/\bpast\s*(?:14|fourteen)\s*d(?:ays?)?\b/g, 'last_14d')
+    .replace(/\blast\s+week\b/g, 'last_7d')
+    .replace(/\bpast\s+week\b/g, 'last_7d')
+    .replace(/\blast\s+two\s+weeks?\b/g, 'last_14d')
+    .replace(/\bpast\s+two\s+weeks?\b/g, 'last_14d')
     .replace(/\bthis\s+morning\b/g, 'this_morning')
     .replace(/\bthis\s+week\b/g, 'this_week')
     .replace(/[\s-]+/g, '_')
@@ -210,6 +223,22 @@ export function normalizeWindowInput(raw: string): string | null {
     past_24h: 'last_24h',
     morning: 'this_morning',
     week: 'this_week',
+    // Rolling 7d — not "previous calendar Mon–Sun". Agents invent these
+    // constantly for "what did we do last week / recently".
+    last_week: 'last_7d',
+    past_week: 'last_7d',
+    last7d: 'last_7d',
+    last_7_days: 'last_7d',
+    last_7days: 'last_7d',
+    past_7d: 'last_7d',
+    past_7_days: 'last_7d',
+    last14d: 'last_14d',
+    last_14_days: 'last_14d',
+    last_14days: 'last_14d',
+    past_14d: 'last_14d',
+    past_14_days: 'last_14d',
+    last_two_weeks: 'last_14d',
+    past_two_weeks: 'last_14d',
   }
   // Prefer explicit key list over `aliases[s]` truthiness — without
   // noUncheckedIndexedAccess, indexed access is typed as always-defined.
@@ -233,6 +262,7 @@ export function formatWindowChoices(): string {
  * - yesterday → local yesterday midnight → local today midnight
  * - this_week → local Monday midnight → now (ISO week, Mon=start)
  * - last_24h → rolling 24h from now
+ * - last_7d / last_14d → rolling N×24h from now (not calendar weeks)
  *
  * Unknown names after {@link normalizeWindowInput} throw — silent no-op was
  * a daily-use footgun (agents thought they time-bounded, got full history).
@@ -276,6 +306,7 @@ export function resolveWindow(
     }
     case 'this_week': {
       // ISO week — Monday start. JS getDay(): 0=Sun..6=Sat.
+      // On Mon/Tue this is almost empty — prefer last_7d for "recent work".
       const monday = new Date(todayLocal.getTime())
       const day = monday.getDay()
       const daysFromMonday = day === 0 ? 6 : day - 1
@@ -284,6 +315,14 @@ export function resolveWindow(
     }
     case 'last_24h': {
       const since = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+      return { since: since.toISOString(), before: null }
+    }
+    case 'last_7d': {
+      const since = new Date(now.getTime() - 7 * MS_PER_DAY)
+      return { since: since.toISOString(), before: null }
+    }
+    case 'last_14d': {
+      const since = new Date(now.getTime() - 14 * MS_PER_DAY)
       return { since: since.toISOString(), before: null }
     }
     default: {
