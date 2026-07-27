@@ -5,6 +5,7 @@ import {
   capSummary,
   demoteH2Headings,
   extractWikiLinks,
+  mergePages,
   normalizeSlug,
   parseWikiPage,
   serializeWikiPage,
@@ -336,6 +337,52 @@ vLLM on :8003.
     expect(entry?.body).toContain('### Configuration')
     expect(entry?.body).toContain('leaked out of history')
     expect(round.extraSections?.some((s) => s.heading === 'Configuration')).toBeFalsy()
+  })
+
+  it('re-applying the same historyEntry dedups against the stored demoted body', () => {
+    const entry = {
+      date: '2026-07-27',
+      title: 'Ops note',
+      body: '- did a thing\n\n## Configuration\n\nleaked out of history',
+    }
+    const once = applyPatch(parseWikiPage(SAMPLE), {
+      action: 'update',
+      slug: 'rivetos-task-engine',
+      historyEntry: entry,
+      verifiedAt: '2026-07-27T00:00:00Z',
+    })
+    const twice = applyPatch(parseWikiPage(serializeWikiPage(once)), {
+      action: 'update',
+      slug: 'rivetos-task-engine',
+      historyEntry: entry,
+      verifiedAt: '2026-07-28T00:00:00Z',
+    })
+    expect(twice.history.filter((h) => h.title === 'Ops note')).toHaveLength(1)
+  })
+
+  it('serialize demotes stray ## on paths that never reach applyPatch', () => {
+    // Legacy on-disk history copied verbatim by mergePages, and a lead/article
+    // written by hand — neither goes through applyPatch's demote.
+    const canonical = parseWikiPage(SAMPLE)
+    const loser = parseWikiPage(SAMPLE.replace('slug: rivetos-task-engine', 'slug: ros-tasks-shard'))
+    loser.history = [{ date: '2026-07-01', title: 'legacy', body: '- x\n\n## Stray\n\nescaped' }]
+    const merged = mergePages(canonical, [loser])
+    const mergedRound = parseWikiPage(serializeWikiPage(merged))
+    expect(mergedRound.history.find((h) => h.title === 'legacy')?.body).toContain('escaped')
+    expect(mergedRound.extraSections?.some((s) => s.heading === 'Stray')).toBeFalsy()
+
+    const hand = parseWikiPage(SAMPLE)
+    hand.currentState = 'Lead.\n\n## Stray\n\nescaped from the lead'
+    hand.article = '### Role\n\nA.\n\n## Stray\n\nescaped from the article'
+    const handRound = parseWikiPage(serializeWikiPage(hand))
+    expect(handRound.currentState).toContain('escaped from the lead')
+    expect(handRound.article).toContain('escaped from the article')
+    expect(handRound.extraSections?.some((s) => s.heading === 'Stray')).toBeFalsy()
+
+    // Idempotent: a second serialize pass changes nothing.
+    expect(serializeWikiPage(handRound)).toBe(
+      serializeWikiPage(parseWikiPage(serializeWikiPage(handRound))),
+    )
   })
 })
 

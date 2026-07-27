@@ -109,8 +109,16 @@ export function serializeWikiPage(page: WikiPage): string {
     ...(page.meta.lastVerified ? { last_verified: page.meta.lastVerified } : {}),
     sources: page.meta.sources,
   }
+  // Safety net: demote stray `## ` in every free-form body on the way out,
+  // whatever path wrote it — legacy files, loser history copied verbatim by
+  // mergePages, or a caller building a page by hand. applyPatch already
+  // demotes what it writes; this guarantees the invariant for everything else:
+  // a serialized page must always parse back to itself.
   const history = page.history
-    .map((h) => `### ${h.date}${h.title ? ` — ${h.title}` : ''}\n\n${h.body.trim()}\n`)
+    .map(
+      (h) =>
+        `### ${h.date}${h.title ? ` — ${h.title}` : ''}\n\n${demoteH2Headings(h.body).trim()}\n`,
+    )
     .join('\n')
   const citations = page.citations || []
   const citationBlock =
@@ -131,7 +139,7 @@ export function serializeWikiPage(page: WikiPage): string {
           '',
         ].join('\n')
 
-  const article = (page.article || '').trim()
+  const article = demoteH2Headings(page.article || '').trim()
   const articleBlock = article === '' ? '' : ['', '## Article', '', article, ''].join('\n')
 
   const seeAlsoBlock =
@@ -145,7 +153,7 @@ export function serializeWikiPage(page: WikiPage): string {
     '',
     '## Summary',
     '',
-    page.currentState.trim(),
+    demoteH2Headings(page.currentState).trim(),
     articleBlock,
     seeAlsoBlock,
     '',
