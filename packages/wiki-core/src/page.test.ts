@@ -318,6 +318,25 @@ vLLM on :8003.
     expect(page.seeAlso).not.toContain('rivetos-task-engine')
     expect(page.seeAlso).toEqual(expect.arrayContaining(['datahub', 'raw-host']))
   })
+
+  it('demotes ## inside historyEntry.body so it does not escape History', () => {
+    const page = applyPatch(parseWikiPage(SAMPLE), {
+      action: 'update',
+      slug: 'rivetos-task-engine',
+      historyEntry: {
+        date: '2026-07-27',
+        title: 'Ops note',
+        body: '- did a thing\n\n## Configuration\n\nleaked out of history',
+      },
+      verifiedAt: '2026-07-27T00:00:00Z',
+    })
+    const md = serializeWikiPage(page)
+    const round = parseWikiPage(md)
+    const entry = round.history.find((h) => h.title === 'Ops note')
+    expect(entry?.body).toContain('### Configuration')
+    expect(entry?.body).toContain('leaked out of history')
+    expect(round.extraSections?.some((s) => s.heading === 'Configuration')).toBeFalsy()
+  })
 })
 
 describe('normalizeSlug', () => {

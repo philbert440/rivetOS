@@ -221,9 +221,16 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
       !patch.allowShrink
 
     if (wouldShrink) {
-      // Refuse thrash: fold only when under the hard ceiling; else drop thrash.
+      // Refuse thrash: fold only when under the hard ceiling; else archive the
+      // rewrite so a real correction never vanishes without a trace.
       if (prev.length < SUMMARY_MAX_CHARS) {
         page.currentState = mergeSummaryText(prev, next)
+      } else {
+        page.history.unshift({
+          date: day,
+          title: 'Summary thrash refused (v7 cap)',
+          body: next,
+        })
       }
     } else if (next !== prev) {
       if (prev !== '') {
@@ -275,10 +282,13 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
 
   if (patch.historyEntry) {
     const h = patch.historyEntry
+    // Same H2-escape class as article: bare ## inside history body would be
+    // re-parsed as a top-level section and truncate the entry.
+    const body = demoteH2Headings(h.body.trim())
     const dup = page.history.find(
-      (e) => e.date === h.date && e.title === h.title && e.body.trim() === h.body.trim(),
+      (e) => e.date === h.date && e.title === h.title && e.body.trim() === body,
     )
-    if (!dup) page.history.unshift({ ...h, body: h.body.trim() })
+    if (!dup) page.history.unshift({ ...h, body })
   }
 
   for (const c of patch.addCitations ?? []) {
