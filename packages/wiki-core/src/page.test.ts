@@ -360,6 +360,42 @@ vLLM on :8003.
     expect(twice.history.filter((h) => h.title === 'Ops note')).toHaveLength(1)
   })
 
+  it('applyPatch tolerates a pre-v7 page object missing the new fields', () => {
+    // A page unpickled from a pre-v7 cache, or built by hand: no article,
+    // seeAlso, citations, or meta.related. applyPatch dereferences all of
+    // these, so it must normalize before touching them (as mergePages does).
+    const legacy = {
+      meta: {
+        title: 'Legacy',
+        slug: 'legacy',
+        aliases: [],
+        tags: [],
+        entities: [],
+        sources: [],
+      },
+      currentState: 'Old lead.',
+      history: [],
+    } as unknown as WikiPage
+
+    const page = applyPatch(legacy, {
+      action: 'update',
+      slug: 'legacy',
+      summaryDelta: 'Now also serves :9000.',
+      articlePatches: [{ heading: 'Role', mode: 'merge', body: 'Runs on [[pve3]].' }],
+      addRelated: ['datahub'],
+      addCitations: [{ summaryId: '8f3a0000-0000-0000-0000-000000000009' }],
+      verifiedAt: '2026-07-27T00:00:00Z',
+    })
+
+    expect(page.currentState).toContain('Old lead.')
+    expect(page.currentState).toContain(':9000')
+    expect(page.article).toContain('### Role')
+    expect(page.citations).toHaveLength(1)
+    expect(page.seeAlso).toEqual(expect.arrayContaining(['datahub', 'pve3']))
+    // And the result is a well-formed page.
+    expect(parseWikiPage(serializeWikiPage(page)).article).toContain('Runs on')
+  })
+
   it('serialize demotes stray ## on paths that never reach applyPatch', () => {
     // Legacy on-disk history copied verbatim by mergePages, and a lead/article
     // written by hand — neither goes through applyPatch's demote.

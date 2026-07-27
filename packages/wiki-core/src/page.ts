@@ -196,6 +196,16 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
         seeAlso: [],
       }
 
+  // Normalize fields on pages that predate v7 (or partial objects built by
+  // hand) — same defensiveness as mergePages. parseWikiPage always populates
+  // these, but applyPatch is public API and dereferences them unguarded below.
+  page.currentState = page.currentState || ''
+  page.article = page.article || ''
+  page.history = page.history || []
+  page.citations = page.citations || []
+  page.seeAlso = page.seeAlso || []
+  page.meta.related = page.meta.related || []
+
   if (patch.title) page.meta.title = patch.title
   page.meta.aliases = union(page.meta.aliases, patch.addAliases)
   page.meta.tags = union(page.meta.tags, patch.addTags)
