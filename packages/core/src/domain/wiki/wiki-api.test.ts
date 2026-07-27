@@ -121,7 +121,7 @@ describe('/api/wiki', () => {
 
     const raw = await fetch(`${base}/api/wiki/${TOPIC.slug}/raw`)
     expect(raw.headers.get('content-type')).toContain('text/markdown')
-    expect(await raw.text()).toContain('## Current state')
+    expect(await raw.text()).toMatch(/## (Summary|Current state)/)
 
     expect((await fetch(`${base}/api/wiki/no-such-page`)).status).toBe(404)
     expect((await fetch(`${base}/api/wiki/Bad_Slug!`)).status).toBe(400)

@@ -1,5 +1,8 @@
 export {
   normalizeSlug,
+  extractWikiLinks,
+  type WikiArticlePatch,
+  type WikiArticleSection,
   type WikiCitation,
   type WikiFrontmatter,
   type WikiHistoryEntry,
@@ -13,6 +16,13 @@ export {
   applyPatch,
   mergePages,
   parseCitations,
+  parseSeeAlso,
+  mergeSummaryText,
+  splitArticleSections,
+  joinArticleSections,
+  applyArticlePatches,
+  mergeArticleBodies,
+  SUMMARY_SHRINK_FLOOR,
   WikiParseError,
 } from './page.js'
 export {

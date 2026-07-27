@@ -1,15 +1,18 @@
 /**
- * Memory wiki page model (phase 3a + memory v6 durable topics).
+ * Memory wiki page model (phase 3a + memory v6 durable topics + v7 articles).
  *
  * Shared contract between the extraction worker (writes), the gateway wiki
  * API (reads), and the MCP tools. One markdown file per durable topic under
- * /rivet-shared/wiki/topics/: YAML frontmatter, replaceable "## Current
- * state", append-only "## History", and "## Citations" (leaf summary refs).
+ * /rivet-shared/wiki/topics/: YAML frontmatter, ## Summary (lead), optional
+ * ## Article (structured body), ## See also, append-only ## History, and
+ * ## Citations (leaf summary refs).
  *
  * Design: /rivet-shared/plans/phase-3-memory-wiki-design.md (§1),
- *         /rivet-shared/plans/memory-v6-durable-topics.md
- * Auto-merge everywhere (Phil 2026-07-07): prior Current state — human or
- * automated — archives to History on update; nothing is frozen.
+ *         /rivet-shared/plans/memory-v6-durable-topics.md,
+ *         /rivet-shared/plans/memory-v7-wikipedia-articles.md
+ * Auto-merge everywhere (Phil 2026-07-07): prior Summary — human or
+ * automated — archives to History on full rewrite; nothing is frozen.
+ * v7: prefer summaryDelta + articlePatches so standing knowledge compounds.
  */
 
 /** Provenance back to the memory store. PG UUIDs are canonical; the git sha
@@ -44,7 +47,9 @@ export interface WikiFrontmatter {
   aliases: string[]
   tags: string[]
   entities: string[]
-  /** ISO timestamp of the last extraction that verified Current state. */
+  /** Explicit related topic slugs (see also graph). */
+  related: string[]
+  /** ISO timestamp of the last extraction that verified Summary. */
   lastVerified?: string
   sources: WikiSource[]
   /** Unknown frontmatter keys — preserved verbatim (forward compat). */
@@ -60,25 +65,49 @@ export interface WikiHistoryEntry {
   body: string
 }
 
+/** One ### subsection under ## Article. */
+export interface WikiArticleSection {
+  /** Heading text without ### (e.g. "Configuration"). */
+  heading: string
+  body: string
+}
+
+/**
+ * Patch a single article subsection (v7 extract).
+ * mode "merge" integrates body under heading; "replace" overwrites that section.
+ */
+export interface WikiArticlePatch {
+  heading: string
+  mode: 'merge' | 'replace'
+  body: string
+}
+
 export interface WikiPage {
   meta: WikiFrontmatter
-  /** Markdown body of the "## Current state" section (no heading). */
+  /**
+   * Lead / Summary markdown (no heading). Wire field keeps the name
+   * `currentState` for API/context compatibility. Parsed from ## Summary
+   * or legacy ## Current state.
+   */
   currentState: string
-  /** Newest-first dated entries under "## History". */
+  /** Encyclopedia body under ## Article (may contain ### subsections). */
+  article: string
+  /** Newest-first dated entries under ## History. */
   history: WikiHistoryEntry[]
   /** Leaf/branch summary citations (memory v6) — newest-first. */
   citations: WikiCitation[]
+  /** Slugs listed under ## See also (and/or meta.related). */
+  seeAlso: string[]
   /** Body text before the first "##" heading — preserved verbatim. */
   preamble?: string
-  /** Sections other than Current state/History/Citations — preserved. */
+  /** Sections other than core headings — preserved. */
   extraSections?: Array<{ heading: string; body: string }>
 }
 
 /**
  * A structured patch from the extractor LLM, applied by applyPatch().
- * 'create' seeds a new page; 'update' replaces Current state (archiving the
- * prior one as a dated History entry when it changed) and/or appends a
- * History entry.
+ * 'create' seeds a new page; 'update' merges Summary/Article and/or appends
+ * History. Prefer summaryDelta + articlePatches over full rewrites (v7).
  */
 export interface WikiPatch {
   action: 'create' | 'update'
@@ -87,14 +116,30 @@ export interface WikiPatch {
   addAliases?: string[]
   addTags?: string[]
   addEntities?: string[]
-  /** Full replacement Current state (markdown, no heading). */
+  /** Explicit related slugs to union into meta.related + See also. */
+  addRelated?: string[]
+  /**
+   * Full replacement Summary (markdown, no heading). Subject to shrink guard
+   * unless allowShrink is true.
+   */
   currentState?: string
+  /** Sentences/paragraphs to fold into the existing Summary (preferred). */
+  summaryDelta?: string
+  /** Full replacement Article body. */
+  article?: string
+  /** Section-aware Article updates (preferred over full article). */
+  articlePatches?: WikiArticlePatch[]
   historyEntry?: WikiHistoryEntry
   addSources?: WikiSource[]
   /** Append leaf citations (deduped by summaryId). */
   addCitations?: WikiCitation[]
   /** ISO timestamp stamped into lastVerified. */
   verifiedAt: string
+  /**
+   * Allow a full Summary rewrite shorter than 60% of the prior length
+   * (contradiction correction). Default false — silent thrash refused.
+   */
+  allowShrink?: boolean
 }
 
 /** Slug rules: lowercase kebab, [a-z0-9-], no leading/trailing dash. */
@@ -104,4 +149,20 @@ export function normalizeSlug(raw: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80)
+}
+
+/** Extract [[slug]] wiki links from markdown (outbound graph edges). */
+export function extractWikiLinks(markdown: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const re = /\[\[([a-z0-9-]+)\]\]/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(markdown)) !== null) {
+    const slug = normalizeSlug(m[1])
+    if (slug && !seen.has(slug)) {
+      seen.add(slug)
+      out.push(slug)
+    }
+  }
+  return out
 }

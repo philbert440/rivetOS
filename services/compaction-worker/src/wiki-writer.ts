@@ -85,7 +85,7 @@ export class WikiWriter {
     await this.git(
       'commit',
       '-m',
-      `wiki(${patch.slug}): ${patch.action} from summary ${provenance.summaryId.slice(0, 8)}\n\nProvenance: summary ${provenance.summaryId}\nPipeline: wiki-v6`,
+      `wiki(${patch.slug}): ${patch.action} from summary ${provenance.summaryId.slice(0, 8)}\n\nProvenance: summary ${provenance.summaryId}\nPipeline: wiki-v7`,
     )
     const sha = await this.git('rev-parse', 'HEAD')
     return { slug: patch.slug, page, gitSha: sha }

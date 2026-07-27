@@ -78,3 +78,39 @@ describe('formatExtractionPrompt', () => {
     expect(without).toContain('no matching durable topics yet')
   })
 })
+
+describe('v7 summary_delta + article_patches', () => {
+  it('parses summary_delta, article_patches, related, and current_state alias', () => {
+    const { patches, rejected } = parseWikiPatches(
+      JSON.stringify([
+        {
+          action: 'update',
+          slug: 'deckard-40b',
+          related: ['pve3', '1cat-vllm'],
+          summary_delta: 'Now serves MTP k=4.',
+          article_patches: [
+            { heading: 'Configuration', mode: 'merge', body: 'MTP k=4 on :8003.' },
+          ],
+          history_entry: { date: '2026-07-27', title: 'MTP', body: '- k=4' },
+        },
+        {
+          action: 'create',
+          slug: 'new-host',
+          current_state: 'A new durable host.',
+        },
+      ]),
+      AT,
+    )
+    expect(rejected).toEqual([])
+    expect(patches[0]).toMatchObject({
+      slug: 'deckard-40b',
+      summaryDelta: 'Now serves MTP k=4.',
+      addRelated: ['pve3', '1cat-vllm'],
+    })
+    expect(patches[0].articlePatches?.[0]).toMatchObject({
+      heading: 'Configuration',
+      mode: 'merge',
+    })
+    expect(patches[1].currentState).toBe('A new durable host.')
+  })
+})

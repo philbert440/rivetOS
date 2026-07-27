@@ -39,6 +39,11 @@ describeIf('WikiIndex (PG)', () => {
       'utf8',
     )
     await pool.query(sql6)
+    const sql7 = readFileSync(
+      resolve(__dirname, '../schema/migrations/0007_wiki_article.sql'),
+      'utf8',
+    )
+    await pool.query(sql7)
     index = new WikiIndex(pool)
     expect(await index.isReady()).toBe(true)
   }, 30_000)

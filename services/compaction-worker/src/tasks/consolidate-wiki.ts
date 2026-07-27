@@ -45,8 +45,17 @@ function deps(): { pool: pg.Pool; index: WikiIndex; writer: WikiWriter } {
   return { pool, index, writer }
 }
 
-function pickCanonical(slugs: string[]): string {
-  // Prefer shortest slug (durable parent); ties break lexicographically.
+/**
+ * Prefer the 2-token cluster key as the durable parent (deckard-40b), even if
+ * no page with that exact slug exists yet — session shards then redirect to it.
+ * Fallback: shortest existing slug.
+ */
+function pickCanonical(slugs: string[], clusterKey: string): string {
+  if (slugs.includes(clusterKey)) return clusterKey
+  // Cluster key is a clean parent stem (2 tokens) — use it as the write target.
+  if (clusterKey.includes('-') && slugs.every((s) => s === clusterKey || s.startsWith(`${clusterKey}-`))) {
+    return clusterKey
+  }
   return [...slugs].sort((a, b) => a.length - b.length || a.localeCompare(b))[0]
 }
 
@@ -79,9 +88,11 @@ export const consolidateWikiTask: Task = async (payload, helpers) => {
   let pagesRemoved = 0
 
   for (const [key, slugs] of clusters.slice(0, limitClusters)) {
-    const canonicalSlug = pickCanonical(slugs)
+    const canonicalSlug = pickCanonical(slugs, key)
+    // Every existing page that is not the canonical file becomes a loser
+    // (including when we synthesize a new parent slug at the cluster key).
     const losers = slugs.filter((s) => s !== canonicalSlug)
-    if (losers.length === 0) continue
+    if (losers.length === 0 && slugs.includes(canonicalSlug)) continue
 
     helpers.logger.info(
       `consolidate-wiki: cluster ${key} → ${canonicalSlug} (+${losers.length} merges): ${slugs.join(', ')}`,
@@ -100,14 +111,30 @@ export const consolidateWikiTask: Task = async (payload, helpers) => {
     }
     if (pages.length === 0) continue
 
-    const canonPage = pages.find((p) => p.meta.slug === canonicalSlug) ?? pages[0]
-    const loserPages = pages.filter((p) => p.meta.slug !== canonPage.meta.slug)
+    // Seed from densest current_state so the new parent is not an empty shell.
+    const seed =
+      pages.find((p) => p.meta.slug === canonicalSlug) ??
+      [...pages].sort((a, b) => b.currentState.length - a.currentState.length)[0]
+    const loserPages = pages.filter((p) => p.meta.slug !== seed.meta.slug)
     const mergedPage = mergePages(
-      { ...canonPage, meta: { ...canonPage.meta, slug: canonicalSlug } },
+      {
+        ...seed,
+        meta: {
+          ...seed.meta,
+          slug: canonicalSlug,
+          title: seed.meta.title.replace(/\s*[—–-]\s*.+$/, '') || key,
+        },
+      },
       loserPages,
     )
     // Ensure canonical slug on meta after merge
     mergedPage.meta.slug = canonicalSlug
+    if (!mergedPage.meta.title || mergedPage.meta.title === seed.meta.slug) {
+      mergedPage.meta.title = key
+        .split('-')
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ')
+    }
     mergedPage.meta.aliases = [
       ...new Set([
         ...mergedPage.meta.aliases,

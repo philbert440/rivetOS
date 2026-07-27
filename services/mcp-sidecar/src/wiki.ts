@@ -71,9 +71,10 @@ export function createWikiTools(options: WikiToolsOptions): WikiToolsHandle {
     {
       name: `${prefix}wiki_read`,
       description:
-        'Read one RivetOS wiki topic page in full: current state, dated history ' +
-        'of changes, and provenance ids (summary/message UUIDs usable with ' +
-        'memory tools for drill-down). Use the slug from wiki_search.',
+        'Read one RivetOS wiki topic page in full: Wikipedia-style Summary ' +
+        '(lead), Article body, See also crosslinks, dated History of changes, ' +
+        'and Citations (summary UUIDs usable with memory tools for drill-down). ' +
+        'Use the slug from wiki_search.',
       inputSchema: {
         slug: z.string().describe('Topic slug, e.g. rivetos-task-engine'),
       },

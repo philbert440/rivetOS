@@ -32,8 +32,15 @@ export interface WikiPageResponse {
   aliases: string[]
   tags: string[]
   entities: string[]
-  /** The "## Current state" section only — UI renders without markdown surgery. */
+  /**
+   * Lead / Summary (## Summary or legacy ## Current state).
+   * UI may also render `article` for the encyclopedia body.
+   */
   currentState: string
+  /** Wikipedia-style body (## Article) — memory v7. */
+  article?: string
+  /** Explicit + harvested related slugs. */
+  seeAlso?: string[]
   history: WikiHistoryEntryWire[]
   /** Leaf summary citations (memory v6 durable topics). */
   citations: WikiCitationWire[]
@@ -43,7 +50,7 @@ export interface WikiPageResponse {
   gitSha: string | null
   lastVerified?: string
   updatedAt: string
-  /** Related slugs (entity/alias co-occurrence) — sidebar graph. */
+  /** Related slugs (explicit + entity/link graph) — sidebar. */
   related?: string[]
 }
 
