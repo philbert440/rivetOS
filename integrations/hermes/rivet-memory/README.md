@@ -16,7 +16,9 @@ on the first try, after a real grok-4.3 Hermes session surfaced three failure
 modes the rules alone didn't cover.
 
 - **`window=` enum on browse + search** — `today` / `yesterday` /
-  `this_morning` / `this_week` / `last_24h`. Resolves to UTC bounds anchored
+  `this_morning` / `this_week` / `last_24h` / `last_7d` / `last_14d`.
+  Rolling `last_7d`/`last_14d` prefer over calendar `this_week` early in the
+  week. Resolves to UTC bounds anchored
   at the server's *local* midnight, so the agent doesn't have to do
   TZ math. `window=` overrides explicit `since`/`before` only when neither is
   provided. Sidesteps the "`since=\"2026-05-23\"` is actually UTC midnight =
