@@ -63,6 +63,11 @@ _WINDOW_ALIASES = {
 }
 
 
+def _format_window_choices() -> str:
+    """Human-readable list of valid window= values for error messages."""
+    return ", ".join(f'"{c}"' for c in WINDOW_CHOICES)
+
+
 def _normalize_window(window: str) -> str:
     """Lower-case / snake_case cleanup + synonym map onto WINDOW_CHOICES."""
     s = window.strip().lower()
@@ -92,10 +97,17 @@ def resolve_window(window: str) -> Tuple[Optional[str], Optional[str]]:
     Hermes process is running in), then converted to UTC. Returns ISO strings
     Postgres will parse via the usual timestamp coercion.
 
-    Returns (None, None) for an unrecognized window so the caller can fall
-    back to other filters without erroring.
+    Unknown values (after alias normalization) raise ``ValueError`` listing
+    valid choices. Silent ``(None, None)`` was a daily-use footgun — agents
+    thought they time-bounded but got unfiltered full history (parity with
+    postgres tools hard-fail from #408).
     """
     window = _normalize_window(window)
+    if not window:
+        raise ValueError(
+            f'Invalid window="" — expected one of: {_format_window_choices()}'
+        )
+
     now_local = datetime.now().astimezone()
     today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -123,7 +135,9 @@ def resolve_window(window: str) -> Tuple[Optional[str], Optional[str]]:
         return ((now_local - timedelta(days=7)).astimezone(timezone.utc).isoformat(), None)
     if window == "last_14d":
         return ((now_local - timedelta(days=14)).astimezone(timezone.utc).isoformat(), None)
-    return (None, None)
+    raise ValueError(
+        f'Unknown window="{window}" — expected one of: {_format_window_choices()}'
+    )
 
 from .client import RivetMemoryClient
 from .expand import Expander, SourceMessage, SummaryNode
@@ -273,7 +287,10 @@ def search_tool(
     # window= takes precedence when the caller hasn't supplied explicit
     # ISO bounds; the agent doesn't have to do local-TZ → UTC math.
     if args.get("window") and not (since or before):
-        since, before = resolve_window(args["window"])
+        try:
+            since, before = resolve_window(args["window"])
+        except ValueError as exc:
+            return f"Search failed: {exc}"
     should_expand = args.get("expand") is not False  # default True
 
     results = engine.search(
@@ -354,7 +371,10 @@ def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
     since = args.get("since")
     before = args.get("before")
     if args.get("window") and not (since or before):
-        since, before = resolve_window(args["window"])
+        try:
+            since, before = resolve_window(args["window"])
+        except ValueError as exc:
+            return f"Browse failed: {exc}"
     if args.get("conversation_id"):
         conditions.append("m.conversation_id = %s")
         params.append(args["conversation_id"])
