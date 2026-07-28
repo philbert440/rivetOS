@@ -22,7 +22,10 @@ modes the rules alone didn't cover.
   at the server's *local* midnight, so the agent doesn't have to do
   TZ math. `window=` overrides explicit `since`/`before` only when neither is
   provided. Sidesteps the "`since=\"2026-05-23\"` is actually UTC midnight =
-  8pm EDT yesterday" trap.
+  8pm EDT yesterday" trap. Unknown / empty values **hard-fail** with the
+  valid list (no silent unfiltered full-history results — postgres #408
+  parity). Spaced/hyphen forms and aliases like `last week` → `last_7d`
+  still normalize first.
 - **Local-TZ timestamps in browse output.** Rows render as
   `[2026-05-23 13:34:38 EDT]` instead of bare UTC numbers, so the agent
   can't mis-read a UTC-morning row as "early local morning."
