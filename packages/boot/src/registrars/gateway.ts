@@ -105,6 +105,11 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     env.RIVETOS_DEN_FILES_OPEN = '1'
   if (terminal?.enabled === true) env.RIVETOS_DEN_TERM = '1'
   if (terminal?.open === true) env.RIVETOS_DEN_TERM_OPEN = '1'
+  // MicBridge (docs/MICBRIDGE.md): den-server only sees this built env map
+  // (not the full process env), so wire RIVETOS_DEN_AUDIO here. Follow the
+  // terminal posture — same trust domain as shell/TUI on the node.
+  if (terminal?.enabled === true) env.RIVETOS_DEN_AUDIO = '1'
+  if (terminal?.open === true) env.RIVETOS_DEN_AUDIO_OPEN = '1'
   // Mesh device enrollment (Settings → Devices). pgUrl/embedUrl for the QR
   // come from the runtime's own RIVETOS_PG_URL/EMBED_URL (den-server reads
   // those directly), so they aren't repeated here.
