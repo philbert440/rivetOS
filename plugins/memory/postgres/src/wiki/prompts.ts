@@ -15,10 +15,14 @@ import { normalizeSlug, type WikiArticlePatch, type WikiPatch } from '@rivetos/w
  */
 export const WIKI_PIPELINE_VERSION = 3
 
-// 6000 not 2048: the local qwen-27b serves with thinking ON — reasoning
-// alone can burn 2k tokens before the JSON starts (first live extraction
-// died exactly this way). Mirrors LEAF_MAX_TOKENS headroom logic.
-export const WIKI_EXTRACT_MAX_TOKENS = 6000
+// 32000, not 6000 or 2048: the local qwen-27b serves with thinking ON, and
+// reasoning scales with the input — a v7 extract carries candidate pages plus
+// article bodies, so thinking alone can outrun a 6k budget and the call comes
+// back with finish_reason=length and EMPTY content (23k dead extract-wiki jobs
+// died exactly this way; 2048 was the same bug one size smaller). The server
+// runs 262k context, so a large ceiling costs nothing when unused — decode
+// stops at the stop token. Extraction quality beats extraction speed here.
+export const WIKI_EXTRACT_MAX_TOKENS = 32000
 
 /** Summaries shorter than this carry too little signal to mine. */
 export const WIKI_MIN_SUMMARY_CHARS = 200

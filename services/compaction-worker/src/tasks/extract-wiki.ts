@@ -118,6 +118,10 @@ export const extractWikiTask: Task = async (payload, helpers) => {
         candidates,
       }),
       WIKI_EXTRACT_MAX_TOKENS,
+      // `[]` — "this summary holds no durable facts" — is the single most common
+      // correct answer here, and it is 2 chars. The default 20-char floor scored
+      // it as an empty response and failed the job.
+      { minChars: 2 },
     )
     if (!raw) throw new Error('empty LLM response')
 
