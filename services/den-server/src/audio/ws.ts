@@ -69,11 +69,7 @@ export function createAudioWs(deps: AudioWsDeps): AudioWs {
     ws.send(JSON.stringify(obj))
   }
 
-  const attach = (
-    bridge: MicBridge,
-    ws: AudioSocket,
-    meta?: { remote?: string },
-  ): void => {
+  const attach = (bridge: MicBridge, ws: AudioSocket, meta?: { remote?: string }): void => {
     const publisherId = randomBytes(8).toString('hex')
     const client: AudioClient = {
       ws,
@@ -106,7 +102,13 @@ export function createAudioWs(deps: AudioWsDeps): AudioWs {
         if (buf.length) bridge.writePcm(publisherId, buf)
         return
       }
-      let msg: { type?: string; v?: number; sampleRate?: number; channels?: number; format?: string }
+      let msg: {
+        type?: string
+        v?: number
+        sampleRate?: number
+        channels?: number
+        format?: string
+      }
       try {
         msg = JSON.parse(toBuffer(data).toString('utf8')) as typeof msg
       } catch {
@@ -178,7 +180,7 @@ export function createAudioWs(deps: AudioWsDeps): AudioWs {
       }
       wss.handleUpgrade(req, socket, head, (ws) => {
         const remote = deps.remoteOf?.(req) ?? req.socket.remoteAddress ?? undefined
-        attach(bridge, ws as unknown as AudioSocket, { remote })
+        attach(bridge, ws, { remote })
       })
     },
     attach,

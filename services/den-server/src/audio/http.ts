@@ -9,7 +9,12 @@ export interface AudioHttpDeps {
   gateError: () => string
 }
 
-const json = (res: ServerResponse, code: number, body: unknown, cors: Record<string, string>): void => {
+const json = (
+  res: ServerResponse,
+  code: number,
+  body: unknown,
+  cors: Record<string, string>,
+): void => {
   res.writeHead(code, { 'Content-Type': 'application/json', ...cors })
   res.end(JSON.stringify(body))
 }

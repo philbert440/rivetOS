@@ -359,8 +359,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       `[den-server] MicBridge is OPEN (tokenless on ${config.host}) by explicit ` +
         `RIVETOS_DEN_AUDIO_OPEN — anything that can reach this port can stream mic PCM.`,
     )
-  const audioDir =
-    config.audio.dir || join(config.stateDir, 'audio')
+  const audioDir = config.audio.dir || join(config.stateDir, 'audio')
   const micBridge = audioEnabled
     ? new MicBridge({
         dir: audioDir,
@@ -613,11 +612,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       // MicBridge status (behind bearer gate)
       if (url.pathname === '/audio' || url.pathname.startsWith('/audio/')) {
         if (
-          handleAudioHttp(req, res, url, {
-            bridge: () => micBridge,
-            enabled: () => audioEnabled,
-            gateError: () => audioGateError,
-          }, CORS)
+          handleAudioHttp(
+            req,
+            res,
+            url,
+            {
+              bridge: () => micBridge,
+              enabled: () => audioEnabled,
+              gateError: () => audioGateError,
+            },
+            CORS,
+          )
         )
           return
       }

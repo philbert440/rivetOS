@@ -170,14 +170,9 @@ export class MicBridge {
     if (this.fd !== null) return
     try {
       // O_RDWR | O_NONBLOCK: do not block waiting for a reader; keep FIFO open.
-      this.fd = openSync(
-        this.fifoPath,
-        constants.O_RDWR | constants.O_NONBLOCK,
-      )
+      this.fd = openSync(this.fifoPath, constants.O_RDWR | constants.O_NONBLOCK)
     } catch (e) {
-      this.log(
-        `[micbridge] open fifo failed: ${e instanceof Error ? e.message : String(e)}`,
-      )
+      this.log(`[micbridge] open fifo failed: ${e instanceof Error ? e.message : String(e)}`)
       this.fd = null
     }
   }
@@ -215,9 +210,7 @@ export class MicBridge {
 }
 
 /** Test helper: bridge under a fresh temp dir. */
-export function createTestMicBridge(
-  overrides: Partial<MicBridgeConfig> = {},
-): MicBridge {
+export function createTestMicBridge(overrides: Partial<MicBridgeConfig> = {}): MicBridge {
   const dir = overrides.dir ?? mkdtempSync(join(process.cwd(), 'micbridge-'))
   return new MicBridge({
     dir,
