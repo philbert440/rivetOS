@@ -49,6 +49,20 @@ export interface DenTermConfig {
   injectSubmitDelayMs?: number
 }
 
+/** Host→node microphone bridge (MicBridge). See docs/MICBRIDGE.md. */
+export interface DenAudioConfig {
+  /** Opt-in master switch — OFF unless RIVETOS_DEN_AUDIO=1/on. */
+  enabled: boolean
+  /** RIVETOS_DEN_AUDIO_OPEN=1: allow tokenless off-loopback (trusted LAN). */
+  open: boolean
+  /** Runtime dir for FIFO + audit (default: $stateDir/audio). Empty = derive. */
+  dir: string
+  /** Logical device name reported in status / ready frames. */
+  deviceName: string
+  /** PCM sample rate Hz (s16le mono). */
+  sampleRate: number
+}
+
 export interface DenConfig {
   port: number
   host: string
@@ -73,6 +87,8 @@ export interface DenConfig {
   meshCacheMs: number
   /** Local PTY terminals (opt-in; see term/). */
   term: DenTermConfig
+  /** Host mic → virtual node input (opt-in; see audio/ + docs/MICBRIDGE.md). */
+  audio: DenAudioConfig
   /** Shared filestore root for /api/files/* (browse/download/upload).
    *  Empty string disables the routes entirely. */
   filesRoot: string
@@ -147,6 +163,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       exitLingerMs: intEnv(env, 'RIVETOS_DEN_TERM_EXIT_LINGER_MS', 60_000),
       injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
       injectSubmitDelayMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_SUBMIT_DELAY_MS', 80),
+    },
+    audio: {
+      enabled: truthyEnv(env.RIVETOS_DEN_AUDIO),
+      open: truthyEnv(env.RIVETOS_DEN_AUDIO_OPEN),
+      dir: env.RIVETOS_DEN_AUDIO_DIR ?? '',
+      deviceName: env.RIVETOS_DEN_AUDIO_DEVICE ?? 'RivetHub Mic',
+      sampleRate: intEnv(env, 'RIVETOS_DEN_AUDIO_RATE', 16_000),
     },
     filesRoot: env.RIVETOS_DEN_FILES_ROOT ?? '/rivet-shared',
     filesOpen: truthyEnv(env.RIVETOS_DEN_FILES_OPEN),

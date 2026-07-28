@@ -411,6 +411,60 @@ export interface TermInjectResponse {
   ptyId: string
 }
 
+// ---------------------------------------------------------------------------
+// /api/audio — MicBridge (host mic → virtual node input); see docs/MICBRIDGE.md
+// ---------------------------------------------------------------------------
+
+export interface AudioMicStatus {
+  enabled: true
+  backend: 'fifo-shim' | 'none'
+  device: string
+  sampleRate: number
+  channels: number
+  format: 's16le'
+  fifoPath: string
+  armed: boolean
+  publisherId: string | null
+  armedAt: number | null
+  bytesWritten: number
+  runtimeReady: boolean
+}
+
+export interface AudioMicHealth {
+  ok: boolean
+  runtimeReady: boolean
+  fifoPath: string
+  message?: string
+}
+
+/** Server → client control frames on WS /api/audio/mic */
+export type AudioMicServerFrame =
+  | {
+      type: 'ready'
+      device: string
+      sampleRate: number
+      format: 's16le'
+      backend: 'fifo-shim' | 'none'
+    }
+  | {
+      type: 'error'
+      code: 'busy' | 'disabled' | 'bad-hello' | 'no-runtime'
+      message: string
+    }
+  | { type: 'stopped' }
+
+/** Client → server control frames on WS /api/audio/mic (binary = raw PCM). */
+export type AudioMicClientFrame =
+  | {
+      type: 'hello'
+      v: 1
+      sampleRate?: number
+      channels?: 1
+      format?: 's16le'
+    }
+  | { type: 'start' }
+  | { type: 'stop' }
+
 export interface HarnessSession {
   id: string
   /** roster command it belongs to (e.g. 'claude') */

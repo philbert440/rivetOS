@@ -94,6 +94,13 @@ function makeManager(
       exitLingerMs: 60_000,
       ...term,
     },
+    audio: {
+      enabled: false,
+      open: false,
+      dir: '',
+      deviceName: 'RivetHub Mic',
+      sampleRate: 16_000,
+    },
   }
   const procs: FakeProc[] = []
   const spawns: { argv: string[]; opts: PtySpawnOpts }[] = []

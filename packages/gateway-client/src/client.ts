@@ -39,6 +39,8 @@ import type {
   TermListResponse,
   TermSpawnRequest,
   TermSpawnResponse,
+  AudioMicStatus,
+  AudioMicHealth,
 } from '@rivetos/types'
 import type {
   DenSessionsResponse,
@@ -327,6 +329,31 @@ export class RivetGateway {
    *  list) — every session that has emitted den events, recency-ordered. */
   denSessions(signal?: AbortSignal): Promise<DenSessionsResponse> {
     return request(this.config, '/api/events/sessions', { signal })
+  }
+
+  // -- audio MicBridge (host mic → virtual node input; docs/MICBRIDGE.md) ----
+
+  /** MicBridge status (armed, fifo, sample rate). Requires RIVETOS_DEN_AUDIO=1. */
+  audioStatus(signal?: AbortSignal): Promise<AudioMicStatus> {
+    return request(this.config, '/api/audio', { signal })
+  }
+
+  audioHealth(signal?: AbortSignal): Promise<AudioMicHealth> {
+    return request(this.config, '/api/audio/health', { signal })
+  }
+
+  /**
+   * Attach URL for WS /api/audio/mic — binary s16le PCM after a JSON hello.
+   * Caller opens the socket (same pattern as terminalWsUrl).
+   */
+  audioMicWsUrl(): string {
+    const u = new URL(
+      '/api/audio/mic',
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    )
+    u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
+    if (this.config.token) u.searchParams.set('token', this.config.token)
+    return u.toString()
   }
 
   // -- files (shared filestore, fenced to the node's files root) --------------

@@ -58,6 +58,13 @@ async function start(overrides: Partial<DenConfig> = {}): Promise<{ den: DenServ
       detachedTtlMs: 1_800_000,
       exitLingerMs: 60_000,
     },
+    audio: {
+      enabled: false,
+      open: false,
+      dir: '',
+      deviceName: 'RivetHub Mic',
+      sampleRate: 16_000,
+    },
     ...overrides,
   }
   const den = createDenServer(config)

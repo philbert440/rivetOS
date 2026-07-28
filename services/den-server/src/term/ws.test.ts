@@ -128,6 +128,13 @@ function baseConfig(stateDir: string, term: Partial<DenTermConfig> = {}): DenCon
       exitLingerMs: 60_000,
       ...term,
     },
+    audio: {
+      enabled: false,
+      open: false,
+      dir: '',
+      deviceName: 'RivetHub Mic',
+      sampleRate: 16_000,
+    },
   }
 }
 
