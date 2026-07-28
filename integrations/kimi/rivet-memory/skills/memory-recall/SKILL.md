@@ -25,7 +25,8 @@ Any prompt that pins a timeframe ("this morning", "yesterday", "today", "earlier
 
 **Use the enhanced `window=` parameter whenever available**:
 
-- `window="this_morning" | "yesterday" | "today" | "this_week" | "last_24h"`
+- `window="this_morning" | "yesterday" | "today" | "this_week" | "last_24h" | "last_7d" | "last_14d"`
+  (prefer rolling `last_7d` over calendar `this_week` early in the week)
 
 This is the preferred path because it correctly handles local timezone boundaries
 without you doing math.
