@@ -280,5 +280,14 @@ def test_resolve_window_returns_utc_iso_bounds():
     age_alias = datetime.now(timezone.utc) - datetime.fromisoformat(since_alias)
     assert 6.5 * 86400 < age_alias.total_seconds() < 7.5 * 86400
 
-    since, before = resolve_window("not_a_real_window")
-    assert since is None and before is None
+    # Unknown window hard-fails (postgres #408 parity) — never silent no-op.
+    import pytest
+
+    with pytest.raises(ValueError, match=r"Unknown window"):
+        resolve_window("not_a_real_window")
+    with pytest.raises(ValueError, match=r"today"):
+        resolve_window("not_a_real_window")
+    with pytest.raises(ValueError, match=r"last_7d"):
+        resolve_window("not_a_real_window")
+    with pytest.raises(ValueError, match=r"Invalid window"):
+        resolve_window("   ")
