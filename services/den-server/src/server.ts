@@ -52,6 +52,9 @@ import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
 import { createTermWs } from './term/ws.js'
+import { MicBridge } from './audio/bridge.js'
+import { createAudioWs } from './audio/ws.js'
+import { handleAudioHttp } from './audio/http.js'
 import {
   listHarnessSessions,
   harnessSessionExists,
@@ -95,6 +98,9 @@ const API_PATHS = new Set([
   '/term/list',
   '/term/inject',
   '/term/harness-sessions',
+  '/audio',
+  '/audio/status',
+  '/audio/health',
   '/files/list',
   '/files/download',
   '/files/upload',
@@ -332,6 +338,48 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // semantics: gated or disabled terminals destroy the upgrade)
   const termWs = createTermWs({ manager: ensureManager, enabled: () => termEnabled })
 
+  // MicBridge (host mic → virtual node input). Same tokenless gate pattern as
+  // terminals: off-loopback without token requires RIVETOS_DEN_AUDIO_OPEN.
+  const audioGateError =
+    config.audio.enabled &&
+    !config.audio.open &&
+    !config.token &&
+    !LOOPBACK_HOSTS.includes(config.host)
+      ? 'audio disabled: RIVETOS_DEN_TOKEN required when host is not loopback'
+      : ''
+  const audioEnabled = config.audio.enabled && !audioGateError
+  if (audioGateError)
+    console.error(
+      `[den-server] SECURITY: refusing to enable MicBridge — RIVETOS_DEN_AUDIO is set but ` +
+        `RIVETOS_DEN_TOKEN is empty and host ${config.host} is not loopback. ` +
+        `Set RIVETOS_DEN_TOKEN, bind to 127.0.0.1, or opt out with RIVETOS_DEN_AUDIO_OPEN=1.`,
+    )
+  if (audioEnabled && config.audio.open && !config.token && !LOOPBACK_HOSTS.includes(config.host))
+    console.warn(
+      `[den-server] MicBridge is OPEN (tokenless on ${config.host}) by explicit ` +
+        `RIVETOS_DEN_AUDIO_OPEN — anything that can reach this port can stream mic PCM.`,
+    )
+  const audioDir = config.audio.dir || join(config.stateDir, 'audio')
+  const micBridge = audioEnabled
+    ? new MicBridge({
+        dir: audioDir,
+        deviceName: config.audio.deviceName,
+        sampleRate: config.audio.sampleRate,
+        channels: 1,
+        format: 's16le',
+        log: console.error,
+      })
+    : null
+  if (micBridge) {
+    const rt = micBridge.ensureRuntime()
+    if (!rt.ok) console.error(`[den-server] MicBridge runtime: ${rt.message}`)
+    else console.error(`[den-server] MicBridge ready fifo=${micBridge.fifoPath}`)
+  }
+  const audioWs = createAudioWs({
+    bridge: () => micBridge,
+    enabled: () => audioEnabled,
+  })
+
   // Shared filestore browser (/files/*, aliased /api/files/*) — fenced to
   // config.filesRoot; empty root = routes off. Same tokenless-exposure gate
   // as terminals: unauthenticated R/W on a non-loopback bind needs the
@@ -418,6 +466,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     '/api/terminal/inject': '/term/inject',
     '/api/terminal/harness-sessions': '/term/harness-sessions',
     '/api/terminal/ws': '/term',
+    '/api/audio': '/audio',
+    '/api/audio/status': '/audio/status',
+    '/api/audio/health': '/audio/health',
+    '/api/audio/mic': '/audio/mic',
   }
   const canonicalize = (url: URL): void => {
     // Exact aliases first — special cases like /api/terminal/ws → /term (not
@@ -488,12 +540,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         const termApi = url.pathname === '/term' || url.pathname.startsWith('/term/')
         // Same as term: nested /files/* must not fall through to the SPA shell.
         const filesApi = url.pathname === '/files' || url.pathname.startsWith('/files/')
+        const audioApi = url.pathname === '/audio' || url.pathname.startsWith('/audio/')
         if (
           config.staticDir &&
           !API_PATHS.has(url.pathname) &&
           !url.pathname.startsWith('/api/') &&
           !termApi &&
           !filesApi &&
+          !audioApi &&
           !gatewayOwned
         ) {
           if (serveStatic(res, config.staticDir, url.pathname)) return
@@ -553,6 +607,24 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (filesRoutes.handle(req, res, url)) return
         return json(res, 404, { error: 'not found' })
+      }
+
+      // MicBridge status (behind bearer gate)
+      if (url.pathname === '/audio' || url.pathname.startsWith('/audio/')) {
+        if (
+          handleAudioHttp(
+            req,
+            res,
+            url,
+            {
+              bridge: () => micBridge,
+              enabled: () => audioEnabled,
+              gateError: () => audioGateError,
+            },
+            CORS,
+          )
+        )
+          return
       }
 
       if (req.method === 'POST' && (url.pathname === '/event' || url.pathname === '/events')) {
@@ -823,6 +895,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       termWs.handleUpgrade(req, socket, head, url)
       return
     }
+    if (url.pathname === '/audio/mic') {
+      audioWs.handleUpgrade(req, socket, head, url)
+      return
+    }
     const up = opts.extraUpgrades?.find((u) => u.path === url.pathname)
     if (up) {
       up.handle(req, socket, head, url)
@@ -868,6 +944,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       c.ws.ping()
     }
     termWs.heartbeat()
+    audioWs.heartbeat()
   }, 30_000)
   heartbeat.unref?.()
 
@@ -880,6 +957,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         for (const t of evictTimers.values()) clearTimeout(t)
         evictTimers.clear()
         termWs.close()
+        audioWs.close()
+        micBridge?.close()
         termManager?.close()
         for (const c of clients) c.ws.close()
         wss.close(() => server.close(() => resolve()))

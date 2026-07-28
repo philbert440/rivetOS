@@ -78,6 +78,13 @@ async function start(
       injectReadyMs: 10,
       ...term,
     },
+    audio: {
+      enabled: false,
+      open: false,
+      dir: '',
+      deviceName: 'RivetHub Mic',
+      sampleRate: 16_000,
+    },
     ...overrides,
   }
   const procs: FakeProc[] = []
