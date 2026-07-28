@@ -270,10 +270,15 @@ def test_resolve_window_returns_utc_iso_bounds():
     since, before = resolve_window("last_14d")
     assert since is not None and before is None
 
-    # Alias: last_week → rolling last_7d
+    # Alias: last_week → rolling last_7d (don't compare two resolve_window
+    # calls with == — each samples datetime.now() so micros differ).
+    from rivet_memory.tools import _normalize_window
+
+    assert _normalize_window("last_week") == "last_7d"
     since_alias, before_alias = resolve_window("last_week")
-    since_7d, before_7d = resolve_window("last_7d")
-    assert since_alias == since_7d and before_alias == before_7d
+    assert since_alias is not None and before_alias is None
+    age_alias = datetime.now(timezone.utc) - datetime.fromisoformat(since_alias)
+    assert 6.5 * 86400 < age_alias.total_seconds() < 7.5 * 86400
 
     since, before = resolve_window("not_a_real_window")
     assert since is None and before is None
