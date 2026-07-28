@@ -10,6 +10,28 @@ import type { RivetConfig } from '../config.js'
 const base = (den: NonNullable<RivetConfig['den']>, mesh?: RivetConfig['mesh']): RivetConfig =>
   ({ den, ...(mesh ? { mesh } : {}) }) as RivetConfig
 
+describe('buildGatewayEnv — MicBridge audio', () => {
+  it('wires RIVETOS_DEN_AUDIO when terminal is enabled', () => {
+    const off = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(off.RIVETOS_DEN_AUDIO).toBeUndefined()
+    expect(off.RIVETOS_DEN_AUDIO_OPEN).toBeUndefined()
+
+    const on = buildGatewayEnv(
+      base({ terminal: { enabled: true, open: false } }),
+      '/opt/rivetos',
+    )
+    expect(on.RIVETOS_DEN_AUDIO).toBe('1')
+    expect(on.RIVETOS_DEN_AUDIO_OPEN).toBeUndefined()
+
+    const open = buildGatewayEnv(
+      base({ terminal: { enabled: true, open: true } }),
+      '/opt/rivetos',
+    )
+    expect(open.RIVETOS_DEN_AUDIO).toBe('1')
+    expect(open.RIVETOS_DEN_AUDIO_OPEN).toBe('1')
+  })
+})
+
 describe('buildGatewayEnv — device enrollment', () => {
   it('emits nothing when devices is absent or disabled', () => {
     expect(buildGatewayEnv(base({}), '/opt/rivetos').RIVETOS_DEN_DEVICES).toBeUndefined()
