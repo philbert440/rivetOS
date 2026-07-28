@@ -38,6 +38,7 @@ sessions, one server — the picker chooses which room drives the den.
 
 | Doc | What it covers |
 |-----|----------------|
+| [MICBRIDGE.md](./MICBRIDGE.md) | Host mic as a native node input (RivetHub → FIFO/`pw-record` shim → Grok voice) |
 | [PROTOCOL.md](../packages/den-protocol/PROTOCOL.md) | The v1 event schema and reducer semantics — the frozen contract everything else builds on |
 | [PACK.md](../packages/den-packs/PACK.md) | SpritePack spec: poses, furniture, stations, composite art, functional rects, `viewer{}` tuning |
 | [ART-PIPELINE.md](../packages/den-packs/ART-PIPELINE.md) | How default-pack@2's art was made with an image generator — the magenta studio, union-crop alignment, analytic anchor solving. Start here if you want to author a pack; it's the fun one |

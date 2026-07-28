@@ -98,6 +98,14 @@ cd apps/rivethub-desktop && cargo tauri build   # or dev
 - `src/stores/connection.ts`, `components/node-switcher.tsx`, `pickers/node-picker.tsx`
 - Core bridge: `packages/core/src/domain/gateway-channel.ts` (`bridgeAgentEvent`)
 
+## MicBridge (host mic → node)
+
+Design: `docs/MICBRIDGE.md`. den-server opt-in `RIVETOS_DEN_AUDIO=1` exposes
+`GET /api/audio` + `WS /api/audio/mic` (s16le PCM). Path A uses a rootless
+`pw-record` shim (`services/den-server/scripts/micbridge-phase0/`) so Grok
+voice sees a recorder without `/dev/snd`. **Hub capture client is Phase 2**
+(global Ctrl+Space → stream to active node). Gateway helper: `audioMicWsUrl()`.
+
 ## Gotchas
 
 - Tauri origin is not http(s) — desktop starts unconfigured until a node is set.

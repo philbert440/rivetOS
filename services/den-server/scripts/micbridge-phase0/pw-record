@@ -1,0 +1,129 @@
+#!/usr/bin/env node
+/**
+ * rivet-mic-record — drop-in shim for Grok's Linux capture probe (pw-record).
+ *
+ * Reads raw s16le mono PCM from the MicBridge FIFO (or RIVET_MIC_FIFO) and
+ * writes it to stdout. If the FIFO has no writer yet, emits silence so
+ * capture tools do not "exit immediately".
+ *
+ * Install: copy/symlink to ~/.local/bin/pw-record (and optionally parec).
+ * Grok only needs a recorder on PATH; full STT still needs live frames from Hub.
+ */
+import { openSync, readSync, closeSync, existsSync, constants, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
+const rate = (() => {
+  const i = process.argv.indexOf('--rate')
+  if (i >= 0 && process.argv[i + 1]) return Number(process.argv[i + 1]) || 16000
+  const eq = process.argv.find((a) => a.startsWith('--rate='))
+  if (eq) return Number(eq.slice('--rate='.length)) || 16000
+  return Number(process.env.RIVET_MIC_RATE) || 16000
+})()
+
+const channels = 1
+const bytesPerSec = rate * channels * 2 // s16le
+const chunkMs = 20
+const chunkBytes = Math.max(320, Math.floor((bytesPerSec * chunkMs) / 1000))
+
+const defaultFifo = join(
+  process.env.RIVETOS_DEN_STATE_DIR ?? join(homedir(), '.rivetos', 'den'),
+  'audio',
+  'mic.pcm',
+)
+const fifoPath = process.env.RIVET_MIC_FIFO ?? defaultFifo
+
+function openFifo() {
+  if (!existsSync(fifoPath)) return null
+  try {
+    // O_RDWR so we don't block forever waiting for a writer on open.
+    return openSync(fifoPath, constants.O_RDWR | constants.O_NONBLOCK)
+  } catch {
+    try {
+      return openSync(fifoPath, constants.O_RDONLY | constants.O_NONBLOCK)
+    } catch {
+      return null
+    }
+  }
+}
+
+const silence = Buffer.alloc(chunkBytes, 0)
+const buf = Buffer.alloc(chunkBytes)
+let fd = openFifo()
+let reopenAt = 0
+
+const tick = () => {
+  const now = Date.now()
+  if (fd === null && now >= reopenAt) {
+    fd = openFifo()
+    if (fd === null) reopenAt = now + 200
+  }
+  let out = silence
+  if (fd !== null) {
+    try {
+      const n = readSync(fd, buf, 0, chunkBytes, null)
+      if (n > 0) out = buf.subarray(0, n)
+    } catch (e) {
+      const err = e
+      if (err && (err.code === 'EAGAIN' || err.code === 'EWOULDBLOCK')) {
+        out = silence
+      } else {
+        try {
+          closeSync(fd)
+        } catch {
+          /* ignore */
+        }
+        fd = null
+        reopenAt = now + 100
+        out = silence
+      }
+    }
+  }
+  try {
+    process.stdout.write(out)
+  } catch {
+    cleanup()
+    process.exit(0)
+  }
+}
+
+function cleanup() {
+  if (fd !== null) {
+    try {
+      closeSync(fd)
+    } catch {
+      /* ignore */
+    }
+    fd = null
+  }
+}
+
+process.on('SIGINT', () => {
+  cleanup()
+  process.exit(0)
+})
+process.on('SIGTERM', () => {
+  cleanup()
+  process.exit(0)
+})
+process.stdout.on('error', () => {
+  cleanup()
+  process.exit(0)
+})
+
+// Announce like a real recorder briefly (some tools check startup).
+if (process.env.RIVET_MIC_VERBOSE) {
+  process.stderr.write(
+    `[rivet-mic-record] rate=${rate} fifo=${fifoPath} exists=${existsSync(fifoPath)}\n`,
+  )
+  try {
+    process.stderr.write(`[rivet-mic-record] fifo mode=${statSync(fifoPath).mode.toString(8)}\n`)
+  } catch {
+    /* ignore */
+  }
+}
+
+const timer = setInterval(tick, chunkMs)
+timer.unref?.()
+// Keep the event loop alive.
+setInterval(() => {}, 1 << 30).unref?.()

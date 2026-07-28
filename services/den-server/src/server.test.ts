@@ -81,6 +81,13 @@ async function start(
       exitLingerMs: 60_000,
       injectReadyMs: 10,
     },
+    audio: {
+      enabled: false,
+      open: false,
+      dir: '',
+      deviceName: 'RivetHub Mic',
+      sampleRate: 16_000,
+    },
   }
   let pid = 2000
   const den = createDenServer(config, {
