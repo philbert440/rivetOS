@@ -126,6 +126,7 @@ export const recompileWikiTask: Task = async (payload, helpers) => {
           today,
         }),
         Math.max(WIKI_EXTRACT_MAX_TOKENS, 8000),
+        { minChars: 2 },
       )
       if (!raw) throw new Error('empty LLM response')
 
