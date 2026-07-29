@@ -6,7 +6,13 @@ import type { Tool } from '@rivetos/types'
 import type { SearchEngine, SearchHit } from '../search.js'
 import type { Expander } from '../expand.js'
 import type { ExpandedSummary, MemoryToolsConfig } from './helpers.js'
-import { applyWindowArgs, fmtDate, queryLlm, MS_PER_DAY, WINDOW_CHOICES } from './helpers.js'
+import {
+  applyWindowArgs,
+  fmtHitWhen,
+  fmtLocalDate,
+  queryLlm,
+  WINDOW_CHOICES,
+} from './helpers.js'
 
 export function createSearchTool(
   searchEngine: SearchEngine,
@@ -193,14 +199,14 @@ function formatExpandedSummaries(
 ): void {
   sections.push('### Summaries (expanded)\n')
   for (const { hit, children, sourceMessages } of expanded) {
-    const age = Math.floor((Date.now() - hit.createdAt.getTime()) / MS_PER_DAY)
+    const when = fmtHitWhen(hit.createdAt)
     const period =
       hit.earliestAt && hit.latestAt
-        ? `${fmtDate(hit.earliestAt)} → ${fmtDate(hit.latestAt)}`
-        : fmtDate(hit.createdAt)
+        ? `${fmtLocalDate(hit.earliestAt)} → ${fmtLocalDate(hit.latestAt)}`
+        : fmtLocalDate(hit.createdAt)
 
     sections.push(
-      `**[${hit.kind ?? 'summary'}]** (${String(age)}d ago, score: ${hit.score.toFixed(3)}, period: ${period})`,
+      `**[${hit.kind ?? 'summary'}]** (${when}, score: ${hit.score.toFixed(3)}, period: ${period})`,
     )
     sections.push(hit.content)
 
@@ -240,10 +246,10 @@ function formatExpandedSummaries(
   if (remaining.length > 0) {
     sections.push('### Additional summaries (not expanded)\n')
     for (const hit of remaining) {
-      const age = Math.floor((Date.now() - hit.createdAt.getTime()) / MS_PER_DAY)
+      const when = fmtHitWhen(hit.createdAt)
       const preview = hit.content.length > 300 ? hit.content.slice(0, 300) + '…' : hit.content
       sections.push(
-        `- [${hit.kind ?? 'summary'}] (${String(age)}d ago, score: ${hit.score.toFixed(3)}) ${preview}`,
+        `- [${hit.kind ?? 'summary'}] (${when}, score: ${hit.score.toFixed(3)}) ${preview}`,
       )
     }
     sections.push('')
@@ -253,10 +259,10 @@ function formatExpandedSummaries(
 function formatUnexpandedSummaries(sections: string[], summaryHits: SearchHit[]): void {
   sections.push('### Summaries\n')
   for (const hit of summaryHits) {
-    const age = Math.floor((Date.now() - hit.createdAt.getTime()) / MS_PER_DAY)
+    const when = fmtHitWhen(hit.createdAt)
     const preview = hit.content.length > 300 ? hit.content.slice(0, 300) + '…' : hit.content
     sections.push(
-      `- [${hit.kind ?? 'summary'}/${hit.id}] (${String(age)}d ago, score: ${hit.score.toFixed(3)}) ${preview}`,
+      `- [${hit.kind ?? 'summary'}/${hit.id}] (${when}, score: ${hit.score.toFixed(3)}) ${preview}`,
     )
   }
   sections.push('')
@@ -265,13 +271,13 @@ function formatUnexpandedSummaries(sections: string[], summaryHits: SearchHit[])
 function formatMessages(sections: string[], messageHits: SearchHit[]): void {
   sections.push('### Messages\n')
   for (const hit of messageHits) {
-    const age = Math.floor((Date.now() - hit.createdAt.getTime()) / MS_PER_DAY)
+    const when = fmtHitWhen(hit.createdAt)
     const preview = hit.content.length > 400 ? hit.content.slice(0, 400) + '…' : hit.content
     const trunc = hit.truncated
       ? ` ⚠ truncated at capture${hit.fullLength ? ` (full: ${String(hit.fullLength)} chars)` : ''} → memory_get_full id=${hit.id}`
       : ''
     sections.push(
-      `- [${hit.agent}/${hit.role}] (${String(age)}d ago, score: ${hit.score.toFixed(3)}) ${preview}${trunc}`,
+      `- [${hit.agent}/${hit.role}] (${when}, score: ${hit.score.toFixed(3)}) ${preview}${trunc}`,
     )
   }
 }

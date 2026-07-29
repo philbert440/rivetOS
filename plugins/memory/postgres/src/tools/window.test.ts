@@ -6,10 +6,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyWindowArgs,
+  fmtHitWhen,
+  fmtLocalDate,
   fmtLocalTs,
   isWindowChoice,
   normalizeWindowInput,
   resolveWindow,
+  timeSince,
   WINDOW_CHOICES,
 } from './helpers.js'
 
@@ -169,6 +172,41 @@ describe('fmtLocalTs', () => {
       `${String(utcInstant.getFullYear())}-${pad(utcInstant.getMonth() + 1)}-${pad(utcInstant.getDate())} ` +
       `${pad(utcInstant.getHours())}:${pad(utcInstant.getMinutes())}:${pad(utcInstant.getSeconds())}`
     expect(s.startsWith(expectedPrefix)).toBe(true)
+  })
+})
+
+describe('fmtLocalDate', () => {
+  it('returns process-local YYYY-MM-DD (not UTC date-only)', () => {
+    // Late evening US Eastern is next calendar day in UTC — local date must win.
+    const eveningUs = new Date('2026-07-29T03:30:00.000Z') // 23:30 EDT Jul 28
+    const local = fmtLocalDate(eveningUs)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const expected = `${String(eveningUs.getFullYear())}-${pad(eveningUs.getMonth() + 1)}-${pad(eveningUs.getDate())}`
+    expect(local).toBe(expected)
+    // On America/* offsets west of UTC this differs from the UTC date string.
+    const utcDate = eveningUs.toISOString().split('T')[0]
+    if (eveningUs.getTimezoneOffset() > 0) {
+      expect(local).not.toBe(utcDate)
+    }
+  })
+
+  it('returns ? for null', () => {
+    expect(fmtLocalDate(null)).toBe('?')
+  })
+})
+
+describe('timeSince / fmtHitWhen', () => {
+  it('uses hour/minute granularity for same-day hits (not 0d ago)', () => {
+    const threeHoursAgo = new Date(Date.now() - 3 * 3_600_000)
+    expect(timeSince(threeHoursAgo)).toMatch(/^\d+h ago$/)
+    expect(timeSince(threeHoursAgo)).not.toBe('0d ago')
+  })
+
+  it('pairs relative age with absolute local timestamp', () => {
+    const d = new Date(Date.now() - 45 * 60_000)
+    const s = fmtHitWhen(d)
+    expect(s).toMatch(/^\d+m ago · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/)
+    expect(s).toContain(fmtLocalTs(d))
   })
 })
 
