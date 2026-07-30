@@ -8,7 +8,7 @@
  * before choosing that path.
  */
 
-import { statSync } from 'node:fs'
+import { accessSync, constants, statSync } from 'node:fs'
 import { access } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { execSync } from 'node:child_process'
@@ -173,12 +173,19 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
- * Warn when the install tree is root-owned while running as a non-root user.
- * Root-owned leftovers from old installs break npm/nx updates (third footgun).
+ * Paths under the install tree that the current user cannot write.
+ *
+ * Historical footgun: updates ran as `rivet` against trees left root-owned
+ * (sudo installs) or philip-owned (desktop checkouts / manual copies). npm/nx
+ * then die mid-flight with EACCES after a long git pull. Root-only detection
+ * missed philip-owned paths; write-access is the real gate.
+ *
+ * Returns relative path labels ('.' → install root) that exist but fail W_OK.
+ * Root (uid 0) is never blocked — it can always chown/write.
  */
-export function findRootOwnedBlockers(
+export function findOwnershipBlockers(
   root: string,
-  paths: string[] = ['node_modules', 'dist', 'packages', '.nx'],
+  paths: string[] = ['.', 'node_modules', 'dist', 'packages', '.nx', '.git'],
 ): string[] {
   if (typeof process.getuid === 'function' && process.getuid() === 0) {
     return []
@@ -187,11 +194,36 @@ export function findRootOwnedBlockers(
   for (const rel of paths) {
     const full = resolve(root, rel)
     try {
-      const st = statSync(full)
-      if (st.uid === 0) blockers.push(rel)
+      statSync(full)
     } catch {
-      // missing path is fine
+      // missing path is fine — npm/git will create what they need
+      continue
+    }
+    try {
+      accessSync(full, constants.W_OK)
+    } catch {
+      blockers.push(rel === '.' ? '(install root)' : rel)
     }
   }
   return blockers
+}
+
+/**
+ * @deprecated Prefer {@link findOwnershipBlockers}. Kept for older call sites /
+ * tests that only named the root-owned case; behavior now covers any
+ * unwritable owner (root, philip, …).
+ */
+export function findRootOwnedBlockers(root: string, paths?: string[]): string[] {
+  return findOwnershipBlockers(root, paths)
+}
+
+/** Best-effort owner label for error messages (e.g. "root", "uid=1000"). */
+export function describePathOwner(fullPath: string): string {
+  try {
+    const st = statSync(fullPath)
+    if (st.uid === 0) return 'root'
+    return `uid=${String(st.uid)}`
+  } catch {
+    return 'unknown'
+  }
 }

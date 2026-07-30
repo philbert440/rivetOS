@@ -17,6 +17,11 @@ export interface UpdateOptions {
    *  status (a reachable host with a crashed service is exactly what an
    *  update fixes). Kept so existing invocations don't break. */
   includeOffline: boolean
+  /**
+   * Skip the local install-tree writability preflight. Escape hatch only —
+   * unwritable trees still fail later with EACCES during npm/nx.
+   */
+  ignoreOwnership: boolean
 }
 
 export interface NodeUpdateResult {
