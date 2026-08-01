@@ -6,13 +6,7 @@ import type { Tool } from '@rivetos/types'
 import type { SearchEngine, SearchHit } from '../search.js'
 import type { Expander } from '../expand.js'
 import type { ExpandedSummary, MemoryToolsConfig } from './helpers.js'
-import {
-  applyWindowArgs,
-  fmtHitWhen,
-  fmtLocalDate,
-  queryLlm,
-  WINDOW_CHOICES,
-} from './helpers.js'
+import { applyWindowArgs, fmtHitWhen, fmtLocalDate, queryLlm, WINDOW_CHOICES } from './helpers.js'
 
 export function createSearchTool(
   searchEngine: SearchEngine,
