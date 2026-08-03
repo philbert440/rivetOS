@@ -161,9 +161,23 @@ def _ensure_aware(d: datetime) -> datetime:
 
 
 def fmt_date(d: Optional[datetime]) -> str:
+    """UTC calendar date (legacy). Prefer fmt_local_date for agent-facing output."""
     if d is None:
         return "?"
     return _ensure_aware(d).date().isoformat()
+
+
+def fmt_local_date(d: Optional[datetime]) -> str:
+    """Local calendar date YYYY-MM-DD — avoids UTC day-boundary mislabels."""
+    if d is None:
+        return "?"
+    return _ensure_aware(d).astimezone().date().isoformat()
+
+
+def fmt_local_ts(d: datetime) -> str:
+    """Local wall-clock with zone label (browse parity)."""
+    ts_local = _ensure_aware(d).astimezone()
+    return ts_local.strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
 
 
 def time_since(d: datetime) -> str:
@@ -176,6 +190,16 @@ def time_since(d: datetime) -> str:
     if secs < 86400:
         return f"{int(secs // 3600)}h ago"
     return f"{int(secs // 86400)}d ago"
+
+
+def fmt_hit_when(d: datetime) -> str:
+    """Relative age + absolute local timestamp for search hit headers.
+
+    Search used to emit only floor-day ages (``0d ago`` / ``3d ago``) with no
+    absolute time — same-day hits looked timeless. Pairing relative + local-TZ
+    absolute matches browse so agents can place hits on a real timeline.
+    """
+    return f"{time_since(d)} · {fmt_local_ts(d)}"
 
 
 def _truncate(text: str, n: int) -> str:
@@ -201,10 +225,6 @@ class _ExpandedSummary:
         self.source_messages = source_messages
 
 
-def _days_ago(d: datetime) -> int:
-    return int((_now_utc() - _ensure_aware(d)).total_seconds() // 86400)
-
-
 def _format_expanded(
     sections: List[str],
     expanded: List[_ExpandedSummary],
@@ -213,13 +233,13 @@ def _format_expanded(
     sections.append("### Summaries (expanded)\n")
     for es in expanded:
         hit = es.hit
-        age = _days_ago(hit.created_at)
+        when = fmt_hit_when(hit.created_at)
         if hit.earliest_at and hit.latest_at:
-            period = f"{fmt_date(hit.earliest_at)} → {fmt_date(hit.latest_at)}"
+            period = f"{fmt_local_date(hit.earliest_at)} → {fmt_local_date(hit.latest_at)}"
         else:
-            period = fmt_date(hit.created_at)
+            period = fmt_local_date(hit.created_at)
         sections.append(
-            f"**[{hit.kind or 'summary'}]** ({age}d ago, score: {hit.score:.3f}, "
+            f"**[{hit.kind or 'summary'}]** ({when}, score: {hit.score:.3f}, "
             f"period: {period})"
         )
         sections.append(hit.content)
@@ -244,7 +264,7 @@ def _format_expanded(
         sections.append("### Additional summaries (not expanded)\n")
         for hit in remaining:
             sections.append(
-                f"- [{hit.kind or 'summary'}] ({_days_ago(hit.created_at)}d ago, "
+                f"- [{hit.kind or 'summary'}] ({fmt_hit_when(hit.created_at)}, "
                 f"score: {hit.score:.3f}) {_truncate(hit.content, 300)}"
             )
         sections.append("")
@@ -254,7 +274,7 @@ def _format_unexpanded(sections: List[str], summary_hits: List[SearchHit]) -> No
     sections.append("### Summaries\n")
     for hit in summary_hits:
         sections.append(
-            f"- [{hit.kind or 'summary'}/{hit.id}] ({_days_ago(hit.created_at)}d ago, "
+            f"- [{hit.kind or 'summary'}/{hit.id}] ({fmt_hit_when(hit.created_at)}, "
             f"score: {hit.score:.3f}) {_truncate(hit.content, 300)}"
         )
     sections.append("")
@@ -264,7 +284,7 @@ def _format_messages(sections: List[str], message_hits: List[SearchHit]) -> None
     sections.append("### Messages\n")
     for hit in message_hits:
         sections.append(
-            f"- [{hit.agent}/{hit.role}] ({_days_ago(hit.created_at)}d ago, "
+            f"- [{hit.agent}/{hit.role}] ({fmt_hit_when(hit.created_at)}, "
             f"score: {hit.score:.3f}) {_truncate(hit.content, 400)}"
         )
 
@@ -700,13 +720,13 @@ class Tools:
         lines = [f'<rivet-memory-context query="{_truncate(query, 80)}">']
         lines.append("## Recalled from RivetOS shared memory")
         for h in hits:
-            age = _days_ago(h.created_at)
+            when = fmt_hit_when(h.created_at)
             tag = (
                 f"[{h.kind or 'summary'}]" if h.type == "summary"
                 else f"[{h.agent}/{h.role}]"
             )
             lines.append(
-                f"- {tag} ({age}d ago, score {h.score:.3f}) {_truncate(h.content, 300)}"
+                f"- {tag} ({when}, score {h.score:.3f}) {_truncate(h.content, 300)}"
             )
         lines.append("</rivet-memory-context>")
         return "\n".join(lines)
