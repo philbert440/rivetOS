@@ -6,7 +6,14 @@ import type { Tool } from '@rivetos/types'
 import type { SearchEngine, SearchHit } from '../search.js'
 import type { Expander } from '../expand.js'
 import type { ExpandedSummary, MemoryToolsConfig } from './helpers.js'
-import { applyWindowArgs, fmtHitWhen, fmtLocalDate, queryLlm, WINDOW_CHOICES } from './helpers.js'
+import {
+  applyWindowArgs,
+  formatEmptySearchResult,
+  fmtHitWhen,
+  fmtLocalDate,
+  queryLlm,
+  WINDOW_CHOICES,
+} from './helpers.js'
 
 export function createSearchTool(
   searchEngine: SearchEngine,
@@ -16,9 +23,11 @@ export function createSearchTool(
   return {
     name: 'memory_search',
     description:
-      'Search conversation history and summaries. Automatically expands promising summary hits ' +
-      'to show children and source messages. Returns structured, scored results. ' +
-      'Use for finding past decisions, discussions, context, or answering "what did we decide about X" questions.',
+      'Topic search over conversation history and summaries (not a chronological browser — ' +
+      'use memory_browse with window= for "what happened today/yesterday"). Automatically expands ' +
+      'promising summary hits to show children and source messages. Returns structured, scored results. ' +
+      'Use for finding past decisions, discussions, context, or answering "what did we decide about X" questions. ' +
+      'Empty results include next-step hints (trigram / multi-angle / browse).',
     parameters: {
       type: 'object',
       properties: {
@@ -97,25 +106,15 @@ export function createSearchTool(
       })
 
       if (results.length === 0) {
-        // Hermes parity: when a date window was applied, point agents at browse
-        // instead of leaving them stuck on empty FTS over a time range.
-        if (since || before) {
-          const parts: string[] = []
-          if (typeof args.window === 'string' && args.window) {
-            parts.push(`window="${args.window}"`)
-          } else {
-            if (since) parts.push(`since="${since}"`)
-            if (before) parts.push(`before="${before}"`)
-          }
-          const windowStr = parts.join(', ')
-          return (
-            `No results found for query "${query}" with ${windowStr}.\n\n` +
-            `For chronological browsing of a date window without a topic filter, ` +
-            `call \`memory_browse(${windowStr})\` instead — that returns every message ` +
-            `in the window, no FTS match required.`
-          )
-        }
-        return 'No results found.'
+        // Hermes parity + full empty-path guidance (trigram / multi-angle /
+        // browse). Bare "No results found." caused agents to trust a false
+        // negative and burn turns instead of retrying.
+        return formatEmptySearchResult({
+          query,
+          since,
+          before,
+          window: typeof args.window === 'string' ? args.window : undefined,
+        })
       }
 
       // 2. Separate summaries from messages
