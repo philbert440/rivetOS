@@ -370,6 +370,19 @@ export function fmtDate(d: Date | null): string {
 }
 
 /**
+ * Local calendar date `YYYY-MM-DD` in the process timezone.
+ *
+ * Prefer this over `fmtDate` (UTC date-only) for agent-facing period ranges —
+ * a hit at 2026-07-29 01:00 UTC is still "yesterday" evening in US Eastern,
+ * and UTC `split('T')[0]` mislabels the day.
+ */
+export function fmtLocalDate(d: Date | null): string {
+  if (!d) return '?'
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${String(d.getFullYear())}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/**
  * Format a timestamp in the process local timezone with a short zone label
  * (e.g. `2026-05-23 13:34:38 EDT`).
  *
@@ -400,6 +413,20 @@ export function timeSince(d: Date): string {
   if (ms < 3_600_000) return `${String(Math.floor(ms / 60_000))}m ago`
   if (ms < MS_PER_DAY) return `${String(Math.floor(ms / 3_600_000))}h ago`
   return `${String(Math.floor(ms / MS_PER_DAY))}d ago`
+}
+
+/**
+ * Search-hit when-label: relative age + absolute local timestamp.
+ *
+ * `memory_search` used to emit only floor-day ages (`0d ago`, `3d ago`) with
+ * no absolute time — same-day hits looked timeless, and period ranges used
+ * unlabeled UTC dates. Pairing relative + local-TZ absolute matches browse
+ * (#413) so agents can place hits on a real timeline.
+ *
+ * Example: `3h ago · 2026-07-29 11:01:30 EDT`
+ */
+export function fmtHitWhen(d: Date): string {
+  return `${timeSince(d)} · ${fmtLocalTs(d)}`
 }
 
 // ---------------------------------------------------------------------------

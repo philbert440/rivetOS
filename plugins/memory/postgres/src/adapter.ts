@@ -21,9 +21,9 @@ import { SearchEngine } from './search.js'
 import { WikiIndex } from './wiki/index-reader.js'
 import type { SearchEngineConfig } from './search.js'
 import { Expander } from './expand.js'
+import { fmtHitWhen } from './tools/helpers.js'
 
 const { Pool } = pg
-const MS_PER_DAY = 86_400_000
 
 // ---------------------------------------------------------------------------
 // Row interfaces
@@ -356,8 +356,9 @@ export class PostgresMemory implements Memory {
       for (const r of relevant) {
         if (seen.has(dedupKey(r.content))) continue
         seen.add(dedupKey(r.content))
-        const age = Math.floor((Date.now() - r.createdAt.getTime()) / MS_PER_DAY)
-        const line = `[${r.agent}/${r.role}, ${String(age)}d ago] ${r.content.slice(0, 500)}`
+        // Match memory_search / browse: relative age + local-TZ absolute
+        // (floor-day-only ages made same-day injection look timeless).
+        const line = `[${r.agent}/${r.role}, ${fmtHitWhen(r.createdAt)}] ${r.content.slice(0, 500)}`
         tokenEstimate += Math.ceil(line.length / 4)
         if (tokenEstimate > maxTokens) break
         sections.push(line)

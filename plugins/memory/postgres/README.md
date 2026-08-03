@@ -54,7 +54,7 @@ Access tracking: when a message or summary is returned in search results, its `a
 
 | Tool | Description |
 |------|-------------|
-| `memory_search` | Unified search across messages and summaries. Auto-expands top summary hits to children/source messages. Supports FTS, trigram, and regex modes. Agent/date filters, optional `window=` shortcuts, optional LLM synthesis. |
+| `memory_search` | Unified search across messages and summaries. Auto-expands top summary hits to children/source messages. Supports FTS, trigram, and regex modes. Agent/date filters, optional `window=` shortcuts, optional LLM synthesis. Hit headers include relative age **and** absolute local-TZ timestamps (e.g. `3h ago · 2026-07-29 11:01:30 EDT`); summary period ranges use local calendar dates — not floor-day-only ages or UTC date-only labels. |
 | `memory_browse` | Chronological message browsing. For reviewing sessions and catching up on activity. Prefer `window=today\|yesterday\|this_morning\|this_week\|last_24h\|last_7d\|last_14d` for time-bounded questions (local-TZ midnight → UTC; Hermes parity). Rolling `last_7d`/`last_14d` are preferred over calendar `this_week` early in the week (Mon/Tue). Aliases like `last week` → `last_7d`. Spaced forms like `this morning` are normalized; unknown values hard-fail with the valid list (no silent unfiltered results). Row timestamps render in the **server local timezone with a zone label** (e.g. `2026-05-23 13:34:38 EDT`) so agents do not mis-read unlabeled UTC as local wall-clock. Empty results echo active filters and suggest widening the window or using `memory_search`. |
 | `memory_stats` | System health diagnostics. Embedding queue depth, unsummarized message counts, compaction status, summary tree depth, embedding coverage. |
 

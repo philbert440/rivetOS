@@ -29,6 +29,10 @@ modes the rules alone didn't cover.
 - **Local-TZ timestamps in browse output.** Rows render as
   `[2026-05-23 13:34:38 EDT]` instead of bare UTC numbers, so the agent
   can't mis-read a UTC-morning row as "early local morning."
+- **Search hit when-labels** — relative age + absolute local timestamp
+  (e.g. `3h ago · 2026-07-29 11:01:30 EDT`) instead of floor-day ages
+  (`0d ago` / `3d ago`) with no wall-clock. Summary period ranges use
+  local calendar dates (not UTC `YYYY-MM-DD`).
 - **Truncation hint when browse hits `limit`** — tells the agent to flip
   `order`, raise `limit` (max 200), or narrow the window instead of
   silently capping at 50.
