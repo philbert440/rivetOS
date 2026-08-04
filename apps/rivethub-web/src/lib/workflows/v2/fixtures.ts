@@ -31,7 +31,9 @@ export const LEGAL_MAP_VERIFY: WorkflowDefV2 = {
         staticFanOut: 3,
         concurrency: 3,
         join: { policy: 'quorum', n: 2 },
-        inputs: [{ id: 'findings', name: 'Findings', direction: 'in', kind: 'data', required: true }],
+        inputs: [
+          { id: 'findings', name: 'Findings', direction: 'in', kind: 'data', required: true },
+        ],
         outputs: [{ id: 'ok', name: 'Confirmed', direction: 'out', kind: 'data' }],
         bodyPortMap: {
           inputs: { findings: 'worker.in' },
@@ -263,7 +265,7 @@ export const ILLEGAL_LOOP_AND_QUORUM: WorkflowDefV2 = {
         bodyPortMap: { inputs: {}, outputs: {} },
         inputs: [],
         outputs: [],
-      } as WorkflowDefV2['graph']['nodes'][number],
+      },
       {
         kind: 'map',
         id: 'map1',

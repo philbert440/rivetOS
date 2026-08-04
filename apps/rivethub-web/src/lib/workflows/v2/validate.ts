@@ -95,9 +95,7 @@ function portMap(node: WorkflowNodeV2): { inputs: PortSpec[]; outputs: PortSpec[
 
 function findPort(node: WorkflowNodeV2, portId: string): PortSpec | undefined {
   const ports = portMap(node)
-  return (
-    ports.inputs.find((p) => p?.id === portId) ?? ports.outputs.find((p) => p?.id === portId)
-  )
+  return ports.inputs.find((p) => p?.id === portId) ?? ports.outputs.find((p) => p?.id === portId)
 }
 
 /** Collect node ids in this graph and all nested composite bodies. */
@@ -528,7 +526,10 @@ function validateNode(
       break
     }
     case 'subworkflow': {
-      if (mode === 'executable' && !(typeof node.workflowId === 'string' && node.workflowId.trim())) {
+      if (
+        mode === 'executable' &&
+        !(typeof node.workflowId === 'string' && node.workflowId.trim())
+      ) {
         issues.push(
           issue({
             code: 'subworkflow.missing_id',
@@ -541,11 +542,15 @@ function validateNode(
       break
     }
     case 'gate': {
-      checkExpression(node.predicate, {
-        nodeId: node.id,
-        graphPath,
-        badCode: 'gate.bad_predicate',
-      }, issues)
+      checkExpression(
+        node.predicate,
+        {
+          nodeId: node.id,
+          graphPath,
+          badCode: 'gate.bad_predicate',
+        },
+        issues,
+      )
       const outs = portMap(node).outputs
       const controlOuts = outs.filter((p) => p?.kind === 'control')
       if (controlOuts.length < 2) {
@@ -562,11 +567,15 @@ function validateNode(
       break
     }
     case 'map': {
-      checkExpression(node.items, {
-        nodeId: node.id,
-        graphPath,
-        badCode: 'map.bad_items',
-      }, issues)
+      checkExpression(
+        node.items,
+        {
+          nodeId: node.id,
+          graphPath,
+          badCode: 'map.bad_items',
+        },
+        issues,
+      )
       if (!node.body || !Array.isArray(node.body.nodes) || !Array.isArray(node.body.edges)) {
         issues.push(
           issue({
@@ -697,17 +706,25 @@ function validateNode(
           }),
         )
       } else if (hasWhile) {
-        checkExpression(node.while, {
-          nodeId: node.id,
-          graphPath,
-          badCode: 'loop.bad_expression',
-        }, issues)
+        checkExpression(
+          node.while,
+          {
+            nodeId: node.id,
+            graphPath,
+            badCode: 'loop.bad_expression',
+          },
+          issues,
+        )
       } else {
-        checkExpression(node.until, {
-          nodeId: node.id,
-          graphPath,
-          badCode: 'loop.bad_expression',
-        }, issues)
+        checkExpression(
+          node.until,
+          {
+            nodeId: node.id,
+            graphPath,
+            badCode: 'loop.bad_expression',
+          },
+          issues,
+        )
       }
       if (!node.body || !Array.isArray(node.body.nodes) || !Array.isArray(node.body.edges)) {
         issues.push(
@@ -817,9 +834,6 @@ export function validateWorkflowV2(
   return issues
 }
 
-export function isValidWorkflowV2(
-  def: WorkflowDefV2,
-  mode: ValidateMode = 'executable',
-): boolean {
+export function isValidWorkflowV2(def: WorkflowDefV2, mode: ValidateMode = 'executable'): boolean {
   return validateWorkflowV2(def, mode).every((i) => i.severity !== 'error')
 }
