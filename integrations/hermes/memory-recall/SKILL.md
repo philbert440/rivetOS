@@ -9,7 +9,8 @@ version: 0.3.0
 
 You have persistent cross-agent memory via the `rivet_memory` provider —
 exposed as the in-process tools `rivet_memory_search`, `rivet_memory_browse`,
-and `rivet_memory_stats`. Every Rivet agent (rivet-hermes, rivet-claude, opus,
+`rivet_memory_stats`, and `rivet_memory_get_full` (recovers rows browse marks
+"⚠ truncated at capture"). Every Rivet agent (rivet-hermes, rivet-claude, opus,
 grok) writes into the same store, so memory you find may be from past Hermes
 turns OR from another agent's session.
 

@@ -141,6 +141,7 @@ def resolve_window(window: str) -> Tuple[Optional[str], Optional[str]]:
 
 from .client import RivetMemoryClient
 from .expand import Expander, SourceMessage, SummaryNode
+from .get_full import get_full_tool
 from .recall import SearchEngine, SearchHit
 
 logger = logging.getLogger(__name__)
@@ -204,6 +205,21 @@ def fmt_hit_when(d: datetime) -> str:
 
 def _truncate(text: str, n: int) -> str:
     return text if len(text) <= n else text[:n] + "…"
+
+
+def _truncation_hint(meta: Any, id_: str) -> str:
+    """One-line marker appended to browse output when a row was truncated at
+    capture time — carries the original length and the rivet_memory_get_full
+    handle (issue #197, parity with @rivetos/memory-postgres). Empty string
+    for complete rows."""
+    if not isinstance(meta, dict) or meta.get("truncated") is not True:
+        return ""
+    full = meta.get("full_content_length")
+    if full is None:
+        full = meta.get("full_tool_result_length")
+    is_num = isinstance(full, (int, float)) and not isinstance(full, bool)
+    length = f"{full} chars" if is_num else "unknown length"
+    return f"\n⚠ truncated at capture (full: {length}) → rivet_memory_get_full id={id_}"
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +361,10 @@ def search_tool(
             f"If you expected a hit: retry with `mode=\"trigram\"` for literal "
             f"tokens (IPs, hostnames, error strings), or vary the angle "
             f"(service / host / subnet / role) and try two more queries before "
-            f"trusting the empty result."
+            f"trusting the empty result. For time-bounded questions (\"today\", "
+            f"\"yesterday\", \"last week\"), prefer `rivet_memory_browse` with "
+            f"window= — search ANDs the query with any date filter and returns "
+            f"empty when FTS misses."
         )
 
     summary_hits = [h for h in results if h.type == "summary"]
@@ -413,7 +432,7 @@ def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     sql = f"""
         SELECT m.id, m.role, m.agent, m.content, m.created_at,
-               m.conversation_id, m.tool_name
+               m.conversation_id, m.tool_name, m.metadata
           FROM ros_messages m
           {where}
          ORDER BY m.created_at {order_sql}
@@ -442,7 +461,9 @@ def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
         ts = ts_local.strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
         tool = f" [tool: {r[6]}]" if r[6] else ""
         content = _truncate(r[3] or "", 500)
-        lines.append(f"[{ts}] {r[2]}/{r[1]}{tool}\n{content}")
+        lines.append(
+            f"[{ts}] {r[2]}/{r[1]}{tool}\n{content}{_truncation_hint(r[7], str(r[0]))}"
+        )
 
     direction = "newest" if order_sql == "DESC" else "oldest"
     header = f"## Messages ({len(rows)} returned, {direction} first)"
@@ -693,6 +714,8 @@ class Tools:
             return browse_tool(self._client, args)
         if name == "rivet_memory_stats":
             return stats_tool(self._client, args)
+        if name == "rivet_memory_get_full":
+            return get_full_tool(self._client, args)
         return f"Unknown tool: {name}"
 
     def prefetch_block(
