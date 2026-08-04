@@ -1,9 +1,9 @@
 /**
  * Product-Map-style workflow canvas: positioned node cards + SVG edges.
- * View/select only (no drag-edit in MVP).
+ * Supports select + drag-to-move when editable.
  */
 
-import type { JSX } from 'react'
+import { useRef, type JSX, type PointerEvent as REPointerEvent } from 'react'
 import {
   NODE_HEIGHT,
   NODE_WIDTH,
@@ -48,7 +48,6 @@ function PortPips(props: { node: WorkflowNode; side: 'in' | 'out' }): JSX.Elemen
       {ports.map((p) => {
         const a = portAnchor(props.node, p.id)
         if (!a) return null
-        // Position relative to the card (absolute within node button)
         const left = props.side === 'in' ? -4 : NODE_WIDTH - 4
         const top = a.y - props.node.position.y - 4
         return (
@@ -70,26 +69,81 @@ function PortPips(props: { node: WorkflowNode; side: 'in' | 'out' }): JSX.Elemen
 function NodeCard(props: {
   node: WorkflowNode
   selected: boolean
+  editable: boolean
   onSelect: (id: string) => void
+  onMove?: (id: string, pos: { x: number; y: number }) => void
 }): JSX.Element {
-  const { node, selected, onSelect } = props
+  const { node, selected, editable, onSelect, onMove } = props
   const tools = toolsLabel(node)
   const ioSummary = `in:${String(node.inputs.length)} · out:${String(node.outputs.length)}`
+  const drag = useRef<{
+    pointerId: number
+    startX: number
+    startY: number
+    origX: number
+    origY: number
+    moved: boolean
+  } | null>(null)
+
+  const onPointerDown = (e: REPointerEvent<HTMLButtonElement>) => {
+    onSelect(node.id)
+    if (!editable || !onMove) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    drag.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: node.position.x,
+      origY: node.position.y,
+      moved: false,
+    }
+  }
+
+  const onPointerMove = (e: REPointerEvent<HTMLButtonElement>) => {
+    const d = drag.current
+    if (!d || d.pointerId !== e.pointerId || !onMove) return
+    const dx = e.clientX - d.startX
+    const dy = e.clientY - d.startY
+    // Ignore sub-threshold jitter so a click-to-select does not dirty the draft.
+    if (Math.abs(dx) + Math.abs(dy) <= 3) return
+    d.moved = true
+    onMove(node.id, {
+      x: Math.max(0, d.origX + dx),
+      y: Math.max(0, d.origY + dy),
+    })
+  }
+
+  const onPointerUp = (e: REPointerEvent<HTMLButtonElement>) => {
+    if (drag.current?.pointerId === e.pointerId) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId)
+      } catch {
+        /* ignore */
+      }
+      drag.current = null
+    }
+  }
 
   return (
     <button
       type="button"
       onClick={() => onSelect(node.id)}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
       style={{
         left: node.position.x,
         top: node.position.y,
         width: NODE_WIDTH,
         height: NODE_HEIGHT,
+        touchAction: editable ? 'none' : undefined,
       }}
       className={cn(
         'absolute z-10 flex flex-col items-start overflow-visible rounded-md border bg-panel px-2.5 py-2 text-left shadow-sm transition-colors',
         CAP_RING[node.capability],
         selected ? 'ring-2 ring-em bg-panel-2' : 'hover:border-em/70',
+        editable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer',
       )}
     >
       <PortPips node={node} side="in" />
@@ -113,12 +167,15 @@ export function WorkflowCanvas(props: {
   workflow: WorkflowDefinition
   selectedNodeId: string | null
   onSelectNode: (id: string | null) => void
+  /** When set, nodes can be dragged and positions reported. */
+  onMoveNode?: (id: string, pos: { x: number; y: number }) => void
+  editable?: boolean
 }): JSX.Element {
-  const { workflow, selectedNodeId, onSelectNode } = props
+  const { workflow, selectedNodeId, onSelectNode, onMoveNode, editable = false } = props
   const bounds = graphBounds(workflow)
   const paths = edgePaths(workflow)
-  const width = bounds.width + Math.max(0, bounds.minX)
-  const height = bounds.height + Math.max(0, bounds.minY)
+  const width = Math.max(bounds.width + Math.max(0, bounds.minX), 640)
+  const height = Math.max(bounds.height + Math.max(0, bounds.minY), 360)
 
   return (
     <div
@@ -156,7 +213,13 @@ export function WorkflowCanvas(props: {
 
         {workflow.nodes.map((node) => (
           <div key={node.id} onClick={(e) => e.stopPropagation()} role="presentation">
-            <NodeCard node={node} selected={selectedNodeId === node.id} onSelect={onSelectNode} />
+            <NodeCard
+              node={node}
+              selected={selectedNodeId === node.id}
+              editable={editable}
+              onSelect={onSelectNode}
+              onMove={onMoveNode}
+            />
           </div>
         ))}
       </div>
