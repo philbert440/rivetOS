@@ -361,6 +361,49 @@ export function applyWindowArgs(args: { window?: unknown; since?: unknown; befor
   return { since: undefined, before: undefined }
 }
 
+/**
+ * Hermes-parity empty-result guidance for `memory_search`.
+ *
+ * Bare `"No results found."` is a daily-use footgun: agents treat it as
+ * "memory has nothing" and skip the retries that actually recover hits
+ * (trigram for literal tokens, multi-angle re-query, or `memory_browse`
+ * when the caller was really trying to scan a time window).
+ */
+export function formatEmptySearchResult(opts: {
+  query: string
+  since?: string
+  before?: string
+  /** Original `window=` value when that was what the caller passed. */
+  window?: string
+}): string {
+  const { query, since, before, window } = opts
+  if (since || before) {
+    const parts: string[] = []
+    if (typeof window === 'string' && window) {
+      parts.push(`window="${window}"`)
+    } else {
+      if (since) parts.push(`since="${since}"`)
+      if (before) parts.push(`before="${before}"`)
+    }
+    const windowStr = parts.join(', ')
+    return (
+      `No results found for query "${query}" with ${windowStr}.\n\n` +
+      `For chronological browsing of a date window without a topic filter, ` +
+      `call \`memory_browse(${windowStr})\` instead — that returns every message ` +
+      `in the window, no FTS match required.`
+    )
+  }
+  return (
+    `No results found for query "${query}".\n\n` +
+    `If you expected a hit: retry with \`mode="trigram"\` for literal ` +
+    `tokens (IPs, hostnames, error strings), or vary the angle ` +
+    `(service / host / subnet / role) and try two more queries before ` +
+    `trusting the empty result. For time-bounded questions ("today", ` +
+    `"yesterday", "last week"), prefer \`memory_browse\` with window= — ` +
+    `search ANDs the query with any date filter and returns empty when FTS misses.`
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
