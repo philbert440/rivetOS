@@ -200,7 +200,8 @@ function checkBodyPortMap(
         )
         continue
       }
-      const parsed = parseBodyRef(String(bodyRef))
+      const bodyRefStr = typeof bodyRef === 'string' ? bodyRef : ''
+      const parsed = parseBodyRef(bodyRefStr)
       if (!parsed) {
         issues.push(
           issue({
@@ -229,7 +230,7 @@ function checkBodyPortMap(
         issues.push(
           issue({
             code,
-            message: `bodyPortMap.${side}.${boundaryPortId} references unknown port "${String(bodyRef)}"`,
+            message: `bodyPortMap.${side}.${boundaryPortId} references unknown port "${bodyRefStr}"`,
             nodeId: composite.id,
             graphPath,
           }),
@@ -401,7 +402,7 @@ function validateGraph(
       issues.push(
         issue({
           code: 'edge.unknown_node',
-          message: `Edge "${edge.id}" references unknown node "${String(missing)}" at this graph level`,
+          message: `Edge "${edge.id}" references unknown node "${missing ?? '?'}" at this graph level`,
           edgeId: edge.id,
           graphPath,
         }),
