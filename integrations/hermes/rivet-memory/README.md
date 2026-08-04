@@ -85,7 +85,7 @@ isn't replicated. The discipline lives in the skill + system prompt block.
 | `on_pre_compress(messages)` | Bulk-inserts about-to-be-discarded messages so nothing is lost |
 | `on_session_switch` / `on_session_end` | Closes the conversation or links it to a new session_id |
 | `prefetch(query)` | FTS + vector hybrid recall, formatted as a `<rivet-memory-context>` block |
-| `handle_tool_call(...)` | Dispatches `rivet_memory_search`, `rivet_memory_browse`, `rivet_memory_stats` |
+| `handle_tool_call(...)` | Dispatches `rivet_memory_search`, `rivet_memory_browse`, `rivet_memory_stats`, `rivet_memory_get_full` |
 
 ## Identity
 
