@@ -1,44 +1,97 @@
 /**
- * Workflows — Product-Map-style definitions (fixture IR for MVP).
- * List + detail graph with per-node contracts (inputs/outputs/tools/capability).
+ * Workflows — Product-Map-style definitions with local edit + catalog persistence.
  */
 
-import { useEffect, useMemo, useState, type JSX } from 'react'
+import { useCallback, useEffect, useMemo, useState, type JSX } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { WorkflowCanvas } from '../components/workflow-canvas.js'
 import { WorkflowInspector } from '../components/workflow-inspector.js'
 import {
-  getWorkflow,
-  listWorkflows,
+  addEdge,
+  addNode,
+  addPort,
+  createEmptyWorkflow,
+  deleteWorkflow,
+  getFromCatalog,
+  loadCatalog,
+  moveNode,
   normalizeWorkflow,
+  removeEdge,
+  removeNode,
+  removePort,
+  resetCatalogToFixtures,
+  saveCatalog,
+  updateNode,
+  updateWorkflowMeta,
+  upsertWorkflow,
   validateWorkflow,
+  type WorkflowDefinition,
+  type WorkflowPort,
 } from '../lib/workflows/index.js'
+
+function useCatalog(): {
+  catalog: WorkflowDefinition[]
+  refresh: () => void
+  setAndSave: (next: WorkflowDefinition[]) => void
+} {
+  const [catalog, setCatalog] = useState<WorkflowDefinition[]>(() => loadCatalog())
+  const refresh = useCallback(() => setCatalog(loadCatalog()), [])
+  const setAndSave = useCallback((next: WorkflowDefinition[]) => {
+    saveCatalog(next)
+    setCatalog(next)
+  }, [])
+  return { catalog, refresh, setAndSave }
+}
 
 export function WorkflowsPage(): JSX.Element {
   const navigate = useNavigate()
-  const workflows = listWorkflows()
+  const { catalog, setAndSave } = useCatalog()
+
+  const onNew = () => {
+    const created = createEmptyWorkflow({ name: 'New workflow' })
+    setAndSave(upsertWorkflow(catalog, created))
+    void navigate({ to: '/workflows/$workflowId', params: { workflowId: created.id } })
+  }
+
+  const onDelete = (id: string) => {
+    if (!confirm(`Delete workflow “${id}”?`)) return
+    setAndSave(deleteWorkflow(catalog, id))
+  }
+
+  const onResetFixtures = () => {
+    if (!confirm('Reset catalog to built-in fixtures? Local edits will be lost.')) return
+    setAndSave(resetCatalogToFixtures())
+  }
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-8">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-mono text-lg font-semibold text-em">Workflows</h1>
-        <span className="font-mono text-[11px] text-ink-dim">
-          {workflows.length} definition{workflows.length === 1 ? '' : 's'} · fixture catalog
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-[11px] text-ink-dim">
+            {catalog.length} definition{catalog.length === 1 ? '' : 's'} · local catalog
+          </span>
+          <button
+            type="button"
+            onClick={onNew}
+            className="rounded bg-em-dim px-3 py-1.5 text-sm font-medium text-bg hover:bg-em"
+          >
+            New workflow
+          </button>
+        </div>
       </div>
 
       <p className="mb-6 max-w-2xl text-sm text-ink-dim">
-        Defined multi-step agent work as a graph of nodes. Each node carries a work contract —
-        inputs, outputs, tools, and capability. Runtime execution is not wired yet; this is the
-        authoring surface.
+        Defined multi-step agent work as a graph of nodes. Edit labels, contracts, edges, and
+        layout; the catalog is stored in this browser. Runtime execution is not wired yet.
       </p>
 
       <ul className="flex flex-col gap-2">
-        {workflows.map((w) => {
+        {catalog.map((w) => {
           const issues = validateWorkflow(normalizeWorkflow(w))
           const errors = issues.filter((i) => i.severity === 'error').length
           return (
-            <li key={w.id}>
+            <li key={w.id} className="flex gap-2">
               <button
                 type="button"
                 onClick={() =>
@@ -47,7 +100,7 @@ export function WorkflowsPage(): JSX.Element {
                     params: { workflowId: w.id },
                   })
                 }
-                className="flex w-full items-center justify-between gap-4 rounded border border-line bg-panel px-4 py-3 text-left hover:border-em"
+                className="flex min-w-0 flex-1 items-center justify-between gap-4 rounded border border-line bg-panel px-4 py-3 text-left hover:border-em"
               >
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-medium">{w.name}</span>
@@ -61,7 +114,7 @@ export function WorkflowsPage(): JSX.Element {
                   )}
                 </span>
                 <span className="flex shrink-0 flex-col items-end gap-1">
-                  <span className="font-mono text-[11px] text-em">open graph</span>
+                  <span className="font-mono text-[11px] text-em">open</span>
                   {errors > 0 ? (
                     <span className="font-mono text-[11px] text-red">
                       {errors} error{errors === 1 ? '' : 's'}
@@ -71,29 +124,87 @@ export function WorkflowsPage(): JSX.Element {
                   )}
                 </span>
               </button>
+              <button
+                type="button"
+                title="Delete"
+                onClick={() => onDelete(w.id)}
+                className="shrink-0 rounded border border-line px-2 text-sm text-ink-dim hover:border-red hover:text-red"
+              >
+                ×
+              </button>
             </li>
           )
         })}
-        {workflows.length === 0 && (
-          <li className="text-sm text-ink-dim">no workflow definitions</li>
-        )}
+        {catalog.length === 0 && <li className="text-sm text-ink-dim">no workflow definitions</li>}
       </ul>
+
+      <div className="mt-6">
+        <button
+          type="button"
+          onClick={onResetFixtures}
+          className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
+        >
+          Reset to fixtures
+        </button>
+      </div>
     </div>
   )
 }
 
 export function WorkflowDetailPage(): JSX.Element {
   const { workflowId } = useParams({ from: '/workflows/$workflowId' })
-  const raw = getWorkflow(workflowId)
-  const workflow = useMemo(() => (raw ? normalizeWorkflow(raw) : undefined), [raw])
-  const issues = useMemo(() => (workflow ? validateWorkflow(workflow) : []), [workflow])
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const { catalog, setAndSave } = useCatalog()
+  const stored = getFromCatalog(catalog, workflowId)
 
+  const [draft, setDraft] = useState<WorkflowDefinition | undefined>(() =>
+    stored ? normalizeWorkflow(structuredClone(stored)) : undefined,
+  )
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [dirty, setDirty] = useState(false)
+  const [savedFlash, setSavedFlash] = useState(false)
+
+  // Reload draft when route id / catalog entry changes and not dirty
   useEffect(() => {
+    const next = getFromCatalog(loadCatalog(), workflowId)
+    if (!next) {
+      setDraft(undefined)
+      setDirty(false)
+      return
+    }
+    setDraft(normalizeWorkflow(structuredClone(next)))
+    setDirty(false)
     setSelectedNodeId(null)
   }, [workflowId])
 
-  if (!workflow) {
+  const issues = useMemo(() => (draft ? validateWorkflow(draft) : []), [draft])
+
+  const patchDraft = useCallback((fn: (d: WorkflowDefinition) => WorkflowDefinition) => {
+    setDraft((prev) => {
+      if (!prev) return prev
+      return fn(prev)
+    })
+    setDirty(true)
+  }, [])
+
+  const onSave = () => {
+    if (!draft) return
+    const normalized = normalizeWorkflow(draft)
+    const next = upsertWorkflow(loadCatalog(), normalized)
+    setAndSave(next)
+    setDraft(normalized)
+    setDirty(false)
+    setSavedFlash(true)
+    window.setTimeout(() => setSavedFlash(false), 1500)
+  }
+
+  const onRevert = () => {
+    const next = getFromCatalog(loadCatalog(), workflowId)
+    if (!next) return
+    setDraft(normalizeWorkflow(structuredClone(next)))
+    setDirty(false)
+  }
+
+  if (!draft) {
     return (
       <div className="mx-auto max-w-4xl px-6 py-8">
         <Link to="/workflows" className="font-mono text-xs text-em hover:underline">
@@ -107,8 +218,43 @@ export function WorkflowDetailPage(): JSX.Element {
     )
   }
 
-  const selectedNode = workflow.nodes.find((n) => n.id === selectedNodeId) ?? null
+  const selectedNode = draft.nodes.find((n) => n.id === selectedNodeId) ?? null
   const errorCount = issues.filter((i) => i.severity === 'error').length
+
+  const onAddPort = (nodeId: string, direction: 'in' | 'out') => {
+    patchDraft((d) => {
+      const node = d.nodes.find((n) => n.id === nodeId)
+      if (!node) return d
+      const base = direction === 'in' ? 'in' : 'out'
+      let n = 1
+      let id = `${base}${String(n)}`
+      const existing = new Set([...node.inputs, ...node.outputs].map((p) => p.id))
+      while (existing.has(id)) {
+        n += 1
+        id = `${base}${String(n)}`
+      }
+      const port: WorkflowPort = {
+        id,
+        name: direction === 'in' ? 'Input' : 'Output',
+        direction,
+        kind: 'data',
+        required: direction === 'in' ? true : undefined,
+      }
+      return addPort(d, nodeId, port)
+    })
+  }
+
+  const onAddEdge = (from: string, to: string) => {
+    const [fromNode, fromPort] = from.split('.')
+    const [toNode, toPort] = to.split('.')
+    if (!fromNode || !fromPort || !toNode || !toPort) return
+    patchDraft((d) =>
+      addEdge(d, {
+        from: { nodeId: fromNode, portId: fromPort },
+        to: { nodeId: toNode, portId: toPort },
+      }),
+    )
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -116,32 +262,82 @@ export function WorkflowDetailPage(): JSX.Element {
         <Link to="/workflows" className="font-mono text-xs text-em hover:underline">
           ← Workflows
         </Link>
-        <h1 className="font-mono text-base font-semibold text-em">{workflow.name}</h1>
+        <h1 className="font-mono text-base font-semibold text-em">{draft.name}</h1>
         <span className="font-mono text-[11px] text-ink-dim">
-          {workflow.id} · v{workflow.version}
+          {draft.id} · v{draft.version}
+          {dirty ? ' · unsaved' : ''}
+          {savedFlash ? ' · saved' : ''}
         </span>
-        <span
-          className={
-            errorCount > 0
-              ? 'ml-auto font-mono text-[11px] text-red'
-              : 'ml-auto font-mono text-[11px] text-ink-dim'
-          }
-        >
-          {errorCount > 0
-            ? `${String(errorCount)} validation error${errorCount === 1 ? '' : 's'}`
-            : `${String(workflow.nodes.length)} nodes · valid`}
-        </span>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <span
+            className={
+              errorCount > 0
+                ? 'font-mono text-[11px] text-red'
+                : 'font-mono text-[11px] text-ink-dim'
+            }
+          >
+            {errorCount > 0
+              ? `${String(errorCount)} error${errorCount === 1 ? '' : 's'}`
+              : `${String(draft.nodes.length)} nodes · valid`}
+          </span>
+          <button
+            type="button"
+            onClick={() =>
+              patchDraft((d) =>
+                addNode(d, {
+                  position: { x: 80 + d.nodes.length * 24, y: 80 + (d.nodes.length % 3) * 40 },
+                }),
+              )
+            }
+            className="rounded border border-line px-2 py-1 font-mono text-[11px] text-ink hover:border-em"
+          >
+            + Node
+          </button>
+          <button
+            type="button"
+            disabled={!dirty}
+            onClick={onRevert}
+            className="rounded border border-line px-2 py-1 font-mono text-[11px] text-ink-dim enabled:hover:border-em enabled:hover:text-ink disabled:opacity-40"
+          >
+            Revert
+          </button>
+          <button
+            type="button"
+            disabled={!dirty}
+            onClick={onSave}
+            className="rounded bg-em-dim px-3 py-1 font-mono text-[11px] font-medium text-bg enabled:hover:bg-em disabled:opacity-40"
+          >
+            Save
+          </button>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col p-3">
           <WorkflowCanvas
-            workflow={workflow}
+            workflow={draft}
             selectedNodeId={selectedNodeId}
             onSelectNode={setSelectedNodeId}
+            editable
+            onMoveNode={(id, pos) => patchDraft((d) => moveNode(d, id, pos))}
           />
         </div>
-        <WorkflowInspector workflow={workflow} selectedNode={selectedNode} issues={issues} />
+        <WorkflowInspector
+          workflow={draft}
+          selectedNode={selectedNode}
+          issues={issues}
+          editable
+          onUpdateMeta={(patch) => patchDraft((d) => updateWorkflowMeta(d, patch))}
+          onUpdateNode={(nodeId, patch) => patchDraft((d) => updateNode(d, nodeId, patch))}
+          onDeleteNode={(nodeId) => {
+            patchDraft((d) => removeNode(d, nodeId))
+            setSelectedNodeId((cur) => (cur === nodeId ? null : cur))
+          }}
+          onAddPort={onAddPort}
+          onRemovePort={(nodeId, portId) => patchDraft((d) => removePort(d, nodeId, portId))}
+          onRemoveEdge={(edgeId) => patchDraft((d) => removeEdge(d, edgeId))}
+          onAddEdge={onAddEdge}
+        />
       </div>
     </div>
   )
