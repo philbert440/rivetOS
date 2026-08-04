@@ -16,10 +16,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "pg": "^8.20.0"
+    "pg": "^8.22.0"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
-    "@types/pg": "^8.20.0"
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.3"
   }
 }

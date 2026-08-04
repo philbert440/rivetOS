@@ -16,7 +16,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@nx/devkit": "^22.6.4",
+    "@nx/devkit": "^23.1.1",
     "enquirer": "^2.4.1"
   },
   "peerDependencies": {
