@@ -28,15 +28,25 @@
     "node": ">=22.0.0"
   },
   "overrides": {
-    "axios": "^1.15.0",
-    "tar": "^7.5.11",
+    "axios": "^1.19.0",
+    "tar": "^7.5.22",
     "form-data": "^4.0.6",
     "tmp": "^0.2.7",
-    "undici@<=6.26.0": "6.27.0",
+    "postcss": "^8.5.25",
+    "svgo": "^4.0.2",
+    "sharp": "^0.35.3",
+    "ip-address": "^10.4.0",
+    "fast-uri": "^3.1.5",
+    "brace-expansion@^1": "1.1.18",
+    "brace-expansion@^5": "5.0.9",
+    "undici@^6": "6.28.0",
+    "undici@^8": "8.10.0",
+    "undici@<=6.26.0": "6.28.0",
+    "follow-redirects": "^1.16.0",
     "nx": {
-      "brace-expansion": "^5.0.5",
+      "brace-expansion": "^5.0.9",
       "follow-redirects": "^1.16.0",
-      "yaml": "^2.8.3"
+      "yaml": "^2.9.0"
     }
   },
   "workspaces": [
@@ -84,22 +94,22 @@
   "homepage": "https://rivetos.dev",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@nx/eslint-plugin": "^22.7.0",
-    "@nx/js": "22.7.0",
+    "@nx/eslint-plugin": "^22.7.8",
+    "@nx/js": "22.7.8",
     "@types/node": "^25.6.0",
-    "esbuild": "^0.28.0",
-    "eslint": "^10.2.1",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.8.0",
     "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-prettier": "^5.5.5",
-    "nx": "22.7.0",
-    "prettier": "^3.8.3",
-    "tsx": "^4.21.0",
+    "eslint-plugin-prettier": "^5.5.6",
+    "nx": "22.7.8",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.5",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.59.0",
-    "vitest": "^4.1.5",
-    "zod": "^4.3.6"
+    "typescript-eslint": "^8.66.0",
+    "vitest": "^4.1.10",
+    "zod": "^4.4.3"
   },
   "dependencies": {
-    "yaml": "^2.8.3"
+    "yaml": "^2.9.0"
   }
 }

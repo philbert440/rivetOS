@@ -78,7 +78,12 @@ describe('WebSearchTool', () => {
     )
     mockFetch(fetchMock)
 
-    const tool = new WebSearchTool({ googleApiKey: 'test-key', googleCseId: 'test-cse' })
+    // Explicit empty xai key so env XAI_API_KEY does not prefer the xAI provider.
+    const tool = new WebSearchTool({
+      googleApiKey: 'test-key',
+      googleCseId: 'test-cse',
+      xaiApiKey: '',
+    })
     const result = await tool.execute({ query: 'test query' })
 
     assert.ok(result.includes('Test Result'))
@@ -106,7 +111,11 @@ describe('WebSearchTool', () => {
       .mockResolvedValueOnce(htmlResponse(ddgHtml))
     mockFetch(fetchMock)
 
-    const tool = new WebSearchTool({ googleApiKey: 'test-key', googleCseId: 'test-cse' })
+    const tool = new WebSearchTool({
+      googleApiKey: 'test-key',
+      googleCseId: 'test-cse',
+      xaiApiKey: '',
+    })
     const result = await tool.execute({ query: 'test fallback' })
 
     assert.ok(
@@ -119,7 +128,11 @@ describe('WebSearchTool', () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('Network error'))
     mockFetch(fetchMock)
 
-    const tool = new WebSearchTool({ googleApiKey: 'test-key', googleCseId: 'test-cse' })
+    const tool = new WebSearchTool({
+      googleApiKey: 'test-key',
+      googleCseId: 'test-cse',
+      xaiApiKey: '',
+    })
     const result = await tool.execute({ query: 'doomed query' })
 
     assert.ok(result.includes('Search failed'))
@@ -127,14 +140,15 @@ describe('WebSearchTool', () => {
   })
 
   it('returns cached results on second call', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
+    // Fresh Response per call — undici bodies are single-use.
+    const fetchMock = vi.fn().mockImplementation(() =>
       jsonResponse({
         items: [{ title: 'Cached', snippet: 'cached result', link: 'https://cached.com' }],
       }),
     )
     mockFetch(fetchMock)
 
-    const tool = new WebSearchTool({ googleApiKey: 'key', googleCseId: 'cse' })
+    const tool = new WebSearchTool({ googleApiKey: 'key', googleCseId: 'cse', xaiApiKey: '' })
 
     const result1 = await tool.execute({ query: 'cache test', count: 5 })
     const result2 = await tool.execute({ query: 'cache test', count: 5 })
@@ -145,13 +159,15 @@ describe('WebSearchTool', () => {
   })
 
   it('works with only DDG when no Google keys configured', async () => {
-    // Clear env vars that would enable Google CSE
+    // Clear env vars that would enable Google CSE / xAI preferred provider
     const savedApiKey = process.env.GOOGLE_API_KEY
     const savedCseKey = process.env.GOOGLE_CSE_API_KEY
     const savedCseId = process.env.GOOGLE_CSE_ID
+    const savedXai = process.env.XAI_API_KEY
     delete process.env.GOOGLE_API_KEY
     delete process.env.GOOGLE_CSE_API_KEY
     delete process.env.GOOGLE_CSE_ID
+    delete process.env.XAI_API_KEY
 
     try {
       const ddgHtml = `
@@ -163,12 +179,12 @@ describe('WebSearchTool', () => {
         </div>
       `
 
-      const fetchMock = vi.fn().mockResolvedValue(htmlResponse(ddgHtml))
+      const fetchMock = vi.fn().mockImplementation(() => htmlResponse(ddgHtml))
       mockFetch(fetchMock)
 
-      // No Google keys — should only use DDG
-      const tool = new WebSearchTool()
-      const result = await tool.execute({ query: 'ddg only' })
+      // No Google/xAI keys — should only use DDG
+      const tool = new WebSearchTool({ xaiApiKey: '' })
+      await tool.execute({ query: 'ddg only' })
 
       // Should attempt DDG (the first and only provider)
       assert.ok(fetchMock.mock.calls.length >= 1)
@@ -179,6 +195,7 @@ describe('WebSearchTool', () => {
       if (savedApiKey) process.env.GOOGLE_API_KEY = savedApiKey
       if (savedCseKey) process.env.GOOGLE_CSE_API_KEY = savedCseKey
       if (savedCseId) process.env.GOOGLE_CSE_ID = savedCseId
+      if (savedXai) process.env.XAI_API_KEY = savedXai
     }
   })
 })

@@ -19,14 +19,14 @@
     "prepublishOnly": "npm run build && npm run bundle-templates"
   },
   "dependencies": {
-    "@clack/prompts": "^1.2.0",
+    "@clack/prompts": "^1.7.0",
     "@rivetos/boot": "0.4.0-beta.6",
-    "pg": "^8.20.0",
-    "undici": "^8.1.0",
-    "yaml": "^2.8.3"
+    "pg": "^8.22.0",
+    "undici": "^8.10.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@types/pg": "^8.20.0"
+    "@types/pg": "^8.20.3"
   },
   "exports": {
     ".": {

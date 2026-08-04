@@ -16,15 +16,15 @@
   "dependencies": {
     "@rivetos/den-protocol": "0.1.0",
     "@rivetos/types": "*",
-    "pg": "^8.20.0",
-    "ws": "^8.18.0"
+    "pg": "^8.22.0",
+    "ws": "^8.21.2"
   },
   "optionalDependencies": {
-    "node-pty": "^1.0.0"
+    "node-pty": "^1.1.0"
   },
   "devDependencies": {
-    "@types/pg": "^8.20.0",
-    "@types/ws": "^8.5.10"
+    "@types/pg": "^8.20.3",
+    "@types/ws": "^8.18.1"
   },
   "engines": {
     "node": ">=22.0.0"

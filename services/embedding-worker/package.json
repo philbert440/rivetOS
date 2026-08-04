@@ -13,12 +13,12 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "graphile-worker": "^0.16.6",
-    "pg": "^8.20.0"
+    "graphile-worker": "^0.17.3",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
-    "@types/pg": "^8.20.0",
-    "vitest": "^4.1.0"
+    "@types/pg": "^8.20.3",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=22.0.0"
