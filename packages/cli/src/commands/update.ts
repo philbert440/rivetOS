@@ -32,8 +32,9 @@ import type { UpdateOptions, NodeUpdateResult } from './update/types.js'
 import { gitUpdateNodeAsync, npmUpdateNodeAsync, waitForHealth } from './update/remote-nodes.js'
 import { retireDenUnitLocal, verifyGatewayLocal } from './update/den-deploy.js'
 import {
+  describePathOwner,
   detectDeployment as resolveDeployment,
-  findRootOwnedBlockers,
+  findOwnershipBlockers,
   type DeploymentMode,
 } from './update/detect-deployment.js'
 
@@ -51,6 +52,7 @@ function parseArgs(): UpdateOptions {
     npm: false,
     channel: 'beta',
     includeOffline: false,
+    ignoreOwnership: false,
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -74,6 +76,8 @@ function parseArgs(): UpdateOptions {
       opts.npm = true
     } else if (arg === '--include-offline') {
       opts.includeOffline = true
+    } else if (arg === '--ignore-ownership') {
+      opts.ignoreOwnership = true
     } else if (arg === '--help' || arg === '-h') {
       showHelp()
       process.exit(0)
@@ -126,6 +130,8 @@ function showHelp(): void {
     --channel <tag>    npm dist-tag or version (default: beta) — implies --npm
     --ssh-user <user>  SSH user for remote nodes (default: rivet)
     --include-offline  Obsolete (all nodes are probed over SSH now); accepted as a no-op
+    --ignore-ownership Skip local install-tree writability preflight (escape hatch;
+                       unwritable trees still fail later with EACCES)
 
   Modes:
 
@@ -275,6 +281,10 @@ export default async function update(): Promise<void> {
   console.log(`   Current: v${oldPkg.version} (${oldCommit})`)
   console.log('')
 
+  // Step 0: Fail fast on unwritable install trees (root-/philip-owned leftovers)
+  // BEFORE git pull / npm / nx burn minutes and then die with EACCES.
+  assertInstallWritable(ROOT, opts.ignoreOwnership)
+
   // Step 1: Ensure on main branch and pull latest (or checkout specific version)
   ensureMainBranch(opts.version)
 
@@ -288,7 +298,6 @@ export default async function update(): Promise<void> {
 
   // Step 3: Detect deployment mode and handle accordingly
   const deployment = await detectDeployment(opts.bareMetal)
-  warnRootOwnedIfNeeded(ROOT)
 
   if (deployment === 'docker') {
     // Safety check: verify user data volumes/mounts exist before rebuild
@@ -489,6 +498,10 @@ function probeNodeOnly(node: MeshNode): NodeUpdateResult {
 async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   console.log('🔩 RivetOS Mesh Rolling Update')
   console.log('')
+
+  // Local preflight first — mesh pulls start from this checkout; an unwritable
+  // tree aborts the whole rolling update before remote work begins.
+  assertInstallWritable(ROOT, opts.ignoreOwnership)
 
   // Load mesh.json
   const meshFile = await loadMeshFile(ROOT)
@@ -820,15 +833,42 @@ async function detectDeployment(forceBareMetal = false): Promise<DeploymentMode>
   return result.mode
 }
 
-/** Surface the root-owned checkout footgun before npm/nx hit EACCES. */
-function warnRootOwnedIfNeeded(root: string): void {
-  const blockers = findRootOwnedBlockers(root)
+/**
+ * Hard-fail when the install tree is not writable by the current user.
+ *
+ * Soft-warn-after-npm was useless: the damage (EACCES mid-install) already
+ * happened, and root-only detection missed philip-owned desktop trees that
+ * agents often hit when they run as `rivet`.
+ */
+function assertInstallWritable(root: string, ignore: boolean): void {
+  const blockers = findOwnershipBlockers(root)
   if (blockers.length === 0) return
-  console.warn(
-    `  ⚠️  Root-owned paths under install (${blockers.join(', ')}) — updates may fail with EACCES.`,
-  )
-  console.warn(
-    '     Fix: sudo chown -R "$(whoami):$(whoami)" ' +
-      blockers.map((p) => resolve(root, p)).join(' '),
-  )
+
+  const who = (() => {
+    try {
+      return execSync('whoami', { encoding: 'utf-8' }).trim()
+    } catch {
+      return `uid=${String(typeof process.getuid === 'function' ? process.getuid() : '?')}`
+    }
+  })()
+
+  const abs = (label: string): string => (label === '(install root)' ? root : resolve(root, label))
+  const detail = blockers.map((b) => `${b} (owner ${describePathOwner(abs(b))})`).join(', ')
+  const chownTargets = blockers.map((b) => abs(b)).join(' ')
+
+  if (ignore) {
+    console.warn(
+      `  ⚠️  Install not writable by ${who}: ${detail} — continuing due to --ignore-ownership`,
+    )
+    console.warn(`     Fix when ready: sudo chown -R "$(whoami):$(whoami)" ${chownTargets}`)
+    return
+  }
+
+  console.error(`❌ Install tree not writable by ${who}: ${detail}`)
+  console.error('   npm/nx/git will fail with EACCES. Common after sudo installs (root) or')
+  console.error('   desktop copies owned by philip while the update runs as rivet (or vice versa).')
+  console.error(`   Fix: sudo chown -R "$(whoami):$(whoami)" ${chownTargets}`)
+  console.error('   Or re-run as the install owner (mesh nodes: usually rivet).')
+  console.error('   Escape hatch (not recommended): --ignore-ownership')
+  process.exit(1)
 }
