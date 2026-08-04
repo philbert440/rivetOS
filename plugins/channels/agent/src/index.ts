@@ -527,7 +527,7 @@ export class AgentChannel implements Channel {
 
       if (this.config.tls) {
         const { Agent: UndiciAgent } = await import('undici')
-        // @ts-expect-error — undici Agent vs undici-types Dispatcher type mismatch
+        // undici Agent vs undici-types Dispatcher mismatch across nested installs
         fetchOpts.dispatcher = new UndiciAgent({
           connect: {
             ca: this.config.tls.ca,
@@ -535,7 +535,7 @@ export class AgentChannel implements Channel {
             key: this.config.tls.key,
             rejectUnauthorized: true,
           },
-        })
+        }) as typeof fetchOpts.dispatcher
       } else {
         // Legacy bearer token auth
         // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy bearer fallback
