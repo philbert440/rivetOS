@@ -30,7 +30,7 @@
  *                             against `Authorization: Bearer <token>`.
  *   RIVETOS_PG_URL          — postgres connection string. If set, enables
  *                             `memory_search`, `memory_browse`,
- *                             and `memory_stats`.
+ *                             `memory_stats`, and `memory_get_full`.
  *   RIVETOS_EMBED_URL       — optional embedding endpoint for hybrid search
  *   RIVETOS_EMBED_MODEL     — optional embedding model (default: nemotron)
  *   GOOGLE_CSE_API_KEY      — optional, enables Google search backend for
