@@ -15,6 +15,7 @@ import { MemoryPage, MemoryTopicPage } from './pages/memory.js'
 import { SettingsPage } from './pages/settings.js'
 import { TerminalPage } from './pages/terminal.js'
 import { TaskDetailPage, TasksPage } from './pages/tasks.js'
+import { WorkflowDetailPage, WorkflowsPage } from './pages/workflows.js'
 import { useConnection } from './stores/connection.js'
 import { useNotifications } from './stores/notifications.js'
 
@@ -93,6 +94,18 @@ const taskDetailRoute = createRoute({
   component: TaskDetailPage,
 })
 
+const workflowsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workflows',
+  component: WorkflowsPage,
+})
+
+const workflowDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workflows/$workflowId',
+  component: WorkflowDetailPage,
+})
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
@@ -108,5 +121,7 @@ export const routeTree = rootRoute.addChildren([
   filesRoute,
   tasksRoute,
   taskDetailRoute,
+  workflowsRoute,
+  workflowDetailRoute,
   settingsRoute,
 ])
