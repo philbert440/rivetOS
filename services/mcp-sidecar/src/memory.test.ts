@@ -1,6 +1,6 @@
 /**
  * Integration test for the full memory data-plane over MCP — `memory_search`,
- * `memory_browse`, `memory_stats`.
+ * `memory_browse`, `memory_stats`, `memory_get_full`.
  *
  * Requires a live Postgres with the RivetOS schema. Skips automatically when
  * `RIVETOS_PG_URL` is not set so local dev / CI without a DB doesn't see
@@ -8,8 +8,8 @@
  *
  * Asserts the wire surface, not the underlying SQL — i.e. that a real MCP
  * client can call each tool and receive a non-error text response. Search
- * relevance, browse pagination, and stats accuracy are covered by unit tests
- * in `@rivetos/memory-postgres`.
+ * relevance, browse pagination, stats accuracy, and JSONL re-read fidelity
+ * are covered by unit tests in `@rivetos/memory-postgres`.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
@@ -57,12 +57,13 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
     })
   })
 
-  it('lists all three memory tools alongside echo', async () => {
+  it('lists all four memory tools alongside echo', async () => {
     const tools = await client.listTools()
     const names = tools.tools.map((t) => t.name)
     expect(names).toContain('memory_search')
     expect(names).toContain('memory_browse')
     expect(names).toContain('memory_stats')
+    expect(names).toContain('memory_get_full')
     expect(names).toContain('echo')
   })
 
@@ -103,5 +104,21 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
     expect(content.length).toBeGreaterThan(0)
     expect(content[0]?.type).toBe('text')
     expect(content[0]?.text).toContain('Memory System Health')
+  })
+
+  it('memory_get_full accepts an id and returns a text response', async () => {
+    // Wire-surface only: unknown id is a soft tool text reply (not MCP error).
+    // Full JSONL re-read coverage lives in @rivetos/memory-postgres get-full tests.
+    const result = await client.callTool({
+      name: 'memory_get_full',
+      arguments: { id: '00000000-0000-0000-0000-000000000000' },
+    })
+
+    expect(result.isError).not.toBe(true)
+    const content = result.content as Array<{ type: string; text?: string }>
+    expect(content.length).toBeGreaterThan(0)
+    expect(content[0]?.type).toBe('text')
+    expect(typeof content[0]?.text).toBe('string')
+    expect(content[0]?.text).toMatch(/No message with id|memory_get_full failed|row was not truncated|Full payload/)
   })
 })

@@ -1,12 +1,17 @@
 /**
  * Memory data-plane tools — `memory_search`, `memory_browse`,
- * `memory_stats`.
+ * `memory_stats`, `memory_get_full`.
  *
  * Wraps the in-process tools exported by `@rivetos/memory-postgres` so external
- * MCP clients (claude-cli, MCP Inspector, etc.) can hit the same surface a
- * local agent has. All three tools share a single `PostgresMemory` instance
- * (and its pg pool) for the server's lifetime; callers must invoke the
- * returned `close()` during shutdown to drain the pool.
+ * MCP clients (claude-cli, MCP Inspector, Grok Build, etc.) can hit the same
+ * surface a local agent has. All four tools share a single `PostgresMemory`
+ * instance (and its pg pool) for the server's lifetime; callers must invoke
+ * the returned `close()` during shutdown to drain the pool.
+ *
+ * `memory_get_full` is required for parity: search/browse append
+ * `→ memory_get_full id=<uuid>` on capture-truncated rows. Without this
+ * registration, MCP clients follow a dead handle and re-search instead of
+ * recovering the full payload (daily friction for long tool outputs).
  */
 
 import { PostgresMemory, createMemoryTools as createPgMemoryTools } from '@rivetos/memory-postgres'
@@ -36,8 +41,9 @@ export interface MemoryToolsHandle {
 
 /**
  * Build the full memory tool surface — `memory_search`, `memory_browse`,
- * `memory_stats` — bootstrapping a `PostgresMemory` adapter and adapting each
- * tool to the MCP wire shape. One pool, three tools, single shutdown path.
+ * `memory_stats`, `memory_get_full` — bootstrapping a `PostgresMemory` adapter
+ * and adapting each tool to the MCP wire shape. One pool, four tools, single
+ * shutdown path.
  */
 export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandle {
   if (!options.pgUrl) {
@@ -74,7 +80,9 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         'Hybrid FTS + semantic + temporal scoring with auto-expansion of summary hits ' +
         'to their source messages. Use this to find past decisions, prior context, ' +
         'or "what did we say about X" before asking the user. ' +
-        'Mirrors the in-process `memory_search` tool exposed to local agents.',
+        'Mirrors the in-process `memory_search` tool exposed to local agents. ' +
+        'Truncated hits include a `memory_get_full id=` handle — call that tool to ' +
+        'recover the full capture payload.',
     }),
     adaptRivetTool(find('memory_browse'), memoryBrowseInputSchema, {
       name: `${prefix}memory_browse`,
@@ -83,7 +91,8 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         '(which ranks by relevance), this returns messages in time order. Use to ' +
         'review what happened in a session, catch up on recent activity, or read a ' +
         'specific conversation by ID. For time-bounded questions ("today", "yesterday", ' +
-        '"this morning"), prefer window= over raw since/before so local midnights convert correctly to UTC.',
+        '"this morning"), prefer window= over raw since/before so local midnights convert correctly to UTC. ' +
+        'Capture-truncated rows append `→ memory_get_full id=` — use that tool for the full payload.',
     }),
     adaptRivetTool(find('memory_stats'), memoryStatsInputSchema, {
       name: `${prefix}memory_stats`,
@@ -92,6 +101,15 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         'depth, unsummarized messages, compaction status, missing summaries, and ' +
         'breakdowns by agent/role/kind. Use to diagnose memory issues or check if ' +
         'background jobs are keeping up.',
+    }),
+    adaptRivetTool(find('memory_get_full'), memoryGetFullInputSchema, {
+      name: `${prefix}memory_get_full`,
+      description:
+        'Fetch the complete, untruncated payload for a memory row whose content or ' +
+        'tool_result was elided at capture time (rows marked "…[truncated]" / ' +
+        '"⚠ truncated at capture" by memory_search or memory_browse). Pass the row ' +
+        'id from that hint. Re-reads the original capture JSONL line from disk — not ' +
+        'a generic file reader. Mirrors the in-process `memory_get_full` tool.',
     }),
   ]
 
@@ -195,4 +213,11 @@ export const memoryBrowseInputSchema = {
 
 export const memoryStatsInputSchema = {
   agent: z.string().optional().describe('Filter stats to a specific agent (optional)'),
+} satisfies z.ZodRawShape
+
+export const memoryGetFullInputSchema = {
+  id: z
+    .string()
+    .min(1)
+    .describe('Row id, as shown by memory_search / memory_browse truncation hints'),
 } satisfies z.ZodRawShape
