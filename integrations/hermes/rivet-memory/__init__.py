@@ -4,7 +4,7 @@ Installs as ``$HERMES_HOME/plugins/rivet_memory/``. Captures Hermes turns,
 memory-tool writes, delegations, and pre-compression messages into the
 RivetOS memory database (cross-agent, shared with rivet-claude, opus, grok,
 etc.) and exposes ``rivet_memory_search`` / ``rivet_memory_browse`` /
-``rivet_memory_stats`` for recall.
+``rivet_memory_stats`` / ``rivet_memory_get_full`` for recall.
 
 The class ``RivetMemoryProvider`` is a top-level ``MemoryProvider`` subclass
 — Hermes's loader auto-instantiates it (see
@@ -224,7 +224,29 @@ STATS_SCHEMA = {
     },
 }
 
-ALL_TOOL_SCHEMAS = [SEARCH_SCHEMA, BROWSE_SCHEMA, STATS_SCHEMA]
+GET_FULL_SCHEMA = {
+    "name": "rivet_memory_get_full",
+    "description": (
+        "Fetch the complete, untruncated payload for a memory row whose "
+        "content or tool_result was elided at capture time — rows marked "
+        "\"⚠ truncated at capture … → rivet_memory_get_full id=<uuid>\" by "
+        "rivet_memory_browse. Reads the original line back from the capture "
+        "JSONL on disk (the file must be readable from the host running "
+        "Hermes). No re-ingest, no DB write."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "Row id, as shown by the truncation hint.",
+            },
+        },
+        "required": ["id"],
+    },
+}
+
+ALL_TOOL_SCHEMAS = [SEARCH_SCHEMA, BROWSE_SCHEMA, STATS_SCHEMA, GET_FULL_SCHEMA]
 
 
 # ---------------------------------------------------------------------------
@@ -511,7 +533,7 @@ class RivetMemoryProvider(MemoryProvider):
             return ""
         return (
             "You have access to RivetOS shared memory across every Rivet agent "
-            "(rivet-claude, rivet-hermes, opus, grok). Three tools:\n"
+            "(rivet-claude, rivet-hermes, opus, grok). Four tools:\n"
             "  - `rivet_memory_browse` — chronological; use FIRST for any "
             "time-bounded question. Pair with "
             "`window=today|yesterday|this_morning|this_week|last_24h|last_7d|last_14d` "
@@ -524,6 +546,9 @@ class RivetMemoryProvider(MemoryProvider):
             "`-noise`). Fall back to `mode: \"trigram\"` for literal tokens "
             "(IPs, MACs, exact error strings).\n"
             "  - `rivet_memory_stats` — system health.\n"
+            "  - `rivet_memory_get_full` — recover the full payload of a row "
+            "marked \"⚠ truncated at capture\" in browse output (pass the id "
+            "from the hint).\n"
             "Full discipline lives in the `memory-recall` skill; auto-loads on "
             "recall cues. Hits may carry any Rivet agent's tag — treat them as "
             "first-class unless the user explicitly means \"this Hermes session.\""
