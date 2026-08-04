@@ -2,21 +2,14 @@
  * Structural validation of workflow IR (ports, edges, ids).
  */
 
-import type {
-  ValidationIssue,
-  WorkflowDefinition,
-  WorkflowNode,
-  WorkflowPort,
-} from './types.js'
+import type { ValidationIssue, WorkflowDefinition, WorkflowNode, WorkflowPort } from './types.js'
 
 function portKey(nodeId: string, portId: string): string {
   return `${nodeId}:${portId}`
 }
 
 function findPort(node: WorkflowNode, portId: string): WorkflowPort | undefined {
-  return (
-    node.inputs.find((p) => p.id === portId) ?? node.outputs.find((p) => p.id === portId)
-  )
+  return node.inputs.find((p) => p.id === portId) ?? node.outputs.find((p) => p.id === portId)
 }
 
 /**
@@ -28,10 +21,10 @@ export function validateWorkflow(def: WorkflowDefinition): ValidationIssue[] {
   const nodeIds = new Set<string>()
   const edgeIds = new Set<string>()
 
-  if (!def.id?.trim()) {
+  if (!def.id.trim()) {
     issues.push({ severity: 'error', code: 'def.missing_id', message: 'Workflow id is required' })
   }
-  if (!def.name?.trim()) {
+  if (!def.name.trim()) {
     issues.push({
       severity: 'error',
       code: 'def.missing_name',
@@ -40,7 +33,7 @@ export function validateWorkflow(def: WorkflowDefinition): ValidationIssue[] {
   }
 
   for (const node of def.nodes) {
-    if (!node.id?.trim()) {
+    if (!node.id.trim()) {
       issues.push({
         severity: 'error',
         code: 'node.missing_id',
@@ -58,7 +51,7 @@ export function validateWorkflow(def: WorkflowDefinition): ValidationIssue[] {
     }
     nodeIds.add(node.id)
 
-    if (!node.label?.trim()) {
+    if (!node.label.trim()) {
       issues.push({
         severity: 'warning',
         code: 'node.missing_label',
@@ -113,7 +106,7 @@ export function validateWorkflow(def: WorkflowDefinition): ValidationIssue[] {
   const nodeById = new Map(def.nodes.map((n) => [n.id, n]))
 
   for (const edge of def.edges) {
-    if (!edge.id?.trim()) {
+    if (!edge.id.trim()) {
       issues.push({
         severity: 'error',
         code: 'edge.missing_id',

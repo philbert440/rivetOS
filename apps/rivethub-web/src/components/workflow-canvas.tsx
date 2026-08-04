@@ -40,10 +40,7 @@ function toolsLabel(node: WorkflowNode): string {
   return parts.length > 0 ? parts.join(' · ') : '—'
 }
 
-function PortPips(props: {
-  node: WorkflowNode
-  side: 'in' | 'out'
-}): JSX.Element | null {
+function PortPips(props: { node: WorkflowNode; side: 'in' | 'out' }): JSX.Element | null {
   const ports = props.side === 'in' ? props.node.inputs : props.node.outputs
   if (ports.length === 0) return null
   return (
@@ -60,9 +57,7 @@ function PortPips(props: {
             title={`${p.id} (${p.kind})`}
             className={cn(
               'pointer-events-none absolute z-20 size-2 rounded-full border',
-              p.kind === 'control'
-                ? 'border-em bg-em'
-                : 'border-line bg-panel-2',
+              p.kind === 'control' ? 'border-em bg-em' : 'border-line bg-panel-2',
             )}
             style={{ left, top }}
           />
@@ -100,9 +95,7 @@ function NodeCard(props: {
       <PortPips node={node} side="in" />
       <PortPips node={node} side="out" />
       <span className="flex w-full items-center gap-1.5">
-        <span className="font-mono text-[11px] text-em">
-          {KIND_GLYPH[node.kind] ?? '•'}
-        </span>
+        <span className="font-mono text-[11px] text-em">{KIND_GLYPH[node.kind] ?? '•'}</span>
         <span className="truncate text-xs font-semibold text-ink">{node.label}</span>
       </span>
       <span className="mt-1 flex w-full items-center justify-between gap-1 font-mono text-[10px] text-ink-dim">
@@ -162,16 +155,8 @@ export function WorkflowCanvas(props: {
         </svg>
 
         {workflow.nodes.map((node) => (
-          <div
-            key={node.id}
-            onClick={(e) => e.stopPropagation()}
-            role="presentation"
-          >
-            <NodeCard
-              node={node}
-              selected={selectedNodeId === node.id}
-              onSelect={onSelectNode}
-            />
+          <div key={node.id} onClick={(e) => e.stopPropagation()} role="presentation">
+            <NodeCard node={node} selected={selectedNodeId === node.id} onSelect={onSelectNode} />
           </div>
         ))}
       </div>

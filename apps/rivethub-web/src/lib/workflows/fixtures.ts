@@ -21,9 +21,7 @@ export const PR_REVIEW_GATE: WorkflowDefinition = {
       capability: 'read-only',
       tools: ['github_pr_get'],
       inputs: [],
-      outputs: [
-        { id: 'doc', name: 'PR bundle', direction: 'out', kind: 'data' },
-      ],
+      outputs: [{ id: 'doc', name: 'PR bundle', direction: 'out', kind: 'data' }],
     },
     {
       id: 'review',
@@ -34,12 +32,8 @@ export const PR_REVIEW_GATE: WorkflowDefinition = {
       // Fixture deliberately uses read-write so the UI shows more than one capability.
       capability: 'read-write',
       toolProfile: 'code-review',
-      inputs: [
-        { id: 'doc', name: 'PR bundle', direction: 'in', kind: 'data', required: true },
-      ],
-      outputs: [
-        { id: 'findings', name: 'Findings', direction: 'out', kind: 'data' },
-      ],
+      inputs: [{ id: 'doc', name: 'PR bundle', direction: 'in', kind: 'data', required: true }],
+      outputs: [{ id: 'findings', name: 'Findings', direction: 'out', kind: 'data' }],
     },
     {
       id: 'verify',
@@ -49,12 +43,8 @@ export const PR_REVIEW_GATE: WorkflowDefinition = {
       position: { x: 520, y: 80 },
       capability: 'execute',
       tools: ['lint', 'typecheck'],
-      inputs: [
-        { id: 'findings', name: 'Findings', direction: 'in', kind: 'data', required: true },
-      ],
-      outputs: [
-        { id: 'report', name: 'Verify report', direction: 'out', kind: 'data' },
-      ],
+      inputs: [{ id: 'findings', name: 'Findings', direction: 'in', kind: 'data', required: true }],
+      outputs: [{ id: 'report', name: 'Verify report', direction: 'out', kind: 'data' }],
     },
     {
       id: 'gate',
@@ -79,12 +69,8 @@ export const PR_REVIEW_GATE: WorkflowDefinition = {
       position: { x: 1000, y: 80 },
       capability: 'all',
       tools: ['github_pr_merge'],
-      inputs: [
-        { id: 'ok', name: 'Approval', direction: 'in', kind: 'control', required: true },
-      ],
-      outputs: [
-        { id: 'result', name: 'Merge result', direction: 'out', kind: 'data' },
-      ],
+      inputs: [{ id: 'ok', name: 'Approval', direction: 'in', kind: 'control', required: true }],
+      outputs: [{ id: 'result', name: 'Merge result', direction: 'out', kind: 'data' }],
     },
     {
       id: 'escalate',
@@ -94,9 +80,7 @@ export const PR_REVIEW_GATE: WorkflowDefinition = {
       position: { x: 1000, y: 240 },
       capability: 'read-only',
       tools: ['create_task'],
-      inputs: [
-        { id: 'ok', name: 'Rejection', direction: 'in', kind: 'control', required: true },
-      ],
+      inputs: [{ id: 'ok', name: 'Rejection', direction: 'in', kind: 'control', required: true }],
       outputs: [],
     },
   ],
@@ -158,9 +142,7 @@ export const WIKI_RECOMPILE: WorkflowDefinition = {
       inputs: [
         { id: 'topics', name: 'Topic slugs', direction: 'in', kind: 'data', required: true },
       ],
-      outputs: [
-        { id: 'patches', name: 'Article patches', direction: 'out', kind: 'data' },
-      ],
+      outputs: [{ id: 'patches', name: 'Article patches', direction: 'out', kind: 'data' }],
     },
     {
       id: 'write',
@@ -172,9 +154,7 @@ export const WIKI_RECOMPILE: WorkflowDefinition = {
       inputs: [
         { id: 'patches', name: 'Article patches', direction: 'in', kind: 'data', required: true },
       ],
-      outputs: [
-        { id: 'result', name: 'Write result', direction: 'out', kind: 'data' },
-      ],
+      outputs: [{ id: 'result', name: 'Write result', direction: 'out', kind: 'data' }],
     },
   ],
   edges: [

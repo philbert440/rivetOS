@@ -22,9 +22,4 @@ export {
   portAnchor,
   type EdgePath,
 } from './layout.js'
-export {
-  PR_REVIEW_GATE,
-  WIKI_RECOMPILE,
-  getWorkflow,
-  listWorkflows,
-} from './fixtures.js'
+export { PR_REVIEW_GATE, WIKI_RECOMPILE, getWorkflow, listWorkflows } from './fixtures.js'

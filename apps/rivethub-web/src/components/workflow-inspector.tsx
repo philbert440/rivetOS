@@ -43,9 +43,7 @@ function PortList(props: { title: string; ports: WorkflowPort[] }): JSX.Element 
 
 function IssueList(props: { issues: ValidationIssue[] }): JSX.Element {
   if (props.issues.length === 0) {
-    return (
-      <div className="font-mono text-[11px] text-em">structurally valid</div>
-    )
+    return <div className="font-mono text-[11px] text-em">structurally valid</div>
   }
   return (
     <ul className="flex flex-col gap-1">
@@ -54,9 +52,7 @@ function IssueList(props: { issues: ValidationIssue[] }): JSX.Element {
           key={`${issue.code}-${String(i)}`}
           className={cn(
             'rounded border px-2 py-1 font-mono text-[11px]',
-            issue.severity === 'error'
-              ? 'border-red/40 text-red'
-              : 'border-line text-ink-dim',
+            issue.severity === 'error' ? 'border-red/40 text-red' : 'border-line text-ink-dim',
           )}
         >
           <span className="opacity-70">{issue.code}</span>
@@ -69,8 +65,7 @@ function IssueList(props: { issues: ValidationIssue[] }): JSX.Element {
 
 function NodeContract(props: { node: WorkflowNode }): JSX.Element {
   const { node } = props
-  const toolsLabel =
-    node.tools && node.tools.length > 0 ? node.tools.join(', ') : null
+  const toolsLabel = node.tools && node.tools.length > 0 ? node.tools.join(', ') : null
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -93,9 +88,7 @@ function NodeContract(props: { node: WorkflowNode }): JSX.Element {
       </div>
 
       <div>
-        <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
-          Tools
-        </div>
+        <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-ink-dim">Tools</div>
         {toolsLabel ? (
           <div className="font-mono text-[11px] text-ink">{toolsLabel}</div>
         ) : (
@@ -122,11 +115,7 @@ export function WorkflowInspector(props: {
   const { workflow, selectedNode, issues } = props
   const errors = issues.filter((i) => i.severity === 'error').length
   const nodeIssues = selectedNode
-    ? issues.filter(
-        (i) =>
-          i.nodeId === selectedNode.id ||
-          (!i.nodeId && !i.edgeId),
-      )
+    ? issues.filter((i) => i.nodeId === selectedNode.id || (!i.nodeId && !i.edgeId))
     : issues
 
   return (
@@ -146,13 +135,10 @@ export function WorkflowInspector(props: {
           <div>
             <div className="text-sm font-semibold text-ink">{workflow.name}</div>
             <div className="mt-0.5 font-mono text-[11px] text-ink-dim">
-              v{workflow.version} · {workflow.nodes.length} nodes · {workflow.edges.length}{' '}
-              edges
+              v{workflow.version} · {workflow.nodes.length} nodes · {workflow.edges.length} edges
             </div>
             {workflow.description && (
-              <p className="mt-2 text-xs leading-relaxed text-ink-dim">
-                {workflow.description}
-              </p>
+              <p className="mt-2 text-xs leading-relaxed text-ink-dim">{workflow.description}</p>
             )}
           </div>
           <div>
@@ -162,8 +148,7 @@ export function WorkflowInspector(props: {
             <IssueList issues={issues} />
           </div>
           <p className="text-[11px] text-ink-dim">
-            Select a node on the canvas to inspect its inputs, outputs, tools, and
-            capability.
+            Select a node on the canvas to inspect its inputs, outputs, tools, and capability.
           </p>
         </div>
       )}

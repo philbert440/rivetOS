@@ -28,9 +28,9 @@ export function WorkflowsPage(): JSX.Element {
       </div>
 
       <p className="mb-6 max-w-2xl text-sm text-ink-dim">
-        Defined multi-step agent work as a graph of nodes. Each node carries a work
-        contract — inputs, outputs, tools, and capability. Runtime execution is not
-        wired yet; this is the authoring surface.
+        Defined multi-step agent work as a graph of nodes. Each node carries a work contract —
+        inputs, outputs, tools, and capability. Runtime execution is not wired yet; this is the
+        authoring surface.
       </p>
 
       <ul className="flex flex-col gap-2">
@@ -85,14 +85,8 @@ export function WorkflowsPage(): JSX.Element {
 export function WorkflowDetailPage(): JSX.Element {
   const { workflowId } = useParams({ from: '/workflows/$workflowId' })
   const raw = getWorkflow(workflowId)
-  const workflow = useMemo(
-    () => (raw ? normalizeWorkflow(raw) : undefined),
-    [raw],
-  )
-  const issues = useMemo(
-    () => (workflow ? validateWorkflow(workflow) : []),
-    [workflow],
-  )
+  const workflow = useMemo(() => (raw ? normalizeWorkflow(raw) : undefined), [raw])
+  const issues = useMemo(() => (workflow ? validateWorkflow(workflow) : []), [workflow])
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -113,8 +107,7 @@ export function WorkflowDetailPage(): JSX.Element {
     )
   }
 
-  const selectedNode =
-    workflow.nodes.find((n) => n.id === selectedNodeId) ?? null
+  const selectedNode = workflow.nodes.find((n) => n.id === selectedNodeId) ?? null
   const errorCount = issues.filter((i) => i.severity === 'error').length
 
   return (
@@ -148,11 +141,7 @@ export function WorkflowDetailPage(): JSX.Element {
             onSelectNode={setSelectedNodeId}
           />
         </div>
-        <WorkflowInspector
-          workflow={workflow}
-          selectedNode={selectedNode}
-          issues={issues}
-        />
+        <WorkflowInspector workflow={workflow} selectedNode={selectedNode} issues={issues} />
       </div>
     </div>
   )

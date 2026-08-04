@@ -20,14 +20,7 @@ export interface WorkflowPort {
   required?: boolean
 }
 
-export type NodeKind =
-  | 'source'
-  | 'agent'
-  | 'tool'
-  | 'verify'
-  | 'gate'
-  | 'action'
-  | 'sink'
+export type NodeKind = 'source' | 'agent' | 'tool' | 'verify' | 'gate' | 'action' | 'sink'
 
 export interface WorkflowNode {
   id: string

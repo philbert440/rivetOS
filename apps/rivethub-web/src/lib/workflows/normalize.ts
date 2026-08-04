@@ -6,11 +6,7 @@ import type { WorkflowDefinition, WorkflowNode, WorkflowPort } from './types.js'
 
 function normalizePort(port: WorkflowPort): WorkflowPort {
   const required =
-    port.required !== undefined
-      ? port.required
-      : port.direction === 'in'
-        ? true
-        : false
+    port.required !== undefined ? port.required : port.direction === 'in' ? true : false
   return {
     id: port.id,
     name: port.name.trim() || port.id,

@@ -91,9 +91,7 @@ export function edgePaths(def: WorkflowDefinition): EdgePath[] {
 }
 
 function findPort(node: WorkflowNode, portId: string): WorkflowPort | undefined {
-  return (
-    node.inputs.find((p) => p.id === portId) ?? node.outputs.find((p) => p.id === portId)
-  )
+  return node.inputs.find((p) => p.id === portId) ?? node.outputs.find((p) => p.id === portId)
 }
 
 /** Bounding box of all nodes (for SVG viewBox / scroll area). */
