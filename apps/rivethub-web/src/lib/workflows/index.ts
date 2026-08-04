@@ -60,3 +60,6 @@ export {
   type CatalogResolve,
   type WorkflowCatalog,
 } from './catalog.js'
+
+/** IR v2 (nested DAG + validation) — see `./v2/VALIDATION.md` */
+export * as workflowsV2 from './v2/index.js'
