@@ -122,14 +122,40 @@ function storageAvailable(): boolean {
   }
 }
 
-/** Load catalog from localStorage, or seed fixtures if empty/missing. */
+/**
+ * Resolve catalog from a raw storage string (pure — no localStorage writes).
+ *
+ * - missing/blank key → seed fixtures (caller may persist)
+ * - valid JSON (including empty workflows[]) → use as-is
+ * - corrupt JSON → ephemeral fixtures, **must not** overwrite storage
+ */
+export type CatalogResolve =
+  | { status: 'missing'; workflows: WorkflowDefinition[]; shouldPersist: true }
+  | { status: 'ok'; workflows: WorkflowDefinition[]; shouldPersist: false }
+  | { status: 'corrupt'; workflows: WorkflowDefinition[]; shouldPersist: false }
+
+export function resolveCatalog(raw: string | null | undefined): CatalogResolve {
+  if (raw == null || raw.trim() === '') {
+    return { status: 'missing', workflows: seedCatalog(), shouldPersist: true }
+  }
+  const parsed = parseCatalog(raw)
+  if (parsed === null) {
+    // Corrupt payload: surface fixtures for the session but never clobber storage.
+    return { status: 'corrupt', workflows: seedCatalog(), shouldPersist: false }
+  }
+  // Empty array is a valid user state (user deleted everything).
+  return { status: 'ok', workflows: parsed, shouldPersist: false }
+}
+
+/**
+ * Load catalog from localStorage.
+ * Seeds + persists only when the key is absent. Never overwrites corrupt or empty catalogs.
+ */
 export function loadCatalog(): WorkflowDefinition[] {
   if (!storageAvailable()) return seedCatalog()
-  const parsed = parseCatalog(localStorage.getItem(CATALOG_STORAGE_KEY))
-  if (parsed && parsed.length > 0) return parsed
-  const seeded = seedCatalog()
-  saveCatalog(seeded)
-  return seeded
+  const resolved = resolveCatalog(localStorage.getItem(CATALOG_STORAGE_KEY))
+  if (resolved.shouldPersist) saveCatalog(resolved.workflows)
+  return resolved.workflows
 }
 
 export function saveCatalog(workflows: readonly WorkflowDefinition[]): void {

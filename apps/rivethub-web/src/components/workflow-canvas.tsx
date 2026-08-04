@@ -104,7 +104,9 @@ function NodeCard(props: {
     if (!d || d.pointerId !== e.pointerId || !onMove) return
     const dx = e.clientX - d.startX
     const dy = e.clientY - d.startY
-    if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true
+    // Ignore sub-threshold jitter so a click-to-select does not dirty the draft.
+    if (Math.abs(dx) + Math.abs(dy) <= 3) return
+    d.moved = true
     onMove(node.id, {
       x: Math.max(0, d.origX + dx),
       y: Math.max(0, d.origY + dy),

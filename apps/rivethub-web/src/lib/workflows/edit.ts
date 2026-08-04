@@ -179,10 +179,58 @@ export function updatePort(
       return def
     }
     port.id = patch.id
-    for (const e of next.edges) {
-      if (e.from.nodeId === nodeId && e.from.portId === oldId) e.from.portId = patch.id
-      if (e.to.nodeId === nodeId && e.to.portId === oldId) e.to.portId = patch.id
-    }
+    remapEdgePorts(next, nodeId, oldId, patch.id)
+  }
+  return next
+}
+
+function remapEdgePorts(
+  def: WorkflowDefinition,
+  nodeId: string,
+  oldPortId: string,
+  newPortId: string,
+): void {
+  for (const e of def.edges) {
+    if (e.from.nodeId === nodeId && e.from.portId === oldPortId) e.from.portId = newPortId
+    if (e.to.nodeId === nodeId && e.to.portId === oldPortId) e.to.portId = newPortId
+  }
+}
+
+/**
+ * Replace a node's input or output list while remapping edge port ids when a
+ * port is renamed (matched by index). Prefer this over updateNode({ inputs })
+ * so the inspector can edit ports without severing edges.
+ */
+export function replaceNodePorts(
+  def: WorkflowDefinition,
+  nodeId: string,
+  side: 'inputs' | 'outputs',
+  ports: WorkflowPort[],
+): WorkflowDefinition {
+  const next = clone(def)
+  const node = next.nodes.find((n) => n.id === nodeId)
+  if (!node) return def
+  const prev = side === 'inputs' ? node.inputs : node.outputs
+  const renamePairs: { from: string; to: string }[] = []
+  const n = Math.min(prev.length, ports.length)
+  for (let i = 0; i < n; i++) {
+    const oldId = prev[i].id
+    const newId = ports[i].id
+    if (oldId !== newId) renamePairs.push({ from: oldId, to: newId })
+  }
+  // Dropped ports: strip edges that referenced them
+  for (let i = ports.length; i < prev.length; i++) {
+    const dropped = prev[i].id
+    next.edges = next.edges.filter(
+      (e) =>
+        !(e.from.nodeId === nodeId && e.from.portId === dropped) &&
+        !(e.to.nodeId === nodeId && e.to.portId === dropped),
+    )
+  }
+  if (side === 'inputs') node.inputs = ports.map((p) => ({ ...p, direction: 'in' as const }))
+  else node.outputs = ports.map((p) => ({ ...p, direction: 'out' as const }))
+  for (const { from, to } of renamePairs) {
+    remapEdgePorts(next, nodeId, from, to)
   }
   return next
 }

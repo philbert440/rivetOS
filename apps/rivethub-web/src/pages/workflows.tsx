@@ -19,6 +19,7 @@ import {
   removeEdge,
   removeNode,
   removePort,
+  replaceNodePorts,
   resetCatalogToFixtures,
   saveCatalog,
   updateNode,
@@ -328,7 +329,23 @@ export function WorkflowDetailPage(): JSX.Element {
           issues={issues}
           editable
           onUpdateMeta={(patch) => patchDraft((d) => updateWorkflowMeta(d, patch))}
-          onUpdateNode={(nodeId, patch) => patchDraft((d) => updateNode(d, nodeId, patch))}
+          onUpdateNode={(nodeId, patch) =>
+            patchDraft((d) => {
+              // Port list edits go through replaceNodePorts so renames remap edges.
+              let next = d
+              if (patch.inputs) {
+                next = replaceNodePorts(next, nodeId, 'inputs', patch.inputs)
+              }
+              if (patch.outputs) {
+                next = replaceNodePorts(next, nodeId, 'outputs', patch.outputs)
+              }
+              const { inputs: _i, outputs: _o, ...rest } = patch
+              if (Object.keys(rest).length > 0) {
+                next = updateNode(next, nodeId, rest)
+              }
+              return next
+            })
+          }
           onDeleteNode={(nodeId) => {
             patchDraft((d) => removeNode(d, nodeId))
             setSelectedNodeId((cur) => (cur === nodeId ? null : cur))

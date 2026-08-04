@@ -7,6 +7,7 @@ import {
   parseToolsField,
   removeEdge,
   removeNode,
+  replaceNodePorts,
   updateNode,
   updateWorkflowMeta,
 } from './edit.js'
@@ -73,5 +74,18 @@ describe('edit mutators', () => {
   it('keeps fixture valid after move', () => {
     const moved = moveNode(normalizeWorkflow(PR_REVIEW_GATE), 'merge', { x: 1100, y: 40 })
     expect(validateWorkflow(moved).filter((i) => i.severity === 'error')).toEqual([])
+  })
+
+  it('replaceNodePorts renames edges instead of severing them', () => {
+    const base = normalizeWorkflow(PR_REVIEW_GATE)
+    const renamed = replaceNodePorts(base, 'review', 'inputs', [
+      { id: 'pr', name: 'PR bundle', direction: 'in', kind: 'data', required: true },
+    ])
+    // Old ingest→review edge targeted review.doc; should now target review.pr
+    const edge = renamed.edges.find((e) => e.id === 'e-ingest-review')
+    expect(edge?.to).toEqual({ nodeId: 'review', portId: 'pr' })
+    expect(renamed.nodes.find((n) => n.id === 'review')!.inputs[0]!.id).toBe('pr')
+    // Fixture remains structurally valid after rename
+    expect(validateWorkflow(renamed).filter((i) => i.severity === 'error')).toEqual([])
   })
 })

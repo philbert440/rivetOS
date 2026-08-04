@@ -3,6 +3,7 @@ import {
   createEmptyWorkflow,
   deleteWorkflow,
   parseCatalog,
+  resolveCatalog,
   seedCatalog,
   serializeCatalog,
   upsertWorkflow,
@@ -45,5 +46,29 @@ describe('catalog', () => {
   it('empty workflow is structurally connected enough to validate without errors', () => {
     const w = createEmptyWorkflow({ id: 'e1' })
     expect(isValidWorkflow(w)).toBe(true)
+  })
+
+  it('resolveCatalog: missing → seed + shouldPersist; empty array kept; corrupt not persisted', () => {
+    const missing = resolveCatalog(null)
+    expect(missing.status).toBe('missing')
+    expect(missing.shouldPersist).toBe(true)
+    expect(missing.workflows.length).toBeGreaterThan(0)
+
+    const emptyRaw = serializeCatalog([])
+    const empty = resolveCatalog(emptyRaw)
+    expect(empty.status).toBe('ok')
+    expect(empty.shouldPersist).toBe(false)
+    expect(empty.workflows).toEqual([])
+
+    const corrupt = resolveCatalog('{not json')
+    expect(corrupt.status).toBe('corrupt')
+    expect(corrupt.shouldPersist).toBe(false)
+    expect(corrupt.workflows.length).toBeGreaterThan(0)
+
+    // Valid catalog with one entry does not reseed
+    const one = serializeCatalog([createEmptyWorkflow({ id: 'only' })])
+    const loaded = resolveCatalog(one)
+    expect(loaded.status).toBe('ok')
+    expect(loaded.workflows.map((w) => w.id)).toEqual(['only'])
   })
 })
