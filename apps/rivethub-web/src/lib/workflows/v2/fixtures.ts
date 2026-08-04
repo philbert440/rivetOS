@@ -31,9 +31,7 @@ export const LEGAL_MAP_VERIFY: WorkflowDefV2 = {
         staticFanOut: 3,
         concurrency: 3,
         join: { policy: 'quorum', n: 2 },
-        inputs: [
-          { id: 'findings', name: 'Findings', direction: 'in', kind: 'data', required: true },
-        ],
+        inputs: [{ id: 'findings', name: 'Findings', direction: 'in', kind: 'data', required: true }],
         outputs: [{ id: 'ok', name: 'Confirmed', direction: 'out', kind: 'data' }],
         bodyPortMap: {
           inputs: { findings: 'worker.in' },
@@ -125,9 +123,37 @@ export const ILLEGAL_REACH_THROUGH: WorkflowDefV2 = {
     edges: [
       {
         id: 'bad',
-        // reach-through: parent graph must not address body-only node
         from: { nodeId: 'src', portId: 'out' },
         to: { nodeId: 'inner', portId: 'in' },
+      },
+    ],
+  },
+}
+
+/** Typo node id — unknown only, not cross_boundary. */
+export const ILLEGAL_TYPO_NODE: WorkflowDefV2 = {
+  id: 'illegal-typo',
+  version: 1,
+  name: 'Typo',
+  inputs: [],
+  outputs: [],
+  triggers: [{ type: 'manual' }],
+  graph: {
+    nodes: [
+      {
+        kind: 'tool',
+        id: 'a',
+        label: 'A',
+        tool: 't',
+        inputs: [],
+        outputs: [{ id: 'out', name: 'Out', direction: 'out', kind: 'data' }],
+      },
+    ],
+    edges: [
+      {
+        id: 'e',
+        from: { nodeId: 'a', portId: 'out' },
+        to: { nodeId: 'does_not_exist', portId: 'in' },
       },
     ],
   },
@@ -167,7 +193,56 @@ export const ILLEGAL_CYCLE: WorkflowDefV2 = {
   },
 }
 
-/** Illegal: loop missing maxIterations / bad quorum. */
+/** Cycle inside a map body. */
+export const ILLEGAL_CYCLE_IN_BODY: WorkflowDefV2 = {
+  id: 'illegal-cycle-body',
+  version: 1,
+  name: 'Cycle in body',
+  inputs: [],
+  outputs: [],
+  triggers: [{ type: 'manual' }],
+  graph: {
+    nodes: [
+      {
+        kind: 'map',
+        id: 'm',
+        label: 'M',
+        items: { dialect: 'simple', expr: 'xs' },
+        join: { policy: 'all' },
+        inputs: [{ id: 'in', name: 'In', direction: 'in', kind: 'data' }],
+        outputs: [{ id: 'out', name: 'Out', direction: 'out', kind: 'data' }],
+        bodyPortMap: { inputs: { in: 'a.in' }, outputs: { out: 'b.out' } },
+        body: {
+          nodes: [
+            {
+              kind: 'tool',
+              id: 'a',
+              label: 'A',
+              tool: 't',
+              inputs: [{ id: 'in', name: 'In', direction: 'in', kind: 'data' }],
+              outputs: [{ id: 'out', name: 'Out', direction: 'out', kind: 'data' }],
+            },
+            {
+              kind: 'tool',
+              id: 'b',
+              label: 'B',
+              tool: 't',
+              inputs: [{ id: 'in', name: 'In', direction: 'in', kind: 'data' }],
+              outputs: [{ id: 'out', name: 'Out', direction: 'out', kind: 'data' }],
+            },
+          ],
+          edges: [
+            { id: 'be1', from: { nodeId: 'a', portId: 'out' }, to: { nodeId: 'b', portId: 'in' } },
+            { id: 'be2', from: { nodeId: 'b', portId: 'out' }, to: { nodeId: 'a', portId: 'in' } },
+          ],
+        },
+      },
+    ],
+    edges: [],
+  },
+}
+
+/** Illegal: loop missing maxIterations / ambiguous condition / bad quorum. */
 export const ILLEGAL_LOOP_AND_QUORUM: WorkflowDefV2 = {
   id: 'illegal-loop-quorum',
   version: 1,
@@ -188,7 +263,7 @@ export const ILLEGAL_LOOP_AND_QUORUM: WorkflowDefV2 = {
         bodyPortMap: { inputs: {}, outputs: {} },
         inputs: [],
         outputs: [],
-      },
+      } as WorkflowDefV2['graph']['nodes'][number],
       {
         kind: 'map',
         id: 'map1',

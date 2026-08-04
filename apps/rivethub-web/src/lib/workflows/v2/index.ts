@@ -34,8 +34,10 @@ export type {
 export { isValidWorkflowV2, validateWorkflowV2 } from './validate.js'
 export {
   ILLEGAL_CYCLE,
+  ILLEGAL_CYCLE_IN_BODY,
   ILLEGAL_LOOP_AND_QUORUM,
   ILLEGAL_REACH_THROUGH,
+  ILLEGAL_TYPO_NODE,
   LEGAL_GATE_JUDGE,
   LEGAL_MAP_VERIFY,
 } from './fixtures.js'
