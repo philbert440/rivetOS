@@ -30,6 +30,7 @@ const OPTS: UpdateOptions = {
   npm: false,
   channel: 'beta',
   includeOffline: true,
+  ignoreOwnership: false,
 }
 
 /**
