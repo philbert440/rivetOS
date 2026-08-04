@@ -23,6 +23,100 @@ import type { UpdateOptions, NodeUpdateResult } from './types.js'
  */
 const RESTART_TIMEOUT_MS = 90_000
 
+/** Default source-tree install path on mesh peers (git update path). */
+export const REMOTE_INSTALL_ROOT = '/opt/rivetos'
+
+/**
+ * Relative path labels checked for writability on a remote source install.
+ * Same hot spots as local ownership preflight: root, .git, node_modules.
+ */
+export const REMOTE_OWNERSHIP_PATHS = ['.', '.git', 'node_modules'] as const
+
+export type RemoteOwnershipProbe =
+  | { ok: true }
+  | { ok: false; reason: 'missing'; root: string }
+  | { ok: false; reason: 'unwritable'; root: string; blockers: { path: string; owner: string }[] }
+
+/**
+ * Probe whether `sshUser` can write the remote source install before git/npm.
+ *
+ * Historical footgun (residual from local ownership preflight / #423): mesh
+ * updates SSHed in, burned minutes on git pull or mid-npm, then died with
+ * EACCES when `/opt/rivetos` (or node_modules) was owned by root/philip while
+ * the update user is `rivet`. Fail fast with a copy-paste chown.
+ *
+ * Uses only fixed path strings (no remote shell variables) so `sshExecQuiet`'s
+ * double-quoted wrapper cannot expand `$…` on the local shell.
+ */
+export function probeRemoteInstallWritable(
+  host: string,
+  sshUser: string,
+  root: string = REMOTE_INSTALL_ROOT,
+): RemoteOwnershipProbe {
+  // Refuse shell metacharacters in root (defense in depth for future callers).
+  if (root.includes('"') || root.includes("'") || root.includes(' ') || root.includes(';')) {
+    return { ok: false, reason: 'missing', root }
+  }
+
+  const exists = sshExecQuiet(host, `test -d ${root} && echo yes || echo no`, sshUser)
+  if (exists !== 'yes') {
+    return { ok: false, reason: 'missing', root }
+  }
+
+  const blockers: { path: string; owner: string }[] = []
+  for (const rel of REMOTE_OWNERSHIP_PATHS) {
+    const full = rel === '.' ? root : `${root}/${rel}`
+    // SKIP = path does not exist yet (ok — npm will create node_modules).
+    // OK = exists and writable. BLOCKED = exists but not writable.
+    const writability = sshExecQuiet(
+      host,
+      `if test -e ${full}; then if test -w ${full}; then echo OK; else echo BLOCKED; fi; else echo SKIP; fi`,
+      sshUser,
+    )
+    if (writability === 'BLOCKED') {
+      const owner = sshExecQuiet(host, `stat -c %U:%G ${full} 2>/dev/null || echo unknown`, sshUser)
+      blockers.push({ path: rel === '.' ? root : full, owner: owner || 'unknown' })
+    }
+  }
+
+  if (blockers.length > 0) {
+    return { ok: false, reason: 'unwritable', root, blockers }
+  }
+  return { ok: true }
+}
+
+/**
+ * Log a clear ownership failure and return a failed NodeUpdateResult fragment
+ * for the mesh summary table (`failedStep: 'ownership'`).
+ */
+export function remoteOwnershipFailure(
+  tag: string,
+  nodeName: string,
+  sshUser: string,
+  probe: Extract<RemoteOwnershipProbe, { ok: false }>,
+  start: number,
+): NodeUpdateResult {
+  if (probe.reason === 'missing') {
+    console.error(
+      `    ${tag} ❌ Install tree missing at ${probe.root} — cannot git-update this node as ${sshUser}`,
+    )
+    console.error(
+      `    ${tag}    Clone RivetOS to ${probe.root} (or fix mesh roster) before re-running.`,
+    )
+    return { success: false, failedStep: 'ownership', elapsedMs: Date.now() - start }
+  }
+
+  const detail = probe.blockers.map((b) => `${b.path} (owner ${b.owner})`).join(', ')
+  const chownTargets = probe.blockers.map((b) => b.path).join(' ')
+  console.error(`    ${tag} ❌ Install tree not writable by ${sshUser}: ${detail}`)
+  console.error(`    ${tag}    git/npm will fail with EACCES. Common after sudo installs (root) or`)
+  console.error(`    ${tag}    desktop copies owned by philip while mesh update SSHs as rivet.`)
+  console.error(
+    `    ${tag}    Fix on ${nodeName}: sudo chown -R ${sshUser}:${sshUser} ${chownTargets}`,
+  )
+  return { success: false, failedStep: 'ownership', elapsedMs: Date.now() - start }
+}
+
 /**
  * Discover rivet-* systemd worker services on a remote host, excluding the
  * primary rivetos.service. Returns an array of unit names (e.g.
@@ -72,6 +166,14 @@ export async function gitUpdateNodeAsync(
       `    ${tag} ❌ SSH connection failed — cannot reach ${host} as ${candidates.join('/')} or root`,
     )
     return { success: false, failedStep: 'ssh', elapsedMs: Date.now() - start }
+  }
+
+  // Step 1.5: install-tree writability — fail before git/npm burn minutes.
+  // Local preflight is open as #423; remotes still only discovered foreign-owned
+  // /opt/rivetos mid-npm with EACCES. Same class of footgun over SSH.
+  const ownership = probeRemoteInstallWritable(host, sshUser, REMOTE_INSTALL_ROOT)
+  if (!ownership.ok) {
+    return remoteOwnershipFailure(tag, nodeName, sshUser, ownership, start)
   }
 
   // Step 2: git pull
