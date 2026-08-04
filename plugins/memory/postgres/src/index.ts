@@ -188,7 +188,7 @@ export const manifest: PluginManifest = {
   },
 }
 
-export { WikiIndex, RESOLVE_SEARCH_SCORE_MIN } from './wiki/index-reader.js'
+export { WikiIndex, RESOLVE_SEARCH_SCORE_MIN, isExtractionCurrent } from './wiki/index-reader.js'
 export {
   WIKI_EXTRACT_SYSTEM_PROMPT,
   WIKI_RECOMPILE_SYSTEM_PROMPT,
