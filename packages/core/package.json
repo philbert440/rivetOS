@@ -22,7 +22,7 @@
     "ai": "^6.0.177",
     "graphile-worker": "^0.16.6",
     "pg": "^8.20.0",
-    "undici": "^8.1.0",
+    "undici": "^8.10.0",
     "ws": "^8.18.0",
     "@rivetos/wiki-core": "0.4.0-beta.6"
   },
