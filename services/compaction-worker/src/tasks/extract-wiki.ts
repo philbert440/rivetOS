@@ -8,9 +8,12 @@
  * slugs fold into canonical durable topics; every apply cites the source leaf.
  * Memory v7: Wikipedia-style Summary/Article patches (pipeline v3).
  *
- * Skip rules (marked 'skipped', never retried): extraction already done,
- * summary below WIKI_MIN_SUMMARY_CHARS, heartbeat conversations, non-leaf
- * summaries. LLM/git failures mark 'failed' (re-enqueueable).
+ * Skip rules (marked 'skipped', never retried): summary below
+ * WIKI_MIN_SUMMARY_CHARS, heartbeat conversations, non-leaf summaries.
+ * Idempotency: `extractionDone` is true for done/skipped at the current
+ * WIKI_PIPELINE_VERSION (or skipped at any version). Done-at-older-pipeline
+ * rows re-mine on version bump via backfill. LLM/git failures mark 'failed'
+ * (re-enqueueable after 24h backoff).
  */
 
 import type { Task } from 'graphile-worker'

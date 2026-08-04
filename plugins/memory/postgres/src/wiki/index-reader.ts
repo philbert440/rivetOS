@@ -18,6 +18,7 @@ import {
   type WikiCitation,
   type WikiPage,
 } from '@rivetos/wiki-core'
+import { WIKI_PIPELINE_VERSION } from './prompts.js'
 
 export interface WikiTopicRow {
   slug: string
@@ -56,6 +57,21 @@ export interface ExtractionMark {
   topicsTouched?: string[]
   gitSha?: string
   error?: string
+}
+
+/**
+ * Pure policy for whether an extraction row is current enough to skip re-mine.
+ * Used by `WikiIndex.extractionDone` and unit-tested without PG.
+ */
+export function isExtractionCurrent(
+  row: { status: string; pipeline_version: number } | undefined,
+  minPipelineVersion: number = WIKI_PIPELINE_VERSION,
+): boolean {
+  if (!row) return false
+  if (row.status === 'failed') return false
+  if (row.status === 'skipped') return true
+  if (row.status === 'done') return row.pipeline_version >= minPipelineVersion
+  return false
 }
 
 export type ResolveReason = 'exact' | 'alias' | 'redirect' | 'entity' | 'stem' | 'search' | 'none'
@@ -520,13 +536,28 @@ export class WikiIndex {
     return cur
   }
 
-  /** Extraction idempotency: has this summary been processed? */
-  async extractionDone(summaryId: string): Promise<boolean> {
-    const { rows } = await this.pool.query<{ status: string }>(
-      `SELECT status FROM ros_wiki_extractions WHERE summary_id = $1`,
+  /**
+   * Extraction idempotency: has this summary been processed at a usable
+   * pipeline version?
+   *
+   * - `skipped` is terminal regardless of version (too-short / heartbeat /
+   *   non-leaf reasons do not change when prompts bump).
+   * - `done` only counts when `pipeline_version >= minPipelineVersion`. A
+   *   bump of `WIKI_PIPELINE_VERSION` must re-mine leaves already marked
+   *   done under an older contract (explicit residual from #420 — backfill
+   *   used to filter on status alone, so article quality rested entirely
+   *   on recompile-wiki).
+   * - `failed` is never done (re-eligible after backoff).
+   */
+  async extractionDone(
+    summaryId: string,
+    minPipelineVersion: number = WIKI_PIPELINE_VERSION,
+  ): Promise<boolean> {
+    const { rows } = await this.pool.query<{ status: string; pipeline_version: number }>(
+      `SELECT status, pipeline_version FROM ros_wiki_extractions WHERE summary_id = $1`,
       [summaryId],
     )
-    return rows[0]?.status === 'done' || rows[0]?.status === 'skipped'
+    return isExtractionCurrent(rows[0], minPipelineVersion)
   }
 
   async markExtraction(mark: ExtractionMark): Promise<void> {

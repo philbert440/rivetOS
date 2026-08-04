@@ -11,6 +11,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import pg from 'pg'
 import { applyPatch } from '@rivetos/wiki-core'
 import { WikiIndex } from './index-reader.js'
+import { WIKI_PIPELINE_VERSION } from './prompts.js'
 
 const TEST_PG_URL = process.env.RIVETOS_WIKI_TEST_PG_URL ?? process.env.RIVETOS_TASKS_TEST_PG_URL ?? ''
 const describeIf = TEST_PG_URL ? describe : describe.skip
@@ -155,9 +156,36 @@ describeIf('WikiIndex (PG)', () => {
     expect(Number(prov.rows[0].n)).toBe(1)
 
     expect(await index.extractionDone(summaryId)).toBe(false)
-    await index.markExtraction({ summaryId, status: 'done', pipelineVersion: 1, topicsTouched: ['gerty-vllm-stack'] })
+    // done at current pipeline → terminal
+    await index.markExtraction({
+      summaryId,
+      status: 'done',
+      pipelineVersion: WIKI_PIPELINE_VERSION,
+      topicsTouched: ['gerty-vllm-stack'],
+    })
     expect(await index.extractionDone(summaryId)).toBe(true)
-    await index.markExtraction({ summaryId, status: 'failed', pipelineVersion: 1, error: 'llm down' })
+    // done at older pipeline → must re-mine on version bump (#420 residual)
+    await index.markExtraction({
+      summaryId,
+      status: 'done',
+      pipelineVersion: 1,
+      topicsTouched: ['gerty-vllm-stack'],
+    })
+    expect(await index.extractionDone(summaryId)).toBe(false)
+    // skipped stays terminal even at an old pipeline (too-short / heartbeat)
+    await index.markExtraction({
+      summaryId,
+      status: 'skipped',
+      pipelineVersion: 1,
+      error: 'summary too short',
+    })
+    expect(await index.extractionDone(summaryId)).toBe(true)
+    await index.markExtraction({
+      summaryId,
+      status: 'failed',
+      pipelineVersion: WIKI_PIPELINE_VERSION,
+      error: 'llm down',
+    })
     expect(await index.extractionDone(summaryId)).toBe(false)
   })
 

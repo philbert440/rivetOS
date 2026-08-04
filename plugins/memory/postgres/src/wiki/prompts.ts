@@ -12,6 +12,11 @@ import { normalizeSlug, type WikiArticlePatch, type WikiPatch } from '@rivetos/w
  * v1 = phase 3c free-form topics
  * v2 = durable topics + hard identity
  * v3 = Wikipedia-style Summary/Article/See also + shrink-safe merges
+ *
+ * A bump re-queues `ros_wiki_extractions` rows with status=`done` and
+ * `pipeline_version < WIKI_PIPELINE_VERSION` (enqueue-wiki-backfill) and
+ * makes `WikiIndex.extractionDone` return false for those rows so
+ * extract-wiki re-mines. `skipped` stays terminal (version-independent).
  */
 export const WIKI_PIPELINE_VERSION = 3
 
