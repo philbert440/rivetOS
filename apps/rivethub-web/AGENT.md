@@ -13,13 +13,14 @@
 ## Status (2026-07-10)
 
 ### Sidebar pages (2026-07-10)
-Rail is now Terminal, Conversations (route `/`), Den (in-app `/dens`), separator, Files, Tasks. "Conversations" is the rail label only — the per-conversation toggle stays [Terminal | Chat | Den].
+Rail: Conversations (`/`), Terminal, Den — separator — Memory, Files, Tasks, Workflows — Settings. "Conversations" is the rail label only — the per-conversation toggle stays [Terminal | Chat | Den].
 
 - **Terminal** (`/terminal`) lands on the node's open-PTY list (click to attach); the tab bar remains the quick switcher.
 - **Den** (`/dens`) lists the node's live den sessions (`GET /api/events/sessions` → `gateway.denSessions()`), embedded viewer iframe on pick. Replaced the old `/den/` link-out.
 - **Memory** (`/memory`, `/memory/$slug`) = **Wikipedia-style** native Hub UI over datahub `GET /api/wiki` (no iframe). Main page / A–Z index / recent / gaps; article with infobox, TOC, section headings, history, See also, categories; `[[slug]]` + red links for missing topics. Datahub origin in Settings (`rivethub.wikiUrl`); blank → mesh-discover datahub.
 - **Dropdowns** use `Select` (Radix Popover) — not native `<select>` (WebKitGTK paints OS menus). Matches Model/Effort/Node pickers.
 - **Tasks** (`/tasks`, `/tasks/$taskId`) = list/filter, detail (steer/kill), and **in-UI create** (goal + agent from catalog local+mesh + optional criteria lines → `POST /api/tasks`; navigates to detail). Create is no longer chat-only.
+- **Workflows** (`/workflows`, `/workflows/$workflowId`) = Product-Map-style graph of fixture workflow definitions (nodes with inputs/outputs/tools/capability); pure IR in `src/lib/workflows/`; no runner yet.
 - **Files** (`/files`) = full browser for the node's files root (`/rivet-shared` default): list/filter/sort, multi-select, text/image preview, mkdir/rename/delete, copy path/URL, DnD upload (current dir or onto a folder), drag row onto folder to move. Server: den-server `src/files.ts` (`list|download|upload|mkdir|rename|delete`, path+symlink fenced, 1 GiB upload cap, no-clobber unless `overwrite=1`, recursive delete opt-in); config `den.files_root` / `RIVETOS_DEN_FILES_ROOT` ('' disables).
 - **Node-switch den trap fixed in boot**: default den static_dir is hub-first (`apps/rivethub-web/dist` when built, else den viewer) — peers without an explicit `static_dir` used to serve full-screen den at `/` with no way back.
 

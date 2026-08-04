@@ -18,6 +18,7 @@ const SECONDARY_NAV = [
   { to: '/memory', label: 'Memory', icon: '◈' },
   { to: '/files', label: 'Files', icon: '▤' },
   { to: '/tasks', label: 'Tasks', icon: '☑' },
+  { to: '/workflows', label: 'Workflows', icon: '⬡' },
 ] as const
 
 const SETTINGS = { to: '/settings', label: 'Settings', icon: '⚙' } as const
