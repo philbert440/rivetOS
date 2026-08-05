@@ -259,8 +259,7 @@ async function main(): Promise<void> {
       `[rivetos-mcp-server] speaking MCP v1 over stdio (session ${stdioServer.sessionId}) — ${String(tools.length)} tool(s)`,
     )
   } else if (protocol === 'v2') {
-    const auth =
-      socketPath && !requireBearerOnSocket ? undefined : authToken
+    const auth = socketPath && !requireBearerOnSocket ? undefined : authToken
     const httpServer = createV2McpServer({
       host,
       port,

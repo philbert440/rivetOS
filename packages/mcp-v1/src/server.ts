@@ -506,7 +506,7 @@ function buildMcpServer(tools: ToolRegistration[]): McpServer {
         ...(tool.annotations
           ? {
               annotations: {
-                ...(tool.annotations.title ?? tool.title
+                ...((tool.annotations.title ?? tool.title)
                   ? { title: tool.annotations.title ?? tool.title }
                   : {}),
                 ...(tool.annotations.readOnlyHint !== undefined
@@ -527,7 +527,7 @@ function buildMcpServer(tools: ToolRegistration[]): McpServer {
       },
       // SDK callback types are structural over CallToolResult; cast the
       // handler return so our structured-result mapping stays flexible.
-      (async (args: Record<string, unknown>) => {
+      async (args: Record<string, unknown>) => {
         try {
           const result = await tool.execute(args)
           // v1 has no MRTR — coerce input_required to an error string.
@@ -542,12 +542,9 @@ function buildMcpServer(tools: ToolRegistration[]): McpServer {
               isError: true,
             }
           }
-          const structured = isStructuredToolResult(result)
-            ? result
-            : normalizeToolResult(result)
+          const structured = isStructuredToolResult(result) ? result : normalizeToolResult(result)
           const content: Array<
-            | { type: 'text'; text: string }
-            | { type: 'image'; data: string; mimeType: string }
+            { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
           > = []
           for (const block of structured.content) {
             if (block.type === 'text' && typeof block.text === 'string') {
@@ -567,7 +564,7 @@ function buildMcpServer(tools: ToolRegistration[]): McpServer {
             } else {
               content.push({
                 type: 'text',
-                text: `[unsupported content type: ${String(block.type)}]`,
+                text: `[unsupported content type: ${block.type}]`,
               })
             }
           }
@@ -586,7 +583,7 @@ function buildMcpServer(tools: ToolRegistration[]): McpServer {
             isError: true,
           }
         }
-      }) as never,
+      },
     )
   }
 

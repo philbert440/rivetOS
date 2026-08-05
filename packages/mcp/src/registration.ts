@@ -39,7 +39,8 @@ export interface ImageContentBlock {
   mimeType: string
 }
 
-export type ToolContentBlock = TextContentBlock | ImageContentBlock | { type: string; [k: string]: unknown }
+export type ToolContentBlock =
+  TextContentBlock | ImageContentBlock | { type: string; [k: string]: unknown }
 
 /**
  * Structured tool result — mirrors the MCP CallToolResult shape closely

@@ -73,7 +73,11 @@ export interface V2CallToolOptions {
 
 export interface V2McpConnection {
   listTools(options?: V2ListToolsOptions): Promise<V2ToolInfo[]>
-  callTool(name: string, args: Record<string, unknown>, options?: V2CallToolOptions): Promise<string>
+  callTool(
+    name: string,
+    args: Record<string, unknown>,
+    options?: V2CallToolOptions,
+  ): Promise<string>
   /** Untranslated content array — multimodal consumers (mcp-client). */
   callToolRaw(
     name: string,
@@ -136,14 +140,13 @@ export async function connectV2(options: V2ClientConnectOptions): Promise<V2McpC
     async listTools(listOpts?: V2ListToolsOptions): Promise<V2ToolInfo[]> {
       // CacheableRequestOptions shape varies across minor SDK builds; pass
       // through as a loose bag so refresh still works when supported.
-      const reqOpts =
-        listOpts?.cache === 'refresh' ? ({ cache: 'refresh' } as never) : undefined
+      const reqOpts = listOpts?.cache === 'refresh' ? ({ cache: 'refresh' } as never) : undefined
       const { tools } = await client.listTools(undefined, reqOpts)
       return tools.map((t) => ({
         name: t.name,
         description: t.description,
         title: (t as { title?: string }).title,
-        inputSchema: t.inputSchema as Record<string, unknown> | undefined,
+        inputSchema: t.inputSchema,
         annotations: (t as { annotations?: V2ToolInfo['annotations'] }).annotations,
       }))
     },
@@ -157,7 +160,7 @@ export async function connectV2(options: V2ClientConnectOptions): Promise<V2McpC
         // ClientOptions.inputRequired.autoFulfill is false.
         const result = (await client.callTool(params as never, {
           allowInputRequired: true,
-        } as never)) as {
+        })) as {
           content?: Array<Record<string, unknown>>
           isError?: boolean
           structuredContent?: Record<string, unknown>

@@ -184,9 +184,7 @@ function buildServer(
             return inputRequired({ inputRequests })
           }
 
-          const structured = isStructuredToolResult(result)
-            ? result
-            : normalizeToolResult(result)
+          const structured = isStructuredToolResult(result) ? result : normalizeToolResult(result)
 
           return {
             content: structured.content,
