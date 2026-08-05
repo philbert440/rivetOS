@@ -21,12 +21,18 @@ Connects to one or more [Model Context Protocol](https://modelcontextprotocol.io
 mcp:
   servers:
     filesystem:
+      # protocol: v1 (default) — sessionful 2025-11-25
       transport: stdio
       command: npx
       args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
     google-workspace:
       transport: streamable-http
       url: http://192.168.1.108:3000/mcp
+    modern-stateless:
+      # Opt into MCP 2026-07-28 final (stateless) when the peer speaks it
+      protocol: v2
+      transport: streamable-http
+      url: http://127.0.0.1:5700/mcp
     custom-server:
       transport: stdio
       command: python3
@@ -38,10 +44,11 @@ mcp:
 
 ## Features
 
-- **Multi-transport** — stdio, StreamableHTTP, and SSE transports
+- **Dual protocol** — `protocol: v1` (default, 2025-11-25) or `v2` (2026-07-28 final)
+- **Multi-transport** — stdio, StreamableHTTP, and SSE (v1-only; deprecated)
 - **Auto-discovery** — tools are discovered from the server at boot
 - **Tool prefixing** — optional prefix to avoid name collisions across servers
-- **Auto-reconnect** — reconnects on disconnect by default
+- **Auto-reconnect** — reconnects on disconnect by default (v1)
 - **Configurable timeouts** — per-server connection timeout settings
 
 ## Installation

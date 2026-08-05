@@ -1,27 +1,30 @@
 /**
  * adaptRivetTool — wraps a RivetOS `Tool` (`@rivetos/types`) into the
- * `ToolRegistration` shape consumed by `createMcpServer`.
+ * `ToolRegistration` shape consumed by the v1/v2 MCP mounts.
  *
  * RivetOS tools execute with `(args, signal?, context?)` and may return either
- * a plain `string` or a `ContentPart[]` (multimodal). MCP `ToolRegistration`
- * — at this slice — expects a `Promise<string>` from `execute`. We coerce
- * any `ContentPart[]` result to its concatenated text. Slice 3 (when real
- * multimodal tool surfaces land) will widen `ToolRegistration` to mirror the
- * MCP content-array shape directly; until then, the string fallback is fine.
+ * a plain `string` or a `ContentPart[]` (multimodal). By default we preserve
+ * multimodal results as StructuredToolResult content blocks; set
+ * `flattenToString: true` for the legacy string-only path.
  *
  * The input schema must be supplied separately as a zod raw shape. We
  * deliberately do NOT auto-translate the JSON schema embedded in
- * `Tool.parameters` — that field's loose `Record<string, unknown>` shape
- * makes a faithful, type-safe round-trip into zod impractical, and the
- * MCP SDK uses zod to validate inputs at the wire boundary. Each adapted
- * tool gets a hand-written zod schema that matches its JSON schema, which
- * also gives us a chance to tighten descriptions for the MCP audience.
+ * `Tool.parameters` for the static path — that field's loose
+ * `Record<string, unknown>` shape makes a faithful, type-safe round-trip
+ * into zod impractical, and the MCP SDK uses zod to validate inputs at the
+ * wire boundary. `adaptRivetToolDynamic` does the JSON-Schema → zod
+ * conversion for the bridge / transport dynamic path.
  */
 
-import type { Tool, ToolResult } from '@rivetos/types'
+import type { Tool, ToolResult, ContentPart } from '@rivetos/types'
 import { z } from 'zod'
 
-import type { ToolRegistration } from './registration.js'
+import type {
+  ToolAnnotations,
+  ToolContentBlock,
+  ToolRegistration,
+  StructuredToolResult,
+} from './registration.js'
 
 export interface AdaptRivetToolOptions {
   /**
@@ -32,6 +35,16 @@ export interface AdaptRivetToolOptions {
   name?: string
   /** Override the description shown to MCP clients. Defaults to the Rivet description. */
   description?: string
+  /** Optional display title. */
+  title?: string
+  /** Optional MCP tool annotations (readOnlyHint, destructiveHint, …). */
+  annotations?: ToolAnnotations
+  /**
+   * When true, coerce ContentPart[] results to a single text string
+   * (legacy slice-1 behaviour). Default false — structured content is
+   * preserved for multimodal clients.
+   */
+  flattenToString?: boolean
 }
 
 export function adaptRivetTool(
@@ -39,19 +52,23 @@ export function adaptRivetTool(
   inputSchema: z.ZodRawShape,
   options: AdaptRivetToolOptions = {},
 ): ToolRegistration {
+  const flatten = options.flattenToString === true
   return {
     name: options.name ?? tool.name,
     description: options.description ?? tool.description,
+    title: options.title,
+    annotations: options.annotations,
     inputSchema,
-    async execute(args) {
-      const result = await tool.execute(args)
-      return toolResultToString(result)
+    async execute(args, ctx) {
+      const result = await tool.execute(args, ctx?.signal)
+      if (flatten) return toolResultToString(result)
+      return toolResultToStructured(result)
     },
   }
 }
 
 /**
- * Coerce a `ToolResult` into a plain string for the slice-1 MCP wire.
+ * Coerce a `ToolResult` into a plain string for string-only consumers.
  *
  * - `string` → returned verbatim
  * - `ContentPart[]` → text parts joined with newlines, non-text parts
@@ -69,6 +86,30 @@ export function toolResultToString(result: ToolResult): string {
     }
   }
   return chunks.join('\n')
+}
+
+/** Coerce a RivetOS ToolResult into a StructuredToolResult for MCP wire. */
+export function toolResultToStructured(result: ToolResult): StructuredToolResult {
+  if (typeof result === 'string') {
+    return { content: [{ type: 'text', text: result }] }
+  }
+  const content: ToolContentBlock[] = result.map((part: ContentPart) => {
+    if (part.type === 'text') {
+      return { type: 'text' as const, text: part.text }
+    }
+    if (part.type === 'image' && typeof part.data === 'string') {
+      return {
+        type: 'image' as const,
+        data: part.data,
+        mimeType: part.mimeType ?? 'image/png',
+      }
+    }
+    if (part.type === 'image' && typeof part.url === 'string') {
+      return { type: 'text' as const, text: `[image url: ${part.url}]` }
+    }
+    return { type: 'text' as const, text: `[non-text part: ${part.type}]` }
+  })
+  return { content }
 }
 
 // ---------------------------------------------------------------------------

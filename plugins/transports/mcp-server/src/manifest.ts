@@ -1,12 +1,12 @@
 /**
- * In-process MCP transport plugin — serves the 2026-07-28 RC (v2, stateless).
+ * In-process MCP transport plugin — serves MCP 2026-07-28 final (v2, stateless).
  *
  * When `transports.mcp` is configured, the boot loader instantiates this
  * manifest, which waits for runtime registration to finish (via
  * `onRegistrationComplete`), wraps every runtime tool through
- * `adaptRivetToolDynamic`, and starts an MCP `createMcpServer` exposing
- * them. Standalone sidecar mode (via `cli.ts`) is unaffected — it remains
- * the supported way to run a curated MCP surface as a separate process.
+ * `adaptRivetToolDynamic`, and starts a v2 `createV2McpServer` exposing
+ * them. Standalone sidecar mode (via `@rivetos/mcp-sidecar`) remains the
+ * supported way to run a curated MCP surface as a separate process.
  *
  * Config (config.yaml):
  *
@@ -40,16 +40,17 @@ export const manifest: PluginManifest = {
     ctx.onRegistrationComplete(async (snapshot) => {
       const tools: ToolRegistration[] = snapshot.tools.map((t) => adaptRivetToolDynamic(t))
 
-      // v2 cutover (MCP unification PR 2): stateless 2026-07-28 RC server.
-      // Config surface unchanged. Note: on a unix socket the fs perms are
-      // the boundary; require_bearer_on_socket keeps its meaning by simply
-      // passing the token through (v2 auth check is token-or-nothing).
+      // Stateless 2026-07-28 final server. Config surface unchanged.
+      // On a unix socket the fs perms are the auth boundary;
+      // require_bearer_on_socket keeps its meaning by simply passing the
+      // token through (v2 auth check is token-or-nothing).
       const server = createV2McpServer({
         host,
         port,
         socketPath,
         authToken: socketPath && !requireBearerOnSocket ? undefined : authToken,
         tools,
+        serverDescription: 'RivetOS in-process MCP transport (2026-07-28 final)',
       })
 
       try {

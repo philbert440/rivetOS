@@ -16,7 +16,7 @@ import { SkillManagerImpl, createSkillListTool, createSkillManageTool } from '@r
 import type { Tool } from '@rivetos/types'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '@rivetos/mcp-v1'
+import type { ToolRegistration } from '@rivetos/mcp'
 import { adaptRivetTool } from '@rivetos/mcp'
 
 export interface SkillToolsOptions {
@@ -76,6 +76,7 @@ export async function createSkillTools(options: SkillToolsOptions = {}): Promise
         'Skills are reusable knowledge/workflow definitions discovered from the ' +
         'configured skill directories. Mirrors the in-process `skill_list` tool ' +
         'exposed to local agents.',
+      annotations: { readOnlyHint: true, idempotentHint: true },
     }),
     adaptRivetTool(manageWithRediscovery, skillManageInputSchema, {
       name: `${prefix}skill_manage`,
@@ -84,6 +85,7 @@ export async function createSkillTools(options: SkillToolsOptions = {}): Promise
         'Use to save reusable knowledge, workflows, or procedures. Workspace and ' +
         'system skill dirs are both writable. Mirrors the in-process ' +
         '`skill_manage` tool exposed to local agents.',
+      annotations: { destructiveHint: true },
     }),
   ]
 

@@ -13,7 +13,9 @@ import { WikiIndex } from '@rivetos/memory-postgres'
 import { parseWikiPage } from '@rivetos/wiki-core'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '@rivetos/mcp-v1'
+import type { ToolRegistration } from '@rivetos/mcp'
+
+const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const
 
 export interface WikiToolsOptions {
   pgUrl: string
@@ -50,6 +52,7 @@ export function createWikiTools(options: WikiToolsOptions): WikiToolsHandle {
         'than memory_search for standing facts about projects, hosts, and ' +
         'services; use memory_search when you need what was actually said. ' +
         'Returns slugs — read a full page (dated history + provenance) with wiki_read.',
+      annotations: READ_ONLY,
       inputSchema: {
         query: z.string().describe('Topic to look for (name, alias, or content terms)'),
         limit: z.number().int().min(1).max(20).optional().describe('Max results (default 5)'),
@@ -75,6 +78,7 @@ export function createWikiTools(options: WikiToolsOptions): WikiToolsHandle {
         '(lead), Article body, See also crosslinks, dated History of changes, ' +
         'and Citations (summary UUIDs usable with memory tools for drill-down). ' +
         'Use the slug from wiki_search.',
+      annotations: READ_ONLY,
       inputSchema: {
         slug: z.string().describe('Topic slug, e.g. rivetos-task-engine'),
       },
