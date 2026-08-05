@@ -298,6 +298,8 @@ def test_browse_emits_truncation_hint():
     from rivet_memory.tools import Tools
 
     now = datetime.now(timezone.utc)
+    # Columns: id, role, agent, content, created_at, conversation_id,
+    # tool_name, tool_result, metadata
     rows = [
         (
             "m-trunc",
@@ -307,14 +309,49 @@ def test_browse_emits_truncation_hint():
             now,
             "conv-1",
             "Bash",
+            "partial tool out",
             {"truncated": True, "full_tool_result_length": 20459},
         ),
-        ("m-ok", "user", "rivet-hermes", "hello", now, "conv-1", None, None),
+        ("m-ok", "user", "rivet-hermes", "hello", now, "conv-1", None, None, None),
     ]
     client = _FakeClient(rows)
     tools = Tools(client, SearchEngine(client))
     out = tools.dispatch("rivet_memory_browse", {"limit": 10})
     assert "⚠ truncated at capture (full: 20459 chars)" in out
     assert "rivet_memory_get_full id=m-trunc" in out
-    # complete rows carry no hint
+    # tool_result preview is included even on capture-truncated rows
+    assert "tool_result (Bash)" in out
+    assert "partial tool out" in out
+    # complete rows carry no capture hint
     assert out.count("truncated at capture") == 1
+
+
+def test_format_browse_message_body_includes_tool_result():
+    from rivet_memory.tools import _format_browse_message_body
+
+    body = _format_browse_message_body(
+        "m2",
+        "[tool] search_tool",
+        "search_tool",
+        "Found 3 matching files under packages/cli",
+        None,
+    )
+    assert "[tool] search_tool" in body
+    assert "[tool_result (search_tool)]" in body
+    assert "Found 3 matching files under packages/cli" in body
+
+
+def test_format_browse_message_body_display_trunc_points_at_get_full():
+    from rivet_memory.tools import _format_browse_message_body
+
+    long_result = "y" * 1200
+    body = _format_browse_message_body(
+        "m4",
+        "[tool] Bash",
+        "Bash",
+        long_result,
+        None,
+        tool_result_limit=800,
+    )
+    assert "tool_result (Bash) 1200 chars" in body
+    assert "display-truncated tool_result → rivet_memory_get_full id=m4" in body
