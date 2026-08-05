@@ -18,7 +18,7 @@ import { PostgresMemory, createMemoryTools as createPgMemoryTools } from '@rivet
 import type { Tool } from '@rivetos/types'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '@rivetos/mcp-v1'
+import type { ToolRegistration } from '@rivetos/mcp'
 import { adaptRivetTool } from '@rivetos/mcp'
 
 export interface MemoryToolsOptions {
@@ -83,6 +83,7 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         'Mirrors the in-process `memory_search` tool exposed to local agents. ' +
         'Truncated hits include a `memory_get_full id=` handle — call that tool to ' +
         'recover the full capture payload.',
+      annotations: { readOnlyHint: true, idempotentHint: true },
     }),
     adaptRivetTool(find('memory_browse'), memoryBrowseInputSchema, {
       name: `${prefix}memory_browse`,
@@ -93,6 +94,7 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         'specific conversation by ID. For time-bounded questions ("today", "yesterday", ' +
         '"this morning"), prefer window= over raw since/before so local midnights convert correctly to UTC. ' +
         'Capture-truncated rows append `→ memory_get_full id=` — use that tool for the full payload.',
+      annotations: { readOnlyHint: true, idempotentHint: true },
     }),
     adaptRivetTool(find('memory_stats'), memoryStatsInputSchema, {
       name: `${prefix}memory_stats`,
@@ -101,6 +103,7 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         'depth, unsummarized messages, compaction status, missing summaries, and ' +
         'breakdowns by agent/role/kind. Use to diagnose memory issues or check if ' +
         'background jobs are keeping up.',
+      annotations: { readOnlyHint: true, idempotentHint: true },
     }),
     adaptRivetTool(find('memory_get_full'), memoryGetFullInputSchema, {
       name: `${prefix}memory_get_full`,
@@ -110,6 +113,7 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         '"⚠ truncated at capture" by memory_search or memory_browse). Pass the row ' +
         'id from that hint. Re-reads the original capture JSONL line from disk — not ' +
         'a generic file reader. Mirrors the in-process `memory_get_full` tool.',
+      annotations: { readOnlyHint: true, idempotentHint: true },
     }),
   ]
 

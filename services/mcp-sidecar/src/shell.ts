@@ -21,7 +21,7 @@
 import { ShellTool, type ShellToolConfig } from '@rivetos/tool-shell'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '@rivetos/mcp-v1'
+import type { ToolRegistration } from '@rivetos/mcp'
 import { adaptRivetTool } from '@rivetos/mcp'
 
 export interface ShellToolOptions extends ShellToolConfig {
@@ -54,6 +54,7 @@ export function createShellTool(options: ShellToolOptions = {}): ShellToolHandle
         'working directory across calls (cd persists). Use for: running ' +
         'scripts, checking system status, git operations, file operations. ' +
         'Mirrors the in-process `shell` tool exposed to local agents.',
+      annotations: { destructiveHint: true, openWorldHint: true },
     }),
   ]
 

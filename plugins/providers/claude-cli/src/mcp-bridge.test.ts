@@ -1,17 +1,12 @@
 /**
  * Integration tests for the per-spawn embedded MCP bridge.
  *
- * Validates the Phase 1.C deliverable: provider stands up an MCP server,
- * exposes runtime tools dynamically, claude-cli (or any MCP client) can
- * discover + call them, teardown is clean.
- *
- * We don't actually shell out to `claude` here — we hit the embedded server
- * with the MCP SDK's stock client, which is what claude-cli would do too.
+ * Default path is MCP 2026-07-28 final (v2, stateless). The v1 fallback is
+ * still covered so we can roll back via RIVETOS_MCP_BRIDGE_PROTOCOL=v1
+ * if a Claude Code build has not yet rolled out 2026-07-28 support.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import type { Tool, ToolContext } from '@rivetos/types'
 
@@ -60,10 +55,6 @@ function makeAdderTool(): Tool {
   }
 }
 
-/**
- * Tool with a parameter that uses an enum — exercises the enum path in
- * `jsonSchemaToZod`.
- */
 function makeEnumTool(): Tool {
   return {
     name: 'pick',
@@ -83,9 +74,22 @@ function makeEnumTool(): Tool {
   }
 }
 
-async function buildClient(handle: EmbeddedMcpHandle): Promise<Client> {
-  const url = new URL(handle.url)
-  const transport = new StreamableHTTPClientTransport(url, {
+/** v2 client against an embedded handle. */
+async function buildV2Client(handle: EmbeddedMcpHandle) {
+  const { connectV2 } = await import('@rivetos/mcp-v2')
+  return connectV2({
+    name: 'mcp-bridge.test',
+    url: handle.url,
+    authToken: handle.token,
+  })
+}
+
+/** v1 client (sessionful SDK) against an embedded handle. */
+async function buildV1Client(handle: EmbeddedMcpHandle) {
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+  const { StreamableHTTPClientTransport } =
+    await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
+  const transport = new StreamableHTTPClientTransport(new URL(handle.url), {
     requestInit: { headers: { Authorization: `Bearer ${handle.token}` } },
   })
   const client = new Client({ name: 'mcp-bridge.test', version: '0.0.0' })
@@ -94,10 +98,10 @@ async function buildClient(handle: EmbeddedMcpHandle): Promise<Client> {
 }
 
 // ---------------------------------------------------------------------------
-// Specs
+// Specs — default v2
 // ---------------------------------------------------------------------------
 
-describe('embedMcpServerForTurn', () => {
+describe('embedMcpServerForTurn (v2 / 2026-07-28 default)', () => {
   let handle: EmbeddedMcpHandle | undefined
 
   afterEach(async () => {
@@ -107,13 +111,12 @@ describe('embedMcpServerForTurn', () => {
     }
   })
 
-  it('stands up an MCP server reachable over HTTP+bearer with the synthesized config', async () => {
+  it('stands up a v2 MCP server with synthesized config', async () => {
     handle = await embedMcpServerForTurn({ tools: [makeEchoTool()] })
-
+    expect(handle.protocol).toBe('v2')
     expect(handle.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
     expect(handle.token).toMatch(/^[0-9a-f]{64}$/)
 
-    // Config tempfile must exist with a sensible shape.
     const raw = await fs.readFile(handle.configPath, 'utf8')
     const parsed = JSON.parse(raw) as {
       mcpServers: Record<string, { type: string; url: string; headers: Record<string, string> }>
@@ -126,56 +129,42 @@ describe('embedMcpServerForTurn', () => {
 
   it('rejects requests without the bearer token (401)', async () => {
     handle = await embedMcpServerForTurn({ tools: [makeEchoTool()] })
-
     const res = await fetch(handle.url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     })
     expect(res.status).toBe(401)
   })
 
-  it('exposes the supplied executable tools, dynamically derived from JSON schema', async () => {
+  it('exposes executable tools without session_attach (stateless)', async () => {
     handle = await embedMcpServerForTurn({
       tools: [makeEchoTool(), makeAdderTool(), makeEnumTool()],
     })
-    const client = await buildClient(handle)
+    const client = await buildV2Client(handle)
     try {
-      const list = await client.listTools()
-      const names = list.tools.map((t) => t.name).sort()
+      const tools = await client.listTools()
+      const names = tools.map((t) => t.name).sort()
       expect(names).toContain('echo_test')
       expect(names).toContain('add_test')
       expect(names).toContain('pick')
-      // session_attach is registered per-session
-      expect(names).toContain('session_attach')
+      expect(names).not.toContain('session_attach')
     } finally {
       await client.close()
     }
   })
 
-  it('routes tool calls to the live execute closure (delegate-style end-to-end)', async () => {
+  it('routes tool calls to the live execute closure', async () => {
     handle = await embedMcpServerForTurn({
       tools: [makeEchoTool(), makeAdderTool(), makeEnumTool()],
     })
-    const client = await buildClient(handle)
+    const client = await buildV2Client(handle)
     try {
-      const echoResult = await client.callTool({
-        name: 'echo_test',
-        arguments: { message: 'hello bridge' },
-      })
-      expect(JSON.stringify(echoResult.content)).toContain('echo: hello bridge')
-
-      const addResult = await client.callTool({
-        name: 'add_test',
-        arguments: { a: 7, b: 35 },
-      })
-      expect(JSON.stringify(addResult.content)).toContain('42')
-
-      const pickResult = await client.callTool({
-        name: 'pick',
-        arguments: { color: 'green' },
-      })
-      expect(JSON.stringify(pickResult.content)).toContain('picked: green')
+      expect(await client.callTool('echo_test', { message: 'hello bridge' })).toContain(
+        'echo: hello bridge',
+      )
+      expect(await client.callTool('add_test', { a: 7, b: 35 })).toContain('42')
+      expect(await client.callTool('pick', { color: 'green' })).toContain('picked: green')
     } finally {
       await client.close()
     }
@@ -189,10 +178,8 @@ describe('embedMcpServerForTurn', () => {
     await handle.close()
     handle = undefined
 
-    // Config tempfile is gone (or its parent dir is gone).
     await expect(fs.access(configPath)).rejects.toThrow()
 
-    // Server no longer listens — fetch should fail.
     const probe = fetch(url, {
       method: 'GET',
       signal: AbortSignal.timeout(500),
@@ -211,12 +198,6 @@ describe('embedMcpServerForTurn', () => {
     const badTool: Tool = {
       name: 'bad',
       description: 'Has a malformed schema',
-      // Force jsonSchemaToZodShape to take a non-throwing path; the dynamic
-      // adapter handles unknown types as `z.unknown()`. To actually exercise
-      // the skip path, we monkey the Object.entries call by setting properties
-      // to a non-iterable. This won't actually throw under our impl — the
-      // skip log is best-effort. We leave this test as documentation that a
-      // real translation failure won't take the whole bridge down.
       parameters: { type: 'object', properties: { weird: { type: 'something-novel' } } },
       execute: () => Promise.resolve('ok'),
     }
@@ -227,13 +208,9 @@ describe('embedMcpServerForTurn', () => {
       debug: vi.fn(),
     }
     handle = await embedMcpServerForTurn({ tools: [makeEchoTool(), badTool], log: logStub })
-    const client = await buildClient(handle)
+    const client = await buildV2Client(handle)
     try {
-      const list = await client.listTools()
-      const names = list.tools.map((t) => t.name)
-      // Both tools land — `bad` falls back to z.unknown() for the weird type.
-      // (The skip log is best-effort — current impl doesn't throw on unknown
-      // types so no warn is emitted; we keep the stub to document the contract.)
+      const names = (await client.listTools()).map((t) => t.name)
       expect(names).toContain('echo_test')
       expect(names).toContain('bad')
       expect(logStub.warn).not.toHaveBeenCalled()
@@ -242,14 +219,60 @@ describe('embedMcpServerForTurn', () => {
     }
   })
 
-  it('respects the kill switch via no executableTools', async () => {
-    // Empty tool list — bridge still comes up but with only session_attach.
+  it('empty tool list comes up with zero tools (no session_attach on v2)', async () => {
     handle = await embedMcpServerForTurn({ tools: [] })
-    const client = await buildClient(handle)
+    const client = await buildV2Client(handle)
+    try {
+      expect(await client.listTools()).toEqual([])
+    } finally {
+      await client.close()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Specs — v1 fallback
+// ---------------------------------------------------------------------------
+
+describe('embedMcpServerForTurn (v1 fallback)', () => {
+  let handle: EmbeddedMcpHandle | undefined
+
+  afterEach(async () => {
+    if (handle) {
+      await handle.close()
+      handle = undefined
+    }
+  })
+
+  it('exposes session_attach on the sessionful path', async () => {
+    handle = await embedMcpServerForTurn({
+      protocol: 'v1',
+      tools: [makeEchoTool()],
+    })
+    expect(handle.protocol).toBe('v1')
+    const client = await buildV1Client(handle)
     try {
       const list = await client.listTools()
       const names = list.tools.map((t) => t.name)
+      expect(names).toContain('echo_test')
       expect(names).toContain('session_attach')
+    } finally {
+      await client.close()
+    }
+  })
+
+  it('routes tool calls on v1', async () => {
+    handle = await embedMcpServerForTurn({
+      protocol: 'v1',
+      tools: [makeEchoTool()],
+    })
+    const client = await buildV1Client(handle)
+    try {
+      const result = await client.callTool({
+        name: 'echo_test',
+        arguments: { message: 'v1 path' },
+      })
+      expect(JSON.stringify(result.content)).toContain('echo: v1 path')
     } finally {
       await client.close()
     }

@@ -4,17 +4,26 @@ RivetOS MCP server — exposes RivetOS tools (memory, skills, runtime,
 utility) to MCP-aware clients (claude-cli, Claude Desktop, Cursor, etc.)
 over the [Model Context Protocol](https://modelcontextprotocol.io/).
 
+## Protocol
+
+- **In-process transport** (`transports.mcp`): **MCP 2026-07-28 final**
+  (stateless v2) via `@rivetos/mcp-v2` + `@modelcontextprotocol/*@2.0.0`.
+- **Standalone sidecar** (`@rivetos/mcp-sidecar` / `rivetos-mcp-server` bin):
+  dual-protocol. HTTP/unix defaults to **v2**; stdio defaults to **v1**
+  (sessionful 2025-11-25) for Claude Code / Grok plugin compatibility.
+  Override with `RIVETOS_MCP_PROTOCOL=v1|v2`.
+- **claude-cli bridge**: defaults to **v2**; set
+  `RIVETOS_MCP_BRIDGE_PROTOCOL=v1` if a Claude Code build has not rolled
+  out 2026-07-28 support yet.
+
 ## Status
 
-**Phase 1.A — Slice 1.B'.1.** StreamableHTTP server with `/health/live`, the
-`echo` smoke-test tool, the full memory data-plane (`memory_search`,
-`memory_browse`, `memory_stats`), web tools (`internet_search`, `web_fetch`),
-skill tools (`skill_list`, `skill_manage`), bearer-token auth on TCP +
-optional unix-socket binding, the per-session `session_attach`
-handshake tool, and the **utility surface** — `shell`, `file_read`/`write`/
-`edit`, `search_glob`/`grep` (opt-in via env). Runtime-context tools
-(`delegate_task`, `subagent_*`, `ask_user`, `todo`, `compact_context`) and
-the claude-cli bridge follow in subsequent slices per
+StreamableHTTP server with `/health/live`, memory data-plane
+(`memory_search`, `memory_browse`, `memory_stats`, `memory_get_full`), web
+tools, skill tools, wiki tools, bearer-token auth on TCP + optional
+unix-socket binding, tool annotations (readOnly/destructive/…), list-cache
+hints, and the utility surface (`shell`, `file_*`, `search_*`, opt-in via
+env). See also
 [`/rivet-shared/plans/mcp-architecture-overhaul.md`](../../).
 
 ## Quick start
