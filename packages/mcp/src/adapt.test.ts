@@ -66,13 +66,19 @@ describe('adaptRivetTool', () => {
     expect(reg.description).toBe('Wired through MCP')
   })
 
-  it('coerces tool execution to a string promise', async () => {
+  it('returns structured content by default', async () => {
     const reg = adaptRivetTool(fakeTool, inputSchema)
+    const result = await reg.execute({ value: 'hi' })
+    expect(result).toEqual({ content: [{ type: 'text', text: 'received: hi' }] })
+  })
+
+  it('flattens to string when flattenToString is set', async () => {
+    const reg = adaptRivetTool(fakeTool, inputSchema, { flattenToString: true })
     const result = await reg.execute({ value: 'hi' })
     expect(result).toBe('received: hi')
   })
 
-  it('flattens ContentPart[] tool results to text', async () => {
+  it('preserves ContentPart[] as structured content by default', async () => {
     const multimodal: Tool = {
       name: 'multi.tool',
       description: 'Returns content parts',
@@ -80,13 +86,38 @@ describe('adaptRivetTool', () => {
       async execute() {
         return [
           { type: 'text' as const, text: 'alpha' },
-          { type: 'image' as const, data: 'AAAA' },
+          { type: 'image' as const, data: 'AAAA', mimeType: 'image/png' },
           { type: 'text' as const, text: 'omega' },
         ]
       },
     }
 
     const reg = adaptRivetTool(multimodal, {})
+    const result = await reg.execute({})
+    expect(result).toEqual({
+      content: [
+        { type: 'text', text: 'alpha' },
+        { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+        { type: 'text', text: 'omega' },
+      ],
+    })
+  })
+
+  it('flattens ContentPart[] when flattenToString is set', async () => {
+    const multimodal: Tool = {
+      name: 'multi.tool',
+      description: 'Returns content parts',
+      parameters: { type: 'object', properties: {} },
+      async execute() {
+        return [
+          { type: 'text' as const, text: 'alpha' },
+          { type: 'image' as const, data: 'AAAA', mimeType: 'image/png' },
+          { type: 'text' as const, text: 'omega' },
+        ]
+      },
+    }
+
+    const reg = adaptRivetTool(multimodal, {}, { flattenToString: true })
     const result = await reg.execute({})
     expect(result).toBe('alpha\n[non-text part: image]\nomega')
   })

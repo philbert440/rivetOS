@@ -14,7 +14,7 @@
 import { WebSearchTool, WebFetchTool } from '@rivetos/tool-web-search'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '@rivetos/mcp-v1'
+import type { ToolRegistration } from '@rivetos/mcp'
 import { adaptRivetTool } from '@rivetos/mcp'
 
 export interface WebToolsOptions {
@@ -64,6 +64,7 @@ export function createWebTools(options: WebToolsOptions = {}): WebToolsHandle {
         'DuckDuckGo. Returns titles, snippets, and URLs. Use when you need current ' +
         'information, facts, or to find resources. Mirrors the in-process ' +
         '`internet_search` tool exposed to local agents.',
+      annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
     }),
     adaptRivetTool(fetchTool, webFetchInputSchema, {
       name: `${prefix}web_fetch`,
@@ -71,6 +72,7 @@ export function createWebTools(options: WebToolsOptions = {}): WebToolsHandle {
         'Fetch and extract readable content from a URL. Returns the text/markdown ' +
         'content of a web page (HTML is converted to markdown). Use when you need to ' +
         'read a specific webpage. PDFs are detected but not extracted.',
+      annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
     }),
   ]
 

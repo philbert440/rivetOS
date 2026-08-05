@@ -1,9 +1,9 @@
 /**
- * @rivetos/mcp-v1 — the sessionful MCP server mount on SDK 1.29 (the world
- * Claude Code speaks today). The claude-cli bridge and the current transport
- * plugin run on this; the v2 (2026-07-28 RC) mount replaces it for our own
- * server/client pairs in PR 2, and for the bridge when Claude Code ships RC
- * support. Exact-pinned SDK; never shares a package.json with v2.
+ * @rivetos/mcp-v1 — the sessionful MCP server mount on SDK 1.30 (protocol
+ * 2025-11-25). Used by the memory sidecar stdio path and as a fallback for
+ * clients that have not yet adopted the 2026-07-28 final. The primary
+ * transport plugin and claude-cli bridge default to @rivetos/mcp-v2.
+ * Exact-pinned SDK; never shares a package.json with v2.
  */
 
 export {

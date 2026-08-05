@@ -23,7 +23,7 @@ import {
 } from '@rivetos/tool-file'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '@rivetos/mcp-v1'
+import type { ToolRegistration } from '@rivetos/mcp'
 import { adaptRivetTool } from '@rivetos/mcp'
 
 export interface FileToolsOptions extends FileReadConfig {
@@ -52,6 +52,7 @@ export function createFileTools(options: FileToolsOptions = {}): FileToolsHandle
         'Read file contents. Returns text with optional line numbers and an ' +
         'optional line range. Binary files are detected and refused. Mirrors ' +
         'the in-process `file_read` tool.',
+      annotations: { readOnlyHint: true, idempotentHint: true },
     }),
     adaptRivetTool(createFileWriteTool(), fileWriteInputSchema, {
       name: `${prefix}file_write`,
@@ -59,6 +60,7 @@ export function createFileTools(options: FileToolsOptions = {}): FileToolsHandle
         'Write content to a file. Creates parent directories if needed. ' +
         'Optional `backup: true` writes a `.bak` copy of the previous content ' +
         'before overwriting. Mirrors the in-process `file_write` tool.',
+      annotations: { destructiveHint: true, idempotentHint: false },
     }),
     adaptRivetTool(createFileEditTool(), fileEditInputSchema, {
       name: `${prefix}file_edit`,
@@ -66,6 +68,7 @@ export function createFileTools(options: FileToolsOptions = {}): FileToolsHandle
         'Edit a file by replacing an exact string match. Fails if `old_string` ' +
         'is not found or matches multiple times — caller must add surrounding ' +
         'context to disambiguate. Mirrors the in-process `file_edit` tool.',
+      annotations: { destructiveHint: true, idempotentHint: true },
     }),
   ]
 

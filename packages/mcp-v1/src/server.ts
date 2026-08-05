@@ -35,7 +35,12 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
-import type { ToolRegistration } from '@rivetos/mcp'
+import {
+  isInputRequiredResult,
+  isStructuredToolResult,
+  normalizeToolResult,
+  type ToolRegistration,
+} from '@rivetos/mcp'
 export type { ToolRegistration }
 
 import { createSessionAttachTool, type SessionState } from './session-attach.js'
@@ -496,12 +501,89 @@ function buildMcpServer(tools: ToolRegistration[]): McpServer {
       tool.name,
       {
         description: tool.description,
+        ...(tool.title ? { title: tool.title } : {}),
         inputSchema: tool.inputSchema,
+        ...(tool.annotations
+          ? {
+              annotations: {
+                ...((tool.annotations.title ?? tool.title)
+                  ? { title: tool.annotations.title ?? tool.title }
+                  : {}),
+                ...(tool.annotations.readOnlyHint !== undefined
+                  ? { readOnlyHint: tool.annotations.readOnlyHint }
+                  : {}),
+                ...(tool.annotations.destructiveHint !== undefined
+                  ? { destructiveHint: tool.annotations.destructiveHint }
+                  : {}),
+                ...(tool.annotations.idempotentHint !== undefined
+                  ? { idempotentHint: tool.annotations.idempotentHint }
+                  : {}),
+                ...(tool.annotations.openWorldHint !== undefined
+                  ? { openWorldHint: tool.annotations.openWorldHint }
+                  : {}),
+              },
+            }
+          : {}),
       },
-      (args: Record<string, unknown>) =>
-        tool.execute(args).then((result) => ({
-          content: [{ type: 'text', text: result }],
-        })),
+      // SDK callback types are structural over CallToolResult; cast the
+      // handler return so our structured-result mapping stays flexible.
+      async (args: Record<string, unknown>) => {
+        try {
+          const result = await tool.execute(args)
+          // v1 has no MRTR — coerce input_required to an error string.
+          if (isInputRequiredResult(result)) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Tool requires additional input (MRTR not available on MCP v1): ${Object.keys(result.inputRequests).join(', ')}`,
+                },
+              ],
+              isError: true,
+            }
+          }
+          const structured = isStructuredToolResult(result) ? result : normalizeToolResult(result)
+          const content: Array<
+            { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+          > = []
+          for (const block of structured.content) {
+            if (block.type === 'text' && typeof block.text === 'string') {
+              content.push({ type: 'text', text: block.text })
+            } else if (
+              block.type === 'image' &&
+              typeof (block as { data?: string }).data === 'string'
+            ) {
+              content.push({
+                type: 'image',
+                data: (block as { data: string }).data,
+                mimeType:
+                  typeof (block as { mimeType?: string }).mimeType === 'string'
+                    ? (block as { mimeType: string }).mimeType
+                    : 'image/png',
+              })
+            } else {
+              content.push({
+                type: 'text',
+                text: `[unsupported content type: ${block.type}]`,
+              })
+            }
+          }
+          return {
+            content,
+            ...(structured.isError ? { isError: true } : {}),
+          }
+        } catch (err: unknown) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: err instanceof Error ? err.message : String(err),
+              },
+            ],
+            isError: true,
+          }
+        }
+      },
     )
   }
 

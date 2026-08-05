@@ -23,10 +23,12 @@
     "@rivetos/types": "0.4.0-beta.6",
     "pg": "^8.22.0",
     "@rivetos/mcp-v1": "0.4.0-beta.6",
+    "@rivetos/mcp-v2": "0.4.0-beta.6",
     "@rivetos/mcp": "0.4.0-beta.6"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.3",
     "vitest": "^4.1.10"

@@ -21,7 +21,7 @@ import {
 } from '@rivetos/tool-search'
 import { z } from 'zod'
 
-import type { ToolRegistration } from '@rivetos/mcp-v1'
+import type { ToolRegistration } from '@rivetos/mcp'
 import { adaptRivetTool } from '@rivetos/mcp'
 
 export interface SearchToolsOptions extends SearchGlobConfig, SearchGrepConfig {
@@ -50,6 +50,7 @@ export function createSearchTools(options: SearchToolsOptions = {}): SearchTools
         'Find files matching a glob pattern. Searches from the MCP server cwd ' +
         'unless `cwd` is provided. Excludes node_modules, .git, dist, build, ' +
         '.next, coverage by default. Mirrors the in-process `search_glob` tool.',
+      annotations: { readOnlyHint: true, idempotentHint: true },
     }),
     adaptRivetTool(createSearchGrepTool(searchConfig), searchGrepInputSchema, {
       name: `${prefix}search_grep`,
@@ -57,6 +58,7 @@ export function createSearchTools(options: SearchToolsOptions = {}): SearchTools
         'Search file contents by regex or literal string. Returns matching ' +
         'lines with `file:line:match` format. Shells out to grep -rn. ' +
         'Mirrors the in-process `search_grep` tool.',
+      annotations: { readOnlyHint: true, idempotentHint: true },
     }),
   ]
 

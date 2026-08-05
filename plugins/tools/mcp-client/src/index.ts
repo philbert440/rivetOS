@@ -40,9 +40,9 @@ import type { ContentPart } from '@rivetos/types'
 export interface MCPServerConfig {
   /**
    * MCP protocol generation. 'v1' (default) speaks sessionful 2025-11-25 —
-   * what today's external MCP servers expect. 'v2' opts a server into the
-   * 2026-07-28 RC stateless protocol (via @rivetos/mcp-v2's facade); flip
-   * per-server as the ecosystem upgrades. SSE is v1-only.
+   * what most external MCP servers still expect. 'v2' opts a server into the
+   * 2026-07-28 final stateless protocol (via @rivetos/mcp-v2's facade); flip
+   * per-server as the ecosystem upgrades. SSE is v1-only (deprecated).
    */
   protocol?: 'v1' | 'v2'
   /** Transport type */
@@ -127,7 +127,7 @@ interface MCPConnection {
   /** v1 (sessionful SDK) handles — absent on v2 connections. */
   client?: Client
   transport?: Transport
-  /** v2 (2026-07-28 RC) facade — absent on v1 connections. */
+  /** v2 (2026-07-28 final) facade — absent on v1 connections. */
   v2?: V2Facade
   connected: boolean
   tools: MCPDiscoveredTool[]
@@ -303,7 +303,7 @@ export class MCPClientPlugin {
     return { id, config, client, transport, connected: true, tools }
   }
 
-  /** v2 (2026-07-28 RC, stateless) connection via the @rivetos/mcp-v2 facade. */
+  /** v2 (2026-07-28 final, stateless) connection via the @rivetos/mcp-v2 facade. */
   private async connectServerV2(id: string, config: MCPServerConfig): Promise<MCPConnection> {
     if (config.transport === 'sse') {
       throw new Error(`MCP server "${id}": sse transport is v1-only`)
