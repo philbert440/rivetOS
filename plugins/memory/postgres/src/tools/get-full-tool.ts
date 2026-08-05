@@ -118,15 +118,20 @@ function formatToolResult(update: any): string | null {
 // --- disk access -------------------------------------------------------------
 
 /** Read a single 0-indexed line from a (potentially large) file without
- *  loading the whole thing. */
-async function readJsonlLine(file: string, lineIndex: number): Promise<string | null> {
+ *  loading the whole thing. Exported for tests.
+ *
+ *  Resolve BEFORE rl.close(): close() emits 'close' synchronously, and at
+ *  that moment `i` has not been incremented past lineIndex yet, so the
+ *  close handler's `i <= lineIndex` guard would resolve(null) first and win
+ *  the promise race — every successful match reported "line not found". */
+export async function readJsonlLine(file: string, lineIndex: number): Promise<string | null> {
   return new Promise((resolve, reject) => {
     const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity })
     let i = 0
     rl.on('line', (line) => {
       if (i === lineIndex) {
-        rl.close()
         resolve(line)
+        rl.close()
       }
       i++
     })
