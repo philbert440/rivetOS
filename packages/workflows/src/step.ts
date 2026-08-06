@@ -9,10 +9,14 @@
  * step.human NEVER resolves inline: writes gate_opened, sets paused_human,
  * throws WorkflowSuspension (caught by engine).
  *
- * step.parallel is reserved (throws) — slice G.
+ * step.parallel (slice G): journaled parent step + branch-scoped Steps with
+ * namespaced labels, serialized journal writes, per-branch caseDirs.
  */
 
+import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import {
+  BudgetExceededError,
   ContractValidationError,
   WorkflowKilled,
   WorkflowSuspension,
@@ -22,7 +26,14 @@ import type { ExecutorRegistry } from './executors.js'
 import { appendJournal, findCachedStepResult, isOpenGate, nowIso } from './journal.js'
 import { mergeFields, updateRun } from './case.js'
 import type { CallRegistry } from './registry.js'
-import type { Field, JournalEntry, LoadedWorkflow, StepKind } from './types.js'
+import type {
+  Field,
+  JournalEntry,
+  LoadedWorkflow,
+  StepKind,
+  StepUsage,
+  WorkflowBudgets,
+} from './types.js'
 import { makeStepId } from './types.js'
 
 export interface AgentStepOpts {
@@ -50,8 +61,6 @@ export interface HumanStepOpts {
 
 /**
  * Step handle injected into run.ts.
- *
- * `parallel` exists so call sites type-check later; invoking it throws.
  */
 export interface Step {
   agent(label: string, opts: AgentStepOpts): Promise<Record<string, unknown>>
@@ -60,10 +69,11 @@ export interface Step {
   call(label: string, ref: string, input?: Record<string, unknown>): Promise<unknown>
   done(output: Record<string, unknown>): Promise<void>
   /**
-   * Reserved for slice G. Plumbing only — throws if called.
-   * Future: step.parallel(label, branches) with per-branch subdirs + merge.
+   * Run branches concurrently. Journaled as kind `parallel`; each branch gets
+   * a scoped Step with namespaced labels and its own working subdirectory.
+   * Result array is in branch-index order (not completion order).
    */
-  parallel(label: string, ..._args: unknown[]): Promise<never>
+  parallel<T>(label: string, branches: Array<(step: Step) => Promise<T>>): Promise<T[]>
 }
 
 export interface StepRuntimeOptions {
@@ -78,18 +88,72 @@ export interface StepRuntimeOptions {
   isKilled: () => boolean
   /** Output contract fields from the workflow manifest — validated at step.done. */
   outputFields: Field[]
+  /** Per-workflow budgets (optional). Absent / empty = unlimited. */
+  budgets?: WorkflowBudgets
+}
+
+function mergeUsage(a: StepUsage | undefined, b: StepUsage): StepUsage {
+  const out: StepUsage = { ...a }
+  if (typeof b.tokens === 'number') {
+    out.tokens = (out.tokens ?? 0) + b.tokens
+  }
+  if (typeof b.costUsd === 'number') {
+    out.costUsd = (out.costUsd ?? 0) + b.costUsd
+  }
+  return out
 }
 
 export function createStepRuntime(options: StepRuntimeOptions): {
   step: Step
   labelCounts: Map<string, number>
   getDoneOutput: () => Record<string, unknown> | undefined
+  getSpent: () => { tokens: number; costUsd: number }
 } {
   const labelCounts = new Map<string, number>()
   let doneOutput: Record<string, unknown> | undefined
 
   // Working copy of journal for in-memory cache hits during a single execution.
   const liveJournal = [...options.journal]
+
+  // Accumulated spend for this run (replay + live). Shared across parallel branches.
+  let spentTokens = 0
+  let spentCostUsd = 0
+
+  function accumulateUsage(u?: StepUsage): void {
+    if (!u) return
+    if (typeof u.tokens === 'number') spentTokens += u.tokens
+    if (typeof u.costUsd === 'number') spentCostUsd += u.costUsd
+  }
+
+  function checkBudget(): void {
+    const budgets = options.budgets
+    if (!budgets) return
+    // zero / non-positive / non-finite = unlimited for that dimension
+    if (
+      typeof budgets.maxTokens === 'number' &&
+      Number.isFinite(budgets.maxTokens) &&
+      budgets.maxTokens > 0 &&
+      spentTokens > budgets.maxTokens
+    ) {
+      throw new BudgetExceededError({
+        budget: 'maxTokens',
+        limit: budgets.maxTokens,
+        spent: spentTokens,
+      })
+    }
+    if (
+      typeof budgets.maxCost === 'number' &&
+      Number.isFinite(budgets.maxCost) &&
+      budgets.maxCost > 0 &&
+      spentCostUsd > budgets.maxCost
+    ) {
+      throw new BudgetExceededError({
+        budget: 'maxCost',
+        limit: budgets.maxCost,
+        spent: spentCostUsd,
+      })
+    }
+  }
 
   function nextSeq(label: string): number {
     const n = (labelCounts.get(label) ?? 0) + 1
@@ -103,6 +167,18 @@ export function createStepRuntime(options: StepRuntimeOptions): {
     }
   }
 
+  /**
+   * Journal lookup for a finished step's usage (for replay accumulation).
+   */
+  function usageFromJournal(label: string, seq: number): StepUsage | undefined {
+    for (const e of liveJournal) {
+      if (e.type === 'step_finished' && e.label === label && e.seq === seq) {
+        return e.usage
+      }
+    }
+    return undefined
+  }
+
   async function beginStep(
     label: string,
     kind: StepKind,
@@ -111,10 +187,13 @@ export function createStepRuntime(options: StepRuntimeOptions): {
     | { mode: 'live'; stepId: string; seq: number }
   > {
     checkKill()
+    checkBudget()
     const seq = nextSeq(label)
     const stepId = makeStepId(label, seq)
     const cached = findCachedStepResult(liveJournal, label, seq, kind)
     if (cached.hit) {
+      // Replay: keep spent total by accumulating journaled usage.
+      accumulateUsage(usageFromJournal(label, seq))
       return { mode: 'replay', stepId, seq, result: cached.result }
     }
     // Re-execute path after crash: step_started may already exist without a finish.
@@ -144,6 +223,7 @@ export function createStepRuntime(options: StepRuntimeOptions): {
     stepId: string,
     kind: StepKind,
     result: unknown,
+    usage?: StepUsage,
   ): Promise<void> {
     const entry = {
       type: 'step_finished' as const,
@@ -153,6 +233,7 @@ export function createStepRuntime(options: StepRuntimeOptions): {
       seq,
       kind,
       result,
+      ...(usage && (usage.tokens !== undefined || usage.costUsd !== undefined) ? { usage } : {}),
     }
     await appendJournal(options.caseDir, entry)
     liveJournal.push(entry)
@@ -179,186 +260,283 @@ export function createStepRuntime(options: StepRuntimeOptions): {
     liveJournal.push(entry)
   }
 
-  const step: Step = {
-    async agent(label, opts) {
-      const phase = await beginStep(label, 'agent')
-      if (phase.mode === 'replay') {
-        return phase.result as Record<string, unknown>
-      }
-      const { stepId, seq } = phase
-      try {
-        const agentDef = opts.agent ? options.workflow.agents[opts.agent] : undefined
-        if (opts.agent && !agentDef) {
+  interface ScopeOpts {
+    /** Prefix prepended to every inner label (branch namespace). */
+    labelPrefix: string
+    /** caseDir seen by agent/run executors (branch subdir or root). */
+    executorCaseDir: string
+    allowHuman: boolean
+    allowParallel: boolean
+    allowDone: boolean
+    /** When false, agent out-fields are NOT merged into case.json (branch safety). */
+    mergeAgentFields: boolean
+  }
+
+  function makeStep(scope: ScopeOpts): Step {
+    function scopedLabel(label: string): string {
+      return scope.labelPrefix ? `${scope.labelPrefix}${label}` : label
+    }
+
+    const step: Step = {
+      async agent(label, opts) {
+        const fullLabel = scopedLabel(label)
+        const phase = await beginStep(fullLabel, 'agent')
+        if (phase.mode === 'replay') {
+          return phase.result as Record<string, unknown>
+        }
+        const { stepId, seq } = phase
+        let stepUsage: StepUsage | undefined
+        try {
+          const agentDef = opts.agent ? options.workflow.agents[opts.agent] : undefined
+          if (opts.agent && !agentDef) {
+            throw new Error(
+              `Unknown agent "${opts.agent}" in step "${fullLabel}" — no agents/${opts.agent}.md ` +
+                `in workflow "${options.workflow.manifest.id}" (known: ${
+                  Object.keys(options.workflow.agents).join(', ') || 'none'
+                })`,
+            )
+          }
+          const result = await options.executors.agent.execute({
+            label: fullLabel,
+            stepId,
+            agent: opts.agent,
+            prompt: opts.prompt,
+            out: opts.out,
+            agentDef,
+            caseDir: scope.executorCaseDir,
+            workflow: options.workflow,
+            timeoutMs: options.stepTimeoutMs,
+            extra: opts,
+            reportUsage: (u) => {
+              stepUsage = mergeUsage(stepUsage, u)
+            },
+          })
+
+          // Merge only declared fields into case.json (root steps only).
+          if (scope.mergeAgentFields) {
+            const mergeDeclared: Record<string, unknown> = {}
+            const und: string[] = []
+            for (const [k, v] of Object.entries(result ?? {})) {
+              if (opts.out.includes(k)) {
+                mergeDeclared[k] = v
+              } else {
+                und.push(k)
+              }
+            }
+            if (Object.keys(mergeDeclared).length > 0) {
+              await mergeFields(options.caseDir, mergeDeclared)
+            }
+            if (und.length > 0) {
+              const warn = {
+                type: 'manifest_warn' as const,
+                ts: nowIso(),
+                stepId,
+                label: fullLabel,
+                seq,
+                undeclared: und,
+                message: `Agent step "${fullLabel}" returned undeclared fields (not merged): ${und.join(', ')}`,
+              }
+              await appendJournal(options.caseDir, warn)
+              liveJournal.push(warn)
+              console.warn(warn.message)
+            }
+          }
+
+          accumulateUsage(stepUsage)
+          await finishStep(fullLabel, seq, stepId, 'agent', result, stepUsage)
+          return result
+        } catch (err) {
+          if (isWorkflowSuspension(err)) throw err
+          await failStep(fullLabel, seq, stepId, 'agent', err)
+          throw err
+        }
+      },
+
+      async run(label, opts) {
+        const fullLabel = scopedLabel(label)
+        const phase = await beginStep(fullLabel, 'run')
+        if (phase.mode === 'replay') {
+          return phase.result
+        }
+        const { stepId, seq } = phase
+        let stepUsage: StepUsage | undefined
+        try {
+          const result = await options.executors.run.execute({
+            label: fullLabel,
+            stepId,
+            script: opts.script,
+            skill: opts.skill,
+            in: opts.in,
+            caseDir: scope.executorCaseDir,
+            workflow: options.workflow,
+            timeoutMs: options.stepTimeoutMs,
+            extra: opts,
+            reportUsage: (u) => {
+              stepUsage = mergeUsage(stepUsage, u)
+            },
+          })
+          accumulateUsage(stepUsage)
+          await finishStep(fullLabel, seq, stepId, 'run', result, stepUsage)
+          return result
+        } catch (err) {
+          if (isWorkflowSuspension(err)) throw err
+          await failStep(fullLabel, seq, stepId, 'run', err)
+          throw err
+        }
+      },
+
+      async human(label, opts) {
+        if (!scope.allowHuman) {
           throw new Error(
-            `Unknown agent "${opts.agent}" in step "${label}" — no agents/${opts.agent}.md ` +
-              `in workflow "${options.workflow.manifest.id}" (known: ${
-                Object.keys(options.workflow.agents).join(', ') || 'none'
-              })`,
+            `step.human("${label}") is not allowed inside a step.parallel branch ` +
+              `(partial suspension is undefined in v1)`,
           )
         }
-        const result = await options.executors.agent.execute({
-          label,
-          stepId,
-          agent: opts.agent,
-          prompt: opts.prompt,
-          out: opts.out,
-          agentDef,
-          caseDir: options.caseDir,
-          workflow: options.workflow,
-          timeoutMs: options.stepTimeoutMs,
-          extra: opts,
-        })
+        const fullLabel = scopedLabel(label)
+        const phase = await beginStep(fullLabel, 'human')
+        if (phase.mode === 'replay') {
+          return phase.result as Record<string, unknown>
+        }
+        const { stepId, seq } = phase
 
-        // Merge only declared fields (opts.out) into case.json; warn on undeclared.
-        const mergeDeclared: Record<string, unknown> = {}
-        const und: string[] = []
-        for (const [k, v] of Object.entries(result ?? {})) {
-          if (opts.out.includes(k)) {
-            mergeDeclared[k] = v
-          } else {
-            und.push(k)
-          }
-        }
-        if (Object.keys(mergeDeclared).length > 0) {
-          await mergeFields(options.caseDir, mergeDeclared)
-        }
-        if (und.length > 0) {
-          const warn = {
-            type: 'manifest_warn' as const,
+        // Live human gate: open gate, pause, suspend. Never resolve inline.
+        // Crash re-entry: if this gate is already open in the journal, re-suspend
+        // without appending a duplicate gate_opened.
+        if (!isOpenGate(liveJournal, fullLabel, seq)) {
+          const opened = {
+            type: 'gate_opened' as const,
             ts: nowIso(),
             stepId,
-            label,
+            label: fullLabel,
             seq,
-            undeclared: und,
-            message: `Agent step "${label}" returned undeclared fields (not merged): ${und.join(', ')}`,
+            prompt: opts.prompt,
+            fields: opts.fields,
           }
-          await appendJournal(options.caseDir, warn)
-          liveJournal.push(warn)
-
-          console.warn(warn.message)
+          await appendJournal(options.caseDir, opened)
+          liveJournal.push(opened)
         }
-
-        await finishStep(label, seq, stepId, 'agent', result)
-        return result
-      } catch (err) {
-        if (isWorkflowSuspension(err)) throw err
-        await failStep(label, seq, stepId, 'agent', err)
-        throw err
-      }
-    },
-
-    async run(label, opts) {
-      const phase = await beginStep(label, 'run')
-      if (phase.mode === 'replay') {
-        return phase.result
-      }
-      const { stepId, seq } = phase
-      try {
-        const result = await options.executors.run.execute({
-          label,
-          stepId,
-          script: opts.script,
-          skill: opts.skill,
-          in: opts.in,
-          caseDir: options.caseDir,
-          workflow: options.workflow,
-          timeoutMs: options.stepTimeoutMs,
-          extra: opts,
+        await updateRun(options.caseDir, {
+          status: 'paused_human',
+          current: stepId,
         })
-        await finishStep(label, seq, stepId, 'run', result)
-        return result
-      } catch (err) {
-        if (isWorkflowSuspension(err)) throw err
-        await failStep(label, seq, stepId, 'run', err)
-        throw err
-      }
-    },
+        throw new WorkflowSuspension({ stepId, label: fullLabel, seq })
+      },
 
-    async human(label, opts) {
-      const phase = await beginStep(label, 'human')
-      if (phase.mode === 'replay') {
-        return phase.result as Record<string, unknown>
-      }
-      const { stepId, seq } = phase
-
-      // Live human gate: open gate, pause, suspend. Never resolve inline.
-      // Crash re-entry: if this gate is already open in the journal, re-suspend
-      // without appending a duplicate gate_opened.
-      if (!isOpenGate(liveJournal, label, seq)) {
-        const opened = {
-          type: 'gate_opened' as const,
-          ts: nowIso(),
-          stepId,
-          label,
-          seq,
-          prompt: opts.prompt,
-          fields: opts.fields,
+      async call(label, ref, input = {}) {
+        const fullLabel = scopedLabel(label)
+        const phase = await beginStep(fullLabel, 'call')
+        if (phase.mode === 'replay') {
+          return phase.result
         }
-        await appendJournal(options.caseDir, opened)
-        liveJournal.push(opened)
-      }
-      await updateRun(options.caseDir, {
-        status: 'paused_human',
-        current: stepId,
-      })
-      throw new WorkflowSuspension({ stepId, label, seq })
-    },
+        const { stepId, seq } = phase
+        try {
+          const result = await options.callRegistry.call(ref, input, {
+            parentRunId: options.runId,
+            parentStepId: stepId,
+            parentCaseDir: options.caseDir,
+            timeoutMs: options.stepTimeoutMs,
+          })
+          await finishStep(fullLabel, seq, stepId, 'call', result)
+          return result
+        } catch (err) {
+          if (isWorkflowSuspension(err)) throw err
+          await failStep(fullLabel, seq, stepId, 'call', err)
+          throw err
+        }
+      },
 
-    async call(label, ref, input = {}) {
-      const phase = await beginStep(label, 'call')
-      if (phase.mode === 'replay') {
-        return phase.result
-      }
-      const { stepId, seq } = phase
-      try {
-        const result = await options.callRegistry.call(ref, input, {
-          parentRunId: options.runId,
-          parentStepId: stepId,
-          parentCaseDir: options.caseDir,
-          timeoutMs: options.stepTimeoutMs,
-        })
-        await finishStep(label, seq, stepId, 'call', result)
-        return result
-      } catch (err) {
-        if (isWorkflowSuspension(err)) throw err
-        await failStep(label, seq, stepId, 'call', err)
-        throw err
-      }
-    },
-
-    async done(output) {
-      checkKill()
-      // Enforce the output contract: every required output field must be present.
-      const missing = options.outputFields.filter(
-        (f) => f.required !== false && (output[f.name] === undefined || output[f.name] === null),
-      )
-      if (missing.length > 0) {
-        throw new ContractValidationError(
-          missing.map((f) => ({
-            field: f.name,
-            reason: 'missing',
-            message: `required ${f.type} output field "${f.name}" is missing from step.done()`,
-          })),
+      async done(output) {
+        if (!scope.allowDone) {
+          throw new Error(
+            `step.done() is not allowed inside a step.parallel branch — ` +
+              `return a value from the branch function instead`,
+          )
+        }
+        checkKill()
+        checkBudget()
+        // Enforce the output contract: every required output field must be present.
+        const missing = options.outputFields.filter(
+          (f) => f.required !== false && (output[f.name] === undefined || output[f.name] === null),
         )
-      }
-      const seq = nextSeq('done')
-      const stepId = makeStepId('done', seq)
-      doneOutput = output
-      await mergeFields(options.caseDir, output)
-      await finishStep('done', seq, stepId, 'done', output)
-    },
+        if (missing.length > 0) {
+          throw new ContractValidationError(
+            missing.map((f) => ({
+              field: f.name,
+              reason: 'missing',
+              message: `required ${f.type} output field "${f.name}" is missing from step.done()`,
+            })),
+          )
+        }
+        const seq = nextSeq('done')
+        const stepId = makeStepId('done', seq)
+        doneOutput = output
+        await mergeFields(options.caseDir, output)
+        await finishStep('done', seq, stepId, 'done', output)
+      },
 
-    parallel(label: string): Promise<never> {
-      throw new Error(
-        `step.parallel("${label}") is not implemented in v1 (slice G). ` +
-          `Use sequential steps or step.call for composition.`,
-      )
-    },
+      async parallel<T>(label: string, branches: Array<(step: Step) => Promise<T>>): Promise<T[]> {
+        if (!scope.allowParallel) {
+          throw new Error(
+            `nested step.parallel("${label}") is not allowed — ` +
+              `parallel branches cannot contain step.parallel`,
+          )
+        }
+        if (!Array.isArray(branches)) {
+          throw new Error(
+            `step.parallel("${label}") requires an array of branch functions as the second argument`,
+          )
+        }
+        const fullLabel = scopedLabel(label)
+        const phase = await beginStep(fullLabel, 'parallel')
+        if (phase.mode === 'replay') {
+          return phase.result as T[]
+        }
+        const { stepId, seq } = phase
+        try {
+          // Promise.all: branch-index order result; any rejection fails the whole step.
+          // In-flight sibling executor work is not cancelled (AbortSignal is a follow-up).
+          const results = await Promise.all(
+            branches.map(async (fn, i) => {
+              const branchCaseDir = join(options.caseDir, stepId, `b${i}`)
+              await mkdir(branchCaseDir, { recursive: true })
+              const branchStep = makeStep({
+                // Namespace: `${parallelStepId}/b${i}:` + inner label
+                labelPrefix: `${stepId}/b${i}:`,
+                executorCaseDir: branchCaseDir,
+                allowHuman: false,
+                allowParallel: false,
+                allowDone: false,
+                mergeAgentFields: false,
+              })
+              return fn(branchStep)
+            }),
+          )
+          await finishStep(fullLabel, seq, stepId, 'parallel', results)
+          return results
+        } catch (err) {
+          if (isWorkflowSuspension(err)) throw err
+          await failStep(fullLabel, seq, stepId, 'parallel', err)
+          throw err
+        }
+      },
+    }
+
+    return step
   }
+
+  const step = makeStep({
+    labelPrefix: '',
+    executorCaseDir: options.caseDir,
+    allowHuman: true,
+    allowParallel: true,
+    allowDone: true,
+    mergeAgentFields: true,
+  })
 
   return {
     step,
     labelCounts,
     getDoneOutput: () => doneOutput,
+    getSpent: () => ({ tokens: spentTokens, costUsd: spentCostUsd }),
   }
 }

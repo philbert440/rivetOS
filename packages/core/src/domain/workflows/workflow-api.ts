@@ -27,6 +27,7 @@ import type {
 } from '@rivetos/types'
 import {
   ContractValidationError,
+  MaxConcurrentRunsError,
   RunNotFoundError,
   WorkflowEngine,
   WorkflowNotFoundError,
@@ -243,7 +244,41 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
               if (err instanceof WorkflowNotFoundError) {
                 return json(res, 404, { error: err.message })
               }
+              if (err instanceof MaxConcurrentRunsError) {
+                return json(res, 429, {
+                  error: err.message,
+                  workflowId: err.workflowId,
+                  max: err.max,
+                  current: err.current,
+                })
+              }
               throw err
+            }
+          }
+
+          // Pre-flight concurrency cap so a detached 202 never means "queued
+          // over the cap". startRun re-checks; this is the HTTP 429 surface.
+          const maxConcurrent = def.manifest.budgets?.maxConcurrentRuns
+          if (
+            typeof maxConcurrent === 'number' &&
+            Number.isFinite(maxConcurrent) &&
+            maxConcurrent > 0
+          ) {
+            const existing = await listRuns(caseDirRoot, { limit: 50_000, depth: 8 })
+            const active = existing.filter(
+              (r) =>
+                r.workflowId === workflowId &&
+                r.status !== 'done' &&
+                r.status !== 'failed' &&
+                r.status !== 'killed',
+            )
+            if (active.length >= maxConcurrent) {
+              return json(res, 429, {
+                error: `Too many concurrent runs of workflow "${workflowId}": ${active.length} active (maxConcurrentRuns=${maxConcurrent})`,
+                workflowId,
+                max: maxConcurrent,
+                current: active.length,
+              })
             }
           }
 

@@ -20,6 +20,7 @@ export type {
   RunStatus,
   Run,
   StepKind,
+  StepUsage,
   JournalEntryType,
   JournalEntry,
   JournalEntryBase,
@@ -45,8 +46,12 @@ export {
   RunNotFoundError,
   StepTimeoutError,
   RunTimeoutError,
+  BudgetExceededError,
+  MaxConcurrentRunsError,
   isWorkflowSuspension,
   isWorkflowKilled,
+  isBudgetExceededError,
+  isMaxConcurrentRunsError,
   type ContractValidationIssue,
 } from './errors.js'
 
@@ -116,6 +121,7 @@ export {
   type MockAgentHandler,
   type MockRunHandler,
   type MockExecutorRegistryOptions,
+  type ReportUsageFn,
 } from './executors.js'
 
 // Call registry
@@ -141,6 +147,7 @@ export {
 // Engine
 export {
   WorkflowEngine,
+  assertUnderConcurrentCap,
   type RunScript,
   type RunScriptContext,
   type StartRunOptions,

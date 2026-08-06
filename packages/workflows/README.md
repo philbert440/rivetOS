@@ -56,7 +56,7 @@ export default async function run(step: Step, ctx: RunScriptContext) {
 | `step.human` | Human gate — **always suspends** (see below) |
 | `step.call` | Child workflow or namespaced foreign unit |
 | `step.done` | Finish with output fields |
-| `step.parallel` | **Not in v1** (slice G) — property exists, throws if called |
+| `step.parallel` | Concurrent branches (see below) |
 
 ### Journal-replay
 
@@ -81,6 +81,46 @@ Orchestration code (`run.ts`) **must** be deterministic between replays:
 - All nondeterminism lives **inside** steps (journaled)
 
 Use `checkRunScriptDeterminism(source)` for a best-effort static scan. Prefer a real eslint rule later.
+
+### Budgets (manifest `budgets`)
+
+Optional caps in `workflow.yaml`:
+
+```yaml
+budgets:
+  maxTokens: 100000        # total tokens across the run (all agent/run steps)
+  maxCost: 2.50            # total USD cost
+  maxConcurrentRuns: 3     # non-terminal runs of this workflowId (incl. nested children)
+```
+
+- **Absent / zero-ish fields** — that dimension is unlimited.
+- **Token/cost** — the step runtime accumulates usage reported by executors via an optional `reportUsage` callback on `AgentExecuteOpts` / `RunExecuteOpts`. Each `step_finished` may carry a `usage: { tokens?, costUsd? }` field. Before every step begins, if accumulated spend **exceeds** the cap, the engine throws `BudgetExceededError` and the run ends **failed** with a message naming the budget and the spend. On resume/continue, journaled usage is re-accumulated so the spent total is preserved.
+- **maxConcurrentRuns** — enforced at `startRun` by scanning `caseDirRoot` (including nested child runs). At/over the cap → `MaxConcurrentRunsError`. The workflow API maps this to **HTTP 429**. Mid-run budget kills are ordinary run failures (status `failed`), not 429.
+- Host agent executor (`createTaskAgentExecutor`) reports `totalTokens` / `costUsd` from the terminal task row when present. If the task engine leaves usage empty, the callback is still wired — that step simply contributes zero (plumbing lands regardless).
+
+### `step.parallel`
+
+```ts
+const results = await step.parallel('fan-out', [
+  async (s) => s.agent('left', { out: ['x'] }),
+  async (s) => s.run('right', { script: 'scripts/other.sh' }),
+])
+// results is T[] in **branch-index order** (not completion order)
+```
+
+Semantics:
+
+| Rule | Detail |
+|------|--------|
+| Journaled parent | kind `parallel`, stable id `label#seq`; fully journaled → replay returns cached `T[]` without re-running branches |
+| Branch Step | each branch `i` gets a scoped Step; inner labels are namespaced `` `${parallelStepId}/b${i}:` + label `` and share the **same** `journal.jsonl` |
+| Journal writes | appends are **serialized** (promise chain per journal path) so concurrent branches never interleave partial JSONL lines |
+| Working dirs | `caseDir/<parallelStepId>/b<i>/` — passed as `caseDir` to that branch's agent/run executors so artifacts don't collide |
+| **No case.json merge from branches** | agent out-fields from branch steps are **not** merged into `case.json` (conflict hazard). Branch results flow only through the returned `T[]`, which is journaled as the parallel step's result |
+| Failure | `Promise.all` semantics — one branch rejection fails the whole parallel (journaled `step_failed`). Sibling in-flight executor work is **not** cancelled (AbortSignal is a tracked follow-up) |
+| Restrictions | no `step.human`, no nested `step.parallel`, no `step.done` inside a branch (clear errors) |
+| Budgets | shared accumulation with the parent run; budget checks apply between branch steps too |
+| Crash/replay | branch fns re-run; completed inner steps replay from the kind-aware journal cache |
 
 ## Engine API
 
@@ -136,6 +176,7 @@ interface ExecutorRegistry {
   agent: { execute(opts: AgentExecuteOpts): Promise<Record<string, unknown>> }
   run:   { execute(opts: RunExecuteOpts): Promise<unknown> }
 }
+// opts may include reportUsage?: (usage: { tokens?: number; costUsd?: number }) => void
 ```
 
 ## Call registry
@@ -161,6 +202,8 @@ CLI: `rivetos workflow new <name>` (see `packages/cli`).
   journal.jsonl    # append-only step journal
   KILLED           # optional kill flag
   <child-...>/     # nested child runs from step.call
+  <parallelStepId>/b0/   # branch working dirs (artifacts only — not case.json)
+  <parallelStepId>/b1/
 ```
 
 **No secrets in run state.** Run dirs may sync mesh-wide.
@@ -173,4 +216,4 @@ CLI: `rivetos workflow new <name>` (see `packages/cli`).
 
 ## Non-goals (v1)
 
-Expression languages · graph IDE · `step.parallel` · fire-and-forget calls · secrets in case state · building on old RivetHub canvas code.
+Expression languages · graph IDE · fire-and-forget calls · secrets in case state · building on old RivetHub canvas code · cancelling sibling parallel branches via AbortSignal (tracked follow-up).

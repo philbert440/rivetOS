@@ -128,6 +128,49 @@ export class RunTimeoutError extends Error {
   }
 }
 
+/**
+ * Thrown when a run's accumulated spend exceeds a workflow budget
+ * (`budgets.maxTokens` or `budgets.maxCost`) before a step begins.
+ * Engine marks the run failed with this message.
+ */
+export class BudgetExceededError extends Error {
+  readonly name = 'BudgetExceededError'
+  readonly budget: 'maxTokens' | 'maxCost'
+  readonly limit: number
+  readonly spent: number
+
+  constructor(opts: { budget: 'maxTokens' | 'maxCost'; limit: number; spent: number }) {
+    const unit = opts.budget === 'maxTokens' ? 'tokens' : 'costUsd'
+    super(
+      `Budget exceeded: ${opts.budget} limit is ${opts.limit} but spend is ${opts.spent} ${unit}`,
+    )
+    this.budget = opts.budget
+    this.limit = opts.limit
+    this.spent = opts.spent
+  }
+}
+
+/**
+ * Thrown at startRun when non-terminal runs of the same workflowId
+ * already meet/exceed `budgets.maxConcurrentRuns`. API surfaces 429.
+ */
+export class MaxConcurrentRunsError extends Error {
+  readonly name = 'MaxConcurrentRunsError'
+  readonly workflowId: string
+  readonly max: number
+  readonly current: number
+
+  constructor(opts: { workflowId: string; max: number; current: number }) {
+    super(
+      `Too many concurrent runs of workflow "${opts.workflowId}": ` +
+        `${opts.current} active (maxConcurrentRuns=${opts.max})`,
+    )
+    this.workflowId = opts.workflowId
+    this.max = opts.max
+    this.current = opts.current
+  }
+}
+
 /** True if err is a control-flow suspension (not a failure). */
 export function isWorkflowSuspension(err: unknown): err is WorkflowSuspension {
   return err instanceof WorkflowSuspension || (err as Error)?.name === 'WorkflowSuspension'
@@ -135,4 +178,12 @@ export function isWorkflowSuspension(err: unknown): err is WorkflowSuspension {
 
 export function isWorkflowKilled(err: unknown): err is WorkflowKilled {
   return err instanceof WorkflowKilled || (err as Error)?.name === 'WorkflowKilled'
+}
+
+export function isBudgetExceededError(err: unknown): err is BudgetExceededError {
+  return err instanceof BudgetExceededError || (err as Error)?.name === 'BudgetExceededError'
+}
+
+export function isMaxConcurrentRunsError(err: unknown): err is MaxConcurrentRunsError {
+  return err instanceof MaxConcurrentRunsError || (err as Error)?.name === 'MaxConcurrentRunsError'
 }

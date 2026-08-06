@@ -113,7 +113,13 @@ export interface Run {
   finishedAt?: string
 }
 
-export type StepKind = 'agent' | 'run' | 'human' | 'call' | 'done'
+export type StepKind = 'agent' | 'run' | 'human' | 'call' | 'done' | 'parallel'
+
+/** Per-step usage reported by executors / journaled on step_finished. */
+export interface StepUsage {
+  tokens?: number
+  costUsd?: number
+}
 
 /** Stable step identity: label + monotonic sequence for that label within the run. */
 export function makeStepId(label: string, seq: number): string {
@@ -173,6 +179,8 @@ export interface StepFinishedEntry extends JournalEntryBase {
   seq: number
   kind: StepKind
   result: unknown
+  /** Optional usage attributed to this step (tokens / cost). */
+  usage?: StepUsage
 }
 
 export interface StepFailedEntry extends JournalEntryBase {

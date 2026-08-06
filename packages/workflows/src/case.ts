@@ -23,10 +23,16 @@ export function casePath(caseDir: string): string {
   return join(caseDir, CASE_FILENAME)
 }
 
+let tmpCounter = 0
+
 export async function writeCase(caseDir: string, state: CaseState): Promise<void> {
   await mkdir(caseDir, { recursive: true })
   const path = casePath(caseDir)
-  const tmp = `${path}.tmp`
+  // Unique tmp per write: concurrent writers (parallel branches bumping
+  // run.current) must never clobber each other's tmp mid-write — rename is
+  // atomic, so last-rename-wins is safe; a shared tmp path is not.
+  tmpCounter += 1
+  const tmp = `${path}.${String(process.pid)}.${String(tmpCounter)}.tmp`
   await writeFile(tmp, JSON.stringify(state, null, 2) + '\n', 'utf-8')
   await rename(tmp, path)
 }
