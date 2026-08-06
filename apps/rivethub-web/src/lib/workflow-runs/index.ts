@@ -11,4 +11,19 @@ export {
 
 export { formatJournalEntry, formatJournal, type JournalLine } from './journal-format.js'
 
-export { RUN_STATUS_COLORS, RUN_STATUS_LABELS, isLiveRunStatus } from './status.js'
+export {
+  RUN_STATUS_COLORS,
+  RUN_STATUS_LABELS,
+  isLiveRunStatus,
+  GRAPH_NODE_STATUS_COLORS,
+  GRAPH_NODE_STATUS_LABELS,
+  GRAPH_NODE_STATUS_STROKE,
+  type GraphNodeStatus,
+} from './status.js'
+
+export {
+  projectGraph,
+  type GraphNode,
+  type GraphEdge,
+  type GraphProjection,
+} from './graph-project.js'

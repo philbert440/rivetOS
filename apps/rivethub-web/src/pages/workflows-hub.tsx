@@ -1,8 +1,10 @@
 /**
- * Workflows hub (slice C) — defs list, contract trigger form, run detail
- * with journal timeline, gate resume, kill, and child-run tree.
+ * Workflows hub (slices C + H) — defs list, contract trigger form, run detail
+ * with journal timeline / graph projection, gate resume, kill, and child-run tree.
  *
  * Live updates: 3s polling on run detail while status is live; 5s on hub list.
+ * Graph is a pure projection of already-polled outline + journal (no extra fetch
+ * beyond the workflow def outline used for declared shape).
  * WS deltas deferred (server does not emit run journal frames yet).
  */
 
@@ -20,6 +22,7 @@ import type {
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { WorkflowContractForm } from '../components/workflow-contract-form.js'
+import { WorkflowGraph } from '../components/workflow-graph.js'
 import {
   emptyFormValues,
   formatJournal,
@@ -28,6 +31,7 @@ import {
   isLiveRunStatus,
   issuesFromGatewayError,
   parseFormValues,
+  projectGraph,
   RUN_STATUS_COLORS,
   RUN_STATUS_LABELS,
   type FieldFormValues,
@@ -185,6 +189,38 @@ function StatusChip(props: { status: string }): JSX.Element {
   return <span className={`shrink-0 font-mono text-xs ${color}`}>{label}</span>
 }
 
+/** Timeline | Graph segment control — matches hub mono chip idiom. */
+function ViewToggle(props: {
+  value: 'timeline' | 'graph'
+  onChange: (v: 'timeline' | 'graph') => void
+}): JSX.Element {
+  const btn = (id: 'timeline' | 'graph', label: string) => {
+    const active = props.value === id
+    return (
+      <button
+        type="button"
+        onClick={() => props.onChange(id)}
+        aria-pressed={active}
+        className={`rounded px-2.5 py-1 font-mono text-[11px] ${
+          active ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
+        }`}
+      >
+        {label}
+      </button>
+    )
+  }
+  return (
+    <div
+      className="inline-flex gap-0.5 rounded border border-line p-0.5"
+      role="group"
+      aria-label="Run view"
+    >
+      {btn('timeline', 'Timeline')}
+      {btn('graph', 'Graph')}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Trigger form
 // ---------------------------------------------------------------------------
@@ -257,7 +293,7 @@ export function WorkflowTriggerPage(): JSX.Element {
   if (!connected) return <NotConnected />
 
   return (
-    <div className="mx-auto max-w-xl px-6 py-8">
+    <div className="mx-auto max-w-3xl px-6 py-8">
       <div className="mb-4">
         <Link
           to="/workflows"
@@ -279,16 +315,13 @@ export function WorkflowTriggerPage(): JSX.Element {
           {def.data.workflow.description && (
             <p className="mt-2 text-sm text-ink-dim">{def.data.workflow.description}</p>
           )}
-          {def.data.workflow.outline && def.data.workflow.outline.length > 0 && (
-            <OutlinePreview outline={def.data.workflow.outline} />
-          )}
 
           <form
             onSubmit={(e) => {
               e.preventDefault()
               void onSubmit()
             }}
-            className="mt-6 flex flex-col gap-4"
+            className="mt-6 flex max-w-xl flex-col gap-4"
           >
             <WorkflowContractForm
               fields={fields}
@@ -317,29 +350,26 @@ export function WorkflowTriggerPage(): JSX.Element {
               </button>
             </div>
           </form>
+
+          {def.data.workflow.outline && def.data.workflow.outline.length > 0 && (
+            <OutlineGraph outline={def.data.workflow.outline} />
+          )}
         </>
       )}
     </div>
   )
 }
 
-function OutlinePreview(props: {
-  outline: NonNullable<WorkflowDefSummary['outline']>
-}): JSX.Element {
+/** Outline-only graph on the trigger page (declared shape, all pending). */
+function OutlineGraph(props: { outline: NonNullable<WorkflowDefSummary['outline']> }): JSX.Element {
+  const graph = useMemo(() => projectGraph(props.outline, []), [props.outline])
   return (
-    <div className="mt-4 rounded border border-line bg-panel px-3 py-2">
-      <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+    <section className="mt-8">
+      <h2 className="mb-2 font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
         Outline (display)
-      </div>
-      <ol className="list-inside list-decimal font-mono text-[11px] text-ink-dim">
-        {props.outline.map((s) => (
-          <li key={s.id}>
-            {s.label ?? s.id}
-            {s.kind ? ` · ${s.kind}` : ''}
-          </li>
-        ))}
-      </ol>
-    </div>
+      </h2>
+      <WorkflowGraph nodes={graph.nodes} edges={graph.edges} />
+    </section>
   )
 }
 
@@ -394,6 +424,23 @@ export function WorkflowRunDetailPage(): JSX.Element {
   const journalLines = useMemo(
     () => (payload?.journal ? formatJournal(payload.journal) : []),
     [payload?.journal],
+  )
+
+  // Outline is display-only on the def; fetch for graph declared shape.
+  // Pure projection — no new run endpoints; reuses getWorkflow.
+  const workflowId = run?.workflowId
+  const def = useQuery({
+    queryKey: ['workflow', baseUrl, token ?? '', workflowId ?? ''],
+    enabled: connected && Boolean(workflowId),
+    queryFn: ({ signal }) => useConnection.getState().gateway.getWorkflow(workflowId!, signal),
+    staleTime: 60_000,
+  })
+
+  const [detailView, setDetailView] = useState<'timeline' | 'graph'>('timeline')
+
+  const graph = useMemo(
+    () => projectGraph(def.data?.workflow.outline, payload?.journal ?? []),
+    [def.data?.workflow.outline, payload?.journal],
   )
 
   const onKill = async (): Promise<void> => {
@@ -547,55 +594,74 @@ export function WorkflowRunDetailPage(): JSX.Element {
           )}
 
           <section>
-            <h2 className="mb-2 font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
-              Journal
-              {isLiveRunStatus(run.status) && (
-                <span className="ml-2 font-normal normal-case text-ink-dim/70">
-                  · live · 3s poll
-                </span>
-              )}
-            </h2>
-            <ol className="flex flex-col gap-0 border-l border-line pl-4">
-              {journalLines.map((line) => (
-                <li key={line.key} className="relative mb-3 pl-1">
-                  <span
-                    className={`absolute -left-[1.15rem] top-1.5 size-2 rounded-full ${
-                      line.severity === 'error'
-                        ? 'bg-red'
-                        : line.severity === 'em'
-                          ? 'bg-em'
-                          : line.severity === 'warn'
-                            ? 'bg-em-dim/60'
-                            : 'bg-line'
-                    }`}
-                  />
-                  <div className="flex flex-wrap items-baseline gap-2">
-                    <span className="font-mono text-[10px] text-ink-dim">
-                      {line.ts ? new Date(line.ts).toLocaleTimeString() : '—'}
-                    </span>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
+                {detailView === 'timeline' ? 'Journal' : 'Graph'}
+                {isLiveRunStatus(run.status) && (
+                  <span className="ml-2 font-normal normal-case text-ink-dim/70">
+                    · live · 3s poll
+                  </span>
+                )}
+              </h2>
+              <ViewToggle value={detailView} onChange={setDetailView} />
+            </div>
+
+            {detailView === 'timeline' ? (
+              <ol className="flex flex-col gap-0 border-l border-line pl-4">
+                {journalLines.map((line) => (
+                  <li key={line.key} className="relative mb-3 pl-1">
                     <span
-                      className={`text-sm ${
+                      className={`absolute -left-[1.15rem] top-1.5 size-2 rounded-full ${
                         line.severity === 'error'
-                          ? 'text-red'
+                          ? 'bg-red'
                           : line.severity === 'em'
-                            ? 'text-em'
-                            : 'text-ink'
+                            ? 'bg-em'
+                            : line.severity === 'warn'
+                              ? 'bg-em-dim/60'
+                              : 'bg-line'
                       }`}
-                    >
-                      {line.summary}
-                    </span>
-                  </div>
-                  {line.detail && (
-                    <pre className="mt-0.5 max-h-24 overflow-auto font-mono text-[11px] text-ink-dim whitespace-pre-wrap">
-                      {line.detail}
-                    </pre>
-                  )}
-                </li>
-              ))}
-              {journalLines.length === 0 && (
-                <li className="text-sm text-ink-dim">no journal entries yet</li>
-              )}
-            </ol>
+                    />
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span className="font-mono text-[10px] text-ink-dim">
+                        {line.ts ? new Date(line.ts).toLocaleTimeString() : '—'}
+                      </span>
+                      <span
+                        className={`text-sm ${
+                          line.severity === 'error'
+                            ? 'text-red'
+                            : line.severity === 'em'
+                              ? 'text-em'
+                              : 'text-ink'
+                        }`}
+                      >
+                        {line.summary}
+                      </span>
+                    </div>
+                    {line.detail && (
+                      <pre className="mt-0.5 max-h-24 overflow-auto font-mono text-[11px] text-ink-dim whitespace-pre-wrap">
+                        {line.detail}
+                      </pre>
+                    )}
+                  </li>
+                ))}
+                {journalLines.length === 0 && (
+                  <li className="text-sm text-ink-dim">no journal entries yet</li>
+                )}
+              </ol>
+            ) : (
+              <WorkflowGraph
+                nodes={graph.nodes}
+                edges={graph.edges}
+                onNodeClick={(node) => {
+                  if (node.childRunId) {
+                    void navigate({
+                      to: '/workflows/runs/$runId',
+                      params: { runId: node.childRunId },
+                    })
+                  }
+                }}
+              />
+            )}
           </section>
         </>
       )}
