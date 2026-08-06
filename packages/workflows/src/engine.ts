@@ -16,13 +16,21 @@ import {
   resolveStepTimeoutMs,
   type EngineConfig,
 } from './config.js'
-import { childCaseDir, readCase, writeCase, updateRun, mergeFields } from './case.js'
+import {
+  childCaseDir,
+  isTerminalStatus,
+  readCase,
+  writeCase,
+  updateRun,
+  mergeFields,
+} from './case.js'
 import { appendJournal, readJournal, nowIso, ensureJournal } from './journal.js'
 import { loadWorkflowDir, resolveWorkflowDir } from './loader.js'
 import { validateStartInput } from './manifest.js'
 import { createStepRuntime, type Step } from './step.js'
 import { createCallRegistry, type CallRegistry, type CallResolver } from './registry.js'
 import {
+  ContractValidationError,
   isWorkflowKilled,
   isWorkflowSuspension,
   RunNotFoundError,
@@ -201,6 +209,18 @@ export class WorkflowEngine {
     }
 
     const values = options.gateResponse ?? {}
+    // The gate declared which fields the human must supply — enforce it here,
+    // or a resume with {} succeeds and run.ts reads undefined downstream.
+    const missing = open.fields.filter((f) => values[f] === undefined || values[f] === null)
+    if (missing.length > 0) {
+      throw new ContractValidationError(
+        missing.map((f) => ({
+          field: f,
+          reason: 'missing',
+          message: `gate "${open.label}" requires field "${f}" in gateResponse`,
+        })),
+      )
+    }
     const resolved: JournalEntry = {
       type: 'gate_resolved',
       ts: nowIso(),
@@ -213,7 +233,42 @@ export class WorkflowEngine {
     await mergeFields(caseDir, values)
     await updateRun(caseDir, { status: 'running' })
 
-    const workflow =
+    return this.execute(
+      caseDir,
+      await this.resolveRunWorkflow(caseState, options),
+      options.runScript,
+    )
+  }
+
+  /**
+   * Re-enter a non-terminal, non-paused run after a crash or engine restart:
+   * re-executes run.ts from the top; the journaled prefix replays from cache.
+   * For paused_human runs use resumeRun; terminal runs cannot be re-entered.
+   */
+  async continueRun(
+    runId: string,
+    options: Pick<ResumeRunOptions, 'runScript' | 'workflow'> = {},
+  ): Promise<StartRunResult> {
+    const caseDir = await this.findCaseDir(runId)
+    const caseState = await readCase(caseDir)
+    if (isTerminalStatus(caseState.run.status)) {
+      throw new Error(`Run ${runId} is ${caseState.run.status} (terminal); cannot continue`)
+    }
+    if (caseState.run.status === 'paused_human') {
+      throw new Error(`Run ${runId} is paused at a human gate; use resumeRun with a gateResponse`)
+    }
+    return this.execute(
+      caseDir,
+      await this.resolveRunWorkflow(caseState, options),
+      options.runScript,
+    )
+  }
+
+  private async resolveRunWorkflow(
+    caseState: CaseState,
+    options: Pick<ResumeRunOptions, 'workflow'>,
+  ): Promise<LoadedWorkflow> {
+    return (
       options.workflow ??
       (caseState.run.workflowDir
         ? await loadWorkflowDir(caseState.run.workflowDir)
@@ -223,8 +278,7 @@ export class WorkflowEngine {
               workflowsRoots: this.config.workflowsRoots,
             }),
           ))
-
-    return this.execute(caseDir, workflow, options.runScript)
+    )
   }
 
   /**
@@ -271,7 +325,7 @@ export class WorkflowEngine {
       callRegistry: this.callRegistry,
       stepTimeoutMs,
       isKilled: () => killFlags.get(runId) === true || existsSync(join(caseDir, 'KILLED')),
-      outputFieldNames: new Set(workflow.manifest.output.map((f) => f.name)),
+      outputFields: workflow.manifest.output,
     })
 
     const script = runScript ?? (await loadRunScript(workflow.runPath))
@@ -381,12 +435,12 @@ export class WorkflowEngine {
 
 function findOpenGate(
   journal: JournalEntry[],
-): { stepId: string; label: string; seq: number } | null {
-  const opened: Array<{ stepId: string; label: string; seq: number }> = []
+): { stepId: string; label: string; seq: number; fields: string[] } | null {
+  const opened: Array<{ stepId: string; label: string; seq: number; fields: string[] }> = []
   const resolved = new Set<string>()
   for (const e of journal) {
     if (e.type === 'gate_opened') {
-      opened.push({ stepId: e.stepId, label: e.label, seq: e.seq })
+      opened.push({ stepId: e.stepId, label: e.label, seq: e.seq, fields: e.fields })
     }
     if (e.type === 'gate_resolved') {
       resolved.add(e.stepId)

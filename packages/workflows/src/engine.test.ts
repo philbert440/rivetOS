@@ -9,8 +9,8 @@ import { tmpdir } from 'node:os'
 import { WorkflowEngine, type RunScript } from './engine.js'
 import { MockExecutorRegistry } from './executors.js'
 import { loadWorkflowDir } from './loader.js'
-import { readJournal } from './journal.js'
-import { readCase } from './case.js'
+import { findCachedStepResult, readJournal } from './journal.js'
+import { readCase, updateRun } from './case.js'
 import { ContractValidationError, UnknownCallNamespaceError } from './errors.js'
 import { parseManifest, validateStartInput } from './manifest.js'
 import { checkRunScriptDeterminism } from './determinism.js'
@@ -37,6 +37,7 @@ input:
 output:
   - name: result
     type: string
+    required: false
 `,
     'utf-8',
   )
@@ -491,5 +492,191 @@ describe('step.parallel plumbing', () => {
     )
     expect(result.run.status).toBe('failed')
     expect(result.run.error).toMatch(/not implemented/)
+  })
+})
+
+describe('review hardening', () => {
+  let root: string
+  let wfDir: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'wf-harden-'))
+    wfDir = await writeMinimalWorkflow(join(root, 'wf'))
+  })
+
+  function makeEngine(workflowId: string) {
+    return new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry(),
+      workflowDirs: { [workflowId]: wfDir },
+    })
+  }
+
+  it('terminal runs are immutable — late writes are ignored', async () => {
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = makeEngine(workflow.manifest.id)
+    const script: RunScript = async (step) => {
+      await step.done({ result: 'ok' })
+    }
+    const r = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'hi' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(r.run.status).toBe('done')
+    await updateRun(r.caseDir, { status: 'running' })
+    expect((await readCase(r.caseDir)).run.status).toBe('done')
+  })
+
+  it('resumeRun rejects a gateResponse missing declared gate fields', async () => {
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = makeEngine(workflow.manifest.id)
+    const script: RunScript = async (step) => {
+      const g = await step.human('gate', { fields: ['approved'], prompt: 'ok?' })
+      await step.done({ result: String(g.approved) })
+    }
+    const started = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'hi' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(started.suspended).toBe(true)
+    await expect(
+      engine.resumeRun(started.run.id, { gateResponse: {}, runScript: script, workflow }),
+    ).rejects.toBeInstanceOf(ContractValidationError)
+    const resumed = await engine.resumeRun(started.run.id, {
+      gateResponse: { approved: true },
+      runScript: script,
+      workflow,
+    })
+    expect(resumed.run.status).toBe('done')
+  })
+
+  it('step.done enforces required output contract fields', async () => {
+    const strictDir = await writeMinimalWorkflow(join(root, 'strict'), {
+      id: 'strict-wf',
+      yaml: `id: strict-wf
+version: "1.0.0"
+name: Strict
+input:
+  - name: message
+    type: string
+output:
+  - name: result
+    type: string
+`,
+    })
+    const workflow = await loadWorkflowDir(strictDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry(),
+      workflowDirs: { 'strict-wf': strictDir },
+    })
+    const script: RunScript = async (step) => {
+      await step.done({})
+    }
+    const r = await engine.startRun(
+      'strict-wf',
+      { message: 'hi' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(r.run.status).toBe('failed')
+    expect(r.run.error).toContain('output field')
+  })
+
+  it('continueRun re-enters a crashed running run; open gate is not double-appended', async () => {
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = makeEngine(workflow.manifest.id)
+    const script: RunScript = async (step) => {
+      const a = await step.agent('work', { out: ['result'] })
+      await step.human('gate', { fields: ['ok'] })
+      await step.done({ result: a.result })
+    }
+    const started = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'hi' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(started.suspended).toBe(true)
+
+    // continueRun refuses paused_human (that's resumeRun's job)
+    await expect(
+      engine.continueRun(started.run.id, { runScript: script, workflow }),
+    ).rejects.toThrow(/paused at a human gate/)
+
+    // Simulate a crash that left status flipped to running (post-resume, pre-completion)
+    await updateRun(started.caseDir, { status: 'running' })
+    const continued = await engine.continueRun(started.run.id, {
+      runScript: script,
+      workflow,
+    })
+    // Replays the agent from journal, hits the still-open gate, re-suspends
+    expect(continued.suspended).toBe(true)
+    const journal = await readJournal(started.caseDir)
+    const opens = journal.filter((e) => e.type === 'gate_opened' && e.label === 'gate')
+    expect(opens).toHaveLength(1)
+  })
+
+  it('journal cache throws on step kind mismatch', () => {
+    const entries = [
+      {
+        type: 'step_finished' as const,
+        ts: 'now',
+        stepId: 'x#1',
+        label: 'x',
+        seq: 1,
+        kind: 'run' as const,
+        result: { ok: true },
+      },
+    ]
+    expect(findCachedStepResult(entries, 'x', 1, 'run').hit).toBe(true)
+    expect(() => findCachedStepResult(entries, 'x', 1, 'agent')).toThrow(/kind mismatch/)
+  })
+
+  it('unknown agent name fails loud', async () => {
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = makeEngine(workflow.manifest.id)
+    const script: RunScript = async (step) => {
+      await step.agent('work', { agent: 'nope', out: ['result'] })
+      await step.done({ result: 'x' })
+    }
+    const r = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'hi' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(r.run.status).toBe('failed')
+    expect(r.run.error).toContain('Unknown agent "nope"')
+  })
+})
+
+describe('frontmatter parsing', () => {
+  it('handles CRLF and BOM', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-fm-'))
+    const dir = await writeMinimalWorkflow(join(root, 'wf'))
+    await writeFile(
+      join(dir, 'agents', 'example.md'),
+      '﻿---\r\nmodel: crlf-model\r\n---\r\n\r\nPrompt body here.\r\n',
+      'utf-8',
+    )
+    const loaded = await loadWorkflowDir(dir)
+    expect(loaded.agents.example.config.model).toBe('crlf-model')
+    expect(loaded.agents.example.prompt).toContain('Prompt body here.')
+  })
+
+  it('throws on an unterminated frontmatter fence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-fm2-'))
+    const dir = await writeMinimalWorkflow(join(root, 'wf'))
+    await writeFile(
+      join(dir, 'agents', 'example.md'),
+      '---\nmodel: broken\n\nNo closing fence, just prose.\n',
+      'utf-8',
+    )
+    await expect(loadWorkflowDir(dir)).rejects.toThrow(/Unterminated frontmatter/)
   })
 })

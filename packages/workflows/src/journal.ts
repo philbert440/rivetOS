@@ -49,17 +49,35 @@ export function nowIso(): string {
 /**
  * Find a completed step result for (label, seq) in the journal.
  * Prefers step_finished; for human gates, gate_resolved supplies the values.
+ *
+ * When `kind` is given, a journaled result with a DIFFERENT kind for the same
+ * (label, seq) throws — silently replaying a stale result across a step-type
+ * edit would corrupt the run.
  */
 export function findCachedStepResult(
   entries: JournalEntry[],
   label: string,
   seq: number,
+  kind?: string,
 ): { hit: true; result: unknown; from: 'step_finished' | 'gate_resolved' } | { hit: false } {
   for (const e of entries) {
     if (e.type === 'step_finished' && e.label === label && e.seq === seq) {
+      if (kind !== undefined && e.kind !== kind) {
+        throw new Error(
+          `Journal kind mismatch for step "${label}#${seq}": journaled as "${e.kind}", ` +
+            `script now declares "${kind}". The orchestration script changed incompatibly ` +
+            `mid-run; start a fresh run.`,
+        )
+      }
       return { hit: true, result: e.result, from: 'step_finished' }
     }
     if (e.type === 'gate_resolved' && e.label === label && e.seq === seq) {
+      if (kind !== undefined && kind !== 'human') {
+        throw new Error(
+          `Journal kind mismatch for step "${label}#${seq}": journaled as a human gate, ` +
+            `script now declares "${kind}". Start a fresh run.`,
+        )
+      }
       return { hit: true, result: e.values, from: 'gate_resolved' }
     }
   }

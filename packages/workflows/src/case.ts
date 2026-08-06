@@ -1,13 +1,23 @@
 /**
  * case.json — run metadata + contract field bag.
+ *
+ * Writes are atomic (tmp + rename) and refuse to overwrite a terminal run:
+ * once status is done/failed/killed, late writers (orphaned steps after a
+ * timeout or kill) cannot clobber the terminal state.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import type { CaseState, Run } from './types.js'
+import type { CaseState, Run, RunStatus } from './types.js'
 
 export const CASE_FILENAME = 'case.json'
+
+const TERMINAL_STATUSES: readonly RunStatus[] = ['done', 'failed', 'killed']
+
+export function isTerminalStatus(status: RunStatus): boolean {
+  return TERMINAL_STATUSES.includes(status)
+}
 
 export function casePath(caseDir: string): string {
   return join(caseDir, CASE_FILENAME)
@@ -15,7 +25,10 @@ export function casePath(caseDir: string): string {
 
 export async function writeCase(caseDir: string, state: CaseState): Promise<void> {
   await mkdir(caseDir, { recursive: true })
-  await writeFile(casePath(caseDir), JSON.stringify(state, null, 2) + '\n', 'utf-8')
+  const path = casePath(caseDir)
+  const tmp = `${path}.tmp`
+  await writeFile(tmp, JSON.stringify(state, null, 2) + '\n', 'utf-8')
+  await rename(tmp, path)
 }
 
 export async function readCase(caseDir: string): Promise<CaseState> {
@@ -32,6 +45,12 @@ export async function updateCase(
   mutate: (state: CaseState) => CaseState | undefined,
 ): Promise<CaseState> {
   const state = await readCase(caseDir)
+  if (isTerminalStatus(state.run.status)) {
+    // Terminal runs are immutable — a late writer (orphan step after
+    // timeout/kill, double finish) must not resurrect or clobber them.
+    console.warn(`updateCase: run ${state.run.id} is ${state.run.status} (terminal); write ignored`)
+    return state
+  }
   const next = mutate(state)
   const finalState = next ?? state
   await writeCase(caseDir, finalState)

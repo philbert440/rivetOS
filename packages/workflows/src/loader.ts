@@ -41,7 +41,7 @@ async function loadAgents(agentsDir: string): Promise<Record<string, AgentDef>> 
     if (!ent.isFile() || !ent.name.endsWith('.md')) continue
     const name = ent.name.slice(0, -'.md'.length)
     const path = join(agentsDir, ent.name)
-    const { config, body } = parseFrontmatter(await readFile(path, 'utf-8'))
+    const { config, body } = parseFrontmatter(await readFile(path, 'utf-8'), path)
     if (!body.trim()) {
       throw new Error(`Agent "${name}" has an empty prompt body in ${path}`)
     }
@@ -50,20 +50,27 @@ async function loadAgents(agentsDir: string): Promise<Record<string, AgentDef>> 
   return out
 }
 
-/** Split optional `---` YAML frontmatter from a markdown body. */
-function parseFrontmatter(text: string): { config: AgentConfig; body: string } {
-  if (text.startsWith('---\n') || text.startsWith('---\r\n')) {
-    const end = text.indexOf('\n---', 3)
-    if (end !== -1) {
-      const rawYaml = text.slice(text.indexOf('\n') + 1, end)
-      const afterMarker = text.indexOf('\n', end + 1)
-      const body = afterMarker === -1 ? '' : text.slice(afterMarker + 1)
-      const raw: unknown = parseYaml(rawYaml)
-      const config = (raw && typeof raw === 'object' ? raw : {}) as AgentConfig
-      return { config, body }
-    }
+/**
+ * Split optional `---` YAML frontmatter from a markdown body.
+ * Tolerates BOM and CRLF; an opening fence without a closing fence throws
+ * (silently treating half a config block as prompt text would be worse).
+ */
+function parseFrontmatter(text: string, path: string): { config: AgentConfig; body: string } {
+  const src = text.replace(/^\uFEFF/, '')
+  if (!/^---\r?\n/.test(src)) {
+    return { config: {}, body: src }
   }
-  return { config: {}, body: text }
+  // Opening fence is at position 0, so the first `\n---` is the closing fence.
+  const closeMatch = /\r?\n---[ \t]*(\r?\n|$)/.exec(src)
+  if (!closeMatch) {
+    throw new Error(`Unterminated frontmatter (missing closing ---) in ${path}`)
+  }
+  const yamlStart = src.indexOf('\n') + 1
+  const rawYaml = src.slice(yamlStart, closeMatch.index)
+  const body = src.slice(closeMatch.index + closeMatch[0].length)
+  const raw: unknown = parseYaml(rawYaml)
+  const config = (raw && typeof raw === 'object' ? raw : {}) as AgentConfig
+  return { config, body }
 }
 
 /**

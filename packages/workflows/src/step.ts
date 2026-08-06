@@ -12,12 +12,17 @@
  * step.parallel is reserved (throws) — slice G.
  */
 
-import { WorkflowKilled, WorkflowSuspension, isWorkflowSuspension } from './errors.js'
+import {
+  ContractValidationError,
+  WorkflowKilled,
+  WorkflowSuspension,
+  isWorkflowSuspension,
+} from './errors.js'
 import type { ExecutorRegistry } from './executors.js'
-import { appendJournal, findCachedStepResult, nowIso } from './journal.js'
+import { appendJournal, findCachedStepResult, isOpenGate, nowIso } from './journal.js'
 import { mergeFields, updateRun } from './case.js'
 import type { CallRegistry } from './registry.js'
-import type { JournalEntry, LoadedWorkflow, StepKind } from './types.js'
+import type { Field, JournalEntry, LoadedWorkflow, StepKind } from './types.js'
 import { makeStepId } from './types.js'
 
 export interface AgentStepOpts {
@@ -71,8 +76,8 @@ export interface StepRuntimeOptions {
   stepTimeoutMs: number
   /** Kill flag checked between steps. */
   isKilled: () => boolean
-  /** Declared output field names from the workflow manifest. */
-  outputFieldNames: Set<string>
+  /** Output contract fields from the workflow manifest — validated at step.done. */
+  outputFields: Field[]
 }
 
 export function createStepRuntime(options: StepRuntimeOptions): {
@@ -108,7 +113,7 @@ export function createStepRuntime(options: StepRuntimeOptions): {
     checkKill()
     const seq = nextSeq(label)
     const stepId = makeStepId(label, seq)
-    const cached = findCachedStepResult(liveJournal, label, seq)
+    const cached = findCachedStepResult(liveJournal, label, seq, kind)
     if (cached.hit) {
       return { mode: 'replay', stepId, seq, result: cached.result }
     }
@@ -183,6 +188,14 @@ export function createStepRuntime(options: StepRuntimeOptions): {
       const { stepId, seq } = phase
       try {
         const agentDef = opts.agent ? options.workflow.agents[opts.agent] : undefined
+        if (opts.agent && !agentDef) {
+          throw new Error(
+            `Unknown agent "${opts.agent}" in step "${label}" — no agents/${opts.agent}.md ` +
+              `in workflow "${options.workflow.manifest.id}" (known: ${
+                Object.keys(options.workflow.agents).join(', ') || 'none'
+              })`,
+          )
+        }
         const result = await options.executors.agent.execute({
           label,
           stepId,
@@ -269,17 +282,21 @@ export function createStepRuntime(options: StepRuntimeOptions): {
       const { stepId, seq } = phase
 
       // Live human gate: open gate, pause, suspend. Never resolve inline.
-      const opened = {
-        type: 'gate_opened' as const,
-        ts: nowIso(),
-        stepId,
-        label,
-        seq,
-        prompt: opts.prompt,
-        fields: opts.fields,
+      // Crash re-entry: if this gate is already open in the journal, re-suspend
+      // without appending a duplicate gate_opened.
+      if (!isOpenGate(liveJournal, label, seq)) {
+        const opened = {
+          type: 'gate_opened' as const,
+          ts: nowIso(),
+          stepId,
+          label,
+          seq,
+          prompt: opts.prompt,
+          fields: opts.fields,
+        }
+        await appendJournal(options.caseDir, opened)
+        liveJournal.push(opened)
       }
-      await appendJournal(options.caseDir, opened)
-      liveJournal.push(opened)
       await updateRun(options.caseDir, {
         status: 'paused_human',
         current: stepId,
@@ -311,6 +328,19 @@ export function createStepRuntime(options: StepRuntimeOptions): {
 
     async done(output) {
       checkKill()
+      // Enforce the output contract: every required output field must be present.
+      const missing = options.outputFields.filter(
+        (f) => f.required !== false && (output[f.name] === undefined || output[f.name] === null),
+      )
+      if (missing.length > 0) {
+        throw new ContractValidationError(
+          missing.map((f) => ({
+            field: f.name,
+            reason: 'missing',
+            message: `required ${f.type} output field "${f.name}" is missing from step.done()`,
+          })),
+        )
+      }
       const seq = nextSeq('done')
       const stepId = makeStepId('done', seq)
       doneOutput = output

@@ -70,7 +70,7 @@ ${result.files.map((f) => `    - ${f}`).join('\n')}
   Next steps:
     1. Edit workflow.yaml (input/output contract)
     2. Implement run.ts orchestration (deterministic — no Date.now/Math.random)
-    3. Fill agents/*/instructions.md
+    3. Fill agents/<name>.md (frontmatter config + prompt body)
     4. Run the fixture test with vitest
 `)
   } catch (err: unknown) {
