@@ -125,6 +125,7 @@ function baseConfig(stateDir: string, term: Partial<DenTermConfig> = {}): DenCon
       maxPtys: 4,
       scrollbackBytes: 262_144,
       detachedTtlMs: 1_800_000,
+      idleTtlMs: 1_800_000,
       exitLingerMs: 60_000,
       ...term,
     },

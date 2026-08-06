@@ -36,6 +36,10 @@ export interface DenTermConfig {
   scrollbackBytes: number
   /** How long a PTY with no attached viewers survives before SIGHUP (ms). */
   detachedTtlMs: number
+  /** How long a PTY may sit with no activity (output / inject / write)
+   *  before SIGHUP — even if a viewer is still attached. 0 disables.
+   *  Resets on every activity bump so long-running turns stay alive. */
+  idleTtlMs: number
   /** How long an exited PTY record lingers (scrollback inspectable) before
    *  it is reaped (ms). */
   exitLingerMs: number
@@ -160,6 +164,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       maxPtys: intEnv(env, 'RIVETOS_DEN_TERM_MAX', 4),
       scrollbackBytes: intEnv(env, 'RIVETOS_DEN_TERM_SCROLLBACK', 262_144),
       detachedTtlMs: intEnv(env, 'RIVETOS_DEN_TERM_DETACHED_TTL_MS', 1_800_000),
+      // 30 min default — auto-close harness sessions that go quiet (chat or
+      // terminal). 0 disables. Distinct from detachedTtlMs (unattached only).
+      idleTtlMs: intEnv(env, 'RIVETOS_DEN_TERM_IDLE_TTL_MS', 1_800_000),
       exitLingerMs: intEnv(env, 'RIVETOS_DEN_TERM_EXIT_LINGER_MS', 60_000),
       injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
       injectSubmitDelayMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_SUBMIT_DELAY_MS', 80),

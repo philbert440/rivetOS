@@ -30,6 +30,20 @@ describe('buildGatewayEnv — MicBridge audio', () => {
     expect(open.RIVETOS_DEN_AUDIO).toBe('1')
     expect(open.RIVETOS_DEN_AUDIO_OPEN).toBe('1')
   })
+
+  it('wires RIVETOS_DEN_TERM_IDLE_TTL_MS from den.terminal.idle_ttl_ms', () => {
+    expect(buildGatewayEnv(base({}), '/opt/rivetos').RIVETOS_DEN_TERM_IDLE_TTL_MS).toBeUndefined()
+    const env = buildGatewayEnv(
+      base({ terminal: { enabled: true, idle_ttl_ms: 3_600_000 } }),
+      '/opt/rivetos',
+    )
+    expect(env.RIVETOS_DEN_TERM_IDLE_TTL_MS).toBe('3600000')
+    const off = buildGatewayEnv(
+      base({ terminal: { enabled: true, idle_ttl_ms: 0 } }),
+      '/opt/rivetos',
+    )
+    expect(off.RIVETOS_DEN_TERM_IDLE_TTL_MS).toBe('0')
+  })
 })
 
 describe('buildGatewayEnv — device enrollment', () => {

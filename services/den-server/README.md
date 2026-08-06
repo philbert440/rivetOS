@@ -85,6 +85,9 @@ in their env so harness hook adapters report into the right room.
 Knobs: `RIVETOS_DEN_TERM_MAX` (4 concurrent PTYs),
 `RIVETOS_DEN_TERM_SCROLLBACK` (262144 bytes per PTY),
 `RIVETOS_DEN_TERM_DETACHED_TTL_MS` (1800000 — unattached PTYs are reaped),
+`RIVETOS_DEN_TERM_IDLE_TTL_MS` (1800000 — PTYs with no activity for this long
+are SIGHUP'd even if a viewer is still attached; activity is stdout, chat
+inject, or terminal write; `0` disables),
 `RIVETOS_DEN_TERM_EXIT_LINGER_MS` (60000 — exited records linger for
 inspection). `node-pty` is an optional dependency; when it failed to
 install, term endpoints answer 503 and everything else works.

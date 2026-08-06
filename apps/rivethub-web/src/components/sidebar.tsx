@@ -5,18 +5,17 @@ import { useNotifications } from '../stores/notifications.js'
 import { NodeSwitcher } from './node-switcher.js'
 import { DenBot } from './den-bot.js'
 
-/** Primary session views — top of the rail. Conversations leads: it's the
- *  most-used view; each view after it is a step more immersive. */
+/** Primary views — top of the rail. Conversations first; Memory and Files
+ *  next as the day-to-day workspace. Terminal / Den stay routable for deep
+ *  links but are no longer in the rail (immersive surfaces, rarely the entry). */
 const PRIMARY_NAV = [
   { to: '/', label: 'Conversations', icon: '💬' },
-  { to: '/terminal', label: 'Terminal', icon: '›_' },
-  { to: '/dens', label: 'Den', icon: '▦' },
-] as const
-
-/** Workspace tools — below the separator. */
-const SECONDARY_NAV = [
   { to: '/memory', label: 'Memory', icon: '◈' },
   { to: '/files', label: 'Files', icon: '▤' },
+] as const
+
+/** Ops tools — below the separator. */
+const SECONDARY_NAV = [
   { to: '/tasks', label: 'Tasks', icon: '☑' },
   { to: '/workflows', label: 'Workflows', icon: '⬡' },
 ] as const

@@ -105,6 +105,8 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     env.RIVETOS_DEN_FILES_OPEN = '1'
   if (terminal?.enabled === true) env.RIVETOS_DEN_TERM = '1'
   if (terminal?.open === true) env.RIVETOS_DEN_TERM_OPEN = '1'
+  if (typeof terminal?.idle_ttl_ms === 'number' && Number.isFinite(terminal.idle_ttl_ms))
+    env.RIVETOS_DEN_TERM_IDLE_TTL_MS = String(Math.max(0, Math.floor(terminal.idle_ttl_ms)))
   // MicBridge (docs/MICBRIDGE.md): den-server only sees this built env map
   // (not the full process env), so wire RIVETOS_DEN_AUDIO here. Follow the
   // terminal posture — same trust domain as shell/TUI on the node.
