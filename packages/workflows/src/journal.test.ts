@@ -105,4 +105,28 @@ describe('journal', () => {
     })
     expect(isOpenGate(entries, 'g', 1)).toBe(false)
   })
+
+  it('serializes concurrent appends so every line parses as JSON', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wf-journal-race-'))
+    const N = 40
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        appendJournal(dir, {
+          type: 'step_finished',
+          ts: `t-${i}`,
+          stepId: `s#${i}`,
+          label: 's',
+          seq: i,
+          kind: 'run',
+          result: { i, pad: 'x'.repeat(20) },
+        }),
+      ),
+    )
+    const all = await readJournal(dir)
+    expect(all).toHaveLength(N)
+    // Every entry is a full object (no partial interleave)
+    for (const e of all) {
+      expect(e.type).toBe('step_finished')
+    }
+  })
 })

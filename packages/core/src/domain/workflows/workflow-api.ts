@@ -27,6 +27,8 @@ import type {
 } from '@rivetos/types'
 import {
   ContractValidationError,
+  MaxConcurrentRunsError,
+  assertUnderConcurrentCap,
   RunNotFoundError,
   WorkflowEngine,
   WorkflowNotFoundError,
@@ -243,8 +245,37 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
               if (err instanceof WorkflowNotFoundError) {
                 return json(res, 404, { error: err.message })
               }
+              if (err instanceof MaxConcurrentRunsError) {
+                return json(res, 429, {
+                  error: err.message,
+                  workflowId: err.workflowId,
+                  max: err.max,
+                  current: err.current,
+                })
+              }
               throw err
             }
+          }
+
+          // Pre-flight concurrency cap so a detached 202 never means "queued
+          // over the cap". startRun re-checks; this is the HTTP 429 surface.
+          // Same helper as the engine — one status filter, no drift.
+          try {
+            await assertUnderConcurrentCap(
+              caseDirRoot,
+              workflowId,
+              def.manifest.budgets?.maxConcurrentRuns,
+            )
+          } catch (err) {
+            if (err instanceof MaxConcurrentRunsError) {
+              return json(res, 429, {
+                error: err.message,
+                workflowId,
+                max: err.max,
+                current: err.current,
+              })
+            }
+            throw err
           }
 
           // Detached (default): a real run can take minutes-to-days — never
