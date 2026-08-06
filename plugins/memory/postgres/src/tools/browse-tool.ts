@@ -7,7 +7,7 @@ import type { Tool } from '@rivetos/types'
 import {
   applyWindowArgs,
   fmtLocalTs,
-  truncationHint,
+  formatBrowseMessageBody,
   WINDOW_CHOICES,
   type MessageRow,
 } from './helpers.js'
@@ -17,10 +17,12 @@ export function createBrowseTool(pool: pg.Pool): Tool {
     name: 'memory_browse',
     description:
       'Browse conversation messages chronologically. Unlike memory_search (which ranks by relevance), ' +
-      'this returns messages in time order. Use to review what happened in a session, ' +
+      'this returns messages in time order and includes tool_result previews on tool rows ' +
+      '(content alone is often just a placeholder). Use to review what happened in a session, ' +
       'catch up on recent activity, or read a specific conversation. ' +
       'For time-bounded questions ("today", "yesterday", "this morning"), prefer window= ' +
-      'over raw since/before so local-timezone midnights convert correctly to UTC.',
+      'over raw since/before so local-timezone midnights convert correctly to UTC. ' +
+      'Display-truncated or capture-truncated payloads: call memory_get_full with the row id.',
     parameters: {
       type: 'object',
       properties: {
@@ -111,7 +113,7 @@ export function createBrowseTool(pool: pg.Pool): Tool {
 
       const sql = `
         SELECT m.id, m.role, m.agent, m.content, m.created_at,
-               m.conversation_id, m.tool_name, m.metadata
+               m.conversation_id, m.tool_name, m.tool_result, m.metadata
         FROM ros_messages m
         ${where}
         ORDER BY m.created_at ${order}
@@ -158,8 +160,10 @@ export function createBrowseTool(pool: pg.Pool): Tool {
           // without a suffix; that misread wastes whole recall turns.
           const ts = fmtLocalTs(r.created_at)
           const tool = r.tool_name ? ` [tool: ${r.tool_name}]` : ''
-          const content = r.content.length > 500 ? r.content.slice(0, 500) + '…' : r.content
-          return `[${ts}] ${r.agent}/${r.role}${tool}\n${content}${truncationHint(r.metadata, r.id)}`
+          // Include tool_result previews — content alone is often just
+          // `[tool] name` and hid the real payload from chronological recall.
+          const body = formatBrowseMessageBody(r)
+          return `[${ts}] ${r.agent}/${r.role}${tool}\n${body}`
         })
 
         let header = `## Messages (${String(result.rows.length)} returned, ${order === 'DESC' ? 'newest' : 'oldest'} first)`

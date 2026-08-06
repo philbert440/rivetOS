@@ -222,6 +222,63 @@ def _truncation_hint(meta: Any, id_: str) -> str:
     return f"\n⚠ truncated at capture (full: {length}) → rivet_memory_get_full id={id_}"
 
 
+# Display caps for browse rows (parity with @rivetos/memory-postgres helpers).
+BROWSE_CONTENT_LIMIT = 500
+BROWSE_TOOL_RESULT_LIMIT = 800
+
+
+def _format_browse_message_body(
+    id_: str,
+    content: str,
+    tool_name: Optional[str],
+    tool_result: Optional[str],
+    meta: Any,
+    *,
+    content_limit: int = BROWSE_CONTENT_LIMIT,
+    tool_result_limit: int = BROWSE_TOOL_RESULT_LIMIT,
+) -> str:
+    """Format one browse row body: content + tool_result preview + recovery.
+
+    Daily-use footgun: browse used to select only ``content``, so tool rows
+    rendered as ``[tool] search_tool`` with no payload. When the stored row is
+    complete (not capture-truncated), display cuts point at
+    ``rivet_memory_get_full`` which returns the full DB payload.
+    """
+    capture_trunc = isinstance(meta, dict) and meta.get("truncated") is True
+    parts: List[str] = []
+    text = content or ""
+    if len(text) > content_limit:
+        parts.append(text[:content_limit] + "…")
+        if not capture_trunc:
+            parts.append(
+                f"…[display-truncated content {len(text)} chars → "
+                f"rivet_memory_get_full id={id_}]"
+            )
+    else:
+        parts.append(text)
+
+    if isinstance(tool_result, str) and tool_result:
+        label = f"tool_result ({tool_name})" if tool_name else "tool_result"
+        if len(tool_result) > tool_result_limit:
+            parts.append(
+                f"[{label} {len(tool_result)} chars]\n"
+                f"{tool_result[:tool_result_limit]}…"
+            )
+            if not capture_trunc:
+                parts.append(
+                    f"…[display-truncated tool_result → "
+                    f"rivet_memory_get_full id={id_}]"
+                )
+        else:
+            parts.append(f"[{label}]\n{tool_result}")
+
+    capture_hint = _truncation_hint(meta, id_)
+    if capture_hint:
+        parts.append(capture_hint.lstrip("\n"))
+
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Search tool
 # ---------------------------------------------------------------------------
@@ -432,7 +489,7 @@ def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     sql = f"""
         SELECT m.id, m.role, m.agent, m.content, m.created_at,
-               m.conversation_id, m.tool_name, m.metadata
+               m.conversation_id, m.tool_name, m.tool_result, m.metadata
           FROM ros_messages m
           {where}
          ORDER BY m.created_at {order_sql}
@@ -457,13 +514,15 @@ def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
         # so readers can't mis-read UTC as local — that misread is exactly
         # what made a previous Hermes session report 00:10 UTC turns as
         # "early morning" when they were really 20:10 EDT yesterday.
+        # Columns: id, role, agent, content, created_at, conversation_id,
+        # tool_name, tool_result, metadata
         ts_local = _ensure_aware(r[4]).astimezone()
         ts = ts_local.strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
         tool = f" [tool: {r[6]}]" if r[6] else ""
-        content = _truncate(r[3] or "", 500)
-        lines.append(
-            f"[{ts}] {r[2]}/{r[1]}{tool}\n{content}{_truncation_hint(r[7], str(r[0]))}"
+        body = _format_browse_message_body(
+            str(r[0]), r[3] or "", r[6], r[7], r[8]
         )
+        lines.append(f"[{ts}] {r[2]}/{r[1]}{tool}\n{body}")
 
     direction = "newest" if order_sql == "DESC" else "oldest"
     header = f"## Messages ({len(rows)} returned, {direction} first)"
