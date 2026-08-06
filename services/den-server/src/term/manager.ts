@@ -87,6 +87,9 @@ interface PtyRecord {
   state: 'running' | 'exited'
   exitCode?: number | null
   detachTimer?: NodeJS.Timeout
+  /** Fires when lastActivityTs is older than idleTtlMs (activity-based
+   *  auto-close; attached viewers do not hold this off). */
+  idleTimer?: NodeJS.Timeout
   sigkillTimer?: NodeJS.Timeout
   reapTimer?: NodeJS.Timeout
   /** Ready-gate (seamless 5g): a chat inject that arrives before the harness
@@ -261,7 +264,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   }
 
   const clearTimers = (r: PtyRecord): void => {
-    for (const key of ['detachTimer', 'sigkillTimer', 'reapTimer', 'readyTimer'] as const) {
+    for (const key of [
+      'detachTimer',
+      'idleTimer',
+      'sigkillTimer',
+      'reapTimer',
+      'readyTimer',
+    ] as const) {
       const t = r[key]
       if (t) clearTimeout(t)
       r[key] = undefined
@@ -302,6 +311,41 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       }
     }, config.term.detachedTtlMs)
     r.detachTimer.unref?.()
+  }
+
+  /** Activity-based auto-close: re-arm from lastActivityTs every time activity
+   *  lands (stdout, inject, write). Attached viewers do NOT hold this off —
+   *  a terminal tab left open on a quiet harness still expires. 0 = off. */
+  const armIdleTtl = (r: PtyRecord): void => {
+    if (r.idleTimer) {
+      clearTimeout(r.idleTimer)
+      r.idleTimer = undefined
+    }
+    const ttl = config.term.idleTtlMs
+    if (ttl <= 0 || r.state !== 'running') return
+    const remaining = r.lastActivityTs + ttl - now()
+    r.idleTimer = setTimeout(
+      () => {
+        r.idleTimer = undefined
+        if (r.state !== 'running') return
+        // Re-check against wall clock: activity may have advanced lastActivityTs
+        // without re-arming (defensive — all activity paths re-arm today).
+        if (now() - r.lastActivityTs < ttl) {
+          armIdleTtl(r)
+          return
+        }
+        audit('kill', r, { reason: 'idle-ttl' })
+        escalate(r)
+      },
+      Math.max(0, remaining),
+    )
+    r.idleTimer.unref?.()
+  }
+
+  /** Bump lastActivityTs and re-arm the idle reaper. Shared by onData / inject / write. */
+  const touchActivity = (r: PtyRecord): void => {
+    r.lastActivityTs = now()
+    armIdleTtl(r)
   }
 
   const appendScrollback = (r: PtyRecord, data: string | Buffer): void => {
@@ -489,7 +533,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       bySession.set(denSession, id)
       proc.onData((data) => {
         r.lastOutputTs = now()
-        r.lastActivityTs = now()
+        touchActivity(r)
         // Ready-gate: on the FIRST output, wait a short settle for the TUI to
         // finish its initial render, then flush any buffered chat injects.
         if (!r.ready && !r.readyTimer) {
@@ -518,6 +562,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       proc.onExit((exitCode) => onExit(r, exitCode))
       audit('spawn', r)
       armDetachedTtl(r)
+      armIdleTtl(r)
       // room:true entries get their den room immediately: harness hooks only
       // fire on the first prompt, and the viewer can't offer a terminal to
       // type that prompt into until a session window exists. The harness's
@@ -585,6 +630,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     write(id, data): boolean {
       const r = records.get(id)
       if (!r || r.state !== 'running') return false
+      // Keystrokes count as activity for idle-TTL (and LRU).
+      touchActivity(r)
       r.proc.write(data)
       return true
     },
@@ -594,8 +641,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       if (!r || r.state !== 'running') return false
       // Chat activity protects this pty from LRU eviction (#316 review): a
       // conversation being chatted is unattached (inject doesn't attach) but
-      // must not be evicted between the send and the harness's reply.
-      r.lastActivityTs = now()
+      // must not be evicted between the send and the harness's reply. Also
+      // re-arms idle-TTL so a live chat turn keeps the harness alive.
+      touchActivity(r)
       // Ready-gate (5g): before the harness TUI is up, buffer instead of
       // writing into the void; the onData settle timer flushes it.
       if (r.ready) {

@@ -74,6 +74,7 @@ async function start(
       maxPtys: 4,
       scrollbackBytes: 262_144,
       detachedTtlMs: 1_800_000,
+      idleTtlMs: 1_800_000,
       exitLingerMs: 60_000,
       injectReadyMs: 10,
       ...term,

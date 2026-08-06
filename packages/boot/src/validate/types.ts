@@ -84,7 +84,7 @@ export const KNOWN_DEN_DEVICES_KEYS = new Set([
   'pg_device_group',
 ])
 
-export const KNOWN_DEN_TERMINAL_KEYS = new Set(['enabled', 'open'])
+export const KNOWN_DEN_TERMINAL_KEYS = new Set(['enabled', 'open', 'idle_ttl_ms'])
 
 /**
  * Hosts den-server treats as loopback in its terminal security gate

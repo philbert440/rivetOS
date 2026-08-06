@@ -97,6 +97,8 @@ memory:
 #     open: false            # true = explicitly allow tokenless terminals on a
 #                            # trusted private network (anything that can reach
 #                            # the port can spawn a shell as the service user)
+#     idle_ttl_ms: 1800000   # auto-close harness PTYs after this many ms idle
+#                            # (no output/inject/write); 0 disables (default 30m)
 #   # static_dir: /opt/rivetos/apps/den/dist            # defaults derived
 #   # packs_dir: /opt/rivetos/packages/den-packs/packs  # from install root
 
