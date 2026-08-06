@@ -1,5 +1,8 @@
 /**
  * Append-only journal.jsonl — single writer (the engine).
+ *
+ * Concurrent branch writes (step.parallel) serialize through a per-path
+ * promise chain so JSONL lines never interleave mid-object.
  */
 
 import { appendFile, readFile, writeFile, mkdir } from 'node:fs/promises'
@@ -8,6 +11,9 @@ import { existsSync } from 'node:fs'
 import type { JournalEntry } from './types.js'
 
 export const JOURNAL_FILENAME = 'journal.jsonl'
+
+/** Per absolute journal path — serializes concurrent appendJournal calls. */
+const appendQueues = new Map<string, Promise<void>>()
 
 export function journalPath(caseDir: string): string {
   return join(caseDir, JOURNAL_FILENAME)
@@ -21,10 +27,29 @@ export async function ensureJournal(caseDir: string): Promise<void> {
   }
 }
 
+/**
+ * Append one journal entry as a single JSONL line.
+ * Concurrent callers for the same caseDir are serialized (promise chain)
+ * so parallel branches cannot interleave partial lines.
+ */
 export async function appendJournal(caseDir: string, entry: JournalEntry): Promise<void> {
-  await ensureJournal(caseDir)
-  const line = JSON.stringify(entry) + '\n'
-  await appendFile(journalPath(caseDir), line, 'utf-8')
+  const path = journalPath(caseDir)
+  const prev = appendQueues.get(path) ?? Promise.resolve()
+  const run = prev.then(async () => {
+    await ensureJournal(caseDir)
+    const line = JSON.stringify(entry) + '\n'
+    await appendFile(path, line, 'utf-8')
+  })
+  // Keep the queue moving even when a write fails; surface the error to the caller.
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  appendQueues.set(path, settled)
+  void settled.then(() => {
+    if (appendQueues.get(path) === settled) appendQueues.delete(path)
+  })
+  return run
 }
 
 export async function readJournal(caseDir: string): Promise<JournalEntry[]> {

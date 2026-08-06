@@ -106,10 +106,36 @@ export function createTaskAgentExecutor(opts: TaskAgentExecutorOptions): AgentEx
         )
       }
 
+      // Report usage for workflow budget accounting (slice F).
+      // Prefer row.usage; fall back to result.usage. Terminal tasks from the
+      // chat-loop always carry TaskUsage; if both are missing, the callback is
+      // still wired — the step simply records zero for this unit.
+      reportTaskUsage(step.reportUsage, terminal)
+
       // Map task result into declared out fields.
       return mapTaskResultToOut(step.out, terminal.result?.output, terminal.result?.summary)
     },
   }
+}
+
+/**
+ * Map a terminal task row's usage into the step runtime's reportUsage callback.
+ * Exported for unit tests.
+ */
+export function reportTaskUsage(
+  reportUsage: AgentExecuteOpts['reportUsage'],
+  terminal: {
+    usage?: { totalTokens?: number; costUsd?: number }
+    result?: { usage?: { totalTokens?: number; costUsd?: number } }
+  },
+): void {
+  if (!reportUsage) return
+  const u = terminal.usage ?? terminal.result?.usage
+  if (!u) return
+  const tokens = typeof u.totalTokens === 'number' ? u.totalTokens : undefined
+  const costUsd = typeof u.costUsd === 'number' ? u.costUsd : undefined
+  if (tokens === undefined && costUsd === undefined) return
+  reportUsage({ tokens, costUsd })
 }
 
 /**

@@ -33,10 +33,12 @@ import {
   ContractValidationError,
   isWorkflowKilled,
   isWorkflowSuspension,
+  MaxConcurrentRunsError,
   RunNotFoundError,
   RunTimeoutError,
   WorkflowKilled,
 } from './errors.js'
+import { listRuns } from './list-runs.js'
 import type { CaseState, JournalEntry, LoadedWorkflow, ParentRef, Run, StartedBy } from './types.js'
 
 /** Signature of a workflow orchestration script (run.ts default export). */
@@ -157,6 +159,13 @@ export class WorkflowEngine {
       ))
 
     validateStartInput(workflow.manifest.input, input)
+
+    // maxConcurrentRuns — count non-terminal runs of this workflowId (incl. nested children).
+    await assertUnderConcurrentCap(
+      resolveCaseDirRoot(this.config),
+      workflow.manifest.id,
+      workflow.manifest.budgets?.maxConcurrentRuns,
+    )
 
     const runId = options.runId ?? randomUUID()
     const caseDir = options.caseDir ?? join(resolveCaseDirRoot(this.config), runId)
@@ -387,6 +396,7 @@ export class WorkflowEngine {
       stepTimeoutMs,
       isKilled: () => killFlags.get(runId) === true || existsSync(join(caseDir, 'KILLED')),
       outputFields: workflow.manifest.output,
+      budgets: workflow.manifest.budgets,
     })
 
     const ctx: RunScriptContext = {
@@ -501,6 +511,36 @@ export class WorkflowEngine {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Enforce budgets.maxConcurrentRuns before creating a new run.
+ * Scans caseDirRoot (incl. nested child runs) for non-terminal rows of the
+ * same workflowId. Zero / undefined cap = unlimited.
+ */
+export async function assertUnderConcurrentCap(
+  caseDirRoot: string,
+  workflowId: string,
+  maxConcurrentRuns: number | undefined,
+): Promise<void> {
+  // undefined / non-finite / <= 0 = unlimited (task: zero/no-budget = unlimited)
+  if (
+    maxConcurrentRuns === undefined ||
+    !Number.isFinite(maxConcurrentRuns) ||
+    maxConcurrentRuns <= 0
+  ) {
+    return
+  }
+  // depth high enough to catch step.call children nested under parents
+  const runs = await listRuns(caseDirRoot, { limit: 50_000, depth: 8 })
+  const active = runs.filter((r) => r.workflowId === workflowId && !isTerminalStatus(r.status))
+  if (active.length >= maxConcurrentRuns) {
+    throw new MaxConcurrentRunsError({
+      workflowId,
+      max: maxConcurrentRuns,
+      current: active.length,
+    })
+  }
+}
 
 async function loadRunScript(runPath: string): Promise<RunScript> {
   // Dynamic import — works for .js; .ts requires tsx/ts-node or prior compile.

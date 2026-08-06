@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createTaskAgentExecutor, mapTaskResultToOut } from './agent-executor.js'
+import {
+  createTaskAgentExecutor,
+  mapTaskResultToOut,
+  reportTaskUsage,
+} from './agent-executor.js'
 import type { TaskStore } from '../task/store.js'
 import type { TaskCompletionWaiter } from '../task/completion-waiter.js'
 
@@ -58,6 +62,36 @@ describe('createTaskAgentExecutor', () => {
   it('failed task throws with the task error', async () => {
     const { exec } = harness({ status: 'failed', error: 'boom' })
     await expect(exec.execute(stepOpts)).rejects.toThrow(/boom/)
+  })
+
+  it('reports usage via reportUsage when the terminal task carries it', async () => {
+    const reported: Array<{ tokens?: number; costUsd?: number }> = []
+    const { exec } = harness({
+      status: 'completed',
+      result: { output: { result: 'ok' }, usage: { totalTokens: 42, costUsd: 0.01 } },
+      usage: { totalTokens: 42, costUsd: 0.01 },
+    })
+    await expect(
+      exec.execute({
+        ...stepOpts,
+        reportUsage: (u) => reported.push(u),
+      }),
+    ).resolves.toEqual({ result: 'ok' })
+    expect(reported).toEqual([{ tokens: 42, costUsd: 0.01 }])
+  })
+})
+
+describe('reportTaskUsage', () => {
+  it('prefers row.usage and no-ops when nothing is present', () => {
+    const calls: unknown[] = []
+    reportTaskUsage((u) => calls.push(u), {
+      usage: { totalTokens: 10, costUsd: 0.5 },
+      result: { usage: { totalTokens: 99, costUsd: 9 } },
+    })
+    expect(calls).toEqual([{ tokens: 10, costUsd: 0.5 }])
+
+    reportTaskUsage((u) => calls.push(u), {})
+    expect(calls).toHaveLength(1)
   })
 })
 

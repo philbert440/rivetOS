@@ -11,11 +11,18 @@
  *  - LocalExecutorRegistry with TODO stubs for real ros_task / script backends
  */
 
-import type { AgentDef, LoadedWorkflow } from './types.js'
+import type { AgentDef, LoadedWorkflow, StepUsage } from './types.js'
 
 // ---------------------------------------------------------------------------
 // Contexts passed to executors
 // ---------------------------------------------------------------------------
+
+/**
+ * Optional callback for executors to report token/cost usage for the step.
+ * The step runtime accumulates these for budget enforcement and journals them
+ * on `step_finished`. Does not change the `execute()` return type.
+ */
+export type ReportUsageFn = (usage: StepUsage) => void
 
 export interface AgentExecuteOpts {
   /** Step label (stable id base). */
@@ -36,6 +43,11 @@ export interface AgentExecuteOpts {
   timeoutMs?: number
   /** Extra free-form opts from the step call. */
   extra?: Record<string, unknown>
+  /**
+   * Report usage for budget accounting. Optional — older executors may omit
+   * calling it; budgets then only see zeros for that step.
+   */
+  reportUsage?: ReportUsageFn
 }
 
 export interface RunExecuteOpts {
@@ -51,6 +63,8 @@ export interface RunExecuteOpts {
   workflow: LoadedWorkflow
   timeoutMs?: number
   extra?: Record<string, unknown>
+  /** See AgentExecuteOpts.reportUsage. */
+  reportUsage?: ReportUsageFn
 }
 
 export interface AgentExecutor {

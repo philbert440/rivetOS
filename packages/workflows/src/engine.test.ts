@@ -471,9 +471,338 @@ describe('loader', () => {
   })
 })
 
-describe('step.parallel plumbing', () => {
-  it('throws when called (slice G)', async () => {
+describe('budgets (slice F)', () => {
+  it('accumulates usage and fails mid-run when maxTokens exceeded', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-budget-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'), {
+      id: 'budget-wf',
+      yaml: `id: budget-wf
+version: "1.0.0"
+name: Budget
+input:
+  - name: message
+    type: string
+output:
+  - name: result
+    type: string
+budgets:
+  maxTokens: 150
+`,
+    })
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry({
+        agent: async (opts) => {
+          opts.reportUsage?.({ tokens: 100 })
+          return { result: 'ok' }
+        },
+      }),
+      workflowDirs: { 'budget-wf': wfDir },
+    })
+    // step1 (100) ok; step2 (100) begins at spent=100 <= 150, finishes spent=200;
+    // step3 begins at 200 > 150 → BudgetExceededError
+    const script: RunScript = async (step) => {
+      await step.agent('a1', { out: ['result'] })
+      await step.agent('a2', { out: ['result'] })
+      await step.agent('a3', { out: ['result'] })
+      await step.done({ result: 'never' })
+    }
+    const r = await engine.startRun(
+      'budget-wf',
+      { message: 'x' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(r.run.status).toBe('failed')
+    expect(r.run.error).toMatch(/Budget exceeded.*maxTokens/)
+    expect(r.run.error).toMatch(/150/)
+    const journal = await readJournal(r.caseDir)
+    const finished = journal.filter((e) => e.type === 'step_finished' && e.kind === 'agent')
+    expect(finished).toHaveLength(2)
+    for (const e of finished) {
+      if (e.type === 'step_finished') expect(e.usage?.tokens).toBe(100)
+    }
+  })
+
+  it('resumed run keeps spent total from journaled usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-budget-resume-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'), {
+      id: 'budget-resume',
+      yaml: `id: budget-resume
+version: "1.0.0"
+name: BudgetResume
+input:
+  - name: message
+    type: string
+output:
+  - name: result
+    type: string
+budgets:
+  maxTokens: 150
+`,
+    })
+    const workflow = await loadWorkflowDir(wfDir)
+    let liveAgentCalls = 0
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry({
+        agent: async (opts) => {
+          liveAgentCalls++
+          opts.reportUsage?.({ tokens: 100 })
+          return { result: `live-${liveAgentCalls}` }
+        },
+      }),
+      workflowDirs: { 'budget-resume': wfDir },
+    })
+    const script: RunScript = async (step) => {
+      await step.agent('pre', { out: ['result'] })
+      await step.human('gate', { fields: ['ok'] })
+      // On resume, pre replays (accumulates 100 from journal); this live step
+      // adds another 100 → spent 200; done then fails budget check.
+      await step.agent('post', { out: ['result'] })
+      await step.done({ result: 'ok' })
+    }
+    const started = await engine.startRun(
+      'budget-resume',
+      { message: 'x' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(started.suspended).toBe(true)
+    expect(liveAgentCalls).toBe(1)
+
+    const resumed = await engine.resumeRun(started.run.id, {
+      gateResponse: { ok: true },
+      runScript: script,
+      workflow,
+    })
+    // post runs live (spent becomes 200), done fails budget
+    expect(resumed.run.status).toBe('failed')
+    expect(resumed.run.error).toMatch(/Budget exceeded.*maxTokens/)
+    expect(liveAgentCalls).toBe(2) // pre not re-run
+  })
+
+  it('maxConcurrentRuns refuses a second start; allows after terminal', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-conc-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'), {
+      id: 'conc-wf',
+      yaml: `id: conc-wf
+version: "1.0.0"
+name: Conc
+input:
+  - name: message
+    type: string
+output:
+  - name: result
+    type: string
+budgets:
+  maxConcurrentRuns: 1
+`,
+    })
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry(),
+      workflowDirs: { 'conc-wf': wfDir },
+    })
+    const gateScript: RunScript = async (step) => {
+      await step.human('gate', { fields: ['ok'] })
+      await step.done({ result: 'done' })
+    }
+    const first = await engine.startRun(
+      'conc-wf',
+      { message: 'a' },
+      { type: 'human' },
+      { runScript: gateScript, workflow, runId: 'conc-1' },
+    )
+    expect(first.suspended).toBe(true)
+
+    await expect(
+      engine.startRun(
+        'conc-wf',
+        { message: 'b' },
+        { type: 'human' },
+        { runScript: gateScript, workflow, runId: 'conc-2' },
+      ),
+    ).rejects.toMatchObject({ name: 'MaxConcurrentRunsError' })
+
+    // Finish first
+    const finished = await engine.resumeRun('conc-1', {
+      gateResponse: { ok: true },
+      runScript: gateScript,
+      workflow,
+    })
+    expect(finished.run.status).toBe('done')
+
+    // Now a new start passes
+    const third = await engine.startRun(
+      'conc-wf',
+      { message: 'c' },
+      { type: 'human' },
+      {
+        runScript: async (step) => {
+          await step.done({ result: 'ok' })
+        },
+        workflow,
+        runId: 'conc-3',
+      },
+    )
+    expect(third.run.status).toBe('done')
+  })
+
+  it('zero / absent budgets are unlimited', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-nobudget-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'))
+    const workflow = await loadWorkflowDir(wfDir)
+    expect(workflow.manifest.budgets).toBeUndefined()
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry({
+        agent: async (opts) => {
+          opts.reportUsage?.({ tokens: 1_000_000, costUsd: 999 })
+          return { result: 'big' }
+        },
+      }),
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+    const r = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'x' },
+      { type: 'human' },
+      {
+        runScript: async (step) => {
+          await step.agent('a', { out: ['result'] })
+          await step.done({ result: 'ok' })
+        },
+        workflow,
+      },
+    )
+    expect(r.run.status).toBe('done')
+  })
+})
+
+describe('step.parallel (slice G)', () => {
+  it('runs branches concurrently and returns results in branch-index order', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wf-par-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'))
+    const workflow = await loadWorkflowDir(wfDir)
+
+    // Deferred resolvers so we control completion order (b1 before b0).
+    type Resolver = (v: unknown) => void
+    const resolvers: Resolver[] = []
+    const started: string[] = []
+    const executors = new MockExecutorRegistry({
+      run: (opts) =>
+        new Promise((resolve) => {
+          started.push(opts.label)
+          resolvers.push(resolve)
+        }),
+    })
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors,
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+
+    let parallelDone: Promise<unknown[]> | undefined
+    const script: RunScript = async (step) => {
+      parallelDone = step.parallel('fan', [
+        async (s) => {
+          const r = await s.run('work', { script: 'a' })
+          return { i: 0, r }
+        },
+        async (s) => {
+          const r = await s.run('work', { script: 'b' })
+          return { i: 1, r }
+        },
+      ])
+      const results = await parallelDone
+      await step.done({ result: JSON.stringify(results) })
+    }
+
+    const startPromise = engine.startRun(
+      workflow.manifest.id,
+      { message: 'x' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+
+    // Wait until both branches have entered their run steps
+    for (let i = 0; i < 50 && resolvers.length < 2; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(resolvers.length).toBe(2)
+    // Resolve out of order: branch 1 first, then branch 0
+    resolvers[1]!({ from: 'b1' })
+    resolvers[0]!({ from: 'b0' })
+
+    const result = await startPromise
+    expect(result.run.status).toBe('done')
+    const parsed = JSON.parse(String(result.run.output?.result)) as Array<{
+      i: number
+      r: { from: string }
+    }>
+    expect(parsed).toEqual([
+      { i: 0, r: { from: 'b0' } },
+      { i: 1, r: { from: 'b1' } },
+    ])
+  })
+
+  it('replay skips completed branch steps', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-par-replay-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'))
+    const workflow = await loadWorkflowDir(wfDir)
+    let liveCalls = 0
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry({
+        agent: async (opts) => {
+          liveCalls++
+          // Value derives from the BRANCH (label carries /b<i>:), not call
+          // arrival order — so the index-order assertion below stays exact
+          // even though branches race.
+          const branch = /\/b(\d+):/.exec(opts.label)?.[1] ?? '?'
+          return { result: `live-b${branch}` }
+        },
+      }),
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+    const script: RunScript = async (step) => {
+      const results = await step.parallel('fan', [
+        async (s) => {
+          const a = await s.agent('work', { out: ['result'] })
+          return a.result
+        },
+        async (s) => {
+          const a = await s.agent('work', { out: ['result'] })
+          return a.result
+        },
+      ])
+      await step.human('gate', { fields: ['ok'] })
+      await step.done({ result: results.join(',') })
+    }
+    const started = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'x' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(started.suspended).toBe(true)
+    expect(liveCalls).toBe(2)
+
+    const resumed = await engine.resumeRun(started.run.id, {
+      gateResponse: { ok: true },
+      runScript: script,
+      workflow,
+    })
+    expect(resumed.run.status).toBe('done')
+    expect(liveCalls).toBe(2) // branch agents not re-run
+    expect(resumed.run.output?.result).toBe('live-b0,live-b1')
+  })
+
+  it('restricts human / nested parallel / done inside branches', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-par-gate-'))
     const wfDir = await writeMinimalWorkflow(join(root, 'wf'))
     const workflow = await loadWorkflowDir(wfDir)
     const engine = new WorkflowEngine({
@@ -481,17 +810,167 @@ describe('step.parallel plumbing', () => {
       executors: new MockExecutorRegistry(),
       workflowDirs: { [workflow.manifest.id]: wfDir },
     })
-    const script: RunScript = async (step) => {
-      await step.parallel('p')
+
+    for (const [name, branchFn] of [
+      [
+        'human',
+        async (s: import('./step.js').Step) => {
+          await s.human('g', { fields: ['x'] })
+          return 1
+        },
+      ],
+      [
+        'parallel',
+        async (s: import('./step.js').Step) => {
+          await s.parallel('inner', [async () => 1])
+          return 1
+        },
+      ],
+      [
+        'done',
+        async (s: import('./step.js').Step) => {
+          await s.done({ result: 'nope' })
+          return 1
+        },
+      ],
+    ] as const) {
+      const script: RunScript = async (step) => {
+        await step.parallel('fan', [branchFn])
+        await step.done({ result: 'ok' })
+      }
+      const r = await engine.startRun(
+        workflow.manifest.id,
+        { message: 'x' },
+        { type: 'human' },
+        { runScript: script, workflow, runId: `restrict-${name}` },
+      )
+      expect(r.run.status).toBe('failed')
+      if (name === 'human') expect(r.run.error).toMatch(/not allowed inside a step\.parallel branch/)
+      if (name === 'parallel') expect(r.run.error).toMatch(/nested step\.parallel/)
+      if (name === 'done') expect(r.run.error).toMatch(/step\.done\(\) is not allowed/)
     }
-    const result = await engine.startRun(
+  })
+
+  it('creates branch subdirs and passes them to executors', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-par-dirs-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'))
+    const workflow = await loadWorkflowDir(wfDir)
+    const seenCaseDirs: string[] = []
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry({
+        run: (opts) => {
+          seenCaseDirs.push(opts.caseDir)
+          return { ok: true }
+        },
+      }),
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+    const script: RunScript = async (step) => {
+      await step.parallel('fan', [
+        async (s) => s.run('w', { script: 'a' }),
+        async (s) => s.run('w', { script: 'b' }),
+      ])
+      await step.done({ result: 'ok' })
+    }
+    const r = await engine.startRun(
       workflow.manifest.id,
       { message: 'x' },
       { type: 'human' },
       { runScript: script, workflow },
     )
-    expect(result.run.status).toBe('failed')
-    expect(result.run.error).toMatch(/not implemented/)
+    expect(r.run.status).toBe('done')
+    expect(seenCaseDirs).toHaveLength(2)
+    // Branches run concurrently — executor arrival order is nondeterministic.
+    expect([...seenCaseDirs].sort()).toEqual([
+      join(r.caseDir, 'fan#1', 'b0'),
+      join(r.caseDir, 'fan#1', 'b1'),
+    ])
+    // dirs exist on disk
+    const { existsSync } = await import('node:fs')
+    expect(existsSync(seenCaseDirs[0]!)).toBe(true)
+    expect(existsSync(seenCaseDirs[1]!)).toBe(true)
+  })
+
+  it('serialized journal has no interleaved lines under concurrent branch writes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-par-stress-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'))
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry({
+        run: async () => {
+          // tiny yield so branches interleave appends
+          await new Promise((r) => setTimeout(r, 0))
+          return { ok: true }
+        },
+      }),
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+    const script: RunScript = async (step) => {
+      await step.parallel('fan', [
+        async (s) => {
+          for (let i = 0; i < 5; i++) await s.run(`s${i}`, { script: 'x' })
+          return 0
+        },
+        async (s) => {
+          for (let i = 0; i < 5; i++) await s.run(`s${i}`, { script: 'x' })
+          return 1
+        },
+        async (s) => {
+          for (let i = 0; i < 5; i++) await s.run(`s${i}`, { script: 'x' })
+          return 2
+        },
+      ])
+      await step.done({ result: 'ok' })
+    }
+    const r = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'x' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(r.run.status).toBe('done')
+    const raw = await readFile(join(r.caseDir, 'journal.jsonl'), 'utf-8')
+    const lines = raw.split('\n').filter((l) => l.trim())
+    for (const line of lines) {
+      expect(() => JSON.parse(line)).not.toThrow()
+    }
+    // 3 branches × 5 steps × (started+finished) + parallel started/finished + done + run_started/finished
+    expect(lines.length).toBeGreaterThan(30)
+  })
+
+  it('branch agent fields do not merge into case.json', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-par-nomerge-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'))
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry({
+        agent: async () => ({ result: 'from-branch', leaked: true }),
+      }),
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+    const script: RunScript = async (step) => {
+      const results = await step.parallel('fan', [
+        async (s) => {
+          const a = await s.agent('w', { out: ['result'] })
+          return a
+        },
+      ])
+      await step.done({ result: String(results[0]?.result) })
+    }
+    const r = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'x' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(r.run.status).toBe('done')
+    const st = await readCase(r.caseDir)
+    // branch result only via T[] → done, not via case field merge from agent
+    expect(st.fields.result).toBe('from-branch')
+    expect(st.fields.leaked).toBeUndefined()
   })
 })
 
@@ -852,5 +1331,65 @@ describe('resume serialization', () => {
     })
     expect(r.run.status).toBe('failed')
     expect(r.suspended).toBe(false)
+  })
+})
+
+describe('budgets × parallel × resume (grok #443 finding 1)', () => {
+  it('journaled branch usage is re-seeded on resume — no free spend after a replayed parallel', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-budget-par-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'), {
+      id: 'budget-par',
+      yaml: `id: budget-par
+version: "1.0.0"
+name: BudgetPar
+input:
+  - name: message
+    type: string
+output:
+  - name: result
+    type: string
+    required: false
+budgets:
+  maxTokens: 250
+`,
+    })
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry({
+        agent: async (opts) => {
+          opts.reportUsage?.({ tokens: 100 })
+          return { result: 'x' }
+        },
+      }),
+      workflowDirs: { 'budget-par': wfDir },
+    })
+    const script: RunScript = async (step) => {
+      await step.parallel('fan', [
+        async (s) => (await s.agent('work', { out: ['result'] })).result,
+        async (s) => (await s.agent('work', { out: ['result'] })).result,
+      ])
+      await step.human('gate', { fields: ['ok'] })
+      // Post-resume spend: 200 (replayed branches) + 100 = 300 > 250.
+      await step.agent('after', { out: ['result'] })
+      await step.done({ result: 'done' })
+    }
+
+    const started = await engine.startRun(
+      'budget-par',
+      { message: 'x' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(started.suspended).toBe(true)
+
+    const resumed = await engine.resumeRun(started.run.id, {
+      gateResponse: { ok: true },
+      runScript: script,
+      workflow,
+    })
+    expect(resumed.run.status).toBe('failed')
+    expect(resumed.run.error).toMatch(/maxTokens/)
+    expect(resumed.run.error).toMatch(/300/)
   })
 })
