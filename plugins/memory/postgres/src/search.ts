@@ -790,7 +790,13 @@ export class SearchEngine {
       case 'fts':
         // content_tsv includes tool_result after migration 0008.
         matchCondition = `${alias}.content_tsv @@ plainto_tsquery('english', ${q})`
-        ftsScoreExpr = `ts_rank_cd(${alias}.content_tsv, plainto_tsquery('english', ${q}))`
+        // Norm flag 32 = rank/(rank+1): bounds long, repetitive tool payloads
+        // (build logs full of the query term) so they don't outrank prose —
+        // same precision class as #210; review on #440. Summaries stay default.
+        ftsScoreExpr =
+          alias === 'm'
+            ? `ts_rank_cd(${alias}.content_tsv, plainto_tsquery('english', ${q}), 32)`
+            : `ts_rank_cd(${alias}.content_tsv, plainto_tsquery('english', ${q}))`
         break
       case 'trigram':
         if (alias === 'm') {

@@ -354,9 +354,18 @@ class SearchEngine:
         def score_and_match(alias: str) -> Tuple[str, str]:
             if method == "fts":
                 # content_tsv includes tool_result after migration 0008.
-                return (
+                # Norm 32 on the message arm only (long tool payloads) — #440.
+                rank = (
                     f"ts_rank_cd({alias}.content_tsv, "
-                    f"websearch_to_tsquery('english', %s))",
+                    f"websearch_to_tsquery('english', %s), 32)"
+                    if alias == "m"
+                    else (
+                        f"ts_rank_cd({alias}.content_tsv, "
+                        f"websearch_to_tsquery('english', %s))"
+                    )
+                )
+                return (
+                    rank,
                     f"{alias}.content_tsv @@ websearch_to_tsquery('english', %s)",
                 )
             if alias == "m":
@@ -646,7 +655,10 @@ class SearchEngine:
 
         if mode == "fts":
             # content_tsv includes tool_result after migration 0008.
-            fts_expr = "ts_rank_cd(m.content_tsv, websearch_to_tsquery('english', %s))"
+            # Norm 32: rank/(rank+1) so long tool payloads don't dominate (#440).
+            fts_expr = (
+                "ts_rank_cd(m.content_tsv, websearch_to_tsquery('english', %s), 32)"
+            )
             select_params.append(query)
             conditions.append("m.content_tsv @@ websearch_to_tsquery('english', %s)")
             condition_params.append(query)
