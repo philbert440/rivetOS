@@ -203,9 +203,10 @@ export function WorkflowGraph(props: WorkflowGraphProps): JSX.Element {
         {/* Nodes */}
         {laid.map((n) => {
           const stroke = GRAPH_NODE_STATUS_STROKE[n.status]
-          // Clickable when handler is provided; call nodes with childRunId show a link affordance.
-          const clickable = Boolean(onNodeClick)
+          // Interactive ONLY when this node actually navigates somewhere —
+          // a button role on a no-op node is an a11y dead end (kimi #444).
           const isLink = Boolean(n.childRunId) && (n.kind === 'call' || !n.kind)
+          const clickable = Boolean(onNodeClick) && isLink
           const title = [
             n.label,
             n.kind ? `kind=${n.kind}` : undefined,
@@ -224,14 +225,17 @@ export function WorkflowGraph(props: WorkflowGraphProps): JSX.Element {
               tabIndex={clickable ? 0 : undefined}
               aria-label={title}
               style={{ cursor: clickable ? 'pointer' : 'default' }}
-              onClick={() => onNodeClick?.(n)}
-              onKeyDown={(ev) => {
-                if (!onNodeClick) return
-                if (ev.key === 'Enter' || ev.key === ' ') {
-                  ev.preventDefault()
-                  onNodeClick(n)
-                }
-              }}
+              onClick={clickable ? () => onNodeClick?.(n) : undefined}
+              onKeyDown={
+                clickable
+                  ? (ev) => {
+                      if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault()
+                        onNodeClick?.(n)
+                      }
+                    }
+                  : undefined
+              }
             >
               <title>{title}</title>
               <rect
