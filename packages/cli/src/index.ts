@@ -66,6 +66,7 @@ const COMMANDS: Partial<Record<string, () => Promise<void> | void>> = {
     // Fall through to skills list for unknown sub-commands
     return import('./commands/skills.js').then((m) => m.default())
   },
+  workflow: () => import('./commands/workflow.js').then((m) => m.default()),
   help: () => showHelp(),
   // Provider commands — rivetos <provider> <action>
   anthropic: () => import('./commands/provider.js').then((m) => m.default('anthropic')),
@@ -130,6 +131,9 @@ function showHelp(): void {
     rivetos skills list                 Show all discovered skills
     rivetos plugins list                Show configured plugins with status
     rivetos plugins sync                Refresh TUI plugin installs from source
+
+  Workflows:
+    rivetos workflow new <name>         Scaffold a workflow directory
 
   Providers:
     rivetos <provider> status           Check provider connectivity
