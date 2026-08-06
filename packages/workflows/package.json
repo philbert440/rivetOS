@@ -1,33 +1,24 @@
 {
-  "name": "@rivetos/cli",
+  "name": "@rivetos/workflows",
   "version": "0.4.0-beta.6",
-  "description": "RivetOS command-line interface",
+  "description": "Workflows v1 engine — document model, step SDK, journal-replay, start API",
   "license": "Apache-2.0",
-  "type": "module",
-  "bin": {
-    "rivetos": "dist/index.js"
-  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ package.json",
-    "test": "echo \"no tests yet\"",
-    "clean": "rm -rf dist workspace-templates",
-    "bundle-templates": "node scripts/bundle-templates.mjs",
-    "prepublishOnly": "npm run build && npm run bundle-templates"
+    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@clack/prompts": "^1.7.0",
-    "@rivetos/boot": "0.4.0-beta.6",
-    "@rivetos/workflows": "0.4.0-beta.6",
-    "pg": "^8.22.0",
-    "undici": "^8.10.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@types/pg": "^8.20.3"
+    "@types/node": "^26.1.2",
+    "vitest": "^4.1.10"
   },
   "exports": {
     ".": {
@@ -38,14 +29,13 @@
   },
   "files": [
     "dist",
-    "workspace-templates",
     "README.md",
     "LICENSE"
   ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/philbert440/rivetOS.git",
-    "directory": "packages/cli"
+    "directory": "packages/workflows"
   },
   "publishConfig": {
     "access": "public"
@@ -55,8 +45,9 @@
   },
   "nx": {
     "tags": [
-      "scope:composition",
-      "type:app"
+      "scope:domain",
+      "type:lib",
+      "domain:workflows"
     ]
   }
 }
