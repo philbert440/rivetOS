@@ -9,7 +9,7 @@ GH="${GH_BIN:-gh}"
 
 parse_input() {
   local raw="${WORKFLOW_INPUT:-${1:-}}"
-  if [[ -z "${raw}" ]]; then
+  if [ -z "${raw}" ]; then
     echo "load-pr.sh: missing WORKFLOW_INPUT / argv[1]" >&2
     exit 1
   fi
@@ -24,7 +24,7 @@ parse_input() {
     echo "load-pr.sh: need python3 or jq to parse WORKFLOW_INPUT" >&2
     exit 1
   fi
-  if [[ -z "${REPO}" || "${REPO}" == "null" || -z "${PR}" || "${PR}" == "null" ]]; then
+  if [ -z "${REPO}" ] || [ "${REPO}" = "null" ] || [ -z "${PR}" ] || [ "${PR}" = "null" ]; then
     echo "load-pr.sh: repo and pr are required in input JSON" >&2
     exit 1
   fi

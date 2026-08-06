@@ -6,7 +6,7 @@ set -eu
 GH="${GH_BIN:-gh}"
 
 raw="${WORKFLOW_INPUT:-${1:-}}"
-if [[ -z "${raw}" ]]; then
+if [ -z "${raw}" ]; then
   echo "merge-pr.sh: missing WORKFLOW_INPUT / argv[1]" >&2
   exit 1
 fi
