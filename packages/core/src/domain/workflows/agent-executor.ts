@@ -63,6 +63,10 @@ export function createTaskAgentExecutor(opts: TaskAgentExecutorOptions): AgentEx
           workflowStepId: step.stepId,
           workflowLabel: step.label,
           workflowCaseDir: step.caseDir,
+          // chat-loop uses spec.workingDir as the session workspace — the
+          // step's case dir, so "read pr.diff from the case dir" is guaranteed
+          // rather than accidental.
+          workingDir: step.caseDir,
           outFields: step.out,
           agentName: step.agent,
           agentConfig: step.agentDef?.config,
@@ -124,11 +128,41 @@ export function createStubAgentExecutor(reason: string): AgentExecutor {
   }
 }
 
+/**
+ * Chat-loop TASK_RESULT carries `output` as a STRING; workflow agents are
+ * instructed to make that string a JSON object of their declared out fields.
+ * Parse it (or the summary) when it looks like an object so multi-field
+ * contracts survive the live path, not just object-returning mocks.
+ */
+function parseJsonObject(text: unknown): Record<string, unknown> | null {
+  if (typeof text !== 'string') return null
+  const trimmed = text.trim().replace(/^```(?:json)?\s*\n?|\n?```$/g, '')
+  const start = trimmed.indexOf('{')
+  const end = trimmed.lastIndexOf('}')
+  if (start === -1 || end <= start) return null
+  try {
+    const parsed: unknown = JSON.parse(trimmed.slice(start, end + 1))
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
+}
+
 export function mapTaskResultToOut(
   out: string[],
   output: unknown,
   summary?: string,
 ): Record<string, unknown> {
+  // String output that encodes a JSON object (the live chat-loop shape) is
+  // promoted to the object branch; summary is the fallback carrier.
+  if (typeof output === 'string' && out.length > 0) {
+    const parsed = parseJsonObject(output) ?? parseJsonObject(summary)
+    if (parsed && out.some((k) => parsed[k] !== undefined)) {
+      output = parsed
+    }
+  }
   const result: Record<string, unknown> = {}
   if (output && typeof output === 'object' && !Array.isArray(output)) {
     const obj = output as Record<string, unknown>

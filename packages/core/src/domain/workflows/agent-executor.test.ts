@@ -60,3 +60,33 @@ describe('createTaskAgentExecutor', () => {
     await expect(exec.execute(stepOpts)).rejects.toThrow(/boom/)
   })
 })
+
+describe('mapTaskResultToOut — chat-loop string output (live path)', () => {
+  it('parses a JSON-object string output into declared out fields', () => {
+    expect(
+      mapTaskResultToOut(
+        ['verdict', 'summary'],
+        '{"verdict":"approve","summary":"looks good"}',
+      ),
+    ).toEqual({ verdict: 'approve', summary: 'looks good' })
+  })
+
+  it('parses fenced / surrounded JSON and falls back to summary carrier', () => {
+    expect(
+      mapTaskResultToOut(
+        ['pr', 'summary'],
+        'Done!\n```json\n{"pr":"https://x/pull/9","summary":"opened"}\n```',
+      ),
+    ).toEqual({ pr: 'https://x/pull/9', summary: 'opened' })
+    expect(
+      mapTaskResultToOut(['plan'], 'no json here', '{"plan":"touch foo"}'),
+    ).toEqual({ plan: 'touch foo' })
+  })
+
+  it('non-JSON string with multi-field out stays null-filled (no blob poisoning)', () => {
+    expect(mapTaskResultToOut(['verdict', 'summary'], 'just prose')).toEqual({
+      verdict: null,
+      summary: null,
+    })
+  })
+})
