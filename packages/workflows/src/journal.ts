@@ -46,6 +46,9 @@ export async function appendJournal(caseDir: string, entry: JournalEntry): Promi
     () => undefined,
   )
   appendQueues.set(path, settled)
+  void settled.then(() => {
+    if (appendQueues.get(path) === settled) appendQueues.delete(path)
+  })
   return run
 }
 

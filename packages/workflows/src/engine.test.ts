@@ -1333,3 +1333,63 @@ describe('resume serialization', () => {
     expect(r.suspended).toBe(false)
   })
 })
+
+describe('budgets × parallel × resume (grok #443 finding 1)', () => {
+  it('journaled branch usage is re-seeded on resume — no free spend after a replayed parallel', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-budget-par-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'), {
+      id: 'budget-par',
+      yaml: `id: budget-par
+version: "1.0.0"
+name: BudgetPar
+input:
+  - name: message
+    type: string
+output:
+  - name: result
+    type: string
+    required: false
+budgets:
+  maxTokens: 250
+`,
+    })
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry({
+        agent: async (opts) => {
+          opts.reportUsage?.({ tokens: 100 })
+          return { result: 'x' }
+        },
+      }),
+      workflowDirs: { 'budget-par': wfDir },
+    })
+    const script: RunScript = async (step) => {
+      await step.parallel('fan', [
+        async (s) => (await s.agent('work', { out: ['result'] })).result,
+        async (s) => (await s.agent('work', { out: ['result'] })).result,
+      ])
+      await step.human('gate', { fields: ['ok'] })
+      // Post-resume spend: 200 (replayed branches) + 100 = 300 > 250.
+      await step.agent('after', { out: ['result'] })
+      await step.done({ result: 'done' })
+    }
+
+    const started = await engine.startRun(
+      'budget-par',
+      { message: 'x' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(started.suspended).toBe(true)
+
+    const resumed = await engine.resumeRun(started.run.id, {
+      gateResponse: { ok: true },
+      runScript: script,
+      workflow,
+    })
+    expect(resumed.run.status).toBe('failed')
+    expect(resumed.run.error).toMatch(/maxTokens/)
+    expect(resumed.run.error).toMatch(/300/)
+  })
+})

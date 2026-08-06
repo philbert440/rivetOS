@@ -115,9 +115,19 @@ export function createStepRuntime(options: StepRuntimeOptions): {
   // Working copy of journal for in-memory cache hits during a single execution.
   const liveJournal = [...options.journal]
 
-  // Accumulated spend for this run (replay + live). Shared across parallel branches.
+  // Accumulated spend for this run (replay + live). Shared across parallel
+  // branches. Seeded by summing EVERY journaled step_finished usage up front —
+  // replay cache-hits must NOT re-accumulate (a replayed parallel parent
+  // short-circuits before its branch steps re-enter beginStep, so per-hit
+  // accumulation would undercount the skipped subtree).
   let spentTokens = 0
   let spentCostUsd = 0
+  for (const e of options.journal) {
+    if (e.type === 'step_finished' && e.usage) {
+      if (typeof e.usage.tokens === 'number') spentTokens += e.usage.tokens
+      if (typeof e.usage.costUsd === 'number') spentCostUsd += e.usage.costUsd
+    }
+  }
 
   function accumulateUsage(u?: StepUsage): void {
     if (!u) return
@@ -167,18 +177,6 @@ export function createStepRuntime(options: StepRuntimeOptions): {
     }
   }
 
-  /**
-   * Journal lookup for a finished step's usage (for replay accumulation).
-   */
-  function usageFromJournal(label: string, seq: number): StepUsage | undefined {
-    for (const e of liveJournal) {
-      if (e.type === 'step_finished' && e.label === label && e.seq === seq) {
-        return e.usage
-      }
-    }
-    return undefined
-  }
-
   async function beginStep(
     label: string,
     kind: StepKind,
@@ -192,8 +190,8 @@ export function createStepRuntime(options: StepRuntimeOptions): {
     const stepId = makeStepId(label, seq)
     const cached = findCachedStepResult(liveJournal, label, seq, kind)
     if (cached.hit) {
-      // Replay: keep spent total by accumulating journaled usage.
-      accumulateUsage(usageFromJournal(label, seq))
+      // Replay: spent totals were seeded from the full journal at init —
+      // do not re-accumulate per hit.
       return { mode: 'replay', stepId, seq, result: cached.result }
     }
     // Re-execute path after crash: step_started may already exist without a finish.
