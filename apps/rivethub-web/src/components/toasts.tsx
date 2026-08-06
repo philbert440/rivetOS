@@ -9,11 +9,33 @@ function frameTitle(frame: NotificationFrame): string {
       return `⚠ escalation — ${frame.agentId}`
     case 'task.done':
       return `task ${frame.status}`
+    case 'workflow.gate':
+      return `⏸ gate · ${frame.workflowId}`
   }
 }
 
 function frameBody(frame: NotificationFrame): string {
-  return frame.kind === 'escalation' ? frame.summary : `${frame.taskId} — ${frame.status}`
+  switch (frame.kind) {
+    case 'escalation':
+      return frame.summary
+    case 'task.done':
+      return `${frame.taskId} — ${frame.status}`
+    case 'workflow.gate':
+      return frame.prompt?.trim()
+        ? `${frame.label}: ${frame.prompt}`
+        : `${frame.label} · ${frame.runId}`
+  }
+}
+
+function frameHref(frame: NotificationFrame): string {
+  switch (frame.kind) {
+    case 'escalation':
+      return frame.href
+    case 'task.done':
+      return `/tasks/${frame.taskId}`
+    case 'workflow.gate':
+      return frame.href || `/workflows/runs/${frame.runId}`
+  }
 }
 
 export function Toasts(): JSX.Element {
@@ -24,14 +46,16 @@ export function Toasts(): JSX.Element {
 
   const open = (entry: { id: string; frame: NotificationFrame }): void => {
     dismiss(entry.id) // navigating consumed it; don't let it linger
-    if (entry.frame.kind === 'escalation') void navigate({ to: entry.frame.href })
-    else void navigate({ to: `/tasks/${entry.frame.taskId}` })
+    void navigate({ to: frameHref(entry.frame) })
   }
 
-  // Red chrome is for bad news only — a completed task.done must not look
-  // like an error (#303 review).
-  const severity = (frame: NotificationFrame): 'red' | 'em' =>
-    frame.kind === 'escalation' || frame.status !== 'completed' ? 'red' : 'em'
+  // Red chrome is for bad news only — completed task.done and workflow gates
+  // use emerald (#303 / slice C).
+  const severity = (frame: NotificationFrame): 'red' | 'em' => {
+    if (frame.kind === 'escalation') return 'red'
+    if (frame.kind === 'task.done' && frame.status !== 'completed') return 'red'
+    return 'em'
+  }
 
   return (
     <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-96 flex-col gap-2">
@@ -53,7 +77,10 @@ export function Toasts(): JSX.Element {
               </div>
               <div className="mt-1 truncate text-sm text-ink">{frameBody(e.frame)}</div>
               <div className="mt-1 font-mono text-[10px] text-ink-dim">
-                {new Date(e.frame.ts).toLocaleTimeString()} · durable record in /api/outcomes
+                {new Date(e.frame.ts).toLocaleTimeString()}
+                {e.frame.kind === 'workflow.gate'
+                  ? ' · resume from run detail'
+                  : ' · durable record in /api/outcomes'}
               </div>
             </button>
             <button

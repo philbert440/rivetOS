@@ -1,0 +1,62 @@
+import { describe, it, expect, vi } from 'vitest'
+import { createTaskAgentExecutor, mapTaskResultToOut } from './agent-executor.js'
+import type { TaskStore } from '../task/store.js'
+import type { TaskCompletionWaiter } from '../task/completion-waiter.js'
+
+describe('mapTaskResultToOut', () => {
+  it('maps declared keys from an object output', () => {
+    expect(mapTaskResultToOut(['a', 'b'], { a: 1, b: 2, extra: 3 })).toEqual({ a: 1, b: 2 })
+  })
+
+  it('missing keys stay null (never the whole blob)', () => {
+    expect(mapTaskResultToOut(['a', 'b'], { a: 1 }, 'summary')).toEqual({ a: 1, b: null })
+  })
+
+  it('single declared key may fall back to summary', () => {
+    expect(mapTaskResultToOut(['verdict'], {}, 'looks good')).toEqual({ verdict: 'looks good' })
+    expect(mapTaskResultToOut(['verdict'], 'raw text')).toEqual({ verdict: 'raw text' })
+  })
+
+  it('empty out passes the object through / wraps scalars', () => {
+    expect(mapTaskResultToOut([], { x: 1 })).toEqual({ x: 1 })
+    expect(mapTaskResultToOut([], undefined, 'sum')).toEqual({ result: 'sum' })
+  })
+})
+
+describe('createTaskAgentExecutor', () => {
+  function harness(waitResult: unknown) {
+    const store = {
+      create: vi.fn().mockResolvedValue({ id: 'task-1' }),
+      requestKill: vi.fn().mockResolvedValue('killed'),
+    } as unknown as TaskStore
+    const waiter = {
+      wait: vi.fn().mockResolvedValue(waitResult),
+    } as unknown as TaskCompletionWaiter
+    const exec = createTaskAgentExecutor({ store, waiter, defaultAgentId: 'rivet' })
+    return { store, waiter, exec }
+  }
+
+  const stepOpts = {
+    label: 'work',
+    stepId: 'work#1',
+    out: ['result'],
+    caseDir: '/tmp/nowhere',
+    workflow: { manifest: { id: 'wf' }, dir: '', runPath: '', agents: {} },
+  } as Parameters<ReturnType<typeof createTaskAgentExecutor>['execute']>[0]
+
+  it('completed task maps output to out fields', async () => {
+    const { exec } = harness({ status: 'completed', result: { output: { result: 'done!' } } })
+    await expect(exec.execute(stepOpts)).resolves.toEqual({ result: 'done!' })
+  })
+
+  it('timeout requests a task kill before throwing', async () => {
+    const { exec, store } = harness(undefined)
+    await expect(exec.execute({ ...stepOpts, timeoutMs: 5 })).rejects.toThrow(/timed out/)
+    expect(store.requestKill).toHaveBeenCalledWith('task-1')
+  })
+
+  it('failed task throws with the task error', async () => {
+    const { exec } = harness({ status: 'failed', error: 'boom' })
+    await expect(exec.execute(stepOpts)).rejects.toThrow(/boom/)
+  })
+})

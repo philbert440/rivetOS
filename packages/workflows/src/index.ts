@@ -80,8 +80,19 @@ export {
   nowIso,
   findCachedStepResult,
   isOpenGate,
+  findOpenGate,
   maxSeqForLabel,
+  type OpenGate,
 } from './journal.js'
+
+// List helpers (UI / gateway scan)
+export {
+  listRuns,
+  listChildRuns,
+  listWorkflowDefs,
+  type RunSummary,
+  type ListRunsOptions,
+} from './list-runs.js'
 export {
   CASE_FILENAME,
   casePath,

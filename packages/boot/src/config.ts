@@ -35,12 +35,30 @@ export interface RivetConfig {
   /** Durable task engine (ros_tasks + embedded runner) — phase 1 */
   tasks?: TasksSection
   /**
+   * Workflows v1 (slice C) — caseDir root + definition search roots.
+   * Defaults: runs=/rivet-shared/workflows/runs, defs=/rivet-shared/workflows/defs.
+   */
+  workflows?: WorkflowsSection
+  /**
    * Explicit plugin list — npm package names of rivetos plugins to load.
    * Authoritative in production (flat install): missing entries fail-fast.
    * Additive in workspace mode: union'd with workspace `plugins/<category>/*`
    * and `node_modules/*` scans, deduped by package name.
    */
   plugins?: string[]
+}
+
+/** Workflows engine host config (YAML snake_case). */
+export interface WorkflowsSection {
+  /** Absolute path for run caseDirs (default /rivet-shared/workflows/runs). */
+  runs_dir?: string
+  /**
+   * Roots scanned for `<root>/<id>/workflow.yaml` (default
+   * ['/rivet-shared/workflows/defs']).
+   */
+  defs_roots?: string[]
+  /** Master switch for gateway routes (default true). */
+  enabled?: boolean
 }
 
 // ---------------------------------------------------------------------------

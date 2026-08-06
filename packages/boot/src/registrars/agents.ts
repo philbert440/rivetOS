@@ -47,7 +47,10 @@ import {
   SkillManagerImpl,
   createSkillListTool,
   createSkillManageTool,
+  createHostExecutorRegistry,
+  createWorkflowApiRouteList,
 } from '@rivetos/core'
+import { WorkflowEngine, DEFAULT_CASE_DIR_ROOT } from '@rivetos/workflows'
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
 import pg from 'pg'
 import type { GatewayRoute, MeshConfig, MeshRegistry } from '@rivetos/types'
@@ -587,6 +590,55 @@ export async function registerAgentTools(
       meshRegistry: registry,
     }),
   )
+
+  // Workflows v1 (slice C) — gateway API over the journal-replay engine.
+  // Executors live here (not in @rivetos/workflows): script child_process +
+  // task-backed agent when the durable engine is available.
+  const workflowsEnabled = config.workflows?.enabled !== false
+  if (workflowsEnabled) {
+    const caseDirRoot = config.workflows?.runs_dir?.trim() || DEFAULT_CASE_DIR_ROOT
+    const workflowsRoots = config.workflows?.defs_roots?.filter(
+      (r) => typeof r === 'string' && r.trim(),
+    ) ?? ['/rivet-shared/workflows/defs']
+    const defaultAgentId =
+      Object.keys(config.agents ?? {})[0] ?? runtime.getRouter().getAgents()[0]?.id ?? 'rivet'
+    // Prefer durable task store; fall back to in-memory subagent store so
+    // agent steps can still dispatch when pg is absent (dev).
+    const agentTaskStore: TaskStore | undefined = taskEngineStore ?? subagentTaskStore
+    const agentWaiter: TaskCompletionWaiter | undefined =
+      taskWaiter ??
+      (agentTaskStore
+        ? createTaskCompletionWaiter({ store: agentTaskStore, pollFallbackMs: 500 })
+        : undefined)
+    if (agentWaiter && !taskWaiter) {
+      runtime.addShutdownHook(async () => {
+        await agentWaiter.stop()
+      })
+    }
+    const hostExecutors = createHostExecutorRegistry({
+      taskStore: agentTaskStore,
+      taskWaiter: agentWaiter,
+      defaultAgentId,
+      nodeId: nodeName,
+    })
+    const workflowEngine = new WorkflowEngine({
+      caseDirRoot,
+      workflowsRoots,
+      executors: hostExecutors,
+    })
+    gatewayRoutes.push(
+      ...createWorkflowApiRouteList({
+        engine: workflowEngine,
+        workflowsRoots,
+        caseDirRoot,
+        onGatePaused: notifications ? (frame) => notifications.broadcast(frame) : undefined,
+      }),
+    )
+    log.info(
+      `Workflows API mounted (defs=${workflowsRoots.join(',')}, runs=${caseDirRoot}, agent=${defaultAgentId})`,
+    )
+  }
+
   return { gatewayRoutes, gatewayUpgrades }
 }
 

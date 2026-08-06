@@ -1,5 +1,6 @@
 /**
- * Workflows — Product-Map-style definitions with local edit + catalog persistence.
+ * Workflows canvas editor (legacy, local catalog).
+ * Slice C front door is pages/workflows-hub.tsx; this stays at /workflows/canvas.
  */
 
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react'
@@ -51,7 +52,10 @@ export function WorkflowsPage(): JSX.Element {
   const onNew = () => {
     const created = createEmptyWorkflow({ name: 'New workflow' })
     setAndSave(upsertWorkflow(catalog, created))
-    void navigate({ to: '/workflows/$workflowId', params: { workflowId: created.id } })
+    void navigate({
+      to: '/workflows/canvas/$workflowId',
+      params: { workflowId: created.id },
+    })
   }
 
   const onDelete = (id: string) => {
@@ -66,8 +70,16 @@ export function WorkflowsPage(): JSX.Element {
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-8">
+      <div className="mb-2">
+        <Link
+          to="/workflows"
+          className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
+        >
+          ← workflows hub
+        </Link>
+      </div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-mono text-lg font-semibold text-em">Workflows</h1>
+        <h1 className="font-mono text-lg font-semibold text-em">Workflows · canvas</h1>
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[11px] text-ink-dim">
             {catalog.length} definition{catalog.length === 1 ? '' : 's'} · local catalog
@@ -97,7 +109,7 @@ export function WorkflowsPage(): JSX.Element {
                 type="button"
                 onClick={() =>
                   void navigate({
-                    to: '/workflows/$workflowId',
+                    to: '/workflows/canvas/$workflowId',
                     params: { workflowId: w.id },
                   })
                 }
@@ -153,7 +165,7 @@ export function WorkflowsPage(): JSX.Element {
 }
 
 export function WorkflowDetailPage(): JSX.Element {
-  const { workflowId } = useParams({ from: '/workflows/$workflowId' })
+  const { workflowId } = useParams({ from: '/workflows/canvas/$workflowId' })
   const { catalog, setAndSave } = useCatalog()
   const stored = getFromCatalog(catalog, workflowId)
 
@@ -208,8 +220,8 @@ export function WorkflowDetailPage(): JSX.Element {
   if (!draft) {
     return (
       <div className="mx-auto max-w-4xl px-6 py-8">
-        <Link to="/workflows" className="font-mono text-xs text-em hover:underline">
-          ← Workflows
+        <Link to="/workflows/canvas" className="font-mono text-xs text-em hover:underline">
+          ← Canvas list
         </Link>
         <h1 className="mt-4 font-mono text-lg font-semibold text-em">Not found</h1>
         <p className="mt-2 text-sm text-ink-dim">
@@ -260,8 +272,8 @@ export function WorkflowDetailPage(): JSX.Element {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
-        <Link to="/workflows" className="font-mono text-xs text-em hover:underline">
-          ← Workflows
+        <Link to="/workflows/canvas" className="font-mono text-xs text-em hover:underline">
+          ← Canvas list
         </Link>
         <h1 className="font-mono text-base font-semibold text-em">{draft.name}</h1>
         <span className="font-mono text-[11px] text-ink-dim">

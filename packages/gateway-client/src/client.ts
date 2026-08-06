@@ -29,6 +29,15 @@ import type {
   WikiPageResponse,
   DevicesListResponse,
   DeviceOpenResponse,
+  WorkflowsListResponse,
+  WorkflowDefSummary,
+  WorkflowRunsListResponse,
+  WorkflowRunDetailResponse,
+  WorkflowStartRunRequest,
+  WorkflowStartRunResponse,
+  WorkflowResumeRequest,
+  WorkflowResumeResponse,
+  WorkflowKillResponse,
 } from '@rivetos/types'
 import type {
   TermConfigResponse,
@@ -153,6 +162,63 @@ export class RivetGateway {
       onFrame,
       onStatus: opts.onStatus,
       factory: opts.factory,
+    })
+  }
+
+  // -- workflows (v1 slice C) ------------------------------------------------
+
+  listWorkflows(signal?: AbortSignal): Promise<WorkflowsListResponse> {
+    return request(this.config, '/api/workflows', { signal })
+  }
+
+  getWorkflow(workflowId: string, signal?: AbortSignal): Promise<{ workflow: WorkflowDefSummary }> {
+    return request(this.config, `/api/workflows/${encodeURIComponent(workflowId)}`, { signal })
+  }
+
+  startWorkflowRun(
+    workflowId: string,
+    body: WorkflowStartRunRequest = {},
+    opts: { wait?: boolean; signal?: AbortSignal } = {},
+  ): Promise<WorkflowStartRunResponse> {
+    return request(this.config, `/api/workflows/${encodeURIComponent(workflowId)}/runs`, {
+      method: 'POST',
+      body,
+      query: opts.wait ? { wait: 'true' } : undefined,
+      signal: opts.signal,
+    })
+  }
+
+  listWorkflowRuns(
+    query: { limit?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<WorkflowRunsListResponse> {
+    return request(this.config, '/api/workflow-runs', {
+      query: query,
+      signal,
+    })
+  }
+
+  getWorkflowRun(runId: string, signal?: AbortSignal): Promise<WorkflowRunDetailResponse> {
+    return request(this.config, `/api/workflow-runs/${encodeURIComponent(runId)}`, { signal })
+  }
+
+  resumeWorkflowRun(
+    runId: string,
+    body: WorkflowResumeRequest,
+    opts: { wait?: boolean; signal?: AbortSignal } = {},
+  ): Promise<WorkflowResumeResponse> {
+    return request(this.config, `/api/workflow-runs/${encodeURIComponent(runId)}/resume`, {
+      method: 'POST',
+      body,
+      query: opts.wait ? { wait: 'true' } : undefined,
+      signal: opts.signal,
+    })
+  }
+
+  killWorkflowRun(runId: string, signal?: AbortSignal): Promise<WorkflowKillResponse> {
+    return request(this.config, `/api/workflow-runs/${encodeURIComponent(runId)}/kill`, {
+      method: 'POST',
+      signal,
     })
   }
 
