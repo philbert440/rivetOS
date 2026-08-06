@@ -144,3 +144,21 @@ memory:
 # (rivetos-memory-migrate). Disable to skip starting the runner entirely.
 # tasks:
 #   enabled: true
+
+# ---------------------------------------------------------------------------
+# Workflows v1 — journal-replay engine (gateway API + agent start door).
+# Gold recipes ship in-repo under workflows/ (pr-review, change). Default
+# defs_roots includes <installRoot>/workflows and /rivet-shared/workflows/defs.
+# ---------------------------------------------------------------------------
+# workflows:
+#   enabled: true
+#   # runs_dir: /rivet-shared/workflows/runs
+#   # defs_roots:
+#   #   - /path/to/checkout/workflows
+#   #   - /rivet-shared/workflows/defs
+#   # Agent tool workflow_start is fail-closed: empty/absent allowlist means
+#   # agents may start NOTHING. Human RivetHub trigger is not gated by this.
+#   # Use ["*"] to allow all workflow ids, or list specific ids:
+#   agent_allowlist:
+#     - pr-review
+#     - change

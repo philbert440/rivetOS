@@ -814,8 +814,7 @@ export class SearchEngine {
         break
       case 'regex':
         if (alias === 'm') {
-          matchCondition =
-            `(m.content ~* ${q} OR coalesce(m.tool_result, '') ~* ${q})`
+          matchCondition = `(m.content ~* ${q} OR coalesce(m.tool_result, '') ~* ${q})`
         } else {
           matchCondition = `s.content ~* ${q}`
         }
@@ -900,10 +899,9 @@ export class SearchEngine {
       ...(r.metadata?.truncated === true
         ? {
             truncated: true,
-            fullLength: [
-              r.metadata.full_content_length,
-              r.metadata.full_tool_result_length,
-            ].find((v): v is number => typeof v === 'number'),
+            fullLength: [r.metadata.full_content_length, r.metadata.full_tool_result_length].find(
+              (v): v is number => typeof v === 'number',
+            ),
           }
         : {}),
     }))

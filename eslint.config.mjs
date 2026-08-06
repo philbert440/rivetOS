@@ -90,6 +90,9 @@ export default tseslint.config(
       '**/*.test.ts',
       '**/*.spec.ts',
       'vitest.config.ts',
+      // Gold workflow recipes: orchestration scripts loaded via tsx/dynamic
+      // import; not part of a package tsconfig. Lint via review, not eslint.
+      'workflows/**',
     ],
   },
 

@@ -36,10 +36,19 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
   'mesh',
   'den',
   'tasks',
+  'workflows',
   'plugins',
 ])
 
 export const KNOWN_TASKS_KEYS = new Set(['enabled', 'pricing', 'eval'])
+
+/** workflows.* keys (YAML snake_case). */
+export const KNOWN_WORKFLOWS_KEYS = new Set([
+  'enabled',
+  'runs_dir',
+  'defs_roots',
+  'agent_allowlist',
+])
 export const KNOWN_TASKS_EVAL_KEYS = new Set([
   'enabled',
   'require_criteria',
