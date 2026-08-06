@@ -571,6 +571,18 @@ export type NotificationFrame =
       ts: number
     }
   | { kind: 'task.done'; taskId: string; status: TaskStatus; ts: number }
+  | {
+      /** Workflow paused at a human gate — resume from run detail. */
+      kind: 'workflow.gate'
+      runId: string
+      workflowId: string
+      label: string
+      prompt?: string
+      /** client-relative link, e.g. `/workflows/runs/<id>` */
+      href: string
+      /** epoch ms */
+      ts: number
+    }
 
 // ---------------------------------------------------------------------------
 // GET /api/events/sessions — the den's live session roster (reducer state).
@@ -627,6 +639,139 @@ export interface FilesMutateResponse {
   ok: true
   /** root-relative path of the created / final / deleted entry */
   path: string
+}
+
+// ---------------------------------------------------------------------------
+// /api/workflows + /api/workflow-runs — workflows v1 (slice C)
+// ---------------------------------------------------------------------------
+
+/** Field types in workflow input/output contracts (mirrors @rivetos/workflows). */
+export type WorkflowFieldType = 'string' | 'number' | 'boolean' | 'json' | 'file'
+
+export interface WorkflowField {
+  name: string
+  type: WorkflowFieldType
+  required?: boolean
+  description?: string
+}
+
+export interface WorkflowOutlineStep {
+  id: string
+  label?: string
+  kind?: string
+  description?: string
+}
+
+/** One available workflow definition (from workflowsRoots). */
+export interface WorkflowDefSummary {
+  id: string
+  name: string
+  version: string
+  description?: string
+  input: WorkflowField[]
+  output: WorkflowField[]
+  outline?: WorkflowOutlineStep[]
+}
+
+export interface WorkflowsListResponse {
+  workflows: WorkflowDefSummary[]
+}
+
+export type WorkflowRunStatus = 'running' | 'paused_human' | 'done' | 'failed' | 'killed'
+
+export interface WorkflowRunSummary {
+  id: string
+  workflowId: string
+  status: WorkflowRunStatus
+  startedAt?: string
+  finishedAt?: string
+  current?: string
+  version?: string
+  nested?: boolean
+  parentRunId?: string
+}
+
+export interface WorkflowRunsListResponse {
+  runs: WorkflowRunSummary[]
+}
+
+export interface WorkflowOpenGate {
+  stepId: string
+  label: string
+  seq: number
+  fields: string[]
+  prompt?: string
+}
+
+/** Opaque journal entry — engine-owned shape; UI renders by `type`. */
+export type WorkflowJournalEntry = Record<string, unknown> & {
+  type: string
+  ts: string
+}
+
+export interface WorkflowRunDetail {
+  run: WorkflowRunSummary & {
+    caseDir?: string
+    error?: string
+    output?: Record<string, unknown>
+    startedBy?: { type: string; id?: string; [key: string]: unknown }
+  }
+  fields: Record<string, unknown>
+  journal: WorkflowJournalEntry[]
+  children: WorkflowRunSummary[]
+  /** Present when status is paused_human and a gate is open. */
+  openGate?: WorkflowOpenGate | null
+}
+
+export interface WorkflowRunDetailResponse {
+  run: WorkflowRunDetail
+}
+
+export interface WorkflowStartRunRequest {
+  /** Input fields matching the workflow contract. */
+  input?: Record<string, unknown>
+  /** Optional human id for startedBy provenance. */
+  startedById?: string
+}
+
+export interface WorkflowStartRunResponse {
+  run: WorkflowRunSummary
+  suspended: boolean
+  suspension?: { stepId: string; label: string; seq: number }
+  /**
+   * True when the server validated the contract and detached execution
+   * (202): the run continues in the background — poll run detail for
+   * progress. Absent/false for `?wait=true` synchronous starts.
+   */
+  detached?: boolean
+}
+
+export interface WorkflowResumeRequest {
+  /** Gate field values (keys must cover the open gate's fields). */
+  gateResponse: Record<string, unknown>
+}
+
+export interface WorkflowResumeResponse {
+  run: WorkflowRunSummary
+  suspended: boolean
+  suspension?: { stepId: string; label: string; seq: number }
+  /** See WorkflowStartRunResponse.detached. */
+  detached?: boolean
+}
+
+export interface WorkflowKillResponse {
+  ok: true
+  runId: string
+}
+
+/** 422 body when contract / gate validation fails. */
+export interface WorkflowContractErrorResponse {
+  error: string
+  issues: Array<{
+    field: string
+    reason: string
+    message: string
+  }>
 }
 
 // -- mesh device enrollment (Settings → Devices; den-server devices.ts) ------

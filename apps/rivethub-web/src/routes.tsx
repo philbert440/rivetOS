@@ -16,6 +16,11 @@ import { SettingsPage } from './pages/settings.js'
 import { TerminalPage } from './pages/terminal.js'
 import { TaskDetailPage, TasksPage } from './pages/tasks.js'
 import { WorkflowDetailPage, WorkflowsPage } from './pages/workflows.js'
+import {
+  WorkflowRunDetailPage,
+  WorkflowsHubPage,
+  WorkflowTriggerPage,
+} from './pages/workflows-hub.js'
 import { useConnection } from './stores/connection.js'
 import { useNotifications } from './stores/notifications.js'
 
@@ -94,15 +99,40 @@ const taskDetailRoute = createRoute({
   component: TaskDetailPage,
 })
 
+/** Slice C front door — defs + recent runs. */
 const workflowsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workflows',
+  component: WorkflowsHubPage,
+})
+
+/** Contract trigger form for a workflow def.
+ *  Known edge: the param segment shadows def ids literally named `runs` or
+ *  `canvas` (static routes rank higher) — don't name workflow defs that. */
+const workflowTriggerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workflows/$workflowId',
+  component: WorkflowTriggerPage,
+})
+
+/** Run detail — journal, gate, kill. Must be registered before $workflowId
+ *  only if paths conflict; /workflows/runs/$runId is distinct from $workflowId. */
+const workflowRunDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workflows/runs/$runId',
+  component: WorkflowRunDetailPage,
+})
+
+/** Legacy local canvas catalog (kept; not the section front door). */
+const workflowsCanvasRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workflows/canvas',
   component: WorkflowsPage,
 })
 
-const workflowDetailRoute = createRoute({
+const workflowCanvasDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/workflows/$workflowId',
+  path: '/workflows/canvas/$workflowId',
   component: WorkflowDetailPage,
 })
 
@@ -121,7 +151,11 @@ export const routeTree = rootRoute.addChildren([
   filesRoute,
   tasksRoute,
   taskDetailRoute,
+  // More specific workflow paths first so they win over $workflowId.
+  workflowRunDetailRoute,
+  workflowsCanvasRoute,
+  workflowCanvasDetailRoute,
   workflowsRoute,
-  workflowDetailRoute,
+  workflowTriggerRoute,
   settingsRoute,
 ])

@@ -48,11 +48,16 @@ function nativeNotify(frame: NotificationFrame): void {
     let granted = await api.isPermissionGranted()
     if (!granted) granted = (await api.requestPermission()) === 'granted'
     if (!granted) return
-    api.sendNotification(
+    const payload =
       frame.kind === 'escalation'
         ? { title: `⚠ Rivet escalation — ${frame.agentId}`, body: frame.summary }
-        : { title: `Rivet task ${frame.status}`, body: frame.taskId },
-    )
+        : frame.kind === 'workflow.gate'
+          ? {
+              title: `Rivet gate · ${frame.workflowId}`,
+              body: frame.prompt?.trim() || `${frame.label} — ${frame.runId}`,
+            }
+          : { title: `Rivet task ${frame.status}`, body: frame.taskId }
+    api.sendNotification(payload)
   })()
 }
 

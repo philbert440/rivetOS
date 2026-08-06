@@ -47,7 +47,7 @@
     "tags": [
       "scope:domain",
       "type:lib",
-      "domain:workflows"
+      "domain:shared"
     ]
   }
 }

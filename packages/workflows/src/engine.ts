@@ -24,7 +24,7 @@ import {
   updateRun,
   mergeFields,
 } from './case.js'
-import { appendJournal, readJournal, nowIso, ensureJournal } from './journal.js'
+import { appendJournal, readJournal, nowIso, ensureJournal, findOpenGate } from './journal.js'
 import { loadWorkflowDir, resolveWorkflowDir } from './loader.js'
 import { validateStartInput } from './manifest.js'
 import { createStepRuntime, type Step } from './step.js'
@@ -318,6 +318,14 @@ export class WorkflowEngine {
     await cascadeKill(caseDir)
   }
 
+  /**
+   * Resolve a run id to its absolute caseDir (top-level or nested child).
+   * Public for gateway detail endpoints.
+   */
+  async resolveCaseDir(runId: string): Promise<string> {
+    return this.findCaseDir(runId)
+  }
+
   // -------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------
@@ -456,25 +464,6 @@ export class WorkflowEngine {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function findOpenGate(
-  journal: JournalEntry[],
-): { stepId: string; label: string; seq: number; fields: string[] } | null {
-  const opened: Array<{ stepId: string; label: string; seq: number; fields: string[] }> = []
-  const resolved = new Set<string>()
-  for (const e of journal) {
-    if (e.type === 'gate_opened') {
-      opened.push({ stepId: e.stepId, label: e.label, seq: e.seq, fields: e.fields })
-    }
-    if (e.type === 'gate_resolved') {
-      resolved.add(e.stepId)
-    }
-  }
-  for (let i = opened.length - 1; i >= 0; i--) {
-    if (!resolved.has(opened[i].stepId)) return opened[i]
-  }
-  return null
-}
 
 async function loadRunScript(runPath: string): Promise<RunScript> {
   // Dynamic import — works for .js; .ts requires tsx/ts-node or prior compile.
