@@ -205,7 +205,18 @@ export class WorkflowEngine {
     // Find the open gate (last gate_opened without gate_resolved)
     const open = findOpenGate(journal)
     if (!open) {
-      throw new Error(`Run ${runId} is paused_human but no open gate found in journal`)
+      // Crash window: gate_resolved reached disk but the process died before
+      // the status flip. The gate is answered — recover by continuing; the
+      // retried gateResponse (if any) is redundant and discarded.
+      console.warn(
+        `resumeRun: run ${runId} is paused_human with no open gate (crashed mid-resume); continuing`,
+      )
+      await updateRun(caseDir, { status: 'running' })
+      return this.execute(
+        caseDir,
+        await this.resolveRunWorkflow(caseState, options),
+        options.runScript,
+      )
     }
 
     const values = options.gateResponse ?? {}
@@ -255,7 +266,14 @@ export class WorkflowEngine {
       throw new Error(`Run ${runId} is ${caseState.run.status} (terminal); cannot continue`)
     }
     if (caseState.run.status === 'paused_human') {
-      throw new Error(`Run ${runId} is paused at a human gate; use resumeRun with a gateResponse`)
+      // A genuinely open gate needs resumeRun; but if every gate is resolved
+      // (crash between gate_resolved and the status flip), this run is
+      // continue-eligible — recover it.
+      const open = findOpenGate(await readJournal(caseDir))
+      if (open) {
+        throw new Error(`Run ${runId} is paused at a human gate; use resumeRun with a gateResponse`)
+      }
+      await updateRun(caseDir, { status: 'running' })
     }
     return this.execute(
       caseDir,
@@ -366,6 +384,12 @@ export class WorkflowEngine {
     } catch (err) {
       if (isWorkflowSuspension(err)) {
         const final = await readCase(caseDir)
+        // A kill can land between the gate opening and this catch; the
+        // terminal status won (updateCase refused the pause write) — report
+        // the terminal outcome, not a suspension.
+        if (isTerminalStatus(final.run.status)) {
+          return { run: final.run, caseDir, suspended: false }
+        }
         return {
           run: final.run,
           caseDir,

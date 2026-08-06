@@ -56,8 +56,9 @@ async function loadAgents(agentsDir: string): Promise<Record<string, AgentDef>> 
  * (silently treating half a config block as prompt text would be worse).
  */
 function parseFrontmatter(text: string, path: string): { config: AgentConfig; body: string } {
-  const src = text.replace(/^\uFEFF/, '')
-  if (!/^---\r?\n/.test(src)) {
+  // Tolerate BOM and leading blank lines/indentation before the opening fence.
+  const src = text.replace(/^\uFEFF/, '').replace(/^\s+(?=---)/, '')
+  if (!/^---[ \t]*\r?\n/.test(src)) {
     return { config: {}, body: src }
   }
   // Opening fence is at position 0, so the first `\n---` is the closing fence.

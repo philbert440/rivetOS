@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { WorkflowEngine, type RunScript } from './engine.js'
 import { MockExecutorRegistry } from './executors.js'
 import { loadWorkflowDir } from './loader.js'
-import { findCachedStepResult, readJournal } from './journal.js'
+import { appendJournal, findCachedStepResult, readJournal } from './journal.js'
 import { readCase, updateRun } from './case.js'
 import { ContractValidationError, UnknownCallNamespaceError } from './errors.js'
 import { parseManifest, validateStartInput } from './manifest.js'
@@ -678,5 +678,121 @@ describe('frontmatter parsing', () => {
       'utf-8',
     )
     await expect(loadWorkflowDir(dir)).rejects.toThrow(/Unterminated frontmatter/)
+  })
+})
+
+describe('re-review residuals', () => {
+  let root: string
+  let wfDir: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'wf-resid-'))
+    wfDir = await writeMinimalWorkflow(join(root, 'wf'))
+  })
+
+  const gateScript: RunScript = async (step) => {
+    const a = await step.agent('work', { out: ['result'] })
+    const g = await step.human('gate', { fields: ['ok'] })
+    await step.done({ result: a.result, ok: g.ok })
+  }
+
+  async function startToGate(engine: WorkflowEngine, workflow: Awaited<ReturnType<typeof loadWorkflowDir>>) {
+    const started = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'hi' },
+      { type: 'human' },
+      { runScript: gateScript, workflow },
+    )
+    expect(started.suspended).toBe(true)
+    return started
+  }
+
+  async function simulateCrashedResume(caseDir: string) {
+    // gate_resolved reached disk, but the process died before the status flip
+    await appendJournal(caseDir, {
+      type: 'gate_resolved',
+      ts: 'crash',
+      stepId: 'gate#1',
+      label: 'gate',
+      seq: 1,
+      values: { ok: true },
+    })
+  }
+
+  it('resumeRun recovers a run crashed between gate_resolved and the status flip', async () => {
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry(),
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+    const started = await startToGate(engine, workflow)
+    await simulateCrashedResume(started.caseDir)
+
+    const resumed = await engine.resumeRun(started.run.id, {
+      runScript: gateScript,
+      workflow,
+    })
+    expect(resumed.suspended).toBe(false)
+    expect(resumed.run.status).toBe('done')
+    expect(resumed.run.output?.ok).toBe(true)
+  })
+
+  it('continueRun recovers the same crash shape', async () => {
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry(),
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+    const started = await startToGate(engine, workflow)
+    await simulateCrashedResume(started.caseDir)
+
+    const continued = await engine.continueRun(started.run.id, {
+      runScript: gateScript,
+      workflow,
+    })
+    expect(continued.suspended).toBe(false)
+    expect(continued.run.status).toBe('done')
+  })
+
+  it('reports terminal outcome, not suspended, when a kill wins during gate open', async () => {
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry({
+        run: async (opts) => {
+          // simulate an external kill landing mid-run, after this step
+          await updateRun(opts.caseDir, { status: 'killed' })
+          return { ok: true }
+        },
+      }),
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+    const script: RunScript = async (step) => {
+      await step.run('pre', { script: 'noop' })
+      await step.human('gate', { fields: ['ok'] })
+      await step.done({ result: 'x' })
+    }
+    const r = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'hi' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(r.suspended).toBe(false)
+    expect(r.run.status).toBe('killed')
+  })
+
+  it('parses frontmatter preceded by blank lines', async () => {
+    const dir = await writeMinimalWorkflow(join(root, 'wf2'), { id: 'ws-wf' })
+    await writeFile(
+      join(dir, 'agents', 'example.md'),
+      '\n\n---\nmodel: padded-model\n---\n\nPadded prompt body.\n',
+      'utf-8',
+    )
+    const loaded = await loadWorkflowDir(dir)
+    expect(loaded.agents.example.config.model).toBe('padded-model')
+    expect(loaded.agents.example.prompt).toContain('Padded prompt body.')
   })
 })
