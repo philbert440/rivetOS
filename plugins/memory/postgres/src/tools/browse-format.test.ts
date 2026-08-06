@@ -4,7 +4,11 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { formatBrowseMessageBody, truncationHint } from './helpers.js'
+import {
+  formatBrowseMessageBody,
+  formatSearchMessageBody,
+  truncationHint,
+} from './helpers.js'
 
 describe('formatBrowseMessageBody', () => {
   it('returns short content unchanged when no tool_result', () => {
@@ -85,5 +89,33 @@ describe('formatBrowseMessageBody', () => {
       metadata: null,
     })
     expect(body).toBe('plain')
+  })
+})
+
+describe('formatSearchMessageBody', () => {
+  it('surfaces tool_result on search hits (tool-row placeholder content)', () => {
+    const body = formatSearchMessageBody({
+      id: 's1',
+      content: '[tool] run_terminal_command',
+      toolName: 'run_terminal_command',
+      toolResult: 'exit: 0\nEACCES: permission denied, open target/',
+    })
+    expect(body).toContain('[tool] run_terminal_command')
+    expect(body).toContain('[tool_result (run_terminal_command)]')
+    expect(body).toContain('EACCES: permission denied')
+  })
+
+  it('embeds capture-truncation handle when truncated flag set', () => {
+    const body = formatSearchMessageBody({
+      id: 's2',
+      content: '[tool] Bash',
+      toolName: 'Bash',
+      toolResult: 'partial output',
+      truncated: true,
+      fullLength: 50000,
+    })
+    expect(body).toContain('partial output')
+    expect(body).toContain('truncated at capture')
+    expect(body).toContain('memory_get_full id=s2')
   })
 })

@@ -9,6 +9,7 @@ import type { ExpandedSummary, MemoryToolsConfig } from './helpers.js'
 import {
   applyWindowArgs,
   formatEmptySearchResult,
+  formatSearchMessageBody,
   fmtHitWhen,
   fmtLocalDate,
   queryLlm,
@@ -26,6 +27,7 @@ export function createSearchTool(
       'Topic search over conversation history and summaries (not a chronological browser — ' +
       'use memory_browse with window= for "what happened today/yesterday"). Automatically expands ' +
       'promising summary hits to show children and source messages. Returns structured, scored results. ' +
+      'Matches message content AND tool_result (tool-row payloads), and shows tool_result previews on hits. ' +
       'Use for finding past decisions, discussions, context, or answering "what did we decide about X" questions. ' +
       'Empty results include next-step hints (trigram / multi-angle / browse).',
     parameters: {
@@ -265,12 +267,12 @@ function formatMessages(sections: string[], messageHits: SearchHit[]): void {
   sections.push('### Messages\n')
   for (const hit of messageHits) {
     const when = fmtHitWhen(hit.createdAt)
-    const preview = hit.content.length > 400 ? hit.content.slice(0, 400) + '…' : hit.content
-    const trunc = hit.truncated
-      ? ` ⚠ truncated at capture${hit.fullLength ? ` (full: ${String(hit.fullLength)} chars)` : ''} → memory_get_full id=${hit.id}`
-      : ''
+    const tool = hit.toolName ? ` [tool: ${hit.toolName}]` : ''
+    // Include tool_result previews — content alone is often `[tool] name`.
+    // Capture-truncation hints are embedded by formatSearchMessageBody.
+    const body = formatSearchMessageBody(hit)
     sections.push(
-      `- [${hit.agent}/${hit.role}] (${when}, score: ${hit.score.toFixed(3)}) ${preview}${trunc}`,
+      `- [${hit.agent}/${hit.role}]${tool} (${when}, score: ${hit.score.toFixed(3)})\n${body}`,
     )
   }
 }

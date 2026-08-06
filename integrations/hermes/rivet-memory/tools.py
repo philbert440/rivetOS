@@ -356,9 +356,21 @@ def _format_unexpanded(sections: List[str], summary_hits: List[SearchHit]) -> No
 def _format_messages(sections: List[str], message_hits: List[SearchHit]) -> None:
     sections.append("### Messages\n")
     for hit in message_hits:
+        tool = f" [tool: {hit.tool_name}]" if hit.tool_name else ""
+        # Include tool_result previews — content alone is often just
+        # "[tool] name" (parity with postgres formatSearchMessageBody).
+        body = _format_browse_message_body(
+            hit.id,
+            hit.content or "",
+            hit.tool_name,
+            hit.tool_result,
+            None,
+            content_limit=400,
+            tool_result_limit=500,
+        )
         sections.append(
-            f"- [{hit.agent}/{hit.role}] ({fmt_hit_when(hit.created_at)}, "
-            f"score: {hit.score:.3f}) {_truncate(hit.content, 400)}"
+            f"- [{hit.agent}/{hit.role}]{tool} ({fmt_hit_when(hit.created_at)}, "
+            f"score: {hit.score:.3f})\n{body}"
         )
 
 
