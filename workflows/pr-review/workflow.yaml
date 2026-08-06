@@ -32,10 +32,16 @@ output:
   - name: summary
     type: string
     description: Two-to-four sentence review summary
+  - name: findings
+    type: string
+    required: false
+    description: "Findings list (path:line — severity — issue), for fixup handoff"
   - name: approved
     type: boolean
     required: false
-    description: Human gate decision (true = approve the verdict)
+    description: >
+      Gate decision. gated=true: the human's call at the verdict gate.
+      gated=false (composed): derived from the verdict (see the gated input).
 outline:
   - id: load-pr
     kind: run

@@ -3,7 +3,7 @@
 # Input: WORKFLOW_INPUT JSON env { "repo": "owner/name", "pr": 123 }
 # Also accepts argv[1] as the same JSON (script-run-executor convention).
 # Requires: gh (or $GH_BIN) authenticated in the node environment.
-set -euo pipefail
+set -eu
 
 GH="${GH_BIN:-gh}"
 

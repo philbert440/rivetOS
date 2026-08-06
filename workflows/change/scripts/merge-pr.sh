@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Squash-merge a GitHub PR. cwd = caseDir.
 # Input: WORKFLOW_INPUT / argv[1] JSON { "repo": "owner/name", "pr": 123 }
-set -euo pipefail
+set -eu
 
 GH="${GH_BIN:-gh}"
 
