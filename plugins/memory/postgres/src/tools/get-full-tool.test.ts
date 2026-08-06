@@ -1,5 +1,9 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { extractFullFromLine } from './get-full-tool.js'
+import type pg from 'pg'
+import { createGetFullTool, extractFullFromLine, readJsonlLine } from './get-full-tool.js'
 import { truncationHint } from './helpers.js'
 
 describe('extractFullFromLine', () => {
@@ -74,5 +78,69 @@ describe('truncationHint', () => {
     const hint = truncationHint({ truncated: true, full_tool_result_length: 52340 }, 'row-9')
     expect(hint).toContain('52340 chars')
     expect(hint).toContain('memory_get_full id=row-9')
+  })
+})
+
+describe('readJsonlLine', () => {
+  const writeJsonl = (lines: string[]): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'getfull-'))
+    const file = join(dir, 'updates.jsonl')
+    writeFileSync(file, lines.join('\n') + '\n', 'utf8')
+    return file
+  }
+
+  it('recovers a matched line (regression: close-event race resolved null on every hit)', async () => {
+    const file = writeJsonl(['{"a":1}', '{"b":2}', '{"c":3}'])
+    expect(await readJsonlLine(file, 1)).toBe('{"b":2}')
+  })
+
+  it('recovers the first and last lines', async () => {
+    const file = writeJsonl(['first', 'mid', 'last'])
+    expect(await readJsonlLine(file, 0)).toBe('first')
+    expect(await readJsonlLine(file, 2)).toBe('last')
+  })
+
+  it('returns null past the end of the file', async () => {
+    const file = writeJsonl(['only'])
+    expect(await readJsonlLine(file, 5)).toBeNull()
+  })
+})
+
+describe('createGetFullTool end-to-end (stub pool + real temp JSONL)', () => {
+  it('recovers the full elided payload from disk', async () => {
+    const big = 'y'.repeat(30_000)
+    const dir = mkdtempSync(join(tmpdir(), 'getfull-e2e-'))
+    const file = join(dir, 'updates.jsonl')
+    const lines = [
+      JSON.stringify({ params: { update: { sessionUpdate: 'noise' } } }),
+      JSON.stringify({
+        params: {
+          update: {
+            sessionUpdate: 'tool_call_update',
+            rawOutput: { type: 'Bash', output_for_prompt: big, exit_code: 0 },
+          },
+        },
+      }),
+    ]
+    writeFileSync(file, lines.join('\n') + '\n', 'utf8')
+
+    const row = {
+      id: 'row-1',
+      content: 'preview…',
+      tool_name: 'Bash',
+      tool_result: 'preview…',
+      metadata: {
+        truncated: true,
+        session_jsonl_path: file,
+        session_jsonl_line: 1,
+        full_tool_result_length: big.length,
+      },
+    }
+    const pool = { query: async () => ({ rows: [row] }) } as unknown as pg.Pool
+
+    const out = await createGetFullTool(pool).execute({ id: 'row-1' })
+    expect(out).toContain('## Full payload for row-1')
+    expect(out).toContain(big)
+    expect(out).toContain('[exit_code=0]')
   })
 })
