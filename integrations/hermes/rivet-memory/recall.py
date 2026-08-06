@@ -83,6 +83,10 @@ class SearchHit:
     kind: Optional[str] = None
     earliest_at: Optional[datetime] = None
     latest_at: Optional[datetime] = None
+    # Tool-row fields — content is often just "[tool] name"; the real payload
+    # lives in tool_result (parity with postgres SearchHit after 0008).
+    tool_name: Optional[str] = None
+    tool_result: Optional[str] = None
 
 
 def _semantic_proxy(alias: str) -> str:
@@ -253,7 +257,8 @@ class SearchEngine:
                          (1 - (m.embedding <=> '{vec}'::halfvec)) * {W_SEMANTIC}
                          + ({temporal}) * {W_TEMPORAL}
                          + ({imp}) * {W_IMPORTANCE}
-                       ) AS score
+                       ) AS score,
+                       m.tool_name, m.tool_result
                   FROM ros_messages m
                  WHERE m.embedding IS NOT NULL {agent_clause}
                  ORDER BY m.embedding <=> '{vec}'::halfvec
@@ -277,6 +282,8 @@ class SearchEngine:
                         conversation_id=str(r[4]),
                         score=float(r[6]),
                         created_at=r[5],
+                        tool_name=r[7],
+                        tool_result=r[8],
                     )
                 )
 
@@ -346,10 +353,28 @@ class SearchEngine:
 
         def score_and_match(alias: str) -> Tuple[str, str]:
             if method == "fts":
-                return (
+                # content_tsv includes tool_result after migration 0008.
+                # Norm 32 on the message arm only (long tool payloads) — #440.
+                rank = (
                     f"ts_rank_cd({alias}.content_tsv, "
-                    f"websearch_to_tsquery('english', %s))",
+                    f"websearch_to_tsquery('english', %s), 32)"
+                    if alias == "m"
+                    else (
+                        f"ts_rank_cd({alias}.content_tsv, "
+                        f"websearch_to_tsquery('english', %s))"
+                    )
+                )
+                return (
+                    rank,
                     f"{alias}.content_tsv @@ websearch_to_tsquery('english', %s)",
+                )
+            if alias == "m":
+                # Match content OR tool_result (tool rows hold payload there).
+                return (
+                    "GREATEST(similarity(m.content, %s), "
+                    "similarity(coalesce(m.tool_result, ''), %s))",
+                    "(similarity(m.content, %s) > 0.3 "
+                    "OR similarity(coalesce(m.tool_result, ''), %s) > 0.3)",
                 )
             return (
                 f"similarity({alias}.content, %s)",
@@ -360,7 +385,12 @@ class SearchEngine:
             score_expr, match = score_and_match("m")
             boost = f"(({temporal_decay_sql('m')}) * {W_TEMPORAL} + ({importance_sql('m')}) * {W_IMPORTANCE})"
             conditions = [match]
-            params: list = [query, query]  # SELECT score_expr, then WHERE match
+            # score_expr and match each need query once; trigram message form
+            # uses two %s per expression (content + tool_result).
+            if method == "trigram":
+                params = [query, query, query, query]
+            else:
+                params = [query, query]  # SELECT score_expr, then WHERE match
             if agent:
                 conditions.append("m.agent = %s")
                 params.append(agent)
@@ -374,7 +404,8 @@ class SearchEngine:
             sql = f"""
                 SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
                        ({score_expr}) AS method_score,
-                       {boost} AS boost
+                       {boost} AS boost,
+                       m.tool_name, m.tool_result
                   FROM ros_messages m
                  WHERE {" AND ".join(conditions)}
                  ORDER BY method_score DESC
@@ -396,6 +427,8 @@ class SearchEngine:
                             conversation_id=str(r[4]),
                             score=0.0,
                             created_at=r[5],
+                            tool_name=r[8],
+                            tool_result=r[9],
                         ),
                         float(r[7]),
                     )
@@ -482,7 +515,7 @@ class SearchEngine:
             params.append(pool)
             sql = f"""
                 SELECT m.id, m.content, m.role, m.agent, m.conversation_id, m.created_at,
-                       {boost} AS boost
+                       {boost} AS boost, m.tool_name, m.tool_result
                   FROM ros_messages m
                  WHERE {" AND ".join(conditions)}
                  ORDER BY m.embedding <=> '{vec}'::halfvec
@@ -504,6 +537,8 @@ class SearchEngine:
                             conversation_id=str(r[4]),
                             score=0.0,
                             created_at=r[5],
+                            tool_name=r[7],
+                            tool_result=r[8],
                         ),
                         float(r[6]),
                     )
@@ -619,19 +654,31 @@ class SearchEngine:
         condition_params: list = []
 
         if mode == "fts":
-            fts_expr = "ts_rank_cd(m.content_tsv, websearch_to_tsquery('english', %s))"
+            # content_tsv includes tool_result after migration 0008.
+            # Norm 32: rank/(rank+1) so long tool payloads don't dominate (#440).
+            fts_expr = (
+                "ts_rank_cd(m.content_tsv, websearch_to_tsquery('english', %s), 32)"
+            )
             select_params.append(query)
             conditions.append("m.content_tsv @@ websearch_to_tsquery('english', %s)")
             condition_params.append(query)
         elif mode == "trigram":
-            fts_expr = "similarity(m.content, %s)"
-            select_params.append(query)
-            conditions.append("similarity(m.content, %s) > 0.3")
-            condition_params.append(query)
+            fts_expr = (
+                "GREATEST(similarity(m.content, %s), "
+                "similarity(coalesce(m.tool_result, ''), %s))"
+            )
+            select_params.extend([query, query])
+            conditions.append(
+                "(similarity(m.content, %s) > 0.3 "
+                "OR similarity(coalesce(m.tool_result, ''), %s) > 0.3)"
+            )
+            condition_params.extend([query, query])
         elif mode == "regex":
             fts_expr = "1.0"
-            conditions.append("m.content ~* %s")
-            condition_params.append(query)
+            conditions.append(
+                "(m.content ~* %s OR coalesce(m.tool_result, '') ~* %s)"
+            )
+            condition_params.extend([query, query])
         else:
             raise ValueError(f"unknown search mode: {mode!r}")
 
@@ -664,7 +711,8 @@ class SearchEngine:
                      + {semantic_expr} * {W_SEMANTIC}
                      + ({temporal}) * {W_TEMPORAL}
                      + ({imp}) * {W_IMPORTANCE}
-                   ) AS score
+                   ) AS score,
+                   m.tool_name, m.tool_result
               FROM ros_messages m
              WHERE {where}
              ORDER BY score DESC
@@ -687,6 +735,8 @@ class SearchEngine:
                 conversation_id=str(r[4]),
                 score=float(r[6]),
                 created_at=r[5],
+                tool_name=r[7],
+                tool_result=r[8],
             )
             for r in rows
         ]

@@ -48,11 +48,13 @@ SEARCH_SCHEMA = {
         "Topic search over RivetOS shared memory across every Rivet agent "
         "(rivet-claude, rivet-hermes, opus, grok). Hybrid FTS + semantic + "
         "temporal scoring with auto-expansion of summary hits to source "
-        "messages. **Requires a topic query** that maps to FTS-matchable "
-        "tokens — empty/stopword queries return nothing even if rows exist in "
-        "the window. For pure chronological browsing of a date window (\"what "
-        "did we do this morning / yesterday / today\") use `rivet_memory_browse` "
-        "instead — that's keyword-free and exhaustive."
+        "messages. Matches message content **and** tool_result (tool-row "
+        "payloads) and shows tool_result previews on hits. **Requires a topic "
+        "query** that maps to FTS-matchable tokens — empty/stopword queries "
+        "return nothing even if rows exist in the window. For pure "
+        "chronological browsing of a date window (\"what did we do this "
+        "morning / yesterday / today\") use `rivet_memory_browse` instead — "
+        "that's keyword-free and exhaustive."
     ),
     "parameters": {
         "type": "object",
@@ -60,9 +62,9 @@ SEARCH_SCHEMA = {
             "query": {
                 "type": "string",
                 "description": (
-                    "Topic to match against message/summary content (FTS "
-                    "tokens). Required — `since`/`before` narrow this query, "
-                    "they do not replace it."
+                    "Topic to match against message/summary content and "
+                    "tool_result payloads (FTS tokens). Required — "
+                    "`since`/`before` narrow this query, they do not replace it."
                 ),
             },
             "mode": {

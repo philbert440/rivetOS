@@ -100,6 +100,52 @@ export function formatBrowseMessageBody(
   return parts.join('\n')
 }
 
+/** Display caps for memory_search message snippets (slightly tighter than browse). */
+export const SEARCH_CONTENT_LIMIT = 400
+export const SEARCH_TOOL_RESULT_LIMIT = 500
+
+/**
+ * Format one memory_search message hit for agent-facing output.
+ *
+ * Same footgun as browse: tool rows often have content=`[tool] name` while the
+ * real payload lives in tool_result. After search begins matching tool_result
+ * (migration 0008 + quality floor), display must surface it or agents still
+ * only see the placeholder in the hit list.
+ */
+export function formatSearchMessageBody(
+  hit: {
+    id: string
+    content: string
+    toolName?: string | null
+    toolResult?: string | null
+    truncated?: boolean
+    fullLength?: number
+  },
+  opts?: { contentLimit?: number; toolResultLimit?: number },
+): string {
+  const meta =
+    hit.truncated === true
+      ? {
+          truncated: true as const,
+          full_content_length: hit.fullLength,
+          full_tool_result_length: hit.fullLength,
+        }
+      : null
+  return formatBrowseMessageBody(
+    {
+      id: hit.id,
+      content: hit.content,
+      tool_name: hit.toolName ?? null,
+      tool_result: hit.toolResult ?? null,
+      metadata: meta,
+    },
+    {
+      contentLimit: opts?.contentLimit ?? SEARCH_CONTENT_LIMIT,
+      toolResultLimit: opts?.toolResultLimit ?? SEARCH_TOOL_RESULT_LIMIT,
+    },
+  )
+}
+
 export interface CountRow {
   total: string
   oldest: Date | null

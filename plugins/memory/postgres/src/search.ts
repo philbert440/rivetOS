@@ -56,6 +56,10 @@ export interface SearchHit {
    *  (metadata.truncated) — memory_get_full can fetch the rest. */
   truncated?: boolean
   fullLength?: number
+  /** Tool call name when the hit is a tool row (or has tool metadata). */
+  toolName?: string | null
+  /** Tool payload — often the only substantive text on role=tool rows. */
+  toolResult?: string | null
   // Summary-specific fields
   kind?: string
   earliestAt?: Date
@@ -93,6 +97,8 @@ interface MessageSearchRow {
   created_at: Date
   score: string
   metadata?: Record<string, unknown> | null
+  tool_name?: string | null
+  tool_result?: string | null
 }
 
 interface SummarySearchRow {
@@ -119,6 +125,8 @@ interface CandidateRow {
   created_at: Date
   boost: string
   metadata?: Record<string, unknown> | null
+  tool_name?: string | null
+  tool_result?: string | null
   kind?: string
   earliest_at?: Date | null
   latest_at?: Date | null
@@ -155,8 +163,23 @@ const HYBRID_POOL_MAX = 100
  * "still there?" — which otherwise ride the recency/importance boost to the top.
  * Applied to hybrid only; explicit trigram/regex modes stay unfiltered so the
  * "find this literal token anywhere" sweep still reaches short/tool rows.
+ *
+ * Tool rows store the real payload in `tool_result` (content is often just
+ * `[tool] name`). The quality floor therefore accepts role=tool when
+ * tool_result is substantive — see {@link MESSAGE_QUALITY_SQL}.
  */
 const MIN_CONTENT_LEN = 40
+
+/**
+ * Hybrid quality floor for ros_messages: substantive non-tool content, or a
+ * tool row whose tool_result carries real payload (≥ {@link MIN_CONTENT_LEN}).
+ * Replaces the old `role <> 'tool'` ban that hid ~85k tool payloads from search.
+ */
+export const MESSAGE_QUALITY_SQL = `(
+  (m.role <> 'tool' AND length(btrim(m.content)) >= ${String(MIN_CONTENT_LEN)})
+  OR
+  (m.role = 'tool' AND length(btrim(coalesce(m.tool_result, ''))) >= ${String(MIN_CONTENT_LEN)})
+)`
 
 /**
  * RRF smoothing constant for hybrid fusion. Lower than the canonical 60 so the
@@ -382,6 +405,7 @@ export class SearchEngine {
       const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
       const sql = `
         SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at,
+               m.tool_name, m.tool_result,
                ${boostExpr} AS boost
         FROM ros_messages m
         WHERE ${whereClause}
@@ -434,10 +458,7 @@ export class SearchEngine {
 
     if (scope === 'messages' || scope === 'both') {
       const params: unknown[] = [vecLiteral]
-      const conds = [
-        'm.embedding IS NOT NULL',
-        `length(btrim(m.content)) >= ${String(MIN_CONTENT_LEN)} AND m.role <> 'tool'`,
-      ]
+      const conds = ['m.embedding IS NOT NULL', MESSAGE_QUALITY_SQL]
       if (options?.agent) {
         params.push(options.agent)
         conds.push(`m.agent = $${String(params.length)}`)
@@ -454,6 +475,7 @@ export class SearchEngine {
       const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
       const sql = `
         SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at,
+               m.tool_name, m.tool_result,
                ${boostExpr} AS boost
         FROM ros_messages m
         WHERE ${conds.join(' AND ')}
@@ -509,10 +531,14 @@ export class SearchEngine {
       createdAt: r.created_at,
       boost: parseFloat(r.boost),
     }
-    if (type === 'message' && r.metadata?.truncated === true) {
-      base.truncated = true
-      const full = r.metadata.full_content_length ?? r.metadata.full_tool_result_length
-      if (typeof full === 'number') base.fullLength = full
+    if (type === 'message') {
+      base.toolName = r.tool_name ?? null
+      base.toolResult = r.tool_result ?? null
+      if (r.metadata?.truncated === true) {
+        base.truncated = true
+        const full = r.metadata.full_content_length ?? r.metadata.full_tool_result_length
+        if (typeof full === 'number') base.fullLength = full
+      }
     }
     if (type === 'summary') {
       base.kind = r.kind
@@ -551,7 +577,7 @@ export class SearchEngine {
 
       const sql = `
         SELECT m.id, m.content, m.role, m.agent, m.metadata,
-               m.conversation_id, m.created_at,
+               m.conversation_id, m.created_at, m.tool_name, m.tool_result,
                (1 - (m.embedding <=> $1::halfvec)) AS semantic_sim,
                (
                  (1 - (m.embedding <=> $1::halfvec)) * ${W_SEMANTIC}
@@ -575,6 +601,8 @@ export class SearchEngine {
           conversationId: r.conversation_id,
           score: parseFloat(r.score),
           createdAt: r.created_at,
+          toolName: r.tool_name ?? null,
+          toolResult: r.tool_result ?? null,
           ...(r.metadata?.truncated === true
             ? {
                 truncated: true,
@@ -739,12 +767,13 @@ export class SearchEngine {
       pi++
     }
 
-    // Content-quality floor (hybrid only): drop stub/empty/tool rows that carry
-    // no recall value. Skipped for explicit trigram/regex escape hatches.
+    // Content-quality floor (hybrid only): drop stub/empty rows that carry
+    // no recall value. Tool rows are eligible when tool_result is substantive
+    // (see MESSAGE_QUALITY_SQL). Skipped for explicit trigram/regex escape hatches.
     if (opts.qualityFilter) {
       conditions.push(
         alias === 'm'
-          ? `length(btrim(m.content)) >= ${String(MIN_CONTENT_LEN)} AND m.role <> 'tool'`
+          ? MESSAGE_QUALITY_SQL
           : `length(btrim(s.content)) >= ${String(MIN_CONTENT_LEN)}`,
       )
     }
@@ -753,20 +782,43 @@ export class SearchEngine {
     const queryParamIdx = pi
     params.push(query)
     pi++
+    const q = `$${String(queryParamIdx)}`
 
     let matchCondition: string
     let ftsScoreExpr: string
     switch (mode) {
       case 'fts':
-        matchCondition = `${alias}.content_tsv @@ plainto_tsquery('english', $${String(queryParamIdx)})`
-        ftsScoreExpr = `ts_rank_cd(${alias}.content_tsv, plainto_tsquery('english', $${String(queryParamIdx)}))`
+        // content_tsv includes tool_result after migration 0008.
+        matchCondition = `${alias}.content_tsv @@ plainto_tsquery('english', ${q})`
+        // Norm flag 32 = rank/(rank+1): bounds long, repetitive tool payloads
+        // (build logs full of the query term) so they don't outrank prose —
+        // same precision class as #210; review on #440. Summaries stay default.
+        ftsScoreExpr =
+          alias === 'm'
+            ? `ts_rank_cd(${alias}.content_tsv, plainto_tsquery('english', ${q}), 32)`
+            : `ts_rank_cd(${alias}.content_tsv, plainto_tsquery('english', ${q}))`
         break
       case 'trigram':
-        matchCondition = `similarity(${alias}.content, $${String(queryParamIdx)}) > 0.3`
-        ftsScoreExpr = `similarity(${alias}.content, $${String(queryParamIdx)})`
+        if (alias === 'm') {
+          // Match content OR tool_result — tool payloads are the high-value text.
+          matchCondition =
+            `(similarity(m.content, ${q}) > 0.3` +
+            ` OR similarity(coalesce(m.tool_result, ''), ${q}) > 0.3)`
+          ftsScoreExpr =
+            `GREATEST(similarity(m.content, ${q}),` +
+            ` similarity(coalesce(m.tool_result, ''), ${q}))`
+        } else {
+          matchCondition = `similarity(s.content, ${q}) > 0.3`
+          ftsScoreExpr = `similarity(s.content, ${q})`
+        }
         break
       case 'regex':
-        matchCondition = `${alias}.content ~* $${String(queryParamIdx)}`
+        if (alias === 'm') {
+          matchCondition =
+            `(m.content ~* ${q} OR coalesce(m.tool_result, '') ~* ${q})`
+        } else {
+          matchCondition = `s.content ~* ${q}`
+        }
         ftsScoreExpr = '1.0'
         break
       default:
@@ -819,6 +871,7 @@ export class SearchEngine {
 
     const sql = `
       SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at,
+             m.tool_name, m.tool_result,
              (
                ${ftsScoreExpr} * ${W_FTS}
                + ${semanticExpr} * ${W_SEMANTIC}
@@ -842,6 +895,17 @@ export class SearchEngine {
       conversationId: r.conversation_id,
       score: parseFloat(r.score),
       createdAt: r.created_at,
+      toolName: r.tool_name ?? null,
+      toolResult: r.tool_result ?? null,
+      ...(r.metadata?.truncated === true
+        ? {
+            truncated: true,
+            fullLength: [
+              r.metadata.full_content_length,
+              r.metadata.full_tool_result_length,
+            ].find((v): v is number => typeof v === 'number'),
+          }
+        : {}),
     }))
   }
 

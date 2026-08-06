@@ -99,7 +99,9 @@ def test_fts_message_search_with_agent_filter_param_order():
     # websearch_to_tsquery(%s) [WHERE] → m.agent = %s [WHERE] → LIMIT %s.
     assert params == ["deckard tuning", "deckard tuning", "rivet-hermes", 10]
     # Sanity-check the SQL placeholder positions to lock the contract.
-    rank_pos = sql.index("ts_rank_cd(m.content_tsv, websearch_to_tsquery('english', %s))")
+    rank_pos = sql.index(
+        "ts_rank_cd(m.content_tsv, websearch_to_tsquery('english', %s), 32)"
+    )
     query_pos = sql.index("m.content_tsv @@ websearch_to_tsquery('english', %s)")
     agent_pos = sql.index("m.agent = %s")
     assert rank_pos < query_pos < agent_pos
