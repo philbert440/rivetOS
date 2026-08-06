@@ -95,6 +95,42 @@ export function isOpenGate(entries: JournalEntry[], label: string, seq: number):
   return opened && !resolved
 }
 
+/** Open gate summary for UI / resume (last unresolved gate_opened). */
+export interface OpenGate {
+  stepId: string
+  label: string
+  seq: number
+  fields: string[]
+  prompt?: string
+}
+
+/**
+ * Find the most recent gate_opened without a matching gate_resolved.
+ * Used by resumeRun and the run-detail API.
+ */
+export function findOpenGate(entries: JournalEntry[]): OpenGate | null {
+  const opened: OpenGate[] = []
+  const resolved = new Set<string>()
+  for (const e of entries) {
+    if (e.type === 'gate_opened') {
+      opened.push({
+        stepId: e.stepId,
+        label: e.label,
+        seq: e.seq,
+        fields: e.fields,
+        prompt: e.prompt,
+      })
+    }
+    if (e.type === 'gate_resolved') {
+      resolved.add(e.stepId)
+    }
+  }
+  for (let i = opened.length - 1; i >= 0; i--) {
+    if (!resolved.has(opened[i].stepId)) return opened[i]
+  }
+  return null
+}
+
 /**
  * Next sequence number for a label: one past the highest seq seen for that label
  * in step_started / gate_opened / step_finished / gate_resolved.

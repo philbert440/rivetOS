@@ -119,6 +119,20 @@ export { createNotificationsChannel } from './domain/notifications-channel.js'
 export type { NotificationsChannelHandle } from './domain/notifications-channel.js'
 export type { GatewayChannelHandle } from './domain/gateway-channel.js'
 export {
+  createWorkflowApiRoutes,
+  createWorkflowApiRouteList,
+  type WorkflowApiOptions,
+  type WorkflowRoutes,
+} from './domain/workflows/workflow-api.js'
+export { createHostExecutorRegistry } from './domain/workflows/host-executors.js'
+export type { HostExecutorRegistryOptions } from './domain/workflows/host-executors.js'
+export { createScriptRunExecutor, parseStdout } from './domain/workflows/script-run-executor.js'
+export {
+  createTaskAgentExecutor,
+  createStubAgentExecutor,
+  mapTaskResultToOut,
+} from './domain/workflows/agent-executor.js'
+export {
   createOpenAICompatRoute,
   lastUserText,
   normalizeConversationId,
