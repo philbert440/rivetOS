@@ -34,5 +34,6 @@ if command -v python3 >/dev/null 2>&1; then
 elif command -v jq >/dev/null 2>&1; then
   jq -n --argjson pr "${PR}" --arg repo "${REPO}" '{merged:true, pr:$pr, repo:$repo}'
 else
-  printf '{"merged":true,"pr":%s,"repo":"%s"}\n' "${PR}" "${REPO}"
+  echo "merge-pr.sh: need python3 or jq for JSON output" >&2
+  exit 1
 fi

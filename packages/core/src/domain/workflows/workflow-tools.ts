@@ -85,6 +85,16 @@ export function createWorkflowTools(opts: WorkflowToolsOptions): Tool[] {
           return JSON.stringify({ error: 'input must be a JSON object' })
         }
 
+        // Human gates exist to keep humans in the loop — an agent must not
+        // start an ungated run (workflows pass gated:false via step.call,
+        // which does not go through this tool).
+        if (input.gated === false) {
+          return JSON.stringify({
+            error:
+              'agents may not start ungated runs (gated:false is reserved for parent workflows); omit gated',
+          })
+        }
+
         if (!isWorkflowAllowed(workflowId, allowlist)) {
           const listed =
             allowlist && allowlist.length > 0
@@ -113,8 +123,13 @@ export function createWorkflowTools(opts: WorkflowToolsOptions): Tool[] {
           throw err
         }
 
-        const agentId = context?.agentId ?? context?.session?.agentId ?? 'unknown'
-        const startedBy: StartedBy = { type: 'agent', id: agentId }
+        const agentId = context?.agentId ?? context?.session?.agentId
+        if (!agentId) {
+          // Attribution matters for the audit trail; don't silently file
+          // every start under 'unknown'.
+          log.error(`workflow_start ${workflowId}: no agent identity in ToolContext`)
+        }
+        const startedBy: StartedBy = { type: 'agent', id: agentId ?? 'unknown' }
         const runId = randomUUID()
         const caseDir = join(opts.caseDirRoot, runId)
 
@@ -179,6 +194,11 @@ export function createWorkflowTools(opts: WorkflowToolsOptions): Tool[] {
         const runId = typeof args.runId === 'string' ? args.runId : ''
         if (!runId) {
           return JSON.stringify({ error: 'runId is required' })
+        }
+        // resolveCaseDir accepts absolute paths (engine test convenience) —
+        // never expose that through the tool surface.
+        if (runId.includes('/') || runId.includes('\\') || runId.includes('..')) {
+          return JSON.stringify({ error: 'runId must be a bare run id, not a path' })
         }
         const caseDir = await opts.engine.resolveCaseDir(runId)
         const caseState = await readCase(caseDir)

@@ -1,5 +1,4 @@
 ---
-tools: []
 maxTurns: 40
 ---
 
@@ -33,7 +32,7 @@ If there are no findings, write `No findings.`
 
 ## Final output (required)
 
-Your **last message must be only a JSON object** (no markdown fence) that the workflow executor can map:
+Finish following the task's TASK_RESULT instructions (appended to your goal by the task runner). Set the TASK_RESULT `output` field to exactly this JSON object, serialized as a string. If you cannot produce the TASK_RESULT fence, end your final message with the raw JSON object alone — the executor parses either form:
 
 ```json
 {"verdict":"approve|approve-with-nits|changes-needed","summary":"2-4 sentences"}

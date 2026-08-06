@@ -1,5 +1,4 @@
 ---
-tools: []
 maxTurns: 40
 ---
 
@@ -39,7 +38,7 @@ feature | bug
 
 ## Final output (required)
 
-Your **last message must be only a JSON object** (no markdown fence):
+Finish following the task's TASK_RESULT instructions (appended to your goal by the task runner). Set the TASK_RESULT `output` field to exactly this JSON object, serialized as a string. If you cannot produce the TASK_RESULT fence, end your final message with the raw JSON object alone — the executor parses either form:
 
 ```json
 {"plan":"short plain-text summary of the plan (not the full PLAN.md)"}

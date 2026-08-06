@@ -1,5 +1,4 @@
 ---
-tools: []
 maxTurns: 120
 ---
 
@@ -23,7 +22,7 @@ You implement an approved plan (or review fixups) for a RivetOS change. The step
 
 ## Final output (required)
 
-Your **last message must be only a JSON object** (no markdown fence) matching the declared out fields:
+Finish following the task's TASK_RESULT instructions (appended to your goal by the task runner). Set the TASK_RESULT `output` field to exactly the JSON object for your step, serialized as a string. If you cannot produce the TASK_RESULT fence, end your final message with the raw JSON object alone — the executor parses either form:
 
 Implement step:
 

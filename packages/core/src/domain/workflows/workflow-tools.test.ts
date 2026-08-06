@@ -194,3 +194,45 @@ describe('workflow_start pre-validation', () => {
     expect(invalid.issues?.some((i) => i.field === 'message')).toBe(true)
   })
 })
+
+describe('workflow_start guards', () => {
+  it('rejects gated:false from agents and path-shaped runIds', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-tools-guard-'))
+    const caseRoot3 = join(root, 'runs')
+    const defsRoot3 = join(root, 'defs')
+    await mkdir(join(defsRoot3, 'demo'), { recursive: true })
+    await writeFile(
+      join(defsRoot3, 'demo', 'workflow.yaml'),
+      'id: demo\nversion: "1.0.0"\nname: Demo\ninput:\n  - name: message\n    type: string\noutput: []\n',
+      'utf-8',
+    )
+    await writeFile(join(defsRoot3, 'demo', 'run.ts'), 'export default async function run() {}', 'utf-8')
+    const engine = new WorkflowEngine({
+      caseDirRoot: caseRoot3,
+      workflowsRoots: [defsRoot3],
+      executors: new MockExecutorRegistry(),
+    })
+    const tools = createWorkflowTools({
+      engine,
+      caseDirRoot: caseRoot3,
+      workflowsRoots: [defsRoot3],
+      agentAllowlist: ['*'],
+    })
+    const start = tools.find((t) => t.name === 'workflow_start')!
+    const status = tools.find((t) => t.name === 'workflow_status')!
+
+    const gated = JSON.parse(
+      String(await start.execute({ workflow: 'demo', input: { message: 'x', gated: false } })),
+    ) as { error?: string }
+    expect(gated.error).toMatch(/ungated/)
+
+    const escape = JSON.parse(
+      String(await status.execute({ runId: '/etc' })),
+    ) as { error?: string }
+    expect(escape.error).toMatch(/bare run id/)
+    const dots = JSON.parse(
+      String(await status.execute({ runId: '../other' })),
+    ) as { error?: string }
+    expect(dots.error).toMatch(/bare run id/)
+  })
+})

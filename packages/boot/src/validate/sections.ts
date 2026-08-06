@@ -928,11 +928,12 @@ export function validateWorkflows(
       })
     } else {
       for (let i = 0; i < workflows.agent_allowlist.length; i++) {
-        if (typeof workflows.agent_allowlist[i] !== 'string') {
+        const entry: unknown = workflows.agent_allowlist[i]
+        if (typeof entry !== 'string' || entry.trim() === '') {
           issues.push({
             severity: 'error',
             path: `${path}.agent_allowlist[${i}]`,
-            message: '"workflows.agent_allowlist" entries must be strings',
+            message: '"workflows.agent_allowlist" entries must be non-empty strings',
           })
         }
       }
