@@ -12,6 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type {
   GatewayRoute,
@@ -32,10 +33,13 @@ import {
   findOpenGate,
   listChildRuns,
   listRuns,
+  appendJournal,
   listWorkflowDefs,
   readCase,
   readJournal,
+  updateRun,
   validateStartInput,
+  writeCase,
   type StartRunResult,
 } from '@rivetos/workflows'
 import { logger } from '../../logger.js'
@@ -245,15 +249,29 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
 
           // Detached (default): a real run can take minutes-to-days — never
           // hold the HTTP request across execution. The UI polls run detail;
-          // failures land in the run's own status/journal.
+          // failures land in the run's own status/journal (engine execute
+          // marks failed; pre-execute throws are materialized below so the
+          // 202'd runId never becomes a permanent 404 / phantom-running run).
           const runId = randomUUID()
+          const caseDir = join(caseDirRoot, runId)
           void opts.engine
-            .startRun(workflowId, input, { type: 'human', id: userId }, { runId })
+            .startRun(workflowId, input, { type: 'human', id: userId }, { runId, caseDir })
             .then((result) => notifyGate(opts, result))
-            .catch((err: unknown) => {
-              log.warn(
-                `detached start ${runId} (${workflowId}) failed: ${err instanceof Error ? err.message : String(err)}`,
-              )
+            .catch(async (err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err)
+              log.warn(`detached start ${runId} (${workflowId}) failed: ${message}`)
+              await materializeDetachedFailure({
+                caseDir,
+                runId,
+                workflowId,
+                version: def.manifest.version,
+                startedBy: { type: 'human', id: userId },
+                message,
+              }).catch((e: unknown) => {
+                log.warn(
+                  `could not materialize failure for ${runId}: ${e instanceof Error ? e.message : String(e)}`,
+                )
+              })
             })
           const body202: WorkflowStartRunResponse = {
             run: {
@@ -498,6 +516,57 @@ async function loadRunDetail(
         }
       : null,
   }
+}
+
+/**
+ * A detached start that failed before the engine's durable catch (e.g. a
+ * workflow dir race or caseDir mkdir failure) must still leave a pollable
+ * failed run behind the 202'd runId — otherwise the client faces a permanent
+ * 404 or a phantom forever-running run. Never overwrites a terminal state.
+ */
+export async function materializeDetachedFailure(args: {
+  caseDir: string
+  runId: string
+  workflowId: string
+  version: string
+  startedBy: { type: 'human' | 'agent' | 'workflow'; id?: string }
+  message: string
+}): Promise<void> {
+  const ts = new Date().toISOString()
+  let existing: Awaited<ReturnType<typeof readCase>> | undefined
+  try {
+    existing = await readCase(args.caseDir)
+  } catch {
+    existing = undefined
+  }
+  if (existing) {
+    const status = existing.run.status
+    if (status === 'done' || status === 'failed' || status === 'killed') return
+    // updateRun refuses terminal→* writes but allows running→failed.
+    await updateRun(args.caseDir, { status: 'failed', error: args.message, finishedAt: ts })
+  } else {
+    await writeCase(args.caseDir, {
+      run: {
+        id: args.runId,
+        workflowId: args.workflowId,
+        version: args.version,
+        startedBy: args.startedBy,
+        caseDir: args.caseDir,
+        status: 'failed',
+        error: args.message,
+        startedAt: ts,
+        finishedAt: ts,
+      },
+      fields: {},
+    })
+  }
+  await appendJournal(args.caseDir, {
+    type: 'run_finished',
+    ts,
+    runId: args.runId,
+    status: 'failed',
+    error: args.message,
+  })
 }
 
 function stripControlKeys(body: Record<string, unknown>): Record<string, unknown> {

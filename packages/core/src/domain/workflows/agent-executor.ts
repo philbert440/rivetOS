@@ -76,8 +76,16 @@ export function createTaskAgentExecutor(opts: TaskAgentExecutorOptions): AgentEx
       const timeoutMs = step.timeoutMs ?? defaultTimeoutMs
       const terminal = await opts.waiter.wait(row.id, { deadlineMs: timeoutMs })
       if (!terminal) {
+        // Don't abandon the task to keep burning tokens — best-effort kill.
+        try {
+          await opts.store.requestKill(row.id)
+        } catch (err) {
+          log.warn(
+            `failed to kill timed-out task ${row.id}: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
         throw new Error(
-          `Workflow agent step "${step.label}" timed out waiting for task ${row.id} after ${timeoutMs}ms`,
+          `Workflow agent step "${step.label}" timed out waiting for task ${row.id} after ${timeoutMs}ms (kill requested)`,
         )
       }
       if (terminal.status === 'killed' || terminal.status === 'timeout') {
@@ -124,25 +132,25 @@ export function mapTaskResultToOut(
   const result: Record<string, unknown> = {}
   if (output && typeof output === 'object' && !Array.isArray(output)) {
     const obj = output as Record<string, unknown>
+    // Passthrough when the step declared no out fields.
+    if (out.length === 0) return { ...obj }
     for (const key of out) {
       if (obj[key] !== undefined) result[key] = obj[key]
     }
-    // If the whole object was meant as a single out field, allow passthrough
-    // of remaining keys only when out is empty.
-    if (out.length === 0) return { ...obj }
-    // Fill missing out keys from summary / whole output string
+    // A single declared out field may be filled from the summary; multiple
+    // missing fields stay null rather than all receiving the same blob.
     for (const key of out) {
       if (result[key] === undefined) {
-        result[key] = typeof output === 'string' ? output : (summary ?? obj)
+        result[key] = out.length === 1 && summary !== undefined ? summary : null
       }
     }
     return result
   }
-  for (const key of out) {
-    result[key] = output ?? summary ?? null
-  }
   if (out.length === 0) {
     return { result: output ?? summary ?? null }
+  }
+  for (const key of out) {
+    result[key] = out.length === 1 ? (output ?? summary ?? null) : null
   }
   return result
 }

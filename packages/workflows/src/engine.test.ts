@@ -796,3 +796,61 @@ describe('re-review residuals', () => {
     expect(loaded.agents.example.prompt).toContain('Padded prompt body.')
   })
 })
+
+describe('resume serialization', () => {
+  it('concurrent resumes: exactly one wins, no double gate_resolved', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-race-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'))
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry(),
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+    const script: RunScript = async (step) => {
+      const g = await step.human('gate', { fields: ['ok'] })
+      await step.done({ result: String(g.ok) })
+    }
+    const started = await engine.startRun(
+      workflow.manifest.id,
+      { message: 'hi' },
+      { type: 'human' },
+      { runScript: script, workflow },
+    )
+    expect(started.suspended).toBe(true)
+
+    const results = await Promise.allSettled([
+      engine.resumeRun(started.run.id, { gateResponse: { ok: true }, runScript: script, workflow }),
+      engine.resumeRun(started.run.id, { gateResponse: { ok: true }, runScript: script, workflow }),
+    ])
+    const fulfilled = results.filter((r) => r.status === 'fulfilled')
+    const rejected = results.filter((r) => r.status === 'rejected')
+    expect(fulfilled).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({})
+
+    const journal = await readJournal(started.caseDir)
+    const resolved = journal.filter((e) => e.type === 'gate_resolved')
+    expect(resolved).toHaveLength(1)
+    const finished = journal.filter((e) => e.type === 'run_finished' && e.status === 'done')
+    expect(finished).toHaveLength(1)
+  })
+
+  it('a broken run.ts marks a run failed instead of stranding it running', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wf-brokenscript-'))
+    const wfDir = await writeMinimalWorkflow(join(root, 'wf'))
+    await writeFile(join(wfDir, 'run.ts'), 'this is not valid javascript {{{', 'utf-8')
+    const workflow = await loadWorkflowDir(wfDir)
+    const engine = new WorkflowEngine({
+      caseDirRoot: join(root, 'runs'),
+      executors: new MockExecutorRegistry(),
+      workflowDirs: { [workflow.manifest.id]: wfDir },
+    })
+    // No runScript injected — engine must load (and fail on) run.ts itself.
+    const r = await engine.startRun(workflow.manifest.id, { message: 'x' }, { type: 'human' }, {
+      workflow,
+    })
+    expect(r.run.status).toBe('failed')
+    expect(r.suspended).toBe(false)
+  })
+})

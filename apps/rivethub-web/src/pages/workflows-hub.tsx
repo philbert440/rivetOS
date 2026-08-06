@@ -354,12 +354,26 @@ export function WorkflowRunDetailPage(): JSX.Element {
     queryFn: ({ signal }) => useConnection.getState().gateway.getWorkflowRun(runId, signal),
     refetchInterval: (q) => {
       const status = q.state.data?.run?.run?.status
-      return isLiveRunStatus(status) ? DETAIL_POLL_MS : false
+      if (isLiveRunStatus(status)) return DETAIL_POLL_MS
+      // Detached start: the caseDir materializes a beat after the 202, so a
+      // fresh detail page can 404. Keep polling through early errors for a
+      // bounded window instead of freezing on a red flash.
+      if (!q.state.data && q.state.errorUpdateCount > 0 && q.state.errorUpdateCount <= 10) {
+        return DETAIL_POLL_MS
+      }
+      return false
     },
   })
 
   const [actionError, setActionError] = useState<string | undefined>()
   const [killing, setKilling] = useState(false)
+  const [recovering, setRecovering] = useState(false)
+
+  // Reset the recovery latch when the run leaves paused_human.
+  const detailStatus = detail.data?.run?.run?.status
+  useEffect(() => {
+    if (detailStatus !== 'paused_human') setRecovering(false)
+  }, [detailStatus])
 
   const payload: WorkflowRunDetail | undefined = detail.data?.run
   const run = payload?.run
@@ -448,8 +462,10 @@ export function WorkflowRunDetailPage(): JSX.Element {
               </p>
               <button
                 type="button"
+                disabled={recovering}
                 onClick={() => {
                   void (async () => {
+                    setRecovering(true)
                     setActionError(undefined)
                     try {
                       await useConnection
@@ -461,11 +477,13 @@ export function WorkflowRunDetailPage(): JSX.Element {
                     } catch (err) {
                       setActionError(err instanceof Error ? err.message : String(err))
                     }
+                    // Stay disabled until the poll moves the run off paused —
+                    // a second detached resume would race the first.
                   })()
                 }}
-                className="rounded border border-em/50 px-3 py-1 font-mono text-xs text-em hover:bg-em/10"
+                className="rounded border border-em/50 px-3 py-1 font-mono text-xs text-em hover:bg-em/10 disabled:opacity-40"
               >
-                Recover run
+                {recovering ? 'Recovering…' : 'Recover run'}
               </button>
             </section>
           )}
@@ -579,17 +597,25 @@ function GateCard(props: {
   const [issues, setIssues] = useState<FieldIssues>({})
   const [error, setError] = useState<string | undefined>()
   const [submitting, setSubmitting] = useState(false)
+  // After a detached 202 the run still polls as paused for up to one cycle —
+  // keep the form latched so a second click can't race the first resume.
+  const [accepted, setAccepted] = useState(false)
 
-  // Re-seed only when the open gate identity changes (resume → next gate) —
-  // but never while a submit is in flight, or a poll observing the next gate
-  // mid-submit wipes the form under the user / the returning 422 issues.
+  // Re-seed only when the open gate identity actually changes (tracked via
+  // lastSeededKey so a 422 on the same gate never wipes its own issues), and
+  // never while a submit is in flight; if a gate change arrives mid-flight,
+  // the `submitting` dep re-runs this effect once the flight ends.
   const submittingRef = useRef(false)
+  const lastSeededKey = useRef<string>()
   useEffect(() => {
     if (submittingRef.current) return
+    if (lastSeededKey.current === gateKey) return
+    lastSeededKey.current = gateKey
     setValues(emptyFormValues(fields))
     setIssues({})
     setError(undefined)
-  }, [gateKey, fields])
+    setAccepted(false)
+  }, [gateKey, fields, submitting])
 
   const onChange = (name: string, value: string): void => {
     setValues((v) => ({ ...v, [name]: value }))
@@ -613,6 +639,7 @@ function GateCard(props: {
       await useConnection.getState().gateway.resumeWorkflowRun(props.runId, {
         gateResponse: parsed.value,
       })
+      setAccepted(true)
       await props.onResumed()
     } catch (err) {
       if (isContractError(err)) {
@@ -645,17 +672,17 @@ function GateCard(props: {
           fields={fields}
           values={values}
           issues={issues}
-          disabled={submitting}
+          disabled={submitting || accepted}
           onChange={onChange}
           idPrefix="gate"
         />
         {error && <p className="font-mono text-sm text-red">{error}</p>}
         <button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || accepted}
           className="self-start rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
         >
-          {submitting ? 'Resuming…' : 'Resume'}
+          {accepted ? 'Resumed — continuing…' : submitting ? 'Resuming…' : 'Resume'}
         </button>
       </form>
     </section>

@@ -87,6 +87,12 @@ const killFlags = new Map<string, boolean>()
 export class WorkflowEngine {
   private readonly config: EngineConfig
   private readonly callRegistry: CallRegistry
+  /**
+   * Per-runId serialization for resume/continue: concurrent resumes must not
+   * both execute the post-gate continuation. The loser observes the winner's
+   * status flip and fails its paused_human check instead of double-running.
+   */
+  private readonly runLocks = new Map<string, Promise<unknown>>()
 
   constructor(config: EngineConfig) {
     this.config = config
@@ -191,10 +197,32 @@ export class WorkflowEngine {
     return this.execute(caseDir, workflow, options.runScript)
   }
 
+  private withRunLock<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.runLocks.get(runId) ?? Promise.resolve()
+    const run = prev.then(fn, fn)
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.runLocks.set(runId, settled)
+    void settled.then(() => {
+      if (this.runLocks.get(runId) === settled) this.runLocks.delete(runId)
+    })
+    return run
+  }
+
   /**
    * Resume a paused_human run: record gate_resolved, re-execute from top.
+   * Serialized per runId — see runLocks.
    */
   async resumeRun(runId: string, options: ResumeRunOptions = {}): Promise<StartRunResult> {
+    return this.withRunLock(runId, () => this.resumeRunInner(runId, options))
+  }
+
+  private async resumeRunInner(
+    runId: string,
+    options: ResumeRunOptions = {},
+  ): Promise<StartRunResult> {
     const caseDir = await this.findCaseDir(runId)
     const caseState = await readCase(caseDir)
     if (caseState.run.status !== 'paused_human') {
@@ -257,6 +285,13 @@ export class WorkflowEngine {
    * For paused_human runs use resumeRun; terminal runs cannot be re-entered.
    */
   async continueRun(
+    runId: string,
+    options: Pick<ResumeRunOptions, 'runScript' | 'workflow'> = {},
+  ): Promise<StartRunResult> {
+    return this.withRunLock(runId, () => this.continueRunInner(runId, options))
+  }
+
+  private async continueRunInner(
     runId: string,
     options: Pick<ResumeRunOptions, 'runScript' | 'workflow'> = {},
   ): Promise<StartRunResult> {
@@ -354,8 +389,6 @@ export class WorkflowEngine {
       outputFields: workflow.manifest.output,
     })
 
-    const script = runScript ?? (await loadRunScript(workflow.runPath))
-
     const ctx: RunScriptContext = {
       runId,
       input: { ...caseState.fields },
@@ -368,6 +401,10 @@ export class WorkflowEngine {
     // Per-step timeout is passed to executors; full enforcement is TODO when
     // real executors support AbortSignal (documented in README/NOTES).
     try {
+      // Script load lives INSIDE the durable try: a missing/broken run.ts must
+      // mark the run failed, not strand it at 'running' (matters for detached
+      // starts, where nobody awaits this promise).
+      const script = runScript ?? (await loadRunScript(workflow.runPath))
       await withTimeout(
         script(step, ctx),
         Math.max(0, deadline - Date.now()),

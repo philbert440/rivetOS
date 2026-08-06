@@ -66,6 +66,9 @@ function resolveScript(script: string, workflowDir: string): string {
   return resolve(workflowDir, script)
 }
 
+/** Per-run capture cap — a chatty or runaway script must not OOM the gateway. */
+const MAX_CAPTURE_BYTES = 4 * 1024 * 1024
+
 function runChild(opts: {
   scriptPath: string
   caseDir: string
@@ -75,28 +78,50 @@ function runChild(opts: {
 }): Promise<unknown> {
   return new Promise((resolvePromise, reject) => {
     // Invoke via `sh` so non-executable scripts and shebang scripts both work
-    // without requiring chmod in fixtures.
+    // without requiring chmod in fixtures. detached puts the script in its own
+    // process group so a timeout kill reaps grandchildren, not just `sh`.
     const child = spawn('sh', [opts.scriptPath, opts.inputJson], {
       cwd: opts.caseDir,
       env: opts.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     })
+
+    const killTree = (): void => {
+      try {
+        if (child.pid) process.kill(-child.pid, 'SIGKILL')
+        else child.kill('SIGKILL')
+      } catch {
+        child.kill('SIGKILL')
+      }
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+    }
 
     let stdout = ''
     let stderr = ''
+    let truncated = false
     let settled = false
     const timer = setTimeout(() => {
       if (settled) return
       settled = true
-      child.kill('SIGKILL')
+      killTree()
       reject(new Error(`Script timed out after ${opts.timeoutMs}ms: ${opts.scriptPath}`))
     }, opts.timeoutMs)
     timer.unref?.()
 
     child.stdout?.on('data', (chunk: Buffer) => {
+      if (stdout.length + stderr.length >= MAX_CAPTURE_BYTES) {
+        truncated = true
+        return
+      }
       stdout += chunk.toString('utf-8')
     })
     child.stderr?.on('data', (chunk: Buffer) => {
+      if (stdout.length + stderr.length >= MAX_CAPTURE_BYTES) {
+        truncated = true
+        return
+      }
       stderr += chunk.toString('utf-8')
     })
 
@@ -116,12 +141,18 @@ function runChild(opts: {
         reject(
           new Error(
             `Script exited ${exitCode}${signal ? ` (signal ${signal})` : ''}: ${opts.scriptPath}` +
+              (truncated ? ' [output truncated]' : '') +
               (stderr.trim() ? `\nstderr: ${stderr.trim().slice(0, 2000)}` : ''),
           ),
         )
         return
       }
-      resolvePromise(parseStdout(stdout, exitCode))
+      const parsed = parseStdout(stdout, exitCode)
+      resolvePromise(
+        truncated && typeof parsed === 'object' && parsed !== null
+          ? { ...(parsed as Record<string, unknown>), truncated: true }
+          : parsed,
+      )
     })
   })
 }
