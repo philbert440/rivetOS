@@ -19,9 +19,21 @@ workflows/pr-review/
   workflow.yaml              # manifest: id, version, input/output, budgets, outline
   run.ts                     # orchestration (code-first step SDK)
   agents/<name>.md           # YAML frontmatter (tools/model/maxTurns) + prompt body
+  scripts/                   # optional step.run shell scripts (cwd = caseDir)
 ```
 
 Agent files use the same frontmatter-plus-prompt shape as Claude Code agent definitions.
+
+### Gold recipes (repo root)
+
+Shipped under the monorepo top-level `workflows/` directory (on boot `defs_roots` by default):
+
+| Id | Role |
+|----|------|
+| `pr-review` | Load PR → agent review → human verdict gate |
+| `change` | Plan → implement → `step.call(pr-review)` loop → merge gate |
+
+Fixture coverage: `src/recipes.fixture.test.ts`.
 
 ## Step SDK
 

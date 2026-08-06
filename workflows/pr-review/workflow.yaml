@@ -1,0 +1,56 @@
+id: pr-review
+version: "0.1.0"
+name: PR Review
+description: >
+  Load a GitHub PR, run an agent review for correctness/security/tests,
+  then pause at a human verdict gate. Callable child of the change workflow.
+input:
+  - name: repo
+    type: string
+    required: true
+    description: "GitHub repository as owner/name"
+  - name: pr
+    type: number
+    required: true
+    description: Pull request number
+  - name: focus
+    type: string
+    required: false
+    description: Optional reviewer steer (areas to emphasize)
+  - name: gated
+    type: boolean
+    required: false
+    description: >
+      Pause at the human verdict gate (default true). Parent workflows pass
+      false — the caller owns its own merge gate, so the child returns a
+      verdict-derived approved without pausing (v1 sync-wait children
+      cannot suspend).
+output:
+  - name: verdict
+    type: string
+    description: "approve | approve-with-nits | changes-needed"
+  - name: summary
+    type: string
+    description: Two-to-four sentence review summary
+  - name: approved
+    type: boolean
+    required: false
+    description: Human gate decision (true = approve the verdict)
+outline:
+  - id: load-pr
+    kind: run
+    label: Load PR
+    description: Fetch PR metadata and diff via gh
+  - id: review
+    kind: agent
+    label: Review
+    description: Agent review of the diff
+  - id: verdict-gate
+    kind: human
+    label: Verdict gate
+    description: Human approves or rejects the review verdict (skipped when gated=false)
+  - id: done
+    kind: done
+    label: Done
+budgets:
+  maxTokens: 200000

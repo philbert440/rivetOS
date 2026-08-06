@@ -1072,4 +1072,44 @@ describe('den', () => {
       assertWarning(validateConfig(cfg), 'tasks.eval.strictness', 'Unknown tasks.eval key')
     })
   })
+
+  // =========================================================================
+  // workflows section (agent allowlist + defs roots)
+  // =========================================================================
+
+  describe('workflows', () => {
+    it('accepts agent_allowlist and defs_roots', () => {
+      const cfg = validConfig()
+      cfg.workflows = {
+        enabled: true,
+        runs_dir: '/tmp/runs',
+        defs_roots: ['/tmp/defs'],
+        agent_allowlist: ['pr-review', 'change', '*'],
+      }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('does not warn on workflows as a top-level key', () => {
+      const cfg = validConfig()
+      cfg.workflows = { agent_allowlist: ['pr-review'] }
+      const result = validateConfig(cfg)
+      assertValid(result)
+      assert.equal(
+        result.warnings.some((w) => w.path === 'workflows' && w.message.includes('Unknown top-level')),
+        false,
+      )
+    })
+
+    it('rejects non-array agent_allowlist', () => {
+      const cfg = validConfig()
+      cfg.workflows = { agent_allowlist: 'change' }
+      assertError(validateConfig(cfg), 'workflows.agent_allowlist', 'must be an array')
+    })
+
+    it('warns on unknown workflows keys', () => {
+      const cfg = validConfig()
+      cfg.workflows = { mystery: true }
+      assertWarning(validateConfig(cfg), 'workflows.mystery', 'Unknown workflows key')
+    })
+  })
 })

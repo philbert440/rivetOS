@@ -19,6 +19,7 @@ import {
   KNOWN_DEN_DEVICES_KEYS,
   KNOWN_TASKS_KEYS,
   KNOWN_TASKS_EVAL_KEYS,
+  KNOWN_WORKFLOWS_KEYS,
   DEN_LOOPBACK_HOSTS,
   API_KEY_PATTERNS,
   type ValidationIssue,
@@ -857,6 +858,84 @@ export function validateTasks(tasks: Record<string, unknown>, issues: Validation
       })
     } else {
       validateTasksEval(tasks.eval as Record<string, unknown>, issues)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Workflows — journal-replay engine host config (gateway + agent start door).
+// ---------------------------------------------------------------------------
+
+export function validateWorkflows(
+  workflows: Record<string, unknown>,
+  issues: ValidationIssue[],
+): void {
+  const path = 'workflows'
+
+  for (const key of Object.keys(workflows)) {
+    if (!KNOWN_WORKFLOWS_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `${path}.${key}`,
+        message: `Unknown workflows key "${key}"`,
+      })
+    }
+  }
+
+  if (workflows.enabled !== undefined && typeof workflows.enabled !== 'boolean') {
+    issues.push({
+      severity: 'error',
+      path: `${path}.enabled`,
+      message: '"workflows.enabled" must be a boolean',
+    })
+  }
+
+  if (workflows.runs_dir !== undefined && typeof workflows.runs_dir !== 'string') {
+    issues.push({
+      severity: 'error',
+      path: `${path}.runs_dir`,
+      message: '"workflows.runs_dir" must be a string path',
+    })
+  }
+
+  if (workflows.defs_roots !== undefined) {
+    if (!Array.isArray(workflows.defs_roots)) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.defs_roots`,
+        message: '"workflows.defs_roots" must be an array of paths',
+      })
+    } else {
+      for (let i = 0; i < workflows.defs_roots.length; i++) {
+        if (typeof workflows.defs_roots[i] !== 'string') {
+          issues.push({
+            severity: 'error',
+            path: `${path}.defs_roots[${i}]`,
+            message: '"workflows.defs_roots" entries must be strings',
+          })
+        }
+      }
+    }
+  }
+
+  if (workflows.agent_allowlist !== undefined) {
+    if (!Array.isArray(workflows.agent_allowlist)) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.agent_allowlist`,
+        message:
+          '"workflows.agent_allowlist" must be an array of workflow ids (or ["*"]). Empty/absent = agents may start nothing.',
+      })
+    } else {
+      for (let i = 0; i < workflows.agent_allowlist.length; i++) {
+        if (typeof workflows.agent_allowlist[i] !== 'string') {
+          issues.push({
+            severity: 'error',
+            path: `${path}.agent_allowlist[${i}]`,
+            message: '"workflows.agent_allowlist" entries must be strings',
+          })
+        }
+      }
     }
   }
 }

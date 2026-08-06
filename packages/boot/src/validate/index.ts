@@ -26,6 +26,7 @@ import {
   validateMesh,
   validateDen,
   validateTasks,
+  validateWorkflows,
 } from './sections.js'
 import { validateDeployment } from './deployment.js'
 import { validateCrossReferences } from './cross-refs.js'
@@ -202,6 +203,19 @@ export function validateConfig(config: unknown): ValidationResult {
       issues.push({ severity: 'error', path: 'tasks', message: '"tasks" must be an object' })
     } else {
       validateTasks(cfg.tasks as Record<string, unknown>, issues)
+    }
+  }
+
+  // === workflows (optional — journal-replay engine + agent start allowlist) ===
+  if (cfg.workflows) {
+    if (typeof cfg.workflows !== 'object' || Array.isArray(cfg.workflows)) {
+      issues.push({
+        severity: 'error',
+        path: 'workflows',
+        message: '"workflows" must be an object',
+      })
+    } else {
+      validateWorkflows(cfg.workflows as Record<string, unknown>, issues)
     }
   }
 

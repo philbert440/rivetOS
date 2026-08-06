@@ -11,6 +11,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { join } from 'node:path'
 import type { Runtime } from '@rivetos/core'
 import { loadTlsConfig } from '@rivetos/core'
 import {
@@ -49,6 +50,7 @@ import {
   createSkillManageTool,
   createHostExecutorRegistry,
   createWorkflowApiRouteList,
+  createWorkflowTools,
 } from '@rivetos/core'
 import { WorkflowEngine, DEFAULT_CASE_DIR_ROOT } from '@rivetos/workflows'
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
@@ -83,6 +85,8 @@ export async function registerAgentTools(
   runtime: Runtime,
   config: RivetConfig,
   workspaceDir: string,
+  /** Install / repo root — used for default workflows.defs_roots. */
+  installRoot?: string,
 ): Promise<AgentToolsResult> {
   // Build tool filter from agent configs
   const toolFilter: Record<string, { exclude?: string[]; include?: string[] }> = {}
@@ -591,15 +595,21 @@ export async function registerAgentTools(
     }),
   )
 
-  // Workflows v1 (slice C) — gateway API over the journal-replay engine.
+  // Workflows v1 — gateway API + agent start door over the journal-replay engine.
   // Executors live here (not in @rivetos/workflows): script child_process +
   // task-backed agent when the durable engine is available.
   const workflowsEnabled = config.workflows?.enabled !== false
   if (workflowsEnabled) {
     const caseDirRoot = config.workflows?.runs_dir?.trim() || DEFAULT_CASE_DIR_ROOT
-    const workflowsRoots = config.workflows?.defs_roots?.filter(
+    const configuredRoots = config.workflows?.defs_roots?.filter(
       (r) => typeof r === 'string' && r.trim(),
-    ) ?? ['/rivet-shared/workflows/defs']
+    )
+    // Default: repo recipes at <installRoot>/workflows + shared defs.
+    // Explicit defs_roots replaces the default entirely (no silent merge).
+    const workflowsRoots =
+      configuredRoots && configuredRoots.length > 0
+        ? configuredRoots
+        : [...(installRoot ? [join(installRoot, 'workflows')] : []), '/rivet-shared/workflows/defs']
     const defaultAgentId =
       Object.keys(config.agents ?? {})[0] ?? runtime.getRouter().getAgents()[0]?.id ?? 'rivet'
     // Prefer durable task store; fall back to in-memory subagent store so
@@ -634,8 +644,24 @@ export async function registerAgentTools(
         onGatePaused: notifications ? (frame) => notifications.broadcast(frame) : undefined,
       }),
     )
+
+    // Agent start door — same engine instance as the gateway API.
+    // Fail-closed allowlist: empty/absent → agents start nothing.
+    const agentAllowlist = config.workflows?.agent_allowlist
+    for (const tool of createWorkflowTools({
+      engine: workflowEngine,
+      caseDirRoot,
+      workflowsRoots,
+      agentAllowlist,
+      allowlistConfigPath: 'config.workflows.agent_allowlist',
+    })) {
+      runtime.registerTool(tool)
+    }
+
     log.info(
-      `Workflows API mounted (defs=${workflowsRoots.join(',')}, runs=${caseDirRoot}, agent=${defaultAgentId})`,
+      `Workflows API + agent tools mounted (defs=${workflowsRoots.join(',')}, runs=${caseDirRoot}, agent=${defaultAgentId}, allowlist=${
+        agentAllowlist?.length ? agentAllowlist.join('|') : '(empty/fail-closed)'
+      })`,
     )
   }
 

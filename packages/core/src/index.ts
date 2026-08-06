@@ -133,6 +133,11 @@ export {
   mapTaskResultToOut,
 } from './domain/workflows/agent-executor.js'
 export {
+  createWorkflowTools,
+  isWorkflowAllowed,
+  type WorkflowToolsOptions,
+} from './domain/workflows/workflow-tools.js'
+export {
   createOpenAICompatRoute,
   lastUserText,
   normalizeConversationId,
