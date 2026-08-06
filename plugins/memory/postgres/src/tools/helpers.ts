@@ -18,8 +18,16 @@ export interface MessageRow {
   created_at: Date
   conversation_id: string
   tool_name: string | null
+  /** Present when the row is a tool call; often holds the real payload while
+   *  `content` is only a short placeholder like `[tool] search_tool`. */
+  tool_result: string | null
   metadata: Record<string, unknown> | null
 }
+
+/** Default display caps for browse rows. Capture still stores up to 16K; these
+ *  only limit what we put in the agent-facing browse response. */
+export const BROWSE_CONTENT_LIMIT = 500
+export const BROWSE_TOOL_RESULT_LIMIT = 800
 
 /** One-line marker appended to recall output when a row was truncated at
  *  capture time — carries the original length and the memory_get_full handle
@@ -32,6 +40,64 @@ export function truncationHint(
   const full = meta.full_content_length ?? meta.full_tool_result_length
   const len = typeof full === 'number' ? `${String(full)} chars` : 'unknown length'
   return `\n⚠ truncated at capture (full: ${len}) → memory_get_full id=${id}`
+}
+
+/**
+ * Format the body of one `memory_browse` row: content preview + optional
+ * tool_result preview + recovery handles.
+ *
+ * Daily-use footgun (2026-08): browse selected only `content`, so tool rows
+ * rendered as `[tool] search_tool` with no payload. Agents then re-ran tools
+ * or trusted incomplete chronology. When the stored row is complete (not
+ * capture-truncated), display cuts still point at `memory_get_full` which
+ * returns the full DB payload.
+ */
+export function formatBrowseMessageBody(
+  row: {
+    id: string
+    content: string
+    tool_name: string | null
+    tool_result: string | null
+    metadata: Record<string, unknown> | null
+  },
+  opts?: { contentLimit?: number; toolResultLimit?: number },
+): string {
+  const contentLimit = opts?.contentLimit ?? BROWSE_CONTENT_LIMIT
+  const toolResultLimit = opts?.toolResultLimit ?? BROWSE_TOOL_RESULT_LIMIT
+  const captureTrunc = row.metadata?.truncated === true
+  const parts: string[] = []
+
+  const content = row.content
+  if (content.length > contentLimit) {
+    parts.push(content.slice(0, contentLimit) + '…')
+    if (!captureTrunc) {
+      parts.push(
+        `…[display-truncated content ${String(content.length)} chars → memory_get_full id=${row.id}]`,
+      )
+    }
+  } else {
+    parts.push(content)
+  }
+
+  const toolResult = row.tool_result
+  if (typeof toolResult === 'string' && toolResult.length > 0) {
+    const label = row.tool_name ? `tool_result (${row.tool_name})` : 'tool_result'
+    if (toolResult.length > toolResultLimit) {
+      parts.push(
+        `[${label} ${String(toolResult.length)} chars]\n${toolResult.slice(0, toolResultLimit)}…`,
+      )
+      if (!captureTrunc) {
+        parts.push(`…[display-truncated tool_result → memory_get_full id=${row.id}]`)
+      }
+    } else {
+      parts.push(`[${label}]\n${toolResult}`)
+    }
+  }
+
+  const captureHint = truncationHint(row.metadata, row.id)
+  if (captureHint) parts.push(captureHint.replace(/^\n/, ''))
+
+  return parts.join('\n')
 }
 
 export interface CountRow {
