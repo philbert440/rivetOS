@@ -91,6 +91,7 @@ function makeManager(
       maxPtys: 4,
       scrollbackBytes: 262_144,
       detachedTtlMs: 1_800_000,
+      idleTtlMs: 1_800_000,
       exitLingerMs: 60_000,
       ...term,
     },
@@ -454,7 +455,7 @@ describe('term manager', () => {
 
   it('kills a detached pty after the TTL: SIGHUP then SIGKILL', () => {
     vi.useFakeTimers()
-    const { manager, procs } = makeManager({ detachedTtlMs: 1000 })
+    const { manager, procs } = makeManager({ detachedTtlMs: 1000, idleTtlMs: 0 })
     manager.spawn('shell', 80, 24, '')
     vi.advanceTimersByTime(999)
     expect(procs[0].kills).toEqual([])
@@ -466,7 +467,8 @@ describe('term manager', () => {
 
   it('attach holds off the detached-TTL kill; detach restarts it', () => {
     vi.useFakeTimers()
-    const { manager, procs } = makeManager({ detachedTtlMs: 1000 })
+    // idle off so this test only measures the detached reaper
+    const { manager, procs } = makeManager({ detachedTtlMs: 1000, idleTtlMs: 0 })
     const pty = manager.spawn('shell', 80, 24, '')
     const detach = manager.attach(pty.id, () => {})!
     vi.advanceTimersByTime(5000)
@@ -474,6 +476,45 @@ describe('term manager', () => {
     detach()
     vi.advanceTimersByTime(1000)
     expect(procs[0].kills).toEqual(['SIGHUP'])
+  })
+
+  it('kills an idle pty after idleTtlMs even when a viewer is attached', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ idleTtlMs: 1000, detachedTtlMs: 60_000 })
+    const pty = manager.spawn('shell', 80, 24, '')
+    manager.attach(pty.id, () => {}) // attached must not protect from idle
+    vi.advanceTimersByTime(999)
+    expect(procs[0].kills).toEqual([])
+    vi.advanceTimersByTime(1)
+    expect(procs[0].kills).toEqual(['SIGHUP'])
+  })
+
+  it('activity (inject / write / output) re-arms the idle TTL', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ idleTtlMs: 1000, detachedTtlMs: 60_000 })
+    const pty = manager.spawn('shell', 80, 24, '')
+    vi.advanceTimersByTime(800)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true) // re-arms
+    vi.advanceTimersByTime(800)
+    expect(procs[0].kills).toEqual([]) // still within 1s of inject
+    expect(manager.write(pty.id, 'x')).toBe(true)
+    vi.advanceTimersByTime(800)
+    expect(procs[0].kills).toEqual([])
+    procs[0].emitData('reply') // output re-arms
+    vi.advanceTimersByTime(800)
+    expect(procs[0].kills).toEqual([])
+    vi.advanceTimersByTime(200)
+    expect(procs[0].kills).toEqual(['SIGHUP'])
+  })
+
+  it('idleTtlMs 0 disables activity-based auto-close', () => {
+    vi.useFakeTimers()
+    // Detached reaper off (attach) so only idle would kill — and idle is 0/off.
+    const { manager, procs } = makeManager({ idleTtlMs: 0, detachedTtlMs: 1_000 })
+    const pty = manager.spawn('shell', 80, 24, '')
+    manager.attach(pty.id, () => {})
+    vi.advanceTimersByTime(60_000)
+    expect(procs[0].kills).toEqual([])
   })
 
   it('skips the SIGKILL escalation when the child dies from SIGHUP', () => {

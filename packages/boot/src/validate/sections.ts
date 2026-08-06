@@ -701,6 +701,16 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
           message: '"den.terminal.open" must be a boolean',
         })
       }
+      if (terminal.idle_ttl_ms !== undefined) {
+        const n = terminal.idle_ttl_ms
+        if (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+          issues.push({
+            severity: 'error',
+            path: `${path}.terminal.idle_ttl_ms`,
+            message: '"den.terminal.idle_ttl_ms" must be a non-negative integer (ms; 0 disables)',
+          })
+        }
+      }
       terminalEnabled = terminal.enabled === true
       terminalOpen = terminal.open === true
     }
