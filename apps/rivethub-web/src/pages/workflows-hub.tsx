@@ -36,6 +36,13 @@ import {
 
 const LIST_POLL_MS = 5_000
 const DETAIL_POLL_MS = 3_000
+/**
+ * Failsafe unlatch for post-202 UI latches (gate resume / recovery): if a
+ * detached continuation dies server-side before flipping the run's status,
+ * the poll never clears the latch — release it so retry stays possible.
+ * Long enough that a healthy resume's status flip (≤ one poll cycle) wins.
+ */
+const LATCH_FAILSAFE_MS = 30_000
 
 // ---------------------------------------------------------------------------
 // Hub list — defs + recent runs
@@ -369,11 +376,18 @@ export function WorkflowRunDetailPage(): JSX.Element {
   const [killing, setKilling] = useState(false)
   const [recovering, setRecovering] = useState(false)
 
-  // Reset the recovery latch when the run leaves paused_human.
+  // Reset the recovery latch when the run leaves paused_human — plus a
+  // failsafe unlatch: if a detached resume dies silently server-side after
+  // its 202, the run stays paused and the latch must not brick the page.
   const detailStatus = detail.data?.run?.run?.status
   useEffect(() => {
     if (detailStatus !== 'paused_human') setRecovering(false)
   }, [detailStatus])
+  useEffect(() => {
+    if (!recovering) return
+    const t = setTimeout(() => setRecovering(false), LATCH_FAILSAFE_MS)
+    return () => clearTimeout(t)
+  }, [recovering])
 
   const payload: WorkflowRunDetail | undefined = detail.data?.run
   const run = payload?.run
@@ -475,10 +489,14 @@ export function WorkflowRunDetailPage(): JSX.Element {
                         queryKey: ['workflow-run', baseUrl, token ?? '', runId],
                       })
                     } catch (err) {
+                      // A rejected request means no detached resume is in
+                      // flight (pre-validation + engine lock) — unlatch so
+                      // the user can retry instead of bricking the button.
+                      setRecovering(false)
                       setActionError(err instanceof Error ? err.message : String(err))
                     }
-                    // Stay disabled until the poll moves the run off paused —
-                    // a second detached resume would race the first.
+                    // On success: stay disabled until the poll moves the run
+                    // off paused — a second detached resume would race the first.
                   })()
                 }}
                 className="rounded border border-em/50 px-3 py-1 font-mono text-xs text-em hover:bg-em/10 disabled:opacity-40"
@@ -599,7 +617,14 @@ function GateCard(props: {
   const [submitting, setSubmitting] = useState(false)
   // After a detached 202 the run still polls as paused for up to one cycle —
   // keep the form latched so a second click can't race the first resume.
+  // Failsafe: a silently-dead detached resume leaves the gate open forever;
+  // release the latch after LATCH_FAILSAFE_MS so retry stays possible.
   const [accepted, setAccepted] = useState(false)
+  useEffect(() => {
+    if (!accepted) return
+    const t = setTimeout(() => setAccepted(false), LATCH_FAILSAFE_MS)
+    return () => clearTimeout(t)
+  }, [accepted])
 
   // Re-seed only when the open gate identity actually changes (tracked via
   // lastSeededKey so a 422 on the same gate never wipes its own issues), and
