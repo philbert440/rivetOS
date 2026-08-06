@@ -18,12 +18,18 @@ DROP INDEX IF EXISTS idx_ros_messages_fts;
 ALTER TABLE ros_messages
   DROP COLUMN IF EXISTS content_tsv;
 
+-- Cap inputs before to_tsvector: Postgres hard-limits tsvector at 1,048,575
+-- bytes. Live phil_memory already has content up to ~900k chars; combining
+-- uncapped content+tool_result leaves only ~4.5% headroom, so a future
+-- insert would fail at capture time (GENERATED ALWAYS recomputes on write).
+-- FTS lexemes past ~300KB of content have negligible recall; trigram/regex
+-- still scan the full columns. Max live tool_result is ~27k, so 32k is safe.
 ALTER TABLE ros_messages
   ADD COLUMN content_tsv tsvector
   GENERATED ALWAYS AS (
     to_tsvector(
       'english',
-      coalesce(content, '') || ' ' || coalesce(tool_result, '')
+      left(coalesce(content, ''), 300000) || ' ' || left(coalesce(tool_result, ''), 32768)
     )
   ) STORED;
 
