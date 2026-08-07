@@ -65,6 +65,9 @@ class _FakeClient:
 
 
 def _msg_row(id_="m1", content="hello world", role="user", agent="rivet-hermes"):
+    """9-col message row: id, content, role, agent, conv, created_at, score,
+    tool_name, tool_result (tool columns added by the tool_result-fidelity
+    series)."""
     return (
         id_,
         content,
@@ -73,6 +76,8 @@ def _msg_row(id_="m1", content="hello world", role="user", agent="rivet-hermes")
         "conv-1",
         datetime.now(timezone.utc),
         0.42,  # score
+        None,  # tool_name
+        None,  # tool_result
     )
 
 
@@ -139,7 +144,10 @@ def test_trigram_messages_skip_embedding_clause():
         query_embedding=None,
     )
     sql, params = fake.cursor.executed[0]
-    assert params == ["phildez", "phildez", 3]
+    # Trigram message form binds the query twice per expression (content +
+    # coalesce(tool_result)): GREATEST(...) in SELECT, then the OR match in
+    # WHERE — four %s before LIMIT.
+    assert params == ["phildez", "phildez", "phildez", "phildez", 3]
     assert "similarity(m.content, %s) > 0.3" in sql
     assert "websearch_to_tsquery" not in sql
 
@@ -159,9 +167,9 @@ def test_regex_mode_omits_score_param():
         query_embedding=None,
     )
     _sql, params = fake.cursor.executed[0]
-    # regex has no ts_rank_cd or similarity, so the only WHERE %s is the regex
-    # and the only LIMIT %s.
-    assert params == [r"^err.*timeout$", 4]
+    # regex has no ts_rank_cd or similarity; the WHERE binds the regex twice
+    # (m.content ~* %s OR coalesce(m.tool_result, '') ~* %s), then LIMIT %s.
+    assert params == [r"^err.*timeout$", r"^err.*timeout$", 4]
 
 
 def test_fts_with_embedding_inlines_vec_literal():
@@ -210,8 +218,8 @@ def test_unknown_mode_raises():
 
 
 def _cand_msg_row(id_="m1", boost=0.5):
-    """8-col candidate row: id, content, role, agent, conv, created_at,
-    method_score, boost."""
+    """10-col candidate row: id, content, role, agent, conv, created_at,
+    method_score, boost, tool_name, tool_result."""
     return (
         id_,
         "hello world",
@@ -221,6 +229,8 @@ def _cand_msg_row(id_="m1", boost=0.5):
         datetime.now(timezone.utc),
         0.42,  # method_score
         boost,
+        None,  # tool_name
+        None,  # tool_result
     )
 
 
@@ -250,7 +260,9 @@ def test_hybrid_trigram_candidate_uses_similarity():
     eng = SearchEngine(fake)
     eng._retrieve_text_candidates("trigram", "phildez", "messages", 50, None, None, None)
     sql, params = fake.cursor.executed[0]
-    assert params == ["phildez", "phildez", 50]
+    # Trigram message arm binds the query 4x: content + tool_result in the
+    # SELECT GREATEST(...), then again in the WHERE OR-match.
+    assert params == ["phildez", "phildez", "phildez", "phildez", 50]
     assert "similarity(m.content, %s)" in sql
     assert "websearch_to_tsquery" not in sql
 
