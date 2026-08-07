@@ -757,30 +757,15 @@ describe('Config Validation', () => {
   // Deployment section
   // =========================================================================
   describe('deployment', () => {
-    it('accepts valid docker deployment', () => {
+    it('accepts docker deployment (target only)', () => {
       const cfg = validConfig() as Record<string, unknown>
-      cfg.deployment = {
-        target: 'docker',
-        datahub: { postgres: true, shared_storage: true },
-        image: { build_from_source: true },
-        docker: { network: 'rivetos-net', postgres_port: 5432 },
-      }
+      cfg.deployment = { target: 'docker' }
       assertValid(validateConfig(cfg))
     })
 
-    it('accepts valid proxmox deployment', () => {
+    it('accepts proxmox deployment (target only)', () => {
       const cfg = validConfig() as Record<string, unknown>
-      cfg.deployment = {
-        target: 'proxmox',
-        proxmox: {
-          api_url: 'https://192.168.1.1:8006',
-          nodes: [
-            { name: 'pve1', host: '192.168.1.1', role: 'datahub' },
-            { name: 'pve2', host: '192.168.1.2', role: 'agents' },
-          ],
-          network: { bridge: 'vmbr1', subnet: '192.168.1.0/24', gateway: '192.168.1.1' },
-        },
-      }
+      cfg.deployment = { target: 'proxmox' }
       assertValid(validateConfig(cfg))
     })
 
@@ -792,7 +777,7 @@ describe('Config Validation', () => {
 
     it('rejects missing target', () => {
       const cfg = validConfig() as Record<string, unknown>
-      cfg.deployment = { docker: {} }
+      cfg.deployment = {}
       assertError(validateConfig(cfg), 'deployment.target', 'Missing required')
     })
 
@@ -808,49 +793,16 @@ describe('Config Validation', () => {
       assertWarning(validateConfig(cfg), 'deployment.mystery', 'Unknown')
     })
 
-    it('rejects invalid postgres_port', () => {
-      const cfg = validConfig() as Record<string, unknown>
-      cfg.deployment = { target: 'docker', docker: { postgres_port: 99999 } }
-      assertError(validateConfig(cfg), 'deployment.docker.postgres_port', 'between 0 and 65535')
-    })
-
-    it('rejects proxmox node without name', () => {
+    it('warns on formerly-known nested keys (datahub/docker/proxmox/etc.)', () => {
       const cfg = validConfig() as Record<string, unknown>
       cfg.deployment = {
-        target: 'proxmox',
-        proxmox: { nodes: [{ role: 'datahub' }] },
+        target: 'docker',
+        datahub: { postgres: true },
+        docker: { network: 'rivetos-net' },
       }
-      assertError(validateConfig(cfg), /nodes\[0\]\.name/, 'requires a string')
-    })
-
-    it('rejects proxmox node with invalid role', () => {
-      const cfg = validConfig() as Record<string, unknown>
-      cfg.deployment = {
-        target: 'proxmox',
-        proxmox: { nodes: [{ name: 'pve1', role: 'master' }] },
-      }
-      assertError(validateConfig(cfg), /nodes\[0\]\.role/, 'must be one of')
-    })
-
-    it('warns when proxmox config is set but target is docker', () => {
-      const cfg = validConfig() as Record<string, unknown>
-      cfg.deployment = { target: 'docker', proxmox: { api_url: 'https://pve:8006' } }
-      assertWarning(validateConfig(cfg), 'deployment.proxmox', 'will be ignored')
-    })
-
-    it('warns when no datahub node is defined', () => {
-      const cfg = validConfig() as Record<string, unknown>
-      cfg.deployment = {
-        target: 'proxmox',
-        proxmox: { nodes: [{ name: 'pve1', role: 'agents' }] },
-      }
-      assertWarning(validateConfig(cfg), 'deployment.proxmox.nodes', 'No node has role')
-    })
-
-    it('rejects non-boolean build_from_source', () => {
-      const cfg = validConfig() as Record<string, unknown>
-      cfg.deployment = { target: 'docker', image: { build_from_source: 'yes' } }
-      assertError(validateConfig(cfg), 'deployment.image.build_from_source', 'must be a boolean')
+      const result = validateConfig(cfg)
+      assertWarning(result, 'deployment.datahub', 'Unknown')
+      assertWarning(result, 'deployment.docker', 'Unknown')
     })
   })
 })

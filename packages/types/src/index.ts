@@ -74,17 +74,7 @@ export type {
   HeartbeatConfig,
   LearningLoopConfig,
 } from './config.js'
-export type {
-  DeploymentConfig,
-  DeploymentTarget,
-  DatahubConfig,
-  ImageConfig,
-  DockerConfig,
-  ProxmoxConfig,
-  ProxmoxNodeConfig,
-  ProxmoxNetworkConfig,
-  KubernetesConfig,
-} from './deployment.js'
+export type { DeploymentConfig, DeploymentTarget } from './deployment.js'
 export type {
   StreamEvent,
   StreamHandler,

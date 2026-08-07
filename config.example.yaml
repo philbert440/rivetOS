@@ -103,41 +103,13 @@ memory:
 #   # packs_dir: /opt/rivetos/packages/den-packs/packs  # from install root
 
 # ---------------------------------------------------------------------------
-# Deployment (optional) — uncomment to enable containerized deployment.
+# Deployment (optional) — declares the intended target for tooling.
 # If omitted, RivetOS runs bare-metal (just: rivetos start).
+# Only `target` is read; nested keys are unknown and will warn.
+# Provisioning is driven by infra/docker/ and infra/scripts/.
 # ---------------------------------------------------------------------------
 # deployment:
 #   target: docker                      # docker | proxmox | kubernetes | manual
-#
-#   datahub:
-#     postgres: true
-#     shared_storage: true
-#     shared_mount_path: /rivet-shared
-#
-#   image:
-#     build_from_source: true           # Build from local source tree (default)
-#     # registry: ghcr.io/philbert440   # For pre-built images
-#     # tag: latest
-#
-#   # Docker-specific (when target: docker)
-#   docker:
-#     network: rivetos-net
-#     postgres_port: 5432
-#
-#   # Proxmox-specific (when target: proxmox)
-#   # proxmox:
-#   #   api_url: https://192.168.1.1:8006
-#   #   nodes:
-#   #     - name: pve1
-#   #       host: 192.168.1.1
-#   #       role: datahub
-#   #     - name: pve2
-#   #       host: 192.168.1.2
-#   #       role: agents
-#   #   network:
-#   #     bridge: vmbr1
-#   #     subnet: 192.168.1.0/24
-#   #     gateway: 192.168.1.1
 
 # Durable task engine (phase 1) — embedded run-task runner over ros_tasks.
 # Inert until something creates tasks; requires Postgres + the 0002 migration

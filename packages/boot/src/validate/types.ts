@@ -103,42 +103,10 @@ export const KNOWN_DEN_TERMINAL_KEYS = new Set(['enabled', 'open', 'idle_ttl_ms'
  */
 export const DEN_LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
 
-export const KNOWN_DEPLOYMENT_KEYS = new Set([
-  'target',
-  'datahub',
-  'image',
-  'docker',
-  'proxmox',
-  'kubernetes',
-])
+/** Only `target` is a known deployment key; all others warn as unknown. */
+export const KNOWN_DEPLOYMENT_KEYS = new Set(['target'])
 
 export const VALID_DEPLOYMENT_TARGETS = new Set(['docker', 'proxmox', 'kubernetes', 'manual'])
-
-export const KNOWN_DEPLOYMENT_DATAHUB_KEYS = new Set([
-  'postgres',
-  'postgres_version',
-  'shared_storage',
-  'shared_mount_path',
-])
-
-export const KNOWN_DEPLOYMENT_IMAGE_KEYS = new Set([
-  'registry',
-  'agent_image',
-  'tag',
-  'build_from_source',
-])
-
-export const KNOWN_DEPLOYMENT_DOCKER_KEYS = new Set(['network', 'postgres_port', 'project_name'])
-
-export const KNOWN_DEPLOYMENT_PROXMOX_KEYS = new Set(['api_url', 'nodes', 'network'])
-
-export const KNOWN_DEPLOYMENT_PROXMOX_NODE_KEYS = new Set(['name', 'host', 'role', 'ctid_start'])
-
-export const VALID_PROXMOX_NODE_ROLES = new Set(['datahub', 'agents', 'both'])
-
-export const KNOWN_DEPLOYMENT_PROXMOX_NETWORK_KEYS = new Set(['bridge', 'subnet', 'gateway'])
-
-export const KNOWN_DEPLOYMENT_K8S_KEYS = new Set(['namespace', 'storage_class', 'resources'])
 
 export const KNOWN_RUNTIME_KEYS = new Set([
   'workspace',

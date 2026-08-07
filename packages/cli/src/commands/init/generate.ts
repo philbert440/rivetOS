@@ -158,38 +158,8 @@ function buildChannelConfig(channel: WizardChannel): Record<string, unknown> {
 }
 
 function buildDeploymentConfig(state: WizardState): Record<string, unknown> {
-  const deployment: Record<string, unknown> = {
-    target: state.deployment,
-    datahub: {
-      postgres: true,
-      shared_storage: true,
-      shared_mount_path: '/rivet-shared',
-    },
-    image: {
-      build_from_source: true,
-    },
-  }
-
-  if (state.deployment === 'docker') {
-    deployment.docker = {
-      network: 'rivetos-net',
-      postgres_port: 5432,
-    }
-  }
-
-  if (state.deployment === 'proxmox' && state.proxmox) {
-    deployment.proxmox = {
-      api_url: state.proxmox.apiUrl,
-      nodes: state.proxmox.nodes.map((n) => ({
-        name: n.name,
-        host: n.host,
-        role: n.role,
-      })),
-      network: state.proxmox.network,
-    }
-  }
-
-  return deployment
+  // Only `target` is read anywhere at runtime; nested keys were write-only.
+  return { target: state.deployment }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
