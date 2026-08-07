@@ -53,11 +53,7 @@ import type {
   AudioMicStatus,
   AudioMicHealth,
 } from '@rivetos/types'
-import type {
-  DenSessionsResponse,
-  FilesListResponse,
-  FilesMutateResponse,
-} from '@rivetos/types'
+import type { DenSessionsResponse, FilesListResponse, FilesMutateResponse } from '@rivetos/types'
 import { GatewayError, request, type QueryValue } from './http.js'
 import {
   subscribe,
@@ -180,10 +176,7 @@ export class RivetGateway {
    * Validate a workflow def on disk (manifest schema, agent frontmatter,
    * empty-prompt checks + run.ts determinism lint). Does not mutate files.
    */
-  validateWorkflow(
-    workflowId: string,
-    signal?: AbortSignal,
-  ): Promise<WorkflowValidateResponse> {
+  validateWorkflow(workflowId: string, signal?: AbortSignal): Promise<WorkflowValidateResponse> {
     return request(this.config, `/api/workflows/${encodeURIComponent(workflowId)}/validate`, {
       method: 'POST',
       body: {},
@@ -507,9 +500,7 @@ export class RivetGateway {
     const name = slash < 0 ? trimmed : trimmed.slice(slash + 1)
     if (!name) throw new GatewayError(400, 'filesSave: empty file name', undefined)
     const blob =
-      typeof body === 'string'
-        ? new Blob([body], { type: 'text/plain;charset=utf-8' })
-        : body
+      typeof body === 'string' ? new Blob([body], { type: 'text/plain;charset=utf-8' }) : body
     return this.filesUpload(dir, name, blob, { overwrite: true, signal: opts.signal })
   }
 
