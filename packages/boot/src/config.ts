@@ -37,7 +37,7 @@ export interface RivetConfig {
   /**
    * Workflows v1 — caseDir root + definition search roots + agent start allowlist.
    * Defaults: runs=/rivet-shared/workflows/runs,
-   * defs=[<installRoot>/workflows, /rivet-shared/workflows/defs].
+   * defs=[/rivet-shared/workflows/defs, <installRoot>/workflows].
    */
   workflows?: WorkflowsSection
   /**
@@ -55,8 +55,8 @@ export interface WorkflowsSection {
   runs_dir?: string
   /**
    * Roots scanned for `<root>/<id>/workflow.yaml`.
-   * Default: `[<installRoot>/workflows, /rivet-shared/workflows/defs]` so
-   * repo gold recipes are visible without copying into shared defs.
+   * Default: `[/rivet-shared/workflows/defs, <installRoot>/workflows]` — shared
+   * defs shadow shipped examples on id collision; first match wins.
    */
   defs_roots?: string[]
   /** Master switch for gateway routes + agent tools (default true). */

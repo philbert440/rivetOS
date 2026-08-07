@@ -2,7 +2,7 @@
 
 Workflows v1 engine — **document model**, **step SDK**, **journal-replay**, **start API**.
 
-Product SoT: `/rivet-shared/plans/workflows-product-v1.md` (rev 3).
+Product SoT: `/rivet-shared/plans/workflows-product-v1.md` (rev 4).
 
 ## Thesis
 
@@ -15,7 +15,7 @@ A **workflow** is a versioned, durable process that advances a **case** through 
 ## Directory convention
 
 ```text
-workflows/pr-review/
+workflows/<name>/
   workflow.yaml              # manifest: id, version, input/output, budgets, outline
   run.ts                     # orchestration (code-first step SDK)
   agents/<name>.md           # YAML frontmatter (tools/model/maxTurns) + prompt body
@@ -24,14 +24,14 @@ workflows/pr-review/
 
 Agent files use the same frontmatter-plus-prompt shape as Claude Code agent definitions.
 
-### Gold recipes (repo root)
+### Example recipe (repo root)
 
-Shipped under the monorepo top-level `workflows/` directory (on boot `defs_roots` by default):
-
-| Id | Role |
-|----|------|
-| `pr-review` | Load PR → agent review → human verdict gate |
-| `change` | Plan → implement → `step.call(pr-review)` loop → merge gate |
+The monorepo top-level `workflows/` directory ships `hello-world`, a minimal
+example of the convention (script step → agent step → human gate → done).
+Real recipes live outside the code repo in a deployment's defs root — the
+gateway workflow API defaults to `/rivet-shared/workflows/defs`, which
+shadows shipped definitions. This package itself takes explicit
+`workflowsRoots` / `workflowDirs`; only `caseDirRoot` has a built-in default.
 
 Fixture coverage: `src/recipes.fixture.test.ts`.
 
@@ -137,7 +137,7 @@ const engine = new WorkflowEngine({
   workflowsRoots: ['/path/to/workflows'],
 })
 
-const started = await engine.startRun('pr-review', { prUrl: '...' }, { type: 'human', id: 'phil' })
+const started = await engine.startRun('hello-world', { name: 'Ada' }, { type: 'human', id: 'phil' })
 if (started.suspended) {
   // notify human; later:
   await engine.resumeRun(started.run.id, { gateResponse: { approved: true } })
