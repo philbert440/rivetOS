@@ -13,6 +13,7 @@ import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
+import { FileEditor } from '../components/file-editor.js'
 
 function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${String(bytes)} B`
@@ -550,12 +551,15 @@ export function FilesPage(): JSX.Element {
           )}
         </div>
 
-        {/* Preview pane */}
+        {/* Preview / edit pane — text files use the shared CodeMirror editor */}
         {previewPath && (
           <PreviewPane
             path={previewPath}
             onClose={() => setPreviewPath(undefined)}
             downloadUrl={gateway().fileDownloadUrl(previewPath)}
+            size={
+              (listing.data?.entries ?? []).find((e) => joinRel(path, e.name) === previewPath)?.size
+            }
           />
         )}
       </div>
@@ -575,49 +579,15 @@ function PreviewPane(props: {
   path: string
   downloadUrl: string
   onClose: () => void
+  /** Optional size from the listing — drives previewKind / edit eligibility. */
+  size?: number
 }): JSX.Element {
   const name = baseName(props.path)
-  const [text, setText] = useState<string | undefined>()
-  const [err, setErr] = useState<string | undefined>()
-  const [loading, setLoading] = useState(true)
-  // We don't have size here cheaply — fetch and let kind decide after HEAD isn't available.
-  // Use name heuristics; text fetch is capped by server stream (we still limit read).
-  const kind = previewKind(name, 100_000) // assume under cap for kind; re-check after fetch
-
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    setText(undefined)
-    setErr(undefined)
-    if (kind === 'image') {
-      setLoading(false)
-      return
-    }
-    if (kind === 'none') {
-      setLoading(false)
-      setErr('No in-app preview for this type — use download.')
-      return
-    }
-    void fetch(props.downloadUrl)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${String(res.status)}`)
-        const body = await res.text()
-        if (body.length > 1024 * 1024) throw new Error('file too large to preview')
-        if (!cancelled) setText(body)
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setErr(e instanceof Error ? e.message : String(e))
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [props.downloadUrl, kind])
+  // Prefer known size; when unknown assume under text cap for extension classification.
+  const kind = previewKind(name, props.size ?? 100_000)
 
   return (
-    <aside className="flex w-[min(28rem,45%)] shrink-0 flex-col border-l border-line bg-panel/60">
+    <aside className="flex w-[min(36rem,50%)] shrink-0 flex-col border-l border-line bg-panel/60">
       <div className="flex items-center gap-2 border-b border-line px-3 py-2">
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-em">{props.path}</span>
         <a
@@ -632,22 +602,26 @@ function PreviewPane(props: {
           ✕
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-3">
-        {loading && <div className="text-sm text-ink-dim">loading…</div>}
-        {err && <div className="font-mono text-xs text-red">{err}</div>}
-        {kind === 'image' && !loading && (
+      {kind === 'image' ? (
+        <div className="min-h-0 flex-1 overflow-auto p-3">
           <img
             src={props.downloadUrl}
             alt={name}
             className="max-w-full rounded border border-line"
           />
-        )}
-        {text !== undefined && (
-          <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-ink">
-            {text}
-          </pre>
-        )}
-      </div>
+        </div>
+      ) : kind === 'text' ? (
+        <FileEditor
+          path={props.path}
+          size={props.size}
+          className="min-h-0 flex-1"
+          minHeight="12rem"
+        />
+      ) : (
+        <div className="p-3 font-mono text-xs text-ink-dim">
+          No in-app preview for this type — use download / open.
+        </div>
+      )}
     </aside>
   )
 }

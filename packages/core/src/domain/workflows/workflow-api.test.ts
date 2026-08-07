@@ -12,7 +12,12 @@ import {
   MockExecutorRegistry,
   type RunScript,
 } from '@rivetos/workflows'
-import { createWorkflowApiRoutes } from './workflow-api.js'
+import {
+  createWorkflowApiRoutes,
+  editPathForDefDir,
+  diagnosticsFromLoadError,
+  validateWorkflowDir,
+} from './workflow-api.js'
 import type { NotificationFrame } from '@rivetos/types'
 
 const cleanups: Array<() => Promise<void> | void> = []
@@ -66,6 +71,8 @@ output:
 async function startApi(opts?: {
   runScript?: RunScript
   onGate?: (f: Extract<NotificationFrame, { kind: 'workflow.gate' }>) => void
+  /** Override files root for editPath (default: parent of defsRoot so defs are editable). */
+  filesRoot?: string
 }): Promise<{ base: string; engine: WorkflowEngine }> {
   await writeFixtureWorkflow('demo')
   const engine = new WorkflowEngine({
@@ -108,10 +115,15 @@ async function startApi(opts?: {
         }),
     })
 
+  // filesRoot defaults so demo sits under it → editPath = `defs/demo` when
+  // defsRoot is `<tmp>/defs` and filesRoot is `<tmp>`.
+  const filesRoot = opts?.filesRoot ?? join(defsRoot, '..')
+
   const routes = createWorkflowApiRoutes({
     engine,
     workflowsRoots: [defsRoot],
     caseDirRoot: caseRoot,
+    filesRoot,
     onGatePaused: opts?.onGate,
   })
 
@@ -293,5 +305,94 @@ describe('workflow API', () => {
     const detail = await fetch(`${base}/api/workflow-runs/${started.run.id}`)
     const d = (await detail.json()) as { run: { run: { status: string } } }
     expect(d.run.run.status).toBe('killed')
+  })
+
+  it('GET /api/workflows/:id exposes editPath when under files root', async () => {
+    const { base } = await startApi()
+    const res = await fetch(`${base}/api/workflows/demo`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { workflow: { id: string; editPath?: string } }
+    expect(body.workflow.id).toBe('demo')
+    expect(body.workflow.editPath).toBe('defs/demo')
+
+    // Outside files root → no editPath
+    const { base: base2 } = await startApi({ filesRoot: '/no/such/files/root' })
+    const res2 = await fetch(`${base2}/api/workflows/demo`)
+    const body2 = (await res2.json()) as { workflow: { editPath?: string } }
+    expect(body2.workflow.editPath).toBeUndefined()
+  })
+
+  it('POST /api/workflows/:id/validate returns ok for clean fixture', async () => {
+    const { base } = await startApi()
+    const res = await fetch(`${base}/api/workflows/demo/validate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      ok: boolean
+      diagnostics: Array<{ file: string; severity: string; message: string }>
+    }
+    expect(body.ok).toBe(true)
+    expect(body.diagnostics).toEqual([])
+  })
+
+  it('POST /api/workflows/:id/validate flags nondeterministic run.ts', async () => {
+    const { base } = await startApi()
+    // Mutate the fixture on disk after API start
+    await writeFile(
+      join(defsRoot, 'demo', 'run.ts'),
+      'export default async function run() {\n  const t = Date.now()\n  return t\n}\n',
+      'utf-8',
+    )
+    const res = await fetch(`${base}/api/workflows/demo/validate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      ok: boolean
+      diagnostics: Array<{ file: string; line?: number; severity: string; message: string }>
+    }
+    expect(body.ok).toBe(false)
+    expect(body.diagnostics.some((d) => /Date\.now|no-date-now/i.test(d.message))).toBe(true)
+    expect(body.diagnostics[0]?.file).toMatch(/run\.ts/)
+  })
+
+  it('POST /api/workflows/:id/validate 404s for unknown id', async () => {
+    const { base } = await startApi()
+    const res = await fetch(`${base}/api/workflows/nope/validate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(404)
+  })
+})
+
+describe('editPathForDefDir', () => {
+  it('maps under files root to relative path', () => {
+    expect(editPathForDefDir('/rivet-shared/workflows/defs/demo', '/rivet-shared')).toBe(
+      'workflows/defs/demo',
+    )
+    expect(editPathForDefDir('/rivet-shared', '/rivet-shared')).toBe('')
+    expect(editPathForDefDir('/other/place', '/rivet-shared')).toBeUndefined()
+    expect(editPathForDefDir('/rivet-shared/workflows/defs/demo', '')).toBeUndefined()
+  })
+})
+
+describe('diagnosticsFromLoadError / validateWorkflowDir', () => {
+  it('shapes load errors to diagnostics', () => {
+    const d = diagnosticsFromLoadError(new Error('workflow.yaml: "id" must be a non-empty string'))
+    expect(d[0]?.file).toBe('workflow.yaml')
+    expect(d[0]?.severity).toBe('error')
+  })
+
+  it('validateWorkflowDir reports clean fixture', async () => {
+    const dir = await writeFixtureWorkflow('clean-v')
+    const r = await validateWorkflowDir(dir)
+    expect(r.ok).toBe(true)
   })
 })
