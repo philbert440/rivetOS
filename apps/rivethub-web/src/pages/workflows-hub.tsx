@@ -249,9 +249,12 @@ export function WorkflowTriggerPage(): JSX.Element {
   const editDirtyRef = useRef(false)
   const switchMode = useCallback(
     (next: 'run' | 'edit') => {
+      // Clicking the already-active chip must be a pure no-op — clearing the
+      // dirty ref here would disarm the guard without any re-render to
+      // re-report dirty (same-value setState bails).
+      if (next === pageMode) return
       if (
         pageMode === 'edit' &&
-        next === 'run' &&
         editDirtyRef.current &&
         !window.confirm('Discard unsaved changes?')
       ) {

@@ -687,6 +687,23 @@ function AgentCardOverlay(props: {
   const [fields, setFields] = useState<AgentFrontmatterFields>(initial.fields)
   const [body, setBody] = useState(initial.body)
 
+  // Same guard as the manifest overlay: broken frontmatter must not render
+  // editable fields — a body edit would wrap the original file in an empty
+  // fence pair and a field edit would absorb the old frontmatter into the
+  // markdown body. Raw view owns fixing broken files.
+  if (initial.error) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
+        <p className="mb-2 font-mono text-xs text-red">
+          {props.fileName} frontmatter does not parse: {initial.error}
+        </p>
+        <p className="font-mono text-xs text-ink-dim">
+          Fix it in the Raw view — the card editor is disabled until the frontmatter parses.
+        </p>
+      </div>
+    )
+  }
+
   const push = (nextFields: AgentFrontmatterFields, nextBody: string): void => {
     setFields(nextFields)
     setBody(nextBody)
