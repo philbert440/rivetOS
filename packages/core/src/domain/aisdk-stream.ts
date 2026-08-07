@@ -56,7 +56,7 @@ export interface StreamCollectorResult {
  * `aborted: true` and whatever's been accumulated so far.
  *
  * The function does NOT throw on stream errors — provider errors are surfaced
- * via 'error' chunks (yielded by the provider's `chatStream`) and translated to
+ * via 'error' chunks (yielded by the provider's stream) and translated to
  * `lastError` here. Iterator-level exceptions (network drops, abort errors)
  * still propagate to the caller.
  */

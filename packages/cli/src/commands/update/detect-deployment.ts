@@ -208,15 +208,6 @@ export function findOwnershipBlockers(
   return blockers
 }
 
-/**
- * @deprecated Prefer {@link findOwnershipBlockers}. Kept for older call sites /
- * tests that only named the root-owned case; behavior now covers any
- * unwritable owner (root, philip, …).
- */
-export function findRootOwnedBlockers(root: string, paths?: string[]): string[] {
-  return findOwnershipBlockers(root, paths)
-}
-
 /** Best-effort owner label for error messages (e.g. "root", "uid=1000"). */
 export function describePathOwner(fullPath: string): string {
   try {

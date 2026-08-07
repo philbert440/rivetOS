@@ -7,8 +7,8 @@
  *     agents/<name>.md    — frontmatter config + prompt body (Claude Code agent style)
  */
 
-import { readdir, readFile, access } from 'node:fs/promises'
-import { constants, existsSync } from 'node:fs'
+import { readdir, readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { loadManifestFile } from './manifest.js'
@@ -107,13 +107,4 @@ export function resolveWorkflowDir(
     ref,
     `Could not resolve workflow ref "${ref}" (checked workflowDirs + workflowsRoots)`,
   )
-}
-
-export async function pathExists(p: string): Promise<boolean> {
-  try {
-    await access(p, constants.F_OK)
-    return true
-  } catch {
-    return false
-  }
 }

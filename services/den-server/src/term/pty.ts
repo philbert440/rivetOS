@@ -86,8 +86,3 @@ export function loadRealPtySpawn(
   })()
   return loaded
 }
-
-/** Test hook: forget the memoized import result. */
-export function resetRealPtySpawnForTests(): void {
-  loaded = null
-}

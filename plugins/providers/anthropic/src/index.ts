@@ -7,21 +7,14 @@
  * lifecycle, and content-block translation.
  */
 
-import type {
-  Provider,
-  Message,
-  ChatOptions,
-  LLMChunk,
-  PluginManifest,
-  ThinkingLevel,
-} from '@rivetos/types'
+import type { Provider, PluginManifest, ThinkingLevel } from '@rivetos/types'
 import { ProviderError } from '@rivetos/types'
 import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
 import type { JSONObject } from '@ai-sdk/provider'
 import type { LanguageModel } from 'ai'
 import { createAnthropic } from '@ai-sdk/anthropic'
 
-import { chatStreamAiSdk, type AnthropicAiSdkContext } from './chat-stream-aisdk.js'
+import type { AnthropicAiSdkContext } from './chat-stream-aisdk.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -109,10 +102,6 @@ export class AnthropicProvider implements Provider {
       defaultModel: this.model,
       maxTokens: this.maxTokens,
     }
-  }
-
-  chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
-    return chatStreamAiSdk(this.buildAiSdkContext(), messages, options)
   }
 
   // -----------------------------------------------------------------------

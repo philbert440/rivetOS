@@ -44,7 +44,7 @@ export const embedTargetTask: Task = async (payload, helpers) => {
 
   const spec = TABLE_SPECS[targetTable]
   if (!spec) {
-    helpers.logger.error(`[embed-target] invalid target_table: ${String(targetTable)}`)
+    helpers.logger.error(`[embed-target] invalid target_table: ${targetTable}`)
     return
   }
 

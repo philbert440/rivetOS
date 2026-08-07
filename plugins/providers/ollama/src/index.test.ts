@@ -408,14 +408,4 @@ describe('OllamaProvider', () => {
     })
   })
 
-  describe('chatStream', () => {
-    it('delegates to chatStreamAiSdk', () => {
-      const provider = new OllamaProvider()
-      const messages: Message[] = [{ role: 'user', content: 'hello' }]
-      const stream = provider.chatStream(messages, {})
-      // chatStream returns AsyncIterable<LLMChunk>; verify it's callable
-      expect(stream).toBeDefined()
-      expect(typeof stream[Symbol.asyncIterator]).toBe('function')
-    })
-  })
 })

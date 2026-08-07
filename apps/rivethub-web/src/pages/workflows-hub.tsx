@@ -80,12 +80,6 @@ export function WorkflowsHubPage(): JSX.Element {
     <div className="mx-auto max-w-4xl px-6 py-8">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-mono text-lg font-semibold text-em">Workflows</h1>
-        <Link
-          to="/workflows/canvas"
-          className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
-        >
-          Canvas editor (legacy)
-        </Link>
       </div>
 
       <p className="mb-6 max-w-2xl text-sm text-ink-dim">

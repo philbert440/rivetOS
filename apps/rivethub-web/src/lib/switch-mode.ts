@@ -45,17 +45,12 @@ export function resolveNodeSwitch(
  * Perform a node switch for the current shell: re-point the gateway via
  * switchTo so the local UI stays put. Returns null when rejected (invalid URL).
  *
- * `opts.navigate` is accepted for API compatibility but never invoked.
  */
 export function performNodeSwitch(
   hubUrl: string,
   switchTo: (url: string) => void,
   opts?: {
     g?: { __TAURI__?: unknown }
-    /** @deprecated No longer used — switch always repoints. */
-    navigate?: (url: string) => void
-    /** @deprecated No longer used — switch always repoints. */
-    currentOrigin?: string
   },
 ): { mode: NodeSwitchMode; url: string } | null {
   const g = opts?.g ?? (globalThis as { __TAURI__?: unknown })

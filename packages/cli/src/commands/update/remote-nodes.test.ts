@@ -29,7 +29,6 @@ const OPTS: UpdateOptions = {
   sshUser: 'rivet',
   npm: false,
   channel: 'beta',
-  includeOffline: true,
   ignoreOwnership: false,
 }
 

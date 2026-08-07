@@ -230,41 +230,6 @@ describe('AnthropicProvider', () => {
     })
   })
 
-  describe('chatStream', () => {
-    it('returns an AsyncIterable', () => {
-      const provider = new AnthropicProvider({
-        apiKey: 'test-key',
-        model: 'claude-opus-4-7',
-      })
-      const messages: Message[] = [{ role: 'user', content: 'hello' }]
-      const stream = provider.chatStream(messages)
-      expect(stream).toBeDefined()
-      expect(typeof stream[Symbol.asyncIterator]).toBe('function')
-    })
-
-    it('accepts messages without options', () => {
-      const provider = new AnthropicProvider({
-        apiKey: 'test-key',
-        model: 'claude-opus-4-7',
-      })
-      const messages: Message[] = [{ role: 'user', content: 'hello' }]
-      const stream = provider.chatStream(messages)
-      expect(stream).toBeDefined()
-    })
-
-    it('accepts messages with ChatOptions', () => {
-      const provider = new AnthropicProvider({
-        apiKey: 'test-key',
-        model: 'claude-opus-4-7',
-      })
-      const messages: Message[] = [{ role: 'user', content: 'hello' }]
-      const options: ChatOptions = {
-        thinking: 'medium',
-      }
-      const stream = provider.chatStream(messages, options)
-      expect(stream).toBeDefined()
-    })
-  })
 
   describe('provider metadata', () => {
     it('has id property set to anthropic', () => {
