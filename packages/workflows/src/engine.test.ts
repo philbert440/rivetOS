@@ -689,14 +689,17 @@ describe('step.parallel (slice G)', () => {
     const workflow = await loadWorkflowDir(wfDir)
 
     // Deferred resolvers so we control completion order (b1 before b0).
+    // Keyed by script, NOT push order — the branches' executor invocations
+    // can interleave either way (journal appends race on slow runners), and
+    // index-keying cross-wires the resolvers when they do.
     type Resolver = (v: unknown) => void
-    const resolvers: Resolver[] = []
+    const resolvers = new Map<string, Resolver>()
     const started: string[] = []
     const executors = new MockExecutorRegistry({
       run: (opts) =>
         new Promise((resolve) => {
           started.push(opts.label)
-          resolvers.push(resolve)
+          resolvers.set(String((opts as { script?: string }).script), resolve)
         }),
     })
     const engine = new WorkflowEngine({
@@ -729,13 +732,13 @@ describe('step.parallel (slice G)', () => {
     )
 
     // Wait until both branches have entered their run steps
-    for (let i = 0; i < 50 && resolvers.length < 2; i++) {
+    for (let i = 0; i < 50 && resolvers.size < 2; i++) {
       await new Promise((r) => setTimeout(r, 5))
     }
-    expect(resolvers.length).toBe(2)
-    // Resolve out of order: branch 1 first, then branch 0
-    resolvers[1]!({ from: 'b1' })
-    resolvers[0]!({ from: 'b0' })
+    expect(resolvers.size).toBe(2)
+    // Resolve out of order: branch 1 (script 'b') first, then branch 0
+    resolvers.get('b')!({ from: 'b1' })
+    resolvers.get('a')!({ from: 'b0' })
 
     const result = await startPromise
     expect(result.run.status).toBe('done')

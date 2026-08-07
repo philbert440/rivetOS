@@ -1,7 +1,9 @@
 /**
- * /api/workflows + /api/workflow-runs — gateway route families (slice C).
+ * /api/workflows + /api/workflow-runs — gateway route families (slice C + J).
  *
  *   GET  /api/workflows              list defs from workflowsRoots
+ *   GET  /api/workflows/:id          single def (+ editPath when under files root)
+ *   POST /api/workflows/:id/validate loader + determinism lint diagnostics
  *   POST /api/workflows/:id/runs     start a run (body = input fields)
  *   GET  /api/workflow-runs          recent runs (scan caseDirRoot)
  *   GET  /api/workflow-runs/:id      detail: case + journal + children + openGate
@@ -12,17 +14,20 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { readFile, readdir } from 'node:fs/promises'
+import { join, relative, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type {
   GatewayRoute,
   NotificationFrame,
   WorkflowDefSummary,
+  WorkflowDiagnostic,
   WorkflowKillResponse,
   WorkflowRunDetail,
   WorkflowRunSummary,
   WorkflowRunsListResponse,
   WorkflowStartRunResponse,
+  WorkflowValidateResponse,
   WorkflowsListResponse,
 } from '@rivetos/types'
 import {
@@ -32,9 +37,11 @@ import {
   RunNotFoundError,
   WorkflowEngine,
   WorkflowNotFoundError,
+  checkRunScriptDeterminism,
   findOpenGate,
   listChildRuns,
   listRuns,
+  loadWorkflowDir,
   appendJournal,
   listWorkflowDefs,
   readCase,
@@ -42,6 +49,7 @@ import {
   updateRun,
   validateStartInput,
   writeCase,
+  type LoadedWorkflow,
   type StartRunResult,
 } from '@rivetos/workflows'
 import { logger } from '../../logger.js'
@@ -51,6 +59,8 @@ const log = logger('WorkflowApi')
 const MAX_BODY_BYTES = 256 * 1024
 const DEFAULT_WORKFLOWS_ROOT = '/rivet-shared/workflows/defs'
 const DEFAULT_CASE_DIR_ROOT = '/rivet-shared/workflows/runs'
+/** Default files root matches den-server / product default. */
+const DEFAULT_FILES_ROOT = '/rivet-shared'
 
 export interface WorkflowApiOptions {
   engine: WorkflowEngine
@@ -58,6 +68,12 @@ export interface WorkflowApiOptions {
   workflowsRoots?: string[]
   /** caseDir root for listRuns. */
   caseDirRoot?: string
+  /**
+   * Absolute files root used to compute `editPath` on def summaries.
+   * When a def dir is under this root, GET exposes the relative path so the
+   * IDE can open it via the existing files API. Empty string disables editPath.
+   */
+  filesRoot?: string
   /**
    * Optional fan-out when a run pauses at a human gate.
    * Boot wires the 4e notifications channel here.
@@ -169,6 +185,8 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
     ? opts.workflowsRoots
     : [DEFAULT_WORKFLOWS_ROOT]
   const caseDirRoot = opts.caseDirRoot ?? DEFAULT_CASE_DIR_ROOT
+  // undefined → product default; explicit '' disables editPath entirely.
+  const filesRoot = opts.filesRoot === undefined ? DEFAULT_FILES_ROOT : opts.filesRoot
 
   const workflows: GatewayRoute = {
     prefix: '/api/workflows',
@@ -182,15 +200,7 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
         if (req.method === 'GET' && parts.length === 0) {
           const loaded = await listWorkflowDefs(workflowsRoots, (m) => log.warn(m))
           const body: WorkflowsListResponse = {
-            workflows: loaded.map((w): WorkflowDefSummary => ({
-              id: w.manifest.id,
-              name: w.manifest.name,
-              version: w.manifest.version,
-              description: w.manifest.description,
-              input: w.manifest.input,
-              output: w.manifest.output,
-              outline: w.manifest.outline,
-            })),
+            workflows: loaded.map((w) => toDefSummary(w, filesRoot)),
           }
           return json(res, 200, body)
         }
@@ -317,23 +327,27 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
           return json(res, 202, body202)
         }
 
-        // GET /api/workflows/:id — single def (handy for trigger form)
+        // GET /api/workflows/:id — single def (handy for trigger form + edit)
         if (req.method === 'GET' && parts.length === 1) {
           const workflowId = decodeURIComponent(parts[0])
           const loaded = await listWorkflowDefs(workflowsRoots, (m) => log.warn(m))
           const match = loaded.find((w) => w.manifest.id === workflowId)
           if (!match) return json(res, 404, { error: `workflow not found: ${workflowId}` })
           return json(res, 200, {
-            workflow: {
-              id: match.manifest.id,
-              name: match.manifest.name,
-              version: match.manifest.version,
-              description: match.manifest.description,
-              input: match.manifest.input,
-              output: match.manifest.output,
-              outline: match.manifest.outline,
-            } satisfies WorkflowDefSummary,
+            workflow: toDefSummary(match, filesRoot),
           })
+        }
+
+        // POST /api/workflows/:id/validate — loader + determinism diagnostics.
+        // Resolves the def DIR without requiring a clean load: a broken
+        // workflow.yaml is exactly what validate exists to diagnose, so load
+        // failures must return 200 + diagnostics, not 404.
+        if (req.method === 'POST' && parts.length === 2 && parts[1] === 'validate') {
+          const workflowId = decodeURIComponent(parts[0])
+          const dir = await resolveDefDirForValidate(workflowsRoots, workflowId, (m) => log.warn(m))
+          if (!dir) return json(res, 404, { error: `workflow not found: ${workflowId}` })
+          const body: WorkflowValidateResponse = await validateWorkflowDir(dir)
+          return json(res, 200, body)
         }
 
         if (req.method !== 'GET' && req.method !== 'POST') {
@@ -606,4 +620,154 @@ function stripControlKeys(body: Record<string, unknown>): Record<string, unknown
   delete out.startedById
   delete out.gateResponse
   return out
+}
+
+/**
+ * Map an absolute def directory to a files-root-relative path when the dir
+ * lives under `filesRoot`. Returns undefined when outside the fence or when
+ * filesRoot is empty/disabled. Pure + exported for unit tests.
+ */
+export function editPathForDefDir(
+  absDir: string,
+  filesRoot: string | undefined,
+): string | undefined {
+  if (!filesRoot || !filesRoot.trim()) return undefined
+  const root = filesRoot.replace(/[/\\]+$/, '')
+  const dir = absDir.replace(/[/\\]+$/, '')
+  if (!root || !dir) return undefined
+  // Normalize for comparison without resolving symlinks (listWorkflowDefs
+  // already returns real absolute paths from join(root, name)).
+  if (dir === root) return ''
+  const prefix = root.endsWith(sep) ? root : root + sep
+  if (!dir.startsWith(prefix) && !dir.startsWith(root + '/')) return undefined
+  const rel = relative(root, dir)
+  if (!rel || rel.startsWith('..') || rel.startsWith(`..${sep}`)) return undefined
+  // Wire paths always use forward slashes (files API convention).
+  return rel.split(sep).join('/')
+}
+
+function toDefSummary(w: LoadedWorkflow, filesRoot: string | undefined): WorkflowDefSummary {
+  const editPath = editPathForDefDir(w.dir, filesRoot)
+  return {
+    id: w.manifest.id,
+    name: w.manifest.name,
+    version: w.manifest.version,
+    description: w.manifest.description,
+    input: w.manifest.input,
+    output: w.manifest.output,
+    outline: w.manifest.outline,
+    ...(editPath !== undefined ? { editPath } : {}),
+  }
+}
+
+/**
+ * Resolve a workflow id to its def directory for validation WITHOUT requiring
+ * a clean load. Preference order: (1) a successfully loading def whose
+ * manifest.id matches; (2) a root child dir containing workflow.yaml whose
+ * basename matches the id; (3) a root child dir whose workflow.yaml text has
+ * a matching top-level `id:`. Exported for unit tests.
+ */
+export async function resolveDefDirForValidate(
+  roots: string[],
+  workflowId: string,
+  warn: (msg: string) => void = () => {},
+): Promise<string | undefined> {
+  const loaded = await listWorkflowDefs(roots, warn)
+  const match = loaded.find((w) => w.manifest.id === workflowId)
+  if (match) return match.dir
+
+  for (const root of roots) {
+    let entries: import('node:fs').Dirent[]
+    try {
+      entries = await readdir(root, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    // Basename match first — cheap and covers the directory convention.
+    for (const ent of entries) {
+      if (!ent.isDirectory() || ent.name !== workflowId) continue
+      const dir = join(root, ent.name)
+      try {
+        await readFile(join(dir, 'workflow.yaml'), 'utf-8')
+        return dir
+      } catch {
+        /* no manifest — not a def dir */
+      }
+    }
+    // Fall back to a top-level `id:` scan of each candidate manifest.
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue
+      const dir = join(root, ent.name)
+      let text: string
+      try {
+        text = await readFile(join(dir, 'workflow.yaml'), 'utf-8')
+      } catch {
+        continue
+      }
+      const m = /^id:\s*["']?([^"'\r\n#]+?)["']?\s*$/m.exec(text)
+      if (m && m[1].trim() === workflowId) return dir
+    }
+  }
+  return undefined
+}
+
+/**
+ * Run loadWorkflowDir + run.ts determinism lint; shape diagnostics without
+ * throwing for expected authoring errors. Exported for unit tests.
+ *
+ * Surfaces load errors as diagnostics (broken manifest, bad frontmatter,
+ * empty agent prompt) — the HTTP validate route depends on this to report on
+ * defs that no longer load cleanly after on-disk edits.
+ */
+export async function validateWorkflowDir(dir: string): Promise<WorkflowValidateResponse> {
+  const diagnostics: WorkflowDiagnostic[] = []
+
+  try {
+    const loaded = await loadWorkflowDir(dir)
+    // Loader already checks empty agent prompts. Determinism lint on the
+    // orchestration script (not part of loadWorkflowDir):
+    try {
+      const source = await readFile(loaded.runPath, 'utf-8')
+      const findings = checkRunScriptDeterminism(source)
+      const runRel = relative(dir, loaded.runPath).split(sep).join('/') || 'run.ts'
+      for (const f of findings) {
+        diagnostics.push({
+          file: runRel,
+          line: f.line,
+          severity: 'error',
+          message: `${f.rule}: ${f.message}`,
+        })
+      }
+    } catch (err) {
+      diagnostics.push({
+        file: 'run.ts',
+        severity: 'error',
+        message: `could not read run script: ${err instanceof Error ? err.message : String(err)}`,
+      })
+    }
+  } catch (err) {
+    diagnostics.push(...diagnosticsFromLoadError(err))
+  }
+
+  return {
+    ok: diagnostics.every((d) => d.severity !== 'error'),
+    diagnostics,
+  }
+}
+
+/** Shape a loadWorkflowDir / manifest error into diagnostics (pure helper). */
+export function diagnosticsFromLoadError(err: unknown): WorkflowDiagnostic[] {
+  const message = err instanceof Error ? err.message : String(err)
+  // Best-effort file attribution from common error phrasing.
+  let file = 'workflow.yaml'
+  if (/agents\/|Agent "/i.test(message)) {
+    const m = /agents\/[^:\s]+\.md/.exec(message)
+    file = m?.[0] ?? 'agents'
+  } else if (/run\.(ts|js|mjs)/i.test(message) || /No run\.ts/i.test(message)) {
+    file = 'run.ts'
+  } else if (/frontmatter/i.test(message)) {
+    const m = /agents\/[^:\s]+\.md/.exec(message)
+    file = m?.[0] ?? 'agents'
+  }
+  return [{ file, severity: 'error', message }]
 }

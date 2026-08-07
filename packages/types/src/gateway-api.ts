@@ -671,6 +671,31 @@ export interface WorkflowDefSummary {
   input: WorkflowField[]
   output: WorkflowField[]
   outline?: WorkflowOutlineStep[]
+  /**
+   * Files-root-relative path of the def directory when (and only when) the
+   * absolute def dir sits under the node's files root. Present ⇒ edit mode
+   * is available in RivetHub; absent ⇒ def is outside the filestore fence
+   * (e.g. install-tree recipes) and edit is disabled.
+   */
+  editPath?: string
+}
+
+/** Severity for workflow validate diagnostics. */
+export type WorkflowDiagnosticSeverity = 'error' | 'warning' | 'info'
+
+/** One diagnostic from POST /api/workflows/:id/validate. */
+export interface WorkflowDiagnostic {
+  /** Path relative to the workflow def dir (e.g. `workflow.yaml`, `run.ts`, `agents/x.md`). */
+  file: string
+  line?: number
+  severity: WorkflowDiagnosticSeverity
+  message: string
+}
+
+/** Response from POST /api/workflows/:id/validate. */
+export interface WorkflowValidateResponse {
+  ok: boolean
+  diagnostics: WorkflowDiagnostic[]
 }
 
 export interface WorkflowsListResponse {

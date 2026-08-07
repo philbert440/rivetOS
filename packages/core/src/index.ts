@@ -121,6 +121,9 @@ export type { GatewayChannelHandle } from './domain/gateway-channel.js'
 export {
   createWorkflowApiRoutes,
   createWorkflowApiRouteList,
+  editPathForDefDir,
+  validateWorkflowDir,
+  diagnosticsFromLoadError,
   type WorkflowApiOptions,
   type WorkflowRoutes,
 } from './domain/workflows/workflow-api.js'

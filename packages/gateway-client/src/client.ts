@@ -38,6 +38,8 @@ import type {
   WorkflowResumeRequest,
   WorkflowResumeResponse,
   WorkflowKillResponse,
+  WorkflowValidateResponse,
+  FilesUploadResponse,
 } from '@rivetos/types'
 import type {
   TermConfigResponse,
@@ -51,12 +53,7 @@ import type {
   AudioMicStatus,
   AudioMicHealth,
 } from '@rivetos/types'
-import type {
-  DenSessionsResponse,
-  FilesListResponse,
-  FilesUploadResponse,
-  FilesMutateResponse,
-} from '@rivetos/types'
+import type { DenSessionsResponse, FilesListResponse, FilesMutateResponse } from '@rivetos/types'
 import { GatewayError, request, type QueryValue } from './http.js'
 import {
   subscribe,
@@ -173,6 +170,18 @@ export class RivetGateway {
 
   getWorkflow(workflowId: string, signal?: AbortSignal): Promise<{ workflow: WorkflowDefSummary }> {
     return request(this.config, `/api/workflows/${encodeURIComponent(workflowId)}`, { signal })
+  }
+
+  /**
+   * Validate a workflow def on disk (manifest schema, agent frontmatter,
+   * empty-prompt checks + run.ts determinism lint). Does not mutate files.
+   */
+  validateWorkflow(workflowId: string, signal?: AbortSignal): Promise<WorkflowValidateResponse> {
+    return request(this.config, `/api/workflows/${encodeURIComponent(workflowId)}/validate`, {
+      method: 'POST',
+      body: {},
+      signal,
+    })
   }
 
   startWorkflowRun(
@@ -439,6 +448,60 @@ export class RivetGateway {
     u.searchParams.set('path', path)
     if (this.config.token) u.searchParams.set('token', this.config.token)
     return u.toString()
+  }
+
+  /**
+   * Read a text file under the files root via GET /api/files/download.
+   * Uses the same fence as the browser download URL; throws GatewayError on
+   * non-2xx (including 403 escape / 404 missing).
+   */
+  async filesReadText(path: string, signal?: AbortSignal): Promise<string> {
+    const url = this.fileDownloadUrl(path)
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: this.config.token ? { authorization: `Bearer ${this.config.token}` } : undefined,
+        signal,
+      })
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') throw err
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new GatewayError(0, `gateway unreachable: ${msg}`, undefined)
+    }
+    if (!res.ok) {
+      const body: unknown = await res
+        .clone()
+        .json()
+        .catch(() => res.text().catch(() => undefined))
+      const message =
+        typeof body === 'object' &&
+        body !== null &&
+        typeof (body as { error?: unknown }).error === 'string'
+          ? (body as { error: string }).error
+          : `gateway ${res.status} on /api/files/download`
+      throw new GatewayError(res.status, message, body)
+    }
+    return res.text()
+  }
+
+  /**
+   * Save text/bytes to an existing or new path under the files root via
+   * upload+overwrite. Splits the root-relative path into dir + name.
+   */
+  async filesSave(
+    path: string,
+    body: string | Blob | ArrayBuffer,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<FilesUploadResponse> {
+    const trimmed = path.replace(/^\/+/, '').replace(/\/+$/, '')
+    const slash = trimmed.lastIndexOf('/')
+    const dir = slash < 0 ? '' : trimmed.slice(0, slash)
+    const name = slash < 0 ? trimmed : trimmed.slice(slash + 1)
+    if (!name) throw new GatewayError(400, 'filesSave: empty file name', undefined)
+    const blob =
+      typeof body === 'string' ? new Blob([body], { type: 'text/plain;charset=utf-8' }) : body
+    return this.filesUpload(dir, name, blob, { overwrite: true, signal: opts.signal })
   }
 
   /** Upload raw bytes as `<dir>/<name>` under the files root. No-clobber by
