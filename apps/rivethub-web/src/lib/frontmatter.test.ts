@@ -59,6 +59,17 @@ describe('agentFieldsFromConfig / configFromAgentFields', () => {
     expect(back.custom).toBe(true)
   })
 
+
+  it('preserves type-mismatched known keys living in extras on round-trip', () => {
+    const fields = agentFieldsFromConfig({ maxTurns: '5', model: 42, keep: 1 })
+    expect(fields.maxTurns).toBeUndefined()
+    expect(fields.extras?.maxTurns).toBe('5')
+    const back = configFromAgentFields(fields)
+    expect(back.maxTurns).toBe('5')
+    expect(back.model).toBe(42)
+    expect(back.keep).toBe(1)
+  })
+
   it('omits empty model on serialize', () => {
     const back = configFromAgentFields({ model: '', extras: { keep: 1 } })
     expect(back.model).toBeUndefined()

@@ -270,7 +270,9 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
   }, [path, controlledText, looksText, kind, forceReadOnly, setDirtyState])
 
   const doSave = useCallback(async (): Promise<void> => {
-    if (readOnly) return
+    // Mirror the Save button's disabled conditions — Mod-S must never write
+    // while loading or after a failed load (empty doc would clobber the file).
+    if (readOnly || loading || loadError) return
     const view = viewRef.current
     const content =
       controlledText !== undefined ? controlledText : (view?.state.doc.toString() ?? '')
@@ -296,7 +298,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
     } finally {
       setSaving(false)
     }
-  }, [path, readOnly, controlledText, onSaved, setDirtyState])
+  }, [path, readOnly, loading, loadError, controlledText, onSaved, setDirtyState])
 
   // Ctrl/Cmd+S from the keymap custom event
   useEffect(() => {

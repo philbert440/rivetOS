@@ -93,14 +93,14 @@ export function agentFieldsFromConfig(raw: unknown): AgentFrontmatterFields {
 
 /** Build a config object for YAML serialization from agent fields. */
 export function configFromAgentFields(fields: AgentFrontmatterFields): Record<string, unknown> {
+  // Typed fields overwrite; absent typed fields leave extras alone — a
+  // type-mismatched value (e.g. maxTurns: "5") lives in extras and must
+  // survive round-trip rather than being deleted by the typed-field logic.
   const out: Record<string, unknown> = { ...(fields.extras ?? {}) }
   if (fields.tools !== undefined) out.tools = fields.tools
   if (fields.model !== undefined && fields.model !== '') out.model = fields.model
-  else delete out.model
   if (fields.maxTurns !== undefined && Number.isFinite(fields.maxTurns)) {
     out.maxTurns = fields.maxTurns
-  } else {
-    delete out.maxTurns
   }
   return out
 }

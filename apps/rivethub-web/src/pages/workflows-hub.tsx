@@ -245,6 +245,23 @@ export function WorkflowTriggerPage(): JSX.Element {
   const [submitting, setSubmitting] = useState(false)
   /** Run | Edit — Edit only when the def exposes editPath (under files root). */
   const [pageMode, setPageMode] = useState<'run' | 'edit'>('run')
+  /** Unsaved-edit tracking from the edit panel — guards leaving edit mode. */
+  const editDirtyRef = useRef(false)
+  const switchMode = useCallback(
+    (next: 'run' | 'edit') => {
+      if (
+        pageMode === 'edit' &&
+        next === 'run' &&
+        editDirtyRef.current &&
+        !window.confirm('Discard unsaved changes?')
+      ) {
+        return
+      }
+      editDirtyRef.current = false
+      setPageMode(next)
+    },
+    [pageMode],
+  )
 
   const fields: WorkflowField[] = def.data?.workflow.input ?? []
   const defId = def.data?.workflow.id
@@ -319,7 +336,7 @@ export function WorkflowTriggerPage(): JSX.Element {
             <button
               type="button"
               aria-pressed={pageMode === 'run'}
-              onClick={() => setPageMode('run')}
+              onClick={() => switchMode('run')}
               className={`rounded px-2.5 py-1 font-mono text-[11px] ${
                 pageMode === 'run' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
               }`}
@@ -335,7 +352,7 @@ export function WorkflowTriggerPage(): JSX.Element {
                   ? `Edit files under ${editPath}`
                   : 'Def is not under the files root — edit disabled'
               }
-              onClick={() => editPath && setPageMode('edit')}
+              onClick={() => editPath && switchMode('edit')}
               className={`rounded px-2.5 py-1 font-mono text-[11px] disabled:opacity-40 ${
                 pageMode === 'edit' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
               }`}
@@ -355,7 +372,16 @@ export function WorkflowTriggerPage(): JSX.Element {
           <p className="mb-4 font-mono text-[11px] text-ink-dim">
             {def.data.workflow.id} · v{def.data.workflow.version}
           </p>
-          <WorkflowEditPanel workflowId={workflowId} editPath={editPath} />
+          {/* key: remount per def — router param navigation reuses this component,
+              and the panel seeds `selected` in a mount-only initializer. */}
+          <WorkflowEditPanel
+            key={editPath}
+            workflowId={workflowId}
+            editPath={editPath}
+            onDirtyChange={(d) => {
+              editDirtyRef.current = d
+            }}
+          />
         </>
       )}
 

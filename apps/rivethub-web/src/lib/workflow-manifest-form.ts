@@ -54,14 +54,31 @@ export function manifestFormFromRaw(raw: unknown): ManifestFormState {
 export function rawFromManifestForm(state: ManifestFormState): Record<string, unknown> {
   const out: Record<string, unknown> = { ...state._raw }
   out.id = state.id
-  out.version = state.version
-  out.name = state.name
+  // Don't invent keys the file never had: an absent version/name stays absent
+  // rather than serializing as ''.
+  if (state.version.trim() || 'version' in state._raw) out.version = state.version
+  else delete out.version
+  if (state.name.trim() || 'name' in state._raw) out.name = state.name
+  else delete out.name
   if (state.description.trim()) out.description = state.description
   else delete out.description
   out.input = state.input.map(fieldToObj)
   out.output = state.output.map(fieldToObj)
-  const b = budgetsToObj(state.budgets)
-  if (b) out.budgets = b
+  // Preserve unknown keys nested under budgets: merge the 3 known fields over
+  // whatever else the file carries instead of rebuilding from scratch.
+  const rawBudgets =
+    state._raw.budgets &&
+    typeof state._raw.budgets === 'object' &&
+    !Array.isArray(state._raw.budgets)
+      ? (state._raw.budgets as Record<string, unknown>)
+      : undefined
+  const KNOWN_BUDGET_KEYS = ['maxTokens', 'maxCost', 'maxConcurrentRuns']
+  const known = budgetsToObj(state.budgets) ?? {}
+  const merged: Record<string, unknown> = Object.fromEntries(
+    Object.entries(rawBudgets ?? {}).filter(([k]) => !KNOWN_BUDGET_KEYS.includes(k)),
+  )
+  Object.assign(merged, known)
+  if (Object.keys(merged).length > 0) out.budgets = merged
   else delete out.budgets
   return out
 }

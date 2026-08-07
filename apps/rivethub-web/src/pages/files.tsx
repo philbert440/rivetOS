@@ -612,6 +612,7 @@ function PreviewPane(props: {
         </div>
       ) : kind === 'text' ? (
         <FileEditor
+          key={props.path}
           path={props.path}
           size={props.size}
           className="min-h-0 flex-1"

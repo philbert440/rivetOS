@@ -54,6 +54,10 @@ async function listTree(dir: string): Promise<TreeNode[]> {
       nodes.push({ name: e.name, path: child, type: 'file' })
     }
   }
+  // Dirs first, then files, each alphabetical — def dirs are tiny, sort here.
+  nodes.sort((a, b) =>
+    a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1,
+  )
   return nodes
 }
 
@@ -79,8 +83,13 @@ function isAgentPath(editPath: string, filePath: string): boolean {
   )
 }
 
-export function WorkflowEditPanel(props: { workflowId: string; editPath: string }): JSX.Element {
-  const { workflowId, editPath } = props
+export function WorkflowEditPanel(props: {
+  workflowId: string
+  editPath: string
+  /** Reports unsaved-edit state so the parent can guard mode/nav switches. */
+  onDirtyChange?: (dirty: boolean) => void
+}): JSX.Element {
+  const { workflowId, editPath, onDirtyChange } = props
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
   const queryClient = useQueryClient()
@@ -93,16 +102,29 @@ export function WorkflowEditPanel(props: { workflowId: string; editPath: string 
   const [diagnostics, setDiagnostics] = useState<WorkflowDiagnostic[]>([])
   const [validateMsg, setValidateMsg] = useState<string | undefined>()
   const [validating, setValidating] = useState(false)
+  const [loadError, setLoadError] = useState<string | undefined>()
+  const [textLoading, setTextLoading] = useState(true)
+
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
 
   const treeQuery = useQuery({
     queryKey: ['workflow-edit-tree', baseUrl, token ?? '', editPath],
     queryFn: () => listTree(editPath),
   })
 
-  // Load selected file text (SoT for both raw + form views)
+  // Load selected file text (SoT for both raw + form views). On load failure
+  // the error stays OUT of fileText — error text must never be savable as
+  // file content; the editor renders read-only empty with the error banner.
+  // While a load is in flight nothing editable renders — otherwise the editor
+  // would remount with the PREVIOUS file's bytes against the new path and a
+  // quick save would cross-write files.
   useEffect(() => {
     let cancelled = false
     setDirty(false)
+    setLoadError(undefined)
+    setTextLoading(true)
     void useConnection
       .getState()
       .gateway.filesReadText(selected)
@@ -110,11 +132,14 @@ export function WorkflowEditPanel(props: { workflowId: string; editPath: string 
         if (cancelled) return
         setFileText(t)
         setTextEpoch((e) => e + 1)
+        setTextLoading(false)
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setFileText(`/* load error: ${err instanceof Error ? err.message : String(err)} */\n`)
+        setLoadError(err instanceof Error ? err.message : String(err))
+        setFileText('')
         setTextEpoch((e) => e + 1)
+        setTextLoading(false)
       })
     return () => {
       cancelled = true
@@ -256,7 +281,13 @@ export function WorkflowEditPanel(props: { workflowId: string; editPath: string 
             </div>
           )}
 
-          {viewMode === 'raw' || !showFormToggle ? (
+          {loadError ? (
+            <div className="px-3 py-2 font-mono text-xs text-red">
+              load error: {loadError} — editing disabled for this file.
+            </div>
+          ) : textLoading ? (
+            <div className="px-3 py-2 font-mono text-xs text-ink-dim">loading…</div>
+          ) : viewMode === 'raw' || !showFormToggle ? (
             <FileEditor
               key={`${selected}:${String(textEpoch)}:raw`}
               path={selected}
@@ -390,6 +421,22 @@ function ManifestFormOverlay(props: {
   }, [])
   const [parseError, setParseError] = useState<string | undefined>(initial.error)
   const [form, setForm] = useState<ManifestFormState>(initial.form)
+
+  // Broken-on-disk manifest: never render editable fields over the empty
+  // skeleton — one keystroke would serialize it into fileText and a save
+  // would destroy the original bytes. Fixing broken YAML is Raw view's job.
+  if (initial.error) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
+        <p className="mb-2 font-mono text-xs text-red">
+          workflow.yaml does not parse: {initial.error}
+        </p>
+        <p className="font-mono text-xs text-ink-dim">
+          Fix it in the Raw view — the form editor is disabled until the file parses.
+        </p>
+      </div>
+    )
+  }
 
   const push = (next: ManifestFormState): void => {
     setForm(next)
