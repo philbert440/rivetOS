@@ -269,18 +269,6 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
     }
   }, [path, controlledText, looksText, kind, forceReadOnly, setDirtyState])
 
-  // Controlled text updates after mount
-  useEffect(() => {
-    if (controlledText === undefined) return
-    const view = viewRef.current
-    if (!view) return
-    if (view.state.doc.toString() === controlledText) return
-    skipNextDocPush.current = true
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: controlledText },
-    })
-  }, [controlledText])
-
   const doSave = useCallback(async (): Promise<void> => {
     if (readOnly) return
     const view = viewRef.current

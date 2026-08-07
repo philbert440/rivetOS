@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type {
@@ -338,15 +338,15 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
           })
         }
 
-        // POST /api/workflows/:id/validate — loader + determinism diagnostics
+        // POST /api/workflows/:id/validate — loader + determinism diagnostics.
+        // Resolves the def DIR without requiring a clean load: a broken
+        // workflow.yaml is exactly what validate exists to diagnose, so load
+        // failures must return 200 + diagnostics, not 404.
         if (req.method === 'POST' && parts.length === 2 && parts[1] === 'validate') {
           const workflowId = decodeURIComponent(parts[0])
-          const loaded = await listWorkflowDefs(workflowsRoots, (m) => log.warn(m))
-          const match = loaded.find((w) => w.manifest.id === workflowId)
-          if (!match) return json(res, 404, { error: `workflow not found: ${workflowId}` })
-          // listWorkflowDefs already loaded successfully; re-run validate on
-          // the dir so we surface determinism findings + any race-reload errors.
-          const body: WorkflowValidateResponse = await validateWorkflowDir(match.dir)
+          const dir = await resolveDefDirForValidate(workflowsRoots, workflowId, (m) => log.warn(m))
+          if (!dir) return json(res, 404, { error: `workflow not found: ${workflowId}` })
+          const body: WorkflowValidateResponse = await validateWorkflowDir(dir)
           return json(res, 200, body)
         }
 
@@ -661,12 +661,63 @@ function toDefSummary(w: LoadedWorkflow, filesRoot: string | undefined): Workflo
 }
 
 /**
+ * Resolve a workflow id to its def directory for validation WITHOUT requiring
+ * a clean load. Preference order: (1) a successfully loading def whose
+ * manifest.id matches; (2) a root child dir containing workflow.yaml whose
+ * basename matches the id; (3) a root child dir whose workflow.yaml text has
+ * a matching top-level `id:`. Exported for unit tests.
+ */
+export async function resolveDefDirForValidate(
+  roots: string[],
+  workflowId: string,
+  warn: (msg: string) => void = () => {},
+): Promise<string | undefined> {
+  const loaded = await listWorkflowDefs(roots, warn)
+  const match = loaded.find((w) => w.manifest.id === workflowId)
+  if (match) return match.dir
+
+  for (const root of roots) {
+    let entries: import('node:fs').Dirent[]
+    try {
+      entries = await readdir(root, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    // Basename match first — cheap and covers the directory convention.
+    for (const ent of entries) {
+      if (!ent.isDirectory() || ent.name !== workflowId) continue
+      const dir = join(root, ent.name)
+      try {
+        await readFile(join(dir, 'workflow.yaml'), 'utf-8')
+        return dir
+      } catch {
+        /* no manifest — not a def dir */
+      }
+    }
+    // Fall back to a top-level `id:` scan of each candidate manifest.
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue
+      const dir = join(root, ent.name)
+      let text: string
+      try {
+        text = await readFile(join(dir, 'workflow.yaml'), 'utf-8')
+      } catch {
+        continue
+      }
+      const m = /^id:\s*["']?([^"'\r\n#]+?)["']?\s*$/m.exec(text)
+      if (m && m[1].trim() === workflowId) return dir
+    }
+  }
+  return undefined
+}
+
+/**
  * Run loadWorkflowDir + run.ts determinism lint; shape diagnostics without
  * throwing for expected authoring errors. Exported for unit tests.
  *
- * Note: listWorkflowDefs only surfaces defs that already load cleanly, so the
- * HTTP validate route mainly adds determinism findings. This helper still
- * surfaces load errors when called directly (e.g. after on-disk edits).
+ * Surfaces load errors as diagnostics (broken manifest, bad frontmatter,
+ * empty agent prompt) — the HTTP validate route depends on this to report on
+ * defs that no longer load cleanly after on-disk edits.
  */
 export async function validateWorkflowDir(dir: string): Promise<WorkflowValidateResponse> {
   const diagnostics: WorkflowDiagnostic[] = []
