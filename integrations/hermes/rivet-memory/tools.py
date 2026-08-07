@@ -473,12 +473,61 @@ def search_tool(
 # ---------------------------------------------------------------------------
 
 
+def format_browse_filter_note(
+    *,
+    window: Optional[str] = None,
+    since: Optional[str] = None,
+    before: Optional[str] = None,
+) -> str:
+    """Echo active time filters for browse (postgres MCP parity).
+
+    Agents need to see which window/bounds were applied so a tight filter
+    isn't misread as "memory is empty". Pure helper — unit-tested.
+    """
+    if window and (since or before):
+        note = f'\n_window="{window}"'
+        if since:
+            note += f" since={since}"
+        if before:
+            note += f" before={before}"
+        return note + "_"
+    if since or before:
+        parts = []
+        if since:
+            parts.append(f"since={since}")
+        if before:
+            parts.append(f"before={before}")
+        return "\n_" + " ".join(parts) + "_"
+    return ""
+
+
+def format_empty_browse_result(
+    *,
+    window: Optional[str] = None,
+    since: Optional[str] = None,
+    before: Optional[str] = None,
+) -> str:
+    """Empty-path UX for ``rivet_memory_browse`` (postgres ``memory_browse`` parity).
+
+    Bare ``"No messages found."`` is a daily-use footgun: agents treat it as
+    ground truth and stop, when the window/agent filter was just too tight
+    (residual from #437/#440 — MCP browse already guides; Hermes did not).
+    """
+    return (
+        "No messages found."
+        + format_browse_filter_note(window=window, since=since, before=before)
+        + "\n_Try a wider window, drop agent/conversation filters, flip order, "
+        "or use rivet_memory_search for topic recall._"
+    )
+
+
 def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
     conditions: List[str] = []
     params: list = []
     since = args.get("since")
     before = args.get("before")
-    if args.get("window") and not (since or before):
+    window_arg = args.get("window") if not (since or before) else None
+    if window_arg and not (since or before):
         try:
             since, before = resolve_window(args["window"])
         except ValueError as exc:
@@ -517,8 +566,18 @@ def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
     except Exception as e:
         return f"Browse failed: {e}"
 
+    # window name only when it drove the bounds (same as MCP browse-tool).
+    window_label = str(window_arg) if window_arg else None
+    filter_note = format_browse_filter_note(
+        window=window_label, since=since, before=before
+    )
+
     if not rows:
-        return "No messages found."
+        # Echo filters + next-step hints so agents don't conclude "memory is
+        # empty" when the window/agent filter was just too tight (MCP parity).
+        return format_empty_browse_result(
+            window=window_label, since=since, before=before
+        )
 
     lines: List[str] = []
     for r in rows:
@@ -538,17 +597,16 @@ def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
 
     direction = "newest" if order_sql == "DESC" else "oldest"
     header = f"## Messages ({len(rows)} returned, {direction} first)"
+    header += filter_note
     if len(rows) >= limit:
         # Hit the cap — more rows may exist beyond this slice. Tell the agent
         # how to find them rather than silently truncating; for "what did we
         # do today?" the off-end chunk is usually what the user wants next.
-        flip_order = "asc" if order_sql == "DESC" else "desc"
-        hint = (
-            f"\n_limit={limit} reached; more rows may exist beyond this slice. "
-            f"Re-call with `order=\"{flip_order}\"` to see the other end, "
-            f"raise `limit` (max 200), or narrow `since`/`before`/`window`._"
+        # Wording aligned with postgres memory_browse (limit=N. Flip order…).
+        header += (
+            f"\n_Hit limit={limit}. Flip order, raise limit (max 200), "
+            f"or narrow since/before/window._"
         )
-        header += hint
     return header + "\n\n" + "\n\n---\n\n".join(lines)
 
 
