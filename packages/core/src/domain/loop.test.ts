@@ -10,7 +10,15 @@
 import { describe, it } from 'vitest'
 import * as assert from 'node:assert/strict'
 import { AgentLoop } from './loop.js'
-import type { LLMChunk, Message, Tool } from '@rivetos/types'
+import { HookPipelineImpl } from './hooks.js'
+import { createPreCompactHook, createPostCompactHook } from './session-hooks.js'
+import type {
+  CompactAfterContext,
+  CompactBeforeContext,
+  LLMChunk,
+  Message,
+  Tool,
+} from '@rivetos/types'
 import { makeMockProvider, makeMockProviderSequence } from '../test-utils/mock-aisdk-provider.js'
 
 // ---------------------------------------------------------------------------
@@ -340,5 +348,140 @@ describe('AgentLoop', () => {
 
     const result = await loop.run('Hi', [])
     assert.equal(result.response, 'Partial response before error')
+  })
+
+  it('emits compact:before and compact:after when compact_context runs', async () => {
+    const pipeline = new HookPipelineImpl()
+    const events: string[] = []
+    let before: CompactBeforeContext | undefined
+    let after: CompactAfterContext | undefined
+
+    pipeline.register({
+      id: 'capture-before',
+      event: 'compact:before',
+      handler: (ctx) => {
+        before = ctx as CompactBeforeContext
+        events.push('before')
+      },
+    })
+    pipeline.register({
+      id: 'capture-after',
+      event: 'compact:after',
+      handler: (ctx) => {
+        after = ctx as CompactAfterContext
+        events.push('after')
+      },
+    })
+
+    const compactArgs = JSON.stringify({
+      replacements: [
+        {
+          start_index: 0,
+          end_index: 1,
+          summary: 'Earlier: user asked about hooks; agent explained.',
+        },
+      ],
+    })
+
+    const COMPACT_THEN_TEXT: LLMChunk[][] = [
+      [
+        {
+          type: 'tool_call_start',
+          toolCall: { index: 0, id: 'tc-c1', name: 'compact_context' },
+        },
+        { type: 'tool_call_delta', delta: compactArgs, toolCall: { index: 0 } },
+        { type: 'tool_call_done', toolCall: { index: 0 } },
+        { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
+      ],
+      [
+        { type: 'text', delta: 'Compacted and continuing.' },
+        { type: 'done', usage: { promptTokens: 5, completionTokens: 5 } },
+      ],
+    ]
+
+    const history: Message[] = [
+      { role: 'user', content: 'Tell me about hooks' },
+      { role: 'assistant', content: 'Hooks are lifecycle events.' },
+    ]
+
+    let onCompactCalled = false
+    const loop = new AgentLoop({
+      systemPrompt: 'You are helpful.',
+      provider: makeMockProviderSequence(COMPACT_THEN_TEXT),
+      tools: [],
+      hooks: pipeline,
+      agentId: 'opus',
+      sessionId: 'sess-1',
+      onCompact: () => {
+        onCompactCalled = true
+      },
+    })
+
+    const result = await loop.run('Please compact', history)
+    assert.equal(result.response, 'Compacted and continuing.')
+    assert.deepEqual(events, ['before', 'after'])
+    assert.ok(before, 'compact:before should have fired')
+    assert.equal(before!.event, 'compact:before')
+    assert.ok((before!.messageCount ?? 0) >= 2)
+    assert.equal(before!.agentId, 'opus')
+    assert.equal(before!.sessionId, 'sess-1')
+    assert.ok(after, 'compact:after should have fired')
+    assert.equal(after!.event, 'compact:after')
+    assert.ok(
+      after!.summary?.includes('Earlier: user asked about hooks'),
+      `unexpected summary: ${after!.summary}`,
+    )
+    assert.ok(onCompactCalled, 'onCompact session sync should run')
+  })
+
+  it('runs boot-registered pre/post compact hooks with shared metadata', async () => {
+    const pipeline = new HookPipelineImpl()
+    pipeline.register(createPreCompactHook())
+    pipeline.register(createPostCompactHook({}))
+
+    const compactArgs = JSON.stringify({
+      replacements: [{ start_index: 0, end_index: 0, summary: 'Prior user greeting.' }],
+    })
+
+    const COMPACT_THEN_TEXT: LLMChunk[][] = [
+      [
+        {
+          type: 'tool_call_start',
+          toolCall: { index: 0, id: 'tc-c2', name: 'compact_context' },
+        },
+        { type: 'tool_call_delta', delta: compactArgs, toolCall: { index: 0 } },
+        { type: 'tool_call_done', toolCall: { index: 0 } },
+        { type: 'done', usage: { promptTokens: 10, completionTokens: 5 } },
+      ],
+      [
+        { type: 'text', delta: 'ok' },
+        { type: 'done', usage: { promptTokens: 5, completionTokens: 2 } },
+      ],
+    ]
+
+    let compactionResult: Record<string, unknown> | undefined
+    pipeline.register({
+      id: 'read-result',
+      event: 'compact:after',
+      priority: 90,
+      handler: (ctx) => {
+        compactionResult = (ctx as CompactAfterContext).metadata.compactionResult as
+          | Record<string, unknown>
+          | undefined
+      },
+    })
+
+    const loop = new AgentLoop({
+      systemPrompt: 'You are helpful.',
+      provider: makeMockProviderSequence(COMPACT_THEN_TEXT),
+      tools: [],
+      hooks: pipeline,
+      sessionId: 'sess-boot',
+    })
+
+    await loop.run('hi again', [{ role: 'user', content: 'hello' }])
+    assert.ok(compactionResult, 'postCompact should have written compactionResult')
+    assert.equal(compactionResult!.summaryGenerated, true)
+    assert.ok(compactionResult!.originalMessages !== undefined)
   })
 })

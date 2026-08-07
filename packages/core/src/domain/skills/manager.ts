@@ -10,7 +10,13 @@
 
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Skill, SkillManager, HookPipeline, SkillBeforeContext } from '@rivetos/types'
+import type {
+  Skill,
+  SkillManager,
+  HookPipeline,
+  SkillBeforeContext,
+  SkillAfterContext,
+} from '@rivetos/types'
 import { logger } from '../../logger.js'
 import { parseFrontmatter, extractTriggersFromDescription } from './frontmatter.js'
 
@@ -62,7 +68,9 @@ export class SkillManagerImpl implements SkillManager {
       )
     }
 
-    // Emit skill:before hook
+    const loadStart = Date.now()
+
+    // Emit skill:before hook (pipeline is fail-safe; skip gate is intentional)
     if (this.pipeline) {
       const ctx: SkillBeforeContext = {
         event: 'skill:before',
@@ -80,6 +88,24 @@ export class SkillManagerImpl implements SkillManager {
     }
 
     const content = await readFile(skill.location, 'utf-8')
+
+    // Emit skill:after on successful load (symmetric pair with skill:before).
+    // Load is the activation moment — turn-level metrics (tools/iterations)
+    // are not available here, so they default to empty/zero.
+    if (this.pipeline) {
+      const after: SkillAfterContext = {
+        event: 'skill:after',
+        skillName: skill.name,
+        success: true,
+        toolsUsed: [],
+        iterations: 0,
+        durationMs: Date.now() - loadStart,
+        timestamp: Date.now(),
+        metadata: {},
+      }
+      await this.pipeline.run(after)
+    }
+
     return content
   }
 

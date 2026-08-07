@@ -175,7 +175,8 @@ export class CommandHandler {
       this.deps.deleteAbort(sessionKey)
       this.deps.deleteActiveLoop(sessionKey)
     }
-    this.deps.sessionManager.delete(sessionKey)
+    // endSession emits session:end then removes the session from the map
+    await this.deps.sessionManager.endSession(sessionKey)
     this.deps.getQueue(sessionKey)?.clear()
     this.deps.workspace.clearCache()
 

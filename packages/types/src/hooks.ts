@@ -36,11 +36,13 @@
  * Turn lifecycle:
  *   turn:before      — before processing a user message (content filtering)
  *   turn:after       — after turn completes (analytics, memory append)
- *   turn:reflect     — after complex turns, triggers pattern analysis for learning loop
+ *   turn:reflect     — RESERVED / not-yet-emitted. Intended for post-complex-turn
+ *                      pattern analysis (learning loop). No emitter and no consumers
+ *                      yet — do not invent a feature to fire it.
  *
  * Learning lifecycle:
  *   skill:before     — before a skill is loaded into context (tracking, skip gate)
- *   skill:after      — after a skill-guided turn completes (metrics for self-improvement)
+ *   skill:after      — after a skill has been loaded successfully (metrics / tracking)
  *
  * Compaction lifecycle:
  *   compact:before   — before memory compaction (preserve important context)
@@ -60,7 +62,7 @@ export type HookEventName =
   | 'session:end'
   | 'turn:before'
   | 'turn:after'
-  | 'turn:reflect'
+  | 'turn:reflect' // RESERVED: not emitted yet — see TurnReflectContext
   | 'skill:before'
   | 'skill:after'
   | 'compact:before'
@@ -257,7 +259,14 @@ export interface DelegationAfterContext extends HookContextBase {
   cached: boolean
 }
 
-/** Context for turn:reflect — fires after complex turns for pattern analysis */
+/**
+ * Context for turn:reflect — RESERVED / not-yet-emitted.
+ *
+ * Intended to fire after complex turns for pattern analysis (learning loop).
+ * Kept in the type union for forward compatibility; the runtime does not
+ * emit this event and no hooks are registered for it. Do not invent emitters
+ * or consumers without an explicit product decision.
+ */
 export interface TurnReflectContext extends HookContextBase {
   event: 'turn:reflect'
   /** The agent's response text */
