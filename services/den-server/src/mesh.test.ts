@@ -211,4 +211,17 @@ describe('mesh view', () => {
     expect(res.status).toBe(204)
     expect(res.headers.get('access-control-allow-methods')).toContain('DELETE')
   })
+
+  it('warns and returns empty roster on pre-capabilities flat-array mesh.json', async () => {
+    const file = join(tmp(), 'mesh.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        nodes: [{ name: 'legacy-node', ip: '192.0.2.1' }],
+        updatedAt: 99,
+      }),
+    )
+    const data = await loadMeshFile([file])
+    expect(data).toEqual({ updatedAt: 99, nodes: {} })
+  })
 })

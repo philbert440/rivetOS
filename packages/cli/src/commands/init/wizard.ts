@@ -105,7 +105,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   const rivetDir = resolve(homedir(), '.rivetos')
 
   // Phase 2: Deployment target
-  const { target, proxmox } = await configureDeployment(env)
+  const { target } = await configureDeployment(env)
 
   // Phase 3: Agent configuration
   p.log.step('Agent Configuration')
@@ -130,7 +130,6 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     deployment: target,
     agents,
     channels,
-    proxmox,
     postgresPassword,
     postgresUrl,
   }

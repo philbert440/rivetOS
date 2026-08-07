@@ -38,17 +38,6 @@ export async function reviewConfig(state: WizardState): Promise<boolean> {
     }
   }
 
-  // Proxmox details
-  if (state.proxmox) {
-    lines.push('')
-    lines.push('Proxmox:')
-    lines.push(`  API: ${state.proxmox.apiUrl}`)
-    for (const node of state.proxmox.nodes) {
-      lines.push(`  ${node.name} (${node.host}) → ${node.role}`)
-    }
-    lines.push(`  Network: ${state.proxmox.network.bridge} / ${state.proxmox.network.subnet}`)
-  }
-
   // Infrastructure
   lines.push('')
   if (state.deployment === 'docker') {

@@ -561,87 +561,21 @@ mcp:
 
 ## `deployment`
 
-Optional. Captures the desired runtime topology (datahub host, agent placement,
-networking) for documentation and tooling. Provisioning is currently driven by
-the Compose files under `infra/docker/` and the scripts under
-`infra/scripts/`.
+Optional. Declares the intended deployment target so tooling (`rivetos update`,
+`rivetos config`) can choose the right path. Provisioning itself is driven by
+the Compose files under `infra/docker/` and the scripts under `infra/scripts/`.
+Only `target` is read; any other key under `deployment` is warned as unknown.
 
 ```yaml
 deployment:
   target: docker
-  
-  datahub:
-    postgres: true
-    shared_storage: true
-    shared_mount_path: /rivet-shared
-  
-  image:
-    build_from_source: true
-  
-  docker:
-    network: rivetos-net
-    postgres_port: 5432
 ```
 
-### Top-Level
+### Keys
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `target` | string | **required** | `docker`, `proxmox`, `kubernetes`, or `manual`. |
-
-### `deployment.datahub`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `postgres` | boolean | `true` | Include PostgreSQL in the datahub container. |
-| `postgres_version` | string | `16` | PostgreSQL major version. |
-| `shared_storage` | boolean | `true` | Create shared storage volume. |
-| `shared_mount_path` | string | `/rivet-shared` | Mount path for shared storage inside containers. |
-
-### `deployment.image`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `build_from_source` | boolean | `true` | Build container images from local source tree. |
-| `registry` | string | — | Container registry for pre-built images (e.g., `ghcr.io/philbert440`). |
-| `agent_image` | string | `rivetos-agent` | Agent image name. |
-| `tag` | string | `latest` | Image tag. |
-
-### `deployment.docker`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `network` | string | `rivetos-net` | Docker network name. |
-| `postgres_port` | number | `5432` | Host port for PostgreSQL. |
-| `project_name` | string | `rivetos` | Docker Compose project name. |
-
-### `deployment.proxmox`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `api_url` | string | — | Proxmox API URL (e.g., `https://192.168.1.1:8006`). |
-| `nodes` | array | — | Node definitions (see below). |
-| `network.bridge` | string | `vmbr0` | Network bridge. |
-| `network.subnet` | string | — | Subnet for container IPs. |
-| `network.gateway` | string | — | Default gateway. |
-
-**Node definition:**
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `name` | string | Node name (e.g., `pve1`). |
-| `host` | string | Node IP or hostname. |
-| `role` | string | `datahub`, `agents`, or `both`. |
-| `ctid_start` | number | Starting container ID. |
-
-### `deployment.kubernetes`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `namespace` | string | `rivetos` | Kubernetes namespace. |
-| `storage_class` | string | — | Storage class for PVCs. |
-| `resources.cpu` | string | `500m` | CPU request per agent pod. |
-| `resources.memory` | string | `512Mi` | Memory request per agent pod. |
 
 ---
 

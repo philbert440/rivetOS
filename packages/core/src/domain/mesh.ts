@@ -70,12 +70,6 @@ interface MeshFile {
   updatedAt: number
 }
 
-/** Legacy mesh.json format — flat array with `ip` instead of `host` */
-interface LegacyMeshFile {
-  nodes: Array<{ name: string; ip?: string; role?: string }>
-  updatedAt?: number
-}
-
 export class FileMeshRegistry implements MeshRegistry {
   private config: MeshRegistryConfig
   private filePath: string
@@ -320,42 +314,26 @@ export class FileMeshRegistry implements MeshRegistry {
   private async load(): Promise<MeshFile> {
     try {
       const raw = await readFile(this.filePath, 'utf-8')
-      const parsed = JSON.parse(raw) as MeshFile | LegacyMeshFile
+      const parsed = JSON.parse(raw) as MeshFile
 
-      // Migrate legacy array-based mesh.json (hand-written, uses `ip` instead of `host`)
-      if (Array.isArray((parsed as LegacyMeshFile).nodes)) {
-        const legacy = parsed as LegacyMeshFile
-        const migrated: MeshFile = {
-          version: 1,
-          nodes: {},
-          updatedAt: legacy.updatedAt ?? Date.now(),
-        }
-        for (const entry of legacy.nodes) {
-          const host = entry.ip ?? (entry as unknown as { host?: string }).host ?? ''
-          migrated.nodes[entry.name] = {
-            id: entry.name,
-            name: entry.name,
-            role: entry.role === 'primary' ? 'agent' : (entry.role as MeshNodeRole | undefined),
-            agents: [],
-            host,
-            port: 3100,
-            providers: [],
-            models: [],
-            capabilities: [],
-            status: 'offline',
-            lastSeen: 0,
-            registeredAt: Date.now(),
-            version: '0.0.0',
-          }
-        }
-        log.info('Migrated legacy array-format mesh.json to Record format')
-        await this.save(migrated)
-        return migrated
+      // Pre-capabilities flat-array format is no longer supported — fail loud.
+      if (Array.isArray((parsed as { nodes?: unknown }).nodes)) {
+        const msg =
+          `mesh.json at ${this.filePath} uses the pre-capabilities flat-array format, ` +
+          'which is no longer supported. Rewrite the file as Record-format ' +
+          '{ version, nodes: { [id]: node }, updatedAt } (see live /rivet-shared/mesh.json).'
+        log.error(msg)
+        throw new Error(msg)
       }
 
-      return parsed as MeshFile
-    } catch {
-      // File doesn't exist yet — return empty registry
+      return parsed
+    } catch (err) {
+      // Re-throw unsupported-format errors so callers fail loud instead of
+      // treating a legacy array file as an empty registry.
+      if (err instanceof Error && err.message.includes('pre-capabilities flat-array')) {
+        throw err
+      }
+      // File doesn't exist yet / unreadable — return empty registry
       return { version: 1, nodes: {}, updatedAt: Date.now() }
     }
   }
