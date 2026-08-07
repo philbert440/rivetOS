@@ -441,10 +441,9 @@ export class AgentLoop {
 
     // ---- Apply any leftover compaction + sync session -------------------
     if (state.pendingCompaction) {
-      aiSdkMessages = await this.applyPendingCompactionWithHooks(
-        aiSdkMessages,
-        state.pendingCompaction,
-      )
+      // Fires compact hooks + clears pending state; the turn is over, so the
+      // returned (compacted) array has no further reader this turn.
+      await this.applyPendingCompactionWithHooks(aiSdkMessages, state.pendingCompaction)
       state.pendingCompaction = null
     }
 
