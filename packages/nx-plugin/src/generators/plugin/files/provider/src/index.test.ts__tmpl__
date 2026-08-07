@@ -22,6 +22,7 @@ describe('<%= className %>', () => {
     const provider = new <%= className %>('test', config)
     const bridge = provider.aiSdkBridge()
     expect(bridge.getModel).toBeTypeOf('function')
+    expect(bridge.buildProviderOptions([])).toBeUndefined()
   })
 
   it('tracks the active model', () => {
