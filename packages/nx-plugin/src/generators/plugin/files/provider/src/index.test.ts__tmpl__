@@ -18,20 +18,16 @@ describe('<%= className %>', () => {
     expect(await noKey.isAvailable()).toBe(false)
   })
 
-  it('should stream chat responses', async () => {
+  it('exposes an AI SDK bridge', () => {
     const provider = new <%= className %>('test', config)
-    const chunks = []
-    for await (const chunk of provider.chatStream([])) {
-      chunks.push(chunk)
-    }
-    expect(chunks.length).toBeGreaterThan(0)
-    expect(chunks[chunks.length - 1].type).toBe('done')
+    const bridge = provider.aiSdkBridge()
+    expect(bridge.getModel).toBeTypeOf('function')
   })
 
-  it('should return non-streaming chat response', async () => {
+  it('tracks the active model', () => {
     const provider = new <%= className %>('test', config)
-    const response = await provider.chat([])
-    expect(response.type).toBe('text')
-    expect(response.content).toBeDefined()
+    expect(provider.getModel()).toBe('test-model')
+    provider.setModel('other-model')
+    expect(provider.getModel()).toBe('other-model')
   })
 })

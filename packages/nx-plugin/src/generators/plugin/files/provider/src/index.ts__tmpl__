@@ -4,13 +4,10 @@
  * <%= description %>
  */
 
-import type {
-  Provider,
-  LLMChunk,
-  LLMResponse,
-  ChatOptions,
-  Message,
-} from '@rivetos/types'
+import type { Provider, PluginManifest } from '@rivetos/types'
+import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
+import type { LanguageModel } from 'ai'
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -32,47 +29,71 @@ export class <%= className %> implements Provider {
   name = '<%= name %>'
 
   private config: <%= className %>Config
+  private model: string
 
   constructor(id: string, config: <%= className %>Config) {
     this.id = id
     this.config = config
+    this.model = config.model ?? 'default-model' // TODO: real default model id
   }
 
-  async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
-    // TODO: Implement streaming chat
-    // 1. Convert messages to provider API format
-    // 2. Include tools from options.tools if present
-    // 3. Make streaming API request
-    // 4. Yield LLMChunk events as they arrive
-
-    // Example structure:
-    yield { type: 'text', delta: 'Hello from <%= name %>!' }
-    yield {
-      type: 'done',
-      usage: { promptTokens: 0, completionTokens: 0 },
+  /**
+   * AI SDK bridge — the agent loop drives this provider via `streamText`.
+   * The OpenAI-compatible adapter covers most APIs; swap in a dedicated
+   * `@ai-sdk/*` package (see plugins/providers/anthropic) when one exists.
+   */
+  aiSdkBridge(): ProviderAiSdkBridge {
+    return {
+      getModel: ({ modelOverride }): LanguageModel => {
+        const provider = createOpenAICompatible({
+          baseURL: this.config.baseUrl ?? 'https://api.example.invalid/v1', // TODO: real base URL
+          name: this.name,
+          apiKey: this.config.apiKey || undefined,
+          includeUsage: true,
+        })
+        return provider.chatModel(modelOverride ?? this.model)
+      },
     }
-  }
-
-  async chat(messages: Message[], options?: ChatOptions): Promise<LLMResponse> {
-    // TODO: Implement non-streaming chat (optional — streaming is primary)
-    // Default implementation collects stream chunks
-    let content = ''
-    let usage = { promptTokens: 0, completionTokens: 0 }
-
-    for await (const chunk of this.chatStream(messages, options)) {
-      if (chunk.type === 'text' && chunk.delta) {
-        content += chunk.delta
-      }
-      if (chunk.usage) {
-        usage = chunk.usage
-      }
-    }
-
-    return { type: 'text', content, usage }
   }
 
   async isAvailable(): Promise<boolean> {
     // TODO: Check if the API key is valid / service is reachable
     return Boolean(this.config.apiKey)
   }
+
+  getModel(): string {
+    return this.model
+  }
+
+  setModel(model: string): void {
+    this.model = model
+  }
+
+  getContextWindow(): number {
+    return 0 // TODO: tokens (0 = unknown/unlimited)
+  }
+
+  getMaxOutputTokens(): number {
+    return this.config.maxTokens ?? 0
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest
+// ---------------------------------------------------------------------------
+
+export const manifest: PluginManifest = {
+  type: 'provider',
+  name: '<%= name %>',
+  register(ctx) {
+    const cfg = ctx.pluginConfig ?? {}
+    ctx.registerProvider(
+      new <%= className %>('<%= name %>', {
+        apiKey: (cfg.api_key as string | undefined) ?? '',
+        model: cfg.model as string | undefined,
+        baseUrl: cfg.base_url as string | undefined,
+        maxTokens: cfg.max_tokens as number | undefined,
+      }),
+    )
+  },
 }
