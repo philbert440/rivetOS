@@ -13,8 +13,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "graphile-worker": "^0.17.3",
-    "pg": "^8.22.0"
+    "graphile-worker": "^0.17.3"
   },
   "devDependencies": {
     "@types/pg": "^8.20.3",

@@ -79,7 +79,7 @@ Certs cannot be used to impersonate another agent.
 | Node enrolls | `provision-ct.sh` on new CT | posts CSR + `mesh.secret` bootstrap auth → CA signs → certs land in `/etc/rivetos/` |
 | Agent cert minted | boot-time registrar | if missing, CSR against local intermediate (CT110 only) |
 | Renewal | systemd timer, 30 days before expiry | re-uses existing private key, rotates cert |
-| Revocation | `rivetos ca revoke <cn>` | CRL rebuilt, pushed to all nodes |
+| Revocation | `scripts/rivet-ca.sh revoke <cn>` | CRL rebuilt, pushed to all nodes |
 
 - **Cert lifetime:** 90 days. Renew at 60.
 - **Root lifetime:** 10 years. Key offline after bootstrap.

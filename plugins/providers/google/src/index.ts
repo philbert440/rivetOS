@@ -7,21 +7,14 @@
  * content-part translation.
  */
 
-import type {
-  Provider,
-  Message,
-  ChatOptions,
-  LLMChunk,
-  PluginManifest,
-  ThinkingLevel,
-} from '@rivetos/types'
+import type { Provider, PluginManifest, ThinkingLevel } from '@rivetos/types'
 import { MODEL_DEFAULTS } from '@rivetos/types'
 import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
 import type { JSONObject } from '@ai-sdk/provider'
 import type { LanguageModel } from 'ai'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 
-import { chatStreamAiSdk, type GoogleAiSdkContext } from './chat-stream-aisdk.js'
+import type { GoogleAiSdkContext } from './chat-stream-aisdk.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -96,10 +89,6 @@ export class GoogleProvider implements Provider {
       defaultModel: this.model,
       maxTokens: this.maxTokens,
     }
-  }
-
-  chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
-    return chatStreamAiSdk(this.buildAiSdkContext(), messages, options)
   }
 
   // -----------------------------------------------------------------------

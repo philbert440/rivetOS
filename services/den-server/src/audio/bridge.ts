@@ -14,7 +14,6 @@ import {
   constants,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   openSync,
   writeSync,
 } from 'node:fs'
@@ -207,17 +206,4 @@ export class MicBridge {
       /* audit best-effort */
     }
   }
-}
-
-/** Test helper: bridge under a fresh temp dir. */
-export function createTestMicBridge(overrides: Partial<MicBridgeConfig> = {}): MicBridge {
-  const dir = overrides.dir ?? mkdtempSync(join(process.cwd(), 'micbridge-'))
-  return new MicBridge({
-    dir,
-    deviceName: 'RivetHub Mic',
-    sampleRate: 16000,
-    channels: 1,
-    format: 's16le',
-    ...overrides,
-  })
 }

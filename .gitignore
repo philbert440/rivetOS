@@ -45,3 +45,7 @@ apps/rivethub-desktop/src-tauri/gen/
 # file, not a compiled build output). The blanket **/*.js above would drop it from
 # clean checkouts, breaking installBridge on fresh-build APKs. Force-track it.
 !apps/rivet-android/app/src/main/assets/rivet-bridge-server-v2.js
+
+# Python bytecode
+__pycache__/
+*.pyc

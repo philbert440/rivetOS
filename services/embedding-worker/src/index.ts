@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   await runner.promise
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error('[EmbedWorker] Fatal:', err)
   process.exit(1)
 })

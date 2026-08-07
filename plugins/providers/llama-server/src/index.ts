@@ -17,7 +17,7 @@
  * config, the `Provider` surface, and the `/v1/models` availability probe.
  */
 
-import type { Provider, Message, ChatOptions, LLMChunk, PluginManifest } from '@rivetos/types'
+import type { Provider, Message, PluginManifest } from '@rivetos/types'
 import { MODEL_DEFAULTS } from '@rivetos/types'
 import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
 import type { JSONObject } from '@ai-sdk/provider'
@@ -25,7 +25,6 @@ import type { LanguageModel } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 
 import {
-  chatStreamAiSdk,
   splitAndFoldSystem,
   type LlamaServerAiSdkContext,
   type ToolChoice,
@@ -196,10 +195,6 @@ export class LlamaServerProvider implements Provider {
       seed: this.seed,
       defaultToolChoice: this.defaultToolChoice,
     }
-  }
-
-  chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
-    return chatStreamAiSdk(this.buildAiSdkContext(), messages, options)
   }
 
   /**

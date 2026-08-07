@@ -15,7 +15,6 @@ import { MemoryPage, MemoryTopicPage } from './pages/memory.js'
 import { SettingsPage } from './pages/settings.js'
 import { TerminalPage } from './pages/terminal.js'
 import { TaskDetailPage, TasksPage } from './pages/tasks.js'
-import { WorkflowDetailPage, WorkflowsPage } from './pages/workflows.js'
 import {
   WorkflowRunDetailPage,
   WorkflowsHubPage,
@@ -123,19 +122,6 @@ const workflowRunDetailRoute = createRoute({
   component: WorkflowRunDetailPage,
 })
 
-/** Legacy local canvas catalog (kept; not the section front door). */
-const workflowsCanvasRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/workflows/canvas',
-  component: WorkflowsPage,
-})
-
-const workflowCanvasDetailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/workflows/canvas/$workflowId',
-  component: WorkflowDetailPage,
-})
-
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
@@ -153,8 +139,6 @@ export const routeTree = rootRoute.addChildren([
   taskDetailRoute,
   // More specific workflow paths first so they win over $workflowId.
   workflowRunDetailRoute,
-  workflowsCanvasRoute,
-  workflowCanvasDetailRoute,
   workflowsRoute,
   workflowTriggerRoute,
   settingsRoute,
