@@ -2,11 +2,7 @@ import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it, expect, afterEach } from 'vitest'
-import {
-  detectDeployment,
-  findOwnershipBlockers,
-  findRootOwnedBlockers,
-} from './detect-deployment.js'
+import { detectDeployment, findOwnershipBlockers } from './detect-deployment.js'
 
 describe('detectDeployment', () => {
   it('honors forceBareMetal over every other signal', async () => {
@@ -180,10 +176,5 @@ describe('findOwnershipBlockers', () => {
     const blockers = findOwnershipBlockers(root)
     expect(blockers).toContain('node_modules')
     expect(blockers).not.toContain('(install root)')
-  })
-
-  it('findRootOwnedBlockers aliases findOwnershipBlockers', () => {
-    const root = scratch()
-    expect(findRootOwnedBlockers(root)).toEqual(findOwnershipBlockers(root))
   })
 })

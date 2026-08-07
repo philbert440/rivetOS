@@ -12,7 +12,7 @@ import { configureAgents } from './agents.js'
 import { configureChannels } from './channels.js'
 import { configurePostgres } from './postgres.js'
 import { reviewConfig } from './review.js'
-import { generateConfig, loadWizardState, clearWizardState } from './generate.js'
+import { generateConfig } from './generate.js'
 import type { WizardState } from './types.js'
 
 function bail(v: unknown): asserts v is Exclude<typeof v, symbol> {
@@ -102,19 +102,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     // 'reconfigure' and confirmed 'overwrite' both fall through to the wizard
   }
 
-  // Check for partial state from a previous interrupted run
   const rivetDir = resolve(homedir(), '.rivetos')
-  const savedState = await loadWizardState(rivetDir)
-  if (savedState?.deployment) {
-    const resume = await p.confirm({
-      message: 'Found a previous incomplete setup. Continue where you left off?',
-      initialValue: true,
-    })
-    bail(resume)
-    if (!resume) {
-      await clearWizardState(rivetDir)
-    }
-  }
 
   // Phase 2: Deployment target
   const { target, proxmox } = await configureDeployment(env)
@@ -159,7 +147,6 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   s.start('Generating configuration...')
 
   const result = await generateConfig(state, rivetDir)
-  await clearWizardState(rivetDir)
 
   s.stop('Configuration generated.')
 

@@ -5,23 +5,12 @@
 import { describe, it, beforeEach } from 'vitest'
 import * as assert from 'node:assert/strict'
 import { Router } from './router.js'
-import type {
-  Provider,
-  AgentConfig,
-  InboundMessage,
-  LLMChunk,
-  Message,
-  ChatOptions,
-} from '@rivetos/types'
+import type { Provider, AgentConfig, InboundMessage } from '@rivetos/types'
 
 function makeProvider(id: string, available = true): Provider {
   return {
     id,
     name: `Provider ${id}`,
-    async *chatStream(_messages: Message[], _options?: ChatOptions): AsyncIterable<LLMChunk> {
-      yield { type: 'text', delta: 'hello' }
-      yield { type: 'done', usage: { promptTokens: 0, completionTokens: 0 } }
-    },
     async isAvailable() {
       return available
     },

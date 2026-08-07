@@ -6,7 +6,7 @@
  */
 
 import { writeFile, mkdir, access, readFile, readdir } from 'node:fs/promises'
-import { resolve, dirname } from 'node:path'
+import { resolve } from 'node:path'
 import { stringify as toYaml } from 'yaml'
 import type { WizardState, WizardAgent, WizardChannel } from './types.js'
 import { PROVIDER_ENV_KEYS } from './agents.js'
@@ -530,43 +530,5 @@ async function writeWorkspaceTemplates(workspacePath: string): Promise<void> {
     } catch {
       await writeFile(filePath, content, 'utf-8')
     }
-  }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// State persistence (for resumable init)
-// ──────────────────────────────────────────────────────────────────────────────
-
-const STATE_FILE = '.rivetos-init-state.json'
-
-export async function saveWizardState(state: WizardState, rivetDir: string): Promise<void> {
-  const statePath = resolve(dirname(rivetDir), STATE_FILE)
-  // Strip secrets before saving state
-  const safe = {
-    ...state,
-    agents: state.agents.map((a) => ({ ...a, apiKey: undefined })),
-    channels: state.channels.map((c) => ({ ...c, botToken: '***' })),
-    postgresPassword: '***',
-  }
-  await writeFile(statePath, JSON.stringify(safe, null, 2), 'utf-8')
-}
-
-export async function loadWizardState(rivetDir: string): Promise<Partial<WizardState> | null> {
-  const statePath = resolve(dirname(rivetDir), STATE_FILE)
-  try {
-    const raw = await readFile(statePath, 'utf-8')
-    return JSON.parse(raw) as Partial<WizardState>
-  } catch {
-    return null
-  }
-}
-
-export async function clearWizardState(rivetDir: string): Promise<void> {
-  const statePath = resolve(dirname(rivetDir), STATE_FILE)
-  const { unlink } = await import('node:fs/promises')
-  try {
-    await unlink(statePath)
-  } catch {
-    // Doesn't exist — that's fine
   }
 }

@@ -51,7 +51,6 @@ function parseArgs(): UpdateOptions {
     sshUser: 'rivet',
     npm: false,
     channel: 'beta',
-    includeOffline: false,
     ignoreOwnership: false,
   }
 
@@ -74,8 +73,6 @@ function parseArgs(): UpdateOptions {
     } else if (arg === '--channel' && args[i + 1]) {
       opts.channel = args[++i]
       opts.npm = true
-    } else if (arg === '--include-offline') {
-      opts.includeOffline = true
     } else if (arg === '--ignore-ownership') {
       opts.ignoreOwnership = true
     } else if (arg === '--help' || arg === '-h') {
@@ -129,7 +126,6 @@ function showHelp(): void {
     --npm              Use npm install -g @rivetos/cli@<channel> instead of git pull
     --channel <tag>    npm dist-tag or version (default: beta) — implies --npm
     --ssh-user <user>  SSH user for remote nodes (default: rivet)
-    --include-offline  Obsolete (all nodes are probed over SSH now); accepted as a no-op
     --ignore-ownership Skip local install-tree writability preflight (escape hatch;
                        unwritable trees still fail later with EACCES)
 

@@ -26,7 +26,6 @@ import type {
   Provider,
   Message,
   ChatOptions,
-  LLMChunk,
   PluginManifest,
   PreparedTurn,
   ProviderSessionCapability,
@@ -39,7 +38,7 @@ import type { LanguageModel, ToolSet } from 'ai'
 import { createXai, xaiTools } from '@ai-sdk/xai'
 import { randomUUID } from 'node:crypto'
 
-import { chatStreamAiSdk, type XAIAiSdkContext } from './chat-stream-aisdk.js'
+import type { XAIAiSdkContext } from './chat-stream-aisdk.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -303,10 +302,6 @@ export class XAIProvider implements Provider {
         return p
       },
     }
-  }
-
-  chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
-    return chatStreamAiSdk(this.buildAiSdkContext(), messages, options)
   }
 
   // -----------------------------------------------------------------------

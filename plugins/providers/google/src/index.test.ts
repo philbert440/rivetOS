@@ -286,11 +286,4 @@ describe('GoogleProvider', () => {
     })
   })
 
-  describe('chatStream integration', () => {
-    it('returns an async iterable', () => {
-      const provider = new GoogleProvider(mockConfig)
-      const stream = provider.chatStream([])
-      expect(stream[Symbol.asyncIterator]).toBeDefined()
-    })
-  })
 })

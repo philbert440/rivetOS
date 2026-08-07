@@ -482,14 +482,6 @@ export class MCPClientPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// Convenience: create the plugin from a config object
-// ---------------------------------------------------------------------------
-
-export function createMCPClientPlugin(config: MCPClientConfig): MCPClientPlugin {
-  return new MCPClientPlugin(config)
-}
-
-// ---------------------------------------------------------------------------
 // Plugin factory
 // ---------------------------------------------------------------------------
 

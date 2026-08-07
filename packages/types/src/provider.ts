@@ -115,7 +115,7 @@ export interface ProviderSessionCapability {
   /** Provider manages its own server-side session continuity. */
   native: true
   /**
-   * Called by the agent loop before each `chatStream` invocation. Lets the
+   * Called by the agent loop before each streaming invocation. Lets the
    * provider decide whether it can continue from prior state (and trim the
    * messages array) or needs a full replay. Return `null` to fall back to
    * full-history replay.
@@ -130,13 +130,6 @@ export interface ProviderSessionCapability {
 export interface Provider {
   id: string
   name: string
-  /**
-   * Legacy streaming entrypoint. Optional — providers that implement
-   * `aiSdkBridge` are driven by the AI SDK loop directly via `streamText` and
-   * do not need to implement `chatStream`. Slated for removal once all in-tree
-   * providers expose `aiSdkBridge`.
-   */
-  chatStream?(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk>
   chat?(messages: Message[], options?: ChatOptions): Promise<LLMResponse>
   isAvailable(): Promise<boolean>
   /** Get the current default model ID */
@@ -161,7 +154,7 @@ export interface Provider {
   resetSession?(): void | Promise<void>
   /**
    * Optional. AI SDK bridge factory. When set, the AI SDK loop drives
-   * this provider via `streamText` directly, bypassing `chatStream`. Each
+   * this provider via `streamText` directly. Each
    * factory call returns a fresh bridge so per-call config (conversationId,
    * headers) can be baked into the returned `LanguageModelV2`.
    *
