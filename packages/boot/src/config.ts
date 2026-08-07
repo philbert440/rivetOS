@@ -295,47 +295,9 @@ export interface DenSection {
 // Deployment Section (YAML shape — snake_case)
 // ---------------------------------------------------------------------------
 
+/** YAML shape — only `target` is read; any other key under deployment warns. */
 export interface DeploymentSection {
   target: 'docker' | 'proxmox' | 'kubernetes' | 'manual'
-  datahub?: {
-    postgres?: boolean
-    postgres_version?: string
-    shared_storage?: boolean
-    shared_mount_path?: string
-  }
-  image?: {
-    registry?: string
-    agent_image?: string
-    tag?: string
-    build_from_source?: boolean
-  }
-  docker?: {
-    network?: string
-    postgres_port?: number
-    project_name?: string
-  }
-  proxmox?: {
-    api_url?: string
-    nodes?: Array<{
-      name: string
-      host?: string
-      role: 'datahub' | 'agents' | 'both'
-      ctid_start?: number
-    }>
-    network?: {
-      bridge?: string
-      subnet?: string
-      gateway?: string
-    }
-  }
-  kubernetes?: {
-    namespace?: string
-    storage_class?: string
-    resources?: {
-      cpu?: string
-      memory?: string
-    }
-  }
 }
 
 export interface RuntimeSection {

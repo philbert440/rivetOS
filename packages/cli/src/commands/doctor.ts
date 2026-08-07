@@ -647,7 +647,7 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
 async function checkPeers(sshUser = 'rivet'): Promise<CheckResult[]> {
   const results: CheckResult[] = []
 
-  // Check for mesh.json (canonical NFS path, with legacy fallbacks + normalization)
+  // Check for mesh.json (canonical NFS path, then cwd)
   const meshFile = await loadMeshFile(process.cwd())
   if (!meshFile) return results
 

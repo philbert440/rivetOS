@@ -343,4 +343,18 @@ describe('FileMeshRegistry', () => {
     const all = await registry.getNodes()
     expect(all).toHaveLength(2)
   })
+
+  it('fails loud on pre-capabilities flat-array mesh.json', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(
+      join(tmpDir, 'mesh.json'),
+      JSON.stringify({
+        nodes: [{ name: 'legacy-node', ip: '192.0.2.1', role: 'primary' }],
+        updatedAt: 1,
+      }),
+      'utf-8',
+    )
+
+    await expect(registry.getNodes()).rejects.toThrow(/pre-capabilities flat-array/)
+  })
 })

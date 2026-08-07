@@ -72,9 +72,10 @@ export interface MeshView {
 export const meshFilePaths = (meshFile: string): string[] =>
   meshFile ? [meshFile] : ['/rivet-shared/mesh.json', join(homedir(), '.rivetos', 'mesh.json')]
 
-/** First readable + parseable candidate wins; null when none is. The legacy
- *  flat-array format predates capabilities/metadata, so nothing in one can be
- *  den-enabled — it parses to an empty roster rather than an error. */
+/** First readable + parseable candidate wins; null when none is.
+ *  Pre-capabilities flat-array format is no longer supported: den must not
+ *  crash the node, but silence is worse — log a clear warning and treat as
+ *  an empty roster. */
 export async function loadMeshFile(paths: string[]): Promise<MeshFileData | null> {
   for (const p of paths) {
     try {
@@ -82,8 +83,16 @@ export async function loadMeshFile(paths: string[]): Promise<MeshFileData | null
         updatedAt?: unknown
         nodes?: unknown
       }
+      if (Array.isArray(parsed.nodes)) {
+        console.warn(
+          `[den-server] mesh.json at ${p} uses the pre-capabilities flat-array format, ` +
+            'which is no longer supported. Treating as empty roster. Rewrite as ' +
+            'Record-format { version, nodes: { [id]: node }, updatedAt }.',
+        )
+        return { updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0, nodes: {} }
+      }
       const nodes =
-        parsed.nodes && typeof parsed.nodes === 'object' && !Array.isArray(parsed.nodes)
+        parsed.nodes && typeof parsed.nodes === 'object'
           ? (parsed.nodes as MeshFileData['nodes'])
           : {}
       return { updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0, nodes }

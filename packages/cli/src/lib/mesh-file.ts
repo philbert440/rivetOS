@@ -1,9 +1,10 @@
 /**
- * Canonical mesh.json loading + legacy-format normalization.
+ * Canonical mesh.json loading.
  *
  * The canonical file lives at `/rivet-shared/mesh.json` (the NFS mount from the
- * datahub). We also accept a couple of legacy locations and the old flat-array
- * format so a half-migrated mesh still updates cleanly.
+ * datahub). When `root` is provided (e.g. doctor/cwd), that directory's
+ * mesh.json is also tried. The pre-capabilities flat-array format is rejected
+ * with a clear error — Record-format only.
  */
 
 import { readFile } from 'node:fs/promises'
@@ -41,55 +42,41 @@ export interface MeshFile {
   updatedAt: number
 }
 
-/** Legacy mesh.json format — flat array with `ip` instead of `host`. */
-interface LegacyMeshFile {
-  nodes: Array<{ name: string; ip?: string; host?: string; role?: string }>
-  updatedAt?: number
-}
-
-/** Normalize a legacy array-based mesh.json to the Record-based format. */
-export function normalizeMeshFile(parsed: MeshFile | LegacyMeshFile): MeshFile {
-  if (!Array.isArray(parsed.nodes)) {
-    return parsed as MeshFile
+/**
+ * Assert mesh.json is Record-format. Throws if `nodes` is a flat array
+ * (pre-capabilities format no longer supported).
+ */
+export function assertRecordMeshFile(parsed: unknown, path: string): MeshFile {
+  const data = parsed as { nodes?: unknown; version?: unknown; updatedAt?: unknown }
+  if (Array.isArray(data.nodes)) {
+    throw new Error(
+      `mesh.json at ${path} uses the pre-capabilities flat-array format, ` +
+        'which is no longer supported. Rewrite the file as Record-format ' +
+        '{ version, nodes: { [id]: node }, updatedAt } (see live /rivet-shared/mesh.json).',
+    )
   }
-
-  const nodes: MeshFile['nodes'] = {}
-  for (const entry of parsed.nodes) {
-    const host = entry.ip ?? entry.host ?? ''
-    const id = entry.name
-    nodes[id] = {
-      id,
-      name: entry.name,
-      host,
-      port: 3100,
-      status: 'offline',
-      role: entry.role === 'primary' ? 'agent' : entry.role,
-    }
-  }
-
-  return {
-    version: 1,
-    nodes,
-    updatedAt: parsed.updatedAt ?? Date.now(),
-  }
+  return parsed as MeshFile
 }
 
 /**
- * Load and normalize mesh.json, checking the canonical path first and a couple
- * of legacy fallbacks. Returns null if none are readable.
+ * Load mesh.json, checking the canonical path first and optional root.
+ * Returns null if none are readable. Throws on unsupported array format.
  */
 export async function loadMeshFile(root?: string): Promise<MeshFile | null> {
   const paths = ['/rivet-shared/mesh.json']
   if (root) paths.push(resolve(root, 'mesh.json'))
-  paths.push(resolve(process.env.HOME ?? '~', '.rivetos', 'mesh.json'))
 
   for (const p of paths) {
     try {
       const raw = await readFile(p, 'utf-8')
-      const parsed = JSON.parse(raw) as MeshFile | LegacyMeshFile
-      return normalizeMeshFile(parsed)
-    } catch {
-      // try next
+      const parsed: unknown = JSON.parse(raw)
+      return assertRecordMeshFile(parsed, p)
+    } catch (err) {
+      // Fail loud on unsupported array format — do not try the next candidate.
+      if (err instanceof Error && err.message.includes('pre-capabilities flat-array')) {
+        throw err
+      }
+      // try next (missing / unreadable / invalid JSON)
     }
   }
 

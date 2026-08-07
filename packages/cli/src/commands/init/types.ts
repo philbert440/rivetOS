@@ -19,27 +19,10 @@ export interface WizardChannel {
   ownerId: string
 }
 
-export interface ProxmoxNode {
-  name: string
-  host: string
-  role: 'datahub' | 'agents' | 'both'
-}
-
-export interface ProxmoxSetup {
-  apiUrl: string
-  nodes: ProxmoxNode[]
-  network: {
-    bridge: string
-    subnet: string
-    gateway: string
-  }
-}
-
 export interface WizardState {
   deployment: DeploymentTarget
   agents: WizardAgent[]
   channels: WizardChannel[]
-  proxmox?: ProxmoxSetup
   postgresPassword: string
   /** Full postgres connection string. For manual deployments the wizard prompts the user; for docker/proxmox it is generated against the bundled datahub. */
   postgresUrl?: string
