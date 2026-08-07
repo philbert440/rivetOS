@@ -1,0 +1,34 @@
+id: hello-world
+version: "0.1.0"
+name: Hello World
+description: >
+  Minimal example workflow demonstrating the directory convention:
+  a script step, an agent step, a human gate, and done. Copy this
+  directory as a starting point for new workflows.
+input:
+  - name: name
+    type: string
+    required: true
+    description: Who to greet
+output:
+  - name: greeting
+    type: string
+    description: The composed greeting
+outline:
+  - id: prepare
+    kind: run
+    label: Prepare
+    description: Record the input in the case directory
+  - id: greet
+    kind: agent
+    label: Greet
+    description: Agent composes a greeting
+  - id: approve-gate
+    kind: human
+    label: Approve
+    description: Human approves the greeting
+  - id: done
+    kind: done
+    label: Done
+budgets:
+  maxTokens: 20000

@@ -604,12 +604,13 @@ export async function registerAgentTools(
     const configuredRoots = config.workflows?.defs_roots?.filter(
       (r) => typeof r === 'string' && r.trim(),
     )
-    // Default: repo recipes at <installRoot>/workflows + shared defs.
+    // Default: shared defs first so deployment recipes (and RivetHub edits)
+    // shadow shipped examples at <installRoot>/workflows on id collision.
     // Explicit defs_roots replaces the default entirely (no silent merge).
     const workflowsRoots =
       configuredRoots && configuredRoots.length > 0
         ? configuredRoots
-        : [...(installRoot ? [join(installRoot, 'workflows')] : []), '/rivet-shared/workflows/defs']
+        : ['/rivet-shared/workflows/defs', ...(installRoot ? [join(installRoot, 'workflows')] : [])]
     const defaultAgentId =
       Object.keys(config.agents ?? {})[0] ?? runtime.getRouter().getAgents()[0]?.id ?? 'rivet'
     // Prefer durable task store; fall back to in-memory subagent store so
