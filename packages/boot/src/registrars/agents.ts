@@ -637,11 +637,16 @@ export async function registerAgentTools(
       workflowsRoots,
       executors: hostExecutors,
     })
+    // filesRoot for editPath: den.files_root when set, else product default
+    // (/rivet-shared). Empty string in config disables editPath.
+    const filesRoot =
+      typeof config.den?.files_root === 'string' ? config.den.files_root.trim() : '/rivet-shared'
     gatewayRoutes.push(
       ...createWorkflowApiRouteList({
         engine: workflowEngine,
         workflowsRoots,
         caseDirRoot,
+        filesRoot,
         onGatePaused: notifications ? (frame) => notifications.broadcast(frame) : undefined,
       }),
     )

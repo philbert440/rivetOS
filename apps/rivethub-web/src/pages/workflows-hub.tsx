@@ -23,6 +23,7 @@ import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { WorkflowContractForm } from '../components/workflow-contract-form.js'
 import { WorkflowGraph } from '../components/workflow-graph.js'
+import { WorkflowEditPanel } from '../components/workflow-edit-panel.js'
 import {
   emptyFormValues,
   formatJournal,
@@ -242,10 +243,33 @@ export function WorkflowTriggerPage(): JSX.Element {
   const [issues, setIssues] = useState<FieldIssues>({})
   const [formError, setFormError] = useState<string | undefined>()
   const [submitting, setSubmitting] = useState(false)
+  /** Run | Edit — Edit only when the def exposes editPath (under files root). */
+  const [pageMode, setPageMode] = useState<'run' | 'edit'>('run')
+  /** Unsaved-edit tracking from the edit panel — guards leaving edit mode. */
+  const editDirtyRef = useRef(false)
+  const switchMode = useCallback(
+    (next: 'run' | 'edit') => {
+      // Clicking the already-active chip must be a pure no-op — clearing the
+      // dirty ref here would disarm the guard without any re-render to
+      // re-report dirty (same-value setState bails).
+      if (next === pageMode) return
+      if (
+        pageMode === 'edit' &&
+        editDirtyRef.current &&
+        !window.confirm('Discard unsaved changes?')
+      ) {
+        return
+      }
+      editDirtyRef.current = false
+      setPageMode(next)
+    },
+    [pageMode],
+  )
 
   const fields: WorkflowField[] = def.data?.workflow.input ?? []
   const defId = def.data?.workflow.id
   const defVersion = def.data?.workflow.version
+  const editPath = def.data?.workflow.editPath
 
   // Seed form when def loads (or workflowId / version changes) — avoid wipe on refetch.
   useEffect(() => {
@@ -255,6 +279,11 @@ export function WorkflowTriggerPage(): JSX.Element {
     setFormError(undefined)
     // def.data.workflow.input is replaced with defId/defVersion identity
   }, [workflowId, defId, defVersion])
+
+  // If editPath disappears (refetch), drop out of edit mode.
+  useEffect(() => {
+    if (!editPath && pageMode === 'edit') setPageMode('run')
+  }, [editPath, pageMode])
 
   const onChange = useCallback((name: string, value: string) => {
     setValues((v) => ({ ...v, [name]: value }))
@@ -293,20 +322,73 @@ export function WorkflowTriggerPage(): JSX.Element {
   if (!connected) return <NotConnected />
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
-      <div className="mb-4">
+    <div className={`mx-auto px-6 py-8 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`}>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <Link
           to="/workflows"
           className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
         >
           ← workflows
         </Link>
+        {def.data && (
+          <div
+            className="inline-flex gap-0.5 rounded border border-line p-0.5"
+            role="group"
+            aria-label="Workflow page mode"
+          >
+            <button
+              type="button"
+              aria-pressed={pageMode === 'run'}
+              onClick={() => switchMode('run')}
+              className={`rounded px-2.5 py-1 font-mono text-[11px] ${
+                pageMode === 'run' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
+              }`}
+            >
+              Run
+            </button>
+            <button
+              type="button"
+              aria-pressed={pageMode === 'edit'}
+              disabled={!editPath}
+              title={
+                editPath
+                  ? `Edit files under ${editPath}`
+                  : 'Def is not under the files root — edit disabled'
+              }
+              onClick={() => editPath && switchMode('edit')}
+              className={`rounded px-2.5 py-1 font-mono text-[11px] disabled:opacity-40 ${
+                pageMode === 'edit' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
+              }`}
+            >
+              Edit
+            </button>
+          </div>
+        )}
       </div>
 
       {def.isError && <div className="font-mono text-sm text-red">{def.error.message}</div>}
       {def.isLoading && <p className="text-sm text-ink-dim">loading definition…</p>}
 
-      {def.data && (
+      {def.data && pageMode === 'edit' && editPath && (
+        <>
+          <h1 className="mb-1 font-mono text-lg font-semibold text-em">{def.data.workflow.name}</h1>
+          <p className="mb-4 font-mono text-[11px] text-ink-dim">
+            {def.data.workflow.id} · v{def.data.workflow.version}
+          </p>
+          {/* key: remount per def — router param navigation reuses this component,
+              and the panel seeds `selected` in a mount-only initializer. */}
+          <WorkflowEditPanel
+            key={editPath}
+            workflowId={workflowId}
+            editPath={editPath}
+            onDirtyChange={(d) => {
+              editDirtyRef.current = d
+            }}
+          />
+        </>
+      )}
+
+      {def.data && pageMode === 'run' && (
         <>
           <h1 className="font-mono text-lg font-semibold text-em">{def.data.workflow.name}</h1>
           <p className="mt-1 font-mono text-[11px] text-ink-dim">
@@ -697,7 +779,7 @@ function GateCard(props: {
   // never while a submit is in flight; if a gate change arrives mid-flight,
   // the `submitting` dep re-runs this effect once the flight ends.
   const submittingRef = useRef(false)
-  const lastSeededKey = useRef<string>()
+  const lastSeededKey = useRef<string | undefined>(undefined)
   useEffect(() => {
     if (submittingRef.current) return
     if (lastSeededKey.current === gateKey) return
