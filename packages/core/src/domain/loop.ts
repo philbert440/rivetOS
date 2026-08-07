@@ -238,7 +238,7 @@ export class AgentLoop {
       ? `${this.config.systemPrompt}\n\n${prep.system}`
       : this.config.systemPrompt
 
-    let aiSdkMessages: ModelMessage[] = convertMessagesToAiSdk(wireMessages)
+    const aiSdkMessages: ModelMessage[] = convertMessagesToAiSdk(wireMessages)
 
     // ---- Turn state ------------------------------------------------------
     const state: TurnState = {
