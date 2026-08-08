@@ -1,13 +1,16 @@
 /**
- * Bearer-auth + unix-socket integration tests for slice 1.A.7'.
+ * Bearer-auth + unix-socket integration tests for the v2 mount.
  *
  * Covers:
  *   - TCP without token → unauthenticated (current behavior, no regression)
- *   - TCP with token → 401 missing/wrong header, 200 with correct bearer
+ *   - TCP with token → 401 missing/wrong header, non-401 with correct bearer
  *   - Liveness probe stays open even when bearer is required
- *   - Unix-socket bind serves MCP without bearer
- *   - Unix socket file is mode 0600 and removed on stop
- *   - `requireBearerOnSocket: true` enforces bearer on the socket too
+ *   - Unix-socket bind without a token serves MCP unauthenticated
+ *     (filesystem perms are the auth boundary)
+ *   - Unix socket file is mode 0600 and removed on close
+ *   - A token on a socket bind enforces bearer (the sidecar composes
+ *     "skip bearer on socket" by omitting the token — see cli.ts)
+ *   - A non-socket file at the socket path is refused, never deleted
  */
 
 import { describe, it, expect, afterEach } from 'vitest'
@@ -16,10 +19,10 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 
-import { createMcpServer, type RivetMcpServer } from '@rivetos/mcp-v1'
+import { createV2McpServer, type V2McpServer } from '@rivetos/mcp-v2'
 
 interface Harness {
-  server: RivetMcpServer
+  server: V2McpServer
 }
 
 const cleanups: Array<() => Promise<void>> = []
@@ -39,8 +42,8 @@ afterEach(async () => {
   }
 })
 
-function track(server: RivetMcpServer): Harness {
-  cleanups.push(() => server.stop())
+function track(server: V2McpServer): Harness {
+  cleanups.push(() => server.close())
   return { server }
 }
 
@@ -100,39 +103,31 @@ async function getOverSocket(
 describe('Bearer-token auth on TCP', () => {
   it('liveness probe stays open without auth', async () => {
     const { server } = track(
-      createMcpServer({
+      createV2McpServer({
         host: '127.0.0.1',
         port: 0,
         authToken: 'sekret-abc-123',
-        log: () => {
-          /* quiet */
-        },
       }),
     )
     await server.start()
-    const port = server.address.port ?? 0
 
-    const res = await fetchOver('127.0.0.1', port, '/health/live')
+    const res = await fetchOver('127.0.0.1', server.port, '/health/live')
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { status: string }
-    expect(body.status).toBe('ok')
+    const body = (await res.json()) as { ok: boolean }
+    expect(body.ok).toBe(true)
   })
 
   it('rejects /mcp without bearer when token is required', async () => {
     const { server } = track(
-      createMcpServer({
+      createV2McpServer({
         host: '127.0.0.1',
         port: 0,
         authToken: 'sekret-abc-123',
-        log: () => {
-          /* quiet */
-        },
       }),
     )
     await server.start()
-    const port = server.address.port ?? 0
 
-    const res = await fetchOver('127.0.0.1', port, '/mcp', {
+    const res = await fetchOver('127.0.0.1', server.port, '/mcp', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
@@ -143,19 +138,15 @@ describe('Bearer-token auth on TCP', () => {
 
   it('rejects /mcp with the wrong bearer', async () => {
     const { server } = track(
-      createMcpServer({
+      createV2McpServer({
         host: '127.0.0.1',
         port: 0,
         authToken: 'sekret-abc-123',
-        log: () => {
-          /* quiet */
-        },
       }),
     )
     await server.start()
-    const port = server.address.port ?? 0
 
-    const res = await fetchOver('127.0.0.1', port, '/mcp', {
+    const res = await fetchOver('127.0.0.1', server.port, '/mcp', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -168,21 +159,17 @@ describe('Bearer-token auth on TCP', () => {
 
   it('passes /mcp with the correct bearer', async () => {
     const { server } = track(
-      createMcpServer({
+      createV2McpServer({
         host: '127.0.0.1',
         port: 0,
         authToken: 'sekret-abc-123',
-        log: () => {
-          /* quiet */
-        },
       }),
     )
     await server.start()
-    const port = server.address.port ?? 0
 
-    // Empty POST body fails downstream (no init request) but we expect 400
-    // not 401 — proves auth passed.
-    const res = await fetchOver('127.0.0.1', port, '/mcp', {
+    // Empty POST body fails downstream (no valid MCP request) but we expect
+    // a non-401 — proves auth passed.
+    const res = await fetchOver('127.0.0.1', server.port, '/mcp', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -197,14 +184,7 @@ describe('Bearer-token auth on TCP', () => {
 describe('Unix-socket binding', () => {
   it('binds to the socket path with mode 0600 and serves liveness', async () => {
     const sockPath = tmpSocketPath()
-    const { server } = track(
-      createMcpServer({
-        socketPath: sockPath,
-        log: () => {
-          /* quiet */
-        },
-      }),
-    )
+    const { server } = track(createV2McpServer({ socketPath: sockPath }))
     await server.start()
 
     const stat = fs.statSync(sockPath)
@@ -214,53 +194,38 @@ describe('Unix-socket binding', () => {
 
     const { status, body } = await getOverSocket(sockPath, '/health/live')
     expect(status).toBe(200)
-    expect((body as { status: string }).status).toBe('ok')
+    expect((body as { ok: boolean }).ok).toBe(true)
   })
 
-  it('removes the socket file on stop', async () => {
+  it('removes the socket file on close', async () => {
     const sockPath = tmpSocketPath()
-    const server = createMcpServer({
-      socketPath: sockPath,
-      log: () => {
-        /* quiet */
-      },
-    })
+    const server = createV2McpServer({ socketPath: sockPath })
     await server.start()
     expect(fs.existsSync(sockPath)).toBe(true)
-    await server.stop()
+    await server.close()
     expect(fs.existsSync(sockPath)).toBe(false)
   })
 
-  it('skips bearer on the socket by default', async () => {
+  it('serves MCP without bearer when no token is configured', async () => {
+    // The sidecar composes "skip bearer on socket" by omitting authToken
+    // (filesystem perms are the boundary) — the server itself is dumb.
     const sockPath = tmpSocketPath()
-    const { server } = track(
-      createMcpServer({
-        socketPath: sockPath,
-        authToken: 'this-should-not-be-required',
-        log: () => {
-          /* quiet */
-        },
-      }),
-    )
+    const { server } = track(createV2McpServer({ socketPath: sockPath }))
     await server.start()
 
     const { status } = await getOverSocket(sockPath, '/mcp', {
       // Note: no authorization header.
     })
-    // /mcp without a session id and via GET → 400 (session_required), NOT 401.
+    // GET /mcp without a valid MCP request → 4xx from the handler, NOT 401.
     expect(status).not.toBe(401)
   })
 
-  it('enforces bearer on the socket when requireBearerOnSocket=true', async () => {
+  it('enforces bearer on the socket when a token is configured', async () => {
     const sockPath = tmpSocketPath()
     const { server } = track(
-      createMcpServer({
+      createV2McpServer({
         socketPath: sockPath,
         authToken: 'sock-token',
-        requireBearerOnSocket: true,
-        log: () => {
-          /* quiet */
-        },
       }),
     )
     await server.start()
@@ -274,33 +239,16 @@ describe('Unix-socket binding', () => {
     expect(withAuthStatus).not.toBe(401)
   })
 
-  it('cleans up a stale socket from a previous run', async () => {
+  it('refuses to clean up a non-socket file at the socket path', async () => {
     const sockPath = tmpSocketPath()
-    // Pre-create a stale socket via a throwaway server.
-    const stale = createMcpServer({
-      socketPath: sockPath,
-      log: () => {
-        /* quiet */
-      },
-    })
-    await stale.start()
-    // Force-leak: grab a handle on the file but DON'T call stop().
-    // Then start a new server on the same path — it should clean up.
-    expect(fs.existsSync(sockPath)).toBe(true)
-    await stale.stop()
-    // Recreate stale state by writing a sentinel file at the path.
+    // A regular file at the path (NOT a crashed run's socket) must be
+    // refused, not deleted — we only auto-clean things that are sockets.
     fs.writeFileSync(sockPath, '')
     expect(fs.existsSync(sockPath)).toBe(true)
 
-    // The new server should refuse to clean up a non-socket file —
-    // safety check. We only auto-clean things that are sockets.
-    const newServer = createMcpServer({
-      socketPath: sockPath,
-      log: () => {
-        /* quiet */
-      },
-    })
-    await expect(newServer.start()).rejects.toThrow()
+    const server = createV2McpServer({ socketPath: sockPath })
+    await expect(server.start()).rejects.toThrow(/non-socket/)
+    expect(fs.existsSync(sockPath)).toBe(true)
     fs.unlinkSync(sockPath)
   })
 })

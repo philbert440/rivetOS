@@ -1,8 +1,7 @@
 /**
  * ToolRegistration — the SDK-agnostic tool shape the RivetOS MCP mounts
- * consume. The v1 mount (packages/mcp-v1, SDK 1.x — the bridge/Claude Code
- * world) and the v2 mount (2026-07-28 final, @modelcontextprotocol/* 2.0)
- * both register these; the adapt layer produces them from RivetOS Tools.
+ * consume. The v2 mount (2026-07-28 final, @modelcontextprotocol/* 2.0)
+ * registers these; the adapt layer produces them from RivetOS Tools.
  * Keeping the shape here keeps the core free of any @modelcontextprotocol
  * dependency.
  */

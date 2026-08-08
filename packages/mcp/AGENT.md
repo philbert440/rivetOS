@@ -1,18 +1,21 @@
 # @rivetos/mcp — agent context
 
-## Current state (2026-08-04)
+## Current state (2026-08-08)
 
-Full ABC cutover to **MCP 2026-07-28 final** is on branch `feat/mcp-2026-07-28-final`.
+Everything speaks **MCP 2026-07-28 final** (v2). `packages/mcp-v1` (the
+sessionful 2025-11-25 mount on `@modelcontextprotocol/sdk@1.30.0`) is
+DELETED — stdio compatibility with 2025-era clients (Claude Code today) is
+handled by the v2 SDK's era-negotiating `serveStdio` instead of a separate
+v1 mount.
 
-| Package | Role | Protocol / SDK |
-|---|---|---|
-| `@rivetos/mcp` | SDK-agnostic core (ToolRegistration, adapt) | — |
-| `@rivetos/mcp-v1` | Sessionful mount | 2025-11-25 / `@modelcontextprotocol/sdk@1.30.0` |
-| `@rivetos/mcp-v2` | Stateless mount + client facade | 2026-07-28 / `server|client|node@2.0.0` |
-| `@rivetos/mcp-server` | In-process transport plugin | **v2** |
-| `@rivetos/mcp-sidecar` | Standalone process | HTTP→**v2**, stdio→**v1** (env override) |
-| `@rivetos/tool-mcp-client` | Outbound client plugin | dual-stack, default v1 |
-| claude-cli `mcp-bridge` | Per-spawn embedded server | **v2** default, `RIVETOS_MCP_BRIDGE_PROTOCOL=v1` fallback |
+| Package                    | Role                                              | Protocol / SDK                                         |
+| -------------------------- | ------------------------------------------------- | ------------------------------------------------------ |
+| `@rivetos/mcp`             | SDK-agnostic core (ToolRegistration, adapt, echo) | —                                                      |
+| `@rivetos/mcp-v2`          | Stateless mount (HTTP + stdio) + client facade    | 2026-07-28 / `server`/`client`/`node` `@2.0.0`         |
+| `@rivetos/mcp-server`      | In-process transport plugin                       | **v2**                                                 |
+| `@rivetos/mcp-sidecar`     | Standalone process                                | HTTP→**v2**; stdio→era-negotiating (v2, legacy served) |
+| `@rivetos/tool-mcp-client` | Outbound client plugin                            | own SDK dep (not mcp-v1)                               |
+| claude-cli `mcp-bridge`    | Per-spawn embedded server                         | **v2** only                                            |
 
 ## Spec features wired
 
@@ -27,8 +30,9 @@ Full ABC cutover to **MCP 2026-07-28 final** is on branch `feat/mcp-2026-07-28-f
 
 ## Env knobs
 
-- `RIVETOS_MCP_PROTOCOL=v1|v2` — sidecar (stdio defaults v1; HTTP defaults v2)
-- `RIVETOS_MCP_BRIDGE_PROTOCOL=v1|v2` — claude-cli bridge (default v2)
+The `RIVETOS_MCP_PROTOCOL` / `RIVETOS_MCP_BRIDGE_PROTOCOL` switches were
+removed with mcp-v1 — every mount is v2. `RIVETOS_DISABLE_MCP_BRIDGE`
+(claude-cli provider kill switch) remains.
 
 ## Gate
 
@@ -39,4 +43,3 @@ Full ABC cutover to **MCP 2026-07-28 final** is on branch `feat/mcp-2026-07-28-f
 
 - Claude Code fleet canary on real `claude` binary (support rolling out)
 - Full MCP Tasks RPC (`tasks/get` / `subscriptions/listen`) when a consumer needs it
-- v2 stdio transport for sidecar (currently refused — use HTTP/socket)

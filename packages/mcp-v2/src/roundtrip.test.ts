@@ -95,17 +95,38 @@ describe('mcp v2 round-trip (2026-07-28 final gate)', () => {
     expect(res.status).toBe(401)
   })
 
-  it('unix socket: stale socket replaced, mode 0600', async () => {
-    const { mkdtempSync, statSync, writeFileSync } = await import('node:fs')
+  it('unix socket: stale socket from a crashed run replaced, mode 0600', async () => {
+    const { mkdtempSync, statSync, lstatSync } = await import('node:fs')
+    const { execFileSync } = await import('node:child_process')
     const { tmpdir } = await import('node:os')
     const { join } = await import('node:path')
     const dir = mkdtempSync(join(tmpdir(), 'mcp-v2-sock-'))
     const sock = join(dir, 'mcp.sock')
-    writeFileSync(sock, '') // stale file at the socket path
+    // Leave a genuine stale socket behind: process death never unlinks a
+    // bound unix socket, so bind in a child and exit without cleanup.
+    execFileSync(process.execPath, [
+      '-e',
+      "require('net').createServer().listen(process.argv[1], () => process.exit(0))",
+      sock,
+    ])
+    expect(lstatSync(sock).isSocket()).toBe(true)
     const server = createV2McpServer({ socketPath: sock, tools: [] })
     await server.start()
     cleanups.push(() => server.close())
     expect(statSync(sock).mode & 0o777).toBe(0o600)
+  })
+
+  it('unix socket: refuses to replace a non-socket file at the path', async () => {
+    const { mkdtempSync, writeFileSync, existsSync, unlinkSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-v2-sock-'))
+    const sock = join(dir, 'mcp.sock')
+    writeFileSync(sock, '') // an ordinary file the config happens to point at
+    const server = createV2McpServer({ socketPath: sock, tools: [] })
+    await expect(server.start()).rejects.toThrow(/non-socket/)
+    expect(existsSync(sock)).toBe(true) // the file was NOT deleted
+    unlinkSync(sock)
   })
 
   it('bearer auth gates the MCP endpoint but not /health/live', async () => {
@@ -145,9 +166,9 @@ describe('mcp v2 round-trip (2026-07-28 final gate)', () => {
     const info = await client.discover()
     // discover may return partial info depending on handler path; must not throw
     expect(info).toBeDefined()
-    expect(info.raw !== undefined || info.serverInfo !== undefined || info.capabilities !== undefined).toBe(
-      true,
-    )
+    expect(
+      info.raw !== undefined || info.serverInfo !== undefined || info.capabilities !== undefined,
+    ).toBe(true)
   })
 
   it('structured results round-trip as text content', async () => {
