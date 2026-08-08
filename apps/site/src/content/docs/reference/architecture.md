@@ -236,7 +236,7 @@ rivetOS/
       rivetos/                       ← Unified runtime image — built once, dispatched via `--role`
       DATA-PERSISTENCE.md            ← data persistence model documentation
     docker/                          ← Compose stacks
-      rivetos/                       ← canonical stack (datahub + migrate + workers + agent)
+      rivetos/                       ← canonical stack (datahub + migrate + agent + 2 workers)
       mcp-stack/                     ← standalone MCP server stack
     scripts/                         ← provision-ct.sh, setup-mesh-hosts.sh, …
     templates/                       ← workspace + config skeletons used by `init`
@@ -430,7 +430,7 @@ rivetOS/
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
 
-Skills are not part of the source tree — they are user-managed and live under the runtime workspace (default `~/.rivetos/workspace/skills/`). See [Skills](/guides/skills/).
+Skills are not part of the source tree — they are user-managed and live under the runtime workspace (default `~/.rivetos/workspace/skills/`). See [SKILLS.md](/guides/skills/).
 
 ## Plugin Interfaces
 

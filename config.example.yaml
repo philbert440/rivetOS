@@ -74,8 +74,12 @@ memory:
   postgres:
     # connection_string via env: RIVETOS_PG_URL
     #
-    # Embedding and compaction are handled by the unified rivetos image
-    # running with --role worker (see infra/docker/rivetos/docker-compose.yml).
+    # Embedding and compaction run as their own processes — the
+    # services/embedding-worker and services/compaction-worker graphile
+    # workers. Deploy them as separate systemd units alongside Postgres, or
+    # bring up the `embedding-worker` / `compaction-worker` services in
+    # infra/docker/rivetos/docker-compose.yml. Neither is started by the
+    # agent runtime.
     #
     # Optional: persist delegation events into memory
     # delegation_tracking: true
