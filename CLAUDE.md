@@ -69,12 +69,16 @@ root `package.json`: `packages/*`, `plugins/*/*`, `services/*`, and several
 `apps/`.
 
 Internal packages depend on each other by **pinned version**
-(`"@rivetos/types": "0.4.0-beta.6"`) rather than the `workspace:*` protocol,
-which npm does not support. npm still links them from the workspace as long as
-the pinned version matches the member's `version` field — so a version bump
-that lands in one package but not its consumers will silently pull the
-published tarball from the registry instead of the local source. Bump in
-lockstep.
+(`"@rivetos/types": "0.4.0-beta.6"`) rather than the `workspace:*` protocol.
+This is a repo convention, not an npm limitation: most of these packages are
+published to npm, and a pinned range is what consumers outside the workspace
+resolve against, so the manifest reads the same in-tree and on the registry.
+
+The catch is that npm links a workspace member locally only while the pinned
+range still matches that member's own `version`. Bump a package's version
+without bumping the consumers that pin it and npm will quietly resolve the
+**published tarball** from the registry instead of your local source — the
+build succeeds, and you are testing the wrong code. Bump in lockstep.
 
 Edits to a workspace package need a rebuild before consumers see them:
 

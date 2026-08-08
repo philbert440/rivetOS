@@ -142,7 +142,13 @@ boot                    ← types, core, workflows, den-server,
                           memory-postgres, provider-claude-cli
 cli                     ← boot, workflows
 
-plugins/*               ← types (some also on core for the logger)
+plugins/providers/*     ← types, aisdk
+  └─ claude-cli         ← + mcp, mcp-v2
+plugins/memory/postgres ← types, wiki-core
+plugins/channels/*      ← types
+plugins/tools/*         ← types
+  └─ mcp-client         ← + mcp-v2
+plugins/transports/mcp-server ← types, mcp, mcp-v2
 
 services/den-server     ← den-protocol, types
 services/compaction-worker ← memory-postgres, wiki-core
@@ -153,15 +159,13 @@ services/mcp-sidecar    ← mcp, mcp-v2, core, types, wiki-core,
 infra/                  ← Build artifacts only — no @rivetos/* runtime deps
 ```
 
+**No plugin depends on `@rivetos/core`.** Providers reach the shared AI SDK adapter through `@rivetos/aisdk`; anything else a plugin needs comes from `@rivetos/types`.
+
 **Rule: `@rivetos/types` is (almost) interfaces only.** Its one workspace dependency is
 `@rivetos/den-protocol`, which supplies the den event contract that the runtime types
 reference. Beyond that, if you need a class or function, it goes in `core`.
 
-**Static plugin dependencies in `boot`.** Plugin loading is still discovery- and
-manifest-driven, but `boot` declares four workspace packages statically so the default
-install always has a working provider, memory backend, den server, and workflow engine:
-`@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, and
-`@rivetos/workflows`. Everything else is discovered and dynamically imported.
+**What `boot` declares in `package.json`.** Four workspace packages are listed as direct dependencies of `boot` — `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, and `@rivetos/workflows` — so a default install always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the two that are also plugins — the claude-cli provider and the memory-postgres backend — are still registered the same way as every other plugin, through discovery and `manifest.register()`.
 
 ---
 
@@ -611,7 +615,7 @@ Channel receives message
 1. **`types` is near the bottom** — everything depends on it; it depends only on `den-protocol`
 2. **Domain layer is pure** — no I/O, no `fs`, no `fetch`. Only interfaces.
 3. **Application layer wires I/O** — runtime/, boot/registrars/
-4. **Plugins are discovered and dynamically imported** — with four deliberate exceptions that `boot` depends on statically so a default install works out of the box: `provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`
+4. **Plugins are discovered and registered via `manifest.register()`** — without exception, including `provider-claude-cli` and `memory-postgres`. `boot` additionally declares four workspace packages in its `package.json` so they are always installed, and imports specific symbols from them; that is an installation edge, not a registration shortcut
 5. **Late binding for tools** — composite tools get tool executors as closures, not direct refs
 6. **Config is YAML, not code** — all user-facing config in `config.yaml`
 7. **Secrets in `.env`** — never in config YAML, never in container images

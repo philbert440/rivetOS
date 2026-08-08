@@ -81,7 +81,9 @@
 └────────────────────────────────────────────────────────┘
 ```
 
-**Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types. The one deliberate exception is `boot`, which declares four plugin/service packages statically (`provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`) so a default install boots with a working provider, memory backend, and den server. Everything else is discovered and dynamically imported.
+**Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types.
+
+**What `boot` declares in `package.json`.** Four workspace packages are listed as direct dependencies of `boot` — `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, and `@rivetos/workflows` — so a default install always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the two that are also plugins — the claude-cli provider and the memory-postgres backend — are still registered the same way as every other plugin, through discovery and `manifest.register()`.
 
 ## Domain Model
 
@@ -417,10 +419,11 @@ rivetOS/
     embedding-worker/                ← Postgres LISTEN → embedding model (GPU)
     compaction-worker/               ← Postgres LISTEN → summarization model (CPU)
     mcp-sidecar/                     ← Standalone MCP surface over the runtime's tools
-  skills/                            ← Optional per-instance skills
 ```
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
+
+Skills are not part of the source tree — they are user-managed and live under the runtime workspace (default `~/.rivetos/workspace/skills/`). See [SKILLS.md](SKILLS.md).
 
 ## Plugin Interfaces
 

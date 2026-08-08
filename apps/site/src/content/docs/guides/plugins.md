@@ -220,7 +220,7 @@ interface Memory {
 }
 ```
 
-The PostgreSQL memory plugin (`plugins/memory/postgres/`) is the reference. It implements full transcript storage, hybrid FTS + vector search, summary DAG (hierarchical compaction), event-driven embedding/compaction workers (deployed from `services/embedding-worker/` and `services/compaction-worker/`, running as Datahub services on Postgres `LISTEN`/`NOTIFY`), temporal decay scoring, and a review loop for pattern extraction. SQL DDL lives co-located in `plugins/memory/postgres/src/schema/migrations/`.
+The PostgreSQL memory plugin (`plugins/memory/postgres/`) is the reference. It implements full transcript storage, hybrid FTS + vector search, summary DAG (hierarchical compaction), event-driven embedding and compaction workers (`services/embedding-worker/` and `services/compaction-worker/` — separate long-running processes, run under Compose or systemd, that wake on Postgres `LISTEN`/`NOTIFY`), temporal decay scoring, and a review loop for pattern extraction. SQL DDL lives co-located in `plugins/memory/postgres/src/schema/migrations/`.
 
 See [MEMORY-DESIGN.md](/reference/memory-design/) for the full design.
 
