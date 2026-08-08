@@ -420,8 +420,8 @@ rivetOS/
                                      ←   StreamableHTTP. Has its own `rivetos-mcp-server` bin.
   services/                          ← Long-running processes deployed alongside the agent
     den-server/                      ← Embedded den/gateway server (also a boot dependency)
-    embedding-worker/                ← Postgres LISTEN → embedding model (GPU)
-    compaction-worker/               ← Postgres LISTEN → summarization model (CPU)
+    embedding-worker/                ← graphile-worker daemon → embedding model (GPU)
+    compaction-worker/               ← graphile-worker daemon → summarization model (CPU)
     mcp-sidecar/                     ← Standalone MCP surface over the runtime's tools
 ```
 

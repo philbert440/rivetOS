@@ -90,8 +90,8 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │
 ├── services/                    # Long-running processes deployed alongside the agent
 │   ├── den-server/              # Embedded den/gateway server (also a boot dependency)
-│   ├── embedding-worker/        # LISTEN/NOTIFY embedding pump
-│   ├── compaction-worker/       # LISTEN/NOTIFY compaction + wiki extraction pump
+│   ├── embedding-worker/        # graphile-worker daemon — embedding jobs
+│   ├── compaction-worker/       # graphile-worker daemon — compaction + wiki extraction
 │   └── mcp-sidecar/             # Standalone MCP surface over the runtime's tools
 │
 ├── apps/                        # End-user surfaces
@@ -284,7 +284,7 @@ Every `rivetos <command>` lives here. Lazy-loaded via dynamic import.
 
 | Command | File | Purpose |
 |---------|------|---------|
-| `init` | `commands/init/` | Interactive setup wizard (@clack/prompts) |
+| `init` | `commands/init.ts` → `commands/init/` | Interactive setup wizard (@clack/prompts) |
 | `start` | `commands/start.ts` | Boot and run (`--role agent \| migrate`) |
 | `stop` | `commands/stop.ts` | Kill running instance via PID file |
 | `status` | `commands/status.ts` | Runtime status display |
@@ -302,8 +302,8 @@ Every `rivetos <command>` lives here. Lazy-loaded via dynamic import.
 | `db` | `commands/db.ts` | Schema migration and inspection (`db migrate`, `db status`) |
 | `keys` | `commands/keys.ts` | SSH key management for the mesh (rotate, list, status) |
 | `service` | `commands/service.ts` | Systemd service management |
-| `skills` / `skill` | `commands/skills.ts` | Skill listing; `skill init`, `skill validate` subcommands |
-| `plugins` / `plugin` | `commands/plugins.ts` | Plugin listing and status; `plugins sync`, `plugin init` subcommands |
+| `skills` / `skill` | `commands/skills.ts` | Skill listing (`skill init` → `skill-init.ts`, `skill validate` → `skill-validate.ts`) |
+| `plugins` / `plugin` | `commands/plugins.ts` | Plugin listing and status (`plugins sync` → `plugins-sync.ts`, `plugin init` → `plugin-init.ts`) |
 | `workflow` | `commands/workflow.ts` | Scaffold workflows (`workflow new <name>`) |
 | `provider` | `commands/provider.ts` | Provider-specific commands (setup, status) |
 | `version` | `commands/version.ts` | Version display |
@@ -419,7 +419,7 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 **Unified `rivetos` image** (`infra/containers/rivetos/Dockerfile`):
 - Single Node 24 Alpine image, non-root user (`rivetos`), tini init
 - Built once with `npm run build` (esbuild bundle in `dist/`)
-- Dispatched at runtime via `--role agent | migrate` (`packages/cli/src/commands/start.ts`); `agent` is the default and any other value is rejected. `RIVETOS_ROLE` overrides the flag.
+- Dispatched at runtime via `--role agent | migrate` (`packages/cli/src/commands/start.ts`). `agent` is the default. `RIVETOS_ROLE` seeds the role, but an explicit `--role` flag overrides it — the flag wins, not the env var. An invalid `--role` value exits with `unknown role`; an invalid `RIVETOS_ROLE` is not validated and falls through to the agent path.
 - Healthcheck: hits `/health/live` on the agent role; the migrate role skips the check
 - Workspace and config mounted as volumes
 
@@ -433,32 +433,43 @@ The canonical stack lives at `infra/docker/rivetos/docker-compose.yml` and runs 
 
 - `datahub` — Postgres + pgvector (image: `pgvector/pgvector:pg16`, upstream)
 - `migrate` — one-shot, applies pending migrations and exits (image: `rivetos`, role: `migrate`)
-- `workers` — embedding + compaction LISTEN/NOTIFY pumps (image: `rivetos`, role: `worker`)
+- `workers` — embedding + compaction `graphile-worker` daemons (image: `rivetos`)
 - `agent` — runtime that drives channels + providers (image: `rivetos`, role: `agent`)
 
 Named volume: `rivetos-pgdata`. Health check dependencies: `migrate` and `workers` wait for `datahub` to be healthy; `workers` and `agent` wait for `migrate` to complete successfully.
 
 ### Memory Workers (Datahub Services)
 
-Embedding and compaction run as **event-driven workers on Datahub**, co-located with Postgres. No agent node runs background memory jobs — the workers are the sole consumers.
+Embedding and compaction run as **`graphile-worker` daemons deployed alongside Datahub**
+(`services/embedding-worker/`, `services/compaction-worker/`). Both pull from a
+Postgres-backed job queue rather than holding a `LISTEN` connection — the earlier
+LISTEN/NOTIFY pumps under `plugins/memory/postgres/workers/` were replaced. No agent node
+runs background memory jobs; the workers are the sole consumers.
 
 ```
 ┌────────────────────────────────────────────────────┐
-│  Datahub  —  Postgres 16 + Workers                 │
+│  Datahub  —  Postgres 16 + graphile_worker queue   │
 │                                                    │
 │  ┌──────────────────┐  ┌─────────────────────────┐ │
-│  │ Embedding Worker  │  │ Compaction Worker        │ │
-│  │ LISTEN embed_work │  │ LISTEN compact_work      │ │
-│  │ → Embed model     │  │ → Summarization model    │ │
-│  │   (GPU endpoint)  │  │   (CPU endpoint)         │ │
+│  │ Embedding Worker │  │ Compaction Worker       │ │
+│  │ embed-target     │  │ compact-conversation    │ │
+│  │ enqueue-         │  │ extract-wiki, enqueue-  │ │
+│  │   unembedded     │  │   idle, consolidate-    │ │
+│  │   (cron, 10min)  │  │   wiki, recompile-wiki  │ │
+│  │ → Embed model    │  │ → Summarization model   │ │
+│  │   (GPU endpoint) │  │   (CPU endpoint)        │ │
 │  └──────────────────┘  └─────────────────────────┘ │
 │                                                    │
-│  Postgres triggers fire on:                        │
-│  • INSERT ros_messages  → embed queue + NOTIFY     │
-│  • INSERT ros_summaries → embed queue + NOTIFY     │
-│  • Message threshold    → compact queue + NOTIFY   │
-│  • Session idle (15min) → compact queue + NOTIFY   │
-│  • Explicit request     → compact queue + NOTIFY   │
+│  Jobs are enqueued by:                             │
+│  • INSERT ros_messages  → trigger calls            │
+│  • INSERT ros_summaries →   graphile_worker        │
+│                             .add_job('embed-       │
+│                             target'), deduped by   │
+│                             job_key                │
+│  • Session idle         → 'enqueue-idle' cron      │
+│                             (every 5 min), not a   │
+│                             DB trigger             │
+│  • Explicit request     → add_job from the runtime │
 └────────────────────────────────────────────────────┘
          │                          │
          ▼                          ▼
@@ -697,7 +708,7 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 - Infra provisioning scripts (Docker, Proxmox)
 - Container builds
 - Streaming manager (tested via runtime integration, no direct unit tests)
-- The compactor/embedder integration tests skip unless `RIVETOS_PG_URL` is set
+- The memory adapter and mcp-sidecar memory tests skip unless `RIVETOS_PG_URL` points at a live Postgres (`plugins/memory/postgres/src/adapter.test.ts`, `services/mcp-sidecar/src/memory.test.ts`); the worker services' own tests are plain unit tests and always run
 
 ---
 
