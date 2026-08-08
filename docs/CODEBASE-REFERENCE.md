@@ -244,7 +244,6 @@ The runtime engine. Split into two layers:
 | `auto-actions.ts` | 330 | Auto-format, auto-lint, auto-test, auto-git-check |
 | `session-hooks.ts` | 313 | Session start/end, auto-summary, pre/post compaction |
 | `heartbeat.ts` | 133 | Scheduled agent execution with quiet hours |
-| `circuit-breaker.ts` | 214 | Per-provider circuit breaker (closed → open → half-open) |
 | `reconnect.ts` | 190 | Channel reconnection with exponential backoff |
 | `mesh.ts` | 344 | File-based mesh registry with heartbeat, prune, seed sync |
 | `mesh-delegation.ts` | 253 | Cross-mesh HTTP delegation |
@@ -269,7 +268,10 @@ The runtime engine. Split into two layers:
 | File | Lines | Purpose |
 |------|-------|---------|
 | `secrets.ts` | ~170 | Secret redaction, .env permissions, 1Password `op://` resolution |
-| `audit-rotation.ts` | ~140 | Log rotation (compress >7d, delete >90d) |
+
+Audit logging itself lives in `domain/safety-hooks.ts` and is wired by `boot`, which appends to
+`<workspace>/.data/audit/<date>.jsonl`. There is no rotation or retention: audit logs accumulate
+indefinitely and operators are expected to prune them manually.
 
 **Logger** (`src/logger.ts`, ~170 lines):
 - Two modes: `pretty` (dev, colored) and `json` (production, structured)
@@ -650,7 +652,7 @@ Channel receives message
 
 - **Packages:** `@rivetos/{name}` (npm scope)
 - **Plugins:** `@rivetos/{category}-{name}` (e.g., `@rivetos/provider-anthropic`)
-- **Files:** kebab-case (`circuit-breaker.ts`, `turn-handler.ts`)
+- **Files:** kebab-case (`safety-hooks.ts`, `turn-handler.ts`)
 - **Classes:** PascalCase (`AgentLoop`, `DelegationEngine`)
 - **Interfaces:** PascalCase, no `I` prefix (`Provider`, not `IProvider`)
 - **Types:** PascalCase (`ThinkingLevel`, `DeploymentTarget`)
@@ -674,7 +676,6 @@ Channel receives message
 
 - **RivetError hierarchy** — typed errors with codes, severity, retryable flag
 - **ProviderError** — HTTP-aware, observed by `provider:error` hooks
-- **Circuit breaker** — per-provider, closed → open → half-open
 - **Reconnection manager** — exponential backoff for channel disconnects
 - **Hook error modes** — `continue` (log & proceed), `abort` (stop pipeline), `retry`
 

@@ -81,7 +81,7 @@ npx rivetos start
 
 The provider is rate limiting you or overloaded.
 
-**Fix:** The circuit breaker prevents hammering a failing provider — it opens after 5 failures in 60 seconds and recovers automatically. Provider fallback chains were removed in the AI SDK migration; if a provider is down, switch the agent's `provider:` setting until it recovers.
+**Fix:** Provider fallback chains were removed in the AI SDK migration, and there is no circuit breaker in front of providers — a rate-limited provider keeps being retried by the AI SDK's own retry policy. If a provider is down or throttling you, switch the agent's `provider:` setting until it recovers.
 
 ### "Maximum tool iterations reached"
 

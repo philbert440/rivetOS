@@ -331,7 +331,7 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 
 - [ ] Fix `packages/cli` `"test": "echo no tests yet"` → real `vitest run` (no false-green)
 - [ ] Add root `typecheck` to the `ci` pipeline
-- [ ] Delete or wire dead exports (`rotateAuditLogs`, unused circuit-breaker reset) after verify
+- [x] Delete or wire dead exports (`rotateAuditLogs`, unused circuit-breaker reset) after verify — both deleted; the core circuit-breaker module went with them (registry was never populated)
 - [ ] Drop unused deps after verify — candidates, not pre-verified: `enquirer` (packages/nx-plugin), `sharp` (root override), `@types/pg` (may pair with live `pg` usage — check before dropping)
 - [ ] Refresh stale `CODEBASE-REFERENCE` / `ARCHITECTURE` claims
 - [ ] CLI `showHelp()` completeness vs actual commands
