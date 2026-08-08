@@ -68,6 +68,10 @@ COPY --from=build /build/node_modules/ ./node_modules/
 # into these trees, so the package.json must come along for resolution.
 COPY --from=build /build/plugins/memory/postgres/package.json ./plugins/memory/postgres/
 COPY --from=build /build/plugins/memory/postgres/dist/ ./plugins/memory/postgres/dist/
+# Nested dep: npm hoists undici@6 to the root for other consumers; this package
+# (and compaction-worker below) lock undici@8 in a nested node_modules. Without
+# these copies the in-image workers silently resolve the wrong undici major.
+COPY --from=build /build/plugins/memory/postgres/node_modules/ ./plugins/memory/postgres/node_modules/
 
 # Worker services. These are separate processes, not part of dist/rivetos.js:
 #   node services/embedding-worker/dist/index.js
@@ -79,6 +83,7 @@ COPY --from=build /build/services/embedding-worker/package.json ./services/embed
 COPY --from=build /build/services/embedding-worker/dist/ ./services/embedding-worker/dist/
 COPY --from=build /build/services/compaction-worker/package.json ./services/compaction-worker/
 COPY --from=build /build/services/compaction-worker/dist/ ./services/compaction-worker/dist/
+COPY --from=build /build/services/compaction-worker/node_modules/ ./services/compaction-worker/node_modules/
 COPY --from=build /build/packages/types/package.json ./packages/types/
 COPY --from=build /build/packages/types/dist/ ./packages/types/dist/
 COPY --from=build /build/packages/den-protocol/package.json ./packages/den-protocol/
