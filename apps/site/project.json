@@ -18,8 +18,12 @@
       },
       "inputs": [
         "{projectRoot}/src/**/*",
+        "{projectRoot}/scripts/**/*",
         "{projectRoot}/astro.config.mjs",
-        "{projectRoot}/package.json"
+        "{projectRoot}/package.json",
+        "{workspaceRoot}/docs/**/*",
+        "{workspaceRoot}/CHANGELOG.md",
+        "{workspaceRoot}/CONTRIBUTING.md"
       ],
       "outputs": ["{projectRoot}/dist"]
     },
