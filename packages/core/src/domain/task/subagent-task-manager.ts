@@ -40,8 +40,8 @@ export interface TaskBackedSubagentManagerConfig {
   criteriaPolicy?: CriteriaPolicy
   router: Router
   store: TaskStore
-  /** History/messageCount source — the task's memory conversation. */
-  memory?: Pick<Memory, 'getSessionHistory'>
+  /** History/messageCount source — the task's memory conversations. */
+  memory?: Pick<Memory, 'getSessionHistory' | 'getTaskHistory'>
   /** Parent agent id stamped on new sessions (defaults to 'parent'). */
   parentAgent?: string
 }
@@ -216,10 +216,18 @@ export class TaskBackedSubagentManager implements SubagentManager {
     return row
   }
 
+  /**
+   * The task's transcript: the union of every conversation it spawned, plus any
+   * legacy `task:<id>`-keyed rows. A Memory without the join (or a store that
+   * never implemented it) falls back to the legacy key alone.
+   */
   private async history(taskId: string): Promise<SubagentSession['history']> {
     if (!this.config.memory) return []
     try {
-      return await this.config.memory.getSessionHistory(`task:${taskId}`, { limit: 1000 })
+      const memory = this.config.memory
+      return memory.getTaskHistory
+        ? await memory.getTaskHistory(taskId, { limit: 1000 })
+        : await memory.getSessionHistory(`task:${taskId}`, { limit: 1000 })
     } catch (err: unknown) {
       log.warn(
         `history for task ${taskId} unavailable: ${

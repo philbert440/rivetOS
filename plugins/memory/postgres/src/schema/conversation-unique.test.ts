@@ -37,10 +37,10 @@ const LOCKED_SQL = readFileSync(resolve(MIGRATIONS_DIR, LOCKED), 'utf8')
 // ---------------------------------------------------------------------------
 
 describe('conversation dedup migration files', () => {
-  it('are discovered by the runner, with the locked re-run applying last', () => {
+  it('are discovered by the runner, with the locked re-run applying after the original', () => {
     const names = listMigrations(MIGRATIONS_DIR).map((m) => m.name)
     expect(names).toContain(MIGRATION)
-    expect(names[names.length - 1]).toBe(LOCKED)
+    expect(names).toContain(LOCKED)
     expect(names.indexOf(LOCKED)).toBeGreaterThan(names.indexOf(MIGRATION))
   })
 
