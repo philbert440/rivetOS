@@ -79,6 +79,8 @@ export class PostgresMemory implements Memory {
   private expander: Expander
   private connected = false
   private lastHealthCheck = 0
+  /** Cached probe for 0009's ux_ros_conversations_session_agent — null until first checked. */
+  private conversationUniqueIndex: boolean | null = null
 
   constructor(config: PostgresMemoryConfig) {
     this.pool = new Pool({
@@ -436,7 +438,33 @@ export class PostgresMemory implements Memory {
     agent: string,
     channel?: string,
   ): Promise<string> {
-    // Try to find an active conversation for this session + agent
+    if (await this.hasConversationUniqueIndex(client)) {
+      // Race-safe path: one (session_key, agent) => one conversation, enforced by
+      // ux_ros_conversations_session_agent (0009). Two concurrent appends for the
+      // same session can no longer both miss a SELECT and both INSERT.
+      //
+      // DO UPDATE (not DO NOTHING) so the conflicting row is always RETURNED —
+      // DO NOTHING returns zero rows and would need a second round-trip.
+      //
+      // active is forced back to true: a finalized conversation (active = false)
+      // that receives a new append is a resumed session, and the adapter's own
+      // reads (getSessionHistory, getContextForTurn) filter on active = true.
+      // Pre-0009 this created a second conversation row instead — which is the
+      // duplication the migration had to clean up.
+      const upserted = await client.query<IdRow>(
+        `INSERT INTO ros_conversations (session_key, agent, channel, title, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, NOW(), NOW())
+         ON CONFLICT (session_key, agent) DO UPDATE
+           SET updated_at = NOW(), active = true
+         RETURNING id`,
+        [sessionId, agent, channel ?? 'unknown', `Session ${sessionId}`],
+      )
+      return upserted.rows[0].id
+    }
+
+    // Legacy path — 0009 has not been applied to this database yet. ON CONFLICT
+    // would raise 42P10 with no arbiter index, so keep capture working (racy, as
+    // it has always been) rather than failing every append on an unmigrated node.
     const existing = await client.query<IdRow>(
       `SELECT id FROM ros_conversations
        WHERE session_key = $1 AND agent = $2 AND active = true
@@ -457,5 +485,24 @@ export class PostgresMemory implements Memory {
     )
 
     return result.rows[0].id
+  }
+
+  /**
+   * Whether 0009's unique index on (session_key, agent) exists — probed once per
+   * process and cached, since a migration cannot be un-applied under a live pool.
+   *
+   * to_regclass returns NULL rather than raising for a name that does not resolve,
+   * so this is safe to run inside the caller's open transaction: it cannot poison
+   * it the way a failed `ON CONFLICT` (42P10) would.
+   */
+  private async hasConversationUniqueIndex(client: pg.PoolClient): Promise<boolean> {
+    if (this.conversationUniqueIndex !== null) return this.conversationUniqueIndex
+
+    const res = await client.query<{ present: boolean }>(
+      `SELECT to_regclass('ux_ros_conversations_session_agent') IS NOT NULL AS present`,
+    )
+    this.conversationUniqueIndex = res.rows[0]?.present ?? false
+
+    return this.conversationUniqueIndex
   }
 }
