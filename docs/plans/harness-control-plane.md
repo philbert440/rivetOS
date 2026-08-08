@@ -172,6 +172,11 @@ export interface HarnessDriver {
   ): Promise<void>;
   /** Live stream; return unsubscribe. Gateway may fan-out. */
   subscribe(sessionId: SessionId, sink: (e: HarnessEvent) => void): () => void;
+  /**
+   * Driver-level registry stream (`session-created` / `session-updated` across
+   * ALL of this driver's sessions) — backs `GET /harnesses/:id/events`.
+   */
+  subscribeEvents(sink: (e: HarnessEvent) => void): () => void;
   listSessions(): Promise<SessionSummary[]>;
   getSession(sessionId: SessionId): Promise<SessionSummary | null>;
 }
@@ -191,6 +196,8 @@ export interface HarnessDriver {
 | `POST /sessions/:sessionId/approvals/:requestId` | `resolveApproval` |
 | `GET /sessions/:sessionId` | `getSession` |
 | `GET /sessions/:sessionId/events` (WS upgrade) | `subscribe` stream |
+| `GET /sessions/:sessionId/transcript` | Hard-resync source (generalizes den's `/term/harness-sessions/:id/transcript`) |
+| `POST /uploads` | Stage a remote client attachment; returns a node-local URI for `UserTurn.attachments` |
 
 This table is the Phase 2 sketch — names are the contract; transports and any end/delete route follow existing den-server patterns when implemented.
 
@@ -231,7 +238,7 @@ SessionId = <harness-id> ":" <native-session-id>
 
 **Examples:** `claude-code:a1b2c3d4-…`, `grok-build:sess_01HZX…`, `kimi-code:c7f2…-uuid`, `hermes:9b41…-uuid`.
 
-**Native ids MUST be collision-resistant (UUID-class entropy).** The capture store is mesh-shared — multiple nodes write one memory DB, disambiguated by the `agent` column — so key entropy is the cross-node collision defense. Sequential or timestamp-shaped native ids (`thread-42`) are forbidden; a driver wrapping a harness that mints low-entropy ids must namespace them (e.g. suffix a mint-time UUID).
+**Native ids MUST be collision-resistant (UUID-class entropy).** The capture store is mesh-shared — multiple nodes write one memory DB, disambiguated by the `agent` column — so key entropy is the cross-node collision defense. Sequential or low-entropy native ids (`thread-42`) are forbidden; ULID/UUIDv7-class k-sortable ids with adequate entropy qualify. A driver wrapping a harness that mints low-entropy ids must namespace them (e.g. suffix a mint-time UUID).
 
 ```typescript
 function parseSessionId(id: string): { harnessId: HarnessId; nativeSessionId: string } {
@@ -288,11 +295,11 @@ When a harness rotates/replaces its native id (compact, fork, crash recovery):
 3. **Memory:** new events write under the **new** `SessionId`; queries resolve alias chain and union transcript history (prefer this over rewriting historical rows).
 4. **Hub:** keep chat row; update external key to new id; store previous for deep links.
 5. **Den:** rename or symlink `harness-session/<old>` → `harness-session/<new>`.
-6. **Gateway:** superseded id redirects (`redirectedTo` / equivalent) to canonical; accept old id via alias for a grace period.
+6. **Gateway:** superseded id redirects (`redirectedTo` / equivalent) to canonical. **Aliases never expire** for reads/redirects/dispatch — "grace period" bounds only how long a driver may legitimately still EMIT under the old id after rotation (at most the in-flight turn); ingest rewrite (rule 10) is permanent behavior.
 7. **Never** invent a Rivet-only third id not derived from harness native ids.
 8. **Same-harness only:** `previousSessionId` and `sessionId` MUST share the same `harness-id`; drivers never emit cross-harness aliases and the control plane rejects them.
 9. **Chain hygiene:** alias resolution always terminates at the newest id; cycle detection required; max chain depth 32 (reject beyond — something is broken).
-10. **Grace-period ingest:** events still arriving under the old id are rewritten to the canonical id at ingest (single write — no dual-writing); events for an unknown alias are dropped with a logged warning.
+10. **Ingest rewrite (permanent):** events arriving under a superseded id are rewritten to the canonical id at ingest (single write — no dual-writing); events for an unknown alias are dropped with a logged warning.
 
 > **Phase 3 breaking change:** hermes capture today handles rotation as "close old key, open new conversation" with no alias. The hermes driver MUST adopt alias semantics — do not ship the old close+new behavior under the new interface.
 
@@ -309,6 +316,10 @@ The repo already holds several key shapes for one interactive session. Phase 2 d
 | `task:<taskId>` (`RIVETOS_SESSION_KEY` override) | Task executors | **Stays a parallel, non-harness conversation-key namespace** (multi-spawn task transcript unity). Never parsed as a `SessionId`. Harness sessions spawned under a task additionally alias `SessionId → task:<taskId>` so both views resolve to one transcript |
 
 Precedence: canonical `<harness-id>:<native-session-id>` > path-fallback alias > bare-uuid alias. Alias resolution applies everywhere rehydrate/merge decisions are made (rule 4 above).
+
+> The `task:<taskId>` mapping is a **bidirectional secondary join key** (two views over one transcript), NOT a rotation-style alias — it does not participate in alias chains, and the legacy→canonical direction convention and chain-hygiene rules do not apply to it.
+>
+> **Write direction (normative):** harness sessions ALWAYS write capture under their canonical `SessionId` — including task-spawned ones. `task:<taskId>` becomes a query-time join (task association stored per conversation) that unions all of a task's spawned sessions into one transcript view. This replaces today's `RIVETOS_SESSION_KEY=task:<id>` write-key override — a Phase 2 migration item; multi-spawn transcript unity is preserved by the join, not by a shared write key.
 
 ### Reference behavior (Claude)
 
@@ -334,6 +345,7 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 - [ ] Land `HarnessDriver`, `HarnessEvent`, `SessionId` in shared package
 - [ ] Parse/format helpers, alias store, `enc()`/`dec()` base64url segment codec
 - [ ] Capture migration: UNIQUE index on `ros_conversations (session_key, agent)` + adapter upsert (collision rule 3 is unimplementable on today's select-then-insert)
+- [ ] Task-key migration: replace `RIVETOS_SESSION_KEY=task:<id>` write-override with per-conversation task association + query-time join (see Legacy keys)
 - [ ] Gateway upload endpoint for remote attachments (returns node-local URI)
 - [ ] Driver-level registry stream (`session-created`) wired to `GET /harnesses/:id/events`
 - [ ] Driver registry on node boot
@@ -341,7 +353,7 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 - [ ] Migrate Claude keys to `claude-code:<native>` (+ aliases for legacy)
 - [ ] Gateway: list harnesses, open/list/resume, turns, interrupt, approvals, event stream
 - [ ] Capture writes canonical `SessionId` only
-- [ ] Tests: first-colon parse, resume, alias redirect
+- [ ] Tests: first-colon parse, resume, alias redirect, `enc()`/`dec()` round-trip (ids containing `:` and `/`), typed `invalid_session_id` → HTTP 400 at the gateway
 
 ---
 
