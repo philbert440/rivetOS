@@ -37,6 +37,7 @@ import {
   findOwnershipBlockers,
   type DeploymentMode,
 } from './update/detect-deployment.js'
+import { healLocalMeshHosts } from './update/mesh-hosts.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
@@ -750,16 +751,12 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         console.log('    Building...')
         execOrThrow('npx nx run-many -t build --exclude container-rivetos,site', 'nx build')
 
-        // Heal /etc/hosts mesh block from mesh.json (non-fatal)
-        try {
-          const hostsScript = resolve(ROOT, 'infra/scripts/setup-mesh-hosts.sh')
-          execSync(`sudo ${hostsScript} /rivet-shared/mesh.json --quiet`, {
-            stdio: 'pipe',
-            timeout: 15_000,
-          })
-        } catch {
-          // Silent — drift in /etc/hosts shouldn't block local update
-        }
+        // Heal /etc/hosts mesh block from mesh.json (non-fatal, but never silent —
+        // remote path already warned; local used to swallow sudo/mesh-file failures).
+        healLocalMeshHosts({
+          scriptPath: resolve(ROOT, 'infra/scripts/setup-mesh-hosts.sh'),
+          tag: '    ',
+        })
 
         if (localOpts.restart) {
           // G0: retire the standalone rivet-den unit before the restart —
