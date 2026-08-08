@@ -67,6 +67,15 @@ export type ApprovalDecision = 'allow' | 'deny' | 'allow-session';
 export type HarnessEvent =
   | { type: 'assistant-delta'; sessionId: SessionId; text: string; turnId?: string }
   | {
+      /** Thinking text for the turn in flight — text only, because what a
+       *  harness can observe of its own thinking varies (spinner status lines
+       *  vs. real thinking blocks). Presentation is the client's call. */
+      type: 'reasoning-delta';
+      sessionId: SessionId;
+      text: string;
+      turnId?: string;
+    }
+  | {
       type: 'tool-use';
       sessionId: SessionId;
       toolCallId: string;
@@ -552,6 +561,12 @@ same den events reach both surfaces and folding twice would double every delta.
 Interrupt and approvals render only when the driver's flags say so, which for
 `claude-code` means a Stop button and never an approval card.
 
+Live thinking streams on this path too: `reasoning-delta` was added to the
+contract after this slice, the `claude-code` driver folds den `thinking.delta`
+frames onto it, and the hub folds it into the same `reasoning`/`reasoningText`
+fields the legacy den-bridge path fills — so a bound session shows thinking
+live instead of waiting for the transcript at turn end.
+
 Gaps this slice records rather than fixes:
 
 - **Hub chat's key is still the bare native id**, not the canonical
@@ -571,11 +586,6 @@ Gaps this slice records rather than fixes:
   queued for the user's inject button. There is no server-side queue, and no
   ready signal to wait on — a harness parked on its own TUI permission prompt
   is legitimately mid-turn for as long as a human takes.
-- **No live thinking on the control-plane path.** `HarnessEvent` has no
-  reasoning/thinking member — the den bridge's `reasoning` frames (Claude's
-  spinner lines) have no equivalent in the contract, so a bound session shows
-  tools and text live and picks up `thinking` only from the transcript at turn
-  end. Adding a `reasoning-delta` event is a contract change, not a client fix.
 - **Approval state is not recoverable.** `approval-request` exists only as a
   live event: a client that attaches after one was emitted, or that reloads,
   has no way to learn the harness is blocked (the tail has no replay and the

@@ -657,6 +657,17 @@ export class ClaudeCodeDriver implements HarnessDriver {
         if (text) this.emit(native, { type: 'assistant-delta', sessionId, text })
         return
       }
+      case 'thinking.delta': {
+        // Claude's den hook cannot read real thinking text, so what arrives is
+        // usually a spinner status line ("✳ Wrangling… (28s · ↓ 4.8k tokens)")
+        // rather than a token stream. Both are the harness thinking out loud,
+        // and the contract carries text only — whether a chunk replaces or
+        // appends to what is showing is the client's call, exactly as it is on
+        // the den bridge path.
+        const text = typeof ev.text === 'string' ? ev.text : ''
+        if (text) this.emit(native, { type: 'reasoning-delta', sessionId, text })
+        return
+      }
       case 'tool.start': {
         const name = typeof ev.tool === 'string' ? ev.tool : 'unknown'
         // den carries no tool call id, so mint a stable per-session one and

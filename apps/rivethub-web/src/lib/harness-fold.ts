@@ -17,7 +17,7 @@
 
 import type { HarnessEvent } from '@rivetos/types'
 import { humanToolTitle, type ToolArgs } from './tool-titles.js'
-import type { LiveToolEntry, LiveTurn } from './fold-stream.js'
+import { nextReasoningText, type LiveToolEntry, type LiveTurn } from './fold-stream.js'
 
 function emptyTurn(): LiveTurn {
   return { text: '', reasoning: false, reasoningText: '', tools: [] }
@@ -44,6 +44,15 @@ export function foldHarnessEvent(
   switch (event.type) {
     case 'assistant-delta':
       return { ...base, text: base.text + event.text, reasoning: false, activity: undefined }
+    case 'reasoning-delta':
+      // Same fields the den-bridge fold fills, by the same rule (spinner lines
+      // replace, real thinking appends) — the transcript renders live thinking
+      // identically whichever surface owns the session.
+      return {
+        ...base,
+        reasoning: true,
+        reasoningText: nextReasoningText(base.reasoningText, event.text),
+      }
     case 'tool-use': {
       const args = toolArgs(event.input)
       const entry: LiveToolEntry = {

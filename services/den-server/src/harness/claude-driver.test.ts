@@ -382,6 +382,42 @@ describe('subscribe maps den AgentEvents onto the contract', () => {
     )
   })
 
+  it('streams thinking as reasoning-delta, carrying text only', async () => {
+    const { driver, emitDen } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(SID, (e) => seen.push(e))
+
+    // Claude's den hook sends spinner status lines; an SDK-shaped harness
+    // would send real thinking. Both are `thinking.delta`, both ride text.
+    emitDen(claudeEvent(UUID, { type: 'thinking.delta', text: '✳ Wrangling… (3s · ↓ 12 tokens)' }))
+    emitDen(claudeEvent(UUID, { type: 'thinking.delta', text: 'weighing the options' }))
+    // Empty text is not an event worth waking every subscriber for.
+    emitDen(claudeEvent(UUID, { type: 'thinking.delta', text: '' }))
+    // Structure beyond text stays off the contract.
+    emitDen(claudeEvent(UUID, { type: 'thinking.end' }))
+    emitDen(claudeEvent(UUID, { type: 'message.agent', text: 'answer' }))
+
+    expect(seen.filter((e) => e.type === 'reasoning-delta')).toEqual([
+      { type: 'reasoning-delta', sessionId: SID, text: '✳ Wrangling… (3s · ↓ 12 tokens)' },
+      { type: 'reasoning-delta', sessionId: SID, text: 'weighing the options' },
+    ])
+    // Interleaving is preserved: thinking lands before the text it precedes.
+    expect(seen.map((e) => e.type)).toEqual([
+      'reasoning-delta',
+      'reasoning-delta',
+      'assistant-delta',
+    ])
+  })
+
+  it('ignores thinking from den rooms that are not Claude', async () => {
+    const { driver, emitDen } = makeDriver()
+    const seen: HarnessEvent[] = []
+    driver.subscribeEvents((e) => seen.push(e))
+    emitDen({ v: 1, session: UUID2, harness: 'grok-build', type: 'thinking.delta', text: 'hmm' })
+    expect(seen).toEqual([])
+  })
+
   it('ignores den rooms that are not Claude (grok pins uuid keys too)', async () => {
     const { driver, emitDen } = makeDriver()
     const seen: HarnessEvent[] = []

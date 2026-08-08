@@ -47,6 +47,23 @@ export type ApprovalDecision = 'allow' | 'deny' | 'allow-session'
 export type HarnessEvent =
   | { type: 'assistant-delta'; sessionId: SessionId; text: string; turnId?: string }
   | {
+      /**
+       * Thinking text for the turn in flight — the twin of `assistant-delta`
+       * for reasoning. Text only, deliberately: what a harness can observe of
+       * its own thinking varies wildly (Claude Code's den hooks see spinner
+       * status lines, an SDK driver sees real thinking blocks), and the
+       * contract carries the one thing they all have. Presentation — whether a
+       * chunk replaces or appends to what is showing — is the client's call.
+       *
+       * Live-tail only, like every other delta: the committed thinking comes
+       * from the transcript on hard-resync.
+       */
+      type: 'reasoning-delta'
+      sessionId: SessionId
+      text: string
+      turnId?: string
+    }
+  | {
       type: 'tool-use'
       sessionId: SessionId
       toolCallId: string
