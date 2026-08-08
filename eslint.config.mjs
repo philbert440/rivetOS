@@ -301,7 +301,9 @@ export default tseslint.config(
   // den-server: node-pty is an optional native dep (needs a C++ toolchain at
   // install time) loaded via a guarded non-literal dynamic import so the
   // build never depends on it being installed — the graph can't see the
-  // usage.
+  // usage. `src/harness/test/**` holds the shared driver-conformance suite and
+  // its fake driver: importable test helpers, not runtime, so their `vitest`
+  // import is root-level like every other `**/test/**` in the tree.
   {
     files: ['services/den-server/package.json'],
     languageOptions: { parser: jsoncParser },
@@ -315,7 +317,7 @@ export default tseslint.config(
           checkObsoleteDependencies: true,
           checkVersionMismatches: true,
           includeTransitiveDependencies: false,
-          ignoredFiles: ['**/*.test.ts', '**/*.spec.ts'],
+          ignoredFiles: ['**/*.test.ts', '**/*.spec.ts', '**/test/**'],
           ignoredDependencies: ['typescript', 'node-pty'],
         },
       ],

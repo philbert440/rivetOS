@@ -499,34 +499,108 @@ Known gaps in the shipped slice (recorded, not fixed):
   adopted immediately). A Claude process started outside den entirely emits
   nothing observable and reads as `ended` until its hooks speak.
 
-### ⚠️ Phase 3 obligations — subscriptions must follow rotation
+### Rotation gate — subscriptions follow rotation (closed)
 
-**Do not land a rotating driver (hermes is the first) before closing this.**
-
-The contract says an active subscription follows the alias chain: the rotation
-`session-updated` is delivered on the existing subscription and later events
-simply carry the new `sessionId`, so clients never re-subscribe
-(§ Contract semantics, § Rotation). **The Phase 2 slice does not implement
-that.** `ClaudeCodeDriver.subscribe` pins each sink to the native id it was
-registered under, and the registry records the alias without touching live
-subscriptions. This is currently unobservable only because Claude Code never
-rotates its native session id — it is a latent contract violation, not a
-design choice.
-
-Closing it requires all three:
+This was the blocker on landing a rotating driver (hermes is the first). The
+three requirements below are normative and unchanged; all three now ship.
 
 1. **Re-key live sinks on alias record.** When the registry records
-   `previous → canonical`, every sink subscribed under `previous` must move to
-   `canonical` (registry-side wrapping is preferable to per-driver re-keying —
-   alias resolution is control-plane-owned, and every driver would otherwise
-   reimplement it).
-2. **End the superseded id's lifecycle.** Rotation rule: the control plane
-   records the old id as ended when it stores the alias, and `listSessions`
-   returns canonical ids only.
+   `previous → canonical`, every sink subscribed under `previous` moves to
+   `canonical`. Registry-side wrapping rather than per-driver re-keying: alias
+   resolution is control-plane-owned, and every driver would otherwise
+   reimplement it.
+2. **End the superseded id's lifecycle.** The control plane records the old id
+   as ended when it stores the alias, and `listSessions` returns canonical ids
+   only.
 3. **A contract test for subscription-follows-rotation** — subscribe under the
    old id, rotate, assert the next event arrives on the *same* subscription
-   carrying the new `sessionId`, and that the client never re-subscribed. It
-   belongs in a shared driver-contract suite, not one driver's tests.
+   carrying the new `sessionId`, and that the client never re-subscribed. In a
+   shared driver-contract suite, not one driver's tests.
+
+**As built.** `registry.subscribeSession(sessionId, sink)` is now the only
+per-session subscribe the gateway calls (`routes.ts`, `WS
+/api/harness-sessions/ws`). It resolves the chain, attaches the sink to the
+driver under the canonical id, and keeps the subscription in a live set. When
+the registry tails a driver `session-updated` carrying `previousSessionId` it
+records the alias and then, **before** the registry-stream fanout, `rekey()`
+moves every tail whose id now resolves elsewhere: detach at the old id,
+`driver.subscribe(canonical, …)` at the new one, and hand the client the
+rotation event on the sink it already holds. Drivers keep pinning sinks to the
+one id they were handed — `ClaudeCodeDriver.subscribe` is unchanged, and a
+rotating driver needs nothing beyond emitting the event.
+
+Delivery is **exactly once regardless of driver ordering**. A driver may emit
+the rotation to its session sinks before the registry stream, after it, under
+the new id, or not at all; the control plane tracks `previous→next` per
+subscription and drops the second copy whichever way it arrives. All four
+orderings are conformant and all four are covered.
+
+Three ordering invariants the re-key holds, in the order it does them:
+**deliver, then attach, then detach.** Delivering first means a driver that
+emits its *next* rotation synchronously from inside `subscribe` cannot overtake
+the current one on the wire. Attaching before detaching leaves the sink briefly
+on both ids — deliberate and unobservable, since JS runs the handler to
+completion, and the opposite order would open a real gap for that same driver.
+And because that driver re-enters the re-key through the registry stream, every
+frame re-checks the tail after `subscribe` returns and yields to whichever
+frame got further down the chain; an outer frame writing back stale locals
+would strand the client on an abandoned id.
+
+Driver misbehavior is contained rather than trusted: a rotation restating its
+own id is a status update, not a rotation (no retirement, no re-key); a
+repeated rotation records an idempotent alias and retires the old id only once;
+a second, different successor for an id that already rotated is refused by the
+alias store with `session_id_collision` rather than overwritten (overwriting
+strands tails on the abandoned branch); and if the driver refuses the
+post-rotation `subscribe`, the tail gets a retryable `error` event telling it to
+re-subscribe and hard-resync, because a silently dead socket looks like a quiet
+session.
+
+The superseded id is retired at the same moment: `registry.isSuperseded()`
+reports it, a single `session-updated { sessionId: <old>, status: 'ended' }`
+follows the rotation event on the registry stream (after it, so a client has
+already moved its row and reads this as "old key retired", not "session died"),
+and `registry.listSessions(harnessId)` — which `GET
+/api/harnesses/:harnessId/sessions` now calls instead of the driver directly —
+is canonical-only: a row a driver still keys on a rotated-away id is rewritten
+to canonical and collapsed into the canonical row rather than dropped, so
+nothing disappears from a drawer. `assertPinnable` moved the alias-chain
+collision rule off the route and into the registry, so it holds for every
+caller and not just HTTP.
+
+**Nothing changed for clients** — that is the point. A hub socket opened under
+an id that later rotates keeps streaming, and `routes.test.ts` proves it over
+a real den server end to end.
+
+**Shared conformance suite:**
+`services/den-server/src/harness/test/driver-conformance.ts` exports
+`runHarnessRotationConformance(name, setup)`; a driver hands it a registry with
+the driver registered, a live session id, a `rotate(from)` that makes the
+harness rotate, and an `emitActivity(id)`. It asserts the rotation arrives once
+on the existing sink, later events carry the new id, chains follow without a
+re-subscribe, unsubscribe still detaches, the superseded id resolves everywhere
+(`resolve` / `getSession` / turns / interrupt / transcript), the old id is
+retired and absent from `listSessions`, and any id in the chain collides on a
+pinned `startSession`. Post-rotation events are asserted as an **exact
+sequence**, not "every event carries the new id": a driver that re-keys its own
+sinks leaves the tail attached twice, and doubling every later event is exactly
+the failure the suite exists to catch — `rotation.test.ts` runs a deliberately
+self-rekeying fake to prove the assertion has teeth.
+`test/fake-rotating-driver.ts` is the reference target —
+also the shape a real rotating driver should copy. Both sit under `test/`
+(importable helper, not a collected suite) beside the drivers they serve,
+matching `packages/core/src/domain/task/test/executor-conformance.ts`; they are
+not exported from the package barrel because every planned driver lands in this
+same directory and the suite imports `vitest`. `rotation.test.ts` runs it across
+all four emit orderings plus the stale-list-row case, then covers the
+control-plane-only edges: nested rotation from inside `subscribe`, self-rekeying
+driver, repeated and self-restating rotations, a refused post-rotation tail, a
+second successor, and a chain rotated to its depth cap.
+
+**Phase 3 driver PRs:** add one `runHarnessRotationConformance('<harness>', …)`
+block to the driver's test file. `claude-code` has none — its native id never
+rotates, so there is nothing to exercise; that is exactly why the suite runs
+against a fake.
 
 ---
 
