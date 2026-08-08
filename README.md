@@ -5,8 +5,8 @@
 > Zero bloat. Zero lock-in. Just the loop.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/Node.js-24%2B-green.svg)](https://nodejs.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org)
+[![Node.js](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6.x-blue.svg)](https://www.typescriptlang.org)
 [![Nx](https://img.shields.io/badge/Nx-22-blue.svg)](https://nx.dev)
 
 RivetOS is a personal AI agent runtime built for reliability. A tiny, stable core routes messages between channels and LLM providers. Everything else — providers, channels, tools, memory — is a plugin.
@@ -15,7 +15,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 ## Features
 
-- **Tiny core, fat plugins** — The kernel stays under 5,000 lines. Everything else is swappable.
+- **Tiny core, fat plugins** — The runtime kernel is a small, stable surface: a loop, a router, a queue, a hook pipeline. Everything else is swappable.
 - **Streaming-first** — `AsyncIterable<StreamEvent>` from every provider. Responses stream in real-time.
 - **7 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, vLLM, llama-server (llama.cpp), claude-cli (Claude Code subscription).
 - **4 channel plugins** — Discord, Telegram, Agent (HTTP inter-agent), Voice (xAI Realtime).
@@ -90,17 +90,25 @@ See [Getting Started](docs/GETTING-STARTED.md) for the full guide.
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**Dependency rule:** Everything points inward. Plugins → Types. Domain → Types. Nothing depends on plugins.
+**Dependency rule:** Everything points inward. Plugins → Types. Domain → Types. Every plugin is registered the same way — discovery plus `manifest.register()`. `boot` additionally lists four workspace packages (`provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`) as direct dependencies so a default install always has them on disk, and imports specific symbols from them.
 
 ## Monorepo Structure
 
 ```
 rivetOS/
 ├── packages/
-│   ├── types/          # Interfaces & contracts — zero dependencies
+│   ├── types/          # Interfaces & contracts (depends only on den-protocol)
 │   ├── core/           # Domain logic, agent loop, runtime, observability
 │   ├── boot/           # Composition root, plugin wiring, validation
 │   ├── cli/            # CLI commands (rivetos start/stop/init/doctor/...)
+│   ├── aisdk/          # AI SDK ↔ RivetOS adapter (messages, stream parts)
+│   ├── workflows/      # Workflows v1 engine — document model, step SDK, journal replay
+│   ├── wiki-core/      # Memory wiki page model — parse/apply/serialize
+│   ├── den-protocol/   # rivet-den event protocol + room-state reducer
+│   ├── den-packs/      # rivet-den SpritePack spec, validator, default pack
+│   ├── gateway-client/ # Typed HTTP+WS client for the gateway API
+│   ├── mcp/            # MCP primitives shared by the sidecar and clients
+│   ├── mcp-v2/         # Era-negotiating MCP surface built on mcp
 │   └── nx-plugin/      # @rivetos/nx — generators, executors, dev tooling
 ├── plugins/
 │   ├── channels/       # discord, telegram, agent, voice-discord
@@ -108,7 +116,12 @@ rivetOS/
 │   ├── memory/         # postgres (pgvector + FTS + summary DAG + workers)
 │   ├── tools/          # shell, file, search, web-search, interaction, mcp-client
 │   └── transports/     # mcp-server (expose RivetOS tools over MCP StreamableHTTP)
+├── services/           # den-server, embedding-worker, compaction-worker, mcp-sidecar
 ├── apps/
+│   ├── den/            # rivet-den companion renderer
+│   ├── rivethub-web/   # RivetHub web client
+│   ├── rivethub-desktop/ # RivetHub Tauri desktop shell
+│   ├── rivet-android/  # RivetHub Android client
 │   └── site/           # Astro docs site
 ├── infra/              # Container Dockerfiles, Compose files, provisioning scripts
 └── docs/               # Full documentation (incl. example configs under docs/examples/)
@@ -246,7 +259,8 @@ Development:
 
 ```bash
 npm install          # Install + build all packages
-npm run ci           # Lint + build + test (what CI runs)
+npm run ci           # Lint + build + test
+                     # (CI additionally runs typecheck, boundary probes, and a secrets scan)
 
 npx nx run core:test           # Test a single package
 npx nx affected -t test        # Test only what you changed

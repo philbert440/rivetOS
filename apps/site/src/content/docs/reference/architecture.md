@@ -79,13 +79,15 @@ description: How RivetOS works internally
 │  RivetError, ChannelError, MemoryError, ToolError      │
 │  SubagentSession, Skill, SkillManager                  │
 │                                                        │
-│  Interfaces + error classes. Zero dependencies.        │
-│  Leaf package. Every other package depends on this.    │
-│  Nothing else.                                         │
+│  Interfaces + error classes. One workspace dep:        │
+│  @rivetos/den-protocol (the den event contract).       │
+│  Every other package depends on this.                  │
 └────────────────────────────────────────────────────────┘
 ```
 
-**Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types. Nothing depends on plugins.
+**Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types.
+
+**What `boot` declares in `package.json`.** Four workspace packages are listed as direct dependencies of `boot` — `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, and `@rivetos/workflows` — so a default install always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the two that are also plugins — the claude-cli provider and the memory-postgres backend — are still registered the same way as every other plugin, through discovery and `manifest.register()`.
 
 ## Domain Model
 
@@ -167,6 +169,8 @@ FileMeshRegistry — owns mesh node registration, heartbeat, pruning.
 │  │                             and transport plugin      │  │
 │  │  registrars/hooks.ts      — wire safety/auto-actions  │  │
 │  │  registrars/agents.ts     — delegation/subagent/skills │  │
+│  │  registrars/gateway.ts    — embedded den/gateway      │  │
+│  │                             server + its routes       │  │
 │  └────────────────────────────────────────────────────────┘  │
 │                                                              │
 │  ┌─────────────────────────────────────────────────────────┐ │
@@ -240,7 +244,7 @@ rivetOS/
     workflows/
       pipeline.yml                   ← single orchestrator: secrets-scan → ci → (publish-npm, containers) → notify-ops
   packages/
-    types/                           ← interfaces only, zero deps
+    types/                           ← interfaces; one workspace dep (den-protocol)
       src/
         index.ts                     ← all exports
         message.ts                   ← Message, ToolCall, ContentPart, TextPart, ImagePart
@@ -251,7 +255,14 @@ rivetOS/
         memory.ts                    ← Memory, MemoryEntry, MemorySearchResult
         workspace.ts                 ← Workspace, WorkspaceFile
         config.ts                    ← AgentConfig, RuntimeConfig, HookConfig
-        deployment.ts                ← DeploymentConfig, DockerConfig, ProxmoxConfig, KubernetesConfig
+        deployment.ts                ← DeploymentTarget, DeploymentConfig (target only)
+        defaults.ts                  ← shared config defaults
+        gateway.ts                   ← GatewayRoute/GatewayUpgrade contracts
+        gateway-api.ts               ← wire types for the gateway HTTP+WS API
+        session-context.ts           ← per-session context carried through a turn
+        task.ts, task-result.ts      ← task engine records and result shapes
+        commands.ts                  ← slash-command descriptors
+        wiki.ts                      ← memory wiki page + index types
         events.ts                    ← StreamEvent, SessionState, DelegationRequest, TokenUsage
         hooks.ts                     ← HookEventName, HookContext variants, HookPipeline
         errors.ts                    ← RivetError, ChannelError, MemoryError, ConfigError, ToolError, etc.
@@ -271,7 +282,7 @@ rivetOS/
           mesh-delegation.ts         ← MeshDelegationEngine — cross-instance via HTTP
           mesh.ts                    ← FileMeshRegistry — file-based mesh registry
           subagent.ts                ← SubagentManagerImpl — child sessions
-          skills/                    ← Skill system (7 files)
+          skills/                    ← Skill system (8 files)
             index.ts                 ← barrel exports
             manager.ts               ← SkillManagerImpl — discovery, matching, embedding
             list-tool.ts             ← skill_list tool
@@ -309,7 +320,7 @@ rivetOS/
         config.ts                    ← Config loader (YAML → typed config, env var resolution)
         discovery.ts                 ← Walks plugin dirs, reads `package.json#rivetos`
         lifecycle.ts                 ← PID file, signals, shutdown
-        validate.ts                  ← validateConfig() entry point
+        validate/index.ts            ← validateConfig() entry point
         validate/
           sections.ts                ← Per-section validators
           cross-refs.ts              ← Cross-reference validation (agent→provider, bindings)
@@ -320,15 +331,18 @@ rivetOS/
                                      ←   channels, tools, memory, transports)
           hooks.ts                   ← Wire safety, auto-actions, sessions, learning
           agents.ts                  ← Delegation, subagent, skills registration
+          gateway.ts                 ← Embedded den/gateway server + its routes
     cli/                             ← command-line interface
       src/
         index.ts                     ← Entry point, command router
         commands/
-          init.ts                    ← Legacy init (directory + default config)
-          init/                      ← Interactive wizard (6 phases)
+          init.ts                    ← Thin shim → runInitWizard()
+          init/                      ← Interactive wizard (phases 1-8: detect,
+                                     ←   deployment, agents, channels, 4b postgres,
+                                     ←   review, generate, deploy, mesh join)
             index.ts, wizard.ts, types.ts, detect.ts,
             deployment.ts, agents.ts, channels.ts,
-            review.ts, generate.ts
+            postgres.ts, review.ts, generate.ts
           start.ts, stop.ts, status.ts, doctor.ts, test.ts
           update.ts                  ← rivetos update (source-based container rebuild)
           build.ts                   ← rivetos build (container image build)
@@ -379,11 +393,9 @@ rivetOS/
       claude-cli/                    ← Drives `claude` CLI via stream-json; embedded MCP bridge
     memory/
       postgres/                      ← Full transcript + hybrid search + summary DAG
-        schema/                      ← Co-located SQL DDL + migrations (PR-G)
-        workers/                     ← Event-driven embedding + compaction workers
-          embedding/                 ← Postgres LISTEN → embedding model (GPU)
-          compaction/                ← Postgres LISTEN → summarization model (CPU)
         src/
+          schema/                    ← Co-located SQL DDL + migrations
+            migrations/              ← numbered migration files (source of truth)
           adapter.ts                 ← PostgresMemory — implements Memory interface
           search.ts                  ← Hybrid FTS + vector search with scoring
           scoring.ts                 ← Search result relevance scoring
@@ -409,10 +421,16 @@ rivetOS/
       mcp-server/                    ← @rivetos/mcp-server — exposes RivetOS tools
                                      ←   (memory_*, web_*, skill_*, runtime) over MCP
                                      ←   StreamableHTTP. Has its own `rivetos-mcp-server` bin.
-  skills/                            ← Optional per-instance skills
+  services/                          ← Long-running processes deployed alongside the agent
+    den-server/                      ← Embedded den/gateway server (also a boot dependency)
+    embedding-worker/                ← graphile-worker daemon → embedding model (GPU)
+    compaction-worker/               ← graphile-worker daemon → summarization model (CPU)
+    mcp-sidecar/                     ← Standalone MCP surface over the runtime's tools
 ```
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
+
+Skills are not part of the source tree — they are user-managed and live under the runtime workspace (default `~/.rivetos/workspace/skills/`). See [Skills](/guides/skills/).
 
 ## Plugin Interfaces
 
@@ -619,14 +637,11 @@ memory:
 # Optional: containerized deployment
 deployment:
   target: docker                    # or proxmox, kubernetes, manual
-  datahub:
-    postgres: true
-    shared_storage: true
-  image:
-    build_from_source: true
-  docker:
-    network: rivetos
 ```
+
+`target` is the only key consumed at runtime — provisioning is driven by the Compose
+files under `infra/docker/` and the scripts under `infra/scripts/`. Any other key inside
+`deployment:` is reported as unknown by config validation.
 
 ## Deployment Model
 
@@ -639,7 +654,7 @@ RivetOS ships as container images built from source. The container IS the securi
 - `rivetos-pgdata` → PostgreSQL data
 - `rivetos-shared` → shared storage (/rivet-shared/)
 - `.env` → API keys and secrets
-- `rivet.config.yaml` → deployment configuration
+- `~/.rivetos/config.yaml` → runtime configuration
 
 **Update model:** Pull source → rebuild containers from source tree → restart. Plugins live in the source tree and survive updates automatically.
 
