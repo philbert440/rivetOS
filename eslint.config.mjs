@@ -229,8 +229,7 @@ export default tseslint.config(
   },
 
   // Per-project dep-check escapes for runtime-only deps (not statically imported).
-  // nx-plugin: enquirer + nx are runtime peers of nx generators (called via
-  // string-based API by the nx executor, not directly imported).
+  // nx-plugin: nx is a peer dep — the executor/generator host, never imported.
   // mcp-client loads @rivetos/mcp-v2 via a runtime-assembled specifier
   // (per-server protocol v2 opt-in; a static edge would violate the
   // adapter→transport boundary). The dep must stay declared for npm-mode
@@ -268,7 +267,7 @@ export default tseslint.config(
           checkVersionMismatches: true,
           includeTransitiveDependencies: false,
           ignoredFiles: ['**/*.test.ts', '**/*.spec.ts'],
-          ignoredDependencies: ['typescript', 'enquirer', 'nx'],
+          ignoredDependencies: ['typescript', 'nx'],
         },
       ],
     },
