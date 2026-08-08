@@ -1,6 +1,6 @@
 ---
 title: Harness Control Plane
-status: accepted
+status: proposed
 date: 2026-08-08
 owner: rivet
 audience: implementers
@@ -129,6 +129,13 @@ export type SessionSummary = {
 export type StartSessionOpts = {
   cwd?: string;
   model?: string;
+  /**
+   * Pin a pre-minted native id for a BRAND-NEW session (e.g. task executors
+   * that mint the id before spawning). Never attaches to an existing session:
+   * if the native id already exists in the harness store, fail with
+   * `session_id_collision`. Attaching to an existing session is
+   * `resumeSession` only.
+   */
   nativeSessionId?: string;
   metadata?: Record<string, string>;
 };
@@ -170,7 +177,18 @@ export interface HarnessDriver {
 | `POST /sessions/:sessionId/turns` | `sendUserTurn` |
 | `POST /sessions/:sessionId/interrupt` | `interrupt` |
 | `POST /sessions/:sessionId/approvals/:requestId` | `resolveApproval` |
-| `GET` / `WS /sessions/:sessionId/events` | `subscribe` stream |
+| `GET /sessions/:sessionId` | `getSession` |
+| `GET /sessions/:sessionId/events` (WS upgrade) | `subscribe` stream |
+
+This table is the Phase 2 sketch — names are the contract; transports and any end/delete route follow existing den-server patterns when implemented.
+
+### Contract semantics (normative)
+
+- **Capability flags gate methods.** Calling a method whose capability flag is `false` MUST reject with typed error code `capability_unsupported`; the gateway maps it to HTTP 501. UIs gate on flags and treat the rejection as non-fatal.
+- **`resolveApproval` with an unknown/expired `requestId`** rejects with `unknown_approval`.
+- **`sendUserTurn` while a turn is in flight** rejects with `turn_in_flight` (drivers MUST NOT silently queue in v1).
+- **`session_id_collision`** is a typed error code (see collision rules), not just prose.
+- **Stream continuity:** `subscribe` is an **at-most-once live tail from attach time** — no replay buffer in v1. After a WS drop, clients re-`subscribe` and MUST resync missed history from the transcript source of truth (`getSession` + capture/harness store). Mid-turn deltas lost during the gap are recovered from the transcript, never re-emitted live.
 
 ---
 
@@ -189,7 +207,7 @@ SessionId = <harness-id> ":" <native-session-id>
 | `harness-id` | Exact enum: `claude-code` \| `grok-build` \| `kimi-code` \| `hermes` |
 | Separator | Single `:` between harness id and native id only |
 | `native-session-id` | Opaque host string. **May contain `:`** — split only on the **first** colon |
-| Encoding | UTF-8; trim reject; empty native id invalid |
+| Encoding | UTF-8. Validate as-is (no silent trimming): leading/trailing whitespace ⇒ invalid; empty native id ⇒ invalid |
 | Case | `harness-id` fixed lowercase; native id preserved as emitted |
 
 **Examples:** `claude-code:a1b2c3d4-…`, `grok-build:sess_01HZX…`, `kimi-code:2026-08-08T12:00:00Z_abc`, `hermes:thread-42`.
@@ -212,7 +230,7 @@ function parseSessionId(id: string): { harnessId: HarnessId; nativeSessionId: st
 | Canonical | `SessionId` | `<harness-id>:<native-session-id>` |
 | ros_messages / capture | `conversation_id` / `session_key` (conversation key) | **Exactly** `SessionId` |
 | Capture plugins | Host label in JSONL | Normalize to `SessionId` before write (no bare native ids) |
-| Den harness-session | Resource name | `harness-session/<SessionId>` (encode if den requires; **round-trip recovers same SessionId**) |
+| Den harness-session | Resource name | `harness-session/<enc(SessionId)>` where `enc` single-segment-encodes the **full** SessionId (`:` and `/` included — Claude's path-fallback native ids contain `/`); **round-trip recovers the same SessionId**, with tests covering both `:` and `/` |
 | Hub chat | Thread external key | `SessionId` (UI may badge harness + short native suffix) |
 | Tasks | Executor payload | type `harness-session` + `sessionId: SessionId` |
 | Gateway | `:sessionId` param | URL-encoded `SessionId` |
@@ -224,7 +242,7 @@ function parseSessionId(id: string): { harnessId: HarnessId; nativeSessionId: st
 1. **Uniqueness domain:** one node. Mesh addresses sessions as `{nodeId, sessionId}` only if needed later.
 2. **Cross-harness:** different `harness-id` ⇒ different sessions even if native ids match.
 3. **Same harness:** native ids unique per harness store; on collision return `session_id_collision` — never overwrite.
-4. **Rehydrate:** if capture and den both have the same `SessionId`, one session. If only one side exists, create the missing mapping without minting a second id.
+4. **Rehydrate:** if capture and den resolve to the same `SessionId` **after alias resolution** (exact string OR legacy-key alias, see Legacy keys below), one session. If only one side exists, create the missing mapping without minting a second id.
 5. **No silent remap:** never change `harness-id` on an existing row.
 
 ### Resume semantics
@@ -234,7 +252,7 @@ function parseSessionId(id: string): { harnessId: HarnessId; nativeSessionId: st
 | `resumeSession(sessionId)` | Parse → driver for `harness-id` → attach to native id. Fail if unregistered/unknown. |
 | Client reconnect (WS drop) | Same `SessionId`; re-`subscribe`; no new native session. |
 | Hub opens existing chat | Bind by `SessionId`; `resumeSession` if not live-attached. |
-| `startSession` | Always new native id → new `SessionId`. Never reuse. |
+| `startSession` | New session, never attach. Without `nativeSessionId`: harness mints a fresh native id. With caller-pinned `nativeSessionId`: id must be fresh; existing ⇒ reject `session_id_collision`. |
 | Task executor | Payload carries `SessionId`; resume before send. |
 
 Resume does **not** create a new conversation id. Capture continues under the same `SessionId`.
@@ -250,6 +268,25 @@ When a harness rotates/replaces its native id (compact, fork, crash recovery):
 5. **Den:** rename or symlink `harness-session/<old>` → `harness-session/<new>`.
 6. **Gateway:** superseded id redirects (`redirectedTo` / equivalent) to canonical; accept old id via alias for a grace period.
 7. **Never** invent a Rivet-only third id not derived from harness native ids.
+8. **Same-harness only:** `previousSessionId` and `sessionId` MUST share the same `harness-id`; drivers never emit cross-harness aliases and the control plane rejects them.
+9. **Chain hygiene:** alias resolution always terminates at the newest id; cycle detection required; max chain depth 32 (reject beyond — something is broken).
+10. **Grace-period ingest:** events still arriving under the old id are rewritten to the canonical id at ingest (single write — no dual-writing); events for an unknown alias are dropped with a logged warning.
+
+> **Phase 3 breaking change:** hermes capture today handles rotation as "close old key, open new conversation" with no alias. The hermes driver MUST adopt alias semantics — do not ship the old close+new behavior under the new interface.
+
+### Legacy keys → SessionId (migration aliases)
+
+The repo already holds several key shapes for one interactive session. Phase 2 defines this table as **mandatory alias precedence** — without it, migration mints duplicate conversations:
+
+| Legacy shape | Where | Disposition |
+|--------------|-------|-------------|
+| `claude-code:<session-uuid>` | Capture (preferred path) | Already canonical — wins over all others |
+| `claude-code:<project-slug>/<uuid>` | Capture path-fallback (`deriveSessionKey`) | Alias → `claude-code:<uuid>` once the session uuid is known; uuid form is canonical |
+| Bare native uuid | Den drawer, hub chat conversation id | Alias → `<harness-id>:<uuid>` during Phase 2 migration; hub external key updated in place |
+| Roster tokens `claude` / `grok` / `hermes` | Den command roster | UI labels only — map to `HarnessId` enum for storage; NEVER stored as key material |
+| `task:<taskId>` (`RIVETOS_SESSION_KEY` override) | Task executors | **Stays a parallel, non-harness conversation-key namespace** (multi-spawn task transcript unity). Never parsed as a `SessionId`. Harness sessions spawned under a task additionally alias `SessionId → task:<taskId>` so both views resolve to one transcript |
+
+Precedence: canonical `<harness-id>:<native-session-id>` > path-fallback alias > bare-uuid alias. Alias resolution applies everywhere rehydrate/merge decisions are made (rule 4 above).
 
 ### Reference behavior (Claude)
 
@@ -262,7 +299,7 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 - [ ] Fix `packages/cli` `"test": "echo no tests yet"` → real `vitest run` (no false-green)
 - [ ] Add root `typecheck` to the `ci` pipeline
 - [ ] Delete or wire dead exports (`rotateAuditLogs`, unused circuit-breaker reset) after verify
-- [ ] Drop unused deps (`enquirer`, `sharp`, leftover `@types/pg`) after verify
+- [ ] Drop unused deps after verify — candidates, not pre-verified: `enquirer` (packages/nx-plugin), `sharp` (root override), `@types/pg` (may pair with live `pg` usage — check before dropping)
 - [ ] Refresh stale `CODEBASE-REFERENCE` / `ARCHITECTURE` claims
 - [ ] CLI `showHelp()` completeness vs actual commands
 
@@ -287,8 +324,9 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 
 - [ ] **Grok Build driver:** promote hooks/capture → gateway stream (`grok-build:…`)
 - [ ] **Hermes driver:** same; memory/den already exist (`hermes:…`)
-- [ ] **Kimi driver:** rivet-den hooks + driver; keep capture (`kimi-code:…`)
-- [ ] Tasks: `harness-session` executors per harness id
+- [ ] **Kimi driver:** rivet-den hooks + driver; keep capture (`kimi-code:…`) — den integration is greenfield (no `integrations/kimi/rivet-den` exists today)
+- [ ] Tasks: `harness-session` executors per harness id — includes renaming/aliasing the existing executor agent id `claude-cli` → `claude-code`
+- [ ] Hermes rotation migrated from close+new-conversation to alias semantics (breaking, see Session identity § Rotation)
 - [ ] **Hub:** chat / tasks / dens bind multi-harness API (not Claude-only)
 - [ ] Den: list all harness types under one naming scheme
 - [ ] **Android:** same gateway APIs — full remote parity (no on-device agent loop)
