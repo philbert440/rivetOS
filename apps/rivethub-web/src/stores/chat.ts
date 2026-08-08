@@ -12,6 +12,13 @@
  * changes, all chat state is reset — session ids are only meaningful per
  * gateway, and merging node A's ring into node B's transcript would
  * fabricate conversations (#299 review).
+ *
+ * **Two owners, never both.** A session claimed by a registered HarnessDriver
+ * is marked `harnessBound` and is driven entirely by the control plane
+ * (`lib/harness-attach.ts` — its own WS plus a transcript hard-resync). This
+ * socket then ignores it: den events reach both surfaces, so folding each
+ * twice would double every delta. Everything else keeps the gateway chat
+ * channel binding verbatim (docs/plans/harness-control-plane.md § Phase 3).
  */
 
 import { create } from 'zustand'
@@ -27,6 +34,7 @@ import { foldStream, type LiveTurn } from '../lib/fold-stream.js'
 import { uuidv4 } from '../lib/uuid.js'
 import { messagesFromHarnessTurns } from '../lib/harness-turns.js'
 import { questionsFromLiveTools, type AskQuestion } from '../lib/ask-user.js'
+import type { HarnessApprovalEvent } from '../lib/harness-fold.js'
 
 export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 export { foldStream } from '../lib/fold-stream.js'
@@ -51,6 +59,10 @@ export interface TranscriptState {
   command: string
 }
 
+/** An approval the harness is blocked on (control-plane sessions only —
+ *  drivers reporting `approvals: false` never emit these). */
+export type PendingApproval = Extract<HarnessApprovalEvent, { type: 'approval-request' }>
+
 interface ChatState {
   /** transcripts keyed by sessionId; only sessions opened this visit */
   messages: Record<string, SessionMessage[] | undefined>
@@ -72,6 +84,16 @@ interface ChatState {
   ask: Record<string, AskQuestion[] | undefined>
   /** outbound send queue per session — shown in the transcript as queued/sending */
   outbound: Record<string, OutboundItem[] | undefined>
+  /**
+   * Sessions a registered HarnessDriver owns. Their transcript and live turn
+   * arrive on the control-plane socket (`WS /api/harness-sessions/ws` + a
+   * transcript hard-resync), so the all-sessions chat socket must NOT also
+   * write them — the same den events reach both surfaces, and folding each
+   * twice doubles every delta. One owner per session.
+   */
+  harnessBound: Record<string, true | undefined>
+  /** Approvals a control-plane session is blocked on, oldest-first. */
+  approvals: Record<string, PendingApproval[] | undefined>
   /** sessions the user opened — the WS write gate */
   opened: string[]
   wsStatus: WsStatus
@@ -98,6 +120,9 @@ interface ChatState {
   /** Enqueue a user turn (optimistic bubble + queue). Returns optim id. */
   enqueueOutbound: (sessionId: string, text: string) => string
   markOutboundSending: (sessionId: string, id: string) => void
+  /** Put a sending item back in the queue — the harness answered
+   *  `turn_in_flight`, which is a "not yet", not a failure. */
+  requeueOutbound: (sessionId: string, id: string) => void
   /** Drop from queue after inject accepted (bubble stays until WS echo). */
   dequeueOutbound: (sessionId: string, id: string) => void
   /** Inject failed / user cancel — remove queue entry + optimistic bubble. */
@@ -111,6 +136,8 @@ interface ChatState {
    * WS fold on top via foldStream; clearLive / done clears the slot.
    */
   beginLive: (sessionId: string, activity?: string) => void
+  /** Replace the live slot outright (control-plane fold owns the whole turn). */
+  setLive: (sessionId: string, turn: LiveTurn | undefined) => void
   /** Drop the live slot (send failed, or explicit cancel). */
   clearLive: (sessionId: string) => void
   /** True when live has real stream content (not just a pre-inject placeholder). */
@@ -123,6 +150,20 @@ interface ChatState {
    *  server-side per socket; re-sent automatically on reconnect). */
   watchTranscript: (sessionId: string) => void
   unwatchTranscript: (sessionId: string) => void
+  /** Hand a session to the control plane (or take it back on detach). */
+  bindHarness: (sessionId: string, harnessId: string) => void
+  unbindHarness: (sessionId: string) => void
+  /**
+   * Hard resync from `GET /api/harness-sessions/:enc/transcript`. Replaces the
+   * committed transcript wholesale (the live tail has no replay, so this is
+   * the only source of missed history) while keeping optimistic bubbles the
+   * store has not caught up with yet.
+   */
+  syncHarnessTranscript: (sessionId: string, turns: HarnessTranscriptTurn[]) => void
+  /** Record an approval-request / retire it on approval-resolved. */
+  applyApprovalEvent: (sessionId: string, event: HarnessApprovalEvent) => void
+  /** Drop one pending approval (answered locally). */
+  clearApproval: (sessionId: string, requestId: string) => void
   connect: (endpointKey: string) => void
   disconnect: () => void
 }
@@ -140,13 +181,58 @@ let currentEndpoint: string | undefined
 const watchedSessions = new Set<string>()
 
 /**
- * Apply a pushed transcript frame: splice the turn array at frame.from,
- * rebuild solid messages from the result, and reconcile the optimistic
- * outbound bubbles (a user turn the store now carries supersedes its
- * optimistic copy — first match only, so two identical queued turns don't
- * collapse). live/ask state is untouched: the live overlay clears through
- * the bridge's commit/done paths, and the view hides the in-flight solid
- * turn while a live turn is busy.
+ * Rebuild a session's solid messages from a full turn array and reconcile the
+ * optimistic outbound bubbles: a user turn the store now carries supersedes
+ * its optimistic copy — first match only, so two identical queued turns don't
+ * collapse. Only bubbles with NO outbound entry are eligible — queued means
+ * not injected yet (a matching store turn is a TUI-typed twin), and sending
+ * means the pump hasn't observed success/failure, so eating the bubble early
+ * could leave a failed inject with no retry cue (grok review).
+ *
+ * `changed` is the window to reconcile against: the delta's own turns for a
+ * pushed frame, every turn for a control-plane hard resync (which has no
+ * "what changed" information by construction).
+ *
+ * live/ask state is untouched: the live overlay clears through its own
+ * commit/done paths, and the view hides the in-flight solid turn while a live
+ * turn is busy.
+ */
+function transcriptPatch(
+  s: ChatState,
+  sid: string,
+  turns: HarnessTranscriptTurn[],
+  changed: HarnessTranscriptTurn[],
+  command: string,
+  rev: number,
+): Partial<ChatState> {
+  const mapped = messagesFromHarnessTurns(sid, turns)
+  const existing = s.messages[sid] ?? []
+  const optimBubbles = existing.filter((m) => m.id.startsWith('optim:'))
+  const outbound = s.outbound[sid] ?? []
+  const newUserTexts = changed.filter((t) => t.role === 'user').map((t) => t.text)
+  const keptBubbles: SessionMessage[] = []
+  for (const bubble of optimBubbles) {
+    // Newest match, not oldest: a bubble the user just sent is the tail of the
+    // conversation, and pairing it with an identical turn from an hour ago
+    // would retire the wrong one (and flicker the new turn in behind it).
+    const hit = newUserTexts.lastIndexOf(bubble.text)
+    const inQueue = outbound.some((o) => o.id === bubble.id)
+    if (hit >= 0 && !inQueue) {
+      newUserTexts.splice(hit, 1)
+    } else {
+      keptBubbles.push(bubble)
+    }
+  }
+  return {
+    transcripts: { ...s.transcripts, [sid]: { rev, turns, command } },
+    messages: { ...s.messages, [sid]: [...mapped, ...keptBubbles] },
+  }
+}
+
+/**
+ * Apply a pushed transcript frame: splice the turn array at frame.from, then
+ * rebuild through `transcriptPatch`. Returns null when a delta can't be
+ * applied (missed rev / length mismatch) so the caller can ask for a snapshot.
  */
 function applyTranscriptFrame(s: ChatState, frame: TranscriptWsFrame): Partial<ChatState> | null {
   const sid = frame.session
@@ -160,35 +246,7 @@ function applyTranscriptFrame(s: ChatState, frame: TranscriptWsFrame): Partial<C
     return null // missed a delta — caller requests a snapshot
   }
   if (turns.length !== frame.total) return null
-
-  const mapped = messagesFromHarnessTurns(sid, turns)
-  // Reconcile optimistic bubbles against the NEW turns only (frame.turns):
-  // the just-committed user turn always sits in the changed window. Only
-  // bubbles with NO outbound entry are eligible — queued means not injected
-  // yet (a matching store turn is a TUI-typed twin), and sending means the
-  // pump hasn't observed success/failure, so eating the bubble early could
-  // leave a failed inject with no retry cue (grok review).
-  const existing = s.messages[sid] ?? []
-  const optimBubbles = existing.filter((m) => m.id.startsWith('optim:'))
-  const outbound = s.outbound[sid] ?? []
-  const newUserTexts = frame.turns.filter((t) => t.role === 'user').map((t) => t.text)
-  const keptBubbles: SessionMessage[] = []
-  for (const bubble of optimBubbles) {
-    const hit = newUserTexts.indexOf(bubble.text)
-    const inQueue = outbound.some((o) => o.id === bubble.id)
-    if (hit >= 0 && !inQueue) {
-      newUserTexts.splice(hit, 1)
-    } else {
-      keptBubbles.push(bubble)
-    }
-  }
-  return {
-    transcripts: {
-      ...s.transcripts,
-      [sid]: { rev: frame.rev, turns, command: frame.command },
-    },
-    messages: { ...s.messages, [sid]: [...mapped, ...keptBubbles] },
-  }
+  return transcriptPatch(s, sid, turns, frame.turns, frame.command, frame.rev)
 }
 
 export const useChat = create<ChatState>((set, get) => ({
@@ -199,6 +257,8 @@ export const useChat = create<ChatState>((set, get) => ({
   liveTs: {},
   ask: {},
   outbound: {},
+  harnessBound: {},
+  approvals: {},
   opened: [],
   wsStatus: 'closed',
   wsEpoch: 0,
@@ -286,6 +346,16 @@ export const useChat = create<ChatState>((set, get) => ({
       },
     })),
 
+  requeueOutbound: (sessionId, id) =>
+    set((s) => ({
+      outbound: {
+        ...s.outbound,
+        [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
+          o.id === id ? { ...o, status: 'queued' as const } : o,
+        ),
+      },
+    })),
+
   dequeueOutbound: (sessionId, id) =>
     set((s) => ({
       outbound: {
@@ -322,6 +392,22 @@ export const useChat = create<ChatState>((set, get) => ({
             ? { ...existing, activity: activity || existing.activity }
             : { text: '', reasoning: false, reasoningText: '', tools: [], activity },
         },
+      }
+    }),
+
+  setLive: (sessionId, turn) =>
+    set((s) => {
+      // A turn ending takes its ask-user prompt with it unless we stash it:
+      // headless ask tools don't block, so the question outlives the turn as
+      // the composer's ask card until answered or dismissed. Same rule the
+      // bridge path applies on `done` — without it, a control-plane session
+      // would show the card mid-turn and lose it the moment the turn ended.
+      const prev = s.live[sessionId]
+      const stashed = turn === undefined && prev ? questionsFromLiveTools(prev.tools) : []
+      return {
+        live: { ...s.live, [sessionId]: turn },
+        liveTs: { ...s.liveTs, [sessionId]: Date.now() },
+        ask: stashed.length > 0 ? { ...s.ask, [sessionId]: stashed } : s.ask,
       }
     }),
 
@@ -363,6 +449,78 @@ export const useChat = create<ChatState>((set, get) => ({
     subscription?.send({ type: 'unwatch', session: sessionId })
   },
 
+  bindHarness: (sessionId, harnessId) =>
+    set((s) => ({
+      harnessBound: { ...s.harnessBound, [sessionId]: true },
+      opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
+      // Mark the session store-backed straight away: the transcript is the
+      // source of truth for solid messages, so nothing else may append.
+      transcripts: s.transcripts[sessionId]
+        ? { ...s.transcripts, [sessionId]: { ...s.transcripts[sessionId], command: harnessId } }
+        : { ...s.transcripts, [sessionId]: { rev: 0, turns: [], command: harnessId } },
+    })),
+
+  unbindHarness: (sessionId) =>
+    set((s) => {
+      const { [sessionId]: _bound, ...harnessBound } = s.harnessBound
+      return { harnessBound, approvals: { ...s.approvals, [sessionId]: undefined } }
+    }),
+
+  syncHarnessTranscript: (sessionId, turns) =>
+    set((s) => {
+      // A resync carries no "what changed", so derive it: everything past the
+      // common prefix with what we already hold. That keeps bubble
+      // reconciliation pointed at the tail instead of the whole history, where
+      // an identical turn from earlier in the conversation could eat a bubble
+      // the store has not actually committed yet.
+      const prev = s.transcripts[sessionId]?.turns ?? []
+      let prefix = 0
+      while (
+        prefix < prev.length &&
+        prefix < turns.length &&
+        prev[prefix].role === turns[prefix].role &&
+        prev[prefix].text === turns[prefix].text
+      ) {
+        prefix += 1
+      }
+      const patch = transcriptPatch(
+        s,
+        sessionId,
+        turns,
+        turns.slice(prefix),
+        s.transcripts[sessionId]?.command || 'harness',
+        (s.transcripts[sessionId]?.rev ?? 0) + 1,
+      )
+      // A committed user turn at the tail IS the answer — retire the ask card
+      // even when the user typed it into the TUI instead of the composer.
+      return turns.at(-1)?.role === 'user'
+        ? { ...patch, ask: { ...s.ask, [sessionId]: undefined } }
+        : patch
+    }),
+
+  applyApprovalEvent: (sessionId, event) =>
+    set((s) => {
+      const pending = s.approvals[sessionId] ?? []
+      if (event.type === 'approval-resolved') {
+        return {
+          approvals: {
+            ...s.approvals,
+            [sessionId]: pending.filter((p) => p.requestId !== event.requestId),
+          },
+        }
+      }
+      if (pending.some((p) => p.requestId === event.requestId)) return s
+      return { approvals: { ...s.approvals, [sessionId]: [...pending, event] } }
+    }),
+
+  clearApproval: (sessionId, requestId) =>
+    set((s) => ({
+      approvals: {
+        ...s.approvals,
+        [sessionId]: (s.approvals[sessionId] ?? []).filter((p) => p.requestId !== requestId),
+      },
+    })),
+
   connect: (endpointKey) => {
     subscription?.close()
     if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
@@ -374,6 +532,8 @@ export const useChat = create<ChatState>((set, get) => ({
         liveTs: {},
         ask: {},
         outbound: {},
+        harnessBound: {},
+        approvals: {},
         opened: [],
         drafts: [],
         active: undefined,
@@ -389,7 +549,10 @@ export const useChat = create<ChatState>((set, get) => ({
     const { gateway } = useConnection.getState()
     subscription = gateway.watchSessions(
       (frame: SessionWsFrame) => {
-        const isOpen = (id: string): boolean => get().opened.includes(id)
+        // A control-plane session is driven by its own socket; the same den
+        // events surface on both, so writing here too would double every
+        // delta and re-append every committed turn.
+        const isOpen = (id: string): boolean => get().opened.includes(id) && !get().harnessBound[id]
         if (frame.kind === 'sessions-dirty') {
           // a harness store changed somewhere — the drawer refetches on this
           set((s) => ({ sessionsDirty: s.sessionsDirty + 1 }))
@@ -482,7 +645,20 @@ export const useChat = create<ChatState>((set, get) => ({
             // Fresh socket: anything accumulated before the outage is
             // unreliable (frames during the gap are gone) — clear live and
             // signal consumers to refetch backfill.
-            set((s) => ({ wsStatus: status, live: {}, wsEpoch: s.wsEpoch + 1 }))
+            //
+            // Except what this socket does not own. A control-plane session's
+            // live turn belongs to ITS socket, which did not drop; blanking it
+            // here would erase a mid-stream bubble and hand the queue pump a
+            // false "idle" mid-turn. Non-owner never mutates owner state.
+            set((s) => {
+              const live: Record<string, LiveTurn | undefined> = {}
+              for (const sid of Object.keys(s.live)) {
+                if (s.harnessBound[sid]) live[sid] = s.live[sid]
+              }
+              // wsEpoch still bumps: it only drives HTTP backfill refetches,
+              // which bound sessions gate off their own transcript anyway.
+              return { wsStatus: status, live, wsEpoch: s.wsEpoch + 1 }
+            })
             // Server-side transcript subscriptions died with the old socket;
             // re-watch everything open. The server answers each watch with a
             // full snapshot, which also heals any frames lost in the gap.

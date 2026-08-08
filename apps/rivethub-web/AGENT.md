@@ -25,6 +25,34 @@ Rail: Conversations (`/`), Terminal, Den — separator — Memory, Files, Tasks,
 - **Files** (`/files`) = full browser for the node's files root (`/rivet-shared` default): list/filter/sort, multi-select, text/image preview, mkdir/rename/delete, copy path/URL, DnD upload (current dir or onto a folder), drag row onto folder to move. Server: den-server `src/files.ts` (`list|download|upload|mkdir|rename|delete`, path+symlink fenced, 1 GiB upload cap, no-clobber unless `overwrite=1`, recursive delete opt-in); config `den.files_root` / `RIVETOS_DEN_FILES_ROOT` ('' disables).
 - **Node-switch den trap fixed in boot**: default den static_dir is hub-first (`apps/rivethub-web/dist` when built, else den viewer) — peers without an explicit `static_dir` used to serve full-screen den at `/` with no way back.
 
+### Harness control plane binding (2026-08-08)
+
+Chat now speaks the node's harness control plane
+(`docs/plans/harness-control-plane.md`) for sessions a registered driver owns —
+`claude-code` today. Two bindings, one surface, chosen per session:
+
+| | control plane | legacy (unclaimed harnesses) |
+|---|---|---|
+| list | `GET /api/harnesses/:id/sessions` | `/api/terminal/harness-sessions` scan |
+| stream | `WS /api/harness-sessions/ws?session=<enc>` | all-sessions WS bridge frames |
+| history | transcript hard-resync on every (re)connect | server-pushed transcript deltas |
+| send | `POST …/turns` (`sendUserTurn`) | `POST /term/inject` into the PTY |
+
+The drawer unions both lists keyed by native id (plane wins) and badges the
+harness id. `useChat.harnessBound` is the mutex: a bound session is ignored by
+the all-sessions socket, because the same den events reach both surfaces.
+
+Key files: `lib/harness-chat.ts` (merge + capability gate + `turn_in_flight`),
+`lib/harness-attach.ts` (subscribe + resync lifecycle), `lib/harness-fold.ts`
+(HarnessEvent → LiveTurn), `components/harness-approval-card.tsx`.
+
+Gotchas: the live tail is **at-most-once from attach time** — every
+`onStatus('open')` must be followed by a transcript resync, never a resume of
+folding. `claude-code` reports `approvals: false` always, so the approval card
+never shows there; `interrupt` follows whether den terminals are enabled. Chat
+keys stay the bare native id (the den join key); the canonical `SessionId`
+rides on the drawer item and is what the control-plane calls use.
+
 ### Chat resync from TUI (Android parity)
 **Auto on open:** opening a conversation (and returning Chat←Terminal/Den) pulls
 `GET /api/terminal/harness-sessions/:id/transcript` and hard-replaces the chat
