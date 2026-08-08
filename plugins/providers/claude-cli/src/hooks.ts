@@ -34,7 +34,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { ingestTranscript, ingestHookEvent } from './transcript-capture.js'
+import {
+  ingestTranscript,
+  ingestHookEvent,
+  resolveTaskContext,
+  LEGACY_TASK_KEY_PREFIX,
+} from './transcript-capture.js'
 
 const SELF = fileURLToPath(import.meta.url)
 const LOG_FILE = path.join(os.homedir(), '.rivetos', 'claude-capture.log')
@@ -81,12 +86,19 @@ interface HookPayload {
   hook_event_name?: string
   session_id?: string
   /**
-   * Stamped into the spool at hook time from RIVETOS_SESSION_KEY (set in the
-   * task executor's spawn env, value `task:<taskId>`). Carried in the payload
-   * rather than re-read in the worker so the detached worker never depends on
-   * env inheritance.
+   * Stamped into the spool at hook time from RIVETOS_SESSION_KEY (den
+   * terminals set it to the den session id; task executors used to set
+   * `task:<taskId>` — deprecated, still honored). Carried in the payload rather
+   * than re-read in the worker so the detached worker never depends on env
+   * inheritance.
    */
   rivetos_session_key?: string
+  /**
+   * Stamped from RIVETOS_TASK_ID — the task that spawned this CLI session.
+   * Recorded as the conversation's task association; unlike the key override it
+   * does not change where the turns are written.
+   */
+  rivetos_task_id?: string
   transcript_path?: string
   cwd?: string
   reason?: string
@@ -121,11 +133,12 @@ async function runHook(): Promise<void> {
   // Anything with neither carries nothing to capture.
   if (!payload.session_id && !payload.transcript_path) return
 
-  // Task-engine spawns export RIVETOS_SESSION_KEY; hooks run inside the
-  // spawned CLI's env, so this is where the task↔conversation join happens.
-  if (process.env.RIVETOS_SESSION_KEY) {
-    payload.rivetos_session_key = process.env.RIVETOS_SESSION_KEY
-  }
+  // Hooks run inside the spawned CLI's env, so this is where the
+  // task↔conversation association is captured. Stamped into the spool because
+  // the detached worker does not inherit this env.
+  const task = resolveTaskContext(process.env)
+  if (task.sessionKeyOverride) payload.rivetos_session_key = task.sessionKeyOverride
+  if (task.taskId) payload.rivetos_task_id = task.taskId
 
   try {
     fs.mkdirSync(SPOOL_DIR, { recursive: true })
@@ -162,6 +175,19 @@ async function runWorker(spoolFile: string): Promise<void> {
 
   const event = payload.hook_event_name ?? 'unknown'
 
+  // Deprecation window: a `task:<id>` write-key override means this spawn came
+  // from an executor that predates the task-association migration (a task
+  // in-flight across a rolling deploy). Honor it — splitting a live task's
+  // transcript mid-run is worse than one more row in the legacy namespace —
+  // but say so, out of band, where it costs the session nothing.
+  if (payload.rivetos_session_key?.startsWith(LEGACY_TASK_KEY_PREFIX)) {
+    log(
+      `DEPRECATED RIVETOS_SESSION_KEY=${payload.rivetos_session_key} — task spawns should set ` +
+        `RIVETOS_TASK_ID and let capture write the canonical session key; honoring the ` +
+        `override for this ingest`,
+    )
+  }
+
   // Payload events (UserPromptSubmit / PostToolUse) — ingest straight from
   // the stdin payload; no transcript involved.
   if ((PAYLOAD_EVENTS as readonly string[]).includes(event)) {
@@ -169,6 +195,7 @@ async function runWorker(spoolFile: string): Promise<void> {
       const res = await ingestHookEvent({
         payload,
         sessionKeyOverride: payload.rivetos_session_key,
+        taskId: payload.rivetos_task_id,
       })
       if (res.skipped) {
         log(`${event} ${res.sessionKey}: skipped (${res.skipped})`)
@@ -195,6 +222,7 @@ async function runWorker(spoolFile: string): Promise<void> {
       transcriptPath: transcript,
       sessionId: payload.session_id,
       sessionKeyOverride: payload.rivetos_session_key,
+      taskId: payload.rivetos_task_id,
       event,
       markInactive: event === 'SessionEnd',
     })

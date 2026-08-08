@@ -215,14 +215,35 @@ describe('ClaudeCliExecutor', () => {
     expect(args).toContain('--permission-mode')
   })
 
-  it('spawns with RIVETOS_SESSION_KEY=task:<id> and RIVETOS_DEN_HOOK_DISABLED=1', async () => {
+  it('spawns with RIVETOS_TASK_ID=<id> and RIVETOS_DEN_HOOK_DISABLED=1', async () => {
     const fake = makeFakeClaude(successLines('ok'))
     const spec = makeConformanceSpec({ taskId: 'task-env-check' })
     await makeExecutor(fake.binary).start(spec, { signal: new AbortController().signal }).result
     const env = fake.env()
-    expect(env.RIVETOS_SESSION_KEY).toBe('task:task-env-check')
+    expect(env.RIVETOS_TASK_ID).toBe('task-env-check')
+    // The write-key override is gone: the spawn writes capture under its own
+    // canonical session key and the task is a query-time join.
+    expect(env.RIVETOS_SESSION_KEY).toBeUndefined()
     expect(env.RIVETOS_DEN_HOOK_DISABLED).toBe('1')
     expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+  })
+
+  it('clears an inherited RIVETOS_SESSION_KEY so a den terminal cannot capture the task', async () => {
+    // An executor running inside a den PTY inherits that terminal's key. Left
+    // in place, capture would file the task's turns into the den chat's
+    // conversation — the executor must delete it, not merely stop setting it.
+    const previous = process.env.RIVETOS_SESSION_KEY
+    process.env.RIVETOS_SESSION_KEY = 'chat-20260808-dead'
+    try {
+      const fake = makeFakeClaude(successLines('ok'))
+      const spec = makeConformanceSpec({ taskId: 'task-inherited-key' })
+      await makeExecutor(fake.binary).start(spec, { signal: new AbortController().signal }).result
+      expect(fake.env().RIVETOS_SESSION_KEY).toBeUndefined()
+      expect(fake.env().RIVETOS_TASK_ID).toBe('task-inherited-key')
+    } finally {
+      if (previous === undefined) delete process.env.RIVETOS_SESSION_KEY
+      else process.env.RIVETOS_SESSION_KEY = previous
+    }
   })
 
   it('passes --json-schema with the TASK_RESULT schema on every spawn', async () => {
@@ -296,6 +317,30 @@ describe('ClaudeCliExecutor', () => {
     expect(rawArgs).toContain('Prior conversation (task resumed')
     expect(rawArgs).toContain('original goal text')
     expect(rawArgs).toContain('first pass, awaiting input')
+  })
+
+  it('resume prefers the task-union read over the legacy task:<id> key', async () => {
+    const fake = makeFakeClaude(successLines('resumed ok'))
+    const seen: string[] = []
+    const memory = {
+      getSessionHistory: async (key: string) => {
+        seen.push(`session:${key}`)
+        return [{ role: 'user' as const, content: 'legacy-only row' }]
+      },
+      getTaskHistory: async (taskId: string) => {
+        seen.push(`task:${taskId}`)
+        return [{ role: 'assistant' as const, content: 'union of every spawn' }]
+      },
+    }
+    const executor = new ClaudeCliExecutor({ binary: fake.binary, memory })
+    await executor.start(makeConformanceSpec({ taskId: 't-99', resumeMessage: 'go on' }), {
+      signal: new AbortController().signal,
+    }).result
+
+    expect(seen).toEqual(['task:t-99'])
+    const rawArgs = fs.readFileSync(path.join(fake.dir, 'args.txt'), 'utf8')
+    expect(rawArgs).toContain('union of every spawn')
+    expect(rawArgs).not.toContain('legacy-only row')
   })
 
   it('resume survives a rehydration failure without the transcript', async () => {

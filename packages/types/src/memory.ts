@@ -50,6 +50,18 @@ export interface Memory {
   /** Restore session history from persistent storage */
   getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]>
 
+  /**
+   * Restore a task's transcript: the union of every conversation the task
+   * spawned, in chronological order.
+   *
+   * A task can spawn many harness sessions, each writing capture under its own
+   * canonical session key, so the task's transcript is a query-time join over
+   * the per-conversation task association — not a single session key. Stores
+   * that predate the join omit this and callers fall back to reading the legacy
+   * `task:<taskId>` conversation key.
+   */
+  getTaskHistory?(taskId: string, options?: { limit?: number }): Promise<Message[]>
+
   /** Persist session settings (thinking level, visibility toggles) */
   saveSessionSettings?(sessionId: string, settings: Record<string, unknown>): Promise<void>
 

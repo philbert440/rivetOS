@@ -48,6 +48,13 @@ interface SettingsRow {
   settings: Record<string, unknown> | null
 }
 
+/** ros_tasks.id, and therefore ros_conversations.task_id, is a UUID. */
+const TASK_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function isTaskUuid(value: string): boolean {
+  return TASK_UUID_RE.test(value)
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -84,6 +91,11 @@ export class PostgresMemory implements Memory {
    * a false result is never cached — see hasConversationUniqueIndex.
    */
   private conversationUniqueIndex = false
+  /**
+   * Latch for ros_conversations.task_id (0011). Sticky once true; a false
+   * result is never cached — see hasConversationTaskId.
+   */
+  private conversationTaskId = false
 
   constructor(config: PostgresMemoryConfig) {
     this.pool = new Pool({
@@ -398,6 +410,73 @@ export class PostgresMemory implements Memory {
   }
 
   // -----------------------------------------------------------------------
+  // getTaskHistory — union transcript for a task (query-time join)
+  // -----------------------------------------------------------------------
+
+  /**
+   * A task's transcript across every session it spawned, oldest-first.
+   *
+   * Two legs, deliberately UNIONed rather than either one alone:
+   *
+   *  - `task_id` — the canonical association (0011). Each spawned harness
+   *    session writes capture under its own `claude-code:<native>` key and
+   *    stamps the task on its conversation, so this leg is what makes
+   *    multi-spawn transcript unity work without a shared write key.
+   *  - `session_key = 'task:<id>'` — the legacy namespace the executors wrote
+   *    into before the migration, and still the key the chat-loop executor
+   *    appends under (it drives AgentLoop with sessionId `task:<id>`). Those
+   *    rows were never migrated and never need to be.
+   *
+   * Unlike getSessionHistory this does NOT filter on `active`: a task's earlier
+   * spawns are finalized by their SessionEnd hook, and they are precisely the
+   * history a resume needs to see.
+   *
+   * `limit` bounds the newest N messages across the union, matching
+   * getSessionHistory's semantics.
+   *
+   * `m.id` breaks ties on created_at. Rows inserted in one transaction can share
+   * a timestamp — capture writes a whole transcript pass that way — and without
+   * a tiebreaker Postgres is free to return them in a different order on every
+   * call, so a resumed task could see its own history reshuffled. The id is a
+   * random UUID, so this buys determinism, not chronology: same-timestamp rows
+   * get an arbitrary but STABLE order.
+   */
+  async getTaskHistory(taskId: string, options?: { limit?: number }): Promise<Message[]> {
+    const limit = options?.limit ?? 100
+    const legacyKey = `task:${taskId}`
+
+    // A non-UUID task id cannot be in the task_id column, and binding it would
+    // raise 22P02 — read the legacy leg only. Same for a node whose 0011 has
+    // not landed: the column does not exist yet, so the union will not parse.
+    const joined = isTaskUuid(taskId) && (await this.hasConversationTaskId())
+
+    const result = joined
+      ? await this.pool.query<SessionMessageRow>(
+          `SELECT m.role, m.content
+             FROM ros_messages m
+             JOIN ros_conversations c ON c.id = m.conversation_id
+            WHERE c.task_id = $1::uuid OR c.session_key = $2
+            ORDER BY m.created_at DESC, m.id DESC
+            LIMIT $3`,
+          [taskId, legacyKey, limit],
+        )
+      : await this.pool.query<SessionMessageRow>(
+          `SELECT m.role, m.content
+             FROM ros_messages m
+             JOIN ros_conversations c ON c.id = m.conversation_id
+            WHERE c.session_key = $1
+            ORDER BY m.created_at DESC, m.id DESC
+            LIMIT $2`,
+          [legacyKey, limit],
+        )
+
+    return result.rows.reverse().map((r) => ({
+      role: r.role as Message['role'],
+      content: r.content,
+    }))
+  }
+
+  // -----------------------------------------------------------------------
   // Session settings — persisted in ros_conversations.settings (JSONB)
   // -----------------------------------------------------------------------
 
@@ -517,5 +596,32 @@ export class PostgresMemory implements Memory {
     this.conversationUniqueIndex = res.rows[0]?.present ?? false
 
     return this.conversationUniqueIndex
+  }
+
+  /**
+   * Whether `ros_conversations.task_id` exists (migration 0011).
+   *
+   * Same caching rule as the unique-index probe, for the same reason: only TRUE
+   * is cached, because the normal deploy order ships code to the nodes before
+   * `rivetos db migrate` runs and a cached negative would pin this process to
+   * the legacy-only read for its whole lifetime.
+   *
+   * A NULL `to_regclass` matches no pg_attribute row, so a database missing
+   * ros_conversations entirely answers false instead of raising.
+   */
+  private async hasConversationTaskId(): Promise<boolean> {
+    if (this.conversationTaskId) return true
+
+    const res = await this.pool.query<{ present: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('ros_conversations')
+            AND attname = 'task_id'
+            AND NOT attisdropped
+       ) AS present`,
+    )
+    this.conversationTaskId = res.rows[0]?.present ?? false
+
+    return this.conversationTaskId
   }
 }
