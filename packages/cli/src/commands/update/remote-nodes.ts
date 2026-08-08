@@ -12,6 +12,7 @@ import { execSync } from 'node:child_process'
 import { buildMeshDispatcher } from '../../lib/mtls.js'
 import { sshExec, sshExecQuiet, resolveSshUser, isSafeArg } from '../../lib/ssh.js'
 import { retireDenUnitRemote, verifyGatewayRemote } from './den-deploy.js'
+import { buildRemoteMeshHostsCommand } from './mesh-hosts.js'
 import type { UpdateOptions, NodeUpdateResult } from './types.js'
 
 /**
@@ -209,13 +210,16 @@ export async function gitUpdateNodeAsync(
 
     const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
 
-    // Heal /etc/hosts mesh block on infra nodes too (non-fatal)
+    // Heal /etc/hosts mesh block on infra nodes too (non-fatal).
+    // sudo -n so missing passwordless sudo fails fast with a clear warning.
     try {
-      const hostsCmd =
-        sshUser === 'root'
-          ? '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
-          : 'sudo /opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
-      await sshExec(host, hostsCmd, `${tag} mesh-hosts`, 15_000, sshUser)
+      await sshExec(
+        host,
+        buildRemoteMeshHostsCommand(sshUser),
+        `${tag} mesh-hosts`,
+        15_000,
+        sshUser,
+      )
     } catch (err: unknown) {
       console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
     }
@@ -318,13 +322,15 @@ export async function gitUpdateNodeAsync(
   }
 
   // Step 4.5: heal /etc/hosts mesh block from /rivet-shared/mesh.json
-  // Non-fatal — drift in /etc/hosts shouldn't block a deploy.
+  // Non-fatal — drift in /etc/hosts shouldn't block a deploy, but must warn.
   try {
-    const hostsCmd =
-      sshUser === 'root'
-        ? '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
-        : 'sudo /opt/rivetos/infra/scripts/setup-mesh-hosts.sh /rivet-shared/mesh.json --quiet'
-    await sshExec(host, hostsCmd, `${tag} mesh-hosts`, 15_000, sshUser)
+    await sshExec(
+      host,
+      buildRemoteMeshHostsCommand(sshUser),
+      `${tag} mesh-hosts`,
+      15_000,
+      sshUser,
+    )
   } catch (err: unknown) {
     console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
   }
