@@ -100,10 +100,17 @@ export type CliContentBlock =
  * the CLI uses API-key auth and bills the console — defeating the entire
  * point of this provider. Strip both vars so the CLI falls back to its
  * OAuth keychain. Callers may layer extra env vars on top (e.g. the task
- * executor's RIVETOS_SESSION_KEY / RIVETOS_DEN_HOOK_DISABLED hook plumbing).
+ * executor's RIVETOS_TASK_ID / RIVETOS_DEN_HOOK_DISABLED hook plumbing), and an
+ * `undefined` value DELETES an inherited var rather than setting it empty —
+ * the task executor uses that to drop a surrounding den terminal's
+ * RIVETOS_SESSION_KEY, which capture would otherwise treat as a key override.
  */
-export function buildChildEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
-  const env = { ...process.env, ...extra }
+export function buildChildEnv(extra?: Record<string, string | undefined>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  for (const [k, v] of Object.entries(extra ?? {})) {
+    if (v === undefined) Reflect.deleteProperty(env, k)
+    else env[k] = v
+  }
   delete env.ANTHROPIC_API_KEY
   delete env.ANTHROPIC_AUTH_TOKEN
   return env
@@ -235,7 +242,7 @@ export interface SpawnedTurn {
 export function spawnClaudeTurn(
   flags: SpawnTurnFlags,
   userContent: string | CliContentBlock[],
-  opts?: { env?: Record<string, string> },
+  opts?: { env?: Record<string, string | undefined> },
 ): SpawnedTurn {
   const args = buildArgs(flags)
 

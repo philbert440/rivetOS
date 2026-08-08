@@ -259,8 +259,11 @@ async function runTask(
       filterToolsForAgent(cfg.tools(), spec.agentId, cfg.toolFilter),
     ).filter((t) => !excluded.has(t.name))
 
-    // The task's memory conversation key — the contract shared with the
-    // harness executors (RIVETOS_SESSION_KEY) and Memory.getSessionHistory.
+    // The task's memory conversation key. In-process turns have no harness
+    // session of their own, so the chat loop still appends under the
+    // `task:<id>` namespace directly — Memory.getTaskHistory unions this
+    // conversation with the canonically-keyed ones the harness executors'
+    // spawns write, so both kinds of task read back as one transcript.
     const sessionKey = `task:${spec.taskId}`
 
     const loop = new AgentLoop({

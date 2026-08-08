@@ -96,12 +96,24 @@ export interface IngestOptions {
    */
   sessionId?: string
   /**
-   * Verbatim conversation key override — wins over every derived key. Set for
-   * task-engine spawns (RIVETOS_SESSION_KEY=`task:<taskId>`) so every CLI
-   * session a task spawns files under the task's one conversation, which is
-   * what `Memory.getSessionHistory('task:<id>')` rehydrates from at resume.
+   * Verbatim conversation key override — wins over every derived key. Set by
+   * the den terminal manager (RIVETOS_SESSION_KEY=`<denSession>`) so a den
+   * chat and its PTY share one conversation.
+   *
+   * DEPRECATED for task spawns: a `task:<taskId>` value is honored for one
+   * deprecation window (see `resolveTaskContext`) but no longer produced by
+   * the task executors — they pass `taskId` instead and let capture write the
+   * canonical session key.
    */
   sessionKeyOverride?: string
+  /**
+   * Task this CLI session was spawned by (RIVETOS_TASK_ID). Recorded on the
+   * conversation as `ros_conversations.task_id` at create time; it does NOT
+   * influence the conversation key. The task's transcript is the query-time
+   * union of every conversation carrying this id — see
+   * `PostgresMemory.getTaskHistory`.
+   */
+  taskId?: string
   /** Postgres connection string. Falls back to resolvePgUrl(). */
   pgUrl?: string
   /** When true, mark the conversation inactive (SessionEnd). */
@@ -364,8 +376,9 @@ export function sessionKeyFromId(sessionId: string): string {
 
 /**
  * Resolve the conversation key for an ingest. Precedence: explicit override
- * (task-engine spawns, used verbatim — e.g. `task:<taskId>`) → hook payload
- * session_id → transcript's own session id → path-derived fallback.
+ * (den terminals, used verbatim; also a legacy `task:<taskId>` for the
+ * deprecation window) → hook payload session_id → transcript's own session id
+ * → path-derived fallback.
  */
 export function resolveConversationKey(parts: {
   override?: string
@@ -379,6 +392,68 @@ export function resolveConversationKey(parts: {
   return parts.fallbackKey
 }
 
+// ---------------------------------------------------------------------------
+// Task association — RIVETOS_TASK_ID, and the RIVETOS_SESSION_KEY sunset
+// ---------------------------------------------------------------------------
+
+/** Conversation-key namespace the task executors used to write under. */
+export const LEGACY_TASK_KEY_PREFIX = 'task:'
+
+/** ros_tasks.id is a UUID (see `newTaskId()`), and so is the task_id column. */
+const TASK_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Is this a value the `task_id` UUID column can hold? Env-supplied ids cross a
+ * process boundary, and a malformed one must degrade to "no association"
+ * rather than abort the whole ingest transaction with a 22P02.
+ */
+export function isTaskId(value: string | undefined): value is string {
+  return value !== undefined && TASK_ID_RE.test(value)
+}
+
+/** What a spawned CLI's env says about the task (if any) that spawned it. */
+export interface TaskCaptureContext {
+  /** Verbatim conversation-key override, when the spawner set one. */
+  sessionKeyOverride?: string
+  /** Task to associate the conversation with. */
+  taskId?: string
+  /** True when the task came from a deprecated `RIVETOS_SESSION_KEY=task:<id>`. */
+  legacyTaskKey: boolean
+}
+
+/**
+ * Read the task/session context a spawned `claude` inherited from its parent.
+ *
+ * Two env vars, one of them on its way out:
+ *
+ *  - `RIVETOS_TASK_ID` (current) — task association only. Capture writes the
+ *    canonical `claude-code:<session_id>` key and stamps `task_id` on the
+ *    conversation; the task's transcript is the read-side union.
+ *
+ *  - `RIVETOS_SESSION_KEY` (legacy for tasks) — a verbatim key override. Still
+ *    the contract for den terminals, where the value is the den session id and
+ *    nothing about it is deprecated. A `task:<id>` value is the old task
+ *    write-key override: honored unchanged for one deprecation window so a task
+ *    already in flight across a rolling deploy keeps filing under the key its
+ *    earlier spawns used, instead of splitting its transcript mid-task. The
+ *    task id is ALSO extracted so the row is discoverable through the join.
+ *
+ * Removal path: the executors stopped setting `RIVETOS_SESSION_KEY=task:<id>`
+ * in this change. Once no in-flight task predates that (i.e. after the fleet has
+ * been on this build for longer than the longest task), drop the `legacyTaskKey`
+ * branch here and the deprecation log in hooks.ts — reads keep working, because
+ * the union already covers `task:<id>`-keyed rows and always will.
+ */
+export function resolveTaskContext(env: NodeJS.ProcessEnv): TaskCaptureContext {
+  const override = env.RIVETOS_SESSION_KEY || undefined
+  const legacyTaskKey = override !== undefined && override.startsWith(LEGACY_TASK_KEY_PREFIX)
+  const explicit = env.RIVETOS_TASK_ID || undefined
+  const fromLegacy = legacyTaskKey
+    ? override.slice(LEGACY_TASK_KEY_PREFIX.length) || undefined
+    : undefined
+  return { sessionKeyOverride: override, taskId: explicit ?? fromLegacy, legacyTaskKey }
+}
+
 interface ConvRow {
   id: string
   created: boolean
@@ -386,9 +461,39 @@ interface ConvRow {
 }
 
 /**
+ * Whether `ros_conversations.task_id` exists (migration 0011).
+ *
+ * Probed rather than assumed: capture runs from a detached hook worker on every
+ * node, and the deploy order is code first, `rivetos db migrate` second. On an
+ * unmigrated node the association is simply skipped — the turns still land under
+ * the canonical key, and the task's legacy `task:<id>` conversation still
+ * carries whatever the pre-deploy spawns wrote.
+ *
+ * `to_regclass` returns NULL instead of raising for an unresolvable name, and a
+ * NULL attrelid matches no pg_attribute row, so this is safe inside the caller's
+ * open transaction: it cannot poison it the way a failed column reference would.
+ */
+async function hasTaskIdColumn(client: PoolClient): Promise<boolean> {
+  const res = await client.query<{ present: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM pg_attribute
+        WHERE attrelid = to_regclass('ros_conversations')
+          AND attname = 'task_id'
+          AND NOT attisdropped
+     ) AS present`,
+  )
+  return res.rows[0]?.present ?? false
+}
+
+/**
  * Find — or create — the `rivet-claude` conversation for `sessionKey`. Must be
  * called inside a transaction already holding the per-session advisory lock,
  * so the find-or-create is race-free against a concurrent ingest.
+ *
+ * `init.taskId` is recorded on the row so the task's transcript can be read as
+ * the union of every conversation it spawned. On an existing row it is only
+ * backfilled when NULL — an established association is never repointed, and the
+ * first writer wins for a conversation that somehow saw two task contexts.
  */
 async function findOrCreateConversation(
   client: PoolClient,
@@ -399,19 +504,32 @@ async function findOrCreateConversation(
     active: boolean
     firstTs: string | null
     lastTs: string | null
+    taskId?: string
   },
 ): Promise<ConvRow> {
+  // A non-UUID task id (or an unmigrated node) means no association, never a
+  // failed ingest: losing the join is recoverable, losing the turns is not.
+  const taskId = isTaskId(init.taskId) && (await hasTaskIdColumn(client)) ? init.taskId : undefined
+
   const existing = await client.query<{ id: string; title: string | null }>(
     `SELECT id, title FROM ros_conversations WHERE session_key = $1 AND agent = $2`,
     [sessionKey, CAPTURE_AGENT],
   )
   if (existing.rows.length > 0) {
+    if (taskId !== undefined) {
+      await client.query(
+        `UPDATE ros_conversations SET task_id = $2 WHERE id = $1 AND task_id IS NULL`,
+        [existing.rows[0].id, taskId],
+      )
+    }
     return { id: existing.rows[0].id, created: false, title: existing.rows[0].title }
   }
   const conv = await client.query<{ id: string }>(
     `INSERT INTO ros_conversations
-       (session_key, agent, channel, title, settings, active, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,now()),COALESCE($8,now()))
+       (session_key, agent, channel, title, settings, active, created_at, updated_at
+        ${taskId !== undefined ? ', task_id' : ''})
+     VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,now()),COALESCE($8,now())
+        ${taskId !== undefined ? ', $9' : ''})
      RETURNING id`,
     [
       sessionKey,
@@ -422,6 +540,7 @@ async function findOrCreateConversation(
       init.active,
       init.firstTs,
       init.lastTs,
+      ...(taskId !== undefined ? [taskId] : []),
     ],
   )
   return { id: conv.rows[0].id, created: true, title: null }
@@ -532,10 +651,12 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
     }
   }
 
-  // Authoritative key order: an explicit override (task-engine spawns) beats
-  // the hook payload's session_id, which beats the transcript's own id, then
-  // the path-derived key. session_id keying unifies transcript rows with the
-  // payload path and merges subagent turns into the parent.
+  // Authoritative key order: an explicit override (den terminals, and legacy
+  // task spawns) beats the hook payload's session_id, which beats the
+  // transcript's own id, then the path-derived key. session_id keying unifies
+  // transcript rows with the payload path and merges subagent turns into the
+  // parent. Task association rides alongside as `taskId` — it never changes
+  // the key.
   const sessionKey = resolveConversationKey({
     override: opts.sessionKeyOverride,
     hookSessionId: opts.sessionId,
@@ -570,6 +691,7 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
       active: !markInactive,
       firstTs,
       lastTs,
+      taskId: opts.taskId,
     })
 
     let inserted = 0
@@ -712,6 +834,8 @@ export interface HookEventOptions {
   payload: HookEventPayload
   /** Verbatim conversation key override — see IngestOptions.sessionKeyOverride. */
   sessionKeyOverride?: string
+  /** Spawning task — see IngestOptions.taskId. */
+  taskId?: string
   /** Postgres connection string. Falls back to resolvePgUrl(). */
   pgUrl?: string
 }
@@ -820,6 +944,7 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
       active: true,
       firstTs: null,
       lastTs: null,
+      taskId: opts.taskId,
     })
 
     await insertMessage(client, conv.id, {

@@ -12,11 +12,11 @@
  *     steering is a no-op.
  *   - Per spawn: the per-spawn MCP bridge (embedMcpServerForTurn) exposes the
  *     task's allowed RivetOS tools via --mcp-config; the child env carries
- *     RIVETOS_SESSION_KEY=task:<taskId> (the contracted join key for the
- *     task's memory conversation — capture hooks stamp it into the spool and
- *     both ingest paths key on it, so every spawn files under task:<id>) and
- *     RIVETOS_DEN_HOOK_DISABLED=1 (this executor owns den emission — the
- *     hook must not double-report).
+ *     RIVETOS_TASK_ID=<taskId> (the task association for capture — every spawn
+ *     files under its OWN canonical session key and carries the task id on its
+ *     conversation, so the task's transcript is the query-time union of all of
+ *     them) and RIVETOS_DEN_HOOK_DISABLED=1 (this executor owns den emission —
+ *     the hook must not double-report).
  *   - stream-json → TaskEvent: assistant text → den message.agent, thinking
  *     deltas → den thinking.delta/thinking.end, tool_use/tool_result → den
  *     tool.start/tool.end. CliResult → {type:'cost'} (total_cost_usd) and
@@ -88,15 +88,40 @@ export interface ClaudeCliExecutorConfig {
    *  flag would hard-fail every spawn with no fence fallback ever reached. */
   structuredResult?: boolean
   /** Task-conversation source for resume rehydration: on resume-from-
-   *  awaiting-input the prior transcript (session_key task:<id>, written by
-   *  the capture hooks) is rendered into the system append so the resumed
-   *  spawn sees what already happened — parity with chat-loop (step (c)). */
-  memory?: Pick<Memory, 'getSessionHistory'>
+   *  awaiting-input the prior transcript (every conversation the task spawned,
+   *  written by the capture hooks) is rendered into the system append so the
+   *  resumed spawn sees what already happened — parity with chat-loop
+   *  (step (c)). */
+  memory?: Pick<Memory, 'getSessionHistory' | 'getTaskHistory'>
 }
 
 /** Caps for the rendered resume transcript — keep the system append sane. */
 const RESUME_TRANSCRIPT_MAX_CHARS = 24_000
 const RESUME_MESSAGE_MAX_CHARS = 2_000
+
+/** Generous cap — the adapter defaults to 100 rows, which a long multi-turn
+ *  task exceeds; the renderer below trims to the real budget. */
+const RESUME_HISTORY_LIMIT = 1000
+
+/**
+ * Read a task's transcript: the union of every conversation the task spawned,
+ * oldest first.
+ *
+ * `getTaskHistory` is optional on the Memory interface — a store that has not
+ * implemented the join falls back to reading the legacy `task:<id>`
+ * conversation key directly, which is exactly what the pre-migration write path
+ * produced. That fallback returns nothing for a task whose spawns wrote
+ * canonical keys, so it degrades to "no rehydration", never to wrong context.
+ */
+export async function readTaskHistory(
+  memory: Pick<Memory, 'getSessionHistory' | 'getTaskHistory'>,
+  taskId: string,
+): Promise<Array<{ role: string; content: unknown }>> {
+  const options = { limit: RESUME_HISTORY_LIMIT }
+  return memory.getTaskHistory
+    ? await memory.getTaskHistory(taskId, options)
+    : await memory.getSessionHistory(`task:${taskId}`, options)
+}
 
 /**
  * Render the task's prior conversation for a resumed spawn: role-labeled,
@@ -306,15 +331,14 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     const startedAt = Date.now()
     const usage = emptyUsage()
     let systemText = buildTaskSystemAppend(spec)
-    // Resume rehydration (step-(c) parity): render the task conversation the
-    // capture hooks wrote under task:<id> into the system append. Failure
-    // degrades to an empty transcript — losing context is survivable,
-    // failing the resume is not.
+    // Resume rehydration (step-(c) parity): render everything the capture
+    // hooks wrote for this task into the system append — the union of every
+    // conversation the task spawned, plus any legacy `task:<id>`-keyed rows
+    // from before the association migration. Failure degrades to an empty
+    // transcript — losing context is survivable, failing the resume is not.
     if (spec.resumeMessage !== undefined && this.cfg.memory) {
       try {
-        const history = await this.cfg.memory.getSessionHistory(`task:${spec.taskId}`, {
-          limit: 1000,
-        })
+        const history = await readTaskHistory(this.cfg.memory, spec.taskId)
         const transcript = renderResumeTranscript(history)
         if (transcript) systemText = `${systemText}\n\n${transcript}`
       } catch (err: unknown) {
@@ -454,11 +478,17 @@ export class ClaudeCliExecutor implements HarnessExecutor {
         message,
         {
           env: {
-            // Contracted join key for the task's memory conversation —
-            // capture hooks carry it through the spool as a verbatim key
-            // override, so every CLI session this task spawns files under
-            // one task:<id> conversation (rehydrated on resume).
-            RIVETOS_SESSION_KEY: `task:${spec.taskId}`,
+            // Task association for capture. The spawn writes its turns under
+            // its OWN canonical session key; this only tells capture which
+            // task to stamp on the conversation, so the task's transcript is
+            // the query-time union of every session it spawned
+            // (Memory.getTaskHistory, rehydrated on resume).
+            RIVETOS_TASK_ID: spec.taskId,
+            // Explicitly cleared, not merely unset: an executor running inside
+            // a den terminal inherits that terminal's RIVETOS_SESSION_KEY, and
+            // capture would file the task's turns into the den chat's
+            // conversation. Undefined deletes the key from the child env.
+            RIVETOS_SESSION_KEY: undefined,
             // This executor owns den emission — the den hook must stay quiet.
             RIVETOS_DEN_HOOK_DISABLED: '1',
           },
