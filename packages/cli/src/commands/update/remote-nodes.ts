@@ -191,9 +191,8 @@ export async function gitUpdateNodeAsync(
 
   // Non-agent (infrastructure) nodes: code sync, install deps, and restart any
   // rivet-* worker services discovered on the host (embedder, compactor, etc.).
-  // No TypeScript build — workers are plain JS.
   if (!isAgent) {
-    // npm install — picks up dep bumps in plugins/memory/postgres/workers/*/package.json
+    // npm install — picks up dep bumps in services/*-worker/package.json
     try {
       console.log(`    ${tag} Installing dependencies...`)
       await sshExec(
@@ -227,6 +226,27 @@ export async function gitUpdateNodeAsync(
     // Discover and restart worker services
     const workers = discoverRivetWorkers(host, sshUser)
     const restartedWorkers: string[] = []
+
+    // Build before restarting. The workers used to be plain JS under
+    // plugins/memory/postgres/workers/ and needed no build step; they are now
+    // TypeScript services under services/, so a git pull alone leaves the
+    // units running the previous dist/ and the "restart" is a silent no-op.
+    if (workers.length > 0) {
+      try {
+        console.log(`    ${tag} Building workers...`)
+        await sshExec(
+          host,
+          'cd /opt/rivetos && npx nx reset && npx nx run-many -t build ' +
+            '-p @rivetos/embedding-worker,@rivetos/compaction-worker',
+          `${tag} build`,
+          180_000,
+          sshUser,
+        )
+      } catch (err: unknown) {
+        console.error(`    ${tag} ❌ Worker build failed: ${(err as Error).message}`)
+        return { success: false, failedStep: 'build', elapsedMs: Date.now() - start }
+      }
+    }
     if (workers.length === 0) {
       console.log(`    ${tag} No rivet-* worker services found`)
     } else if (!opts.restart) {

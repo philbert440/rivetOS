@@ -236,7 +236,7 @@ rivetOS/
       rivetos/                       ← Unified runtime image — built once, dispatched via `--role`
       DATA-PERSISTENCE.md            ← data persistence model documentation
     docker/                          ← Compose stacks
-      rivetos/                       ← canonical stack (datahub + migrate + workers + agent)
+      rivetos/                       ← canonical stack (datahub + migrate + agent + 2 workers)
       mcp-stack/                     ← standalone MCP server stack
     scripts/                         ← provision-ct.sh, setup-mesh-hosts.sh, …
     templates/                       ← workspace + config skeletons used by `init`

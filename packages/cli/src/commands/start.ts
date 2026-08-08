@@ -16,6 +16,10 @@ import { resolveMemoryMigrateScript } from '../paths.js'
 
 type Role = 'agent' | 'migrate'
 
+function isRole(value: string): value is Role {
+  return value === 'agent' || value === 'migrate'
+}
+
 const HELP_TEXT = `Usage: rivetos start [options]
 
 Start the RivetOS agent runtime (boot pipeline) or apply pending DB migrations.
@@ -26,13 +30,22 @@ Options:
   -h, --help            Show this help and exit
 
 Environment:
-  RIVETOS_ROLE          Overrides --role when set
+  RIVETOS_ROLE          Seeds the default role; an explicit --role overrides it.
+                        Must be 'agent' or 'migrate' — any other value is an error.
 `
 
 function parseArgs(): { configPath?: string; role: Role } {
   const args = process.argv.slice(3)
   let configPath: string | undefined
-  let role: Role = (process.env.RIVETOS_ROLE as Role | undefined) ?? 'agent'
+  // RIVETOS_ROLE only seeds the default — an explicit --role below wins.
+  // Validated the same way as the flag so a stale value (e.g. the removed
+  // 'worker' role) fails loudly instead of silently booting an agent.
+  const envRole = process.env.RIVETOS_ROLE
+  if (envRole && !isRole(envRole)) {
+    console.error(`unknown role: ${envRole} (from RIVETOS_ROLE)`)
+    process.exit(1)
+  }
+  let role: Role = envRole && isRole(envRole) ? envRole : 'agent'
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--help' || args[i] === '-h') {
@@ -42,7 +55,7 @@ function parseArgs(): { configPath?: string; role: Role } {
       configPath = args[++i]
     } else if (args[i] === '--role' && args[i + 1]) {
       const next = args[++i]
-      if (next === 'agent' || next === 'migrate') {
+      if (isRole(next)) {
         role = next
       } else {
         console.error(`unknown role: ${next}`)

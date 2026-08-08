@@ -42,28 +42,28 @@ The unified Compose stack ships a single `agent` service. Multi-agent fleets are
 
 ### Docker Compose Architecture
 
-The unified stack runs four services off two images: upstream `pgvector/pgvector:pg16` for the database and a single role-dispatched runtime image (`rivetos`). Schema is applied by the `migrate` role at stack startup — there is no custom datahub image to build or push.
+The unified stack runs five services off two images: upstream `pgvector/pgvector:pg16` for the database and a single role-dispatched runtime image (`rivetos`). Schema is applied by the `migrate` role at stack startup — there is no custom datahub image to build or push. Only `migrate` and `agent` are CLI roles; the two memory workers ship in the same image but run as plain node processes and sit behind the `workers` compose profile, so a bare `up` skips them.
 
 ```
-┌─────────────────────────────────────────────┐
-│  Docker Network: rivetos-net                │
-│                                             │
-│  ┌─────────┐  ┌──────────┐  ┌────────────┐  │
-│  │ migrate │  │ workers  │  │  agent     │  │
-│  │ (rivetos│  │ (rivetos │  │ (rivetos   │  │
-│  │  one-   │  │  --role  │  │  --role    │  │
-│  │  shot)  │  │  worker) │  │  agent)    │  │
-│  └────┬────┘  └────┬─────┘  └────┬───────┘  │
-│       │            │             │          │
-│       └────────────┼─────────────┘          │
-│                    │                        │
-│            ┌───────┴────────┐               │
-│            │   datahub      │               │
-│            │   postgres:16  │               │
-│            │   + pgvector   │               │
-│            │   :5432        │               │
-│            └────────────────┘               │
-└─────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│  Docker Network: rivetos-net                               │
+│                                                            │
+│  ┌─────────┐  ┌───────────┐  ┌────────────┐  ┌──────────┐  │
+│  │ migrate │  │ embedding │  │ compaction │  │  agent   │  │
+│  │ (rivetos│  │  -worker  │  │  -worker   │  │ (rivetos │  │
+│  │  --role │  │ (profile: │  │ (profile:  │  │  --role  │  │
+│  │ migrate)│  │  workers) │  │  workers)  │  │  agent)  │  │
+│  └────┬────┘  └─────┬─────┘  └─────┬──────┘  └────┬─────┘  │
+│       │             │              │              │        │
+│       └─────────────┴──────┬───────┴──────────────┘        │
+│                            │                               │
+│                    ┌───────┴────────┐                      │
+│                    │   datahub      │                      │
+│                    │   postgres:16  │                      │
+│                    │   + pgvector   │                      │
+│                    │   :5432        │                      │
+│                    └────────────────┘                      │
+└────────────────────────────────────────────────────────────┘
 
 Volumes:
   rivetos-pgdata           → Postgres data (survives rebuilds)

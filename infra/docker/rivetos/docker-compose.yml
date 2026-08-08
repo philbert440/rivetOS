@@ -8,11 +8,24 @@
 #
 #   docker compose -f infra/docker/rivetos/docker-compose.yml up --build
 #
-# Modes:
-#   - datahub:  upstream Postgres 16 + pgvector (no custom image)
-#   - migrate:  applies any pending migrations on each container start
-#   - workers:  embedding + compaction LISTEN/NOTIFY pumps
-#   - agent:    the runtime that drives channels + providers (needs config)
+# Services:
+#   - datahub:            upstream Postgres 16 + pgvector (no custom image)
+#   - migrate:            applies pending migrations on each stack start
+#                         (`rivetos start --role migrate`)
+#   - embedding-worker:   graphile-worker pump that embeds new rows
+#   - compaction-worker:  graphile-worker pump that summarizes conversations
+#   - agent:              the runtime that drives channels + providers
+#                         (`rivetos start --role agent`; needs config)
+#
+# Only `migrate` and `agent` are CLI roles. The two workers are standalone
+# node processes shipped in the same image — there is no `--role worker`.
+#
+# Both workers sit behind the `workers` profile, so a plain `up` skips them.
+# Each needs an inference endpoint this file cannot guess (RIVETOS_EMBED_URL /
+# RIVETOS_COMPACTOR_URL) and exits on boot without one. Point them at your
+# hosts, then:
+#   docker compose -f infra/docker/rivetos/docker-compose.yml \
+#     --profile workers up
 #
 # The `agent` service expects ~/.rivetos to exist on the host with config.yaml
 # and .env. Run `rivetos init` first to generate them.
@@ -51,6 +64,9 @@ services:
     command: ['node', 'dist/rivetos.js', 'start', '--role', 'migrate']
     environment:
       RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
+      # Also tells the image's inline HEALTHCHECK to skip — it keys off
+      # RIVETOS_ROLE, not the --role flag.
+      RIVETOS_ROLE: migrate
     depends_on:
       datahub:
         condition: service_healthy
@@ -58,18 +74,52 @@ services:
       - rivetos-net
     restart: 'no'
 
-  workers:
+  # services/embedding-worker — standalone graphile-worker process, not a CLI
+  # role. Requires RIVETOS_EMBED_URL; exits on boot without it.
+  embedding-worker:
+    profiles: ['workers']
     build:
       context: ../../..
       dockerfile: infra/containers/rivetos/Dockerfile
     image: rivetos:latest
-    command: ['node', 'dist/rivetos.js', 'start', '--role', 'worker']
+    command: ['node', 'services/embedding-worker/dist/index.js']
     environment:
       RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
-      # RIVETOS_EMBED_URL is required for the embedding worker; without it
-      # the worker exits on boot. Comment-in to enable.
-      # RIVETOS_EMBED_URL: http://gpu-host:9401
-      # RIVETOS_EMBED_MODEL: nemotron
+      # e.g. RIVETOS_EMBED_URL=http://gpu-host:9401 in the shell or a .env file
+      # next to this compose file. Left empty the worker logs
+      # "[EmbedWorker] RIVETOS_EMBED_URL is required" and exits 1.
+      RIVETOS_EMBED_URL: ${RIVETOS_EMBED_URL:-}
+      RIVETOS_EMBED_MODEL: ${RIVETOS_EMBED_MODEL:-nemotron}
+    # The image healthcheck probes the agent's HTTP port, which this process
+    # does not open.
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - rivetos-net
+    restart: unless-stopped
+
+  # services/compaction-worker — standalone graphile-worker process, not a CLI
+  # role. Requires RIVETOS_COMPACTOR_URL; exits on boot without it.
+  compaction-worker:
+    profiles: ['workers']
+    build:
+      context: ../../..
+      dockerfile: infra/containers/rivetos/Dockerfile
+    image: rivetos:latest
+    command: ['node', 'services/compaction-worker/dist/index.js']
+    environment:
+      RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
+      # OpenAI-compatible base URL — the worker appends /chat/completions.
+      # e.g. RIVETOS_COMPACTOR_URL=http://llm-host:8003/v1. Left empty the
+      # worker logs "[CompactWorker] RIVETOS_COMPACTOR_URL is required" and
+      # exits 1.
+      RIVETOS_COMPACTOR_URL: ${RIVETOS_COMPACTOR_URL:-}
+      RIVETOS_COMPACTOR_MODEL: ${RIVETOS_COMPACTOR_MODEL:-rivet-refined-v5}
+    healthcheck:
+      disable: true
     depends_on:
       migrate:
         condition: service_completed_successfully

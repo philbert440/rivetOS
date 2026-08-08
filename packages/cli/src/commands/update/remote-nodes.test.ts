@@ -158,6 +158,40 @@ describe('gitUpdateNodeAsync — datahub worker restart resilience', () => {
     expect(res.workers).toEqual(['rivet-compactor.service', 'rivet-embedder.service'])
   })
 
+  it('builds the worker services before restarting their units', async () => {
+    // The workers are TypeScript under services/ now — without a build the
+    // restart puts the units straight back onto the previous dist/.
+    sshExecMock.mockResolvedValue(undefined)
+    stubQuiet({ 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' })
+
+    await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false)
+
+    const commands = sshExecMock.mock.calls.map((c) => c[1])
+    const buildIdx = commands.findIndex(
+      (cmd) => cmd.includes('nx run-many -t build') && cmd.includes('@rivetos/embedding-worker'),
+    )
+    const firstRestartIdx = commands.findIndex((cmd) => cmd.includes('systemctl restart rivet-'))
+    expect(buildIdx).toBeGreaterThanOrEqual(0)
+    expect(buildIdx).toBeLessThan(firstRestartIdx)
+  })
+
+  it('fails at the build step without restarting anything', async () => {
+    sshExecMock.mockImplementation((_host, command: string) =>
+      command.includes('nx run-many -t build')
+        ? Promise.reject(new Error('tsc exploded'))
+        : Promise.resolve(),
+    )
+    stubQuiet({ 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' })
+
+    const res = await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false)
+
+    expect(res.success).toBe(false)
+    expect(res.failedStep).toBe('build')
+    expect(sshExecMock.mock.calls.map((c) => c[1]).some((c) => c.includes('systemctl restart'))).toBe(
+      false,
+    )
+  })
+
   it('still restarts the embedder when the compactor restart times out (the bug)', async () => {
     // Compactor restart "times out" (SSH client killed) but the unit is active.
     sshExecMock.mockImplementation((_host, command: string) => {
