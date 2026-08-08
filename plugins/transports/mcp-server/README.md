@@ -63,23 +63,22 @@ wire without a database.
 
 ## Tool catalog
 
-| Tool              | When                          | What it does                                                                                                                                                        |
-| ----------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `echo`            | Always                        | Echoes input back, prefixed with `echo:`. Smoke test for the wire.                                                                                                  |
-| `session_attach`  | Always (per-session)          | Handshake — records `{agent, runtimePid, clientName}` and returns canonical `{sessionId, serverVersion, capabilities}`. Optional but recommended as the first call. |
-| `memory_search`   | `RIVETOS_PG_URL` set          | Search RivetOS persistent memory (conversations + summaries). Hybrid FTS + semantic + temporal scoring with auto-expansion.                                         |
-| `memory_browse`   | `RIVETOS_PG_URL` set          | Browse messages chronologically by conversation, agent, or time window.                                                                                             |
-| `memory_stats`    | `RIVETOS_PG_URL` set          | Memory system health: counts, embedding queue, unsummarized backlog, freshness.                                                                                     |
-| `internet_search` | Always                        | Web search — Google CSE when configured, DuckDuckGo fallback otherwise.                                                                                             |
-| `web_fetch`       | Always                        | Fetch and extract readable content from a URL (HTML → markdown).                                                                                                    |
-| `skill_list`      | Always                        | List discovered skills with names, descriptions, version, file count.                                                                                               |
-| `skill_manage`    | Always                        | Create / edit / patch / delete / retire / read / write_file skills. Workspace and system dirs both writable.                                                        |
-| `shell`           | `RIVETOS_MCP_ENABLE_SHELL=1`  | Execute a shell command. Maintains a session cwd across calls (`cd` persists).                                                                                      |
-| `file_read`       | `RIVETOS_MCP_ENABLE_FILE=1`   | Read file contents with optional line range and line numbers. Binary files refused.                                                                                 |
-| `file_write`      | `RIVETOS_MCP_ENABLE_FILE=1`   | Write content to a file. Creates parent dirs. Optional `.bak` backup.                                                                                               |
-| `file_edit`       | `RIVETOS_MCP_ENABLE_FILE=1`   | Replace an exact string in a file. Fails if not unique.                                                                                                             |
-| `search_glob`     | `RIVETOS_MCP_ENABLE_SEARCH=1` | Find files matching a glob (excludes `node_modules`, `.git`, build dirs).                                                                                           |
-| `search_grep`     | `RIVETOS_MCP_ENABLE_SEARCH=1` | Search file contents by regex/literal. Returns `file:line:match`.                                                                                                   |
+| Tool              | When                          | What it does                                                                                                                |
+| ----------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `echo`            | Always                        | Echoes input back, prefixed with `echo:`. Smoke test for the wire.                                                          |
+| `memory_search`   | `RIVETOS_PG_URL` set          | Search RivetOS persistent memory (conversations + summaries). Hybrid FTS + semantic + temporal scoring with auto-expansion. |
+| `memory_browse`   | `RIVETOS_PG_URL` set          | Browse messages chronologically by conversation, agent, or time window.                                                     |
+| `memory_stats`    | `RIVETOS_PG_URL` set          | Memory system health: counts, embedding queue, unsummarized backlog, freshness.                                             |
+| `internet_search` | Always                        | Web search — Google CSE when configured, DuckDuckGo fallback otherwise.                                                     |
+| `web_fetch`       | Always                        | Fetch and extract readable content from a URL (HTML → markdown).                                                            |
+| `skill_list`      | Always                        | List discovered skills with names, descriptions, version, file count.                                                       |
+| `skill_manage`    | Always                        | Create / edit / patch / delete / retire / read / write_file skills. Workspace and system dirs both writable.                |
+| `shell`           | `RIVETOS_MCP_ENABLE_SHELL=1`  | Execute a shell command. Maintains a session cwd across calls (`cd` persists).                                              |
+| `file_read`       | `RIVETOS_MCP_ENABLE_FILE=1`   | Read file contents with optional line range and line numbers. Binary files refused.                                         |
+| `file_write`      | `RIVETOS_MCP_ENABLE_FILE=1`   | Write content to a file. Creates parent dirs. Optional `.bak` backup.                                                       |
+| `file_edit`       | `RIVETOS_MCP_ENABLE_FILE=1`   | Replace an exact string in a file. Fails if not unique.                                                                     |
+| `search_glob`     | `RIVETOS_MCP_ENABLE_SEARCH=1` | Find files matching a glob (excludes `node_modules`, `.git`, build dirs).                                                   |
+| `search_grep`     | `RIVETOS_MCP_ENABLE_SEARCH=1` | Search file contents by regex/literal. Returns `file:line:match`.                                                           |
 
 ## Auth model
 

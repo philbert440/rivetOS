@@ -17,7 +17,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { chmodSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { timingSafeEqual } from 'node:crypto'
 import {
@@ -326,8 +326,18 @@ export function createV2McpServer(options: V2McpServerOptions = {}): V2McpServer
         if (options.socketPath) {
           // v1 parity: stale-socket unlink, parent mkdir, then 0600 after
           // bind — filesystem perms ARE the auth boundary on a socket.
+          // Only debris that IS a socket (a crashed previous run) is
+          // auto-removed; refuse to delete an arbitrary file the config
+          // happens to point at.
           mkdirSync(dirname(options.socketPath), { recursive: true })
-          if (existsSync(options.socketPath)) unlinkSync(options.socketPath)
+          if (existsSync(options.socketPath)) {
+            if (lstatSync(options.socketPath).isSocket()) {
+              unlinkSync(options.socketPath)
+            } else {
+              reject(new Error(`refusing to replace non-socket file at ${options.socketPath}`))
+              return
+            }
+          }
           server.listen(options.socketPath, () => {
             try {
               chmodSync(options.socketPath as string, 0o600)
@@ -348,7 +358,11 @@ export function createV2McpServer(options: V2McpServerOptions = {}): V2McpServer
       await new Promise<void>((resolve) => server.close(() => resolve()))
       // v1 parity: leave no stale socket file behind — the next start()'s
       // stale-unlink covers crashes, this covers clean shutdown.
-      if (options.socketPath && existsSync(options.socketPath)) {
+      if (
+        options.socketPath &&
+        existsSync(options.socketPath) &&
+        lstatSync(options.socketPath).isSocket()
+      ) {
         try {
           unlinkSync(options.socketPath)
         } catch {

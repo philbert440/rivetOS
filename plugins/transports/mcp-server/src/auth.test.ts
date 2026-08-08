@@ -10,7 +10,7 @@
  *   - Unix socket file is mode 0600 and removed on close
  *   - A token on a socket bind enforces bearer (the sidecar composes
  *     "skip bearer on socket" by omitting the token — see cli.ts)
- *   - A stale file at the socket path is replaced on start
+ *   - A non-socket file at the socket path is refused, never deleted
  */
 
 import { describe, it, expect, afterEach } from 'vitest'
@@ -239,17 +239,16 @@ describe('Unix-socket binding', () => {
     expect(withAuthStatus).not.toBe(401)
   })
 
-  it('replaces a stale file at the socket path', async () => {
+  it('refuses to clean up a non-socket file at the socket path', async () => {
     const sockPath = tmpSocketPath()
-    // Simulate a crashed previous run leaving debris at the path.
+    // A regular file at the path (NOT a crashed run's socket) must be
+    // refused, not deleted — we only auto-clean things that are sockets.
     fs.writeFileSync(sockPath, '')
     expect(fs.existsSync(sockPath)).toBe(true)
 
-    const { server } = track(createV2McpServer({ socketPath: sockPath }))
-    await server.start()
-    expect(fs.statSync(sockPath).isSocket()).toBe(true)
-
-    const { status } = await getOverSocket(sockPath, '/health/live')
-    expect(status).toBe(200)
+    const server = createV2McpServer({ socketPath: sockPath })
+    await expect(server.start()).rejects.toThrow(/non-socket/)
+    expect(fs.existsSync(sockPath)).toBe(true)
+    fs.unlinkSync(sockPath)
   })
 })

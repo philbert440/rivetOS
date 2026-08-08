@@ -3,10 +3,11 @@
  * `rivetos-mcp-server` — standalone entrypoint.
  *
  * Phase 1.A — slice 7' adds bearer-token auth on TCP and an alternative
- * unix-socket binding (filesystem perms as auth boundary), plus the
- * `session_attach` handshake tool. Other slices ship the data-plane
- * (memory, skills, web) and runtime-plane (delegate / subagent / shell / ...)
- * tools.
+ * unix-socket binding (filesystem perms as auth boundary). Other slices
+ * ship the data-plane (memory, skills, web) and runtime-plane
+ * (delegate / subagent / shell / ...) tools. (The v1-era `session_attach`
+ * handshake was removed with mcp-v1 — v2 identity is bearer + per-request
+ * _meta.)
  *
  * Env:
  *   RIVETOS_MCP_STDIO=1     — speak MCP over stdin/stdout instead of binding a

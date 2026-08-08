@@ -11,7 +11,7 @@ v1 mount.
 | Package                    | Role                                              | Protocol / SDK                                         |
 | -------------------------- | ------------------------------------------------- | ------------------------------------------------------ |
 | `@rivetos/mcp`             | SDK-agnostic core (ToolRegistration, adapt, echo) | —                                                      |
-| `@rivetos/mcp-v2`          | Stateless mount (HTTP + stdio) + client facade    | 2026-07-28 / `server                                   | client | node@2.0.0` |
+| `@rivetos/mcp-v2`          | Stateless mount (HTTP + stdio) + client facade    | 2026-07-28 / `server`/`client`/`node` `@2.0.0`         |
 | `@rivetos/mcp-server`      | In-process transport plugin                       | **v2**                                                 |
 | `@rivetos/mcp-sidecar`     | Standalone process                                | HTTP→**v2**; stdio→era-negotiating (v2, legacy served) |
 | `@rivetos/tool-mcp-client` | Outbound client plugin                            | own SDK dep (not mcp-v1)                               |
