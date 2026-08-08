@@ -38,6 +38,10 @@ const migrationSql = (): string =>
 
 /** Pin every connection of a pool to the scratch schema. */
 const scopedUrl = (schema: string): string => {
+  // describe.skip still EXECUTES the suite body at collection, so this runs
+  // even when the RIVETOS_PG_URL gate is closed — return a placeholder rather
+  // than throwing on `new URL('')` (skipped tests never connect with it).
+  if (PG_URL.length === 0) return ''
   const url = new URL(PG_URL)
   url.searchParams.set('options', `-c search_path=${schema}`)
   return url.toString()
