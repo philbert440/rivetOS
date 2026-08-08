@@ -54,6 +54,22 @@ import type {
   AudioMicHealth,
 } from '@rivetos/types'
 import type { DenSessionsResponse, FilesListResponse, FilesMutateResponse } from '@rivetos/types'
+import type {
+  ApprovalDecision,
+  HarnessApprovalAccepted,
+  HarnessDescriptor,
+  HarnessesResponse,
+  HarnessEvent,
+  HarnessId,
+  HarnessSessionListResponse,
+  HarnessSessionResponse,
+  HarnessSessionSummary,
+  HarnessSessionTranscriptResponse,
+  HarnessTurnAccepted,
+  StartSessionOpts,
+  UserTurn,
+} from '@rivetos/types'
+import { encodeSessionIdSegment, isSessionId } from '@rivetos/types'
 import { GatewayError, request, type QueryValue } from './http.js'
 import {
   subscribe,
@@ -95,6 +111,21 @@ export interface WatchOptions {
   onStatus?: SubscriptionOptions<never>['onStatus']
   /** Test seam / non-platform environments. */
   factory?: WebSocketFactory
+}
+
+/**
+ * `:sessionId` path/query segment for the harness control plane.
+ *
+ * Canonical ids are encoded with the contract codec (`enc(SessionId)` =
+ * unpadded base64url) — never hand-rolled, because Claude's path-fallback
+ * native ids contain `/` and percent-encoding those inside a path segment is
+ * unreliable across routers and proxies. A bare native id (the den drawer /
+ * hub chat legacy shape) has no harness prefix to encode, so it rides through
+ * as an ordinary escaped segment; the control plane aliases it to canonical
+ * before dispatch.
+ */
+function sessionSegment(sessionId: string): string {
+  return isSessionId(sessionId) ? encodeSessionIdSegment(sessionId) : encodeURIComponent(sessionId)
 }
 
 export class RivetGateway {
@@ -404,6 +435,159 @@ export class RivetGateway {
    *  list) — every session that has emitted den events, recency-ordered. */
   denSessions(signal?: AbortSignal): Promise<DenSessionsResponse> {
     return request(this.config, '/api/events/sessions', { signal })
+  }
+
+  // -- harness control plane (docs/plans/harness-control-plane.md) -----------
+  //
+  // The node's HarnessDriver registry: `/api/harnesses` for drivers and their
+  // capability flags, `/api/harness-sessions/:enc` for one session. Distinct
+  // from the legacy `/api/terminal/harness-sessions` reads above — this family
+  // speaks canonical `SessionId`s, honors capability flags (a `false` flag
+  // answers 501 `capability_unsupported`), and its live stream is an
+  // at-most-once tail: after any drop the client re-subscribes and
+  // hard-resyncs from `harnessSessionTranscript`. Never assume replay.
+
+  /** Registered drivers + their capability flags. */
+  harnesses(signal?: AbortSignal): Promise<HarnessesResponse> {
+    return request(this.config, '/api/harnesses', { signal })
+  }
+
+  /** One driver's capability sheet. */
+  harnessCapabilities(harnessId: HarnessId, signal?: AbortSignal): Promise<HarnessDescriptor> {
+    return request(this.config, `/api/harnesses/${encodeURIComponent(harnessId)}`, { signal })
+  }
+
+  /** One driver's sessions — canonical ids only (superseded ids never appear). */
+  harnessSessionList(
+    harnessId: HarnessId,
+    signal?: AbortSignal,
+  ): Promise<HarnessSessionListResponse> {
+    return request(this.config, `/api/harnesses/${encodeURIComponent(harnessId)}/sessions`, {
+      signal,
+    })
+  }
+
+  /**
+   * Start a NEW session (201). Never attaches: a pinned `nativeSessionId` that
+   * already exists — including anywhere in an alias chain — is rejected with
+   * `session_id_collision` (409). Attaching is `resumeHarnessSession`.
+   */
+  startHarnessSession(
+    harnessId: HarnessId,
+    body: StartSessionOpts = {},
+    signal?: AbortSignal,
+  ): Promise<HarnessSessionSummary> {
+    return request(this.config, `/api/harnesses/${encodeURIComponent(harnessId)}/sessions`, {
+      method: 'POST',
+      body,
+      signal,
+    })
+  }
+
+  getHarnessSession(sessionId: string, signal?: AbortSignal): Promise<HarnessSessionResponse> {
+    return request(this.config, `/api/harness-sessions/${sessionSegment(sessionId)}`, { signal })
+  }
+
+  /** Attach to an existing session (spawn-or-get on the node). */
+  resumeHarnessSession(sessionId: string, signal?: AbortSignal): Promise<HarnessSessionResponse> {
+    return request(this.config, `/api/harness-sessions/${sessionSegment(sessionId)}/resume`, {
+      method: 'POST',
+      signal,
+    })
+  }
+
+  /**
+   * Send a user turn (202). Rejects with `turn_in_flight` (409) while a turn
+   * is running — v1 drivers never silently queue, so the caller owns the
+   * queue and retries.
+   */
+  sendHarnessTurn(
+    sessionId: string,
+    turn: UserTurn,
+    signal?: AbortSignal,
+  ): Promise<HarnessTurnAccepted> {
+    return request(this.config, `/api/harness-sessions/${sessionSegment(sessionId)}/turns`, {
+      method: 'POST',
+      body: turn,
+      signal,
+    })
+  }
+
+  /** Cancel the in-flight turn (202). Idempotent — a session with nothing
+   *  running answers ok. 501 when the driver has no interrupt. */
+  interruptHarnessSession(sessionId: string, signal?: AbortSignal): Promise<HarnessTurnAccepted> {
+    return request(this.config, `/api/harness-sessions/${sessionSegment(sessionId)}/interrupt`, {
+      method: 'POST',
+      signal,
+    })
+  }
+
+  /** Answer an `approval-request` event (202). 501 when the driver reports
+   *  `approvals: false` — `claude-code` always does. */
+  resolveHarnessApproval(
+    sessionId: string,
+    requestId: string,
+    decision: ApprovalDecision,
+    signal?: AbortSignal,
+  ): Promise<HarnessApprovalAccepted> {
+    return request(
+      this.config,
+      `/api/harness-sessions/${sessionSegment(sessionId)}/approvals/${encodeURIComponent(requestId)}`,
+      { method: 'POST', body: { decision }, signal },
+    )
+  }
+
+  /** Hard-resync source: the session's committed transcript. Re-read on every
+   *  (re)connect — the live tail carries no replay buffer. */
+  harnessSessionTranscript(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<HarnessSessionTranscriptResponse> {
+    return request(this.config, `/api/harness-sessions/${sessionSegment(sessionId)}/transcript`, {
+      signal,
+    })
+  }
+
+  /**
+   * Live event tail for one session (`WS /api/harness-sessions/ws?session=`).
+   * den's upgrade mounts are exact-path, so the resource rides the query
+   * string. Reconnects are automatic; every `onStatus('open')` is a fresh
+   * attach the caller must follow with a transcript hard-resync.
+   *
+   * A failed attach arrives as an `error` frame (carrying the typed harness
+   * code) and the server then closes the socket.
+   */
+  watchHarnessSession(
+    sessionId: string,
+    onEvent: (event: HarnessEvent) => void,
+    opts: WatchOptions = {},
+  ): Subscription {
+    return subscribe<HarnessEvent>(this.config, {
+      path: '/api/harness-sessions/ws',
+      query: { session: sessionSegment(sessionId) },
+      onFrame: onEvent,
+      onStatus: opts.onStatus,
+      factory: opts.factory,
+    })
+  }
+
+  /**
+   * Driver-level registry stream (`session-created` / `session-updated` across
+   * every session) so session lists live-update instead of polling. Omit
+   * `harnessId` to watch all registered drivers.
+   */
+  watchHarnesses(
+    onEvent: (event: HarnessEvent) => void,
+    harnessId?: HarnessId,
+    opts: WatchOptions = {},
+  ): Subscription {
+    return subscribe<HarnessEvent>(this.config, {
+      path: '/api/harnesses/ws',
+      query: { harness: harnessId },
+      onFrame: onEvent,
+      onStatus: opts.onStatus,
+      factory: opts.factory,
+    })
   }
 
   // -- audio MicBridge (host mic → virtual node input; docs/MICBRIDGE.md) ----

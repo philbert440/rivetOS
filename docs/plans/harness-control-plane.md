@@ -524,9 +524,62 @@ Closing it requires all three:
 - [ ] **Kimi driver:** rivet-den hooks + driver; keep capture (`kimi-code:…`) — den integration is greenfield (no `integrations/kimi/rivet-den` exists today)
 - [ ] Tasks: `harness-session` executors per harness id — includes renaming/aliasing the existing executor agent id `claude-cli` → `claude-code`
 - [ ] Hermes rotation migrated from close+new-conversation to alias semantics (breaking, see Session identity § Rotation)
-- [ ] **Hub:** chat / tasks / dens bind multi-harness API (not Claude-only)
+- [x] **Hub chat** binds the harness API (`apps/rivethub-web`) — see below
+- [ ] **Hub:** tasks / dens bind multi-harness API (not Claude-only)
 - [ ] Den: list all harness types under one naming scheme
 - [ ] **Android:** same gateway APIs — full remote parity (no on-device agent loop)
+
+### As built (hub chat binding)
+
+`@rivetos/gateway-client` carries the typed surface (`harnesses`,
+`harnessSessionList`, `startHarnessSession`, `getHarnessSession`,
+`resumeHarnessSession`, `sendHarnessTurn`, `interruptHarnessSession`,
+`resolveHarnessApproval`, `harnessSessionTranscript`, `watchHarnessSession`,
+`watchHarnesses`); path params go through `encodeSessionIdSegment`, and a bare
+native id rides as a plain segment for the documented legacy shape.
+
+Hub chat binds **per session, not per app**: a row a registered driver claims
+streams on `WS /api/harness-sessions/ws`, hard-resyncs its transcript on every
+`open` (first connect and reconnect alike — the tail has no replay), and sends
+through `sendUserTurn`; the drawer badges its harness id. Rows no driver claims
+— grok and hermes, until their Phase 3 drivers land — keep the existing gateway
+chat channel binding verbatim, so nothing disappears from the drawer. The chat
+store marks bound sessions so the all-sessions socket stops writing them: the
+same den events reach both surfaces and folding twice would double every delta.
+Interrupt and approvals render only when the driver's flags say so, which for
+`claude-code` means a Stop button and never an approval card.
+
+Gaps this slice records rather than fixes:
+
+- **Hub chat's key is still the bare native id**, not the canonical
+  `SessionId` the identity table asks for. It is the den join key that the PTY,
+  the den viewer's `?session=`, the transcript watch and the memory
+  conversation key all share; moving it is a den-server change, not a client
+  one. The canonical id rides alongside and is what every control-plane call
+  and the chat header use.
+- **No `session-created` fast path.** The registry stream invalidates the
+  drawer's session queries rather than merging the summary it already carries.
+- **No attachments and no `startSession` from the hub.** `POST /uploads` does
+  not exist (Phase 2 checklist), and "+ new" stays a local draft so clicking it
+  does not spawn a harness; the draft's first turn pins its id through the
+  existing PTY path and the control plane adopts it from there.
+- **`turn_in_flight` is client-queued.** The hub requeues and retries on a
+  bounded exponential backoff (6 attempts, 30s cap) and then leaves the turn
+  queued for the user's inject button. There is no server-side queue, and no
+  ready signal to wait on — a harness parked on its own TUI permission prompt
+  is legitimately mid-turn for as long as a human takes.
+- **No live thinking on the control-plane path.** `HarnessEvent` has no
+  reasoning/thinking member — the den bridge's `reasoning` frames (Claude's
+  spinner lines) have no equivalent in the contract, so a bound session shows
+  tools and text live and picks up `thinking` only from the transcript at turn
+  end. Adding a `reasoning-delta` event is a contract change, not a client fix.
+- **Approval state is not recoverable.** `approval-request` exists only as a
+  live event: a client that attaches after one was emitted, or that reloads,
+  has no way to learn the harness is blocked (the tail has no replay and the
+  transcript does not carry pending approvals). **Phase 3 driver requirement:**
+  the first driver reporting `approvals: true` must also make pending
+  approvals readable — a `GET` on the session, or approvals carried on the
+  transcript — or every reconnect silently strands the harness.
 
 ---
 

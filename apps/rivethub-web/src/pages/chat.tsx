@@ -1,13 +1,26 @@
 /**
  * Chat — the day-one job (phase-4 design doc). Layout mirrors
  * rivet-android: conversation drawer on the left, transcript + composer on
- * the right. Live updates ride the all-sessions WS (stores/chat.ts); HTTP
- * seeds a transcript on first open.
+ * the right.
+ *
+ * Two bindings feed one surface (docs/plans/harness-control-plane.md):
+ *
+ *   - **Control plane.** Sessions a registered HarnessDriver claims come from
+ *     `GET /api/harnesses/:id/sessions`, stream over
+ *     `WS /api/harness-sessions/ws`, hard-resync from the session transcript
+ *     on every (re)connect, and take turns through `sendUserTurn`. Affordances
+ *     follow the driver's capability flags — a `false` flag answers 501, so
+ *     the button is hidden rather than shown-and-failing.
+ *   - **Legacy.** Everything the plane does not claim (grok, hermes — their
+ *     drivers land in Phase 3) keeps the gateway chat channel binding it has
+ *     today: the all-sessions WS, server-pushed transcripts, PTY inject.
+ *
+ * The split is per-session and automatic; there is no mode to pick.
  */
 
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { SessionMessage } from '@rivetos/types'
+import type { ApprovalDecision, SessionMessage } from '@rivetos/types'
 import { uuidv4 } from '../lib/uuid.js'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
@@ -17,11 +30,22 @@ import { Transcript } from '../components/transcript.js'
 import { Composer, type ComposerHandle } from '../components/composer.js'
 import { XtermAttach } from '../components/xterm-attach.js'
 import { SessionErrorBoundary } from '../components/session-error-boundary.js'
+import { HarnessApprovalCard } from '../components/harness-approval-card.js'
 import { questionsFromLiveTools } from '../lib/ask-user.js'
 import { harnessAccent } from '../lib/harness-colors.js'
+import { attachHarnessSession } from '../lib/harness-attach.js'
+import {
+  chatItems,
+  fetchHarnessPlaneSessions,
+  harnessGate,
+  isTurnInFlight,
+  shortNativeId,
+  type ChatItem,
+  type HarnessGate,
+} from '../lib/harness-chat.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
-import { Pencil } from 'lucide-react'
+import { Pencil, Square } from 'lucide-react'
 import { useSessionNames } from '../stores/session-names.js'
 
 /** Stable empty array for zustand selectors — `?? []` inside a selector
@@ -39,6 +63,17 @@ const INJECT_LATCH_MS = 6_000
  *  no-tool generation is silent between blocks), so short windows
  *  false-positive on healthy turns (grok review, PR #338). */
 const STALE_TURN_MS = 120_000
+/** First backoff after a `turn_in_flight` rejection; doubles per attempt. */
+const TURN_RETRY_MS = 1_500
+const TURN_RETRY_MAX_MS = 30_000
+/**
+ * Give up auto-retrying after this many rejections. A harness parked on a TUI
+ * permission prompt is mid-turn indefinitely, and hammering it forever is
+ * worse than leaving the message queued with its inject button.
+ */
+const TURN_RETRY_ATTEMPTS = 6
+/** Pause between a control-plane interrupt and the turn that displaced it. */
+const INTERRUPT_SETTLE_MS = 400
 
 // A conversation id IS a UUID so it can be the harness's native session id
 // (claude --session-id requires a UUID). Then the join key, the harness's
@@ -74,27 +109,60 @@ export function ChatPage(): JSX.Element {
     refetchInterval: 120_000,
     enabled: connected,
   })
+
+  // The node's driver registry + capability sheet. Rarely changes (drivers
+  // register at boot), so it is cached hard and only re-read per endpoint.
+  const registryQuery = useQuery({
+    queryKey: ['harnesses', baseUrl, token ?? ''],
+    queryFn: ({ signal }) => useConnection.getState().gateway.harnesses(signal),
+    staleTime: 300_000,
+    enabled: connected,
+  })
+  const descriptors = registryQuery.data?.harnesses
+
+  // Control-plane sessions, one list per registered driver. A node with no
+  // drivers (older den-server) simply returns nothing and the drawer falls
+  // back to the legacy scan alone — that is the no-regression path.
+  const planeQuery = useQuery({
+    queryKey: ['harness-plane-sessions', baseUrl, token ?? '', descriptors?.length ?? 0],
+    queryFn: ({ signal }) =>
+      fetchHarnessPlaneSessions(useConnection.getState().gateway, descriptors, signal),
+    enabled: connected && (descriptors?.length ?? 0) > 0,
+    refetchInterval: 120_000,
+  })
+
+  const invalidateSessions = (): void => {
+    void queryClient.invalidateQueries({ queryKey: ['harness-sessions', baseUrl, token ?? ''] })
+    void queryClient.invalidateQueries({ queryKey: ['harness-plane-sessions', baseUrl] })
+  }
   useEffect(() => {
-    if (sessionsDirty > 0) {
-      void queryClient.invalidateQueries({ queryKey: ['harness-sessions', baseUrl, token ?? ''] })
-    }
+    if (sessionsDirty > 0) invalidateSessions()
   }, [sessionsDirty, baseUrl, token, queryClient])
+
+  // Registry stream: `session-created` / `session-updated` across every driver
+  // so the drawer live-updates instead of polling (contract § gateway surface).
+  const hasDrivers = (descriptors?.length ?? 0) > 0
+  useEffect(() => {
+    if (!connected || !hasDrivers) return
+    const sub = useConnection.getState().gateway.watchHarnesses((event) => {
+      if (event.type === 'session-created' || event.type === 'session-updated') {
+        invalidateSessions()
+      }
+    })
+    return () => sub.close()
+  }, [connected, hasDrivers, baseUrl, token, queryClient])
 
   if (!connected) return <NotConnected />
 
-  const harness = harnessQuery.data?.sessions ?? []
-  const harnessById = new Map(harness.map((s) => [s.id, s] as const))
-  // Fresh drafts (a UUID with no store file yet) first, then every harness
-  // session, newest-first from the store. Deduped: once a draft's first turn
-  // creates its store file, it shows as a harness session, not a draft.
-  const draftItems = chat.drafts
-    .filter((d) => !harnessById.has(d))
-    .map((id) => ({ id, title: 'new conversation', command: undefined }))
-  const harnessItems = harness.map((s) => ({ id: s.id, title: s.title, command: s.command }))
-  const items = [...draftItems, ...harnessItems]
+  const items = chatItems({
+    drafts: chat.drafts,
+    harnessSessions: planeQuery.data ?? [],
+    legacySessions: harnessQuery.data?.sessions ?? [],
+  })
   const active = useChat((s) => s.active)
   const setActive = useChat((s) => s.setActive)
-  const activeHarness = active ? harnessById.get(active) : undefined
+  const activeItem = items.find((it) => it.key === active)
+  const gate = harnessGate(activeItem, descriptors)
 
   return (
     <div className="flex h-full">
@@ -112,7 +180,12 @@ export function ChatPage(): JSX.Element {
         // Error boundary: a render crash must not trap the whole shell —
         // "back to conversations" clears selection without quitting.
         <SessionErrorBoundary key={active} sessionId={active} onClose={() => setActive(undefined)}>
-          <ActiveSession sessionId={active} harnessCommand={activeHarness?.command} />
+          <ActiveSession
+            sessionId={active}
+            item={activeItem}
+            gate={gate}
+            harnessCommand={activeItem?.command}
+          />
         </SessionErrorBoundary>
       ) : (
         <EmptyState />
@@ -123,14 +196,12 @@ export function ChatPage(): JSX.Element {
 
 /** One conversation row — shows the custom name (if set) over the derived
  *  title, with inline rename (pencil on hover → input; Enter/blur saves, empty
- *  clears, Escape cancels). Rename persists per node+session (localStorage). */
-function DrawerItem(props: {
-  item: { id: string; title: string; command?: string }
-  active: boolean
-  onSelect: () => void
-}): JSX.Element {
+ *  clears, Escape cancels). Rename persists per node+session (localStorage).
+ *  Control-plane rows also carry a harness badge (§ Session identity: "UI may
+ *  badge harness + short native suffix"). */
+function DrawerItem(props: { item: ChatItem; active: boolean; onSelect: () => void }): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const key = `${baseUrl}::${props.item.id}`
+  const key = `${baseUrl}::${props.item.key}`
   const customName = useSessionNames((s) => s.byKey[key])
   const setName = useSessionNames((s) => s.set)
   const [editing, setEditing] = useState(false)
@@ -183,7 +254,10 @@ function DrawerItem(props: {
     >
       <button
         onClick={props.onSelect}
-        title={props.item.command ? `${props.item.command} · ${props.item.id}` : props.item.id}
+        title={
+          props.item.sessionId ??
+          (props.item.command ? `${props.item.command} · ${props.item.key}` : props.item.key)
+        }
         className={`flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-xs ${
           props.active ? 'text-em' : 'text-ink-dim group-hover:text-ink'
         }`}
@@ -191,10 +265,18 @@ function DrawerItem(props: {
         {/* harness accent: claude clay / grok grey / local emerald */}
         <span
           className="size-1.5 shrink-0 rounded-full"
-          style={{ background: harnessAccent(props.item.command) }}
+          style={{ background: harnessAccent(props.item.harnessId ?? props.item.command) }}
           aria-hidden
         />
         <span className="min-w-0 truncate">{customName ?? props.item.title}</span>
+        {props.item.harnessId && (
+          <span
+            title={`${props.item.harnessId} ${shortNativeId(props.item.key)}`}
+            className="shrink-0 rounded bg-panel-2 px-1 font-mono text-[9px] text-ink-dim"
+          >
+            {props.item.harnessId}
+          </span>
+        )}
       </button>
       <button
         onClick={() => {
@@ -214,11 +296,7 @@ function DrawerItem(props: {
 /** Drawer shows a filter box once the list stops being glanceable. */
 const DRAWER_FILTER_MIN = 6
 
-function SessionDrawer(props: {
-  items: { id: string; title: string; command?: string }[]
-  active?: string
-  error?: string
-}): JSX.Element {
+function SessionDrawer(props: { items: ChatItem[]; active?: string; error?: string }): JSX.Element {
   const setActive = useChat((s) => s.setActive)
   const addDraft = useChat((s) => s.addDraft)
   const wsStatus = useChat((s) => s.wsStatus)
@@ -231,11 +309,12 @@ function SessionDrawer(props: {
   const q = filter.trim().toLowerCase()
   const items = q
     ? props.items.filter((it) => {
-        const custom = names[`${baseUrl}::${it.id}`] ?? ''
+        const custom = names[`${baseUrl}::${it.key}`] ?? ''
         return (
           custom.toLowerCase().includes(q) ||
           it.title.toLowerCase().includes(q) ||
-          it.id.toLowerCase().includes(q)
+          it.key.toLowerCase().includes(q) ||
+          (it.harnessId ?? '').includes(q)
         )
       })
     : props.items
@@ -275,10 +354,10 @@ function SessionDrawer(props: {
       <div className="flex-1 overflow-y-auto px-2">
         {items.map((it) => (
           <DrawerItem
-            key={it.id}
+            key={it.key}
             item={it}
-            active={it.id === props.active}
-            onSelect={() => setActive(it.id)}
+            active={it.key === props.active}
+            onSelect={() => setActive(it.key)}
           />
         ))}
         {items.length === 0 && q && (
@@ -292,7 +371,16 @@ function SessionDrawer(props: {
   )
 }
 
-function ActiveSession(props: { sessionId: string; harnessCommand?: string }): JSX.Element {
+function ActiveSession(props: {
+  sessionId: string
+  /** Drawer row for this session (absent for a just-created draft). */
+  item?: ChatItem
+  /** Which control-plane affordances this session's driver actually has. */
+  gate: HarnessGate
+  harnessCommand?: string
+}): JSX.Element {
+  /** Canonical `<harness-id>:<native>` when the control plane owns this row. */
+  const canonicalId = props.gate.bound ? props.item?.sessionId : undefined
   // Terminal is the starting place — chat and den are progressively more
   // immersive views of the same live harness.
   const [mode, setMode] = useState<'chat' | 'terminal' | 'den'>('terminal')
@@ -332,16 +420,46 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const settings = useChatSettings((s) => s.byKey[settingsKey])
   const setSetting = useChatSettings((s) => s.set)
 
-  // ---- Push-synced transcript (seamless modes v2) ---------------------------
-  // The on-disk harness store is the canonical conversation. Subscribing here
-  // makes the server watch that file and push turn deltas over the sessions
-  // WS — the store applies them (stores/chat.ts), so this view just renders.
-  // Reconnects re-watch automatically (store's onStatus hook); no pull-on-
-  // navigate heuristics and no manual resync button anymore.
+  // ---- Transcript binding ---------------------------------------------------
+  //
+  // Control plane (driver-owned, liveStream on): tail
+  // `WS /api/harness-sessions/ws` and hard-resync the transcript on every
+  // (re)connect. The tail is at-most-once from attach time with no replay, so
+  // re-subscribing is only half the recovery — the resync is the other half
+  // (harness-control-plane.md § Contract semantics).
+  //
+  // Otherwise: the legacy push-synced watch. The server watches the on-disk
+  // store and pushes turn deltas over the sessions WS; the store applies them.
+  const streamId = props.gate.stream ? canonicalId : undefined
+  const [streamError, setStreamError] = useState<string | undefined>()
   useEffect(() => {
-    useChat.getState().watchTranscript(props.sessionId)
-    return () => useChat.getState().unwatchTranscript(props.sessionId)
-  }, [props.sessionId])
+    if (streamId === undefined) {
+      useChat.getState().watchTranscript(props.sessionId)
+      return () => useChat.getState().unwatchTranscript(props.sessionId)
+    }
+    useChat.getState().bindHarness(props.sessionId, props.item?.harnessId ?? 'harness')
+    const attachment = attachHarnessSession({
+      gateway: useConnection.getState().gateway,
+      sessionId: streamId,
+      onTranscript: (turns) => useChat.getState().syncHarnessTranscript(props.sessionId, turns),
+      onLive: (turn) => useChat.getState().setLive(props.sessionId, turn),
+      onApproval: (event) => useChat.getState().applyApprovalEvent(props.sessionId, event),
+      onError: (err) => setStreamError(err instanceof Error ? err.message : String(err)),
+      // Terminal: the attachment has already stopped itself, so say so plainly
+      // instead of leaving a banner that looks like it might clear.
+      onFatal: (message) => {
+        useChat.getState().setLive(props.sessionId, undefined)
+        setStreamError(`${message} — this session is no longer attachable`)
+      },
+      onStatus: (status) => {
+        if (status === 'open') setStreamError(undefined)
+      },
+    })
+    return () => {
+      attachment.close()
+      useChat.getState().unbindHarness(props.sessionId)
+    }
+  }, [props.sessionId, streamId, props.item?.harnessId])
   const transcript = useChat((s) => s.transcripts[props.sessionId])
   const storeHasTurns = (transcript?.turns.length ?? 0) > 0
   // Backfill gate: the store snapshot came back empty (API-only agents, fresh
@@ -495,6 +613,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const enqueueOutbound = useChat((s) => s.enqueueOutbound)
   const markOutboundSending = useChat((s) => s.markOutboundSending)
   const dequeueOutbound = useChat((s) => s.dequeueOutbound)
+  const requeueOutbound = useChat((s) => s.requeueOutbound)
   const failOutbound = useChat((s) => s.failOutbound)
   const cancelOutbound = useChat((s) => s.cancelOutbound)
   const beginLive = useChat((s) => s.beginLive)
@@ -505,6 +624,15 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   const dismissAsk = useChat((s) => s.dismissAsk)
   const pumping = useRef(false)
   const composerRef = useRef<ComposerHandle | null>(null)
+  /** `turn_in_flight` attempts per queued turn, and the one pending retry. */
+  const turnRetries = useRef(new Map<string, number>())
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(
+    () => () => {
+      if (retryTimer.current) clearTimeout(retryTimer.current)
+    },
+    [],
+  )
 
   // Ask card content: the live turn's ask tool wins (question just streamed
   // in); after the turn ends the store's stashed copy keeps the card up until
@@ -523,6 +651,19 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
 
   const injectOne = async (text: string, interrupt = false): Promise<void> => {
     const gw = useConnection.getState().gateway
+    if (canonicalId) {
+      // Control plane: the driver owns spawn-or-resume, so there is no PTY to
+      // ensure here. "Inject now" is interrupt-then-send, and only when the
+      // driver actually has an interrupt (a false flag answers 501).
+      if (interrupt && props.gate.canInterrupt) {
+        await gw.interruptHarnessSession(canonicalId).catch(() => undefined)
+        // Same beat the legacy interrupt-inject waits: the TUI needs a moment
+        // to draw its cancel before the next paste, or the turn swallows it.
+        await new Promise((r) => setTimeout(r, INTERRUPT_SETTLE_MS))
+      }
+      await gw.sendHarnessTurn(canonicalId, { text })
+      return
+    }
     await ensurePty()
     try {
       await gw.termInject({ session: props.sessionId, text, ...(interrupt ? { interrupt } : {}) })
@@ -556,6 +697,7 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
     try {
       await injectOne(next.text, opts?.interrupt === true)
       dequeueOutbound(props.sessionId, next.id)
+      turnRetries.current.delete(next.id)
       // Hold the pump until the harness's stream latches busy. The hook chain
       // (UserPromptSubmit → den → bridge) is normally sub-second, but a big
       // context can take seconds to first frame — draining the next queued
@@ -570,9 +712,35 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
         clearLive(props.sessionId)
       }
     } catch (err) {
+      pumping.current = false
+      if (isTurnInFlight(err)) {
+        // Not a failure: v1 drivers never queue, so a mid-turn send is simply
+        // "not yet". Put the turn back in the queue (bubble intact) and let
+        // the retry timer / next live change pick it up.
+        requeueOutbound(props.sessionId, next.id)
+        // Only the pre-inject placeholder goes: a real streaming turn is
+        // exactly WHY the driver said no, and dropping its bubble would blank
+        // the reply the user is watching.
+        if (!useChat.getState().liveIsBusy(props.sessionId)) clearLive(props.sessionId)
+        // Backoff, bounded: a harness sitting on a TUI permission prompt is
+        // mid-turn until a human answers it, and a fixed-interval retry would
+        // POST at it until the tab closes. After the cap the turn stays queued
+        // and the user's inject button is the (interrupting) manual retry.
+        const attempts = (turnRetries.current.get(next.id) ?? 0) + 1
+        turnRetries.current.set(next.id, attempts)
+        if (attempts <= TURN_RETRY_ATTEMPTS) {
+          const delay = Math.min(TURN_RETRY_MS * 2 ** (attempts - 1), TURN_RETRY_MAX_MS)
+          if (retryTimer.current) clearTimeout(retryTimer.current)
+          retryTimer.current = setTimeout(() => {
+            retryTimer.current = undefined
+            void pumpOutbound().catch(() => undefined)
+          }, delay)
+        }
+        return
+      }
+      turnRetries.current.delete(next.id)
       failOutbound(props.sessionId, next.id)
       clearLive(props.sessionId)
-      pumping.current = false
       // Try the next queued message after a failure.
       void pumpOutbound().catch(() => undefined)
       throw err
@@ -659,6 +827,40 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
       ? messages.slice(0, -1)
       : messages
 
+  // Capability-gated affordances. `canInterrupt` is the driver's own flag —
+  // hidden rather than shown-and-501'd when the node has no interrupt path.
+  const onInterrupt = (): void => {
+    if (!canonicalId) return
+    void useConnection
+      .getState()
+      .gateway.interruptHarnessSession(canonicalId)
+      .then(() => clearLive(props.sessionId))
+      .catch((e: unknown) => setStreamError(e instanceof Error ? e.message : String(e)))
+  }
+
+  // Approvals only exist for drivers that surface their permission gate on the
+  // wire; `claude-code` reports `approvals: false` always (its prompts live
+  // inside the TUI), so this stays empty there.
+  const pendingApprovals = useChat((s) => s.approvals[props.sessionId])
+  const onDecideApproval = (requestId: string, decision: ApprovalDecision): void => {
+    if (!canonicalId) return
+    // Optimistic: the driver broadcasts approval-resolved to every subscriber,
+    // which clears the card again on any other client. Restore it if the POST
+    // fails, though — the harness is still blocked on that request, and a
+    // vanished card would leave the session wedged with nothing to click.
+    const request = useChat
+      .getState()
+      .approvals[props.sessionId]?.find((p) => p.requestId === requestId)
+    useChat.getState().clearApproval(props.sessionId, requestId)
+    void useConnection
+      .getState()
+      .gateway.resolveHarnessApproval(canonicalId, requestId, decision)
+      .catch((e: unknown) => {
+        setStreamError(e instanceof Error ? e.message : String(e))
+        if (request) useChat.getState().applyApprovalEvent(props.sessionId, request)
+      })
+  }
+
   // ?token= rides along for token-gated gateways — an iframe can't carry a
   // bearer header (den viewer net.ts keeps it across routes).
   const denUrl =
@@ -668,7 +870,11 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
-        <span className="truncate font-mono text-xs text-ink-dim">{props.sessionId}</span>
+        {/* Canonical `<harness-id>:<native>` once the control plane owns the
+            session; the bare den join key until then. */}
+        <span className="truncate font-mono text-xs text-ink-dim">
+          {canonicalId ?? props.sessionId}
+        </span>
         {/* Context-fill bar — reported usage when present; else estimate. */}
         <ContextBar
           tokens={contextSource?.usage?.promptTokens}
@@ -677,6 +883,18 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
           }
           transcriptTexts={messages.map((m) => m.text)}
         />
+        {/* Interrupt is the driver's capability, not a UI preference: shown
+            only when the control plane owns this session AND reports one. */}
+        {props.gate.canInterrupt && liveBusy && (
+          <button
+            onClick={onInterrupt}
+            title="cancel the in-flight turn"
+            className="flex shrink-0 items-center gap-1 rounded border border-line px-2 py-1 font-mono text-[11px] text-ink-dim hover:border-red hover:text-red"
+          >
+            <Square className="size-2.5 fill-current" aria-hidden />
+            Stop
+          </button>
+        )}
         {/* [Terminal | Chat | Den] — three views of ONE session, ordered by
             immersion (terminal is home); the bar stays visible so the den
             never takes over with no way back. */}
@@ -718,6 +936,16 @@ function ActiveSession(props: { sessionId: string; harnessCommand?: string }): J
               {outbound.filter((o) => o.status === 'queued').length} message
               {outbound.filter((o) => o.status === 'queued').length === 1 ? '' : 's'} queued — will
               send when Rivet finishes the current turn (or use inject on the bubble)
+            </div>
+          )}
+          {streamError && (
+            <div className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-red">
+              harness stream: {streamError}
+            </div>
+          )}
+          {props.gate.canApprove && pendingApprovals && pendingApprovals.length > 0 && (
+            <div className="px-4">
+              <HarnessApprovalCard pending={pendingApprovals} onDecide={onDecideApproval} />
             </div>
           )}
           <Composer

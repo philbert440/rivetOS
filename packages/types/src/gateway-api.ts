@@ -14,6 +14,12 @@
 
 import type { StreamEvent } from './events.js'
 import type {
+  HarnessCapabilities,
+  HarnessId,
+  SessionId,
+  SessionSummary as HarnessSessionSummary,
+} from './harness.js'
+import type {
   AcceptanceCriterion,
   ContextRef,
   EvalOutcome,
@@ -509,6 +515,60 @@ export interface HarnessTranscriptResponse {
   /** Which harness produced the turns, or '' if none found. */
   command: string
   turns: HarnessTranscriptTurn[]
+}
+
+// ---------------------------------------------------------------------------
+// Harness control plane — /api/harnesses + /api/harness-sessions
+// (docs/plans/harness-control-plane.md § As built).
+//
+// Distinct from the legacy `/api/terminal/harness-sessions` shapes above: this
+// family is keyed by canonical `SessionId`, path params carry
+// `enc(SessionId)` (unpadded base64url), and any request made under a
+// superseded or legacy id answers with the canonical id in `redirectedTo`.
+// ---------------------------------------------------------------------------
+
+/** One registered driver — `GET /api/harnesses` row and the single-driver
+ *  capability sheet at `GET /api/harnesses/:harnessId`. */
+export interface HarnessDescriptor {
+  harnessId: HarnessId
+  capabilities: HarnessCapabilities
+}
+
+export interface HarnessesResponse {
+  harnesses: HarnessDescriptor[]
+}
+
+/** `GET /api/harnesses/:harnessId/sessions` — canonical ids only. */
+export interface HarnessSessionListResponse {
+  sessions: HarnessSessionSummary[]
+}
+
+/** Canonical id the control plane resolved a superseded/legacy id to. Absent
+ *  when the caller already used the canonical id. */
+export interface HarnessRedirect {
+  redirectedTo?: SessionId
+}
+
+/** `GET /api/harness-sessions/:enc` and `POST /api/harness-sessions/:enc/resume`. */
+export type HarnessSessionResponse = HarnessSessionSummary & HarnessRedirect
+
+/** `GET /api/harness-sessions/:enc/transcript` — the hard-resync source a
+ *  client re-reads on every (re)connect (the live tail has no replay). */
+export interface HarnessSessionTranscriptResponse extends HarnessRedirect {
+  sessionId: SessionId
+  harnessId: HarnessId
+  turns: HarnessTranscriptTurn[]
+}
+
+/** 202 from `POST /api/harness-sessions/:enc/turns` and `…/interrupt`. */
+export interface HarnessTurnAccepted extends HarnessRedirect {
+  ok: true
+  sessionId: SessionId
+}
+
+/** 202 from `POST /api/harness-sessions/:enc/approvals/:requestId`. */
+export interface HarnessApprovalAccepted extends HarnessTurnAccepted {
+  requestId: string
 }
 
 export interface PtyInfo {
