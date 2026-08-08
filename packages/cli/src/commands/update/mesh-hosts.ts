@@ -7,6 +7,7 @@
  */
 
 import { execSync } from 'node:child_process'
+import { inspect } from 'node:util'
 
 export const DEFAULT_MESH_FILE = '/rivet-shared/mesh.json'
 export const REMOTE_MESH_HOSTS_SCRIPT = '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh'
@@ -22,7 +23,8 @@ export function isProcessRoot(): boolean {
  */
 export function formatExecFailure(err: unknown): string {
   if (err == null) return 'unknown error'
-  if (typeof err !== 'object') return String(err)
+  if (typeof err === 'string') return err
+  if (typeof err !== 'object') return inspect(err)
 
   const e = err as {
     stderr?: Buffer | string
@@ -51,7 +53,7 @@ export function formatExecFailure(err: unknown): string {
   if (stdout) return pick(stdout)
   if (e.message) return e.message
   if (typeof e.status === 'number') return `exited with code ${e.status}`
-  return String(err)
+  return inspect(err)
 }
 
 /**
