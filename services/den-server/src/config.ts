@@ -2,6 +2,7 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { DEFAULT_UPLOAD_MAX_BYTES, DEFAULT_UPLOAD_TTL_MS } from './harness/uploads.js'
 
 function intEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   // Read from the PASSED env — loadConfig(env) callers (the embedded
@@ -103,6 +104,21 @@ export interface DenConfig {
   /** Mesh device enrollment (/api/devices/*, Settings → Devices). Optional
    *  so hand-built test configs predating the feature stay valid. */
   devices?: DenDevicesConfig
+  /** Harness attachment staging (POST /api/uploads). Optional for the same
+   *  reason as `devices`. */
+  uploads?: DenUploadsConfig
+}
+
+/** Staging area for remote-client harness attachments (see harness/uploads.ts). */
+export interface DenUploadsConfig {
+  /** Staging directory. Empty = `<stateDir>/uploads`. */
+  dir: string
+  /** Per-upload byte ceiling (RIVETOS_DEN_UPLOAD_MAX_BYTES). */
+  maxBytes: number
+  /** How long a staged file survives before the sweep unlinks it
+   *  (RIVETOS_DEN_UPLOAD_TTL_MS). 0 disables retention entirely — files then
+   *  live until an operator removes them. */
+  ttlMs: number
 }
 
 export interface DenDevicesConfig {
@@ -200,6 +216,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       gatewayUrl: env.RIVETOS_DEN_DEVICES_GATEWAY_URL ?? '',
       pgAdminUrl: env.RIVETOS_DEN_DEVICES_PG_ADMIN_URL ?? '',
       pgDeviceGroup: env.RIVETOS_DEN_DEVICES_PG_DEVICE_GROUP ?? 'rivet_device',
+    },
+    uploads: {
+      dir: env.RIVETOS_DEN_UPLOAD_DIR ?? '',
+      maxBytes: intEnv(env, 'RIVETOS_DEN_UPLOAD_MAX_BYTES', DEFAULT_UPLOAD_MAX_BYTES),
+      ttlMs: intEnv(env, 'RIVETOS_DEN_UPLOAD_TTL_MS', DEFAULT_UPLOAD_TTL_MS),
     },
   }
 }
