@@ -153,12 +153,14 @@ describe('capability-false paths reject with capability_unsupported', () => {
     expect(() => driver.subscribe(SID, () => undefined)).toThrowError(HarnessError)
   })
 
-  it('rejects attachments — there is no node-local staging path into the TUI', async () => {
+  it('rejects attachments even when the URI is a staged node-local path', async () => {
+    // POST /api/uploads makes `pathOrUri` resolvable; the PTY paste still has
+    // no way to hand a file to the TUI, so the rejection stands.
     const { driver } = makeDriver()
     await expectUnsupported(() =>
       driver.sendUserTurn(SID, {
         text: 'look',
-        attachments: [{ mime: 'image/png', pathOrUri: '/tmp/x.png' }],
+        attachments: [{ mime: 'image/png', pathOrUri: '/home/rivet/.rivetos/den/uploads/x.png' }],
       }),
     )
   })

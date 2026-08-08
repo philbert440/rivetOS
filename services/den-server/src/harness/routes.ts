@@ -18,6 +18,11 @@
  *   POST /api/harness-sessions/:enc/approvals/:reqId resolveApproval
  *   WS   /api/harness-sessions/ws?session=<enc>      subscribe stream
  *
+ * Attachment staging for those turns is the third, single-route family, in
+ * `uploads.ts` (`POST /api/uploads`): it needs the node's state dir rather
+ * than the registry, so den mounts it alongside these rather than through
+ * them.
+ *
  * `:enc` is `enc(SessionId)` — unpadded base64url of the UTF-8 SessionId
  * (`encodeSessionIdSegment`). Percent-encoded `/` inside a path segment is
  * unreliable across routers and proxies, and Claude's path-fallback capture

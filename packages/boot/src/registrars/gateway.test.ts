@@ -150,6 +150,25 @@ describe('buildGatewayEnv — device enrollment', () => {
     )
   })
 
+  it('forwards the RIVETOS_DEN_UPLOAD_* knobs from process env', () => {
+    // den-server sees only this map, never the process env, so without the
+    // passthrough the documented attachment-staging knobs are inert.
+    vi.stubEnv('RIVETOS_DEN_UPLOAD_DIR', '/var/lib/rivetos/staging')
+    vi.stubEnv('RIVETOS_DEN_UPLOAD_MAX_BYTES', '52428800')
+    vi.stubEnv('RIVETOS_DEN_UPLOAD_TTL_MS', '3600000')
+    const env = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_UPLOAD_DIR).toBe('/var/lib/rivetos/staging')
+    expect(env.RIVETOS_DEN_UPLOAD_MAX_BYTES).toBe('52428800')
+    expect(env.RIVETOS_DEN_UPLOAD_TTL_MS).toBe('3600000')
+  })
+
+  it('omits the upload knobs when the process env is silent (den defaults win)', () => {
+    const env = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_UPLOAD_DIR).toBeUndefined()
+    expect(env.RIVETOS_DEN_UPLOAD_MAX_BYTES).toBeUndefined()
+    expect(env.RIVETOS_DEN_UPLOAD_TTL_MS).toBeUndefined()
+  })
+
   it('omits PG admin env when devices is on but admin URL is unset', () => {
     const env = buildGatewayEnv(
       base({ devices: { enabled: true, pool: '192.0.2.10-192.0.2.20' } }),

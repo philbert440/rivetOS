@@ -302,8 +302,13 @@ export class ClaudeCodeDriver implements HarnessDriver {
   async sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void> {
     const native = this.native(sessionId)
     if (turn.attachments?.length) {
-      // A PTY paste carries text only; there is no node-local staging path
-      // into Claude's TUI in v1 (the doc's POST /uploads is not built yet).
+      // `POST /api/uploads` now hands clients a node-local path, so
+      // `pathOrUri` is resolvable — but this driver still cannot use one. Its
+      // only channel into Claude is a PTY paste, which carries text; there is
+      // no wire for "here is a file" into the TUI. Attaching by pasting the
+      // path as prose would be a different thing wearing the contract's name,
+      // so the honest answer stays `capability_unsupported`. A driver that
+      // speaks a real protocol (SDK / ACP) consumes the staged URI directly.
       throw unsupported('claude-code: attachments are not supported in v1', sessionId)
     }
     const pty = await this.requirePty('sendUserTurn')
