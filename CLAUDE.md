@@ -61,25 +61,29 @@ not just **what** (the diff already shows that).
   `services/{compaction,embedding}-worker/` and run as **separate**
   systemd services (where deployed) — not as part of `rivetos.service`.
 
-## pnpm caches
+## Workspace layout & installs
 
-This is a pnpm workspace, but several plugins depend on workspace
-packages by **pinned version** (`"0.4.0-beta.6"`) rather than
-`workspace:*`. That means each consumer has an independent hard-copy of
-the dist under `node_modules/.pnpm/@rivetos+<pkg>@<ver>/...`.
+This is an **npm workspace** monorepo (`package-lock.json`, `npm ci` in CI) —
+not pnpm and not yarn. Workspace members are listed under `workspaces` in the
+root `package.json`: `packages/*`, `plugins/*/*`, `services/*`, and several
+`apps/`.
 
-When you edit a workspace package's source and rebuild, consumers' caches
-do **not** auto-update. To roll a change to all consumers in-place:
+Internal packages depend on each other by **pinned version**
+(`"@rivetos/types": "0.4.0-beta.6"`) rather than the `workspace:*` protocol,
+which npm does not support. npm still links them from the workspace as long as
+the pinned version matches the member's `version` field — so a version bump
+that lands in one package but not its consumers will silently pull the
+published tarball from the registry instead of the local source. Bump in
+lockstep.
+
+Edits to a workspace package need a rebuild before consumers see them:
 
 ```bash
-SRC=plugins/memory/postgres/dist
-for D in $(find . -path '*/node_modules/.pnpm/@rivetos+memory-postgres@*/node_modules/@rivetos/memory-postgres/dist' -type d); do
-  cp -r "$SRC"/. "$D"/
-done
+npx nx build @rivetos/memory-postgres   # or: npx nx run-many -t build
 ```
 
-A clean `pnpm install` will also re-sync them, but the in-place copy is
-faster for local iteration.
+`npm install` re-links workspace members; there is no per-consumer cache to
+hand-copy.
 
 ## Tests
 

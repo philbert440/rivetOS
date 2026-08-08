@@ -1,7 +1,7 @@
-# ARCHITECTURE.md — RivetOS Codebase Reference
+# RivetOS Codebase Reference
 
 > Living document. Updated as the codebase evolves. Read this before building anything.
-> Last updated: 2026-04-30 (post pulumi removal, schema relocation, transport plugins)
+> Last updated: 2026-08-08 (docs staleness sweep — package tree, roles, CI, test inventory)
 
 ---
 
@@ -26,10 +26,10 @@
 RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic, xAI, Google, Ollama, vLLM, llama-server, claude-cli) to messaging channels (Discord, Telegram, voice) with a tool execution loop, persistent memory, multi-agent orchestration, and an MCP transport that exposes the agent to external clients.
 
 **Key Numbers:**
-- ~25k lines of source code in `packages/` + `plugins/` (excluding tests)
-- 5 core packages, 19 plugins across 5 categories (provider, channel, tool, memory, transport)
-- One unified `rivetos` container image with `--role` (agent / datahub / mcp), plus the legacy split agent + datahub Dockerfiles
-- Node.js 24+, TypeScript 5.8, ES2023 target
+- ~63k lines of source code in `packages/` + `plugins/` (excluding tests)
+- 13 packages, 19 plugins across 5 categories (provider, channel, tool, memory, transport)
+- One unified `rivetos` container image with `--role agent | migrate` — no separate datahub image (Datahub is upstream `pgvector/pgvector:pg16`)
+- Node.js 22+ (24 used in CI/containers), TypeScript 6, ES2023 target
 - Nx monorepo with npm workspaces
 
 ---
@@ -38,15 +38,23 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 
 ```
 /opt/rivetos/
-├── packages/                    # Core framework (5 packages)
-│   ├── types/                   # 2,078 lines — Interfaces only. Zero deps. Leaf package.
-│   ├── boot/                    # 2,364 lines — Config loading, validation, registrars
-│   ├── core/                    # 8,534 lines — Runtime engine, domain logic, hooks
-│   ├── cli/                     # 6,080 lines — All CLI commands (rivetos <command>)
-│   └── nx-plugin/               # 724 lines   — Nx generators for scaffolding plugins
+├── packages/                    # Core framework (13 packages)
+│   ├── types/                   # Shared interfaces. Depends only on den-protocol.
+│   ├── core/                    # Runtime engine, domain logic, hooks
+│   ├── boot/                    # Config loading, validation, registrars
+│   ├── cli/                     # All CLI commands (rivetos <command>)
+│   ├── aisdk/                   # AI SDK ↔ RivetOS adapter (message + stream-part conversion)
+│   ├── workflows/               # Workflows v1 engine — document model, step SDK, journal replay
+│   ├── wiki-core/               # Memory wiki page model — parse/apply/serialize, pure
+│   ├── den-protocol/            # rivet-den event protocol + pure room-state reducer
+│   ├── den-packs/               # rivet-den SpritePack spec, validator CLI, default pack
+│   ├── gateway-client/          # Typed HTTP+WS client for the gateway API (RivetHub's bridge)
+│   ├── mcp/                     # MCP primitives shared by the sidecar and clients
+│   ├── mcp-v2/                  # Era-negotiating MCP surface built on `mcp`
+│   └── nx-plugin/               # `@rivetos/nx` — Nx generators for scaffolding plugins
 │
 ├── plugins/                     # Extensions (19 plugins across 5 categories)
-│   ├── providers/               # ~5,700 lines — LLM provider adapters
+│   ├── providers/               # LLM provider adapters
 │   │   ├── anthropic/           # Claude (streaming, adaptive thinking, prompt caching)
 │   │   ├── google/              # Gemini (thought signatures for function calling)
 │   │   ├── xai/                 # Grok (streaming, live search)
@@ -55,13 +63,13 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   ├── llama-server/       # llama.cpp llama-server (lean)
 │   │   └── claude-cli/          # Drives `claude` CLI via stream-json + embedded MCP bridge
 │   │
-│   ├── channels/                # ~4,300 lines — Messaging surface adapters
+│   ├── channels/                # Messaging surface adapters
 │   │   ├── discord/             # Discord (edit, react, embed, overflow, bindings)
 │   │   ├── telegram/            # Telegram (owner gate, inline queries)
 │   │   ├── agent/               # Agent-to-agent HTTPS/mTLS channel (delegation target)
 │   │   └── voice-discord/       # Discord voice (xAI Realtime API, STT/TTS)
 │   │
-│   ├── tools/                   # ~3,300 lines — Agent capabilities
+│   ├── tools/                   # Agent capabilities
 │   │   ├── shell/               # Shell execution (cwd, timeout, danger detection)
 │   │   ├── file/                # file_read, file_write, file_edit
 │   │   ├── search/              # search_glob, search_grep
@@ -69,20 +77,32 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   ├── web-search/          # Google CSE + web_fetch (Readability)
 │   │   └── mcp-client/          # MCP protocol client (stdio + HTTP transports)
 │   │
-│   ├── memory/                  # ~5,700 lines — Persistence backends
+│   ├── memory/                  # Persistence backends
 │   │   └── postgres/            # PostgreSQL (conversations, messages, search,
 │   │       │                    #   embeddings, compaction, summaries, review loop)
-│   │       ├── schema/          # Co-located SQL migrations & DDL
-│   │       └── workers/         # Event-driven workers (embedding + compaction)
+│   │       └── src/schema/      # Co-located SQL migrations & DDL
+│   │                            #   (workers live in services/, not here)
 │   │
-│   └── transports/              # ~2,600 lines — Inbound MCP / RPC surfaces
+│   └── transports/              # Inbound MCP / RPC surfaces
 │       └── mcp-server/          # @rivetos/mcp-server — exposes RivetOS tools
 │                                #   (memory_*, web_*, skill_*, runtime) over MCP
 │                                #   StreamableHTTP. Has its own `rivetos-mcp-server` bin.
 │
+├── services/                    # Long-running processes deployed alongside the agent
+│   ├── den-server/              # Embedded den/gateway server (also a boot dependency)
+│   ├── embedding-worker/        # LISTEN/NOTIFY embedding pump
+│   ├── compaction-worker/       # LISTEN/NOTIFY compaction + wiki extraction pump
+│   └── mcp-sidecar/             # Standalone MCP surface over the runtime's tools
+│
+├── apps/                        # End-user surfaces
+│   ├── den/                     # rivet-den companion renderer
+│   ├── rivethub-web/            # RivetHub web client
+│   ├── rivethub-desktop/        # RivetHub Tauri desktop shell
+│   ├── rivet-android/           # RivetHub Android client
+│   └── site/                    # Astro docs site (rivetos.dev)
+│
 ├── infra/                       # Container Dockerfiles + Compose + provisioning scripts
 │   ├── containers/
-│   │   ├── datahub/             # Postgres + pgvector image
 │   │   ├── rivetos/             # Unified runtime image — built once, dispatched via `--role`
 │   │   └── DATA-PERSISTENCE.md  # What survives container rebuilds
 │   ├── docker/                  # Compose stacks
@@ -102,29 +122,55 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 
 ## Package Dependency Graph
 
+Workspace dependencies as declared in each `package.json` (`@rivetos/*` only):
+
 ```
-@rivetos/types          ← Leaf. No dependencies. Everything depends on this.
-    ↑
-@rivetos/core           ← Depends on: types
-    ↑
-@rivetos/boot           ← Depends on: types, core, all plugins (dynamic import)
-    ↑
-@rivetos/cli            ← Depends on: types, core, boot
-    
-plugins/*               ← Each depends on: types (some on core for logger)
+den-protocol            ← Leaf. No workspace deps.
+wiki-core               ← Leaf. No workspace deps.
+workflows               ← Leaf. No workspace deps.
+nx (nx-plugin)          ← Leaf. No workspace deps.
+
+types                   ← den-protocol
+aisdk                   ← types
+mcp                     ← types
+mcp-v2                  ← mcp
+gateway-client          ← types
+den-packs               ← den-protocol
+
+core                    ← types, aisdk, workflows, wiki-core
+boot                    ← types, core, workflows, den-server,
+                          memory-postgres, provider-claude-cli
+cli                     ← boot, workflows
+
+plugins/*               ← types (some also on core for the logger)
+
+services/den-server     ← den-protocol, types
+services/compaction-worker ← memory-postgres, wiki-core
+services/embedding-worker  ← no workspace deps
+services/mcp-sidecar    ← mcp, mcp-v2, core, types, wiki-core,
+                          memory-postgres, tool-{file,search,shell,web-search}
 
 infra/                  ← Build artifacts only — no @rivetos/* runtime deps
 ```
 
-**Rule: `@rivetos/types` is interfaces only. Zero runtime deps. If you need a class or function, it goes in `core`.**
+**Rule: `@rivetos/types` is (almost) interfaces only.** Its one workspace dependency is
+`@rivetos/den-protocol`, which supplies the den event contract that the runtime types
+reference. Beyond that, if you need a class or function, it goes in `core`.
+
+**Static plugin dependencies in `boot`.** Plugin loading is still discovery- and
+manifest-driven, but `boot` declares four workspace packages statically so the default
+install always has a working provider, memory backend, den server, and workflow engine:
+`@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, and
+`@rivetos/workflows`. Everything else is discovered and dynamically imported.
 
 ---
 
 ## Packages
 
-### `@rivetos/types` (2,078 lines)
+### `@rivetos/types`
 
-Pure TypeScript interfaces and type exports. The contract layer.
+TypeScript interfaces and type exports. The contract layer. Its only workspace
+dependency is `@rivetos/den-protocol`.
 
 | File | Purpose |
 |------|---------|
@@ -136,10 +182,17 @@ Pure TypeScript interfaces and type exports. The contract layer.
 | `memory.ts` | `Memory`, `MemoryEntry`, `MemorySearchResult` |
 | `workspace.ts` | `Workspace`, `WorkspaceFile` |
 | `config.ts` | `RuntimeConfig`, `AgentConfig`, `HeartbeatConfig`, `LearningLoopConfig` |
-| `deployment.ts` | `DeploymentConfig`, Docker/Proxmox/K8s types |
+| `deployment.ts` | `DeploymentTarget`, `DeploymentConfig` (`target` only) |
+| `defaults.ts` | Shared default values for config resolution |
 | `events.ts` | `StreamEvent`, `SessionState`, `DelegationRequest/Result`, `TokenUsage` |
 | `hooks.ts` | Full hook system types (16 event types, pipeline, config) |
 | `mesh.ts` | `MeshNode`, `MeshRegistry`, `MeshConfig`, `MeshDelegationRoute` |
+| `gateway.ts` | Gateway route/upgrade contracts registered by `boot` |
+| `gateway-api.ts` | Wire types for the gateway HTTP+WS API (shared with `gateway-client`) |
+| `session-context.ts` | Per-session context carried through a turn |
+| `task.ts` / `task-result.ts` | Task engine records and result shapes (`ros_tasks`) |
+| `commands.ts` | Slash-command descriptors |
+| `wiki.ts` | Memory wiki page + index types |
 | `skill.ts` | `Skill`, `SkillManager` |
 | `subagent.ts` | `SubagentSession`, `SubagentManager` |
 | `errors.ts` | `RivetError` hierarchy (Channel, Memory, Config, Tool, Delegation, Runtime) |
@@ -147,26 +200,28 @@ Pure TypeScript interfaces and type exports. The contract layer.
 
 **Exception:** `ProviderError` and `RivetError` (and subclasses) are classes exported from types. This is the one place types has runtime code — because errors need to be `instanceof`-checkable across package boundaries.
 
-### `@rivetos/boot` (2,364 lines)
+### `@rivetos/boot`
 
 The composition root. Loads config, validates, wires everything together, starts the runtime.
 
 | File | Purpose |
 |------|---------|
 | `config.ts` | YAML config loader with `${ENV_VAR}` resolution |
+| `discovery.ts` | Finds the plugin root and builds the plugin registry from manifests |
 | `lifecycle.ts` | PID file management, SIGINT/SIGTERM handlers |
 | `validate/` | Config schema validation (sections, cross-refs, deployment) |
 | `registrars/agents.ts` | Wires delegation, sub-agents, skills |
 | `registrars/hooks.ts` | Wires safety, auto-action, session hooks |
 | `registrars/plugins.ts` | Generic manifest-driven loader for all discovered providers, channels, tools, and memory plugins |
+| `registrars/gateway.ts` | Starts the embedded den/gateway server with the routes and WS upgrades collected from agent tools |
 
-**Boot flow:** `loadConfig()` → `validateConfig()` → `discoverPlugins()` → `registerHooks()` → `new Runtime()` → `registerPlugins()` → `registerAgentTools()` → `writePidFile()` → `runtime.start()`
+**Boot flow:** `loadConfig()` → `validateConfig()` → `discoverPlugins()` → `registerHooks()` → `new Runtime()` → `registerPlugins()` → `registerAgentTools()` → `registerGateway()` → `writePidFile()` → `runtime.start()`
 
 Each plugin package exports `manifest: PluginManifest` from its `index.ts`. `registerPlugins()` calls `manifest.register(ctx)` once per discovered plugin; the plugin owns its config resolution, env-var lookup, and shutdown wiring via the `RegistrationContext`.
 
 **Config shape:** YAML with sections `runtime`, `agents`, `providers`, `channels`, `memory`, `mcp`, `deployment`. See `config.ts` for the full RivetConfig interface.
 
-### `@rivetos/core` (8,534 lines)
+### `@rivetos/core`
 
 The runtime engine. Split into two layers:
 
@@ -219,39 +274,43 @@ The runtime engine. Split into two layers:
 - Set via `RIVETOS_LOG_LEVEL` and `RIVETOS_LOG_FORMAT` env vars
 - Understands `RivetError` — extracts code, severity into structured output
 
-### `@rivetos/cli` (6,080 lines)
+### `@rivetos/cli`
 
 Every `rivetos <command>` lives here. Lazy-loaded via dynamic import.
 
-| Command | File | Lines | Purpose |
-|---------|------|-------|---------|
-| `init` | `commands/init/` | ~1,240 | Interactive setup wizard (@clack/prompts) |
-| `start` | `commands/start.ts` | 44 | Boot and run |
-| `stop` | `commands/stop.ts` | 26 | Kill running instance via PID file |
-| `status` | `commands/status.ts` | 173 | Runtime status display |
-| `update` | `commands/update.ts` | 481 | Source-based container rebuild |
-| `doctor` | `commands/doctor.ts` | 877 | 12-category health check |
-| `test` | `commands/test.ts` | 391 | Smoke tests (config, provider, memory, tools) |
-| `logs` | `commands/logs.ts` | 270 | Tail runtime logs with filtering |
-| `config` | `commands/config.ts` | 158 | Show/validate/edit config |
-| `agent` | `commands/agent.ts` | 207 | Add/remove/list agents |
-| `model` | `commands/model.ts` | 128 | Show/switch models |
-| `build` | `commands/build.ts` | 157 | Build container images |
-| `mesh` | `commands/mesh.ts` | 403 | Mesh management (list, ping, join, status) |
-| `service` | `commands/service.ts` | 154 | Systemd service management |
-| `skills` | `commands/skills.ts` | 368 | Skill management |
-| `plugins` | `commands/plugins.ts` | 307 | Plugin listing and status |
-| `provider` | `commands/provider.ts` | 321 | Provider-specific commands (setup, status) |
-| `login` | `commands/login.ts` | 72 | OAuth login flow |
-| `version` | `commands/version.ts` | 25 | Version display |
+| Command | File | Purpose |
+|---------|------|---------|
+| `init` | `commands/init/` | Interactive setup wizard (@clack/prompts) |
+| `start` | `commands/start.ts` | Boot and run (`--role agent \| migrate`) |
+| `stop` | `commands/stop.ts` | Kill running instance via PID file |
+| `status` | `commands/status.ts` | Runtime status display |
+| `update` | `commands/update.ts` (+ `commands/update/`) | Source/container update, incl. remote mesh nodes |
+| `doctor` | `commands/doctor.ts` | 12-category health check |
+| `test` | `commands/test.ts` | Smoke tests (config, provider, memory, tools) |
+| `logs` | `commands/logs.ts` | Tail runtime logs with filtering |
+| `config` | `commands/config.ts` | Show/validate/edit config |
+| `agent` | `commands/agent.ts` | Add/remove/list agents |
+| `model` | `commands/model.ts` | Show/switch models |
+| `build` | `commands/build.ts` | Build container images |
+| `mesh` | `commands/mesh.ts` | Mesh management (list, ping, join, status) |
+| `gateway` | `commands/gateway.ts` | Embedded-den gateway helpers (`gateway token`, `--rotate`) |
+| `memory` | `commands/memory.ts` | Memory subsystem maintenance (backfill jobs, etc.) |
+| `db` | `commands/db.ts` | Schema migration and inspection (`db migrate`, `db status`) |
+| `keys` | `commands/keys.ts` | SSH key management for the mesh (rotate, list, status) |
+| `service` | `commands/service.ts` | Systemd service management |
+| `skills` / `skill` | `commands/skills.ts` | Skill listing; `skill init`, `skill validate` subcommands |
+| `plugins` / `plugin` | `commands/plugins.ts` | Plugin listing and status; `plugins sync`, `plugin init` subcommands |
+| `workflow` | `commands/workflow.ts` | Scaffold workflows (`workflow new <name>`) |
+| `provider` | `commands/provider.ts` | Provider-specific commands (setup, status) |
+| `version` | `commands/version.ts` | Version display |
 
 **Init wizard phases:** `detect` → `deployment` → `agents` → `channels` → `review` → `generate`
 
-### `@rivetos/nx-plugin` (724 lines)
+### `@rivetos/nx` (`packages/nx-plugin/`)
 
 Nx generators for scaffolding new plugins:
 ```bash
-nx generate @rivetos/nx-plugin:plugin --type=provider --name=deepseek
+npx nx g @rivetos/nx:plugin --type=provider --name=deepseek
 ```
 Generates: `plugins/{type}/{name}/` with `package.json`, `tsconfig.json`, `src/index.ts`, `src/index.test.ts`.
 
@@ -356,8 +415,8 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 **Unified `rivetos` image** (`infra/containers/rivetos/Dockerfile`):
 - Single Node 24 Alpine image, non-root user (`rivetos`), tini init
 - Built once with `npm run build` (esbuild bundle in `dist/`)
-- Dispatched at runtime via `--role agent | worker | migrate | monolith` (entrypoint reads the role and starts the right surface)
-- Healthcheck: hits `/health/live` on the agent role; workers/migrate skip the check
+- Dispatched at runtime via `--role agent | migrate` (`packages/cli/src/commands/start.ts`); `agent` is the default and any other value is rejected. `RIVETOS_ROLE` overrides the flag.
+- Healthcheck: hits `/health/live` on the agent role; the migrate role skips the check
 - Workspace and config mounted as volumes
 
 **Datahub** (no custom image):
@@ -549,10 +608,10 @@ Channel receives message
 
 ### Architecture Rules
 
-1. **`types` is the leaf** — everything depends on it, it depends on nothing
+1. **`types` is near the bottom** — everything depends on it; it depends only on `den-protocol`
 2. **Domain layer is pure** — no I/O, no `fs`, no `fetch`. Only interfaces.
 3. **Application layer wires I/O** — runtime/, boot/registrars/
-4. **Plugins use dynamic import** — boot never statically imports a plugin
+4. **Plugins are discovered and dynamically imported** — with four deliberate exceptions that `boot` depends on statically so a default install works out of the box: `provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`
 5. **Late binding for tools** — composite tools get tool executors as closures, not direct refs
 6. **Config is YAML, not code** — all user-facing config in `config.yaml`
 7. **Secrets in `.env`** — never in config YAML, never in container images
@@ -596,11 +655,13 @@ mcp:
   servers:
     memory: { transport: stdio, command: npx, args: [...] }
 
-deployment:             # Optional — drives containerized deployment
-  target: docker
-  datahub: { postgres: true }
-  image: { build_from_source: true }
+deployment:             # Optional — `target` is the only key consumed at runtime
+  target: docker        # docker | proxmox | kubernetes | manual
 ```
+
+Provisioning itself is driven by the Compose files under `infra/docker/` and the scripts
+under `infra/scripts/` — not by nested config keys. Anything other than `target` inside
+`deployment:` is reported as unknown by config validation.
 
 ---
 
@@ -613,25 +674,26 @@ deployment:             # Optional — drives containerized deployment
 - **No external test deps** — uses `node:assert/strict`, no chai/jest matchers
 - **Run:** `nx run-many -t test` or `nx test @rivetos/core`
 
-### Test Coverage by Package
+### Test Coverage
 
-| Package | Test Files | Lines | Coverage Area |
-|---------|-----------|-------|---------------|
-| `types` | 1 | 62 | Export verification |
-| `boot` | 1 | 784 | Config validation (comprehensive) |
-| `core/domain` | 12 | 5,559 | Loop, hooks, delegation, queue, router, skills, safety, etc. |
-| `core/runtime` | 1 | 467 | Full turn lifecycle integration |
-| `nx-plugin` | 1 | 82 | Generator scaffolding |
-| `plugins` | 10 | 1,589 | Channel, tools, MCP, OAuth |
-| **Total** | **28** | **8,543** | |
+Tests are co-located, so the current inventory is always one command away rather than a
+table that rots:
+
+```bash
+find packages plugins services apps -name '*.test.ts' | wc -l   # ~160 files
+npx nx run-many -t test --all                                    # run them
+```
+
+Coverage is broadest in `core/domain` (loop, hooks, delegation, queue, router, skills,
+safety), `boot` (config validation, discovery, registrars), the memory plugin (adapter,
+scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 
 ### Untested Areas
 
-- CLI commands (no unit tests — tested manually)
-- Infra providers (Docker, Proxmox)
+- Infra provisioning scripts (Docker, Proxmox)
 - Container builds
-- Memory plugin (tested via integration, no unit tests)
-- Streaming manager (tested via runtime integration)
+- Streaming manager (tested via runtime integration, no direct unit tests)
+- The compactor/embedder integration tests skip unless `RIVETOS_PG_URL` is set
 
 ---
 
@@ -641,7 +703,7 @@ deployment:             # Optional — drives containerized deployment
 
 1. **Compiled bundle now standard** — `npm run build` produces an esbuild bundle in `dist/`. The unified `rivetos` image runs the bundle, not source via `tsx`. Some legacy paths still allow running from source for dev.
 
-2. **Root `package.json` has runtime deps** — `discord.js`, `grammy`, `pg`, `yaml` are in root deps. Should be plugin-scoped only. Currently works because npm workspaces hoist.
+2. **Root `package.json` still has one runtime dep** — `yaml`. `discord.js`, `grammy`, and `pg` have all moved to the packages that actually use them; `yaml` is the last holdout and should follow.
 
 3. **Voice plugin lifecycle quirk** — `voice-discord` isn't a Channel, it manages its own lifecycle. With the manifest contract this is now a clean `registerShutdown` call, but the plugin still owns its session lifecycle internally rather than going through the runtime's channel registry.
 
@@ -657,7 +719,7 @@ deployment:             # Optional — drives containerized deployment
 
 ### Infrastructure
 
-8. **CI builds packages and containers in one pipeline** — `pipeline.yml` runs lint/build/test, then fans out to `publish-npm` and `containers` (matrix: agent + datahub) in parallel, with `notify-ops` gated on both.
+8. **CI builds packages and containers in one pipeline** — `pipeline.yml` runs `secrets-scan` → `ci` (lint, boundary probes, typecheck, test, build), then fans out to `publish-npm` and `containers` in parallel, with `notify-ops` gated on both. `containers` builds the single unified `infra/containers/rivetos/Dockerfile` — there is no build matrix and no datahub image.
 
 9. **Multi-arch container builds not implemented** — Dockerfiles are amd64 only. Buildx for arm64 is planned but not done.
 

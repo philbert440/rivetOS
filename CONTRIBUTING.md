@@ -6,7 +6,7 @@ Thanks for your interest in contributing! This guide covers development setup, t
 
 ## Prerequisites
 
-- **Node.js ≥ 24** — [download](https://nodejs.org)
+- **Node.js ≥ 22** (24 is used in CI and containers) — [download](https://nodejs.org)
 - **npm** (comes with Node)
 - **Git**
 
@@ -24,7 +24,7 @@ Thanks for your interest in contributing! This guide covers development setup, t
    ```
 4. **Verify everything works:**
    ```bash
-   npm run ci    # runs lint + build + test across all 22 packages
+   npm run ci    # runs lint + build + test across every workspace project
    ```
 5. **Create a branch** from `main`:
    ```bash
@@ -33,13 +33,14 @@ Thanks for your interest in contributing! This guide covers development setup, t
 
 ## Working with Nx
 
-RivetOS uses [Nx](https://nx.dev) to orchestrate the monorepo. Nx understands the dependency graph between the 22 packages and provides caching, parallel execution, and affected-only runs.
+RivetOS uses [Nx](https://nx.dev) to orchestrate the monorepo. Nx understands the dependency graph across the workspace (packages, plugins, services, and apps) and provides caching, parallel execution, and affected-only runs.
 
 ### Everyday commands
 
 ```bash
-# ── Full pipeline (what CI runs) ─────────────────────────
+# ── Full local pipeline ──────────────────────────────────
 npm run ci                              # lint + build + test all packages
+                                        # (CI also runs typecheck + boundary/secret scans)
 
 # ── Individual targets across all packages ───────────────
 npm run lint                            # ESLint all packages
@@ -170,7 +171,7 @@ Types → Domain → Runtime → Boot
 
 **The most important rule:** Plugins depend on `@rivetos/types` only. Never on `@rivetos/core`, never on other plugins, never on boot.
 
-- `packages/types` — Interfaces and contracts. Zero dependencies.
+- `packages/types` — Interfaces and contracts. Its only workspace dependency is `@rivetos/den-protocol`.
 - `packages/core/src/domain` — Pure domain logic. Depends on types only.
 - `packages/core/src/runtime/` — Application layer. Thin compositor with focused modules:
   - `runtime.ts` — registration, routing, lifecycle
@@ -240,7 +241,7 @@ After scaffolding:
        "test": "vitest run"
      },
      "dependencies": {
-       "@rivetos/types": "workspace:*"
+       "@rivetos/types": "0.4.0-beta.6"
      }
    }
    ```
@@ -323,7 +324,7 @@ If you're not using the PR generator, verify before submitting:
 - [ ] Plugin depends on `@rivetos/types` only (if adding/modifying a plugin)
 - [ ] Documentation updated if applicable
 
-**CI runs `nx affected -t lint build test`** on every PR. If your changes break any package's lint, build, or tests, the PR will be blocked.
+**CI runs lint, typecheck, test, and build** (via `nx affected`) on every PR, plus boundary probes and a secrets scan. If your changes break any of them, the PR will be blocked.
 
 ## Plugin Discovery
 
