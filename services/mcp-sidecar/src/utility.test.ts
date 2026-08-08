@@ -17,10 +17,13 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-
-import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '@rivetos/mcp-v1'
+import { defaultEchoTool } from '@rivetos/mcp'
+import {
+  connectV2,
+  createV2McpServer,
+  type V2McpConnection,
+  type V2McpServer,
+} from '@rivetos/mcp-v2'
 import { createShellTool, type ShellToolHandle } from './shell.js'
 import { createFileTools, type FileToolsHandle } from './file.js'
 import { createSearchTools, type SearchToolsHandle } from './search.js'
@@ -32,11 +35,17 @@ function firstText(content: unknown): string {
 
 describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
   let tempDir: string
-  let server: RivetMcpServer
-  let client: Client
+  let server: V2McpServer
+  let client: V2McpConnection
   let shellHandle: ShellToolHandle
   let fileHandle: FileToolsHandle
   let searchHandle: SearchToolsHandle
+
+  // Envelope-preserving shim over connectV2's callToolRaw — these tests
+  // assert on content/isError rather than callTool's unwrapped string.
+  function callTool(params: { name: string; arguments: Record<string, unknown> }) {
+    return client.callToolRaw(params.name, params.arguments)
+  }
 
   beforeAll(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'rivetos-mcp-utility-'))
@@ -54,26 +63,24 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
     fileHandle = createFileTools()
     searchHandle = createSearchTools()
 
-    server = createMcpServer({
+    server = createV2McpServer({
       host: '127.0.0.1',
       port: 0,
       tools: [defaultEchoTool(), ...shellHandle.tools, ...fileHandle.tools, ...searchHandle.tools],
-      log: () => {
-        /* quiet */
-      },
     })
     await server.start()
 
-    const url = new URL(`http://${server.address.host}:${String(server.address.port)}/mcp`)
-    client = new Client({ name: 'utility-tools-test', version: '0.0.0' })
-    await client.connect(new StreamableHTTPClientTransport(url))
+    client = await connectV2({
+      name: 'utility-tools-test',
+      url: `http://127.0.0.1:${String(server.port)}/mcp`,
+    })
   }, 20_000)
 
   afterAll(async () => {
     await client.close().catch(() => {
       /* swallow */
     })
-    await server.stop().catch(() => {
+    await server.close().catch(() => {
       /* swallow */
     })
     await shellHandle.close().catch(() => {
@@ -91,8 +98,7 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
   })
 
   it('lists all six utility tools alongside echo', async () => {
-    const tools = await client.listTools()
-    const names = tools.tools.map((t) => t.name)
+    const names = (await client.listTools()).map((t) => t.name)
     expect(names).toContain('shell')
     expect(names).toContain('file_read')
     expect(names).toContain('file_write')
@@ -104,7 +110,7 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
 
   describe('shell', () => {
     it('runs echo and returns stdout', async () => {
-      const result = await client.callTool({
+      const result = await callTool({
         name: 'shell',
         arguments: { command: 'echo hello-from-mcp' },
       })
@@ -113,13 +119,13 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
     })
 
     it('cd persists across calls (session cwd)', async () => {
-      const cd = await client.callTool({
+      const cd = await callTool({
         name: 'shell',
         arguments: { command: 'cd src' },
       })
       expect(firstText(cd.content)).toContain('Changed directory to')
 
-      const pwd = await client.callTool({
+      const pwd = await callTool({
         name: 'shell',
         arguments: { command: 'pwd' },
       })
@@ -133,13 +139,13 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
   describe('file_*', () => {
     it('write → read round-trip', async () => {
       const target = join(tempDir, 'roundtrip.txt')
-      const written = await client.callTool({
+      const written = await callTool({
         name: 'file_write',
         arguments: { path: target, content: 'line one\nline two\nline three\n' },
       })
       expect(written.isError).not.toBe(true)
 
-      const read = await client.callTool({
+      const read = await callTool({
         name: 'file_read',
         arguments: { path: target, line_numbers: false },
       })
@@ -152,7 +158,7 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
       const target = join(tempDir, 'edit-target.txt')
       await writeFile(target, 'before-marker\npersistent\n', 'utf-8')
 
-      const edited = await client.callTool({
+      const edited = await callTool({
         name: 'file_edit',
         arguments: { path: target, old_string: 'before-marker', new_string: 'after-marker' },
       })
@@ -168,7 +174,7 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
       const target = join(tempDir, 'ambiguous.txt')
       await writeFile(target, 'dup\ndup\n', 'utf-8')
 
-      const result = await client.callTool({
+      const result = await callTool({
         name: 'file_edit',
         arguments: { path: target, old_string: 'dup', new_string: 'unique' },
       })
@@ -180,7 +186,7 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
 
   describe('search_*', () => {
     it('search_glob finds the seeded ts files', async () => {
-      const result = await client.callTool({
+      const result = await callTool({
         name: 'search_glob',
         arguments: { pattern: '**/*.ts', cwd: tempDir },
       })
@@ -191,7 +197,7 @@ describe('utility tools (Phase 1.A slice 1.B-prime.1)', () => {
     })
 
     it('search_grep finds the seeded token', async () => {
-      const result = await client.callTool({
+      const result = await callTool({
         name: 'search_grep',
         arguments: { pattern: 'SEEDED_TOKEN', path: tempDir },
       })

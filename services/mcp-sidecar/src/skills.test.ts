@@ -14,10 +14,13 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-
-import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '@rivetos/mcp-v1'
+import { defaultEchoTool } from '@rivetos/mcp'
+import {
+  connectV2,
+  createV2McpServer,
+  type V2McpConnection,
+  type V2McpServer,
+} from '@rivetos/mcp-v2'
 import { createSkillTools, type SkillToolsHandle } from './skills.js'
 
 const SEED_SKILL_NAME = 'mcp-test-seed'
@@ -34,9 +37,15 @@ This skill exists to verify discovery works.
 
 describe('skill data-plane (Phase 1.A slice 6)', () => {
   let tempDir: string
-  let server: RivetMcpServer
-  let client: Client
+  let server: V2McpServer
+  let client: V2McpConnection
   let skillHandle: SkillToolsHandle
+
+  // Envelope-preserving shim over connectV2's callToolRaw — these tests
+  // assert on content/isError rather than callTool's unwrapped string.
+  function callTool(params: { name: string; arguments: Record<string, unknown> }) {
+    return client.callToolRaw(params.name, params.arguments)
+  }
 
   beforeAll(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'rivetos-mcp-skills-'))
@@ -46,26 +55,24 @@ describe('skill data-plane (Phase 1.A slice 6)', () => {
 
     skillHandle = await createSkillTools({ skillDirs: [tempDir] })
 
-    server = createMcpServer({
+    server = createV2McpServer({
       host: '127.0.0.1',
       port: 0,
       tools: [defaultEchoTool(), ...skillHandle.tools],
-      log: () => {
-        /* quiet */
-      },
     })
     await server.start()
 
-    const url = new URL(`http://${server.address.host}:${String(server.address.port)}/mcp`)
-    client = new Client({ name: 'skill-tools-test', version: '0.0.0' })
-    await client.connect(new StreamableHTTPClientTransport(url))
+    client = await connectV2({
+      name: 'skill-tools-test',
+      url: `http://127.0.0.1:${String(server.port)}/mcp`,
+    })
   }, 20_000)
 
   afterAll(async () => {
     await client.close().catch(() => {
       /* swallow */
     })
-    await server.stop().catch(() => {
+    await server.close().catch(() => {
       /* swallow */
     })
     await skillHandle.close().catch(() => {
@@ -77,15 +84,14 @@ describe('skill data-plane (Phase 1.A slice 6)', () => {
   })
 
   it('lists both skill tools alongside echo', async () => {
-    const tools = await client.listTools()
-    const names = tools.tools.map((t) => t.name)
+    const names = (await client.listTools()).map((t) => t.name)
     expect(names).toContain('skill_list')
     expect(names).toContain('skill_manage')
     expect(names).toContain('echo')
   })
 
   it('skill_list reports the seeded skill', async () => {
-    const result = await client.callTool({ name: 'skill_list', arguments: {} })
+    const result = await callTool({ name: 'skill_list', arguments: {} })
     expect(result.isError).not.toBe(true)
     const content = result.content as Array<{ type: string; text?: string }>
     expect(content[0]?.type).toBe('text')
@@ -94,7 +100,7 @@ describe('skill data-plane (Phase 1.A slice 6)', () => {
 
   it('skill_manage create + list round-trip (rediscovery wired)', async () => {
     const newName = 'mcp-test-created'
-    const created = await client.callTool({
+    const created = await callTool({
       name: 'skill_manage',
       arguments: {
         action: 'create',
@@ -107,14 +113,14 @@ describe('skill data-plane (Phase 1.A slice 6)', () => {
     expect(created.isError).not.toBe(true)
 
     // List should now include both seeded + created without manual rediscovery.
-    const listed = await client.callTool({ name: 'skill_list', arguments: {} })
+    const listed = await callTool({ name: 'skill_list', arguments: {} })
     const text = (listed.content as Array<{ text?: string }>)[0]?.text ?? ''
     expect(text).toContain(SEED_SKILL_NAME)
     expect(text).toContain(newName)
   })
 
   it('skill_manage read returns the SKILL.md content', async () => {
-    const result = await client.callTool({
+    const result = await callTool({
       name: 'skill_manage',
       arguments: { action: 'read', name: SEED_SKILL_NAME, level: 1 },
     })

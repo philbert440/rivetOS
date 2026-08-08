@@ -13,43 +13,50 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-
-import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '@rivetos/mcp-v1'
+import { defaultEchoTool } from '@rivetos/mcp'
+import {
+  connectV2,
+  createV2McpServer,
+  type V2McpConnection,
+  type V2McpServer,
+} from '@rivetos/mcp-v2'
 import { createMemoryTools, type MemoryToolsHandle } from './memory.js'
 
 const PG_URL = process.env.RIVETOS_PG_URL ?? ''
 const describeIfPg = PG_URL ? describe : describe.skip
 
 describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
-  let server: RivetMcpServer
-  let client: Client
+  let server: V2McpServer
+  let client: V2McpConnection
   let memoryHandle: MemoryToolsHandle
+
+  // Envelope-preserving shim over connectV2's callToolRaw — these tests
+  // assert on content/isError rather than callTool's unwrapped string.
+  function callTool(params: { name: string; arguments: Record<string, unknown> }) {
+    return client.callToolRaw(params.name, params.arguments)
+  }
 
   beforeAll(async () => {
     memoryHandle = createMemoryTools({ pgUrl: PG_URL })
 
-    server = createMcpServer({
+    server = createV2McpServer({
       host: '127.0.0.1',
       port: 0,
       tools: [defaultEchoTool(), ...memoryHandle.tools],
-      log: () => {
-        // Quiet during tests.
-      },
     })
     await server.start()
 
-    const url = new URL(`http://${server.address.host}:${String(server.address.port)}/mcp`)
-    client = new Client({ name: 'memory-tools-test', version: '0.0.0' })
-    await client.connect(new StreamableHTTPClientTransport(url))
+    client = await connectV2({
+      name: 'memory-tools-test',
+      url: `http://127.0.0.1:${String(server.port)}/mcp`,
+    })
   })
 
   afterAll(async () => {
     await client.close().catch(() => {
       /* swallow */
     })
-    await server.stop().catch(() => {
+    await server.close().catch(() => {
       /* swallow */
     })
     await memoryHandle.close().catch(() => {
@@ -58,8 +65,7 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
   })
 
   it('lists all four memory tools alongside echo', async () => {
-    const tools = await client.listTools()
-    const names = tools.tools.map((t) => t.name)
+    const names = (await client.listTools()).map((t) => t.name)
     expect(names).toContain('memory_search')
     expect(names).toContain('memory_browse')
     expect(names).toContain('memory_stats')
@@ -68,7 +74,7 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
   })
 
   it('memory_search returns a text response for a real query', async () => {
-    const result = await client.callTool({
+    const result = await callTool({
       name: 'memory_search',
       arguments: { query: 'rivetos', limit: 3 },
     })
@@ -81,7 +87,7 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
   })
 
   it('memory_browse returns a text response with chronological messages', async () => {
-    const result = await client.callTool({
+    const result = await callTool({
       name: 'memory_browse',
       arguments: { limit: 5, order: 'desc' },
     })
@@ -94,7 +100,7 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
   })
 
   it('memory_stats returns a health report', async () => {
-    const result = await client.callTool({
+    const result = await callTool({
       name: 'memory_stats',
       arguments: {},
     })
@@ -109,7 +115,7 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
   it('memory_get_full accepts an id and returns a text response', async () => {
     // Wire-surface only: unknown id is a soft tool text reply (not MCP error).
     // Full JSONL re-read coverage lives in @rivetos/memory-postgres get-full tests.
-    const result = await client.callTool({
+    const result = await callTool({
       name: 'memory_get_full',
       arguments: { id: '00000000-0000-0000-0000-000000000000' },
     })
@@ -119,6 +125,8 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
     expect(content.length).toBeGreaterThan(0)
     expect(content[0]?.type).toBe('text')
     expect(typeof content[0]?.text).toBe('string')
-    expect(content[0]?.text).toMatch(/No message with id|memory_get_full failed|row was not truncated|Full payload/)
+    expect(content[0]?.text).toMatch(
+      /No message with id|memory_get_full failed|row was not truncated|Full payload/,
+    )
   })
 })

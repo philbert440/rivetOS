@@ -26,6 +26,11 @@ import {
   inputRequired,
   type CacheHint,
 } from '@modelcontextprotocol/server'
+import {
+  serveStdio,
+  type ServeStdioOptions,
+  type StdioServerHandle,
+} from '@modelcontextprotocol/server/stdio'
 import { toNodeHandler } from '@modelcontextprotocol/node'
 import * as z from 'zod'
 import {
@@ -210,6 +215,73 @@ function buildServer(
   return server
 }
 
+export interface V2StdioMcpServerOptions {
+  tools?: ToolRegistration[]
+  /** See {@link V2McpServerOptions.toolsListCache}. */
+  toolsListCache?: CacheHint | null
+  serverName?: string
+  serverVersion?: string
+  serverDescription?: string
+  /**
+   * How a 2025-era opening (an `initialize` request) is handled. 'serve'
+   * (default) pins a 2025-era instance from the same factory — Claude Code
+   * and other pre-2026-07-28 clients keep working; 'reject' answers with
+   * the unsupported-protocol-version error.
+   */
+  legacy?: 'serve' | 'reject'
+  /**
+   * Bring your own transport (tests: stream pairs). Defaults to a
+   * StdioServerTransport over the current process's stdio.
+   */
+  transport?: ServeStdioOptions['transport']
+  /** Out-of-band error reporting (never alters what is written to the wire). */
+  onerror?: (error: Error) => void
+}
+
+export interface V2StdioMcpServer {
+  start(): Promise<void>
+  stop(): Promise<void>
+}
+
+/**
+ * MCP over stdio from the same per-connection server factory the HTTP mount
+ * uses. The SDK's serveStdio owns the era decision: a 2026-07-28 opening gets
+ * a v2 instance, a 2025-era `initialize` gets a legacy-era instance from the
+ * SAME factory (same tools) unless `legacy: 'reject'`.
+ */
+export function createV2StdioMcpServer(options: V2StdioMcpServerOptions = {}): V2StdioMcpServer {
+  const tools = options.tools ?? []
+  const serverName = options.serverName ?? RIVETOS_MCP_V2_SERVER_NAME
+  const serverVersion = options.serverVersion ?? RIVETOS_MCP_V2_SERVER_VERSION
+  let handle: StdioServerHandle | undefined
+
+  return {
+    start(): Promise<void> {
+      if (handle) return Promise.resolve()
+      handle = serveStdio(
+        () =>
+          buildServer(tools, {
+            name: serverName,
+            version: serverVersion,
+            description: options.serverDescription,
+            toolsListCache: options.toolsListCache,
+          }),
+        {
+          legacy: options.legacy ?? 'serve',
+          ...(options.transport ? { transport: options.transport } : {}),
+          ...(options.onerror ? { onerror: options.onerror } : {}),
+        },
+      )
+      return Promise.resolve()
+    },
+    async stop(): Promise<void> {
+      const h = handle
+      handle = undefined
+      await h?.close()
+    },
+  }
+}
+
 export function createV2McpServer(options: V2McpServerOptions = {}): V2McpServer {
   const tools = options.tools ?? []
   const serverName = options.serverName ?? RIVETOS_MCP_V2_SERVER_NAME
@@ -238,7 +310,7 @@ export function createV2McpServer(options: V2McpServerOptions = {}): V2McpServer
       return
     }
     if (options.authToken && !tokenMatches(options.authToken, req.headers.authorization)) {
-      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.writeHead(401, { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer' })
       res.end(JSON.stringify({ error: 'unauthorized' }))
       return
     }
@@ -274,6 +346,15 @@ export function createV2McpServer(options: V2McpServerOptions = {}): V2McpServer
     async close(): Promise<void> {
       await handler.close()
       await new Promise<void>((resolve) => server.close(() => resolve()))
+      // v1 parity: leave no stale socket file behind — the next start()'s
+      // stale-unlink covers crashes, this covers clean shutdown.
+      if (options.socketPath && existsSync(options.socketPath)) {
+        try {
+          unlinkSync(options.socketPath)
+        } catch {
+          /* best-effort; next start() unlinks stale sockets anyway */
+        }
+      }
     },
   }
   return handle

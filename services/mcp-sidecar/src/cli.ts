@@ -16,12 +16,11 @@
  *                             set, MCP_HOST/PORT and RIVETOS_MCP_SOCKET are
  *                             ignored, no auth applies (the parent owns the
  *                             pipe), and all diagnostics are routed to stderr
- *                             to keep stdout clean for the protocol.
- *   RIVETOS_MCP_PROTOCOL    — `v1` (sessionful 2025-11-25, default for stdio)
- *                             or `v2` (stateless 2026-07-28 final). HTTP/TCP
- *                             and unix-socket binds default to `v2`; stdio
- *                             defaults to `v1` for Claude Code / Grok plugin
- *                             compatibility until those clients opt into v2.
+ *                             to keep stdout clean for the protocol. The
+ *                             mount is era-negotiating: 2026-07-28 clients
+ *                             get v2, 2025-era clients (Claude Code today)
+ *                             are served by a legacy-era instance over the
+ *                             same tools.
  *   MCP_HOST                — default 127.0.0.1
  *   MCP_PORT                — default 5700
  *   RIVETOS_MCP_SOCKET      — bind to this unix socket path INSTEAD of TCP.
@@ -60,13 +59,8 @@
  * compact_context) and the claude-cli MCP bridge land in later slices.
  */
 
-import {
-  createMcpServer,
-  createStdioMcpServer,
-  defaultEchoTool,
-  type ToolRegistration,
-} from '@rivetos/mcp-v1'
-import { createV2McpServer } from '@rivetos/mcp-v2'
+import { defaultEchoTool, type ToolRegistration } from '@rivetos/mcp'
+import { createV2McpServer, createV2StdioMcpServer } from '@rivetos/mcp-v2'
 import { createFileTools, type FileToolsHandle } from './file.js'
 import { createMemoryTools, type MemoryToolsHandle } from './memory.js'
 import { createWikiTools, type WikiToolsHandle } from './wiki.js'
@@ -75,19 +69,8 @@ import { createShellTool, type ShellToolHandle } from './shell.js'
 import { createSkillTools, type SkillToolsHandle } from './skills.js'
 import { createWebTools, type WebToolsHandle } from './web.js'
 
-type ProtocolGen = 'v1' | 'v2'
-
-function resolveProtocol(stdioMode: boolean): ProtocolGen {
-  const env = process.env.RIVETOS_MCP_PROTOCOL?.trim().toLowerCase()
-  if (env === 'v1' || env === 'v2') return env
-  // Defaults: stdio stays on v1 for Claude Code / Grok plugin compatibility;
-  // HTTP/socket prefers the 2026-07-28 final (stateless, load-balancer friendly).
-  return stdioMode ? 'v1' : 'v2'
-}
-
 async function main(): Promise<void> {
   const stdioMode = process.env.RIVETOS_MCP_STDIO === '1' || process.argv.includes('--stdio')
-  const protocol = resolveProtocol(stdioMode)
 
   // In stdio mode stdout IS the JSON-RPC channel — a single stray line of
   // log output corrupts the protocol. Redirect `console.log` to stderr before
@@ -241,24 +224,20 @@ async function main(): Promise<void> {
   let server: { stop: () => Promise<void> }
 
   if (stdioMode) {
-    if (protocol === 'v2') {
-      // v2 has no dedicated stdio helper in our mount yet — refuse rather
-      // than silently speaking the wrong protocol on a pipe. Callers who
-      // need v2 should use HTTP/socket; stdio consumers stay on v1 until
-      // a stdio v2 transport is wired.
-      console.error(
-        '[rivetos-mcp-server] RIVETOS_MCP_PROTOCOL=v2 is not supported in stdio mode yet; use HTTP/socket or omit the env (stdio defaults to v1)',
-      )
-      process.exit(2)
-    }
-    const stdioServer = createStdioMcpServer({ tools })
+    const stdioServer = createV2StdioMcpServer({
+      tools,
+      serverDescription: 'RivetOS MCP sidecar (2026-07-28 final)',
+      onerror: (err) => {
+        console.error('[rivetos-mcp-server] stdio transport error', err)
+      },
+    })
     await stdioServer.start()
     server = stdioServer
     // Diagnostic only — `console.log` is already redirected to stderr above.
     console.log(
-      `[rivetos-mcp-server] speaking MCP v1 over stdio (session ${stdioServer.sessionId}) — ${String(tools.length)} tool(s)`,
+      `[rivetos-mcp-server] speaking MCP over stdio (era-negotiating: 2026-07-28 final, 2025-era served for legacy clients) — ${String(tools.length)} tool(s)`,
     )
-  } else if (protocol === 'v2') {
+  } else {
     const auth = socketPath && !requireBearerOnSocket ? undefined : authToken
     const httpServer = createV2McpServer({
       host,
@@ -282,33 +261,6 @@ async function main(): Promise<void> {
       console.log(
         `[rivetos-mcp-server] protocol=v2 bound to ${host}:${String(httpServer.port || port)}` +
           (auth
-            ? ' [bearer required]'
-            : ' [WARNING: no RIVETOS_MCP_TOKEN — bind is unauthenticated, localhost-only OK for dev]'),
-      )
-    }
-  } else {
-    const httpServer = createMcpServer({
-      host,
-      port,
-      socketPath,
-      authToken,
-      requireBearerOnSocket,
-      tools,
-    })
-    await httpServer.start()
-    server = httpServer
-
-    if (socketPath) {
-      console.log(
-        `[rivetos-mcp-server] protocol=v1 bound to unix socket ${socketPath} (mode 0600)` +
-          (authToken && requireBearerOnSocket
-            ? ' [bearer required]'
-            : ' [bearer skipped — fs perms are the auth boundary]'),
-      )
-    } else {
-      console.log(
-        `[rivetos-mcp-server] protocol=v1 bound to ${host}:${String(port)}` +
-          (authToken
             ? ' [bearer required]'
             : ' [WARNING: no RIVETOS_MCP_TOKEN — bind is unauthenticated, localhost-only OK for dev]'),
       )
