@@ -1,9 +1,8 @@
 /**
  * Integration tests for the per-spawn embedded MCP bridge.
  *
- * Default path is MCP 2026-07-28 final (v2, stateless). The v1 fallback is
- * still covered so we can roll back via RIVETOS_MCP_BRIDGE_PROTOCOL=v1
- * if a Claude Code build has not yet rolled out 2026-07-28 support.
+ * The bridge speaks MCP 2026-07-28 final (v2, stateless) only — the
+ * sessionful v1 fallback was removed with packages/mcp-v1.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -84,19 +83,6 @@ async function buildV2Client(handle: EmbeddedMcpHandle) {
   })
 }
 
-/** v1 client (sessionful SDK) against an embedded handle. */
-async function buildV1Client(handle: EmbeddedMcpHandle) {
-  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
-  const { StreamableHTTPClientTransport } =
-    await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
-  const transport = new StreamableHTTPClientTransport(new URL(handle.url), {
-    requestInit: { headers: { Authorization: `Bearer ${handle.token}` } },
-  })
-  const client = new Client({ name: 'mcp-bridge.test', version: '0.0.0' })
-  await client.connect(transport)
-  return client
-}
-
 // ---------------------------------------------------------------------------
 // Specs — default v2
 // ---------------------------------------------------------------------------
@@ -113,7 +99,6 @@ describe('embedMcpServerForTurn (v2 / 2026-07-28 default)', () => {
 
   it('stands up a v2 MCP server with synthesized config', async () => {
     handle = await embedMcpServerForTurn({ tools: [makeEchoTool()] })
-    expect(handle.protocol).toBe('v2')
     expect(handle.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
     expect(handle.token).toMatch(/^[0-9a-f]{64}$/)
 
@@ -224,55 +209,6 @@ describe('embedMcpServerForTurn (v2 / 2026-07-28 default)', () => {
     const client = await buildV2Client(handle)
     try {
       expect(await client.listTools()).toEqual([])
-    } finally {
-      await client.close()
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Specs — v1 fallback
-// ---------------------------------------------------------------------------
-
-describe('embedMcpServerForTurn (v1 fallback)', () => {
-  let handle: EmbeddedMcpHandle | undefined
-
-  afterEach(async () => {
-    if (handle) {
-      await handle.close()
-      handle = undefined
-    }
-  })
-
-  it('exposes session_attach on the sessionful path', async () => {
-    handle = await embedMcpServerForTurn({
-      protocol: 'v1',
-      tools: [makeEchoTool()],
-    })
-    expect(handle.protocol).toBe('v1')
-    const client = await buildV1Client(handle)
-    try {
-      const list = await client.listTools()
-      const names = list.tools.map((t) => t.name)
-      expect(names).toContain('echo_test')
-      expect(names).toContain('session_attach')
-    } finally {
-      await client.close()
-    }
-  })
-
-  it('routes tool calls on v1', async () => {
-    handle = await embedMcpServerForTurn({
-      protocol: 'v1',
-      tools: [makeEchoTool()],
-    })
-    const client = await buildV1Client(handle)
-    try {
-      const result = await client.callTool({
-        name: 'echo_test',
-        arguments: { message: 'v1 path' },
-      })
-      expect(JSON.stringify(result.content)).toContain('echo: v1 path')
     } finally {
       await client.close()
     }

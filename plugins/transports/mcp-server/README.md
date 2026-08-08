@@ -9,12 +9,10 @@ over the [Model Context Protocol](https://modelcontextprotocol.io/).
 - **In-process transport** (`transports.mcp`): **MCP 2026-07-28 final**
   (stateless v2) via `@rivetos/mcp-v2` + `@modelcontextprotocol/*@2.0.0`.
 - **Standalone sidecar** (`@rivetos/mcp-sidecar` / `rivetos-mcp-server` bin):
-  dual-protocol. HTTP/unix defaults to **v2**; stdio defaults to **v1**
-  (sessionful 2025-11-25) for Claude Code / Grok plugin compatibility.
-  Override with `RIVETOS_MCP_PROTOCOL=v1|v2`.
-- **claude-cli bridge**: defaults to **v2**; set
-  `RIVETOS_MCP_BRIDGE_PROTOCOL=v1` if a Claude Code build has not rolled
-  out 2026-07-28 support yet.
+  **v2** everywhere. The stdio mount is era-negotiating: 2026-07-28 clients
+  get v2, 2025-era clients (Claude Code / Grok plugin today) are served by
+  a legacy-era instance over the same tools.
+- **claude-cli bridge**: **v2** only.
 
 ## Status
 
@@ -41,23 +39,23 @@ curl http://127.0.0.1:5700/health/live
 
 Environment:
 
-| Var                          | Default       | Notes                                                                   |
-|------------------------------|---------------|-------------------------------------------------------------------------|
-| `MCP_HOST`                   | `127.0.0.1`   | Bind host (ignored when `RIVETOS_MCP_SOCKET` is set)                    |
-| `MCP_PORT`                   | `5700`        | Bind port (ignored when `RIVETOS_MCP_SOCKET` is set)                    |
-| `RIVETOS_MCP_SOCKET`         | _(unset)_     | Bind to a unix socket at this path INSTEAD of TCP. Created mode 0600 — filesystem perms ARE the auth boundary, bearer token is skipped. |
-| `RIVETOS_MCP_TOKEN`          | _(unset)_     | Bearer token. Required for TCP binds in any non-dev setup. Compared in constant time against `Authorization: Bearer <token>`. |
-| `RIVETOS_MCP_REQUIRE_BEARER` | `0`           | Set to `1` to require bearer even on a unix socket (defense-in-depth).  |
-| `RIVETOS_PG_URL`             | _(unset)_     | Postgres connection string. Enables all three `memory_*` tools.         |
-| `RIVETOS_EMBED_URL`          | _(unset)_     | Embedding endpoint for hybrid (FTS + semantic) ranking.                 |
-| `RIVETOS_EMBED_MODEL`        | `nemotron`    | Embedding model name.                                                   |
-| `GOOGLE_CSE_API_KEY`         | _(unset)_     | Optional Google Custom Search key for `internet_search`.                |
-| `GOOGLE_CSE_ID`              | _(unset)_     | Required alongside `GOOGLE_CSE_API_KEY`. DuckDuckGo is used otherwise.  |
-| `RIVETOS_USER_AGENT`         | _(default)_   | Override for `web_fetch`.                                               |
-| `RIVETOS_SKILL_DIRS`         | `~/.rivetos/skills` | Colon-separated dirs to scan for skills. Both workspace + system dirs are writable from MCP. |
-| `RIVETOS_MCP_ENABLE_SHELL`   | `0`           | Set to `1` to enable `shell`. **Write surface** — runs arbitrary shell as the server process. |
-| `RIVETOS_MCP_ENABLE_FILE`    | `0`           | Set to `1` to enable `file_read`, `file_write`, `file_edit`. **Write surface.**       |
-| `RIVETOS_MCP_ENABLE_SEARCH`  | `0`           | Set to `1` to enable `search_glob`, `search_grep` (read-only — gated for symmetry, safe to enable). |
+| Var                          | Default             | Notes                                                                                                                                   |
+| ---------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `MCP_HOST`                   | `127.0.0.1`         | Bind host (ignored when `RIVETOS_MCP_SOCKET` is set)                                                                                    |
+| `MCP_PORT`                   | `5700`              | Bind port (ignored when `RIVETOS_MCP_SOCKET` is set)                                                                                    |
+| `RIVETOS_MCP_SOCKET`         | _(unset)_           | Bind to a unix socket at this path INSTEAD of TCP. Created mode 0600 — filesystem perms ARE the auth boundary, bearer token is skipped. |
+| `RIVETOS_MCP_TOKEN`          | _(unset)_           | Bearer token. Required for TCP binds in any non-dev setup. Compared in constant time against `Authorization: Bearer <token>`.           |
+| `RIVETOS_MCP_REQUIRE_BEARER` | `0`                 | Set to `1` to require bearer even on a unix socket (defense-in-depth).                                                                  |
+| `RIVETOS_PG_URL`             | _(unset)_           | Postgres connection string. Enables all three `memory_*` tools.                                                                         |
+| `RIVETOS_EMBED_URL`          | _(unset)_           | Embedding endpoint for hybrid (FTS + semantic) ranking.                                                                                 |
+| `RIVETOS_EMBED_MODEL`        | `nemotron`          | Embedding model name.                                                                                                                   |
+| `GOOGLE_CSE_API_KEY`         | _(unset)_           | Optional Google Custom Search key for `internet_search`.                                                                                |
+| `GOOGLE_CSE_ID`              | _(unset)_           | Required alongside `GOOGLE_CSE_API_KEY`. DuckDuckGo is used otherwise.                                                                  |
+| `RIVETOS_USER_AGENT`         | _(default)_         | Override for `web_fetch`.                                                                                                               |
+| `RIVETOS_SKILL_DIRS`         | `~/.rivetos/skills` | Colon-separated dirs to scan for skills. Both workspace + system dirs are writable from MCP.                                            |
+| `RIVETOS_MCP_ENABLE_SHELL`   | `0`                 | Set to `1` to enable `shell`. **Write surface** — runs arbitrary shell as the server process.                                           |
+| `RIVETOS_MCP_ENABLE_FILE`    | `0`                 | Set to `1` to enable `file_read`, `file_write`, `file_edit`. **Write surface.**                                                         |
+| `RIVETOS_MCP_ENABLE_SEARCH`  | `0`                 | Set to `1` to enable `search_glob`, `search_grep` (read-only — gated for symmetry, safe to enable).                                     |
 
 When `RIVETOS_PG_URL` is unset, the memory tools are disabled but the server
 still serves `echo` and the web tools — useful for smoke-testing the
@@ -65,23 +63,22 @@ wire without a database.
 
 ## Tool catalog
 
-| Tool                       | When                  | What it does |
-|----------------------------|-----------------------|--------------|
-| `echo`             | Always                | Echoes input back, prefixed with `echo:`. Smoke test for the wire. |
-| `session_attach`   | Always (per-session)  | Handshake — records `{agent, runtimePid, clientName}` and returns canonical `{sessionId, serverVersion, capabilities}`. Optional but recommended as the first call. |
-| `memory_search`    | `RIVETOS_PG_URL` set  | Search RivetOS persistent memory (conversations + summaries). Hybrid FTS + semantic + temporal scoring with auto-expansion. |
-| `memory_browse`    | `RIVETOS_PG_URL` set  | Browse messages chronologically by conversation, agent, or time window. |
-| `memory_stats`     | `RIVETOS_PG_URL` set  | Memory system health: counts, embedding queue, unsummarized backlog, freshness. |
-| `internet_search`  | Always                | Web search — Google CSE when configured, DuckDuckGo fallback otherwise. |
-| `web_fetch`        | Always                | Fetch and extract readable content from a URL (HTML → markdown). |
-| `skill_list`       | Always                | List discovered skills with names, descriptions, version, file count. |
-| `skill_manage`     | Always                | Create / edit / patch / delete / retire / read / write_file skills. Workspace and system dirs both writable. |
-| `shell`            | `RIVETOS_MCP_ENABLE_SHELL=1` | Execute a shell command. Maintains a session cwd across calls (`cd` persists). |
-| `file_read`        | `RIVETOS_MCP_ENABLE_FILE=1`  | Read file contents with optional line range and line numbers. Binary files refused. |
-| `file_write`       | `RIVETOS_MCP_ENABLE_FILE=1`  | Write content to a file. Creates parent dirs. Optional `.bak` backup. |
-| `file_edit`        | `RIVETOS_MCP_ENABLE_FILE=1`  | Replace an exact string in a file. Fails if not unique. |
-| `search_glob`      | `RIVETOS_MCP_ENABLE_SEARCH=1` | Find files matching a glob (excludes `node_modules`, `.git`, build dirs). |
-| `search_grep`      | `RIVETOS_MCP_ENABLE_SEARCH=1` | Search file contents by regex/literal. Returns `file:line:match`. |
+| Tool              | When                          | What it does                                                                                                                |
+| ----------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `echo`            | Always                        | Echoes input back, prefixed with `echo:`. Smoke test for the wire.                                                          |
+| `memory_search`   | `RIVETOS_PG_URL` set          | Search RivetOS persistent memory (conversations + summaries). Hybrid FTS + semantic + temporal scoring with auto-expansion. |
+| `memory_browse`   | `RIVETOS_PG_URL` set          | Browse messages chronologically by conversation, agent, or time window.                                                     |
+| `memory_stats`    | `RIVETOS_PG_URL` set          | Memory system health: counts, embedding queue, unsummarized backlog, freshness.                                             |
+| `internet_search` | Always                        | Web search — Google CSE when configured, DuckDuckGo fallback otherwise.                                                     |
+| `web_fetch`       | Always                        | Fetch and extract readable content from a URL (HTML → markdown).                                                            |
+| `skill_list`      | Always                        | List discovered skills with names, descriptions, version, file count.                                                       |
+| `skill_manage`    | Always                        | Create / edit / patch / delete / retire / read / write_file skills. Workspace and system dirs both writable.                |
+| `shell`           | `RIVETOS_MCP_ENABLE_SHELL=1`  | Execute a shell command. Maintains a session cwd across calls (`cd` persists).                                              |
+| `file_read`       | `RIVETOS_MCP_ENABLE_FILE=1`   | Read file contents with optional line range and line numbers. Binary files refused.                                         |
+| `file_write`      | `RIVETOS_MCP_ENABLE_FILE=1`   | Write content to a file. Creates parent dirs. Optional `.bak` backup.                                                       |
+| `file_edit`       | `RIVETOS_MCP_ENABLE_FILE=1`   | Replace an exact string in a file. Fails if not unique.                                                                     |
+| `search_glob`     | `RIVETOS_MCP_ENABLE_SEARCH=1` | Find files matching a glob (excludes `node_modules`, `.git`, build dirs).                                                   |
+| `search_grep`     | `RIVETOS_MCP_ENABLE_SEARCH=1` | Search file contents by regex/literal. Returns `file:line:match`.                                                           |
 
 ## Auth model
 
@@ -113,7 +110,7 @@ await server.start()
 // …
 await server.stop()
 await memory.close() // drain pg pool
-await web.close()    // no-op, included for symmetry
+await web.close() // no-op, included for symmetry
 ```
 
 ## Adapting your own RivetOS tools
@@ -122,12 +119,16 @@ await web.close()    // no-op, included for symmetry
 import { adaptRivetTool } from '@rivetos/mcp-server'
 import { z } from 'zod'
 
-const adapted = adaptRivetTool(myRivetTool, {
-  query: z.string(),
-  limit: z.number().optional(),
-}, {
-  name: 'my_tool',
-})
+const adapted = adaptRivetTool(
+  myRivetTool,
+  {
+    query: z.string(),
+    limit: z.number().optional(),
+  },
+  {
+    name: 'my_tool',
+  },
+)
 ```
 
 `adaptRivetTool` flattens `string | ContentPart[]` results to a single

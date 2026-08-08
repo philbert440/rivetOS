@@ -12,41 +12,48 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-
-import { createMcpServer, defaultEchoTool, type RivetMcpServer } from '@rivetos/mcp-v1'
+import { defaultEchoTool } from '@rivetos/mcp'
+import {
+  connectV2,
+  createV2McpServer,
+  type V2McpConnection,
+  type V2McpServer,
+} from '@rivetos/mcp-v2'
 import { createWebTools, type WebToolsHandle } from './web.js'
 
 const skipNetwork = process.env.RIVETOS_TEST_SKIP_NETWORK === '1'
 
 describe('web data-plane (Phase 1.A slice 3)', () => {
-  let server: RivetMcpServer
-  let client: Client
+  let server: V2McpServer
+  let client: V2McpConnection
   let webHandle: WebToolsHandle
+
+  // Envelope-preserving shim over connectV2's callToolRaw — these tests
+  // assert on content/isError rather than callTool's unwrapped string.
+  function callTool(params: { name: string; arguments: Record<string, unknown> }) {
+    return client.callToolRaw(params.name, params.arguments)
+  }
 
   beforeAll(async () => {
     webHandle = createWebTools()
-    server = createMcpServer({
+    server = createV2McpServer({
       host: '127.0.0.1',
       port: 0,
       tools: [defaultEchoTool(), ...webHandle.tools],
-      log: () => {
-        // Quiet during tests.
-      },
     })
     await server.start()
 
-    const url = new URL(`http://${server.address.host}:${String(server.address.port)}/mcp`)
-    client = new Client({ name: 'web-tools-test', version: '0.0.0' })
-    await client.connect(new StreamableHTTPClientTransport(url))
+    client = await connectV2({
+      name: 'web-tools-test',
+      url: `http://127.0.0.1:${String(server.port)}/mcp`,
+    })
   })
 
   afterAll(async () => {
     await client.close().catch(() => {
       /* swallow */
     })
-    await server.stop().catch(() => {
+    await server.close().catch(() => {
       /* swallow */
     })
     await webHandle.close().catch(() => {
@@ -55,15 +62,14 @@ describe('web data-plane (Phase 1.A slice 3)', () => {
   })
 
   it('lists both web tools alongside echo', async () => {
-    const tools = await client.listTools()
-    const names = tools.tools.map((t) => t.name)
+    const names = (await client.listTools()).map((t) => t.name)
     expect(names).toContain('internet_search')
     expect(names).toContain('web_fetch')
     expect(names).toContain('echo')
   })
 
   it('web_fetch returns a text envelope for an invalid URL', async () => {
-    const result = await client.callTool({
+    const result = await callTool({
       name: 'web_fetch',
       arguments: { url: 'http://127.0.0.1:1/nope', max_chars: 1000 },
     })
@@ -79,7 +85,7 @@ describe('web data-plane (Phase 1.A slice 3)', () => {
   ;(skipNetwork ? it.skip : it)(
     'internet_search returns a text envelope for a real query',
     async () => {
-      const result = await client.callTool({
+      const result = await callTool({
         name: 'internet_search',
         arguments: { query: 'rivetos github', count: 3 },
       })

@@ -2,16 +2,18 @@
  * @rivetos/mcp-v2 — server + client mounts on the MCP 2026-07-28 final
  * SDKs (exact-pinned @modelcontextprotocol/{server,client,node}@2.0.0).
  * Stateless: no sessions, no initialize, no session_attach.
- * Never shares a package.json with @rivetos/mcp-v1.
  */
 
 export {
   createV2McpServer,
+  createV2StdioMcpServer,
   RIVETOS_MCP_V2_SERVER_NAME,
   RIVETOS_MCP_V2_SERVER_VERSION,
   DEFAULT_TOOLS_LIST_CACHE,
   type V2McpServer,
   type V2McpServerOptions,
+  type V2StdioMcpServer,
+  type V2StdioMcpServerOptions,
 } from './server.js'
 export {
   connectV2,

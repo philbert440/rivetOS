@@ -50,9 +50,9 @@ Two surfaces, two lanes:
 
 Mechanics for each `chatStream()` turn:
 
-1. `embedMcpServerForTurn({ tools, agentId })` brings up a fresh
-   `RivetMcpServer` on `127.0.0.1:0` (ephemeral OS-picked port) protected by
-   a 32-byte hex bearer.
+1. `embedMcpServerForTurn({ tools, agentId })` brings up a fresh v2 MCP
+   server (2026-07-28 stateless) on `127.0.0.1:0` (ephemeral OS-picked
+   port) protected by a 32-byte hex bearer.
 2. Each executable tool is wrapped via `adaptRivetToolDynamic` — its zod
    schema is derived from the `Tool.parameters` JSON-Schema-ish object. Live
    `execute` closures retain the host runtime context (DelegationEngine,
@@ -75,14 +75,14 @@ smoke testing the bare shellout).
 ```yaml
 providers:
   claude-cli:
-    binary: claude                 # default
-    model: opus                    # or 'sonnet' — default: CLI default
-    effort: medium                 # low|medium|high|xhigh|max — default: medium
-    tools: default                 # or comma-separated list, or "" to disable
+    binary: claude # default
+    model: opus # or 'sonnet' — default: CLI default
+    effort: medium # low|medium|high|xhigh|max — default: medium
+    tools: default # or comma-separated list, or "" to disable
     permission_mode: bypassPermissions
     exclude_dynamic_sections: true
-    append_system_prompt: true     # fold system messages into --append-system-prompt
-    cwd: ~/.rivetos/workspace      # cwd for the spawned process
+    append_system_prompt: true # fold system messages into --append-system-prompt
+    cwd: ~/.rivetos/workspace # cwd for the spawned process
     context_window: 200000
     max_output_tokens: 32000
 ```
