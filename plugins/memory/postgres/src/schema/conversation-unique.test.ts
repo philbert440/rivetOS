@@ -1,17 +1,22 @@
 /**
- * 0009_conversation_session_key_unique — dedup + UNIQUE(session_key, agent) +
- * the adapter's race-safe conversation upsert.
+ * Conversation dedup + UNIQUE(session_key, agent) + the adapter's race-safe
+ * conversation upsert. Covers 0009 (the original) and 0010 (the same dedup re-run
+ * under ACCESS EXCLUSIVE, because 0009 took no lock and could cascade-delete a
+ * capture write that raced its DELETE).
  *
- * Unit half (always runs): shape assertions on the migration file itself.
+ * Unit half (always runs): shape assertions on the migration files themselves.
  *
- * Integration half (needs RIVETOS_PG_URL, same gate as adapter.test.ts): builds a
- * throwaway schema inside the target database, creates the subset of the 0001/0002/
- * 0005 tables that 0009 touches, applies the real migration text from disk, and
- * checks the merge. Everything lives in `rivetos_conv_unique_test_<ts>` and is
- * dropped in afterAll — no row in `public` is read or written. The scratch tables
- * deliberately omit vector/tsvector columns and the graphile embedding triggers:
- * 0009 does not touch them, and firing the triggers would enqueue real embed jobs
- * for rows that only exist inside the test schema.
+ * Integration half (needs RIVETOS_PG_URL, same gate as adapter.test.ts): builds
+ * throwaway schemas inside the target database, creates the subset of the 0001/
+ * 0002/0005 tables the migrations touch, applies the real migration text from
+ * disk, and checks the merge. Everything lives under `rivetos_conv_unique_test_
+ * <ts>*` and is dropped in afterAll — no row in `public` is read or written. The
+ * scratch tables deliberately omit vector/tsvector columns and the graphile
+ * embedding triggers: the migrations do not touch them, and firing the triggers
+ * would enqueue real embed jobs for rows that only exist inside the test schema.
+ *
+ * Both race tests are written to be discriminating — the 0009 one asserts the
+ * message really is lost, and the 0010 one fails if pointed at 0009's SQL.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
@@ -22,44 +27,64 @@ import { listMigrations } from './migrate.js'
 import { PostgresMemory } from '../adapter.ts'
 
 const MIGRATION = '0009_conversation_session_key_unique.sql'
+const LOCKED = '0010_conversation_dedup_locked.sql'
 const MIGRATIONS_DIR = resolve(__dirname, 'migrations')
 const MIGRATION_SQL = readFileSync(resolve(MIGRATIONS_DIR, MIGRATION), 'utf8')
+const LOCKED_SQL = readFileSync(resolve(MIGRATIONS_DIR, LOCKED), 'utf8')
 
 // ---------------------------------------------------------------------------
 // Unit — migration shape (no database required)
 // ---------------------------------------------------------------------------
 
-describe('0009 migration file', () => {
-  it('is discovered by the runner and sorts last', () => {
+describe('conversation dedup migration files', () => {
+  it('are discovered by the runner, with the locked re-run applying last', () => {
     const names = listMigrations(MIGRATIONS_DIR).map((m) => m.name)
     expect(names).toContain(MIGRATION)
-    expect(names[names.length - 1]).toBe(MIGRATION)
+    expect(names[names.length - 1]).toBe(LOCKED)
+    expect(names.indexOf(LOCKED)).toBeGreaterThan(names.indexOf(MIGRATION))
   })
 
-  it('creates the unique index the adapter probes for, unpartitioned', () => {
-    expect(MIGRATION_SQL).toMatch(
-      /CREATE UNIQUE INDEX IF NOT EXISTS ux_ros_conversations_session_agent\s+ON ros_conversations \(session_key, agent\);/,
-    )
-    // NULL semantics: deliberately NOT a partial index — see the file header.
-    expect(MIGRATION_SQL).not.toMatch(/CREATE UNIQUE INDEX[\s\S]*?WHERE session_key IS NOT NULL/)
+  for (const [name, sql] of [
+    [MIGRATION, MIGRATION_SQL],
+    [LOCKED, LOCKED_SQL],
+  ] as const) {
+    it(`${name} creates the unique index the adapter probes for, unpartitioned`, () => {
+      expect(sql).toMatch(
+        /CREATE UNIQUE INDEX IF NOT EXISTS ux_ros_conversations_session_agent\s+ON ros_conversations \(session_key, agent\);/,
+      )
+      // NULL semantics: deliberately NOT a partial index — see the file headers.
+      expect(sql).not.toMatch(/CREATE UNIQUE INDEX[\s\S]*?WHERE session_key IS NOT NULL/)
+    })
+
+    it(`${name} repoints every table referencing a conversation id before deleting`, () => {
+      const deleteAt = sql.indexOf('DELETE FROM ros_conversations c')
+      expect(deleteAt).toBeGreaterThan(0)
+      const beforeDelete = sql.slice(0, deleteAt)
+      for (const table of ['ros_messages', 'ros_summaries', 'ros_tasks', 'ros_wiki_provenance']) {
+        expect(beforeDelete).toContain(`UPDATE ${table}`)
+      }
+    })
+
+    it(`${name} aborts rather than cascading on an unknown FK to ros_conversations`, () => {
+      expect(sql).toContain('unhandled foreign key reference(s)')
+    })
+  }
+
+  it('0010 takes ACCESS EXCLUSIVE at the top level, before it reads anything', () => {
+    // Top-level (not wrapped in a DO block) so running the file outside a
+    // transaction errors loudly instead of releasing the lock immediately.
+    const lockAt = LOCKED_SQL.indexOf('LOCK TABLE ros_conversations IN ACCESS EXCLUSIVE MODE;')
+    expect(lockAt).toBeGreaterThan(0)
+    expect(LOCKED_SQL.indexOf('CREATE TEMP TABLE')).toBeGreaterThan(lockAt)
+
+    // The soft-reference tables have no FK to block writers, so they are locked too.
+    expect(LOCKED_SQL).toContain("LOCK TABLE ros_tasks IN ACCESS EXCLUSIVE MODE")
+    expect(LOCKED_SQL).toContain("LOCK TABLE ros_wiki_provenance IN ACCESS EXCLUSIVE MODE")
   })
 
-  it('repoints every table that references a conversation id before deleting', () => {
-    const deleteAt = MIGRATION_SQL.indexOf('DELETE FROM ros_conversations c')
-    expect(deleteAt).toBeGreaterThan(0)
-    const beforeDelete = MIGRATION_SQL.slice(0, deleteAt)
-    for (const table of [
-      'ros_messages',
-      'ros_summaries',
-      'ros_tasks',
-      'ros_wiki_provenance',
-    ]) {
-      expect(beforeDelete).toContain(`UPDATE ${table}`)
-    }
-  })
-
-  it('aborts rather than cascading when an unknown FK references ros_conversations', () => {
-    expect(MIGRATION_SQL).toContain('unhandled foreign key reference(s)')
+  it('0010 uses its own temp-table name so it can share a transaction with 0009', () => {
+    expect(LOCKED_SQL).toContain('_ros_conv_dedup_map_0010')
+    expect(LOCKED_SQL).not.toContain('_ros_conv_dedup_map ')
   })
 })
 
@@ -287,6 +312,184 @@ describeIf('0009 dedup against a real Postgres', () => {
   })
 })
 
+describeIf('0010 locked dedup', () => {
+  let pool: pg.Pool
+  const schemas: string[] = []
+
+  /** Fresh scratch schema; `sql` is applied after DDL + fixtures. */
+  const build = async (suffix: string, sql: string[]): Promise<string> => {
+    const name = `${SCHEMA}_${suffix}`
+    schemas.push(name)
+    const client = await pool.connect()
+    try {
+      await client.query(`CREATE SCHEMA ${name}`)
+      await client.query(`SET search_path = ${name}`)
+      await client.query(SCRATCH_DDL)
+      await client.query(FIXTURES)
+      for (const stmt of sql) {
+        await client.query('BEGIN')
+        await client.query(stmt)
+        await client.query('COMMIT')
+      }
+    } finally {
+      client.release()
+    }
+    return name
+  }
+
+  const count = async (schema: string, table: string): Promise<number> => {
+    const res = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ${schema}.${table}`,
+    )
+    return Number(res.rows[0].n)
+  }
+
+  beforeAll(() => {
+    pool = new pg.Pool({ connectionString: PG_URL, max: 4 })
+  })
+
+  afterAll(async () => {
+    for (const s of schemas) {
+      await pool.query(`DROP SCHEMA IF EXISTS ${s} CASCADE`)
+    }
+    await pool.end()
+  }, 60_000)
+
+  it('dedups on its own, for a database whose 0009 index build rolled back', async () => {
+    const schema = await build('l1', [LOCKED_SQL])
+
+    const rows = await pool.query<{ id: string }>(
+      `SELECT id FROM ${schema}.ros_conversations ORDER BY session_key, agent`,
+    )
+    expect(rows.rows.map((r) => r.id)).toEqual([A_OLD, B_OLD, SOLO, SOLO_OTHER_AGENT])
+    expect(await count(schema, 'ros_messages')).toBe(6)
+
+    const dangling = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ${schema}.ros_messages m
+        WHERE NOT EXISTS (SELECT 1 FROM ${schema}.ros_conversations c WHERE c.id = m.conversation_id)`,
+    )
+    expect(Number(dangling.rows[0].n)).toBe(0)
+
+    const idx = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM pg_indexes
+        WHERE schemaname = $1 AND indexname = 'ux_ros_conversations_session_agent'`,
+      [schema],
+    )
+    expect(Number(idx.rows[0].n)).toBe(1)
+  }, 60_000)
+
+  it('is a no-op on a database 0009 already deduped, however often it runs', async () => {
+    const schema = await build('l2', [MIGRATION_SQL, LOCKED_SQL])
+    const snapshot = {
+      conversations: await count(schema, 'ros_conversations'),
+      messages: await count(schema, 'ros_messages'),
+      summaries: await count(schema, 'ros_summaries'),
+      provenance: await count(schema, 'ros_wiki_provenance'),
+    }
+    expect(snapshot.conversations).toBe(4)
+
+    const client = await pool.connect()
+    try {
+      await client.query(`SET search_path = ${schema}`)
+      for (let i = 0; i < 2; i++) {
+        await client.query('BEGIN')
+        await client.query(LOCKED_SQL)
+        await client.query('COMMIT')
+      }
+    } finally {
+      client.release()
+    }
+
+    expect({
+      conversations: await count(schema, 'ros_conversations'),
+      messages: await count(schema, 'ros_messages'),
+      summaries: await count(schema, 'ros_summaries'),
+      provenance: await count(schema, 'ros_wiki_provenance'),
+    }).toEqual(snapshot)
+  }, 60_000)
+
+  /**
+   * The race window is between the repoint and the DELETE. Split the file there
+   * so a capture write can be interleaved exactly where it hurts — a whole-file
+   * run is not discriminating, because the DELETE's own row locks block a late
+   * writer whether or not the migration took a table lock.
+   */
+  const splitAtDelete = (sql: string): [string, string] => {
+    const cut = sql.indexOf('DELETE FROM ros_conversations c')
+    expect(cut).toBeGreaterThan(0)
+    return [sql.slice(0, cut), sql.slice(cut)]
+  }
+
+  /** A second connection pinned to `schema`, with a short statement timeout. */
+  const racingWriter = async (schema: string): Promise<pg.PoolClient> => {
+    const writer = await pool.connect()
+    await writer.query(`SET search_path = ${schema}`)
+    await writer.query(`SET statement_timeout = '1500ms'`)
+    return writer
+  }
+
+  const RACE_INSERT = `INSERT INTO ros_messages (conversation_id, agent, channel, role, content)
+                       VALUES ($1, 'opus', 'c', 'user', 'racing capture write')`
+
+  it('0009 silently cascade-deletes a capture write that races the delete', async () => {
+    // Documents the defect, so the fix below is measured against something real.
+    const schema = await build('l3', [])
+    const [head, tail] = splitAtDelete(MIGRATION_SQL)
+
+    const migrator = await pool.connect()
+    const writer = await racingWriter(schema)
+    try {
+      await migrator.query(`SET search_path = ${schema}`)
+      await migrator.query('BEGIN')
+      await migrator.query(head) // repoint done, no lock taken
+
+      // Capture write lands on a row that is about to be deleted. Nothing stops it.
+      await writer.query(RACE_INSERT, [A_NEW])
+
+      await migrator.query(tail) // DELETE + index
+      await migrator.query('COMMIT')
+    } finally {
+      await migrator.query('ROLLBACK').catch(() => undefined)
+      migrator.release()
+      await writer.query(`RESET statement_timeout`).catch(() => undefined)
+      writer.release()
+    }
+
+    const survived = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ${schema}.ros_messages WHERE content = 'racing capture write'`,
+    )
+    // Committed, then destroyed by ON DELETE CASCADE.
+    expect(Number(survived.rows[0].n)).toBe(0)
+  }, 60_000)
+
+  it('0010 blocks that write instead of losing it', async () => {
+    const schema = await build('l4', [])
+    const [head] = splitAtDelete(LOCKED_SQL)
+
+    const migrator = await pool.connect()
+    const writer = await racingWriter(schema)
+    try {
+      await migrator.query(`SET search_path = ${schema}`)
+      await migrator.query('BEGIN')
+      await migrator.query(head) // first statement is the ACCESS EXCLUSIVE lock
+
+      await expect(writer.query(RACE_INSERT, [A_NEW])).rejects.toMatchObject({ code: '57014' })
+
+      // ros_messages itself is deliberately NOT locked — search and embedding
+      // reads keep working for the duration of the dedup.
+      const read = await writer.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM ros_messages`,
+      )
+      expect(Number(read.rows[0].n)).toBeGreaterThan(0)
+    } finally {
+      await migrator.query('ROLLBACK').catch(() => undefined)
+      migrator.release()
+      await writer.query(`RESET statement_timeout`).catch(() => undefined)
+      writer.release()
+    }
+  }, 60_000)
+})
+
 describeIf('adapter conversation upsert', () => {
   const SCHEMA2 = `${SCHEMA}_adapter`
   let memory: PostgresMemory
@@ -370,7 +573,73 @@ describeIf('adapter conversation upsert', () => {
     expect(a).not.toBe(b)
   })
 
-  it('falls back to select-then-insert when 0009 has not been applied', async () => {
+  it('switches to the upsert when the migration lands mid-process, without a restart', async () => {
+    // The deploy order is: new code to every node, then `rivetos db migrate`. A
+    // process that probed before the migration must not stay on the legacy path —
+    // that path INSERTs a fresh row whenever the conversation is finalized, which
+    // is a 23505 once the unique index exists.
+    const SCHEMA4 = `${SCHEMA}_midflight`
+    const mem = new PostgresMemory({ connectionString: PG_URL })
+    const memPool = mem.getPool()
+
+    const call = async (): Promise<string> => {
+      const client = await memPool.connect()
+      try {
+        await client.query(`SET search_path = ${SCHEMA4}`)
+        return await (
+          mem as unknown as {
+            ensureConversation: (c: pg.PoolClient, s: string, a: string) => Promise<string>
+          }
+        ).ensureConversation(client, 'sess-midflight', 'agent-midflight')
+      } finally {
+        client.release()
+      }
+    }
+
+    try {
+      const setup = await memPool.connect()
+      try {
+        await setup.query(`CREATE SCHEMA ${SCHEMA4}`)
+        await setup.query(`SET search_path = ${SCHEMA4}`)
+        await setup.query(SCRATCH_DDL) // pre-migration: no unique index
+      } finally {
+        setup.release()
+      }
+
+      // Probes false and caches nothing.
+      const first = await call()
+
+      // Migration lands under the live pool.
+      const migrate = await memPool.connect()
+      try {
+        await migrate.query(`SET search_path = ${SCHEMA4}`)
+        await migrate.query('BEGIN')
+        await migrate.query(LOCKED_SQL)
+        await migrate.query('COMMIT')
+      } finally {
+        migrate.release()
+      }
+
+      // Finalize, then resume: the legacy path would INSERT a second row and hit
+      // 23505. The upsert reuses and reactivates.
+      await memPool.query(
+        `UPDATE ${SCHEMA4}.ros_conversations SET active = false WHERE id = $1`,
+        [first],
+      )
+      expect(await call()).toBe(first)
+
+      const row = await memPool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM ${SCHEMA4}.ros_conversations`,
+      )
+      expect(row.rows[0].n).toBe('1')
+
+    } finally {
+      await memPool.query(`DROP SCHEMA IF EXISTS ${SCHEMA4} CASCADE`).catch(() => undefined)
+      await mem.close()
+    }
+  }, 60_000)
+
+  it('falls back to select-then-insert when the index has not been created', async () => {
     const SCHEMA3 = `${SCHEMA}_legacy`
     const legacy = new PostgresMemory({ connectionString: PG_URL })
     const legacyPool = legacy.getPool()
@@ -410,8 +679,8 @@ describeIf('adapter conversation upsert', () => {
       )
       expect(await call()).not.toBe(first)
 
-      await legacyPool.query(`DROP SCHEMA IF EXISTS ${SCHEMA3} CASCADE`)
     } finally {
+      await legacyPool.query(`DROP SCHEMA IF EXISTS ${SCHEMA3} CASCADE`).catch(() => undefined)
       await legacy.close()
     }
   }, 60_000)
