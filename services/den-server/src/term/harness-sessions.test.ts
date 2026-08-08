@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  describeClaudeSession,
   listHarnessSessions,
   harnessSessionExists,
   readHarnessTranscript,
@@ -61,6 +62,27 @@ describe('listHarnessSessions', () => {
     expect(sessions[0]).toMatchObject({ command: 'claude', title: 'deploy the thing' })
     expect(sessions[1].title).toBe('fix the flaky test') // array + string content both parse
     expect(sessions[0].updatedAt).toBeGreaterThan(sessions[1].updatedAt)
+  })
+
+  it('agrees with describeClaudeSession on createdAt/updatedAt for the same session', async () => {
+    // The harness control plane reads sessions through both paths; a session
+    // whose createdAt differed between the list and the single lookup would
+    // show two different creation times in the same UI.
+    fakeClaudeStore()
+    const id = '22222222-2222-2222-2222-222222222222'
+    const listed = (await listHarnessSessions(['claude'])).find((x) => x.id === id)
+    const described = await describeClaudeSession(id)
+    expect(listed?.createdAt).toBeTypeOf('number')
+    expect(described?.createdAt).toBe(listed?.createdAt)
+    expect(described?.updatedAt).toBe(listed?.updatedAt)
+    expect(described?.title).toBe(listed?.title)
+  })
+
+  it('describeClaudeSession returns undefined for an unknown or unsafe id', async () => {
+    fakeClaudeStore()
+    expect(await describeClaudeSession('33333333-3333-3333-3333-333333333333')).toBeUndefined()
+    expect(await describeClaudeSession('../escape')).toBeUndefined()
+    expect(await describeClaudeSession('')).toBeUndefined()
   })
 
   it('lists grok sessions from summary.json, merged + sorted with claude', async () => {

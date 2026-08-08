@@ -25,6 +25,10 @@ export interface HarnessSession {
   title: string
   /** epoch ms of last activity (file mtime) */
   updatedAt: number
+  /** epoch ms the store file was created (birthtime, falling back to ctime
+   *  then mtime). Populated by the Claude readers; other harness stores do not
+   *  expose it, hence optional. */
+  createdAt?: number
 }
 
 /** ~/.claude/projects (respects CLAUDE_CONFIG_DIR like the CLI does). */
@@ -83,7 +87,7 @@ async function listClaudeSessions(limit: number): Promise<HarnessSession[]> {
   } catch {
     return [] // no Claude store on this node
   }
-  const files: { id: string; path: string; mtime: number }[] = []
+  const files: { id: string; path: string; mtime: number; birth: number }[] = []
   for (const slug of slugs) {
     let entries: string[]
     try {
@@ -96,7 +100,15 @@ async function listClaudeSessions(limit: number): Promise<HarnessSession[]> {
       const path = join(dir, slug, f)
       try {
         const s = await stat(path)
-        if (s.isFile()) files.push({ id: f.slice(0, -6), path, mtime: s.mtimeMs })
+        // birth: same fallback chain as describeClaudeSession, so a session's
+        // createdAt cannot disagree between the list and the single lookup.
+        if (s.isFile())
+          files.push({
+            id: f.slice(0, -6),
+            path,
+            mtime: s.mtimeMs,
+            birth: s.birthtimeMs || s.ctimeMs || s.mtimeMs,
+          })
       } catch {
         /* vanished between readdir and stat — skip */
       }
@@ -107,9 +119,46 @@ async function listClaudeSessions(limit: number): Promise<HarnessSession[]> {
   const out: HarnessSession[] = []
   for (const f of files.slice(0, limit)) {
     const title = await sessionTitle(f.path).catch(() => '')
-    out.push({ id: f.id, command: 'claude', title: title || f.id, updatedAt: Math.floor(f.mtime) })
+    out.push({
+      id: f.id,
+      command: 'claude',
+      title: title || f.id,
+      updatedAt: Math.floor(f.mtime),
+      createdAt: Math.floor(f.birth),
+    })
   }
   return out
+}
+
+/**
+ * Describe ONE Claude session by native id, without scanning every title.
+ *
+ * `listClaudeSessions` is the drawer's bulk path; the harness control plane
+ * needs a single-session lookup for `getSession` / `startSession` collision
+ * checks, and paying a whole-store title parse for that would be silly.
+ * Returns undefined when the id has no `.jsonl` under any project slug.
+ */
+export async function describeClaudeSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const path = await findClaudeJsonl(id)
+  if (!path) return undefined
+  let mtime: number
+  let birth: number
+  try {
+    const s = await stat(path)
+    mtime = s.mtimeMs
+    birth = s.birthtimeMs || s.ctimeMs || s.mtimeMs
+  } catch {
+    return undefined
+  }
+  const title = await sessionTitle(path).catch(() => '')
+  return {
+    id,
+    command: 'claude',
+    title: title || id,
+    updatedAt: Math.floor(mtime),
+    createdAt: Math.floor(birth),
+  }
 }
 
 /** ~/.grok/sessions (respects GROK_HOME). grok stores one DIR per session:

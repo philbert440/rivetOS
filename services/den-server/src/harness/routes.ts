@@ -1,0 +1,586 @@
+/**
+ * Harness control-plane gateway surface (Phase 2).
+ *
+ * Two route families, mounted by the den server behind its bearer gate exactly
+ * like `/api/devices` and `/files/*`:
+ *
+ *   GET  /api/harnesses                              drivers + capability flags
+ *   GET  /api/harnesses/:harnessId                   one driver's capabilities
+ *   GET  /api/harnesses/:harnessId/sessions          listSessions
+ *   POST /api/harnesses/:harnessId/sessions          startSession
+ *   WS   /api/harnesses/ws[?harness=<id>]            registry stream
+ *
+ *   GET  /api/harness-sessions/:enc                  getSession
+ *   GET  /api/harness-sessions/:enc/transcript       hard-resync source
+ *   POST /api/harness-sessions/:enc/resume           resumeSession
+ *   POST /api/harness-sessions/:enc/turns            sendUserTurn
+ *   POST /api/harness-sessions/:enc/interrupt        interrupt
+ *   POST /api/harness-sessions/:enc/approvals/:reqId resolveApproval
+ *   WS   /api/harness-sessions/ws?session=<enc>      subscribe stream
+ *
+ * `:enc` is `enc(SessionId)` — unpadded base64url of the UTF-8 SessionId
+ * (`encodeSessionIdSegment`). Percent-encoded `/` inside a path segment is
+ * unreliable across routers and proxies, and Claude's path-fallback capture
+ * keys contain `/`. A bare native uuid is also accepted so the den drawer and
+ * hub chat can migrate at leisure; the control plane aliases it to canonical.
+ *
+ * **Transport note.** The design doc writes the two streams as
+ * `GET /harnesses/:id/events` and `GET /sessions/:sessionId/events`. den's WS
+ * mounts are exact-path (`/ws`, `/term?id=`, `/api/sessions/ws`,
+ * `/api/notifications/ws`) with the resource in the query string, so these
+ * follow that existing convention rather than introducing dynamic-segment
+ * upgrade matching. Names, payloads and semantics are otherwise the contract.
+ *
+ * The legacy `/term/harness-sessions/*` endpoints are untouched — the hub
+ * still uses them (the doc prunes them in Phase 5).
+ *
+ * **Known gaps** (both Phase 3+ work, recorded so clients aren't surprised):
+ *
+ *   - *Capability flags are declared, not runtime-probed.* A driver computes
+ *     them at construction. `claude-code` reads `interrupt`/`resume` off
+ *     whether den terminals are ENABLED — if `node-pty` then fails to load,
+ *     `GET /api/harnesses` keeps advertising `true` while the methods answer
+ *     501. The rejection is honest; the advertisement is optimistic.
+ *   - *Session status for out-of-den harnesses.* A Claude process started
+ *     outside den (no `RIVET_DEN_SESSION`) is invisible to the driver's live
+ *     map and reads as `ended` until its den hooks speak. Sessions spawned
+ *     through the driver or the `/term` drawer are adopted at spawn time.
+ *
+ * See docs/plans/harness-control-plane.md.
+ */
+
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Duplex } from 'node:stream'
+import { WebSocketServer, type WebSocket } from 'ws'
+import {
+  HarnessError,
+  decodeSessionIdSegment,
+  formatSessionId,
+  type ApprovalDecision,
+  type HarnessEvent,
+  type HarnessTranscriptTurn,
+  type SessionId,
+  type UserTurn,
+} from '@rivetos/types'
+import { isBareNativeUuid } from './alias.js'
+import { isHarnessId, type HarnessRegistry, type ResolvedSession } from './registry.js'
+
+/** Drivers that can serve the hard-resync transcript (feature-detected). */
+export interface HarnessTranscriptSource {
+  transcript(sessionId: SessionId): Promise<{ turns: HarnessTranscriptTurn[] }>
+}
+
+/** HarnessErrorCode → HTTP, per packages/types/src/errors.ts. */
+const ERROR_STATUS: Record<string, number> = {
+  invalid_session_id: 400,
+  session_id_collision: 409,
+  capability_unsupported: 501,
+  unknown_approval: 404,
+  turn_in_flight: 409,
+}
+
+export function harnessErrorStatus(err: unknown): number {
+  if (err instanceof HarnessError) return ERROR_STATUS[err.code] ?? 500
+  return 500
+}
+
+const MAX_BODY_BYTES = 256 * 1024
+const MAX_BUFFERED = 1024 * 1024
+
+const json = (res: ServerResponse, code: number, body: unknown): boolean => {
+  res.writeHead(code, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify(body))
+  return true
+}
+
+function fail(res: ServerResponse, err: unknown): boolean {
+  if (err instanceof HarnessError) {
+    return json(res, harnessErrorStatus(err), {
+      error: err.message,
+      code: err.code,
+      retryable: err.retryable,
+    })
+  }
+  const message = err instanceof Error ? err.message : String(err)
+  return json(res, 500, { error: message })
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (d: Buffer) => {
+      size += d.length
+      if (size > MAX_BODY_BYTES) {
+        req.pause()
+        reject(new Error('body too large'))
+        return
+      }
+      chunks.push(d)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+/**
+ * Decode a `:sessionId` path segment. `enc(SessionId)` wins; a bare native
+ * uuid is accepted as the documented legacy shape (den drawer / hub chat) and
+ * resolved to canonical by the registry. Order matters: enc() is checked first
+ * so a base64url string that happens to look like a uuid is never misread.
+ */
+export function decodeSessionSegment(segment: string): string {
+  try {
+    return decodeSessionIdSegment(segment)
+  } catch (err) {
+    if (isBareNativeUuid(segment)) return segment
+    throw err
+  }
+}
+
+export interface HarnessRoutes {
+  /** `true` when the request was handled. */
+  handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean>
+  /** `true` when the upgrade was handled (socket owned from here on). */
+  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, url: URL): boolean
+  heartbeat(): void
+  close(): void
+}
+
+export function createHarnessRoutes(opts: {
+  registry: HarnessRegistry
+  log?: (msg: string) => void
+}): HarnessRoutes {
+  const { registry } = opts
+  const log = opts.log ?? ((): void => undefined)
+  const wss = new WebSocketServer({ noServer: true })
+  const clients = new Map<WebSocket, { alive: boolean; off: () => void }>()
+
+  const send = (ws: WebSocket, event: HarnessEvent): void => {
+    if (ws.readyState !== 1) return
+    if (ws.bufferedAmount > MAX_BUFFERED) {
+      ws.terminate()
+      return
+    }
+    ws.send(JSON.stringify(event))
+  }
+
+  const attach = (
+    ws: WebSocket,
+    subscribe: (sink: (e: HarnessEvent) => void) => () => void,
+  ): void => {
+    let off: () => void
+    try {
+      off = subscribe((e) => send(ws, e))
+    } catch (err) {
+      // capability_unsupported on a stream the node can't serve: say so on the
+      // wire, then close — a silently-idle socket looks like a live stream.
+      ws.send(
+        JSON.stringify({
+          type: 'error',
+          code: err instanceof HarnessError ? err.code : 'error',
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      )
+      ws.close()
+      return
+    }
+    clients.set(ws, { alive: true, off })
+    ws.on('pong', () => {
+      const entry = clients.get(ws)
+      if (entry) entry.alive = true
+    })
+    const drop = (): void => {
+      const entry = clients.get(ws)
+      if (!entry) return
+      clients.delete(ws)
+      entry.off()
+    }
+    ws.on('close', drop)
+    ws.on('error', () => {
+      drop()
+      ws.terminate()
+    })
+  }
+
+  /** Resolve a `:enc` segment all the way to a driver, or answer the request. */
+  const resolve = async (
+    res: ServerResponse,
+    segment: string,
+  ): Promise<ResolvedSession | undefined> => {
+    let raw: string
+    try {
+      raw = decodeSessionSegment(segment)
+    } catch (err) {
+      fail(res, err)
+      return undefined
+    }
+    try {
+      return await registry.resolve(raw)
+    } catch (err) {
+      fail(res, err)
+      return undefined
+    }
+  }
+
+  const parseJsonBody = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<Record<string, unknown> | undefined> => {
+    let body: string
+    try {
+      body = await readBody(req)
+    } catch {
+      json(res, 413, { error: 'body too large' })
+      return undefined
+    }
+    if (body.trim() === '') return {}
+    let raw: unknown
+    try {
+      raw = JSON.parse(body)
+    } catch {
+      json(res, 400, { error: 'invalid JSON' })
+      return undefined
+    }
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      json(res, 400, { error: 'expected a JSON object' })
+      return undefined
+    }
+    return raw as Record<string, unknown>
+  }
+
+  // -- /api/harnesses --------------------------------------------------------
+
+  const handleHarnesses = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<boolean> => {
+    const rest = url.pathname.slice('/api/harnesses'.length).replace(/^\//, '')
+    if (rest === '') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+      return json(res, 200, { harnesses: registry.list() })
+    }
+    const parts: (string | undefined)[] = rest.split('/')
+    const [harnessId = '', sub, ...extra] = parts
+    if (extra.length > 0) return json(res, 404, { error: 'not found' })
+    if (!isHarnessId(harnessId)) return json(res, 404, { error: `unknown harness: ${harnessId}` })
+    const driver = registry.get(harnessId)
+    if (!driver) return json(res, 404, { error: `no driver registered for ${harnessId}` })
+
+    if (sub === undefined) {
+      if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+      return json(res, 200, { harnessId, capabilities: driver.capabilities })
+    }
+    if (sub !== 'sessions') return json(res, 404, { error: 'not found' })
+
+    if (req.method === 'GET') {
+      if (!driver.capabilities.listSessions) {
+        return fail(
+          res,
+          new HarnessError('capability_unsupported', `${harnessId} cannot list sessions`, {
+            harnessId,
+          }),
+        )
+      }
+      try {
+        return json(res, 200, { sessions: await driver.listSessions() })
+      } catch (err) {
+        return fail(res, err)
+      }
+    }
+    if (req.method === 'POST') {
+      const body = await parseJsonBody(req, res)
+      if (!body) return true
+      const { cwd, model, nativeSessionId, metadata } = body
+      if (cwd !== undefined && typeof cwd !== 'string')
+        return json(res, 400, { error: 'cwd must be a string' })
+      if (model !== undefined && typeof model !== 'string')
+        return json(res, 400, { error: 'model must be a string' })
+      if (nativeSessionId !== undefined && typeof nativeSessionId !== 'string')
+        return json(res, 400, { error: 'nativeSessionId must be a string' })
+      if (
+        metadata !== undefined &&
+        (typeof metadata !== 'object' ||
+          metadata === null ||
+          Object.values(metadata).some((v) => typeof v !== 'string'))
+      ) {
+        return json(res, 400, { error: 'metadata must be a string map' })
+      }
+      // Alias chains occupy the namespace: a pinned id anywhere in one is a
+      // collision even if the harness store itself has forgotten it.
+      if (typeof nativeSessionId === 'string') {
+        try {
+          const pinned = formatSessionId(harnessId, nativeSessionId)
+          if (registry.knows(pinned)) {
+            return fail(
+              res,
+              new HarnessError(
+                'session_id_collision',
+                `${pinned} is already part of an alias chain`,
+                { harnessId, sessionId: pinned },
+              ),
+            )
+          }
+        } catch (err) {
+          return fail(res, err)
+        }
+      }
+      try {
+        const summary = await driver.startSession({
+          ...(cwd !== undefined ? { cwd } : {}),
+          ...(model !== undefined ? { model } : {}),
+          ...(nativeSessionId !== undefined ? { nativeSessionId } : {}),
+          ...(metadata !== undefined ? { metadata: metadata as Record<string, string> } : {}),
+        })
+        return json(res, 201, summary)
+      } catch (err) {
+        return fail(res, err)
+      }
+    }
+    return json(res, 405, { error: 'method not allowed' })
+  }
+
+  // -- /api/harness-sessions -------------------------------------------------
+
+  const handleSessions = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<boolean> => {
+    const rest = url.pathname.slice('/api/harness-sessions'.length).replace(/^\//, '')
+    if (rest === '') return json(res, 404, { error: 'not found' })
+    const parts: (string | undefined)[] = rest.split('/')
+    const [segment = '', action, requestId, ...extra] = parts
+    if (extra.length > 0) return json(res, 404, { error: 'not found' })
+
+    const resolved = await resolve(res, segment)
+    if (!resolved) return true
+    const { driver, sessionId, requestedId } = resolved
+    /** Superseded/legacy ids answer with the canonical they redirected to. */
+    const redirect = requestedId ? { redirectedTo: sessionId } : {}
+
+    if (action === undefined) {
+      if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+      try {
+        const summary = await driver.getSession(sessionId)
+        if (!summary) return json(res, 404, { error: `unknown session ${sessionId}` })
+        return json(res, 200, { ...summary, ...redirect })
+      } catch (err) {
+        return fail(res, err)
+      }
+    }
+
+    if (action === 'transcript') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+      const source = driver as unknown as Partial<HarnessTranscriptSource>
+      if (typeof source.transcript !== 'function') {
+        return fail(
+          res,
+          new HarnessError(
+            'capability_unsupported',
+            `${driver.harnessId} has no transcript source`,
+            { harnessId: driver.harnessId, sessionId },
+          ),
+        )
+      }
+      try {
+        const { turns } = await source.transcript(sessionId)
+        return json(res, 200, {
+          sessionId,
+          harnessId: driver.harnessId,
+          turns,
+          ...redirect,
+        })
+      } catch (err) {
+        return fail(res, err)
+      }
+    }
+
+    if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+
+    if (action === 'resume') {
+      if (!driver.capabilities.resume) {
+        return fail(
+          res,
+          new HarnessError('capability_unsupported', `${driver.harnessId} cannot resume`, {
+            harnessId: driver.harnessId,
+            sessionId,
+          }),
+        )
+      }
+      try {
+        return json(res, 200, { ...(await driver.resumeSession(sessionId)), ...redirect })
+      } catch (err) {
+        return fail(res, err)
+      }
+    }
+
+    if (action === 'interrupt') {
+      if (!driver.capabilities.interrupt) {
+        return fail(
+          res,
+          new HarnessError('capability_unsupported', `${driver.harnessId} cannot interrupt`, {
+            harnessId: driver.harnessId,
+            sessionId,
+          }),
+        )
+      }
+      try {
+        await driver.interrupt(sessionId)
+        return json(res, 202, { ok: true, sessionId, ...redirect })
+      } catch (err) {
+        return fail(res, err)
+      }
+    }
+
+    if (action === 'turns') {
+      const body = await parseJsonBody(req, res)
+      if (!body) return true
+      const { text, attachments } = body
+      if (typeof text !== 'string' || text === '')
+        return json(res, 400, { error: 'text (non-empty string) is required' })
+      const turn: UserTurn = { text }
+      if (attachments !== undefined) {
+        if (
+          !Array.isArray(attachments) ||
+          attachments.some(
+            (a) =>
+              typeof a !== 'object' ||
+              a === null ||
+              typeof (a as { mime?: unknown }).mime !== 'string' ||
+              typeof (a as { pathOrUri?: unknown }).pathOrUri !== 'string',
+          )
+        ) {
+          return json(res, 400, { error: 'attachments must be {mime,pathOrUri,name?} objects' })
+        }
+        turn.attachments = attachments as UserTurn['attachments']
+      }
+      try {
+        await driver.sendUserTurn(sessionId, turn)
+        return json(res, 202, { ok: true, sessionId, ...redirect })
+      } catch (err) {
+        return fail(res, err)
+      }
+    }
+
+    if (action === 'approvals') {
+      if (!requestId) return json(res, 404, { error: 'approval requestId is required' })
+      if (!driver.capabilities.approvals) {
+        return fail(
+          res,
+          new HarnessError(
+            'capability_unsupported',
+            `${driver.harnessId} does not surface approvals`,
+            { harnessId: driver.harnessId, sessionId },
+          ),
+        )
+      }
+      const body = await parseJsonBody(req, res)
+      if (!body) return true
+      const decision = body.decision
+      if (decision !== 'allow' && decision !== 'deny' && decision !== 'allow-session') {
+        return json(res, 400, { error: 'decision must be allow | deny | allow-session' })
+      }
+      try {
+        await driver.resolveApproval(sessionId, requestId, decision satisfies ApprovalDecision)
+        return json(res, 202, { ok: true, sessionId, requestId, ...redirect })
+      } catch (err) {
+        return fail(res, err)
+      }
+    }
+
+    return json(res, 404, { error: 'not found' })
+  }
+
+  return {
+    async handle(req, res, url): Promise<boolean> {
+      try {
+        if (url.pathname === '/api/harnesses' || url.pathname.startsWith('/api/harnesses/')) {
+          if (url.pathname === '/api/harnesses/ws')
+            return json(res, 426, { error: 'ws upgrade required' })
+          return await handleHarnesses(req, res, url)
+        }
+        if (
+          url.pathname === '/api/harness-sessions' ||
+          url.pathname.startsWith('/api/harness-sessions/')
+        ) {
+          if (url.pathname === '/api/harness-sessions/ws')
+            return json(res, 426, { error: 'ws upgrade required' })
+          return await handleSessions(req, res, url)
+        }
+        return false
+      } catch (err) {
+        log(
+          `[den-server] harness route failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        if (!res.headersSent) fail(res, err)
+        return true
+      }
+    },
+
+    handleUpgrade(req, socket, head, url): boolean {
+      if (url.pathname === '/api/harnesses/ws') {
+        const filter = url.searchParams.get('harness') ?? undefined
+        if (filter !== undefined && !isHarnessId(filter)) {
+          socket.destroy()
+          return true
+        }
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          attach(ws, (sink) => registry.subscribe(sink, filter))
+        })
+        return true
+      }
+      if (url.pathname === '/api/harness-sessions/ws') {
+        const segment = url.searchParams.get('session') ?? ''
+        if (!segment) {
+          socket.destroy()
+          return true
+        }
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          void (async (): Promise<void> => {
+            let target: ResolvedSession
+            try {
+              target = await registry.resolve(decodeSessionSegment(segment))
+            } catch (err) {
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  code: err instanceof HarnessError ? err.code : 'error',
+                  message: err instanceof Error ? err.message : String(err),
+                }),
+              )
+              ws.close()
+              return
+            }
+            attach(ws, (sink) => target.driver.subscribe(target.sessionId, sink))
+          })()
+        })
+        return true
+      }
+      return false
+    },
+
+    heartbeat(): void {
+      for (const [ws, entry] of [...clients]) {
+        if (!entry.alive) {
+          clients.delete(ws)
+          entry.off()
+          ws.terminate()
+          continue
+        }
+        entry.alive = false
+        ws.ping()
+      }
+    },
+
+    close(): void {
+      for (const [ws, entry] of [...clients]) {
+        entry.off()
+        ws.terminate()
+      }
+      clients.clear()
+      wss.close()
+    },
+  }
+}

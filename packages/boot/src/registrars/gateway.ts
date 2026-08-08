@@ -22,7 +22,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { logger, createGatewayChannel, createOpenAICompatRoute, type Runtime } from '@rivetos/core'
-import type { GatewayRoute, SessionWsFrame } from '@rivetos/types'
+import type { GatewayRoute, HarnessDriver, SessionWsFrame } from '@rivetos/types'
 
 /** WS upgrade handler shape den-server accepts (same as the channel's). */
 interface GatewayUpgrade {
@@ -192,6 +192,13 @@ export async function registerGateway(
   installRoot: string,
   extraRoutes: GatewayRoute[] = [],
   extraUpgrades: GatewayUpgrade[] = [],
+  /**
+   * Harness control plane (docs/plans/harness-control-plane.md): drivers to
+   * register on the node's HarnessDriver registry at boot, alongside the
+   * built-in `claude-code` reference driver the gateway registers itself.
+   * Phase 3 (grok-build, kimi-code, hermes) plugs in here.
+   */
+  harnessDrivers: HarnessDriver[] = [],
 ): Promise<GatewayStart | undefined> {
   if (config.den?.enabled !== true) return undefined
 
@@ -262,6 +269,7 @@ export async function registerGateway(
     // the coalesced assistant message per turn). Terminal + den views are
     // unaffected; `task:` sessions are skipped inside the bridge.
     onAgentEvent: (ev) => gatewayChannel.bridgeAgentEvent(ev),
+    harnessDrivers,
   })
 
   const listening = await new Promise<boolean>((resolve) => {
