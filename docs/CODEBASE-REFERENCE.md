@@ -106,7 +106,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   ├── rivetos/             # Unified runtime image — built once, dispatched via `--role`
 │   │   └── DATA-PERSISTENCE.md  # What survives container rebuilds
 │   ├── docker/                  # Compose stacks
-│   │   ├── rivetos/             # canonical stack (datahub + migrate + workers + agent)
+│   │   ├── rivetos/             # canonical stack (datahub + migrate + agent + 2 workers)
 │   │   └── mcp-stack/           # standalone MCP server stack
 │   ├── scripts/                 # provision-ct.sh, setup-mesh-hosts.sh, …
 │   └── templates/               # Workspace + config skeletons used by `init`
@@ -419,7 +419,8 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 **Unified `rivetos` image** (`infra/containers/rivetos/Dockerfile`):
 - Single Node 24 Alpine image, non-root user (`rivetos`), tini init
 - Built once with `npm run build` (esbuild bundle in `dist/`)
-- Dispatched at runtime via `--role agent | migrate` (`packages/cli/src/commands/start.ts`). `agent` is the default. `RIVETOS_ROLE` seeds the role, but an explicit `--role` flag overrides it — the flag wins, not the env var. An invalid `--role` value exits with `unknown role`; an invalid `RIVETOS_ROLE` is not validated and falls through to the agent path.
+- Dispatched at runtime via `--role agent | migrate` (`packages/cli/src/commands/start.ts`). `agent` is the default. `RIVETOS_ROLE` seeds the role, but an explicit `--role` flag overrides it — the flag wins, not the env var. An unknown value exits with `unknown role`, whether it came from the flag or from `RIVETOS_ROLE`.
+- The `services/{embedding,compaction}-worker` dists ship in the image too, but they are not roles — run them directly (`node services/embedding-worker/dist/index.js`).
 - Healthcheck: hits `/health/live` on the agent role; the migrate role skips the check
 - Workspace and config mounted as volumes
 
@@ -429,14 +430,17 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 
 ### Docker Compose
 
-The canonical stack lives at `infra/docker/rivetos/docker-compose.yml` and runs four services:
+The canonical stack lives at `infra/docker/rivetos/docker-compose.yml` and defines five services:
 
 - `datahub` — Postgres + pgvector (image: `pgvector/pgvector:pg16`, upstream)
 - `migrate` — one-shot, applies pending migrations and exits (image: `rivetos`, role: `migrate`)
-- `workers` — embedding + compaction `graphile-worker` daemons (image: `rivetos`)
+- `embedding-worker` — `graphile-worker` daemon, `node services/embedding-worker/dist/index.js` (image: `rivetos`, profile: `workers`)
+- `compaction-worker` — `graphile-worker` daemon, `node services/compaction-worker/dist/index.js` (image: `rivetos`, profile: `workers`)
 - `agent` — runtime that drives channels + providers (image: `rivetos`, role: `agent`)
 
-Named volume: `rivetos-pgdata`. Dependency ordering: only `migrate` waits on `datahub` being healthy; `workers` and `agent` each wait solely on `migrate` completing successfully (`service_completed_successfully`), so they inherit the database gate transitively rather than declaring it.
+Named volume: `rivetos-pgdata`. Dependency ordering: only `migrate` waits on `datahub` being healthy; the workers and `agent` each wait solely on `migrate` completing successfully (`service_completed_successfully`), so they inherit the database gate transitively rather than declaring it.
+
+Both workers sit behind the `workers` profile, so a bare `docker compose up` brings up only `datahub`, `migrate`, and `agent`. Each needs an inference endpoint the compose file cannot guess (`RIVETOS_EMBED_URL` / `RIVETOS_COMPACTOR_URL`) and exits 1 on boot without one; supply those, then `docker compose --profile workers up`.
 
 ### Memory Workers (graphile-worker daemons)
 
