@@ -28,15 +28,17 @@ there, the file might be stale. Update the file.
 
 ## Commit & PR signature
 
-Use **RivetOS Claude**, not Claude Code branding.
+Commits are **authored** as `Rivet Philbot <rivetphilbot@gmail.com>` — the
+account's own identity — and carry **no trailer of any kind**. Nothing is
+co-authored: there is one author, and it is already on the commit.
 
-- ✅ `Co-Authored-By: RivetOS Claude <noreply@rivetos.dev>`
-- ❌ `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`
+- ✅ `git commit --author='Rivet Philbot <rivetphilbot@gmail.com>'`, body ends
+  at the last line of prose
+- ❌ any `Co-Authored-By:` trailer, including a RivetOS-branded one
 - ❌ `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
 
-Applies to every commit message and PR body. The identity is Rivet — the
-underlying model/tool is an implementation detail and shouldn't leak into
-artifacts.
+Applies to every commit message and PR body alike. The identity is Rivet —
+neither the vendor nor the model behind it belongs in a repo artifact.
 
 ## Commit messages
 
