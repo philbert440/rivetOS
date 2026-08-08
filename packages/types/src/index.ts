@@ -27,6 +27,7 @@ export type {
   ToolErrorCode,
   DelegationErrorCode,
   RuntimeErrorCode,
+  HarnessErrorCode,
 } from './errors.js'
 export {
   RivetError,
@@ -36,6 +37,13 @@ export {
   ToolError,
   DelegationError,
   RuntimeError,
+  HarnessError,
+  HARNESS_ERROR_CODES,
+  INVALID_SESSION_ID,
+  SESSION_ID_COLLISION,
+  CAPABILITY_UNSUPPORTED,
+  UNKNOWN_APPROVAL,
+  TURN_IN_FLIGHT,
 } from './errors.js'
 export type {
   Channel,
@@ -119,6 +127,28 @@ export {
   taskResultFenceInstructions,
 } from './task-result.js'
 export type { ParsedTaskResult } from './task-result.js'
+// Harness control plane (docs/plans/harness-control-plane.md). `SessionSummary`
+// is re-exported as `HarnessSessionSummary`: the bare name is already taken by
+// the den chat-session summary in gateway-api.js.
+export type {
+  HarnessId,
+  SessionId,
+  HarnessCapabilities,
+  ApprovalDecision,
+  HarnessEvent,
+  StartSessionOpts,
+  UserTurn,
+  HarnessDriver,
+} from './harness.js'
+export type { SessionSummary as HarnessSessionSummary } from './harness.js'
+export { HARNESS_IDS } from './harness.js'
+export {
+  parseSessionId,
+  formatSessionId,
+  isSessionId,
+  encodeSessionIdSegment,
+  decodeSessionIdSegment,
+} from './harness-session-id.js'
 export type {
   WikiSourceRef,
   WikiHistoryEntryWire,
