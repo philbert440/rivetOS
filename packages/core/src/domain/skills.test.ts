@@ -14,6 +14,8 @@ import {
   scanSkillContent,
   cosineSimilarity,
 } from './skills/index.js'
+import { HookPipelineImpl } from './hooks.js'
+import type { SkillBeforeContext, SkillAfterContext } from '@rivetos/types'
 
 describe('SkillManagerImpl', () => {
   let tempDir: string
@@ -140,6 +142,94 @@ describe('SkillManagerImpl', () => {
           return true
         },
       )
+    })
+
+    it('emits skill:before and skill:after when pipeline is set', async () => {
+      const content = '---\nname: Hooked\ndescription: Hook test\ntriggers: hook\n---\n# Hooked'
+      await createSkill('hooked', content)
+      await manager.discover([tempDir])
+
+      const pipeline = new HookPipelineImpl()
+      const events: string[] = []
+      let beforeCtx: SkillBeforeContext | undefined
+      let afterCtx: SkillAfterContext | undefined
+
+      pipeline.register({
+        id: 'skill-before-capture',
+        event: 'skill:before',
+        handler: (ctx) => {
+          beforeCtx = ctx as SkillBeforeContext
+          events.push('before')
+        },
+      })
+      pipeline.register({
+        id: 'skill-after-capture',
+        event: 'skill:after',
+        handler: (ctx) => {
+          afterCtx = ctx as SkillAfterContext
+          events.push('after')
+        },
+      })
+
+      manager.setPipeline(pipeline)
+      const loaded = await manager.load('Hooked')
+
+      assert.equal(loaded, content)
+      assert.deepEqual(events, ['before', 'after'])
+      assert.equal(beforeCtx?.skillName, 'Hooked')
+      assert.ok(beforeCtx?.skillLocation.includes('SKILL.md'))
+      assert.equal(afterCtx?.skillName, 'Hooked')
+      assert.equal(afterCtx?.success, true)
+      assert.ok((afterCtx?.durationMs ?? -1) >= 0)
+    })
+
+    it('honors skill:before skip gate', async () => {
+      await createSkill(
+        'skipme',
+        '---\nname: SkipMe\ndescription: Will be skipped\n---\n# Skip',
+      )
+      await manager.discover([tempDir])
+
+      const pipeline = new HookPipelineImpl()
+      pipeline.register({
+        id: 'skipper',
+        event: 'skill:before',
+        handler: (ctx) => {
+          const c = ctx as SkillBeforeContext
+          c.skip = true
+          c.skipReason = 'blocked for test'
+        },
+      })
+      manager.setPipeline(pipeline)
+
+      await assert.rejects(
+        () => manager.load('SkipMe'),
+        (err: Error) => {
+          assert.ok(err.message.includes('skipped by hook'))
+          assert.ok(err.message.includes('blocked for test'))
+          return true
+        },
+      )
+    })
+
+    it('load succeeds when a skill hook throws (fail-safe continue)', async () => {
+      const content = '---\nname: Resilient\ndescription: Resilient\n---\n# R'
+      await createSkill('resilient', content)
+      await manager.discover([tempDir])
+
+      const pipeline = new HookPipelineImpl()
+      pipeline.register({
+        id: 'boom-before',
+        event: 'skill:before',
+        onError: 'continue',
+        handler: () => {
+          throw new Error('before exploded')
+        },
+      })
+      manager.setPipeline(pipeline)
+
+      const loaded = await manager.load('Resilient')
+      assert.equal(loaded, content)
     })
   })
 

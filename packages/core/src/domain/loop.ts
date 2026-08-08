@@ -29,6 +29,8 @@ import type {
   ChatOptions,
   ThinkingLevel,
   HookPipeline,
+  CompactBeforeContext,
+  CompactAfterContext,
 } from '@rivetos/types'
 import { getToolResultImages, toolResultHasImages } from '@rivetos/types'
 import { writeFile, mkdir } from 'node:fs/promises'
@@ -236,7 +238,7 @@ export class AgentLoop {
       ? `${this.config.systemPrompt}\n\n${prep.system}`
       : this.config.systemPrompt
 
-    let aiSdkMessages: ModelMessage[] = convertMessagesToAiSdk(wireMessages)
+    const aiSdkMessages: ModelMessage[] = convertMessagesToAiSdk(wireMessages)
 
     // ---- Turn state ------------------------------------------------------
     const state: TurnState = {
@@ -358,7 +360,7 @@ export class AgentLoop {
         stopWhen: stepCountIs(this.config.maxSteps ?? 50),
         abortSignal: turnAbort.signal,
         providerOptions,
-        prepareStep: (opts) => this.handlePrepareStep(opts, state),
+        prepareStep: async (opts) => this.handlePrepareStep(opts, state),
         onStepFinish: (stepResult) => {
           this.handleStepFinish(stepResult, state, bridge, chatOptions)
         },
@@ -439,8 +441,9 @@ export class AgentLoop {
 
     // ---- Apply any leftover compaction + sync session -------------------
     if (state.pendingCompaction) {
-      aiSdkMessages = this.applyCompaction(aiSdkMessages, state.pendingCompaction)
-      this.syncCompactedSession(aiSdkMessages)
+      // Fires compact hooks + clears pending state; the turn is over, so the
+      // returned (compacted) array has no further reader this turn.
+      await this.applyPendingCompactionWithHooks(aiSdkMessages, state.pendingCompaction)
       state.pendingCompaction = null
     }
 
@@ -471,17 +474,17 @@ export class AgentLoop {
   // prepareStep — runs before each LLM call
   // -----------------------------------------------------------------------
 
-  private handlePrepareStep(
+  private async handlePrepareStep(
     opts: { messages: ModelMessage[]; stepNumber: number },
     state: TurnState,
-  ): { messages: ModelMessage[] } | undefined {
+  ): Promise<{ messages: ModelMessage[] } | undefined> {
     let messages = opts.messages
     let mutated = false
 
     // 1. Apply pending compaction (set by compact_context tool last step).
+    //    Emits compact:before / compact:after when hooks are wired.
     if (state.pendingCompaction) {
-      messages = this.applyCompaction(messages, state.pendingCompaction)
-      this.syncCompactedSession(messages)
+      messages = await this.applyPendingCompactionWithHooks(messages, state.pendingCompaction)
       state.pendingCompaction = null
       state.nudgesFired.length = 0 // reset nudges for fresh window
       mutated = true
@@ -783,6 +786,49 @@ export class AgentLoop {
       })
     }
     return out
+  }
+
+  /**
+   * Apply compaction with compact:before / compact:after hooks, then sync session.
+   * Shared metadata object so preCompact snapshot is visible to postCompact.
+   * Pipeline is fail-safe (default onError: continue) — same as other emit sites.
+   */
+  private async applyPendingCompactionWithHooks(
+    messages: ModelMessage[],
+    replacements: CompactionRequest[],
+  ): Promise<ModelMessage[]> {
+    const metadata: Record<string, unknown> = {}
+
+    if (this.config.hooks) {
+      const before: CompactBeforeContext = {
+        event: 'compact:before',
+        messageCount: messages.length,
+        agentId: this.config.agentId,
+        sessionId: this.config.sessionId,
+        timestamp: Date.now(),
+        metadata,
+      }
+      await this.config.hooks.run(before)
+    }
+
+    const compacted = this.applyCompaction(messages, replacements)
+    const summary = replacements.map((r) => r.summary).join('\n')
+
+    if (this.config.hooks) {
+      const after: CompactAfterContext = {
+        event: 'compact:after',
+        remainingMessages: compacted.length,
+        summary,
+        agentId: this.config.agentId,
+        sessionId: this.config.sessionId,
+        timestamp: Date.now(),
+        metadata,
+      }
+      await this.config.hooks.run(after)
+    }
+
+    this.syncCompactedSession(compacted)
+    return compacted
   }
 
   /**
