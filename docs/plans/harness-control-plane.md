@@ -346,7 +346,7 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 - [x] Parse/format helpers, alias store, `enc()`/`dec()` base64url segment codec
 - [ ] Capture migration: UNIQUE index on `ros_conversations (session_key, agent)` + adapter upsert (collision rule 3 is unimplementable on today's select-then-insert)
 - [ ] Task-key migration: replace `RIVETOS_SESSION_KEY=task:<id>` write-override with per-conversation task association + query-time join (see Legacy keys)
-- [ ] Gateway upload endpoint for remote attachments (returns node-local URI)
+- [x] Gateway upload endpoint for remote attachments (returns node-local URI) — `POST /api/uploads`; no driver consumes a staged URI yet (see Attachment staging)
 - [x] Driver-level registry stream (`session-created`) wired to `GET /harnesses/:id/events`
 - [x] Driver registry on node boot
 - [x] **Claude reference driver** over claude-cli + den harness-sessions
@@ -380,7 +380,7 @@ Mounted paths — this table is authoritative for what shipped:
 | `POST /sessions/:sessionId/approvals/:requestId` | `POST /api/harness-sessions/:enc/approvals/:requestId` (501 for `claude-code`) |
 | `GET /sessions/:sessionId/transcript` | `GET /api/harness-sessions/:enc/transcript` |
 | `GET /sessions/:sessionId/events` | `WS /api/harness-sessions/ws?session=<enc>` |
-| `POST /uploads` | not built — see Phase 2 checklist |
+| `POST /uploads` | `POST /api/uploads?name=<filename>[&mime=<type>]` — raw body |
 
 Two deviations, both because den has no path router to deviate from:
 
@@ -401,7 +401,77 @@ prompts live inside the TUI and never reach the den wire); `interrupt` /
 `resume` follow whether den terminals are enabled; `liveStream` follows the den
 event tap; `listSessions` is always true (a store scan). `startSession` rejects
 `cwd`/`model` (roster-owned) and `sendUserTurn` rejects attachments, both with
-`capability_unsupported`, rather than ignoring them silently.
+`capability_unsupported`, rather than ignoring them silently. The attachment
+rejection stands even now that staging exists — see below.
+
+### Attachment staging (`POST /api/uploads`)
+
+`services/den-server/src/harness/uploads.ts`. The contract requires
+`UserTurn.attachments[].pathOrUri` to be **node-resolvable**; a browser,
+desktop or Android client has no path this node can open, so it streams the
+bytes here and puts the returned `uri` in the turn.
+
+```
+POST /api/uploads?name=<client-filename>[&mime=<type>]
+Authorization: Bearer <token>
+<raw body>
+
+201 { "uri": "/home/rivet/.rivetos/den/uploads/<uuid>.png",
+      "name": "shot.png", "mime": "image/png", "size": 20481,
+      "expiresAt": "2026-08-08T06:00:00.000Z" }
+```
+
+- **Raw body, metadata in the query string.** Same shape as `POST
+  /files/upload`. den has no body parser; `multipart/form-data` would mean a
+  new runtime dependency for one endpoint. A filename *header* was rejected
+  separately: den's CORS allow-list is a fixed set (`content-type`,
+  `authorization`, `x-rivet-conversation`, `x-rivet-title`), so a custom
+  header fails preflight for exactly the browser clients this exists for.
+- **Auth** is the den bearer gate, identical to `/api/harnesses` and
+  `/api/harness-sessions` — no separate tokenless opt-out like `term` /
+  `files` / `audio`. Anyone who can reach this route can already reach `POST
+  .../turns`, which spawns and drives a harness; uploads are not the weak
+  link. Disk exposure is bounded **per upload** by the cap and **in
+  aggregate** by the TTL — there is no total-bytes ceiling, so a bearer client
+  can hold up to (request rate × cap × TTL) on the state volume. Same posture
+  as `POST /files/upload`, which has a 1 GiB per-file cap and no aggregate at
+  all, so this is not a regression; a staging quota is future work if a node
+  ever exposes its bearer beyond the mesh.
+- **Client filenames are metadata, never paths.** The on-disk name is always
+  `<uuid><ext>`; the extension is honored only when it is 1–12 alphanumerics.
+  The client's name survives as the sanitized single-segment `name` in the
+  response, for display. `?name=../../etc/passwd` stages a uuid in the
+  staging dir and reports `name: "passwd"`.
+- **`uri` is an absolute node-local filesystem path**, not a `file://` URL —
+  every consumer of `pathOrUri` is a driver that will `open()` it. This
+  deliberately discloses the node's `stateDir` layout to an authenticated
+  client, which is fine: the client hands the path straight back to the node
+  that minted it, and a `file://` URL would disclose exactly the same string.
+- **Cap:** 25 MiB per upload, `RIVETOS_DEN_UPLOAD_MAX_BYTES`. Enforced twice —
+  a `Content-Length` pre-check that refuses before the staging dir is even
+  created, and a running total on the data path for chunked bodies. The
+  response is flushed before the socket is torn down, so an oversize client
+  sees a 413 rather than a connection reset.
+- **Retention:** staged files are transient. A sweep unlinks anything older
+  than 6h (`RIVETOS_DEN_UPLOAD_TTL_MS`, `0` disables), running once at server
+  start — so a node that was down past the TTL boots clean — and then on a
+  derived interval (the TTL, clamped to 1–30 min). The staging dir is
+  `<stateDir>/uploads` (`RIVETOS_DEN_UPLOAD_DIR`), mode 0700, files 0600. It
+  is deliberately **flat**: uuid names need no per-session disambiguation, and
+  a flat directory lets the sweep never recurse and only ever `unlink` entries
+  that `lstat` as regular files — a symlink planted in the staging dir is
+  neither followed nor removed. Orphaned `.part` files from dropped
+  connections age out on the same rule.
+
+**What this enables today:** any client can turn its own bytes into a path
+this node can open, and the turn API already accepts and forwards
+`attachments`. **What it does not enable:** `claude-code` still answers
+`capability_unsupported` for a turn with attachments, staged URI or not. Its
+only channel into Claude is a PTY paste, which carries text — there is no wire
+for "here is a file" into the TUI, and pasting the path as prose would be a
+different thing wearing the contract's name. The first driver that speaks a
+real protocol (SDK / ACP) consumes the staged URI directly, with no change to
+this endpoint.
 
 Known gaps in the shipped slice (recorded, not fixed):
 

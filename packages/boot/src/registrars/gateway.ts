@@ -165,6 +165,19 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     if (devices.pg_device_group?.trim())
       env.RIVETOS_DEN_DEVICES_PG_DEVICE_GROUP = devices.pg_device_group.trim()
   }
+  // Harness attachment staging (POST /api/uploads). The defaults suit every
+  // node we run, so there is no config.yaml surface — but den-server sees
+  // only this map, never the process env, so without a passthrough the
+  // documented cap/TTL/dir knobs would be silently inert on an embedded
+  // gateway. Same reasoning as RIVETOS_DEN_DEVICES_PG_ADMIN_URL above.
+  for (const key of [
+    'RIVETOS_DEN_UPLOAD_DIR',
+    'RIVETOS_DEN_UPLOAD_MAX_BYTES',
+    'RIVETOS_DEN_UPLOAD_TTL_MS',
+  ] as const) {
+    const value = process.env[key]?.trim()
+    if (value) env[key] = value
+  }
   return env
 }
 

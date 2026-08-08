@@ -67,6 +67,7 @@ import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.
 import { ClaudeCodeDriver } from './harness/claude-driver.js'
 import { createClaudeStoreHost } from './harness/claude-store.js'
 import { createHarnessRoutes } from './harness/routes.js'
+import { createUploadRoutes } from './harness/uploads.js'
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
@@ -441,6 +442,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
   const harnessRoutes = createHarnessRoutes({ registry: harnesses, log: console.error })
 
+  // Attachment staging for remote clients (POST /api/uploads). Rides the same
+  // bearer gate as the rest of the harness surface — no separate tokenless
+  // opt-out like term/files/audio, because a caller who can reach this can
+  // already reach POST /turns, which spawns and drives a harness. The disk
+  // exposure is bounded instead: a per-upload cap plus a TTL sweep.
+  const uploadRoutes = createUploadRoutes({
+    dir: config.uploads?.dir || join(config.stateDir, 'uploads'),
+    ...(config.uploads ? { maxBytes: config.uploads.maxBytes, ttlMs: config.uploads.ttlMs } : {}),
+    log: console.error,
+  })
+
   // MicBridge (host mic → virtual node input). Same tokenless gate pattern as
   // terminals: off-loopback without token requires RIVETOS_DEN_AUDIO_OPEN.
   const audioGateError =
@@ -714,6 +726,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       ) {
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await harnessRoutes.handle(req, res, url)) return
+        return json(res, 404, { error: 'not found' })
+      }
+
+      // Harness attachment staging (behind the bearer gate). Turns remote
+      // client bytes into a node-local path a UserTurn can reference.
+      if (url.pathname === '/api/uploads' || url.pathname.startsWith('/api/uploads/')) {
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (uploadRoutes.handle(req, res, url)) return
         return json(res, 404, { error: 'not found' })
       }
 
@@ -1077,6 +1097,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         for (const t of evictTimers.values()) clearTimeout(t)
         evictTimers.clear()
         harnessRoutes.close()
+        uploadRoutes.close()
         claudeDriver?.close()
         harnesses.close()
         termWs.close()
