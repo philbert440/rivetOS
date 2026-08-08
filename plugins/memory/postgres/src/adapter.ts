@@ -79,8 +79,11 @@ export class PostgresMemory implements Memory {
   private expander: Expander
   private connected = false
   private lastHealthCheck = 0
-  /** Cached probe for 0009's ux_ros_conversations_session_agent — null until first checked. */
-  private conversationUniqueIndex: boolean | null = null
+  /**
+   * Latch for ux_ros_conversations_session_agent (0009/0010). Sticky once true;
+   * a false result is never cached — see hasConversationUniqueIndex.
+   */
+  private conversationUniqueIndex = false
 
   constructor(config: PostgresMemoryConfig) {
     this.pool = new Pool({
@@ -462,9 +465,11 @@ export class PostgresMemory implements Memory {
       return upserted.rows[0].id
     }
 
-    // Legacy path — 0009 has not been applied to this database yet. ON CONFLICT
-    // would raise 42P10 with no arbiter index, so keep capture working (racy, as
-    // it has always been) rather than failing every append on an unmigrated node.
+    // Legacy path — the index is not there yet. ON CONFLICT would raise 42P10 with
+    // no arbiter index, so keep capture working (racy, as it has always been)
+    // rather than failing every append on an unmigrated node. The probe above
+    // re-checks on every call while this is the case, so the process switches to
+    // the upsert as soon as the migration lands — no restart needed.
     const existing = await client.query<IdRow>(
       `SELECT id FROM ros_conversations
        WHERE session_key = $1 AND agent = $2 AND active = true
@@ -488,15 +493,23 @@ export class PostgresMemory implements Memory {
   }
 
   /**
-   * Whether 0009's unique index on (session_key, agent) exists — probed once per
-   * process and cached, since a migration cannot be un-applied under a live pool.
+   * Whether the unique index on (session_key, agent) exists.
+   *
+   * Only a TRUE result is cached. A migration cannot be un-applied under a live
+   * pool, so once the index is there it stays — but it very much CAN be applied
+   * under a live pool, which is the normal deploy order: new code ships to the
+   * nodes, then `rivetos db migrate` runs. Caching a negative would pin that
+   * process to the legacy path for its whole lifetime, and the legacy path starts
+   * raising 23505 the moment the index exists (it INSERTs a fresh row whenever the
+   * conversation is finalized, and races on first insert). Re-probing costs one
+   * catalog lookup per append until the migration lands, and nothing after.
    *
    * to_regclass returns NULL rather than raising for a name that does not resolve,
    * so this is safe to run inside the caller's open transaction: it cannot poison
    * it the way a failed `ON CONFLICT` (42P10) would.
    */
   private async hasConversationUniqueIndex(client: pg.PoolClient): Promise<boolean> {
-    if (this.conversationUniqueIndex !== null) return this.conversationUniqueIndex
+    if (this.conversationUniqueIndex) return true
 
     const res = await client.query<{ present: boolean }>(
       `SELECT to_regclass('ux_ros_conversations_session_agent') IS NOT NULL AS present`,
