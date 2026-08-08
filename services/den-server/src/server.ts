@@ -46,6 +46,7 @@ import {
   reduceDen,
   type DenState,
 } from '@rivetos/den-protocol'
+import type { HarnessDriver } from '@rivetos/types'
 import type { DenConfig } from './config.js'
 import { createMeshView } from './mesh.js'
 import { createRosterProvider } from './term/roster.js'
@@ -62,10 +63,50 @@ import {
 } from './term/harness-sessions.js'
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes } from './devices.js'
+import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
+import { ClaudeCodeDriver } from './harness/claude-driver.js'
+import { createClaudeStoreHost } from './harness/claude-store.js'
+import { createHarnessRoutes } from './harness/routes.js'
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
 export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcript-watch.js'
+
+// Harness control plane (docs/plans/harness-control-plane.md) — the registry,
+// the `claude-code` reference driver, and the alias/codec helpers Phase 3
+// drivers build on. Re-exported here so consumers have one entry point.
+export {
+  createAliasStore,
+  normalizeSessionId,
+  collapsePathFallback,
+  isBareNativeUuid,
+  MAX_ALIAS_CHAIN_DEPTH,
+  type AliasStore,
+} from './harness/alias.js'
+export {
+  createHarnessRegistry,
+  isHarnessId,
+  type HarnessRegistry,
+  type HarnessDescriptor,
+  type ResolvedSession,
+} from './harness/registry.js'
+export {
+  ClaudeCodeDriver,
+  CLAUDE_HARNESS_ID,
+  CLAUDE_ROSTER_COMMAND,
+  type ClaudeDriverDeps,
+  type ClaudePtyHost,
+  type ClaudeStoreHost,
+  type DenAgentEventLike,
+} from './harness/claude-driver.js'
+export { createClaudeStoreHost } from './harness/claude-store.js'
+export {
+  createHarnessRoutes,
+  decodeSessionSegment,
+  harnessErrorStatus,
+  type HarnessRoutes,
+  type HarnessTranscriptSource,
+} from './harness/routes.js'
 
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -128,6 +169,13 @@ export interface DenServer {
   server: Server
   /** Current reducer state (exposed for tests/inspection). */
   state(): DenState
+  /**
+   * Harness control plane (docs/plans/harness-control-plane.md): the node's
+   * `HarnessDriver` registry. `claude-code` is registered here at boot;
+   * Phase 3 drivers (grok-build, kimi-code, hermes) register through
+   * `DenServerOptions.harnessDrivers` or against this handle.
+   */
+  harnesses: HarnessRegistry
   close(): Promise<void>
 }
 
@@ -166,6 +214,16 @@ export interface DenServerOptions {
    * streams. Fire-and-forget — must never throw into the ingest path.
    */
   onAgentEvent?: (ev: { session: string; type: string; [k: string]: unknown }) => void
+  /**
+   * Extra HarnessDrivers to register alongside the built-in `claude-code`
+   * reference driver (Phase 3: grok-build, kimi-code, hermes).
+   */
+  harnessDrivers?: HarnessDriver[]
+  /**
+   * Skip registering the built-in `claude-code` driver — tests that drive the
+   * registry with a fake, and nodes that want a different Claude wiring.
+   */
+  skipClaudeHarnessDriver?: boolean
 }
 
 const json = (res: ServerResponse, code: number, body: unknown): void => {
@@ -254,6 +312,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     },
   })
 
+  /** Raw AgentEvent subscribers — the harness drivers' live event source. */
+  const denEventSinks = new Set<(ev: { session: string; type: string }) => void>()
+
   // Ingestion is serialized by construction: everything from parse to
   // broadcast is synchronous, so Node's event loop applies each caller's
   // events atomically and in arrival order — there is no await between
@@ -273,6 +334,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         opts.onAgentEvent(ev as unknown as { session: string; type: string })
       } catch {
         /* bridge errors must not break den ingest */
+      }
+    }
+    // Harness control plane tap: the drivers' live event source. Same rule —
+    // a driver bug must never break den ingest.
+    for (const sink of [...denEventSinks]) {
+      try {
+        sink(ev)
+      } catch {
+        /* as above */
       }
     }
   }
@@ -337,6 +407,39 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // WS /term attach channel — shares the memoized manager (and its 503/gate
   // semantics: gated or disabled terminals destroy the upgrade)
   const termWs = createTermWs({ manager: ensureManager, enabled: () => termEnabled })
+
+  // ── harness control plane ───────────────────────────────────────────────
+  // Roster cwd for the claude entry, read at call time — rosterProvider
+  // re-reads den-term.json when it changes on disk, so an operator edit is
+  // reflected without a restart (passed as a getter, not a snapshot).
+  const claudeRosterCwd = (): string => {
+    const roster = rosterProvider.get()
+    return roster.commands.claude?.cwd ?? roster.cwd
+  }
+  // The node's HarnessDriver registry (docs/plans/harness-control-plane.md).
+  // `claude-code` is the reference driver: it formalizes the machinery right
+  // above it — the term manager (spawn/--resume/inject/Esc), the on-disk
+  // Claude store, and the den AgentEvent stream — behind the one contract the
+  // Phase 3 drivers will match. Capability flags follow what is ACTUALLY
+  // wired here: no terminals on this node means no interrupt/resume, and
+  // approvals are false for Claude regardless (its permission prompts live
+  // inside the TUI and never reach the den wire).
+  const harnesses = createHarnessRegistry()
+  const claudeDriver = opts.skipClaudeHarnessDriver
+    ? undefined
+    : new ClaudeCodeDriver({
+        store: createClaudeStoreHost(),
+        pty: termEnabled ? () => ensureManager() : undefined,
+        events: (sink) => {
+          denEventSinks.add(sink)
+          return () => denEventSinks.delete(sink)
+        },
+        cwd: claudeRosterCwd,
+        log: console.error,
+      })
+  if (claudeDriver) harnesses.register(claudeDriver)
+  for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
+  const harnessRoutes = createHarnessRoutes({ registry: harnesses, log: console.error })
 
   // MicBridge (host mic → virtual node input). Same tokenless gate pattern as
   // terminals: off-loopback without token requires RIVETOS_DEN_AUDIO_OPEN.
@@ -597,6 +700,20 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           return json(res, 503, { error: 'device enrollment disabled on this node' })
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await devicesRoutes.handle(req, res, url)) return
+        return json(res, 404, { error: 'not found' })
+      }
+
+      // Harness control plane (behind the bearer gate). Runs alongside the
+      // legacy /term/harness-sessions/* endpoints the hub still uses — the
+      // design doc prunes those in Phase 5, not here.
+      if (
+        url.pathname === '/api/harnesses' ||
+        url.pathname.startsWith('/api/harnesses/') ||
+        url.pathname === '/api/harness-sessions' ||
+        url.pathname.startsWith('/api/harness-sessions/')
+      ) {
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (await harnessRoutes.handle(req, res, url)) return
         return json(res, 404, { error: 'not found' })
       }
 
@@ -899,6 +1016,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       audioWs.handleUpgrade(req, socket, head, url)
       return
     }
+    if (harnessRoutes.handleUpgrade(req, socket, head, url)) return
     const up = opts.extraUpgrades?.find((u) => u.path === url.pathname)
     if (up) {
       up.handle(req, socket, head, url)
@@ -945,17 +1063,22 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     }
     termWs.heartbeat()
     audioWs.heartbeat()
+    harnessRoutes.heartbeat()
   }, 30_000)
   heartbeat.unref?.()
 
   return {
     server,
     state: () => state,
+    harnesses,
     close: () =>
       new Promise((resolve) => {
         clearInterval(heartbeat)
         for (const t of evictTimers.values()) clearTimeout(t)
         evictTimers.clear()
+        harnessRoutes.close()
+        claudeDriver?.close()
+        harnesses.close()
         termWs.close()
         audioWs.close()
         micBridge?.close()

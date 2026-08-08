@@ -342,18 +342,108 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 
 ## Phase 2 — Gateway harness API + Claude reference
 
-- [ ] Land `HarnessDriver`, `HarnessEvent`, `SessionId` in shared package
-- [ ] Parse/format helpers, alias store, `enc()`/`dec()` base64url segment codec
+- [x] Land `HarnessDriver`, `HarnessEvent`, `SessionId` in shared package
+- [x] Parse/format helpers, alias store, `enc()`/`dec()` base64url segment codec
 - [ ] Capture migration: UNIQUE index on `ros_conversations (session_key, agent)` + adapter upsert (collision rule 3 is unimplementable on today's select-then-insert)
 - [ ] Task-key migration: replace `RIVETOS_SESSION_KEY=task:<id>` write-override with per-conversation task association + query-time join (see Legacy keys)
 - [ ] Gateway upload endpoint for remote attachments (returns node-local URI)
-- [ ] Driver-level registry stream (`session-created`) wired to `GET /harnesses/:id/events`
-- [ ] Driver registry on node boot
-- [ ] **Claude reference driver** over claude-cli + den harness-sessions
-- [ ] Migrate Claude keys to `claude-code:<native>` (+ aliases for legacy)
-- [ ] Gateway: list harnesses, open/list/resume, turns, interrupt, approvals, event stream
+- [x] Driver-level registry stream (`session-created`) wired to `GET /harnesses/:id/events`
+- [x] Driver registry on node boot
+- [x] **Claude reference driver** over claude-cli + den harness-sessions
+- [x] Migrate Claude keys to `claude-code:<native>` — **read side only**: the gateway resolves legacy shapes (bare uuid, `claude-code:<slug>/<uuid>`) to canonical before dispatch
+- [ ] Migrate Claude keys to `claude-code:<native>` — **write side**: capture still writes the legacy shapes; pairs with the two capture rows above
+- [x] Gateway: list harnesses, open/list/resume, turns, interrupt, approvals, event stream
 - [ ] Capture writes canonical `SessionId` only
-- [ ] Tests: first-colon parse, resume, alias redirect, `enc()`/`dec()` round-trip (ids containing `:` and `/`), typed `invalid_session_id` → HTTP 400 at the gateway
+- [x] Tests: first-colon parse, resume, alias redirect, `enc()`/`dec()` round-trip (ids containing `:` and `/`), typed `invalid_session_id` → HTTP 400 at the gateway
+
+### As built (node control plane)
+
+`services/den-server/src/harness/` — the registry, the `claude-code` driver, and
+the routes all live in den-server because that is where the machinery they
+formalize already is (term manager, on-disk Claude store, den AgentEvent
+ingest). Boot registers the driver by starting the gateway; Phase 3 drivers pass
+through `registerGateway(..., harnessDrivers)`.
+
+Mounted paths — this table is authoritative for what shipped:
+
+| Contract name | As built |
+|---------------|----------|
+| `GET /harnesses` | `GET /api/harnesses` |
+| — (added) | `GET /api/harnesses/:harnessId` — one driver's capability sheet |
+| `GET /harnesses/:id/events` | `WS /api/harnesses/ws[?harness=<id>]` |
+| `POST /harnesses/:id/sessions` | `POST /api/harnesses/:harnessId/sessions` |
+| `GET /harnesses/:id/sessions` | `GET /api/harnesses/:harnessId/sessions` |
+| `GET /sessions/:sessionId` | `GET /api/harness-sessions/:enc` |
+| `POST /sessions/:sessionId/resume` | `POST /api/harness-sessions/:enc/resume` |
+| `POST /sessions/:sessionId/turns` | `POST /api/harness-sessions/:enc/turns` |
+| `POST /sessions/:sessionId/interrupt` | `POST /api/harness-sessions/:enc/interrupt` |
+| `POST /sessions/:sessionId/approvals/:requestId` | `POST /api/harness-sessions/:enc/approvals/:requestId` (501 for `claude-code`) |
+| `GET /sessions/:sessionId/transcript` | `GET /api/harness-sessions/:enc/transcript` |
+| `GET /sessions/:sessionId/events` | `WS /api/harness-sessions/ws?session=<enc>` |
+| `POST /uploads` | not built — see Phase 2 checklist |
+
+Two deviations, both because den has no path router to deviate from:
+
+- **`/api/harness-sessions`, not `/api/sessions`.** den dispatches HTTP by
+  matching a request path against a set of literal prefixes, longest first
+  (`server.ts`, the `extraRoutes` loop) — there are no dynamic segments
+  anywhere. `/api/sessions` is one such opaque prefix, owned entirely by the
+  gateway chat channel, which splits sub-paths by hand inside its own handler.
+  A second family under that prefix would mean editing the chat channel's
+  handler, not registering a route.
+- **WS resources ride the query string.** den's upgrade mounts are matched by
+  exact path (`/ws`, `/term?id=`, `/api/sessions/ws`,
+  `/api/notifications/ws`), so a dynamic `:sessionId` segment has nothing to
+  match against.
+
+Claude capability flags, honestly: `approvals: false` always (its permission
+prompts live inside the TUI and never reach the den wire); `interrupt` /
+`resume` follow whether den terminals are enabled; `liveStream` follows the den
+event tap; `listSessions` is always true (a store scan). `startSession` rejects
+`cwd`/`model` (roster-owned) and `sendUserTurn` rejects attachments, both with
+`capability_unsupported`, rather than ignoring them silently.
+
+Known gaps in the shipped slice (recorded, not fixed):
+
+- Capability flags are **declared at construction, not runtime-probed**.
+  `claude-code` reads `interrupt`/`resume` off whether den terminals are
+  *enabled*; if `node-pty` then fails to load, `GET /api/harnesses` keeps
+  advertising `true` while the methods answer 501. The rejection is honest;
+  the advertisement is optimistic.
+- Session **status for out-of-den harnesses**. Liveness comes from the driver's
+  own map, fed by `startSession`/`resumeSession` and by den events (including
+  the term manager's synthetic `session.start`, so a `/term` drawer spawn is
+  adopted immediately). A Claude process started outside den entirely emits
+  nothing observable and reads as `ended` until its hooks speak.
+
+### ⚠️ Phase 3 obligations — subscriptions must follow rotation
+
+**Do not land a rotating driver (hermes is the first) before closing this.**
+
+The contract says an active subscription follows the alias chain: the rotation
+`session-updated` is delivered on the existing subscription and later events
+simply carry the new `sessionId`, so clients never re-subscribe
+(§ Contract semantics, § Rotation). **The Phase 2 slice does not implement
+that.** `ClaudeCodeDriver.subscribe` pins each sink to the native id it was
+registered under, and the registry records the alias without touching live
+subscriptions. This is currently unobservable only because Claude Code never
+rotates its native session id — it is a latent contract violation, not a
+design choice.
+
+Closing it requires all three:
+
+1. **Re-key live sinks on alias record.** When the registry records
+   `previous → canonical`, every sink subscribed under `previous` must move to
+   `canonical` (registry-side wrapping is preferable to per-driver re-keying —
+   alias resolution is control-plane-owned, and every driver would otherwise
+   reimplement it).
+2. **End the superseded id's lifecycle.** Rotation rule: the control plane
+   records the old id as ended when it stores the alias, and `listSessions`
+   returns canonical ids only.
+3. **A contract test for subscription-follows-rotation** — subscribe under the
+   old id, rotate, assert the next event arrives on the *same* subscription
+   carrying the new `sessionId`, and that the client never re-subscribed. It
+   belongs in a shared driver-contract suite, not one driver's tests.
 
 ---
 
