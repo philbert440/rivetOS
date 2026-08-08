@@ -104,7 +104,7 @@ export class Runtime {
     this.router = new Router(config.defaultAgent)
     this.workspace = new WorkspaceLoader(config.workspaceDir)
     this.streamManager = new StreamManager()
-    this.sessionManager = new SessionManager(this.router)
+    this.sessionManager = new SessionManager(this.router, undefined, config.hooks)
     this.reconnectionManager = new ReconnectionManager({
       onReconnect: (channelId) => {
         this.channelConnected.set(channelId, true)
@@ -413,6 +413,13 @@ export class Runtime {
     }
     this.aborts.clear()
     this.activeLoops.clear()
+
+    // Emit session:end for every live session before channels go away
+    try {
+      await this.sessionManager.endAllSessions()
+    } catch (err: unknown) {
+      log.error(`Session teardown failed: ${(err as Error).message}`)
+    }
 
     for (const [id, channel] of this.channels) {
       try {

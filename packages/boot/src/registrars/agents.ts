@@ -498,6 +498,12 @@ export async function registerAgentTools(
 
   // Skills — discover, list, and manage
   const skillManager = new SkillManagerImpl()
+  // Wire hook pipeline so skill:before / skill:after actually fire on load.
+  // setPipeline had zero callers before this — dead path at boot.
+  const hooks = runtime.getHooks()
+  if (hooks) {
+    skillManager.setPipeline(hooks)
+  }
   const defaultSkillDirs = [`${process.env.HOME ?? '~'}/.rivetos/workspace/skills`]
   const skillDirs = config.runtime.skill_dirs ?? defaultSkillDirs
   await skillManager.discover(skillDirs)

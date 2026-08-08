@@ -104,10 +104,13 @@ export class TurnHandler {
       const { agent, provider } = router.route(message)
       log.debug(`Agent: ${agent.id}, Provider: ${provider.id}`)
 
-      // Session
+      // Session — create emits session:start when hooks are wired
       let session = sessionManager.get(sessionKey)
       if (!session) {
-        session = await sessionManager.createSession(sessionKey, agent)
+        session = await sessionManager.createSession(sessionKey, agent, {
+          platform: message.platform,
+          userId: message.userId,
+        })
         sessionManager.set(sessionKey, session)
       }
 
@@ -227,6 +230,9 @@ export class TurnHandler {
         }
         await this.deps.hooks.run(ctx)
       }
+
+      // Bookkeeping for session:end (turn count + tokens)
+      sessionManager.recordTurn(sessionKey, result.usage)
 
       // Cleanup maps
       this.deps.aborts.delete(sessionKey)
