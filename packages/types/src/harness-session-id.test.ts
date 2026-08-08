@@ -143,6 +143,23 @@ describe('enc/dec session id segment', () => {
     expectInvalid(() => decodeSessionIdSegment(encodeToSegment('claude:abc')))
     expectInvalid(() => decodeSessionIdSegment(encodeToSegment('bare-uuid')))
   })
+
+  it('rejects a base64url-shaped segment of impossible length (atob throws)', () => {
+    // Passes the charset regex but length % 4 === 1 is not decodable — atob
+    // raises a DOMException, which must surface as the typed code, not escape.
+    expectInvalid(() => decodeSessionIdSegment('A'))
+    expectInvalid(() => decodeSessionIdSegment('Y2xhdWRlLWNvZGU6YWJjZQ'.slice(0, 17)))
+  })
+
+  it('rejects a segment whose bytes are not valid UTF-8', () => {
+    // 'claude-code:' + a lone 0xFF — decodable base64url, undecodable UTF-8.
+    const segment = btoa(`claude-code:${String.fromCharCode(0xff)}`)
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '')
+    expect(segment).toMatch(/^[A-Za-z0-9_-]+$/)
+    expectInvalid(() => decodeSessionIdSegment(segment))
+  })
 })
 
 /** Encode without the canonical-id validation, to build bad-input fixtures. */
