@@ -24,7 +24,7 @@ This creates `plugins/{category}/{name}/` with `package.json`, `tsconfig.json`, 
 
 ## Architecture Rules
 
-1. **Depend on `@rivetos/types` only.** Plugins do not import from `@rivetos/core` or `@rivetos/boot`. (The memory plugin's workers and the MCP server transport are exceptions because they ship binaries that run outside the runtime.)
+1. **Depend on `@rivetos/types` only.** Plugins do not import from `@rivetos/core` or `@rivetos/boot`. (The MCP server transport is the exception — it ships a binary that runs outside the runtime. The memory plugin's workers are not an exception at all: they are separate packages under `services/`, not part of the plugin.)
 2. **Export a `manifest: PluginManifest` const.** This is the entry point boot uses.
 3. **Declare `package.json#rivetos`.** This is what discovery reads — without importing the package.
 4. **Handle platform concerns internally.** Message splitting, rate limits, API quirks — all inside the plugin.

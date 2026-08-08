@@ -436,7 +436,7 @@ The canonical stack lives at `infra/docker/rivetos/docker-compose.yml` and runs 
 - `workers` — embedding + compaction `graphile-worker` daemons (image: `rivetos`)
 - `agent` — runtime that drives channels + providers (image: `rivetos`, role: `agent`)
 
-Named volume: `rivetos-pgdata`. Health check dependencies: `migrate` and `workers` wait for `datahub` to be healthy; `workers` and `agent` wait for `migrate` to complete successfully.
+Named volume: `rivetos-pgdata`. Dependency ordering: only `migrate` waits on `datahub` being healthy; `workers` and `agent` each wait solely on `migrate` completing successfully (`service_completed_successfully`), so they inherit the database gate transitively rather than declaring it.
 
 ### Memory Workers (graphile-worker daemons)
 
@@ -452,10 +452,15 @@ runs background memory jobs; the workers are the sole consumers.
 │                                                    │
 │  ┌──────────────────┐  ┌─────────────────────────┐ │
 │  │ Embedding Worker │  │ Compaction Worker       │ │
+│  │ (2 tasks)        │  │ (7 tasks)               │ │
 │  │ embed-target     │  │ compact-conversation    │ │
-│  │ enqueue-         │  │ extract-wiki, enqueue-  │ │
-│  │   unembedded     │  │   idle, consolidate-    │ │
-│  │   (cron, 10min)  │  │   wiki, recompile-wiki  │ │
+│  │ enqueue-         │  │ synthesize-tool-call    │ │
+│  │   unembedded     │  │ extract-wiki            │ │
+│  │   (cron */10)    │  │ consolidate-wiki        │ │
+│  │                  │  │ recompile-wiki          │ │
+│  │                  │  │ enqueue-idle (cron */5) │ │
+│  │                  │  │ enqueue-wiki-backfill   │ │
+│  │                  │  │   (cron */10)           │ │
 │  │ → Embed model    │  │ → Summarization model   │ │
 │  │   (GPU endpoint) │  │   (CPU endpoint)        │ │
 │  └──────────────────┘  └─────────────────────────┘ │
@@ -469,7 +474,9 @@ runs background memory jobs; the workers are the sole consumers.
 │  • Session idle         → 'enqueue-idle' cron      │
 │                             (every 5 min), not a   │
 │                             DB trigger             │
-│  • Explicit request     → add_job from the runtime │
+│  • Empty-content tool   → the memory adapter       │
+│    call appended            enqueues 'synthesize-  │
+│                             tool-call' inline      │
 └────────────────────────────────────────────────────┘
          │                          │
          ▼                          ▼
@@ -506,6 +513,17 @@ Jobs are deduped by `jobKey = conversationId` (`preserve_run_at`, `maxAttempts: 
 tick can enqueue unconditionally without checking for a pending job.
 
 Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled with generous token budgets and a 60-minute timeout.
+
+**Tool-call synthesis:** when an assistant message is appended with empty content but a
+`tool_name`, the memory adapter enqueues a `synthesize-tool-call` job inline
+(`plugins/memory/postgres/src/adapter.ts`) so the row gets natural-language content it can
+be searched by. `rivetos memory backfill-tool-synth` enqueues the same task for historical
+rows.
+
+**Wiki extraction:** the compaction worker also owns the memory wiki — `extract-wiki`
+mines durable topic patches out of leaf summaries, `consolidate-wiki` merges near-duplicate
+topics, and `recompile-wiki` rebuilds a topic's Summary + Article from history. A second
+cron, `enqueue-wiki-backfill` (`*/10 * * * *`), queues leaves that were never mined.
 
 **Source:** `services/embedding-worker/` and `services/compaction-worker/` (TS, graphile-worker tasks)
 **Setup:** Schema DDL lives at `plugins/memory/postgres/src/schema/migrations/` and is applied at boot. Worker services run as their own systemd units; graphile-worker installs its own schema lazily on first connection.
@@ -721,7 +739,6 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 
 - Infra provisioning scripts (Docker, Proxmox)
 - Container builds
-- Streaming manager (tested via runtime integration, no direct unit tests)
 - The memory adapter and mcp-sidecar memory tests skip unless `RIVETOS_PG_URL` points at a live Postgres (`plugins/memory/postgres/src/adapter.test.ts`, `services/mcp-sidecar/src/memory.test.ts`); the worker services' own tests are plain unit tests and always run
 
 ---

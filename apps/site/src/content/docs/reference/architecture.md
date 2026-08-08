@@ -320,7 +320,7 @@ rivetOS/
         config.ts                    ← Config loader (YAML → typed config, env var resolution)
         discovery.ts                 ← Walks plugin dirs, reads `package.json#rivetos`
         lifecycle.ts                 ← PID file, signals, shutdown
-        validate.ts                  ← validateConfig() entry point
+        validate/index.ts            ← validateConfig() entry point
         validate/
           sections.ts                ← Per-section validators
           cross-refs.ts              ← Cross-reference validation (agent→provider, bindings)
@@ -331,15 +331,18 @@ rivetOS/
                                      ←   channels, tools, memory, transports)
           hooks.ts                   ← Wire safety, auto-actions, sessions, learning
           agents.ts                  ← Delegation, subagent, skills registration
+          gateway.ts                 ← Embedded den/gateway server + its routes
     cli/                             ← command-line interface
       src/
         index.ts                     ← Entry point, command router
         commands/
-          init.ts                    ← Legacy init (directory + default config)
-          init/                      ← Interactive wizard (6 phases)
+          init.ts                    ← Thin shim → runInitWizard()
+          init/                      ← Interactive wizard (phases 1-8: detect,
+                                     ←   deployment, agents, channels, 4b postgres,
+                                     ←   review, generate, deploy, mesh join)
             index.ts, wizard.ts, types.ts, detect.ts,
             deployment.ts, agents.ts, channels.ts,
-            review.ts, generate.ts
+            postgres.ts, review.ts, generate.ts
           start.ts, stop.ts, status.ts, doctor.ts, test.ts
           update.ts                  ← rivetos update (source-based container rebuild)
           build.ts                   ← rivetos build (container image build)

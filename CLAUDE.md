@@ -77,12 +77,15 @@ limitation: most of these packages are published to npm, and a pinned version
 is what consumers outside the workspace resolve against, so the manifest reads
 the same in-tree and on the registry.
 
-The pins track each dependency's own version, so they are not uniform —
-most of the tree is at `0.4.0-beta.6`, but `den-protocol` and `den-packs` are
-`0.1.0`, and `den-server`, `compaction-worker`, and `den-app` are `0.4.0`.
-A handful of edges opt out with `"*"` (`gateway-client` → types, `den-server` →
-types, `rivethub-web` → types and gateway-client); those always resolve to the
-local member.
+The pins track each dependency's own version, so they are not uniform. Most
+of the tree is at `0.4.0-beta.6`, but several members are not — e.g.
+`den-protocol` and `den-packs` at `0.1.0`; `den-server`, `embedding-worker`,
+`compaction-worker`, `den-app`, and `site` at `0.4.0`; `rivet-android` at
+`0.0.0`; and the two capture packages at `0.3.0` and `0.1.0`. Check the
+member's own `version` rather than assuming the common one. A handful of edges
+opt out with `"*"` (`gateway-client` → types, `den-server` → types,
+`rivethub-web` → types and gateway-client); those always resolve to the local
+member.
 
 For every pinned edge, npm links the workspace member locally only while the
 pin still matches that member's own `version`. Bump a package's version
