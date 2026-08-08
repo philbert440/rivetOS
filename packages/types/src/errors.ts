@@ -11,7 +11,8 @@
  *   ├── ConfigError
  *   ├── ToolError
  *   ├── DelegationError
- *   └── RuntimeError
+ *   ├── RuntimeError
+ *   └── HarnessError
  *
  * Note: ProviderError lives in provider.ts for backward compatibility
  * but follows the same patterns (toJSON, retryable, severity).
@@ -315,5 +316,81 @@ export class RuntimeError extends RivetError {
       context: options?.context,
     })
     this.name = 'RuntimeError'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Harness Errors (harness control plane — see harness.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Typed rejection codes for the `HarnessDriver` contract. Lowercase snake_case
+ * (unlike the SCREAMING_SNAKE codes above) because these cross the wire: the
+ * gateway surfaces them verbatim in its error responses.
+ *
+ * - `invalid_session_id`    — malformed/unknown-harness/whitespace SessionId → HTTP 400
+ * - `session_id_collision`  — pinned native id already exists (incl. anywhere in
+ *                             an alias chain); never overwrite → HTTP 409
+ * - `capability_unsupported`— method called whose capability flag is false → HTTP 501
+ * - `unknown_approval`      — unknown/expired approval requestId → HTTP 404
+ * - `turn_in_flight`        — sendUserTurn while a turn is running → HTTP 409
+ */
+export const HARNESS_ERROR_CODES = [
+  'invalid_session_id',
+  'session_id_collision',
+  'capability_unsupported',
+  'unknown_approval',
+  'turn_in_flight',
+] as const
+
+export type HarnessErrorCode = (typeof HARNESS_ERROR_CODES)[number]
+
+export const INVALID_SESSION_ID: HarnessErrorCode = 'invalid_session_id'
+export const SESSION_ID_COLLISION: HarnessErrorCode = 'session_id_collision'
+export const CAPABILITY_UNSUPPORTED: HarnessErrorCode = 'capability_unsupported'
+export const UNKNOWN_APPROVAL: HarnessErrorCode = 'unknown_approval'
+export const TURN_IN_FLIGHT: HarnessErrorCode = 'turn_in_flight'
+
+export class HarnessError extends RivetError {
+  readonly harnessId?: string
+  readonly sessionId?: string
+
+  constructor(
+    code: HarnessErrorCode,
+    message: string,
+    options?: {
+      harnessId?: string
+      sessionId?: string
+      severity?: ErrorSeverity
+      cause?: Error
+      context?: Record<string, unknown>
+      retryable?: boolean
+    },
+  ) {
+    // `turn_in_flight` is the only transient one — the caller can retry once
+    // the in-flight turn completes. The rest need a different request.
+    const defaults: Record<HarnessErrorCode, { severity: ErrorSeverity; retryable: boolean }> = {
+      invalid_session_id: { severity: 'error', retryable: false },
+      session_id_collision: { severity: 'error', retryable: false },
+      capability_unsupported: { severity: 'error', retryable: false },
+      unknown_approval: { severity: 'error', retryable: false },
+      turn_in_flight: { severity: 'transient', retryable: true },
+    }
+
+    super({
+      code,
+      message,
+      severity: options?.severity ?? defaults[code].severity,
+      retryable: options?.retryable ?? defaults[code].retryable,
+      cause: options?.cause,
+      context: {
+        ...options?.context,
+        ...(options?.harnessId ? { harnessId: options.harnessId } : {}),
+        ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
+      },
+    })
+    this.name = 'HarnessError'
+    this.harnessId = options?.harnessId
+    this.sessionId = options?.sessionId
   }
 }
