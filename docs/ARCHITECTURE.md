@@ -174,7 +174,7 @@ FileMeshRegistry — owns mesh node registration, heartbeat, pruning.
 │  │  Metrics    — turns/min, latency, tokens, errors        │ │
 │  │  Health     — GET /health endpoint, full runtime status │ │
 │  │  Logger     — structured JSON or pretty-print modes     │ │
-│  │  Audit      — append-only log with rotation/retention   │ │
+│  │  Audit      — append-only daily JSONL (manual pruning)   │ │
 │  └─────────────────────────────────────────────────────────┘ │
 │                                                              │
 │  ┌───────────────────────────────────────────────────────┐   │
