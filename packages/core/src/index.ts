@@ -177,17 +177,6 @@ export { logger, setLogLevel, getLogLevel, setLogFormat, getLogFormat } from './
 export type { Logger, LogLevel, LogFormat, LogEntry } from './logger.js'
 
 // Reliability
-export {
-  CircuitBreaker,
-  getCircuitBreaker,
-  getAllCircuitBreakerStats,
-  resetAllCircuitBreakers,
-} from './domain/circuit-breaker.js'
-export type {
-  CircuitState,
-  CircuitBreakerConfig,
-  CircuitBreakerStats,
-} from './domain/circuit-breaker.js'
 export { ReconnectionManager } from './domain/reconnect.js'
 export type { ReconnectConfig } from './domain/reconnect.js'
 
@@ -227,5 +216,3 @@ export {
   getSecretEnvVars,
   resolveOpReferences,
 } from './security/secrets.js'
-export { rotateAuditLogs } from './security/audit-rotation.js'
-export type { AuditRotationConfig, RotationResult } from './security/audit-rotation.js'
