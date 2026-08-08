@@ -438,7 +438,7 @@ The canonical stack lives at `infra/docker/rivetos/docker-compose.yml` and runs 
 
 Named volume: `rivetos-pgdata`. Health check dependencies: `migrate` and `workers` wait for `datahub` to be healthy; `workers` and `agent` wait for `migrate` to complete successfully.
 
-### Memory Workers (Datahub Services)
+### Memory Workers (graphile-worker daemons)
 
 Embedding and compaction run as **`graphile-worker` daemons deployed alongside Datahub**
 (`services/embedding-worker/`, `services/compaction-worker/`). Both pull from a
@@ -482,14 +482,28 @@ runs background memory jobs; the workers are the sole consumers.
 ```
 
 **Embedding flow:**
-1. Message INSERT → Postgres trigger → `graphile_worker.add_job('embed-target', …)`
-2. graphile-worker wakes the embedding-worker → calls Nemotron on GERTY GPU
-3. Writes vector back to source row
-4. graphile-worker handles retry/backoff/dedup; `max_attempts=3` per row
+1. INSERT into `ros_messages` / `ros_summaries` → `notify_embedding_queue()` trigger → `graphile_worker.add_job('embed-target', …)`, skipped when content is empty
+2. graphile-worker picks the job up in the embedding-worker → calls the configured embed endpoint (`RIVETOS_EMBED_URL` / `RIVETOS_EMBED_MODEL`)
+3. Writes the vector back to the source row
+4. graphile-worker handles retry/backoff/dedup — deduped by `job_key = 'embed-<table>-<id>'`, `max_attempts => 5`
+5. An `enqueue-unembedded` cron (every 10 min) re-queues rows left with a NULL embedding and no live job
 
-**Compaction flow (two trigger paths):**
-1. **Message threshold** — Postgres trigger counts unsummarized messages per conversation, calls `graphile_worker.add_job('compact-conversation', …)` at 50+
-2. **Session idle** — graphile-worker cron task (every 5 min) finds idle conversations and enqueues compact-conversation jobs (in `services/compaction-worker/src/tasks/enqueue-idle.ts`)
+**Compaction flow (one enqueue path):**
+
+All compaction enqueueing lives in the worker's `enqueue-idle` cron
+(`services/compaction-worker/src/tasks/enqueue-idle.ts`, `*/5 * * * *`). There is no
+Postgres trigger — `check_compaction_threshold` and `enqueue_idle_sessions()` are
+deliberately absent from the baseline schema. Each tick enqueues up to 10 conversations,
+picking any whose unsummarized messages satisfy one of three clauses:
+
+| Clause | Condition | Trigger type |
+|--------|-----------|--------------|
+| Full window | `>= COMPACT_LEAF_BATCH` (default 10) unsummarized — fires even while the conversation is active, so long-running sessions drain one window per tick | `session_idle` |
+| Idle | quiet for `COMPACT_IDLE_MINUTES` (default 15) and `>= MIN_BATCH_SIZE` (5) unsummarized — mops up the remainder | `session_idle` |
+| Stale | quiet for `COMPACT_STALE_MINUTES` (default 4 days) and `>= COMPACT_STALE_MIN_BATCH` (2) — flushes the below-floor tail the idle clause skips by design | `session_stale` |
+
+Jobs are deduped by `jobKey = conversationId` (`preserve_run_at`, `maxAttempts: 3`), so a
+tick can enqueue unconditionally without checking for a pending job.
 
 Hierarchy: messages → leaf summaries → branch summaries → root summaries (bottom-up). Full thinking enabled with generous token budgets and a 60-minute timeout.
 

@@ -103,5 +103,7 @@ hand-copy.
 
 - Each plugin/service has its own `npm test` (vitest). Run from the
   package directory.
-- The compactor + embedder integration tests skip if `RIVETOS_PG_URL` is
-  unset, which is fine for the default CI run.
+- The tests that need a live Postgres skip when `RIVETOS_PG_URL` is unset —
+  `plugins/memory/postgres/src/adapter.test.ts` and
+  `services/mcp-sidecar/src/memory.test.ts`. The compaction- and
+  embedding-worker tests are plain unit tests and always run.
