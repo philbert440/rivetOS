@@ -12,7 +12,7 @@ Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or *
 
 | Requirement | Version | Check |
 |---|---|---|
-| Node.js | ≥ 24 | `node --version` |
+| Node.js | ≥ 22 (24 used in CI/containers) | `node --version` |
 | npm | ≥ 10 | `npm --version` |
 | Git | any | `git --version` |
 | Docker (optional) | ≥ 24 | `docker --version` |
@@ -34,7 +34,7 @@ The wizard will:
 1. **Detect your environment** — Docker available? Proxmox? How much memory?
 2. **Choose deployment target** — Docker (recommended), Proxmox, or manual
 3. **Configure agents** — pick a provider, enter your API key, choose a model
-4. **Configure channels** — Discord, Telegram, voice (Discord voice), terminal, or API-only
+4. **Configure channels** — Discord, Telegram, or terminal-only
 5. **Review and deploy** — summary of your choices, then one-click deploy
 
 After the wizard completes, your agent is running.

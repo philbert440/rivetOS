@@ -61,29 +61,52 @@ not just **what** (the diff already shows that).
   `services/{compaction,embedding}-worker/` and run as **separate**
   systemd services (where deployed) — not as part of `rivetos.service`.
 
-## pnpm caches
+## Workspace layout & installs
 
-This is a pnpm workspace, but several plugins depend on workspace
-packages by **pinned version** (`"0.4.0-beta.6"`) rather than
-`workspace:*`. That means each consumer has an independent hard-copy of
-the dist under `node_modules/.pnpm/@rivetos+<pkg>@<ver>/...`.
+This is an **npm workspace** monorepo (`package-lock.json`, `npm ci` in CI) —
+not pnpm and not yarn. Workspace members are enumerated under `workspaces` in
+the root `package.json`: `packages/*`, five per-category plugin globs
+(`plugins/{channels,memory,providers,tools,transports}/*`), `services/*`, four
+explicitly-listed apps (`apps/den`, `apps/site`, `apps/rivethub-web`,
+`apps/rivet-android` — note `apps/rivethub-desktop` is *not* a member), and the
+two `integrations/*/rivet-memory/capture` packages.
 
-When you edit a workspace package's source and rebuild, consumers' caches
-do **not** auto-update. To roll a change to all consumers in-place:
+Internal packages mostly depend on each other by **exact pinned version**
+rather than the `workspace:*` protocol. This is a repo convention, not an npm
+limitation: most of these packages are published to npm, and a pinned version
+is what consumers outside the workspace resolve against, so the manifest reads
+the same in-tree and on the registry.
+
+The pins track each dependency's own version, so they are not uniform. Most
+of the tree is at `0.4.0-beta.6`, but several members are not — e.g.
+`den-protocol` and `den-packs` at `0.1.0`; `den-server`, `embedding-worker`,
+`compaction-worker`, `den-app`, and `site` at `0.4.0`; `rivet-android` at
+`0.0.0`; and the two capture packages at `0.3.0` and `0.1.0`. Check the
+member's own `version` rather than assuming the common one. A handful of edges
+opt out with `"*"` (`gateway-client` → types, `den-server` → types,
+`rivethub-web` → types and gateway-client); those always resolve to the local
+member.
+
+For every pinned edge, npm links the workspace member locally only while the
+pin still matches that member's own `version`. Bump a package's version
+without bumping the consumers that pin it and npm will quietly resolve the
+**published tarball** from the registry instead of your local source — the
+build succeeds, and you are testing the wrong code. Bump in lockstep.
+
+Edits to a workspace package need a rebuild before consumers see them:
 
 ```bash
-SRC=plugins/memory/postgres/dist
-for D in $(find . -path '*/node_modules/.pnpm/@rivetos+memory-postgres@*/node_modules/@rivetos/memory-postgres/dist' -type d); do
-  cp -r "$SRC"/. "$D"/
-done
+npx nx build @rivetos/memory-postgres   # or: npx nx run-many -t build
 ```
 
-A clean `pnpm install` will also re-sync them, but the in-place copy is
-faster for local iteration.
+`npm install` re-links workspace members; there is no per-consumer cache to
+hand-copy.
 
 ## Tests
 
 - Each plugin/service has its own `npm test` (vitest). Run from the
   package directory.
-- The compactor + embedder integration tests skip if `RIVETOS_PG_URL` is
-  unset, which is fine for the default CI run.
+- The tests that need a live Postgres skip when `RIVETOS_PG_URL` is unset —
+  `plugins/memory/postgres/src/adapter.test.ts` and
+  `services/mcp-sidecar/src/memory.test.ts`. The compaction- and
+  embedding-worker tests are plain unit tests and always run.
