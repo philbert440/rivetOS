@@ -61,7 +61,6 @@ description: How RivetOS works internally
 │  Skills       — skill discovery and matching           │
 │  Heartbeat    — periodic scheduling                    │
 │  Safety       — shell danger, workspace fence, audit   │
-│  Circuit Break— provider failure tracking, open/close  │
 │  Reconnect    — exponential backoff for channels       │
 │  Auto-Actions — post-tool automation (format, lint)    │
 │  Sessions     — session lifecycle and history          │
@@ -179,7 +178,7 @@ FileMeshRegistry — owns mesh node registration, heartbeat, pruning.
 │  │  Metrics    — turns/min, latency, tokens, errors        │ │
 │  │  Health     — GET /health endpoint, full runtime status │ │
 │  │  Logger     — structured JSON or pretty-print modes     │ │
-│  │  Audit      — append-only log with rotation/retention   │ │
+│  │  Audit      — append-only daily JSONL (manual pruning)   │ │
 │  └─────────────────────────────────────────────────────────┘ │
 │                                                              │
 │  ┌───────────────────────────────────────────────────────┐   │
@@ -293,7 +292,6 @@ rivetOS/
             security.ts              ← skill content validation
           heartbeat.ts               ← HeartbeatRunner — periodic scheduling
           safety-hooks.ts            ← Shell danger, workspace fence, audit, custom rules
-          circuit-breaker.ts         ← Provider failure tracking, open/half-open/closed
           reconnect.ts               ← ReconnectionManager — exponential backoff
           auto-actions.ts            ← Post-tool automation (format, lint, test, git check)
           session-hooks.ts           ← Session lifecycle hooks (summary, auto-commit)
@@ -310,7 +308,6 @@ rivetOS/
           index.ts                   ← Module barrel exports
         security/
           secrets.ts                 ← redactSecrets, ensureEnvPermissions, 1Password resolution
-          audit-rotation.ts          ← Audit log rotation, compression, retention
         logger.ts                    ← Structured logger (JSON + pretty modes)
         runtime.ts                   ← Backward-compat re-export → runtime/runtime.ts
         index.ts                     ← Package exports (everything above)
@@ -597,6 +594,8 @@ Composable async pipeline with priority ordering (0-99):
 
 **Built-in hooks (wired via boot registrars):**
 - **Safety hooks** — Shell danger blocker (P10), workspace fence (P15), custom rules (P20), audit logger (P90)
+  - The audit logger appends to `<workspace>/.data/audit/<date>.jsonl`. There is no rotation or retention:
+    audit logs accumulate indefinitely and operators are expected to prune them manually.
 - **Auto-actions** — Post-tool format/lint/test/git-check (opt-in)
 - **Session hooks** — Daily context loading, session summaries, auto-commit, pre/post-compact
 
