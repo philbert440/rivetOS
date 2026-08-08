@@ -344,13 +344,7 @@ export async function gitUpdateNodeAsync(
   // Step 4.5: heal /etc/hosts mesh block from /rivet-shared/mesh.json
   // Non-fatal — drift in /etc/hosts shouldn't block a deploy, but must warn.
   try {
-    await sshExec(
-      host,
-      buildRemoteMeshHostsCommand(sshUser),
-      `${tag} mesh-hosts`,
-      15_000,
-      sshUser,
-    )
+    await sshExec(host, buildRemoteMeshHostsCommand(sshUser), `${tag} mesh-hosts`, 15_000, sshUser)
   } catch (err: unknown) {
     console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
   }
