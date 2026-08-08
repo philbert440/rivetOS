@@ -48,11 +48,8 @@ Web / Desktop / Android
 
 ```typescript
 /** Left half of SessionId. Fixed product tokens. */
-export type HarnessId =
-  | 'claude-code'
-  | 'grok-build'
-  | 'kimi-code'
-  | 'hermes';
+export const HARNESS_IDS = ['claude-code', 'grok-build', 'kimi-code', 'hermes'] as const;
+export type HarnessId = (typeof HARNESS_IDS)[number];
 
 /** Canonical identity: `<harness-id>:<native-session-id>` */
 export type SessionId = `${HarnessId}:${string}`;
@@ -96,9 +93,23 @@ export type HarnessEvent =
       reason?: string;
     }
   | {
+      /** Broadcast to ALL subscribers so multi-client UIs clear stale prompts. */
+      type: 'approval-resolved';
+      sessionId: SessionId;
+      requestId: string;
+      decision: ApprovalDecision;
+    }
+  | {
+      /** Emitted on the driver-level registry stream for any new/discovered session. */
+      type: 'session-created';
+      sessionId: SessionId;
+      summary: SessionSummary;
+    }
+  | {
       type: 'turn-complete';
       sessionId: SessionId;
       turnId?: string;
+      /** 'end-turn' | 'interrupted' | 'error' | harness-specific string */
       stopReason?: string;
     }
   | {
@@ -106,7 +117,7 @@ export type HarnessEvent =
       sessionId: SessionId;
       code: string;
       message: string;
-      retriable?: boolean;
+      retryable?: boolean;
     }
   | {
       type: 'session-updated';
@@ -171,6 +182,7 @@ export interface HarnessDriver {
 | Endpoint (conceptual) | Behavior |
 |-----------------------|----------|
 | `GET /harnesses` | Drivers + capability flags |
+| `GET /harnesses/:id/events` (WS upgrade) | Driver-level registry stream (`session-created` / `session-updated`) so hub session lists live-update instead of polling |
 | `POST /harnesses/:id/sessions` | `startSession` |
 | `GET /harnesses/:id/sessions` | `listSessions` |
 | `POST /sessions/:sessionId/resume` | `resumeSession` |
@@ -188,7 +200,14 @@ This table is the Phase 2 sketch — names are the contract; transports and any 
 - **`resolveApproval` with an unknown/expired `requestId`** rejects with `unknown_approval`.
 - **`sendUserTurn` while a turn is in flight** rejects with `turn_in_flight` (drivers MUST NOT silently queue in v1).
 - **`session_id_collision`** is a typed error code (see collision rules), not just prose.
-- **Stream continuity:** `subscribe` is an **at-most-once live tail from attach time** — no replay buffer in v1. After a WS drop, clients re-`subscribe` and MUST resync missed history from the transcript source of truth (`getSession` + capture/harness store). Mid-turn deltas lost during the gap are recovered from the transcript, never re-emitted live.
+- **Stream continuity:** `subscribe` is an **at-most-once live tail from attach time** — no replay buffer and no sequence numbers in v1. After a WS drop, clients re-`subscribe` and MUST hard-resync missed history from the transcript source of truth — den already exposes this today (`GET /term/harness-sessions/:id/transcript`); the gateway generalizes it per harness. Mid-turn deltas lost during the gap are recovered from the transcript, never re-emitted live.
+- **Alias resolution is control-plane-owned.** The gateway/control plane resolves superseded ids to canonical BEFORE dispatch, for every driver method and for `subscribe`. Drivers only ever see canonical ids and never consult the alias store.
+- **Subscriptions survive rotation.** An active subscription follows the alias chain: the rotation `session-updated` is delivered on the existing subscription and subsequent events simply carry the new `sessionId`. Clients never need to re-subscribe on rotation.
+- **`listSessions` returns canonical ids only.** Superseded ids never appear; rotation ends the old id's lifecycle (the control plane records the old id as ended when it stores the alias).
+- **`allow-session` scope:** all future invocations of the same tool `name` within that session. Nothing broader.
+- **Session status `idle`** = session alive, no turn in flight; drivers emit `session-updated` on active↔idle transitions.
+- **Remote attachments:** `UserTurn.attachments[].pathOrUri` must be node-resolvable. Remote clients (web/desktop/Android) stage files through a gateway upload endpoint that returns a node-local URI — attachments are never client filesystem paths.
+- **Canonical segment encoding:** `enc(SessionId)` = **unpadded base64url of the UTF-8 SessionId**. Used for den resource names AND gateway path params — percent-encoded `/` inside path segments is unreliable across routers/proxies, and legacy Claude keys contain `/`.
 
 ---
 
@@ -210,16 +229,18 @@ SessionId = <harness-id> ":" <native-session-id>
 | Encoding | UTF-8. Validate as-is (no silent trimming): leading/trailing whitespace ⇒ invalid; empty native id ⇒ invalid |
 | Case | `harness-id` fixed lowercase; native id preserved as emitted |
 
-**Examples:** `claude-code:a1b2c3d4-…`, `grok-build:sess_01HZX…`, `kimi-code:2026-08-08T12:00:00Z_abc`, `hermes:thread-42`.
+**Examples:** `claude-code:a1b2c3d4-…`, `grok-build:sess_01HZX…`, `kimi-code:c7f2…-uuid`, `hermes:9b41…-uuid`.
+
+**Native ids MUST be collision-resistant (UUID-class entropy).** The capture store is mesh-shared — multiple nodes write one memory DB, disambiguated by the `agent` column — so key entropy is the cross-node collision defense. Sequential or timestamp-shaped native ids (`thread-42`) are forbidden; a driver wrapping a harness that mints low-entropy ids must namespace them (e.g. suffix a mint-time UUID).
 
 ```typescript
 function parseSessionId(id: string): { harnessId: HarnessId; nativeSessionId: string } {
+  if (id !== id.trim()) throw new Error('invalid SessionId: whitespace');
   const i = id.indexOf(':');
   if (i <= 0 || i === id.length - 1) throw new Error('invalid SessionId');
-  const harnessId = id.slice(0, i) as HarnessId;
-  const nativeSessionId = id.slice(i + 1);
-  // validate harnessId ∈ enum
-  return { harnessId, nativeSessionId };
+  const harnessId = id.slice(0, i);
+  if (!HARNESS_IDS.includes(harnessId as HarnessId)) throw new Error('unknown harness id');
+  return { harnessId: harnessId as HarnessId, nativeSessionId: id.slice(i + 1) };
 }
 ```
 
@@ -228,12 +249,12 @@ function parseSessionId(id: string): { harnessId: HarnessId; nativeSessionId: st
 | Surface | Field | Value |
 |---------|-------|--------|
 | Canonical | `SessionId` | `<harness-id>:<native-session-id>` |
-| ros_messages / capture | `conversation_id` / `session_key` (conversation key) | **Exactly** `SessionId` |
+| Capture (memory DB) | `ros_conversations.session_key` (natural key, with `agent`) | **Exactly** `SessionId`. NOTE: `ros_messages.conversation_id` is an internal UUID FK to `ros_conversations(id)` — never the SessionId |
 | Capture plugins | Host label in JSONL | Normalize to `SessionId` before write (no bare native ids) |
 | Den harness-session | Resource name | `harness-session/<enc(SessionId)>` where `enc` single-segment-encodes the **full** SessionId (`:` and `/` included — Claude's path-fallback native ids contain `/`); **round-trip recovers the same SessionId**, with tests covering both `:` and `/` |
 | Hub chat | Thread external key | `SessionId` (UI may badge harness + short native suffix) |
 | Tasks | Executor payload | type `harness-session` + `sessionId: SessionId` |
-| Gateway | `:sessionId` param | URL-encoded `SessionId` |
+| Gateway | `:sessionId` param | `enc(SessionId)` — unpadded base64url (see Contract semantics; raw/percent-encoded `/` in path segments is unreliable) |
 
 **Forbidden:** bare native ids in memory/den/hub; alternate prefixes (`claude:`, `cc:`, agent nicknames); dual keys that disagree between capture and den.
 
@@ -241,7 +262,8 @@ function parseSessionId(id: string): { harnessId: HarnessId; nativeSessionId: st
 
 1. **Uniqueness domain:** one node. Mesh addresses sessions as `{nodeId, sessionId}` only if needed later.
 2. **Cross-harness:** different `harness-id` ⇒ different sessions even if native ids match.
-3. **Same harness:** native ids unique per harness store; on collision return `session_id_collision` — never overwrite.
+3. **Same harness:** native ids unique per harness store; on collision return `session_id_collision` — never overwrite. **Requires a real DB constraint:** capture today has no unique index on `(session_key, agent)` and select-then-insert races — the Phase 2 migration adds the constraint and switches the adapter to upsert.
+   - **Alias chains occupy the namespace:** a `startSession` native id matching ANY id in an existing alias chain (including rotated-away ids) ⇒ `session_id_collision`. Reused ids never silently merge two sessions into one chain.
 4. **Rehydrate:** if capture and den resolve to the same `SessionId` **after alias resolution** (exact string OR legacy-key alias, see Legacy keys below), one session. If only one side exists, create the missing mapping without minting a second id.
 5. **No silent remap:** never change `harness-id` on an existing row.
 
@@ -310,7 +332,10 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 ## Phase 2 — Gateway harness API + Claude reference
 
 - [ ] Land `HarnessDriver`, `HarnessEvent`, `SessionId` in shared package
-- [ ] Parse/format helpers, alias store, den name encode/decode
+- [ ] Parse/format helpers, alias store, `enc()`/`dec()` base64url segment codec
+- [ ] Capture migration: UNIQUE index on `ros_conversations (session_key, agent)` + adapter upsert (collision rule 3 is unimplementable on today's select-then-insert)
+- [ ] Gateway upload endpoint for remote attachments (returns node-local URI)
+- [ ] Driver-level registry stream (`session-created`) wired to `GET /harnesses/:id/events`
 - [ ] Driver registry on node boot
 - [ ] **Claude reference driver** over claude-cli + den harness-sessions
 - [ ] Migrate Claude keys to `claude-code:<native>` (+ aliases for legacy)
@@ -345,7 +370,7 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 ## Phase 5 — Docs, channel deprecation, prune
 
 - [ ] Docs: `ARCHITECTURE` + hub setup = harness-first node OS
-- [ ] Mark Telegram / Discord / voice-discord deprecated in docs and config examples
+- [ ] Finalize Telegram / Discord / voice-discord deprecation in docs and config examples (decision announced at Phase 0; executed here)
 - [ ] Remove channel plugins when no longer required for install
 - [ ] Demote provider plugins for interactive use (docs + defaults)
 - [ ] God-file splits **as touched**: task/store, den devices/server, boot agents
