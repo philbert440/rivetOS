@@ -140,6 +140,65 @@ export function pickUnknown(obj: Record<string, unknown>, ...keys: string[]): un
   return undefined
 }
 
+/**
+ * Text out of a kimi message-content value.
+ *
+ * The `prompt` field on `UserPromptSubmit` (and `TurnStarted` /
+ * `UserPromptQueued`) is the raw *message content*, which kimi models as
+ * either a plain string or an array of content parts —
+ * `[{ type: 'text', text }, …]`, with non-text parts (images, audio) mixed in.
+ * kimi's own `matcherValueText` does exactly this filter-and-join.
+ *
+ * Reading it as a string only is why this worker captured 1 user message out
+ * of roughly 50 prompts: every array-shaped prompt fell through `pickString`
+ * and the payload logged "no messages extracted".
+ *
+ * **This rendering is hash-relevant — one rule, both shapes.** Whatever comes
+ * out of here is what `contentHashEventId` hashes, so normalization is part of
+ * the dedup key rather than cosmetics. Both shapes are trimmed, so
+ * `'do the thing\n'`, `'do the thing'` and `[{type:'text',text:'do the thing'}]`
+ * render — and therefore hash — identically. That matters beyond tidiness: the
+ * transcript backfill tool (PR #474) re-renders history through the same rule,
+ * and any divergence between the two would insert a second copy of every row
+ * it re-derives for a session this worker already captured. Trailing newlines
+ * on prompts are common, so an untrimmed string path would have doubled them.
+ *
+ * The den translator (`integrations/kimi/rivet-den/hooks/kimi-den-hook.mjs`,
+ * landing alongside this fix in PR #471) carries the same logic. It is
+ * duplicated rather than shared on purpose: that hook is a dependency-free
+ * single file so it can be dropped onto a machine with no rivetos install.
+ * Change one, change the other.
+ */
+export function contentText(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+  }
+  if (!Array.isArray(value)) return undefined
+  const joined = value
+    .filter(
+      (part): part is { type: string; text?: unknown } =>
+        typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'text',
+    )
+    .map(part => (typeof part.text === 'string' ? part.text : ''))
+    .filter(Boolean)
+    .join(' ')
+    .trim()
+  return joined.length > 0 ? joined : undefined
+}
+
+/** `contentText` over the first present key — the string-or-parts `pickString`. */
+export function pickContentText(
+  obj: Record<string, unknown>,
+  ...keys: string[]
+): string | undefined {
+  for (const k of keys) {
+    const text = contentText(obj[k])
+    if (text !== undefined) return text
+  }
+  return undefined
+}
+
 // ---------------------------------------------------------------------------
 // Content-hash event_id (idempotency)
 // ---------------------------------------------------------------------------
@@ -189,7 +248,7 @@ export function messagesFromHookPayload(
 
   // User prompt
   if (/userpromptsubmit/i.test(event) || /UserPromptSubmit/i.test(event)) {
-    const prompt = pickString(payload, 'prompt', 'user_prompt', 'userPrompt', 'text', 'content')
+    const prompt = pickContentText(payload, 'prompt', 'user_prompt', 'userPrompt', 'text', 'content')
     if (prompt) {
       const eventId = contentHashEventId({
         sessionId,
@@ -257,10 +316,29 @@ export function messagesFromHookPayload(
     })
   }
 
-  // Assistant text on Stop (if payload carries it — verify live)
+  // Assistant text on Stop — kept as a forward-compatible path, not a live one.
+  //
+  // Verified against kimi-code 0.34.0: the Stop payload is
+  // `{ stop_hook_active }` plus the base fields, and carries no reply at all
+  // (99 of 99 Stop fires in the capture log extracted nothing). None of the
+  // keys below exist on a real Stop payload, so this cannot misfire on
+  // today's harness — it only wakes up if a future release starts shipping
+  // the reply, in either the string or the content-parts shape.
+  //
+  // Consequence to be aware of when reading the store: kimi conversations have
+  // no assistant rows. Recovering them needs a non-hook ingest path (the
+  // session-file path this file's header sketches) or the Phase 3 gateway
+  // driver — not a change here.
   if (/^stop$/i.test(event) || event === 'Stop') {
-    const assistant =
-      pickString(payload, 'response', 'assistant', 'assistant_text', 'assistantText', 'text', 'content')
+    const assistant = pickContentText(
+      payload,
+      'response',
+      'assistant',
+      'assistant_text',
+      'assistantText',
+      'text',
+      'content',
+    )
     if (assistant) {
       const eventId = contentHashEventId({
         sessionId,
@@ -300,7 +378,7 @@ export function messagesFromHookPayload(
 
   // If nothing matched but payload has a bare prompt, still capture it
   if (out.length === 0) {
-    const prompt = pickString(payload, 'prompt')
+    const prompt = pickContentText(payload, 'prompt')
     if (prompt) {
       const eventId = contentHashEventId({
         sessionId,

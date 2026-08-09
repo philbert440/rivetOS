@@ -21,6 +21,8 @@ import {
   messagesFromHookPayload,
   contentHashEventId,
   pickString,
+  contentText,
+  pickContentText,
   findSessionDir,
   deriveSessionKey,
   CAPTURE_AGENT,
@@ -138,6 +140,115 @@ console.log('\n— messagesFromHookPayload (camelCase fixture) —')
     'camelCase toolOutput extracted',
     !!msgs[0]?.toolResult && msgs[0].toolResult!.includes('camelCase'),
     `toolResult=${msgs[0]?.toolResult}`
+  )
+}
+
+console.log('\n— prompt content: string OR content-part array —')
+{
+  check('contentText passes a plain string through', contentText('hello') === 'hello')
+  check('contentText trims the string path too', contentText('  hello \n') === 'hello')
+  check('contentText returns undefined for whitespace-only', contentText('  \n ') === undefined)
+  check('contentText joins text parts', contentText([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }]) === 'a b')
+  check(
+    'contentText skips non-text parts',
+    contentText([
+      { type: 'text', text: 'before' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+      { type: 'text', text: 'after' },
+    ]) === 'before after'
+  )
+  check('contentText returns undefined for an empty string', contentText('') === undefined)
+  check('contentText returns undefined for an all-image array', contentText([{ type: 'image_url' }]) === undefined)
+  check('contentText returns undefined for a non-content value', contentText({ text: 'nope' }) === undefined)
+  check('contentText tolerates nulls in the array', contentText([null, { type: 'text', text: 'ok' }]) === 'ok')
+  check(
+    'pickContentText takes the first key that has content',
+    pickContentText({ prompt: [{ type: 'text', text: 'from prompt' }] }, 'text', 'prompt') === 'from prompt'
+  )
+
+  // The regression itself: kimi ships UserPromptSubmit.prompt as message
+  // CONTENT, which is a content-part array for essentially every real turn.
+  // Reading it as a string only captured 1 user message out of ~50 prompts.
+  const parts = loadFixture('user-prompt-parts.json')
+  const partsSession = pickString(parts, 'session_id', 'sessionId')!
+  const partsMsgs = messagesFromHookPayload('UserPromptSubmit', partsSession, parts)
+  check('array-shaped prompt yields a user message', partsMsgs.length === 1 && partsMsgs[0]?.role === 'user', `got ${partsMsgs.length}`)
+  check(
+    'array-shaped prompt content is the joined text',
+    partsMsgs[0]?.content === 'what did we do yesterday about the memory capture work?',
+    `content=${partsMsgs[0]?.content}`
+  )
+
+  const camelParts = loadFixture('user-prompt-parts-camel.json')
+  const camelSession = pickString(camelParts, 'session_id', 'sessionId')!
+  const camelMsgs = messagesFromHookPayload('UserPromptSubmit', camelSession, camelParts)
+  check('camelCase array-shaped prompt yields a user message', camelMsgs.length === 1 && camelMsgs[0]?.role === 'user')
+  check(
+    'camelCase array prompt drops the image part',
+    camelMsgs[0]?.content === 'what did we do yesterday about the memory capture work?',
+    `content=${camelMsgs[0]?.content}`
+  )
+
+  const stringPayload = loadFixture('user-prompt.json')
+  const stringSession = pickString(stringPayload, 'session_id', 'sessionId')!
+  check(
+    'string-shaped prompts still work',
+    messagesFromHookPayload('UserPromptSubmit', stringSession, stringPayload).length === 1
+  )
+
+  const emptyPrompt = messagesFromHookPayload('UserPromptSubmit', 'sess', {
+    hook_event_name: 'UserPromptSubmit',
+    prompt: [],
+  })
+  check('an empty content array yields no message', emptyPrompt.length === 0, `got ${emptyPrompt.length}`)
+
+  // One rendering rule, and it is part of the dedup key. The transcript
+  // backfill tool (PR #474) re-renders history through the same rule, so a
+  // trailing newline that survived here would make every re-derived row a
+  // duplicate instead of a skip.
+  const render = (prompt: unknown) =>
+    messagesFromHookPayload('UserPromptSubmit', 'hash-sess', {
+      hook_event_name: 'UserPromptSubmit',
+      prompt,
+    })[0]
+  const padded = render('  do the thing \n')
+  const bare = render('do the thing')
+  const parted = render([{ type: 'text', text: 'do the thing' }])
+  check('a padded string renders trimmed', padded?.content === 'do the thing', `content=${JSON.stringify(padded?.content)}`)
+  check(
+    'padded and bare strings hash identically',
+    !!padded?.eventId && padded?.eventId === bare?.eventId,
+    `${padded?.eventId} vs ${bare?.eventId}`
+  )
+  check(
+    'string and content-part renderings hash identically',
+    !!parted?.eventId && parted?.eventId === bare?.eventId,
+    `${parted?.eventId} vs ${bare?.eventId}`
+  )
+}
+
+console.log('\n— Stop carries no reply (kimi 0.34) —')
+{
+  // Verified against the shipped CLI: Stop's payload is `{ stop_hook_active }`
+  // plus base fields. The assistant branch is forward-compatible only, so the
+  // Stop is not a lifecycle event for the extractor — a real 0.34 payload
+  // yields zero messages; the assertions pin the absence of anything like a
+  // reply.
+  const real = loadFixture('stop-no-reply.json')
+  const sessionId = pickString(real, 'session_id', 'sessionId')!
+  const msgs = messagesFromHookPayload('Stop', sessionId, real)
+  check('a real Stop payload yields no assistant row', !msgs.some(m => m.role === 'assistant'), `roles=${msgs.map(m => m.role).join(',')}`)
+  check('a real Stop payload cannot misfire into a user row', !msgs.some(m => m.role === 'user'), `roles=${msgs.map(m => m.role).join(',')}`)
+
+  // …and if a future release does ship one, in either shape, it is captured.
+  const arrayReply = messagesFromHookPayload('Stop', sessionId, {
+    ...real,
+    response: [{ type: 'text', text: 'hypothetical reply' }],
+  })
+  check(
+    'a future array-shaped reply would be captured',
+    arrayReply.find(m => m.role === 'assistant')?.content === 'hypothetical reply',
+    `roles=${arrayReply.map(m => m.role).join(',')}`
   )
 }
 

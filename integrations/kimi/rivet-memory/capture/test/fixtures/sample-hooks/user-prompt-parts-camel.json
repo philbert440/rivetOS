@@ -1,0 +1,11 @@
+{
+  "sessionId": "kimi-fixture-session-001",
+  "cwd": "/home/rivet/project",
+  "hookEventName": "UserPromptSubmit",
+  "sessionTitle": "memory capture work",
+  "prompt": [
+    { "type": "text", "text": "what did we do yesterday" },
+    { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } },
+    { "type": "text", "text": "about the memory capture work?" }
+  ]
+}
