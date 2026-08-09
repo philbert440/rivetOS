@@ -1,0 +1,16 @@
+{
+  "hook_event_name": "PostToolUseFailure",
+  "session_id": "session_2f0f7f2e-1c9a-4b3f-9a51-6d0e1f2a3b4c",
+  "cwd": "/home/rivet/project",
+  "tool_name": "Edit",
+  "tool_call_id": "call_02",
+  "tool_input": {
+    "path": "/home/rivet/project/src/index.ts"
+  },
+  "error": {
+    "code": "INTERNAL",
+    "message": "old_string not found",
+    "name": "ToolError",
+    "retryable": false
+  }
+}

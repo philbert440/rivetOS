@@ -608,7 +608,8 @@ against a fake.
 
 - [ ] **Grok Build driver:** promote hooks/capture → gateway stream (`grok-build:…`)
 - [ ] **Hermes driver:** same; memory/den already exist (`hermes:…`)
-- [ ] **Kimi driver:** rivet-den hooks + driver; keep capture (`kimi-code:…`) — den integration is greenfield (no `integrations/kimi/rivet-den` exists today)
+- [x] **Kimi den hooks:** `integrations/kimi/rivet-den` streams kimi-code sessions into a den under the canonical `kimi-code:<native>` — the same key capture writes, so room and conversation join on one identity
+- [ ] **Kimi driver:** the gateway half is still to come; it also has to supply what the hooks cannot — kimi's `Stop` payload carries no assistant reply, so a hook-only kimi den shows prompts, tools and plan but no agent messages. Capture stays as-is (`kimi-code:…`)
 - [ ] Tasks: `harness-session` executors per harness id — includes renaming/aliasing the existing executor agent id `claude-cli` → `claude-code`
 - [ ] Hermes rotation migrated from close+new-conversation to alias semantics (breaking, see Session identity § Rotation)
 - [x] **Hub chat** binds the harness API (`apps/rivethub-web`) — see below

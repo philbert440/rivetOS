@@ -29,6 +29,11 @@ To stream a real session, install an adapter:
   isn't on localhost. [Plugin README](../integrations/claude-code/rivet-den/README.md)
   — read its "What the den shows" section before pointing it at a shared server.
 - **Grok Build** — hook set in `integrations/grok/rivet-den/`.
+- **Kimi Code CLI** — append `integrations/kimi/rivet-den/hooks/hooks.toml` to
+  `~/.kimi-code/config.toml`.
+  [README](../integrations/kimi/rivet-den/README.md) — kimi's hooks carry no
+  assistant reply, so that room shows prompts, tools, plan and terminal but no
+  agent messages.
 
 The server binds `127.0.0.1` by default; set `RIVETOS_DEN_HOST=0.0.0.0` (and
 ideally `RIVETOS_DEN_TOKEN`) to serve a LAN. Multiple viewers, multiple

@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "session_id": "session_2f0f7f2e-1c9a-4b3f-9a51-6d0e1f2a3b4c",
+  "cwd": "/home/rivet/project",
+  "session_title": "kimi den wiring",
+  "prompt": [{ "type": "text", "text": "wire the den hooks for kimi" }],
+  "is_steer": false
+}
