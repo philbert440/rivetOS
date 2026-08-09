@@ -134,6 +134,114 @@ object HarnessPlane {
     fun listable(descriptors: List<HarnessDescriptor>?): List<String> =
         descriptors.orEmpty().filter { it.capabilities.listSessions }.map { it.harnessId }
 
+    // ---- registry stream fast path -------------------------------------------
+    //
+    // The driver-level registry stream already carries a full session summary on
+    // `session-created`, so a client that only re-reads the list on a timer is
+    // paying a round trip for something it was handed. These merge it into the
+    // list the drawer is already rendering. Pure, and returning the SAME list
+    // when nothing changed, so a caller can skip the cache write (and therefore
+    // the repaint) on a duplicate frame.
+
+    /**
+     * Upsert a `session-created` summary, keyed by canonical [SessionId].
+     *
+     * Upsert rather than append because a refetch — or a duplicate frame — that
+     * lands after the merge must not produce a second row. The event payload
+     * wins wholesale on a hit: it is a full summary, not a partial patch, so
+     * field-by-field spreading would keep a `title`/`cwd` the driver had
+     * deliberately cleared.
+     */
+    fun mergeSessionCreated(
+        sessions: List<HarnessSessionSummary>,
+        summary: HarnessSessionSummary,
+    ): List<HarnessSessionSummary> {
+        val i = sessions.indexOfFirst { it.sessionId == summary.sessionId }
+        if (i < 0) return listOf(summary) + sessions
+        if (sessions[i] == summary) return sessions
+        return sessions.toMutableList().also { it[i] = summary }
+    }
+
+    /**
+     * Patch a `session-updated` in place: status, and the canonical id itself
+     * when the native id rotated.
+     *
+     * An id nobody has is left alone — the list re-read is the recovery path for
+     * a `session-created` that was missed, and inventing a row here would mean
+     * inventing every field the event does not carry.
+     *
+     * A rotation can race the `session-created` for its own new id, and after
+     * that create the list reads `[new, old]` — [mergeSessionCreated] prepends,
+     * so that is the ordering production actually produces. Both ids therefore
+     * name the same session and exactly one row may survive: the row under the
+     * new id is preferred (it is the fresher of the two), the row under
+     * [previousSessionId] is dropped whether or not it was the one patched, and
+     * the drop happens even when the status the frame carries is what the kept
+     * row already said. Deduping only the new id, or bailing early on an
+     * unchanged status, leaves the pre-rotation row in the drawer until the
+     * poll — a dead thread nothing on the node will ever speak for again.
+     *
+     * One deviation from the hub's version: [harnessId] is re-derived from the
+     * rewritten canonical id when it parses. On Kotlin the field is a real
+     * member of the summary rather than a re-parse of the id at read time, and
+     * a row whose `harnessId` disagreed with its `sessionId` would resolve its
+     * capability gate against the wrong driver.
+     */
+    fun patchSessionUpdated(
+        sessions: List<HarnessSessionSummary>,
+        sessionId: String,
+        previousSessionId: String?,
+        status: HarnessStatus,
+    ): List<HarnessSessionSummary> {
+        val lookFor = previousSessionId ?: sessionId
+        val keep = sessions.indexOfFirst { it.sessionId == sessionId }
+            .takeIf { it >= 0 }
+            ?: sessions.indexOfFirst { it.sessionId == lookFor }
+        if (keep < 0) return sessions
+
+        val current = sessions[keep]
+        val patched = if (current.sessionId == sessionId && current.status == status) {
+            current
+        } else {
+            current.copy(
+                sessionId = sessionId,
+                harnessId = HarnessSessionIds.parseOrNull(sessionId)?.harnessId ?: current.harnessId,
+                status = status,
+            )
+        }
+
+        val next = ArrayList<HarnessSessionSummary>(sessions.size)
+        sessions.forEachIndexed { index, row ->
+            when {
+                index == keep -> next.add(patched)
+                // Any other row under either id is the same session.
+                row.sessionId == sessionId || row.sessionId == lookFor -> Unit
+                else -> next.add(row)
+            }
+        }
+        // Same list when the frame said nothing new and there was nothing to
+        // collapse — the caller skips the cache write, and the repaint with it.
+        return if (patched === current && next.size == sessions.size) sessions else next
+    }
+
+    /**
+     * Apply one registry frame to a plane session list. Everything that is not
+     * a registry-list event — turn deltas, approvals, the tool frames — leaves
+     * the list untouched, by reference.
+     */
+    fun applyRegistryEvent(
+        sessions: List<HarnessSessionSummary>,
+        event: HarnessEvent,
+    ): List<HarnessSessionSummary> = when (event) {
+        is HarnessEvent.SessionCreated ->
+            event.summary?.let { mergeSessionCreated(sessions, it) } ?: sessions
+
+        is HarnessEvent.SessionUpdated ->
+            patchSessionUpdated(sessions, event.sessionId, event.previousSessionId, event.status)
+
+        else -> sessions
+    }
+
     /**
      * `turn_in_flight` — the driver is mid-turn. v1 drivers MUST NOT silently
      * queue, so this is the caller's cue to keep the turn queued and retry, not
