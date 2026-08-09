@@ -320,7 +320,7 @@ The repo already holds several key shapes for one interactive session. Phase 2 d
 |--------------|-------|-------------|
 | `claude-code:<session-uuid>` | Capture (preferred path) | Already canonical — wins over all others |
 | `claude-code:<project-slug>/<uuid>` | Capture path-fallback (`deriveSessionKey`) | Alias → `claude-code:<uuid>` once the session uuid is known; uuid form is canonical |
-| Bare native uuid | Den drawer, hub chat conversation id | Alias → `<harness-id>:<uuid>` during Phase 2 migration; hub external key updated in place |
+| Bare native uuid | Den drawer, hub chat conversation id | Alias → `<harness-id>:<uuid>`; hub external key updated in place (**done** — see As built (canonical hub keying)) |
 | Roster tokens `claude` / `grok` / `hermes` | Den command roster | UI labels only — map to `HarnessId` enum for storage; NEVER stored as key material |
 | `task:<taskId>` | Task executors (chat-loop appends; harness spawns, pre-0011) | **Stays a parallel, non-harness conversation-key namespace.** Never parsed as a `SessionId`. No longer a write key for harness spawns — those write canonical and carry `ros_conversations.task_id`; the key remains readable forever through the union (`task_id = <id> OR session_key = 'task:<id>'`) |
 
@@ -1250,12 +1250,8 @@ live instead of waiting for the transcript at turn end.
 
 Gaps this slice records rather than fixes:
 
-- **Hub chat's key is still the bare native id**, not the canonical
-  `SessionId` the identity table asks for. It is the den join key that the PTY,
-  the den viewer's `?session=`, the transcript watch and the memory
-  conversation key all share; moving it is a den-server change, not a client
-  one. The canonical id rides alongside and is what every control-plane call
-  and the chat header use.
+- ~~**Hub chat's key is still the bare native id.**~~ Closed — see As built
+  (canonical hub keying) below.
 - **No `session-created` fast path.** The registry stream invalidates the
   drawer's session queries rather than merging the summary it already carries.
 - **No attachments and no `startSession` from the hub.** `POST /uploads` does
@@ -1274,6 +1270,101 @@ Gaps this slice records rather than fixes:
   the first driver reporting `approvals: true` must also make pending
   approvals readable — a `GET` on the session, or approvals carried on the
   transcript — or every reconnect silently strands the harness.
+
+### As built (canonical hub keying)
+
+Closes the gap above: hub chat's thread external key is now the canonical
+`SessionId` for every row a registered driver claims, which is the identity
+table's "Hub chat → `SessionId`".
+
+**Two key spaces, one direction of resolution.** The den keeps its own: the
+ROOM key a PTY runs under (`RIVET_DEN_SESSION`), that v1 AgentEvents carry as
+`session`, that the viewer joins with `?session=`, and that the on-disk stores
+file transcripts under. For every session the hub opens, that key IS the
+harness's native id — the term manager pins it at spawn. So the migration is
+not "rename the room", it is "canonicalize the layer above and resolve down at
+the edge": `denSessionRef()`
+(`services/den-server/src/harness/session-key.ts`) maps canonical → room,
+leaves a bare id alone, and passes a non-session string (`den-pty-…`, an
+operator's room, `task:<id>`) through untouched. `denJoinKey()` is the
+room-only shorthand for edges with no store to pick.
+
+**A canonical id names its store.** `denSessionRef` returns the roster token
+alongside the room key whenever the inbound id was canonical, and the two store
+readers (`readHarnessTranscript`, `resolveHarnessStore`) then read that store
+and only that store. The claude → grok → hermes → kimi
+probe-and-take-the-first order stays, but for BARE ids alone, where it is the
+documented legacy behavior. Probing on a canonical id would let a uuid present
+in two stores answer `claude-code:<uuid>` out of grok's — the cross-store
+fall-through § Collision rules rule 2 forbids, and the same rule the driver
+layer enforces on its own reads. An empty answer is the correct answer there.
+It matters twice over for `resolveHarnessStore`: the watcher caches that ref
+for the life of the watch, so a wrong store would feed a wrong transcript on
+every subsequent change, not just once.
+
+Surfaces that now take either shape — bare ids keep working as aliases, and
+nothing is dual-written:
+
+| Surface | Resolution |
+|---|---|
+| `POST /term` (`session`, `resume`) | canonical → room; the spawned `denSession`, the store filename and `--resume` all stay native |
+| `POST /term/inject` | canonical → the same PTY as the bare key |
+| `WS /term?session=` | same |
+| `WS /ws?session=` | canonical → room (a subscription filter, nothing echoed) |
+| `DELETE /session` | canonical → room. Its `session.removed` broadcast necessarily carries the ROOM key, not the asked id: it addresses den viewers, which key on rooms |
+| `GET /state` | canonical → room, **echoes the requested id** |
+| `GET /term/harness-sessions/:id/transcript` | reads the named store, **echoes the requested id** so the client can match it to its thread |
+| Transcript watch (`watch`/`unwatch`/`sync` on `WS /api/sessions/ws`) | subscription key is the client's id verbatim; only the store lookup resolves. Frames come back under the key that was watched |
+| `GET /api/sessions/:id/messages` | alias read: a canonical id with no ring of its own falls back to the native half rather than minting an empty session |
+| `GET /api/conversations/:key/messages` | alias read: capture files a den-spawned harness under the bare key it inherited via `RIVETOS_SESSION_KEY`, so a canonical ask with no rows retries native. No rewrite — the alias covers the read forever |
+
+**What stays bare, and why (precedence).** A `draft` has no harness yet: its id
+is a locally minted uuid the first spawn pins, and there is nothing to
+canonicalize with until the plane adopts it. A `legacy` row is one no
+registered driver claimed, which by construction carries a roster token
+(`claude`, `grok`) and not a `HarnessId` — and roster tokens are never key
+material. With all four drivers registered every on-disk row IS claimed, so
+`legacy` is the degraded path (drivers disabled, a plane fetch that failed),
+not the normal one. The drawer union still joins on the NATIVE id, because
+that is the only field the two lists share.
+
+**Back-compat.** `findChatItem` matches a selection by key first and by native
+half second, so a pre-canonical selection, a draft the plane just adopted, and
+a rotation all still land on their row. `useChat.rekey(from, to)` then moves
+the thread's state — transcript, inject queue, live turn, approvals, the
+transcript subscription — onto the new key rather than stranding it, which
+also fixes rotation, where the drawer key used to change under a live
+conversation with nothing following it. When the destination already holds a
+transcript `rekey` leaves both sets of records alone rather than merge them —
+but it still moves `active` and `opened`, because the send path keys on the
+active id and the effect that called it does not re-fire, so a selection left
+on the retired key would queue every later turn under an id no row carries.
+Persisted client state (`sessionNames`, `chatSettings`) migrates lazily: the
+read falls back to the pre-canonical key and the next write lands on the new
+one.
+
+**The one projection.** The den viewer iframe's `?session=` is the only
+hub→id handoff that does not pass through a den-server edge — the viewer
+bundle matches it against the room keys in its own snapshot — so the hub
+projects it with `denRoomKey()`. Documented rather than hidden: it is a
+boundary onto the den's key space, not a second key for the thread.
+
+Deferred, precisely:
+
+- **Capture still writes the bare key for a den-spawned harness.** `manager.ts`
+  sets `RIVETOS_SESSION_KEY = <den join key>`, so `ros_conversations.session_key`
+  is the native id for those sessions while a harness left to its own hooks
+  writes canonical — the identity table wants canonical for both. Flipping the
+  write is a capture-side migration with its own deprecation window (the same
+  shape the `task:<id>` flip needed), so this slice ships the alias READ
+  instead: correct today, and the precondition for the write flip.
+- **`GET /term/harness-sessions` still returns bare ids** with a roster
+  command and no `harnessId`. It is the degraded-path source by definition, and
+  canonicalizing it would need the driver→roster map inside `term/`, which is
+  a dependency inversion. The plane list is the canonical source.
+- **Android** (`apps/rivet-android`) is untouched: it keys its own drawer and
+  reaches the same endpoints, which now accept both shapes, so it keeps
+  working bare. Moving it is the same client-side change made twice.
 
 ### As built (Android binding)
 

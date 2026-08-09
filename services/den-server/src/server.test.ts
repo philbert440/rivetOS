@@ -455,6 +455,49 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     )
   })
 
+  it('GET /state resolves a canonical id and echoes it back verbatim', async () => {
+    // Echo-as-asked, matching the transcript read and the transcript watch: a
+    // client keyed on canonical SessionIds has to be able to correlate the
+    // response with the thread it asked about. Resolution stays internal.
+    const { base } = await start('', 60_000, { term: true })
+    const uuid = 'a1b2c3d4-1111-4222-8333-444455556666'
+    await post(base, '/event', { ...EV, session: uuid })
+
+    const bare = (await (await fetch(`${base}/state?session=${uuid}`)).json()) as {
+      session: string
+      state: { title: string }
+    }
+    expect(bare).toMatchObject({ session: uuid, state: { title: 'hello' } })
+
+    const canonical = (await (
+      await fetch(`${base}/state?session=${encodeURIComponent(`claude-code:${uuid}`)}`)
+    ).json()) as { session: string; state: { title: string } }
+    expect(canonical.state.title).toBe('hello') // same room
+    expect(canonical.session).toBe(`claude-code:${uuid}`) // asked id, not the room key
+  })
+
+  it('accepts a canonical SessionId for the same PTY as its bare join key', async () => {
+    // Hub chat keys threads on `<harness-id>:<native>` (identity table); the
+    // den's own key space is the room, so every session-keyed edge resolves
+    // one onto the other rather than making the client carry both.
+    fakeProcs.length = 0
+    const { base } = await start('', 60_000, { term: true })
+    const uuid = 'a1b2c3d4-1111-4222-8333-444455556666'
+    // spawn with the canonical id — the room, and so the store filename, is
+    // still the bare native id
+    const spawn = await post(base, '/term', { command: 'shell', session: `claude-code:${uuid}` })
+    expect(spawn.status).toBe(201)
+    expect(((await spawn.json()) as { denSession: string }).denSession).toBe(uuid)
+    fakeProcs[0].emit('data', Buffer.from('welcome'))
+    await new Promise((r) => setTimeout(r, 30))
+    // both shapes reach the same PTY
+    for (const session of [uuid, `claude-code:${uuid}`]) {
+      const inj = await post(base, '/term/inject', { session, text: 'hi' })
+      expect(inj.status).toBe(202)
+      await new Promise((r) => setTimeout(r, 120))
+    }
+  })
+
   it('is behind the bearer gate (401 without the token)', async () => {
     const { base } = await start('sekret', 60_000, { term: true })
     expect((await post(base, '/term/inject', { session: 'x', text: 'hi' })).status).toBe(401)

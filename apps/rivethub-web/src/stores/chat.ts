@@ -35,6 +35,7 @@ import { uuidv4 } from '../lib/uuid.js'
 import { messagesFromHarnessTurns } from '../lib/harness-turns.js'
 import { questionsFromLiveTools, type AskQuestion } from '../lib/ask-user.js'
 import type { HarnessApprovalEvent } from '../lib/harness-fold.js'
+import { denRoomKey } from '../lib/harness-chat.js'
 
 export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 export { foldStream } from '../lib/fold-stream.js'
@@ -115,6 +116,21 @@ interface ChatState {
     opts?: { preserveOutbound?: boolean },
   ) => void
   addDraft: (sessionId: string) => void
+  /**
+   * Move every record for a thread onto a new key, in place.
+   *
+   * Two things do this: the control plane ADOPTING a draft (its bare uuid
+   * becomes the canonical `<harness-id>:<uuid>`) and a driver ROTATING a
+   * native id (`previousSessionId` → new canonical). Both replace the drawer
+   * row's key while the user is sitting in the conversation, and without this
+   * the transcript, the inject queue and the live turn are all stranded on the
+   * old key. When the destination already has state the thread records are
+   * left alone (a real collision is the node's problem, not something to merge
+   * blindly) but the SELECTION still moves — the send path keys on the active
+   * id, so leaving it on a retired key would queue new turns under an id no
+   * row carries.
+   */
+  rekey: (from: string, to: string) => void
   /** Seamless modes: show the user's turn immediately. Returns optim id. */
   addOptimisticUser: (sessionId: string, text: string, id?: string) => string
   /** Enqueue a user turn (optimistic bubble + queue). Returns optim id. */
@@ -306,6 +322,49 @@ export const useChat = create<ChatState>((set, get) => ({
       drafts: s.drafts.includes(sessionId) ? s.drafts : [sessionId, ...s.drafts],
       opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
     })),
+
+  rekey: (from, to) =>
+    set((s) => {
+      if (from === to) return {}
+      const swap = (list: string[]): string[] =>
+        list.includes(from) ? list.map((id) => (id === from ? to : id)) : list
+      /** Point the user (and so the send path) at the surviving key. */
+      const retarget = {
+        opened: s.opened.includes(to) ? s.opened.filter((id) => id !== from) : swap(s.opened),
+        drafts: s.drafts.includes(from) ? s.drafts.filter((id) => id !== from) : s.drafts,
+        active: s.active === from ? to : s.active,
+      }
+      // Destination already live: keep its records rather than clobber a real
+      // transcript with the one we were about to fold in — but still move the
+      // selection, or the composer keeps queueing turns onto the retired key
+      // (the effect that called us does not re-fire).
+      if (s.messages[to] !== undefined || s.transcripts[to] !== undefined) return retarget
+      const move = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
+        if (!(from in m)) return m
+        const { [from]: value, ...rest } = m
+        return { ...rest, [to]: value }
+      }
+      // The transcript watch is refcounted server-side per socket, so the old
+      // subscription has to be released explicitly — the server has no idea
+      // the two ids are the same thread.
+      if (watchedSessions.has(from)) {
+        watchedSessions.delete(from)
+        subscription?.send({ type: 'unwatch', session: from })
+        watchedSessions.add(to)
+        subscription?.send({ type: 'watch', session: to })
+      }
+      return {
+        ...retarget,
+        messages: move(s.messages),
+        transcripts: move(s.transcripts),
+        live: move(s.live),
+        liveTs: move(s.liveTs),
+        ask: move(s.ask),
+        outbound: move(s.outbound),
+        harnessBound: move(s.harnessBound),
+        approvals: move(s.approvals),
+      }
+    }),
 
   addOptimisticUser: (sessionId, text, id) => {
     const msgId = id ?? `optim:${uuidv4()}`
@@ -553,6 +612,18 @@ export const useChat = create<ChatState>((set, get) => ({
         // events surface on both, so writing here too would double every
         // delta and re-append every committed turn.
         const isOpen = (id: string): boolean => get().opened.includes(id) && !get().harnessBound[id]
+        // The den bridge keys its message/stream frames on the DEN ROOM key,
+        // which is the native half of a canonical thread key. Map one back
+        // onto the thread that owns it — otherwise a canonical-keyed session
+        // matches neither `opened` (nothing renders) nor `harnessBound` (the
+        // suppression that stops a control-plane session folding every delta
+        // twice). Transcript frames need no mapping: the server echoes the id
+        // the client watched with, so they already arrive keyed on the thread.
+        const ownerKey = (id: string): string => {
+          const opened = get().opened
+          if (opened.includes(id)) return id
+          return opened.find((key) => denRoomKey(key) === id) ?? id
+        }
         if (frame.kind === 'sessions-dirty') {
           // a harness store changed somewhere — the drawer refetches on this
           set((s) => ({ sessionsDirty: s.sessionsDirty + 1 }))
@@ -571,7 +642,8 @@ export const useChat = create<ChatState>((set, get) => ({
           return
         }
         if (frame.kind === 'message') {
-          const { kind: _kind, ...msg } = frame
+          const { kind: _kind, ...bridged } = frame
+          const msg = { ...bridged, sessionId: ownerKey(bridged.sessionId) }
           if (!isOpen(msg.sessionId)) return
           set((s) => {
             let list = s.messages[msg.sessionId] ?? []
@@ -623,17 +695,18 @@ export const useChat = create<ChatState>((set, get) => ({
             }
           })
         } else {
-          if (!isOpen(frame.session)) return
+          const sid = ownerKey(frame.session)
+          if (!isOpen(sid)) return
           set((s) => {
-            const prev = s.live[frame.session]
+            const prev = s.live[sid]
             const next = foldStream(prev, frame.event)
             // `done` clears the slot — keep the turn's ask-user prompt alive
             // as the pending ask card (cleared on answer/dismiss).
             const stashed = next === undefined && prev ? questionsFromLiveTools(prev.tools) : []
             return {
-              live: { ...s.live, [frame.session]: next },
-              liveTs: { ...s.liveTs, [frame.session]: Date.now() },
-              ask: stashed.length > 0 ? { ...s.ask, [frame.session]: stashed } : s.ask,
+              live: { ...s.live, [sid]: next },
+              liveTs: { ...s.liveTs, [sid]: Date.now() },
+              ask: stashed.length > 0 ? { ...s.ask, [sid]: stashed } : s.ask,
             }
           })
         }

@@ -317,3 +317,130 @@ describe('all-sessions socket ownership (the mutex)', () => {
     expect(useChat.getState().wsStatus).toBe('open')
   })
 })
+
+describe('canonical thread keys (§ Session identity mapping)', () => {
+  const streaming = (text: string): { text: string; reasoning: boolean; reasoningText: string; tools: [] } => ({
+    text,
+    reasoning: false,
+    reasoningText: '',
+    tools: [],
+  })
+
+  beforeEach(() => {
+    socket.onFrame = undefined
+    socket.onStatus = undefined
+    socket.sent = []
+    useChat.getState().connect('http://gateway.test|')
+  })
+
+  it('den-bridge frames keyed on the room fold onto the canonical thread', () => {
+    // The bridge keys on the den room (the native id); the thread is open
+    // under `<harness-id>:<native>`. Without the mapping the frame matches
+    // nothing and the conversation goes dark.
+    useChat.getState().setActive(SID)
+    socket.onFrame?.({ kind: 'stream', session: KEY, event: { type: 'text', content: 'live' } })
+    expect(useChat.getState().live[SID]?.text).toBe('live')
+    expect(useChat.getState().live[KEY]).toBeUndefined()
+
+    socket.onFrame?.({
+      kind: 'message',
+      id: 'm1',
+      sessionId: KEY,
+      role: 'assistant',
+      text: 'committed',
+      ts: 1,
+    })
+    expect(useChat.getState().messages[SID]?.map((m) => m.text)).toEqual(['committed'])
+    expect(useChat.getState().messages[KEY]).toBeUndefined()
+  })
+
+  it('no double-render: a bound canonical thread still suppresses room-keyed frames', () => {
+    // The regression the mapping exists to avoid — a canonical `harnessBound`
+    // entry that a bare frame id never matches would fold every delta twice,
+    // once from each socket.
+    useChat.getState().bindHarness(SID, 'claude-code')
+    socket.onFrame?.({ kind: 'stream', session: KEY, event: { type: 'text', content: 'ghost' } })
+    socket.onFrame?.({
+      kind: 'message',
+      id: 'm1',
+      sessionId: KEY,
+      role: 'assistant',
+      text: 'double',
+      ts: 1,
+    })
+    expect(useChat.getState().live[SID]).toBeUndefined()
+    expect(useChat.getState().live[KEY]).toBeUndefined()
+    expect(useChat.getState().messages[SID] ?? []).toEqual([])
+    expect(useChat.getState().messages[KEY]).toBeUndefined()
+  })
+})
+
+describe('rekey', () => {
+  it('moves a draft onto the canonical id the plane adopted it under', () => {
+    const chat = useChat.getState()
+    chat.addDraft(KEY)
+    chat.setActive(KEY)
+    chat.addOptimisticUser(KEY, 'first turn')
+    chat.setLive(KEY, { text: 'streaming', reasoning: false, reasoningText: '', tools: [] })
+
+    useChat.getState().rekey(KEY, SID)
+
+    const s = useChat.getState()
+    expect(s.active).toBe(SID)
+    expect(s.opened).toEqual([SID])
+    expect(s.drafts).toEqual([]) // adopted — no longer a local-only row
+    expect(s.messages[SID]?.map((m) => m.text)).toEqual(['first turn'])
+    expect(s.live[SID]?.text).toBe('streaming')
+    expect(s.messages[KEY]).toBeUndefined()
+    expect(s.live[KEY]).toBeUndefined()
+  })
+
+  it('re-subscribes the transcript watch under the new key', () => {
+    socket.sent = []
+    useChat.getState().connect('http://gateway.test|')
+    socket.sent = []
+    useChat.getState().watchTranscript(KEY)
+    useChat.getState().rekey(KEY, SID)
+    expect(socket.sent).toEqual([
+      { type: 'watch', session: KEY },
+      { type: 'unwatch', session: KEY },
+      { type: 'watch', session: SID },
+    ])
+    // and a frame under the new key now lands
+    socket.onFrame?.({ kind: 'stream', session: SID, event: { type: 'text', content: 'after' } })
+    expect(useChat.getState().live[SID]?.text).toBe('after')
+  })
+
+  it('is a no-op onto itself', () => {
+    const chat = useChat.getState()
+    chat.seed(KEY, [{ id: 'a', sessionId: KEY, role: 'user', text: 'from', ts: 1 }])
+    chat.setActive(KEY)
+    useChat.getState().rekey(KEY, KEY)
+    expect(useChat.getState().messages[KEY]?.map((m) => m.text)).toEqual(['from'])
+    expect(useChat.getState().active).toBe(KEY)
+  })
+
+  it('refuses to clobber a live destination but still moves the selection', () => {
+    // The send path keys on the ACTIVE id, and the effect that calls rekey
+    // does not re-fire — so leaving `active` on the retired key would queue
+    // every subsequent turn under an id no drawer row carries.
+    const chat = useChat.getState()
+    chat.seed(KEY, [{ id: 'a', sessionId: KEY, role: 'user', text: 'from', ts: 1 }])
+    chat.seed(SID, [{ id: 'b', sessionId: SID, role: 'user', text: 'to', ts: 1 }])
+    chat.addDraft(KEY)
+    chat.setActive(KEY)
+    chat.setActive(SID)
+    chat.setActive(KEY)
+
+    useChat.getState().rekey(KEY, SID)
+
+    const s = useChat.getState()
+    // neither transcript was merged or overwritten
+    expect(s.messages[KEY]?.map((m) => m.text)).toEqual(['from'])
+    expect(s.messages[SID]?.map((m) => m.text)).toEqual(['to'])
+    // …but the user (and the composer) are pointed at the surviving row
+    expect(s.active).toBe(SID)
+    expect(s.opened).toEqual([SID])
+    expect(s.drafts).toEqual([])
+  })
+})

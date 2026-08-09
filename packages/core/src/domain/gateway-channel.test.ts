@@ -426,6 +426,26 @@ describe('emitFrame (seamless-modes push)', () => {
     }
     expect(msgs.messages.some((m) => m.id === 'm1')).toBe(true)
   })
+
+  it('the ring is readable by canonical SessionId as well as by den room key', async () => {
+    // The bridge keys the ring on the room key an AgentEvent carries; hub chat
+    // asks with the canonical id. Alias read, no dual write (§ Legacy keys).
+    const { gw, base } = await start()
+    const uuid = 'a1b2c3d4-1111-4222-8333-444455556666'
+    gw.emitFrame({ kind: 'message', id: 'm9', sessionId: uuid, role: 'assistant', text: 'hi', ts: 1 })
+    await new Promise((r) => setTimeout(r, 20))
+
+    const key = encodeURIComponent(`claude-code:${uuid}`)
+    const aliased = (await (await fetch(`${base}/api/sessions/${key}/messages`)).json()) as {
+      messages: { id: string }[]
+    }
+    expect(aliased.messages.map((m) => m.id)).toEqual(['m9'])
+    // and it did not mint a second, empty session under the canonical id
+    const { sessions } = (await (await fetch(`${base}/api/sessions`)).json()) as {
+      sessions: { id: string }[]
+    }
+    expect(sessions.map((s) => s.id)).toEqual([uuid])
+  })
 })
 
 describe('GET /api/conversations/:key/messages (seamless-modes backfill 5e)', () => {
@@ -490,6 +510,71 @@ describe('GET /api/conversations/:key/messages (seamless-modes backfill 5e)', ()
     }
     expect(ok.messages).toEqual([])
     expect((await fetch(`${base}/api/conversations/k`)).status).toBe(404)
+  })
+
+  it('falls back to the bare native key when the canonical one has no rows', async () => {
+    // A den-spawned harness inherits RIVETOS_SESSION_KEY = the bare join key,
+    // so its conversation is filed under that; the hub now asks with the
+    // canonical SessionId. Nothing is rewritten — the alias covers the read
+    // (harness-control-plane.md § Legacy keys).
+    const uuid = 'a1b2c3d4-1111-4222-8333-444455556666'
+    const asked: string[] = []
+    const gw = createGatewayChannel({
+      getMemory: () => ({
+        getSessionHistory: async (key: string) => {
+          asked.push(key)
+          return key === uuid ? [{ role: 'user', content: 'legacy row' }] : []
+        },
+      }),
+    })
+    await gw.channel.start()
+    const server: Server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const route = gw.routes.find((r) => url.pathname.startsWith(r.prefix))
+      void route?.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as AddressInfo).port
+    cleanups.push(async () => {
+      await gw.close()
+      await new Promise((r) => server.close(r))
+    })
+    const base = `http://127.0.0.1:${port}`
+
+    const key = encodeURIComponent(`claude-code:${uuid}`)
+    const { messages } = (await (
+      await fetch(`${base}/api/conversations/${key}/messages`)
+    ).json()) as { messages: Array<{ text: string }> }
+    expect(messages.map((m) => m.text)).toEqual(['legacy row'])
+    // canonical first, native only as the fallback
+    expect(asked).toEqual([`claude-code:${uuid}`, uuid])
+  })
+
+  it('never mistakes a task key for a SessionId', async () => {
+    // `task:<id>` is a parallel conversation-key namespace, not an alias.
+    const asked: string[] = []
+    const gw = createGatewayChannel({
+      getMemory: () => ({
+        getSessionHistory: async (key: string) => {
+          asked.push(key)
+          return []
+        },
+      }),
+    })
+    await gw.channel.start()
+    const server: Server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const route = gw.routes.find((r) => url.pathname.startsWith(r.prefix))
+      void route?.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as AddressInfo).port
+    cleanups.push(async () => {
+      await gw.close()
+      await new Promise((r) => server.close(r))
+    })
+    await fetch(`http://127.0.0.1:${port}/api/conversations/${encodeURIComponent('task:42')}/messages`)
+    expect(asked).toEqual(['task:42'])
   })
 })
 

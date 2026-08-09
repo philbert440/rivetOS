@@ -11,6 +11,7 @@ import {
   readGrokTranscript,
   readHarnessTranscript,
   readKimiTranscript,
+  resolveHarnessStore,
 } from './harness-sessions.js'
 
 const dirs: string[] = []
@@ -589,6 +590,95 @@ describe('readHarnessTranscript', () => {
     process.env.CLAUDE_CONFIG_DIR = join(tmpdir(), 'none-' + String(process.pid))
     const t = await readHarnessTranscript('zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz')
     expect(t).toEqual({ id: 'zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz', command: '', turns: [] })
+  })
+
+  it('reads by canonical SessionId and echoes the id the caller asked with', async () => {
+    // Hub chat keys threads canonically, so the resync read has to accept that
+    // shape — and answer under it, or the client cannot match the response to
+    // the thread it asked about (§ Legacy keys).
+    const base = mkdtempSync(join(tmpdir(), 'claude-canon-'))
+    dirs.push(base)
+    const id = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      JSON.stringify({ type: 'user', message: { content: 'canonical read' } }) + '\n',
+    )
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    const bare = await readHarnessTranscript(id)
+    const canonical = await readHarnessTranscript(`claude-code:${id}`)
+    expect(canonical.turns).toEqual(bare.turns)
+    expect(canonical.command).toBe('claude')
+    expect(canonical.id).toBe(`claude-code:${id}`)
+    // …including the path-fallback capture key, which aliases onto the uuid
+    const pathForm = await readHarnessTranscript(`claude-code:-home-rivet/${id}`)
+    expect(pathForm.turns).toEqual(bare.turns)
+  })
+
+  it('a canonical id never falls through to another harness store', async () => {
+    // A canonical id NAMES its store (§ Collision rules, rule 2: a different
+    // harness id is a different session). The bare probe order is claude →
+    // grok → hermes → kimi, so a uuid present in BOTH stores is exactly where
+    // a fall-through would show up — and a wrong transcript here is worse than
+    // an empty one, because the chat would resync a whole other conversation.
+    const id = 'cafe1111-0000-4000-8000-000000000002'
+    const claudeBase = mkdtempSync(join(tmpdir(), 'canon-claude-'))
+    const grokBase = mkdtempSync(join(tmpdir(), 'canon-grok-'))
+    dirs.push(claudeBase, grokBase)
+
+    const slug = join(claudeBase, 'projects', '-home-rivet')
+    mkdirSync(slug, { recursive: true })
+    writeFileSync(
+      join(slug, `${id}.jsonl`),
+      JSON.stringify({ type: 'user', message: { content: 'claude turn' } }) + '\n',
+    )
+    const grokDir = join(grokBase, 'sessions', 'cwd', id)
+    mkdirSync(grokDir, { recursive: true })
+    writeFileSync(
+      join(grokDir, 'chat_history.jsonl'),
+      JSON.stringify({ role: 'user', content: 'grok turn' }) + '\n',
+    )
+    process.env.CLAUDE_CONFIG_DIR = claudeBase
+    process.env.GROK_HOME = grokBase
+
+    // bare: legacy probe order wins, claude first — unchanged behavior
+    expect((await readHarnessTranscript(id)).command).toBe('claude')
+    // canonical: each id reads its OWN store, never the other's
+    const claude = await readHarnessTranscript(`claude-code:${id}`)
+    expect(claude.command).toBe('claude')
+    expect(claude.turns.map((t) => t.text)).toEqual(['claude turn'])
+    const grok = await readHarnessTranscript(`grok-build:${id}`)
+    expect(grok.command).toBe('grok')
+    expect(grok.turns.map((t) => t.text)).toEqual(['grok turn'])
+    // a harness with no row for this uuid answers empty, not someone else's
+    expect(await readHarnessTranscript(`hermes:${id}`)).toEqual({
+      id: `hermes:${id}`,
+      command: '',
+      turns: [],
+    })
+    // …and the watcher resolves the same way (a wrong ref here is cached for
+    // the life of the watch)
+    expect((await resolveHarnessStore(`claude-code:${id}`))?.command).toBe('claude')
+    expect((await resolveHarnessStore(`grok-build:${id}`))?.command).toBe('grok')
+    expect(await resolveHarnessStore(`hermes:${id}`)).toBeUndefined()
+  })
+
+  it('resolveHarnessStore points a canonical id at the same store file', async () => {
+    // The transcript watcher resolves once and then parses that path on every
+    // change; a canonical watch key that failed to resolve would silently
+    // downgrade the whole session to the slow full-scan path.
+    const base = mkdtempSync(join(tmpdir(), 'claude-canon-store-'))
+    dirs.push(base)
+    const id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${id}.jsonl`), '')
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    expect(await resolveHarnessStore(`claude-code:${id}`)).toEqual(await resolveHarnessStore(id))
+    expect((await resolveHarnessStore(`claude-code:${id}`))?.command).toBe('claude')
   })
 
   it('readGrokTranscript never falls through to another harness store', async () => {
