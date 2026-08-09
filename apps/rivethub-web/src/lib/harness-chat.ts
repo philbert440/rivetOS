@@ -223,3 +223,97 @@ export async function fetchHarnessPlaneSessions(
   const settled = await Promise.allSettled(ids.map((id) => gateway.harnessSessionList(id, signal)))
   return settled.flatMap((r) => (r.status === 'fulfilled' ? r.value.sessions : []))
 }
+
+/**
+ * Fast path for the driver-level registry stream (`session-created`): merge the
+ * carried `HarnessSessionSummary` into the plane session list so the drawer
+ * paints the new row before the list refetch round-trips. Upserts by
+ * `sessionId` — a refetch (or a duplicate event) that lands after the merge
+ * must not create a second row. The summary is stored as-is: it is the same
+ * shape `listSessions` returns, so a merged row is indistinguishable from a
+ * fetched one for plane-selection (`harnessGate` / `chatItems`).
+ *
+ * Returns a new array; when the id is already present, the carried summary
+ * wins field-for-field (status/title/updatedAt from the event are fresher).
+ */
+export function mergeSessionCreated(
+  sessions: HarnessSessionSummary[],
+  summary: HarnessSessionSummary,
+): HarnessSessionSummary[] {
+  const i = sessions.findIndex((s) => s.sessionId === summary.sessionId)
+  if (i < 0) return [summary, ...sessions]
+  if (sessions[i] === summary) return sessions
+  const next = sessions.slice()
+  // Prefer the event payload wholesale — it is a full SessionSummary, not a
+  // partial patch. Spread-over-existing would keep stale optional fields
+  // (title/cwd) the driver deliberately cleared.
+  next[i] = summary
+  return next
+}
+
+/** Trivial `session-updated` fields the registry stream carries. */
+export type SessionUpdatedPatch = {
+  sessionId: SessionId
+  /** Native-id rotation: rewrite the row keyed by the previous id. */
+  previousSessionId?: SessionId
+  status: HarnessSessionSummary['status']
+}
+
+/**
+ * Fast path for registry `session-updated`: patch status in place (and rewrite
+ * `sessionId` when the native id rotates). Unknown ids are left alone — the
+ * caller's invalidation/refetch is the recovery path for a missed
+ * `session-created`. Returns the same array reference when nothing matched so
+ * callers can skip a cache write.
+ */
+export function patchSessionUpdated(
+  sessions: HarnessSessionSummary[],
+  patch: SessionUpdatedPatch,
+): HarnessSessionSummary[] {
+  const lookFor = patch.previousSessionId ?? patch.sessionId
+  const i = sessions.findIndex((s) => s.sessionId === lookFor || s.sessionId === patch.sessionId)
+  if (i < 0) return sessions
+  const cur = sessions[i]
+  if (cur.sessionId === patch.sessionId && cur.status === patch.status) return sessions
+  const next = sessions.slice()
+  next[i] = { ...cur, sessionId: patch.sessionId, status: patch.status }
+  // A rotation can race a create under the new id — keep one row.
+  if (patch.previousSessionId && patch.previousSessionId !== patch.sessionId) {
+    return next.filter((s, idx) => idx === i || s.sessionId !== patch.sessionId)
+  }
+  return next
+}
+
+/**
+ * Apply a registry-stream event to a plane session list. Pure; the React
+ * layer feeds this into `queryClient.setQueryData` and still invalidates as
+ * reconciliation. Non-registry event types (turn-*, approval-*, …) are no-ops.
+ *
+ * `prev === undefined` (query never resolved) seeds from a `session-created`
+ * so the drawer is not blank while the first fetch is in flight; other events
+ * leave the cache empty and rely on invalidation.
+ */
+export function applyRegistryEventToPlaneSessions(
+  prev: HarnessSessionSummary[] | undefined,
+  event: {
+    type: string
+    sessionId: SessionId
+    summary?: HarnessSessionSummary
+    previousSessionId?: SessionId
+    status?: HarnessSessionSummary['status']
+  },
+): HarnessSessionSummary[] | undefined {
+  if (event.type === 'session-created') {
+    if (!event.summary) return prev
+    return mergeSessionCreated(prev ?? [], event.summary)
+  }
+  if (event.type === 'session-updated') {
+    if (!prev || event.status === undefined) return prev
+    return patchSessionUpdated(prev, {
+      sessionId: event.sessionId,
+      previousSessionId: event.previousSessionId,
+      status: event.status,
+    })
+  }
+  return prev
+}
