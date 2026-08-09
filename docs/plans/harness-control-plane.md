@@ -1258,14 +1258,14 @@ Gaps this slice records rather than fixes:
   approval frames rather than rendering a card — the same Phase 3 driver
   requirement recorded for the hub applies before any of this is worth
   building.
-- **The node roster is still tokenless.** The client takes a bearer and puts it
-  on both transports, but `RosterNode` has no token field, so nothing supplies
-  one. A token-gated node needs that field plus a DataStore migration.
 - **No rotation re-key on the drawer.** A rotation follows the bound thread's
   own socket (the registry re-keys live sinks), but the drawer's cached
   snapshot only picks up the new canonical id on its next poll.
 - **CI never builds Android.** The suites below run locally only; see the
   app's `AGENT.md` for the build host.
+
+**Closed since:** the tokenless roster — see "As built (Android per-node
+bearers)" below.
 
 Tests: `app/src/test/java/dev/rivet/app/data/harness/` — codec round-trips,
 URL shapes, wire parsing, plane selection and the error→behavior mapping, the
@@ -1276,6 +1276,80 @@ binder's own invariants: one sender at a time, one commit retires exactly one
 queued turn, an accepted-but-never-committed turn is reaped rather than left as
 a phantom bubble, and a fatal stream clears the gate and the live turn so the
 composer frees and the legacy poll resumes. `./gradlew :app:testPhilDebugUnitTest`.
+
+### As built (Android per-node bearers)
+
+The roster shipped tokenless, so every control-plane call against a node with
+`den.token` set came back 401, the descriptor list came back empty, and the app
+silently resolved every row to the legacy surface. The degrade was correct and
+is unchanged; what was missing was any way to *not* need it.
+
+**Where the bearer comes from: the operator, per node.** That is the RivetHub
+web mechanism, not a new one. `apps/rivethub-web/src/pages/settings.tsx` has a
+password field labelled "Bearer token (only if the node gates its gateway)";
+the value is read off the node itself with `rivetos gateway token` and pasted
+in. Android now has the same field in the same place a node is defined — the
+drawer's node switcher — on the Add-node form and behind a key button on every
+remote row. Mesh enrollment was considered and rejected as the transport:
+`POST /api/devices/enroll` is the one route deliberately *outside* the bearer
+gate (the enrolling device has no bearer yet), so handing out the gateway
+credential in exchange for a one-time enroll token would let a scanned QR
+escalate into full node access. The hub does not do it, and neither does this.
+
+**Where it is kept: not in the roster.** `RosterNode` still has exactly `name`
+and `denUrl`, and there is no DataStore migration, because `Settings` is
+serialized whole into `settings.json` and uploaded by the WebDAV/S3 backup sync
+(`app/src/main/java/dev/rivet/app/data/sync/`) — a bearer stored on the roster
+would leave the phone for a third-party server. Web splits the same way and for
+a related reason (roster in `localStorage`, tokens in `sessionStorage` keyed per
+node). The Kotlin split is `dev.rivet.app.data.node.NodeTokenStore`: an
+app-private prefs file of its own, keyed by the normalized den URL, excluded
+from Android cloud backup and device transfer, never logged, and dropped when
+its node leaves the roster. It is not keystore-encrypted; every provider API key
+and the mesh `pgUrl` password already sit in the plain settings DataStore beside
+it, so wrapping one value would be theatre. Encrypting that whole surface at
+once is the honest follow-up and is recorded below.
+
+**Where it is supplied:** `HarnessPlaneRepository.tokenFor`, the seam #479 left
+open. One lambda now feeds the control-plane client (bearer header on HTTP,
+`?token=` on both sockets), the legacy `/api/terminal/harness-sessions` scan it
+unions with, and the remote terminal's `DenTermClient`. A tokenless node behaves
+exactly as before.
+
+**Rotation.** `rivetos gateway token --rotate` mints a new bearer and does not
+reload the gateway, so a rotated node starts refusing a client that worked five
+minutes ago. A 401 is therefore not one condition, and the app says which:
+with no bearer stored it reads "gateway is token-gated — add a token", with a
+bearer this node has never accepted "token rejected", and with a bearer it *has*
+accepted "the node rotated it; paste the new one". The acceptance bit lives next
+to the credential, so the distinction survives a process restart rather than
+only holding within one app run. Only an explicit 401/403 counts as an auth
+answer — a 404 from a node with no control plane, or a phone with no route, is
+`INDETERMINATE` and never downgrades a known verdict. The probe is the snapshot
+read the drawer already polls, so a node that starts gating surfaces within one
+poll instead of waiting for a chat thread to fail. All of it is reporting only:
+the legacy degrade runs underneath the whole time, unconditional and unchanged.
+
+Gaps this slice records rather than fixes:
+
+- **The credential surface is not encrypted at rest.** This file is app-private
+  and out of every backup, which is strictly more than the settings DataStore
+  gets, but the provider API keys and `MeshConfig.pgUrl` next door are still
+  plaintext. Wrapping all of them in one keystore-backed store is a single
+  follow-up; wrapping only the newest one is not worth a dependency.
+- **No probe button.** Web's Settings page tests the credential against
+  `/healthz` + `/api/catalog` before saving. Here the verdict arrives on the
+  next drawer poll instead.
+- **Auth state is fed only by the snapshot read.** A 401 that kills a bound
+  thread's socket still surfaces as that thread's error bubble (unchanged), not
+  as a roster-level verdict.
+
+Tests: `app/src/test/java/dev/rivet/app/data/node/` for the store's keying,
+blank/clear handling and the acceptance bit's reset on replacement, plus the
+state machine and registry; `app/src/test/java/dev/rivet/app/data/harness/HarnessPlaneTokenTest.kt`
+answers OkHttp in-process so the assertions are on the `Authorization` header
+the production client actually emits, and covers the 401 degrade, per-node
+precedence, and 404/unreachable staying silent about auth.
 
 ---
 

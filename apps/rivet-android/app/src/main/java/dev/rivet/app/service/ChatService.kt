@@ -61,6 +61,8 @@ import dev.rivet.app.data.harness.HarnessGate
 import dev.rivet.app.data.harness.HarnessPlaneRepository
 import dev.rivet.app.data.harness.HarnessTranscriptTurn
 import dev.rivet.app.data.harness.LiveTurn
+import dev.rivet.app.data.node.NodeAuthRegistry
+import dev.rivet.app.data.node.NodeTokenStore
 import java.io.IOException
 import dev.rivet.app.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
 import dev.rivet.app.CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID
@@ -163,6 +165,8 @@ class ChatService(
     val mcpManager: McpManager,
     private val filesManager: FilesManager,
     private val skillManager: SkillManager,
+    private val nodeTokens: NodeTokenStore,
+    private val nodeAuth: NodeAuthRegistry,
 ) {
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
@@ -336,7 +340,7 @@ class ChatService(
     suspend fun listRemoteHarnessSessions(): List<DenHarnessClient.Session> =
         withContext(Dispatchers.IO) {
             val den = remoteDenUrl() ?: return@withContext emptyList()
-            DenHarnessClient.tryList(den)
+            DenHarnessClient.tryList(den, tokenForNode(den))
         }
 
     // ---- harness control plane (docs/plans/harness-control-plane.md) ----
@@ -355,8 +359,16 @@ class ChatService(
         return den
     }
 
+    /** This node's saved bearer, or null — the roster itself stays tokenless. */
+    private fun tokenForNode(denUrl: String?): String? =
+        denUrl?.takeIf { it.isNotBlank() }?.let { nodeTokens.tokenFor(it) }
+
     /** Rows + capability sheets for the active node (control plane ∪ legacy). */
-    val harnessPlane = HarnessPlaneRepository(remoteDenUrl = { remoteDenUrl() })
+    val harnessPlane = HarnessPlaneRepository(
+        remoteDenUrl = { remoteDenUrl() },
+        tokenFor = { den -> nodeTokens.tokenFor(den) },
+        onAuth = { probe -> nodeAuth.record(probe) },
+    )
 
     /** Binds the open thread to its driver when one claims it. */
     val harnessBinder = HarnessChatBinder(
@@ -507,7 +519,8 @@ class ChatService(
         val den = settings.activeNodeDenUrl.ifBlank { return@withContext null }
         if (NodeRosterDefaults.isLocalDenUrl(den)) return@withContext null
         val convUuid = parseHarnessSessionUuid(sessionId) ?: return@withContext null
-        val tx = DenHarnessClient.tryTranscript(den, sessionId) ?: return@withContext null
+        val tx = DenHarnessClient.tryTranscript(den, sessionId, tokenForNode(den))
+            ?: return@withContext null
         val command = tx.command.ifBlank { commandHint.orEmpty() }.ifBlank { "grok" }
         val assistant = settings.getCurrentAssistant()
         val modelId = modelUuidForHarnessCommand(command)
@@ -576,7 +589,7 @@ class ChatService(
         // Don't clobber an in-flight /v1 turn mid-stream.
         if (this.sessions[conversationId]?.getJob()?.isActive == true) return
         // Only touch sessions the den actually owns (avoid wiping a phone draft UUID).
-        val remoteSessions = DenHarnessClient.tryList(den)
+        val remoteSessions = DenHarnessClient.tryList(den, tokenForNode(den))
         val hit = remoteSessions.firstOrNull {
             it.id.equals(conversationId.toString(), ignoreCase = true)
         } ?: return
@@ -585,7 +598,7 @@ class ChatService(
             return
         }
         // Soft path: fetch transcript and append turns that cleanly extend the thread.
-        val tx = DenHarnessClient.tryTranscript(den, hit.id) ?: return
+        val tx = DenHarnessClient.tryTranscript(den, hit.id, tokenForNode(den)) ?: return
         val command = tx.command.ifBlank { hit.command }.ifBlank { "grok" }
         val modelId = modelUuidForHarnessCommand(command)
         val turns = tx.turns.mapNotNull { turn ->
