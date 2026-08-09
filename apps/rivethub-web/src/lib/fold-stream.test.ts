@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { foldStream, type LiveTurn } from './fold-stream.js'
+import {
+  foldStream,
+  nextReasoningText,
+  REASONING_TEXT_MAX,
+  type LiveTurn,
+} from './fold-stream.js'
 import type { StreamEvent } from '@rivetos/types'
 
 function ev(partial: StreamEvent): StreamEvent {
@@ -118,5 +123,117 @@ describe('foldStream', () => {
       ev({ type: 'tool_start', content: 'mcp:rivetos:memory_search' }),
     )
     expect(t?.tools[0].name).toBe('mcp:rivetos:memory_search')
+  })
+
+  it('caps reasoningText through foldStream while leaving text/tools untouched', () => {
+    // Interleaving: long thinking, a tool, more thinking past the cap, then answer text.
+    const words = ['a', 'bb', 'ccc', 'dddd', 'eeeeeee', 'ffffffffff', 'ggggg']
+    let t: LiveTurn | undefined
+    for (let i = 0; i < 800; i++) {
+      t = foldStream(t, ev({ type: 'reasoning', content: `${words[i % words.length]} ` }))
+    }
+    expect(t?.reasoningText.length).toBeLessThanOrEqual(REASONING_TEXT_MAX)
+    for (const w of (t?.reasoningText ?? '').trimEnd().split(' ')) {
+      expect(words).toContain(w)
+    }
+
+    t = foldStream(
+      t,
+      ev({
+        type: 'tool_start',
+        content: 'Bash',
+        metadata: { tool: 'Bash', args: { command: 'ls' } },
+      }),
+    )
+    t = foldStream(t, ev({ type: 'tool_result', content: 'Bash', metadata: { tool: 'Bash' } }))
+    const thoughtAfterTool = t?.reasoningText
+    t = foldStream(t, ev({ type: 'text', content: 'answer body' }))
+    expect(t?.text).toBe('answer body')
+    expect(t?.reasoning).toBe(false)
+    // Text path does not clear or re-cap reasoning; tools did not either.
+    expect(t?.reasoningText).toBe(thoughtAfterTool)
+    expect(t?.tools).toHaveLength(1)
+    expect(t?.tools[0].status).toBe('done')
+  })
+})
+
+describe('nextReasoningText', () => {
+  it('exports REASONING_TEXT_MAX as a stable assertable cap (hub > den board)', () => {
+    // Den board THOUGHT_MAX is 220; hub transcript shows more. Pin the constant
+    // so tests cannot silently drift from the implementation.
+    expect(REASONING_TEXT_MAX).toBe(4096)
+    expect(REASONING_TEXT_MAX).toBeGreaterThan(220)
+  })
+
+  it('appends under the cap unchanged', () => {
+    expect(nextReasoningText('hello ', 'world')).toBe('hello world')
+    expect(nextReasoningText('', 'only')).toBe('only')
+
+    // Fill close to the cap but stay strictly under — no slide, exact concat.
+    const prev = 'x'.repeat(REASONING_TEXT_MAX - 10)
+    const out = nextReasoningText(prev, 'yyyyy')
+    expect(out).toBe(prev + 'yyyyy')
+    expect(out.length).toBe(REASONING_TEXT_MAX - 5)
+  })
+
+  it('slides the window and drops the leading partial word when crossing the cap', () => {
+    // Construct a full string longer than the cap whose last REASONING_TEXT_MAX
+    // chars begin mid-word: "XXXX kept-tail…". After slice(-MAX) the window is
+    // full; the den-parity /^\S*\s+/ trim drops "XXXX " so the stream never
+    // opens mid-word.
+    const partial = 'XXXX'
+    const kept = 'kept tail of the thinking stream with spaces'
+    const windowBody = partial + ' ' + kept
+    const pad = 'p'.repeat(REASONING_TEXT_MAX - windowBody.length)
+    const atCap = windowBody + pad
+    expect(atCap.length).toBe(REASONING_TEXT_MAX)
+
+    const full = 'DISCARDME ' + atCap
+    const previous = full.slice(0, -20)
+    const chunk = full.slice(-20)
+    const result = nextReasoningText(previous, chunk)
+
+    expect(result).toBe(kept + pad)
+    expect(result.length).toBeLessThan(REASONING_TEXT_MAX)
+    expect(result.startsWith('kept')).toBe(true)
+    expect(result.includes('XXXX')).toBe(false)
+    expect(result.includes('DISCARDME')).toBe(false)
+  })
+
+  it('word-boundary trim only fires when the sliced window is exactly at cap', () => {
+    // Under-cap appends must not lose a leading word via the trim regex.
+    expect(nextReasoningText('alpha beta ', 'gamma')).toBe('alpha beta gamma')
+  })
+
+  it('spinner replace semantics are never capped or affected', () => {
+    const huge = 'a'.repeat(REASONING_TEXT_MAX * 2)
+    const spinner = '✳ Wrangling… (28s · ↓ 4.8k tokens)'
+    expect(nextReasoningText(huge, spinner)).toBe(spinner)
+
+    // Each spinner glyph in the den/claude set replaces wholesale.
+    for (const glyph of ['✳', '✢', '✻', '✽', '·'] as const) {
+      const line = `${glyph} Status… (1s · ↓ 1 tokens)`
+      expect(nextReasoningText(huge, line)).toBe(line)
+    }
+
+    // Even an (unrealistic) over-long spinner-prefixed line is not sliced —
+    // only the append path applies REASONING_TEXT_MAX.
+    const longSpinner = `✳ ${'x'.repeat(REASONING_TEXT_MAX + 500)}`
+    expect(nextReasoningText(huge, longSpinner)).toBe(longSpinner)
+    expect(longSpinner.length).toBeGreaterThan(REASONING_TEXT_MAX)
+  })
+
+  it('streaming word window never opens mid-word under sustained appends', () => {
+    // Variable-length words so slice(-MAX) cannot accidentally land on a
+    // boundary — mirrors packages/den-protocol index.test.ts THOUGHT_MAX case.
+    const words = ['a', 'bb', 'ccc', 'dddd', 'eeeeeee', 'ffffffffff', 'ggggg']
+    let text = ''
+    for (let i = 0; i < 800; i++) {
+      text = nextReasoningText(text, `${words[i % words.length]} `)
+    }
+    expect(text.length).toBeLessThanOrEqual(REASONING_TEXT_MAX)
+    for (const w of text.trimEnd().split(' ')) {
+      expect(words).toContain(w)
+    }
   })
 })
