@@ -527,7 +527,9 @@ flag (`--pass-session-id` only injects the id into the system prompt). So:
   adopts, which § Rotation rule 7 forbids. Hermes sessions enter the control
   plane by **adoption**: spawn from the den roster (or `POST .../resume` an
   existing one) and the driver picks the session up the moment its hooks
-  announce an id. Everything else on the contract works normally.
+  announce an id. This is also why the per-harness task executor for `hermes`
+  stays an explicit rejection now that the driver exists: a task needs a session
+  spawned FOR it, and that is the one thing this harness cannot be asked to do. Everything else on the contract works normally.
 - **It rotates.** `/new`, `/branch`, a mid-chat `/resume`, a rewind, and a
   compaction that forks a child session each replace hermes's session id inside
   one running process (hermes fires its own `on_session_switch` for all five).

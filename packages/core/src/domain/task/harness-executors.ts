@@ -16,9 +16,10 @@
  *     that predate the rename drain. Nothing writes the legacy target anymore.
  *
  *   - **Honest not-implemented executors.** grok-build, kimi-code and hermes
- *     have no headless spawn machinery in this repo — the grok driver spawns a
- *     PTY and kimi is hooks-only — so their executors are explicit rejections,
- *     not absences. A task aimed at one fails immediately with the typed
+ *     cannot spawn a session for a task to run in — the grok driver spawns a
+ *     PTY, kimi is hooks-only, and hermes can only ADOPT a session the roster
+ *     started (it has no flag to pin a new id) — so their executors are
+ *     explicit rejections, not absences. A task aimed at one fails immediately with the typed
  *     `capability_unsupported` code and a message that says what is missing,
  *     rather than the registry's anonymous `executor_not_registered` miss, and
  *     `GET /api/catalog` lists the harness with `implemented: false` so a UI
@@ -214,8 +215,9 @@ export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = 
     'the Kimi Code integration is hooks + capture only — nothing in this repo spawns ' +
     'the kimi binary, and its Stop hook carries no assistant reply to parse a result from',
   hermes:
-    'hermes has no node-side session driver yet (Phase 3 item) — capture still uses ' +
-    'close+new-conversation rotation rather than alias semantics',
+    'the hermes driver cannot START a session for a task to run in: hermes has no flag ' +
+    'to pin a new session id, so it only ever adopts sessions the roster spawned ' +
+    '(HermesDriver.startSession answers capability_unsupported for the same reason)',
 })
 
 /** The recorded gap for a harness, or a generic one for an unlisted id. */
