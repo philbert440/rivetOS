@@ -4,6 +4,7 @@ import dev.rivet.app.ui.pages.terminal.DenHarnessClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -201,6 +202,158 @@ class HarnessPlaneTest {
         assertFalse(HarnessPlane.isFatal(HarnessHttpException(503, null, "restarting", true)))
         assertFalse(HarnessPlane.isFatal(HarnessHttpException(0, null, "node unreachable", true)))
         assertFalse(HarnessPlane.isFatal(RuntimeException("boom")))
+    }
+
+    // ---- registry stream → session list merge --------------------------------
+
+    @Test
+    fun `mergeSessionCreated inserts a row without a refetch`() {
+        val created = summary("claude-code:bbb", title = "brand new", status = HarnessStatus.ACTIVE)
+        assertEquals(listOf(created), HarnessPlane.mergeSessionCreated(emptyList(), created))
+
+        val existing = listOf(summary("claude-code:aaa"))
+        val merged = HarnessPlane.mergeSessionCreated(existing, created)
+        assertEquals(listOf(created, existing[0]), merged)
+        // pure: the prior list is untouched
+        assertEquals(1, existing.size)
+    }
+
+    @Test
+    fun `a merged row is the same shape as a fetched one`() {
+        val fetched = summary("claude-code:aaa", title = "from list")
+        val fromEvent = summary("claude-code:bbb", title = "from event", status = HarnessStatus.ACTIVE)
+
+        val merged = HarnessPlane.rows(
+            HarnessPlane.mergeSessionCreated(listOf(fetched), fromEvent),
+            emptyList(),
+        )
+        // The row a GET returning both would have produced, byte for byte.
+        val refetched = HarnessPlane.rows(listOf(fromEvent, fetched), emptyList())
+        assertEquals(refetched, merged)
+
+        val row = merged.single { it.key == "bbb" }
+        assertEquals(ChatRowKind.HARNESS, row.kind)
+        assertEquals("claude-code:bbb", row.sessionId)
+        assertEquals("claude-code", row.harnessId)
+        assertEquals(HarnessStatus.ACTIVE, row.status)
+        // and the gate opens for it exactly as for a fetched row
+        assertTrue(HarnessPlane.gate(row, descriptors("claude-code" to fullCaps)).bound)
+    }
+
+    @Test
+    fun `a session-created that races a refetch leaves one row, not two`() {
+        val created = summary("claude-code:aaa", title = "v1", status = HarnessStatus.ACTIVE)
+        val once = HarnessPlane.mergeSessionCreated(emptyList(), created)
+        // the same frame twice, or a merge onto a refetch that already has it
+        val twice = HarnessPlane.mergeSessionCreated(once, created)
+        assertEquals(1, twice.size)
+        // nothing moved, so the caller can skip the cache write entirely
+        assertSame(once, twice)
+
+        // the refetch answered with a staler copy; a later frame wins in place
+        val fromRefetch = listOf(
+            summary("claude-code:aaa", title = "from GET", status = HarnessStatus.IDLE),
+            summary("claude-code:bbb"),
+        )
+        val after = HarnessPlane.mergeSessionCreated(
+            fromRefetch,
+            summary("claude-code:aaa", title = "from event", status = HarnessStatus.ACTIVE),
+        )
+        assertEquals(2, after.size)
+        val row = after.single { it.sessionId == "claude-code:aaa" }
+        assertEquals("from event", row.title)
+        assertEquals(HarnessStatus.ACTIVE, row.status)
+    }
+
+    @Test
+    fun `session-updated patches status in place`() {
+        val list = listOf(summary("claude-code:aaa"), summary("claude-code:bbb"))
+
+        val patched = HarnessPlane.patchSessionUpdated(
+            list,
+            sessionId = "claude-code:aaa",
+            previousSessionId = null,
+            status = HarnessStatus.ACTIVE,
+        )
+
+        assertEquals(2, patched.size)
+        assertEquals(HarnessStatus.ACTIVE, patched.single { it.sessionId == "claude-code:aaa" }.status)
+        assertEquals(HarnessStatus.IDLE, patched.single { it.sessionId == "claude-code:bbb" }.status)
+        // the rest of the summary is carried, not rebuilt from the frame
+        assertEquals(list[0].updatedAt, patched[0].updatedAt)
+    }
+
+    @Test
+    fun `a rotation rewrites the id, keeps one row, and re-keys the drawer`() {
+        val rotated = HarnessPlane.patchSessionUpdated(
+            listOf(summary("claude-code:old", title = "kept"), summary("claude-code:other")),
+            sessionId = "claude-code:new",
+            previousSessionId = "claude-code:old",
+            status = HarnessStatus.IDLE,
+        )
+
+        val moved = rotated.single { it.sessionId == "claude-code:new" }
+        assertEquals("kept", moved.title)
+        assertEquals("claude-code", moved.harnessId)
+        assertTrue(rotated.none { it.sessionId == "claude-code:old" })
+        // the drawer key is the bare native id, so it follows the rotation
+        assertEquals("new", HarnessPlane.rows(rotated, emptyList()).first { it.title == "kept" }.key)
+
+        // a create under the new id that raced the rotation collapses into it
+        val raced = HarnessPlane.patchSessionUpdated(
+            listOf(summary("claude-code:old"), summary("claude-code:new", title = "raced")),
+            sessionId = "claude-code:new",
+            previousSessionId = "claude-code:old",
+            status = HarnessStatus.ACTIVE,
+        )
+        assertEquals(1, raced.count { it.sessionId == "claude-code:new" })
+        assertTrue(raced.none { it.sessionId == "claude-code:old" })
+    }
+
+    @Test
+    fun `an id nobody has is left for the refetch to reconcile`() {
+        val list = listOf(summary("claude-code:aaa"))
+
+        val untouched = HarnessPlane.patchSessionUpdated(
+            list,
+            sessionId = "claude-code:ccc",
+            previousSessionId = null,
+            status = HarnessStatus.ENDED,
+        )
+
+        // same reference: no row invented, no cache write, no repaint
+        assertSame(list, untouched)
+    }
+
+    @Test
+    fun `applyRegistryEvent covers create and update and ignores everything else`() {
+        val created = summary("claude-code:aaa", title = "live")
+        val seeded = HarnessPlane.applyRegistryEvent(
+            emptyList(),
+            HarnessEvent.SessionCreated("claude-code:aaa", created),
+        )
+        assertEquals(listOf(created), seeded)
+
+        val active = HarnessPlane.applyRegistryEvent(
+            seeded,
+            HarnessEvent.SessionUpdated("claude-code:aaa", null, HarnessStatus.ACTIVE),
+        )
+        assertEquals(HarnessStatus.ACTIVE, active.single().status)
+
+        // turn frames are not registry-list events
+        assertSame(
+            active,
+            HarnessPlane.applyRegistryEvent(active, HarnessEvent.TurnComplete("claude-code:aaa", null)),
+        )
+        assertSame(
+            active,
+            HarnessPlane.applyRegistryEvent(active, HarnessEvent.AssistantDelta("claude-code:aaa", "hi")),
+        )
+        // a malformed session-created carries no summary — nothing to merge
+        assertSame(
+            active,
+            HarnessPlane.applyRegistryEvent(active, HarnessEvent.SessionCreated("claude-code:aaa", null)),
+        )
     }
 
     @Test

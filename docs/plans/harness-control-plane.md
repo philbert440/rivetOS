@@ -1252,8 +1252,7 @@ Gaps this slice records rather than fixes:
 
 - ~~**Hub chat's key is still the bare native id.**~~ Closed — see As built
   (canonical hub keying) below.
-- **No `session-created` fast path.** The registry stream invalidates the
-  drawer's session queries rather than merging the summary it already carries.
+- ~~**No `session-created` fast path.**~~ Closed — see **Closed since** below.
 - **No attachments and no `startSession` from the hub.** `POST /uploads` does
   not exist (Phase 2 checklist), and "+ new" stays a local draft so clicking it
   does not spawn a harness; the draft's first turn pins its id through the
@@ -1270,6 +1269,11 @@ Gaps this slice records rather than fixes:
   the first driver reporting `approvals: true` must also make pending
   approvals readable — a `GET` on the session, or approvals carried on the
   transcript — or every reconnect silently strands the harness.
+
+**Closed since:** the `session-created` fast path. #478 merges the summary the
+registry stream already carries into the drawer's session cache
+(`setQueryData`), keeping the invalidation as reconciliation, and patches
+`session-updated` in place including a rotation's id rewrite.
 
 ### As built (canonical hub keying)
 
@@ -1429,26 +1433,18 @@ Gaps this slice records rather than fixes:
   `capability_unsupported` for attachments regardless of staging, since a PTY
   paste cannot hand a file to a TUI. The picker stays wired to the `/v1` path
   it already had. First driver that speaks a real protocol unblocks both ends.
-- **No `session-created` fast path — the hub has one now and Android does
-  not.** #478 merges the registry stream's summary straight into the hub's
-  drawer cache; here `watchHarnesses` exists on the client and nothing
-  subscribes to it, so the drawer still re-reads on its 30s poll and a session
-  started elsewhere shows up late. Straight port, deliberately not bundled with
-  the binding itself.
 - **No `startSession` from the app.** "+ new" stays a local draft whose first
   turn pins its id through the existing path; the control plane adopts it.
 - **Approval state is still unrecoverable**, and the app therefore logs
   approval frames rather than rendering a card — the same Phase 3 driver
   requirement recorded for the hub applies before any of this is worth
   building.
-- **No rotation re-key on the drawer.** A rotation follows the bound thread's
-  own socket (the registry re-keys live sinks), but the drawer's cached
-  snapshot only picks up the new canonical id on its next poll.
 - **CI never builds Android.** The suites below run locally only; see the
   app's `AGENT.md` for the build host.
 
 **Closed since:** the tokenless roster — see "As built (Android per-node
-bearers)" below.
+bearers)" below — and the `session-created` fast path, which also took the
+drawer's rotation re-key with it; see "As built (Android registry fast path)".
 
 Tests: `app/src/test/java/dev/rivet/app/data/harness/` — codec round-trips,
 URL shapes, wire parsing, plane selection and the error→behavior mapping, the
@@ -1544,6 +1540,71 @@ state machine and registry; `app/src/test/java/dev/rivet/app/data/harness/Harnes
 answers OkHttp in-process so the assertions are on the `Authorization` header
 the production client actually emits, and covers the 401 degrade, per-node
 precedence, and 404/unreachable staying silent about auth.
+
+### As built (Android registry fast path)
+
+`session-created` carries a full `HarnessSessionSummary`. The hub started
+merging it into its drawer cache in #478; here the client could already open
+the registry socket (`HarnessControlPlaneClient.watchHarnesses`) and nothing
+ever called it, so a session started on the desktop waited up to 30s for the
+drawer's safety poll. This is the same mechanism one layer lower: the hub
+merges into a react-query cache with `setQueryData`, Android merges into the
+`HarnessPlaneSnapshot` the drawer renders.
+
+**The merge is a rebuild, not a patch.** `HarnessPlaneSnapshot` now keeps the
+two inputs its rows were derived from — the control-plane session list and the
+legacy scan — and `withSessions` re-runs the *same* `HarnessPlane.rows` union a
+fetch runs. That is what makes a merged row indistinguishable from a fetched
+one rather than merely similar: same title/command/timestamp fallbacks, same
+plane selection, same capability gate, asserted by building both and comparing.
+
+`HarnessPlane.mergeSessionCreated` / `patchSessionUpdated` /
+`applyRegistryEvent` are the pure half, and mirror the hub's rules: upsert by
+canonical id so a duplicate frame or a refetch that already carries the row
+cannot produce a second one; the event payload wins wholesale on a hit (it is a
+full summary, so spreading it over the existing row would keep fields the
+driver cleared); `session-updated` patches status in place and follows a native
+id rotation, dropping a row created under the new id in the same breath. An id
+the list does not have is left alone — the read is the recovery path, and the
+rotation rewrite is also what closes the drawer's old "re-keys only on the next
+poll" gap, since the drawer key is the bare native id and follows the rewrite.
+One deviation: `harnessId` is re-derived from the rewritten id where the hub
+carries the old one over, because on Kotlin it is a real field on the summary
+and a row whose `harnessId` disagreed with its `sessionId` would gate against
+the wrong driver.
+
+**Invalidation is kept as reconciliation, in the shape this app already had.**
+The merge does not touch `cachedAt`, so the 10s TTL and the 30s poll re-read on
+exactly the cadence they did before and a merged row the node disagrees with
+disappears on the next read. What changed is which of the two the drawer
+renders: the fetch now only *fills* the plane cache and the drawer subscribes
+to the cache itself, so a merged row paints with no round trip at all rather
+than waiting for a refetch that a stale cache would have forced. `invalidate()`
+now marks stale while keeping the rows on screen (the hub's
+`invalidateQueries`); dropping them outright is `clear()`, for a node switch,
+where the rows describe a different machine.
+
+**The tail gets the same treatment a session tail does.** `HarnessRegistryWatch`
+follows `activeNodeDenUrl`, drains frames through one channel so a create and
+the update behind it cannot land out of order, and forces a full re-read on
+*every* socket open — first connect and reconnect alike — because the registry
+stream is at-most-once from attach time exactly like the session stream, and
+anything published during a gap is gone. A node with no registry route answers
+404 on the upgrade and a gated one 401; both are terminal, the socket stops
+itself, and the poll carries the drawer as before, so there is nothing to gate
+on up front. The one thing that needs a nudge is a bearer pasted *after* such a
+refusal: the credential is captured when the socket is built and the refusal
+deliberately does not retry, so the switcher's token field re-opens the tail
+(`ChatService.onNodeCredentialChanged`).
+
+Tests: the pure merge rules extend
+`app/src/test/java/dev/rivet/app/data/harness/HarnessPlaneTest.kt` (the Kotlin
+twin of the hub's suite), and
+`HarnessRegistryFastPathTest.kt` asserts the repository and watch behavior with
+every HTTP call answered in-process — so "merged without a refetch" is a
+request count, not a claim — plus shape parity against a real fetch, the
+refetch/duplicate race, in-place status, the rotation re-key, the cross-node
+and unknown-id refusals, and the reconciling read that heals a phantom row.
 
 ---
 

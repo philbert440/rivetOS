@@ -25,9 +25,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectIndexed
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -59,6 +59,7 @@ import dev.rivet.app.AppScope
 import dev.rivet.app.data.harness.HarnessChatRow
 import dev.rivet.app.data.harness.HarnessGate
 import dev.rivet.app.data.harness.HarnessPlaneRepository
+import dev.rivet.app.data.harness.HarnessRegistryWatch
 import dev.rivet.app.data.harness.HarnessTranscriptTurn
 import dev.rivet.app.data.harness.LiveTurn
 import dev.rivet.app.data.node.NodeAuthRegistry
@@ -370,6 +371,17 @@ class ChatService(
         onAuth = { probe -> nodeAuth.record(probe) },
     )
 
+    /**
+     * Registry tail for the active node. `session-created` merges the summary
+     * it already carries straight into [harnessPlane], so a session started on
+     * the desktop appears here without waiting for the drawer's next poll.
+     */
+    val harnessRegistry = HarnessRegistryWatch(
+        scope = appScope,
+        sink = harnessPlane,
+        gatewayFor = { den -> harnessPlane.registryGatewayFor(den) },
+    )
+
     /** Binds the open thread to its driver when one claims it. */
     val harnessBinder = HarnessChatBinder(
         scope = appScope,
@@ -387,6 +399,17 @@ class ChatService(
      */
     suspend fun remoteChatRows(force: Boolean = false): List<HarnessChatRow> =
         harnessPlane.snapshot(maxAgeMs = if (force) 0L else 10_000L).rows
+
+    /**
+     * A bearer was pasted, replaced or cleared for some node. Age the cache so
+     * the next read re-probes with it, and re-open the registry tail: its
+     * credential was captured when the socket was built, and a 401 handshake is
+     * terminal on purpose, so nothing else would ever pick the new one up.
+     */
+    fun onNodeCredentialChanged() {
+        harnessPlane.invalidate()
+        appScope.launch { harnessRegistry.rebind() }
+    }
 
     /** Attach [conversationId] to its driver; CLOSED means "stay on legacy". */
     suspend fun bindHarnessSession(conversationId: Uuid): HarnessGate =
@@ -411,20 +434,27 @@ class ChatService(
      */
     fun onActiveNodeChanged() {
         harnessBinder.unbindAll()
-        harnessPlane.invalidate()
+        // Drop the rows rather than just aging them: they describe a different
+        // machine, and the drawer renders the cache directly.
+        harnessPlane.clear()
     }
 
     init {
         // Watch the setting rather than the switcher: `activeNodeDenUrl` also
         // moves on roster removal and on the local fallback, and a binding that
         // survived any of those would keep writing the old node's turns into an
-        // open thread. `drop(1)` skips the initial value — that is not a switch.
+        // open thread. The first value is not a switch — but it IS the node the
+        // registry tail has to follow, so only the unbind half is skipped.
         appScope.launch {
             settingsStore.settingsFlowRaw
                 .map { it.activeNodeDenUrl }
                 .distinctUntilChanged()
-                .drop(1)
-                .collect { onActiveNodeChanged() }
+                .collectIndexed { index, den ->
+                    if (index > 0) onActiveNodeChanged()
+                    harnessRegistry.retarget(
+                        den.takeIf { it.isNotBlank() && !NodeRosterDefaults.isLocalDenUrl(it) },
+                    )
+                }
         }
     }
 
