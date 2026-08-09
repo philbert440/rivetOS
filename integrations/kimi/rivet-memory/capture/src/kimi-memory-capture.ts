@@ -153,8 +153,8 @@ export function pickUnknown(obj: Record<string, unknown>, ...keys: string[]): un
  * of roughly 50 prompts: every array-shaped prompt fell through `pickString`
  * and the payload logged "no messages extracted".
  *
- * The den translator (`integrations/kimi/rivet-den/hooks/kimi-den-hook.mjs`)
- * carries the same logic. It is duplicated rather than shared on purpose: that
+ * The den translator (`integrations/kimi/rivet-den/hooks/kimi-den-hook.mjs`,
+ * landing alongside this fix in PR #471) carries the same logic. It is duplicated rather than shared on purpose: that
  * hook is a dependency-free single file so it can be dropped onto a machine
  * with no rivetos install. Change one, change the other.
  */

@@ -205,7 +205,8 @@ console.log('\n— Stop carries no reply (kimi 0.34) —')
 {
   // Verified against the shipped CLI: Stop's payload is `{ stop_hook_active }`
   // plus base fields. The assistant branch is forward-compatible only, so the
-  // real payload must produce a lifecycle marker and nothing that looks like a
+  // Stop is not a lifecycle event for the extractor — a real 0.34 payload
+  // yields zero messages; the assertions pin the absence of anything like a
   // reply.
   const real = loadFixture('stop-no-reply.json')
   const sessionId = pickString(real, 'session_id', 'sessionId')!
