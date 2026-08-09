@@ -158,11 +158,27 @@ export {
   createTaskRunner,
 } from './domain/task/runner.js'
 export type {
+  ExecutorRegistryOptions,
   TaskExecutorRegistry,
   TaskHandlerOptions,
   TaskRunner,
   TaskRunnerOptions,
 } from './domain/task/runner.js'
+export {
+  DEPRECATED_EXECUTOR_TARGETS,
+  HARNESS_EXECUTOR_GAPS,
+  canonicalizeExecutorTarget,
+  createNotImplementedHarnessExecutor,
+  harnessExecutorCoverage,
+  harnessExecutorGap,
+  harnessExecutorUnsupported,
+  isHarnessExecutorTarget,
+  isNotImplementedHarnessExecutor,
+} from './domain/task/harness-executors.js'
+export type {
+  HarnessExecutorCoverage,
+  NotImplementedHarnessExecutorOptions,
+} from './domain/task/harness-executors.js'
 export {
   SkillManagerImpl,
   createSkillListTool,

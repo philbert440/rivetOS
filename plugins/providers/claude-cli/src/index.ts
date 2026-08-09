@@ -50,7 +50,15 @@ export {
   CAPTURE_CHANNEL,
 } from './transcript-capture.js'
 // Task engine (phase 1 step (b)) — HarnessExecutor over headless claude -p.
-export { ClaudeCliExecutor, parseTaskResultBlock, buildTaskSystemAppend } from './executor.js'
+// The class keeps the plugin's name; the harness it executes is `claude-code`,
+// which is the id the task engine registers it under (Phase 3 rename).
+export {
+  ClaudeCliExecutor,
+  CLAUDE_HARNESS_ID,
+  canonicalClaudeSessionId,
+  parseTaskResultBlock,
+  buildTaskSystemAppend,
+} from './executor.js'
 export type { ClaudeCliExecutorConfig } from './executor.js'
 
 export type {

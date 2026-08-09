@@ -44,6 +44,8 @@ import {
   PgTaskStore,
   createChatLoopExecutor,
   createExecutorRegistry,
+  createNotImplementedHarnessExecutor,
+  harnessExecutorGap,
   createTaskRunner,
   SkillManagerImpl,
   createSkillListTool,
@@ -55,7 +57,7 @@ import {
 import { WorkflowEngine, DEFAULT_CASE_DIR_ROOT } from '@rivetos/workflows'
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
 import pg from 'pg'
-import type { GatewayRoute, MeshConfig, MeshRegistry } from '@rivetos/types'
+import type { GatewayRoute, HarnessId, MeshConfig, MeshRegistry } from '@rivetos/types'
 import { WikiIndex } from '@rivetos/memory-postgres'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
@@ -332,9 +334,10 @@ export async function registerAgentTools(
   // Task engine (phase 1a) — durable ros_tasks + embedded run-task runner.
   //
   // Enabled by default and inert: nothing creates task rows yet, so the
-  // runner idles on an empty queue. chat-loop always registers; claude-cli
-  // registers when its binary probe passes; further CLI harness executors
-  // (grok, hermes) are still pending.
+  // runner idles on an empty queue. chat-loop always registers; the
+  // `claude-code` harness executor registers when its binary probe passes,
+  // and EVERY other harness id registers an explicit rejection so a task
+  // aimed at one fails with a reason instead of an anonymous registry miss.
   // On startup the runner crash-sweeps rows this node left 'running'.
   // ------------------------------------------------------------------
   // Executor registry — shared by the durable runner and the in-memory
@@ -354,7 +357,7 @@ export async function registerAgentTools(
     'chat-loop',
     createChatLoopExecutor({ ...executorCfg, memory: runtime.getMemory(), pricing: taskPricing }),
   )
-  await registerClaudeCliTaskExecutor(runtime, config, executors, workspaceDir)
+  await registerHarnessTaskExecutors(runtime, config, executors, workspaceDir)
 
   // Subagent tool store: durable when the engine is live, else process-local
   // (g2a: the in-memory task store replaces the deleted InMemorySubagentStore;
@@ -685,17 +688,58 @@ export async function registerAgentTools(
 // ---------------------------------------------------------------------------
 
 /**
- * Register the claude-cli harness-session executor (phase 1 step (b)) when
- * the `claude` binary is resolvable. Binary resolution mirrors the claude-cli
- * provider: config.providers['claude-cli'].binary, falling back to PATH.
- * If the binary (or the provider package) is missing, log and skip — the
- * task engine simply has no ('harness-session','claude-cli') executor.
+ * Register one `harness-session` executor per harness id (Phase 3).
+ *
+ * `claude-code` gets the real thing — the claude-cli plugin's headless
+ * `claude -p` executor — when the binary probe passes. Every id left over
+ * (including `claude-code` itself when the probe fails, with the probe's own
+ * reason rather than the generic one) gets an explicit rejecting executor
+ * carrying that reason, so the registry answers "no, and here is why" rather
+ * than going silent. That is deliberate: an unregistered target fails with the
+ * runner's anonymous `executor_not_registered`, which tells an operator nothing
+ * about whether the harness is unsupported, not installed, or misspelled.
  */
-async function registerClaudeCliTaskExecutor(
+async function registerHarnessTaskExecutors(
   runtime: Runtime,
   config: RivetConfig,
   executors: ReturnType<typeof createExecutorRegistry>,
   workspaceDir: string,
+): Promise<void> {
+  // A harness that failed for a KNOWN reason here (an unresolvable binary, a
+  // provider package that would not load) overrides the generic recorded gap:
+  // the task row's error should name the actual cause, which only boot knows.
+  const gapOverrides = new Map<HarnessId, string>()
+  await registerClaudeCodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
+  // Exact per-harness lookup (not resolve(), whose kind-level fallback would
+  // report every harness as covered once any one of them registered).
+  for (const { harnessId, registered } of executors.harnesses()) {
+    if (registered) continue
+    const reason = gapOverrides.get(harnessId) ?? harnessExecutorGap(harnessId)
+    executors.register(
+      'harness-session',
+      createNotImplementedHarnessExecutor(harnessId, { reason }),
+      harnessId,
+    )
+    log.info(`Task executor for (harness-session, ${harnessId}): not implemented — ${reason}`)
+  }
+}
+
+/**
+ * Register the `claude-code` harness-session executor (phase 1 step (b)) when
+ * the `claude` binary is resolvable. Binary resolution mirrors the claude-cli
+ * provider: config.providers['claude-cli'].binary, falling back to PATH — the
+ * PROVIDER is still named `claude-cli`; only the executor target was renamed.
+ * If the binary (or the provider package) is missing, record WHY in
+ * `gapOverrides` and return — the caller registers the rejecting executor, and
+ * the operator-facing reason on a failing task row is then the real cause
+ * ("binary X not resolvable") rather than the generic "not wired here".
+ */
+async function registerClaudeCodeTaskExecutor(
+  runtime: Runtime,
+  config: RivetConfig,
+  executors: ReturnType<typeof createExecutorRegistry>,
+  workspaceDir: string,
+  gapOverrides: Map<HarnessId, string>,
 ): Promise<void> {
   const providerCfg = config.providers?.['claude-cli'] ?? {}
   const binary = (providerCfg.binary as string | undefined) ?? 'claude'
@@ -712,7 +756,7 @@ async function registerClaudeCliTaskExecutor(
       const timer = setTimeout(() => {
         log.warn(
           `claude --version probe timed out after ${String(PROBE_TIMEOUT_MS)}ms — ` +
-            `killing probe, skipping claude-cli task executor`,
+            `killing probe, skipping the claude-code task executor`,
         )
         proc.kill('SIGKILL')
         resolve(false)
@@ -731,7 +775,11 @@ async function registerClaudeCliTaskExecutor(
     }
   })
   if (!available) {
-    log.info(`claude binary "${binary}" not resolvable — claude-cli task executor not registered`)
+    const reason =
+      `the \`claude\` binary is not resolvable on this node (tried "${binary}"): install ` +
+      `Claude Code, or set providers.claude-cli.binary to its path`
+    gapOverrides.set('claude-code', reason)
+    log.info(`claude binary "${binary}" not resolvable — claude-code task executor not registered`)
     return
   }
 
@@ -768,7 +816,7 @@ async function registerClaudeCliTaskExecutor(
   }
 
   try {
-    const { ClaudeCliExecutor } = await import('@rivetos/provider-claude-cli')
+    const { ClaudeCliExecutor, CLAUDE_HARNESS_ID } = await import('@rivetos/provider-claude-cli')
     executors.register(
       'harness-session',
       new ClaudeCliExecutor({
@@ -783,13 +831,17 @@ async function registerClaudeCliTaskExecutor(
         memory: runtime.getMemory(),
         structuredResult,
       }),
-      'claude-cli',
+      CLAUDE_HARNESS_ID,
     )
-    log.info(`Task executor registered: (harness-session, claude-cli) via ${binary}`)
+    log.info(`Task executor registered: (harness-session, ${CLAUDE_HARNESS_ID}) via ${binary}`)
   } catch (err: unknown) {
+    const message = (err as Error).message
+    gapOverrides.set(
+      'claude-code',
+      `the @rivetos/provider-claude-cli package did not load on this node: ${message}`,
+    )
     log.warn(
-      `@rivetos/provider-claude-cli not loadable — claude-cli task executor skipped: ` +
-        (err as Error).message,
+      `@rivetos/provider-claude-cli not loadable — claude-code task executor skipped: ` + message,
     )
   }
 }

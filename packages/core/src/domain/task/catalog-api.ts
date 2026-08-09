@@ -17,6 +17,7 @@ import type {
   CatalogAgent,
   CatalogAgentsResponse,
   CatalogCommand,
+  CatalogExecutorEntry,
   CatalogSheet,
   GatewayRoute,
   HarnessExecutor,
@@ -26,9 +27,13 @@ import type {
 } from '@rivetos/types'
 import type { Router } from '../router.js'
 import type { TaskExecutorRegistry } from './runner.js'
+import { isHarnessExecutorTarget, isNotImplementedHarnessExecutor } from './harness-executors.js'
 import { logger } from '../../logger.js'
 
 const log = logger('CatalogApi')
+
+/** Registry key prefix for harness-session entries (`kind:target`). */
+const HARNESS_KEY_PREFIX = 'harness-session:'
 
 export interface CatalogApiOptions {
   nodeName: string
@@ -113,11 +118,24 @@ export function createCatalogApiRoute(opts: CatalogApiOptions): GatewayRoute {
           ])
         }
         const executors = await Promise.all(
-          opts.executors.entries().map(async ({ key, executor }) => ({
-            key,
-            capabilities: executor.capabilities(),
-            commands: await commandsFor(executor),
-          })),
+          opts.executors.entries().map(async ({ key, executor }): Promise<CatalogExecutorEntry> => {
+            const entry: CatalogExecutorEntry = {
+              key,
+              capabilities: executor.capabilities(),
+              commands: await commandsFor(executor),
+            }
+            // harness-session entries carry their harness id and whether the
+            // registration is a real harness or a registered rejection, so a
+            // client can tell "we have kimi" from "we know about kimi".
+            const target = key.startsWith(HARNESS_KEY_PREFIX)
+              ? key.slice(HARNESS_KEY_PREFIX.length)
+              : undefined
+            if (target !== undefined && isHarnessExecutorTarget(target)) {
+              entry.harnessId = target
+              entry.implemented = !isNotImplementedHarnessExecutor(executor)
+            }
+            return entry
+          }),
         )
 
         return json(res, 200, {
