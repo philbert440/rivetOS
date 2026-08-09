@@ -70,6 +70,8 @@ import { GrokBuildDriver } from './harness/grok-driver.js'
 import { createGrokStoreHost } from './harness/grok-store.js'
 import { HermesDriver } from './harness/hermes-driver.js'
 import { createHermesStoreHost } from './harness/hermes-store.js'
+import { KimiCodeDriver } from './harness/kimi-driver.js'
+import { createKimiStoreHost } from './harness/kimi-store.js'
 import { createHarnessRoutes } from './harness/routes.js'
 import { createUploadRoutes } from './harness/uploads.js'
 
@@ -78,9 +80,9 @@ import { createUploadRoutes } from './harness/uploads.js'
 export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcript-watch.js'
 
 // Harness control plane (docs/plans/harness-control-plane.md) — the registry,
-// the `claude-code` reference driver, the `grok-build` and `hermes` drivers,
-// the `PtyHarnessDriver` base the three share, and the alias/codec helpers the
-// remaining Phase 3 driver builds on. Re-exported here so consumers have one
+// the `claude-code` reference driver, the `grok-build`, `hermes` and
+// `kimi-code` drivers, the `PtyHarnessDriver` base the four share, and the
+// alias/codec helpers around them. Re-exported here so consumers have one
 // entry point.
 export {
   createAliasStore,
@@ -125,6 +127,15 @@ export {
   type HermesStoreHost,
 } from './harness/hermes-driver.js'
 export { createHermesStoreHost } from './harness/hermes-store.js'
+export {
+  KimiCodeDriver,
+  KIMI_HARNESS_ID,
+  KIMI_ROSTER_COMMAND,
+  type KimiDriverDeps,
+  type KimiPtyHost,
+  type KimiStoreHost,
+} from './harness/kimi-driver.js'
+export { createKimiStoreHost } from './harness/kimi-store.js'
 export {
   PtyHarnessDriver,
   type HarnessPtyHost,
@@ -247,14 +258,14 @@ export interface DenServerOptions {
    */
   onAgentEvent?: (ev: { session: string; type: string; [k: string]: unknown }) => void
   /**
-   * Extra HarnessDrivers to register alongside the built-in `claude-code`,
-   * `grok-build` and `hermes` drivers (the rest of Phase 3: kimi-code).
+   * Extra HarnessDrivers to register alongside the four built-in drivers
+   * (`claude-code`, `grok-build`, `hermes`, `kimi-code`).
    */
   harnessDrivers?: HarnessDriver[]
   /**
-   * Skip registering the built-in `claude-code` + `grok-build` + `hermes`
-   * drivers — tests that drive the registry with a fake, and nodes that want
-   * their own wiring. They are skipped together: they share the PTY host and
+   * Skip registering the built-in `claude-code` + `grok-build` + `hermes` +
+   * `kimi-code` drivers — tests that drive the registry with a fake, and nodes
+   * that want their own wiring. They are skipped together: they share the PTY host and
    * the den event tap, so a node that replaces one is replacing that wiring for
    * all of them.
    */
@@ -452,15 +463,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     return roster.commands[key]?.cwd ?? roster.cwd
   }
   // The node's HarnessDriver registry (docs/plans/harness-control-plane.md).
-  // All three built-in drivers formalize the machinery right above them — the
+  // All four built-in drivers formalize the machinery right above them — the
   // term manager (spawn/--resume/inject/Esc), the harness's on-disk store, and
   // the den AgentEvent stream — behind the one contract, and share it through
   // `PtyHarnessDriver`. Capability flags follow what is ACTUALLY wired here: no
   // terminals on this node means no interrupt/resume, no den tap means no
-  // liveStream, and `approvals` is false for all three regardless (their
+  // liveStream, and `approvals` is false for all four regardless (their
   // permission prompts live inside their TUIs and never reach the den wire).
-  // `hermes` is the one that rotates: it cannot pin a new session's id, so it
-  // adopts sessions off the den stream and re-keys them when hermes switches.
+  // `hermes` and `kimi-code` are the two that cannot pin a new session's id, so
+  // they refuse `startSession`, adopt sessions off the den stream, and report a
+  // room whose session changed as a rotation.
   const harnesses = createHarnessRegistry()
   const denEventTap = (sink: (ev: DenAgentEventLike) => void): (() => void) => {
     denEventSinks.add(sink)
@@ -489,6 +501,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         cwd: rosterCwdFor('hermes'),
+        log: console.error,
+      }),
+      new KimiCodeDriver({
+        store: createKimiStoreHost(),
+        pty: termEnabled ? () => ensureManager() : undefined,
+        events: denEventTap,
+        cwd: rosterCwdFor('kimi'),
         log: console.error,
       }),
     )

@@ -58,6 +58,12 @@ export function defaultRoster(): TermRoster {
       //   - hermes: --yolo bypasses command approval, --accept-hooks
       //             auto-approves config hooks (else it prompts, or exits
       //             non-zero when it can't reach a TTY)
+      //   - kimi:   --yolo auto-approves regular tool calls. Its stricter
+      //             sibling --auto is fully autonomous (the agent will not ask
+      //             questions at all); --yolo is the default here for the same
+      //             reason hermes uses it — the operator can trade up in
+      //             den-term.json, and the roster should not be the place a
+      //             node quietly loses its last "are you sure".
       // claude trusts its cwd via ~/.claude.json and needs no flag here.
       claude: { label: 'Claude Code', cmd: ['claude'], room: true },
       grok: {
@@ -66,6 +72,7 @@ export function defaultRoster(): TermRoster {
         room: true,
       },
       hermes: { label: 'Hermes', cmd: ['hermes', '--yolo', '--accept-hooks'], room: true },
+      kimi: { label: 'Kimi Code', cmd: ['kimi', '--yolo'], room: true },
       shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
     },
   }
