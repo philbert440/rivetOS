@@ -68,6 +68,8 @@ import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-drive
 import { createClaudeStoreHost } from './harness/claude-store.js'
 import { GrokBuildDriver } from './harness/grok-driver.js'
 import { createGrokStoreHost } from './harness/grok-store.js'
+import { HermesDriver } from './harness/hermes-driver.js'
+import { createHermesStoreHost } from './harness/hermes-store.js'
 import { createHarnessRoutes } from './harness/routes.js'
 import { createUploadRoutes } from './harness/uploads.js'
 
@@ -76,9 +78,10 @@ import { createUploadRoutes } from './harness/uploads.js'
 export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcript-watch.js'
 
 // Harness control plane (docs/plans/harness-control-plane.md) — the registry,
-// the `claude-code` reference driver, the `grok-build` driver, and the
-// alias/codec helpers the remaining Phase 3 drivers build on. Re-exported here
-// so consumers have one entry point.
+// the `claude-code` reference driver, the `grok-build` and `hermes` drivers,
+// the `PtyHarnessDriver` base the three share, and the alias/codec helpers the
+// remaining Phase 3 driver builds on. Re-exported here so consumers have one
+// entry point.
 export {
   createAliasStore,
   normalizeSessionId,
@@ -113,6 +116,22 @@ export {
   type GrokStoreHost,
 } from './harness/grok-driver.js'
 export { createGrokStoreHost } from './harness/grok-store.js'
+export {
+  HermesDriver,
+  HERMES_HARNESS_ID,
+  HERMES_ROSTER_COMMAND,
+  type HermesDriverDeps,
+  type HermesPtyHost,
+  type HermesStoreHost,
+} from './harness/hermes-driver.js'
+export { createHermesStoreHost } from './harness/hermes-store.js'
+export {
+  PtyHarnessDriver,
+  type HarnessPtyHost,
+  type HarnessStoreHost,
+  type PtyHarnessDriverDeps,
+  type PtyHarnessIdentity,
+} from './harness/pty-harness-driver.js'
 export {
   createHarnessRoutes,
   decodeSessionSegment,
@@ -184,8 +203,8 @@ export interface DenServer {
   state(): DenState
   /**
    * Harness control plane (docs/plans/harness-control-plane.md): the node's
-   * `HarnessDriver` registry. `claude-code` and `grok-build` are registered
-   * here at boot; the remaining Phase 3 drivers (kimi-code, hermes) register
+   * `HarnessDriver` registry. `claude-code`, `grok-build` and `hermes` are
+   * registered here at boot; the remaining Phase 3 driver (kimi-code) registers
    * through `DenServerOptions.harnessDrivers` or against this handle.
    */
   harnesses: HarnessRegistry
@@ -228,15 +247,16 @@ export interface DenServerOptions {
    */
   onAgentEvent?: (ev: { session: string; type: string; [k: string]: unknown }) => void
   /**
-   * Extra HarnessDrivers to register alongside the built-in `claude-code` and
-   * `grok-build` drivers (the rest of Phase 3: kimi-code, hermes).
+   * Extra HarnessDrivers to register alongside the built-in `claude-code`,
+   * `grok-build` and `hermes` drivers (the rest of Phase 3: kimi-code).
    */
   harnessDrivers?: HarnessDriver[]
   /**
-   * Skip registering the built-in `claude-code` + `grok-build` drivers — tests
-   * that drive the registry with a fake, and nodes that want their own wiring.
-   * Both are skipped together: they share the PTY host and the den event tap,
-   * so a node that replaces one is replacing that wiring for both.
+   * Skip registering the built-in `claude-code` + `grok-build` + `hermes`
+   * drivers — tests that drive the registry with a fake, and nodes that want
+   * their own wiring. They are skipped together: they share the PTY host and
+   * the den event tap, so a node that replaces one is replacing that wiring for
+   * all of them.
    */
   skipBuiltinHarnessDrivers?: boolean
 }
@@ -432,13 +452,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     return roster.commands[key]?.cwd ?? roster.cwd
   }
   // The node's HarnessDriver registry (docs/plans/harness-control-plane.md).
-  // Both built-in drivers formalize the machinery right above them — the term
-  // manager (spawn/--resume/inject/Esc), the harness's on-disk store, and the
-  // den AgentEvent stream — behind the one contract. Capability flags follow
-  // what is ACTUALLY wired here: no terminals on this node means no
-  // interrupt/resume, no den tap means no liveStream, and `approvals` is false
-  // for both regardless (their permission prompts live inside their TUIs and
-  // never reach the den wire).
+  // All three built-in drivers formalize the machinery right above them — the
+  // term manager (spawn/--resume/inject/Esc), the harness's on-disk store, and
+  // the den AgentEvent stream — behind the one contract, and share it through
+  // `PtyHarnessDriver`. Capability flags follow what is ACTUALLY wired here: no
+  // terminals on this node means no interrupt/resume, no den tap means no
+  // liveStream, and `approvals` is false for all three regardless (their
+  // permission prompts live inside their TUIs and never reach the den wire).
+  // `hermes` is the one that rotates: it cannot pin a new session's id, so it
+  // adopts sessions off the den stream and re-keys them when hermes switches.
   const harnesses = createHarnessRegistry()
   const denEventTap = (sink: (ev: DenAgentEventLike) => void): (() => void) => {
     denEventSinks.add(sink)
@@ -460,6 +482,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         cwd: rosterCwdFor('grok'),
+        log: console.error,
+      }),
+      new HermesDriver({
+        store: createHermesStoreHost(),
+        pty: termEnabled ? () => ensureManager() : undefined,
+        events: denEventTap,
+        cwd: rosterCwdFor('hermes'),
         log: console.error,
       }),
     )

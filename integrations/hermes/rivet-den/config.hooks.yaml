@@ -34,6 +34,15 @@ hooks:
   post_llm_call:
     - command: "sh -c 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs post_llm_call'"
       timeout: 5
+  # Session-id ROTATION boundary: /new, /branch, a mid-chat /resume, a rewind.
+  # Hermes fires this after it has switched, so the payload's session_id is the
+  # NEW id; the `hermes` HarnessDriver holds the previous one and turns the pair
+  # into `session-updated { previousSessionId }` on the control plane. Without
+  # this hook the rotation is still seen, just one turn later (every payload
+  # carries session_id) — with it, at the boundary.
+  on_session_reset:
+    - command: "sh -c 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs on_session_reset'"
+      timeout: 5
   on_session_end:
     - command: "sh -c 'node $HOME/.hermes/agent-hooks/hermes-den-hook.mjs on_session_end'"
       timeout: 5

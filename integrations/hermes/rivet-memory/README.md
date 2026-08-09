@@ -83,7 +83,8 @@ isn't replicated. The discipline lives in the skill + system prompt block.
 | `on_memory_write(action, target, content, metadata)` | `role=system` row tagged `metadata.source='hermes-memory-tool'` |
 | `on_delegation(task, result, child_session_id)` | `role=system` row tagged `metadata.kind='delegation'` |
 | `on_pre_compress(messages)` | Bulk-inserts about-to-be-discarded messages so nothing is lost |
-| `on_session_switch` / `on_session_end` | Closes the conversation or links it to a new session_id |
+| `on_session_switch` | **Rotation, not an ending** — one `role=system` breadcrumb under the NEW key tagged `metadata.kind='session-rotation'` with `previous_session_key` + hermes's `reason`; the old conversation stays open and is read through the alias chain |
+| `on_session_end` | Marks the conversation inactive |
 | `prefetch(query)` | FTS + vector hybrid recall, formatted as a `<rivet-memory-context>` block |
 | `handle_tool_call(...)` | Dispatches `rivet_memory_search`, `rivet_memory_browse`, `rivet_memory_stats`, `rivet_memory_get_full` |
 
@@ -93,7 +94,18 @@ isn't replicated. The discipline lives in the skill + system prompt block.
   `memory_search(agent='rivet-hermes')`).
 - **Channel:** `hermes-<platform>` (`hermes-cli`, `hermes-telegram`, etc.) —
   taken from the `platform` kwarg of `initialize()`.
-- **Conversation key:** `hermes:<session_id>`.
+- **Conversation key:** `hermes:<session_id>` — the canonical `SessionId` of
+  the harness control plane, the same string the `hermes` HarnessDriver and
+  `~/.hermes/state.db` use (docs/plans/harness-control-plane.md § Session
+  identity standard).
+- **Rotations are aliases.** Hermes replaces its session id in place on
+  `/new`, `/branch`, a mid-chat `/resume`, a rewind, and a compaction that
+  forks a child session. Each one writes a `session-rotation` breadcrumb under
+  the new key and leaves the old conversation untouched, so one thread stays
+  one chain. **Migration:** conversations already keyed on an older
+  `hermes:<id>` need no rewrite — reads resolve the chain, and rows written
+  before this change simply have no breadcrumb linking them, exactly as
+  before.
 
 ## Install
 

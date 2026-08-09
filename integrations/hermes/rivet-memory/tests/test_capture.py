@@ -144,6 +144,93 @@ def test_compressed_bulk_inserts_with_marker():
     assert all(r["metadata"]["preserved_from"] == "pre-compress" for r in rows)
 
 
+def test_rotate_session_links_old_to_new_without_closing_either():
+    """Alias semantics, not close+new (harness-control-plane § Rotation).
+
+    The breadcrumb is written under the NEW key — opening the successor
+    conversation and stamping the link back — and the predecessor is left
+    ACTIVE, because a rotation is not the end of a conversation.
+    """
+    from rivet_memory.capture import Capture
+
+    fake = FakeClient()
+    cap = Capture(fake, _ctx)
+    try:
+        cap.rotate_session(
+            "hermes:20260802_225647_6ad0b9",
+            "hermes:20260802_231014_b71c40",
+            {"reason": "compression", "reset": False},
+        )
+        _run(cap)
+    finally:
+        cap.shutdown(timeout=2.0)
+
+    assert fake.closed_session_keys == []
+    assert len(fake.appends) == 1
+    row = fake.appends[0]
+    assert row["session_key"] == "hermes:20260802_231014_b71c40"
+    assert row["role"] == "system"
+    assert row["metadata"]["kind"] == "session-rotation"
+    assert row["metadata"]["previous_session_key"] == "hermes:20260802_225647_6ad0b9"
+    assert row["metadata"]["reason"] == "compression"
+    assert "20260802_225647_6ad0b9" in row["content"]
+
+
+def test_provider_session_switch_rotates_instead_of_closing():
+    """The breaking change, at the provider boundary hermes actually calls."""
+    import rivet_memory
+
+    provider = rivet_memory.RivetMemoryProvider()
+    fake = FakeClient()
+    recorded = []
+
+    class RecordingCapture:
+        def rotate_session(self, previous_key, next_key, metadata=None):
+            recorded.append((previous_key, next_key, dict(metadata or {})))
+
+        def close_session(self, session_key):
+            recorded.append(("closed", session_key, {}))
+
+    provider._session_id = "20260802_225647_6ad0b9"
+    provider._session_key = "hermes:20260802_225647_6ad0b9"
+    provider._capture = RecordingCapture()
+
+    # reset=True is a user's /new — still a rotation, with the reason kept.
+    provider.on_session_switch(
+        "20260802_231014_b71c40", parent_session_id="", reset=True, reason="new_session"
+    )
+    assert provider._session_key == "hermes:20260802_231014_b71c40"
+    assert recorded == [
+        (
+            "hermes:20260802_225647_6ad0b9",
+            "hermes:20260802_231014_b71c40",
+            {
+                "reason": "new_session",
+                "reset": True,
+                "rewound": False,
+                "parent_session_id": "20260802_225647_6ad0b9",
+            },
+        )
+    ]
+
+    # reset=False (a compaction child) carries the lineage hermes supplied.
+    recorded.clear()
+    provider.on_session_switch(
+        "20260803_090512_1f9ae2",
+        parent_session_id="20260802_231014_b71c40",
+        reset=False,
+        reason="compression",
+    )
+    assert recorded[0][2]["parent_session_id"] == "20260802_231014_b71c40"
+    assert recorded[0][2]["reason"] == "compression"
+
+    # Restating the same id is not a rotation.
+    recorded.clear()
+    provider.on_session_switch("20260803_090512_1f9ae2")
+    assert recorded == []
+    assert fake.closed_session_keys == []
+
+
 def test_close_session_dispatches_inactive_mark():
     from rivet_memory.capture import Capture
 

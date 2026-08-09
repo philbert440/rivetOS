@@ -11,6 +11,16 @@
 // name arrives BOTH as the payload's `hook_event_name` and as argv[1] (belt
 // and suspenders, matching the grok wrapper). Best-effort: ALWAYS exits 0.
 //
+// Two ids, deliberately. `session` is the den ROOM — the join key den, chat and
+// the PTY share — while `harnessSession` is Hermes's OWN session id from the
+// payload. Claude and grok are spawned with `--session-id <room key>` so their
+// two ids are one string; Hermes has no flag to pin a new session's id and
+// mints `20260802_225647_6ad0b9` for itself, so both have to travel. The
+// `hermes` HarnessDriver keys sessions on `harnessSession` (the id the sqlite
+// store and rivet-memory capture also use) and reads a ROTATION — /new,
+// /branch, a mid-chat /resume, a rewind, a compaction that forks a child — off
+// that field changing while the room stays put.
+//
 // Env (injected by the den-server PTY spawner):
 //   RIVET_DEN_SESSION  the conversation join key — the den room to report into
 //   RIVET_DEN_URL      den-server base(s), comma-separated (default :5174)
@@ -52,6 +62,12 @@ async function main() {
   // The PTY spawner injects RIVET_DEN_SESSION (the join key) so a Hermes it
   // launched reports into the pre-created room, beating Hermes's own id.
   const session = process.env.RIVET_DEN_SESSION ?? p.session_id ?? p.sessionId ?? `unknown-${process.ppid}`
+  // Hermes's own id, every event, so the driver can key sessions on it and see
+  // it rotate. Every shell-hook payload carries session_id at the top level
+  // (agent/shell_hooks.py `_serialize_payload`).
+  const harnessSession = typeof (p.session_id ?? p.sessionId) === 'string'
+    ? (p.session_id ?? p.sessionId)
+    : ''
   const extra = p.extra ?? {}
 
   // Per-session state: dedup the user message (pre_llm_call fires once per
@@ -68,7 +84,15 @@ async function main() {
 
   const events = []
   const emit = (body) =>
-    events.push({ v: 1, session, name: NAME, harness: 'hermes', ts: Date.now() + events.length, ...body })
+    events.push({
+      v: 1,
+      session,
+      name: NAME,
+      harness: 'hermes',
+      ...(harnessSession ? { harnessSession } : {}),
+      ts: Date.now() + events.length,
+      ...body,
+    })
 
   switch (event) {
     case 'on_session_start':
@@ -76,6 +100,20 @@ async function main() {
       // the room is usually pre-created by the PTY spawner; this is harmless
       // reinforcement and covers Hermes launched outside RivetHub.
       emit({ type: 'session.start', title: 'Hermes' })
+      break
+    case 'on_session_reset':
+    case 'session:reset':
+      // Hermes replaced this room's session id in place (/new, /branch, a
+      // mid-chat /resume, a rewind). Shell hooks only ever see the NEW id —
+      // the previous one is the driver's to remember — and the room itself
+      // continues, which is exactly what den's reducer does with session.start
+      // (it keeps the conversation log across session boundaries). Reporting it
+      // here rather than waiting for the next pre_llm_call means the control
+      // plane records the rotation at the boundary, not one turn late.
+      emit({ type: 'session.start', title: 'Hermes' })
+      // The new session starts with no history, so the user-message dedup must
+      // not swallow a first turn that repeats the last one before the reset.
+      st.lastUser = ''
       break
     case 'pre_llm_call': {
       // Hermes fires pre_llm_call ONCE per turn (before the tool loop), so

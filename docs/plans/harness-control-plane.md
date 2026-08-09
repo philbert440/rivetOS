@@ -310,7 +310,7 @@ When a harness rotates/replaces its native id (compact, fork, crash recovery):
 9. **Chain hygiene:** alias resolution always terminates at the newest id; cycle detection required; max chain depth 32 (reject beyond — something is broken).
 10. **Ingest rewrite (permanent):** events arriving under a superseded id are rewritten to the canonical id at ingest (single write — no dual-writing); events for an unknown alias are dropped with a logged warning.
 
-> **Phase 3 breaking change:** hermes capture today handles rotation as "close old key, open new conversation" with no alias. The hermes driver MUST adopt alias semantics — do not ship the old close+new behavior under the new interface.
+> **Phase 3 breaking change (shipped):** hermes capture used to handle rotation as "close old key, open new conversation" with no alias. It now records an alias instead — the predecessor conversation stays open, a durable breadcrumb links it to the successor, and no history is rewritten. See As built (hermes) § Rotation migration story.
 
 ### Legacy keys → SessionId (migration aliases)
 
@@ -371,11 +371,12 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 
 ### As built (node control plane)
 
-`services/den-server/src/harness/` — the registry, the `claude-code` and
-`grok-build` drivers, and the routes all live in den-server because that is
-where the machinery they formalize already is (term manager, the harnesses'
-on-disk stores, den AgentEvent ingest). Boot registers both built-ins by
-starting the gateway; the remaining Phase 3 drivers pass through
+`services/den-server/src/harness/` — the registry, the `claude-code`,
+`grok-build` and `hermes` drivers, the `PtyHarnessDriver` base they share, and
+the routes all live in den-server because that is where the machinery they
+formalize already is (term manager, the harnesses' on-disk stores, den
+AgentEvent ingest). Boot registers all three built-ins by starting the gateway;
+the remaining Phase 3 driver passes through
 `registerGateway(..., harnessDrivers)`.
 
 Mounted paths — this table is authoritative for what shipped:
@@ -413,18 +414,20 @@ Two deviations, both because den has no path router to deviate from:
 Capability flags of the built-in drivers, honestly — each is what is ACTUALLY
 wired on the node, never an aspiration:
 
-| Flag | `claude-code` | `grok-build` | Why |
-|------|---------------|--------------|-----|
-| `interrupt` | den terminals enabled | den terminals enabled | Esc through the term manager's `inject(..., interrupt)`; no PTY, no interrupt |
-| `resume` | den terminals enabled | den terminals enabled | `--resume <id>` through the term manager's spawn-or-get |
-| `approvals` | **false** | **false** | Both surface permission prompts inside their own TUI; the den wire carries neither a request nor a decision channel. `resolveApproval` → 501 |
-| `liveStream` | den event tap present | den event tap present | The driver's only live source is den AgentEvent ingest |
-| `listSessions` | true | true | A store scan: `~/.claude/projects` / `~/.grok/sessions` |
+| Flag | `claude-code` | `grok-build` | `hermes` | Why |
+|------|---------------|--------------|----------|-----|
+| `interrupt` | den terminals enabled | den terminals enabled | den terminals enabled | Esc through the term manager's `inject(..., interrupt)`; no PTY, no interrupt |
+| `resume` | den terminals enabled | den terminals enabled | den terminals enabled | `--resume <id>` through the term manager's spawn-or-get |
+| `approvals` | **false** | **false** | **false** | All three surface permission prompts inside their own TUI; the den wire carries neither a request nor a decision channel. `resolveApproval` → 501. (A hermes shell hook *can* block a tool call, but that is a policy verdict computed on the node, not a request for a human decision) |
+| `liveStream` | den event tap present | den event tap present | den event tap present | The driver's only live source is den AgentEvent ingest |
+| `listSessions` | true | true | true | A store scan: `~/.claude/projects` / `~/.grok/sessions` / `~/.hermes/state.db` |
 
-Both reject `cwd`/`model` on `startSession` (roster-owned) and attachments on
-`sendUserTurn`, with `capability_unsupported` rather than ignoring them
+All three reject `cwd`/`model` on `startSession` (roster-owned) and attachments
+on `sendUserTurn`, with `capability_unsupported` rather than ignoring them
 silently. The attachment rejection stands even now that staging exists — a PTY
-paste has no way to hand a file to a TUI; see below.
+paste has no way to hand a file to a TUI; see below. `hermes` additionally
+rejects `startSession` outright — it has no flag to pin a new session's id, so
+the control plane cannot name the session it would be starting.
 
 ### As built (`grok-build` driver)
 
@@ -485,22 +488,125 @@ Two things the den wire cannot express, recorded rather than faked:
 `PostToolUseFailure`; and tool names pass through as grok emits them
 (`run_terminal_cmd`, `search_replace`) rather than being renamed to Claude's.
 
-**Follow-ups, deliberately not taken here:**
+**Follow-ups, both taken at driver three (`hermes`) — see below:**
 
-- The two PTY drivers now share most of a state machine (live map,
-  quiet-window failsafe, LIFO tool pairing, den event mapping). Extracting a
-  common base is the right move at driver three — `kimi-code` or `hermes`,
-  whichever lands next — when there is a third data point to shape it. Doing it
-  on the second would be guessing at the abstraction while also destabilizing
-  the reference driver. `DenAgentEventLike` lives in `claude-driver.ts` and
-  `grok-driver.ts` imports it from there; that is fine at two drivers and moves
-  to the shared base at the same time.
-- **`claude-store.ts:23` still reads through the first-hit-wins
-  `readHarnessTranscript`** (`term/harness-sessions.ts:782`, claude → grok →
-  hermes), so a `claude-code` id whose `.jsonl` has been deleted or rotated
-  away can be served a *grok* transcript. Pre-existing, and the exact
-  asymmetry `readGrokTranscript` now fixes on the grok side; give Claude the
-  same store-scoped reader.
+- ~~The two PTY drivers now share most of a state machine.~~ **Done:**
+  `harness/pty-harness-driver.ts`. The third data point arrived and confirmed
+  the shape rather than complicating it, so the base was extracted and all
+  three drivers are thin subclasses of it. `DenAgentEventLike` moved there and
+  `claude-driver.ts` re-exports it.
+- ~~`claude-store.ts` still reads through the first-hit-wins
+  `readHarnessTranscript`.~~ **Done:** `readClaudeTranscript`, the same
+  store-scoping `readGrokTranscript` and `readHermesTranscript` have.
+
+### As built (`hermes` driver) — the first rotating driver
+
+`services/den-server/src/harness/hermes-driver.ts` + `hermes-store.ts`,
+registered at boot beside the other two behind the same gating. It is the
+acceptance test the rotation gate was built for: `hermes-driver.test.ts` runs
+`runHarnessRotationConformance('hermes', …)` against the real driver and a real
+registry, and the suite needed **no changes** to accommodate it.
+
+Everything hermes does differently follows from one fact: **it cannot be told
+what to call a new session.** `hermes --resume <id>` and `--continue [name]`
+both reference an EXISTING session and there is no new-session-with-this-id
+flag (`--pass-session-id` only injects the id into the system prompt). So:
+
+- **The den room key is not the native id.** Claude and grok are spawned with
+  `--session-id <den session key>`, which is why their two ids are one string
+  and why the base's room↔native mapping is the identity function. A hermes
+  spawned from the drawer or hub chat runs in a room key den chose while hermes
+  mints `20260802_225647_6ad0b9` for itself. The driver keeps a room ↔ native
+  map, learned from the den stream: `hermes-den-hook.mjs` now stamps hermes's
+  own `session_id` on every event as `harnessSession` (a new optional field on
+  `AgentEventMeta` — the room key stays `session`, so nothing that joins on it
+  moves). A session the driver resumes itself is spawned into a room *named*
+  after the native id, so for those the two coincide again.
+- **`startSession` answers `capability_unsupported`.** The alternative — mint a
+  uuid, return it, and hope — is a Rivet-only third id the harness never
+  adopts, which § Rotation rule 7 forbids. Hermes sessions enter the control
+  plane by **adoption**: spawn from the den roster (or `POST .../resume` an
+  existing one) and the driver picks the session up the moment its hooks
+  announce an id. Everything else on the contract works normally.
+- **It rotates.** `/new`, `/branch`, a mid-chat `/resume`, a rewind, and a
+  compaction that forks a child session each replace hermes's session id inside
+  one running process (hermes fires its own `on_session_switch` for all five).
+  On the den wire that is the room's `harnessSession` changing, and the driver
+  answers with `session-updated` + `previousSessionId`. That is its entire part:
+  the control plane records the alias, moves live tails, retires the old id and
+  keeps `listSessions` canonical-only. The driver deliberately does **not**
+  re-key its own sinks — `hermes-driver.test.ts` pins that, because a driver
+  that did would double every post-rotation event.
+- **Rotation is reported at the boundary, not a turn late.** The hooks config
+  gains `on_session_reset`, which hermes fires right after a switch; without it
+  the rotation would still be seen (every payload carries `session_id`) but only
+  on the next turn's first hook.
+- **A turn survives the rotation.** A compaction can fork mid-turn, so the
+  in-flight lock and the open tool calls move to the new id rather than wedging
+  the old one on `turn_in_flight` forever.
+
+The driver cannot distinguish a user's `/new` from a compaction fork on the den
+wire, and does not try: every cause — including a den room re-spawned into a
+fresh hermes, since the room is the conversation — is "this room's session id
+was replaced", which is exactly what `previousSessionId` means. The *reason* is
+preserved where it is observable — capture stamps hermes's own `reason` on its
+breadcrumb (below).
+
+**Identity.** `hermes:<native>` — exactly what the capture plugin already
+writes and what `~/.hermes/state.db` keys on, so den, capture and the control
+plane join on one string. Those natives are `YYYYMMDD_HHMMSS_<6 hex>`:
+k-sortable, but second-resolution plus 24 bits rather than the uuid-class
+entropy § Session identity requires. Namespacing them (the rule's remedy) is
+deliberately NOT done — it would fork the key away from capture and from
+hermes's own store, a worse failure than the residual risk of two sessions
+starting in the same second, on one node, under one agent tag, drawing the same
+24 bits. Recorded rather than papered over. It also means a bare hermes id
+never goes near the registry's bare-*uuid* probe: hermes ids do not have that
+shape, so they must arrive canonical.
+
+**Store.** sqlite (`~/.hermes/state.db`) rather than files, read through
+`term/harness-sessions.ts` as usual: `listHermesSessions`, a new
+`describeHermesSession` (the list query narrowed to one row, so a drawer row and
+a `getSession` cannot disagree — and hermes is the one harness whose store
+records when a session began, so `createdAt` is the harness's own answer rather
+than a file birthtime), `harnessSessionExists` for the `--resume` ground truth,
+and a new store-scoped `readHermesTranscript`.
+
+#### Rotation migration story (breaking, capture side)
+
+`integrations/hermes/rivet-memory` used to treat a switch as **close + new**:
+on `reset=True` it marked the old conversation inactive and let the next write
+open a fresh one; on `reset=False` it moved the write key with no record at
+all. Either way one continuing thread became two unrelated conversations with
+nothing linking them.
+
+Now `on_session_switch` records an **alias**: subsequent writes go under the new
+`SessionId` (unchanged), the predecessor conversation stays **open and
+untouched**, and one `role=system` breadcrumb is written under the new key
+carrying `metadata.kind='session-rotation'`, `previous_session_key`, hermes's
+`reason` (`new_session` / `branch` / `resume` / `compression`), `reset` and
+`rewound`. `on_session_end` still closes — an ending is still an ending.
+
+Why a breadcrumb row and not just the control-plane alias: the registry's alias
+store is in-memory and per-node, so it covers live reads and dies with the
+process. The breadcrumb makes the chain reconstructible from the memory DB
+alone, with no schema migration.
+
+**What existing data needs:** nothing. Conversations already keyed
+`hermes:<old-id>` are not rewritten, re-keyed, or merged — § Rotation rule 3
+prefers exactly that ("queries resolve alias chain and union transcript
+history"). Reads keep working: the control plane resolves superseded ids for
+every driver method, `subscribe` included. Rows written before this change
+simply have no breadcrumb, which is the state they were already in. The one
+behavioural change an operator will notice is that a hermes conversation is no
+longer marked inactive on `/new`; it is marked inactive when the session
+actually ends.
+
+Known gap, recorded: the capture worker resolves its write key at dispatch
+time, so a turn enqueued microseconds before a switch can be filed under the
+new key. Under alias semantics both keys are one chain, so this is a cosmetic
+misordering within one thread — strictly better than the old behaviour, where
+the same turn landed in a conversation that had just been closed.
 
 ### Attachment staging (`POST /api/uploads`)
 
@@ -685,18 +791,20 @@ second successor, and a chain rotated to its depth cap.
 **Phase 3 driver PRs:** add one `runHarnessRotationConformance('<harness>', …)`
 block to the driver's test file. `claude-code` has none — its native id never
 rotates, so there is nothing to exercise; that is exactly why the suite runs
-against a fake.
+against a fake. **`hermes` is the suite's first real customer** and passed it
+unmodified: its `rotate()` is one den event carrying a new `harnessSession` for
+the same room, and its `emitActivity()` is a `message.agent` in that room.
 
 ---
 
 ## Phase 3 — Multi-harness parity + hub binding
 
 - [x] **Grok Build driver:** promote hooks/capture → gateway stream (`grok-build:…`) — see As built (grok-build) below
-- [ ] **Hermes driver:** same; memory/den already exist (`hermes:…`)
+- [x] **Hermes driver:** same; memory/den already exist (`hermes:…`) — see As built (hermes) below
 - [x] **Kimi den hooks:** `integrations/kimi/rivet-den` streams kimi-code sessions into a den under the canonical `kimi-code:<native>` — the same key capture writes, so room and conversation join on one identity
 - [ ] **Kimi driver:** the gateway half is still to come; it also has to supply what the hooks cannot — kimi's `Stop` payload carries no assistant reply, so a hook-only kimi den shows prompts, tools and plan but no agent messages. Capture stays as-is (`kimi-code:…`)
 - [x] Tasks: `harness-session` executors per harness id — includes renaming/aliasing the existing executor agent id `claude-cli` → `claude-code`; grok-build/kimi-code/hermes register as explicit rejections, not absences — see As built (per-harness task executors) below
-- [ ] Hermes rotation migrated from close+new-conversation to alias semantics (breaking, see Session identity § Rotation)
+- [x] Hermes rotation migrated from close+new-conversation to alias semantics (breaking, see Session identity § Rotation) — driver side and capture side both, see As built (hermes)
 - [x] **Hub chat** binds the harness API (`apps/rivethub-web`) — see below
 - [ ] **Hub:** tasks / dens bind multi-harness API (not Claude-only)
 - [ ] Den: list all harness types under one naming scheme
@@ -782,8 +890,9 @@ Hub chat binds **per session, not per app**: a row a registered driver claims
 streams on `WS /api/harness-sessions/ws`, hard-resyncs its transcript on every
 `open` (first connect and reconnect alike — the tail has no replay), and sends
 through `sendUserTurn`; the drawer badges its harness id. Rows no driver claims
-— hermes and kimi, until their Phase 3 drivers land — keep the existing gateway
-chat channel binding verbatim, so nothing disappears from the drawer. The chat
+— kimi, until its Phase 3 driver lands — keep the existing gateway
+chat channel binding verbatim, so nothing disappears from the drawer. (As of
+the `hermes` driver, only kimi rows are still unclaimed.) The chat
 store marks bound sessions so the all-sessions socket stops writing them: the
 same den events reach both surfaces and folding twice would double every delta.
 Interrupt and approvals render only when the driver's flags say so, which for

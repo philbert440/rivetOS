@@ -345,6 +345,56 @@ function listHermesSessions(limit: number): HarnessSession[] {
   }
 }
 
+/**
+ * One hermes session by id — the `hermes` driver's `getSession`.
+ *
+ * The list query's shape, narrowed to a single row: the SAME first-user-message
+ * title subquery and the same `COALESCE(ended_at, started_at)` recency, so a
+ * drawer row and a `getSession` cannot disagree — plus `started_at` as the
+ * creation stamp. Hermes is the one harness whose store records when a session
+ * began, so unlike Claude's file-birthtime guess this is the harness's own
+ * answer.
+ */
+function describeHermesSessionSync(id: string): HarnessSession | undefined {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const db = openHermesDb()
+  if (!db) return undefined
+  try {
+    const row = db
+      .prepare(
+        `SELECT s.id AS id, s.started_at AS started, s.ended_at AS ended,
+                (SELECT m.content FROM messages m
+                  WHERE m.session_id = s.id AND m.role = 'user'
+                  ORDER BY m.timestamp ASC LIMIT 1) AS title
+         FROM sessions s WHERE s.id = ? LIMIT 1`,
+      )
+      .get(id)
+    if (!row) return undefined
+    const started = toEpochMs(row.started)
+    return {
+      id: String(row.id),
+      command: 'hermes',
+      title:
+        (typeof row.title === 'string' ? row.title : '').trim().slice(0, 120) || String(row.id),
+      updatedAt: toEpochMs(row.ended ?? row.started),
+      ...(started ? { createdAt: started } : {}),
+    }
+  } catch {
+    return undefined
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Async face of the sqlite lookup, so every driver's store port looks alike. */
+export function describeHermesSession(id: string): Promise<HarnessSession | undefined> {
+  return Promise.resolve(describeHermesSessionSync(id))
+}
+
 function hermesSessionExists(id: string): boolean {
   const db = openHermesDb()
   if (!db) return false
@@ -800,6 +850,35 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
   if (hermes.length > 0) return { id, command: 'hermes', turns: hermes }
 
   return { id, command: '', turns: [] }
+}
+
+/**
+ * Claude-only transcript read — the `claude-code` driver's hard-resync source.
+ *
+ * Same store-scoping rule as `readGrokTranscript` below, applied to the
+ * reference driver at driver three (it was the leftover the `grok-build` slice
+ * recorded): a `claude-code` id whose `.jsonl` has been deleted must read as an
+ * empty transcript, not as whichever other store happens to hold that id.
+ */
+export async function readClaudeTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const path = await findClaudeJsonl(id)
+  if (!path) return { id, command: '', turns: [] }
+  return { id, command: 'claude', turns: claudeTurnsFromLines(await parseJsonlObjects(path)) }
+}
+
+/**
+ * Hermes-only transcript read — the `hermes` driver's hard-resync source.
+ *
+ * Same rule again, and it matters most here: hermes ids are not uuids
+ * (`20260802_225647_6ad0b9`), so the first-hit probe's "collisions across
+ * harnesses are rare" argument does not even apply to them by shape.
+ */
+export function readHermesTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) {
+    return Promise.resolve({ id, command: '', turns: [] })
+  }
+  return Promise.resolve({ id, command: 'hermes', turns: readHermesTurns(id) })
 }
 
 /**

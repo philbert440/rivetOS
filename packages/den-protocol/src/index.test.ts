@@ -44,7 +44,22 @@ describe('parseEvent', () => {
     expect(parseEvent({ v: 1, session: 's1', type: 'session.end', ts: NaN })).toBeNull();
     expect(parseEvent({ v: 1, session: 's1', type: 'session.end', name: 42 })).toBeNull();
     expect(parseEvent({ v: 1, session: 's1', type: 'session.end', harness: {} })).toBeNull();
+    expect(parseEvent({ v: 1, session: 's1', type: 'session.end', harnessSession: 7 })).toBeNull();
     expect(parseEvent({ v: 1, session: 's1', type: 'session.end', ts: 5, name: 'n' })).not.toBeNull();
+  });
+
+  it('carries the harness’s own session id when the room key is not it (hermes)', () => {
+    // The one field that lets a driver see a native-id rotation: the room key
+    // stays put while `harnessSession` moves.
+    const ev = parseEvent({
+      v: 1,
+      session: 'den-pty-1a2b',
+      type: 'message.agent',
+      text: 'done',
+      harness: 'hermes',
+      harnessSession: '20260802_225647_6ad0b9',
+    });
+    expect(ev?.harnessSession).toBe('20260802_225647_6ad0b9');
   });
 
   it('accepts message.agent turn stats and preserves them', () => {

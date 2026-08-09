@@ -226,20 +226,54 @@ describe('GET /api/harnesses', () => {
 describe('more than one driver on a node', () => {
   const GROK_UUID = '019e5f82-f0e5-7d41-a38c-4eefced7e570'
   const GROK_SID = `grok-build:${GROK_UUID}` as SessionId
+  /** hermes ids are its own `YYYYMMDD_HHMMSS_<hex>`, never uuids. */
+  const HERMES_NATIVE = '20260802_225647_6ad0b9'
+  const HERMES_SID = `hermes:${HERMES_NATIVE}` as SessionId
+  /** A node with terminals but no den tap — a third, distinct capability sheet. */
+  const HERMES_CAPS: HarnessCapabilities = { ...FULL_CAPS, liveStream: false }
   const pair = (): { claude: FakeDriver; grok: FakeDriver } => ({
     claude: new FakeDriver(),
     grok: new FakeDriver(FULL_CAPS, 'grok-build'),
   })
+  const trio = (): { claude: FakeDriver; grok: FakeDriver; hermes: FakeDriver } => ({
+    ...pair(),
+    hermes: new FakeDriver(HERMES_CAPS, 'hermes'),
+  })
 
-  it('lists both drivers with their own capability sheets', async () => {
-    const { claude, grok } = pair()
-    const { base } = await start(claude, grok)
+  it('lists all three drivers with their own capability sheets', async () => {
+    const { claude, grok, hermes } = trio()
+    const { base } = await start(claude, grok, hermes)
     expect(await (await fetch(`${base}/api/harnesses`)).json()).toEqual({
       harnesses: [
         { harnessId: 'claude-code', capabilities: FULL_CAPS },
         { harnessId: 'grok-build', capabilities: FULL_CAPS },
+        { harnessId: 'hermes', capabilities: HERMES_CAPS },
       ],
     })
+    // …and each is individually addressable.
+    for (const id of ['claude-code', 'grok-build', 'hermes']) {
+      expect((await fetch(`${base}/api/harnesses/${id}`)).status).toBe(200)
+    }
+    expect((await fetch(`${base}/api/harnesses/kimi-code`)).status).toBe(404)
+  })
+
+  it('routes a non-uuid hermes id to the hermes driver alone', async () => {
+    // The other two key sessions on uuids; hermes does not, so an id shape that
+    // no probe could ever claim still has to dispatch on its harness prefix.
+    const { claude, grok, hermes } = trio()
+    hermes.add(HERMES_SID)
+    const { base } = await start(claude, grok, hermes)
+
+    const res = await fetch(`${base}/api/harness-sessions/${enc(HERMES_SID)}`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ sessionId: HERMES_SID, harnessId: 'hermes' })
+
+    expect(
+      (await post(base, `/api/harness-sessions/${enc(HERMES_SID)}/turns`, { text: 'hi' })).status,
+    ).toBe(202)
+    expect(hermes.calls.turns).toEqual([{ sessionId: HERMES_SID, turn: { text: 'hi' } }])
+    expect(claude.calls.turns).toEqual([])
+    expect(grok.calls.turns).toEqual([])
   })
 
   it('scopes listSessions and startSession to the harness in the path', async () => {
