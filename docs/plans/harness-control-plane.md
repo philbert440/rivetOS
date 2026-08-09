@@ -371,11 +371,12 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 
 ### As built (node control plane)
 
-`services/den-server/src/harness/` — the registry, the `claude-code` driver, and
-the routes all live in den-server because that is where the machinery they
-formalize already is (term manager, on-disk Claude store, den AgentEvent
-ingest). Boot registers the driver by starting the gateway; Phase 3 drivers pass
-through `registerGateway(..., harnessDrivers)`.
+`services/den-server/src/harness/` — the registry, the `claude-code` and
+`grok-build` drivers, and the routes all live in den-server because that is
+where the machinery they formalize already is (term manager, the harnesses'
+on-disk stores, den AgentEvent ingest). Boot registers both built-ins by
+starting the gateway; the remaining Phase 3 drivers pass through
+`registerGateway(..., harnessDrivers)`.
 
 Mounted paths — this table is authoritative for what shipped:
 
@@ -409,13 +410,97 @@ Two deviations, both because den has no path router to deviate from:
   `/api/notifications/ws`), so a dynamic `:sessionId` segment has nothing to
   match against.
 
-Claude capability flags, honestly: `approvals: false` always (its permission
-prompts live inside the TUI and never reach the den wire); `interrupt` /
-`resume` follow whether den terminals are enabled; `liveStream` follows the den
-event tap; `listSessions` is always true (a store scan). `startSession` rejects
-`cwd`/`model` (roster-owned) and `sendUserTurn` rejects attachments, both with
-`capability_unsupported`, rather than ignoring them silently. The attachment
-rejection stands even now that staging exists — see below.
+Capability flags of the built-in drivers, honestly — each is what is ACTUALLY
+wired on the node, never an aspiration:
+
+| Flag | `claude-code` | `grok-build` | Why |
+|------|---------------|--------------|-----|
+| `interrupt` | den terminals enabled | den terminals enabled | Esc through the term manager's `inject(..., interrupt)`; no PTY, no interrupt |
+| `resume` | den terminals enabled | den terminals enabled | `--resume <id>` through the term manager's spawn-or-get |
+| `approvals` | **false** | **false** | Both surface permission prompts inside their own TUI; the den wire carries neither a request nor a decision channel. `resolveApproval` → 501 |
+| `liveStream` | den event tap present | den event tap present | The driver's only live source is den AgentEvent ingest |
+| `listSessions` | true | true | A store scan: `~/.claude/projects` / `~/.grok/sessions` |
+
+Both reject `cwd`/`model` on `startSession` (roster-owned) and attachments on
+`sendUserTurn`, with `capability_unsupported` rather than ignoring them
+silently. The attachment rejection stands even now that staging exists — a PTY
+paste has no way to hand a file to a TUI; see below.
+
+### As built (`grok-build` driver)
+
+`services/den-server/src/harness/grok-driver.ts` + `grok-store.ts`, registered
+at boot next to `claude-code` behind the same gating (`termEnabled` for the PTY
+host, the shared den event tap for the stream). It is the same shape as the
+reference driver because it wraps the same machinery — the term manager, an
+on-disk store, den ingest — and deviates in exactly four places:
+
+- **Store existence is a directory.** grok writes `~/.grok/sessions/<enc-cwd>/
+  <uuid>/` before `summary.json`, so a describe miss does not mean the id is
+  free and `grok --session-id` refuses an id whose dir exists. The driver has an
+  `exists` port over `harnessSessionExists('grok', id)` — the same ground truth
+  the term manager uses to pick `--resume` — and uses it for the collision
+  check, the resume check, and the re-spawn decision. `describe` stays the
+  summary read, and now carries `created_at`, so a list row and a `getSession`
+  cannot disagree about `createdAt`.
+- **Reasoning is real.** The shared hook translator tails grok's ACP
+  `agent_thought_chunk`s out of `updates.jsonl`, so `thinking.delta` carries the
+  actual thought tail rather than Claude's spinner status line. Both map onto
+  `reasoning-delta`; grok's is the higher-fidelity stream of the two.
+- **No legacy key shape.** grok's capture plugin already derives
+  `grok-build:<uuid>` — the canonical form — so unlike Claude there is nothing
+  to collapse. Native ids are UUIDv7 minted by grok (and required by
+  `--session-id`), so nothing needs namespacing either. The bare-uuid shape the
+  den drawer and hub chat use is resolved by the registry's probe, which asks
+  every registered driver in turn.
+- **Its own transcript reader.** `readGrokTranscript` instead of the drawer's
+  id-only `readHarnessTranscript`, which probes claude → grok → hermes and
+  returns the first hit. A driver already knows which harness owns the id and
+  must not serve another store's transcript for it.
+
+Also worth knowing about a two-driver node: a **bare native uuid carries no
+harness**, so `registry.resolve` asks each registered driver in turn and
+memoizes the first that claims it (`registry.ts`, `bareOwner`). Claude is
+probed first, and the memo is permanent for the life of the process. With two
+uuid-keyed stores now coexisting, a wrong answer is possible in principle;
+with 128 bits of id it is not possible in practice, and the canonical
+`<harness>:<uuid>` form — which every client that knows the harness should
+send — never goes near the probe.
+
+`grok-build` **does not rotate**. grok can mint a new native id
+(`--fork-session`), but nothing on the den wire carries a previous→new pair —
+the `PreCompact` hook the rivet-den integration wires emits `thinking.end` +
+`activity` and names no ids. So the driver never emits `session-updated` with
+`previousSessionId`, and the shared rotation conformance suite
+(`harness/test/driver-conformance.ts`) has no `rotate()` to drive, exactly as
+for `claude-code`. `grok-driver.test.ts` pins the non-rotation explicitly
+instead, and exercises the non-rotating half of the suite's assertions —
+canonical dispatch, canonical-only listings, a live tail through
+`registry.subscribeSession` — against a real registry. If grok ever surfaces a
+fork/compact signal, the suite is the acceptance test for wiring it and nothing
+else about the driver has to change: the registry owns re-keying.
+
+Two things the den wire cannot express, recorded rather than faked:
+`tool-result.output` is always `null` and `isError` is never set, because den's
+`tool.end` carries no result body and collapses `PostToolUse` with
+`PostToolUseFailure`; and tool names pass through as grok emits them
+(`run_terminal_cmd`, `search_replace`) rather than being renamed to Claude's.
+
+**Follow-ups, deliberately not taken here:**
+
+- The two PTY drivers now share most of a state machine (live map,
+  quiet-window failsafe, LIFO tool pairing, den event mapping). Extracting a
+  common base is the right move at driver three — `kimi-code` or `hermes`,
+  whichever lands next — when there is a third data point to shape it. Doing it
+  on the second would be guessing at the abstraction while also destabilizing
+  the reference driver. `DenAgentEventLike` lives in `claude-driver.ts` and
+  `grok-driver.ts` imports it from there; that is fine at two drivers and moves
+  to the shared base at the same time.
+- **`claude-store.ts:23` still reads through the first-hit-wins
+  `readHarnessTranscript`** (`term/harness-sessions.ts:782`, claude → grok →
+  hermes), so a `claude-code` id whose `.jsonl` has been deleted or rotated
+  away can be served a *grok* transcript. Pre-existing, and the exact
+  asymmetry `readGrokTranscript` now fixes on the grok side; give Claude the
+  same store-scoped reader.
 
 ### Attachment staging (`POST /api/uploads`)
 
@@ -606,7 +691,7 @@ against a fake.
 
 ## Phase 3 — Multi-harness parity + hub binding
 
-- [ ] **Grok Build driver:** promote hooks/capture → gateway stream (`grok-build:…`)
+- [x] **Grok Build driver:** promote hooks/capture → gateway stream (`grok-build:…`) — see As built (grok-build) below
 - [ ] **Hermes driver:** same; memory/den already exist (`hermes:…`)
 - [x] **Kimi den hooks:** `integrations/kimi/rivet-den` streams kimi-code sessions into a den under the canonical `kimi-code:<native>` — the same key capture writes, so room and conversation join on one identity
 - [ ] **Kimi driver:** the gateway half is still to come; it also has to supply what the hooks cannot — kimi's `Stop` payload carries no assistant reply, so a hook-only kimi den shows prompts, tools and plan but no agent messages. Capture stays as-is (`kimi-code:…`)
@@ -630,15 +715,16 @@ Hub chat binds **per session, not per app**: a row a registered driver claims
 streams on `WS /api/harness-sessions/ws`, hard-resyncs its transcript on every
 `open` (first connect and reconnect alike — the tail has no replay), and sends
 through `sendUserTurn`; the drawer badges its harness id. Rows no driver claims
-— grok and hermes, until their Phase 3 drivers land — keep the existing gateway
+— hermes and kimi, until their Phase 3 drivers land — keep the existing gateway
 chat channel binding verbatim, so nothing disappears from the drawer. The chat
 store marks bound sessions so the all-sessions socket stops writing them: the
 same den events reach both surfaces and folding twice would double every delta.
 Interrupt and approvals render only when the driver's flags say so, which for
-`claude-code` means a Stop button and never an approval card.
+`claude-code` and `grok-build` alike means a Stop button and never an approval
+card.
 
 Live thinking streams on this path too: `reasoning-delta` was added to the
-contract after this slice, the `claude-code` driver folds den `thinking.delta`
+contract after this slice, both PTY drivers fold den `thinking.delta`
 frames onto it, and the hub folds it into the same `reasoning`/`reasoningText`
 fields the legacy den-bridge path fills — so a bound session shows thinking
 live instead of waiting for the transcript at turn end.
