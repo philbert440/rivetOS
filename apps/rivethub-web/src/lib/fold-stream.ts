@@ -32,18 +32,42 @@ function emptyTurn(): LiveTurn {
 }
 
 /**
+ * Sliding-window cap for live `reasoningText` (den `THOUGHT_MAX` parity).
+ *
+ * Den board uses 220 chars — a single short thought bubble on a tile. The hub
+ * transcript's ReasoningBlock is an expandable multi-line pane (mono 11px,
+ * `whitespace-pre-wrap`, no max-height) that re-renders into the Zustand live
+ * store on every delta. Cap high enough for readable recent thinking
+ * (~2–4 screens at typical hub width ≈ 80 cols × 50 lines) yet hard-bounded so
+ * a long extended-thinking turn (claude-cli `reasoning-delta` token streams)
+ * cannot grow the live store without limit. 4 KiB is two orders of magnitude
+ * under what a full extended-thinking stream can emit, and keeps re-render /
+ * DOM cost bounded while always showing the *tail* of the stream.
+ */
+export const REASONING_TEXT_MAX = 4096
+
+/**
  * Next `reasoningText` for a thinking chunk. Claude's den hook can't read real
  * thinking text, so it sends spinner status lines ("✳ Wrangling… (28s · ↓ 4.8k
  * tokens)") — each REPLACES the previous one (den reducer parity) instead of
  * accumulating into a wall of stale spinner snapshots. Real streamed thinking
- * appends.
+ * appends, then slides through a capped window (same rule as
+ * `packages/den-protocol` `THOUGHT_MAX`: `slice(-MAX)` then drop the leading
+ * partial word when at cap).
  *
  * Shared with `harness-fold.ts`: the control-plane `reasoning-delta` and the
  * den bridge's `reasoning` frame carry the same text from the same hook, so
- * they must render the same way.
+ * they must render the same way. Only the append path hits the cap — replace
+ * semantics are preserved exactly.
  */
 export function nextReasoningText(previous: string, chunk: string): string {
-  return /^[✳✢✻✽·] /.test(chunk) ? chunk : previous + chunk
+  // Spinner status lines replace wholesale — short by construction; never capped.
+  if (/^[✳✢✻✽·] /.test(chunk)) return chunk
+  let next = (previous + chunk).slice(-REASONING_TEXT_MAX)
+  // When the window is full, trim to a word boundary so the stream never opens
+  // mid-word (den reducer parity: `packages/den-protocol/src/reducer.ts`).
+  if (next.length === REASONING_TEXT_MAX) next = next.replace(/^\S*\s+/, '')
+  return next
 }
 
 function newToolId(): string {
