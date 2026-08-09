@@ -8,7 +8,9 @@ import type {
 import {
   applyRegistryEventToPlaneSessions,
   chatItems,
+  denRoomKey,
   fetchHarnessPlaneSessions,
+  findChatItem,
   harnessGate,
   isTurnInFlight,
   listableHarnesses,
@@ -57,7 +59,8 @@ describe('chatItems', () => {
     })
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({
-      key: UUID_A,
+      // the thread key IS the canonical SessionId (§ Session identity mapping)
+      key: `claude-code:${UUID_A}`,
       kind: 'harness',
       harnessId: 'claude-code',
       sessionId: `claude-code:${UUID_A}`,
@@ -75,7 +78,9 @@ describe('chatItems', () => {
       legacySessions: [legacy(UUID_B, 'grok', 2_000), legacy(UUID_C, 'hermes', 1_000)],
     })
     expect(items.map((i) => [i.key, i.kind])).toEqual([
-      [UUID_A, 'harness'],
+      [`claude-code:${UUID_A}`, 'harness'],
+      // no driver claimed these, so there is no harness id to canonicalize
+      // with — they stay bare, and say so by carrying no sessionId
       [UUID_B, 'legacy'],
       [UUID_C, 'legacy'],
     ])
@@ -104,7 +109,7 @@ describe('chatItems', () => {
       harnessSessions: [summary(UUID_A, { updatedAt: '2026-08-08T00:00:01.000Z' })],
       legacySessions: [legacy(UUID_B, 'grok', Date.parse('2026-08-08T09:00:00.000Z'))],
     })
-    expect(items.map((i) => i.key)).toEqual([UUID_B, UUID_A])
+    expect(items.map((i) => i.key)).toEqual([UUID_B, `claude-code:${UUID_A}`])
   })
 
   it('falls back to the native id for a title and skips unparseable ids', () => {
@@ -118,6 +123,79 @@ describe('chatItems', () => {
     })
     expect(items).toHaveLength(1)
     expect(items[0].title).toBe(UUID_A)
+  })
+
+  // -- canonical keying (§ Session identity mapping / § Legacy keys) --------
+
+  it('renders one row, not two, when the plane and the scan see the same session', () => {
+    // The regression this guards: keying the plane row canonically while the
+    // legacy scan still reports the bare id would put BOTH in the drawer.
+    const items = chatItems({
+      drafts: [UUID_A],
+      harnessSessions: [summary(UUID_A)],
+      legacySessions: [legacy(UUID_A, 'claude', 1_000)],
+    })
+    expect(items).toHaveLength(1)
+    expect(items[0].key).toBe(`claude-code:${UUID_A}`)
+  })
+
+  it('every drawer row is canonical once all four drivers report', () => {
+    // The four-driver reality: each roster harness has a HarnessId, so the
+    // plane claims every on-disk row and nothing is left bare.
+    const rows: HarnessSessionSummary[] = [
+      summary(UUID_A),
+      { ...summary(UUID_B), sessionId: `grok-build:${UUID_B}` as SessionId, harnessId: 'grok-build' },
+      { ...summary(UUID_C), sessionId: `hermes:${UUID_C}` as SessionId, harnessId: 'hermes' },
+    ]
+    const items = chatItems({
+      drafts: [],
+      harnessSessions: rows,
+      legacySessions: [
+        legacy(UUID_A, 'claude', 1),
+        legacy(UUID_B, 'grok', 2),
+        legacy(UUID_C, 'hermes', 3),
+      ],
+    })
+    expect(items.map((i) => i.key).sort()).toEqual(
+      [`claude-code:${UUID_A}`, `grok-build:${UUID_B}`, `hermes:${UUID_C}`].sort(),
+    )
+    expect(items.every((i) => i.kind === 'harness')).toBe(true)
+  })
+})
+
+describe('denRoomKey', () => {
+  it('projects a canonical thread key onto the den room key', () => {
+    expect(denRoomKey(`claude-code:${UUID_A}`)).toBe(UUID_A)
+  })
+
+  it('leaves a bare key and a non-SessionId room alone', () => {
+    expect(denRoomKey(UUID_A)).toBe(UUID_A)
+    expect(denRoomKey('den-pty-1a2b3c4d')).toBe('den-pty-1a2b3c4d')
+  })
+})
+
+describe('findChatItem', () => {
+  const items = chatItems({
+    drafts: [UUID_C],
+    harnessSessions: [summary(UUID_A)],
+    legacySessions: [legacy(UUID_B, 'grok', 1_000)],
+  })
+
+  it('finds a row by its own key', () => {
+    expect(findChatItem(items, `claude-code:${UUID_A}`)?.kind).toBe('harness')
+    expect(findChatItem(items, UUID_B)?.kind).toBe('legacy')
+    expect(findChatItem(items, UUID_C)?.kind).toBe('draft')
+  })
+
+  it('back-compat: a bare id still finds the row that got canonicalized', () => {
+    // A pre-canonical selection, a deep link, or a draft the plane adopted.
+    const found = findChatItem(items, UUID_A)
+    expect(found?.key).toBe(`claude-code:${UUID_A}`)
+  })
+
+  it('does not invent a row for an unknown id', () => {
+    expect(findChatItem(items, 'nope')).toBeUndefined()
+    expect(findChatItem(items, undefined)).toBeUndefined()
   })
 })
 
@@ -269,7 +347,7 @@ describe('registry stream → plane session list merge', () => {
     }
     // chatItems treats the merged row as a harness plane row, not a draft/legacy
     const items = chatItems({ drafts: [], harnessSessions: list, legacySessions: [] })
-    const item = items.find((i) => i.key === UUID_B)
+    const item = items.find((i) => i.key === `claude-code:${UUID_B}`)
     expect(item).toMatchObject({
       kind: 'harness',
       sessionId: fromEvent.sessionId,

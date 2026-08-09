@@ -39,9 +39,30 @@ import type {
   StreamEvent,
   MessageUsage,
 } from '@rivetos/types'
+import { HARNESS_IDS } from '@rivetos/types'
 import { logger } from '../logger.js'
 
 const log = logger('GatewayChannel')
+
+/**
+ * Legacy-key alias for the read paths (harness-control-plane.md § Legacy
+ * keys). Both stores this channel reads are keyed on the BARE native id — the
+ * live ring by the den room key an AgentEvent carries, the memory transcript
+ * by whatever `RIVETOS_SESSION_KEY` a den-spawned harness inherited — while a
+ * client keyed on the identity table asks with the canonical
+ * `<harness-id>:<native>` SessionId. Historical rows are never rewritten, so
+ * a canonical miss retries under the native half.
+ *
+ * Returns `undefined` when there is no alias to try (the id is already bare,
+ * or is not a SessionId at all — `task:<id>` is a different namespace and is
+ * deliberately not parsed as one).
+ */
+export function bareAliasOf(id: string): string | undefined {
+  const i = id.indexOf(':')
+  if (i <= 0 || i === id.length - 1) return undefined
+  if (!(HARNESS_IDS as readonly string[]).includes(id.slice(0, i))) return undefined
+  return id.slice(i + 1)
+}
 
 const RING_MAX = 200
 const DEFAULT_WAIT_MS = 120_000
@@ -288,7 +309,10 @@ export function createGatewayChannel(opts?: {
         try {
           const url = new URL(req.url ?? '/', 'http://localhost')
           const rest = url.pathname.slice('/api/sessions'.length).replace(/^\//, '')
-          const [id, sub] = rest === '' ? [undefined, undefined] : rest.split('/')
+          const [rawId, sub] = rest === '' ? [undefined, undefined] : rest.split('/')
+          // Canonical SessionIds carry a `:`, which encodeURIComponent escapes
+          // — decode before it is used as a key (bare uuids are unaffected).
+          const id = rawId === undefined ? undefined : decodeURIComponent(rawId)
 
           if (req.method === 'GET' && !id) {
             const list = [...sessions.entries()]
@@ -304,7 +328,13 @@ export function createGatewayChannel(opts?: {
           if (!id || sub !== 'messages') return json(res, 404, { error: 'not found' })
 
           if (req.method === 'GET') {
-            return json(res, 200, { messages: session(id).ring } satisfies SessionMessagesResponse)
+            // Alias read: the ring is filed under the den room key the bridge
+            // saw. A canonical id with no ring of its own falls back to its
+            // native half rather than minting an empty one (§ Legacy keys).
+            const alias = sessions.has(id) ? undefined : bareAliasOf(id)
+            const aliased = alias === undefined ? undefined : sessions.get(alias)
+            const ring = aliased ? aliased.ring : session(id).ring
+            return json(res, 200, { messages: ring } satisfies SessionMessagesResponse)
           }
 
           if (req.method === 'POST') {
@@ -408,7 +438,15 @@ export function createGatewayChannel(opts?: {
             return json(res, 404, { error: 'not found' })
           const mem = opts?.getMemory?.()
           if (!mem) return json(res, 200, { messages: [] } satisfies SessionMessagesResponse)
-          const history = await mem.getSessionHistory(key, { limit })
+          let history = await mem.getSessionHistory(key, { limit })
+          // Alias read: capture files a den-spawned harness under the bare
+          // den join key it inherited via RIVETOS_SESSION_KEY, so a canonical
+          // ask with no rows retries the native half. Nothing is rewritten —
+          // the alias covers the read forever (§ Legacy keys).
+          if (history.length === 0) {
+            const alias = bareAliasOf(key)
+            if (alias !== undefined) history = await mem.getSessionHistory(alias, { limit })
+          }
           const messages = history
             .filter((m) => m.role === 'user' || m.role === 'assistant')
             .map((m, i) => ({

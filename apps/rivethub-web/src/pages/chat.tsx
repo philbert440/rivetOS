@@ -37,7 +37,9 @@ import { attachHarnessSession } from '../lib/harness-attach.js'
 import {
   applyRegistryEventToPlaneSessions,
   chatItems,
+  denRoomKey,
   fetchHarnessPlaneSessions,
+  findChatItem,
   harnessGate,
   isTurnInFlight,
   shortNativeId,
@@ -76,11 +78,55 @@ const TURN_RETRY_ATTEMPTS = 6
 /** Pause between a control-plane interrupt and the turn that displaced it. */
 const INTERRUPT_SETTLE_MS = 400
 
-// A conversation id IS a UUID so it can be the harness's native session id
-// (claude --session-id requires a UUID). Then the join key, the harness's
-// on-disk store filename, and the drawer id are all the same value.
+// A draft id IS a UUID so it can become the harness's native session id
+// (claude --session-id requires a UUID). It stays bare until the control plane
+// adopts the session and hands back a canonical `<harness-id>:<uuid>`.
 function newSessionId(): string {
   return uuidv4()
+}
+
+/** localStorage key for a thread's per-node persisted state. */
+const storageKey = (baseUrl: string, key: string): string => `${baseUrl}::${key}`
+
+/**
+ * Read a thread's persisted value, falling back to the pre-canonical key.
+ *
+ * Names and per-thread settings were filed under the bare native id before
+ * hub chat keyed on `SessionId`. Nothing is rewritten on upgrade: the read
+ * falls back to the old key and the next write lands on the new one, so the
+ * migration happens per conversation as it is used (§ Legacy keys — aliases
+ * cover reads).
+ */
+function persisted<T>(
+  byKey: Record<string, T | undefined>,
+  baseUrl: string,
+  key: string,
+): T | undefined {
+  const own = byKey[storageKey(baseUrl, key)]
+  if (own !== undefined) return own
+  const native = denRoomKey(key)
+  return native === key ? undefined : byKey[storageKey(baseUrl, native)]
+}
+
+/**
+ * Move a thread's persisted state onto a key it has just been rekeyed to.
+ *
+ * The read fallback above covers bare → canonical. This covers the case it
+ * cannot: a driver ROTATING its native id, where old and new keys share
+ * nothing. Lazy — only the conversation the user has open pays for it.
+ */
+function migrateSessionKey(baseUrl: string, from: string, to: string): void {
+  const names = useSessionNames.getState()
+  const name = names.byKey[storageKey(baseUrl, from)]
+  if (name !== undefined && names.byKey[storageKey(baseUrl, to)] === undefined) {
+    names.set(storageKey(baseUrl, to), name)
+    names.set(storageKey(baseUrl, from), '') // empty clears the override
+  }
+  const settings = useChatSettings.getState()
+  const prior = settings.byKey[storageKey(baseUrl, from)]
+  if (prior !== undefined && settings.byKey[storageKey(baseUrl, to)] === undefined) {
+    settings.set(storageKey(baseUrl, to), prior)
+  }
 }
 
 export function ChatPage(): JSX.Element {
@@ -173,8 +219,6 @@ export function ChatPage(): JSX.Element {
     // explicitly so the effect rebinds when the endpoint or driver set changes.
   }, [connected, hasDrivers, baseUrl, token, queryClient, descriptors?.length])
 
-  if (!connected) return <NotConnected />
-
   const items = chatItems({
     drafts: chat.drafts,
     harnessSessions: planeQuery.data ?? [],
@@ -182,8 +226,26 @@ export function ChatPage(): JSX.Element {
   })
   const active = useChat((s) => s.active)
   const setActive = useChat((s) => s.setActive)
-  const activeItem = items.find((it) => it.key === active)
+  // Tolerant lookup: the open thread's key changes under the selection when
+  // the plane adopts a draft (bare uuid → canonical) or a driver rotates the
+  // native id. The rekey effect below moves the conversation onto the new
+  // key; until it runs, this keeps the view rendering the right row instead
+  // of blanking it.
+  const activeItem = findChatItem(items, active)
   const gate = harnessGate(activeItem, descriptors)
+
+  // Lazy key migration. Adoption and rotation both retire the key the
+  // conversation's state is filed under; move it rather than strand the
+  // transcript, the inject queue and the persisted per-thread settings on an
+  // id no row carries any more.
+  const activeKey = activeItem?.key
+  useEffect(() => {
+    if (active === undefined || activeKey === undefined || activeKey === active) return
+    useChat.getState().rekey(active, activeKey)
+    migrateSessionKey(baseUrl, active, activeKey)
+  }, [active, activeKey, baseUrl])
+
+  if (!connected) return <NotConnected />
 
   return (
     <div className="flex h-full">
@@ -222,8 +284,8 @@ export function ChatPage(): JSX.Element {
  *  badge harness + short native suffix"). */
 function DrawerItem(props: { item: ChatItem; active: boolean; onSelect: () => void }): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const key = `${baseUrl}::${props.item.key}`
-  const customName = useSessionNames((s) => s.byKey[key])
+  const key = storageKey(baseUrl, props.item.key)
+  const customName = useSessionNames((s) => persisted(s.byKey, baseUrl, props.item.key))
   const setName = useSessionNames((s) => s.set)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -330,7 +392,7 @@ function SessionDrawer(props: { items: ChatItem[]; active?: string; error?: stri
   const q = filter.trim().toLowerCase()
   const items = q
     ? props.items.filter((it) => {
-        const custom = names[`${baseUrl}::${it.key}`] ?? ''
+        const custom = persisted(names, baseUrl, it.key) ?? ''
         return (
           custom.toLowerCase().includes(q) ||
           it.title.toLowerCase().includes(q) ||
@@ -436,9 +498,10 @@ function ActiveSession(props: {
   const baseUrl = useConnection((s) => s.baseUrl)
   const token = useConnection((s) => s.token)
 
-  // per-conversation model + effort (persisted). Keyed per node + session.
-  const settingsKey = `${baseUrl}::${props.sessionId}`
-  const settings = useChatSettings((s) => s.byKey[settingsKey])
+  // per-conversation model + effort (persisted). Keyed per node + thread, with
+  // the pre-canonical key as a read fallback; writes land on the new key.
+  const settingsKey = storageKey(baseUrl, props.sessionId)
+  const settings = useChatSettings((s) => persisted(s.byKey, baseUrl, props.sessionId))
   const setSetting = useChatSettings((s) => s.set)
 
   // ---- Transcript binding ---------------------------------------------------
@@ -882,10 +945,13 @@ function ActiveSession(props: {
       })
   }
 
+  // The viewer bundle matches `?session=` against the ROOM keys in its own den
+  // snapshot, so this is the one hub→id handoff that does not go through a
+  // den-server edge and has to be projected onto the den's key space.
   // ?token= rides along for token-gated gateways — an iframe can't carry a
   // bearer header (den viewer net.ts keeps it across routes).
   const denUrl =
-    `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(props.sessionId)}` +
+    `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(denRoomKey(props.sessionId))}` +
     (token ? `&token=${encodeURIComponent(token)}` : '')
 
   return (

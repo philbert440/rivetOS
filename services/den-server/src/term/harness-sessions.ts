@@ -16,6 +16,7 @@ import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
 import type { HarnessTranscriptTool, HarnessTranscriptTurn } from '@rivetos/types'
+import { denJoinKey } from '../harness/session-key.js'
 
 export interface HarnessSession {
   /** the harness's native session id (e.g. Claude Code's uuid) */
@@ -1093,32 +1094,38 @@ function readHermesTurns(id: string): HarnessTurn[] {
  *
  * Tries Claude → Grok → Hermes and returns the first non-empty transcript
  * (session ids are UUIDs per harness; collisions across harnesses are rare).
+ *
+ * `id` may be a canonical `<harness-id>:<native>` SessionId or the bare native
+ * id the store files the transcript under; the store lookup uses the den join
+ * key either way and `id` is echoed back exactly as asked for, so a caller
+ * keyed on canonical ids can match the response to its request.
  */
 export async function readHarnessTranscript(id: string): Promise<HarnessTranscript> {
-  if (!id || id.includes('/') || id.includes('..')) {
+  const native = denJoinKey(id)
+  if (!native || native.includes('/') || native.includes('..')) {
     return { id, command: '', turns: [] }
   }
 
-  const claudePath = await findClaudeJsonl(id)
+  const claudePath = await findClaudeJsonl(native)
   if (claudePath) {
     const turns = claudeTurnsFromLines(await parseJsonlObjects(claudePath))
     if (turns.length > 0) return { id, command: 'claude', turns }
   }
 
-  const grokPath = await findGrokChatHistory(id)
+  const grokPath = await findGrokChatHistory(native)
   if (grokPath) {
     const turns = await parseJsonlTurns(grokPath, grokPickTurn)
     if (turns.length > 0) return { id, command: 'grok', turns }
   }
 
-  const hermes = readHermesTurns(id)
+  const hermes = readHermesTurns(native)
   if (hermes.length > 0) return { id, command: 'hermes', turns: hermes }
 
   // kimi last, and cheaply: its ids are `session_<uuid>`, so the probe is a
   // prefix test before any filesystem work.
-  if (id.startsWith(KIMI_ID_PREFIX)) {
-    const kimi = await readKimiTranscript(id)
-    if (kimi.turns.length > 0) return kimi
+  if (native.startsWith(KIMI_ID_PREFIX)) {
+    const kimi = await readKimiTranscript(native)
+    if (kimi.turns.length > 0) return { ...kimi, id }
   }
 
   return { id, command: '', turns: [] }
@@ -1346,7 +1353,8 @@ export async function readHarnessStoreAt(
   if (ref.command === 'kimi') {
     return { id, command: 'kimi', turns: kimiTurnsFromLines(await parseJsonlObjects(ref.path)) }
   }
-  return { id, command: 'hermes', turns: readHermesTurns(id) }
+  // hermes reads by id rather than by path (one sqlite db holds every session)
+  return { id, command: 'hermes', turns: readHermesTurns(denJoinKey(id)) }
 }
 
 // ---- Store resolution for the transcript watcher ---------------------------
@@ -1359,17 +1367,19 @@ export interface HarnessStoreRef {
 
 /**
  * Resolve which on-disk store file backs a session id — the watch target for
- * push-based transcript sync. Same probe order as readHarnessTranscript.
+ * push-based transcript sync. Same probe order (and same canonical-or-bare
+ * acceptance) as readHarnessTranscript.
  */
 export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef | undefined> {
-  if (!id || id.includes('/') || id.includes('..')) return undefined
-  const claudePath = await findClaudeJsonl(id)
+  const native = denJoinKey(id)
+  if (!native || native.includes('/') || native.includes('..')) return undefined
+  const claudePath = await findClaudeJsonl(native)
   if (claudePath) return { command: 'claude', path: claudePath }
-  const grokPath = await findGrokChatHistory(id)
+  const grokPath = await findGrokChatHistory(native)
   if (grokPath) return { command: 'grok', path: grokPath }
-  if (hermesSessionExists(id)) return { command: 'hermes', path: hermesDbPath() }
-  if (id.startsWith(KIMI_ID_PREFIX)) {
-    const dir = kimiSessionDir(id)
+  if (hermesSessionExists(native)) return { command: 'hermes', path: hermesDbPath() }
+  if (native.startsWith(KIMI_ID_PREFIX)) {
+    const dir = kimiSessionDir(native)
     if (dir) return { command: 'kimi', path: join(dir, 'agents', 'main', 'wire.jsonl') }
   }
   return undefined

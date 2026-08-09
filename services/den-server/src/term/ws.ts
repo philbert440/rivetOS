@@ -33,6 +33,7 @@ import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer } from 'ws'
 import type { TermManager } from './manager.js'
+import { denJoinKey } from '../harness/session-key.js'
 
 /** The slice of a WebSocket the protocol touches — ws.WebSocket satisfies it
  *  structurally; tests drive the protocol with a scripted fake. */
@@ -267,9 +268,12 @@ export function createTermWs(deps: TermWsDeps): TermWs {
         socket.destroy()
         return
       }
+      // A canonical `<harness-id>:<native>` SessionId attaches to the same PTY
+      // as the bare den join key it resolves to (§ Legacy keys).
       const session = url.searchParams.get('session')
       const id =
-        url.searchParams.get('id') ?? (session ? manager.ptyForSession(session) : undefined)
+        url.searchParams.get('id') ??
+        (session ? manager.ptyForSession(denJoinKey(session)) : undefined)
       if (!id || !manager.get(id)) {
         socket.destroy()
         return

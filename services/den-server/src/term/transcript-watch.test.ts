@@ -79,6 +79,33 @@ describe('createTranscriptWatcher', () => {
     expect(delta.total).toBe(3)
   })
 
+  it('watches by canonical SessionId and echoes it back on every frame', async () => {
+    // Join integrity: hub chat's thread key is canonical, so the watch key is
+    // too. The store lives under the native id — the frame must still come
+    // back under the key the client subscribed with, or nothing matches the
+    // thread and the delta is dropped as "not open".
+    const { dir } = claudeStore()
+    const native = 'aaaaaaaa-0000-0000-0000-00000000000c'
+    const canonical = `claude-code:${native}`
+    const file = join(dir, `${native}.jsonl`)
+    writeFileSync(file, userLine('hello'))
+
+    const frames: SessionWsFrame[] = []
+    watcher = createTranscriptWatcher((f) => frames.push(f), FAST)
+    watcher.watch(canonical)
+
+    const snap = await until(() => transcripts(frames).find((f) => f.from === 0))
+    expect(snap.session).toBe(canonical)
+    expect(snap.command).toBe('claude')
+    expect(snap.turns.map((t) => t.text)).toEqual(['hello'])
+
+    // and the resolved store keeps feeding the canonical subscription
+    appendFileSync(file, assistantLine('hi'))
+    const delta = await until(() => transcripts(frames).find((f) => f.rev === snap.rev + 1))
+    expect(delta.session).toBe(canonical)
+    expect(delta.turns.map((t) => t.text)).toEqual(['hi'])
+  })
+
   it('mid-turn growth restates the in-flight assistant turn, not the prefix', async () => {
     const { dir } = claudeStore()
     const id = 'aaaaaaaa-0000-0000-0000-000000000002'
