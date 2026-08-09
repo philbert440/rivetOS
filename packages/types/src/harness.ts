@@ -191,6 +191,11 @@ export interface HarnessDriver {
    * At-most-once live tail from attach time — no replay buffer, no sequence
    * numbers in v1. After a drop, clients re-`subscribe` and hard-resync missed
    * history from the transcript source of truth.
+   *
+   * Pin the sink to the id you were handed: **rotation is control-plane work.**
+   * The gateway subscribes through the registry, which re-keys live sinks onto
+   * the canonical id when it records the alias, so a client's subscription
+   * survives a rotation without any driver consulting the alias store.
    */
   subscribe(sessionId: SessionId, sink: (e: HarnessEvent) => void): () => void
   /**

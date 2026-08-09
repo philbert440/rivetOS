@@ -85,6 +85,12 @@ export interface AliasStore {
   /**
    * Record a rotation alias. Both ids MUST share a harness id; the control
    * plane rejects cross-harness aliases (§ Rotation, rule 8).
+   *
+   * An id rotates **once**: re-pointing a known predecessor at a second
+   * successor is rejected with `session_id_collision` rather than overwritten.
+   * A silent overwrite would strand every live tail on the abandoned branch
+   * and retire the same id twice — and it can only mean a driver bug, since a
+   * chain has one head by construction (§ Rotation, rule 9, chain hygiene).
    */
   record(previous: SessionId, canonical: SessionId): void
   /** Follow the chain to the newest id. Unknown ids resolve to themselves. */
@@ -132,6 +138,19 @@ export function createAliasStore(): AliasStore {
         )
       }
       if (previous === canonical) return // self-alias is a no-op, not an error
+      const successor = next.get(previous)
+      if (successor !== undefined) {
+        // Idempotent re-emit of a rotation we already hold: fine, no-op.
+        if (successor === canonical) return
+        // A second, different successor. Overwriting would strand every live
+        // subscription on the abandoned branch and end `previous` twice, so
+        // the control plane refuses and the caller drops the alias.
+        throw new HarnessError(
+          'session_id_collision',
+          `${previous} already rotated to ${successor}; refusing to re-point it at ${canonical}`,
+          { context: { previous, successor, canonical } },
+        )
+      }
       // Resolve BEFORE writing so a cycle is caught while the map is still
       // consistent (a recorded cycle would poison every later resolve()).
       if (resolve(canonical) === previous) {

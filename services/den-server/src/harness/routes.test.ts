@@ -24,6 +24,7 @@ import {
 } from '@rivetos/types'
 import { createDenServer, type DenServer } from '../server.js'
 import type { DenConfig } from '../config.js'
+import { FakeRotatingDriver } from './test/fake-rotating-driver.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
 const SID = `claude-code:${UUID}` as SessionId
@@ -463,6 +464,40 @@ describe('WS streams', () => {
       sessionId: SID,
       text: 'hello',
     })
+    ws.close()
+  })
+
+  it('keeps a session socket across a rotation, with no re-subscribe', async () => {
+    // The whole client-visible contract for rotation, over the real wire: one
+    // subscribe under the old id, then the rotation and everything after it
+    // arrive on that same socket.
+    const driver = new FakeRotatingDriver({ rotationDelivery: 'registry-first' })
+    const before = driver.seed()
+    const { base } = await start(driver)
+    const ws = new WebSocket(
+      `${base.replace('http', 'ws')}/api/harness-sessions/ws?session=${enc(before)}`,
+    )
+    await new Promise<void>((r) => ws.on('open', () => r()))
+    const frames: HarnessEvent[] = []
+    ws.on('message', (d) => frames.push(JSON.parse(String(d)) as HarnessEvent))
+    await new Promise((r) => setTimeout(r, 20))
+
+    const after = driver.rotate(before)
+    driver.activity(after, 'post-rotation')
+    await new Promise((r) => setTimeout(r, 20))
+
+    expect(frames).toEqual([
+      { type: 'session-updated', sessionId: after, previousSessionId: before, status: 'active' },
+      { type: 'assistant-delta', sessionId: after, text: 'post-rotation' },
+    ])
+    // The old id is gone from the listing, and still redirects on a read.
+    const list = (await (await fetch(`${base}/api/harnesses/hermes/sessions`)).json()) as {
+      sessions: HarnessSessionSummary[]
+    }
+    expect(list.sessions.map((s) => s.sessionId)).toEqual([after])
+    expect(await (await fetch(`${base}/api/harness-sessions/${enc(before)}`)).json()).toMatchObject(
+      { sessionId: after, redirectedTo: after },
+    )
     ws.close()
   })
 
