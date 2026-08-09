@@ -93,9 +93,16 @@ $KIMI_CODE_HOME/sessions
 (+ projects/ variants)
 ```
 
-They return null until the on-disk layout is verified. When a transcript format
-is known, add a JSONL (or equivalent) parser and prefer it for full assistant
-text — same pattern as Grok's `updates.jsonl` ingest.
+They return null until the on-disk layout is verified.
+
+The layout **is** now verified —
+`~/.kimi-code/sessions/<workspace>/session_<uuid>/agents/<slot>/wire.jsonl` — and
+the parser for it lives in [`../backfill`](../backfill/README.md), which replays
+those transcripts into the same rows with the same content-hash `event_id`.
+It is a separate one-shot tool on purpose: recovering history is not hot-path
+work, and the hook path must stay a spool-and-detach that never blocks the CLI.
+Should this worker ever grow a live session-file path, reuse that parser rather
+than writing a second one.
 
 ## Database Schema
 
