@@ -23,7 +23,7 @@ import {
   type StartSessionOpts,
   type UserTurn,
 } from '@rivetos/types'
-import { createDenServer, type DenServer } from '../server.js'
+import { createDenServer, type DenServer, type DenServerOptions } from '../server.js'
 import type { DenConfig } from '../config.js'
 import { FakeRotatingDriver } from './test/fake-rotating-driver.js'
 
@@ -170,15 +170,17 @@ function denConfig(stateDir: string): DenConfig {
 }
 
 async function start(...drivers: HarnessDriver[]): Promise<{ base: string; den: DenServer }> {
+  return startWith({ skipBuiltinHarnessDrivers: true, harnessDrivers: drivers })
+}
+
+async function startWith(
+  opts: Pick<DenServerOptions, 'skipBuiltinHarnessDrivers' | 'harnessDrivers'>,
+): Promise<{ base: string; den: DenServer }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-harness-'))
   dirs.push(stateDir)
-  const den = createDenServer(denConfig(stateDir), {
-    ptySpawn: null,
-    // The real built-in drivers would scan the developer's ~/.claude and
-    // ~/.grok here.
-    skipBuiltinHarnessDrivers: true,
-    harnessDrivers: drivers,
-  })
+  // `skipBuiltinHarnessDrivers` by default: the real built-ins would read the
+  // developer's ~/.claude, ~/.grok and ~/.hermes for anything store-backed.
+  const den = createDenServer(denConfig(stateDir), { ptySpawn: null, ...opts })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
   const port = (den.server.address() as AddressInfo).port
@@ -193,6 +195,26 @@ const post = (base: string, path: string, body?: unknown): Promise<Response> =>
   })
 
 describe('GET /api/harnesses', () => {
+  it('lists the three built-in drivers a real node boots with', async () => {
+    // No fakes: this is what `createDenServer` actually registers. Reading the
+    // capability sheet touches no harness store, so it is safe to boot for
+    // real here.
+    const { base } = await startWith({})
+    const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { harnessId: string; capabilities: HarnessCapabilities }[]
+    }
+    expect(body.harnesses.map((h) => h.harnessId)).toEqual([
+      'claude-code',
+      'grok-build',
+      'hermes',
+    ])
+    // Terminals are off in this config, so interrupt/resume are honestly false
+    // and nobody claims approvals.
+    for (const h of body.harnesses) {
+      expect(h.capabilities).toMatchObject({ approvals: false, listSessions: true })
+    }
+  })
+
   it('lists registered drivers with their capability flags', async () => {
     const { base } = await start(new FakeDriver())
     const res = await fetch(`${base}/api/harnesses`)
