@@ -149,10 +149,14 @@ snake_case and camelCase):
 | `tool_output` / `toolOutput` | Tool result |
 | `reason` / `source` / `trigger` | Lifecycle context |
 
-If live hook payloads omit assistant text (likely — Grok's did), find where
-kimi-code writes session transcripts on disk and wire the optional session-file
-path in `capture/src/kimi-memory-capture.ts` (`SESSIONS_ROOT` / `findSessionDir`
-constants at the top of the file). Document findings here after verification.
+**Done — hook payloads do omit assistant text.** Verified against kimi-code
+0.34.0: `Stop` carries `{ stop_hook_active }` and no reply, so assistant text is
+not capturable from hooks at all, and array-shaped `prompt` values were dropping
+user turns as well. Transcripts do exist on disk, at
+`~/.kimi-code/sessions/<workspace>/session_<uuid>/agents/<slot>/wire.jsonl`, and
+the recovery path is a separate one-shot tool rather than a branch inside the
+hot-path worker: **[`backfill/`](backfill/README.md)** — format notes, identity
+scheme, and the operator runbook live in its README.
 
 ### Enabling Capture
 

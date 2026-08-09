@@ -1,0 +1,5 @@
+{"type":"metadata","protocol_version":"1.4","created_at":1780000000200}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"Summarize the widget change for the parent agent."}],"toolCalls":[],"origin":{"kind":"system_trigger","name":"subagent"}},"time":1780000000210}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"Keep going toward the stated goal."}],"toolCalls":[],"origin":{"kind":"system_trigger","name":"goal_continuation"}},"time":1780000000215}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"44444444-4444-4444-8444-444444444444","turnId":"0","step":1,"stepUuid":"55555555-5555-4555-8555-555555555555","part":{"type":"text","text":"I'll add the widget and wire it into the page."}},"time":1780000000220}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"Skill tool loaded instructions."}],"toolCalls":[],"origin":{"kind":"skill_activation","activationId":"66666666-6666-4666-8666-666666666666","skillName":"demo-skill","trigger":"model-tool","skillType":"inline","skillSource":"builtin"}},"time":1780000000230}

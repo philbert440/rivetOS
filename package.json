@@ -63,7 +63,8 @@
     "services/*",
     "integrations/grok/rivet-memory/capture",
     "integrations/kimi/rivet-memory/capture",
-    "integrations/kimi/rivet-den"
+    "integrations/kimi/rivet-den",
+    "integrations/kimi/rivet-memory/backfill"
   ],
   "bin": {
     "rivetos": "./packages/cli/dist/index.js"
