@@ -67,6 +67,15 @@ export type ApprovalDecision = 'allow' | 'deny' | 'allow-session';
 export type HarnessEvent =
   | { type: 'assistant-delta'; sessionId: SessionId; text: string; turnId?: string }
   | {
+      /** Thinking text for the turn in flight — text only, because what a
+       *  harness can observe of its own thinking varies (spinner status lines
+       *  vs. real thinking blocks). Presentation is the client's call. */
+      type: 'reasoning-delta';
+      sessionId: SessionId;
+      text: string;
+      turnId?: string;
+    }
+  | {
       type: 'tool-use';
       sessionId: SessionId;
       toolCallId: string;
@@ -348,6 +357,7 @@ Existing cli + den `harness-sessions` is the gold standard for attach/stream/int
 - [x] Parse/format helpers, alias store, `enc()`/`dec()` base64url segment codec
 - [ ] Capture migration: UNIQUE index on `ros_conversations (session_key, agent)` + adapter upsert (collision rule 3 is unimplementable on today's select-then-insert)
 - [x] Task-key migration: replace `RIVETOS_SESSION_KEY=task:<id>` write-override with per-conversation task association + query-time join (see Legacy keys) — 0011 + `RIVETOS_TASK_ID` + `Memory.getTaskHistory`; claude-cli harness-session executor only. Follow-ups: the chat-loop executor keeps appending under `task:<id>` (in-process turns have no harness session of their own — the union reads it), and the `mesh` executor kind has no implementation registered yet; whichever one lands must pass `RIVETOS_TASK_ID` rather than a write-key override
+- [ ] **`reasoningText` accumulates unbounded in the hub live store** — neither `foldStream` nor `foldHarnessEvent` caps thinking accumulation, unlike the den reducer's `THOUGHT_MAX` sliding window (`packages/den-protocol/src/reducer.ts:92-95`). Pre-existing on the legacy path, but `reasoning-delta` now carries the claude-cli executor's real thinking token-streams, so a long turn grows the store without bound. Apply the same sliding-window cap in the shared `nextReasoningText` hook
 - [ ] **Interactive path leaks an inherited session key** — `plugins/providers/claude-cli/src/claude-cli-model.ts:448` calls `spawnClaudeTurn(flags, cliContent)` with no env opts, so a core launched inside a den PTY passes that terminal's `RIVETOS_SESSION_KEY` into every interactive `claude -p` turn and capture files them into the den chat's conversation. Same class as the task-executor leak fixed alongside 0011 (there the executor explicitly deletes the inherited key); this path has no task id to substitute, so the fix is to decide per call whether the den session is genuinely the conversation or the key should be dropped
 - [x] Gateway upload endpoint for remote attachments (returns node-local URI) — `POST /api/uploads`; no driver consumes a staged URI yet (see Attachment staging)
 - [x] Driver-level registry stream (`session-created`) wired to `GET /harnesses/:id/events`
@@ -552,6 +562,12 @@ same den events reach both surfaces and folding twice would double every delta.
 Interrupt and approvals render only when the driver's flags say so, which for
 `claude-code` means a Stop button and never an approval card.
 
+Live thinking streams on this path too: `reasoning-delta` was added to the
+contract after this slice, the `claude-code` driver folds den `thinking.delta`
+frames onto it, and the hub folds it into the same `reasoning`/`reasoningText`
+fields the legacy den-bridge path fills — so a bound session shows thinking
+live instead of waiting for the transcript at turn end.
+
 Gaps this slice records rather than fixes:
 
 - **Hub chat's key is still the bare native id**, not the canonical
@@ -571,11 +587,6 @@ Gaps this slice records rather than fixes:
   queued for the user's inject button. There is no server-side queue, and no
   ready signal to wait on — a harness parked on its own TUI permission prompt
   is legitimately mid-turn for as long as a human takes.
-- **No live thinking on the control-plane path.** `HarnessEvent` has no
-  reasoning/thinking member — the den bridge's `reasoning` frames (Claude's
-  spinner lines) have no equivalent in the contract, so a bound session shows
-  tools and text live and picks up `thinking` only from the transcript at turn
-  end. Adding a `reasoning-delta` event is a contract change, not a client fix.
 - **Approval state is not recoverable.** `approval-request` exists only as a
   live event: a client that attaches after one was emitted, or that reloads,
   has no way to learn the harness is blocked (the tail has no replay and the

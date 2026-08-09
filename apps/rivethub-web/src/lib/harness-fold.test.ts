@@ -16,6 +16,46 @@ describe('foldHarnessEvent', () => {
     expect(t?.reasoning).toBe(false)
   })
 
+  it('folds reasoning-delta into live thinking: spinners replace, thinking appends', () => {
+    let t: LiveTurn | undefined
+    t = foldHarnessEvent(t, ev({ type: 'reasoning-delta', sessionId: SID, text: 'weigh' }))
+    t = foldHarnessEvent(t, ev({ type: 'reasoning-delta', sessionId: SID, text: 'ing' }))
+    expect(t?.reasoning).toBe(true)
+    expect(t?.reasoningText).toBe('weighing')
+    // A spinner status line supersedes the bubble rather than stacking stale
+    // snapshots (den reducer parity, shared with the legacy bridge fold).
+    t = foldHarnessEvent(
+      t,
+      ev({ type: 'reasoning-delta', sessionId: SID, text: '✳ Wrangling… (3s · ↓ 12 tokens)' }),
+    )
+    expect(t?.reasoningText).toBe('✳ Wrangling… (3s · ↓ 12 tokens)')
+  })
+
+  it('keeps thinking, text and tools interleaved on one turn', () => {
+    let t: LiveTurn | undefined
+    t = foldHarnessEvent(t, ev({ type: 'reasoning-delta', sessionId: SID, text: 'plan it' }))
+    t = foldHarnessEvent(
+      t,
+      ev({ type: 'tool-use', sessionId: SID, toolCallId: 't1', name: 'Bash', input: {} }),
+    )
+    t = foldHarnessEvent(
+      t,
+      ev({ type: 'tool-result', sessionId: SID, toolCallId: 't1', name: 'Bash', output: null }),
+    )
+    t = foldHarnessEvent(t, ev({ type: 'assistant-delta', sessionId: SID, text: 'done' }))
+    // Answer text closes the thinking pane but keeps what was thought — the
+    // transcript collapses it rather than dropping it.
+    expect(t?.reasoning).toBe(false)
+    expect(t?.reasoningText).toBe('plan it')
+    expect(t?.text).toBe('done')
+    expect(t?.tools.map((x) => x.status)).toEqual(['done'])
+    // …and thinking resuming after a tool re-opens the pane.
+    t = foldHarnessEvent(t, ev({ type: 'reasoning-delta', sessionId: SID, text: ' more' }))
+    expect(t?.reasoning).toBe(true)
+    expect(t?.reasoningText).toBe('plan it more')
+    expect(t?.text).toBe('done')
+  })
+
   it('pairs tool-result to its own tool-use by toolCallId, not by name', () => {
     let t: LiveTurn | undefined
     t = foldHarnessEvent(
