@@ -1,0 +1,19 @@
+{
+  "name": "rivet-den",
+  "version": "0.1.0",
+  "description": "Live pixel-art diorama of your Kimi Code CLI session — lifecycle hooks translate prompts, tool calls, todo updates and compaction into rivet-den protocol events and stream them to a den-server, where the room plays out in real time.",
+  "keywords": ["den", "visualizer", "diorama", "hooks", "rivetos", "kimi-code", "pixel-art"],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "RivetOS"
+  },
+  "kimi": {
+    "minVersion": "0.34.0",
+    "provides": ["hooks"],
+    "install": {
+      "hooks": "hooks/hooks.toml"
+    }
+  }
+}

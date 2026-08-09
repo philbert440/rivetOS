@@ -1,0 +1,11 @@
+{
+  "name": "@rivetos/kimi-rivet-den",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Test harness for the Kimi Code CLI rivet-den hooks. The shipped artifact is hooks/kimi-den-hook.mjs, which is dependency-free by design; this package exists only so the hook's behaviour is covered by the workspace test run.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "tsx test/smoke.test.ts"
+  }
+}
