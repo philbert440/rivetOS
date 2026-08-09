@@ -1,5 +1,6 @@
 package dev.rivet.app.data.harness
 
+import dev.rivet.app.data.node.NodeAuthProbe
 import dev.rivet.app.ui.pages.terminal.DenHarnessClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -32,10 +33,20 @@ interface HarnessPlaneSource {
 class HarnessPlaneRepository(
     /** Active den origin, or null/blank when the active node is this device. */
     private val remoteDenUrl: suspend () -> String?,
-    /** Per-node bearer; the roster is tokenless today, so normally null. */
+    /** Per-node bearer, from the credential store; null for a tokenless node. */
     private val tokenFor: suspend (String) -> String? = { null },
+    /**
+     * Told what the registry read said about the credential. The snapshot is the
+     * only control-plane call that runs on a timer against every active node, so
+     * it is where a node that started gating — or rotated its bearer — is first
+     * visible. Reporting is all it does: the degrade below is unconditional.
+     */
+    private val onAuth: (NodeAuthProbe) -> Unit = {},
     private val clientFactory: (String, String?) -> HarnessControlPlaneClient =
         { url, token -> HarnessControlPlaneClient(url, token) },
+    /** Seam for tests; production is the legacy on-disk scan. */
+    private val legacyList: (String, String?) -> List<DenHarnessClient.Session> =
+        { url, token -> DenHarnessClient.tryList(url, token) },
 ) : HarnessPlaneSource {
     private val lock = Mutex()
 
@@ -89,7 +100,18 @@ class HarnessPlaneRepository(
     private suspend fun read(den: String): HarnessPlaneSnapshot = withContext(Dispatchers.IO) {
         val token = tokenFor(den)
         val client = clientFactory(den, token)
-        val descriptors = runCatching { client.harnesses() }.getOrDefault(emptyList())
+        val registry = runCatching { client.harnesses() }
+        onAuth(
+            NodeAuthProbe(
+                denUrl = den,
+                hadToken = !token.isNullOrBlank(),
+                outcome = HarnessPlane.authOutcome(registry.exceptionOrNull()),
+            ),
+        )
+        // A 401 lands here exactly like a 404 does: empty descriptors, every row
+        // resolves to legacy, the app behaves as it did before the control plane
+        // existed. Surfacing the reason must never change the degrade.
+        val descriptors = registry.getOrDefault(emptyList())
         val planeSessions = coroutineScope {
             HarnessPlane.listable(descriptors)
                 .map { id -> async { runCatching { client.sessions(id) }.getOrDefault(emptyList()) } }
@@ -97,7 +119,7 @@ class HarnessPlaneRepository(
         }
         // One driver failing (a store it cannot read, a node mid-restart) must
         // not blank the drawer — the legacy scan still backs those rows.
-        val legacy = DenHarnessClient.tryList(den, token)
+        val legacy = legacyList(den, token)
         HarnessPlaneSnapshot(
             denUrl = den,
             descriptors = descriptors,

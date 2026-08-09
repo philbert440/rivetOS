@@ -169,9 +169,25 @@ internal class ReconnectingSocket(
                 Thread(r, "harness-ws-reconnect").apply { isDaemon = true }
             }
 
-        /** The real transport: a socket on the shared OkHttp pool. */
-        fun over(client: OkHttpClient): (String, WebSocketListener) -> WebSocket =
-            { url, listener -> client.newWebSocket(Request.Builder().url(url).build(), listener) }
+        /**
+         * The real transport: a socket on the shared OkHttp pool, with the
+         * bearer on the upgrade request.
+         *
+         * den's gate reads `Authorization` on an upgrade exactly as it does on a
+         * GET, and accepts `?token=` only because a browser's `WebSocket`
+         * constructor cannot set headers. OkHttp can, so the credential never
+         * enters a URL that a proxy or access log might keep.
+         */
+        fun over(client: OkHttpClient, token: String? = null): (String, WebSocketListener) -> WebSocket =
+            { url, listener -> client.newWebSocket(upgradeRequest(url, token), listener) }
+
+        /** The handshake request [over] sends; separate so it is assertable. */
+        fun upgradeRequest(url: String, token: String?): Request {
+            val bearer = token?.trim().orEmpty()
+            val builder = Request.Builder().url(url)
+            if (bearer.isNotEmpty()) builder.header("Authorization", "Bearer $bearer")
+            return builder.build()
+        }
     }
 }
 

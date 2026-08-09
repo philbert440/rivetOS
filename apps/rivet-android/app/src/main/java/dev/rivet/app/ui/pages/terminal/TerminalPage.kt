@@ -49,6 +49,7 @@ import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import dev.rivet.app.data.datastore.NodeRosterDefaults
 import dev.rivet.app.data.datastore.SettingsStore
+import dev.rivet.app.data.node.NodeTokenStore
 import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.service.ChatService
 import dev.rivet.app.ui.context.LocalNavController
@@ -212,6 +213,7 @@ fun TerminalPage(
     val context = LocalContext.current
     val nav = LocalNavController.current
     val settingsStore = koinInject<SettingsStore>()
+    val nodeTokens = koinInject<NodeTokenStore>()
     val settings by settingsStore.settingsFlow.collectAsStateWithLifecycle()
     val activeDenUrl = settings.activeNodeDenUrl.ifBlank { NodeRosterDefaults.localDenUrl() }
     val isLocal = NodeRosterDefaults.isLocalDenUrl(activeDenUrl)
@@ -288,7 +290,7 @@ fun TerminalPage(
                 key = key,
                 title = title,
                 denUrl = activeDenUrl,
-                token = null, // roster is tokenless by design; ?token= only if we add per-node tokens later
+                token = nodeTokens.tokenFor(activeDenUrl),
                 launchCommand = launchCommand,
                 conversationId = conversationId,
                 errorOut = { msg -> err = msg },

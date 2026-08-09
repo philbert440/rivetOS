@@ -1,5 +1,6 @@
 package dev.rivet.app.data.harness
 
+import dev.rivet.app.data.node.NodeAuthOutcome
 import dev.rivet.app.ui.pages.terminal.DenHarnessClient
 
 /**
@@ -156,6 +157,27 @@ object HarnessPlane {
 
     /** Also the codes a terminal `error` frame can carry on the socket. */
     private val FATAL_CODES = setOf("invalid_session_id", "capability_unsupported")
+
+    /**
+     * What one control-plane read says about this client's credential.
+     *
+     * Only an explicit refusal counts as an auth answer. A 404 is a node with no
+     * control plane, an exhausted socket is a phone on a bad radio — neither is
+     * evidence about a bearer, so both stay [NodeAuthOutcome.INDETERMINATE] and
+     * leave whatever the last real answer was in place.
+     */
+    fun authOutcome(err: Throwable?): NodeAuthOutcome {
+        if (err == null) return NodeAuthOutcome.AUTHORIZED
+        val status = (err as? HarnessHttpException)?.status
+            ?: return NodeAuthOutcome.INDETERMINATE
+        return if (status in AUTH_STATUS) {
+            NodeAuthOutcome.UNAUTHORIZED
+        } else {
+            NodeAuthOutcome.INDETERMINATE
+        }
+    }
+
+    private val AUTH_STATUS = setOf(401, 403)
 
     /**
      * Gone (404), malformed (400), unsupported (501) — and refused (401/403).
