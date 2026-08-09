@@ -7,6 +7,7 @@ import type { AddressInfo } from 'node:net'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type { HarnessExecutorCapabilities, MeshNode, MeshRegistry } from '@rivetos/types'
 import { createExecutorRegistry } from './runner.js'
+import { createNotImplementedHarnessExecutor } from './harness-executors.js'
 import { createCatalogApiRoute } from './catalog-api.js'
 import type { Router } from '../router.js'
 
@@ -70,14 +71,21 @@ async function startWith(nodes: MeshNode[]): Promise<string> {
   executors.register(
     'harness-session',
     {
-      name: 'claude-cli',
+      name: 'claude-code',
       capabilities: () => caps,
       listCommands: async () => [{ name: '/compact', description: 'compact context' }],
       start: () => {
         throw new Error('not executed here')
       },
     },
-    'claude-cli',
+    'claude-code',
+  )
+  // A harness the node knows about but cannot run — the sheet says so rather
+  // than omitting it (Phase 3 per-harness executors).
+  executors.register(
+    'harness-session',
+    createNotImplementedHarnessExecutor('kimi-code', { reason: 'hooks only, no spawn' }),
+    'kimi-code',
   )
 
   const router = {
@@ -110,7 +118,12 @@ describe('/api/catalog', () => {
     const body = (await (await fetch(`${base}/api/catalog`)).json()) as {
       node: string
       agents: Array<{ id: string; node: string; local?: boolean; provider?: string; model?: string }>
-      executors: Array<{ key: string; commands: unknown[] }>
+      executors: Array<{
+        key: string
+        commands: unknown[]
+        harnessId?: string
+        implemented?: boolean
+      }>
       tools: string[]
       skills: Array<{ name: string }>
     }
@@ -123,8 +136,18 @@ describe('/api/catalog', () => {
     // #272: the remote grok carries its advertised provider/model
     const grokDetail = body.agents.find((a) => a.id === 'grok')
     expect(grokDetail).toMatchObject({ node: 'ct112', provider: 'xai', model: 'grok-4-1' })
-    const harness = body.executors.find((e) => e.key === 'harness-session:claude-cli')
+    const harness = body.executors.find((e) => e.key === 'harness-session:claude-code')
     expect(harness?.commands).toEqual([{ name: '/compact', description: 'compact context' }])
+    // harness-session entries carry the harness id + whether it is runnable
+    expect(harness).toMatchObject({ harnessId: 'claude-code', implemented: true })
+    expect(body.executors.find((e) => e.key === 'harness-session:kimi-code')).toMatchObject({
+      harnessId: 'kimi-code',
+      implemented: false,
+    })
+    // Non-harness executors carry neither field.
+    const chat = body.executors.find((e) => e.key === 'chat-loop')
+    expect(chat?.harnessId).toBeUndefined()
+    expect(chat?.implemented).toBeUndefined()
     expect(body.tools).toContain('memory_search')
     expect(body.skills[0].name).toBe('deep-research')
   })

@@ -31,6 +31,8 @@ import type {
   TaskUsage,
 } from '@rivetos/types'
 import { buildLocalSessionContext } from '@rivetos/types'
+import { canonicalizeExecutorTarget, harnessExecutorCoverage } from './harness-executors.js'
+import type { HarnessExecutorCoverage } from './harness-executors.js'
 import type { TaskRow, TaskStore } from './store.js'
 import { TASK_JOB_NAME, taskJobName } from './store.js'
 import { buildRetryMessage } from './evaluation-coordinator.js'
@@ -41,6 +43,11 @@ const log = logger('TaskRunner')
 
 // ---------------------------------------------------------------------------
 // Executor registry — keyed by (executor, executor_target).
+//
+// For kind 'harness-session' the target is a HARNESS ID (`claude-code`,
+// `grok-build`, `kimi-code`, `hermes`) — the same vocabulary SessionId and the
+// gateway speak. Retired targets (`claude-cli`) canonicalize on the way in and
+// out, warning once each, so rows queued before the rename still resolve.
 // ---------------------------------------------------------------------------
 
 export interface TaskExecutorRegistry {
@@ -49,21 +56,62 @@ export interface TaskExecutorRegistry {
   resolve(kind: TaskExecutorKind, target?: string): HarnessExecutor | undefined
   /** Registered executors, for the gateway catalog (key = kind[:target]). */
   entries(): Array<{ key: string; executor: HarnessExecutor }>
+  /** One row per harness id: what this node can actually execute. */
+  harnesses(): HarnessExecutorCoverage[]
 }
 
-export function createExecutorRegistry(): TaskExecutorRegistry {
+export interface ExecutorRegistryOptions {
+  /**
+   * Called the FIRST time each retired target is canonicalized. Defaults to a
+   * warn log; tests pass a spy. Once-per-target, not once-per-task: a queue of
+   * legacy rows should say so once, not on every claim.
+   */
+  onDeprecatedTarget?: (legacy: string, canonical: string) => void
+}
+
+export function createExecutorRegistry(opts?: ExecutorRegistryOptions): TaskExecutorRegistry {
   const executors = new Map<string, HarnessExecutor>()
+  const warned = new Set<string>()
   const key = (kind: TaskExecutorKind, target?: string): string =>
     target ? `${kind}:${target}` : kind
+  const warn =
+    opts?.onDeprecatedTarget ??
+    ((legacy: string, canonical: string): void => {
+      // Deliberately says what the alias MAPS to, not that the lookup
+      // succeeded: canonicalization happens before the registry is consulted,
+      // so `claude-code` may itself be unregistered on this node.
+      log.warn(
+        `executor target "${legacy}" is deprecated and maps to "${canonical}" — ` +
+          `update callers; the alias will be removed once no queued task names it.`,
+      )
+    })
+  /** Harness-session targets only: 'chat-loop'/'mesh' targets are free-form. */
+  const canonical = (kind: TaskExecutorKind, target?: string): string | undefined => {
+    if (kind !== 'harness-session') return target
+    const { target: resolved, deprecatedAlias } = canonicalizeExecutorTarget(target)
+    if (deprecatedAlias !== undefined && resolved !== undefined && !warned.has(deprecatedAlias)) {
+      warned.add(deprecatedAlias)
+      warn(deprecatedAlias, resolved)
+    }
+    return resolved
+  }
   return {
     register(kind, executor, target): void {
-      executors.set(key(kind, target), executor)
+      executors.set(key(kind, canonical(kind, target)), executor)
     },
     resolve(kind, target): HarnessExecutor | undefined {
-      return executors.get(key(kind, target)) ?? executors.get(key(kind))
+      const t = canonical(kind, target)
+      return executors.get(key(kind, t)) ?? executors.get(key(kind))
     },
     entries(): Array<{ key: string; executor: HarnessExecutor }> {
       return [...executors.entries()].map(([k, executor]) => ({ key: k, executor }))
+    },
+    harnesses(): HarnessExecutorCoverage[] {
+      // Exact lookups only — the kind-level fallback in resolve() would report
+      // every harness as covered the moment any one of them registered.
+      return harnessExecutorCoverage((harnessId) =>
+        executors.get(key('harness-session', harnessId)),
+      )
     },
   }
 }

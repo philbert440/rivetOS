@@ -35,6 +35,7 @@
 import type {
   AgentEventBody,
   HarnessExecutor,
+  HarnessId,
   Memory,
   HarnessExecutorCapabilities,
   TaskEvent,
@@ -45,6 +46,8 @@ import type {
   Tool,
 } from '@rivetos/types'
 import {
+  formatSessionId,
+  isSessionId,
   taskResultFenceInstructions,
   parseTaskResultJson,
   parseTaskResultBlock,
@@ -60,6 +63,13 @@ import {
   type SpawnedTurn,
 } from './spawn-turn.js'
 import { createLogger, type BridgeLogger } from './log.js'
+
+/**
+ * Harness id this executor registers under (`HARNESS_IDS`). Renamed from the
+ * provider name `claude-cli` in Phase 3 — see the executor-target alias in
+ * `@rivetos/core`'s harness-executors module for the deprecation window.
+ */
+export const CLAUDE_HARNESS_ID: HarnessId = 'claude-code'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -220,12 +230,41 @@ function emptyUsage(): TaskUsage {
   return { inputTokens: 0, outputTokens: 0, totalTokens: 0, turns: 0, wallClockMs: 0 }
 }
 
+/**
+ * Canonicalize the spawn's native session id onto the control plane's one id
+ * format, `claude-code:<uuid>` — the same key capture, the driver and the
+ * gateway use, so a task row's `harness_session_ids` can be looked up as a
+ * SessionId instead of being a bare uuid that only claude-cli understands.
+ *
+ * The CLI mints the id (there is no `--session-id` pin on this path — every
+ * spawn is a one-shot `-p` with `--no-session-persistence`), so this adopts
+ * rather than pins. An id already carrying a harness prefix, or one the codec
+ * rejects, is passed through untouched: a traceability breadcrumb that is not
+ * canonical still beats none, and claiming canonical form for a malformed id
+ * would be the lie the codec exists to prevent.
+ */
+export function canonicalClaudeSessionId(nativeId: string | undefined): string | undefined {
+  if (nativeId === undefined || nativeId === '') return undefined
+  if (isSessionId(nativeId)) return nativeId
+  try {
+    return formatSessionId(CLAUDE_HARNESS_ID, nativeId)
+  } catch {
+    return nativeId
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Executor
 // ---------------------------------------------------------------------------
 
 export class ClaudeCliExecutor implements HarnessExecutor {
-  readonly name = 'claude-cli'
+  /**
+   * The HARNESS id, not the provider-plugin name. The plugin is still
+   * `claude-cli` (it drives the `claude` binary); the harness it executes is
+   * `claude-code`, which is what SessionId, the driver registry, the gateway
+   * and now the task engine all agree to call it.
+   */
+  readonly name = CLAUDE_HARNESS_ID
   private readonly cfg: ClaudeCliExecutorConfig
   private readonly log: BridgeLogger
 
@@ -372,7 +411,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
         type: 'turn.end',
         turn: usage.turns,
         usage: { ...usage },
-        harnessSessionId: turn.sessionId,
+        harnessSessionId: canonicalClaudeSessionId(turn.sessionId),
       })
 
       if (turn.text) lastText = turn.text
