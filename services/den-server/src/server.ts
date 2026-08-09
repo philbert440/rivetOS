@@ -64,8 +64,10 @@ import {
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes } from './devices.js'
 import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
-import { ClaudeCodeDriver } from './harness/claude-driver.js'
+import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-driver.js'
 import { createClaudeStoreHost } from './harness/claude-store.js'
+import { GrokBuildDriver } from './harness/grok-driver.js'
+import { createGrokStoreHost } from './harness/grok-store.js'
 import { createHarnessRoutes } from './harness/routes.js'
 import { createUploadRoutes } from './harness/uploads.js'
 
@@ -74,8 +76,9 @@ import { createUploadRoutes } from './harness/uploads.js'
 export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcript-watch.js'
 
 // Harness control plane (docs/plans/harness-control-plane.md) — the registry,
-// the `claude-code` reference driver, and the alias/codec helpers Phase 3
-// drivers build on. Re-exported here so consumers have one entry point.
+// the `claude-code` reference driver, the `grok-build` driver, and the
+// alias/codec helpers the remaining Phase 3 drivers build on. Re-exported here
+// so consumers have one entry point.
 export {
   createAliasStore,
   normalizeSessionId,
@@ -101,6 +104,15 @@ export {
   type DenAgentEventLike,
 } from './harness/claude-driver.js'
 export { createClaudeStoreHost } from './harness/claude-store.js'
+export {
+  GrokBuildDriver,
+  GROK_HARNESS_ID,
+  GROK_ROSTER_COMMAND,
+  type GrokDriverDeps,
+  type GrokPtyHost,
+  type GrokStoreHost,
+} from './harness/grok-driver.js'
+export { createGrokStoreHost } from './harness/grok-store.js'
 export {
   createHarnessRoutes,
   decodeSessionSegment,
@@ -172,9 +184,9 @@ export interface DenServer {
   state(): DenState
   /**
    * Harness control plane (docs/plans/harness-control-plane.md): the node's
-   * `HarnessDriver` registry. `claude-code` is registered here at boot;
-   * Phase 3 drivers (grok-build, kimi-code, hermes) register through
-   * `DenServerOptions.harnessDrivers` or against this handle.
+   * `HarnessDriver` registry. `claude-code` and `grok-build` are registered
+   * here at boot; the remaining Phase 3 drivers (kimi-code, hermes) register
+   * through `DenServerOptions.harnessDrivers` or against this handle.
    */
   harnesses: HarnessRegistry
   close(): Promise<void>
@@ -216,15 +228,17 @@ export interface DenServerOptions {
    */
   onAgentEvent?: (ev: { session: string; type: string; [k: string]: unknown }) => void
   /**
-   * Extra HarnessDrivers to register alongside the built-in `claude-code`
-   * reference driver (Phase 3: grok-build, kimi-code, hermes).
+   * Extra HarnessDrivers to register alongside the built-in `claude-code` and
+   * `grok-build` drivers (the rest of Phase 3: kimi-code, hermes).
    */
   harnessDrivers?: HarnessDriver[]
   /**
-   * Skip registering the built-in `claude-code` driver — tests that drive the
-   * registry with a fake, and nodes that want a different Claude wiring.
+   * Skip registering the built-in `claude-code` + `grok-build` drivers — tests
+   * that drive the registry with a fake, and nodes that want their own wiring.
+   * Both are skipped together: they share the PTY host and the den event tap,
+   * so a node that replaces one is replacing that wiring for both.
    */
-  skipClaudeHarnessDriver?: boolean
+  skipBuiltinHarnessDrivers?: boolean
 }
 
 const json = (res: ServerResponse, code: number, body: unknown): void => {
@@ -410,35 +424,47 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const termWs = createTermWs({ manager: ensureManager, enabled: () => termEnabled })
 
   // ── harness control plane ───────────────────────────────────────────────
-  // Roster cwd for the claude entry, read at call time — rosterProvider
+  // Roster cwd for a harness entry, read at call time — rosterProvider
   // re-reads den-term.json when it changes on disk, so an operator edit is
   // reflected without a restart (passed as a getter, not a snapshot).
-  const claudeRosterCwd = (): string => {
+  const rosterCwdFor = (key: string) => (): string => {
     const roster = rosterProvider.get()
-    return roster.commands.claude?.cwd ?? roster.cwd
+    return roster.commands[key]?.cwd ?? roster.cwd
   }
   // The node's HarnessDriver registry (docs/plans/harness-control-plane.md).
-  // `claude-code` is the reference driver: it formalizes the machinery right
-  // above it — the term manager (spawn/--resume/inject/Esc), the on-disk
-  // Claude store, and the den AgentEvent stream — behind the one contract the
-  // Phase 3 drivers will match. Capability flags follow what is ACTUALLY
-  // wired here: no terminals on this node means no interrupt/resume, and
-  // approvals are false for Claude regardless (its permission prompts live
-  // inside the TUI and never reach the den wire).
+  // Both built-in drivers formalize the machinery right above them — the term
+  // manager (spawn/--resume/inject/Esc), the harness's on-disk store, and the
+  // den AgentEvent stream — behind the one contract. Capability flags follow
+  // what is ACTUALLY wired here: no terminals on this node means no
+  // interrupt/resume, no den tap means no liveStream, and `approvals` is false
+  // for both regardless (their permission prompts live inside their TUIs and
+  // never reach the den wire).
   const harnesses = createHarnessRegistry()
-  const claudeDriver = opts.skipClaudeHarnessDriver
-    ? undefined
-    : new ClaudeCodeDriver({
+  const denEventTap = (sink: (ev: DenAgentEventLike) => void): (() => void) => {
+    denEventSinks.add(sink)
+    return () => denEventSinks.delete(sink)
+  }
+  /** Built-ins we own the lifetime of — closed on shutdown to drop the tap. */
+  const builtinDrivers: (HarnessDriver & { close(): void })[] = []
+  if (!opts.skipBuiltinHarnessDrivers) {
+    builtinDrivers.push(
+      new ClaudeCodeDriver({
         store: createClaudeStoreHost(),
         pty: termEnabled ? () => ensureManager() : undefined,
-        events: (sink) => {
-          denEventSinks.add(sink)
-          return () => denEventSinks.delete(sink)
-        },
-        cwd: claudeRosterCwd,
+        events: denEventTap,
+        cwd: rosterCwdFor('claude'),
         log: console.error,
-      })
-  if (claudeDriver) harnesses.register(claudeDriver)
+      }),
+      new GrokBuildDriver({
+        store: createGrokStoreHost(),
+        pty: termEnabled ? () => ensureManager() : undefined,
+        events: denEventTap,
+        cwd: rosterCwdFor('grok'),
+        log: console.error,
+      }),
+    )
+    for (const driver of builtinDrivers) harnesses.register(driver)
+  }
   for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
   const harnessRoutes = createHarnessRoutes({ registry: harnesses, log: console.error })
 
@@ -1098,7 +1124,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         evictTimers.clear()
         harnessRoutes.close()
         uploadRoutes.close()
-        claudeDriver?.close()
+        for (const driver of builtinDrivers) driver.close()
         harnesses.close()
         termWs.close()
         audioWs.close()

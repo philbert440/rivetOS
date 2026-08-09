@@ -4,8 +4,10 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   describeClaudeSession,
+  describeGrokSession,
   listHarnessSessions,
   harnessSessionExists,
+  readGrokTranscript,
   readHarnessTranscript,
 } from './harness-sessions.js'
 
@@ -111,6 +113,42 @@ describe('listHarnessSessions', () => {
     delete process.env.GROK_HOME
   })
 
+  it('carries grok created_at onto the row so list and describe cannot disagree', async () => {
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-created-'))
+    dirs.push(grokBase)
+    const id = 'cccc-3333'
+    const sess = join(grokBase, 'sessions', '%2Fhome%2Frivet', id)
+    mkdirSync(sess, { recursive: true })
+    writeFileSync(
+      join(sess, 'summary.json'),
+      JSON.stringify({
+        info: { id },
+        session_summary: 'quantize the thing',
+        created_at: '2026-07-07T00:00:00.000Z',
+        updated_at: '2026-07-07T01:00:00.000Z',
+      }),
+    )
+    process.env.GROK_HOME = grokBase
+
+    const [listed] = await listHarnessSessions(['grok'])
+    const described = await describeGrokSession(id)
+    expect(listed.createdAt).toBe(Date.parse('2026-07-07T00:00:00.000Z'))
+    expect(described).toEqual(listed)
+  })
+
+  it('describeGrokSession: no summary yet → undefined (existence is a separate question)', async () => {
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-describe-'))
+    dirs.push(grokBase)
+    // The window right after a fresh spawn: dir written, summary not yet.
+    mkdirSync(join(grokBase, 'sessions', '%2Fhome%2Frivet', 'dddd-4444'), { recursive: true })
+    process.env.GROK_HOME = grokBase
+    expect(await describeGrokSession('dddd-4444')).toBeUndefined()
+    expect(harnessSessionExists('grok', 'dddd-4444')).toBe(true)
+    // Path-ish ids never escape the store root.
+    expect(await describeGrokSession('../../etc')).toBeUndefined()
+    expect(await describeGrokSession('')).toBeUndefined()
+  })
+
   it('harnessSessionExists: grok checks the session DIR, not summary.json (written later)', async () => {
     const grokBase = mkdtempSync(join(tmpdir(), 'grok-exists-'))
     dirs.push(grokBase)
@@ -121,6 +159,22 @@ describe('listHarnessSessions', () => {
     expect(harnessSessionExists('grok', 'nope-0000')).toBe(false)
     expect(harnessSessionExists('hermes', 'bbbb-2222')).toBe(false) // unknown harness
     delete process.env.GROK_HOME
+  })
+
+  it('harnessSessionExists rejects path-ish ids — the harness drivers make it caller-reachable', () => {
+    // `POST /api/harness-sessions/:enc/resume` and `.../turns` reach this with
+    // an id from the wire, not just with a den key the term manager minted.
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-traversal-'))
+    dirs.push(grokBase)
+    mkdirSync(join(grokBase, 'sessions', '%2Fhome%2Frivet'), { recursive: true })
+    process.env.GROK_HOME = grokBase
+    process.env.CLAUDE_CONFIG_DIR = grokBase
+    for (const command of ['grok', 'claude', 'hermes']) {
+      expect(harnessSessionExists(command, '')).toBe(false)
+      expect(harnessSessionExists(command, '..')).toBe(false)
+      expect(harnessSessionExists(command, '../../etc/passwd')).toBe(false)
+      expect(harnessSessionExists(command, 'a/b')).toBe(false)
+    }
   })
 
   it('lists hermes sessions from state.db (title = first user message)', async () => {
@@ -358,5 +412,25 @@ describe('readHarnessTranscript', () => {
     process.env.CLAUDE_CONFIG_DIR = join(tmpdir(), 'none-' + String(process.pid))
     const t = await readHarnessTranscript('zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz')
     expect(t).toEqual({ id: 'zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz', command: '', turns: [] })
+  })
+
+  it('readGrokTranscript never falls through to another harness store', async () => {
+    // The id-only drawer read probes claude → grok → hermes; the grok DRIVER
+    // must not serve a Claude transcript for an id it was handed, however
+    // improbable a cross-store uuid collision is.
+    const id = 'cafe0000-0000-4000-8000-000000000001'
+    const claudeBase = mkdtempSync(join(tmpdir(), 'claude-only-'))
+    dirs.push(claudeBase)
+    const slug = join(claudeBase, 'projects', '-home-rivet')
+    mkdirSync(slug, { recursive: true })
+    writeFileSync(
+      join(slug, `${id}.jsonl`),
+      JSON.stringify({ type: 'user', message: { content: 'claude turn' } }) + '\n',
+    )
+    process.env.CLAUDE_CONFIG_DIR = claudeBase
+    process.env.GROK_HOME = join(tmpdir(), 'no-grok-' + String(process.pid))
+
+    expect((await readHarnessTranscript(id)).command).toBe('claude')
+    expect(await readGrokTranscript(id)).toEqual({ id, command: '', turns: [] })
   })
 })

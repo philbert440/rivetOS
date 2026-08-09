@@ -17,6 +17,7 @@ import {
   type HarnessCapabilities,
   type HarnessDriver,
   type HarnessEvent,
+  type HarnessId,
   type HarnessSessionSummary,
   type SessionId,
   type StartSessionOpts,
@@ -46,7 +47,6 @@ interface FakeCalls {
 }
 
 class FakeDriver implements HarnessDriver {
-  readonly harnessId = 'claude-code' as const
   readonly calls: FakeCalls = { started: [], resumed: [], turns: [], interrupted: [] }
   readonly sessions = new Map<SessionId, HarnessSessionSummary>()
   private readonly sinks = new Set<(e: HarnessEvent) => void>()
@@ -54,12 +54,15 @@ class FakeDriver implements HarnessDriver {
   /** Thrown by the next mutating call, if set. */
   next?: HarnessError
 
-  constructor(readonly capabilities: HarnessCapabilities = FULL_CAPS) {}
+  constructor(
+    readonly capabilities: HarnessCapabilities = FULL_CAPS,
+    readonly harnessId: HarnessId = 'claude-code',
+  ) {}
 
   add(sessionId: SessionId, extra: Partial<HarnessSessionSummary> = {}): HarnessSessionSummary {
     const summary: HarnessSessionSummary = {
       sessionId,
-      harnessId: 'claude-code',
+      harnessId: this.harnessId,
       createdAt: '2026-08-08T00:00:00.000Z',
       updatedAt: '2026-08-08T00:00:00.000Z',
       status: 'idle',
@@ -80,7 +83,9 @@ class FakeDriver implements HarnessDriver {
   startSession(opts: StartSessionOpts = {}): Promise<HarnessSessionSummary> {
     this.calls.started.push(opts)
     this.throwIfArmed()
-    return Promise.resolve(this.add(`claude-code:${opts.nativeSessionId ?? 'minted'}` as SessionId))
+    return Promise.resolve(
+      this.add(`${this.harnessId}:${opts.nativeSessionId ?? 'minted'}` as SessionId),
+    )
   }
   resumeSession(sessionId: SessionId): Promise<HarnessSessionSummary> {
     this.calls.resumed.push(sessionId)
@@ -164,14 +169,15 @@ function denConfig(stateDir: string): DenConfig {
   }
 }
 
-async function start(driver: HarnessDriver): Promise<{ base: string; den: DenServer }> {
+async function start(...drivers: HarnessDriver[]): Promise<{ base: string; den: DenServer }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-harness-'))
   dirs.push(stateDir)
   const den = createDenServer(denConfig(stateDir), {
     ptySpawn: null,
-    // The real claude-code driver would scan the developer's ~/.claude here.
-    skipClaudeHarnessDriver: true,
-    harnessDrivers: [driver],
+    // The real built-in drivers would scan the developer's ~/.claude and
+    // ~/.grok here.
+    skipBuiltinHarnessDrivers: true,
+    harnessDrivers: drivers,
   })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
@@ -214,6 +220,96 @@ describe('GET /api/harnesses', () => {
       sessions: HarnessSessionSummary[]
     }
     expect(list.sessions.map((s) => s.sessionId)).toEqual([SID])
+  })
+})
+
+describe('more than one driver on a node', () => {
+  const GROK_UUID = '019e5f82-f0e5-7d41-a38c-4eefced7e570'
+  const GROK_SID = `grok-build:${GROK_UUID}` as SessionId
+  const pair = (): { claude: FakeDriver; grok: FakeDriver } => ({
+    claude: new FakeDriver(),
+    grok: new FakeDriver(FULL_CAPS, 'grok-build'),
+  })
+
+  it('lists both drivers with their own capability sheets', async () => {
+    const { claude, grok } = pair()
+    const { base } = await start(claude, grok)
+    expect(await (await fetch(`${base}/api/harnesses`)).json()).toEqual({
+      harnesses: [
+        { harnessId: 'claude-code', capabilities: FULL_CAPS },
+        { harnessId: 'grok-build', capabilities: FULL_CAPS },
+      ],
+    })
+  })
+
+  it('scopes listSessions and startSession to the harness in the path', async () => {
+    const { claude, grok } = pair()
+    claude.add(SID)
+    grok.add(GROK_SID)
+    const { base } = await start(claude, grok)
+
+    const list = async (id: string): Promise<string[]> => {
+      const body = (await (await fetch(`${base}/api/harnesses/${id}/sessions`)).json()) as {
+        sessions: HarnessSessionSummary[]
+      }
+      return body.sessions.map((s) => s.sessionId)
+    }
+    expect(await list('claude-code')).toEqual([SID])
+    expect(await list('grok-build')).toEqual([GROK_SID])
+
+    await post(base, '/api/harnesses/grok-build/sessions', { nativeSessionId: GROK_UUID })
+    expect(grok.calls.started).toEqual([{ nativeSessionId: GROK_UUID }])
+    expect(claude.calls.started).toEqual([])
+  })
+
+  it('dispatches a session action to the driver named by the id, not the other one', async () => {
+    const { claude, grok } = pair()
+    claude.add(SID)
+    grok.add(GROK_SID)
+    const { base } = await start(claude, grok)
+
+    expect((await post(base, `/api/harness-sessions/${enc(GROK_SID)}/turns`, { text: 'hi' })).status).toBe(
+      202,
+    )
+    expect(grok.calls.turns).toEqual([{ sessionId: GROK_SID, turn: { text: 'hi' } }])
+    expect(claude.calls.turns).toEqual([])
+
+    expect((await post(base, `/api/harness-sessions/${enc(SID)}/interrupt`)).status).toBe(202)
+    expect(claude.calls.interrupted).toEqual([SID])
+    expect(grok.calls.interrupted).toEqual([])
+  })
+
+  it('probes both drivers for a bare uuid and answers with the owner’s canonical id', async () => {
+    // Claude and Grok both key sessions on uuids, so the bare shape carries no
+    // harness — the registry asks each driver who owns it.
+    const { claude, grok } = pair()
+    grok.add(GROK_SID)
+    const { base } = await start(claude, grok)
+    const res = await fetch(`${base}/api/harness-sessions/${GROK_UUID}`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      sessionId: GROK_SID,
+      harnessId: 'grok-build',
+      redirectedTo: GROK_SID,
+    })
+  })
+
+  it('filters the registry WS stream by harness', async () => {
+    const { claude, grok } = pair()
+    const { base } = await start(claude, grok)
+    const ws = new WebSocket(`${base.replace('http', 'ws')}/api/harnesses/ws?harness=grok-build`)
+    await new Promise<void>((r) => ws.on('open', () => r()))
+    const frames: HarnessEvent[] = []
+    ws.on('message', (d) => frames.push(JSON.parse(String(d)) as HarnessEvent))
+
+    claude.emitRegistry({ type: 'session-updated', sessionId: SID, status: 'active' })
+    grok.emitRegistry({ type: 'session-updated', sessionId: GROK_SID, status: 'active' })
+    await new Promise((r) => setTimeout(r, 20))
+
+    expect(frames).toEqual([
+      { type: 'session-updated', sessionId: GROK_SID, status: 'active' },
+    ])
+    ws.close()
   })
 })
 

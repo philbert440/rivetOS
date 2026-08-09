@@ -392,7 +392,7 @@ describe('upload auth', () => {
     const stateDir = tempDir('den-uploads-auth-')
     const den = createDenServer(denConfig(stateDir, 'sekrit'), {
       ptySpawn: null,
-      skipClaudeHarnessDriver: true,
+      skipBuiltinHarnessDrivers: true,
     })
     dens.push(den)
     await new Promise<void>((resolve) => den.server.listen(0, '127.0.0.1', () => resolve()))
