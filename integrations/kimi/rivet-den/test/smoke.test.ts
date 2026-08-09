@@ -361,6 +361,20 @@ console.log('\n— session identity —')
     env: { RIVET_DEN_SESSION: 'kimi-code:pre-created-room' },
   })
   check('RIVET_DEN_SESSION is used verbatim, never re-prefixed', pinned.every((e) => e.session === 'kimi-code:pre-created-room'), String(pinned[0]?.session))
+  // The room and kimi's own session id are different strings here — which is
+  // the whole point of the second field. The `kimi-code` HarnessDriver keys on
+  // `harnessSession`, so a den-spawned kimi that dropped it would be a room the
+  // control plane can see but cannot name a session for.
+  check(
+    'a pinned room still reports kimi’s own id in harnessSession',
+    pinned.every((e) => e.harnessSession === NATIVE_ID),
+    String(pinned[0]?.harnessSession),
+  )
+  check(
+    'harnessSession travels on an unpinned room too',
+    evs.every((e) => e.harnessSession === NATIVE_ID),
+    String(evs[0]?.harnessSession),
+  )
 
   // Cold start on purpose: `newHome()` has no ~/.cache/rivet-den yet, which is
   // exactly the state a first hook fire meets. The id cache has to create the
@@ -372,6 +386,14 @@ console.log('\n— session identity —')
   const fallbackId = String(idless[0]?.session ?? '')
   check('an id-less payload still gets a namespaced id', fallbackId.startsWith('kimi-code:unknown-'), fallbackId)
   check('the fallback id carries real entropy', /^kimi-code:unknown-[0-9a-f]{16}$/.test(fallbackId), fallbackId)
+  // A payload with no session_id has no harness id to report — the room key is
+  // a translator invention, and echoing it as a store id would send the driver
+  // looking for a session kimi never created.
+  check(
+    'an id-less payload reports no harnessSession',
+    idless.every((e) => e.harnessSession === undefined),
+    String(idless[0]?.harnessSession),
+  )
   const idFiles = fs.readdirSync(path.join(idlessHome, '.cache', 'rivet-den')).filter((f) => f.endsWith('.id'))
   check('the id cache is written on a cold start (no pre-created state dir)', idFiles.length === 1, idFiles.join(','))
 

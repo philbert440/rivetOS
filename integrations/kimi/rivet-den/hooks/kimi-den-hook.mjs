@@ -226,6 +226,19 @@ async function main() {
   const cwd = pickString(p, 'cwd') ?? ''
   const usedFallback = !pinned && !native
   const session = pinned ? pinned : `${HARNESS}:${native ?? fallbackNativeId(cwd)}`
+  // kimi's OWN session id, carried alongside the room key on every event.
+  //
+  // The two are the same string only when this hook picked the room itself.
+  // Under `RIVET_DEN_SESSION` — a kimi the den-server PTY spawner started — the
+  // room is a key den chose, and kimi has no flag to be told what to call its
+  // session (`-S/--session` resumes an existing one; there is no
+  // `--session-id`), so the two ids genuinely differ and BOTH have to travel.
+  // The `kimi-code` HarnessDriver keys sessions on this field, exactly as the
+  // hermes driver does — `harnessSession` is an existing optional field on the
+  // protocol envelope (`AgentEventMeta`), added for that harness for this same
+  // reason. Without it a den-spawned kimi is a room the control plane cannot
+  // name a session for.
+  const harnessSession = native ?? ''
 
   // ---- per-session translator state ------------------------------------
   fs.mkdirSync(STATE_DIR, { recursive: true })
@@ -241,7 +254,15 @@ async function main() {
   // ts ticks up per event so a batch keeps its order through the reducer's
   // monotonic lastEventTs even though it is emitted within one millisecond
   const emit = (body) =>
-    events.push({ v: 1, session, name: NAME, harness: HARNESS, ts: Date.now() + events.length, ...body })
+    events.push({
+      v: 1,
+      session,
+      name: NAME,
+      harness: HARNESS,
+      ...(harnessSession ? { harnessSession } : {}),
+      ts: Date.now() + events.length,
+      ...body,
+    })
 
   const termLine = (text) => {
     if (TERM_OFF) return

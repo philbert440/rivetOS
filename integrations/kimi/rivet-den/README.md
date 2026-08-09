@@ -60,6 +60,18 @@ itself at all. The cache file is removed on SessionEnd.
 `RIVET_DEN_SESSION`, injected by the den-server PTY spawner, is already
 canonical and is used verbatim.
 
+Every event ALSO carries kimi's own session id in `harnessSession`, alongside
+the room key in `session`. The two are the same string only when this hook
+picked the room itself; under `RIVET_DEN_SESSION` the room is a key den chose,
+and kimi has no flag to be told what to call its session (`-S/--session`
+resumes an existing one; there is no `--session-id`), so both ids have to
+travel. The `kimi-code` HarnessDriver keys sessions on `harnessSession` — the
+same optional envelope field the hermes hook uses, for the same reason — so a
+den-spawned kimi is a room the control plane can name a session for. A payload
+with no `session_id` reports no `harnessSession` at all: the fallback room key
+is a translator invention, and echoing it as a store id would send the driver
+looking for a session kimi never created.
+
 ## Event mapping
 
 kimi 0.34 defines **20** hook events (`HOOK_EVENT_TYPES` in the shipped CLI).
@@ -108,12 +120,20 @@ the tests pin them so they cannot rot into dead code.
 nothing else — no reply text, no usage, no model. There is no `message.agent`
 to emit, and the hook does not invent one: a den room shows the user's prompts,
 the tools, the plan and the terminal, and the chat side of the room stays
-one-sided until the kimi gateway driver lands (see
-`docs/plans/harness-control-plane.md` § Phase 3), which reads replies from the
-session rather than from a hook.
+one-sided.
 
 Two other consequences of the same gap: there is no thinking text (kimi does
 not expose it to hooks either), and no token accounting on turns.
+
+The `kimi-code` HarnessDriver, which landed after this integration, does not
+paper over any of it — it emits no `assistant-delta` and no `reasoning-delta`,
+because there is no event to fold. What it adds is the other route to the same
+text: `GET .../transcript` reads kimi's own `wire.jsonl`, whose `content.part`
+records carry the reply (`text`) and the thinking (`think`) verbatim, plus
+per-turn usage and a real `isError` per tool. A hard-resync therefore shows the
+full conversation that the live room cannot. Streaming those deltas from a
+transcript watch is the documented follow-up (see
+`docs/plans/harness-control-plane.md` § As built (kimi-code)).
 
 ## What the den does show — read this before pointing it anywhere shared
 

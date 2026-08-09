@@ -192,6 +192,10 @@ const HARNESS_FLAGS: Record<string, { sessionFlag?: string; resumeFlag: string }
   // session's id — so no sessionFlag: a fresh hermes chat gets its own id
   // (can't equal the join key), reopening resumes cleanly.
   hermes: { resumeFlag: '--resume' },
+  // Kimi is in the same position, with a differently-spelled resume flag:
+  // `-S, --session [id]` resumes an EXISTING session (an unknown id fails with
+  // `Session "…" not found`) and there is no --session-id to pin a new one.
+  kimi: { resumeFlag: '--session' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:
