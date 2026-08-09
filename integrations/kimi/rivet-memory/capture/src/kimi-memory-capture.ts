@@ -153,13 +153,27 @@ export function pickUnknown(obj: Record<string, unknown>, ...keys: string[]): un
  * of roughly 50 prompts: every array-shaped prompt fell through `pickString`
  * and the payload logged "no messages extracted".
  *
+ * **This rendering is hash-relevant — one rule, both shapes.** Whatever comes
+ * out of here is what `contentHashEventId` hashes, so normalization is part of
+ * the dedup key rather than cosmetics. Both shapes are trimmed, so
+ * `'do the thing\n'`, `'do the thing'` and `[{type:'text',text:'do the thing'}]`
+ * render — and therefore hash — identically. That matters beyond tidiness: the
+ * transcript backfill tool (PR #474) re-renders history through the same rule,
+ * and any divergence between the two would insert a second copy of every row
+ * it re-derives for a session this worker already captured. Trailing newlines
+ * on prompts are common, so an untrimmed string path would have doubled them.
+ *
  * The den translator (`integrations/kimi/rivet-den/hooks/kimi-den-hook.mjs`,
- * landing alongside this fix in PR #471) carries the same logic. It is duplicated rather than shared on purpose: that
- * hook is a dependency-free single file so it can be dropped onto a machine
- * with no rivetos install. Change one, change the other.
+ * landing alongside this fix in PR #471) carries the same logic. It is
+ * duplicated rather than shared on purpose: that hook is a dependency-free
+ * single file so it can be dropped onto a machine with no rivetos install.
+ * Change one, change the other.
  */
 export function contentText(value: unknown): string | undefined {
-  if (typeof value === 'string') return value.length > 0 ? value : undefined
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+  }
   if (!Array.isArray(value)) return undefined
   const joined = value
     .filter(

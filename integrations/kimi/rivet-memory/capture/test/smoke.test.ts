@@ -146,6 +146,8 @@ console.log('\n— messagesFromHookPayload (camelCase fixture) —')
 console.log('\n— prompt content: string OR content-part array —')
 {
   check('contentText passes a plain string through', contentText('hello') === 'hello')
+  check('contentText trims the string path too', contentText('  hello \n') === 'hello')
+  check('contentText returns undefined for whitespace-only', contentText('  \n ') === undefined)
   check('contentText joins text parts', contentText([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }]) === 'a b')
   check(
     'contentText skips non-text parts',
@@ -199,6 +201,30 @@ console.log('\n— prompt content: string OR content-part array —')
     prompt: [],
   })
   check('an empty content array yields no message', emptyPrompt.length === 0, `got ${emptyPrompt.length}`)
+
+  // One rendering rule, and it is part of the dedup key. The transcript
+  // backfill tool (PR #474) re-renders history through the same rule, so a
+  // trailing newline that survived here would make every re-derived row a
+  // duplicate instead of a skip.
+  const render = (prompt: unknown) =>
+    messagesFromHookPayload('UserPromptSubmit', 'hash-sess', {
+      hook_event_name: 'UserPromptSubmit',
+      prompt,
+    })[0]
+  const padded = render('  do the thing \n')
+  const bare = render('do the thing')
+  const parted = render([{ type: 'text', text: 'do the thing' }])
+  check('a padded string renders trimmed', padded?.content === 'do the thing', `content=${JSON.stringify(padded?.content)}`)
+  check(
+    'padded and bare strings hash identically',
+    !!padded?.eventId && padded?.eventId === bare?.eventId,
+    `${padded?.eventId} vs ${bare?.eventId}`
+  )
+  check(
+    'string and content-part renderings hash identically',
+    !!parted?.eventId && parted?.eventId === bare?.eventId,
+    `${parted?.eventId} vs ${bare?.eventId}`
+  )
 }
 
 console.log('\n— Stop carries no reply (kimi 0.34) —')
