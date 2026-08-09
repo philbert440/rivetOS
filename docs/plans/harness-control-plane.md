@@ -695,12 +695,79 @@ against a fake.
 - [ ] **Hermes driver:** same; memory/den already exist (`hermes:…`)
 - [x] **Kimi den hooks:** `integrations/kimi/rivet-den` streams kimi-code sessions into a den under the canonical `kimi-code:<native>` — the same key capture writes, so room and conversation join on one identity
 - [ ] **Kimi driver:** the gateway half is still to come; it also has to supply what the hooks cannot — kimi's `Stop` payload carries no assistant reply, so a hook-only kimi den shows prompts, tools and plan but no agent messages. Capture stays as-is (`kimi-code:…`)
-- [ ] Tasks: `harness-session` executors per harness id — includes renaming/aliasing the existing executor agent id `claude-cli` → `claude-code`
+- [x] Tasks: `harness-session` executors per harness id — includes renaming/aliasing the existing executor agent id `claude-cli` → `claude-code`; grok-build/kimi-code/hermes register as explicit rejections, not absences — see As built (per-harness task executors) below
 - [ ] Hermes rotation migrated from close+new-conversation to alias semantics (breaking, see Session identity § Rotation)
 - [x] **Hub chat** binds the harness API (`apps/rivethub-web`) — see below
 - [ ] **Hub:** tasks / dens bind multi-harness API (not Claude-only)
 - [ ] Den: list all harness types under one naming scheme
 - [ ] **Android:** same gateway APIs — full remote parity (no on-device agent loop)
+
+### As built (per-harness task executors)
+
+The task engine's `harness-session` registry is keyed by **harness id**, the
+same `claude-code | grok-build | kimi-code | hermes` vocabulary `SessionId`,
+the driver registry and the gateway already speak. Before this the one CLI
+executor registered under the PROVIDER name `claude-cli`, so a task row and a
+session id disagreed about what to call the same harness.
+
+**The rename.** `ClaudeCliExecutor.name` and its registry target are
+`claude-code`; the plugin, the package (`@rivetos/provider-claude-cli`), the
+config key `providers.claude-cli` and the binary probe are untouched — the
+provider really is "the claude-cli provider", and only the harness it executes
+was misnamed. `claude-cli` stays accepted as a **deprecated executor target**
+for one window, canonicalized on both `register` and `resolve` with a
+warn-once-per-target log, exactly the treatment legacy session keys get: rows
+queued before the rename still resolve, nothing writes it, and the alias comes
+out once no queued task names it. Aliasing is scoped to `harness-session` —
+`chat-loop` and `mesh` targets are free-form and pass through untouched.
+
+**Registrations are honest, not aspirational.** Only `claude-code` has
+node-side headless spawn machinery in this repo: the grok integration here
+drives an interactive PTY (term manager `--session-id`/`--resume`, hook-fed
+capture) and kimi is hooks plus capture with a `Stop` payload that carries no
+assistant reply. Rather than invent headless drivers, every harness id without
+one registers an explicit rejecting executor — including `claude-code` itself
+when the `claude` binary probe fails, in which case the reason is the probe's
+own ("binary not resolvable", "provider package did not load") rather than the
+generic recorded gap. A task aimed at one resolves (never rejects) with verdict
+`failed` and the typed `capability_unsupported` code plus that reason, where
+before it hit the runner's anonymous `executor_not_registered` and told an
+operator nothing about whether the harness is unsupported, uninstalled or
+misspelled. `steer` is the one method that throws the typed error: steering
+something that never started is a caller bug.
+
+**Where a real grok executor should start.** Not the PTY, and not grok's
+headless streaming-json (thought/text/end only): **ACP — `grok agent stdio`**,
+which streams `tool_call`/`tool_call_update` and thought chunks and returns
+real token usage on the prompt response, i.e. everything a `HarnessExecutor`
+has to translate into `TaskEvent`s. The one in-repo driver of it today lives in
+the Android bridge rootfs, so ACP is deliberately not wired node-side here; the
+recorded gap names it so the next implementer does not re-derive the choice.
+
+**Discovery.** `TaskExecutorRegistry.harnesses()` returns one row per harness
+id (`registered` / `implemented`) using exact lookups — `resolve`'s kind-level
+fallback would otherwise report every harness as covered the moment one of them
+registered. `GET /api/catalog` carries the same truth per entry: `harness-session`
+rows gain `harnessId` and `implemented`, so a client can grey an option instead
+of offering a trap. Non-harness executors carry neither field.
+
+**Session identity.** The executor now surfaces `claude-code:<native>` on
+`turn.end` rather than the bare uuid, so a task row's `harness_session_ids` are
+canonical `SessionId`s. It adopts rather than pins: there is no `--session-id`
+on this path (every spawn is a one-shot `-p` with `--no-session-persistence`),
+the CLI mints the id and reports it on `system/init`. An id the codec rejects
+passes through verbatim — a non-canonical breadcrumb beats none, and claiming
+canonical form for a malformed id is the lie the codec exists to prevent.
+\#467's task association is unchanged and still carries: `RIVETOS_TASK_ID` on
+the child env, the inherited `RIVETOS_SESSION_KEY` explicitly deleted, no
+write-key override.
+
+The shared executor-conformance suite runs against the renamed executor
+(`runExecutorConformance('claude-code', …)`). The not-implemented executors
+deliberately do not run it — it opens with a success path they can never have —
+so they are pinned by their own tests instead: typed code, resolve-never-reject,
+one error log then a completed iterable, and a runner-level test that a
+`kimi-code` row goes terminal with the reason rather than the anonymous miss.
 
 ### As built (hub chat binding)
 

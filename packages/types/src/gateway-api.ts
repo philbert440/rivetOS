@@ -276,6 +276,14 @@ export interface CatalogExecutorEntry {
   key: string
   capabilities: HarnessExecutorCapabilities
   commands: CatalogCommand[]
+  /** Set for `harness-session` entries: the harness id this executor targets. */
+  harnessId?: HarnessId
+  /**
+   * `false` when the entry is a registered rejection rather than a runnable
+   * harness — the node names the gap instead of hiding it, so a UI can grey
+   * the option. Absent on non-harness executors (always runnable).
+   */
+  implemented?: boolean
 }
 
 export interface CatalogSkillEntry {

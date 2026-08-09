@@ -15,7 +15,9 @@ import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import type { TaskEvent } from '@rivetos/types'
 import {
+  canonicalClaudeSessionId,
   ClaudeCliExecutor,
+  CLAUDE_HARNESS_ID,
   parseTaskResultBlock,
   parseTaskResultJson,
   renderResumeTranscript,
@@ -145,7 +147,7 @@ async function drain(events: AsyncIterable<TaskEvent>): Promise<TaskEvent[]> {
 // Shared conformance suite
 // ---------------------------------------------------------------------------
 
-runExecutorConformance('claude-cli', {
+runExecutorConformance('claude-code', {
   makeSuccess: () => ({
     executor: makeExecutor(makeFakeClaude(successLines('All done.')).binary),
     spec: makeConformanceSpec(),
@@ -192,7 +194,8 @@ describe('ClaudeCliExecutor', () => {
 
     const turnEnd = events.find((e) => e.type === 'turn.end')
     expect(turnEnd).toMatchObject({
-      harnessSessionId: SESSION,
+      // Canonical SessionId, not the bare native uuid the CLI reported.
+      harnessSessionId: `claude-code:${SESSION}`,
       usage: { inputTokens: 100, outputTokens: 25, totalTokens: 125, costUsd: 0.0123, turns: 1 },
     })
 
@@ -202,6 +205,22 @@ describe('ClaudeCliExecutor', () => {
     expect(den).toContainEqual({ type: 'tool.end', tool: 'Bash' })
 
     expect(result.usage.costUsd).toBeCloseTo(0.0123)
+  })
+
+  it('registers under the harness id, not the provider name', () => {
+    // Phase 3 rename: the plugin is claude-cli, the harness is claude-code.
+    expect(CLAUDE_HARNESS_ID).toBe('claude-code')
+    expect(makeExecutor('claude').name).toBe('claude-code')
+  })
+
+  it('canonicalizes native session ids, and only when it honestly can', () => {
+    expect(canonicalClaudeSessionId('abc-123')).toBe('claude-code:abc-123')
+    // Already canonical → untouched (no double-prefixing).
+    expect(canonicalClaudeSessionId('claude-code:abc-123')).toBe('claude-code:abc-123')
+    // Unusable ids stay verbatim rather than being dressed up as canonical.
+    expect(canonicalClaudeSessionId(' padded ')).toBe(' padded ')
+    expect(canonicalClaudeSessionId('')).toBeUndefined()
+    expect(canonicalClaudeSessionId(undefined)).toBeUndefined()
   })
 
   it('passes model/effort through as --model/--effort flags', async () => {
