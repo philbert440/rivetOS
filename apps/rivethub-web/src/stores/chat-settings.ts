@@ -34,6 +34,10 @@ interface SettingsState {
   byKey: Record<string, ChatSettings | undefined>
   get: (key: string) => ChatSettings
   set: (key: string, patch: Partial<ChatSettings>) => void
+  /** Drop a key outright — the migration half that `set` cannot express, so a
+   *  rekeyed thread leaves nothing behind for a later key reuse to resurrect
+   *  through the read fallback. Mirrors session-names' empty-string clear. */
+  clear: (key: string) => void
 }
 
 export const useChatSettings = create<SettingsState>((set, getState) => ({
@@ -53,6 +57,18 @@ export const useChatSettings = create<SettingsState>((set, getState) => ({
         localStorage.setItem(KEY, JSON.stringify(next))
       } catch {
         // storage full / disabled — keep the in-memory value, lose persistence
+      }
+      return { byKey: next }
+    }),
+
+  clear: (key) =>
+    set((s) => {
+      if (!(key in s.byKey)) return s
+      const next = Object.fromEntries(Object.entries(s.byKey).filter(([k]) => k !== key))
+      try {
+        localStorage.setItem(KEY, JSON.stringify(next))
+      } catch {
+        /* storage full/disabled — keep in-memory */
       }
       return { byKey: next }
     }),

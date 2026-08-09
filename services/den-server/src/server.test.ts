@@ -455,6 +455,64 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     )
   })
 
+  it('the transcript route decodes an encoded canonical id and echoes it', async () => {
+    // The doc table advertises this surface as canonical-capable, but the
+    // canonical shape only survives the URL as `%3A` — an undecoded segment
+    // would reach denSessionRef unparseable and silently answer empty.
+    const home = mkdtempSync(join(tmpdir(), 'den-tx-http-'))
+    dirs.push(home)
+    const id = 'a1b2c3d4-1111-4222-8333-444455556666'
+    const slug = join(home, 'projects', '-home-rivet')
+    mkdirSync(slug, { recursive: true })
+    writeFileSync(
+      join(slug, `${id}.jsonl`),
+      JSON.stringify({ type: 'user', message: { content: 'over http' } }) + '\n',
+    )
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = home
+    try {
+      const { base } = await start('', 60_000, { term: true })
+      const canonical = `claude-code:${id}`
+      const res = await fetch(
+        `${base}/term/harness-sessions/${encodeURIComponent(canonical)}/transcript`,
+      )
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { id: string; command: string; turns: { text: string }[] }
+      expect(body.command).toBe('claude')
+      expect(body.turns.map((t) => t.text)).toEqual(['over http'])
+      expect(body.id).toBe(canonical) // echoed as asked, not as the room key
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+    }
+  })
+
+  it('non-session room keys survive every flipped edge byte-exact', async () => {
+    // The den's key space is not all sessions: `task:<id>` is the task
+    // engine's namespace and `den-pty-…` is an unpinned PTY's synthetic room.
+    // Unit tests pin the passthrough; this pins the HTTP/WS wiring around it.
+    const { base } = await start('', 60_000, { term: true })
+    for (const room of ['task:9f2c', 'den-pty-1a2b3c4d', 'unknown-4211']) {
+      await post(base, '/event', { ...EV, session: room, title: `title-${room}` })
+      const st = (await (
+        await fetch(`${base}/state?session=${encodeURIComponent(room)}`)
+      ).json()) as { session: string; state: { title: string } }
+      expect(st.session).toBe(room)
+      expect(st.state.title).toBe(`title-${room}`)
+
+      const { sessions } = (await (await fetch(`${base}/sessions`)).json()) as {
+        sessions: { id: string }[]
+      }
+      expect(sessions.some((s) => s.id === room)).toBe(true)
+
+      // …and DELETE addresses the same literal room
+      expect(
+        (await fetch(`${base}/session?session=${encodeURIComponent(room)}`, { method: 'DELETE' }))
+          .status,
+      ).toBe(200)
+    }
+  })
+
   it('GET /state resolves a canonical id and echoes it back verbatim', async () => {
     // Echo-as-asked, matching the transcript read and the transcript watch: a
     // client keyed on canonical SessionIds has to be able to correlate the

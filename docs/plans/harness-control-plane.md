@@ -1319,8 +1319,41 @@ nothing is dual-written:
 | `GET /state` | canonical → room, **echoes the requested id** |
 | `GET /term/harness-sessions/:id/transcript` | reads the named store, **echoes the requested id** so the client can match it to its thread |
 | Transcript watch (`watch`/`unwatch`/`sync` on `WS /api/sessions/ws`) | subscription key is the client's id verbatim; only the store lookup resolves. Frames come back under the key that was watched |
-| `GET /api/sessions/:id/messages` | alias read: a canonical id with no ring of its own falls back to the native half rather than minting an empty session |
+| `GET /api/sessions/:id/messages` | alias read, and **non-allocating**: the ring is get-or-create everywhere else, so a canonical read that minted an entry would make that key authoritative forever and permanently shadow the native history behind an empty ring — the hub's cold-open ordering (`storeEmpty` fires the backfill before the first bridge frame) hits that every time |
+| `POST /api/sessions/:id/messages`, `submitTurn` | one key for the whole turn — `channelId`, the ring append, the long-poll waiter and the error reply. A canonical id joins the legacy bare-keyed ring instead of forking a split-brain second transcript; a session nobody has seen opens its own (writes may allocate, reads may not). The OpenAI-compat surface goes through the same resolution — it is the same ring by another door |
+
+Reads and writes share ONE resolution rule (`ringKeyFor`): own non-empty →
+alias non-empty → own. Presence is deliberately not the test. An empty own
+entry losing to a non-empty alias is what keeps the two sides from disagreeing:
+a phantom `{ ring: [] }` under a canonical key — left by a pre-fix build, or by
+a write that allocated before the den session existed — would otherwise
+self-heal on read and then take the next write, flipping every later read from
+the full history to a one-message ring. Serving the alias past an empty own
+entry also drops the phantom, so `GET /api/sessions` stops advertising a
+session with no messages. No current code path can mint an empty entry (every
+`session()` caller pushes in the same synchronous call), so that branch is
+belt-and-braces for state an older build already produced.
+
+**Known residual — a canonical write that precedes its den session.** If a
+client POSTs a canonical id when NEITHER ring exists, the write allocates
+under the canonical key (correctly — nothing else exists to join). Should the
+den later run that session, the bridge files its frames under the bare room
+key, and both rings end up non-empty: a stable split, with real turns on each
+side, invisible to the other. It is not reachable from hub chat, whose send
+path injects into the PTY rather than posting, and needs an API client that
+both names a canonical session and has the den start it afterwards. Folding
+the canonical ring into the native one on the bridge's first frame was
+considered and rejected: an in-flight `?wait=1` turn has its `channelId` and
+its waiter already resolved, so the fold would have to re-resolve mid-turn and
+`submitTurn`'s user-message lookup would chase a ring that moved underneath
+it. The residual is cheaper than that machinery.
 | `GET /api/conversations/:key/messages` | alias read: capture files a den-spawned harness under the bare key it inherited via `RIVETOS_SESSION_KEY`, so a canonical ask with no rows retries native. No rewrite — the alias covers the read forever |
+
+Both gateway alias reads go through `bareAliasOf`, which replicates
+`collapsePathFallback` rather than importing it — `@rivetos/core` must not
+depend on den-server, and the conversations store legitimately holds
+path-form keys (§ Legacy keys row 2), so the two implementations agreeing on
+that shape is load-bearing. They share a test vector in both directions.
 
 **What stays bare, and why (precedence).** A `draft` has no harness yet: its id
 is a locally minted uuid the first spawn pins, and there is nothing to
@@ -1332,26 +1365,79 @@ material. With all four drivers registered every on-disk row IS claimed, so
 not the normal one. The drawer union still joins on the NATIVE id, because
 that is the only field the two lists share.
 
-**Back-compat.** `findChatItem` matches a selection by key first and by native
-half second, so a pre-canonical selection, a draft the plane just adopted, and
-a rotation all still land on their row. `useChat.rekey(from, to)` then moves
-the thread's state — transcript, inject queue, live turn, approvals, the
-transcript subscription — onto the new key rather than stranding it, which
-also fixes rotation, where the drawer key used to change under a live
-conversation with nothing following it. When the destination already holds a
-transcript `rekey` leaves both sets of records alone rather than merge them —
-but it still moves `active` and `opened`, because the send path keys on the
-active id and the effect that called it does not re-fire, so a selection left
-on the retired key would queue every later turn under an id no row carries.
+**Back-compat, and following an identity change.** `findChatItem` matches a
+selection by key first and by native half second, so a pre-canonical
+selection, a pasted uuid, and a draft the plane just adopted all still land on
+their row. `useChat.rekey(from, to)` then moves the thread's state —
+transcript, inject queue, live turn, approvals — onto the new key rather than
+stranding it.
+
+Rotation cannot be discovered that way: it replaces the native half outright,
+so no matching on the drawer row can connect the old key to the new one. It is
+driven by the registry stream instead, which is the only place both halves are
+known — `useChat.adoptSessionKey(sessionId, previousSessionId)` runs on every
+`session-created` / `session-updated`, following a rotation by its announced
+predecessor and an adoption by native half. It sweeps every OPENED thread, not
+just the active one: a background draft left in `opened` under its bare id
+keeps catching bridge frames onto records no drawer row renders. The
+`activeItem` effect stays as reconciliation for an adoption the stream did not
+deliver (missed event, no registry stream, plane refetch first).
+
+The sweep only claims BARE keys, and that restriction is load-bearing. Two
+canonical threads can share a native half across stores (`claude-code:U` and
+`grok-build:U` — the collision `ownerKey` ranks for), and a `session-created`
+for one of them is not a claim on the other: folding grok's live transcript,
+inject queue and selection onto claude would go dark on a conversation the
+user is sitting in, and migrate its persisted name too. A canonical
+predecessor is retired only when the control plane names it explicitly via
+`previousSessionId`.
+
+When the destination already holds a transcript `rekey` leaves both sets of
+records alone rather than merge them — but it still moves `active` / `opened`
+/ `drafts`, because the send path keys on the active id and the effect that
+called it does not re-fire, so a selection left on the retired key would queue
+every later turn under an id no row carries. It returns whether records moved,
+and only a real move migrates persisted state: copying a retired thread's
+custom name onto a different surviving session is exactly wrong at the moment
+the code decided the two must not merge.
+
+Transcript subscriptions are refcounted server-side per socket, so ownership
+is explicit: `watchTranscript` is idempotent per key (a remount, or
+StrictMode's double effect, must not take a second ref the single unmount
+never returns), `unwatchTranscript` releases once, and `rekey` releases the
+retired key without subscribing the new one — the remounted view owns that,
+and a control-plane-bound thread needs no store watch at all.
+
 Persisted client state (`sessionNames`, `chatSettings`) migrates lazily: the
 read falls back to the pre-canonical key and the next write lands on the new
-one.
+one. A migration clears BOTH stores at the old key, so a later key reuse
+cannot resurrect half a thread's settings through that fallback.
 
 **The one projection.** The den viewer iframe's `?session=` is the only
 hub→id handoff that does not pass through a den-server edge — the viewer
 bundle matches it against the room keys in its own snapshot — so the hub
 projects it with `denRoomKey()`. Documented rather than hidden: it is a
 boundary onto the den's key space, not a second key for the thread.
+
+Two behavior changes worth stating rather than guarding:
+
+- **`<harness-id>:<x>` is now reserved for session ids.** Resolution at the den
+  edges is unconditional, so a hand-rolled room literally named `hermes:ops`
+  resolves to room `ops` instead of addressing itself. Every key shape the den
+  mints for itself (`den-pty-…`, `unknown-<ppid>`, uuids, `task:<id>`) is
+  unaffected and covered by tests. Probing for room existence before resolving
+  would make each edge's behavior depend on live den state — a worse trade
+  than reserving a four-token prefix nothing should have been squatting on.
+- **`POST /term` does not reject a `command` that disagrees with a canonical
+  `session`.** `{ command: 'grok', session: 'claude-code:<uuid>' }` spawns grok
+  in room `<uuid>`, after which canonical reads of `claude-code:<uuid>`
+  correctly find nothing. Rejecting it would also reject two legitimate
+  callers: the hub's API-only-agent fallback, which retries `termSpawn` with no
+  `command` at all and gets the roster default, and a drawer row whose roster
+  token came from a legacy-scan row that collided on the native id. The
+  cross-wire is already self-announcing — the named store is empty — so the
+  rule is stated, not enforced: the caller owns keeping `command` and a
+  canonical `session` consistent.
 
 Deferred, precisely:
 

@@ -18,6 +18,15 @@
  * neither shape (`den-pty-1a2b3c4d` for an unpinned PTY, `unknown-<ppid>`
  * from an old translator, an operator's hand-rolled room, `task:<id>` from
  * the task engine). Those are their own key space and pass through untouched.
+ *
+ * The one exception, and it is a deliberate reservation rather than an
+ * oversight: resolution is unconditional, so a hand-rolled room whose name
+ * happens to sit in the harness-id namespace — literally `hermes:ops` — now
+ * resolves to room `ops` at every flipped edge instead of addressing itself.
+ * `<harness-id>:<x>` is reserved for session ids; an operator room must not
+ * use it. Probing for room existence before resolving would make every edge's
+ * behavior depend on live den state, which is a worse trade than reserving a
+ * four-token prefix nobody should have been squatting on.
  */
 
 import { parseSessionId, type HarnessId } from '@rivetos/types'
@@ -69,15 +78,18 @@ export interface DenSessionRef {
  * an unknown id as "no such session", not to 400 on it.
  */
 export function denSessionRef(raw: string): DenSessionRef {
-  let normalized: ReturnType<typeof normalizeSessionId>
   try {
-    normalized = normalizeSessionId(raw)
+    const normalized = normalizeSessionId(raw)
+    if (normalized.kind === 'bare') return { native: normalized.nativeSessionId }
+    // Inside the try on purpose: `normalizeSessionId` already guarantees a
+    // parseable SessionId on this branch, but these are HTTP/WS edges and a
+    // throw here would be a 500 where the contract says "unknown session".
+    // If that coupling ever weakens, junk falls through to passthrough.
+    const { harnessId, nativeSessionId } = parseSessionId(normalized.sessionId)
+    return { native: nativeSessionId, command: STORE_COMMAND[harnessId] }
   } catch {
     return { native: raw }
   }
-  if (normalized.kind === 'bare') return { native: normalized.nativeSessionId }
-  const { harnessId, nativeSessionId } = parseSessionId(normalized.sessionId)
-  return { native: nativeSessionId, command: STORE_COMMAND[harnessId] }
 }
 
 /**

@@ -106,6 +106,36 @@ describe('createTranscriptWatcher', () => {
     expect(delta.turns.map((t) => t.text)).toEqual(['hi'])
   })
 
+  it("watches Claude's path-fallback key instead of silently ignoring it", async () => {
+    // The `/` and `..` screen has to run on the RESOLVED native id: the store
+    // readers accept `claude-code:<slug>/<uuid>` and collapse it to the uuid,
+    // so screening the raw string would drop a subscription the readers would
+    // have served — with no snapshot and no error to notice it by.
+    const { dir } = claudeStore()
+    const native = 'aaaaaaaa-0000-0000-0000-00000000000d'
+    const pathForm = `claude-code:-home-rivet/${native}`
+    writeFileSync(join(dir, `${native}.jsonl`), userLine('path form'))
+
+    const frames: SessionWsFrame[] = []
+    watcher = createTranscriptWatcher((f) => frames.push(f), FAST)
+    watcher.watch(pathForm)
+
+    const snap = await until(() => transcripts(frames).find((f) => f.from === 0))
+    expect(snap.session).toBe(pathForm) // verbatim echo, as watched
+    expect(snap.command).toBe('claude')
+    expect(snap.turns.map((t) => t.text)).toEqual(['path form'])
+  })
+
+  it('still refuses a traversal attempt in the resolved native id', async () => {
+    claudeStore()
+    const frames: SessionWsFrame[] = []
+    watcher = createTranscriptWatcher((f) => frames.push(f), FAST)
+    watcher.watch('claude-code:../../etc/passwd')
+    watcher.watch('../../etc/passwd')
+    await new Promise((r) => setTimeout(r, 120))
+    expect(transcripts(frames)).toHaveLength(0)
+  })
+
   it('mid-turn growth restates the in-flight assistant turn, not the prefix', async () => {
     const { dir } = claudeStore()
     const id = 'aaaaaaaa-0000-0000-0000-000000000002'
