@@ -137,7 +137,24 @@ function announcedNative(ev: DenAgentEventLike): string | undefined {
 }
 
 export class KimiCodeDriver extends PtyHarnessDriver<KimiStoreHost> {
-  /** den room key → the kimi session currently running in it. */
+  /**
+   * den room key → the kimi session currently running in it.
+   *
+   * EXTRACTION POINT: this room ↔ native pair, and the `nativeFor` / `room` /
+   * `ownsEvent` / `bindRoom` shape around it, is copy TWO of
+   * `hermes-driver.ts`. Deliberately not extracted yet, under this plan's own
+   * rule — the `PtyHarnessDriver` base was pulled out at driver THREE so the
+   * shape had three data points to be sure of, and an adopting-driver base
+   * drawn from two would be guessing at which parts are general. A THIRD
+   * adopting driver is the trigger: extract then, taking the room map and the
+   * adopt-vs-rotate decision in `bindRoom` with it. The same note sits on
+   * hermes's copy, so whichever file the next author opens says so.
+   *
+   * What is NOT shared, and would have to survive any extraction: kimi accepts
+   * a canonical `kimi-code:<native>` ROOM KEY as an id announcement (hermes has
+   * no such path), and what a changed room MEANS differs — hermes switches
+   * session inside one process, kimi never does. See `bindRoom` below.
+   */
   private readonly roomNative = new Map<string, string>()
   /** The inverse — which room a native id is live in. See `room()`. */
   private readonly nativeRoom = new Map<string, string>()

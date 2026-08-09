@@ -444,8 +444,36 @@ function kimiTime(v: unknown): number {
 }
 
 /**
+ * How far into `wire.jsonl` to look for the opening human turn.
+ *
+ * The fixed 64K head the Claude reader uses is nowhere near enough here, and
+ * the reason is structural rather than bad luck: kimi's transcript opens with a
+ * `config.update` carrying the whole system prompt, and on a session started
+ * from a large pasted prompt the `turn.prompt` echo of that prompt runs to
+ * six figures on its own. Measured across a real 55-session store, the first
+ * human turn sits at:
+ *
+ *   | window | sessions covered |
+ *   |--------|------------------|
+ *   | 64K    | 37 / 54          |
+ *   | 256K   | 53 / 54          |
+ *   | 512K   | 54 / 54          |
+ *
+ * (the 55th has no human turn at all). A 64K bound would therefore label
+ * roughly a THIRD of the drawer with the raw session id.
+ *
+ * 1 MiB is the bound, with a real early exit: the scan stops at the first human
+ * turn, so the 37 sessions that answer inside 64K still cost one 64K read. Over
+ * that whole store a full drawer list reads 5.0 MB rather than the 23 MB the
+ * files total — and only 1.5 MB more than the 64K-per-session version that got
+ * a third of the answers wrong.
+ */
+const KIMI_TITLE_SCAN_MAX_BYTES = 1024 * 1024
+const KIMI_TITLE_CHUNK_BYTES = 64 * 1024
+
+/**
  * First user prompt out of a session's main-agent `wire.jsonl`, for the drawer
- * label. Bounded 64K head read, the same idiom as `sessionTitle`.
+ * label.
  *
  * Needed because the two state shapes disagree about titles too: the v1 store
  * carries `title` + `lastPrompt`, and the v2 store carries NEITHER — the newer
@@ -460,25 +488,36 @@ async function kimiWireTitle(wireFile: string): Promise<string> {
     return ''
   }
   try {
-    const buf = Buffer.alloc(64 * 1024)
-    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
-    for (const line of buf.subarray(0, bytesRead).toString('utf8').split('\n')) {
-      const t = line.trim()
-      if (!t.startsWith('{')) continue
-      let d: Record<string, unknown>
-      try {
-        d = JSON.parse(t) as Record<string, unknown>
-      } catch {
-        continue // truncated final line in the 64K window
+    const buf = Buffer.alloc(KIMI_TITLE_CHUNK_BYTES)
+    let carry = ''
+    let offset = 0
+    while (offset < KIMI_TITLE_SCAN_MAX_BYTES) {
+      const { bytesRead } = await fh.read(buf, 0, buf.length, offset)
+      if (bytesRead === 0) break
+      offset += bytesRead
+      carry += buf.subarray(0, bytesRead).toString('utf8')
+      // Keep the trailing fragment for the next chunk — a wire line can be
+      // hundreds of KB, so a line is regularly longer than a read.
+      const lines = carry.split('\n')
+      carry = lines.pop() ?? ''
+      for (const line of lines) {
+        const t = line.trim()
+        if (!t.startsWith('{')) continue
+        let d: Record<string, unknown>
+        try {
+          d = JSON.parse(t) as Record<string, unknown>
+        } catch {
+          continue
+        }
+        if (d.type !== 'context.append_message') continue
+        const msg = d.message as { content?: unknown; origin?: { kind?: unknown } } | undefined
+        // Only a HUMAN turn: kimi injects permission banners and todo reminders
+        // as user-role messages with `origin.kind: 'injection'`, and one of
+        // those as a drawer label would be worse than the raw id.
+        if (msg?.origin?.kind !== 'user') continue
+        const text = extractTurnText(msg.content, 'user')
+        if (text) return text.slice(0, 120)
       }
-      if (d.type !== 'context.append_message') continue
-      const msg = d.message as { content?: unknown; origin?: { kind?: unknown } } | undefined
-      // Only a HUMAN turn: kimi injects permission banners and todo reminders
-      // as user-role messages with `origin.kind: 'injection'`, and one of those
-      // as a drawer label would be worse than the raw id.
-      if (msg?.origin?.kind !== 'user') continue
-      const text = extractTurnText(msg.content, 'user')
-      if (text) return text.slice(0, 120)
     }
   } finally {
     await fh.close()

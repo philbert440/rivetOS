@@ -114,7 +114,19 @@ function announcedNative(ev: DenAgentEventLike): string | undefined {
 }
 
 export class HermesDriver extends PtyHarnessDriver<HermesStoreHost> {
-  /** den room key → the hermes session currently running in it. */
+  /**
+   * den room key → the hermes session currently running in it.
+   *
+   * EXTRACTION POINT: `kimi-code` is the second driver that cannot pin an id
+   * and therefore keeps this same room ↔ native pair, plus the same
+   * `nativeFor` / `room` / `ownsEvent` / `bindRoom` shape around it. Two is a
+   * deliberate duplicate under this plan's own rule — the `PtyHarnessDriver`
+   * base was extracted at driver THREE precisely so the shape had three data
+   * points to be sure of. A THIRD adopting driver is the trigger: extract the
+   * room map (and the adopt-vs-rotate decision in `bindRoom`) into a shared
+   * intermediate then, not before. See `kimi-driver.ts` for the twin, and for
+   * the two places kimi genuinely diverges.
+   */
   private readonly roomNative = new Map<string, string>()
   /** The inverse — which room a native id is live in. See `room()`. */
   private readonly nativeRoom = new Map<string, string>()
@@ -154,8 +166,9 @@ export class HermesDriver extends PtyHarnessDriver<HermesStoreHost> {
   /**
    * Resuming binds the den room key TO the native id (`hermes --resume <id>` in
    * a room named `<id>`), which is the one case where hermes's two ids
-   * coincide. Recorded before the spawn so the den events that follow map back
-   * to this session immediately.
+   * coincide. The bind happens AFTER the base has checked the store, not
+   * before: binding marks the session live, which would talk the base out of
+   * rejecting an id the harness has never heard of.
    */
   async resumeSession(sessionId: SessionId): Promise<HarnessSessionSummary> {
     // Bind AFTER the base has checked the store: binding marks the session

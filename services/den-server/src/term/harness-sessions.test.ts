@@ -307,6 +307,38 @@ describe('listHarnessSessions', () => {
     expect(sessions[2].title).toBe('review the harness driver')
   })
 
+  it('finds the opening human turn past the old 64K head bound', async () => {
+    // Measured on a real 55-session store: a 64K window finds the first human
+    // turn in only 37 of 54, because kimi's transcript opens with a
+    // `config.update` carrying the whole system prompt and, on a session
+    // started from a large pasted prompt, a `turn.prompt` echo of it. A third
+    // of the drawer would be labelled with the raw session id.
+    const { home } = fakeKimiStore()
+    const id = 'session_55555555-5555-4555-8555-555555555555'
+    const dir = join(home, 'sessions', 'wd_rivet_abc123', id)
+    mkdirSync(join(dir, 'agents', 'main'), { recursive: true })
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({ id, version: 2, createdAt: 9, updatedAt: 9 }))
+    writeFileSync(
+      join(dir, 'agents', 'main', 'wire.jsonl'),
+      [
+        // one record far larger than a single chunk read, so this also pins
+        // that a line spanning chunk boundaries is reassembled rather than
+        // split into two unparseable halves
+        JSON.stringify({ type: 'config.update', systemPrompt: 'x'.repeat(200_000) }),
+        JSON.stringify({ type: 'turn.prompt', input: [{ type: 'text', text: 'y'.repeat(50_000) }] }),
+        JSON.stringify({
+          type: 'context.append_message',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'deep opening turn' }],
+            origin: { kind: 'user' },
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    expect((await describeKimiSession(id))?.title).toBe('deep opening turn')
+  })
+
   it('agrees with describeKimiSession on the same session', async () => {
     const { v1, v2 } = fakeKimiStore()
     const listed = await listHarnessSessions(['kimi'])

@@ -672,7 +672,13 @@ Where it is NOT hermes:
   runs a 0.34 npm install alongside a 0.26 standalone binary). The reader parses
   either, takes the session id from the DIRECTORY NAME (the only field both
   shapes have), and falls back to the transcript's opening human turn for a
-  title, because the v2 shape carries none.
+  title, because the v2 shape carries none. That fallback scans up to 1 MiB
+  with an early exit rather than the fixed 64K head the Claude reader uses:
+  kimi's transcript opens with a `config.update` carrying the whole system
+  prompt, so measured across a real 55-session store the first human turn is
+  inside 64K for only 37 of 54 — a 64K bound would label a third of the drawer
+  with the raw session id. Early exit keeps those 37 at one 64K read, and a
+  full list of that store reads 5.0 MB against 23 MB of files.
 - **A real `isError` on the transcript.** `readKimiTranscript` folds
   `agents/main/wire.jsonl` — kimi's agent-loop event log — into turns:
   `context.append_message` with `origin.kind: 'user'` is a human turn,
