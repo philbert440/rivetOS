@@ -1,4 +1,4 @@
-// Contract tests for the shared `PtyHarnessDriver` base, run against ALL THREE
+// Contract tests for the shared `PtyHarnessDriver` base, run against ALL FOUR
 // real drivers rather than a stand-in subclass — the point is that every driver
 // inherits the behaviour, so every driver is asserted.
 //
@@ -13,11 +13,14 @@ import type { HarnessSession } from '../term/harness-sessions.js'
 import { ClaudeCodeDriver } from './claude-driver.js'
 import { GrokBuildDriver } from './grok-driver.js'
 import { HermesDriver } from './hermes-driver.js'
+import { KimiCodeDriver } from './kimi-driver.js'
 import type { HarnessPtyHost, PtyHarnessDriver } from './pty-harness-driver.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
 /** hermes mints its own, and they are not uuids. */
 const HERMES_NATIVE = '20260802_225647_6ad0b9'
+/** kimi's are uuid-class, behind a fixed `session_` prefix. */
+const KIMI_NATIVE = 'session_89965427-b96f-4d5e-8ad5-c3dd138e33dc'
 
 interface Injected {
   id: string
@@ -136,6 +139,28 @@ const subjects: [name: string, make: () => Subject][] = [
         injects: pty.injects,
         activate: async () => {
           await driver.resumeSession(HermesDriver.sessionId(HERMES_NATIVE))
+        },
+      }
+    },
+  ],
+  [
+    'kimi-code',
+    (): Subject => {
+      const pty = fakePty()
+      // kimi refuses startSession for the same reason hermes does (no flag to
+      // pin a new session's id), so it too is reached through resume.
+      const store = fakeStore([{ id: KIMI_NATIVE, command: 'kimi', title: 't', updatedAt: 1 }])
+      const driver = new KimiCodeDriver({
+        store,
+        pty: () => Promise.resolve(pty.host),
+        turnQuietMs: 0,
+      })
+      return {
+        driver,
+        sessionId: KimiCodeDriver.sessionId(KIMI_NATIVE),
+        injects: pty.injects,
+        activate: async () => {
+          await driver.resumeSession(KimiCodeDriver.sessionId(KIMI_NATIVE))
         },
       }
     },

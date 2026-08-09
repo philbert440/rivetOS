@@ -171,7 +171,13 @@ describe('term endpoints', () => {
       commands: { id: string; label: string; room: boolean }[]
     }
     expect(body).toMatchObject({ enabled: true, default: 'claude', maxPtys: 4, active: 0 })
-    expect(body.commands.map((c) => c.id).sort()).toEqual(['claude', 'grok', 'hermes', 'shell'])
+    expect(body.commands.map((c) => c.id).sort()).toEqual([
+      'claude',
+      'grok',
+      'hermes',
+      'kimi',
+      'shell',
+    ])
     expect(body.commands.find((c) => c.id === 'shell')).toEqual({
       id: 'shell',
       label: 'Shell',

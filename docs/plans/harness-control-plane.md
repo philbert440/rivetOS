@@ -414,20 +414,21 @@ Two deviations, both because den has no path router to deviate from:
 Capability flags of the built-in drivers, honestly — each is what is ACTUALLY
 wired on the node, never an aspiration:
 
-| Flag | `claude-code` | `grok-build` | `hermes` | Why |
-|------|---------------|--------------|----------|-----|
-| `interrupt` | den terminals enabled | den terminals enabled | den terminals enabled | Esc through the term manager's `inject(..., interrupt)`; no PTY, no interrupt |
-| `resume` | den terminals enabled | den terminals enabled | den terminals enabled | `--resume <id>` through the term manager's spawn-or-get |
-| `approvals` | **false** | **false** | **false** | All three surface permission prompts inside their own TUI; the den wire carries neither a request nor a decision channel. `resolveApproval` → 501. (A hermes shell hook *can* block a tool call, but that is a policy verdict computed on the node, not a request for a human decision) |
-| `liveStream` | den event tap present | den event tap present | den event tap present | The driver's only live source is den AgentEvent ingest |
-| `listSessions` | true | true | true | A store scan: `~/.claude/projects` / `~/.grok/sessions` / `~/.hermes/state.db` |
+| Flag | `claude-code` | `grok-build` | `hermes` | `kimi-code` | Why |
+|------|---------------|--------------|----------|-------------|-----|
+| `interrupt` | den terminals enabled | den terminals enabled | den terminals enabled | den terminals enabled | Esc through the term manager's `inject(..., interrupt)`; no PTY, no interrupt. Esc is each TUI's own cancel key — kimi documents it as "Close dialogs / interrupt streaming" |
+| `resume` | den terminals enabled | den terminals enabled | den terminals enabled | den terminals enabled | The harness's resume flag through the term manager's spawn-or-get: `--resume <id>` for the first three, `--session <id>` for kimi |
+| `approvals` | **false** | **false** | **false** | **false** | All four surface permission prompts inside their own TUI; the den wire carries neither a request nor a decision channel. `resolveApproval` → 501. (A hermes shell hook *can* block a tool call, but that is a policy verdict computed on the node, not a request for a human decision. kimi's `PermissionRequest`/`PermissionResult` hooks are deliberately unmapped for the same reason) |
+| `liveStream` | den event tap present | den event tap present | den event tap present | den event tap present | The driver's only live source is den AgentEvent ingest. Honest but uneven in what it can carry: kimi's hooks give it no assistant text and no thinking, so its stream is lifecycle + tools + turn boundaries (see As built (kimi-code)) |
+| `listSessions` | true | true | true | true | A store scan: `~/.claude/projects` / `~/.grok/sessions` / `~/.hermes/state.db` / `~/.kimi-code/sessions` |
 
-All three reject `cwd`/`model` on `startSession` (roster-owned) and attachments
+All four reject `cwd`/`model` on `startSession` (roster-owned) and attachments
 on `sendUserTurn`, with `capability_unsupported` rather than ignoring them
 silently. The attachment rejection stands even now that staging exists — a PTY
-paste has no way to hand a file to a TUI; see below. `hermes` additionally
-rejects `startSession` outright — it has no flag to pin a new session's id, so
-the control plane cannot name the session it would be starting.
+paste has no way to hand a file to a TUI; see below. `hermes` and `kimi-code`
+additionally reject `startSession` outright — neither has a flag to pin a new
+session's id, so the control plane cannot name the session it would be
+starting.
 
 ### As built (`grok-build` driver)
 
@@ -629,6 +630,107 @@ new key. Under alias semantics both keys are one chain, so this is a cosmetic
 misordering within one thread — strictly better than the old behaviour, where
 the same turn landed in a conversation that had just been closed.
 
+### As built (`kimi-code` driver) — the fourth, and the honest-gap one
+
+`services/den-server/src/harness/kimi-driver.ts` + `kimi-store.ts`, registered
+at boot beside the other three behind the same gating. It completes the
+four-harness set: `GET /api/harnesses` on a real node now lists `claude-code`,
+`grok-build`, `hermes` and `kimi-code`, all four thin subclasses of
+`PtyHarnessDriver`.
+
+Structurally it is hermes's twin, because the one fact that shaped hermes is
+true of kimi too: **kimi cannot be told what to call a new session.**
+`kimi --help` (0.34.0) offers `-S, --session [id]` and `-c, --continue`, both of
+which reference an EXISTING session — `--session <unknown-id>` fails with
+`Session "…" not found` — and there is no `--session-id`. So `startSession`
+answers `capability_unsupported` (§ Rotation rule 7: a Rivet-only third id the
+harness never adopts is not an option), the den room key is not the native id,
+and the driver adopts sessions off the den stream through a room ↔ native map.
+`kimi-den-hook.mjs` now stamps kimi's own id on every event as `harnessSession`
+— the same optional `AgentEventMeta` field hermes added, reused rather than
+reinvented. Consequently the per-harness task executor for `kimi-code` stays an
+explicit rejection: a task needs a session spawned FOR it.
+
+Where it is NOT hermes:
+
+- **Its natives are `session_<uuid>`.** uuid-class entropy behind a fixed
+  prefix, which is what capture already writes, so namespacing satisfies
+  § Session identity without touching the key. The prefix does mean
+  `isBareNativeUuid` never matches a kimi id, so the registry's bare-uuid probe
+  cannot resolve one and clients must send the canonical form — the right trade
+  at four drivers, where an unprefixed probe would be guessing.
+- **A kimi outside den announces itself through the room key.** With no
+  `RIVET_DEN_SESSION` to pin a room, its hook posts under
+  `kimi-code:session_<uuid>` — the canonical id — so the driver recovers the
+  native from the room itself and adopts the session even from a hook too old to
+  send `harnessSession`. Only that exact shape is read as an id; a room key that
+  merely contains a colon is not.
+- **Two on-disk state shapes, both live.** kimi ≥0.34 writes
+  `state.json` with `"version": 2`, epoch-ms timestamps, an `id` and a `cwd`;
+  an older install writes ISO strings, `workDir`, `title` and `lastPrompt` — and
+  a node with both installed has both in one store (observed on ct116, which
+  runs a 0.34 npm install alongside a 0.26 standalone binary). The reader parses
+  either, takes the session id from the DIRECTORY NAME (the only field both
+  shapes have), and falls back to the transcript's opening human turn for a
+  title, because the v2 shape carries none. That fallback scans up to 1 MiB
+  with an early exit rather than the fixed 64K head the Claude reader uses:
+  kimi's transcript opens with a `config.update` carrying the whole system
+  prompt, so measured across a real 55-session store the first human turn is
+  inside 64K for only 37 of 54 — a 64K bound would label a third of the drawer
+  with the raw session id. Early exit keeps those 37 at one 64K read, and a
+  full list of that store reads 5.0 MB against 23 MB of files.
+- **A real `isError` on the transcript.** `readKimiTranscript` folds
+  `agents/main/wire.jsonl` — kimi's agent-loop event log — into turns:
+  `context.append_message` with `origin.kind: 'user'` is a human turn,
+  `content.part` grows the assistant message (`text`) and its thinking
+  (`think`), `tool.call`/`tool.result` pair by `toolCallId`, and `step.end`
+  carries usage. `tool.result.isError` is recorded, so a resynced kimi
+  transcript reports a failed tool honestly where no den live stream can.
+
+**The gap this driver does not paper over.** kimi's `Stop` hook payload is
+`{ stop_hook_active }` — no reply text — and no kimi hook is given thinking
+text at all, so its den translator emits neither `message.agent` nor
+`thinking.delta`. The driver therefore emits **no `assistant-delta` and no
+`reasoning-delta`**. It could have manufactured a spinner line, as the Claude
+hook does for thinking; it does not, because the node genuinely observed
+nothing. `liveStream` stays honestly true for what the stream does carry —
+session lifecycle, tool calls, turn boundaries — and the assistant/thinking text
+is served by `transcript()`, which reads it out of kimi's own store. The base's
+mapping for both events is unconditional, so the day kimi's hooks learn to send
+them the driver needs no change; `kimi-driver.test.ts` pins both halves of that.
+Streaming the deltas off a transcript watch is the documented follow-up.
+
+**Rotation: kimi never renames its own session.** Verified against 0.34.0
+rather than assumed, because the question was open going in:
+
+| Path | What it actually does | Rotates? |
+|------|-----------------------|----------|
+| `/clear` | `clearContext({ sessionId })` — an RPC scoped to the RUNNING session, appending a `context.clear` record to the same `wire.jsonl` | no |
+| compaction | appends `context.apply_compaction` in place, same transcript | no |
+| `kimi --session <id>` | replays the same session dir under the same id | no |
+| anything else | a native id is minted in exactly one place, `createSession` at process start | no |
+
+What CAN change is which session a den ROOM is running: a room whose PTY was
+reaped and re-spawned fresh holds a different kimi, and the room is the
+conversation every attached client is watching. The driver reports that as a
+rotation — the native id behind this session id has been replaced, which is
+precisely what `previousSessionId` means and precisely what wants an alias, a
+moved tail and a retired predecessor. So `kimi-code` runs
+`runHarnessRotationConformance('kimi-code', …)` against the real driver and a
+real registry (its `emitActivity` is a `tool.start`, not a `message.agent` — the
+suite should be driven by an event this harness really produces), AND pins the
+non-rotation of kimi's own id explicitly, the way `grok-driver.test.ts` does:
+a compaction emits no `previousSessionId`, a restated id is a status update
+rather than a rotation, and a resume keeps the id it was asked for.
+
+**Roster.** `kimi: { label: 'Kimi Code', cmd: ['kimi', '--yolo'], room: true }`,
+and `HARNESS_FLAGS.kimi = { resumeFlag: '--session' }` with no `sessionFlag`.
+`--yolo` auto-approves regular tool calls; kimi's stricter `--auto` is fully
+autonomous and will not ask questions at all. `--yolo` is the default here for
+the same reason hermes uses it — the operator can trade up in `den-term.json`,
+and the shipped roster should not be where a node quietly loses its last "are
+you sure".
+
 ### Attachment staging (`POST /api/uploads`)
 
 `services/den-server/src/harness/uploads.ts`. The contract requires
@@ -823,7 +925,7 @@ the same room, and its `emitActivity()` is a `message.agent` in that room.
 - [x] **Grok Build driver:** promote hooks/capture → gateway stream (`grok-build:…`) — see As built (grok-build) below
 - [x] **Hermes driver:** same; memory/den already exist (`hermes:…`) — see As built (hermes) below
 - [x] **Kimi den hooks:** `integrations/kimi/rivet-den` streams kimi-code sessions into a den under the canonical `kimi-code:<native>` — the same key capture writes, so room and conversation join on one identity
-- [ ] **Kimi driver:** the gateway half is still to come; it also has to supply what the hooks cannot — kimi's `Stop` payload carries no assistant reply, so a hook-only kimi den shows prompts, tools and plan but no agent messages. Capture stays as-is (`kimi-code:…`)
+- [x] **Kimi driver:** the gateway half, completing the four-harness control plane — see As built (kimi-code) below. It supplies what the hooks cannot, but through the store rather than the stream: kimi's `Stop` payload carries no assistant reply and no hook sees thinking, so the driver emits no `assistant-delta`/`reasoning-delta` and serves both out of `transcript()` (`wire.jsonl` `content.part`) instead of inventing them. Capture stays as-is (`kimi-code:…`)
 - [x] Tasks: `harness-session` executors per harness id — includes renaming/aliasing the existing executor agent id `claude-cli` → `claude-code`; grok-build/kimi-code/hermes register as explicit rejections, not absences — see As built (per-harness task executors) below
 - [x] Hermes rotation migrated from close+new-conversation to alias semantics (breaking, see Session identity § Rotation) — driver side and capture side both, see As built (hermes)
 - [x] **Hub chat** binds the harness API (`apps/rivethub-web`) — see below
@@ -910,10 +1012,10 @@ native id rides as a plain segment for the documented legacy shape.
 Hub chat binds **per session, not per app**: a row a registered driver claims
 streams on `WS /api/harness-sessions/ws`, hard-resyncs its transcript on every
 `open` (first connect and reconnect alike — the tail has no replay), and sends
-through `sendUserTurn`; the drawer badges its harness id. Rows no driver claims
-— kimi, until its Phase 3 driver lands — keep the existing gateway
-chat channel binding verbatim, so nothing disappears from the drawer. (As of
-the `hermes` driver, only kimi rows are still unclaimed.) The chat
+through `sendUserTurn`; the drawer badges its harness id. Rows no driver claims keep the
+existing gateway chat channel binding verbatim, so nothing disappears from the
+drawer. (As of the `kimi-code` driver every harness row on a node is claimed;
+the fallback remains for a node whose drivers are disabled.) The chat
 store marks bound sessions so the all-sessions socket stops writing them: the
 same den events reach both surfaces and folding twice would double every delta.
 Interrupt and approvals render only when the driver's flags say so, which for
@@ -1087,7 +1189,7 @@ composer frees and the legacy poll resumes. `./gradlew :app:testPhilDebugUnitTes
 
 ## Definition of done
 
-1. **Node control plane:** four harnesses via `HarnessDriver`, one `SessionId` model, gateway list/start/resume/turn/interrupt/approvals/stream.
+1. **Node control plane:** four harnesses via `HarnessDriver`, one `SessionId` model, gateway list/start/resume/turn/interrupt/approvals/stream. **Driver work complete** as of `kimi-code`: `GET /api/harnesses` lists all four on a real node, each a thin `PtyHarnessDriver` subclass, each with honest flags. Two of the four (`hermes`, `kimi-code`) refuse `start` because their harness has no flag to pin a new session's id — recorded as a harness limitation, not a contract gap.
 2. **Clients:** web + desktop + Android full per-node harness UX on that contract.
 3. **Capture/memory:** all four hosts keyed by canonical `SessionId` (aliases for rotations/legacy).
 4. **Channels:** deprecated in product docs; removed or inert per Phase 5.

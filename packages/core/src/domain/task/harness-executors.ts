@@ -17,8 +17,8 @@
  *
  *   - **Honest not-implemented executors.** grok-build, kimi-code and hermes
  *     cannot spawn a session for a task to run in — the grok driver spawns a
- *     PTY, kimi is hooks-only, and hermes can only ADOPT a session the roster
- *     started (it has no flag to pin a new id) — so their executors are
+ *     PTY, and hermes and kimi-code can only ADOPT a session the roster started
+ *     (neither has a flag to pin a new id) — so their executors are
  *     explicit rejections, not absences. A task aimed at one fails immediately with the typed
  *     `capability_unsupported` code and a message that says what is missing,
  *     rather than the registry's anonymous `executor_not_registered` miss, and
@@ -212,8 +212,10 @@ export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = 
     'streaming-json output, which carries thought/text/end only. It is driven today solely ' +
     'from the Android bridge rootfs, so wiring ACP node-side is the future executor basis',
   'kimi-code':
-    'the Kimi Code integration is hooks + capture only — nothing in this repo spawns ' +
-    'the kimi binary, and its Stop hook carries no assistant reply to parse a result from',
+    'the kimi-code driver cannot START a session for a task to run in: kimi has no flag ' +
+    'to pin a new session id (-S/--session resumes an existing one), so it only ever adopts ' +
+    'sessions the roster spawned. Its Stop hook also carries no assistant reply to parse a ' +
+    'result from — a task result would have to come from the wire.jsonl transcript',
   hermes:
     'the hermes driver cannot START a session for a task to run in: hermes has no flag ' +
     'to pin a new session id, so it only ever adopts sessions the roster spawned ' +
