@@ -89,6 +89,19 @@ export interface AgentEventMeta {
   name?: string
   /** Producing harness. */
   harness?: Harness
+  /**
+   * The harness's OWN session id, when it is not the same string as `session`.
+   *
+   * Claude Code and Grok Build are spawned with `--session-id <den room key>`,
+   * so for them the two ids coincide and this is omitted. Hermes has no flag to
+   * pin a new session's id and mints its own (`20260802_225647_6ad0b9`), so its
+   * hook reports both: `session` stays the den room everything joins on, and
+   * this carries the id the harness store and capture key. It is also the only
+   * place on the wire a session-id ROTATION is observable — the hermes driver
+   * watches this field change within one room (docs/plans/harness-control-plane.md
+   * § Native session id rotation).
+   */
+  harnessSession?: string
   /** Milliseconds since epoch at emit time. */
   ts?: number
 }
@@ -132,6 +145,7 @@ export function parseEvent(raw: unknown): AgentEvent | null {
   // otherwise flow into the recency sort / display untouched
   if (e.name !== undefined && typeof e.name !== 'string') return null
   if (e.harness !== undefined && typeof e.harness !== 'string') return null
+  if (e.harnessSession !== undefined && typeof e.harnessSession !== 'string') return null
   if (e.ts !== undefined && (typeof e.ts !== 'number' || !Number.isFinite(e.ts))) return null
   const str = (k: string) => typeof e[k] === 'string'
   switch (e.type) {

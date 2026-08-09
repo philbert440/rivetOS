@@ -1,0 +1,877 @@
+/**
+ * `PtyHarnessDriver` — the shared half of every HarnessDriver that drives a
+ * TUI harness through the den term manager and watches it through den's
+ * AgentEvent stream.
+ *
+ * This is the rule-of-three extraction the `grok-build` slice deferred
+ * ("extracting a common base is the right move at driver three … when there is
+ * a third data point to shape it", docs/plans/harness-control-plane.md
+ * § As built (grok-build)). `hermes` is that third driver, and the three of
+ * them wrap exactly the same machinery:
+ *
+ *   | Contract method | Machinery                                            |
+ *   |-----------------|------------------------------------------------------|
+ *   | listSessions    | the harness's on-disk store, filtered to its roster key |
+ *   | getSession      | a single-store lookup, or the live map for a fresh spawn |
+ *   | startSession    | term manager `spawn(..., session)`                   |
+ *   | resumeSession   | term manager spawn-or-get → `--resume`               |
+ *   | sendUserTurn    | term manager `inject(pty, text, submit)`             |
+ *   | interrupt       | term manager `inject(pty, '', false, interrupt)` (Esc) |
+ *   | subscribe       | den AgentEvent ingest tap (the harness's den hooks)  |
+ *   | transcript      | a store-scoped transcript reader                     |
+ *
+ * so the state machine over that machinery — the live map, the in-flight turn
+ * lock and its quiet-window failsafe, LIFO tool pairing, status de-duping,
+ * `session-created` announcement, sink fanout — is written once here. What a
+ * subclass supplies is its identity (`harnessId` + roster key), its store
+ * ports, and the handful of places its harness genuinely differs:
+ *
+ *   - **`nativeFor`** — which native session id a den event belongs to.
+ *     Claude and grok pin the harness's native id to the den room key, so the
+ *     room key IS the native id; hermes cannot pin (no `--session-id` flag) and
+ *     maps room → native itself.
+ *   - **`room`** — the inverse: which den room a native id is running in.
+ *   - **`storeExists`** — grok's ground truth is a session DIR that predates
+ *     its `summary.json`; claude's is simply "the store can describe it".
+ *   - **`assertPinnable`** — claude and grok require a uuid because their
+ *     `--session-id` does; a harness with no pinning flag refuses outright.
+ *   - **`rotate`** — emitting `session-updated` with `previousSessionId`. Only
+ *     hermes has an observable rotation; the helper lives here because the
+ *     bookkeeping (carry the live state, retire the old key locally) is
+ *     contract-level rather than harness-level. Note what it deliberately does
+ *     NOT do: re-key subscriber sinks. That is control-plane work
+ *     (`registry.ts` → `rekey`), and a driver that did it too would leave every
+ *     tail attached twice.
+ *
+ * Everything else is identical across the three, including the honest-capability
+ * stance: flags report what is ACTUALLY wired on this node (terminals enabled,
+ * den tap present), `approvals` is false because a TUI's permission prompt
+ * never reaches the den wire, and roster-owned `cwd`/`model` plus attachments
+ * are rejected with `capability_unsupported` rather than silently ignored.
+ *
+ * See docs/plans/harness-control-plane.md.
+ */
+
+import { randomUUID } from 'node:crypto'
+import {
+  HarnessError,
+  formatSessionId,
+  parseSessionId,
+  type HarnessCapabilities,
+  type HarnessDriver,
+  type HarnessEvent,
+  type HarnessId,
+  type HarnessSessionSummary,
+  type HarnessTranscriptTurn,
+  type SessionId,
+  type StartSessionOpts,
+  type UserTurn,
+} from '@rivetos/types'
+import type { HarnessSession } from '../term/harness-sessions.js'
+import { isBareNativeUuid } from './alias.js'
+
+/** The den AgentEvent shape the tap delivers (structurally den-protocol's). */
+export interface DenAgentEventLike {
+  session: string
+  type: string
+  [k: string]: unknown
+}
+
+/** The slice of the den term manager these drivers need. */
+export interface HarnessPtyHost {
+  spawn(
+    rosterKey: string | undefined,
+    cols: number,
+    rows: number,
+    remote: string,
+    session?: string,
+    resume?: string,
+  ): { id: string; denSession: string }
+  ptyForSession(denSession: string): string | undefined
+  inject(id: string, text: string, submit: boolean, interrupt?: boolean): boolean
+}
+
+/** The slice of a harness's on-disk store these drivers need. */
+export interface HarnessStoreHost {
+  list(limit: number): Promise<HarnessSession[]>
+  describe(nativeId: string): Promise<HarnessSession | undefined>
+  transcript(nativeId: string): Promise<{ turns: HarnessTranscriptTurn[] }>
+  /**
+   * Does the harness store already hold this id? Ground truth for the
+   * collision check and for choosing `--resume`. Optional: when store
+   * existence is exactly describability (Claude's single `<uuid>.jsonl`), the
+   * base derives it from `describe` instead.
+   */
+  exists?(nativeId: string): boolean | Promise<boolean>
+}
+
+export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreHost> {
+  store: S
+  /**
+   * Lazily-resolved PTY host. Omit when den terminals are disabled on this
+   * node — `interrupt` / `resume` then report `false` and the start/turn paths
+   * reject with `capability_unsupported` instead of pretending.
+   */
+  pty?: () => Promise<HarnessPtyHost | null>
+  /** Tap on den AgentEvent ingest. Omit → `liveStream: false`. */
+  events?: (sink: (ev: DenAgentEventLike) => void) => () => void
+  /**
+   * cwd the roster spawns this harness in — reported on summaries. A getter,
+   * not a value: the term manager re-reads `den-term.json` on every spawn, so
+   * a snapshot taken at construction would go stale the moment an operator
+   * edits the roster.
+   */
+  cwd?: () => string | undefined
+  /** How many sessions `listSessions` pulls from the store. */
+  listLimit?: number
+  /**
+   * Quiet window after a turn is injected before the driver stops calling it
+   * in flight. The den hooks emit `turn.end`; a node whose hooks are not
+   * installed would otherwise wedge every later turn on `turn_in_flight`.
+   */
+  turnQuietMs?: number
+  now?: () => number
+  log?: (msg: string) => void
+}
+
+/** Per-driver identity, supplied by the subclass's constructor. */
+export interface PtyHarnessIdentity {
+  harnessId: HarnessId
+  /** Roster key the den term manager spawns this harness under. */
+  rosterCommand: string
+  /** Product name, for the `approvals: false` rejection message. */
+  productName: string
+}
+
+const DEFAULT_LIST_LIMIT = 100
+const DEFAULT_TURN_QUIET_MS = 5 * 60_000
+/** Fresh PTYs get a sane default geometry; a real attach resizes immediately. */
+const SPAWN_COLS = 120
+const SPAWN_ROWS = 40
+
+export interface LiveState {
+  status: 'active' | 'idle' | 'ended'
+  /** Last status we emitted `session-updated` for — de-dupes the stream. */
+  reported?: 'active' | 'idle' | 'ended' | 'error'
+  turnInFlight: boolean
+  quietTimer?: NodeJS.Timeout
+  /** Open tool calls, oldest-first — den carries no tool call ids. */
+  openTools: { toolCallId: string; name: string }[]
+  toolSeq: number
+}
+
+export abstract class PtyHarnessDriver<
+  S extends HarnessStoreHost = HarnessStoreHost,
+> implements HarnessDriver {
+  readonly harnessId: HarnessId
+  readonly capabilities: HarnessCapabilities
+
+  /** Roster key the den term manager spawns this harness under. */
+  protected readonly rosterCommand: string
+  protected readonly productName: string
+  protected readonly deps: PtyHarnessDriverDeps<S>
+  protected readonly now: () => number
+  protected readonly log: (msg: string) => void
+  protected readonly listLimit: number
+  protected readonly turnQuietMs: number
+
+  /** native id → live view (status, in-flight turn, open tool calls). */
+  protected readonly live = new Map<string, LiveState>()
+  private readonly sessionSinks = new Map<string, Set<(e: HarnessEvent) => void>>()
+  private readonly registrySinks = new Set<(e: HarnessEvent) => void>()
+  /** native ids we have already announced as `session-created`. */
+  private readonly announced = new Set<string>()
+  private detachEvents?: () => void
+
+  constructor(identity: PtyHarnessIdentity, deps: PtyHarnessDriverDeps<S>) {
+    this.harnessId = identity.harnessId
+    this.rosterCommand = identity.rosterCommand
+    this.productName = identity.productName
+    this.deps = deps
+    this.now = deps.now ?? Date.now
+    this.log = deps.log ?? ((): void => undefined)
+    this.listLimit = deps.listLimit ?? DEFAULT_LIST_LIMIT
+    this.turnQuietMs = deps.turnQuietMs ?? DEFAULT_TURN_QUIET_MS
+    this.capabilities = {
+      interrupt: !!deps.pty,
+      resume: !!deps.pty,
+      // Every harness on this path owns its permission prompts inside its own
+      // TUI, and nothing on the den wire carries an approval request, let
+      // alone a decision channel. Never faked true.
+      approvals: false,
+      liveStream: !!deps.events,
+      listSessions: true,
+    }
+    if (deps.events) this.detachEvents = deps.events((ev) => this.onDenEvent(ev))
+  }
+
+  // -- identity --------------------------------------------------------------
+
+  /** `<harness-id>:<native>`. @throws `invalid_session_id` */
+  protected sid(nativeId: string): SessionId {
+    return formatSessionId(this.harnessId, nativeId)
+  }
+
+  /** Canonical id → native id, rejecting ids that belong to another harness. */
+  protected native(sessionId: SessionId): string {
+    const { harnessId, nativeSessionId } = parseSessionId(sessionId)
+    if (harnessId !== this.harnessId) {
+      throw new HarnessError(
+        'invalid_session_id',
+        `${sessionId} is not a ${this.harnessId} session`,
+        { harnessId: this.harnessId, sessionId },
+      )
+    }
+    return nativeSessionId
+  }
+
+  protected unsupported(message: string, sessionId?: string): HarnessError {
+    return new HarnessError('capability_unsupported', message, {
+      harnessId: this.harnessId,
+      ...(sessionId ? { sessionId } : {}),
+    })
+  }
+
+  // -- reads -----------------------------------------------------------------
+
+  async listSessions(): Promise<HarnessSessionSummary[]> {
+    const rows = await this.deps.store.list(this.listLimit)
+    return rows.filter((r) => r.command === this.rosterCommand).map((r) => this.summarize(r))
+  }
+
+  async getSession(sessionId: SessionId): Promise<HarnessSessionSummary | null> {
+    const native = this.native(sessionId)
+    const row = await this.deps.store.describe(native)
+    if (row) return this.summarize(row)
+    // A just-spawned session has a live PTY before its store entry exists.
+    if (this.live.has(native)) return this.liveSummary(native)
+    return null
+  }
+
+  /**
+   * Hard-resync source (generalizes den's
+   * `GET /term/harness-sessions/:id/transcript`). Not part of the
+   * `HarnessDriver` interface — the gateway feature-detects it.
+   *
+   * Store-SCOPED by construction: a driver already knows which harness owns
+   * the id and must never serve another store's transcript for it.
+   */
+  async transcript(sessionId: SessionId): Promise<{ turns: HarnessTranscriptTurn[] }> {
+    return this.deps.store.transcript(this.native(sessionId))
+  }
+
+  // -- lifecycle -------------------------------------------------------------
+
+  async startSession(opts: StartSessionOpts = {}): Promise<HarnessSessionSummary> {
+    // cwd/model are roster-owned on this path: the term manager spawns the
+    // operator's argv in the roster cwd and takes no per-request override.
+    // Rejecting beats silently ignoring the caller's intent.
+    if (opts.cwd !== undefined) {
+      throw this.unsupported(`${this.harnessId}: cwd is roster-owned (den-term.json)`)
+    }
+    if (opts.model !== undefined) {
+      throw this.unsupported(`${this.harnessId}: model is roster-owned (den-term.json)`)
+    }
+    const pty = await this.requirePty('startSession')
+
+    const native = opts.nativeSessionId ?? randomUUID()
+    this.assertPinnable(native)
+    const sessionId = this.sid(native)
+    // Never attach: an id already in the harness store is a collision, even if
+    // the caller meant to resume (that is `resumeSession`).
+    if (await this.storeExists(native)) {
+      throw new HarnessError(
+        'session_id_collision',
+        `${this.harnessId} session ${native} already exists in the harness store`,
+        { harnessId: this.harnessId, sessionId },
+      )
+    }
+
+    pty.spawn(this.rosterCommand, SPAWN_COLS, SPAWN_ROWS, 'harness-driver', native)
+    this.ensureLive(native).status = 'idle'
+    const summary = this.liveSummary(native, 'idle')
+    this.announce(native, summary)
+    return summary
+  }
+
+  async resumeSession(sessionId: SessionId): Promise<HarnessSessionSummary> {
+    const native = this.native(sessionId)
+    const pty = await this.requirePty('resumeSession')
+    const row = await this.deps.store.describe(native)
+    // A session the store knows of but cannot describe yet is still resumable
+    // — that is exactly the window right after a fresh spawn (grok's session
+    // dir before its summary.json; a hermes row before its first message).
+    //
+    // Deliberate on Claude, where `exists` is DERIVED from `describe` and this
+    // reads the store twice: the two are genuinely different questions, the
+    // second read only happens on the miss path (`row` undefined, `&&`
+    // short-circuits), and it re-asks a moment later, which is the direction
+    // that turns a just-lost race into a resume rather than a 400. Not an
+    // oversight — please do not "optimize" it into reusing `row`.
+    if (!row && !(await this.storeExists(native)) && !this.live.has(native)) {
+      throw new HarnessError(
+        'invalid_session_id',
+        `no ${this.harnessId} session ${native} in the harness store`,
+        { harnessId: this.harnessId, sessionId },
+      )
+    }
+    // spawn-or-get: a live PTY for this session is returned as-is; otherwise
+    // the term manager re-spawns with `--resume <native>` (store existence is
+    // its ground truth, so passing `resume` is belt-and-braces).
+    this.spawnFor(pty, native, true)
+    return row ? this.summarize(row, this.statusFor(native)) : this.liveSummary(native)
+  }
+
+  async sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void> {
+    const native = this.native(sessionId)
+    if (turn.attachments?.length) {
+      // `POST /api/uploads` hands clients a node-local path, so `pathOrUri` is
+      // resolvable — but this driver still cannot use one. Its only channel
+      // into the harness is a PTY paste, which carries text; there is no wire
+      // for "here is a file" into a TUI, and pasting the path as prose would
+      // be a different thing wearing the contract's name. A driver that speaks
+      // a real protocol (SDK / ACP) consumes the staged URI directly.
+      throw this.unsupported(`${this.harnessId}: attachments are not supported in v1`, sessionId)
+    }
+    const pty = await this.requirePty('sendUserTurn')
+    // CLAIM the in-flight lock synchronously, in the same tick as the check,
+    // and hold it across every await below. Two concurrent turns must not both
+    // pass the check and both paste into the TUI — the loser gets the retryable
+    // 409 (§ Contract semantics: "drivers MUST NOT silently queue in v1").
+    // Checking here and setting it after the inject would leave a window at
+    // every `await` in between: resolving the PTY host, probing the store.
+    // `pty-harness-driver.test.ts` pins this for all three drivers.
+    const state = this.ensureLive(native)
+    if (state.turnInFlight) {
+      throw new HarnessError('turn_in_flight', `${this.harnessId} ${native} is mid-turn`, {
+        harnessId: this.harnessId,
+        sessionId,
+      })
+    }
+    state.turnInFlight = true
+    try {
+      let ptyId = await this.ensurePty(pty, native)
+      if (!pty.inject(ptyId, turn.text, true)) {
+        // The term manager keeps its session→pty mapping until the EXITED
+        // record is reaped (exitLingerMs), so a harness that just died still
+        // resolves to a pty that refuses writes. Answering
+        // `capability_unsupported` there would tell the client "this node
+        // cannot do turns" — false, and a 501 is not retryable. Re-spawn
+        // through the same `--resume` path a fully-reaped session takes and try
+        // once more.
+        ptyId = this.spawnFor(pty, native, true)
+        if (!pty.inject(ptyId, turn.text, true)) {
+          // A live-but-unwritable harness means its pre-ready inject buffer is
+          // full — genuinely transient, so say so instead of 501.
+          throw new HarnessError(
+            'turn_in_flight',
+            `${this.harnessId} ${native} is not accepting input yet`,
+            { harnessId: this.harnessId, sessionId },
+          )
+        }
+      }
+    } catch (err) {
+      // Nothing was accepted, so the claim has to go back — otherwise one
+      // failed turn wedges the session on 409 until the quiet window expires.
+      state.turnInFlight = false
+      throw err
+    }
+    // Announce it: `beginTurn` re-sets the flag (already ours), arms the
+    // quiet-window failsafe and moves the session to `active`.
+    this.beginTurn(native)
+  }
+
+  async interrupt(sessionId: SessionId): Promise<void> {
+    const native = this.native(sessionId)
+    const pty = await this.requirePty('interrupt')
+    const ptyId = pty.ptyForSession(this.room(native))
+    // Idempotent: with no live harness there is no turn to cancel. Spawning
+    // one just to Esc it would be worse than a no-op.
+    if (!ptyId) return
+    // Deliberately unchecked, unlike sendUserTurn: interrupt is best-effort
+    // "ensure no turn is running". A false here means the pty is dead or
+    // unwritable — in which case nothing is running.
+    pty.inject(ptyId, '', false, true)
+    // Release the lock here rather than waiting for a den `turn.end`, which may
+    // or may not follow a cancel. Clearing early is the safe direction: a later
+    // real `turn.end` is a no-op, whereas waiting for one that never comes
+    // would 409 every later turn.
+    if (this.live.get(native)?.turnInFlight) this.endTurn(native, 'interrupted')
+  }
+
+  resolveApproval(): Promise<void> {
+    return Promise.reject(
+      this.unsupported(
+        `${this.harnessId}: approvals are handled inside the ${this.productName} TUI and are ` +
+          'not observable on the den wire',
+      ),
+    )
+  }
+
+  // -- streams ---------------------------------------------------------------
+
+  /**
+   * The sink is pinned to the native id it was registered under, and that is
+   * correct for a driver: **rotation is control-plane work.** The registry's
+   * `subscribeSession` wraps this call and re-keys the sink onto the canonical
+   * id when it records an alias, so the client's subscription survives a
+   * rotation without the driver ever consulting the alias store
+   * (`registry.ts` → `rekey`; § Contract semantics, "Subscriptions survive
+   * rotation"). A rotating driver needs nothing here beyond emitting
+   * `session-updated` with `previousSessionId` — see `rotate`.
+   */
+  subscribe(sessionId: SessionId, sink: (e: HarnessEvent) => void): () => void {
+    if (!this.capabilities.liveStream) {
+      throw this.unsupported(`${this.harnessId}: no den event tap on this node`, sessionId)
+    }
+    const native = this.native(sessionId)
+    let set = this.sessionSinks.get(native)
+    if (!set) {
+      set = new Set()
+      this.sessionSinks.set(native, set)
+    }
+    set.add(sink)
+    return () => {
+      const current = this.sessionSinks.get(native)
+      if (!current) return
+      current.delete(sink)
+      if (current.size === 0) this.sessionSinks.delete(native)
+    }
+  }
+
+  subscribeEvents(sink: (e: HarnessEvent) => void): () => void {
+    this.registrySinks.add(sink)
+    return () => this.registrySinks.delete(sink)
+  }
+
+  /** Detach the den tap and drop every subscriber (server shutdown). */
+  close(): void {
+    for (const state of this.live.values()) {
+      if (state.quietTimer) clearTimeout(state.quietTimer)
+    }
+    this.live.clear()
+    this.sessionSinks.clear()
+    this.registrySinks.clear()
+    this.detachEvents?.()
+    this.detachEvents = undefined
+  }
+
+  // -- subclass hooks --------------------------------------------------------
+
+  /**
+   * Which native session id a den event belongs to, or `undefined` to ignore
+   * it. The default is the pinning harnesses' answer: the den room key IS the
+   * native id, and a non-uuid room (the translator's `unknown-<ppid>`
+   * fallback, a shell pty) is not a harness session at all.
+   */
+  protected nativeFor(ev: DenAgentEventLike): string | undefined {
+    return isBareNativeUuid(ev.session) ? ev.session : undefined
+  }
+
+  /**
+   * Which den room a native id runs in. Identity for the pinning harnesses;
+   * a harness that cannot pin its id maps this itself.
+   */
+  protected room(native: string): string {
+    return native
+  }
+
+  /**
+   * Is this den event one of ours? den rooms also carry the other harnesses
+   * and plain shells, and a uuid alone proves nothing when two harnesses both
+   * pin uuid keys.
+   */
+  protected ownsEvent(native: string, ev: DenAgentEventLike): boolean {
+    if (this.live.has(native)) return true
+    // The shared den-hook translator stamps the harness id on everything it
+    // posts; the term manager's synthetic `session.start` for a roster spawn
+    // stamps `rivetos` + `<host>:<roster-key>` instead.
+    if (ev.harness === this.harnessId) return true
+    return (
+      ev.harness === 'rivetos' &&
+      typeof ev.name === 'string' &&
+      ev.name.endsWith(`:${this.rosterCommand}`)
+    )
+  }
+
+  /**
+   * Guard a caller-pinned `startSession` id. Both pinning harnesses require a
+   * uuid because their `--session-id` flag does, and the den join key is the
+   * same string, so a non-uuid pin cannot be honored end to end.
+   *
+   * @throws HarnessError `invalid_session_id` | `capability_unsupported`
+   */
+  protected assertPinnable(native: string): void {
+    if (isBareNativeUuid(native)) return
+    throw new HarnessError(
+      'invalid_session_id',
+      `${this.harnessId} native session ids must be uuids: ${native}`,
+      { harnessId: this.harnessId, sessionId: native },
+    )
+  }
+
+  /** Does the harness store already hold this id? See `HarnessStoreHost`. */
+  protected async storeExists(native: string): Promise<boolean> {
+    const store = this.deps.store
+    if (typeof store.exists === 'function') return store.exists(native)
+    return !!(await store.describe(native))
+  }
+
+  // -- internals -------------------------------------------------------------
+
+  /** Roster cwd at call time — see `PtyHarnessDriverDeps.cwd`. */
+  protected cwd(): string | undefined {
+    return this.deps.cwd?.()
+  }
+
+  /**
+   * Summary for a session that exists only as a live PTY (no store row yet).
+   *
+   * `cwd` is omitted when the roster has none, where the pre-extraction drivers
+   * set it to `undefined` on this path (their `summarize` already guarded it).
+   * The wire is identical — `JSON.stringify` drops an undefined value either
+   * way — and this makes the two summary paths agree with each other.
+   */
+  protected liveSummary(
+    native: string,
+    statusOverride?: HarnessSessionSummary['status'],
+  ): HarnessSessionSummary {
+    const stamp = new Date(this.now()).toISOString()
+    const summary: HarnessSessionSummary = {
+      sessionId: this.sid(native),
+      harnessId: this.harnessId,
+      createdAt: stamp,
+      updatedAt: stamp,
+      status: statusOverride ?? this.statusFor(native),
+    }
+    const cwd = this.cwd()
+    if (cwd) summary.cwd = cwd
+    return summary
+  }
+
+  protected summarize(
+    row: HarnessSession,
+    statusOverride?: HarnessSessionSummary['status'],
+  ): HarnessSessionSummary {
+    const summary: HarnessSessionSummary = {
+      sessionId: this.sid(row.id),
+      harnessId: this.harnessId,
+      // A store that carries a creation stamp uses it; one that does not falls
+      // back to updatedAt, so a list row and a `getSession` cannot disagree.
+      createdAt: new Date(row.createdAt ?? row.updatedAt).toISOString(),
+      updatedAt: new Date(row.updatedAt || this.now()).toISOString(),
+      status: statusOverride ?? this.statusFor(row.id),
+    }
+    if (row.title && row.title !== row.id) summary.title = row.title
+    const cwd = this.cwd()
+    if (cwd) summary.cwd = cwd
+    return summary
+  }
+
+  /**
+   * Status is reported from what we can actually observe: a live PTY mid-turn
+   * is `active`, a live PTY between turns is `idle`, and a session that exists
+   * only on disk is `ended` — the process is gone, though `resumeSession`
+   * revives it.
+   *
+   * KNOWN GAP: liveness comes from this driver's own map, fed by
+   * `startSession`/`resumeSession` and by den events. A harness process started
+   * outside den entirely (no `RIVET_DEN_SESSION`, no den hooks) reads as
+   * `ended` until it speaks.
+   */
+  protected statusFor(native: string): HarnessSessionSummary['status'] {
+    const state = this.live.get(native)
+    if (!state) return 'ended'
+    if (state.status === 'ended') return 'ended'
+    return state.turnInFlight ? 'active' : 'idle'
+  }
+
+  protected ensureLive(native: string): LiveState {
+    let state = this.live.get(native)
+    if (!state) {
+      state = { status: 'idle', turnInFlight: false, openTools: [], toolSeq: 0 }
+      this.live.set(native, state)
+    }
+    return state
+  }
+
+  protected async requirePty(method: string): Promise<HarnessPtyHost> {
+    if (!this.deps.pty) {
+      throw this.unsupported(`${this.harnessId}: ${method} needs den terminals, which are disabled`)
+    }
+    const pty = await this.deps.pty()
+    if (!pty) {
+      throw this.unsupported(
+        `${this.harnessId}: ${method} needs a PTY backend, which is unavailable`,
+      )
+    }
+    return pty
+  }
+
+  /** Live PTY for a session, re-spawning (`--resume`) after an LRU eviction. */
+  protected async ensurePty(pty: HarnessPtyHost, native: string): Promise<string> {
+    const existing = pty.ptyForSession(this.room(native))
+    if (existing) return existing
+    return this.spawnFor(pty, native, await this.storeExists(native))
+  }
+
+  /**
+   * Spawn (or spawn-or-get) the harness for a session. `resume` is passed when
+   * the session already exists in the store; the term manager checks store
+   * existence itself, so this is belt-and-braces. A spawn-or-get against a
+   * still-lingering EXITED record produces a fresh pty, which is what the
+   * dead-pty retry in `sendUserTurn` wants.
+   */
+  protected spawnFor(pty: HarnessPtyHost, native: string, resume: boolean): string {
+    const spawned = pty.spawn(
+      this.rosterCommand,
+      SPAWN_COLS,
+      SPAWN_ROWS,
+      'harness-driver',
+      this.room(native),
+      resume ? native : undefined,
+    )
+    this.ensureLive(native)
+    return spawned.id
+  }
+
+  protected emit(native: string, event: HarnessEvent): void {
+    for (const sink of [...(this.sessionSinks.get(native) ?? [])]) {
+      try {
+        sink(event)
+      } catch {
+        /* one bad subscriber must never break the others */
+      }
+    }
+  }
+
+  protected emitRegistry(event: HarnessEvent): void {
+    for (const sink of [...this.registrySinks]) {
+      try {
+        sink(event)
+      } catch {
+        /* as above */
+      }
+    }
+  }
+
+  protected announce(native: string, summary: HarnessSessionSummary): void {
+    if (this.announced.has(native)) return
+    this.announced.add(native)
+    this.emitRegistry({ type: 'session-created', sessionId: summary.sessionId, summary })
+  }
+
+  /**
+   * Announce a session we have just learned about from the den stream. Reads
+   * the store for a real summary and drops the announcement if the read fails
+   * — a `session-created` is worth nothing without one.
+   */
+  protected announceIfNew(native: string): void {
+    if (this.announced.has(native)) return
+    void this.getSession(this.sid(native)).then(
+      (summary) => {
+        if (summary) this.announce(native, summary)
+      },
+      () => undefined,
+    )
+  }
+
+  protected setStatus(native: string, status: 'active' | 'idle' | 'ended' | 'error'): void {
+    const state = this.ensureLive(native)
+    if (status !== 'error') state.status = status
+    if (state.reported === status) return
+    state.reported = status
+    const event: HarnessEvent = { type: 'session-updated', sessionId: this.sid(native), status }
+    this.emit(native, event)
+    this.emitRegistry(event)
+  }
+
+  /**
+   * Announce that the harness replaced `previous`'s native id with `next`
+   * (§ Native session id rotation). The driver's whole job is this one event:
+   * the control plane records the alias, moves every live tail, retires the
+   * old id and keeps `listSessions` canonical-only.
+   *
+   * The live state moves with the id — an in-flight turn that spans a
+   * compaction still completes — and the old key is dropped from this driver's
+   * map. Sinks are deliberately NOT moved: `registry.rekey` owns that, and a
+   * driver that re-keyed its own would leave every tail attached twice and
+   * double every later event.
+   */
+  protected rotate(previous: string, next: string): void {
+    if (previous === next) return
+    // The rotation IS the successor's announcement: a client that also got a
+    // `session-created` for it would show the same session twice, once under
+    // each id, which is the opposite of what an alias is for.
+    this.announced.add(next)
+    const carried = this.live.get(previous)
+    const state = this.ensureLive(next)
+    if (carried) {
+      state.status = carried.status === 'ended' ? 'idle' : carried.status
+      state.turnInFlight = carried.turnInFlight
+      state.openTools = carried.openTools
+      state.toolSeq = carried.toolSeq
+      if (carried.quietTimer) {
+        clearTimeout(carried.quietTimer)
+        carried.quietTimer = undefined
+      }
+      if (state.turnInFlight) this.armQuietWindow(next)
+      this.live.delete(previous)
+    }
+    const status = this.statusFor(next)
+    // The rotation event is also the successor's first status report, so record
+    // it as reported: an immediate follow-up `setStatus` with the same value
+    // (the den event that CARRIED the rotation usually reports one) de-dupes
+    // into silence instead of restating it.
+    state.reported = status
+    const event: HarnessEvent = {
+      type: 'session-updated',
+      sessionId: this.sid(next),
+      previousSessionId: this.sid(previous),
+      status,
+    }
+    // To the tails still attached under the OLD id first (the registry
+    // de-dupes its own copy against this one), then to the registry stream,
+    // which is what records the alias and moves those tails.
+    this.emit(previous, event)
+    this.emitRegistry(event)
+  }
+
+  protected beginTurn(native: string): void {
+    const state = this.ensureLive(native)
+    state.turnInFlight = true
+    this.armQuietWindow(native)
+    this.setStatus(native, 'active')
+  }
+
+  /**
+   * Complete the current turn. `always` is set for a real `turn.end` from the
+   * harness: a turn typed straight into the TUI (no `sendUserTurn`) still ends,
+   * and subscribers must see it. Teardown paths (interrupt, session exit, the
+   * quiet-window failsafe) only report a turn they know was running.
+   */
+  protected endTurn(native: string, stopReason: string, always = false): void {
+    const state = this.live.get(native)
+    if (!state) return
+    if (state.quietTimer) {
+      clearTimeout(state.quietTimer)
+      state.quietTimer = undefined
+    }
+    if (!state.turnInFlight && !always) return
+    state.turnInFlight = false
+    this.emit(native, { type: 'turn-complete', sessionId: this.sid(native), stopReason })
+    this.setStatus(native, 'idle')
+  }
+
+  /**
+   * Failsafe for nodes whose den hooks are not installed: without a `turn.end`
+   * the in-flight flag would never clear and every later `sendUserTurn` would
+   * 409. Re-armed on any den event for the session, so a genuinely long turn is
+   * never cut short.
+   */
+  protected armQuietWindow(native: string): void {
+    const state = this.ensureLive(native)
+    if (state.quietTimer) clearTimeout(state.quietTimer)
+    if (this.turnQuietMs <= 0) return
+    state.quietTimer = setTimeout(() => {
+      state.quietTimer = undefined
+      if (!state.turnInFlight) return
+      this.log(
+        `[den-server] harness: no den events for ${this.harnessId}:${native} in ` +
+          `${String(this.turnQuietMs)}ms — releasing the in-flight turn lock`,
+      )
+      this.endTurn(native, 'quiet-timeout')
+    }, this.turnQuietMs)
+    state.quietTimer.unref()
+  }
+
+  /**
+   * Map one den AgentEvent onto the harness contract.
+   *
+   * Den event types the hooks produce that are NOT mapped here —
+   * `message.user`, `speech.stt`, `thinking.end`, `activity`, `task.plan`,
+   * `task.check`, `term.line` — are den-UI concerns with no place on the
+   * contract's event union.
+   */
+  protected onDenEvent(ev: DenAgentEventLike): void {
+    const native = this.nativeFor(ev)
+    if (native === undefined) return
+    if (!this.ownsEvent(native, ev)) return
+    const state = this.ensureLive(native)
+    if (state.turnInFlight) this.armQuietWindow(native)
+    const sessionId = this.sid(native)
+
+    switch (ev.type) {
+      case 'session.start': {
+        this.announceIfNew(native)
+        // Report what is TRUE, not a hardcoded `idle`. On the rotation path
+        // this very event is the one that carried a rotation (hermes's
+        // `on_session_reset`), and a compaction can fork mid-turn: the in-flight
+        // turn moved to this id a few lines ago, so forcing `idle` here would
+        // tell every stream client the session went quiet while it is still
+        // answering — on exactly the path rotation exists for. A session.start
+        // does still REVIVE an ended session; that is the one thing it settles.
+        if (state.status === 'ended') state.status = 'idle'
+        this.setStatus(native, this.statusFor(native))
+        return
+      }
+      case 'session.end': {
+        this.endTurn(native, 'error')
+        this.setStatus(native, 'ended')
+        return
+      }
+      case 'message.agent': {
+        const text = typeof ev.text === 'string' ? ev.text : ''
+        if (text) this.emit(native, { type: 'assistant-delta', sessionId, text })
+        return
+      }
+      case 'thinking.delta': {
+        // The contract carries text only — whether a chunk replaces or appends
+        // to what is showing is the client's call, because what a harness can
+        // observe of its own thinking varies (a spinner status line for Claude,
+        // real ACP thought chunks for grok).
+        const text = typeof ev.text === 'string' ? ev.text : ''
+        if (text) this.emit(native, { type: 'reasoning-delta', sessionId, text })
+        return
+      }
+      case 'tool.start': {
+        const name = typeof ev.tool === 'string' ? ev.tool : 'unknown'
+        // Names pass through as the harness emits them — renaming them to
+        // another harness's vocabulary would be a lie about which tool ran.
+        // den carries no tool call id, so mint a stable per-session one and
+        // pair `tool.end` against it LIFO.
+        const toolCallId = `${native}:t${String(++state.toolSeq)}`
+        state.openTools.push({ toolCallId, name })
+        this.emit(native, { type: 'tool-use', sessionId, toolCallId, name, input: ev.args ?? {} })
+        return
+      }
+      case 'tool.end': {
+        const name = typeof ev.tool === 'string' ? ev.tool : undefined
+        const index = name
+          ? state.openTools.map((t) => t.name).lastIndexOf(name)
+          : state.openTools.length - 1
+        const open = index >= 0 ? state.openTools.splice(index, 1)[0] : undefined
+        if (!open) return
+        // `output: null` and no `isError`: den's `tool.end` carries neither a
+        // result body nor a failure flag — the translators collapse the success
+        // and failure hooks into the same event. Claiming success would be
+        // worse than saying nothing.
+        this.emit(native, {
+          type: 'tool-result',
+          sessionId,
+          toolCallId: open.toolCallId,
+          name: open.name,
+          output: null,
+        })
+        return
+      }
+      case 'turn.end': {
+        state.openTools = []
+        this.endTurn(native, 'end-turn', true)
+        return
+      }
+      default:
+        return
+    }
+  }
+}

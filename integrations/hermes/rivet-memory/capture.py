@@ -41,6 +41,7 @@ _STOP = object()
 #   ('memory_write', action, target, content, metadata)
 #   ('delegation', task, result, child_session_id)
 #   ('compressed', [{role, content, ...}, ...])
+#   ('rotate', previous_session_key, next_session_key, metadata)
 #   ('close_conversation', conversation_id)
 
 
@@ -99,8 +100,34 @@ class Capture:
             return
         self._queue.put(("compressed", list(messages)))
 
+    def rotate_session(
+        self,
+        previous_key: str,
+        next_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record a native-session-id rotation as an ALIAS, not an ending.
+
+        Hermes replaces its session id inside one running process on ``/new``,
+        ``/branch``, a mid-chat ``/resume``, a rewind, and a compaction that
+        forks a child session. The RivetOS control plane models that as
+        ``previous -> next`` alias chain: new messages write under the new key,
+        reads resolve the chain and union the transcript
+        (docs/plans/harness-control-plane.md § Native session id rotation).
+
+        This writes one durable breadcrumb row under the NEW key carrying the
+        old one. The control plane's own alias store is in-memory and per-node,
+        so without this the link would not survive a restart — with it, the
+        chain is reconstructible from the memory DB alone, with no schema
+        migration and no rewrite of the rows already filed under the old key.
+
+        Both keys are explicit rather than taken from the live context: a
+        rotation is exactly the moment the context is moving.
+        """
+        self._queue.put(("rotate", previous_key, next_key, dict(metadata or {})))
+
     def close_session(self, session_key: str) -> None:
-        """Enqueue an inactive-mark for a session_key. Used by reset/end paths."""
+        """Enqueue an inactive-mark for a session_key. Used by end paths."""
         self._queue.put(("close_session", session_key))
 
     # -- Lifecycle -----------------------------------------------------------
@@ -229,6 +256,29 @@ class Capture:
                     agent=agent,
                     channel=channel,
                 )
+            return
+
+        if kind == "rotate":
+            _, previous_key, next_key, meta = op
+            info = {
+                "kind": "session-rotation",
+                "previous_session_key": previous_key,
+                "session_key": next_key,
+            }
+            info.update(meta)
+            # Written under the NEW key: the write both opens the successor
+            # conversation and stamps the link back. The predecessor is left
+            # ACTIVE and untouched — closing it is what the pre-alias behaviour
+            # did, and it is precisely what made the transcript two unrelated
+            # conversations instead of one chain.
+            self._client.append_message(
+                session_key=next_key,
+                agent=agent,
+                channel=channel,
+                role=S.ROLE_SYSTEM,
+                content=f"[session-rotation] {previous_key} -> {next_key}",
+                metadata=info,
+            )
             return
 
         if kind == "close_session":

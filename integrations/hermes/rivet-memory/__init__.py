@@ -329,6 +329,11 @@ class RivetMemoryProvider(MemoryProvider):
         self._session_key: str = ""
         self._conversation_id: Optional[str] = None
         self._parent_session_id: str = ""
+        # Keys this process has rotated away from, oldest first. A rotation
+        # leaves the predecessor OPEN (that is the point — the thread
+        # continues), so the whole chain is closed together when the session
+        # actually ends rather than leaking "active" conversations per /new.
+        self._rotated_keys: List[str] = []
         self._platform: str = "cli"
         self._hermes_home: str = ""
 
@@ -666,21 +671,68 @@ class RivetMemoryProvider(MemoryProvider):
         reset: bool = False,
         **kwargs,
     ) -> None:
+        """Hermes replaced its session id — record it as an ALIAS.
+
+        **Breaking change (Phase 3, docs/plans/harness-control-plane.md
+        § Native session id rotation).** This used to close the old
+        conversation on ``reset=True`` and silently start a new one, and on
+        ``reset=False`` it just moved the write key with no record at all. Both
+        made one continuing thread look like two unrelated conversations, and
+        neither left anything a reader could follow.
+
+        Now every switch — ``/new``, ``/branch``, a mid-chat ``/resume``, a
+        rewind, a compaction that forks a child session — is a rotation:
+        subsequent writes go to the new key (as before), the old conversation
+        stays open and intact, and one breadcrumb row links them so the chain
+        survives a restart of the node. The `hermes` HarnessDriver reports the
+        same rotation to the control plane off the den wire, which is what makes
+        superseded ids keep resolving for live reads. Nothing is rewritten:
+        history filed under ``hermes:<old-id>`` stays exactly where it is and is
+        read through the chain.
+
+        The switch REASON (hermes passes ``reason=``/``rewound=``) rides on the
+        breadcrumb rather than changing the identity story, because the den wire
+        cannot distinguish a user's ``/new`` from a compaction fork — one chain,
+        reasons preserved.
+        """
         old_key = self._session_key
-        if reset and self._capture is not None and old_key:
-            # Close the old conversation in the background; the next write
-            # under the new session_key spawns a fresh one via ensure_conversation.
-            self._capture.close_session(old_key)
+        old_session_id = self._session_id
         self._session_id = new_session_id
         self._session_key = f"hermes:{new_session_id}"
-        # For reset=False, mint a parent-link breadcrumb on the next memory_write
-        # caller by exposing the parent id; capture metadata will include it
-        # naturally on subsequent on_memory_write / on_delegation events.
-        self._parent_session_id = parent_session_id
+        # The lineage hermes handed us, falling back to the session we were on
+        # (a compaction child names its parent; /new only knows "the last one").
+        self._parent_session_id = parent_session_id or old_session_id
+        if self._capture is None or not old_key or old_key == self._session_key:
+            return
+        self._rotated_keys.append(old_key)
+        self._capture.rotate_session(
+            old_key,
+            self._session_key,
+            {
+                "reason": kwargs.get("reason") or ("new_session" if reset else "switch"),
+                "reset": bool(reset),
+                "rewound": bool(kwargs.get("rewound", False)),
+                "parent_session_id": self._parent_session_id,
+            },
+        )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if self._capture is not None and self._session_key:
-            self._capture.close_session(self._session_key)
+        """Close the whole chain, not just the key we happen to be on.
+
+        A rotation deliberately leaves its predecessor active — the thread is
+        still going, under a new id. The ending is what closes them, so every
+        key this process rotated away from is marked inactive here alongside the
+        current one. (A chain broken by a crash leaves its members open, the
+        same as any other conversation the process never got to close.)
+        """
+        if self._capture is not None:
+            seen = set()
+            for key in [*self._rotated_keys, self._session_key]:
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                self._capture.close_session(key)
+        self._rotated_keys = []
         self.shutdown()
 
     # -- Tool surface --------------------------------------------------------
