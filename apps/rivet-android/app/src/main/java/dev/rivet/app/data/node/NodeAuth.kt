@@ -85,10 +85,19 @@ class NodeAuthRegistry(private val tokens: NodeTokenStore) {
 
     fun record(probe: NodeAuthProbe) {
         val key = NodeRosterDefaults.normalizeDenUrl(probe.denUrl)
-        val next = NodeAuthStates.next(state(key), probe, tokens.wasAuthorized(key))
-        // Only a bearer we actually sent can be marked as accepted; a tokenless
-        // node answering 200 says nothing about a credential.
-        if (probe.outcome == NodeAuthOutcome.AUTHORIZED && probe.hadToken) {
+        val everAuthorized = tokens.wasAuthorized(key)
+        val next = NodeAuthStates.next(state(key), probe, everAuthorized)
+        // Only a bearer we actually sent can be marked accepted; a tokenless node
+        // answering 200 says nothing about a credential. Written once per
+        // credential, not once per poll.
+        //
+        // Accuracy note: an UNGATED node also answers 200 to a request carrying a
+        // bearer it never looked at, so a token pasted at a node with no
+        // `den.token` gets marked accepted. If that node later starts gating and
+        // refuses the same value, this reports STALE ("rotated") where REJECTED
+        // would be truer. Cosmetic — both sentences end at the same paste field,
+        // and no wire response distinguishes "validated" from "ignored".
+        if (probe.outcome == NodeAuthOutcome.AUTHORIZED && probe.hadToken && !everAuthorized) {
             tokens.markAuthorized(key)
         }
         _states.update { it + (key to next) }

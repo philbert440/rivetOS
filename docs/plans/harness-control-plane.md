@@ -1311,14 +1311,25 @@ it, so wrapping one value would be theatre. Encrypting that whole surface at
 once is the honest follow-up and is recorded below.
 
 **Where it is supplied:** `HarnessPlaneRepository.tokenFor`, the seam #479 left
-open. One lambda now feeds the control-plane client (bearer header on HTTP,
-`?token=` on both sockets), the legacy `/api/terminal/harness-sessions` scan it
-unions with, and the remote terminal's `DenTermClient`. A tokenless node behaves
-exactly as before.
+open. One lambda now feeds the control-plane client, the legacy
+`/api/terminal/harness-sessions` scan it unions with, and the remote terminal's
+`DenTermClient`. A tokenless node behaves exactly as before.
 
-**Rotation.** `rivetos gateway token --rotate` mints a new bearer and does not
-reload the gateway, so a rotated node starts refusing a client that worked five
-minutes ago. A 401 is therefore not one condition, and the app says which:
+**On every transport the bearer is a header, including the sockets.** den's gate
+reads `Authorization` on an upgrade request exactly as it does on a GET
+(`services/den-server/src/server.ts`); `?token=` exists because a browser's
+`WebSocket` constructor cannot set headers, which is not a constraint OkHttp
+has. So no Android URL — control-plane tail, registry watch, or remote terminal
+— ever carries a credential, and none can end up in a proxy or access log. A
+unit test asserts each of those URLs is credential-free, so a regression that
+puts the token back in the query string fails the build.
+
+**Rotation.** `rivetos gateway token --rotate` writes a new token file and tells
+the operator to restart rivetos — the running gateway holds the old value until
+then (`packages/cli/src/commands/gateway.ts`). So the refusal does not arrive at
+mint time; it arrives at the next node restart, by which point the phone's
+stored bearer is simply wrong and nothing on the device knows why. A 401 is
+therefore not one condition, and the app says which:
 with no bearer stored it reads "gateway is token-gated — add a token", with a
 bearer this node has never accepted "token rejected", and with a bearer it *has*
 accepted "the node rotated it; paste the new one". The acceptance bit lives next

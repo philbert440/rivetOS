@@ -5,6 +5,7 @@ import dev.rivet.app.data.node.NodeAuthProbe
 import dev.rivet.app.data.node.NodeAuthRegistry
 import dev.rivet.app.data.node.NodeAuthState
 import dev.rivet.app.ui.pages.terminal.DenHarnessClient
+import dev.rivet.app.ui.pages.terminal.DenTermClient
 import kotlinx.coroutines.runBlocking
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -14,6 +15,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -104,6 +106,59 @@ class HarnessPlaneTokenTest {
 
         assertEquals("Bearer token-a", transportA.requests.first().header("Authorization"))
         assertEquals("Bearer token-b", transportB.requests.first().header("Authorization"))
+    }
+
+    @Test
+    fun `rotating the token on one node swaps the header`() = runBlocking {
+        tokens.put(node, "token-a")
+        val (before, transportBefore) = repository(node)
+        before.snapshot(maxAgeMs = 0)
+
+        tokens.put(node, "token-b")
+        val (after, transportAfter) = repository(node)
+        after.snapshot(maxAgeMs = 0)
+
+        assertEquals("Bearer token-a", transportBefore.requests.first().header("Authorization"))
+        assertEquals("Bearer token-b", transportAfter.requests.first().header("Authorization"))
+    }
+
+    @Test
+    fun `clearing the token stops sending a header`() = runBlocking {
+        tokens.put(node, "token-a")
+        val (gated, _) = repository(node)
+        gated.snapshot(maxAgeMs = 0)
+
+        tokens.put(node, null)
+        val (cleared, transport) = repository(node)
+        cleared.snapshot(maxAgeMs = 0)
+
+        assertNull(transport.requests.first().header("Authorization"))
+        assertEquals(node to null, legacyCalls.last())
+    }
+
+    @Test
+    fun `the socket upgrade carries the bearer as a header, not a query param`() {
+        val url = HarnessUrls(node).sessionWs("claude-code:abc")
+        val request = ReconnectingSocket.upgradeRequest(url, "token-a")
+
+        assertEquals("Bearer token-a", request.header("Authorization"))
+        assertFalse(request.url.toString().contains("token"))
+    }
+
+    @Test
+    fun `a tokenless socket upgrade sends no authorization header`() {
+        val url = HarnessUrls(node).harnessesWs(null)
+
+        assertNull(ReconnectingSocket.upgradeRequest(url, null).header("Authorization"))
+        assertNull(ReconnectingSocket.upgradeRequest(url, "  ").header("Authorization"))
+    }
+
+    @Test
+    fun `the remote terminal upgrade url carries no credential either`() {
+        val url = DenTermClient("http://node-a:5174", "token-a").terminalWsUrl("pty-1")
+
+        assertFalse(url.contains("token"))
+        assertTrue(url.startsWith("ws://node-a:5174/api/terminal/ws?id=pty-1"))
     }
 
     @Test

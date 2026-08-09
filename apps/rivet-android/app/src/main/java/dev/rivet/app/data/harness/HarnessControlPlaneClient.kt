@@ -23,8 +23,10 @@ import java.util.concurrent.TimeUnit
  * assume replay.
  *
  * WS resources ride the query string because den's upgrade mounts are matched
- * by exact path, and the bearer rides `?token=` there for the same reason
- * every other den socket does (a WS handshake carries no custom headers).
+ * by exact path. The bearer does not: den reads `Authorization` on an upgrade
+ * request just as it does on a GET, and only offers `?token=` because a
+ * browser's `WebSocket` constructor cannot set headers. OkHttp can, so the
+ * credential stays on the handshake and out of every URL.
  *
  * Blocking by design, like [DenHarnessClient] — callers are already on
  * `Dispatchers.IO`.
@@ -128,17 +130,17 @@ class HarnessControlPlaneClient(
      */
     fun watchSession(sessionId: String, listener: HarnessStreamListener): HarnessSubscription =
         ReconnectingSocket(
-            url = { urls.sessionWs(sessionId, token) },
+            url = { urls.sessionWs(sessionId) },
             listener = listener,
-            connectSocket = ReconnectingSocket.over(shared),
+            connectSocket = ReconnectingSocket.over(shared, token),
         ).start()
 
     /** Driver-level registry stream — `session-created` / `session-updated`. */
     fun watchHarnesses(harnessId: String?, listener: HarnessStreamListener): HarnessSubscription =
         ReconnectingSocket(
-            url = { urls.harnessesWs(harnessId, token) },
+            url = { urls.harnessesWs(harnessId) },
             listener = listener,
-            connectSocket = ReconnectingSocket.over(shared),
+            connectSocket = ReconnectingSocket.over(shared, token),
         ).start()
 
     // -- plumbing --------------------------------------------------------------

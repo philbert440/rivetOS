@@ -28,8 +28,12 @@ class SharedPrefsNodeTokenStore(context: Context) : KeyedNodeTokenStore() {
 
     override fun read(key: String): String? = prefs.getString(key, null)
 
-    override fun write(key: String, value: String) {
-        prefs.edit().putString(key, value).apply()
+    override fun write(key: String, value: String, durable: Boolean) {
+        val editor = prefs.edit().putString(key, value)
+        // The acceptance bit is written once per credential, off the main
+        // thread, and a crash inside apply()'s flush window would cost the
+        // rotation-versus-rejection distinction — cheap enough to just commit.
+        if (durable) editor.commit() else editor.apply()
     }
 
     override fun delete(vararg keys: String) {

@@ -51,25 +51,25 @@ class HarnessUrls(denBaseUrl: String) {
         return q.toString()
     }
 
-    /** `WS /api/harness-sessions/ws?session=<enc>` — bearer rides the query. */
-    fun sessionWs(sessionId: String, token: String?): String =
-        withToken("$wsBase/api/harness-sessions/ws?session=${seg(sessionId)}", token)
+    /**
+     * `WS /api/harness-sessions/ws?session=<enc>`.
+     *
+     * No credential in the URL. den accepts `?token=` on an upgrade because a
+     * browser's `WebSocket` constructor cannot set headers; OkHttp can, so the
+     * bearer goes on the handshake request ([ReconnectingSocket.over]) and stays
+     * out of anything that logs URLs.
+     */
+    fun sessionWs(sessionId: String): String =
+        "$wsBase/api/harness-sessions/ws?session=${seg(sessionId)}"
 
     /** `WS /api/harnesses/ws[?harness=<id>]` — omit the id to watch them all. */
-    fun harnessesWs(harnessId: String?, token: String?): String {
+    fun harnessesWs(harnessId: String?): String {
         val url = StringBuilder("$wsBase/api/harnesses/ws")
         if (!harnessId.isNullOrBlank()) {
             url.append("?harness=").append(HarnessSessionIds.urlEncode(harnessId))
         }
-        return withToken(url.toString(), token)
+        return url.toString()
     }
 
     private fun seg(sessionId: String): String = HarnessSessionIds.segmentFor(sessionId)
-
-    private fun withToken(url: String, token: String?): String {
-        val t = token?.trim().orEmpty()
-        if (t.isEmpty()) return url
-        val sep = if (url.contains('?')) "&" else "?"
-        return "$url${sep}token=${HarnessSessionIds.urlEncode(t)}"
-    }
 }

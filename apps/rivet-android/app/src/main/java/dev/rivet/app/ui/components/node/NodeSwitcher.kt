@@ -200,7 +200,10 @@ fun NodeSwitcher(
                     next.add(node.copy(denUrl = url))
                 }
                 // The bearer never enters the roster — it goes to the credential
-                // store, keyed by the same normalized URL.
+                // store, keyed by the same normalized URL. No forget/invalidate
+                // here on purpose: a newly added node is not the active one, so
+                // there is no cached snapshot or stale verdict of its own to
+                // clear. (Removal does forget, because the node may be active.)
                 if (!token.isNullOrBlank()) {
                     nodeTokens.put(url, token)
                     tokenEpoch++

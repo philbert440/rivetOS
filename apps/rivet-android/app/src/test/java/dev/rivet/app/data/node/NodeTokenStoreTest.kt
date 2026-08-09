@@ -92,6 +92,16 @@ class NodeTokenStoreTest {
     }
 
     @Test
+    fun `the acceptance bit is written durably`() {
+        store.put("http://node-a:5174", "aaa")
+        assertEquals(0, store.durableWrites)
+
+        store.markAuthorized("http://node-a:5174")
+
+        assertEquals(1, store.durableWrites)
+    }
+
+    @Test
     fun `acceptance history is per node`() {
         store.put("http://node-a:5174", "aaa")
         store.put("http://node-b:5174", "bbb")
@@ -110,7 +120,11 @@ class InMemoryNodeTokenStore : KeyedNodeTokenStore() {
 
     override fun read(key: String): String? = map[key]
 
-    override fun write(key: String, value: String) {
+    var durableWrites: Int = 0
+        private set
+
+    override fun write(key: String, value: String, durable: Boolean) {
+        if (durable) durableWrites++
         map[key] = value
     }
 

@@ -157,6 +157,16 @@ class NodeAuthRegistryTest {
     }
 
     @Test
+    fun `the acceptance bit is written once per credential, not once per poll`() {
+        tokens.put(node, "aaa")
+        repeat(5) {
+            registry.record(NodeAuthProbe(node, hadToken = true, NodeAuthOutcome.AUTHORIZED))
+        }
+
+        assertEquals(1, tokens.durableWrites)
+    }
+
+    @Test
     fun `nodes do not share a verdict`() {
         val other = "http://node-b:5174"
         registry.record(NodeAuthProbe(node, hadToken = false, NodeAuthOutcome.UNAUTHORIZED))

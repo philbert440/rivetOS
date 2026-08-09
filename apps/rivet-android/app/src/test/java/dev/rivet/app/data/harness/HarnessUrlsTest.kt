@@ -74,35 +74,36 @@ class HarnessUrlsTest {
     }
 
     @Test
-    fun `session websocket rides the query string with the token`() {
+    fun `session websocket carries the session and no credential`() {
         assertEquals(
             "ws://node.example:5174/api/harness-sessions/ws?session=$enc",
-            urls.sessionWs(sid, null),
-        )
-        assertEquals(
-            "ws://node.example:5174/api/harness-sessions/ws?session=$enc&token=s3cret",
-            urls.sessionWs(sid, "s3cret"),
+            urls.sessionWs(sid),
         )
     }
 
     @Test
     fun `registry websocket omits the harness filter when unset`() {
-        assertEquals("ws://node.example:5174/api/harnesses/ws", urls.harnessesWs(null, null))
+        assertEquals("ws://node.example:5174/api/harnesses/ws", urls.harnessesWs(null))
         assertEquals(
             "ws://node.example:5174/api/harnesses/ws?harness=kimi-code",
-            urls.harnessesWs("kimi-code", null),
+            urls.harnessesWs("kimi-code"),
         )
-        assertEquals(
-            "ws://node.example:5174/api/harnesses/ws?token=t",
-            urls.harnessesWs(" ", "t"),
-        )
+        assertEquals("ws://node.example:5174/api/harnesses/ws", urls.harnessesWs(" "))
+    }
+
+    @Test
+    fun `no websocket url can carry a token`() {
+        // The bearer rides the upgrade request's Authorization header. A regression
+        // that puts it back in the query would leak it into every proxy log.
+        assertFalse(urls.sessionWs(sid).contains("token"))
+        assertFalse(urls.harnessesWs("kimi-code").contains("token"))
     }
 
     @Test
     fun `https upgrades to wss`() {
         val secure = HarnessUrls("https://node.example")
-        assertTrue(secure.sessionWs(sid, null).startsWith("wss://node.example/"))
-        assertTrue(secure.harnessesWs(null, null).startsWith("wss://node.example/"))
+        assertTrue(secure.sessionWs(sid).startsWith("wss://node.example/"))
+        assertTrue(secure.harnessesWs(null).startsWith("wss://node.example/"))
     }
 
     @Test

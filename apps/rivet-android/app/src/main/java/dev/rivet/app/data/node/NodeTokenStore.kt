@@ -43,7 +43,12 @@ interface NodeTokenStore {
 abstract class KeyedNodeTokenStore : NodeTokenStore {
     protected abstract fun read(key: String): String?
 
-    protected abstract fun write(key: String, value: String)
+    /**
+     * [durable] asks the backing store to flush before returning. Used for the
+     * acceptance bit, whose loss silently downgrades a later rotation into
+     * "rejected"; a lost token is self-evident and just gets pasted again.
+     */
+    protected abstract fun write(key: String, value: String, durable: Boolean)
 
     protected abstract fun delete(vararg keys: String)
 
@@ -60,7 +65,7 @@ abstract class KeyedNodeTokenStore : NodeTokenStore {
         // acceptance bit resets. Without this, pasting a wrong token after a
         // working one would still read as "rotated", not "rejected".
         if (next != tokenFor(denUrl)) delete(authorizedKey(denUrl))
-        write(tokenKey(denUrl), next)
+        write(tokenKey(denUrl), next, durable = false)
     }
 
     final override fun remove(denUrl: String) {
@@ -71,7 +76,7 @@ abstract class KeyedNodeTokenStore : NodeTokenStore {
         read(authorizedKey(denUrl)) == ACCEPTED
 
     final override fun markAuthorized(denUrl: String) {
-        write(authorizedKey(denUrl), ACCEPTED)
+        write(authorizedKey(denUrl), ACCEPTED, durable = true)
     }
 
     companion object {
