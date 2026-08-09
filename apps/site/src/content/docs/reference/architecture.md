@@ -11,9 +11,9 @@ description: RivetOS as a harness-first per-node control plane
 > Last updated: 2026-08-09 (Phase 5 docs rewrite — harness control plane as product frame;
 > preserves accuracy from the #453 staleness sweep).
 >
-> Product plan: [plans/harness-control-plane.md](plans/harness-control-plane.md).
-> Engineering file map: [CODEBASE-REFERENCE.md](CODEBASE-REFERENCE.md).
-> Hub operator guide: [HUB-SETUP.md](HUB-SETUP.md).
+> Product plan: [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md).
+> Engineering file map: [CODEBASE-REFERENCE.md](https://github.com/philbert440/rivetOS/blob/main/docs/CODEBASE-REFERENCE.md).
+> Hub operator guide: [HUB-SETUP.md](/guides/hub-setup/).
 
 ---
 
@@ -184,7 +184,7 @@ SessionId = <harness-id> ":" <native-session-id>
 - **Rotation:** driver emits `session-updated` with `previousSessionId`; control plane stores alias, re-keys live subscriptions, retires old id from `listSessions`. Hermes is the real rotating customer; capture writes a durable breadcrumb (`metadata.kind='session-rotation'`). Registry aliases are in-memory — breadcrumb is the durable link across restarts.
 - **Tasks:** harness spawns write under canonical SessionId + `ros_conversations.task_id`; `Memory.getTaskHistory` unions by `task_id` **or** legacy `session_key = 'task:<id>'`. `RIVETOS_SESSION_KEY=task:<id>` write override is deprecated (still honored for in-flight deploys).
 
-Full normative rules: [plans/harness-control-plane.md](plans/harness-control-plane.md) § Session identity.
+Full normative rules: [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md) § Session identity.
 
 ### Gateway surface (as built)
 
@@ -212,7 +212,7 @@ den dispatches by literal path prefixes (no dynamic segments). Contract names ma
 
 ### Clients on the plane
 
-- **Hub chat** (`apps/rivethub-web`) — per-session bind via `@rivetos/gateway-client`; harness rows stream on harness WS; unclaimed rows keep legacy gateway chat. Capability-gated Stop; approvals false today. See [HUB-SETUP.md](HUB-SETUP.md).
+- **Hub chat** (`apps/rivethub-web`) — per-session bind via `@rivetos/gateway-client`; harness rows stream on harness WS; unclaimed rows keep legacy gateway chat. Capability-gated Stop; approvals false today. See [HUB-SETUP.md](/guides/hub-setup/).
 - **Desktop** — Tauri v2 shell over the same Hub dist.
 - **Android** — Kotlin re-implementation of the same semantics (`HarnessControlPlaneClient`, etc.); no on-device agent loop. Uploads UI and `session-created` fast path deferred.
 
@@ -301,7 +301,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 
 **Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types. **No plugin depends on `@rivetos/core`.** Providers reach the shared AI SDK adapter through `@rivetos/aisdk`.
 
-**What `boot` declares in `package.json`.** Four workspace packages are listed as direct dependencies of `boot` — `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, and `@rivetos/workflows` — so a default install always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the two that are also plugins — the claude-cli provider and the memory-postgres backend — are still registered the same way as every other plugin, through discovery and `manifest.register()`.
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot` — `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code` (the kimi task executor) — so a default install always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the two that are also plugins — the claude-cli provider and the memory-postgres backend — are still registered the same way as every other plugin, through discovery and `manifest.register()`.
 
 ---
 
@@ -487,14 +487,14 @@ rivetOS/
     rivet-android/               ← remote client
     den/                         ← den viewer SPA
     site/                        ← Astro docs site
-  integrations/                  ← capture + den hooks per harness (claude, grok, kimi, hermes)
+  integrations/                  ← capture + den hooks per harness (claude-code, grok, kimi, hermes)
 ```
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
 
 Skills are not part of the source tree — they are user-managed and live under the runtime workspace (default `~/.rivetos/workspace/skills/`). See [Skills](/guides/skills/).
 
-**Container roles:** the unified `rivetos` image accepts `--role agent | migrate` only. Datahub is upstream `pgvector/pgvector:pg16` — there is no custom datahub image. Flag `--role` wins over env `RIVETOS_ROLE` (env seeds; flag overwrites). Invalid `RIVETOS_ROLE` is not hard-validated and may fall through to the agent path.
+**Container roles:** the unified `rivetos` image accepts `--role agent | migrate` only. Datahub is upstream `pgvector/pgvector:pg16` — there is no custom datahub image. Flag `--role` wins over env `RIVETOS_ROLE` (env seeds; flag overwrites). An invalid `RIVETOS_ROLE` is rejected at startup — it fails loudly (`unknown role`, exit 1) rather than silently booting an agent.
 
 **Workers** are separate long-running processes (Compose profile `workers` or systemd), not "Datahub services". They pull jobs from a Postgres-backed graphile-worker queue (INSERT triggers + crons), not LISTEN/NOTIFY.
 
@@ -786,7 +786,7 @@ room state; the viewer (and Hub dens page) renders the room.
 - Protocol: `packages/den-protocol`
 - Server: `services/den-server`
 - Packs: `packages/den-packs`
-- Product overview: [DEN.md](DEN.md)
+- Product overview: [DEN.md](https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md)
 
 Default bind is loopback; set host + token for LAN. Mesh discovery via
 `GET /mesh.json` projects den-enabled roster entries (`capabilities` includes
@@ -938,10 +938,10 @@ When documenting mesh peers, use hostnames or documentation address space
 
 | Doc | Role |
 |-----|------|
-| [plans/harness-control-plane.md](plans/harness-control-plane.md) | Product plan + full As-built driver notes |
-| [HUB-SETUP.md](HUB-SETUP.md) | Build and point RivetHub at a node |
-| [CODEBASE-REFERENCE.md](CODEBASE-REFERENCE.md) | File-level map (#453 accuracy baseline) |
-| [DEN.md](DEN.md) | Den product / protocol entry |
+| [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md) | Product plan + full As-built driver notes |
+| [HUB-SETUP.md](/guides/hub-setup/) | Build and point RivetHub at a node |
+| [CODEBASE-REFERENCE.md](https://github.com/philbert440/rivetOS/blob/main/docs/CODEBASE-REFERENCE.md) | File-level map (#453 accuracy baseline) |
+| [DEN.md](https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md) | Den product / protocol entry |
 | [GETTING-STARTED.md](/guides/getting-started/) | Install paths |
 | [DEPLOYMENT.md](/guides/deployment/) | Docker / Proxmox / bare-metal |
 | [MEMORY-DESIGN.md](/reference/memory-design/) | Memory system design |

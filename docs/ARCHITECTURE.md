@@ -297,7 +297,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 
 **Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types. **No plugin depends on `@rivetos/core`.** Providers reach the shared AI SDK adapter through `@rivetos/aisdk`.
 
-**What `boot` declares in `package.json`.** Four workspace packages are listed as direct dependencies of `boot` — `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, and `@rivetos/workflows` — so a default install always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the two that are also plugins — the claude-cli provider and the memory-postgres backend — are still registered the same way as every other plugin, through discovery and `manifest.register()`.
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot` — `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code` (the kimi task executor) — so a default install always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the two that are also plugins — the claude-cli provider and the memory-postgres backend — are still registered the same way as every other plugin, through discovery and `manifest.register()`.
 
 ---
 
@@ -483,14 +483,14 @@ rivetOS/
     rivet-android/               ← remote client
     den/                         ← den viewer SPA
     site/                        ← Astro docs site
-  integrations/                  ← capture + den hooks per harness (claude, grok, kimi, hermes)
+  integrations/                  ← capture + den hooks per harness (claude-code, grok, kimi, hermes)
 ```
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
 
 Skills are not part of the source tree — they are user-managed and live under the runtime workspace (default `~/.rivetos/workspace/skills/`). See [Skills](SKILLS.md).
 
-**Container roles:** the unified `rivetos` image accepts `--role agent | migrate` only. Datahub is upstream `pgvector/pgvector:pg16` — there is no custom datahub image. Flag `--role` wins over env `RIVETOS_ROLE` (env seeds; flag overwrites). Invalid `RIVETOS_ROLE` is not hard-validated and may fall through to the agent path.
+**Container roles:** the unified `rivetos` image accepts `--role agent | migrate` only. Datahub is upstream `pgvector/pgvector:pg16` — there is no custom datahub image. Flag `--role` wins over env `RIVETOS_ROLE` (env seeds; flag overwrites). An invalid `RIVETOS_ROLE` is rejected at startup — it fails loudly (`unknown role`, exit 1) rather than silently booting an agent.
 
 **Workers** are separate long-running processes (Compose profile `workers` or systemd), not "Datahub services". They pull jobs from a Postgres-backed graphile-worker queue (INSERT triggers + crons), not LISTEN/NOTIFY.
 

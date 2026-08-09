@@ -4,12 +4,11 @@ sidebar:
   order: 3
 description: Build and point RivetHub at a RivetOS node gateway
 ---
-
 > Point Hub web (and desktop) at a RivetOS node gateway. Hub is the node's face —
 > not a separate agent runtime.
 >
-> Architecture frame: [ARCHITECTURE.md](ARCHITECTURE.md).
-> Control-plane plan: [plans/harness-control-plane.md](plans/harness-control-plane.md).
+> Architecture frame: [ARCHITECTURE.md](/reference/architecture/).
+> Control-plane plan: [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md).
 
 ---
 
@@ -198,7 +197,7 @@ Path + symlink fenced; large upload cap; recursive delete opt-in.
 
 ## MicBridge (optional)
 
-Host microphone as node input for voice harnesses. Design: [MICBRIDGE.md](MICBRIDGE.md).
+Host microphone as node input for voice harnesses. Design: [MICBRIDGE.md](https://github.com/philbert440/rivetOS/blob/main/docs/MICBRIDGE.md).
 den-server opt-in `RIVETOS_DEN_AUDIO=1`. Hub capture client is a later phase.
 
 ---
@@ -247,8 +246,8 @@ npx nx test @rivetos/rivethub-web
 
 ## Related
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — harness-first node OS
-- [DEN.md](DEN.md) — den viewer and protocol
-- [GETTING-STARTED.md](GETTING-STARTED.md) — install RivetOS
-- [DEPLOYMENT.md](DEPLOYMENT.md) — Docker / Proxmox / mesh
-- [plans/harness-control-plane.md](plans/harness-control-plane.md) — As-built hub binding
+- [ARCHITECTURE.md](/reference/architecture/) — harness-first node OS
+- [DEN.md](https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md) — den viewer and protocol
+- [GETTING-STARTED.md](/guides/getting-started/) — install RivetOS
+- [DEPLOYMENT.md](/guides/deployment/) — Docker / Proxmox / mesh
+- [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md) — As-built hub binding
