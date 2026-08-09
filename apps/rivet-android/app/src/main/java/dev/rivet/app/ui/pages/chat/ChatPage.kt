@@ -267,6 +267,20 @@ private fun ChatPageContent(
     var previewMode by rememberSaveable { mutableStateOf(false) }
     val hazeState = rememberHazeState()
 
+    // Control plane: a driver-owned thread has no local generation job, so its
+    // activity and its Stop button come off the harness tail instead.
+    val harnessGate by vm.harnessGate.collectAsStateWithLifecycle()
+    val harnessBusy by vm.harnessBusy.collectAsStateWithLifecycle()
+    val busy = loadingJob != null || harnessBusy
+    // Interrupt is the driver's own capability, not a UI preference: with no
+    // interrupt the composer keeps its send button and further turns simply
+    // queue behind the one in flight (the plane retries `turn_in_flight`).
+    val cancellable = if (harnessGate.bound) {
+        harnessBusy && harnessGate.canInterrupt
+    } else {
+        loadingJob != null
+    }
+
     TTSAutoPlay(vm = vm, setting = setting, conversation = conversation)
 
     Surface(
@@ -299,13 +313,13 @@ private fun ChatPageContent(
             bottomBar = {
                 ChatInput(
                     state = inputState,
-                    loading = loadingJob != null,
+                    loading = cancellable,
                     settings = setting,
                     conversation = conversation,
                     mcpManager = vm.mcpManager,
                     hazeState = hazeState,
                     onCancelClick = {
-                        vm.stopGeneration()
+                        if (harnessGate.bound) vm.interruptHarnessTurn() else vm.stopGeneration()
                     },
                     onSendClick = {
                         if (currentChatModel == null) {
@@ -370,7 +384,7 @@ private fun ChatPageContent(
                 innerPadding = innerPadding,
                 conversation = conversation,
                 state = chatListState,
-                loading = loadingJob != null,
+                loading = busy,
                 processingStatus = processingStatus,
                 previewMode = previewMode,
                 settings = setting,

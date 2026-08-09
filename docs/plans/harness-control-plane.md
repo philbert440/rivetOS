@@ -829,7 +829,7 @@ the same room, and its `emitActivity()` is a `message.agent` in that room.
 - [x] **Hub chat** binds the harness API (`apps/rivethub-web`) — see below
 - [ ] **Hub:** tasks / dens bind multi-harness API (not Claude-only)
 - [ ] Den: list all harness types under one naming scheme
-- [ ] **Android:** same gateway APIs — full remote parity (no on-device agent loop)
+- [x] **Android:** same gateway APIs — full remote parity (no on-device agent loop) — see As built (Android binding) below; uploads staging UI deferred
 
 ### As built (per-harness task executors)
 
@@ -952,6 +952,100 @@ Gaps this slice records rather than fixes:
   the first driver reporting `approvals: true` must also make pending
   approvals readable — a `GET` on the session, or approvals carried on the
   transcript — or every reconnect silently strands the harness.
+
+### As built (Android binding)
+
+`apps/rivet-android/app/src/main/java/dev/rivet/app/data/harness/` carries the
+Kotlin half of the contract — there is no shared client to reuse, because the
+app is Gradle/Kotlin and `@rivetos/gateway-client` is a TypeScript workspace
+member. It is a re-implementation of the same semantics, not a port of the
+code: `HarnessSessionIds` (parse on the first colon, `enc`/`dec` as unpadded
+base64url with round-trip tests over ids containing `:` and `/`),
+`HarnessUrls` (every path shape, pure so the "As built" table above is
+unit-tested), `HarnessControlPlaneClient` (OkHttp; bearer header on HTTP,
+`?token=` on the socket; one `HarnessHttpException` carrying the typed wire
+`code`), `HarnessFold`, `HarnessAttachment`, `HarnessPlane` and
+`HarnessTurnPolicy`.
+
+**Per session, not per app** — the same rule the hub follows. The drawer unions
+`GET /api/harnesses/:id/sessions` with the legacy `/api/terminal/harness-sessions`
+scan, keyed by bare native id with the control plane winning
+(`HarnessPlaneRepository`). A driver-owned row sends through `sendUserTurn`,
+tails `WS /api/harness-sessions/ws` and hard-resyncs its transcript on every
+open; every other row — a harness whose driver has not landed (`kimi-code`
+today), phone drafts, the local node — keeps the existing `/v1` provider
+binding byte for byte. Which harnesses those are is read off `GET
+/api/harnesses` at runtime, so `hermes` moved from one side to the other when
+#477 landed without a line of app code changing. A node with no driver
+registry answers 404, the descriptor list comes back empty, and the app behaves
+exactly as it did before. No toggle, no legacy mode to pick.
+
+The chat key stays the bare native id for the same reason it does on the hub,
+plus one more: on Android it is also the Room conversation UUID
+(`ChatService.parseHarnessSessionUuid`) and the Terminal escalate join key.
+
+Two things the app had to grow that the hub gets for free:
+
+- **The 15s transcript poll is off on a *streaming* thread.** `ChatVM` polled
+  `syncTranscriptToConversation` because Android had no push. A thread whose
+  driver reports `liveStream` has one, and the poll would fight the same rows —
+  so the poll skips on `gate.stream`, not on `bound`: a driver bound for send
+  but with no live tail still needs the poll. The gate is read off a flow, so a
+  stream that dies terminally un-binds the thread and the poll resumes by
+  itself. The legacy import and hard resync are guarded on
+  `harnessBinder.isBound` separately.
+- **A bound thread renders `transcript + pending user turns + live turn`**
+  (`HarnessChatBinder`, `ChatService.applyHarnessRender`). The transcript is
+  replaced wholesale on every resync — that is what hard resync means — so a
+  turn typed here that the store has not committed yet is carried alongside and
+  retired when it appears in the committed turns. Live `reasoning-delta` folds
+  into `UIMessagePart.Reasoning` with `finishedAt = null`, which is what makes
+  the existing chain-of-thought card render as still thinking; no new UI.
+
+Capability gating is the driver's flags, not a preference: Stop renders only
+when `interrupt` is true (with no interrupt the composer keeps its send button
+and further turns queue behind the one in flight), and no approval card exists
+because both PTY drivers report `approvals: false`.
+
+Gaps this slice records rather than fixes:
+
+- **No uploads staging UI.** `POST /api/uploads` is implemented in the client
+  (`HarnessControlPlaneClient.upload`) and turns accept `attachments`, but a
+  turn carrying files is refused with a message rather than silently sent as
+  its caption alone — `claude-code` and `grok-build` both answer
+  `capability_unsupported` for attachments regardless of staging, since a PTY
+  paste cannot hand a file to a TUI. The picker stays wired to the `/v1` path
+  it already had. First driver that speaks a real protocol unblocks both ends.
+- **No `session-created` fast path — the hub has one now and Android does
+  not.** #478 merges the registry stream's summary straight into the hub's
+  drawer cache; here `watchHarnesses` exists on the client and nothing
+  subscribes to it, so the drawer still re-reads on its 30s poll and a session
+  started elsewhere shows up late. Straight port, deliberately not bundled with
+  the binding itself.
+- **No `startSession` from the app.** "+ new" stays a local draft whose first
+  turn pins its id through the existing path; the control plane adopts it.
+- **Approval state is still unrecoverable**, and the app therefore logs
+  approval frames rather than rendering a card — the same Phase 3 driver
+  requirement recorded for the hub applies before any of this is worth
+  building.
+- **The node roster is still tokenless.** The client takes a bearer and puts it
+  on both transports, but `RosterNode` has no token field, so nothing supplies
+  one. A token-gated node needs that field plus a DataStore migration.
+- **No rotation re-key on the drawer.** A rotation follows the bound thread's
+  own socket (the registry re-keys live sinks), but the drawer's cached
+  snapshot only picks up the new canonical id on its next poll.
+- **CI never builds Android.** The suites below run locally only; see the
+  app's `AGENT.md` for the build host.
+
+Tests: `app/src/test/java/dev/rivet/app/data/harness/` — codec round-trips,
+URL shapes, wire parsing, plane selection and the error→behavior mapping, the
+fold, the attachment's resync/fatal ordering, the reconnect/terminal-handshake
+rules, and the bounded retry — plus
+`app/src/test/java/dev/rivet/app/service/HarnessChatBinderTest.kt` for the
+binder's own invariants: one sender at a time, one commit retires exactly one
+queued turn, an accepted-but-never-committed turn is reaped rather than left as
+a phantom bubble, and a fatal stream clears the gate and the live turn so the
+composer frees and the legacy poll resumes. `./gradlew :app:testPhilDebugUnitTest`.
 
 ---
 

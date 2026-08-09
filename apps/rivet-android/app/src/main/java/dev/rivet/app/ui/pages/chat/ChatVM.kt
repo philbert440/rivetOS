@@ -13,9 +13,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
@@ -27,6 +29,7 @@ import dev.rivet.ai.ui.isEmptyInputMessage
 import dev.rivet.app.R
 import dev.rivet.app.data.datastore.NodeRosterDefaults
 import dev.rivet.app.data.datastore.Settings
+import dev.rivet.app.data.harness.HarnessGate
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.data.datastore.getAssistantById
 import dev.rivet.app.data.datastore.getCurrentAssistant
@@ -82,12 +85,35 @@ class ChatVM(
         .getConversationJobs()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
+    /**
+     * Control-plane capabilities for this thread. `bound = false` (the default)
+     * means a registered driver does not claim it and every legacy behavior
+     * stays exactly as it was — the `/v1` send, the 15s transcript poll, no
+     * Stop button.
+     */
+    /**
+     * Observed, never snapshotted: a stream that dies terminally un-binds the
+     * thread, and a `bound = true` frozen at bind time would keep the legacy
+     * poll suppressed and keep a Stop button over a dead socket.
+     */
+    val harnessGate: StateFlow<HarnessGate> = chatService.harnessGateFlow(_conversationId)
+
+    /** True while a bound thread has a turn in flight worth a Stop button. */
+    val harnessBusy: StateFlow<Boolean> = chatService.harnessBinder
+        .liveFlow(_conversationId)
+        .map { it?.isBusy == true }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     init {
         // 添加对话引用
         chatService.addConversationReference(_conversationId)
 
         // 初始化对话
         viewModelScope.launch {
+            // Bind before the first import: a driver-owned row hard-resyncs
+            // through its own attachment, and the legacy import would race it.
+            // The gate itself is read off the flow above, not from this call.
+            chatService.bindHarnessSession(_conversationId)
             chatService.initializeConversation(_conversationId)
             applyLastUsedModel()
         }
@@ -96,9 +122,16 @@ class ChatVM(
         // while RivetHub desktop continues the same session. Soft sync only
         // (skips when already matching / generation active). Local CLI mirror
         // still runs via ON_RESUME + menu resync — not this poll.
+        //
+        // A bound thread never polls: its socket pushes and every (re)open
+        // hard-resyncs, which is the contract's own recovery for a tail that
+        // carries no replay.
         viewModelScope.launch {
             while (isActive) {
                 delay(REMOTE_HARNESS_SYNC_MS)
+                // Live-read the gate: a stream that dies terminally clears it,
+                // and the poll is this thread's only remaining source of turns.
+                if (harnessGate.value.stream) continue
                 val den = settingsStore.settingsFlowRaw.first().activeNodeDenUrl
                 if (den.isBlank() || NodeRosterDefaults.isLocalDenUrl(den)) continue
                 chatService.syncTranscriptToConversation(_conversationId)
@@ -134,8 +167,20 @@ class ChatVM(
 
     override fun onCleared() {
         super.onCleared()
+        // Detach the control-plane tail and cancel any pending turn retry —
+        // leaving a thread must not keep a socket or a backoff timer alive.
+        chatService.unbindHarnessSession(_conversationId)
         // 移除对话引用
         chatService.removeConversationReference(_conversationId)
+    }
+
+    /**
+     * Cancel the in-flight turn. Capability-gated: shown only when the driver
+     * reports `interrupt`, because a false flag answers 501.
+     */
+    fun interruptHarnessTurn() {
+        if (!harnessGate.value.canInterrupt) return
+        viewModelScope.launch { chatService.interruptHarnessSession(_conversationId) }
     }
 
     // 用户设置
