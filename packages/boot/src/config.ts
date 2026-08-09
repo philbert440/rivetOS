@@ -163,6 +163,30 @@ export interface TasksSection {
   pricing?: Record<string, { input_per_mtok?: number; output_per_mtok?: number }>
   /** Phase-2 evaluation loop — dark by default; independent of `enabled`. */
   eval?: TasksEvalSection
+  /**
+   * Per-harness settings for the `harness-session` executors, keyed by HARNESS
+   * id (`claude-code | grok-build | kimi-code | hermes`).
+   *
+   * Only harnesses whose executor reads it are affected; `claude-code` keeps
+   * taking its binary from `providers.claude-cli` because the provider plugin
+   * that owns the binary really is named that. `kimi-code` has no provider, so
+   * this is where its binary lives.
+   */
+  harnesses?: Record<string, HarnessExecutorSection>
+}
+
+/** `tasks.harnesses.<harness-id>` — one harness's executor settings. */
+export interface HarnessExecutorSection {
+  /** Path to the harness CLI (default: the harness's own name on PATH). */
+  binary?: string
+  /** Default model alias for tasks that do not pin one. */
+  model?: string
+  /** Default reasoning effort for tasks that do not pin one. */
+  effort?: 'low' | 'medium' | 'high'
+  /** Default working directory (default: the workspace dir). */
+  cwd?: string
+  /** CLI home override (e.g. KIMI_CODE_HOME) for task spawns. */
+  home?: string
 }
 
 /**
