@@ -15,10 +15,23 @@
  * does not claim keep the legacy binding verbatim until their driver lands
  * (Phase 3) — no user-facing toggle, no legacy mode to pick.
  *
- * Chat keys stay the BARE NATIVE id, not the canonical `SessionId`: it is the
- * den join key that the PTY, the den viewer (`?session=`), the transcript
- * watch and the memory conversation key are all filed under. The canonical id
- * rides alongside on the item and is what every control-plane call uses.
+ * Chat keys are the canonical `SessionId` for every row the plane claims —
+ * the identity table's "Hub chat → thread external key = SessionId". The den
+ * keeps its own key space (the room key a PTY runs under, which IS the native
+ * id), and den-server resolves a canonical id onto it at every edge, so one
+ * key drives the PTY, the transcript watch, the ring and the memory
+ * conversation without anything being dual-keyed here.
+ *
+ * Precedence for what stays bare (§ Legacy keys): a `draft` has no harness yet
+ * — its id is a locally minted uuid that the first spawn pins — and a `legacy`
+ * row is one no registered driver claimed, which by construction has no
+ * harness id to canonicalize with. With all four drivers registered every
+ * on-disk row IS claimed, so `legacy` is the degraded path (a node with
+ * drivers disabled, a plane fetch that failed), not the normal one.
+ *
+ * The union itself still joins on the NATIVE id, because that is the only
+ * field the two lists share: a legacy row carries a roster token, not a
+ * harness id.
  */
 
 import {
@@ -41,11 +54,17 @@ export type ChatItemKind =
   | 'legacy'
 
 export interface ChatItem {
-  /** Den join key = bare native session id. Chat state is filed under this. */
+  /**
+   * Thread key. Chat state (store records, persisted name/settings, the
+   * drawer's React key, `active`) is filed under this. Canonical
+   * `<harness-id>:<native>` for `harness` rows; the bare native id for
+   * `draft` and `legacy` rows, which have no harness id to canonicalize with.
+   */
   key: string
   kind: ChatItemKind
   title: string
-  /** Canonical `<harness-id>:<native>` — set for `harness` rows only. */
+  /** Canonical `<harness-id>:<native>` — set for `harness` rows only, where
+   *  it is also `key`. */
   sessionId?: SessionId
   harnessId?: HarnessId
   /** Den roster command ('claude', 'grok', …) — PTY spawn + accent color. */
@@ -79,8 +98,24 @@ export function nativeIdOf(sessionId: string): string | undefined {
 
 /** Drawer badge suffix — enough of the native id to tell two rows apart. */
 export function shortNativeId(key: string): string {
-  const tail = key.slice(-6)
-  return tail.length < key.length ? `…${tail}` : key
+  const native = nativeIdOf(key) ?? key
+  const tail = native.slice(-6)
+  return tail.length < native.length ? `…${tail}` : native
+}
+
+/**
+ * The den's key for a thread: its room key, which IS the native id.
+ *
+ * The identity table canonicalizes hub chat's thread key, not the den's room
+ * key — a room is a den-v1 concept that predates the harness contract and
+ * holds plenty of non-harness strings. den-server accepts either shape on
+ * every session-keyed edge, so this only matters where the hub hands an id to
+ * something OUTSIDE den-server: the den viewer iframe's `?session=`, which is
+ * read by the viewer bundle and matched against the room keys in its own
+ * snapshot.
+ */
+export function denRoomKey(chatKey: string): string {
+  return nativeIdOf(chatKey) ?? chatKey
 }
 
 /**
@@ -94,16 +129,21 @@ export function chatItems(input: {
   legacySessions: HarnessSession[]
 }): ChatItem[] {
   const legacyByKey = new Map(input.legacySessions.map((s) => [s.id, s] as const))
+  // Keyed by NATIVE id: it is the only field both lists carry, so it is what
+  // decides "these two rows are one session". The row's own `key` (canonical
+  // for a claimed row) is a field on the value, not this map's key — a draft
+  // and a legacy row are still deduped against the plane row that adopted
+  // them, which is what keeps the drawer from double-rendering a session.
   const items = new Map<string, ChatItem>()
 
   for (const summary of input.harnessSessions) {
-    const key = nativeIdOf(summary.sessionId)
-    if (key === undefined) continue // a malformed id is the node's bug, not a row
-    const legacy = legacyByKey.get(key)
-    items.set(key, {
-      key,
+    const native = nativeIdOf(summary.sessionId)
+    if (native === undefined) continue // a malformed id is the node's bug, not a row
+    const legacy = legacyByKey.get(native)
+    items.set(native, {
+      key: summary.sessionId,
       kind: 'harness',
-      title: summary.title ?? legacy?.title ?? key,
+      title: summary.title ?? legacy?.title ?? native,
       sessionId: summary.sessionId,
       harnessId: summary.harnessId,
       command: legacy?.command ?? ROSTER_COMMAND[summary.harnessId],
@@ -128,6 +168,24 @@ export function chatItems(input: {
     .filter((id) => !items.has(id))
     .map((id) => ({ key: id, kind: 'draft', title: 'new conversation', updatedAt: 0 }))
   return [...drafts, ...listed]
+}
+
+/**
+ * The row that owns a thread key, tolerating a key that has since been
+ * canonicalized (or rotated) underneath the selection.
+ *
+ * A draft is a bare uuid until the plane adopts it; adoption replaces the row
+ * with a canonical-keyed one, and rotation replaces the native half outright.
+ * Both leave `active` pointing at a key no row carries any more — the exact
+ * back-compat case a deep link into an old bare id also hits. Match on the
+ * key first, then on the native half, which survives adoption.
+ */
+export function findChatItem(items: ChatItem[], key: string | undefined): ChatItem | undefined {
+  if (key === undefined) return undefined
+  const exact = items.find((it) => it.key === key)
+  if (exact) return exact
+  const native = denRoomKey(key)
+  return items.find((it) => it.key !== key && denRoomKey(it.key) === native)
 }
 
 /**

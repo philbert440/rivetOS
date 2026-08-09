@@ -73,6 +73,7 @@ import { createHermesStoreHost } from './harness/hermes-store.js'
 import { KimiCodeDriver } from './harness/kimi-driver.js'
 import { createKimiStoreHost } from './harness/kimi-store.js'
 import { createHarnessRoutes } from './harness/routes.js'
+import { denJoinKey } from './harness/session-key.js'
 import { createUploadRoutes } from './harness/uploads.js'
 import {
   startAliasRestore,
@@ -930,7 +931,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       }
 
       if (req.method === 'DELETE' && url.pathname === '/session') {
-        const id = url.searchParams.get('session')
+        // Rooms are keyed by the den join key; a caller keyed on canonical
+        // SessionIds (hub chat) resolves to the same room (§ Legacy keys).
+        const raw = url.searchParams.get('session')
+        const id = raw ? denJoinKey(raw) : raw
         if (!id) return json(res, 404, { error: 'unknown session' })
         // a PTY linked to the session dies with the room — removing the room
         // while its terminal keeps running would leak an invisible shell
@@ -1006,13 +1010,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               ? Math.min(hi, Math.max(lo, Math.floor(v)))
               : dflt
           try {
+            // The PTY's den session IS the room key, so a canonical SessionId
+            // from a hub keyed on the identity table resolves to the same
+            // room, store filename and `--resume` id a bare native id would
+            // (§ Legacy keys).
             const pty = manager.spawn(
               p.command,
               clamp(p.cols, 20, 500, 80),
               clamp(p.rows, 5, 200, 24),
               req.socket.remoteAddress ?? '',
-              p.session,
-              p.resume,
+              p.session === undefined ? undefined : denJoinKey(p.session),
+              p.resume === undefined ? undefined : denJoinKey(p.resume),
             )
             return json(res, 201, {
               id: pty.id,
@@ -1086,7 +1094,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             return json(res, 400, { error: 'session (string) is required' })
           if (typeof p.text !== 'string')
             return json(res, 400, { error: 'text (string) is required' })
-          const ptyId = manager.ptyForSession(p.session)
+          const ptyId = manager.ptyForSession(denJoinKey(p.session))
           if (!ptyId) return json(res, 409, { error: 'no live harness for session' })
           const submit = p.submit !== false // default true
           const interrupt = p.interrupt === true // Esc the in-flight turn first
@@ -1097,10 +1105,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       }
 
       if (req.method === 'GET' && url.pathname === '/state') {
-        const id = url.searchParams.get('session')
+        // Echo the id the caller asked with, like the transcript read and the
+        // transcript watch do — resolution to the room stays internal, so a
+        // client keyed on canonical SessionIds can match the response to its
+        // thread. (`DELETE /session` below cannot do the same: its
+        // `session.removed` broadcast addresses den VIEWERS, which key on
+        // rooms, so that one is necessarily the resolved key.)
+        const rawId = url.searchParams.get('session')
+        const id = rawId ? denJoinKey(rawId) : rawId
         const room = id ? (state.rooms[id] as typeof initialRoomState | undefined) : undefined
-        if (!id || !room) return json(res, 404, { error: 'unknown session' })
-        return json(res, 200, { session: id, state: room })
+        if (!rawId || !id || !room) return json(res, 404, { error: 'unknown session' })
+        return json(res, 200, { session: rawId, state: room })
       }
 
       if (url.pathname === '/layout') {
@@ -1172,7 +1187,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   })
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
-    const session = url.searchParams.get('session') ?? undefined
+    // Room scope for this viewer. Canonical SessionIds resolve to their room
+    // so an identity-table-keyed client subscribes to the same events.
+    const rawSession = url.searchParams.get('session')
+    const session = rawSession ? denJoinKey(rawSession) : undefined
     const client: Client = { ws, session, alive: true }
     clients.add(client)
     // without an error listener one ECONNRESET from a dropped viewer is an
