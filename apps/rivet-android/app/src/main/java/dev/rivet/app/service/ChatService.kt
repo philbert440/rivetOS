@@ -26,6 +26,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -54,6 +56,12 @@ import dev.rivet.ai.ui.finishReasoning
 import dev.rivet.ai.ui.isEmptyInputMessage
 import dev.rivet.common.android.Logging
 import dev.rivet.app.AppScope
+import dev.rivet.app.data.harness.HarnessChatRow
+import dev.rivet.app.data.harness.HarnessGate
+import dev.rivet.app.data.harness.HarnessPlaneRepository
+import dev.rivet.app.data.harness.HarnessTranscriptTurn
+import dev.rivet.app.data.harness.LiveTurn
+import java.io.IOException
 import dev.rivet.app.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
 import dev.rivet.app.CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID
 import dev.rivet.app.R
@@ -327,11 +335,156 @@ class ChatService(
      */
     suspend fun listRemoteHarnessSessions(): List<DenHarnessClient.Session> =
         withContext(Dispatchers.IO) {
-            val settings = settingsStore.settingsFlowRaw.first()
-            val den = settings.activeNodeDenUrl.ifBlank { return@withContext emptyList() }
-            if (NodeRosterDefaults.isLocalDenUrl(den)) return@withContext emptyList()
+            val den = remoteDenUrl() ?: return@withContext emptyList()
             DenHarnessClient.tryList(den)
         }
+
+    // ---- harness control plane (docs/plans/harness-control-plane.md) ----
+    //
+    // Per-session plane selection, matching RivetHub web: a row a registered
+    // driver claims sends/streams/resyncs through /api/harness-sessions, and
+    // every other row — unclaimed harnesses, phone drafts, the local node —
+    // keeps the existing /v1 provider binding byte for byte. A node with no
+    // driver registry answers 404, the descriptor list is empty, and nothing
+    // about this app changes. There is no toggle and no legacy mode to pick.
+
+    /** Active den origin when the active node is remote, else null. */
+    private suspend fun remoteDenUrl(): String? {
+        val den = settingsStore.settingsFlowRaw.first().activeNodeDenUrl
+        if (den.isBlank() || NodeRosterDefaults.isLocalDenUrl(den)) return null
+        return den
+    }
+
+    /** Rows + capability sheets for the active node (control plane ∪ legacy). */
+    val harnessPlane = HarnessPlaneRepository(remoteDenUrl = { remoteDenUrl() })
+
+    /** Binds the open thread to its driver when one claims it. */
+    val harnessBinder = HarnessChatBinder(
+        scope = appScope,
+        plane = harnessPlane,
+        render = { id, snapshot -> applyHarnessRender(id, snapshot) },
+        onFatal = { id, message ->
+            addError(IOException(message), id, title = "Harness session")
+        },
+    )
+
+    /**
+     * Drawer rows for the active remote den. A superset of
+     * [listRemoteHarnessSessions]: driver-owned rows carry a canonical
+     * SessionId and a real status, everything else is the same legacy scan.
+     */
+    suspend fun remoteChatRows(force: Boolean = false): List<HarnessChatRow> =
+        harnessPlane.snapshot(maxAgeMs = if (force) 0L else 10_000L).rows
+
+    /** Attach [conversationId] to its driver; CLOSED means "stay on legacy". */
+    suspend fun bindHarnessSession(conversationId: Uuid): HarnessGate =
+        harnessBinder.bind(conversationId)
+
+    fun unbindHarnessSession(conversationId: Uuid) = harnessBinder.unbind(conversationId)
+
+    /**
+     * This thread's capabilities as a flow — never a snapshot. A stream that
+     * dies terminally un-binds the thread, and a caller holding a stale
+     * `bound = true` would keep suppressing the legacy poll.
+     */
+    fun harnessGateFlow(conversationId: Uuid): StateFlow<HarnessGate> =
+        harnessBinder.gateFlow(conversationId)
+
+    fun harnessGate(conversationId: Uuid): HarnessGate = harnessBinder.gate(conversationId)
+
+    /**
+     * Detach every bound thread. The active node's rows are meaningless on a
+     * different node, and a socket left tailing the old one would keep writing
+     * its turns into a conversation the user is no longer looking at.
+     */
+    fun onActiveNodeChanged() {
+        harnessBinder.unbindAll()
+        harnessPlane.invalidate()
+    }
+
+    init {
+        // Watch the setting rather than the switcher: `activeNodeDenUrl` also
+        // moves on roster removal and on the local fallback, and a binding that
+        // survived any of those would keep writing the old node's turns into an
+        // open thread. `drop(1)` skips the initial value — that is not a switch.
+        appScope.launch {
+            settingsStore.settingsFlowRaw
+                .map { it.activeNodeDenUrl }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { onActiveNodeChanged() }
+        }
+    }
+
+    /** Cancel the in-flight turn — only when the driver reports `interrupt`. */
+    suspend fun interruptHarnessSession(conversationId: Uuid) =
+        harnessBinder.interrupt(conversationId)
+
+    /**
+     * Repaint a bound thread: committed transcript, then turns typed here the
+     * store has not caught up with, then the turn in flight.
+     *
+     * The transcript is replaced wholesale — that is what "hard resync" means,
+     * and merging would let a gap in the at-most-once tail survive as a
+     * permanently wrong thread.
+     */
+    private suspend fun applyHarnessRender(conversationId: Uuid, snapshot: HarnessRender) {
+        val settings = settingsStore.settingsFlowRaw.first()
+        val modelId = modelUuidForHarnessCommand(snapshot.harnessCommand.orEmpty().ifBlank { "claude" })
+        val nodes = ArrayList<MessageNode>()
+        for (turn in snapshot.turns) {
+            val message = harnessTurnMessage(turn, modelId) ?: continue
+            nodes.add(message.toMessageNode())
+        }
+        for (text in snapshot.pendingUser) {
+            nodes.add(UIMessage.user(text).toMessageNode())
+        }
+        harnessLiveMessage(snapshot.live, modelId)?.let { nodes.add(it.toMessageNode()) }
+
+        getOrCreateSession(conversationId)
+        val existing = getConversationFlow(conversationId).value
+        val conversation = existing.copy(
+            title = existing.title.ifBlank {
+                snapshot.turns.firstOrNull { it.role == "user" && it.text.isNotBlank() }
+                    ?.text?.trim()?.take(80).orEmpty()
+            },
+            messageNodes = nodes,
+            updateAt = java.time.Instant.now(),
+            newConversation = false,
+        )
+        saveConversation(conversationId, conversation)
+    }
+
+    /** One committed turn → a UI message, thinking included when the store has it. */
+    private fun harnessTurnMessage(turn: HarnessTranscriptTurn, modelId: Uuid): UIMessage? {
+        val parts = ArrayList<UIMessagePart>()
+        if (turn.role == "assistant" && !turn.thinking.isNullOrBlank()) {
+            parts.add(UIMessagePart.Reasoning(reasoning = turn.thinking))
+        }
+        if (turn.text.isNotBlank()) parts.add(UIMessagePart.Text(turn.text))
+        if (parts.isEmpty()) return null
+        return if (turn.role == "assistant") {
+            UIMessage(role = MessageRole.ASSISTANT, parts = parts).copy(modelId = modelId)
+        } else {
+            UIMessage(role = MessageRole.USER, parts = parts)
+        }
+    }
+
+    /**
+     * The live turn as a trailing assistant bubble. `finishedAt = null` on the
+     * reasoning part is what makes the existing chain-of-thought card render as
+     * still thinking, so live `reasoning-delta` shows without new UI.
+     */
+    private fun harnessLiveMessage(live: LiveTurn?, modelId: Uuid): UIMessage? {
+        if (live == null || !live.isBusy) return null
+        val parts = ArrayList<UIMessagePart>()
+        if (live.reasoningText.isNotBlank()) {
+            parts.add(UIMessagePart.Reasoning(reasoning = live.reasoningText, finishedAt = null))
+        }
+        if (live.text.isNotBlank()) parts.add(UIMessagePart.Text(live.text))
+        if (parts.isEmpty()) return null
+        return UIMessage(role = MessageRole.ASSISTANT, parts = parts).copy(modelId = modelId)
+    }
 
     /**
      * Import (or refresh) a remote harness session into Room and the live
@@ -411,6 +564,12 @@ class ChatService(
      *   phone is open). Never deletes phone-only /v1 turns; use force for hard reconcile.
      */
     private suspend fun maybeImportHarnessTranscript(conversationId: Uuid, force: Boolean = false) {
+        // A bound thread is owned by the control plane: its transcript arrives
+        // on hard resync and this poll would fight the same rows.
+        if (harnessBinder.isBound(conversationId)) {
+            if (force) harnessBinder.resync(conversationId)
+            return
+        }
         val settings = settingsStore.settingsFlowRaw.first()
         val den = settings.activeNodeDenUrl
         if (den.isBlank() || NodeRosterDefaults.isLocalDenUrl(den)) return
@@ -531,6 +690,13 @@ class ChatService(
 
     fun sendMessage(conversationId: Uuid, content: List<UIMessagePart>, answer: Boolean = true) {
         if (content.isEmptyInputMessage()) return
+        // Control plane owns this thread: the driver records the turn and the
+        // tail + transcript paint it, so there is no local append and no /v1
+        // run to cancel or queue behind.
+        if (harnessBinder.isBound(conversationId)) {
+            sendBoundHarnessTurn(conversationId, content)
+            return
+        }
 
         val session = getOrCreateSession(conversationId)
         val previousJob = session.getJob()
@@ -577,6 +743,36 @@ class ChatService(
         // cancelPrevious=false: for agent-session conversations the previous job must keep
         // running (the new job queues behind it above); for others we cancel inside the job.
         session.setJob(job, cancelPrevious = false)
+    }
+
+    /**
+     * Send one turn on a bound thread.
+     *
+     * Attachments are refused rather than dropped: both PTY drivers answer
+     * `capability_unsupported` for a turn carrying files (a paste has no way to
+     * hand a file to a TUI), and silently sending only the caption would be a
+     * different message than the one the user wrote. Staging through
+     * `POST /api/uploads` is wired in the client and waits on a driver that can
+     * consume a staged URI.
+     */
+    private fun sendBoundHarnessTurn(conversationId: Uuid, content: List<UIMessagePart>) {
+        val text = content.filterIsInstance<UIMessagePart.Text>()
+            .joinToString("\n") { it.text }
+            .trim()
+        val hasAttachments = content.any { it !is UIMessagePart.Text }
+        appScope.launch {
+            if (hasAttachments) {
+                addError(
+                    IOException(context.getString(R.string.harness_attachments_unsupported)),
+                    conversationId,
+                    title = context.getString(R.string.harness_session_title),
+                )
+                return@launch
+            }
+            if (text.isEmpty()) return@launch
+            harnessBinder.send(conversationId, text)
+            _generationDoneFlow.emit(conversationId)
+        }
     }
 
     // True when this conversation's model goes through the Rivet agent-session provider
@@ -1434,6 +1630,11 @@ class ChatService(
      */
     suspend fun resyncTranscriptToConversation(conversationId: Uuid) {
         runCatching {
+            // Bound: the control plane's own hard resync is the full replace.
+            if (harnessBinder.isBound(conversationId)) {
+                harnessBinder.resync(conversationId)
+                return
+            }
             // Remote: harness store is the single source of truth (desktop parity). Full replace.
             if (isRemoteActiveNode()) {
                 val imported = importHarnessSession(
