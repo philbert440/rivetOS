@@ -370,16 +370,16 @@ export class ClaudeCodeDriver implements HarnessDriver {
   // -- streams -------------------------------------------------------------
 
   /**
-   * ⚠️ PHASE 3 OBLIGATION — subscriptions do not yet follow rotation.
-   *
-   * The sink is pinned to the native id it was registered under. The contract
-   * says an active subscription follows the alias chain (§ Contract semantics),
-   * and it does not here. That is unobservable today only because Claude Code
-   * never rotates its native session id — it is a latent violation, not a
-   * design choice. Before ANY rotating driver lands (hermes is the first), the
-   * registry must re-key live sinks when it records an alias, mark the
-   * superseded id ended, and a shared contract test must cover it. See
-   * docs/plans/harness-control-plane.md § Phase 3 obligations.
+   * The sink is pinned to the native id it was registered under, and that is
+   * correct for a driver: **rotation is control-plane work.** The registry's
+   * `subscribeSession` wraps this call and re-keys the sink onto the canonical
+   * id when it records an alias, so the client's subscription survives a
+   * rotation without the driver ever consulting the alias store
+   * (`registry.ts` → `rekey`; § Contract semantics, "Subscriptions survive
+   * rotation"). Claude Code never rotates its native id anyway; a driver that
+   * does — hermes first — needs nothing here beyond emitting `session-updated`
+   * with `previousSessionId`, and proves it by running the shared conformance
+   * suite in `harness/test/driver-conformance.ts`.
    */
   subscribe(sessionId: SessionId, sink: (e: HarnessEvent) => void): () => void {
     if (!this.capabilities.liveStream) {

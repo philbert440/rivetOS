@@ -60,7 +60,6 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import {
   HarnessError,
   decodeSessionIdSegment,
-  formatSessionId,
   type ApprovalDecision,
   type HarnessEvent,
   type HarnessTranscriptTurn,
@@ -289,7 +288,9 @@ export function createHarnessRoutes(opts: {
         )
       }
       try {
-        return json(res, 200, { sessions: await driver.listSessions() })
+        // Through the registry, not the driver: superseded ids must never
+        // reach a client (§ Contract semantics, canonical-only listSessions).
+        return json(res, 200, { sessions: await registry.listSessions(harnessId) })
       } catch (err) {
         return fail(res, err)
       }
@@ -313,20 +314,11 @@ export function createHarnessRoutes(opts: {
         return json(res, 400, { error: 'metadata must be a string map' })
       }
       // Alias chains occupy the namespace: a pinned id anywhere in one is a
-      // collision even if the harness store itself has forgotten it.
+      // collision even if the harness store itself has forgotten it. The rule
+      // is control-plane-owned, so the registry enforces it.
       if (typeof nativeSessionId === 'string') {
         try {
-          const pinned = formatSessionId(harnessId, nativeSessionId)
-          if (registry.knows(pinned)) {
-            return fail(
-              res,
-              new HarnessError(
-                'session_id_collision',
-                `${pinned} is already part of an alias chain`,
-                { harnessId, sessionId: pinned },
-              ),
-            )
-          }
+          registry.assertPinnable(harnessId, nativeSessionId)
         } catch (err) {
           return fail(res, err)
         }
@@ -558,7 +550,10 @@ export function createHarnessRoutes(opts: {
               ws.close()
               return
             }
-            attach(ws, (sink) => target.driver.subscribe(target.sessionId, sink))
+            // Registry, not driver: the tail must follow the alias chain, so
+            // a rotation mid-stream never costs the client its socket
+            // (§ Contract semantics, "Subscriptions survive rotation").
+            attach(ws, (sink) => registry.subscribeSession(target.sessionId, sink))
           })()
         })
         return true

@@ -106,6 +106,27 @@ describe('alias store', () => {
     )
   })
 
+  it('accepts an idempotent re-record but refuses a second successor', () => {
+    const store = createAliasStore()
+    const a = `claude-code:${UUID}` as SessionId
+    const b = `claude-code:${UUID2}` as SessionId
+    const c = `claude-code:${UUID3}` as SessionId
+    store.record(a, b)
+    store.record(a, b) // the driver repeated itself — no-op, not an error
+
+    // Re-pointing a already rotated once would strand every live tail on `b`
+    // and retire `a` twice, so the store refuses instead of overwriting.
+    let thrown: unknown
+    try {
+      store.record(a, c)
+    } catch (err) {
+      thrown = err
+    }
+    expect((thrown as HarnessError).code).toBe('session_id_collision')
+    expect(store.resolve(a)).toBe(b)
+    expect(store.knows(c)).toBe(false)
+  })
+
   it('rejects a cross-harness alias', () => {
     const store = createAliasStore()
     expect(() =>
