@@ -20,7 +20,7 @@
 
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ApprovalDecision, SessionMessage } from '@rivetos/types'
+import type { ApprovalDecision, HarnessSessionSummary, SessionMessage } from '@rivetos/types'
 import { uuidv4 } from '../lib/uuid.js'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
@@ -35,6 +35,7 @@ import { questionsFromLiveTools } from '../lib/ask-user.js'
 import { harnessAccent } from '../lib/harness-colors.js'
 import { attachHarnessSession } from '../lib/harness-attach.js'
 import {
+  applyRegistryEventToPlaneSessions,
   chatItems,
   fetchHarnessPlaneSessions,
   harnessGate,
@@ -123,8 +124,16 @@ export function ChatPage(): JSX.Element {
   // Control-plane sessions, one list per registered driver. A node with no
   // drivers (older den-server) simply returns nothing and the drawer falls
   // back to the legacy scan alone — that is the no-regression path.
+  // Key is shared with the registry-stream merge path below — setQueryData
+  // must hit the same entry the useQuery reads.
+  const planeQueryKey = [
+    'harness-plane-sessions',
+    baseUrl,
+    token ?? '',
+    descriptors?.length ?? 0,
+  ] as const
   const planeQuery = useQuery({
-    queryKey: ['harness-plane-sessions', baseUrl, token ?? '', descriptors?.length ?? 0],
+    queryKey: planeQueryKey,
     queryFn: ({ signal }) =>
       fetchHarnessPlaneSessions(useConnection.getState().gateway, descriptors, signal),
     enabled: connected && (descriptors?.length ?? 0) > 0,
@@ -141,16 +150,28 @@ export function ChatPage(): JSX.Element {
 
   // Registry stream: `session-created` / `session-updated` across every driver
   // so the drawer live-updates instead of polling (contract § gateway surface).
+  // Fast path: merge the carried summary (or status patch) into the plane
+  // session list cache so new/updated rows paint before the refetch returns.
+  // Invalidation stays as reconciliation — a missed event, a partial cache,
+  // or a server-side field the event does not carry still heals on the next
+  // list fetch. Merged rows are full HarnessSessionSummary values (same shape
+  // as listSessions), so plane-selection (`harnessGate`) cannot tell them apart.
   const hasDrivers = (descriptors?.length ?? 0) > 0
   useEffect(() => {
     if (!connected || !hasDrivers) return
     const sub = useConnection.getState().gateway.watchHarnesses((event) => {
-      if (event.type === 'session-created' || event.type === 'session-updated') {
-        invalidateSessions()
-      }
+      if (event.type !== 'session-created' && event.type !== 'session-updated') return
+      queryClient.setQueryData<HarnessSessionSummary[]>(planeQueryKey, (prev) =>
+        applyRegistryEventToPlaneSessions(prev, event),
+      )
+      // Fallback / reconciliation: refetch still runs so a raced merge cannot
+      // leave the cache permanently wrong relative to the node.
+      invalidateSessions()
     })
     return () => sub.close()
-  }, [connected, hasDrivers, baseUrl, token, queryClient])
+    // planeQueryKey fields are baseUrl/token/descriptors.length — listed
+    // explicitly so the effect rebinds when the endpoint or driver set changes.
+  }, [connected, hasDrivers, baseUrl, token, queryClient, descriptors?.length])
 
   if (!connected) return <NotConnected />
 
