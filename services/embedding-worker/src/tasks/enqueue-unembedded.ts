@@ -15,8 +15,9 @@
  *   - are not terminal: embed_status IS NULL — i.e. NOT 'unembeddable' (skipped
  *     by design) and NOT 'failed' (gave up after maxFailures; needs a manual
  *     reset, not endless re-churn), AND
- *   - carry embeddable content (length > 20) — the same floor the trigger uses,
- *     so empty tool-call / ack rows that are skipped by design are never swept.
+ *   - carry embeddable text (length > 20). For ros_messages that means content
+ *     OR tool_result — tool rows store the real payload in tool_result while
+ *     content is often a short `[tool] name` placeholder (FTS parity / #440).
  *
  * graphile-worker dedup via job_key='embed-<table>-<id>' (job_key_mode
  * 'preserve_run_at') means a row that already has a live job is coalesced, so
@@ -28,10 +29,26 @@ import { config } from '../config.js'
 
 /** Per-table column spec — wiki topics key on slug and embed search_text. */
 const TABLES = [
-  { table: 'ros_messages', idCol: 'id', contentCol: 'content' },
-  { table: 'ros_summaries', idCol: 'id', contentCol: 'content' },
-  { table: 'ros_wiki_topics', idCol: 'slug', contentCol: 'search_text' },
-] as const
+  {
+    table: 'ros_messages' as const,
+    idCol: 'id',
+    // content placeholder OR substantive tool_result (tool-row footgun).
+    lengthPredicate: `(
+      (content IS NOT NULL AND LENGTH(content) > 20)
+      OR (tool_result IS NOT NULL AND LENGTH(tool_result) > 20)
+    )`,
+  },
+  {
+    table: 'ros_summaries' as const,
+    idCol: 'id',
+    lengthPredicate: `content IS NOT NULL AND LENGTH(content) > 20`,
+  },
+  {
+    table: 'ros_wiki_topics' as const,
+    idCol: 'slug',
+    lengthPredicate: `search_text IS NOT NULL AND LENGTH(search_text) > 20`,
+  },
+]
 
 interface UnembeddedRow {
   id: string
@@ -41,15 +58,14 @@ export const enqueueUnembeddedTask: Task = async (_payload, helpers) => {
   await helpers.withPgClient(async (client) => {
     let enqueued = 0
 
-    for (const { table, idCol, contentCol } of TABLES) {
+    for (const { table, idCol, lengthPredicate } of TABLES) {
       const { rows } = await client
         .query<UnembeddedRow>(
           `SELECT ${idCol}::text AS id
              FROM ${table}
             WHERE embedding IS NULL
               AND embed_status IS NULL
-              AND ${contentCol} IS NOT NULL
-              AND LENGTH(${contentCol}) > 20
+              AND ${lengthPredicate}
             ORDER BY created_at DESC
             LIMIT $1`,
           [config.sweepLimit],

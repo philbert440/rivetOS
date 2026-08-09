@@ -123,10 +123,17 @@ export function createStatsTool(pool: pg.Pool): Tool {
           sections.push('\n**Summaries:** 0 ⚠️ No summaries — compactor may not be running')
         }
 
-        // Embedding queue
+        // Embedding queue — messages count content OR tool_result so tool rows
+        // with placeholder-only content are not invisible to the backlog metric
+        // (parity with embed-target / enqueue-unembedded after #440 residual).
         const embedQueue = await pool.query<EmbedQueueRow>(`
           SELECT
-            (SELECT COUNT(*) FROM ros_messages WHERE embedding IS NULL AND content IS NOT NULL AND LENGTH(content) > 0) AS msg_queue,
+            (SELECT COUNT(*) FROM ros_messages
+              WHERE embedding IS NULL
+                AND (
+                  (content IS NOT NULL AND LENGTH(content) > 0)
+                  OR (tool_result IS NOT NULL AND LENGTH(tool_result) > 0)
+                )) AS msg_queue,
             (SELECT COUNT(*) FROM ros_summaries WHERE embedding IS NULL AND content IS NOT NULL) AS sum_queue
         `)
         const eq = embedQueue.rows[0]
