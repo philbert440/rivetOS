@@ -145,7 +145,7 @@ fun NodeSwitcher(
                 // "needs token" and force the next snapshot to re-probe rather
                 // than serve a cached one read with the old bearer.
                 nodeAuth.forget(url)
-                chatService.onNodeCredentialChanged()
+                chatService.onNodeCredentialChanged(url)
                 tokenEpoch++
                 toaster.show(
                     message = if (token.isNullOrBlank()) {
