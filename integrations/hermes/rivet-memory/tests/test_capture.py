@@ -231,6 +231,35 @@ def test_provider_session_switch_rotates_instead_of_closing():
     assert fake.closed_session_keys == []
 
 
+def test_session_end_closes_the_whole_rotation_chain():
+    """A rotation leaves its predecessor open; the ENDING closes them all.
+
+    Otherwise every /new would leak an active conversation that nothing ever
+    marks finished.
+    """
+    import rivet_memory
+
+    provider = rivet_memory.RivetMemoryProvider()
+    closed = []
+
+    class RecordingCapture:
+        def rotate_session(self, previous_key, next_key, metadata=None):
+            pass
+
+        def close_session(self, session_key):
+            closed.append(session_key)
+
+    provider._session_id = "a"
+    provider._session_key = "hermes:a"
+    provider._capture = RecordingCapture()
+    provider.on_session_switch("b", reason="branch")
+    provider.on_session_switch("c", reason="compression")
+
+    provider.on_session_end([])
+
+    assert closed == ["hermes:a", "hermes:b", "hermes:c"]
+
+
 def test_close_session_dispatches_inactive_mark():
     from rivet_memory.capture import Capture
 

@@ -55,9 +55,10 @@
  * second-resolution plus 24 bits rather than the uuid-class entropy § Session
  * identity asks for. Namespacing them (the rule's remedy) is deliberately NOT
  * done — it would fork the key away from capture and from hermes's own store,
+ * done — it would fork the key away from capture and from hermes's own store,
  * which is a worse failure than the residual collision risk of two sessions
  * starting in the same second, on the same node, under the same agent tag, and
- * drawing the same 24 bits. Recorded rather than papered over.
+ * drawing the same 24 bits. Ruled in review (PR #477): accept and record.
  *
  * **Honest capabilities.** `approvals` is `false` like the others: the den
  * roster runs `hermes --yolo --accept-hooks` precisely so it never blocks on a

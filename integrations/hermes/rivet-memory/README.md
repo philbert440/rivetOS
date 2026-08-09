@@ -105,7 +105,11 @@ isn't replicated. The discipline lives in the skill + system prompt block.
   one chain. **Migration:** conversations already keyed on an older
   `hermes:<id>` need no rewrite — reads resolve the chain, and rows written
   before this change simply have no breadcrumb linking them, exactly as
-  before.
+  before. The breadcrumb is a durable *record* of the link; nothing reads it
+  back yet, so after a den-server restart the two halves of a chain are each
+  readable on their own but no longer joined.
+- **Endings close the chain.** `on_session_end` marks every key the process
+  rotated through inactive, not just the last one.
 
 ## Install
 

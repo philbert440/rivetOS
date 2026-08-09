@@ -560,7 +560,8 @@ entropy § Session identity requires. Namespacing them (the rule's remedy) is
 deliberately NOT done — it would fork the key away from capture and from
 hermes's own store, a worse failure than the residual risk of two sessions
 starting in the same second, on one node, under one agent tag, drawing the same
-24 bits. Recorded rather than papered over. It also means a bare hermes id
+24 bits. **Ruled in review** (PR #477): accept and record, do not namespace —
+so this note, not a fix, is the disposition of the entropy rule for hermes. It also means a bare hermes id
 never goes near the registry's bare-*uuid* probe: hermes ids do not have that
 shape, so they must arrive canonical.
 
@@ -589,18 +590,36 @@ carrying `metadata.kind='session-rotation'`, `previous_session_key`, hermes's
 
 Why a breadcrumb row and not just the control-plane alias: the registry's alias
 store is in-memory and per-node, so it covers live reads and dies with the
-process. The breadcrumb makes the chain reconstructible from the memory DB
-alone, with no schema migration.
+process. The breadcrumb is the durable record of the link, in the memory DB,
+with no schema migration.
+
+**What that means after a den-server restart, plainly:** the aliases are gone
+and nothing rebuilds them. A superseded id stops resolving to canonical — a
+`subscribe` under the old id no longer follows the chain, and a chain-union read
+no longer unions — while `getSession` and `transcript` on that old id keep
+working *standalone*, because its store row and its conversation are still
+there. The chain does not re-link on its own: the driver only observes a
+rotation as it happens, so a restart mid-chain leaves the two halves addressable
+but no longer joined. The breadcrumb means the link is recoverable **in the
+data**; **no reconstructor reads it back today.** Writing one (registry rehydrate
+at boot, or a union in the memory reader) is the follow-up, and both would
+consume exactly this row.
 
 **What existing data needs:** nothing. Conversations already keyed
 `hermes:<old-id>` are not rewritten, re-keyed, or merged — § Rotation rule 3
 prefers exactly that ("queries resolve alias chain and union transcript
 history"). Reads keep working: the control plane resolves superseded ids for
 every driver method, `subscribe` included. Rows written before this change
-simply have no breadcrumb, which is the state they were already in. The one
-behavioural change an operator will notice is that a hermes conversation is no
-longer marked inactive on `/new`; it is marked inactive when the session
-actually ends.
+simply have no breadcrumb, which is the state they were already in.
+
+The behavioural change an operator will notice: a hermes conversation is no
+longer marked inactive on `/new`. A rotation leaves its predecessor **open**,
+deliberately — the thread is still going, under a new id — and `on_session_end`
+then closes the **whole chain** the process rotated through, not just the key it
+happens to be on. So `active` still means "not finished" rather than
+accumulating one stranded conversation per `/new`. A chain broken by a crash
+leaves its members open, the same as any other conversation the process never
+got to close.
 
 Known gap, recorded: the capture worker resolves its write key at dispatch
 time, so a turn enqueued microseconds before a switch can be filed under the

@@ -299,7 +299,15 @@ export abstract class PtyHarnessDriver<
     const pty = await this.requirePty('resumeSession')
     const row = await this.deps.store.describe(native)
     // A session the store knows of but cannot describe yet is still resumable
-    // — that is exactly the window right after a fresh spawn.
+    // — that is exactly the window right after a fresh spawn (grok's session
+    // dir before its summary.json; a hermes row before its first message).
+    //
+    // Deliberate on Claude, where `exists` is DERIVED from `describe` and this
+    // reads the store twice: the two are genuinely different questions, the
+    // second read only happens on the miss path (`row` undefined, `&&`
+    // short-circuits), and it re-asks a moment later, which is the direction
+    // that turns a just-lost race into a resume rather than a 400. Not an
+    // oversight — please do not "optimize" it into reusing `row`.
     if (!row && !(await this.storeExists(native)) && !this.live.has(native)) {
       throw new HarnessError(
         'invalid_session_id',
@@ -326,32 +334,50 @@ export abstract class PtyHarnessDriver<
       throw this.unsupported(`${this.harnessId}: attachments are not supported in v1`, sessionId)
     }
     const pty = await this.requirePty('sendUserTurn')
-    const state = this.live.get(native)
-    if (state?.turnInFlight) {
+    // CLAIM the in-flight lock synchronously, in the same tick as the check,
+    // and hold it across every await below. Two concurrent turns must not both
+    // pass the check and both paste into the TUI — the loser gets the retryable
+    // 409 (§ Contract semantics: "drivers MUST NOT silently queue in v1").
+    // Checking here and setting it after the inject would leave a window at
+    // every `await` in between: resolving the PTY host, probing the store.
+    // `pty-harness-driver.test.ts` pins this for all three drivers.
+    const state = this.ensureLive(native)
+    if (state.turnInFlight) {
       throw new HarnessError('turn_in_flight', `${this.harnessId} ${native} is mid-turn`, {
         harnessId: this.harnessId,
         sessionId,
       })
     }
-    let ptyId = await this.ensurePty(pty, native)
-    if (!pty.inject(ptyId, turn.text, true)) {
-      // The term manager keeps its session→pty mapping until the EXITED record
-      // is reaped (exitLingerMs), so a harness that just died still resolves to
-      // a pty that refuses writes. Answering `capability_unsupported` there
-      // would tell the client "this node cannot do turns" — false, and a 501 is
-      // not retryable. Re-spawn through the same `--resume` path a fully-reaped
-      // session takes and try once more.
-      ptyId = this.spawnFor(pty, native, true)
+    state.turnInFlight = true
+    try {
+      let ptyId = await this.ensurePty(pty, native)
       if (!pty.inject(ptyId, turn.text, true)) {
-        // A live-but-unwritable harness means its pre-ready inject buffer is
-        // full — genuinely transient, so say so instead of 501.
-        throw new HarnessError(
-          'turn_in_flight',
-          `${this.harnessId} ${native} is not accepting input yet`,
-          { harnessId: this.harnessId, sessionId },
-        )
+        // The term manager keeps its session→pty mapping until the EXITED
+        // record is reaped (exitLingerMs), so a harness that just died still
+        // resolves to a pty that refuses writes. Answering
+        // `capability_unsupported` there would tell the client "this node
+        // cannot do turns" — false, and a 501 is not retryable. Re-spawn
+        // through the same `--resume` path a fully-reaped session takes and try
+        // once more.
+        ptyId = this.spawnFor(pty, native, true)
+        if (!pty.inject(ptyId, turn.text, true)) {
+          // A live-but-unwritable harness means its pre-ready inject buffer is
+          // full — genuinely transient, so say so instead of 501.
+          throw new HarnessError(
+            'turn_in_flight',
+            `${this.harnessId} ${native} is not accepting input yet`,
+            { harnessId: this.harnessId, sessionId },
+          )
+        }
       }
+    } catch (err) {
+      // Nothing was accepted, so the claim has to go back — otherwise one
+      // failed turn wedges the session on 409 until the quiet window expires.
+      state.turnInFlight = false
+      throw err
     }
+    // Announce it: `beginTurn` re-sets the flag (already ours), arms the
+    // quiet-window failsafe and moves the session to `active`.
     this.beginTurn(native)
   }
 
@@ -498,7 +524,14 @@ export abstract class PtyHarnessDriver<
     return this.deps.cwd?.()
   }
 
-  /** Summary for a session that exists only as a live PTY (no store row yet). */
+  /**
+   * Summary for a session that exists only as a live PTY (no store row yet).
+   *
+   * `cwd` is omitted when the roster has none, where the pre-extraction drivers
+   * set it to `undefined` on this path (their `summarize` already guarded it).
+   * The wire is identical — `JSON.stringify` drops an undefined value either
+   * way — and this makes the two summary paths agree with each other.
+   */
   protected liveSummary(
     native: string,
     statusOverride?: HarnessSessionSummary['status'],
@@ -685,11 +718,17 @@ export abstract class PtyHarnessDriver<
       if (state.turnInFlight) this.armQuietWindow(next)
       this.live.delete(previous)
     }
+    const status = this.statusFor(next)
+    // The rotation event is also the successor's first status report, so record
+    // it as reported: an immediate follow-up `setStatus` with the same value
+    // (the den event that CARRIED the rotation usually reports one) de-dupes
+    // into silence instead of restating it.
+    state.reported = status
     const event: HarnessEvent = {
       type: 'session-updated',
       sessionId: this.sid(next),
       previousSessionId: this.sid(previous),
-      status: this.statusFor(next),
+      status,
     }
     // To the tails still attached under the OLD id first (the registry
     // de-dupes its own copy against this one), then to the registry stream,
@@ -765,7 +804,15 @@ export abstract class PtyHarnessDriver<
     switch (ev.type) {
       case 'session.start': {
         this.announceIfNew(native)
-        this.setStatus(native, 'idle')
+        // Report what is TRUE, not a hardcoded `idle`. On the rotation path
+        // this very event is the one that carried a rotation (hermes's
+        // `on_session_reset`), and a compaction can fork mid-turn: the in-flight
+        // turn moved to this id a few lines ago, so forcing `idle` here would
+        // tell every stream client the session went quiet while it is still
+        // answering — on exactly the path rotation exists for. A session.start
+        // does still REVIVE an ended session; that is the one thing it settles.
+        if (state.status === 'ended') state.status = 'idle'
+        this.setStatus(native, this.statusFor(native))
         return
       }
       case 'session.end': {

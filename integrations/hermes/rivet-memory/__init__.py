@@ -329,6 +329,11 @@ class RivetMemoryProvider(MemoryProvider):
         self._session_key: str = ""
         self._conversation_id: Optional[str] = None
         self._parent_session_id: str = ""
+        # Keys this process has rotated away from, oldest first. A rotation
+        # leaves the predecessor OPEN (that is the point — the thread
+        # continues), so the whole chain is closed together when the session
+        # actually ends rather than leaking "active" conversations per /new.
+        self._rotated_keys: List[str] = []
         self._platform: str = "cli"
         self._hermes_home: str = ""
 
@@ -699,6 +704,7 @@ class RivetMemoryProvider(MemoryProvider):
         self._parent_session_id = parent_session_id or old_session_id
         if self._capture is None or not old_key or old_key == self._session_key:
             return
+        self._rotated_keys.append(old_key)
         self._capture.rotate_session(
             old_key,
             self._session_key,
@@ -711,8 +717,22 @@ class RivetMemoryProvider(MemoryProvider):
         )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if self._capture is not None and self._session_key:
-            self._capture.close_session(self._session_key)
+        """Close the whole chain, not just the key we happen to be on.
+
+        A rotation deliberately leaves its predecessor active — the thread is
+        still going, under a new id. The ending is what closes them, so every
+        key this process rotated away from is marked inactive here alongside the
+        current one. (A chain broken by a crash leaves its members open, the
+        same as any other conversation the process never got to close.)
+        """
+        if self._capture is not None:
+            seen = set()
+            for key in [*self._rotated_keys, self._session_key]:
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                self._capture.close_session(key)
+        self._rotated_keys = []
         self.shutdown()
 
     # -- Tool surface --------------------------------------------------------

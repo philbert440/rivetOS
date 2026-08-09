@@ -579,6 +579,41 @@ describe('rotation — the driver’s whole part in it', () => {
     await expect(f.driver.sendUserTurn(next, { text: 'now' })).resolves.toBeUndefined()
   })
 
+  it('never reports idle mid-turn — the rotation event carries `active`', async () => {
+    // The den event that carries a rotation is normally a `session.start`
+    // (hermes's on_session_reset). Forcing `idle` on it would tell every stream
+    // client the session went quiet while it is still answering, on exactly the
+    // path rotation exists for. Status must follow the turn, not the event type.
+    const f = makeDriver({ rows: [{ id: NAT, command: 'hermes', title: 't', updatedAt: 1 }] })
+    await f.driver.resumeSession(SID)
+    await f.driver.sendUserTurn(SID, { text: 'long one' })
+
+    const registry: HarnessEvent[] = []
+    f.driver.subscribeEvents((e) => registry.push(e))
+    f.emitDen(hermesEvent(NAT, NAT2, { type: 'session.start', title: 'Hermes' }))
+
+    const statuses = registry.filter((e) => e.type === 'session-updated')
+    // One event only: the rotation itself, carrying the turn forward. No
+    // restatement of the same status behind it either.
+    expect(statuses).toEqual([
+      {
+        type: 'session-updated',
+        sessionId: `hermes:${NAT2}`,
+        previousSessionId: SID,
+        status: 'active',
+      },
+    ])
+
+    // …and idle arrives when the turn actually completes, not before.
+    registry.length = 0
+    f.emitDen(hermesEvent(NAT, NAT2, { type: 'turn.end' }))
+    expect(registry).toContainEqual({
+      type: 'session-updated',
+      sessionId: `hermes:${NAT2}`,
+      status: 'idle',
+    })
+  })
+
   it('restating the same id is not a rotation', () => {
     const f = makeDriver()
     adopt(f, ROOM, NAT)
