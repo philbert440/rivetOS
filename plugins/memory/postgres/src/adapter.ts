@@ -389,6 +389,16 @@ export class PostgresMemory implements Memory {
   // getSessionHistory — restore conversation on startup/reconnect
   // -----------------------------------------------------------------------
 
+  /**
+   * The active conversation's transcript for a session key, oldest-first.
+   *
+   * `m.id` breaks ties on created_at. Rows inserted in one transaction can share
+   * a timestamp — capture writes a whole transcript pass that way — and without
+   * a tiebreaker Postgres is free to return them in a different order on every
+   * call, so a reconnecting session could see its own history reshuffled. The id
+   * is a random UUID, so this buys determinism, not chronology: same-timestamp
+   * rows get an arbitrary but STABLE order.
+   */
   async getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]> {
     const limit = options?.limit ?? 100
 
@@ -397,7 +407,7 @@ export class PostgresMemory implements Memory {
        FROM ros_messages m
        JOIN ros_conversations c ON c.id = m.conversation_id
        WHERE c.session_key = $1 AND c.active = true
-       ORDER BY m.created_at DESC
+       ORDER BY m.created_at DESC, m.id DESC
        LIMIT $2`,
       [sessionId, limit],
     )
