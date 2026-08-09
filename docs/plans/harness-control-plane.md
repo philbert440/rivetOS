@@ -1283,9 +1283,24 @@ ROOM key a PTY runs under (`RIVET_DEN_SESSION`), that v1 AgentEvents carry as
 file transcripts under. For every session the hub opens, that key IS the
 harness's native id — the term manager pins it at spawn. So the migration is
 not "rename the room", it is "canonicalize the layer above and resolve down at
-the edge": `denJoinKey()` (`services/den-server/src/harness/session-key.ts`)
-maps canonical → room, leaves a bare id alone, and passes a non-session string
-(`den-pty-…`, an operator's room, `task:<id>`) through untouched.
+the edge": `denSessionRef()`
+(`services/den-server/src/harness/session-key.ts`) maps canonical → room,
+leaves a bare id alone, and passes a non-session string (`den-pty-…`, an
+operator's room, `task:<id>`) through untouched. `denJoinKey()` is the
+room-only shorthand for edges with no store to pick.
+
+**A canonical id names its store.** `denSessionRef` returns the roster token
+alongside the room key whenever the inbound id was canonical, and the two store
+readers (`readHarnessTranscript`, `resolveHarnessStore`) then read that store
+and only that store. The claude → grok → hermes → kimi
+probe-and-take-the-first order stays, but for BARE ids alone, where it is the
+documented legacy behavior. Probing on a canonical id would let a uuid present
+in two stores answer `claude-code:<uuid>` out of grok's — the cross-store
+fall-through § Collision rules rule 2 forbids, and the same rule the driver
+layer enforces on its own reads. An empty answer is the correct answer there.
+It matters twice over for `resolveHarnessStore`: the watcher caches that ref
+for the life of the watch, so a wrong store would feed a wrong transcript on
+every subsequent change, not just once.
 
 Surfaces that now take either shape — bare ids keep working as aliases, and
 nothing is dual-written:
@@ -1295,8 +1310,10 @@ nothing is dual-written:
 | `POST /term` (`session`, `resume`) | canonical → room; the spawned `denSession`, the store filename and `--resume` all stay native |
 | `POST /term/inject` | canonical → the same PTY as the bare key |
 | `WS /term?session=` | same |
-| `DELETE /session`, `GET /state`, `WS /ws?session=` | canonical → room |
-| `GET /term/harness-sessions/:id/transcript` | reads the native store, **echoes the requested id** so the client can match it to its thread |
+| `WS /ws?session=` | canonical → room (a subscription filter, nothing echoed) |
+| `DELETE /session` | canonical → room. Its `session.removed` broadcast necessarily carries the ROOM key, not the asked id: it addresses den viewers, which key on rooms |
+| `GET /state` | canonical → room, **echoes the requested id** |
+| `GET /term/harness-sessions/:id/transcript` | reads the named store, **echoes the requested id** so the client can match it to its thread |
 | Transcript watch (`watch`/`unwatch`/`sync` on `WS /api/sessions/ws`) | subscription key is the client's id verbatim; only the store lookup resolves. Frames come back under the key that was watched |
 | `GET /api/sessions/:id/messages` | alias read: a canonical id with no ring of its own falls back to the native half rather than minting an empty session |
 | `GET /api/conversations/:key/messages` | alias read: capture files a den-spawned harness under the bare key it inherited via `RIVETOS_SESSION_KEY`, so a canonical ask with no rows retries native. No rewrite — the alias covers the read forever |
@@ -1317,9 +1334,14 @@ a rotation all still land on their row. `useChat.rekey(from, to)` then moves
 the thread's state — transcript, inject queue, live turn, approvals, the
 transcript subscription — onto the new key rather than stranding it, which
 also fixes rotation, where the drawer key used to change under a live
-conversation with nothing following it. Persisted client state (`sessionNames`,
-`chatSettings`) migrates lazily: the read falls back to the pre-canonical key
-and the next write lands on the new one.
+conversation with nothing following it. When the destination already holds a
+transcript `rekey` leaves both sets of records alone rather than merge them —
+but it still moves `active` and `opened`, because the send path keys on the
+active id and the effect that called it does not re-fire, so a selection left
+on the retired key would queue every later turn under an id no row carries.
+Persisted client state (`sessionNames`, `chatSettings`) migrates lazily: the
+read falls back to the pre-canonical key and the next write lands on the new
+one.
 
 **The one projection.** The den viewer iframe's `?session=` is the only
 hub→id handoff that does not pass through a den-server edge — the viewer

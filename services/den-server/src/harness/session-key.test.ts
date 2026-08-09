@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { denJoinKey } from './session-key.js'
+import { denJoinKey, denSessionRef } from './session-key.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
 
@@ -30,5 +30,30 @@ describe('denJoinKey', () => {
 
   it('splits on the FIRST colon only — native ids may contain colons', () => {
     expect(denJoinKey('hermes:a:b:c')).toBe('a:b:c')
+  })
+})
+
+describe('denSessionRef', () => {
+  it('names the store a canonical id belongs to', () => {
+    // The store name is what stops a canonical read falling through to another
+    // harness's store on a uuid collision (§ Collision rules, rule 2).
+    expect(denSessionRef(`claude-code:${UUID}`)).toEqual({ native: UUID, command: 'claude' })
+    expect(denSessionRef(`grok-build:${UUID}`)).toEqual({ native: UUID, command: 'grok' })
+    expect(denSessionRef('kimi-code:session_abc')).toEqual({
+      native: 'session_abc',
+      command: 'kimi',
+    })
+    expect(denSessionRef(`hermes:${UUID}`)).toEqual({ native: UUID, command: 'hermes' })
+    // path-fallback still names claude, and still collapses to the uuid
+    expect(denSessionRef(`claude-code:-home-rivet-proj/${UUID}`)).toEqual({
+      native: UUID,
+      command: 'claude',
+    })
+  })
+
+  it('names no store for a bare id — probing every store is its documented behavior', () => {
+    expect(denSessionRef(UUID)).toEqual({ native: UUID })
+    expect(denSessionRef('den-pty-1a2b3c4d')).toEqual({ native: 'den-pty-1a2b3c4d' })
+    expect(denSessionRef('task:9f2c')).toEqual({ native: 'task:9f2c' })
   })
 })

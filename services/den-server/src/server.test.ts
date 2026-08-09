@@ -455,6 +455,27 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     )
   })
 
+  it('GET /state resolves a canonical id and echoes it back verbatim', async () => {
+    // Echo-as-asked, matching the transcript read and the transcript watch: a
+    // client keyed on canonical SessionIds has to be able to correlate the
+    // response with the thread it asked about. Resolution stays internal.
+    const { base } = await start('', 60_000, { term: true })
+    const uuid = 'a1b2c3d4-1111-4222-8333-444455556666'
+    await post(base, '/event', { ...EV, session: uuid })
+
+    const bare = (await (await fetch(`${base}/state?session=${uuid}`)).json()) as {
+      session: string
+      state: { title: string }
+    }
+    expect(bare).toMatchObject({ session: uuid, state: { title: 'hello' } })
+
+    const canonical = (await (
+      await fetch(`${base}/state?session=${encodeURIComponent(`claude-code:${uuid}`)}`)
+    ).json()) as { session: string; state: { title: string } }
+    expect(canonical.state.title).toBe('hello') // same room
+    expect(canonical.session).toBe(`claude-code:${uuid}`) // asked id, not the room key
+  })
+
   it('accepts a canonical SessionId for the same PTY as its bare join key', async () => {
     // Hub chat keys threads on `<harness-id>:<native>` (identity table); the
     // den's own key space is the room, so every session-keyed edge resolves

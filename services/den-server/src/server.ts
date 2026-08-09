@@ -1105,11 +1105,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       }
 
       if (req.method === 'GET' && url.pathname === '/state') {
+        // Echo the id the caller asked with, like the transcript read and the
+        // transcript watch do — resolution to the room stays internal, so a
+        // client keyed on canonical SessionIds can match the response to its
+        // thread. (`DELETE /session` below cannot do the same: its
+        // `session.removed` broadcast addresses den VIEWERS, which key on
+        // rooms, so that one is necessarily the resolved key.)
         const rawId = url.searchParams.get('session')
         const id = rawId ? denJoinKey(rawId) : rawId
         const room = id ? (state.rooms[id] as typeof initialRoomState | undefined) : undefined
-        if (!id || !room) return json(res, 404, { error: 'unknown session' })
-        return json(res, 200, { session: id, state: room })
+        if (!rawId || !id || !room) return json(res, 404, { error: 'unknown session' })
+        return json(res, 200, { session: rawId, state: room })
       }
 
       if (url.pathname === '/layout') {

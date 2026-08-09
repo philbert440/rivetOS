@@ -124,8 +124,11 @@ interface ChatState {
    * native id (`previousSessionId` → new canonical). Both replace the drawer
    * row's key while the user is sitting in the conversation, and without this
    * the transcript, the inject queue and the live turn are all stranded on the
-   * old key. No-op when the destination already has state (a real collision is
-   * the node's problem, not something to merge blindly).
+   * old key. When the destination already has state the thread records are
+   * left alone (a real collision is the node's problem, not something to merge
+   * blindly) but the SELECTION still moves — the send path keys on the active
+   * id, so leaving it on a retired key would queue new turns under an id no
+   * row carries.
    */
   rekey: (from: string, to: string) => void
   /** Seamless modes: show the user's turn immediately. Returns optim id. */
@@ -323,16 +326,24 @@ export const useChat = create<ChatState>((set, get) => ({
   rekey: (from, to) =>
     set((s) => {
       if (from === to) return {}
-      // Destination already live: leave both alone rather than clobber a real
-      // transcript with the one we were about to fold in.
-      if (s.messages[to] !== undefined || s.transcripts[to] !== undefined) return {}
+      const swap = (list: string[]): string[] =>
+        list.includes(from) ? list.map((id) => (id === from ? to : id)) : list
+      /** Point the user (and so the send path) at the surviving key. */
+      const retarget = {
+        opened: s.opened.includes(to) ? s.opened.filter((id) => id !== from) : swap(s.opened),
+        drafts: s.drafts.includes(from) ? s.drafts.filter((id) => id !== from) : s.drafts,
+        active: s.active === from ? to : s.active,
+      }
+      // Destination already live: keep its records rather than clobber a real
+      // transcript with the one we were about to fold in — but still move the
+      // selection, or the composer keeps queueing turns onto the retired key
+      // (the effect that called us does not re-fire).
+      if (s.messages[to] !== undefined || s.transcripts[to] !== undefined) return retarget
       const move = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
         if (!(from in m)) return m
         const { [from]: value, ...rest } = m
         return { ...rest, [to]: value }
       }
-      const swap = (list: string[]): string[] =>
-        list.includes(from) ? list.map((id) => (id === from ? to : id)) : list
       // The transcript watch is refcounted server-side per socket, so the old
       // subscription has to be released explicitly — the server has no idea
       // the two ids are the same thread.
@@ -343,6 +354,7 @@ export const useChat = create<ChatState>((set, get) => ({
         subscription?.send({ type: 'watch', session: to })
       }
       return {
+        ...retarget,
         messages: move(s.messages),
         transcripts: move(s.transcripts),
         live: move(s.live),
@@ -351,9 +363,6 @@ export const useChat = create<ChatState>((set, get) => ({
         outbound: move(s.outbound),
         harnessBound: move(s.harnessBound),
         approvals: move(s.approvals),
-        opened: swap(s.opened),
-        drafts: s.drafts.includes(from) ? s.drafts.filter((id) => id !== from) : s.drafts,
-        active: s.active === from ? to : s.active,
       }
     }),
 

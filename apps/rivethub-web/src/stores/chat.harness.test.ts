@@ -411,13 +411,36 @@ describe('rekey', () => {
     expect(useChat.getState().live[SID]?.text).toBe('after')
   })
 
-  it('is a no-op onto itself, and refuses to clobber a live destination', () => {
+  it('is a no-op onto itself', () => {
+    const chat = useChat.getState()
+    chat.seed(KEY, [{ id: 'a', sessionId: KEY, role: 'user', text: 'from', ts: 1 }])
+    chat.setActive(KEY)
+    useChat.getState().rekey(KEY, KEY)
+    expect(useChat.getState().messages[KEY]?.map((m) => m.text)).toEqual(['from'])
+    expect(useChat.getState().active).toBe(KEY)
+  })
+
+  it('refuses to clobber a live destination but still moves the selection', () => {
+    // The send path keys on the ACTIVE id, and the effect that calls rekey
+    // does not re-fire — so leaving `active` on the retired key would queue
+    // every subsequent turn under an id no drawer row carries.
     const chat = useChat.getState()
     chat.seed(KEY, [{ id: 'a', sessionId: KEY, role: 'user', text: 'from', ts: 1 }])
     chat.seed(SID, [{ id: 'b', sessionId: SID, role: 'user', text: 'to', ts: 1 }])
-    useChat.getState().rekey(KEY, KEY)
+    chat.addDraft(KEY)
+    chat.setActive(KEY)
+    chat.setActive(SID)
+    chat.setActive(KEY)
+
     useChat.getState().rekey(KEY, SID)
-    expect(useChat.getState().messages[KEY]?.map((m) => m.text)).toEqual(['from'])
-    expect(useChat.getState().messages[SID]?.map((m) => m.text)).toEqual(['to'])
+
+    const s = useChat.getState()
+    // neither transcript was merged or overwritten
+    expect(s.messages[KEY]?.map((m) => m.text)).toEqual(['from'])
+    expect(s.messages[SID]?.map((m) => m.text)).toEqual(['to'])
+    // …but the user (and the composer) are pointed at the surviving row
+    expect(s.active).toBe(SID)
+    expect(s.opened).toEqual([SID])
+    expect(s.drafts).toEqual([])
   })
 })

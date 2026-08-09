@@ -16,7 +16,7 @@ import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
 import type { HarnessTranscriptTool, HarnessTranscriptTurn } from '@rivetos/types'
-import { denJoinKey } from '../harness/session-key.js'
+import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session-key.js'
 
 export interface HarnessSession {
   /** the harness's native session id (e.g. Claude Code's uuid) */
@@ -1092,38 +1092,52 @@ function readHermesTurns(id: string): HarnessTurn[] {
  * used to hard-resync the RivetHub chat UI when it has diverged (Android
  * SessionTranscript + resyncTranscriptToConversation pattern).
  *
- * Tries Claude → Grok → Hermes and returns the first non-empty transcript
- * (session ids are UUIDs per harness; collisions across harnesses are rare).
- *
  * `id` may be a canonical `<harness-id>:<native>` SessionId or the bare native
- * id the store files the transcript under; the store lookup uses the den join
+ * id the store files the transcript under. The store lookup uses the den join
  * key either way and `id` is echoed back exactly as asked for, so a caller
  * keyed on canonical ids can match the response to its request.
+ *
+ * A BARE id has to be probed Claude → Grok → Hermes → Kimi, returning the
+ * first non-empty transcript — it carries no harness, and that is the
+ * documented legacy behavior. A CANONICAL id names its store, so it reads that
+ * store and only that store: answering `claude-code:<uuid>` out of grok's
+ * store on a uuid collision would be exactly the cross-store fall-through the
+ * identity standard forbids (§ Collision rules, rule 2 — different harness id
+ * means a different session, full stop). An empty answer is the correct answer
+ * there.
  */
 export async function readHarnessTranscript(id: string): Promise<HarnessTranscript> {
-  const native = denJoinKey(id)
+  const { native, command } = denSessionRef(id)
   if (!native || native.includes('/') || native.includes('..')) {
     return { id, command: '', turns: [] }
   }
+  /** Probe this store? Every store for a bare id; only the named one otherwise. */
+  const wants = (store: StoreCommand): boolean => command === undefined || command === store
 
-  const claudePath = await findClaudeJsonl(native)
-  if (claudePath) {
-    const turns = claudeTurnsFromLines(await parseJsonlObjects(claudePath))
-    if (turns.length > 0) return { id, command: 'claude', turns }
+  if (wants('claude')) {
+    const claudePath = await findClaudeJsonl(native)
+    if (claudePath) {
+      const turns = claudeTurnsFromLines(await parseJsonlObjects(claudePath))
+      if (turns.length > 0) return { id, command: 'claude', turns }
+    }
   }
 
-  const grokPath = await findGrokChatHistory(native)
-  if (grokPath) {
-    const turns = await parseJsonlTurns(grokPath, grokPickTurn)
-    if (turns.length > 0) return { id, command: 'grok', turns }
+  if (wants('grok')) {
+    const grokPath = await findGrokChatHistory(native)
+    if (grokPath) {
+      const turns = await parseJsonlTurns(grokPath, grokPickTurn)
+      if (turns.length > 0) return { id, command: 'grok', turns }
+    }
   }
 
-  const hermes = readHermesTurns(native)
-  if (hermes.length > 0) return { id, command: 'hermes', turns: hermes }
+  if (wants('hermes')) {
+    const hermes = readHermesTurns(native)
+    if (hermes.length > 0) return { id, command: 'hermes', turns: hermes }
+  }
 
   // kimi last, and cheaply: its ids are `session_<uuid>`, so the probe is a
   // prefix test before any filesystem work.
-  if (native.startsWith(KIMI_ID_PREFIX)) {
+  if (wants('kimi') && native.startsWith(KIMI_ID_PREFIX)) {
     const kimi = await readKimiTranscript(native)
     if (kimi.turns.length > 0) return { ...kimi, id }
   }
@@ -1367,18 +1381,30 @@ export interface HarnessStoreRef {
 
 /**
  * Resolve which on-disk store file backs a session id — the watch target for
- * push-based transcript sync. Same probe order (and same canonical-or-bare
- * acceptance) as readHarnessTranscript.
+ * push-based transcript sync. Same probe order, same canonical-or-bare
+ * acceptance, and the same no-cross-store rule as readHarnessTranscript: a
+ * canonical id resolves against the store it names or against nothing. This
+ * one matters twice over — the resolved ref is cached for the life of the
+ * watch, so a wrong store here feeds a wrong transcript on every subsequent
+ * change, not just once.
  */
 export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef | undefined> {
-  const native = denJoinKey(id)
+  const { native, command } = denSessionRef(id)
   if (!native || native.includes('/') || native.includes('..')) return undefined
-  const claudePath = await findClaudeJsonl(native)
-  if (claudePath) return { command: 'claude', path: claudePath }
-  const grokPath = await findGrokChatHistory(native)
-  if (grokPath) return { command: 'grok', path: grokPath }
-  if (hermesSessionExists(native)) return { command: 'hermes', path: hermesDbPath() }
-  if (native.startsWith(KIMI_ID_PREFIX)) {
+  const wants = (store: StoreCommand): boolean => command === undefined || command === store
+
+  if (wants('claude')) {
+    const claudePath = await findClaudeJsonl(native)
+    if (claudePath) return { command: 'claude', path: claudePath }
+  }
+  if (wants('grok')) {
+    const grokPath = await findGrokChatHistory(native)
+    if (grokPath) return { command: 'grok', path: grokPath }
+  }
+  if (wants('hermes') && hermesSessionExists(native)) {
+    return { command: 'hermes', path: hermesDbPath() }
+  }
+  if (wants('kimi') && native.startsWith(KIMI_ID_PREFIX)) {
     const dir = kimiSessionDir(native)
     if (dir) return { command: 'kimi', path: join(dir, 'agents', 'main', 'wire.jsonl') }
   }
