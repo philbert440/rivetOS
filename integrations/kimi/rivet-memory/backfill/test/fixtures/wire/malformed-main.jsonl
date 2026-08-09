@@ -1,0 +1,9 @@
+{"type":"metadata","protocol_version":"1.4","created_at":1786000000000}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"First prompt, before the damage."}],"toolCalls":[],"origin":{"kind":"user"}},"time":1786000000010}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"aaaa
+
+"not an object"
+[1,2,3]
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"Second prompt, after the damage."}],"toolCalls":[],"origin":{"kind":"user"}},"time":1786000000020}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","turnId":"0","step":1,"stepUuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","part":{"type":"text","text":"Recovered and still answering."}},"time":1786000000030}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"dddddddd-dddd-4ddd-8ddd
