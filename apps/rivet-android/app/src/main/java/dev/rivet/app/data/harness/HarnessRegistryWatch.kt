@@ -67,6 +67,13 @@ class HarnessRegistryWatch(
     private val gatewayFor: suspend (String) -> HarnessRegistryGateway?,
     private val log: (String) -> Unit = { Log.i(TAG, it) },
 ) {
+    /**
+     * Written single-writer from the active-node collector, but read from
+     * OkHttp's socket threads in [Listener.onOpen] — volatile for the
+     * happens-before edge, or a retarget racing an open could drop the resync
+     * the reconnect owes, or fire one for a node that is no longer active.
+     */
+    @Volatile
     private var target: String? = null
     private var subscription: HarnessSubscription? = null
     private var frames: Channel<HarnessEvent>? = null

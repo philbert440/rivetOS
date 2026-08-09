@@ -170,6 +170,17 @@ object HarnessPlane {
      * a `session-created` that was missed, and inventing a row here would mean
      * inventing every field the event does not carry.
      *
+     * A rotation can race the `session-created` for its own new id, and after
+     * that create the list reads `[new, old]` — [mergeSessionCreated] prepends,
+     * so that is the ordering production actually produces. Both ids therefore
+     * name the same session and exactly one row may survive: the row under the
+     * new id is preferred (it is the fresher of the two), the row under
+     * [previousSessionId] is dropped whether or not it was the one patched, and
+     * the drop happens even when the status the frame carries is what the kept
+     * row already said. Deduping only the new id, or bailing early on an
+     * unchanged status, leaves the pre-rotation row in the drawer until the
+     * poll — a dead thread nothing on the node will ever speak for again.
+     *
      * One deviation from the hub's version: [harnessId] is re-derived from the
      * rewritten canonical id when it parses. On Kotlin the field is a real
      * member of the summary rather than a re-parse of the id at read time, and
@@ -183,21 +194,34 @@ object HarnessPlane {
         status: HarnessStatus,
     ): List<HarnessSessionSummary> {
         val lookFor = previousSessionId ?: sessionId
-        val i = sessions.indexOfFirst { it.sessionId == lookFor || it.sessionId == sessionId }
-        if (i < 0) return sessions
-        val current = sessions[i]
-        if (current.sessionId == sessionId && current.status == status) return sessions
-        val next = sessions.toMutableList()
-        next[i] = current.copy(
-            sessionId = sessionId,
-            harnessId = HarnessSessionIds.parseOrNull(sessionId)?.harnessId ?: current.harnessId,
-            status = status,
-        )
-        // A rotation can race a create under the new id. Keep one row.
-        if (previousSessionId != null && previousSessionId != sessionId) {
-            return next.filterIndexed { idx, s -> idx == i || s.sessionId != sessionId }
+        val keep = sessions.indexOfFirst { it.sessionId == sessionId }
+            .takeIf { it >= 0 }
+            ?: sessions.indexOfFirst { it.sessionId == lookFor }
+        if (keep < 0) return sessions
+
+        val current = sessions[keep]
+        val patched = if (current.sessionId == sessionId && current.status == status) {
+            current
+        } else {
+            current.copy(
+                sessionId = sessionId,
+                harnessId = HarnessSessionIds.parseOrNull(sessionId)?.harnessId ?: current.harnessId,
+                status = status,
+            )
         }
-        return next
+
+        val next = ArrayList<HarnessSessionSummary>(sessions.size)
+        sessions.forEachIndexed { index, row ->
+            when {
+                index == keep -> next.add(patched)
+                // Any other row under either id is the same session.
+                row.sessionId == sessionId || row.sessionId == lookFor -> Unit
+                else -> next.add(row)
+            }
+        }
+        // Same list when the frame said nothing new and there was nothing to
+        // collapse — the caller skips the cache write, and the repaint with it.
+        return if (patched === current && next.size == sessions.size) sessions else next
     }
 
     /**

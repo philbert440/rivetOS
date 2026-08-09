@@ -311,6 +311,58 @@ class HarnessPlaneTest {
     }
 
     @Test
+    fun `a rotation collapses a racing create that arrived first`() {
+        // The ordering production actually produces: a create prepends, so by
+        // the time the rotation frame lands the list reads [new, old] and the
+        // row the id lookup hits first is the NEW one.
+        val list = HarnessPlane.mergeSessionCreated(
+            listOf(summary("claude-code:old", title = "pre-rotation")),
+            summary("claude-code:new", title = "raced", status = HarnessStatus.ACTIVE),
+        )
+        assertEquals(listOf("claude-code:new", "claude-code:old"), list.map { it.sessionId })
+
+        val rotated = HarnessPlane.patchSessionUpdated(
+            list,
+            sessionId = "claude-code:new",
+            previousSessionId = "claude-code:old",
+            status = HarnessStatus.IDLE,
+        )
+
+        // The pre-rotation row is dead — nothing on the node will ever speak
+        // for it again — so it must not survive to the drawer.
+        assertEquals(listOf("claude-code:new"), rotated.map { it.sessionId })
+        assertEquals(HarnessStatus.IDLE, rotated.single().status)
+        assertEquals(listOf("new"), HarnessPlane.rows(rotated, emptyList()).map { it.key })
+    }
+
+    @Test
+    fun `a rotation whose status is already right still drops the stale id`() {
+        val list = HarnessPlane.mergeSessionCreated(
+            listOf(summary("claude-code:old")),
+            summary("claude-code:new", status = HarnessStatus.ACTIVE),
+        )
+
+        // Nothing to patch — and that is exactly when an early return would
+        // hand the ghost row back.
+        val rotated = HarnessPlane.patchSessionUpdated(
+            list,
+            sessionId = "claude-code:new",
+            previousSessionId = "claude-code:old",
+            status = HarnessStatus.ACTIVE,
+        )
+
+        assertEquals(listOf("claude-code:new"), rotated.map { it.sessionId })
+
+        // A plain status frame that says nothing new is still a no-op, by
+        // reference: the cache write and the repaint both get skipped.
+        val steady = listOf(summary("claude-code:aaa", status = HarnessStatus.ACTIVE))
+        assertSame(
+            steady,
+            HarnessPlane.patchSessionUpdated(steady, "claude-code:aaa", null, HarnessStatus.ACTIVE),
+        )
+    }
+
+    @Test
     fun `an id nobody has is left for the refetch to reconcile`() {
         val list = listOf(summary("claude-code:aaa"))
 
