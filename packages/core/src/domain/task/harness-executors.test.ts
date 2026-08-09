@@ -230,13 +230,17 @@ describe('not-implemented harness executor', () => {
   })
 
   it('every gap reason is real prose, one per unimplemented harness', () => {
-    for (const id of ['grok-build', 'kimi-code', 'hermes']) {
+    for (const id of ['grok-build', 'hermes']) {
       expect(harnessExecutorGap(id).length).toBeGreaterThan(40)
     }
-    // claude-code is implemented — no recorded gap, so an unlisted id falls
-    // back to the generic reason rather than inventing one.
-    expect(HARNESS_EXECUTOR_GAPS['claude-code']).toBeUndefined()
-    expect(harnessExecutorGap('claude-code')).toContain('no task executor is wired')
+    // claude-code and kimi-code are implemented — no recorded gap, so they
+    // fall back to the generic reason rather than keeping stale prose. A
+    // rejection for either can only come from boot's probe, which supplies
+    // its own reason (see the boot-override case below).
+    for (const id of ['claude-code', 'kimi-code']) {
+      expect(HARNESS_EXECUTOR_GAPS[id]).toBeUndefined()
+      expect(harnessExecutorGap(id)).toContain('no task executor is wired')
+    }
   })
 })
 
@@ -246,13 +250,16 @@ describe('not-implemented harness executor', () => {
 
 describe('task handler with a not-implemented harness executor', () => {
   it('fails the row with the typed code and the reason', async () => {
+    // kimi-code has a real executor now, so the realistic rejection is boot's
+    // probe reason on a node where the binary is missing — the shape a task
+    // row actually sees there.
+    const probeFailure =
+      'the `kimi` binary is not resolvable on this node (tried "kimi"): install Kimi Code'
     const store = new InMemoryTaskStore()
     const executors = createExecutorRegistry()
     executors.register(
       'harness-session',
-      createNotImplementedHarnessExecutor('kimi-code', {
-        reason: harnessExecutorGap('kimi-code'),
-      }),
+      createNotImplementedHarnessExecutor('kimi-code', { reason: probeFailure }),
       'kimi-code',
     )
     const handler = createTaskHandler({ store, executors, nodeId: 'test-node' })

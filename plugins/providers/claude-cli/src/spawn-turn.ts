@@ -262,18 +262,31 @@ export function spawnClaudeTurn(
   // No internal *runtime* timeout — Claude Code owns max-output-tokens and
   // runtime limits — this only bounds how long a *kill* can hang.
   let killTimer: ReturnType<typeof setTimeout> | undefined
+  const exited = (): boolean => proc.exitCode !== null || proc.signalCode !== null
   const kill = (): void => {
-    if (proc.exitCode !== null) return // already exited — nothing to do
+    if (exited()) return // already exited (or signalled) — nothing to do
     if (!proc.killed) proc.kill('SIGTERM')
     if (!killTimer) {
       killTimer = setTimeout(() => {
-        if (proc.exitCode === null) proc.kill('SIGKILL')
+        if (!exited()) proc.kill('SIGKILL')
       }, KILL_GRACE_MS)
       killTimer.unref()
     }
   }
-  proc.once('exit', () => {
+
+  // Exit is latched from a listener attached HERE, at spawn time, and every
+  // waitExit() reads the latch. Attaching on demand instead could hang
+  // forever two ways: the child closes before the first waitExit() call, so
+  // `close` has already fired by the time the listener goes on; or the child
+  // dies on a signal, where `proc.exitCode` stays null and the "already
+  // exited" shortcut never fires either. A hung waitExit strands the turn,
+  // and the executor's `result` must resolve on every terminal path.
+  let exitCode: number | null | undefined
+  const exitWaiters: Array<(code: number | null) => void> = []
+  proc.once('close', (code) => {
+    exitCode = code
     if (killTimer) clearTimeout(killTimer)
+    for (const waiter of exitWaiters.splice(0)) waiter(code)
   })
 
   // Cap stderr accumulation — callers only ever surface the first 500 chars,
@@ -298,15 +311,9 @@ export function spawnClaudeTurn(
   }
 
   const waitExit = (): Promise<number | null> =>
-    new Promise((resolve) => {
-      if (proc.exitCode !== null) {
-        resolve(proc.exitCode)
-        return
-      }
-      proc.once('close', (code) => {
-        resolve(code)
-      })
-    })
+    exitCode === undefined
+      ? new Promise((resolve) => exitWaiters.push(resolve))
+      : Promise.resolve(exitCode)
 
   return { proc, args, events, stderrText: () => stderr, kill, waitExit }
 }

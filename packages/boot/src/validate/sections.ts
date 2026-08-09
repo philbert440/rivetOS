@@ -2,6 +2,7 @@
  * Section validators — runtime, agents, providers, channels, memory.
  */
 
+import { HARNESS_IDS } from '@rivetos/types'
 import {
   KNOWN_RUNTIME_KEYS,
   KNOWN_AGENT_KEYS,
@@ -19,6 +20,7 @@ import {
   KNOWN_DEN_DEVICES_KEYS,
   KNOWN_TASKS_KEYS,
   KNOWN_TASKS_EVAL_KEYS,
+  KNOWN_TASKS_HARNESS_KEYS,
   KNOWN_WORKFLOWS_KEYS,
   DEN_LOOPBACK_HOSTS,
   API_KEY_PATTERNS,
@@ -858,6 +860,79 @@ export function validateTasks(tasks: Record<string, unknown>, issues: Validation
       })
     } else {
       validateTasksEval(tasks.eval as Record<string, unknown>, issues)
+    }
+  }
+
+  if (tasks.harnesses !== undefined) {
+    if (
+      typeof tasks.harnesses !== 'object' ||
+      tasks.harnesses === null ||
+      Array.isArray(tasks.harnesses)
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.harnesses`,
+        message: '"tasks.harnesses" must be an object keyed by harness id',
+      })
+    } else {
+      validateTasksHarnesses(tasks.harnesses as Record<string, unknown>, issues)
+    }
+  }
+}
+
+/**
+ * `tasks.harnesses.<harness-id>` — per-harness settings for the
+ * `harness-session` executors (binary path, model, effort, cwd, CLI home).
+ *
+ * Keyed by HARNESS id, the same vocabulary the executor registry, SessionId
+ * and the gateway speak; an unknown id is a warning, not an error, so a config
+ * written for a node that has the harness still loads on one that does not.
+ */
+function validateTasksHarnesses(
+  harnesses: Record<string, unknown>,
+  issues: ValidationIssue[],
+): void {
+  for (const [harnessId, value] of Object.entries(harnesses)) {
+    const path = `tasks.harnesses.${harnessId}`
+    if (!(HARNESS_IDS as readonly string[]).includes(harnessId)) {
+      issues.push({
+        severity: 'warning',
+        path,
+        message: `Unknown harness id "${harnessId}" — expected one of: ${HARNESS_IDS.join(', ')}`,
+      })
+    }
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      issues.push({ severity: 'error', path, message: `"${path}" must be an object` })
+      continue
+    }
+    const section = value as Record<string, unknown>
+    for (const key of Object.keys(section)) {
+      if (!KNOWN_TASKS_HARNESS_KEYS.has(key)) {
+        issues.push({
+          severity: 'warning',
+          path: `${path}.${key}`,
+          message: `Unknown key "${key}"`,
+        })
+      }
+    }
+    for (const key of ['binary', 'model', 'cwd', 'home'] as const) {
+      if (section[key] !== undefined && typeof section[key] !== 'string') {
+        issues.push({
+          severity: 'error',
+          path: `${path}.${key}`,
+          message: `"${path}.${key}" must be a string`,
+        })
+      }
+    }
+    if (
+      section.effort !== undefined &&
+      !['low', 'medium', 'high'].includes(section.effort as string)
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.effort`,
+        message: `"${path}.effort" must be 'low', 'medium' or 'high'`,
+      })
     }
   }
 }
