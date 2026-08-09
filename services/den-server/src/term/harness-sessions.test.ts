@@ -5,10 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   describeClaudeSession,
   describeGrokSession,
+  describeKimiSession,
   listHarnessSessions,
   harnessSessionExists,
   readGrokTranscript,
   readHarnessTranscript,
+  readKimiTranscript,
 } from './harness-sessions.js'
 
 const dirs: string[] = []
@@ -17,7 +19,80 @@ afterEach(() => {
   delete process.env.CLAUDE_CONFIG_DIR
   delete process.env.GROK_HOME
   delete process.env.HERMES_HOME
+  delete process.env.KIMI_CODE_HOME
 })
+
+/**
+ * A kimi store with BOTH state shapes in it, because a real box has both: kimi
+ * ≥0.34 writes `"version": 2` state with epoch-ms numbers, an `id` and a `cwd`
+ * and NO title, while an older install writes ISO strings, `workDir`, `title`
+ * and `lastPrompt` — and the two coexist in one `~/.kimi-code/sessions` when a
+ * node has both installed (observed on ct116).
+ */
+function fakeKimiStore(): { home: string; v1: string; v2: string; untitled: string } {
+  const home = mkdtempSync(join(tmpdir(), 'kimi-store-'))
+  dirs.push(home)
+  const v2 = 'session_11111111-1111-4111-8111-111111111111'
+  const v1 = 'session_22222222-2222-4222-8222-222222222222'
+  const untitled = 'session_33333333-3333-4333-8333-333333333333'
+  const write = (wd: string, id: string, state: unknown, wire?: unknown[]): void => {
+    const dir = join(home, 'sessions', wd, id)
+    mkdirSync(join(dir, 'agents', 'main'), { recursive: true })
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state))
+    if (wire) {
+      writeFileSync(
+        join(dir, 'agents', 'main', 'wire.jsonl'),
+        wire.map((l) => JSON.stringify(l)).join('\n') + '\n',
+      )
+    }
+  }
+  write('wd_rivet_abc123', v2, {
+    id: v2,
+    version: 2,
+    cwd: '/home/rivet',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_200_000,
+    archived: false,
+  })
+  write('wd_rivetos_def456', v1, {
+    createdAt: '2023-11-14T22:13:20.000Z', // 1_700_000_000_000
+    updatedAt: '2023-11-14T22:14:20.000Z', // 1_700_000_060_000
+    title: 'ship the release',
+    isCustomTitle: false,
+    workDir: '/rivet-shared',
+    lastPrompt: 'ship the release',
+  })
+  // v2 state carries no title at all — the only title source that works across
+  // both shapes is the transcript's opening human turn.
+  write(
+    'wd_rivet_abc123',
+    untitled,
+    { id: untitled, version: 2, cwd: '/home/rivet', createdAt: 1, updatedAt: 2 },
+    [
+      { type: 'metadata', protocol_version: '1.5' },
+      // An injected banner is user-ROLE but not a human turn — it must never
+      // become a drawer label.
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'Auto permission mode is active.' }],
+          origin: { kind: 'injection', variant: 'permission_mode' },
+        },
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'review the harness driver' }],
+          origin: { kind: 'user' },
+        },
+      },
+    ],
+  )
+  process.env.KIMI_CODE_HOME = home
+  return { home, v1, v2, untitled }
+}
 
 function fakeClaudeStore(): string {
   const base = mkdtempSync(join(tmpdir(), 'claude-store-'))
@@ -208,14 +283,84 @@ describe('listHarnessSessions', () => {
     delete process.env.HERMES_HOME
   })
 
+  it('reads kimi sessions across BOTH on-disk state shapes', async () => {
+    const { v1, v2, untitled } = fakeKimiStore()
+    const sessions = await listHarnessSessions(['kimi'])
+    expect(sessions.map((s) => s.id)).toEqual([v2, v1, untitled]) // newest first
+    expect(sessions[0]).toEqual({
+      id: v2,
+      command: 'kimi',
+      // v2 state carries no title, and this session has no transcript either —
+      // the id is the honest fallback, never a guess.
+      title: v2,
+      updatedAt: 1_700_000_200_000,
+      createdAt: 1_700_000_000_000,
+    })
+    // The older shape's ISO strings parse to the same epoch-ms the newer
+    // shape's numbers are, so a mixed store sorts correctly.
+    expect(sessions[1]).toMatchObject({
+      id: v1,
+      title: 'ship the release',
+      updatedAt: 1_700_000_060_000,
+      createdAt: 1_700_000_000_000,
+    })
+    expect(sessions[2].title).toBe('review the harness driver')
+  })
+
+  it('agrees with describeKimiSession on the same session', async () => {
+    const { v1, v2 } = fakeKimiStore()
+    const listed = await listHarnessSessions(['kimi'])
+    for (const id of [v1, v2]) {
+      expect(await describeKimiSession(id)).toEqual(listed.find((s) => s.id === id))
+    }
+    expect(await describeKimiSession('session_nope')).toBeUndefined()
+    expect(await describeKimiSession('../../etc/passwd')).toBeUndefined()
+  })
+
+  it('describeKimiSession takes the fast path through session_index.jsonl', async () => {
+    const { home, v1 } = fakeKimiStore()
+    writeFileSync(
+      join(home, 'session_index.jsonl'),
+      JSON.stringify({
+        sessionId: v1,
+        sessionDir: join(home, 'sessions', 'wd_rivetos_def456', v1),
+        workDir: '/rivet-shared',
+      }) + '\n',
+    )
+    expect((await describeKimiSession(v1))?.title).toBe('ship the release')
+
+    // An index line whose dir does not END in the id is never trusted — the
+    // index is data on disk and a caller-reachable id must not be able to point
+    // a read somewhere else.
+    writeFileSync(
+      join(home, 'session_index.jsonl'),
+      JSON.stringify({ sessionId: v1, sessionDir: join(home, 'sessions', 'wd_rivet_abc123') }) +
+        '\n',
+    )
+    expect((await describeKimiSession(v1))?.title).toBe('ship the release') // scan fallback
+  })
+
+  it('harnessSessionExists: kimi checks the session DIR, written before state.json', () => {
+    const { home, v2 } = fakeKimiStore()
+    expect(harnessSessionExists('kimi', v2)).toBe(true)
+    expect(harnessSessionExists('kimi', 'session_deadbeef')).toBe(false)
+    // A dir that exists but has no state.json yet is still taken: kimi creates
+    // the dir first, so describability is a strict subset of existence.
+    mkdirSync(join(home, 'sessions', 'wd_rivet_abc123', 'session_fresh'), { recursive: true })
+    expect(harnessSessionExists('kimi', 'session_fresh')).toBe(true)
+    expect(describeKimiSession('session_fresh')).resolves.toBeUndefined()
+  })
+
   it('empty when the harness has no store / is not a known harness', async () => {
     process.env.CLAUDE_CONFIG_DIR = join(tmpdir(), 'does-not-exist-' + String(process.pid))
     process.env.GROK_HOME = join(tmpdir(), 'no-grok-' + String(process.pid))
     process.env.HERMES_HOME = join(tmpdir(), 'no-hermes-' + String(process.pid))
-    expect(await listHarnessSessions(['claude', 'grok', 'hermes'])).toEqual([])
+    process.env.KIMI_CODE_HOME = join(tmpdir(), 'no-kimi-' + String(process.pid))
+    expect(await listHarnessSessions(['claude', 'grok', 'hermes', 'kimi'])).toEqual([])
     expect(await listHarnessSessions(['shell'])).toEqual([]) // no reader wired
     delete process.env.GROK_HOME
     delete process.env.HERMES_HOME
+    delete process.env.KIMI_CODE_HOME
   })
 })
 
@@ -432,5 +577,122 @@ describe('readHarnessTranscript', () => {
 
     expect((await readHarnessTranscript(id)).command).toBe('claude')
     expect(await readGrokTranscript(id)).toEqual({ id, command: '', turns: [] })
+  })
+
+  it('folds one kimi turn out of wire.jsonl loop events: text, thinking, tools, usage', async () => {
+    // kimi's transcript is an event log of the agent loop, not a message list —
+    // and it is the ONLY place a kimi reply or thought exists at all, because
+    // its hooks carry neither. This is what the `kimi-code` driver's
+    // hard-resync has to reconstruct.
+    const home = mkdtempSync(join(tmpdir(), 'kimi-tx-'))
+    dirs.push(home)
+    const id = 'session_44444444-4444-4444-8444-444444444444'
+    // No state.json on purpose: the dir is what makes the session real, and a
+    // transcript must be readable in the window before the state file lands.
+    const dir = join(home, 'sessions', 'wd_rivet_abc123', id, 'agents', 'main')
+    mkdirSync(dir, { recursive: true })
+    const step = { turnId: '0', step: 1, stepUuid: 's1' }
+    writeFileSync(
+      join(dir, 'wire.jsonl'),
+      [
+        { type: 'metadata', protocol_version: '1.5' },
+        {
+          type: 'context.append_message',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'review the diff' }],
+            origin: { kind: 'user' },
+          },
+        },
+        // injected noise: user-role, but kimi talking to itself
+        {
+          type: 'context.append_message',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '<system-reminder>todo</system-reminder>' }],
+            origin: { kind: 'injection' },
+          },
+        },
+        { type: 'llm.request', model: 'kimi-k2', kind: 'chat' },
+        { type: 'context.append_loop_event', event: { type: 'step.begin', ...step } },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'content.part', ...step, part: { type: 'think', think: 'weighing it' } },
+        },
+        {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.call',
+            ...step,
+            toolCallId: 'Bash_0',
+            name: 'Bash',
+            args: { command: 'git diff', timeout: 30 },
+          },
+        },
+        {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.call',
+            ...step,
+            toolCallId: 'Read_0',
+            name: 'Read',
+            args: { path: '/tmp/x' },
+          },
+        },
+        {
+          type: 'context.append_loop_event',
+          // kimi records a real isError, unlike den's tool.end — so a resynced
+          // transcript can report a failed tool honestly where the live stream
+          // cannot.
+          event: { type: 'tool.result', toolCallId: 'Bash_0', result: { output: 'boom', isError: true } },
+        },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'tool.result', toolCallId: 'Read_0', result: { output: 'file' } },
+        },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'content.part', ...step, part: { type: 'text', text: 'looks good' } },
+        },
+        {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'step.end',
+            ...step,
+            usage: { inputOther: 100, inputCacheRead: 20, inputCacheCreation: 5, output: 40 },
+          },
+        },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join('\n') + '\n',
+    )
+    process.env.KIMI_CODE_HOME = home
+
+    expect(await readKimiTranscript(id)).toEqual({
+      id,
+      command: 'kimi',
+      turns: [
+        { role: 'user', text: 'review the diff' },
+        {
+          role: 'assistant',
+          text: 'looks good',
+          thinking: 'weighing it',
+          tools: [
+            { name: 'Bash', status: 'error', args: { command: 'git diff', timeout: 30 } },
+            { name: 'Read', status: 'done', args: { path: '/tmp/x' } },
+          ],
+          usage: { promptTokens: 125, completionTokens: 40, cachedTokens: 20 },
+          model: 'kimi-k2',
+        },
+      ],
+    })
+    // The drawer's id-only probe reaches it too, and a deleted store reads
+    // empty rather than falling through to another harness.
+    expect((await readHarnessTranscript(id)).command).toBe('kimi')
+    expect(await readKimiTranscript('session_gone')).toEqual({
+      id: 'session_gone',
+      command: '',
+      turns: [],
+    })
   })
 })

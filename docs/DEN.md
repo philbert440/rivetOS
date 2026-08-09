@@ -32,8 +32,9 @@ To stream a real session, install an adapter:
 - **Kimi Code CLI** — append `integrations/kimi/rivet-den/hooks/hooks.toml` to
   `~/.kimi-code/config.toml`.
   [README](../integrations/kimi/rivet-den/README.md) — kimi's hooks carry no
-  assistant reply, so that room shows prompts, tools, plan and terminal but no
-  agent messages.
+  assistant reply and no thinking, so that room shows prompts, tools, plan and
+  terminal but no agent messages; the `kimi-code` harness driver serves both out
+  of kimi's own transcript instead.
 
 The server binds `127.0.0.1` by default; set `RIVETOS_DEN_HOST=0.0.0.0` (and
 ideally `RIVETOS_DEN_TOKEN`) to serve a LAN. Multiple viewers, multiple

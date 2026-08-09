@@ -5,13 +5,14 @@
 // harness's native session (claude --resume <id>).
 //
 // Supports Claude Code (~/.claude/projects/<slug>/<id>.jsonl), grok Build
-// (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json), and Hermes (a sqlite DB at
-// ~/.hermes/state.db). An unknown harness yields [] — the drawer just shows
-// nothing for it rather than breaking.
+// (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json), Hermes (a sqlite DB at
+// ~/.hermes/state.db) and Kimi Code
+// (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/). An unknown harness
+// yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
-import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
 import type { HarnessTranscriptTool, HarnessTranscriptTurn } from '@rivetos/types'
@@ -411,6 +412,229 @@ function hermesSessionExists(id: string): boolean {
   }
 }
 
+// ---- Kimi Code: ~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/ ----
+
+/** ~/.kimi-code (respects KIMI_CODE_HOME, which the CLI itself reads and the
+ *  rivet-memory backfill tool already honors). */
+function kimiHome(): string {
+  return process.env.KIMI_CODE_HOME?.trim() || join(homedir(), '.kimi-code')
+}
+
+function kimiSessionsDir(): string {
+  return join(kimiHome(), 'sessions')
+}
+
+/** kimi native ids are `session_<uuid>` — the store DIR name, verbatim. */
+const KIMI_ID_PREFIX = 'session_'
+
+/**
+ * `state.json` timestamps come in two shapes, and BOTH are live on a real box:
+ * kimi ≥0.34 writes `"version": 2` state with epoch-ms NUMBERS, while an older
+ * install (0.26 was still writing into the same store on ct116) writes ISO
+ * STRINGS. Neither is "the" format, so parse both and fall back to the file's
+ * mtime rather than picking a winner.
+ */
+function kimiTime(v: unknown): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v === 'string') {
+    const t = Date.parse(v)
+    return Number.isFinite(t) ? t : 0
+  }
+  return 0
+}
+
+/**
+ * First user prompt out of a session's main-agent `wire.jsonl`, for the drawer
+ * label. Bounded 64K head read, the same idiom as `sessionTitle`.
+ *
+ * Needed because the two state shapes disagree about titles too: the v1 store
+ * carries `title` + `lastPrompt`, and the v2 store carries NEITHER — the newer
+ * CLI derives the title at display time. So the only title source that works
+ * across both is the transcript's opening turn.
+ */
+async function kimiWireTitle(wireFile: string): Promise<string> {
+  let fh: Awaited<ReturnType<typeof open>>
+  try {
+    fh = await open(wireFile, 'r')
+  } catch {
+    return ''
+  }
+  try {
+    const buf = Buffer.alloc(64 * 1024)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    for (const line of buf.subarray(0, bytesRead).toString('utf8').split('\n')) {
+      const t = line.trim()
+      if (!t.startsWith('{')) continue
+      let d: Record<string, unknown>
+      try {
+        d = JSON.parse(t) as Record<string, unknown>
+      } catch {
+        continue // truncated final line in the 64K window
+      }
+      if (d.type !== 'context.append_message') continue
+      const msg = d.message as { content?: unknown; origin?: { kind?: unknown } } | undefined
+      // Only a HUMAN turn: kimi injects permission banners and todo reminders
+      // as user-role messages with `origin.kind: 'injection'`, and one of those
+      // as a drawer label would be worse than the raw id.
+      if (msg?.origin?.kind !== 'user') continue
+      const text = extractTurnText(msg.content, 'user')
+      if (text) return text.slice(0, 120)
+    }
+  } finally {
+    await fh.close()
+  }
+  return ''
+}
+
+/**
+ * Read one kimi session dir into a HarnessSession. Shared by the bulk list and
+ * the single-session lookup so the two can never disagree about `createdAt` —
+ * the same guarantee the claude/grok readers give.
+ *
+ * The id is the DIRECTORY NAME, not `state.json.id`: the v2 state carries an
+ * `id` that always equals the dir name, and the v1 state carries no id at all.
+ * The dir name is the only field both shapes have.
+ */
+async function readKimiSession(dir: string, id: string): Promise<HarnessSession | undefined> {
+  const stateFile = join(dir, 'state.json')
+  let s: { title?: unknown; lastPrompt?: unknown; createdAt?: unknown; updatedAt?: unknown }
+  let mtime: number
+  try {
+    const [raw, st] = await Promise.all([readFile(stateFile, 'utf8'), stat(stateFile)])
+    s = JSON.parse(raw) as typeof s
+    mtime = st.mtimeMs
+  } catch {
+    return undefined
+  }
+  const title =
+    (typeof s.title === 'string' ? s.title.trim() : '') ||
+    (typeof s.lastPrompt === 'string' ? s.lastPrompt.trim() : '') ||
+    (await kimiWireTitle(join(dir, 'agents', 'main', 'wire.jsonl')).catch(() => ''))
+  const row: HarnessSession = {
+    id,
+    command: 'kimi',
+    title: title.replace(/\s+/g, ' ').trim().slice(0, 120) || id,
+    updatedAt: Math.floor(kimiTime(s.updatedAt) || mtime),
+  }
+  const created = kimiTime(s.createdAt)
+  if (created) row.createdAt = Math.floor(created)
+  return row
+}
+
+async function listKimiSessions(limit: number): Promise<HarnessSession[]> {
+  const root = kimiSessionsDir()
+  let wdDirs: string[]
+  try {
+    wdDirs = await readdir(root)
+  } catch {
+    return [] // no kimi store on this node
+  }
+  // Cheap stat pass first, then only parse the top N — parsing is the costly
+  // part (a title can cost a 64K transcript read). Same shape as the Claude
+  // reader.
+  const found: { id: string; path: string; mtime: number }[] = []
+  for (const wd of wdDirs) {
+    let entries: string[]
+    try {
+      entries = await readdir(join(root, wd))
+    } catch {
+      continue // session_index.jsonl siblings, stray files
+    }
+    for (const e of entries) {
+      if (!e.startsWith(KIMI_ID_PREFIX)) continue
+      const path = join(root, wd, e)
+      try {
+        const st = await stat(join(path, 'state.json'))
+        if (st.isFile()) found.push({ id: e, path, mtime: st.mtimeMs })
+      } catch {
+        /* dir without state.json — mid-create, or reaped between reads */
+      }
+    }
+  }
+  found.sort((a, b) => b.mtime - a.mtime)
+  const out: HarnessSession[] = []
+  for (const f of found.slice(0, limit)) {
+    const row = await readKimiSession(f.path, f.id)
+    if (row) out.push(row)
+  }
+  return out
+}
+
+/**
+ * Which workspace bucket holds a kimi session, without walking every bucket.
+ *
+ * `~/.kimi-code/session_index.jsonl` is one `{sessionId, sessionDir, workDir}`
+ * line per session, appended when the session is created — so it is the fast
+ * path, and a full scan is the fallback for a session the index never got
+ * (an index truncated by hand, a dir copied in). The recorded `sessionDir` is
+ * only trusted when its basename IS the id: the index is data on disk, and a
+ * driver-reachable id must not be able to point a read anywhere else.
+ */
+function kimiSessionDir(id: string): string | undefined {
+  const root = kimiSessionsDir()
+  let indexed: string | undefined
+  try {
+    const raw = readFileSync(join(kimiHome(), 'session_index.jsonl'), 'utf8')
+    for (const line of raw.split('\n')) {
+      const t = line.trim()
+      if (!t.startsWith('{')) continue
+      try {
+        const o = JSON.parse(t) as { sessionId?: unknown; sessionDir?: unknown }
+        // Last occurrence wins, defensively — the file is append-only.
+        if (o.sessionId === id && typeof o.sessionDir === 'string') indexed = o.sessionDir
+      } catch {
+        /* partial trailing line — skip */
+      }
+    }
+  } catch {
+    /* no index on this node */
+  }
+  // Existence is the DIR, not `state.json`: kimi creates the dir first, so a
+  // session caught between the two is still a real session — `readKimiSession`
+  // is the one that answers "can it be described yet".
+  if (indexed && basename(indexed) === id && existsSync(indexed)) return indexed
+  let wdDirs: string[]
+  try {
+    wdDirs = readdirSync(root)
+  } catch {
+    return undefined
+  }
+  for (const wd of wdDirs) {
+    const path = join(root, wd, id)
+    if (existsSync(path)) return path
+  }
+  return undefined
+}
+
+/**
+ * Describe ONE kimi session by native id — the `kimi-code` driver's
+ * `getSession`, without paying a whole-store title scan.
+ */
+export async function describeKimiSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const dir = kimiSessionDir(id)
+  if (!dir) return undefined
+  return readKimiSession(dir, id)
+}
+
+/**
+ * Does a kimi session DIR exist? Broader than `describe` and deliberately so:
+ * kimi creates the dir, then writes `state.json`, then the transcript, so a
+ * describable session is a strict subset of an existing one — the same
+ * relationship grok's store has.
+ */
+function kimiSessionExists(id: string): boolean {
+  if (!id.startsWith(KIMI_ID_PREFIX)) return false
+  const root = kimiSessionsDir()
+  let wdDirs: string[]
+  try {
+    wdDirs = readdirSync(root)
+  } catch {
+    return false
+  }
+  return wdDirs.some((wd) => existsSync(join(root, wd, id)))
+}
+
 /**
  * Does a harness already have an on-disk session with this id? Store existence
  * is the ground truth for choosing --resume (continue) vs --session-id (pin a
@@ -429,6 +653,7 @@ function hermesSessionExists(id: string): boolean {
 export function harnessSessionExists(command: string, id: string): boolean {
   if (!id || id.includes('/') || id.includes('..')) return false
   if (command === 'hermes') return hermesSessionExists(id) // sqlite lookup
+  if (command === 'kimi') return kimiSessionExists(id) // session DIR under any workspace bucket
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -466,6 +691,7 @@ export async function listHarnessSessions(
   if (commands.includes('claude')) all.push(...(await listClaudeSessions(limit)))
   if (commands.includes('grok')) all.push(...(await listGrokSessions(limit)))
   if (commands.includes('hermes')) all.push(...listHermesSessions(limit))
+  if (commands.includes('kimi')) all.push(...(await listKimiSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
@@ -849,6 +1075,13 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
   const hermes = readHermesTurns(id)
   if (hermes.length > 0) return { id, command: 'hermes', turns: hermes }
 
+  // kimi last, and cheaply: its ids are `session_<uuid>`, so the probe is a
+  // prefix test before any filesystem work.
+  if (id.startsWith(KIMI_ID_PREFIX)) {
+    const kimi = await readKimiTranscript(id)
+    if (kimi.turns.length > 0) return kimi
+  }
+
   return { id, command: '', turns: [] }
 }
 
@@ -879,6 +1112,156 @@ export function readHermesTranscript(id: string): Promise<HarnessTranscript> {
     return Promise.resolve({ id, command: '', turns: [] })
   }
   return Promise.resolve({ id, command: 'hermes', turns: readHermesTurns(id) })
+}
+
+/**
+ * Fold kimi `wire.jsonl` records into LOGICAL turns.
+ *
+ * kimi's transcript is an event log of the agent loop, not a message list, and
+ * the CLI reconstructs the message view from it at read time. The record
+ * semantics are kimi's own (`packages/agent-core` context restore, mirrored in
+ * its daemon REST reducer) and the rivet-memory backfill tool in this repo
+ * already relies on the same ones:
+ *
+ *   - `context.append_message`  — a real message. `origin.kind` says whose:
+ *     `user` is a human turn, everything else (`injection` permission banners
+ *     and todo reminders, `skill_activation`, `background_task`,
+ *     `compaction_summary`) is kimi talking to itself.
+ *   - `context.append_loop_event` `step.begin` — a new assistant step; later
+ *     `content.part` (`text` / `think`) and `tool.call` events on that step
+ *     grow the same assistant message, and `step.end` closes it with `usage`.
+ *   - `context.append_loop_event` `tool.result` — pairs to a `tool.call` by
+ *     `toolCallId` and carries a real `isError` flag, so unlike the den live
+ *     stream a kimi transcript CAN report a failed tool honestly.
+ *
+ * Only a real user message ends the assistant turn, so everything between two
+ * human turns coalesces into one — the same folding rule the Claude reader
+ * uses, so the two harnesses' transcripts render identically.
+ */
+function kimiTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[] {
+  const turns: HarnessTurn[] = []
+  let toolsById = new Map<string, HarnessTranscriptTool>()
+  let cur: HarnessTurn | null = null
+  let thinking = ''
+  let prompt = 0
+  let completion = 0
+  let cached = 0
+  let model = ''
+
+  const finishAssistant = (): void => {
+    if (cur) {
+      if (thinking) {
+        cur.thinking =
+          thinking.length > THINKING_TAIL_CHARS
+            ? '…' + thinking.slice(-THINKING_TAIL_CHARS)
+            : thinking
+      }
+      if (cur.tools && cur.tools.length === 0) delete cur.tools
+      if (prompt > 0 || completion > 0) {
+        cur.usage = { promptTokens: prompt, completionTokens: completion, cachedTokens: cached }
+      }
+      if (model) cur.model = model
+      if (cur.text || cur.thinking || cur.tools) turns.push(cur)
+    }
+    cur = null
+    thinking = ''
+    prompt = 0
+    completion = 0
+    cached = 0
+    toolsById = new Map()
+  }
+
+  for (const obj of lines) {
+    // The model actually serving the session — stamped on every llm.request,
+    // and the only place the transcript names it.
+    if (obj.type === 'llm.request' && typeof obj.model === 'string') model = obj.model
+
+    if (obj.type === 'context.append_message') {
+      const msg = obj.message as { role?: unknown; content?: unknown; origin?: unknown } | undefined
+      const origin = (msg?.origin ?? {}) as { kind?: unknown }
+      if (msg?.role !== 'user' || origin.kind !== 'user') continue
+      const text = extractTurnText(msg.content, 'user')
+      if (!text) continue
+      finishAssistant()
+      turns.push({ role: 'user', text })
+      continue
+    }
+
+    if (obj.type !== 'context.append_loop_event') continue
+    const event = obj.event as Record<string, unknown> | undefined
+    if (!event || typeof event !== 'object') continue
+
+    switch (event.type) {
+      case 'content.part': {
+        const part = event.part as { type?: unknown; text?: unknown; think?: unknown } | undefined
+        if (!part) break
+        cur ??= { role: 'assistant', text: '', tools: [] }
+        if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
+          cur.text = cur.text ? cur.text + '\n\n' + part.text.trim() : part.text.trim()
+        } else if (part.type === 'think' && typeof part.think === 'string') {
+          thinking += part.think
+        }
+        break
+      }
+      case 'tool.call': {
+        if (typeof event.name !== 'string') break
+        cur ??= { role: 'assistant', text: '', tools: [] }
+        const entry: HarnessTranscriptTool = { name: event.name, status: 'running' }
+        const args = summarizeTurnArgs(event.args)
+        if (args) entry.args = args
+        if (typeof event.toolCallId === 'string') toolsById.set(event.toolCallId, entry)
+        cur.tools?.push(entry)
+        break
+      }
+      case 'tool.result': {
+        const entry =
+          typeof event.toolCallId === 'string' ? toolsById.get(event.toolCallId) : undefined
+        if (!entry) break
+        const result = event.result as { isError?: unknown } | undefined
+        entry.status = result?.isError === true ? 'error' : 'done'
+        break
+      }
+      case 'step.end': {
+        // kimi's usage split: `inputOther` is the uncached prompt, and the two
+        // cache counters are prompt tokens too — summed the same way the Claude
+        // reader sums input + cache_read + cache_creation, so a token count
+        // means the same thing on both transcripts.
+        const usage = event.usage as Record<string, unknown> | undefined
+        if (!usage) break
+        const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+        const read = num(usage.inputCacheRead)
+        prompt += num(usage.inputOther) + read + num(usage.inputCacheCreation)
+        completion += num(usage.output)
+        cached += read
+        break
+      }
+      default:
+        break
+    }
+  }
+  finishAssistant()
+  return turns
+}
+
+/**
+ * Kimi-only transcript read — the `kimi-code` driver's hard-resync source, and
+ * the ONLY place a kimi assistant reply or thought is observable at all: its
+ * `Stop` hook payload carries no reply text and no hook sees thinking, so the
+ * den live stream cannot fold either one (see the driver header).
+ *
+ * Store-scoped like its siblings: a kimi id whose dir has been deleted reads as
+ * an empty transcript, never as whichever other store happens to hold that id.
+ * Only the MAIN agent's wire is read: a subagent gets its own `agents/<slot>`
+ * transcript, but it is one tool call on the main thread, and splicing its
+ * inner turns into the conversation would render work the user never said as
+ * dialog.
+ */
+export async function readKimiTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const dir = kimiSessionDir(id)
+  if (!dir) return { id, command: '', turns: [] }
+  const wire = join(dir, 'agents', 'main', 'wire.jsonl')
+  return { id, command: 'kimi', turns: kimiTurnsFromLines(await parseJsonlObjects(wire)) }
 }
 
 /**
@@ -921,13 +1304,16 @@ export async function readHarnessStoreAt(
   if (ref.command === 'grok') {
     return { id, command: 'grok', turns: await parseJsonlTurns(ref.path, grokPickTurn) }
   }
+  if (ref.command === 'kimi') {
+    return { id, command: 'kimi', turns: kimiTurnsFromLines(await parseJsonlObjects(ref.path)) }
+  }
   return { id, command: 'hermes', turns: readHermesTurns(id) }
 }
 
 // ---- Store resolution for the transcript watcher ---------------------------
 
 export interface HarnessStoreRef {
-  command: 'claude' | 'grok' | 'hermes'
+  command: 'claude' | 'grok' | 'hermes' | 'kimi'
   /** The file to watch for changes (jsonl / chat_history / sqlite db). */
   path: string
 }
@@ -943,12 +1329,21 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
   const grokPath = await findGrokChatHistory(id)
   if (grokPath) return { command: 'grok', path: grokPath }
   if (hermesSessionExists(id)) return { command: 'hermes', path: hermesDbPath() }
+  if (id.startsWith(KIMI_ID_PREFIX)) {
+    const dir = kimiSessionDir(id)
+    if (dir) return { command: 'kimi', path: join(dir, 'agents', 'main', 'wire.jsonl') }
+  }
   return undefined
 }
 
 /** Store roots that exist on this node — watched (recursively) for the
  *  drawer's sessions-dirty signal. */
 export function harnessStoreDirs(): string[] {
-  const candidates = [claudeProjectsDir(), grokSessionsDir(), join(hermesDbPath(), '..')]
+  const candidates = [
+    claudeProjectsDir(),
+    grokSessionsDir(),
+    join(hermesDbPath(), '..'),
+    kimiSessionsDir(),
+  ]
   return candidates.filter((d) => existsSync(d))
 }
