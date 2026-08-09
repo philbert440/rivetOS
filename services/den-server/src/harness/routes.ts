@@ -42,14 +42,14 @@
  * **Known gaps** (both Phase 3+ work, recorded so clients aren't surprised):
  *
  *   - *Capability flags are declared, not runtime-probed.* A driver computes
- *     them at construction. `claude-code` reads `interrupt`/`resume` off
+ *     them at construction. The PTY drivers read `interrupt`/`resume` off
  *     whether den terminals are ENABLED — if `node-pty` then fails to load,
  *     `GET /api/harnesses` keeps advertising `true` while the methods answer
  *     501. The rejection is honest; the advertisement is optimistic.
- *   - *Session status for out-of-den harnesses.* A Claude process started
- *     outside den (no `RIVET_DEN_SESSION`) is invisible to the driver's live
+ *   - *Session status for out-of-den harnesses.* A harness process started
+ *     outside den (no `RIVET_DEN_SESSION`) is invisible to its driver's live
  *     map and reads as `ended` until its den hooks speak. Sessions spawned
- *     through the driver or the `/term` drawer are adopted at spawn time.
+ *     through a driver or the `/term` drawer are adopted at spawn time.
  *
  * See docs/plans/harness-control-plane.md.
  */

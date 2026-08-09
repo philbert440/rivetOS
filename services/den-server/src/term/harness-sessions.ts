@@ -25,9 +25,11 @@ export interface HarnessSession {
   title: string
   /** epoch ms of last activity (file mtime) */
   updatedAt: number
-  /** epoch ms the store file was created (birthtime, falling back to ctime
-   *  then mtime). Populated by the Claude readers; other harness stores do not
-   *  expose it, hence optional. */
+  /** epoch ms the session was created. Claude has no field for it, so its
+   *  readers use the store file's birthtime (falling back to ctime then
+   *  mtime); grok's summary.json carries `created_at` and the reader parses it.
+   *  Optional because hermes exposes nothing usable, and because an older grok
+   *  store may predate the field. */
   createdAt?: number
 }
 
@@ -168,6 +170,47 @@ function grokSessionsDir(): string {
   return join(base, 'sessions')
 }
 
+/**
+ * Read one grok session dir's `summary.json` into a HarnessSession.
+ *
+ * summary.json carries the id, a real title, created_at and updated_at — much
+ * cleaner than parsing chat_history.jsonl. Shared by the bulk list and the
+ * single-session lookup so the two can never disagree about a session's
+ * createdAt (the same guarantee the Claude readers give via their stat
+ * fallback chain).
+ *
+ * Returns undefined when the dir has no readable summary — grok writes the
+ * session DIR before its summary, so "no row" does NOT mean "id is free"; that
+ * question is `harnessSessionExists('grok', id)`.
+ */
+async function readGrokSummary(
+  dir: string,
+  fallbackId: string,
+): Promise<HarnessSession | undefined> {
+  let s: {
+    info?: { id?: string }
+    session_summary?: string
+    created_at?: string
+    updated_at?: string
+  }
+  try {
+    s = JSON.parse(await readFile(join(dir, 'summary.json'), 'utf8')) as typeof s
+  } catch {
+    return undefined
+  }
+  const id = s.info?.id || fallbackId
+  const updated = s.updated_at ? Date.parse(s.updated_at) : NaN
+  const created = s.created_at ? Date.parse(s.created_at) : NaN
+  const row: HarnessSession = {
+    id,
+    command: 'grok',
+    title: s.session_summary?.trim().slice(0, 120) || id,
+    updatedAt: Number.isFinite(updated) ? updated : 0,
+  }
+  if (Number.isFinite(created)) row.createdAt = created
+  return row
+}
+
 async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
   const dir = grokSessionsDir()
   let cwdDirs: string[]
@@ -186,28 +229,37 @@ async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
     }
     for (const e of entries) {
       if (!e.isDirectory()) continue
-      // summary.json carries the id, a real title, and updated_at — much
-      // cleaner than parsing chat_history.jsonl.
-      try {
-        const s = JSON.parse(await readFile(join(dir, cwd, e.name, 'summary.json'), 'utf8')) as {
-          info?: { id?: string }
-          session_summary?: string
-          updated_at?: string
-        }
-        const id = s.info?.id || e.name
-        const t = s.updated_at ? Date.parse(s.updated_at) : NaN
-        out.push({
-          id,
-          command: 'grok',
-          title: s.session_summary?.trim().slice(0, 120) || id,
-          updatedAt: Number.isFinite(t) ? t : 0,
-        })
-      } catch {
-        /* no summary / unreadable → skip this session */
-      }
+      const row = await readGrokSummary(join(dir, cwd, e.name), e.name)
+      if (row) out.push(row)
     }
   }
   return out.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit)
+}
+
+/**
+ * Describe ONE grok session by native id — the harness control plane's
+ * single-session read (`getSession`, and the store half of the resume check),
+ * without scanning every cwd bucket's titles.
+ *
+ * The id appears under exactly one cwd bucket in practice; if it somehow
+ * appears under several, the most recently updated wins (same tie-break as
+ * `findClaudeJsonl` / `findGrokChatHistory`).
+ */
+export async function describeGrokSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const dir = grokSessionsDir()
+  let cwdDirs: string[]
+  try {
+    cwdDirs = await readdir(dir)
+  } catch {
+    return undefined // no grok store on this node
+  }
+  let best: HarnessSession | undefined
+  for (const cwd of cwdDirs) {
+    const row = await readGrokSummary(join(dir, cwd, id), id)
+    if (row && (!best || row.updatedAt > best.updatedAt)) best = row
+  }
+  return best
 }
 
 // ---- Hermes: sessions live in a sqlite DB, not files (~/.hermes/state.db) ----
@@ -314,8 +366,18 @@ function hermesSessionExists(id: string): boolean {
  * is the ground truth for choosing --resume (continue) vs --session-id (pin a
  * NEW id) when re-spawning a conversation whose PTY was evicted (#318 review).
  * Sync + cheap (a handful of existsSync); unknown harnesses → false.
+ *
+ * Ids are interpolated straight into a store path, and since the harness
+ * drivers landed this is reachable with a CALLER-SUPPLIED id (`POST
+ * /api/harness-sessions/:enc/resume` and `.../turns`), not just with a den
+ * session key the term manager minted. Same reject as `readHarnessTranscript` /
+ * `resolveHarnessStore`: a path separator or a `..` segment is never a session
+ * id, whatever it might happen to resolve to on disk. Applied before the
+ * harness switch — hermes's lookup is a bound sqlite parameter and was never
+ * exposed, but one rule for the whole module beats three.
  */
 export function harnessSessionExists(command: string, id: string): boolean {
+  if (!id || id.includes('/') || id.includes('..')) return false
   if (command === 'hermes') return hermesSessionExists(id) // sqlite lookup
   let dir: string
   let hit: (top: string) => string
@@ -738,6 +800,22 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
   if (hermes.length > 0) return { id, command: 'hermes', turns: hermes }
 
   return { id, command: '', turns: [] }
+}
+
+/**
+ * Grok-only transcript read — the `grok-build` driver's hard-resync source.
+ *
+ * `readHarnessTranscript` probes claude → grok → hermes and returns the first
+ * non-empty hit, which is right for the id-only drawer endpoint but wrong for
+ * a driver: a driver already knows which harness owns the id and must never
+ * serve another harness's transcript for it, however unlikely a uuid collision
+ * across two stores is.
+ */
+export async function readGrokTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const path = await findGrokChatHistory(id)
+  if (!path) return { id, command: '', turns: [] }
+  return { id, command: 'grok', turns: await parseJsonlTurns(path, grokPickTurn) }
 }
 
 function grokPickTurn(obj: Record<string, unknown>): HarnessTurn | null {

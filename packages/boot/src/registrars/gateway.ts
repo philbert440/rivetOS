@@ -208,8 +208,8 @@ export async function registerGateway(
   /**
    * Harness control plane (docs/plans/harness-control-plane.md): drivers to
    * register on the node's HarnessDriver registry at boot, alongside the
-   * built-in `claude-code` reference driver the gateway registers itself.
-   * Phase 3 (grok-build, kimi-code, hermes) plugs in here.
+   * built-in `claude-code` and `grok-build` drivers the gateway registers
+   * itself. The rest of Phase 3 (kimi-code, hermes) plugs in here.
    */
   harnessDrivers: HarnessDriver[] = [],
 ): Promise<GatewayStart | undefined> {
