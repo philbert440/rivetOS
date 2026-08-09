@@ -48,6 +48,9 @@ class ChatDrawerVM(
 
     /** Call when the chat drawer becomes visible so the list is not a one-shot snapshot. */
     fun refreshRemoteList() {
+        // Drop the plane cache too, or a pull-to-refresh would re-render the
+        // same 10s-old snapshot.
+        chatService.harnessPlane.invalidate()
         remoteListEpoch.update { it + 1 }
     }
 
@@ -84,19 +87,25 @@ class ChatDrawerVM(
                     ) { epoch, tick -> epoch to tick }
                         .flatMapLatest {
                             flow {
-                                val sessions = chatService.listRemoteHarnessSessions()
+                                // Control plane ∪ legacy scan, keyed by native
+                                // id: a driver-owned row wins (canonical id,
+                                // harness badge, real status) and everything
+                                // else is the same list as before, so nothing
+                                // disappears while the other drivers land.
+                                val sessions = chatService.remoteChatRows()
                                 val items = sessions.mapNotNull { s ->
-                                    val id = ChatService.parseHarnessSessionUuid(s.id)
+                                    val id = ChatService.parseHarnessSessionUuid(s.key)
                                         ?: return@mapNotNull null
                                     val updated = if (s.updatedAt > 0) {
                                         Instant.ofEpochMilli(s.updatedAt)
                                     } else {
                                         Instant.now()
                                     }
+                                    val command = s.command ?: s.harnessId ?: "shell"
                                     Conversation(
                                         id = id,
                                         assistantId = assistantId,
-                                        title = s.title.ifBlank { "${s.command} · ${s.id.take(8)}" },
+                                        title = s.title.ifBlank { "$command · ${s.key.take(8)}" },
                                         messageNodes = emptyList(),
                                         createAt = updated,
                                         updateAt = updated,
