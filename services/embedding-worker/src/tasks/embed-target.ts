@@ -10,6 +10,9 @@
  *
  * For oversized content (> EMBED_CHARS_PER_CHUNK), we chunk the content,
  * embed each chunk, and mean-pool the vectors into a single row vector.
+ *
+ * ros_messages: embed content + tool_result (FTS parity after #440). Tool rows
+ * store the real payload in tool_result; content is often a short placeholder.
  */
 
 import type { Task } from 'graphile-worker'
@@ -18,6 +21,7 @@ import { safeSlice } from '../safe-slice.js'
 import { splitIntoChunks, meanPool } from '../chunking.js'
 import { classifyUnembeddable } from '../classify.js'
 import { embedBatch } from '../embed-api.js'
+import { composeMessageEmbedText } from '../compose-embed-text.js'
 
 export interface EmbedTargetPayload {
   targetTable: 'ros_messages' | 'ros_summaries' | 'ros_wiki_topics'
@@ -27,16 +31,17 @@ export interface EmbedTargetPayload {
 /** Per-table column spec — wiki topics key on slug and embed search_text. */
 const TABLE_SPECS: Record<
   EmbedTargetPayload['targetTable'],
-  { idCol: string; contentCol: string }
+  { idCol: string; contentCol: string; includeToolResult: boolean }
 > = {
-  ros_messages: { idCol: 'id', contentCol: 'content' },
-  ros_summaries: { idCol: 'id', contentCol: 'content' },
-  ros_wiki_topics: { idCol: 'slug', contentCol: 'search_text' },
+  ros_messages: { idCol: 'id', contentCol: 'content', includeToolResult: true },
+  ros_summaries: { idCol: 'id', contentCol: 'content', includeToolResult: false },
+  ros_wiki_topics: { idCol: 'slug', contentCol: 'search_text', includeToolResult: false },
 }
 
 interface ContentRow {
   id: string
   content: string | null
+  tool_result?: string | null
 }
 
 export const embedTargetTask: Task = async (payload, helpers) => {
@@ -49,11 +54,20 @@ export const embedTargetTask: Task = async (payload, helpers) => {
   }
 
   await helpers.withPgClient(async (client) => {
+    // Messages: allow rows that only have tool_result (content may be empty or
+    // a short `[tool] name` placeholder). Other tables stay content-only.
+    const selectCols = spec.includeToolResult
+      ? `${spec.idCol} AS id, ${spec.contentCol} AS content, tool_result`
+      : `${spec.idCol} AS id, ${spec.contentCol} AS content`
+    const eligibility = spec.includeToolResult
+      ? `((${spec.contentCol} IS NOT NULL AND LENGTH(btrim(${spec.contentCol})) > 0)
+         OR (tool_result IS NOT NULL AND LENGTH(btrim(tool_result)) > 0))`
+      : `${spec.contentCol} IS NOT NULL AND LENGTH(${spec.contentCol}) > 0`
+
     const result = await client.query<ContentRow>(
-      `SELECT ${spec.idCol} AS id, ${spec.contentCol} AS content FROM ${targetTable}
+      `SELECT ${selectCols} FROM ${targetTable}
         WHERE ${spec.idCol} = $1
-          AND ${spec.contentCol} IS NOT NULL
-          AND LENGTH(${spec.contentCol}) > 0`,
+          AND ${eligibility}`,
       [targetId],
     )
 
@@ -65,7 +79,16 @@ export const embedTargetTask: Task = async (payload, helpers) => {
     }
 
     const row = result.rows[0]
-    const content = row.content ?? ''
+    const content = spec.includeToolResult
+      ? composeMessageEmbedText(row.content, row.tool_result)
+      : (row.content ?? '')
+
+    if (!content) {
+      helpers.logger.info(
+        `[embed-target] ${targetTable} ${targetId.slice(0, 8)} empty after compose — dropping`,
+      )
+      return
+    }
 
     const unembeddable = classifyUnembeddable(content)
     if (unembeddable) {

@@ -684,13 +684,16 @@ def stats_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
                         "\n**Summaries:** 0 ⚠️ No summaries — compactor may not be running"
                     )
 
+                # Messages: content OR tool_result (tool-row residual after #440)
                 cur.execute(
                     """
                     SELECT
                       (SELECT COUNT(*) FROM ros_messages
                         WHERE embedding IS NULL
-                          AND content IS NOT NULL
-                          AND LENGTH(content) > 0),
+                          AND (
+                            (content IS NOT NULL AND LENGTH(content) > 0)
+                            OR (tool_result IS NOT NULL AND LENGTH(tool_result) > 0)
+                          )),
                       (SELECT COUNT(*) FROM ros_summaries
                         WHERE embedding IS NULL AND content IS NOT NULL)
                     """

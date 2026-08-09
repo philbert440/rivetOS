@@ -62,6 +62,26 @@ describe('enqueue-unembedded', () => {
     expect(helpers.logger.info).toHaveBeenCalledWith(expect.stringContaining('re-enqueued 3'))
   })
 
+  it('message sweep SQL includes tool_result eligibility (not content alone)', async () => {
+    const sqls: string[] = []
+    const query = vi.fn(async (sql: string) => {
+      sqls.push(sql)
+      return { rows: [], rowCount: 0 }
+    })
+    const helpers = {
+      withPgClient: async (fn: (c: { query: typeof query }) => Promise<void>) => fn({ query }),
+      addJob: vi.fn(async () => undefined),
+      logger: { info: vi.fn() },
+    }
+
+    await enqueueUnembeddedTask({} as any, helpers as any)
+
+    const msgSql = sqls.find((s) => s.includes('ros_messages'))
+    expect(msgSql).toBeDefined()
+    expect(msgSql).toMatch(/tool_result/)
+    expect(msgSql).toMatch(/LENGTH\(tool_result\) > 20/)
+  })
+
   it('sweeps ros_wiki_topics keyed on slug (3d)', async () => {
     const helpers = makeHelpers({ ros_wiki_topics: [{ id: 'gerty-vllm-stack' }] })
 
