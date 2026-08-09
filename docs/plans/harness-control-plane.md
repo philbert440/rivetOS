@@ -416,11 +416,52 @@ wired on the node, never an aspiration:
 
 | Flag | `claude-code` | `grok-build` | `hermes` | `kimi-code` | Why |
 |------|---------------|--------------|----------|-------------|-----|
-| `interrupt` | den terminals enabled | den terminals enabled | den terminals enabled | den terminals enabled | Esc through the term manager's `inject(..., interrupt)`; no PTY, no interrupt. Esc is each TUI's own cancel key — kimi documents it as "Close dialogs / interrupt streaming" |
-| `resume` | den terminals enabled | den terminals enabled | den terminals enabled | den terminals enabled | The harness's resume flag through the term manager's spawn-or-get: `--resume <id>` for the first three, `--session <id>` for kimi |
+| `interrupt` | PTY host resolves | PTY host resolves | PTY host resolves | PTY host resolves | Esc through the term manager's `inject(..., interrupt)`; no PTY, no interrupt. Esc is each TUI's own cancel key — kimi documents it as "Close dialogs / interrupt streaming". **Runtime-truthed**, not read off the config flag: see below |
+| `resume` | PTY host resolves | PTY host resolves | PTY host resolves | PTY host resolves | The harness's resume flag through the term manager's spawn-or-get: `--resume <id>` for the first three, `--session <id>` for kimi. Runtime-truthed with `interrupt` — they stand or fall on the same PTY host |
 | `approvals` | **false** | **false** | **false** | **false** | All four surface permission prompts inside their own TUI; the den wire carries neither a request nor a decision channel. `resolveApproval` → 501. (A hermes shell hook *can* block a tool call, but that is a policy verdict computed on the node, not a request for a human decision. kimi's `PermissionRequest`/`PermissionResult` hooks are deliberately unmapped for the same reason) |
 | `liveStream` | den event tap present | den event tap present | den event tap present | den event tap present | The driver's only live source is den AgentEvent ingest. Honest but uneven in what it can carry: kimi's hooks give it no assistant text and no thinking, so its stream is lifecycle + tools + turn boundaries (see As built (kimi-code)) |
 | `listSessions` | true | true | true | true | A store scan: `~/.claude/projects` / `~/.grok/sessions` / `~/.hermes/state.db` / `~/.kimi-code/sessions` |
+
+**Capability runtime truthing (as built).** `interrupt`/`resume` used to be
+`!!deps.pty`, which answers a CONFIG question ("are den terminals enabled")
+where the contract asks a RUNTIME one ("can this node open a PTY"). A node whose
+`node-pty` import failed advertised `true` on `GET /api/harnesses` and answered
+501 from the method — the rejection honest, the advertisement optimistic. Now
+the declaration is only the starting point and the flags follow the machinery,
+in three places (`services/den-server/src/harness/capabilities.ts`):
+
+- **Probe before advertising.** Both capability reads
+  (`GET /api/harnesses`, `GET /api/harnesses/:harnessId`) `await
+  registry.verifyCapabilities()` first. The driver resolves its PTY host once
+  and latches the verdict; `loadRealPtySpawn` memoizes one import attempt and
+  returns null forever after, so one probe per process is the whole cost, and
+  it is paid at the first moment an optimistic flag could have misled anyone.
+- **Lazy-verify for free.** `requirePty` records what every real call observes,
+  so the sheet corrects itself on the first method that needed a PTY even on a
+  node nobody ever asked for the sheet.
+- **Flips surface on the registry stream** as a `harness-capabilities` frame
+  (full sheet + the flags that moved + a reason), and attaching to
+  `WS /api/harnesses/ws` kicks a probe so a client that only watches the stream
+  still learns the truth.
+
+**Contract limit hit, deliberately not crossed:** every member of `HarnessEvent`
+carries a `sessionId` — the union is session-scoped by construction, and a
+driver-level capability flip has no session to name (fabricating one would be a
+worse lie than the flag was). So the flip is a **den-level frame on den's
+registry socket**, which already carries non-union frames (the attach error
+frame), and the truthing surface itself (`verifyCapabilities` /
+`subscribeCapabilities`) is **feature-detected off the driver exactly like
+`transcript`** rather than added to `HarnessDriver`. Nothing in
+`@rivetos/types` changed. Clients ignore frame types they do not know (the
+Android parser maps them to `Unknown`, the web fold has a default case).
+Promoting the flip to a `capabilities-changed` member of the union is the
+follow-up if another transport ever needs it — and that is a real contract
+change, with the version bump it implies.
+
+`liveStream` and `listSessions` are not probed, deliberately: the den tap is a
+closure over an in-process Set (`!!deps.events` IS the answer, not a proxy for
+it), and `listSessions` is a store scan that reports an empty list rather than
+failing. `approvals` is false unconditionally.
 
 All four reject `cwd`/`model` on `startSession` (roster-owned) and attachments
 on `sendUserTurn`, with `capability_unsupported` rather than ignoring them
@@ -596,17 +637,69 @@ store is in-memory and per-node, so it covers live reads and dies with the
 process. The breadcrumb is the durable record of the link, in the memory DB,
 with no schema migration.
 
-**What that means after a den-server restart, plainly:** the aliases are gone
-and nothing rebuilds them. A superseded id stops resolving to canonical — a
+**What that means after a den-server restart, plainly:** the in-memory aliases
+are gone. Without a reader, a superseded id stops resolving to canonical — a
 `subscribe` under the old id no longer follows the chain, and a chain-union read
 no longer unions — while `getSession` and `transcript` on that old id keep
 working *standalone*, because its store row and its conversation are still
-there. The chain does not re-link on its own: the driver only observes a
-rotation as it happens, so a restart mid-chain leaves the two halves addressable
-but no longer joined. The breadcrumb means the link is recoverable **in the
-data**; **no reconstructor reads it back today.** Writing one (registry rehydrate
-at boot, or a union in the memory reader) is the follow-up, and both would
-consume exactly this row.
+there. The driver only observes a rotation as it happens, so nothing in the
+control plane re-links the two halves on its own.
+
+**As built — the reconstructor** (`services/den-server/src/harness/alias-restore.ts`):
+at boot, den-server reads those breadcrumbs back and re-records each link, so a
+restart mid-chain no longer costs the chain.
+
+- **The query** joins `ros_messages` to `ros_conversations` on
+  `role = 'system'` and `metadata->>'kind' = 'session-rotation'`, taking the
+  predecessor from `metadata->>'previous_session_key'` and the successor from
+  the conversation's own `session_key`. Bounded: newest 30 days,
+  ≤5000 rows, `ORDER BY created_at DESC LIMIT` (then reversed to oldest-first,
+  because in an over-full window the OLD half is the half nobody is still
+  holding an id from). The time bound rides `idx_ros_messages_created`, so the
+  scan is a range over recent rows rather than the whole table. Not scoped by
+  `agent`: a breadcrumb names BOTH keys, so a link is self-contained, and the
+  `agent` tag is per-harness (`rivet-hermes`), not per-node, so filtering on it
+  would isolate nothing. Another node's chain resolves harmlessly here — the
+  local driver simply does not own those ids.
+- **Every link goes in through `registry.alias()`** — the same
+  `AliasStore.record` path a live rotation takes — so a rebuilt chain is subject
+  to identical hygiene: same-harness only, one successor per id, cycle
+  detection, depth 32. A breadcrumb that violates any of them is logged and
+  dropped, never forced in. Malformed keys (a bare uuid, a `task:<id>`, an agent
+  nickname, whitespace) are rejected by the same `normalizeSessionId` gate
+  inbound ids pass through.
+- **DB access story: none needed.** den-server already depends on `pg` —
+  `devices.ts` mints per-device roles through it, over its own CREATEROLE admin
+  URL (`pgAdminUrl`) — and already reads `RIVETOS_PG_URL`, which until now it
+  only handed onward inside an enrollment payload rather than connecting to
+  itself. Both halves were already here, so the reader owns a short-lived
+  `pg.Client` for one query rather than a pool or a gateway-side pre-read
+  handed in as initial aliases. `RIVETOS_PG_URL` is lifted to `config.pgUrl` —
+  it is no longer a devices-only concern. No URL configured = no memory DB on
+  this node = nothing to reconstruct, which is a configuration fact and not a
+  failure.
+- **Placement: boot, not first-miss.** An alias miss is not observable — an id
+  with no alias resolves to itself, indistinguishable from a canonical id that
+  never rotated — so a lazy reader would have to query on every unknown id (a
+  remote round trip on the dispatch path) or memoize the first one, which is
+  boot-time behavior with extra latency. One bounded query at boot answers
+  before the first client asks.
+- **Failure-soft, never blocking.** The restore is fired and NOT awaited: a
+  remote or down memory DB must not delay a node's boot. A miss logs one line
+  and the node comes up with an empty alias store — where it was before this
+  existed — and the breadcrumbs stay on disk, so the next boot tries again. Any
+  outcome is readable on `DenServer.aliasesRestored`
+  (`{ ok, read, linked, malformed, selfLinks, rejected }` — a breadcrumb whose
+  two keys are the same id is its own bucket, since `record()` no-ops it and
+  counting it as a link would report a hop nobody made), and re-running is
+  idempotent: `record()` no-ops a link it already holds. The source is released
+  in a `finally`, including after a read that gave up, so a failed restore never
+  leaves a connection open.
+
+What is still deliberately NOT done: the memory reader does not union a chain's
+transcripts at query time. Reads of an old id keep working standalone, the
+control plane resolves it to canonical, and the union in the reader remains the
+open follow-up — it would consume exactly this same row.
 
 **What existing data needs:** nothing. Conversations already keyed
 `hermes:<old-id>` are not rewritten, re-keyed, or merged — § Rotation rule 3
@@ -802,11 +895,10 @@ this endpoint.
 
 Known gaps in the shipped slice (recorded, not fixed):
 
-- Capability flags are **declared at construction, not runtime-probed**.
-  `claude-code` reads `interrupt`/`resume` off whether den terminals are
-  *enabled*; if `node-pty` then fails to load, `GET /api/harnesses` keeps
-  advertising `true` while the methods answer 501. The rejection is honest;
-  the advertisement is optimistic.
+- ~~Capability flags are **declared at construction, not runtime-probed**.~~
+  **Closed.** Flags are probed before they are advertised, corrected lazily by
+  the first PTY call, and a post-advertisement flip surfaces on the registry
+  stream — see § As built (node control plane), *Capability runtime truthing*.
 - Session **status for out-of-den harnesses**. Liveness comes from the driver's
   own map, fed by `startSession`/`resumeSession` and by den events (including
   the term manager's synthetic `session.start`, so a `/term` drawer spawn is

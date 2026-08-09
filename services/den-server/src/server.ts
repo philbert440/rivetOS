@@ -74,6 +74,11 @@ import { KimiCodeDriver } from './harness/kimi-driver.js'
 import { createKimiStoreHost } from './harness/kimi-store.js'
 import { createHarnessRoutes } from './harness/routes.js'
 import { createUploadRoutes } from './harness/uploads.js'
+import {
+  startAliasRestore,
+  type AliasRestoreResult,
+  type RotationBreadcrumbSource,
+} from './harness/alias-restore.js'
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
@@ -99,6 +104,22 @@ export {
   type HarnessDescriptor,
   type ResolvedSession,
 } from './harness/registry.js'
+export {
+  asCapabilitySource,
+  capabilityDiff,
+  type HarnessCapabilityEvent,
+  type HarnessCapabilitySource,
+} from './harness/capabilities.js'
+export {
+  createPgBreadcrumbSource,
+  restoreHarnessAliases,
+  startAliasRestore,
+  DEFAULT_LOOKBACK_MS as ALIAS_RESTORE_LOOKBACK_MS,
+  DEFAULT_LIMIT as ALIAS_RESTORE_LIMIT,
+  type AliasRestoreResult,
+  type RotationBreadcrumb,
+  type RotationBreadcrumbSource,
+} from './harness/alias-restore.js'
 export {
   ClaudeCodeDriver,
   CLAUDE_HARNESS_ID,
@@ -219,6 +240,14 @@ export interface DenServer {
    * through `DenServerOptions.harnessDrivers` or against this handle.
    */
   harnesses: HarnessRegistry
+  /**
+   * Post-restart alias reconstruction (§ Rotation migration story): rotation
+   * breadcrumbs read back out of the memory DB and re-recorded as aliases.
+   * Fired at boot and never awaited by the startup path — exposed so an
+   * operator tool or a test can see how it went. Resolves `ok: false` when
+   * there was no source or the DB could not answer.
+   */
+  aliasesRestored: Promise<AliasRestoreResult>
   close(): Promise<void>
 }
 
@@ -270,6 +299,13 @@ export interface DenServerOptions {
    * all of them.
    */
   skipBuiltinHarnessDrivers?: boolean
+  /**
+   * Rotation-breadcrumb source for the post-restart alias reconstructor.
+   * Omitted = the memory DB at `config.pgUrl` (`RIVETOS_PG_URL`); with no URL
+   * configured there is nothing to recover from and reconstruction is skipped.
+   * `null` disables it outright — what most tests want.
+   */
+  aliasBreadcrumbs?: RotationBreadcrumbSource | null
 }
 
 const json = (res: ServerResponse, code: number, body: unknown): void => {
@@ -515,6 +551,22 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   }
   for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
   const harnessRoutes = createHarnessRoutes({ registry: harnesses, log: console.error })
+
+  // Post-restart alias reconstruction (§ Rotation migration story). The alias
+  // store is in-memory and died with the last process; the rotation
+  // breadcrumbs hermes capture wrote to the memory DB did not. Read them back
+  // and re-record each link through the registry's own `record()` path, so the
+  // chain-hygiene rules apply to a rebuilt chain exactly as to a live one.
+  //
+  // Deliberately NOT awaited: a remote or down memory DB must never delay a
+  // node's boot, and a miss is failure-soft — the breadcrumbs stay on disk and
+  // the next boot tries again.
+  const aliasesRestored = startAliasRestore({
+    registry: harnesses,
+    ...(opts.aliasBreadcrumbs !== undefined ? { source: opts.aliasBreadcrumbs } : {}),
+    ...(config.pgUrl ? { pgUrl: config.pgUrl } : {}),
+    log: console.error,
+  })
 
   // Attachment staging for remote clients (POST /api/uploads). Rides the same
   // bearer gate as the rest of the harness surface — no separate tokenless
@@ -1165,6 +1217,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     server,
     state: () => state,
     harnesses,
+    aliasesRestored,
     close: () =>
       new Promise((resolve) => {
         clearInterval(heartbeat)

@@ -174,13 +174,17 @@ async function start(...drivers: HarnessDriver[]): Promise<{ base: string; den: 
 }
 
 async function startWith(
-  opts: Pick<DenServerOptions, 'skipBuiltinHarnessDrivers' | 'harnessDrivers'>,
+  opts: Pick<
+    DenServerOptions,
+    'skipBuiltinHarnessDrivers' | 'harnessDrivers' | 'ptySpawn' | 'aliasBreadcrumbs'
+  >,
+  tweak: (config: DenConfig) => DenConfig = (c) => c,
 ): Promise<{ base: string; den: DenServer }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-harness-'))
   dirs.push(stateDir)
   // `skipBuiltinHarnessDrivers` by default: the real built-ins would read the
   // developer's ~/.claude, ~/.grok and ~/.hermes for anything store-backed.
-  const den = createDenServer(denConfig(stateDir), { ptySpawn: null, ...opts })
+  const den = createDenServer(tweak(denConfig(stateDir)), { ptySpawn: null, ...opts })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
   const port = (den.server.address() as AddressInfo).port
@@ -668,5 +672,126 @@ describe('legacy /term/harness-sessions is untouched', () => {
     const res = await fetch(`${base}/term/harness-sessions`)
     expect([200, 503]).toContain(res.status)
     expect((await fetch(`${base}/api/harnesses`)).status).toBe(200)
+  })
+})
+
+describe('capability runtime truthing', () => {
+  /** Terminals ENABLED, `node-pty` absent — the exact shape of the old gap. */
+  const termsOnPtyBroken = (config: DenConfig): DenConfig => ({
+    ...config,
+    term: { ...config.term, enabled: true },
+  })
+
+  it('advertises what the node can DO, not what it was configured to hope', async () => {
+    // Before truthing this node answered `interrupt: true` on the sheet and
+    // 501 on the method. Both halves are asserted here, together.
+    const { base } = await startWith({ ptySpawn: null }, termsOnPtyBroken)
+    const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { harnessId: string; capabilities: HarnessCapabilities }[]
+    }
+    expect(body.harnesses).toHaveLength(4)
+    for (const h of body.harnesses) {
+      expect(h.capabilities).toMatchObject({ interrupt: false, resume: false })
+    }
+
+    // The single-driver sheet agrees…
+    const one = (await (await fetch(`${base}/api/harnesses/claude-code`)).json()) as {
+      capabilities: HarnessCapabilities
+    }
+    expect(one.capabilities).toMatchObject({ interrupt: false, resume: false })
+
+    // …and so does the method the flag gates.
+    const res = await post(base, `/api/harness-sessions/${enc(SID)}/interrupt`)
+    expect(res.status).toBe(501)
+  })
+
+  it('still advertises true when the PTY backend is really there', async () => {
+    const { base } = await startWith(
+      { ptySpawn: (() => ({})) as unknown as DenServerOptions['ptySpawn'] },
+      termsOnPtyBroken,
+    )
+    const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { capabilities: HarnessCapabilities }[]
+    }
+    for (const h of body.harnesses) {
+      expect(h.capabilities).toMatchObject({ interrupt: true, resume: true })
+    }
+  })
+
+  it('surfaces the flip on the registry stream, filtered like every other frame', async () => {
+    // Nobody has read the sheet yet, so the flags are still the optimistic
+    // declaration. Attaching kicks the probe, and the flip finds the client.
+    const { base } = await startWith({ ptySpawn: null }, termsOnPtyBroken)
+    const ws = new WebSocket(
+      `${base.replace('http', 'ws')}/api/harnesses/ws?harness=kimi-code`,
+    )
+    // Listener BEFORE the handshake settles: the probe the attach kicks can
+    // land in the same chunk as the 101, and a frame emitted with no listener
+    // is simply gone.
+    const frames: Record<string, unknown>[] = []
+    ws.on('message', (d) => frames.push(JSON.parse(String(d)) as Record<string, unknown>))
+    await new Promise<void>((r) => ws.on('open', () => r()))
+    for (let i = 0; i < 100 && frames.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    expect(frames[0]).toMatchObject({
+      type: 'harness-capabilities',
+      harnessId: 'kimi-code',
+      changed: { interrupt: false, resume: false },
+    })
+    ws.close()
+  })
+})
+
+describe('post-restart alias reconstruction (boot)', () => {
+  const HERMES_OLD = 'hermes:20260802_225647_6ad0b9'
+  const HERMES_NEW = 'hermes:20260802_231001_7c11ab'
+
+  it('rebuilds the chain at boot so a superseded id still resolves', async () => {
+    const hermes = (): FakeDriver => {
+      const driver = new FakeDriver(FULL_CAPS, 'hermes')
+      driver.add(HERMES_NEW as SessionId)
+      return driver
+    }
+
+    // The node restarted: the in-memory alias store came back empty, so the
+    // predecessor id a client is still holding resolves to nothing.
+    const cold = await start(hermes())
+    expect(await cold.den.aliasesRestored).toMatchObject({ ok: false })
+    expect((await fetch(`${cold.base}/api/harness-sessions/${enc(HERMES_OLD)}`)).status).toBe(404)
+
+    // Same node, same restart — except the rotation breadcrumb capture wrote
+    // is read back at boot and re-recorded through the registry.
+    const warm = await startWith({
+      skipBuiltinHarnessDrivers: true,
+      harnessDrivers: [hermes()],
+      aliasBreadcrumbs: {
+        read: () =>
+          Promise.resolve([
+            { previousSessionKey: HERMES_OLD, sessionKey: HERMES_NEW, reason: 'compression' },
+          ]),
+      },
+    })
+    expect(await warm.den.aliasesRestored).toMatchObject({ ok: true, read: 1, linked: 1 })
+
+    const res = await fetch(`${warm.base}/api/harness-sessions/${enc(HERMES_OLD)}`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ sessionId: HERMES_NEW, redirectedTo: HERMES_NEW })
+  })
+
+  it('boots normally when the memory DB cannot answer', async () => {
+    const driver = new FakeDriver(FULL_CAPS, 'hermes')
+    driver.add(HERMES_NEW as SessionId)
+    const { base, den } = await startWith({
+      skipBuiltinHarnessDrivers: true,
+      harnessDrivers: [driver],
+      aliasBreadcrumbs: {
+        read: () => Promise.reject(new Error('ECONNREFUSED 192.0.2.10:5432')),
+      },
+    })
+    // Failure-soft: the node serves, the aliases stay recoverable next boot.
+    expect(await den.aliasesRestored).toMatchObject({ ok: false, linked: 0 })
+    expect((await fetch(`${base}/api/harnesses`)).status).toBe(200)
+    expect((await fetch(`${base}/api/harness-sessions/${enc(HERMES_NEW)}`)).status).toBe(200)
   })
 })
