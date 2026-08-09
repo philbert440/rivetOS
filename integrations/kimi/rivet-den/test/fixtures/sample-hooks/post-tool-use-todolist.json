@@ -1,0 +1,14 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "session_2f0f7f2e-1c9a-4b3f-9a51-6d0e1f2a3b4c",
+  "cwd": "/home/rivet/project",
+  "tool_name": "TodoList",
+  "tool_call_id": "call_03",
+  "tool_input": {
+    "todos": [
+      { "title": "read the design", "status": "done" },
+      { "title": "write the translator", "status": "in_progress" },
+      { "title": "land the tests", "status": "pending" }
+    ]
+  }
+}
