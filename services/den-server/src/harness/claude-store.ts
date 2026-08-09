@@ -11,7 +11,7 @@
 import {
   describeClaudeSession,
   listHarnessSessions,
-  readHarnessTranscript,
+  readClaudeTranscript,
 } from '../term/harness-sessions.js'
 import { CLAUDE_ROSTER_COMMAND, type ClaudeStoreHost } from './claude-driver.js'
 
@@ -19,8 +19,12 @@ export function createClaudeStoreHost(): ClaudeStoreHost {
   return {
     list: (limit) => listHarnessSessions([CLAUDE_ROSTER_COMMAND], limit),
     describe: (nativeId) => describeClaudeSession(nativeId),
+    // Store-scoped, not the drawer's first-hit-wins probe (claude → grok →
+    // hermes): a claude id whose .jsonl is gone must read as empty rather than
+    // be served another harness's transcript. Closed at driver three, where the
+    // grok slice recorded it.
     transcript: async (nativeId) => {
-      const transcript = await readHarnessTranscript(nativeId)
+      const transcript = await readClaudeTranscript(nativeId)
       return { turns: transcript.turns }
     },
   }
