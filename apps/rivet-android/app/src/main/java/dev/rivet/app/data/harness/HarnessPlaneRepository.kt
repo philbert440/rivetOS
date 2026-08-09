@@ -5,6 +5,9 @@ import dev.rivet.app.ui.pages.terminal.DenHarnessClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -47,11 +50,20 @@ class HarnessPlaneRepository(
     /** Seam for tests; production is the legacy on-disk scan. */
     private val legacyList: (String, String?) -> List<DenHarnessClient.Session> =
         { url, token -> DenHarnessClient.tryList(url, token) },
-) : HarnessPlaneSource {
+) : HarnessPlaneSource, HarnessRegistrySink {
     private val lock = Mutex()
 
-    @Volatile
-    private var cached: HarnessPlaneSnapshot? = null
+    private val cached = MutableStateFlow<HarnessPlaneSnapshot?>(null)
+
+    /**
+     * The cache itself, observable.
+     *
+     * The drawer renders off this rather than off a [snapshot] return value,
+     * which is what lets a registry `session-created` repaint the list without
+     * a fetch: [onRegistryEvent] merges the carried summary straight in here.
+     * Null means nothing has been read for the active node yet.
+     */
+    val snapshots: StateFlow<HarnessPlaneSnapshot?> = cached.asStateFlow()
 
     @Volatile
     private var cachedAt = 0L
@@ -66,7 +78,7 @@ class HarnessPlaneRepository(
         val den = remoteDenUrl()?.trim().orEmpty()
         if (den.isEmpty()) return HarnessPlaneSnapshot.EMPTY
         lock.withLock {
-            val hit = cached
+            val hit = cached.value
             if (hit != null &&
                 hit.denUrl == den &&
                 maxAgeMs > 0 &&
@@ -75,17 +87,67 @@ class HarnessPlaneRepository(
                 return hit
             }
             val fresh = read(den)
-            cached = fresh
+            cached.value = fresh
             cachedAt = System.currentTimeMillis()
             return fresh
         }
     }
 
-    /** Drop the cache so the next [snapshot] re-reads (node switch, resync). */
+    /**
+     * Mark the cache stale so the next [snapshot] re-reads, keeping the rows on
+     * screen until it returns — the drawer's pull-to-refresh, a pasted bearer.
+     * Blanking the list first would flicker every time the drawer opens.
+     */
     fun invalidate() {
-        cached = null
         cachedAt = 0L
     }
+
+    /**
+     * Drop the rows outright. Only for a node switch: the previous node's rows
+     * are not stale, they are about a different machine, and [snapshot]'s own
+     * `denUrl` guard would refuse to serve them anyway.
+     */
+    fun clear() {
+        cached.value = null
+        cachedAt = 0L
+    }
+
+    /** Force a re-read of the active node. */
+    override suspend fun refresh() {
+        snapshot(maxAgeMs = 0L)
+    }
+
+    /**
+     * Merge one registry frame into the cache — the `session-created` fast
+     * path. Returns true when the cache actually moved.
+     *
+     * [denUrl] is checked against the cached snapshot's own: a socket that
+     * outlived a node switch by a few milliseconds must not write the old
+     * node's sessions into the new node's drawer.
+     *
+     * Nothing cached is a deliberate no-op rather than a seed. Rows merged
+     * without the node's capability sheet would render un-bound, and the read
+     * that produces that sheet is already the thing about to happen.
+     *
+     * Serialized against [snapshot] on the same lock, so a frame that arrives
+     * mid-fetch is applied to the answer that fetch returns rather than to the
+     * list it replaced. The reconciliation half is untouched: [cachedAt] does
+     * not move, so the drawer's poll still re-reads on its own cadence and a
+     * merged row the node disagrees with heals on the next read.
+     */
+    override suspend fun onRegistryEvent(denUrl: String, event: HarnessEvent): Boolean =
+        lock.withLock {
+            val hit = cached.value
+            if (hit == null || hit.denUrl != denUrl.trim()) return@withLock false
+            val next = hit.withSessions(HarnessPlane.applyRegistryEvent(hit.sessions, event))
+            if (next === hit) return@withLock false
+            cached.value = next
+            true
+        }
+
+    /** Registry-stream gateway for one node — the watch targets a node, not "active". */
+    suspend fun registryGatewayFor(denUrl: String): HarnessRegistryGateway =
+        ClientRegistryGateway(clientFactory(denUrl, tokenFor(denUrl)))
 
     /** A client for the active node, or null when the active node is local. */
     suspend fun client(): HarnessControlPlaneClient? {
@@ -124,6 +186,8 @@ class HarnessPlaneRepository(
             denUrl = den,
             descriptors = descriptors,
             rows = HarnessPlane.rows(planeSessions, legacy),
+            sessions = planeSessions,
+            legacy = legacy,
         )
     }
 
@@ -137,7 +201,28 @@ data class HarnessPlaneSnapshot(
     val denUrl: String,
     val descriptors: List<HarnessDescriptor>,
     val rows: List<HarnessChatRow>,
+    /** Control-plane half of [rows], kept so a registry merge can re-derive them. */
+    val sessions: List<HarnessSessionSummary> = emptyList(),
+    /** Legacy-scan half of [rows], same reason. */
+    val legacy: List<DenHarnessClient.Session> = emptyList(),
 ) {
+    /**
+     * The same snapshot with a different control-plane session list, rows
+     * rebuilt.
+     *
+     * Rebuilt, not patched: the merged row goes through the identical
+     * [HarnessPlane.rows] call a fetched one does, so it carries the same
+     * title/command/timestamp fallbacks and nothing downstream — plane
+     * selection, the gate, the binder — can tell the two apart. Returns `this`
+     * when the list did not move.
+     */
+    fun withSessions(next: List<HarnessSessionSummary>): HarnessPlaneSnapshot =
+        if (next === sessions) {
+            this
+        } else {
+            copy(sessions = next, rows = HarnessPlane.rows(next, legacy))
+        }
+
     fun row(key: String): HarnessChatRow? = rows.firstOrNull { it.key == key }
 
     /** Capability gate for one row; [HarnessGate.CLOSED] keeps it on legacy. */
