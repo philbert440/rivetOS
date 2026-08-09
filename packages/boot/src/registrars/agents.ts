@@ -690,14 +690,15 @@ export async function registerAgentTools(
 /**
  * Register one `harness-session` executor per harness id (Phase 3).
  *
- * `claude-code` gets the real thing — the claude-cli plugin's headless
- * `claude -p` executor — when the binary probe passes. Every id left over
- * (including `claude-code` itself when the probe fails, with the probe's own
- * reason rather than the generic one) gets an explicit rejecting executor
- * carrying that reason, so the registry answers "no, and here is why" rather
- * than going silent. That is deliberate: an unregistered target fails with the
- * runner's anonymous `executor_not_registered`, which tells an operator nothing
- * about whether the harness is unsupported, not installed, or misspelled.
+ * `claude-code` and `kimi-code` get the real thing — the claude-cli plugin's
+ * headless `claude -p` executor and `@rivetos/harness-kimi-code`'s `kimi -p`
+ * one — when their binary probes pass. Every id left over (including those two
+ * when the probe fails, with the probe's own reason rather than the generic
+ * one) gets an explicit rejecting executor carrying that reason, so the
+ * registry answers "no, and here is why" rather than going silent. That is
+ * deliberate: an unregistered target fails with the runner's anonymous
+ * `executor_not_registered`, which tells an operator nothing about whether the
+ * harness is unsupported, not installed, or misspelled.
  */
 async function registerHarnessTaskExecutors(
   runtime: Runtime,
@@ -710,6 +711,7 @@ async function registerHarnessTaskExecutors(
   // the task row's error should name the actual cause, which only boot knows.
   const gapOverrides = new Map<HarnessId, string>()
   await registerClaudeCodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
+  await registerKimiCodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
   // Exact per-harness lookup (not resolve(), whose kind-level fallback would
   // report every harness as covered once any one of them registered).
   for (const { harnessId, registered } of executors.harnesses()) {
@@ -746,33 +748,9 @@ async function registerClaudeCodeTaskExecutor(
 
   // 3s probe timeout: a hung binary must never stall boot — kill it, warn,
   // and skip registration.
-  const PROBE_TIMEOUT_MS = 3_000
-  const available = await new Promise<boolean>((resolve) => {
-    try {
-      const env = { ...process.env }
-      delete env.ANTHROPIC_API_KEY
-      delete env.ANTHROPIC_AUTH_TOKEN
-      const proc = spawn(binary, ['--version'], { env, stdio: ['ignore', 'ignore', 'ignore'] })
-      const timer = setTimeout(() => {
-        log.warn(
-          `claude --version probe timed out after ${String(PROBE_TIMEOUT_MS)}ms — ` +
-            `killing probe, skipping the claude-code task executor`,
-        )
-        proc.kill('SIGKILL')
-        resolve(false)
-      }, PROBE_TIMEOUT_MS)
-      timer.unref()
-      proc.on('error', () => {
-        clearTimeout(timer)
-        resolve(false)
-      })
-      proc.on('close', (code) => {
-        clearTimeout(timer)
-        resolve(code === 0)
-      })
-    } catch {
-      resolve(false)
-    }
+  const available = await probeBinaryVersion(binary, {
+    harnessId: 'claude-code',
+    scrub: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   })
   if (!available) {
     const reason =
@@ -844,6 +822,110 @@ async function registerClaudeCodeTaskExecutor(
       `@rivetos/provider-claude-cli not loadable — claude-code task executor skipped: ` + message,
     )
   }
+}
+
+/**
+ * Register the `kimi-code` harness-session executor when the `kimi` binary is
+ * resolvable.
+ *
+ * Same probe-or-record-why shape as claude, one difference in where the
+ * settings come from: kimi-code is NOT a RivetOS provider (there is no
+ * LanguageModel wrapper and no `providers.kimi-code` slice), so its binary,
+ * model, effort, cwd and CLI home live under `tasks.harnesses.kimi-code`.
+ *
+ * `home` is worth setting on a node that also runs kimi interactively only if
+ * the task spawns should be isolated from it: sharing the default
+ * `~/.kimi-code` is what keeps the deployed rivet-memory capture hooks and the
+ * `mcp.json` server list in play for task turns.
+ */
+async function registerKimiCodeTaskExecutor(
+  runtime: Runtime,
+  config: RivetConfig,
+  executors: ReturnType<typeof createExecutorRegistry>,
+  workspaceDir: string,
+  gapOverrides: Map<HarnessId, string>,
+): Promise<void> {
+  const harnessCfg = config.tasks?.harnesses?.['kimi-code'] ?? {}
+  const binary = harnessCfg.binary ?? 'kimi'
+
+  const available = await probeBinaryVersion(binary, { harnessId: 'kimi-code' })
+  if (!available) {
+    const reason =
+      `the \`kimi\` binary is not resolvable on this node (tried "${binary}"): install ` +
+      `Kimi Code, or set tasks.harnesses.kimi-code.binary to its path`
+    gapOverrides.set('kimi-code', reason)
+    log.info(`kimi binary "${binary}" not resolvable — kimi-code task executor not registered`)
+    return
+  }
+
+  try {
+    const { KimiCodeExecutor, KIMI_HARNESS_ID } = await import('@rivetos/harness-kimi-code')
+    executors.register(
+      'harness-session',
+      new KimiCodeExecutor({
+        binary,
+        modelId: harnessCfg.model,
+        effort: harnessCfg.effort,
+        cwd: harnessCfg.cwd ?? workspaceDir,
+        kimiHome: harnessCfg.home,
+        // Resume rehydration: kimi resumes its own native session between
+        // turns, so this only feeds a cross-process resume or a session kimi
+        // refuses to reopen.
+        memory: runtime.getMemory(),
+      }),
+      KIMI_HARNESS_ID,
+    )
+    log.info(`Task executor registered: (harness-session, ${KIMI_HARNESS_ID}) via ${binary}`)
+  } catch (err: unknown) {
+    const message = (err as Error).message
+    gapOverrides.set(
+      'kimi-code',
+      `the @rivetos/harness-kimi-code package did not load on this node: ${message}`,
+    )
+    log.warn(
+      `@rivetos/harness-kimi-code not loadable — kimi-code task executor skipped: ${message}`,
+    )
+  }
+}
+
+/**
+ * `<binary> --version`, true when it exits 0.
+ *
+ * 3s timeout: a hung binary must never stall boot — kill the probe, warn, and
+ * skip registration. `scrub` drops env vars that would make the probe (or the
+ * spawns after it) authenticate as something other than the operator intends.
+ */
+async function probeBinaryVersion(
+  binary: string,
+  opts: { harnessId: HarnessId; scrub?: string[] },
+): Promise<boolean> {
+  const PROBE_TIMEOUT_MS = 3_000
+  return new Promise<boolean>((resolve) => {
+    try {
+      const env = { ...process.env }
+      for (const name of opts.scrub ?? []) Reflect.deleteProperty(env, name)
+      const proc = spawn(binary, ['--version'], { env, stdio: ['ignore', 'ignore', 'ignore'] })
+      const timer = setTimeout(() => {
+        log.warn(
+          `${binary} --version probe timed out after ${String(PROBE_TIMEOUT_MS)}ms — ` +
+            `killing probe, skipping the ${opts.harnessId} task executor`,
+        )
+        proc.kill('SIGKILL')
+        resolve(false)
+      }, PROBE_TIMEOUT_MS)
+      timer.unref()
+      proc.on('error', () => {
+        clearTimeout(timer)
+        resolve(false)
+      })
+      proc.on('close', (code) => {
+        clearTimeout(timer)
+        resolve(code === 0)
+      })
+    } catch {
+      resolve(false)
+    }
+  })
 }
 
 /** Get the local IP — reads from environment or falls back to hostname */

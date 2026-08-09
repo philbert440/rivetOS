@@ -926,7 +926,8 @@ the same room, and its `emitActivity()` is a `message.agent` in that room.
 - [x] **Hermes driver:** same; memory/den already exist (`hermes:…`) — see As built (hermes) below
 - [x] **Kimi den hooks:** `integrations/kimi/rivet-den` streams kimi-code sessions into a den under the canonical `kimi-code:<native>` — the same key capture writes, so room and conversation join on one identity
 - [x] **Kimi driver:** the gateway half, completing the four-harness control plane — see As built (kimi-code) below. It supplies what the hooks cannot, but through the store rather than the stream: kimi's `Stop` payload carries no assistant reply and no hook sees thinking, so the driver emits no `assistant-delta`/`reasoning-delta` and serves both out of `transcript()` (`wire.jsonl` `content.part`) instead of inventing them. Capture stays as-is (`kimi-code:…`)
-- [x] Tasks: `harness-session` executors per harness id — includes renaming/aliasing the existing executor agent id `claude-cli` → `claude-code`; grok-build/kimi-code/hermes register as explicit rejections, not absences — see As built (per-harness task executors) below
+- [x] Tasks: `harness-session` executors per harness id — includes renaming/aliasing the existing executor agent id `claude-cli` → `claude-code`; grok-build/hermes register as explicit rejections, not absences — see As built (per-harness task executors) below
+- [x] **Kimi task executor:** `kimi-code` graduated from rejection to a real executor over headless `kimi -p` (`@rivetos/harness-kimi-code`) — see As built (kimi-code task executor) below
 - [x] Hermes rotation migrated from close+new-conversation to alias semantics (breaking, see Session identity § Rotation) — driver side and capture side both, see As built (hermes)
 - [x] **Hub chat** binds the harness API (`apps/rivethub-web`) — see below
 - [ ] **Hub:** tasks / dens bind multi-harness API (not Claude-only)
@@ -952,12 +953,15 @@ queued before the rename still resolve, nothing writes it, and the alias comes
 out once no queued task names it. Aliasing is scoped to `harness-session` —
 `chat-loop` and `mesh` targets are free-form and pass through untouched.
 
-**Registrations are honest, not aspirational.** Only `claude-code` has
-node-side headless spawn machinery in this repo: the grok integration here
-drives an interactive PTY (term manager `--session-id`/`--resume`, hook-fed
-capture) and kimi is hooks plus capture with a `Stop` payload that carries no
-assistant reply. Rather than invent headless drivers, every harness id without
-one registers an explicit rejecting executor — including `claude-code` itself
+**Registrations are honest, not aspirational.** At this slice only
+`claude-code` had node-side headless spawn machinery in this repo: the grok
+integration here drives an interactive PTY (term manager
+`--session-id`/`--resume`, hook-fed capture) and kimi was hooks plus capture
+with a `Stop` payload that carries no assistant reply. (`kimi-code` has since
+graduated — the CLI's own `--output-format stream-json` turned out to be enough
+to build on; see As built (kimi-code task executor) below.) Rather than invent
+headless drivers, every harness id without one registers an explicit rejecting
+executor — including `claude-code` itself
 when the `claude` binary probe fails, in which case the reason is the probe's
 own ("binary not resolvable", "provider package did not load") rather than the
 generic recorded gap. A task aimed at one resolves (never rejects) with verdict
@@ -999,6 +1003,130 @@ deliberately do not run it — it opens with a success path they can never have 
 so they are pinned by their own tests instead: typed code, resolve-never-reject,
 one error log then a completed iterable, and a runner-level test that a
 `kimi-code` row goes terminal with the reason rather than the anonymous miss.
+
+### As built (kimi-code task executor)
+
+`kimi-code` was one of #476's honest rejections: *"the Kimi Code integration is
+hooks + capture only — nothing in this repo spawns the kimi binary, and its
+Stop hook carries no assistant reply to parse a result from."* True of the
+integration; not true of the CLI. kimi 0.34.0 ships `--output-format
+stream-json`, and every session writes a transcript that carries what the
+stream does not. `@rivetos/harness-kimi-code` is the executor built on those
+two facts, and it passes the shared conformance suite as
+`runExecutorConformance('kimi-code', …)`.
+
+**Where it lives, and why not `plugins/providers/`.** The claude executor rides
+inside the claude-cli PROVIDER plugin because that plugin already owns the
+`claude` binary (model wrapper, capture hooks, executor). kimi has no RivetOS
+provider: no `LanguageModel`, no `providers.kimi-code` slice, nothing for the
+plugin loader to register. Filing it under `plugins/providers/` would mean
+declaring `rivetos.type: "provider"` for a package that registers no provider —
+a category the discovery layer would then report. `integrations/kimi/` was the
+other candidate and is where the kimi capture and wire-backfill packages live,
+but everything there is `private: true`, and `@rivetos/boot` is published: a
+published package cannot depend on an unpublished one. So it is a published
+`packages/*` library, tagged `scope:adapter` like the plugins it is a sibling
+of in spirit — an adapter to an external CLI that boot composes.
+
+**The turn.** One `kimi -p` per turn in a fixed cwd, prompt on argv. There is
+no `--append-system-prompt`, so the task scaffold — context, acceptance
+criteria, the `TASK_RESULT` fence contract, byte-for-byte the text claude gets
+in its system append — is PREPENDED to the prompt every turn. `--agent-file`
+was considered and rejected: it replaces the agent definition wholesale, tool
+instructions included. Scaffold-first is also a safety property: `kimi -p`
+intercepts a prompt STARTING with `/goal` and runs goal mode instead of a turn,
+and a scaffold in front means a task goal that opens with a slash command can
+never hijack the spawn.
+
+**Result and usage: post-hoc, not tailed.** stream-json carries assistant text,
+`tool_calls[]`, correlated `role:"tool"` results and — as the last line of a
+successful turn — `session.resume_hint` with the native session id. It carries
+no usage, no result event and no error event. Usage comes from the session's
+own `agents/*/wire.jsonl` AFTER the child exits: `usage.record` per LLM request
+(`usageScope:"turn"`; the `"session"` rollups are excluded or they would
+double-count), summed from the spawn clock forward, subagent slots included.
+Reading a finished file has no races to handle — no fsync-batch lag, no
+new-session-dir attribution guess, no inode swap mid-read — and a reconcile
+that finds nothing degrades to zero usage plus a warning. It can never fail a
+turn. There are no `cost` events: kimi reports tokens, not money.
+
+**Finding the transcript.** `session_index.jsonl` at the CLI home maps session
+id → absolute session dir and is tried first; the fallback is kimi's own bucket
+naming, `wd_<slug>_<sha256(cwd)[:12]>` (the hash formula was checked against
+every bucket on the rivet-kimi node and matched), matched on the hash suffix so
+a change to the slug rules cannot break it. One case needs more than the hint:
+a turn that THROWS never reaches the resume-hint line, so a failed first turn
+prints no session id at all. The executor snapshots the ids for its cwd before
+spawning and diffs after — exactly one new id is the spawn's, more than one
+means concurrent same-cwd spawns and it declines to guess rather than bill
+another task's tokens to this one.
+
+**Multi-turn is native, which claude's still is not.** Steered turns spawn
+`kimi -S <native-id> -p`, so the whole task shares ONE kimi session, its
+context and its id — `harnessSessionId` is the same `kimi-code:session_<uuid>`
+on every `turn.end`. The resume is cwd-scoped (kimi refuses a session created
+under a different directory), so every turn spawns with the same cwd. When kimi
+refuses the resume anyway — pruned session, moved directory — the turn retries
+once on a fresh session seeded with the task's rendered transcript, the same
+rehydration a cross-process resume-from-awaiting-input uses, and adopts the new
+id from there.
+
+**Kill.** SIGTERM then SIGKILL, but on a 10s grace rather than claude's 2s:
+kimi's termination cleanup is bounded by `PROMPT_CLEANUP_TIMEOUT_MS = 8_000`
+and the turn's last wire batch — its `usage.record`s and `turn.ended` — is only
+durable if that cleanup runs. A killed turn's usage may still be partial, and a
+SIGKILLed one's certainly is; the reconcile tolerates a torn final line the way
+kimi's own reader does.
+
+**Identity and association.** `formatSessionId('kimi-code', native)` — the same
+key the den hooks and the memory capture already write, so room, conversation
+and task row join on one id. Adoption, not pinning: kimi has no `--session-id`.
+#467's env contract is claude's verbatim — `RIVETOS_TASK_ID` set,
+`RIVETOS_SESSION_KEY` explicitly deleted, `RIVETOS_DEN_HOOK_DISABLED=1` — and
+kimi reads none of them. The consumer is the hook launcher it spawns, which
+inherits the env, which is how capture stamps the task onto the conversation.
+Two more vars are scrubbed. `KIMI_CODE_LEGACY_FLAG` selects the retired v1
+print runner, whose stream vocabulary is not the one parsed here, and has no
+flag in front of it — scrubbing it is load-bearing. `KIMI_MODEL_OUTPUT_FORMAT`
+is only the FALLBACK for `--output-format` (kimi reads the explicit flag first
+and the env solely when the flag is absent), so with the flag always passed it
+cannot win today; it is scrubbed belt-and-braces because it is the one
+inherited value that could silently change the output PROTOCOL if a future path
+ever dropped the flag.
+
+**Registration.** `tasks.harnesses.kimi-code.{binary,model,effort,cwd,home}` —
+a new config section, keyed by harness id, for executors whose harness has no
+provider plugin to borrow settings from. Boot probes `kimi --version` and, on
+failure, registers the rejecting executor with the probe's own reason. The
+recorded gap for `kimi-code` is therefore GONE from `HARNESS_EXECUTOR_GAPS`,
+the same treatment `claude-code` gets: a harness with an executor has no
+standing gap, only a probe that can fail.
+
+**One shared defect fixed on the way through.** The `waitExit()` this
+executor's spawn layer inherited from the claude-cli one could never settle on
+two real terminal paths: a child that closed before the first call (the `close`
+listener is attached on demand, and a spent event does not re-fire) and a child
+killed by a signal (`proc.exitCode` stays null, so the "already exited"
+shortcut misses too). Both halves miss at once on a signalled child whose close
+has landed — exactly what the kill path produces. Exit is now latched from a
+listener attached at spawn time and every caller reads the latch, in BOTH
+copies, each with a regression test that hangs against the old code.
+
+**What the first live run still has to confirm** (fakes cover the contract, not
+the CLI): that stream-json lines arrive incrementally over a pipe during a long
+turn rather than at exit; that a SIGTERMed turn really does flush its last wire
+batch within the cleanup budget; that `KIMI_MODEL_THINKING_EFFORT` is honored
+in `-p` (the override bypasses `support_efforts`, so an unsupported value
+surfaces as a provider error); and that `mcp.json` servers load in headless
+prompt mode at all.
+
+**Upstream asks recorded for Moonshot.** One event would delete most of this
+machinery: a terminal `turn.result` on stdout carrying stop reason, per-turn
+usage, `is_error` and duration. After that, in order: the session id in the
+FIRST line rather than the last (a failed turn would stop being a
+disk-forensics exercise), a `--session-id` flag to pin rather than adopt, a
+machine-readable error line instead of stderr prose, `--append-system-prompt`,
+`--json-schema`, `--mcp-config`, and a documented exit-code contract.
 
 ### As built (hub chat binding)
 

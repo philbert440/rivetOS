@@ -84,7 +84,9 @@ async function startWith(nodes: MeshNode[]): Promise<string> {
   // than omitting it (Phase 3 per-harness executors).
   executors.register(
     'harness-session',
-    createNotImplementedHarnessExecutor('kimi-code', { reason: 'hooks only, no spawn' }),
+    createNotImplementedHarnessExecutor('kimi-code', {
+      reason: 'the `kimi` binary is not resolvable on this node',
+    }),
     'kimi-code',
   )
 

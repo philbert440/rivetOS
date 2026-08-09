@@ -15,11 +15,15 @@
  *     session keys: resolve it, warn once, keep reads working while the rows
  *     that predate the rename drain. Nothing writes the legacy target anymore.
  *
- *   - **Honest not-implemented executors.** grok-build, kimi-code and hermes
- *     cannot spawn a session for a task to run in — the grok driver spawns a
- *     PTY, and hermes and kimi-code can only ADOPT a session the roster started
- *     (neither has a flag to pin a new id) — so their executors are
- *     explicit rejections, not absences. A task aimed at one fails immediately with the typed
+ *   - **Honest not-implemented executors.** grok-build and hermes cannot spawn
+ *     a session for a task to run in — the grok driver spawns a PTY, and
+ *     hermes can only ADOPT a session the roster started (it has no flag to
+ *     pin a new id) — so their executors are explicit rejections, not
+ *     absences. `kimi-code` used to be one of them and no longer is: it has a
+ *     real executor over headless `kimi -p`
+ *     (`@rivetos/harness-kimi-code`), and registers a rejection only where
+ *     boot's binary probe fails, carrying the probe's own reason.
+ *     A task aimed at a rejection fails immediately with the typed
  *     `capability_unsupported` code and a message that says what is missing,
  *     rather than the registry's anonymous `executor_not_registered` miss, and
  *     `GET /api/catalog` lists the harness with `implemented: false` so a UI
@@ -201,7 +205,11 @@ export function harnessExecutorCoverage(
  * Why each harness has no executor here. Kept beside the registrations so the
  * message a failing task shows is the same one the code review can check.
  *
- * Not aspirational text: each line is what the repo actually has today.
+ * Not aspirational text: each line is what the repo actually has today. A
+ * harness that GAINS an executor loses its entry — `claude-code` and
+ * `kimi-code` both have one, so a rejection registered for either can only
+ * come from boot's probe (binary not resolvable, package would not load) and
+ * carries that reason instead.
  */
 export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = Object.freeze({
   'grok-build':
@@ -211,11 +219,6 @@ export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = 
     'tool_call/tool_call_update, thought chunks and real token usage, unlike the ' +
     'streaming-json output, which carries thought/text/end only. It is driven today solely ' +
     'from the Android bridge rootfs, so wiring ACP node-side is the future executor basis',
-  'kimi-code':
-    'the kimi-code driver cannot START a session for a task to run in: kimi has no flag ' +
-    'to pin a new session id (-S/--session resumes an existing one), so it only ever adopts ' +
-    'sessions the roster spawned. Its Stop hook also carries no assistant reply to parse a ' +
-    'result from — a task result would have to come from the wire.jsonl transcript',
   hermes:
     'the hermes driver cannot START a session for a task to run in: hermes has no flag ' +
     'to pin a new session id, so it only ever adopts sessions the roster spawned ' +
