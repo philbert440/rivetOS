@@ -31,6 +31,21 @@ function emptyTurn(): LiveTurn {
   return { text: '', reasoning: false, reasoningText: '', tools: [] }
 }
 
+/**
+ * Next `reasoningText` for a thinking chunk. Claude's den hook can't read real
+ * thinking text, so it sends spinner status lines ("✳ Wrangling… (28s · ↓ 4.8k
+ * tokens)") — each REPLACES the previous one (den reducer parity) instead of
+ * accumulating into a wall of stale spinner snapshots. Real streamed thinking
+ * appends.
+ *
+ * Shared with `harness-fold.ts`: the control-plane `reasoning-delta` and the
+ * den bridge's `reasoning` frame carry the same text from the same hook, so
+ * they must render the same way.
+ */
+export function nextReasoningText(previous: string, chunk: string): string {
+  return /^[✳✢✻✽·] /.test(chunk) ? chunk : previous + chunk
+}
+
 function newToolId(): string {
   return uuidv4()
 }
@@ -103,19 +118,12 @@ export function foldStream(turn: LiveTurn | undefined, event: StreamEvent): Live
         reasoning: false,
         activity: undefined,
       }
-    case 'reasoning': {
-      const chunk = event.content || ''
-      // Claude's den hook can't read real thinking text, so it sends spinner
-      // status lines ("✳ Wrangling… (28s · ↓ 4.8k tokens)") — each REPLACES
-      // the previous one (den reducer parity) instead of accumulating into
-      // a wall of stale spinner snapshots.
-      const spinner = /^[✳✢✻✽·] /.test(chunk)
+    case 'reasoning':
       return {
         ...base,
         reasoning: true,
-        reasoningText: spinner ? chunk : base.reasoningText + chunk,
+        reasoningText: nextReasoningText(base.reasoningText, event.content || ''),
       }
-    }
     case 'tool_start': {
       const name = toolNameFromEvent(event)
       const args = argsFromEvent(event)
