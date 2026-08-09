@@ -49,6 +49,34 @@
  * never reaches the den wire, and roster-owned `cwd`/`model` plus attachments
  * are rejected with `capability_unsupported` rather than silently ignored.
  *
+ * **Capabilities are runtime-truthed, not just declared** (`capabilities.ts`).
+ * `interrupt`/`resume` used to be `!!deps.pty` — a CONFIG question ("are den
+ * terminals enabled") standing in for a RUNTIME one ("can this node actually
+ * open a PTY"), so a node whose `node-pty` import failed advertised `true` and
+ * answered 501. The declaration is still the starting point, because nothing
+ * has been asked yet at construction time; from there the flags follow what the
+ * machinery says:
+ *
+ *   - `verifyCapabilities()` resolves the PTY host once and latches the
+ *     verdict. The routes call it before advertising, so the sheet a client
+ *     reads is true when it is read.
+ *   - `requirePty` records what it observes on every real call, so the truth is
+ *     also learned lazily, for free, by the first method that needs a PTY.
+ *   - A flip after advertisement is announced on `subscribeCapabilities`, which
+ *     the registry fans onto the registry stream.
+ *
+ * The latch is one-way in practice rather than by rule: `loadRealPtySpawn`
+ * memoizes one import attempt and returns null forever after, so an unavailable
+ * PTY host stays unavailable for the life of the process. The code still lets a
+ * later observation move the verdict either way — it reports what it last saw,
+ * which is the honest rule, and it means a fake in a test cannot lie by
+ * omission.
+ *
+ * `liveStream` and `listSessions` are NOT probed, deliberately. The den tap is
+ * a closure over an in-process Set — `!!deps.events` is not a proxy for
+ * anything, it IS the answer — and `listSessions` is a store scan that reports
+ * an empty list rather than failing. `approvals` is false unconditionally.
+ *
  * See docs/plans/harness-control-plane.md.
  */
 
@@ -69,6 +97,11 @@ import {
 } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { isBareNativeUuid } from './alias.js'
+import {
+  capabilityDiff,
+  type HarnessCapabilityEvent,
+  type HarnessCapabilitySource,
+} from './capabilities.js'
 
 /** The den AgentEvent shape the tap delivers (structurally den-protocol's). */
 export interface DenAgentEventLike {
@@ -160,11 +193,13 @@ export interface LiveState {
   toolSeq: number
 }
 
-export abstract class PtyHarnessDriver<
-  S extends HarnessStoreHost = HarnessStoreHost,
-> implements HarnessDriver {
+/** What a PTY probe last learned. See § capability truthing in the header. */
+type PtyVerdict = 'unprobed' | 'available' | 'unavailable'
+
+export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStoreHost>
+  implements HarnessDriver, HarnessCapabilitySource
+{
   readonly harnessId: HarnessId
-  readonly capabilities: HarnessCapabilities
 
   /** Roster key the den term manager spawns this harness under. */
   protected readonly rosterCommand: string
@@ -182,6 +217,13 @@ export abstract class PtyHarnessDriver<
   /** native ids we have already announced as `session-created`. */
   private readonly announced = new Set<string>()
   private detachEvents?: () => void
+  /** Flags as DECLARED at construction — the pre-probe starting point. */
+  private readonly declared: HarnessCapabilities
+  /** What the PTY host last told us. See § capability truthing in the header. */
+  private ptyVerdict: PtyVerdict = 'unprobed'
+  /** Memoized proactive probe — one `deps.pty()` for the life of the driver. */
+  private probe?: Promise<HarnessCapabilities>
+  private readonly capabilitySinks = new Set<(e: HarnessCapabilityEvent) => void>()
 
   constructor(identity: PtyHarnessIdentity, deps: PtyHarnessDriverDeps<S>) {
     this.harnessId = identity.harnessId
@@ -192,7 +234,11 @@ export abstract class PtyHarnessDriver<
     this.log = deps.log ?? ((): void => undefined)
     this.listLimit = deps.listLimit ?? DEFAULT_LIST_LIMIT
     this.turnQuietMs = deps.turnQuietMs ?? DEFAULT_TURN_QUIET_MS
-    this.capabilities = {
+    this.declared = {
+      // Config, not yet ground truth: `deps.pty` present means den terminals
+      // are ENABLED. Whether a PTY can actually be opened is what
+      // `verifyCapabilities`/`requirePty` find out — until one of them has
+      // asked, the declaration is the most this driver honestly knows.
       interrupt: !!deps.pty,
       resume: !!deps.pty,
       // Every harness on this path owns its permission prompts inside its own
@@ -203,6 +249,79 @@ export abstract class PtyHarnessDriver<
       listSessions: true,
     }
     if (deps.events) this.detachEvents = deps.events((ev) => this.onDenEvent(ev))
+  }
+
+  // -- capabilities (runtime-truthed) -----------------------------------------
+
+  /**
+   * The sheet as of now. A fresh object each read: callers must never be able
+   * to mutate a driver's advertised flags, and a cached reference must never
+   * silently change under a client that thought it held a snapshot.
+   */
+  get capabilities(): HarnessCapabilities {
+    const pty = this.declared.interrupt && this.ptyVerdict !== 'unavailable'
+    return { ...this.declared, interrupt: pty, resume: pty }
+  }
+
+  /**
+   * Ask the machinery and latch the answer (`HarnessCapabilitySource`). One
+   * probe per driver: `deps.pty()` is itself memoized in production
+   * (`ensureManager` → `loadRealPtySpawn`), so re-probing would re-read a
+   * decided answer, and a probe that has already run costs one microtask.
+   *
+   * Never throws. A PTY host that rejects is exactly as unavailable as one that
+   * resolves null, and the caller asked a question about capabilities, not for
+   * a chance to fail.
+   */
+  verifyCapabilities(): Promise<HarnessCapabilities> {
+    // Nothing to verify when terminals are disabled: the flags are already
+    // false and there is no machinery to ask.
+    if (!this.deps.pty) return Promise.resolve(this.capabilities)
+    this.probe ??= (async (): Promise<HarnessCapabilities> => {
+      const host = await (this.deps.pty?.() ?? Promise.resolve(null)).catch(() => null)
+      this.notePty(!!host, 'probe')
+      return this.capabilities
+    })()
+    return this.probe
+  }
+
+  subscribeCapabilities(sink: (e: HarnessCapabilityEvent) => void): () => void {
+    this.capabilitySinks.add(sink)
+    return () => this.capabilitySinks.delete(sink)
+  }
+
+  /**
+   * Record what a PTY resolution just observed, announcing the flip if it moved
+   * an advertised flag. Called by the proactive probe AND by `requirePty`, so
+   * the first real method call corrects the sheet even on a node nobody ever
+   * asked `GET /api/harnesses`.
+   */
+  private notePty(available: boolean, source: 'probe' | 'call'): void {
+    const verdict: PtyVerdict = available ? 'available' : 'unavailable'
+    if (this.ptyVerdict === verdict) return
+    const previous = this.capabilities
+    this.ptyVerdict = verdict
+    const next = this.capabilities
+    const changed = capabilityDiff(previous, next)
+    if (Object.keys(changed).length === 0) return
+    const reason = available
+      ? `${this.harnessId}: PTY backend is available (${source})`
+      : `${this.harnessId}: PTY backend is unavailable — interrupt/resume answer 501 (${source})`
+    this.log(`[den-server] harness: ${reason}`)
+    const event: HarnessCapabilityEvent = {
+      type: 'harness-capabilities',
+      harnessId: this.harnessId,
+      capabilities: next,
+      changed,
+      reason,
+    }
+    for (const sink of [...this.capabilitySinks]) {
+      try {
+        sink(event)
+      } catch {
+        /* one bad subscriber must never break the others */
+      }
+    }
   }
 
   // -- identity --------------------------------------------------------------
@@ -452,6 +571,7 @@ export abstract class PtyHarnessDriver<
     this.live.clear()
     this.sessionSinks.clear()
     this.registrySinks.clear()
+    this.capabilitySinks.clear()
     this.detachEvents?.()
     this.detachEvents = undefined
   }
@@ -595,11 +715,30 @@ export abstract class PtyHarnessDriver<
     return state
   }
 
+  /**
+   * Resolve the PTY host, or reject with `capability_unsupported`.
+   *
+   * Doubles as the LAZY half of capability truthing: whatever this call
+   * observes is recorded, so the sheet corrects itself on the first real method
+   * that needs a PTY even if nobody ever read `GET /api/harnesses`. A node that
+   * never calls a PTY method never pays for the probe, and never advertises a
+   * flag anyone could have acted on.
+   */
   protected async requirePty(method: string): Promise<HarnessPtyHost> {
     if (!this.deps.pty) {
       throw this.unsupported(`${this.harnessId}: ${method} needs den terminals, which are disabled`)
     }
-    const pty = await this.deps.pty()
+    let pty: HarnessPtyHost | null
+    try {
+      pty = await this.deps.pty()
+    } catch (err) {
+      this.notePty(false, 'call')
+      throw this.unsupported(
+        `${this.harnessId}: ${method} needs a PTY backend, which failed to load ` +
+          `(${err instanceof Error ? err.message : String(err)})`,
+      )
+    }
+    this.notePty(!!pty, 'call')
     if (!pty) {
       throw this.unsupported(
         `${this.harnessId}: ${method} needs a PTY backend, which is unavailable`,
