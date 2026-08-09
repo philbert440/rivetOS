@@ -36,9 +36,29 @@ const LINK_MAP = {
   'docs/SKILLS.md': '/guides/skills/',
   'docs/DEPLOYMENT.md': '/guides/deployment/',
   'docs/TROUBLESHOOTING.md': '/reference/troubleshooting/',
+  'HUB-SETUP.md': '/guides/hub-setup/',
+  'docs/HUB-SETUP.md': '/guides/hub-setup/',
+  // No site pages exist for these — link out to the repository.
+  'MICBRIDGE.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/MICBRIDGE.md',
+  'DEN.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md',
+  'CODEBASE-REFERENCE.md':
+    'https://github.com/philbert440/rivetOS/blob/main/docs/CODEBASE-REFERENCE.md',
+  'plans/harness-control-plane.md':
+    'https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md',
+  'docs/plans/harness-control-plane.md':
+    'https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md',
 };
 
 const MAPPINGS = [
+  {
+    src: 'docs/HUB-SETUP.md',
+    dest: 'guides/hub-setup.md',
+    frontmatter: {
+      title: 'Hub Setup',
+      sidebar: { order: 5 },
+      description: 'Run a harness-first RivetOS node with the RivetHub clients',
+    },
+  },
   {
     src: 'docs/GETTING-STARTED.md',
     dest: 'guides/getting-started.md',
