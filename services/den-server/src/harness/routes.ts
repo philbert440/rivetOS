@@ -39,13 +39,25 @@
  * The legacy `/term/harness-sessions/*` endpoints are untouched — the hub
  * still uses them (the doc prunes them in Phase 5).
  *
- * **Known gaps** (both Phase 3+ work, recorded so clients aren't surprised):
+ * **Capabilities are runtime-truthed here.** Both capability reads
+ * (`GET /api/harnesses`, `GET /api/harnesses/:harnessId`) `await
+ * registry.verifyCapabilities()` before they answer, so the sheet is what the
+ * node can do at the moment it is read rather than what it was configured to
+ * hope: a node with terminals enabled but a failed `node-pty` import reports
+ * `interrupt`/`resume` as `false`, matching the 501 its methods already gave.
+ * The probe is memoized per driver, so the cost is one PTY-host resolution per
+ * process — paid on the first capability read, which is also the first moment
+ * an optimistic flag could have misled anyone.
  *
- *   - *Capability flags are declared, not runtime-probed.* A driver computes
- *     them at construction. The PTY drivers read `interrupt`/`resume` off
- *     whether den terminals are ENABLED — if `node-pty` then fails to load,
- *     `GET /api/harnesses` keeps advertising `true` while the methods answer
- *     501. The rejection is honest; the advertisement is optimistic.
+ * A flip that happens AFTER a client read the sheet rides the registry stream
+ * as a `harness-capabilities` frame (`capabilities.ts` explains why it is a
+ * den-level frame and not a `HarnessEvent`: the contract's union is
+ * session-scoped, and a driver-level flip has no session to name). An attach to
+ * `/api/harnesses/ws` also kicks a verify, so a client that only ever watches
+ * the stream still learns the truth.
+ *
+ * **Known gap** (Phase 3+ work, recorded so clients aren't surprised):
+ *
  *   - *Session status for out-of-den harnesses.* A harness process started
  *     outside den (no `RIVET_DEN_SESSION`) is invisible to its driver's live
  *     map and reads as `ended` until its den hooks speak. Sessions spawned
@@ -67,6 +79,7 @@ import {
   type UserTurn,
 } from '@rivetos/types'
 import { isBareNativeUuid } from './alias.js'
+import type { HarnessCapabilityEvent } from './capabilities.js'
 import { isHarnessId, type HarnessRegistry, type ResolvedSession } from './registry.js'
 
 /** Drivers that can serve the hard-resync transcript (feature-detected). */
@@ -160,7 +173,7 @@ export function createHarnessRoutes(opts: {
   const wss = new WebSocketServer({ noServer: true })
   const clients = new Map<WebSocket, { alive: boolean; off: () => void }>()
 
-  const send = (ws: WebSocket, event: HarnessEvent): void => {
+  const send = (ws: WebSocket, event: HarnessEvent | HarnessCapabilityEvent): void => {
     if (ws.readyState !== 1) return
     if (ws.bufferedAmount > MAX_BUFFERED) {
       ws.terminate()
@@ -171,7 +184,7 @@ export function createHarnessRoutes(opts: {
 
   const attach = (
     ws: WebSocket,
-    subscribe: (sink: (e: HarnessEvent) => void) => () => void,
+    subscribe: (sink: (e: HarnessEvent | HarnessCapabilityEvent) => void) => () => void,
   ): void => {
     let off: () => void
     try {
@@ -263,6 +276,9 @@ export function createHarnessRoutes(opts: {
     const rest = url.pathname.slice('/api/harnesses'.length).replace(/^\//, '')
     if (rest === '') {
       if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+      // Truth the flags before publishing them: a declared-only sheet is how a
+      // node with a failed `node-pty` advertises an interrupt it will 501.
+      await registry.verifyCapabilities()
       return json(res, 200, { harnesses: registry.list() })
     }
     const parts: (string | undefined)[] = rest.split('/')
@@ -274,6 +290,7 @@ export function createHarnessRoutes(opts: {
 
     if (sub === undefined) {
       if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+      await registry.verifyCapabilities(harnessId)
       return json(res, 200, { harnessId, capabilities: driver.capabilities })
     }
     if (sub !== 'sessions') return json(res, 404, { error: 'not found' })
@@ -524,7 +541,21 @@ export function createHarnessRoutes(opts: {
           return true
         }
         wss.handleUpgrade(req, socket, head, (ws) => {
-          attach(ws, (sink) => registry.subscribe(sink, filter))
+          // Two streams, one socket: session lifecycle (the contract's
+          // `HarnessEvent`s) and driver-level capability flips (a den frame —
+          // see `capabilities.ts`). A client that does not know the second type
+          // ignores it, which is why this needed no contract change.
+          attach(ws, (sink) => {
+            const offEvents = registry.subscribe(sink, filter)
+            const offCapabilities = registry.subscribeCapabilities(sink, filter)
+            return () => {
+              offEvents()
+              offCapabilities()
+            }
+          })
+          // Kick a probe now that someone is listening: a watcher who never
+          // GETs the sheet still learns about a flag that was never true.
+          void registry.verifyCapabilities(filter)
         })
         return true
       }

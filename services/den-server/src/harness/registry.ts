@@ -5,7 +5,11 @@
  * and never touches a harness binary itself. The registry owns the three jobs
  * the contract calls "control-plane-owned":
  *
- *   - **Driver lookup + capability sheet** (`GET /api/harnesses`).
+ *   - **Driver lookup + capability sheet** (`GET /api/harnesses`), including
+ *     the runtime truthing that makes the sheet honest: `verifyCapabilities`
+ *     probes each driver's machinery before the flags are advertised, and a
+ *     flag that flips afterwards is fanned to registry-stream clients
+ *     (`capabilities.ts`).
  *   - **Alias resolution before dispatch.** Legacy and superseded ids are
  *     collapsed to canonical here, so drivers only ever see canonical ids —
  *     including for `subscribe` (docs/plans/harness-control-plane.md
@@ -47,6 +51,7 @@ import {
   normalizeSessionId,
   type AliasStore,
 } from './alias.js'
+import { asCapabilitySource, type HarnessCapabilityEvent } from './capabilities.js'
 
 export interface HarnessDescriptor {
   harnessId: HarnessId
@@ -64,8 +69,22 @@ export interface ResolvedSession {
 export interface HarnessRegistry {
   register(driver: HarnessDriver): void
   get(harnessId: string): HarnessDriver | undefined
-  /** Drivers + capability flags — the `GET /api/harnesses` body. */
+  /**
+   * Drivers + capability flags — the `GET /api/harnesses` body.
+   *
+   * Reports each driver's sheet **as of now**. Callers that are about to
+   * ADVERTISE those flags should `await verifyCapabilities()` first, so what
+   * they publish is what the node can do rather than what it was configured to
+   * hope (`capabilities.ts`).
+   */
   list(): HarnessDescriptor[]
+  /**
+   * Runtime-truth every driver's capability sheet: each driver that implements
+   * the truthing surface probes its machinery once and latches the answer.
+   * Cheap after the first call, never rejects — a driver that cannot answer
+   * keeps the flags it has.
+   */
+  verifyCapabilities(harnessId?: HarnessId): Promise<void>
   /**
    * Resolve any inbound id (canonical, superseded, or a legacy shape) to the
    * canonical id and its owning driver.
@@ -102,6 +121,16 @@ export interface HarnessRegistry {
   listSessions(harnessId: HarnessId): Promise<HarnessSessionSummary[]>
   /** Live registry stream across every driver (or one, when filtered). */
   subscribe(sink: (e: HarnessEvent) => void, harnessId?: HarnessId): () => void
+  /**
+   * Capability flips across every driver (or one, when filtered) — a flag that
+   * changes AFTER it was advertised. A den-level frame rather than a
+   * `HarnessEvent`: the contract's union is session-scoped and a driver-level
+   * flip has no session to name (see `capabilities.ts`).
+   */
+  subscribeCapabilities(
+    sink: (e: HarnessCapabilityEvent) => void,
+    harnessId?: HarnessId,
+  ): () => void
   /**
    * Per-session live tail that **follows the alias chain**. Attaches the sink
    * to the driver under the canonical id and moves it on every rotation, so a
@@ -177,6 +206,10 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
   const drivers = new Map<HarnessId, HarnessDriver>()
   const aliases = opts.aliases ?? createAliasStore()
   const sinks = new Set<{ harnessId?: HarnessId; sink: (e: HarnessEvent) => void }>()
+  const capabilitySinks = new Set<{
+    harnessId?: HarnessId
+    sink: (e: HarnessCapabilityEvent) => void
+  }>()
   const detach = new Map<HarnessId, () => void>()
   /**
    * Probe CACHE for bare native uuids, not an alias-store entry: `<uuid>` →
@@ -197,6 +230,17 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
         entry.sink(event)
       } catch {
         /* one bad subscriber must never break the others */
+      }
+    }
+  }
+
+  const fanoutCapabilities = (event: HarnessCapabilityEvent): void => {
+    for (const entry of [...capabilitySinks]) {
+      if (entry.harnessId && entry.harnessId !== event.harnessId) continue
+      try {
+        entry.sink(event)
+      } catch {
+        /* as above */
       }
     }
   }
@@ -318,51 +362,60 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
         })
       }
       drivers.set(harnessId, driver)
+      // Capability flips, for drivers that runtime-truth their flags. Tailed
+      // exactly like the registry stream and fanned to the same WS clients —
+      // feature-detected, so a driver without the surface simply never flips
+      // (`capabilities.ts`).
+      const capabilities = asCapabilitySource(driver)
+      const offCapabilities = capabilities?.subscribeCapabilities((event) =>
+        fanoutCapabilities(event),
+      )
       // Tail the driver's registry stream: rotation aliases are recorded here
       // (never in the driver) and the event is then fanned to WS clients.
-      detach.set(
-        harnessId,
-        driver.subscribeEvents((event) => {
-          let rotated: SessionId | undefined
-          if (
-            event.type === 'session-updated' &&
-            event.previousSessionId &&
-            // A driver restating its own id is a status update, not a
-            // rotation: the store no-ops it, and treating it as one would
-            // retire a live session on the stream.
-            event.previousSessionId !== event.sessionId
-          ) {
-            try {
-              aliases.record(event.previousSessionId, event.sessionId)
-              rotated = event.previousSessionId
-            } catch {
-              // Cross-harness, cyclic, or a second successor for an id that
-              // already rotated — all driver bugs. Drop the alias but still
-              // deliver the event so clients see the status.
-            }
+      const offEvents = driver.subscribeEvents((event) => {
+        let rotated: SessionId | undefined
+        if (
+          event.type === 'session-updated' &&
+          event.previousSessionId &&
+          // A driver restating its own id is a status update, not a
+          // rotation: the store no-ops it, and treating it as one would
+          // retire a live session on the stream.
+          event.previousSessionId !== event.sessionId
+        ) {
+          try {
+            aliases.record(event.previousSessionId, event.sessionId)
+            rotated = event.previousSessionId
+          } catch {
+            // Cross-harness, cyclic, or a second successor for an id that
+            // already rotated — all driver bugs. Drop the alias but still
+            // deliver the event so clients see the status.
           }
-          // Re-key live tails BEFORE the fanout: the rotation event reaches
-          // per-session subscribers through their own (now moved) sink, and a
-          // registry subscriber that reacts synchronously to the fanout must
-          // already see the post-rotation world.
-          if (rotated && event.type === 'session-updated') rekey(harnessId, rotated, event)
-          fanout(harnessId, event)
-          // The superseded id's lifecycle ends here. Reported once — a driver
-          // that re-emits the same rotation records an idempotent alias, and
-          // must not produce a second retirement — and AFTER the rotation
-          // event, so a registry client has already moved its row to the
-          // canonical id and reads this as "the old key is retired" rather
-          // than "the session died".
-          if (rotated && !retired.has(rotated)) {
-            retired.add(rotated)
-            fanout(harnessId, {
-              type: 'session-updated',
-              sessionId: rotated,
-              status: 'ended',
-            })
-          }
-        }),
-      )
+        }
+        // Re-key live tails BEFORE the fanout: the rotation event reaches
+        // per-session subscribers through their own (now moved) sink, and a
+        // registry subscriber that reacts synchronously to the fanout must
+        // already see the post-rotation world.
+        if (rotated && event.type === 'session-updated') rekey(harnessId, rotated, event)
+        fanout(harnessId, event)
+        // The superseded id's lifecycle ends here. Reported once — a driver
+        // that re-emits the same rotation records an idempotent alias, and
+        // must not produce a second retirement — and AFTER the rotation
+        // event, so a registry client has already moved its row to the
+        // canonical id and reads this as "the old key is retired" rather
+        // than "the session died".
+        if (rotated && !retired.has(rotated)) {
+          retired.add(rotated)
+          fanout(harnessId, {
+            type: 'session-updated',
+            sessionId: rotated,
+            status: 'ended',
+          })
+        }
+      })
+      detach.set(harnessId, () => {
+        offEvents()
+        offCapabilities?.()
+      })
     },
 
     get: (harnessId) => (isHarnessId(harnessId) ? drivers.get(harnessId) : undefined),
@@ -372,6 +425,22 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
         harnessId: d.harnessId,
         capabilities: d.capabilities,
       })),
+
+    async verifyCapabilities(harnessId): Promise<void> {
+      const targets = harnessId
+        ? [drivers.get(harnessId)].filter((d) => d !== undefined)
+        : [...drivers.values()]
+      await Promise.all(
+        targets.map(async (driver) => {
+          // A driver's probe is its own contract to keep quiet about failure;
+          // the catch is for a driver that breaks that promise. Advertising a
+          // stale flag beats failing the request that asked for the sheet.
+          await asCapabilitySource(driver)
+            ?.verifyCapabilities()
+            .catch(() => undefined)
+        }),
+      )
+    },
 
     async resolve(raw): Promise<ResolvedSession> {
       const normalized = normalizeSessionId(raw)
@@ -480,6 +549,12 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
       return () => sinks.delete(entry)
     },
 
+    subscribeCapabilities(sink, harnessId): () => void {
+      const entry = { harnessId, sink }
+      capabilitySinks.add(entry)
+      return () => capabilitySinks.delete(entry)
+    },
+
     subscribeSession(sessionId, sink): () => void {
       const canonical = aliases.resolve(sessionId)
       const { harnessId } = parseSessionId(canonical)
@@ -544,6 +619,7 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
       }
       detach.clear()
       sinks.clear()
+      capabilitySinks.clear()
       drivers.clear()
     },
   }

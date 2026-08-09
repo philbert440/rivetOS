@@ -105,9 +105,12 @@ isn't replicated. The discipline lives in the skill + system prompt block.
   one chain. **Migration:** conversations already keyed on an older
   `hermes:<id>` need no rewrite — reads resolve the chain, and rows written
   before this change simply have no breadcrumb linking them, exactly as
-  before. The breadcrumb is a durable *record* of the link; nothing reads it
-  back yet, so after a den-server restart the two halves of a chain are each
-  readable on their own but no longer joined.
+  before. The breadcrumb is a durable *record* of the link, and den-server
+  **reads it back at boot** — the alias reconstructor rebuilds each chain into
+  the control plane's alias store (`services/den-server/src/harness/alias-restore.ts`),
+  so a restart mid-chain no longer leaves the two halves addressable but
+  unjoined. A conversation written before that reader existed needs nothing: it
+  is the breadcrumb that is read, not the conversation.
 - **Endings close the chain.** `on_session_end` marks every key the process
   rotated through inactive, not just the last one.
 

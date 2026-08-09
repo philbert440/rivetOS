@@ -107,6 +107,15 @@ export interface DenConfig {
   /** Harness attachment staging (POST /api/uploads). Optional for the same
    *  reason as `devices`. */
   uploads?: DenUploadsConfig
+  /**
+   * Shared memory DB (`RIVETOS_PG_URL`) — the same database capture writes to.
+   * den-server reads it for exactly one thing today: the post-restart alias
+   * reconstructor, which reads rotation breadcrumbs back out of
+   * `ros_messages` (see harness/alias-restore.ts). Empty/absent = no memory DB
+   * on this node, so nothing to reconstruct from. Optional for the same reason
+   * as `devices`: hand-built test configs predating the field stay valid.
+   */
+  pgUrl?: string
 }
 
 /** Staging area for remote-client harness attachments (see harness/uploads.ts). */
@@ -222,5 +231,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       maxBytes: intEnv(env, 'RIVETOS_DEN_UPLOAD_MAX_BYTES', DEFAULT_UPLOAD_MAX_BYTES),
       ttlMs: intEnv(env, 'RIVETOS_DEN_UPLOAD_TTL_MS', DEFAULT_UPLOAD_TTL_MS),
     },
+    // Same env var `devices.pgUrl` carries — one memory DB per node. Lifted to
+    // the top level because it is no longer a devices-only concern: the alias
+    // reconstructor reads it with no relation to device enrollment.
+    pgUrl: env.RIVETOS_PG_URL ?? '',
   }
 }
