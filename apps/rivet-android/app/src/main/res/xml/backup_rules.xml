@@ -1,12 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+   Auto Backup rules for devices below API 31 (API 31+ uses
+   data_extraction_rules.xml).
+
+   The include list already limits the backup set to `upload/`, but the bearer
+   prefs file is excluded explicitly so widening that list later cannot start
+   syncing node credentials off the device by accident. See
+   dev.rivet.app.data.node.SharedPrefsNodeTokenStore.
+   https://developer.android.com/guide/topics/data/autobackup
 -->
 <full-backup-content>
   <include
     domain="file"
     path="upload/" />
+  <exclude
+    domain="sharedpref"
+    path="rivet_node_tokens.xml" />
 </full-backup-content>

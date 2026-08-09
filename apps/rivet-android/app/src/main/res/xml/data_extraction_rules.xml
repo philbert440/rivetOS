@@ -1,19 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
+   Data extraction rules (API 31+).
+
+   Per-node gateway bearers live in their own prefs file so they can be excluded
+   here: a credential the operator pasted into this phone should not ride a cloud
+   backup or a device transfer to another handset. See
+   dev.rivet.app.data.node.SharedPrefsNodeTokenStore.
 -->
 <data-extraction-rules>
   <cloud-backup>
-    <!-- TODO: Use <include> and <exclude> to control what is backed up.
-    <include .../>
-    <exclude .../>
-    -->
+    <exclude
+      domain="sharedpref"
+      path="rivet_node_tokens.xml" />
   </cloud-backup>
-  <!--
   <device-transfer>
-      <include .../>
-      <exclude .../>
+    <exclude
+      domain="sharedpref"
+      path="rivet_node_tokens.xml" />
   </device-transfer>
-  -->
 </data-extraction-rules>

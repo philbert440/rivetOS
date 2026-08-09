@@ -19,7 +19,9 @@ import java.util.concurrent.TimeUnit
  * Kotlin client for den-server's terminal surface (`/api/terminal/...` aliases of `/term/...`).
  *
  * Wire protocol (see `services/den-server/src/term/ws.ts` + web `XtermAttach`):
- * - Connect `ws(s)://<den>/api/terminal/ws?id=<ptyId>` (optional `?token=` — WS cannot send headers)
+ * - Connect `ws(s)://<den>/api/terminal/ws?id=<ptyId>`; the bearer goes on the upgrade request's
+ *   `Authorization` header (den's gate reads it there — `?token=` exists for browsers, whose
+ *   `WebSocket` constructor cannot set headers, and this client is OkHttp)
  * - Server → client: JSON hello, binary scrollback, live binary output, JSON `{type:exit}` then close
  * - Client → server: binary keystrokes; JSON `{type:resize,cols,rows}` / `{type:kill}`
  *
@@ -142,6 +144,7 @@ internal class DenTermClient(
         )
     }
 
+    /** Upgrade URL — never carries the credential; see [connect]. */
     fun terminalWsUrl(ptyId: String): String {
         val httpBase = if (base.endsWith("/")) base else "$base/"
         val wsBase = when {
@@ -149,21 +152,17 @@ internal class DenTermClient(
             httpBase.startsWith("http://") -> "ws://" + httpBase.removePrefix("http://")
             else -> "ws://$httpBase"
         }
-        val u = StringBuilder(wsBase.trimEnd('/'))
+        return StringBuilder(wsBase.trimEnd('/'))
             .append("/api/terminal/ws?id=")
             .append(java.net.URLEncoder.encode(ptyId, Charsets.UTF_8.name()))
-        val t = token?.trim().orEmpty()
-        if (t.isNotEmpty()) {
-            u.append("&token=").append(java.net.URLEncoder.encode(t, Charsets.UTF_8.name()))
-        }
-        return u.toString()
+            .toString()
     }
 
     fun connect(
         ptyId: String,
         listener: Listener,
     ): WebSocket {
-        val req = Request.Builder().url(terminalWsUrl(ptyId)).build()
+        val req = authorized(Request.Builder().url(terminalWsUrl(ptyId))).build()
         return wsHttp.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 listener.onOpen()

@@ -20,6 +20,9 @@ import dev.rivet.app.data.ai.GenerationHandler
 import dev.rivet.app.data.ai.transformers.TemplateTransformer
 import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.data.db.AppDatabase
+import dev.rivet.app.data.node.NodeAuthRegistry
+import dev.rivet.app.data.node.NodeTokenStore
+import dev.rivet.app.data.node.SharedPrefsNodeTokenStore
 import dev.rivet.app.data.db.fts.MessageFtsManager
 import dev.rivet.app.data.db.fts.SimpleDictManager
 import dev.rivet.app.data.db.migrations.Migration_6_7
@@ -42,6 +45,16 @@ import java.util.concurrent.TimeUnit
 val dataSourceModule = module {
     single {
         SettingsStore(context = get(), scope = get())
+    }
+
+    // Per-node gateway bearers. Their own app-private prefs file, never the
+    // settings DataStore — that blob is what the WebDAV/S3 backup uploads.
+    single<NodeTokenStore> {
+        SharedPrefsNodeTokenStore(context = get())
+    }
+
+    single {
+        NodeAuthRegistry(tokens = get())
     }
 
     single {
