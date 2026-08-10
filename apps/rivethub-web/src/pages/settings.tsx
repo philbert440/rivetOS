@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
 import { RivetGateway } from '@rivetos/gateway-client'
@@ -121,6 +121,11 @@ export function SettingsPage(): JSX.Element {
   const { baseUrl, setConnection } = useConnection()
   const queryClient = useQueryClient()
   const [draftUrl, setDraftUrl] = useState(baseUrl)
+  // The Saved Nodes editor below can repoint baseUrl from within this page —
+  // without this sync, Save here would silently revert that edit.
+  useEffect(() => {
+    setDraftUrl(baseUrl)
+  }, [baseUrl])
   const [probe, setProbe] = useState<ProbeState>({ kind: 'idle' })
   const { wikiBaseUrl, setWikiBaseUrl } = useWikiSettings()
   const [draftWiki, setDraftWiki] = useState(wikiBaseUrl)

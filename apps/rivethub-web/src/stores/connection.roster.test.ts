@@ -81,6 +81,25 @@ describe('updateNode', () => {
     expect(localStorage.getItem('rivethub.baseUrl')).toBe('https://192.0.2.13:5174')
   })
 
+  it('keeps the active connection put when an INACTIVE row is edited onto its URL', () => {
+    useConnection.getState().switchTo(NODE_B.baseUrl)
+    // alpha edited onto beta's URL — beta (active) is absorbed, but the live
+    // connection must not move or churn.
+    useConnection.getState().updateNode(NODE_A.baseUrl, { name: 'alpha', baseUrl: NODE_B.baseUrl })
+    expect(useConnection.getState().roster).toEqual([{ name: 'alpha', baseUrl: NODE_B.baseUrl }])
+    expect(useConnection.getState().baseUrl).toBe(NODE_B.baseUrl)
+  })
+
+  it('rename-only on the active node causes zero connection churn', () => {
+    useConnection.getState().switchTo(NODE_A.baseUrl)
+    const before = useConnection.getState()
+    useConnection.getState().updateNode(NODE_A.baseUrl, { name: 'renamed', baseUrl: NODE_A.baseUrl })
+    const after = useConnection.getState()
+    expect(after.baseUrl).toBe(NODE_A.baseUrl)
+    expect(after.gateway).toBe(before.gateway)
+    expect(after.transportEpoch).toBe(before.transportEpoch)
+  })
+
   it('ignores edits to unknown rows', () => {
     useConnection.getState().updateNode('https://192.0.2.99:5174', { name: 'x', baseUrl: NODE_A.baseUrl })
     expect(useConnection.getState().roster).toHaveLength(2)
