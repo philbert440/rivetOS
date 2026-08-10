@@ -123,14 +123,26 @@ fn parse_target(target: &str) -> Result<(String, u16), String> {
     if rest.contains('/') {
         return Err(format!("gateway base must not carry a path: {target}"));
     }
-    // Bracketed v6 literals ([fd00::1]:5174), userinfo, and query forms all — generic RFC4193 example, secret-scan-allow
-    // fall through to host_allowed/ServerName and FAIL CLOSED — only the
-    // plain host[:port] shapes the roster actually uses are accepted.
-    let (host, port) = match rest.rsplit_once(':') {
-        Some((h, p)) if !h.contains(':') => {
-            (h.to_string(), p.parse::<u16>().map_err(|_| format!("bad port in {target}"))?)
+    // Accepted shapes: host, host:port, [v6]:port, [v6] — bracketed v6 so a
+    // ULA overlay base with an explicit port actually reaches the allow-list.
+    // Userinfo/query forms fall through to host_allowed and FAIL CLOSED.
+    let (host, port) = if let Some(v6) = rest.strip_prefix('[') {
+        let (h, after) = v6
+            .split_once(']')
+            .ok_or_else(|| format!("unclosed v6 bracket in {target}"))?;
+        let port = match after.strip_prefix(':') {
+            Some(p) => p.parse::<u16>().map_err(|_| format!("bad port in {target}"))?,
+            None if after.is_empty() => 443,
+            None => return Err(format!("bad v6 authority in {target}")),
+        };
+        (h.to_string(), port)
+    } else {
+        match rest.rsplit_once(':') {
+            Some((h, p)) if !h.contains(':') => {
+                (h.to_string(), p.parse::<u16>().map_err(|_| format!("bad port in {target}"))?)
+            }
+            _ => (rest.to_string(), 443),
         }
-        _ => (rest.to_string(), 443),
     };
     if host.is_empty() {
         return Err(format!("empty host in {target}"));
@@ -247,5 +259,10 @@ mod tests {
         assert_eq!(parse_target("https://ct112.mesh").unwrap(), ("ct112.mesh".into(), 443));
         assert!(parse_target("http://10.0.0.7:5174").is_err());
         assert!(parse_target("https://10.0.0.7:5174/den").is_err());
+        // bracketed v6 — ULA overlay with explicit port (generic RFC4193 examples, secret-scan-allow)
+        assert_eq!(parse_target("https://[fd00::7]:5174").unwrap(), ("fd00::7".into(), 5174)); // secret-scan-allow
+        assert_eq!(parse_target("https://[fd00::7]").unwrap(), ("fd00::7".into(), 443)); // secret-scan-allow
+        assert!(parse_target("https://[2001:db8::1]:5174").is_err()); // public v6 refused
+        assert!(parse_target("https://[fd00::7").is_err()); // unclosed bracket — secret-scan-allow
     }
 }

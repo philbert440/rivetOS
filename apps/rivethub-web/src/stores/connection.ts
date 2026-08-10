@@ -32,6 +32,13 @@ export interface RosterNode {
 interface ConnectionState {
   baseUrl: string
   gateway: RivetGateway
+  /**
+   * Bumped whenever the gateway is swapped onto a new transport (desktop
+   * mTLS pipe resolving) WITHOUT baseUrl changing. Long-lived sockets that
+   * reconnect on baseUrl must include this in their deps, or they stay on
+   * the pre-pipe gateway (which can never authenticate) for the session.
+   */
+  transportEpoch: number
   roster: RosterNode[]
   setConnection: (baseUrl: string) => void
   /** Switch to a roster node. */
@@ -103,11 +110,22 @@ function upgradeTransport(
   baseUrl: string,
   set: (partial: Partial<ConnectionState>) => void,
   get: () => ConnectionState,
+  attempt = 0,
 ): void {
   void transportBase(baseUrl).then((transport) => {
-    if (transport === baseUrl) return
     if (get().baseUrl !== baseUrl) return // switched nodes while resolving
-    set({ gateway: makeGateway(transport) })
+    if (transport === baseUrl) {
+      // Tauri + https with no identity imported yet: keep watching (10 min)
+      // so an identity dropped in mid-run engages without a relaunch or a
+      // node switch — mirrors the Rust side's no-failure-caching.
+      if ('__TAURI__' in window && baseUrl.startsWith('https://') && attempt < 40) {
+        setTimeout(() => {
+          if (get().baseUrl === baseUrl) upgradeTransport(baseUrl, set, get, attempt + 1)
+        }, 15_000)
+      }
+      return
+    }
+    set({ gateway: makeGateway(transport), transportEpoch: get().transportEpoch + 1 })
   })
 }
 
@@ -130,6 +148,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
   return {
     baseUrl,
     gateway: makeGateway(baseUrl),
+    transportEpoch: 0,
     roster: loadRoster(),
 
     setConnection(rawUrl: string): void {
