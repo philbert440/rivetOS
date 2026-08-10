@@ -34,6 +34,9 @@ import dev.rivet.app.data.ai.mcp.AgentMcpReader
 import dev.rivet.app.runtime.RivetNodeInspector
 import dev.rivet.app.data.ai.mcp.McpManager
 import dev.rivet.app.data.sync.webdav.WebDavSync
+import dev.rivet.app.data.tls.DeviceIdentityStore
+import dev.rivet.app.data.tls.RivetTls
+import dev.rivet.app.data.tls.RivetTls.applyRivetTls
 import dev.rivet.search.SearchService
 import dev.rivet.app.data.sync.S3Sync
 import okhttp3.OkHttpClient
@@ -51,6 +54,14 @@ val dataSourceModule = module {
     // settings DataStore — that blob is what the WebDAV/S3 backup uploads.
     single<NodeTokenStore> {
         SharedPrefsNodeTokenStore(context = get())
+    }
+
+    // Device client cert for gateway mTLS (Rivet CA PKCS#12). Own on-disk bag +
+    // encrypted passphrase vault — never the settings DataStore / backup blob.
+    // Bind into RivetTls so DenTermClient.sharedClient() (process-level) sees it
+    // even when this singleton is first touched before the DI OkHttpClient.
+    single {
+        DeviceIdentityStore(context = get()).also { RivetTls.bind(it) }
     }
 
     single {
@@ -151,7 +162,14 @@ val dataSourceModule = module {
         MessageFtsManager(get())
     }
 
-    single { McpManager(settingsStore = get(), appScope = get(), filesManager = get()) }
+    single {
+        // No DeviceIdentityStore: MCP dials arbitrary third-party endpoints.
+        McpManager(
+            settingsStore = get(),
+            appScope = get(),
+            filesManager = get(),
+        )
+    }
 
     single { AgentMcpReader(context = get()) }
 
@@ -171,6 +189,7 @@ val dataSourceModule = module {
     single<OkHttpClient> {
         val acceptLang = AcceptLanguageBuilder.fromAndroid(get())
             .build()
+        val identityStore: DeviceIdentityStore = get()
         OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.MINUTES)
@@ -178,6 +197,7 @@ val dataSourceModule = module {
             .followSslRedirects(true)
             .followRedirects(true)
             .retryOnConnectionFailure(true)
+            .applyRivetTls(identityStore)
             .addInterceptor { chain ->
                 val originalRequest = chain.request()
                 val requestBuilder = originalRequest.newBuilder()
@@ -210,7 +230,11 @@ val dataSourceModule = module {
             .addInterceptor(HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.HEADERS
             })
-            .build().also { SearchService.init(it, get()) }
+            .build().also { client ->
+                SearchService.init(client, get())
+                // Fresh identity must re-handshake; drop pooled sessions that hold the old cert.
+                identityStore.addChangeListener { client.connectionPool.evictAll() }
+            }
     }
 
     single {

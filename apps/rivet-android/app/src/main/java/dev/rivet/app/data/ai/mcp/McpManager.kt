@@ -51,6 +51,11 @@ private const val MAX_RECONNECT_ATTEMPTS = 5
 private const val BASE_RECONNECT_DELAY_MS = 1000L
 private const val MAX_RECONNECT_DELAY_MS = 30000L
 
+/**
+ * MCP endpoint manager. Uses a plain OkHttp client on purpose: servers are
+ * arbitrary user-configured third-party URLs, so device gateway mTLS must not
+ * be applied here (would offer the Rivet client cert to any peer that asks).
+ */
 class McpManager(
     private val settingsStore: SettingsStore,
     private val appScope: AppScope,

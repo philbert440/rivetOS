@@ -1,6 +1,8 @@
 package dev.rivet.app.ui.pages.terminal
 
 import android.util.Log
+import dev.rivet.app.data.tls.RivetTls
+import dev.rivet.app.data.tls.RivetTls.applyRivetTls
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -265,13 +267,19 @@ internal class DenTermClient(
             shared?.let { return it }
             synchronized(this) {
                 shared?.let { return it }
-                val c = OkHttpClient.Builder()
+                val builder = OkHttpClient.Builder()
                     .connectTimeout(CONNECT_TIMEOUT_SEC, TimeUnit.SECONDS)
                     .readTimeout(0, TimeUnit.MILLISECONDS) // WS is long-lived; den pings keep it alive
                     .writeTimeout(30, TimeUnit.SECONDS)
                     .pingInterval(30, TimeUnit.SECONDS)
                     .retryOnConnectionFailure(true)
-                    .build()
+                // Gateway mTLS: device client cert when Settings → Node has an
+                // imported PKCS#12. Bound by DI; no-op until then (http dens ok).
+                with(RivetTls) { builder.applyRivetTls() }
+                val c = builder.build()
+                // Drop pooled TLS sessions when identity is imported/removed so the
+                // next handshake presents the new cert (abbreviated resume won't).
+                RivetTls.boundStore()?.addChangeListener { c.connectionPool.evictAll() }
                 shared = c
                 return c
             }

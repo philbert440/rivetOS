@@ -30,6 +30,7 @@ import dev.rivet.app.di.repositoryModule
 import dev.rivet.app.di.viewModelModule
 import dev.rivet.app.data.files.FilesManager
 import dev.rivet.app.data.datastore.SettingsStore
+import dev.rivet.app.data.tls.DeviceIdentityStore
 import dev.rivet.app.service.RivetRuntimeService
 import dev.rivet.app.service.WebServerService
 import dev.rivet.app.utils.CrashHandler
@@ -70,6 +71,10 @@ class RivetHubApp : Application() {
             workManagerFactory()
             modules(appModule, viewModelModule, dataSourceModule, repositoryModule)
         }
+        // Eager-load device identity so process-level den OkHttp clients (DenTermClient
+        // shared pool) bind RivetTls before any gateway call races the DI graph.
+        get<DeviceIdentityStore>()
+
         this.createNotificationChannel()
 
         // set cursor window size to 32MB
