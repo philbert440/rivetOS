@@ -12,7 +12,7 @@
 import { execFileSync, execSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request, type RequestOptions } from 'node:https'
-import { tmpdir } from 'node:os'
+import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createDenServer, type DenServer } from './server.js'
@@ -36,15 +36,27 @@ interface TestPki {
   deviceKey: string
 }
 
-/** Throwaway CA + server leaf (IP:127.0.0.1 SAN) + device leaf (OU=client). */
-function makePki(): TestPki {
+/** First non-internal IPv4 of this host — lets the suite exercise the
+ *  NON-loopback remote path by dialing ourselves externally. */
+export function lanIp(): string | null {
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const a of addrs ?? []) {
+      if (a.family === 'IPv4' && !a.internal) return a.address
+    }
+  }
+  return null
+}
+
+/** Throwaway CA + server leaf (loopback + LAN IP SANs) + device leaf (OU=client). */
+function makePki(extraIp: string | null): TestPki {
   const dir = mkdtempSync(join(tmpdir(), 'rivet-tls-e2e-'))
   const o = (args: string[]): void => {
     execFileSync('openssl', args, { cwd: dir, stdio: 'ignore' })
   }
   o(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt',
      '-days', '2', '-subj', '/O=Rivet Test/CN=Rivet Test CA'])
-  writeFileSync(join(dir, 'srv.ext'), 'subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n')
+  const sans = `IP:127.0.0.1${extraIp ? `,IP:${extraIp}` : ''}`
+  writeFileSync(join(dir, 'srv.ext'), `subjectAltName=${sans}\nextendedKeyUsage=serverAuth\n`)
   o(['req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'srv.key', '-out', 'srv.csr',
      '-subj', '/O=Rivet Test/CN=testnode.mesh'])
   o(['x509', '-req', '-in', 'srv.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial',
@@ -87,13 +99,17 @@ describe.skipIf(!haveOpenssl())('gateway TLS gate (real sockets)', () => {
   let pki: TestPki
   let den: DenServer
   let base: string
+  let remoteBase: string
   let stateDir: string
 
+  const remoteIp = lanIp()
+
   beforeAll(async () => {
-    pki = makePki()
+    pki = makePki(remoteIp)
     stateDir = mkdtempSync(join(tmpdir(), 'rivet-tls-e2e-state-'))
     den = createDenServer(
       baseTestDenConfig(stateDir, {
+        host: '0.0.0.0',
         tls: {
           certPath: pki.serverCert,
           keyPath: pki.serverKey,
@@ -102,10 +118,14 @@ describe.skipIf(!haveOpenssl())('gateway TLS gate (real sockets)', () => {
         },
       }),
     )
-    await new Promise<void>((resolve) => den.server.listen(0, '127.0.0.1', resolve))
+    // Wildcard bind so the same server is reachable via 127.0.0.1 (loopback
+    // remoteAddress) AND the host's own LAN IP (a genuine non-loopback
+    // remoteAddress — the path the loopback shortcut cannot exercise).
+    await new Promise<void>((resolve) => den.server.listen(0, '0.0.0.0', resolve))
     const addr = den.server.address()
     if (addr === null || typeof addr === 'string') throw new Error('no address')
     base = `https://127.0.0.1:${String(addr.port)}`
+    remoteBase = remoteIp ? `https://${remoteIp}:${String(addr.port)}` : ''
   })
 
   afterAll(async () => {
@@ -133,5 +153,23 @@ describe.skipIf(!haveOpenssl())('gateway TLS gate (real sockets)', () => {
     // Loopback-over-TLS is local operator traffic per isGatewayAuthorized.
     const res = await get(`${base}/sessions`, { ca: pki.ca })
     expect(res.status).toBe(200)
+  })
+
+  describe.skipIf(!lanIp())('non-loopback remotes', () => {
+    it('denies a certless REMOTE everything but liveness — API and the static shell', async () => {
+      expect((await get(`${remoteBase}/healthz`, { ca: pki.ca })).status).toBe(200)
+      expect((await get(`${remoteBase}/sessions`, { ca: pki.ca })).status).toBe(401)
+      expect((await get(`${remoteBase}/`, { ca: pki.ca })).status).toBe(401)
+      expect((await get(`${remoteBase}/packs/anything.png`, { ca: pki.ca })).status).toBe(401)
+    })
+
+    it('admits a verified device leaf from a non-loopback remote', async () => {
+      const res = await get(`${remoteBase}/sessions`, {
+        ca: pki.ca,
+        cert: pki.deviceCert,
+        key: pki.deviceKey,
+      })
+      expect(res.status).toBe(200)
+    })
   })
 })
