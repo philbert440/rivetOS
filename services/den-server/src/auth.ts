@@ -126,7 +126,7 @@ export function isGatewayAuthorized(
   if (!opts.requireClientCert) {
     // TLS without client auth: encrypt-only (not recommended for product;
     // kept for explicit lab opt-out). Remote is allowed if TLS completed.
-    return Boolean(sock.encrypted)
+    return sock.encrypted
   }
 
   // Mutual TLS required: peer cert must verify (rejectUnauthorized) and be a device leaf
