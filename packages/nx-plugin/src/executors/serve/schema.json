@@ -14,7 +14,7 @@
     },
     "channel": {
       "type": "string",
-      "description": "Channel to bind (e.g. 'telegram', 'discord', 'terminal')"
+      "description": "Channel to bind (e.g. 'agent', 'terminal')"
     },
     "verbose": {
       "type": "boolean",

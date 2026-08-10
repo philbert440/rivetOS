@@ -41,7 +41,6 @@ await build({
     // Native bindings — must remain as runtime deps in the container image.
     'pg-native',
     'better-sqlite3',
-    '@discordjs/voice',
     '@elevenlabs/elevenlabs-js',
     // pg uses optional pg-native; keep it as runtime resolution.
     'pg',

@@ -324,29 +324,6 @@ export default tseslint.config(
     },
   },
 
-  // voice-discord: mediaplex + sodium-native + @discordjs/opus are native
-  // runtime peers of @discordjs/voice / prism-media — required for opus
-  // encode/decode and encryption, never statically imported by us.
-  {
-    files: ['plugins/channels/voice-discord/package.json'],
-    languageOptions: { parser: jsoncParser },
-    plugins: { '@nx': nxPlugin },
-    rules: {
-      '@nx/dependency-checks': [
-        'error',
-        {
-          buildTargets: ['build'],
-          checkMissingDependencies: true,
-          checkObsoleteDependencies: true,
-          checkVersionMismatches: true,
-          includeTransitiveDependencies: false,
-          ignoredFiles: ['**/*.test.ts', '**/*.spec.ts'],
-          ignoredDependencies: ['typescript', 'mediaplex', 'sodium-native', '@discordjs/opus'],
-        },
-      ],
-    },
-  },
-
   // Prettier — must be last
   prettier,
 )

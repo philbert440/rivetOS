@@ -33,9 +33,7 @@ providers:
     max_tokens: 8192
 
 channels:
-  discord:
-    channel_bindings:
-      "123456789": opus
+  # social channels removed Phase 5 — use RivetHub
 
 memory:
   postgres: {}
@@ -84,7 +82,7 @@ runtime:
     - agent: opus
       schedule: "*/30 * * * *"    # Every 30 minutes
       prompt: "Check for unread emails and calendar events."
-      output_channel: discord:123456789
+      output_channel: ""  # no social channel output
       timezone: America/New_York
       quiet_hours:
         start: 23
@@ -360,46 +358,11 @@ providers:
 
 ## `channels`
 
-Messaging channel configuration. Each key is a channel ID.
+Messaging channel configuration. Each key is a channel type / plugin name.
 
-### Discord
-
-```yaml
-channels:
-  discord:
-    channel_bindings:
-      "123456789012345678": opus
-      "987654321098765432": grok
-    owner_id: "111222333444555666"
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `channel_bindings` | object | **required** | Maps Discord channel IDs to agent names. |
-| `owner_id` | string | — | Discord user ID for owner-only features. |
-| `bot_token` | string | `${DISCORD_BOT_TOKEN}` | Bot token. Prefer env var. |
-| `allowed_guilds` | string[] | — | If set, only these guild (server) IDs may interact. |
-| `allowed_channels` | string[] | — | If set, only these channel IDs may interact (beyond `channel_bindings`). |
-| `allowed_users` | string[] | — | If set, only these user IDs may interact. |
-| `mention_only` | boolean | `false` | Only respond when the bot is @-mentioned. |
-| `mention_only_channels` | string[] | — | Channel IDs where mention-only mode applies (overrides the global setting per-channel). |
-
-**Setup:** Create a bot at [discord.com/developers](https://discord.com/developers/applications), copy the token, invite the bot to your server.
-
-### Telegram
-
-```yaml
-channels:
-  telegram:
-    owner_id: "123456789"
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `owner_id` | string | **required** | Telegram user ID. Only this user can talk to the bot. |
-| `bot_token` | string | `${TELEGRAM_BOT_TOKEN}` | Bot token from @BotFather. |
-| `allowed_users` | string[] | — | Additional Telegram user IDs permitted to interact, beyond `owner_id`. |
-| `agent` | string | `default_agent` | Agent that handles this channel. |
+> **Phase 5:** Telegram, Discord, and voice-discord channel plugins were **removed**.
+> Human UX is RivetHub. Optional remaining first-party channel: `channels.agent` (mesh).
+> Stale social-channel keys warn as unknown types (no crash-loop).
 
 ### Agent (HTTP)
 
@@ -424,6 +387,7 @@ channels:
 | `secret` | string | — | **Deprecated but enforced.** Bearer token checked by the standalone agent channel plugin when set. Mesh node-to-node auth uses mTLS via `mesh.tls` instead. |
 
 ---
+
 
 ## `mesh`
 
@@ -588,8 +552,6 @@ These are typically set in `.env`:
 | `ANTHROPIC_API_KEY` | provider-anthropic | Anthropic API key |
 | `XAI_API_KEY` | provider-xai | xAI API key |
 | `GOOGLE_API_KEY` | provider-google | Google AI API key |
-| `DISCORD_BOT_TOKEN` | channel-discord | Discord bot token |
-| `TELEGRAM_BOT_TOKEN` | channel-telegram | Telegram bot token |
 | `RIVETOS_PG_URL` | memory-postgres | PostgreSQL connection string |
 | `RIVETOS_AGENT_SECRET` | channel-agent | **Deprecated** — was the bearer secret for agent mesh. No longer used for agent-channel auth (replaced by mTLS). |
 | `RIVETOS_LOG_LEVEL` | core | Log level: `error`, `warn`, `info`, `debug` |

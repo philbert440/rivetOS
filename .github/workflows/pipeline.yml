@@ -194,9 +194,6 @@ jobs:
             packages/core
             packages/boot
             plugins/channels/agent
-            plugins/channels/discord
-            plugins/channels/telegram
-            plugins/channels/voice-discord
             plugins/memory/postgres
             plugins/providers/anthropic
             plugins/providers/claude-cli

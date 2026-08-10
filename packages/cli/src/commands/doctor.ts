@@ -315,11 +315,9 @@ function checkEnvVars(rawConfig: string | null): CheckResult[] {
       type Section = Partial<Record<string, Record<string, unknown>>>
       const parsed = parseYaml(rawConfig) as {
         providers?: Section
-        channels?: Section
         memory?: Section
       }
       const providers: Section = parsed.providers ?? {}
-      const channels: Section = parsed.channels ?? {}
       const memory: Section = parsed.memory ?? {}
 
       if (providers.anthropic && !providers.anthropic.api_key) {
@@ -332,19 +330,8 @@ function checkEnvVars(rawConfig: string | null): CheckResult[] {
         envChecks.push({ name: 'GOOGLE_API_KEY', context: 'provider: google' })
       }
 
-      if (channels.telegram && !channels.telegram.bot_token) {
-        envChecks.push({ name: 'TELEGRAM_BOT_TOKEN', context: 'channel: telegram' })
-      }
-      if (
-        (channels.discord || channels.voice || channels['voice-discord']) &&
-        !(
-          channels.discord?.bot_token ||
-          channels.voice?.bot_token ||
-          channels['voice-discord']?.bot_token
-        )
-      ) {
-        envChecks.push({ name: 'DISCORD_BOT_TOKEN', context: 'channel: discord' })
-      }
+      // Social channels (telegram/discord/voice-discord) were removed in Phase 5.
+      // Doctor no longer probes their bot tokens.
 
       if (memory.postgres && !memory.postgres.connection_string) {
         envChecks.push({ name: 'RIVETOS_PG_URL', context: 'memory: postgres' })

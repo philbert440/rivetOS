@@ -111,7 +111,7 @@ rivetOS/
 │   ├── mcp-v2/         # Era-negotiating MCP surface built on mcp
 │   └── nx-plugin/      # @rivetos/nx — generators, executors, dev tooling
 ├── plugins/
-│   ├── channels/       # discord, telegram, agent, voice-discord
+│   ├── channels/       # agent (mesh); social bots removed Phase 5
 │   ├── providers/      # anthropic, google, xai, ollama, vllm, llama-server, claude-cli
 │   ├── memory/         # postgres (pgvector + FTS + summary DAG + workers)
 │   ├── tools/          # shell, file, search, web-search, interaction, mcp-client
@@ -147,10 +147,9 @@ Skills are user-managed and live outside the source tree (default: `~/.rivetos/w
 
 | Plugin | Description |
 |--------|-------------|
-| `channel-discord` | Discord with streaming edits, reactions, overflow handling |
-| `channel-telegram` | Telegram with owner gate, inline keyboards, 4096-char splitting |
 | `channel-agent` | HTTP inter-agent messaging and mesh endpoints |
-| `channel-voice-discord` | Discord voice via xAI Realtime API (STT/TTS) |
+
+Social channel plugins (`channel-telegram`, `channel-discord`, `channel-voice-discord`) were **removed in Phase 5**. Human UX is RivetHub via the node gateway. Stale `channels.telegram:` (etc.) in config is a validation warning only — boot does not crash-loop.
 
 ### Tools
 
@@ -187,10 +186,12 @@ providers:
   anthropic:
     model: claude-sonnet-4-6
 
-channels:
-  discord:
-    channel_bindings:
-      "channel_id": opus
+# channels: social bots removed — use RivetHub
+# optional agent mesh:
+# channels:
+#   agent:
+#     port: 3100
+#     agent_id: opus
 
 memory:
   postgres: {}

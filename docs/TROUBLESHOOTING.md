@@ -227,45 +227,17 @@ ls -la workspace/
 
 ## Channel Issues
 
-### Discord: "Missing Access"
+### Social channel bots removed (Phase 5)
 
-The bot doesn't have permission to read/write in the channel.
+Telegram / Discord / voice-discord plugins are no longer shipped. If you still
+see reconnect loops or bot-token errors, remove those keys from `config.yaml`
+and use RivetHub against the node gateway instead.
 
-**Fix:**
-1. Go to Server Settings → Roles → your bot's role
-2. Ensure "Send Messages", "Read Messages", "Add Reactions" are enabled
-3. Check channel-specific permissions if using channel overrides
-
-### Discord: "Invalid token"
-
-```bash
-# Check your token (don't share it!)
-grep DISCORD_BOT_TOKEN .env
-
-# Common issues:
-# - Trailing whitespace
-# - Quotes around the value (remove them)
-# - Wrong token (application token vs bot token)
-```
-
-### Telegram: "409 Conflict"
-
-Another instance is polling with the same bot token.
-
-**Fix:** Only one process can use a Telegram bot token at a time. Stop the other instance.
-
-### Channel keeps disconnecting
-
-Check `npx rivetos logs` for reconnection messages. The reconnection manager uses exponential backoff:
-
-```
-[ReconnectManager] Channel discord disconnected. Attempt 1/10, retry in 2s
-[ReconnectManager] Channel discord disconnected. Attempt 2/10, retry in 4s
-```
-
-If it keeps failing, check your network connection and the platform's status page.
+Leftover `channels.telegram:` / `channels.discord:` only produce an
+**unknown channel type warning** at boot — they do not crash-loop the node.
 
 ---
+
 
 ## Mesh Issues
 

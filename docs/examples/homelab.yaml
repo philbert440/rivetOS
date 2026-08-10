@@ -14,12 +14,11 @@ runtime:
   default_agent: opus
   turn_timeout: 900
 
-
   heartbeats:
     - agent: opus
       schedule: "*/30 * * * *"
       prompt: "Check email, calendar, and system health. HEARTBEAT_OK if nothing."
-      output_channel: discord:YOUR_OPS_CHANNEL_ID
+      output_channel: ""  # Hub/gateway is the product path; no social channel output
       quiet_hours:
         start: 23
         end: 8
@@ -48,13 +47,12 @@ providers:
     model: qwen2.5:32b
     base_url: http://192.168.1.100:11434  # Ollama on the local agent's host
 
-channels:
-  discord:
-    channel_bindings:
-      "OPUS_CHANNEL": opus
-      "GROK_CHANNEL": grok
-      "LOCAL_CHANNEL": local
-
+# Channels: social bots (telegram/discord/voice-discord) were removed in Phase 5.
+# Human UX is RivetHub (gateway clients). Optional agent mesh:
+# channels:
+#   agent:
+#     port: 3100
+#     agent_id: opus
 # Cross-node delegation uses the mTLS-authenticated mesh (the old `channels.agent`
 # bearer-`secret` pattern is removed). Set `node_name` to THIS node's cert CN — so
 # this block differs per node. The datahub node acts as the discovery seed.
