@@ -22,14 +22,57 @@ if (process.env.RIVETOS_DEN_HOOK_DISABLED === '1') process.exit(0)
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import https from 'node:https'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 // comma-separated fan-out: each node posts to its OWN den (bare-IP view) and
-// to the mesh hub, e.g. "http://127.0.0.1:80,http://10.0.0.1:80"
-const DEN_URLS = (process.env.RIVET_DEN_URL ?? 'http://127.0.0.1:5174').split(',').map((u) => u.trim()).filter(Boolean)
+// to the mesh hub, e.g. "http://127.0.0.1:80,http://10.0.0.1:80". The default
+// lists BOTH loopback schemes: with gateway TLS (#491) the den answers https
+// only, and only one listener exists per port — the wrong-scheme attempt
+// fails fast and is swallowed.
+const DEN_URLS = (process.env.RIVET_DEN_URL ?? 'http://127.0.0.1:5174,https://127.0.0.1:5174')
+  .split(',')
+  .map((u) => u.trim())
+  .filter(Boolean)
 const TOKEN = process.env.RIVET_DEN_TOKEN ?? ''
 const NAME = process.env.RIVET_DEN_NAME ?? os.hostname()
+
+// TLS dens are signed by the private Rivet CA — fetch() can't be given a CA,
+// so https bases go through node:https with the chain from disk.
+const DEN_CA_PATH = process.env.RIVET_DEN_CA ?? '/rivet-shared/rivet-ca/intermediate/chain.pem'
+let denCa // lazy — only read when an https base is actually posted to
+/** POST json; resolves the HTTP status (http via fetch, https via node:https). */
+function postJson(url, headers, body, timeoutMs) {
+  if (!url.startsWith('https:')) {
+    return fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    }).then((res) => res.status)
+  }
+  if (denCa === undefined) {
+    try {
+      denCa = fs.readFileSync(DEN_CA_PATH, 'utf8')
+    } catch {
+      denCa = null // no chain on disk — system trust (public-cert dens)
+    }
+  }
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      url,
+      { method: 'POST', headers, ...(denCa ? { ca: denCa } : {}), timeout: timeoutMs },
+      (res) => {
+        res.resume()
+        resolve(res.statusCode ?? 0)
+      },
+    )
+    req.on('timeout', () => req.destroy(new Error('timeout')))
+    req.on('error', reject)
+    req.end(body)
+  })
+}
 
 const SECRET_KEY_RE =
   /^(?:.*(?:password|passwd|secret|token|api[_-]?key|authorization|auth|credential|private[_-]?key).*)$/i
@@ -582,23 +625,13 @@ async function main() {
   await Promise.allSettled(
     DEN_URLS.map(async (base) => {
       try {
-        const res = await fetch(`${base}/events`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(events),
-          signal: AbortSignal.timeout(1500),
-        })
-        if (res.status !== 404) return
+        const status = await postJson(`${base}/events`, headers, JSON.stringify(events), 1500)
+        if (status !== 404) return
       } catch {
         return // server unreachable — retrying event-by-event won't help
       }
       for (const ev of events) {
-        await fetch(`${base}/event`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(ev),
-          signal: AbortSignal.timeout(1000),
-        })
+        await postJson(`${base}/event`, headers, JSON.stringify(ev), 1000)
       }
     }),
   )

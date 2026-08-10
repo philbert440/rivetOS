@@ -26,6 +26,8 @@ const DEN_RESTART_TIMEOUT_MS = 90_000
 /** Total budget for the post-restart /healthz poll. */
 const DEN_HEALTH_TIMEOUT_MS = 15_000
 const DEN_HEALTH_INTERVAL_MS = 2_000
+/** Default CA bundle for verifying a TLS den — matches boot resolveDenTls. */
+const DEFAULT_TLS_CA = '/rivet-shared/rivet-ca/intermediate/chain.pem'
 
 // ---------------------------------------------------------------------------
 // Config → deploy settings
@@ -40,6 +42,10 @@ export interface DenDeploySettings {
   termOpen: boolean
   staticDir: string
   packsDir: string
+  /** Resolved node cert path — non-empty means the den serves https (#491). */
+  tlsCert: string
+  /** CA bundle the probe verifies the server against. */
+  tlsCa: string
 }
 
 export type DenDeployOutcome = 'deployed' | 'skipped' | 'failed' | 'unmanaged-active'
@@ -65,6 +71,8 @@ export function parseDenSettings(
     termOpen: false,
     staticDir: join(root, 'apps', 'den', 'dist'),
     packsDir: join(root, 'packages', 'den-packs', 'packs'),
+    tlsCert: '',
+    tlsCa: DEFAULT_TLS_CA,
   }
 
   if (!rawYaml) return defaults
@@ -91,11 +99,32 @@ export function parseDenSettings(
       ? d.port
       : defaults.port
 
+  // Gateway TLS (#491): mirror packages/boot resolveDenTls — explicit
+  // den.tls_* else the mesh issue-node auto path. existsSync runs on the
+  // orchestrating host, but /rivet-shared is the same NFS view on every
+  // node, so the answer holds for remote targets too.
+  const mesh = (parsed as Record<string, unknown>).mesh
+  const rawNodeName =
+    mesh && typeof mesh === 'object' && !Array.isArray(mesh)
+      ? (mesh as Record<string, unknown>).node_name
+      : undefined
+  const nodeName = typeof rawNodeName === 'string' ? rawNodeName.trim() : ''
+  const autoCert = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : ''
+  const tlsCert =
+    typeof d.tls_cert === 'string' && d.tls_cert.trim() !== ''
+      ? d.tls_cert.trim()
+      : autoCert && existsSync(autoCert)
+        ? autoCert
+        : ''
+
   return {
     enabled: d.enabled === true,
     host: typeof d.host === 'string' && d.host.trim() !== '' ? d.host.trim() : defaults.host,
     port,
     token: typeof d.token === 'string' ? d.token : '',
+    tlsCert,
+    tlsCa:
+      typeof d.tls_ca === 'string' && d.tls_ca.trim() !== '' ? d.tls_ca.trim() : defaults.tlsCa,
     termEnabled: terminal?.enabled === true,
     termOpen: terminal?.open === true,
     staticDir:
@@ -112,6 +141,18 @@ export function parseDenSettings(
 /** Host to curl for the health probe — wildcard binds answer on loopback. */
 export function denProbeHost(bindHost: string): string {
   return bindHost === '0.0.0.0' || bindHost === '::' ? '127.0.0.1' : bindHost
+}
+
+/**
+ * The /healthz probe command for this den. With gateway TLS (#491) the den
+ * answers https only, verified against the Rivet CA chain — node leaves must
+ * carry an IP:127.0.0.1 SAN (rivet-ca.sh issue-node ... IP:127.0.0.1) for
+ * the loopback probe to pass hostname verification.
+ */
+export function denProbeCmd(den: DenDeploySettings): string {
+  const target = `${denProbeHost(den.host)}:${String(den.port)}/healthz`
+  if (!den.tlsCert) return `curl -fsS -m 3 http://${target}`
+  return `curl -fsS -m 3 --cacert ${den.tlsCa} https://${target}`
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +242,7 @@ export async function verifyGatewayLocal(restart: boolean): Promise<DenDeployOut
     return 'failed'
   }
 
-  const probe = `curl -fsS -m 3 http://${denProbeHost(den.host)}:${String(den.port)}/healthz`
+  const probe = denProbeCmd(den)
   const deadline = Date.now() + DEN_HEALTH_TIMEOUT_MS
   for (;;) {
     const out = execLocalQuiet(probe)
@@ -276,6 +317,10 @@ export async function verifyGatewayRemote(
     console.error(`    ${tag} ❌ den.host "${den.host}" contains shell-unsafe characters`)
     return 'failed'
   }
+  if (den.tlsCert && !isSafeArg(den.tlsCa)) {
+    console.error(`    ${tag} ❌ den.tls_ca "${den.tlsCa}" contains shell-unsafe characters`)
+    return 'failed'
+  }
 
   // False-green guard: /healthz answering while the RETIRED unit is still
   // active means the old standalone server is serving — the embed never cut
@@ -294,7 +339,7 @@ export async function verifyGatewayRemote(
     return 'failed'
   }
 
-  const probe = `curl -fsS -m 3 http://${denProbeHost(den.host)}:${String(den.port)}/healthz`
+  const probe = denProbeCmd(den)
   const deadline = Date.now() + DEN_HEALTH_TIMEOUT_MS
   for (;;) {
     const out = sshExecQuiet(host, probe, sshUser)

@@ -61,6 +61,7 @@ import type { GatewayRoute, HarnessId, MeshConfig, MeshRegistry } from '@rivetos
 import { WikiIndex } from '@rivetos/memory-postgres'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
+import { denTlsConfigured } from './gateway.js'
 
 const log = logger('Boot:Agents')
 
@@ -239,6 +240,14 @@ export async function registerAgentTools(
     // tags in mesh.json don't survive a restart. den.enabled here is what
     // makes den-node discovery (viewer /mesh.json) restart-proof.
     const denEnabled = config.den?.enabled === true
+    // With gateway TLS (#491) the den answers https only — advertise a full
+    // denUrl so peer mesh views and the hub node-switcher probe/connect with
+    // the right scheme instead of the http:// fallback built from denPort.
+    const denHost = resolveAdvertiseHost(meshConfig)
+    const denUrl =
+      denEnabled && denTlsConfigured(config)
+        ? `https://${denHost}:${String(config.den?.port ?? 5174)}`
+        : ''
     // Per-agent provider/model so REMOTE catalog entries (RivetHub node
     // switcher + picker) show more than id@node (#272). Node-level
     // providers/models stay for coarse capability queries.
@@ -252,7 +261,7 @@ export async function registerAgentTools(
       existingId: nodeName,
       name: nodeName,
       agents: localAgents,
-      host: resolveAdvertiseHost(meshConfig),
+      host: denHost,
       port: agentChannelPort,
       providers: Object.keys(config.providers ?? {}),
       models: Object.values(config.agents)
@@ -261,6 +270,7 @@ export async function registerAgentTools(
       capabilities: denEnabled ? ['den'] : undefined,
       metadata: {
         ...(denEnabled ? { denPort: config.den?.port ?? 5174 } : {}),
+        ...(denUrl ? { denUrl } : {}),
         agentDetails,
       },
       version: '0.1.0',

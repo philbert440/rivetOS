@@ -479,7 +479,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // conversation the terminal is running (seamless modes join key).
       if (session) setNonEmpty(env, 'RIVETOS_SESSION_KEY', session)
       setNonEmpty(env, 'RIVET_DEN_TOKEN', config.token)
-      env.RIVET_DEN_URL = `http://127.0.0.1:${config.port}`
+      // Gateway TLS (#491): a TLS den answers https only — hand the spawned
+      // harness's den hook the live scheme (the hook trusts the Rivet CA).
+      const denScheme = config.tls.certPath.trim() && config.tls.keyPath.trim() ? 'https' : 'http'
+      env.RIVET_DEN_URL = `${denScheme}://127.0.0.1:${config.port}`
       env.RIVET_DEN_NAME = `${hostname()}:${key}`
       env.TERM = 'xterm-256color'
       env.COLORTERM = 'truecolor'
