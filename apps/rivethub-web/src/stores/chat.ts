@@ -129,8 +129,26 @@ interface ChatState {
    * blindly) but the SELECTION still moves — the send path keys on the active
    * id, so leaving it on a retired key would queue new turns under an id no
    * row carries.
+   *
+   * Returns whether the thread records actually moved. Callers use it to
+   * decide whether to migrate persisted state too: copying a retired thread's
+   * custom name onto a DIFFERENT surviving session is exactly wrong at the
+   * moment we have decided the two must not merge.
    */
-  rekey: (from: string, to: string) => void
+  rekey: (from: string, to: string) => boolean
+  /**
+   * Apply a control-plane identity change to whatever this client has open.
+   *
+   * Driven by the registry stream, which is the only place both halves of the
+   * change are known: `session-created` announces an ADOPTION (a thread we
+   * opened under its bare native id is now the plane's), and `session-updated`
+   * carries `previousSessionId` for a ROTATION (the native id was replaced, so
+   * nothing derivable from the new id could find the old thread).
+   *
+   * Returns the keys whose records were moved onto `canonical`, so the caller
+   * can migrate their persisted state.
+   */
+  adoptSessionKey: (canonical: string, previous?: string) => string[]
   /** Seamless modes: show the user's turn immediately. Returns optim id. */
   addOptimisticUser: (sessionId: string, text: string, id?: string) => string
   /** Enqueue a user turn (optimistic bubble + queue). Returns optim id. */
@@ -195,6 +213,13 @@ let currentEndpoint: string | undefined
 /** Sessions with an active transcript watch — re-sent on every reconnect
  *  (server-side subscriptions die with the socket). */
 const watchedSessions = new Set<string>()
+
+/** Drop this client's transcript subscription for a key, once. Paired with the
+ *  idempotent `watchTranscript`, so refs never drift from what we hold. */
+function releaseWatch(sessionId: string): void {
+  if (!watchedSessions.delete(sessionId)) return
+  subscription?.send({ type: 'unwatch', session: sessionId })
+}
 
 /**
  * Rebuild a session's solid messages from a full turn array and reconcile the
@@ -323,9 +348,23 @@ export const useChat = create<ChatState>((set, get) => ({
       opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
     })),
 
-  rekey: (from, to) =>
+  rekey: (from, to) => {
+    if (from === to) return false
+    // Decide before mutating, so the updater below stays a pure reducer.
+    // Destination already live: keep its records rather than clobber a real
+    // transcript with the one we were about to fold in — but still move the
+    // selection, or the composer keeps queueing turns onto the retired key
+    // (the effect that called us does not re-fire).
+    const moved = get().messages[to] === undefined && get().transcripts[to] === undefined
+    // The retired key keeps no subscription either way — the selection has
+    // left it, so its frames would be dropped client-side while the server
+    // kept parsing the store for it. We do NOT auto-watch `to`: the view owns
+    // that lifecycle, and `<SessionErrorBoundary key={active}>` remounts
+    // `ActiveSession` under the new key, which subscribes (or binds to the
+    // control plane, which needs no watch at all). Sends on a socket, so it
+    // lives out here rather than inside `set`.
+    releaseWatch(from)
     set((s) => {
-      if (from === to) return {}
       const swap = (list: string[]): string[] =>
         list.includes(from) ? list.map((id) => (id === from ? to : id)) : list
       /** Point the user (and so the send path) at the surviving key. */
@@ -334,24 +373,11 @@ export const useChat = create<ChatState>((set, get) => ({
         drafts: s.drafts.includes(from) ? s.drafts.filter((id) => id !== from) : s.drafts,
         active: s.active === from ? to : s.active,
       }
-      // Destination already live: keep its records rather than clobber a real
-      // transcript with the one we were about to fold in — but still move the
-      // selection, or the composer keeps queueing turns onto the retired key
-      // (the effect that called us does not re-fire).
-      if (s.messages[to] !== undefined || s.transcripts[to] !== undefined) return retarget
+      if (!moved) return retarget
       const move = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
         if (!(from in m)) return m
         const { [from]: value, ...rest } = m
         return { ...rest, [to]: value }
-      }
-      // The transcript watch is refcounted server-side per socket, so the old
-      // subscription has to be released explicitly — the server has no idea
-      // the two ids are the same thread.
-      if (watchedSessions.has(from)) {
-        watchedSessions.delete(from)
-        subscription?.send({ type: 'unwatch', session: from })
-        watchedSessions.add(to)
-        subscription?.send({ type: 'watch', session: to })
       }
       return {
         ...retarget,
@@ -364,7 +390,45 @@ export const useChat = create<ChatState>((set, get) => ({
         harnessBound: move(s.harnessBound),
         approvals: move(s.approvals),
       }
-    }),
+    })
+    return moved
+  },
+
+  adoptSessionKey: (canonical, previous) => {
+    const tracked = (id: string): boolean => {
+      const s = get()
+      return (
+        s.opened.includes(id) || s.messages[id] !== undefined || s.transcripts[id] !== undefined
+      )
+    }
+    const retire = new Set<string>()
+    // Rotation: the control plane names the predecessor outright, and its
+    // native half is unrelated to the successor's — nothing else can find it.
+    if (previous !== undefined && previous !== canonical && tracked(previous)) {
+      retire.add(previous)
+    }
+    // Adoption: a thread we opened under the BARE native id (a draft, or a
+    // legacy row) that the plane has now claimed. Every opened entry, not just
+    // the active one — a background draft left in `opened` under its bare id
+    // keeps catching bridge frames onto records no drawer row renders.
+    //
+    // Bare only, and that restriction is load-bearing. Two canonical threads
+    // can share a native half across stores (`claude-code:U` and
+    // `grok-build:U` — the collision `ownerKey` ranks for), and an ordinary
+    // `session-created` for one of them is NOT a claim on the other: folding
+    // grok's live transcript, queue and selection onto claude would go dark on
+    // a conversation the user is sitting in. A canonical predecessor is only
+    // ever retired when the control plane names it via `previousSessionId`.
+    const native = denRoomKey(canonical)
+    for (const key of get().opened) {
+      if (key !== canonical && key === native) retire.add(key)
+    }
+    const moved: string[] = []
+    for (const from of retire) {
+      if (get().rekey(from, canonical)) moved.push(from)
+    }
+    return moved
+  },
 
   addOptimisticUser: (sessionId, text, id) => {
     const msgId = id ?? `optim:${uuidv4()}`
@@ -498,15 +562,18 @@ export const useChat = create<ChatState>((set, get) => ({
     set((s) => ({
       opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
     }))
+    // Idempotent per key: the server refcounts subscriptions per socket, and
+    // this client has exactly one logical watcher per thread. A second `watch`
+    // for a key we already hold (a React remount after `rekey` changed
+    // `active`, StrictMode's double-effect) would take a ref that the single
+    // matching unmount never gives back — a permanent leak, not just waste.
+    if (watchedSessions.has(sessionId)) return
     watchedSessions.add(sessionId)
     subscription?.send({ type: 'watch', session: sessionId })
     // not-open sends are fine — the onStatus('open') hook re-sends the set
   },
 
-  unwatchTranscript: (sessionId) => {
-    watchedSessions.delete(sessionId)
-    subscription?.send({ type: 'unwatch', session: sessionId })
-  },
+  unwatchTranscript: (sessionId) => releaseWatch(sessionId),
 
   bindHarness: (sessionId, harnessId) =>
     set((s) => ({
@@ -619,10 +686,21 @@ export const useChat = create<ChatState>((set, get) => ({
         // suppression that stops a control-plane session folding every delta
         // twice). Transcript frames need no mapping: the server echoes the id
         // the client watched with, so they already arrive keyed on the thread.
+        //
+        // More than one opened entry can share a native half — mid-adoption
+        // (`opened` briefly holds both the bare draft and its canonical id),
+        // or two harnesses whose stores collide on a uuid. "First in `opened`"
+        // would then hand frames to the retired draft and leave the row the
+        // user is looking at silent, so rank instead: the active selection
+        // wins, then a canonical key over the bare room key, then the thread
+        // the control plane actually owns. Ties keep `opened` order.
         const ownerKey = (id: string): string => {
-          const opened = get().opened
-          if (opened.includes(id)) return id
-          return opened.find((key) => denRoomKey(key) === id) ?? id
+          const s = get()
+          const owners = s.opened.filter((key) => denRoomKey(key) === id)
+          if (owners.length <= 1) return owners[0] ?? id
+          const rank = (key: string): number =>
+            (key === s.active ? 4 : 0) + (key === id ? 0 : 2) + (s.harnessBound[key] ? 1 : 0)
+          return owners.reduce((best, key) => (rank(key) > rank(best) ? key : best))
         }
         if (frame.kind === 'sessions-dirty') {
           // a harness store changed somewhere — the drawer refetches on this

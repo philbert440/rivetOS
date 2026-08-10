@@ -171,14 +171,18 @@ export function chatItems(input: {
 }
 
 /**
- * The row that owns a thread key, tolerating a key that has since been
- * canonicalized (or rotated) underneath the selection.
+ * The row that owns a thread key, tolerating a key that has been canonicalized
+ * underneath the selection.
  *
- * A draft is a bare uuid until the plane adopts it; adoption replaces the row
- * with a canonical-keyed one, and rotation replaces the native half outright.
- * Both leave `active` pointing at a key no row carries any more — the exact
- * back-compat case a deep link into an old bare id also hits. Match on the
- * key first, then on the native half, which survives adoption.
+ * A draft is a bare uuid until the plane adopts it, and adoption replaces the
+ * row with a canonical-keyed one — leaving `active` on a key no row carries,
+ * the same back-compat case a stale selection or a pasted uuid hits. Match on
+ * the key first, then on the native half, which survives adoption.
+ *
+ * It does NOT survive ROTATION: a rotated session replaces the native half
+ * outright, so no amount of matching here can connect the old key to the new
+ * row. That is why rotation is driven by the registry event, which carries
+ * `previousSessionId` — see `useChat.adoptSessionKey`.
  */
 export function findChatItem(items: ChatItem[], key: string | undefined): ChatItem | undefined {
   if (key === undefined) return undefined

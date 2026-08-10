@@ -61,8 +61,21 @@ export function bareAliasOf(id: string): string | undefined {
   const i = id.indexOf(':')
   if (i <= 0 || i === id.length - 1) return undefined
   if (!(HARNESS_IDS as readonly string[]).includes(id.slice(0, i))) return undefined
-  return id.slice(i + 1)
+  const native = id.slice(i + 1)
+  // Collapse Claude's path-fallback capture key the same way den-server's
+  // `collapsePathFallback` (services/den-server/src/harness/alias.ts, reached
+  // through `denSessionRef`) does: `claude-code:<project-slug>/<uuid>` aliases
+  // to `<uuid>`, not to `<slug>/<uuid>`. The conversations store legitimately
+  // holds path-form keys (§ Legacy keys row 2), so two alias implementations
+  // disagreeing on that shape is a real miss, not a theoretical one. Kept as a
+  // replica rather than a shared import because @rivetos/core must not depend
+  // on den-server; `bareAliasOf` and `denSessionRef` share a test vector.
+  const slash = native.lastIndexOf('/')
+  if (slash >= 0 && UUID_RE.test(native.slice(slash + 1))) return native.slice(slash + 1)
+  return native
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const RING_MAX = 200
 const DEFAULT_WAIT_MS = 120_000
@@ -204,6 +217,50 @@ export function createGatewayChannel(opts?: {
     return s
   }
 
+  /**
+   * The ring entry an id addresses — the ONE rule reads and writes share.
+   *
+   * The bridge keys the ring on the den room (the native id); hub chat asks
+   * with the canonical `<harness-id>:<native>`, so a canonical id has to reach
+   * the native entry. Presence alone is the wrong test for "has its own":
+   * an EMPTY own entry must lose to a non-empty alias, or reads and writes
+   * disagree and the transcript forks. A process carrying a phantom
+   * `{ ring: [] }` under a canonical key — minted by an older build, or by a
+   * write that allocated before the den session existed — would otherwise
+   * self-heal on read (serving the native history) and then take the next
+   * write into the empty own ring, flipping every later read from the full
+   * history to a one-message ring. That is the original mint-shadow blocker
+   * in reverse.
+   *
+   * Order: own non-empty → alias non-empty → own. The fallback returns `id`
+   * whether or not an entry exists there; only writes may create one.
+   */
+  const ringKeyFor = (id: string): string => {
+    const own = sessions.get(id)
+    if (own && own.ring.length > 0) return id
+    const alias = bareAliasOf(id)
+    if (alias === undefined) return id
+    const aliased = sessions.get(alias)
+    if (!aliased || aliased.ring.length === 0) return id
+    // Serving the alias past an empty own entry: drop the phantom, so
+    // `GET /api/sessions` stops advertising a session with no messages while
+    // the real transcript lives under the native key.
+    if (own) sessions.delete(id)
+    return alias
+  }
+
+  /**
+   * Read a session's ring WITHOUT allocating one.
+   *
+   * `session()` is get-or-create, which used to be harmless: a bare GET minted
+   * a bare entry and the bridge writes bare, so the minted entry was the one
+   * future frames landed in. Under canonical keys it is a trap — a canonical
+   * GET arriving BEFORE the first frame (the hub's cold-open ordering, gated
+   * on `storeEmpty`) would mint an empty ring, make that key authoritative
+   * forever, and permanently shadow the native history behind it.
+   */
+  const readRing = (id: string): RingMessage[] => sessions.get(ringKeyFor(id))?.ring ?? []
+
   /** sessionId undefined = deliver to every subscriber (drawer signals). */
   const broadcast = (frame: SessionWsFrame, sessionId: string | undefined): void => {
     const payload = JSON.stringify(frame)
@@ -329,16 +386,19 @@ export function createGatewayChannel(opts?: {
 
           if (req.method === 'GET') {
             // Alias read: the ring is filed under the den room key the bridge
-            // saw. A canonical id with no ring of its own falls back to its
-            // native half rather than minting an empty one (§ Legacy keys).
-            const alias = sessions.has(id) ? undefined : bareAliasOf(id)
-            const aliased = alias === undefined ? undefined : sessions.get(alias)
-            const ring = aliased ? aliased.ring : session(id).ring
-            return json(res, 200, { messages: ring } satisfies SessionMessagesResponse)
+            // saw, so a canonical id falls back to its native half — and never
+            // allocates, or it would shadow that history (see `readRing`).
+            return json(res, 200, { messages: readRing(id) } satisfies SessionMessagesResponse)
           }
 
           if (req.method === 'POST') {
             if (!onMessageHandler) return json(res, 503, { error: 'channel not started' })
+            // One key for the whole turn — the inbound `channelId`, the ring
+            // append, the long-poll waiter and the error reply all have to
+            // agree, or the user turn and its answer land in different rings.
+            // A canonical id with no ring of its own joins the legacy
+            // bare-keyed one rather than forking a second transcript.
+            const key = ringKeyFor(id)
             const body = await readJsonBody(req).catch((err: unknown) => {
               json(res, (err as Error).message === 'body too large' ? 413 : 400, {
                 error: (err as Error).message,
@@ -360,7 +420,7 @@ export function createGatewayChannel(opts?: {
             const inbound: InboundMessage = {
               id: randomUUID(),
               userId: typeof body.userId === 'string' ? body.userId : 'gateway-user',
-              channelId: id,
+              channelId: key,
               chatType: 'direct',
               text: body.text,
               platform: 'gateway',
@@ -368,7 +428,7 @@ export function createGatewayChannel(opts?: {
               ...(thinking ? { metadata: { thinking } } : {}),
               timestamp: Math.floor(Date.now() / 1000),
             }
-            record(id, 'user', body.text)
+            record(key, 'user', body.text)
 
             const wait =
               url.searchParams.get('wait') === '1' || url.searchParams.get('wait') === 'true'
@@ -378,8 +438,8 @@ export function createGatewayChannel(opts?: {
                   const n = raw ? Number.parseInt(raw, 10) : NaN
                   const waitMs =
                     Number.isFinite(n) && n > 0 ? Math.min(n, MAX_WAIT_MS) : DEFAULT_WAIT_MS
-                  const list = waiters.get(id) ?? []
-                  waiters.set(id, list)
+                  const list = waiters.get(key) ?? []
+                  waiters.set(key, list)
                   const timer = setTimeout(() => {
                     const idx = list.indexOf(done)
                     if (idx >= 0) list.splice(idx, 1)
@@ -398,7 +458,7 @@ export function createGatewayChannel(opts?: {
             void onMessageHandler(inbound).catch((err: unknown) => {
               log.warn(`gateway turn failed: ${(err as Error).message}`)
               void channel.send({
-                channelId: id,
+                channelId: key,
                 text: `⚠️ turn failed: ${(err as Error).message}`,
               })
             })
@@ -529,10 +589,15 @@ export function createGatewayChannel(opts?: {
         input.thinking && (THINK as readonly string[]).includes(input.thinking)
           ? input.thinking
           : undefined
+      // Same one-key-per-turn discipline as the HTTP POST handler: this is the
+      // OpenAI-compat door onto the identical ring, so a canonical session id
+      // here must join the transcript the den bridge is filling rather than
+      // fork a second one.
+      const key = ringKeyFor(input.sessionId)
       const inbound: InboundMessage = {
         id: randomUUID(),
         userId: input.userId ?? 'gateway-user',
-        channelId: input.sessionId,
+        channelId: key,
         chatType: 'direct',
         text,
         platform: 'gateway',
@@ -542,9 +607,9 @@ export function createGatewayChannel(opts?: {
       }
       // Capture the user-message id so we can pick the *last* assistant after
       // this turn — not a StreamManager mid-turn partial that arrives first.
-      const userMsg = record(input.sessionId, 'user', text)
+      const userMsg = record(key, 'user', text)
 
-      const listener = input.onStream ? { session: input.sessionId, fn: input.onStream } : undefined
+      const listener = input.onStream ? { session: key, fn: input.onStream } : undefined
       if (listener) streamListeners.add(listener)
 
       const waitMs =
@@ -559,7 +624,7 @@ export function createGatewayChannel(opts?: {
       const turnDone = onMessageHandler(inbound).catch(async (err: unknown) => {
         log.warn(`gateway turn failed: ${(err as Error).message}`)
         await channel.send({
-          channelId: input.sessionId,
+          channelId: key,
           text: `⚠️ turn failed: ${(err as Error).message}`,
         })
       })
@@ -576,7 +641,9 @@ export function createGatewayChannel(opts?: {
           return { ok: false, status: 504, error: 'no reply before deadline' }
         }
 
-        const ring = session(input.sessionId).ring
+        // Non-allocating, like every other read: `record(key, …)` above
+        // guarantees the entry exists, so this is only belt for the invariant.
+        const ring = sessions.get(key)?.ring ?? []
         const userIdx = ring.findIndex((m) => m.id === userMsg.id)
         const after = userIdx >= 0 ? ring.slice(userIdx + 1) : ring
         // Final committed assistant wins over mid-turn partials / tool logs.

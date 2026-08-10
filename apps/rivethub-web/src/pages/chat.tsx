@@ -113,20 +113,29 @@ function persisted<T>(
  *
  * The read fallback above covers bare → canonical. This covers the case it
  * cannot: a driver ROTATING its native id, where old and new keys share
- * nothing. Lazy — only the conversation the user has open pays for it.
+ * nothing. Lazy — only threads the client actually touches pay for it.
+ *
+ * ONLY call this when the thread's records really moved. On a destination
+ * collision `rekey` deliberately leaves two live threads apart, and copying
+ * the retired one's custom name onto the survivor (then clearing it from the
+ * original) would swap two real conversations' metadata at exactly the moment
+ * the code decided they must not merge — hence the `moved` gate at every call
+ * site. Both stores are cleared, not just the name: a half-migrated key would
+ * resurrect stale settings through `persisted()`'s fallback.
  */
 function migrateSessionKey(baseUrl: string, from: string, to: string): void {
   const names = useSessionNames.getState()
   const name = names.byKey[storageKey(baseUrl, from)]
   if (name !== undefined && names.byKey[storageKey(baseUrl, to)] === undefined) {
     names.set(storageKey(baseUrl, to), name)
-    names.set(storageKey(baseUrl, from), '') // empty clears the override
   }
+  names.set(storageKey(baseUrl, from), '') // empty clears the override
   const settings = useChatSettings.getState()
   const prior = settings.byKey[storageKey(baseUrl, from)]
   if (prior !== undefined && settings.byKey[storageKey(baseUrl, to)] === undefined) {
     settings.set(storageKey(baseUrl, to), prior)
   }
+  settings.clear(storageKey(baseUrl, from))
 }
 
 export function ChatPage(): JSX.Element {
@@ -207,6 +216,17 @@ export function ChatPage(): JSX.Element {
     if (!connected || !hasDrivers) return
     const sub = useConnection.getState().gateway.watchHarnesses((event) => {
       if (event.type !== 'session-created' && event.type !== 'session-updated') return
+      // Identity changes land here first, and for a ROTATION this is the only
+      // place both halves are known: `previousSessionId` shares no native id
+      // with its successor, so nothing derivable from the drawer row could
+      // find the thread the user has open. Adoption is folded in for every
+      // opened thread, not just the active one — a background draft left in
+      // `opened` under its bare id keeps catching bridge frames onto records
+      // no drawer row renders.
+      const previous = event.type === 'session-updated' ? event.previousSessionId : undefined
+      for (const from of useChat.getState().adoptSessionKey(event.sessionId, previous)) {
+        migrateSessionKey(baseUrl, from, event.sessionId)
+      }
       queryClient.setQueryData<HarnessSessionSummary[]>(planeQueryKey, (prev) =>
         applyRegistryEventToPlaneSessions(prev, event),
       )
@@ -234,15 +254,17 @@ export function ChatPage(): JSX.Element {
   const activeItem = findChatItem(items, active)
   const gate = harnessGate(activeItem, descriptors)
 
-  // Lazy key migration. Adoption and rotation both retire the key the
-  // conversation's state is filed under; move it rather than strand the
-  // transcript, the inject queue and the persisted per-thread settings on an
-  // id no row carries any more.
+  // Reconciliation for the adoption the registry stream did not deliver — a
+  // missed event, a node with no registry stream, or a plane refetch that
+  // revealed the claim first. Rotation is NOT reachable from here (the new
+  // row shares no native half with the retired key, so `findChatItem` returns
+  // nothing); that path is wired to `session-updated` above.
   const activeKey = activeItem?.key
   useEffect(() => {
     if (active === undefined || activeKey === undefined || activeKey === active) return
-    useChat.getState().rekey(active, activeKey)
-    migrateSessionKey(baseUrl, active, activeKey)
+    // Only migrate persisted state when the records actually moved — see
+    // `migrateSessionKey`.
+    if (useChat.getState().rekey(active, activeKey)) migrateSessionKey(baseUrl, active, activeKey)
   }, [active, activeKey, baseUrl])
 
   if (!connected) return <NotConnected />
