@@ -181,11 +181,15 @@ object HarnessPlane {
      * unchanged status, leaves the pre-rotation row in the drawer until the
      * poll — a dead thread nothing on the node will ever speak for again.
      *
-     * One deviation from the hub's version: [harnessId] is re-derived from the
-     * rewritten canonical id when it parses. On Kotlin the field is a real
-     * member of the summary rather than a re-parse of the id at read time, and
-     * a row whose `harnessId` disagreed with its `sessionId` would resolve its
-     * capability gate against the wrong driver.
+     * One deviation from the hub's version: `harnessId` is re-derived from the
+     * rewritten canonical id. On Kotlin the field is a real member of the
+     * summary rather than a re-parse of the id at read time, and a row whose
+     * `harnessId` disagreed with its `sessionId` would resolve its capability
+     * gate against the wrong driver. For the same reason a [sessionId] that is
+     * not a canonical id at all is refused outright rather than written in:
+     * [rows] keys on the native half and would drop the row entirely, so a
+     * malformed frame would delete a live session from the drawer. Same rule as
+     * an unknown id — the read is the recovery path.
      */
     fun patchSessionUpdated(
         sessions: List<HarnessSessionSummary>,
@@ -193,6 +197,7 @@ object HarnessPlane {
         previousSessionId: String?,
         status: HarnessStatus,
     ): List<HarnessSessionSummary> {
+        val harnessId = HarnessSessionIds.parseOrNull(sessionId)?.harnessId ?: return sessions
         val lookFor = previousSessionId ?: sessionId
         val keep = sessions.indexOfFirst { it.sessionId == sessionId }
             .takeIf { it >= 0 }
@@ -203,11 +208,7 @@ object HarnessPlane {
         val patched = if (current.sessionId == sessionId && current.status == status) {
             current
         } else {
-            current.copy(
-                sessionId = sessionId,
-                harnessId = HarnessSessionIds.parseOrNull(sessionId)?.harnessId ?: current.harnessId,
-                status = status,
-            )
+            current.copy(sessionId = sessionId, harnessId = harnessId, status = status)
         }
 
         val next = ArrayList<HarnessSessionSummary>(sessions.size)

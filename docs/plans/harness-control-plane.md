@@ -1670,18 +1670,75 @@ now marks stale while keeping the rows on screen (the hub's
 `invalidateQueries`); dropping them outright is `clear()`, for a node switch,
 where the rows describe a different machine.
 
+**Three states, not two, and the drawer has to be able to reach all of them.**
+Rendering goes through `rowsFor(den)`, which emits an EMPTY list for a cleared
+or foreign-node cache rather than staying silent. A render half that only ever
+emitted real rows could never be told the rows went away: on a switch to a node
+that is down, the paging differ would keep its last generation and leave the
+previous machine's sessions on screen, tappable, for as long as that node
+stayed unreachable. "Nothing yet", "nothing here", and "someone else's rows"
+are different things.
+
+**Cache writes are ordered against node switches and against the fetch.**
+`clear()` bumps a generation and a read that began before the bump is discarded
+at publish: otherwise a slow read for the old node could land after the new
+node's read and strand the cache on a machine the user has left, which makes
+every subsequent merge refuse (`denUrl` mismatch) and kills the fast path until
+the next poll. The generation is sampled before the active node is read, not
+when the read takes its ticket — reading the setting suspends, so a switch
+landing in that window would otherwise let an attempt holding the *old* den
+publish under the *new* generation. A refused publish returns nothing to the
+caller rather than the old node's rows, since a caller resolving a capability
+gate off the return would be resolving it for a machine it is not looking at;
+an accepted one returns the published value, mid-read frames included. The
+cache lock is also never held across the HTTP read —
+the registry pump takes that lock for every frame, so a slow refresh would park
+the fast path behind exactly the round trip it exists to avoid while frames
+piled into an unbounded channel. The invariant that a frame arriving mid-fetch
+is not clobbered by that fetch is therefore enforced at publish rather than by
+exclusion: such frames are recorded and re-applied on top of the answer. The
+cost is that two callers arriving during one read may both hit the node, which
+is cheaper than letting a dead node's 25s timeout stall the node the user just
+switched to; overlapping reads of the same node converge, and there is a test
+holding two of them open at once to say so.
+
+Replay starts at the read's own ticket index, and that bound is an ordering
+argument rather than an optimization: a frame recorded before a read's ticket
+was committed on the node before that read's GET went out, so the answer
+already carries it. Replaying every recorded frame instead would re-apply state
+a fresher answer had moved past — an `active` frame resurrected over a fetched
+`ended`. The lock is a plain monitor, not a coroutine `Mutex`, because no
+critical section here suspends and the read accounting must be released on a
+path that cannot fail: the drawer's fetch half lives under `flatMapLatest`, so
+every node switch and poll tick cancels a read mid-flight, and a release that
+could itself be cancelled would leak the in-flight count permanently — after
+which every frame is buffered for a replay that never comes.
+
 **The tail gets the same treatment a session tail does.** `HarnessRegistryWatch`
 follows `activeNodeDenUrl`, drains frames through one channel so a create and
 the update behind it cannot land out of order, and forces a full re-read on
 *every* socket open — first connect and reconnect alike — because the registry
 stream is at-most-once from attach time exactly like the session stream, and
-anything published during a gap is gone. A node with no registry route answers
-404 on the upgrade and a gated one 401; both are terminal, the socket stops
-itself, and the poll carries the drawer as before, so there is nothing to gate
-on up front. The one thing that needs a nudge is a bearer pasted *after* such a
-refusal: the credential is captured when the socket is built and the refusal
-deliberately does not retry, so the switcher's token field re-opens the tail
-(`ChatService.onNodeCredentialChanged`).
+anything published during a gap is gone. One frame that trips the merge path is
+logged and skipped rather than allowed to kill the pump, the same rule the
+socket layer applies to a frame it cannot parse. A node with no registry route
+answers 404 on the upgrade and a gated one 401; both are terminal, the socket
+stops itself, and the poll carries the drawer as before, so there is nothing to
+gate on up front. A terminal refusal also marks the tail dead, so `retarget` of
+the same node re-subscribes instead of no-opping against a stream that will
+never speak again.
+
+The watch has two writers, not one — the active-node collector and a pasted
+bearer — and both suspend partway through building a gateway, so every entry
+point is serialized on a mutex. `rebind` reads the target after acquiring it
+rather than capturing it first: a credential change that raced a node switch
+re-opens the node that is actually active instead of resurrecting the one it
+left. Unserialized, the two could orphan a live socket (never closed, backing
+off forever, doubling every refresh) or leave the subscription pointing at a
+channel the other writer had already closed — a tail that looks attached and
+delivers nothing. The bearer needs the rebind at all because it is captured
+when the socket is built and a refused handshake deliberately does not retry
+(`ChatService.onNodeCredentialChanged`, which only fires for the active node).
 
 Tests: the pure merge rules extend
 `app/src/test/java/dev/rivet/app/data/harness/HarnessPlaneTest.kt` (the Kotlin
@@ -1691,6 +1748,17 @@ every HTTP call answered in-process — so "merged without a refetch" is a
 request count, not a claim — plus shape parity against a real fetch, the
 refetch/duplicate race, in-place status, the rotation re-key, the cross-node
 and unknown-id refusals, and the reconciling read that heals a phantom row.
+The ordering rules have tests that hold a read open inside the transport (a
+node switch outrunning a read, a frame landing mid-read) and one that holds an
+attach open inside its suspension point while a switch and a rebind queue
+behind it. Every wait in those is bounded: the regressions they guard render by
+*not* emitting, and an unbounded wait would hang the suite instead of naming
+the fault.
+
+One gap left open on purpose: a failing first fetch after a node switch leaves
+the drawer empty until the next 30s tick. With the render fix that is an honest
+empty state rather than another machine's rows, and a second retry ladder
+beside the poll buys little.
 
 ---
 
