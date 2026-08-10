@@ -395,20 +395,52 @@ describe('rekey', () => {
     expect(s.live[KEY]).toBeUndefined()
   })
 
-  it('re-subscribes the transcript watch under the new key', () => {
+  it('releases the retired watch and leaves the new subscription to the view', () => {
+    // The server refcounts per socket. `rekey` changes `active`, which
+    // remounts `ActiveSession` under the new key, and THAT mount subscribes —
+    // so rekey must not also watch `to`, or the pair would take two refs and
+    // the single unmount would give back only one.
     socket.sent = []
     useChat.getState().connect('http://gateway.test|')
     socket.sent = []
+    useChat.getState().setActive(KEY)
     useChat.getState().watchTranscript(KEY)
     useChat.getState().rekey(KEY, SID)
     expect(socket.sent).toEqual([
       { type: 'watch', session: KEY },
       { type: 'unwatch', session: KEY },
+    ])
+
+    // the remounted view subscribes under the new key — exactly once
+    useChat.getState().watchTranscript(SID)
+    useChat.getState().watchTranscript(SID) // StrictMode double-effect / re-render
+    expect(socket.sent).toEqual([
+      { type: 'watch', session: KEY },
+      { type: 'unwatch', session: KEY },
       { type: 'watch', session: SID },
     ])
-    // and a frame under the new key now lands
-    socket.onFrame?.({ kind: 'stream', session: SID, event: { type: 'text', content: 'after' } })
-    expect(useChat.getState().live[SID]?.text).toBe('after')
+
+    // …and one unmount fully releases it (no dangling ref)
+    useChat.getState().unwatchTranscript(SID)
+    useChat.getState().unwatchTranscript(SID) // idempotent
+    expect(socket.sent.filter((f) => (f as { type: string }).type === 'unwatch')).toEqual([
+      { type: 'unwatch', session: KEY },
+      { type: 'unwatch', session: SID },
+    ])
+  })
+
+  it('releases the retired watch on the collision path too', () => {
+    socket.sent = []
+    useChat.getState().connect('http://gateway.test|')
+    socket.sent = []
+    const chat = useChat.getState()
+    chat.seed(SID, [{ id: 'b', sessionId: SID, role: 'user', text: 'to', ts: 1 }])
+    chat.watchTranscript(KEY)
+    expect(useChat.getState().rekey(KEY, SID)).toBe(false) // records stayed put
+    expect(socket.sent).toEqual([
+      { type: 'watch', session: KEY },
+      { type: 'unwatch', session: KEY },
+    ])
   })
 
   it('is a no-op onto itself', () => {
@@ -442,5 +474,152 @@ describe('rekey', () => {
     expect(s.active).toBe(SID)
     expect(s.opened).toEqual([SID])
     expect(s.drafts).toEqual([])
+  })
+})
+
+describe('adoptSessionKey (registry-driven identity changes)', () => {
+  const OTHER_NATIVE = 'b2c3d4e5-2222-4333-8444-555566667777'
+  const ROTATED = `claude-code:${OTHER_NATIVE}` as SessionId
+
+  beforeEach(() => {
+    socket.onFrame = undefined
+    socket.onStatus = undefined
+    socket.sent = []
+    useChat.getState().connect('http://gateway.test|')
+  })
+
+  it('follows a ROTATION, which nothing derivable from the new id could find', () => {
+    // `previousSessionId` shares no native half with its successor — this is
+    // the whole reason the rotation path has to be driven by the registry
+    // event rather than by matching drawer rows.
+    const chat = useChat.getState()
+    chat.addOptimisticUser(SID, 'mid-conversation')
+    chat.setActive(SID)
+    chat.watchTranscript(SID)
+    socket.sent = []
+
+    const moved = useChat.getState().adoptSessionKey(ROTATED, SID)
+
+    expect(moved).toEqual([SID])
+    const s = useChat.getState()
+    expect(s.active).toBe(ROTATED)
+    expect(s.opened).toEqual([ROTATED])
+    expect(s.messages[ROTATED]?.map((m) => m.text)).toEqual(['mid-conversation'])
+    expect(s.messages[SID]).toBeUndefined()
+    expect(socket.sent).toEqual([{ type: 'unwatch', session: SID }])
+  })
+
+  it('adopts a NON-ACTIVE opened draft, not just the active thread', () => {
+    // Otherwise both shapes sit in `opened`, and bridge frames keep folding
+    // into records keyed by an id no drawer row renders.
+    const chat = useChat.getState()
+    chat.addDraft(KEY) // opened, but never selected
+    chat.addOptimisticUser(KEY, 'background turn')
+    chat.setActive(OTHER_NATIVE)
+
+    const moved = useChat.getState().adoptSessionKey(SID)
+
+    expect(moved).toEqual([KEY])
+    const s = useChat.getState()
+    expect(s.opened).toEqual([SID, OTHER_NATIVE])
+    expect(s.active).toBe(OTHER_NATIVE) // untouched — it was not the adopted one
+    expect(s.messages[SID]?.map((m) => m.text)).toEqual(['background turn'])
+    expect(s.drafts).toEqual([])
+  })
+
+  it('never adopts another harness sharing the native half', () => {
+    // The dual-store collision `ownerKey` ranks for, seen by the adoption
+    // sweep. A `session-created` for claude is the plane claiming CLAUDE's
+    // row — it says nothing about grok. Folding grok's live thread onto it
+    // would move a transcript, an inject queue and the selection out from
+    // under a conversation the user is sitting in, and migrate its name too.
+    const grok = `grok-build:${KEY}` as SessionId
+    const chat = useChat.getState()
+    chat.setActive(grok)
+    chat.addOptimisticUser(grok, 'grok turn')
+    chat.setActive(SID)
+    chat.addOptimisticUser(SID, 'claude turn')
+
+    expect(useChat.getState().adoptSessionKey(SID)).toEqual([])
+
+    const s = useChat.getState()
+    expect(s.messages[grok]?.map((m) => m.text)).toEqual(['grok turn'])
+    expect(s.messages[SID]?.map((m) => m.text)).toEqual(['claude turn'])
+    expect(s.opened).toEqual([grok, SID])
+    expect(s.active).toBe(SID)
+  })
+
+  it('still adopts the BARE twin while leaving a foreign canonical alone', () => {
+    const grok = `grok-build:${KEY}` as SessionId
+    const chat = useChat.getState()
+    chat.setActive(grok)
+    chat.addOptimisticUser(grok, 'grok turn')
+    chat.addDraft(KEY) // the bare draft — the real adoption candidate
+    chat.addOptimisticUser(KEY, 'draft turn')
+
+    expect(useChat.getState().adoptSessionKey(SID)).toEqual([KEY])
+
+    const s = useChat.getState()
+    expect(s.messages[SID]?.map((m) => m.text)).toEqual(['draft turn'])
+    expect(s.messages[grok]?.map((m) => m.text)).toEqual(['grok turn'])
+    expect(s.opened).toEqual([grok, SID])
+  })
+
+  it('ignores an identity change for a thread this client never opened', () => {
+    expect(useChat.getState().adoptSessionKey(SID, ROTATED)).toEqual([])
+    expect(useChat.getState().opened).toEqual([])
+    expect(useChat.getState().active).toBeUndefined()
+  })
+})
+
+describe('ownerKey affinity', () => {
+  beforeEach(() => {
+    socket.onFrame = undefined
+    socket.onStatus = undefined
+    socket.sent = []
+    useChat.getState().connect('http://gateway.test|')
+  })
+
+  const stream = (session: string, content: string): void => {
+    socket.onFrame?.({ kind: 'stream', session, event: { type: 'text', content } })
+  }
+
+  it('prefers the active canonical thread over a stale bare twin', () => {
+    // Mid-adoption `opened` briefly holds both shapes. "First in opened" would
+    // hand the frame to the retired draft and leave the row the user is
+    // actually looking at silent.
+    const chat = useChat.getState()
+    chat.addDraft(KEY) // bare, opened first
+    chat.setActive(SID) // canonical, opened second and selected
+    stream(KEY, 'live')
+    expect(useChat.getState().live[SID]?.text).toBe('live')
+    expect(useChat.getState().live[KEY]).toBeUndefined()
+  })
+
+  it('prefers canonical over bare even when neither is selected', () => {
+    const chat = useChat.getState()
+    chat.addDraft(KEY)
+    chat.watchTranscript(SID) // opens SID without selecting it
+    chat.setActive('unrelated-session')
+    stream(KEY, 'live')
+    expect(useChat.getState().live[SID]?.text).toBe('live')
+    expect(useChat.getState().live[KEY]).toBeUndefined()
+  })
+
+  it('breaks a two-harness native collision on control-plane ownership', () => {
+    // Two canonical threads can share a native id across stores; the one the
+    // control plane owns is the one the den room belongs to.
+    const grok = `grok-build:${KEY}` as SessionId
+    const chat = useChat.getState()
+    chat.setActive(SID) // claude first in `opened`, unbound
+    chat.setActive('unrelated-session') // deselect so `active` cannot decide it
+    chat.watchTranscript(grok)
+    chat.bindHarness(grok, 'grok-build')
+    stream(KEY, 'live')
+    // Discriminating assertion: claude is FIRST in `opened` and unbound, so
+    // an unranked "first match wins" would have folded 'live' onto it. Ranking
+    // routes the frame to grok instead, where `harnessBound` suppresses it.
+    expect(useChat.getState().live[SID]).toBeUndefined()
+    expect(useChat.getState().live[grok]).toBeUndefined()
   })
 })

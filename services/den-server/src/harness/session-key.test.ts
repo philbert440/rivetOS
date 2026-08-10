@@ -44,10 +44,19 @@ describe('denSessionRef', () => {
       command: 'kimi',
     })
     expect(denSessionRef(`hermes:${UUID}`)).toEqual({ native: UUID, command: 'hermes' })
-    // path-fallback still names claude, and still collapses to the uuid
+    // Path-fallback still names claude, and still collapses to the uuid.
+    // SHARED VECTOR: `packages/core/src/domain/gateway-channel.test.ts`
+    // asserts `bareAliasOf` resolves this exact input to the same native id —
+    // the two alias implementations must not drift on a documented legacy
+    // shape (§ Legacy keys row 2).
     expect(denSessionRef(`claude-code:-home-rivet-proj/${UUID}`)).toEqual({
       native: UUID,
       command: 'claude',
+    })
+    // a native id that merely contains `/` is opaque, not a path fallback
+    expect(denSessionRef('hermes:some/other')).toEqual({
+      native: 'some/other',
+      command: 'hermes',
     })
   })
 

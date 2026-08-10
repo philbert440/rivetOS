@@ -29,6 +29,7 @@ import {
   resolveHarnessStore,
   type HarnessStoreRef,
 } from './harness-sessions.js'
+import { denSessionRef } from '../harness/session-key.js'
 
 /** Quiet window after a store change before reparsing — harnesses append in
  *  bursts (one line per content block). */
@@ -293,7 +294,14 @@ export function createTranscriptWatcher(
 
   return {
     watch(session: string): void {
-      if (closed || !session || session.includes('/') || session.includes('..')) return
+      if (closed) return
+      // Guard the RESOLVED key, not the raw one: the store readers accept
+      // Claude's path-fallback capture key (`claude-code:<slug>/<uuid>`, which
+      // collapses to the uuid), so screening the raw string for `/` would
+      // silently ignore a shape they would happily serve. The subscription key
+      // stays the client's verbatim id — frames echo what was asked for.
+      const { native } = denSessionRef(session)
+      if (!native || native.includes('/') || native.includes('..')) return
       const existing = watched.get(session)
       if (existing) {
         existing.refs += 1

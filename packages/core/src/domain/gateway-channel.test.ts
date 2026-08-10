@@ -9,6 +9,7 @@ import { WebSocket } from 'ws'
 import type { SessionWsFrame } from '@rivetos/types'
 import { describe, it, expect, afterEach } from 'vitest'
 import {
+  bareAliasOf,
   createGatewayChannel,
   type GatewayChannelHandle,
 } from './gateway-channel.js'
@@ -445,6 +446,182 @@ describe('emitFrame (seamless-modes push)', () => {
       sessions: { id: string }[]
     }
     expect(sessions.map((s) => s.id)).toEqual([uuid])
+  })
+
+  it('a canonical GET before the first frame does not shadow the native ring', async () => {
+    // The hub's cold-open ordering: `storeEmpty` fires the ring backfill BEFORE
+    // any bridge frame exists. A read that allocated here would make
+    // `sessions.has(canonical)` true forever, the alias would never be
+    // consulted again, and the real transcript would be invisible for the life
+    // of the process.
+    const { gw, base } = await start()
+    const uuid = 'a1b2c3d4-1111-4222-8333-444455556666'
+    const key = encodeURIComponent(`claude-code:${uuid}`)
+
+    const cold = (await (await fetch(`${base}/api/sessions/${key}/messages`)).json()) as {
+      messages: unknown[]
+    }
+    expect(cold.messages).toEqual([])
+    // nothing was allocated — no phantom in the session list
+    const empty = (await (await fetch(`${base}/api/sessions`)).json()) as {
+      sessions: { id: string }[]
+    }
+    expect(empty.sessions).toEqual([])
+
+    // the bridge now fills the ring under the den room key…
+    gw.emitFrame({ kind: 'message', id: 'm1', sessionId: uuid, role: 'user', text: 'hi', ts: 1 })
+    await new Promise((r) => setTimeout(r, 20))
+
+    // …and the SAME canonical read now finds it through the alias
+    const warm = (await (await fetch(`${base}/api/sessions/${key}/messages`)).json()) as {
+      messages: { id: string }[]
+    }
+    expect(warm.messages.map((m) => m.id)).toEqual(['m1'])
+    const after = (await (await fetch(`${base}/api/sessions`)).json()) as {
+      sessions: { id: string }[]
+    }
+    expect(after.sessions.map((s) => s.id)).toEqual([uuid])
+  })
+
+  it('a canonical POST joins the native ring instead of forking a second one', async () => {
+    // Split-brain guard: the user turn, the assistant reply and the long-poll
+    // waiter all have to land in the ring the den bridge is already filling.
+    const { gw, base } = await start()
+    const uuid = 'a1b2c3d4-1111-4222-8333-444455556666'
+    gw.emitFrame({ kind: 'message', id: 'm0', sessionId: uuid, role: 'user', text: 'earlier', ts: 1 })
+    await new Promise((r) => setTimeout(r, 20))
+
+    const res = await post(base, encodeURIComponent(`claude-code:${uuid}`), { text: 'hello' })
+    expect(res.status).toBe(202)
+    await new Promise((r) => setTimeout(r, 60))
+
+    // one ring, in order: the bridged turn, the posted turn, its reply
+    const { sessions } = (await (await fetch(`${base}/api/sessions`)).json()) as {
+      sessions: { id: string }[]
+    }
+    expect(sessions.map((s) => s.id)).toEqual([uuid])
+    const { messages } = (await (
+      await fetch(`${base}/api/sessions/${encodeURIComponent(`claude-code:${uuid}`)}/messages`)
+    ).json()) as { messages: { role: string; text: string }[] }
+    expect(messages.map((m) => `${m.role}:${m.text}`)).toEqual([
+      'user:earlier',
+      'user:hello',
+      'assistant:echo: hello',
+    ])
+  })
+
+  it('a canonical POST after a self-healed GET still joins the native ring', async () => {
+    // Reads and writes have to agree on which entry an id addresses. When they
+    // disagreed, a canonical GET self-healed to the native history and the
+    // NEXT canonical POST wrote somewhere else, flipping every later read from
+    // the full transcript to a one-message ring — the original mint-shadow in
+    // reverse.
+    const { gw, base } = await start()
+    const uuid = 'a1b2c3d4-1111-4222-8333-444455556666'
+    const key = encodeURIComponent(`claude-code:${uuid}`)
+    gw.emitFrame({ kind: 'message', id: 'm0', sessionId: uuid, role: 'user', text: 'bridged', ts: 1 })
+    await new Promise((r) => setTimeout(r, 20))
+
+    // read first (self-heals through the alias)…
+    const healed = (await (await fetch(`${base}/api/sessions/${key}/messages`)).json()) as {
+      messages: { text: string }[]
+    }
+    expect(healed.messages.map((m) => m.text)).toEqual(['bridged'])
+
+    // …then write, and read back: one ring, history intact
+    await post(base, key, { text: 'hello' })
+    await new Promise((r) => setTimeout(r, 60))
+    const after = (await (await fetch(`${base}/api/sessions/${key}/messages`)).json()) as {
+      messages: { role: string; text: string }[]
+    }
+    expect(after.messages.map((m) => `${m.role}:${m.text}`)).toEqual([
+      'user:bridged',
+      'user:hello',
+      'assistant:echo: hello',
+    ])
+    const { sessions } = (await (await fetch(`${base}/api/sessions`)).json()) as {
+      sessions: { id: string }[]
+    }
+    expect(sessions.map((s) => s.id)).toEqual([uuid]) // no phantom canonical row
+  })
+
+  it('a rejected POST allocates nothing', async () => {
+    // `ringKeyFor` resolves before the body is validated, so it must not be a
+    // get-or-create — a 400 that left an entry behind would be a phantom in
+    // the listing and, worse, an empty own ring for later writes to prefer.
+    const { base } = await start()
+    const canonical = `claude-code:a1b2c3d4-1111-4222-8333-444455556666`
+    expect((await post(base, encodeURIComponent(canonical), { text: '  ' })).status).toBe(400)
+    const { sessions } = (await (await fetch(`${base}/api/sessions`)).json()) as {
+      sessions: unknown[]
+    }
+    expect(sessions).toEqual([])
+  })
+
+  it('submitTurn resolves the same key the HTTP POST would', async () => {
+    // The OpenAI-compat surface is the same ring by another door; a canonical
+    // session id there has to join the bridged transcript, not fork one.
+    const { gw, base } = await start()
+    const uuid = 'c3d4e5f6-3333-4444-8555-666677778888'
+    gw.emitFrame({ kind: 'message', id: 'm0', sessionId: uuid, role: 'user', text: 'bridged', ts: 1 })
+    await new Promise((r) => setTimeout(r, 20))
+
+    const result = await gw.submitTurn({ sessionId: `claude-code:${uuid}`, text: 'via compat' })
+    expect(result.ok).toBe(true)
+
+    const { sessions } = (await (await fetch(`${base}/api/sessions`)).json()) as {
+      sessions: { id: string }[]
+    }
+    expect(sessions.map((s) => s.id)).toEqual([uuid]) // one ring, native-keyed
+    const { messages } = (await (
+      await fetch(`${base}/api/sessions/${encodeURIComponent(`claude-code:${uuid}`)}/messages`)
+    ).json()) as { messages: { role: string; text: string }[] }
+    expect(messages.map((m) => `${m.role}:${m.text}`)).toEqual([
+      'user:bridged',
+      'user:via compat',
+      'assistant:echo: via compat',
+    ])
+  })
+
+  it('a canonical POST for a session nobody has seen still opens its own ring', async () => {
+    // No native entry to join — the canonical id is the session, and a write
+    // is allowed to allocate (only reads are not).
+    const { base } = await start()
+    const uuid = 'b2c3d4e5-2222-4333-8444-555566667777'
+    const canonical = `claude-code:${uuid}`
+    await post(base, encodeURIComponent(canonical), { text: 'fresh' })
+    await new Promise((r) => setTimeout(r, 60))
+    const { sessions } = (await (await fetch(`${base}/api/sessions`)).json()) as {
+      sessions: { id: string }[]
+    }
+    expect(sessions.map((s) => s.id)).toEqual([canonical])
+  })
+})
+
+describe('bareAliasOf', () => {
+  const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
+
+  it('aliases a canonical id to its native half', () => {
+    expect(bareAliasOf(`claude-code:${UUID}`)).toBe(UUID)
+    expect(bareAliasOf('kimi-code:session_abc')).toBe('session_abc')
+    expect(bareAliasOf('hermes:a:b:c')).toBe('a:b:c') // first colon only
+  })
+
+  it("collapses Claude's path-fallback form, matching den-server's denSessionRef", () => {
+    // Shared vector: `services/den-server/src/harness/session-key.test.ts`
+    // asserts the same input resolves to the same native id there. Two alias
+    // implementations that disagree on a documented legacy shape would send
+    // the gateway looking for a row the den edges would have found.
+    expect(bareAliasOf(`claude-code:-home-rivet-proj/${UUID}`)).toBe(UUID)
+    // a native id that merely contains `/` is opaque, not a path fallback
+    expect(bareAliasOf('hermes:some/other')).toBe('some/other')
+  })
+
+  it('has no alias for a bare id or a foreign namespace', () => {
+    expect(bareAliasOf(UUID)).toBeUndefined()
+    expect(bareAliasOf('task:42')).toBeUndefined()
+    expect(bareAliasOf('claude:nickname')).toBeUndefined()
+    expect(bareAliasOf('den-pty-1a2b3c4d')).toBeUndefined()
   })
 })
 
