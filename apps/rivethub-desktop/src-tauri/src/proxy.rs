@@ -7,7 +7,19 @@
 //
 // Device identity lives in the app config dir (see identity_dir): device.crt,
 // device.key (a rivet-ca.sh issue-client leaf) and ca.pem (the CA chain).
-// Missing material is a per-call soft error — http nodes keep working.
+// Missing material is a per-call soft error — http nodes keep working — and
+// is re-read on every call so enrolling mid-run needs no relaunch.
+//
+// Known trade-offs, on purpose:
+// - The pipe forwards bytes verbatim, so the gateway sees Host/Origin
+//   `127.0.0.1:<port>`. The den is Host-agnostic and mTLS means no cookies;
+//   if cookie auth ever appears, note that all piped gateways share one
+//   loopback cookie jar (host-scoped, not port-scoped).
+// - The listener is an unauthenticated loopback socket: any same-user local
+//   process can ride the device identity — the same trust domain as the key
+//   file on disk beside it.
+// - `.mesh` names resolve at connect time with no pinning; the LAN resolver
+//   is trusted (certificate verification still gates the far end).
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -24,9 +36,9 @@ use tokio_rustls::TlsConnector;
 pub struct ProxyState {
     /// target base url (normalized, e.g. "https://192.0.2.7:5174") → loopback port
     ports: Mutex<HashMap<String, u16>>,
-    /// Built once from the identity dir on first use; Err is remembered too so
-    /// a missing identity doesn't re-read the disk per call.
-    connector: Mutex<Option<Result<TlsConnector, String>>>,
+    /// Only a WORKING connector is cached — failures (no identity yet) fall
+    /// through to a fresh disk read next call, so enrollment recovers live.
+    connector: Mutex<Option<TlsConnector>>,
     identity_dir: PathBuf,
 }
 
@@ -48,9 +60,15 @@ fn host_allowed(host: &str) -> bool {
     }
     match host.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => {
-            v4.is_private() || v4.is_loopback() || v4.is_link_local()
+            let o = v4.octets();
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                // CGNAT 100.64/10 — used by some WG overlays
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
         }
-        Ok(IpAddr::V6(v6)) => v6.is_loopback(),
+        // v6: loopback + unique-local fd00::/7 (WG overlay addressing)
+        Ok(IpAddr::V6(v6)) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
         Err(_) => false,
     }
 }
@@ -85,6 +103,10 @@ fn build_connector(dir: &PathBuf) -> Result<TlsConnector, String> {
             .map_err(|e| format!("{}: {e}", ca_path.display()))?;
     }
 
+    // No ALPN on purpose: the webview speaks HTTP/1.1 into the pipe, and a
+    // client offering no ALPN gets the gateway's http/1.1 default (Node
+    // https server). IP targets verify against IP SANs (no SNI) — issue-node
+    // leaves must carry every literal address the roster dials.
     let config = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_client_auth_cert(certs, key)
@@ -101,7 +123,9 @@ fn parse_target(target: &str) -> Result<(String, u16), String> {
     if rest.contains('/') {
         return Err(format!("gateway base must not carry a path: {target}"));
     }
-    // v6 literals aren't used on this LAN; keep the parser honest anyway.
+    // Bracketed v6 literals ([fd00::1]:5174), userinfo, and query forms all — generic RFC4193 example, secret-scan-allow
+    // fall through to host_allowed/ServerName and FAIL CLOSED — only the
+    // plain host[:port] shapes the roster actually uses are accepted.
     let (host, port) = match rest.rsplit_once(':') {
         Some((h, p)) if !h.contains(':') => {
             (h.to_string(), p.parse::<u16>().map_err(|_| format!("bad port in {target}"))?)
@@ -144,16 +168,27 @@ pub async fn proxy_port(state: &ProxyState, target: String) -> Result<u16, Strin
     let (host, port) = parse_target(&target)?;
     let key = format!("https://{host}:{port}");
 
-    if let Some(p) = state.ports.lock().await.get(&key) {
+    // The ports lock is held across check + bind + spawn + insert: multiple
+    // windows (each webview has its own JS-side cache) can race the same
+    // target, and a lost race would leak an orphaned listener that still
+    // serves the device identity on an unrecorded port.
+    let mut ports = state.ports.lock().await;
+    if let Some(p) = ports.get(&key) {
         return Ok(*p);
     }
 
     let connector = {
         let mut slot = state.connector.lock().await;
-        if slot.is_none() {
-            *slot = Some(build_connector(&state.identity_dir));
+        match slot.as_ref() {
+            Some(c) => c.clone(),
+            None => {
+                // Failures are NOT cached: enrolling identity mid-run must
+                // start working on the next call, not after a relaunch.
+                let c = build_connector(&state.identity_dir)?;
+                *slot = Some(c.clone());
+                c
+            }
         }
-        slot.as_ref().expect("just filled").clone()?
     };
 
     let listener = TcpListener::bind((IpAddr::from([127, 0, 0, 1]), 0))
@@ -163,14 +198,24 @@ pub async fn proxy_port(state: &ProxyState, target: String) -> Result<u16, Strin
 
     tauri::async_runtime::spawn(async move {
         loop {
-            let Ok((client, _)) = listener.accept().await else { break };
-            let connector = connector.clone();
-            let host = host.clone();
-            tauri::async_runtime::spawn(pipe(client, connector, host, port));
+            match listener.accept().await {
+                Ok((client, _)) => {
+                    let connector = connector.clone();
+                    let host = host.clone();
+                    tauri::async_runtime::spawn(pipe(client, connector, host, port));
+                }
+                Err(e) => {
+                    // Transient (EMFILE, ECONNABORTED…): don't kill the pipe —
+                    // the port stays cached web-side, a dead loop would brick
+                    // this gateway until relaunch. Back off briefly and retry.
+                    eprintln!("RivetHub mtls-proxy: accept on :{}: {e}", local.port());
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+            }
         }
     });
 
-    state.ports.lock().await.insert(key, local.port());
+    ports.insert(key, local.port());
     Ok(local.port())
 }
 
@@ -184,9 +229,13 @@ mod tests {
         assert!(host_allowed("10.0.0.5"));
         assert!(host_allowed("172.16.9.9")); // generic RFC1918 example, not a host — secret-scan-allow
         assert!(host_allowed("127.0.0.1"));
+        assert!(host_allowed("100.64.0.7")); // CGNAT (WG overlay)
+        assert!(host_allowed("fd00::7")); // v6 ULA (WG overlay) — generic RFC4193 example, secret-scan-allow
         assert!(host_allowed("ct112.mesh"));
         assert!(host_allowed("localhost"));
         assert!(!host_allowed("8.8.8.8"));
+        assert!(!host_allowed("100.128.0.1")); // past CGNAT /10
+        assert!(!host_allowed("2001:db8::1"));
         assert!(!host_allowed("example.com"));
     }
 

@@ -15,6 +15,10 @@ const resolved = new Map<string, Promise<string>>()
 
 /** The base URL transport should actually dial for `baseUrl`. */
 export function transportBase(baseUrl: string): Promise<string> {
+  // Detection rides the injected global, which exists only because the shell
+  // sets `app.withGlobalTauri: true` in tauri.conf.json — if that flag ever
+  // goes away this must switch to importing @tauri-apps/api directly, or the
+  // bridge silently fails open to direct (unauthenticatable) https.
   const tauri = (window as { __TAURI__?: TauriGlobal }).__TAURI__
   if (!tauri || !baseUrl.startsWith('https://')) return Promise.resolve(baseUrl)
   let p = resolved.get(baseUrl)
