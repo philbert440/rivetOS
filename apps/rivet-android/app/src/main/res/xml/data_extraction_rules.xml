@@ -11,10 +11,22 @@
     <exclude
       domain="sharedpref"
       path="rivet_node_tokens.xml" />
+    <exclude
+      domain="file"
+      path="device.p12" />
+    <exclude
+      domain="sharedpref"
+      path="rivet_device_identity.xml" />
   </cloud-backup>
   <device-transfer>
     <exclude
       domain="sharedpref"
       path="rivet_node_tokens.xml" />
+    <exclude
+      domain="file"
+      path="device.p12" />
+    <exclude
+      domain="sharedpref"
+      path="rivet_device_identity.xml" />
   </device-transfer>
 </data-extraction-rules>

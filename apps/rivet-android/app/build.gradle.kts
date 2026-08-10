@@ -252,6 +252,9 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okhttp.sse)
 
+    // EncryptedSharedPreferences for the device mTLS passphrase vault
+    implementation(libs.androidx.security.crypto)
+
     // ktor client
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.okhttp)

@@ -15,4 +15,17 @@
   <exclude
     domain="sharedpref"
     path="rivet_node_tokens.xml" />
+  <!-- Device client PKCS#12 + encrypted passphrase vault for gateway mTLS. -->
+  <exclude
+    domain="file"
+    path="device.p12" />
+  <exclude
+    domain="sharedpref"
+    path="rivet_device_identity.xml" />
+  <exclude
+    domain="sharedpref"
+    path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml" />
+  <exclude
+    domain="sharedpref"
+    path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml" />
 </full-backup-content>

@@ -1,21 +1,29 @@
 package dev.rivet.app.ui.pages.setting
 
+import android.net.Uri
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -43,9 +51,10 @@ import me.rerere.hugeicons.stroke.Copy01
 import me.rerere.hugeicons.stroke.QrCode
 import me.rerere.hugeicons.stroke.View
 import me.rerere.hugeicons.stroke.ViewOff
-import android.os.Build
 import dev.rivet.app.data.datastore.MeshConfig
 import dev.rivet.app.data.datastore.SettingsStore
+import dev.rivet.app.data.tls.DeviceCertSummary
+import dev.rivet.app.data.tls.DeviceIdentityStore
 import dev.rivet.app.net.MeshEnroll
 import dev.rivet.app.net.RivetVpn
 import dev.rivet.app.ui.components.mesh.QrScanner
@@ -67,6 +76,7 @@ import org.koin.compose.koinInject
 @Composable
 fun SettingMeshPage() {
     val settingsStore: SettingsStore = koinInject()
+    val identityStore: DeviceIdentityStore = koinInject()
     val settings = LocalSettings.current
     val scope = rememberCoroutineScope()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -88,6 +98,22 @@ fun SettingMeshPage() {
     val cameraPermission = rememberPermissionState(setOf(PermissionCamera))
     PermissionManager(permissionState = cameraPermission)
 
+    // Device certificate (gateway mTLS) — re-read after import/remove.
+    var certSummary by remember {
+        mutableStateOf<DeviceCertSummary?>(identityStore.summary())
+    }
+    var importPendingUri by remember { mutableStateOf<Uri?>(null) }
+    var importPassphrase by remember { mutableStateOf("") }
+    var importing by remember { mutableStateOf(false) }
+
+    val p12Picker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        importPendingUri = uri
+        importPassphrase = ""
+    }
+
     fun onScanned(qr: String) {
         showScanner = false
         enrolling = true
@@ -106,6 +132,75 @@ fun SettingMeshPage() {
                 is MeshEnroll.Result.Error -> toaster.show(result.message)
             }
         }
+    }
+
+    if (importPendingUri != null) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!importing) {
+                    importPendingUri = null
+                    importPassphrase = ""
+                }
+            },
+            title = { Text("Import device certificate") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "PKCS#12 from the Rivet CA handoff. Passphrase unlocks the bag; " +
+                            "it is stored in the app keystore, not in settings backup.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = importPassphrase,
+                        onValueChange = { importPassphrase = it },
+                        label = { Text("Passphrase") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !importing && importPassphrase.isNotEmpty(),
+                    onClick = {
+                        val uri = importPendingUri ?: return@TextButton
+                        importing = true
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val bytes = context.contentResolver.openInputStream(uri)
+                                        ?.use { it.readBytes() }
+                                        ?: error("Could not read the selected file")
+                                    identityStore.importPkcs12(bytes, importPassphrase)
+                                }
+                            }
+                            importing = false
+                            result.onSuccess { summary ->
+                                certSummary = summary
+                                importPendingUri = null
+                                importPassphrase = ""
+                                toaster.show("Device cert · ${summary.commonName}")
+                            }.onFailure { e ->
+                                toaster.show(e.message ?: "Import failed")
+                            }
+                        }
+                    },
+                ) {
+                    Text(if (importing) "Importing…" else "Import")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !importing,
+                    onClick = {
+                        importPendingUri = null
+                        importPassphrase = ""
+                    },
+                ) { Text("Cancel") }
+            },
+        )
     }
 
     if (showScanner) {
@@ -169,6 +264,66 @@ fun SettingMeshPage() {
                         Text(
                             if (enrolling) "  Joining…" else "  Scan from desktop to join a mesh",
                         )
+                    }
+                }
+            }
+
+            item("device-cert") {
+                MeshSection(title = "Device certificate") {
+                    val summary = certSummary
+                    if (summary != null) {
+                        Text(
+                            text = "${summary.commonName} · expires ${summary.notAfterLabel()} (UTC)",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            text = "Presented as the client cert on https gateway connections.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    p12Picker.launch(
+                                        arrayOf(
+                                            "application/x-pkcs12",
+                                            "application/pkcs12",
+                                            "*/*",
+                                        ),
+                                    )
+                                },
+                                modifier = Modifier.weight(1f),
+                            ) { Text("Replace") }
+                            OutlinedButton(
+                                onClick = {
+                                    identityStore.clear()
+                                    certSummary = null
+                                    toaster.show("Device certificate removed")
+                                },
+                                modifier = Modifier.weight(1f),
+                            ) { Text("Remove") }
+                        }
+                    } else {
+                        Text(
+                            text = "No device certificate. Gateways that require Rivet CA " +
+                                "mTLS will refuse connections until you import the PKCS#12 " +
+                                "the admin issued for this phone.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                p12Picker.launch(
+                                    arrayOf(
+                                        "application/x-pkcs12",
+                                        "application/pkcs12",
+                                        "*/*",
+                                    ),
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Import PKCS#12…") }
                     }
                 }
             }
