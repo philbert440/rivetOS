@@ -189,12 +189,15 @@ export function createMeshView(opts: MeshViewOptions): MeshView {
   const localNodeId = opts.localNodeId ?? process.env.RIVETOS_DEN_NODE_ID ?? hostname()
   const paths = meshFilePaths(opts.meshFile)
   // CA is read once per process — cert rotation on /rivet-shared is picked up
-  // by the service restart that a rotation already requires.
-  let caCache: Promise<string | null> | null = null
-  const loadCa = (): Promise<string | null> =>
-    (caCache ??= opts.caPath
-      ? readFile(opts.caPath, 'utf8').catch(() => null)
-      : Promise.resolve(null))
+  // by the service restart that a rotation already requires. Only a SUCCESSFUL
+  // read is memoized: a transient NFS hiccup must not pin every https peer
+  // offline until restart.
+  let caCache: string | null = null
+  const loadCa = async (): Promise<string | null> => {
+    if (caCache !== null || !opts.caPath) return caCache
+    caCache = await readFile(opts.caPath, 'utf8').catch(() => null)
+    return caCache
+  }
 
   const build = async (): Promise<MeshOverview | null> => {
     const file = await loadMeshFile(paths)

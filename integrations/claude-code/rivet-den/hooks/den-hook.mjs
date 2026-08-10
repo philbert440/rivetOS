@@ -27,7 +27,8 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 // comma-separated fan-out: each node posts to its OWN den (bare-IP view) and
-// to the mesh hub, e.g. "http://127.0.0.1:80,http://10.0.0.1:80". The default
+// to the mesh hub, e.g. "https://127.0.0.1:5174,https://192.0.2.1:5174" —
+// explicit values must name the scheme their den actually serves. The default
 // lists BOTH loopback schemes: with gateway TLS (#491) the den answers https
 // only, and only one listener exists per port — the wrong-scheme attempt
 // fails fast and is swallowed.
@@ -56,7 +57,10 @@ function postJson(url, headers, body, timeoutMs) {
     try {
       denCa = fs.readFileSync(DEN_CA_PATH, 'utf8')
     } catch {
-      denCa = null // no chain on disk — system trust (public-cert dens)
+      // System trust only: a private-CA den will refuse the handshake and the
+      // post is silently dropped — warn once so vanished events are traceable.
+      denCa = null
+      console.error(`rivet-den hook: CA chain unreadable at ${DEN_CA_PATH} — posts to https dens may fail`)
     }
   }
   return new Promise((resolve, reject) => {

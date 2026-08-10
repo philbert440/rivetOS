@@ -99,10 +99,14 @@ export function parseDenSettings(
       ? d.port
       : defaults.port
 
-  // Gateway TLS (#491): mirror packages/boot resolveDenTls — explicit
-  // den.tls_* else the mesh issue-node auto path. existsSync runs on the
-  // orchestrating host, but /rivet-shared is the same NFS view on every
-  // node, so the answer holds for remote targets too.
+  // Gateway TLS (#491): mirror packages/boot resolveDenTls's config + auto
+  // path branches — cert AND key must both resolve, same as denTlsConfigured,
+  // or the probe scheme diverges from what the gateway actually serves.
+  // (The RIVETOS_DEN_TLS_* env branch cannot be mirrored: the orchestrator
+  // can't see a remote node's unit environment. Nodes doing env-only TLS
+  // must set den.tls_* in config.yaml for the deploy probe to follow.)
+  // existsSync runs on the orchestrating host, but /rivet-shared is the same
+  // NFS view on every node, so the auto-path answer holds for remote targets.
   const mesh = (parsed as Record<string, unknown>).mesh
   const rawNodeName =
     mesh && typeof mesh === 'object' && !Array.isArray(mesh)
@@ -110,12 +114,12 @@ export function parseDenSettings(
       : undefined
   const nodeName = typeof rawNodeName === 'string' ? rawNodeName.trim() : ''
   const autoCert = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : ''
-  const tlsCert =
-    typeof d.tls_cert === 'string' && d.tls_cert.trim() !== ''
-      ? d.tls_cert.trim()
-      : autoCert && existsSync(autoCert)
-        ? autoCert
-        : ''
+  const autoKey = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.key` : ''
+  const confCert = typeof d.tls_cert === 'string' ? d.tls_cert.trim() : ''
+  const confKey = typeof d.tls_key === 'string' ? d.tls_key.trim() : ''
+  const cert = confCert || (autoCert && existsSync(autoCert) ? autoCert : '')
+  const key = confKey || (autoKey && existsSync(autoKey) ? autoKey : '')
+  const tlsCert = cert && key ? cert : ''
 
   return {
     enabled: d.enabled === true,
@@ -228,6 +232,10 @@ export async function verifyGatewayLocal(restart: boolean): Promise<DenDeployOut
   const rawConfig = await readLocalConfig([rivetHome, process.env.HOME ?? '/root'])
   const den = parseDenSettings(rawConfig, '/opt/rivetos')
   if (!den.enabled) return 'skipped'
+  if (den.tlsCert && !isSafeArg(den.tlsCa)) {
+    console.error(`    ${tag} ❌ den.tls_ca "${den.tlsCa}" contains shell-unsafe characters`)
+    return 'failed'
+  }
   if (!restart) {
     console.log(`    ${tag} ℹ️  gateway not verified (no restart requested)`)
     return 'skipped'

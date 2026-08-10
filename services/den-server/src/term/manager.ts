@@ -481,6 +481,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       setNonEmpty(env, 'RIVET_DEN_TOKEN', config.token)
       // Gateway TLS (#491): a TLS den answers https only — hand the spawned
       // harness's den hook the live scheme (the hook trusts the Rivet CA).
+      // Predicate MUST match server.ts tlsReady (cert+key paths non-empty);
+      // a divergence hands harnesses a single-scheme URL the den won't serve.
       const denScheme = config.tls.certPath.trim() && config.tls.keyPath.trim() ? 'https' : 'http'
       env.RIVET_DEN_URL = `${denScheme}://127.0.0.1:${config.port}`
       env.RIVET_DEN_NAME = `${hostname()}:${key}`

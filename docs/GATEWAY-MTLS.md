@@ -77,6 +77,11 @@ device client certificates.
   so loopback https — the deploy health probe, den hooks, spawned harnesses —
   passes hostname verification:
   `rivet-ca.sh issue-node ct112 DNS:ct112 IP:192.0.2.112 IP:127.0.0.1`
+  SANs must cover **both** `127.0.0.1` and whatever host the node advertises
+  on the mesh (`mesh.advertise_host` — LAN or overlay IP): peers verify the
+  advertised name, local probes verify loopback. **Re-issue every node leaf
+  to this shape BEFORE the fleet cutover** — leaves minted before this scheme
+  fail deploy verification with a hostname error, not a scheme error.
 - **Deploy probe**: `rivetos update` probes `https://…/healthz --cacert
   <chain>` automatically when the den resolves TLS material (explicit
   `den.tls_*` or the issue-node auto path).

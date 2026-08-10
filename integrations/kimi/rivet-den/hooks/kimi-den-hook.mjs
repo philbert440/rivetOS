@@ -60,7 +60,10 @@ function postJson(url, headers, body, timeoutMs) {
     try {
       denCa = fs.readFileSync(DEN_CA_PATH, 'utf8')
     } catch {
-      denCa = null // no chain on disk — system trust (public-cert dens)
+      // System trust only: a private-CA den will refuse the handshake and the
+      // post is silently dropped — warn once so vanished events are traceable.
+      denCa = null
+      console.error(`rivet-den hook: CA chain unreadable at ${DEN_CA_PATH} — posts to https dens may fail`)
     }
   }
   return new Promise((resolve, reject) => {

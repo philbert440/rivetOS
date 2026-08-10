@@ -106,6 +106,11 @@ describe('parseDenSettings', () => {
     expect(s.tlsCa).toBe('/x/chain.pem')
   })
 
+  it('stays plain-http when the cert resolves but the key does not (probe must track the gateway)', () => {
+    const s = parseDenSettings('den:\n  enabled: true\n  tls_cert: /x/n.crt\n', ROOT)
+    expect(s.tlsCert).toBe('')
+  })
+
   it('stays plain-http when mesh.node_name has no issued cert on disk', () => {
     const s = parseDenSettings(
       'mesh:\n  node_name: no-such-node-xyz\nden:\n  enabled: true\n',
