@@ -729,9 +729,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         json(res, 200, { ok: true, sessions: Object.keys(state.rooms).length, name: hostname() })
         return
       }
-      // Static viewer + pack art: served after TLS handshake. With mTLS the
-      // connection already proves device enrollment; subresources share that
-      // connection so they do not need a second app-layer credential.
+      // Static viewer + pack art: the TLS handshake no longer implies
+      // enrollment (the TLS layer verifies but never rejects — see the
+      // createHttpsServer options), so static shares the SAME app-layer gate
+      // as the API: enrolled devices and loopback pass, an unenrolled remote
+      // gets nothing — "if the admin did not enroll the device, Hub must not
+      // work" includes the shell itself. Only /healthz stays open above.
+      if (!authorized(req, url)) {
+        json(res, 401, { error: 'unauthorized' })
+        return
+      }
       // Landing redirect (3e): '/' → config.rootRedirect (e.g. /wiki on the
       // datahub node) — before static so the SPA shell doesn't swallow it.
       if (config.rootRedirect && url.pathname === '/' && req.method === 'GET') {
