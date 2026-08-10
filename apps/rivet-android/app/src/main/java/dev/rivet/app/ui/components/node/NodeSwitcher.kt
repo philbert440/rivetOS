@@ -578,7 +578,7 @@ private fun AddNodeForm(
         OutlinedTextField(
             value = host,
             onValueChange = { host = it },
-            label = { Text("Host") },
+            label = { Text("Host (https assumed; prefix http:// to override)") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("192.0.2.10") },
