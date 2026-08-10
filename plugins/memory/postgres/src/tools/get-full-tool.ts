@@ -117,6 +117,54 @@ function formatToolResult(update: any): string | null {
 
 // --- disk access -------------------------------------------------------------
 
+/**
+ * Diagnose a missing capture JSONL path for memory_get_full.
+ *
+ * Daily-use footgun (residual from #431 / #482): capture stores an absolute
+ * path from the node that ran the session. Central MCP (phildesk, datahub)
+ * cannot read `/home/rivet/.grok/...` on ct112 etc., but the old message
+ * said "gone or invalid — unrecoverable", so agents stopped trying and
+ * treated multi-host layout as permanent data loss.
+ *
+ * Pure helper — exported for unit tests.
+ */
+export function formatMissingJsonlMessage(
+  file: string,
+  opts?: { agent?: string | null },
+): string {
+  const agent = typeof opts?.agent === 'string' && opts.agent.trim() ? opts.agent.trim() : null
+  const agentBit = agent ? ` agent=${agent}` : ''
+
+  // Path shape → which machine likely owns the session files.
+  let layoutHint = ''
+  if (file.startsWith('/home/rivet/')) {
+    layoutHint =
+      'Path is under /home/rivet/ — fleet agent home. The JSONL almost certainly lives on the mesh node that ran that harness session (ctNNN / agent CT), not on the host serving this MCP query.'
+  } else if (file.startsWith('/home/philip/') || file.startsWith('/Users/')) {
+    layoutHint =
+      'Path is a desk/user home directory. The JSONL is local to that machine’s interactive session store, not shared mesh storage.'
+  } else if (file.includes('/.grok/sessions/') || file.includes('/.claude/') || file.includes('/sessions/')) {
+    layoutHint =
+      'Path looks like a per-host harness session store. Capture writes absolute paths on the node that produced the row.'
+  } else {
+    layoutHint =
+      'Capture records absolute paths on the node that produced the row; central MCP only reads what is mounted on *this* host.'
+  }
+
+  const nextSteps = [
+    'Next steps (pick one):',
+    '1. Re-run memory_get_full / rivet_memory_get_full on the node that owns this path (same host as the session dir), or via that node’s MCP sidecar.',
+    '2. Use the truncated preview already on the row (content / tool_result) — that text is complete in Postgres up to the 16K capture cap.',
+    '3. Do not treat this as permanent data loss: the elided tail is usually still on the capture host’s disk unless the session dir was deleted.',
+  ].join('\n')
+
+  return (
+    `Source JSONL not readable from this host (${file}).${agentBit}\n\n` +
+    `${layoutHint}\n\n` +
+    `${nextSteps}`
+  )
+}
+
 /** Read a single 0-indexed line from a (potentially large) file without
  *  loading the whole thing. Exported for tests.
  *
@@ -166,6 +214,7 @@ interface FullRow {
   content: string
   tool_name: string | null
   tool_result: string | null
+  agent: string | null
   metadata: Record<string, unknown> | null
 }
 
@@ -175,7 +224,8 @@ export function createGetFullTool(pool: pg.Pool): Tool {
     description:
       'Fetch the complete, untruncated payload for a memory row whose content or tool_result ' +
       'was elided at capture time (rows marked "…[truncated]" by memory_search/memory_browse). ' +
-      'Reads the original line back from the capture JSONL on disk.',
+      'Reads the original line back from the capture JSONL on disk. ' +
+      'JSONL paths are host-local — if the file is not on this machine, the tool explains multi-host recovery instead of claiming the data is gone.',
     parameters: {
       type: 'object',
       properties: {
@@ -193,7 +243,7 @@ export function createGetFullTool(pool: pg.Pool): Tool {
       let row: FullRow | undefined
       try {
         const res = await pool.query<FullRow>(
-          `SELECT id, content, tool_name, tool_result, metadata
+          `SELECT id, content, tool_name, tool_result, agent, metadata
            FROM ros_messages WHERE id = $1`,
           [id],
         )
@@ -218,14 +268,26 @@ export function createGetFullTool(pool: pg.Pool): Tool {
           'Row is truncated but carries no disk pointer (pre-#196 capture, or a non-grok source) — ' +
           'the elided tail is unrecoverable.'
         )
-      if (!file.endsWith('.jsonl') || !existsSync(file))
+      // Non-.jsonl pointer is a corrupt/unexpected metadata shape — treat as
+      // unrecoverable rather than a multi-host miss.
+      if (!file.endsWith('.jsonl'))
         return `Source JSONL is gone or invalid (${file}) — the elided tail is unrecoverable.`
+      if (!existsSync(file))
+        return formatMissingJsonlMessage(file, { agent: row.agent })
 
       let raw: string | null
       try {
         raw = await readJsonlLine(file, line)
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error)
+        // Permission denied / I/O on a path that exists still looks like
+        // "this host cannot serve the file" — same multi-host recovery path.
+        if (/EACCES|EPERM|permission denied/i.test(msg)) {
+          return (
+            formatMissingJsonlMessage(file, { agent: row.agent }) +
+            `\n\n(underlying error: ${msg})`
+          )
+        }
         return `Failed reading ${file}:${String(line)}: ${msg}`
       }
       if (raw === null)

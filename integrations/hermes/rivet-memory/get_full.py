@@ -149,6 +149,64 @@ def _is_num(v: Any) -> bool:
 # --- disk access ------------------------------------------------------------
 
 
+def format_missing_jsonl_message(
+    file: str, *, agent: Optional[str] = None
+) -> str:
+    """Diagnose a missing capture JSONL path for rivet_memory_get_full.
+
+    Daily-use footgun (residual from #431 / #482): capture stores an absolute
+    path from the node that ran the session. Central MCP cannot read
+    ``/home/rivet/.grok/...`` on another CT, but the old message said
+    "gone or invalid — unrecoverable", so agents stopped trying.
+
+    Keep in sync with ``formatMissingJsonlMessage`` in
+    ``plugins/memory/postgres/src/tools/get-full-tool.ts``.
+    """
+    agent_bit = f" agent={agent.strip()}" if isinstance(agent, str) and agent.strip() else ""
+
+    if file.startswith("/home/rivet/"):
+        layout_hint = (
+            "Path is under /home/rivet/ — fleet agent home. The JSONL almost "
+            "certainly lives on the mesh node that ran that harness session "
+            "(ctNNN / agent CT), not on the host serving this MCP query."
+        )
+    elif file.startswith("/home/philip/") or file.startswith("/Users/"):
+        layout_hint = (
+            "Path is a desk/user home directory. The JSONL is local to that "
+            "machine’s interactive session store, not shared mesh storage."
+        )
+    elif (
+        "/.grok/sessions/" in file
+        or "/.claude/" in file
+        or "/sessions/" in file
+    ):
+        layout_hint = (
+            "Path looks like a per-host harness session store. Capture writes "
+            "absolute paths on the node that produced the row."
+        )
+    else:
+        layout_hint = (
+            "Capture records absolute paths on the node that produced the row; "
+            "central MCP only reads what is mounted on *this* host."
+        )
+
+    next_steps = (
+        "Next steps (pick one):\n"
+        "1. Re-run memory_get_full / rivet_memory_get_full on the node that owns "
+        "this path (same host as the session dir), or via that node’s MCP sidecar.\n"
+        "2. Use the truncated preview already on the row (content / tool_result) "
+        "— that text is complete in Postgres up to the 16K capture cap.\n"
+        "3. Do not treat this as permanent data loss: the elided tail is usually "
+        "still on the capture host’s disk unless the session dir was deleted."
+    )
+
+    return (
+        f"Source JSONL not readable from this host ({file}).{agent_bit}\n\n"
+        f"{layout_hint}\n\n"
+        f"{next_steps}"
+    )
+
+
 def _read_jsonl_line(path: str, line_index: int) -> Optional[str]:
     """Read a single 0-indexed line from a (potentially large) file without
     loading the whole thing."""
@@ -197,7 +255,7 @@ def get_full_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
         with client.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, content, tool_name, tool_result, metadata "
+                    "SELECT id, content, tool_name, tool_result, agent, metadata "
                     "FROM ros_messages WHERE id = %s::uuid",
                     (id_,),
                 )
@@ -207,7 +265,7 @@ def get_full_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
     if not row:
         return f"No message with id {id_}."
 
-    _, content, tool_name, tool_result, meta = row
+    _, content, tool_name, tool_result, agent, meta = row
     meta = meta if isinstance(meta, dict) else {}
     if meta.get("truncated") is not True:
         # nothing was elided — the stored row already IS the full payload
@@ -224,16 +282,28 @@ def get_full_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
             "Row is truncated but carries no disk pointer (pre-#196 capture, or a "
             "non-grok source) — the elided tail is unrecoverable."
         )
-    if not file.endswith(".jsonl") or not os.path.isfile(file):
+    # Non-.jsonl pointer is a corrupt/unexpected metadata shape.
+    if not file.endswith(".jsonl"):
         return (
             f"Source JSONL is gone or invalid ({file}) — the elided tail is "
-            f"unrecoverable. (get_full needs the capture JSONL readable from the "
-            f"host running Hermes.)"
+            f"unrecoverable."
+        )
+    if not os.path.isfile(file):
+        return format_missing_jsonl_message(
+            file, agent=agent if isinstance(agent, str) else None
         )
 
     try:
         raw = _read_jsonl_line(file, line)
     except Exception as e:
+        err = str(e)
+        if any(tok in err.lower() for tok in ("permission denied", "eacces", "eperm")):
+            return (
+                format_missing_jsonl_message(
+                    file, agent=agent if isinstance(agent, str) else None
+                )
+                + f"\n\n(underlying error: {err})"
+            )
         return f"Failed reading {file}:{line}: {e}"
     if raw is None:
         return f"Line {line} not found in {file} (file rotated/rewritten?)."
