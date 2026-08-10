@@ -5,11 +5,12 @@ import dev.rivet.app.ui.pages.terminal.DenHarnessClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
 /**
@@ -51,7 +52,26 @@ class HarnessPlaneRepository(
     private val legacyList: (String, String?) -> List<DenHarnessClient.Session> =
         { url, token -> DenHarnessClient.tryList(url, token) },
 ) : HarnessPlaneSource, HarnessRegistrySink {
-    private val lock = Mutex()
+    /**
+     * Guards every cache field below — never held across the network read.
+     *
+     * The registry pump takes this lock for every frame, so a slow refresh
+     * holding it would park the fast path behind the very round trip the fast
+     * path exists to avoid, with frames piling into the watch's channel
+     * meanwhile. Reads therefore run outside it, at the cost of two callers
+     * arriving during one read both hitting the node: cheap on a LAN, and the
+     * alternative — serializing reads — lets a dead node's 25s timeout stall
+     * the node the user just switched to.
+     *
+     * A plain monitor rather than a coroutine `Mutex`, because not one of these
+     * critical sections suspends — and the read accounting has to be released on
+     * a path that cannot fail. `Mutex.lock()` is a cancellation point when it
+     * has to wait, and the drawer's fetch half lives under `flatMapLatest`, so
+     * every node switch and every poll tick cancels a read mid-flight. A
+     * release that could itself throw would leak [reads] permanently, and from
+     * then on every frame would be buffered for a replay that never comes.
+     */
+    private val stateLock = Any()
 
     private val cached = MutableStateFlow<HarnessPlaneSnapshot?>(null)
 
@@ -61,12 +81,43 @@ class HarnessPlaneRepository(
      * The drawer renders off this rather than off a [snapshot] return value,
      * which is what lets a registry `session-created` repaint the list without
      * a fetch: [onRegistryEvent] merges the carried summary straight in here.
-     * Null means nothing has been read for the active node yet.
+     * Null means nothing has been read for the active node yet. Render through
+     * [rowsFor] rather than reading this directly — an observer that simply
+     * filters null away can never learn that the cache was cleared.
      */
     val snapshots: StateFlow<HarnessPlaneSnapshot?> = cached.asStateFlow()
 
-    @Volatile
     private var cachedAt = 0L
+
+    /** Bumped by [clear]; a read that began before the bump is discarded. */
+    private var generation = 0L
+
+    /** Reads currently in flight — while any is, frames are recorded below. */
+    private var reads = 0
+
+    /**
+     * Frames that landed while a read was in flight, with the node they came
+     * from. Replayed onto that read's answer at publish time, so a fetch that
+     * started before a `session-created` cannot un-paint the row the merge
+     * already put on screen. Cleared when the last read finishes.
+     */
+    private val midReadFrames = ArrayList<Pair<String, HarnessEvent>>()
+
+    /**
+     * Rows to render for [denUrl].
+     *
+     * A cleared cache, or one belonging to a different node, emits an EMPTY
+     * list — not nothing. An observer that filtered those away would never be
+     * told the rows went away, so a switch to an unreachable node would leave
+     * the previous machine's sessions on screen, tappable, until some later
+     * read happened to succeed.
+     */
+    fun rowsFor(denUrl: String): Flow<List<HarnessChatRow>> {
+        val target = denUrl.trim()
+        return snapshots
+            .map { snapshot -> if (snapshot?.denUrl == target) snapshot.rows else emptyList() }
+            .distinctUntilChanged()
+    }
 
     /**
      * Rows + capability sheets for the active remote node.
@@ -75,9 +126,17 @@ class HarnessPlaneRepository(
      * the chat's open from hammering a node with the same three calls.
      */
     override suspend fun snapshot(maxAgeMs: Long): HarnessPlaneSnapshot {
+        // Sampled before the den is read, not when the ticket is taken. The
+        // question this answers is "has the active node moved since this
+        // attempt began" — and reading the setting suspends, so a switch can
+        // land between that read and the ticket. Sampling later would let an
+        // attempt that already captured the OLD den publish under the NEW
+        // generation, stranding the cache on a node the user has left.
+        val attempt = synchronized(stateLock) { generation }
         val den = remoteDenUrl()?.trim().orEmpty()
         if (den.isEmpty()) return HarnessPlaneSnapshot.EMPTY
-        lock.withLock {
+
+        val started = synchronized(stateLock) {
             val hit = cached.value
             if (hit != null &&
                 hit.denUrl == den &&
@@ -86,10 +145,34 @@ class HarnessPlaneRepository(
             ) {
                 return hit
             }
+            reads += 1
+            ReadTicket(attempt, midReadFrames.size)
+        }
+
+        try {
             val fresh = read(den)
-            cached.value = fresh
-            cachedAt = System.currentTimeMillis()
-            return fresh
+            return synchronized(stateLock) {
+                if (started.generation != generation) {
+                    // A node switch while this read was in flight makes its
+                    // answer history. Publishing it would strand the cache on
+                    // the old node and leave every merge for the new one
+                    // refused until the next poll — and handing it back would
+                    // have the caller resolve rows for a machine it is not
+                    // looking at, so the caller gets nothing instead.
+                    HarnessPlaneSnapshot.EMPTY
+                } else {
+                    val published = replay(fresh, started.from)
+                    cached.value = published
+                    cachedAt = System.currentTimeMillis()
+                    // The PUBLISHED value, not `fresh`: a caller resolving a
+                    // gate off the return must see the same rows the drawer
+                    // does, mid-read frames included.
+                    published
+                }
+            }
+        } finally {
+            // Cannot suspend, so it cannot be skipped by cancellation.
+            synchronized(stateLock) { finishRead() }
         }
     }
 
@@ -99,17 +182,20 @@ class HarnessPlaneRepository(
      * Blanking the list first would flicker every time the drawer opens.
      */
     fun invalidate() {
-        cachedAt = 0L
+        synchronized(stateLock) { cachedAt = 0L }
     }
 
     /**
-     * Drop the rows outright. Only for a node switch: the previous node's rows
-     * are not stale, they are about a different machine, and [snapshot]'s own
-     * `denUrl` guard would refuse to serve them anyway.
+     * Drop the rows outright, and disown every read already in flight. Only for
+     * a node switch: the previous node's rows are not stale, they are about a
+     * different machine.
      */
     fun clear() {
-        cached.value = null
-        cachedAt = 0L
+        synchronized(stateLock) {
+            cached.value = null
+            cachedAt = 0L
+            generation += 1
+        }
     }
 
     /** Force a re-read of the active node. */
@@ -129,21 +215,73 @@ class HarnessPlaneRepository(
      * without the node's capability sheet would render un-bound, and the read
      * that produces that sheet is already the thing about to happen.
      *
-     * Serialized against [snapshot] on the same lock, so a frame that arrives
-     * mid-fetch is applied to the answer that fetch returns rather than to the
-     * list it replaced. The reconciliation half is untouched: [cachedAt] does
-     * not move, so the drawer's poll still re-reads on its own cadence and a
-     * merged row the node disagrees with heals on the next read.
+     * The read no longer holds [lock] (it would park the pump behind a round
+     * trip), so a frame can land while a fetch that predates it is in flight.
+     * Rather than let that fetch's publish un-paint the row, frames arriving
+     * mid-read are recorded and re-applied on top of the answer — the invariant
+     * is preserved, it is just enforced at publish instead of by exclusion.
+     *
+     * The reconciliation half is untouched: [cachedAt] does not move, so the
+     * drawer's poll still re-reads on its own cadence and a merged row the node
+     * disagrees with heals on the next read.
      */
     override suspend fun onRegistryEvent(denUrl: String, event: HarnessEvent): Boolean =
-        lock.withLock {
+        synchronized(stateLock) {
+            val den = denUrl.trim()
+            // Recorded even when the merge below refuses: a frame for the node
+            // a read is currently fetching belongs on that read's answer, and
+            // the cache may still be the previous node's (or nothing at all).
+            if (reads > 0) midReadFrames.add(den to event)
             val hit = cached.value
-            if (hit == null || hit.denUrl != denUrl.trim()) return@withLock false
+            if (hit == null || hit.denUrl != den) return@synchronized false
             val next = hit.withSessions(HarnessPlane.applyRegistryEvent(hit.sessions, event))
-            if (next === hit) return@withLock false
+            if (next === hit) return@synchronized false
             cached.value = next
             true
         }
+
+    /** One in-flight read's claim on the cache. Taken under [stateLock]. */
+    private class ReadTicket(val generation: Long, val from: Int)
+
+    /**
+     * Re-apply frames that landed for this node while [fresh] was being read.
+     *
+     * From [from] onward, deliberately: a frame recorded BEFORE this read's
+     * ticket was committed on the node before this read's GET went out, so
+     * [fresh] already carries it. Replaying from zero instead would re-apply
+     * state a fresher answer had already moved past — an `active` frame
+     * resurrected over a fetched `ended`. The index is the ordering argument,
+     * written down.
+     *
+     * Must be held under [stateLock].
+     */
+    private fun replay(fresh: HarnessPlaneSnapshot, from: Int): HarnessPlaneSnapshot {
+        var published = fresh
+        for (i in from until midReadFrames.size) {
+            val (den, event) = midReadFrames[i]
+            if (den != fresh.denUrl) continue
+            published = published.withSessions(
+                HarnessPlane.applyRegistryEvent(published.sessions, event),
+            )
+        }
+        return published
+    }
+
+    /** Must be held under [stateLock]. */
+    private fun finishRead() {
+        reads -= 1
+        if (reads <= 0) {
+            reads = 0
+            midReadFrames.clear()
+        }
+    }
+
+    /**
+     * Test seam: frames buffered for replay. Nothing is ever buffered while no
+     * read is in flight, so a non-zero count with no reader is the signature of
+     * leaked read accounting.
+     */
+    internal fun bufferedFrames(): Int = synchronized(stateLock) { midReadFrames.size }
 
     /** Registry-stream gateway for one node — the watch targets a node, not "active". */
     suspend fun registryGatewayFor(denUrl: String): HarnessRegistryGateway =

@@ -401,14 +401,26 @@ class ChatService(
         harnessPlane.snapshot(maxAgeMs = if (force) 0L else 10_000L).rows
 
     /**
-     * A bearer was pasted, replaced or cleared for some node. Age the cache so
-     * the next read re-probes with it, and re-open the registry tail: its
-     * credential was captured when the socket was built, and a 401 handshake is
-     * terminal on purpose, so nothing else would ever pick the new one up.
+     * A bearer was pasted, replaced or cleared for [denUrl]. Age the cache so
+     * the next read re-probes with it, and re-open that node's registry tail:
+     * its credential was captured when the socket was built, and a 401
+     * handshake is terminal on purpose, so nothing else would ever pick the new
+     * one up.
+     *
+     * Only the active node has a tail to re-open — a token edited on some other
+     * roster row takes effect when that node is selected.
      */
-    fun onNodeCredentialChanged() {
+    fun onNodeCredentialChanged(denUrl: String) {
         harnessPlane.invalidate()
-        appScope.launch { harnessRegistry.rebind() }
+        appScope.launch {
+            val active = remoteDenUrl() ?: return@launch
+            if (NodeRosterDefaults.normalizeDenUrl(active) !=
+                NodeRosterDefaults.normalizeDenUrl(denUrl)
+            ) {
+                return@launch
+            }
+            harnessRegistry.rebind()
+        }
     }
 
     /** Attach [conversationId] to its driver; CLOSED means "stay on legacy". */

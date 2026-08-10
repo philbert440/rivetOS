@@ -26,8 +26,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
@@ -93,17 +91,15 @@ class ChatDrawerVM(
                     // status) and everything else is the same list as before,
                     // so nothing disappears while the other drivers land.
                     //
-                    // The snapshot is filtered by node here as well as inside
-                    // the repository: a cache the previous node filled must
-                    // never paint rows under the new one, however the switch
-                    // and this subscription interleave.
-                    val target = den.trim()
+                    // `rowsFor` is node-scoped and emits an EMPTY list for a
+                    // cleared or foreign cache rather than staying silent: a
+                    // switch to an unreachable node has to blank this list, and
+                    // a render half that only ever emitted real rows would
+                    // leave the previous machine's sessions on screen — and
+                    // tappable — for as long as the new node stayed down.
                     merge(
                         remoteListFetches(),
-                        chatService.harnessPlane.snapshots
-                            .filterNotNull()
-                            .filter { it.denUrl == target }
-                            .map { it.rows },
+                        chatService.harnessPlane.rowsFor(den),
                     ).map { rows ->
                         val items = rows.mapNotNull { s ->
                             val id = ChatService.parseHarnessSessionUuid(s.key)

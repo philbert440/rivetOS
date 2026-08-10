@@ -363,6 +363,23 @@ class HarnessPlaneTest {
     }
 
     @Test
+    fun `a rotation to an id that is not canonical is refused, not written in`() {
+        val list = listOf(summary("claude-code:aaa", title = "alive"))
+
+        val garbage = HarnessPlane.patchSessionUpdated(
+            list,
+            sessionId = "not-a-session-id",
+            previousSessionId = "claude-code:aaa",
+            status = HarnessStatus.ACTIVE,
+        )
+
+        // Writing it in would null the native half and `rows` would drop the
+        // row entirely — a malformed frame must not delete a live session.
+        assertSame(list, garbage)
+        assertEquals(listOf("aaa"), HarnessPlane.rows(garbage, emptyList()).map { it.key })
+    }
+
+    @Test
     fun `an id nobody has is left for the refetch to reconcile`() {
         val list = listOf(summary("claude-code:aaa"))
 
