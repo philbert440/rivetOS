@@ -9,7 +9,7 @@
  * Requests use node:https directly: den-server declares no client deps.
  */
 
-import { execFileSync, execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request, type RequestOptions } from 'node:https'
 import { networkInterfaces, tmpdir } from 'node:os'
@@ -20,7 +20,7 @@ import { baseTestDenConfig } from './test-config.js'
 
 function haveOpenssl(): boolean {
   try {
-    execSync('openssl version', { stdio: 'ignore' })
+    execFileSync('openssl', ['version'], { stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -34,6 +34,10 @@ interface TestPki {
   serverKey: string
   deviceCert: string
   deviceKey: string
+  nodeCert: string
+  nodeKey: string
+  foreignCert: string
+  foreignKey: string
 }
 
 /** First non-internal IPv4 of this host — lets the suite exercise the
@@ -66,6 +70,19 @@ function makePki(extraIp: string | null): TestPki {
      '-subj', '/O=Rivet Test/OU=client/CN=device:e2e-test'])
   o(['x509', '-req', '-in', 'dev.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial',
      '-days', '2', '-extfile', 'dev.ext', '-out', 'dev.crt'])
+  // A NODE leaf: same CA, clientAuth EKU, but not a device subject —
+  // verifies at the TLS layer yet must fail the device-leaf check.
+  o(['req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'node.key', '-out', 'node.csr',
+     '-subj', '/O=Rivet Test/CN=testpeer.mesh'])
+  o(['x509', '-req', '-in', 'node.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial',
+     '-days', '2', '-extfile', 'dev.ext', '-out', 'node.crt'])
+  // A FOREIGN CA + client leaf: presents fine, can never verify against ours.
+  o(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'fca.key', '-out', 'fca.crt',
+     '-days', '2', '-subj', '/O=Foreign/CN=Foreign CA'])
+  o(['req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'fdev.key', '-out', 'fdev.csr',
+     '-subj', '/O=Foreign/OU=client/CN=device:intruder'])
+  o(['x509', '-req', '-in', 'fdev.csr', '-CA', 'fca.crt', '-CAkey', 'fca.key', '-CAcreateserial',
+     '-days', '2', '-extfile', 'dev.ext', '-out', 'fdev.crt'])
   return {
     dir,
     ca: readFileSync(join(dir, 'ca.crt'), 'utf8'),
@@ -73,6 +90,10 @@ function makePki(extraIp: string | null): TestPki {
     serverKey: join(dir, 'srv.key'),
     deviceCert: readFileSync(join(dir, 'dev.crt'), 'utf8'),
     deviceKey: readFileSync(join(dir, 'dev.key'), 'utf8'),
+    nodeCert: readFileSync(join(dir, 'node.crt'), 'utf8'),
+    nodeKey: readFileSync(join(dir, 'node.key'), 'utf8'),
+    foreignCert: readFileSync(join(dir, 'fdev.crt'), 'utf8'),
+    foreignKey: readFileSync(join(dir, 'fdev.key'), 'utf8'),
   }
 }
 
@@ -170,6 +191,53 @@ describe.skipIf(!haveOpenssl())('gateway TLS gate (real sockets)', () => {
         key: pki.deviceKey,
       })
       expect(res.status).toBe(200)
+    })
+
+    it('refuses a foreign-CA client cert (verification failure → 401)', async () => {
+      const res = await get(`${remoteBase}/sessions`, {
+        ca: pki.ca,
+        cert: pki.foreignCert,
+        key: pki.foreignKey,
+      })
+      expect(res.status).toBe(401)
+    })
+
+    it('refuses a same-CA NODE leaf (verifies, but is not a device)', async () => {
+      const res = await get(`${remoteBase}/sessions`, {
+        ca: pki.ca,
+        cert: pki.nodeCert,
+        key: pki.nodeKey,
+      })
+      expect(res.status).toBe(401)
+    })
+
+    it('destroys a certless remote WS upgrade without completing it', async () => {
+      const { connect } = await import('node:tls')
+      const url = new URL(remoteBase)
+      const outcome = await new Promise<string>((resolve) => {
+        const sock = connect(
+          { host: url.hostname, port: Number(url.port), ca: pki.ca },
+          () => {
+            sock.write(
+              `GET /ws HTTP/1.1\r\nHost: ${url.host}\r\nConnection: Upgrade\r\n` +
+                `Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n` +
+                `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`,
+            )
+          },
+        )
+        let buf = ''
+        sock.on('data', (c: Buffer) => {
+          buf += c.toString('utf8')
+        })
+        sock.on('close', () => resolve(buf))
+        sock.on('error', () => resolve(buf))
+        setTimeout(() => {
+          sock.destroy()
+          resolve(buf.length > 0 ? buf : 'TIMEOUT-NO-CLOSE')
+        }, 3000)
+      })
+      expect(outcome).not.toContain('101')
+      expect(outcome).not.toBe('TIMEOUT-NO-CLOSE')
     })
   })
 })
