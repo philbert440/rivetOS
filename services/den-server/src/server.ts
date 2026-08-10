@@ -729,9 +729,19 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         json(res, 200, { ok: true, sessions: Object.keys(state.rooms).length, name: hostname() })
         return
       }
-      // Static viewer + pack art: served after TLS handshake. With mTLS the
-      // connection already proves device enrollment; subresources share that
-      // connection so they do not need a second app-layer credential.
+      // Static viewer + pack art: the TLS handshake no longer implies
+      // enrollment (the TLS layer verifies but never rejects — see the
+      // createHttpsServer options), so static shares the SAME app-layer gate
+      // as the API: enrolled devices and loopback pass, an unenrolled remote
+      // gets nothing — "if the admin did not enroll the device, Hub must not
+      // work" includes the shell itself. Two carve-outs stay open above the
+      // gate: /healthz (liveness) and the one-time WireGuard enroll
+      // redemption — a not-yet-enrolled device MUST reach it, and its
+      // pairing token is the auth (see auth.ts rule 4).
+      if (!(devicesRoutes && url.pathname === '/api/devices/enroll') && !authorized(req, url)) {
+        json(res, 401, { error: 'unauthorized' })
+        return
+      }
       // Landing redirect (3e): '/' → config.rootRedirect (e.g. /wiki on the
       // datahub node) — before static so the SPA shell doesn't swallow it.
       if (config.rootRedirect && url.pathname === '/' && req.method === 'GET') {
@@ -1156,10 +1166,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cert,
         key,
         ca,
-        // Require a client cert and verify against our CA. Loopback clients
-        // may omit it; isGatewayAuthorized still allows them.
+        // Request and VERIFY the client cert against our CA, but never kill
+        // the connection at the TLS layer: under TLS 1.3 rejectUnauthorized
+        // sends `certificate required` to every certless client, which
+        // breaks the documented open surfaces — /healthz (deploy probe, mesh
+        // peer probes) and loopback callers (den hooks) — before the app
+        // layer ever runs. Enforcement lives in isGatewayAuthorized: remote
+        // API access requires socket.authorized && a device leaf, so an
+        // absent, expired, or foreign cert is still refused everything but
+        // liveness. (Found live on the ct113 canary, 2026-08-10.)
         requestCert: config.tls.requireClientCert,
-        rejectUnauthorized: config.tls.requireClientCert,
+        rejectUnauthorized: false,
       },
       requestHandler,
     )
