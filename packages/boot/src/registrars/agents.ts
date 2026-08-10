@@ -243,9 +243,13 @@ export async function registerAgentTools(
     // With gateway TLS (#491) the den answers https only — advertise a full
     // denUrl so peer mesh views and the hub node-switcher probe/connect with
     // the right scheme instead of the http:// fallback built from denPort.
+    // Never advertise a loopback denUrl: every peer would probe/connect to
+    // ITSELF under this node's id (phildesk registers host 127.0.0.1).
     const denHost = resolveAdvertiseHost(meshConfig)
+    const denHostIsLoopback =
+      denHost === '127.0.0.1' || denHost === '::1' || denHost === 'localhost'
     const denUrl =
-      denEnabled && denTlsConfigured(config)
+      denEnabled && !denHostIsLoopback && denTlsConfigured(config)
         ? `https://${denHost}:${String(config.den?.port ?? 5174)}`
         : ''
     // Per-agent provider/model so REMOTE catalog entries (RivetHub node
