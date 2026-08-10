@@ -15,19 +15,18 @@ import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 
 export function TerminalPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
-  const endpointKey = `${baseUrl}|${token ?? ''}`
+  const endpointKey = baseUrl
   const [attached, setAttached] = useState<string | undefined>()
   const [spawnError, setSpawnError] = useState<string | undefined>()
   const connected = useGatewayReady()
 
   const config = useQuery({
-    queryKey: ['term-config', baseUrl, token ?? ''],
+    queryKey: ['term-config', baseUrl],
     queryFn: ({ signal }) => useConnection.getState().gateway.termConfig(signal),
     enabled: connected,
   })
   const list = useQuery({
-    queryKey: ['term-list', baseUrl, token ?? ''],
+    queryKey: ['term-list', baseUrl],
     queryFn: ({ signal }) => useConnection.getState().gateway.termList(signal),
     refetchInterval: 10_000,
     enabled: connected,

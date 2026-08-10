@@ -142,6 +142,7 @@ function denConfig(stateDir: string): DenConfig {
     port: 0,
     host: '127.0.0.1',
     token: '',
+    tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
     stateDir,
     staticDir: '',
     packsDir: '',

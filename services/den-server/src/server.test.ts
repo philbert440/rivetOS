@@ -7,6 +7,7 @@ import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDenServer, type DenServer } from './server.js'
 import type { DenConfig } from './config.js'
+import { baseTestDenConfig, emptyTls } from './test-config.js'
 import type { PtyProc } from './term/pty.js'
 
 // Inspectable fake PTY for terminal/inject tests.
@@ -38,7 +39,7 @@ afterEach(async () => {
 })
 
 async function start(
-  token = '',
+  _token = '', // ignored — bearer removed; loopback tests need no client cert
   evictTtlMs = 60_000,
   opts: {
     staticDir?: string
@@ -61,16 +62,12 @@ async function start(
 ): Promise<{ den: DenServer; base: string; port: number }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
   dirs.push(stateDir)
-  const config: DenConfig = {
+  const config: DenConfig = baseTestDenConfig(stateDir, {
     port: 0,
     host: '127.0.0.1',
-    token,
-    stateDir,
     staticDir: opts.staticDir ?? '',
     packsDir: opts.packsDir ?? '',
     evictTtlMs,
-    meshFile: '',
-    meshCacheMs: 10_000,
     term: {
       enabled: opts.term ?? false,
       open: opts.term ?? false,
@@ -82,14 +79,7 @@ async function start(
       exitLingerMs: 60_000,
       injectReadyMs: 10,
     },
-    audio: {
-      enabled: false,
-      open: false,
-      dir: '',
-      deviceName: 'RivetHub Mic',
-      sampleRate: 16_000,
-    },
-  }
+  })
   let pid = 2000
   const den = createDenServer(config, {
     extraRoutes: opts.extraRoutes,
@@ -235,23 +225,15 @@ describe('den-server', () => {
     expect(res?.status).toBe(413)
   })
 
-  it('enforces bearer auth on everything but /healthz', async () => {
-    const { base, port } = await start('sekrit')
+  it('loopback allows APIs and WS without client certs; bearer is ignored', async () => {
+    const { base, port } = await start()
     expect((await fetch(`${base}/healthz`)).status).toBe(200)
-    expect((await post(base, '/event', EV)).status).toBe(401)
-    expect((await fetch(`${base}/sessions`)).status).toBe(401)
-    expect((await post(base, '/event', EV, { authorization: 'Bearer sekrit' })).status).toBe(200)
-    // ?token= form for browser WS
+    expect((await post(base, '/event', EV)).status).toBe(200)
+    expect((await fetch(`${base}/sessions`)).status).toBe(200)
+    // legacy bearer / ?token= must not be required (and do not gate)
     expect((await fetch(`${base}/sessions?token=sekrit`)).status).toBe(200)
 
-    const denied = new WebSocket(`ws://127.0.0.1:${port}/ws`)
-    const deniedResult = await new Promise((resolve) => {
-      denied.once('error', () => resolve('rejected'))
-      denied.once('open', () => resolve('open'))
-    })
-    expect(deniedResult).toBe('rejected')
-
-    const ok = new WebSocket(`ws://127.0.0.1:${port}/ws?token=sekrit`)
+    const ok = new WebSocket(`ws://127.0.0.1:${port}/ws`)
     await new Promise((r, j) => {
       ok.once('open', r)
       ok.once('error', j)
@@ -259,35 +241,39 @@ describe('den-server', () => {
     ok.close()
   })
 
-  it('serves the viewer shell and pack art without auth; APIs stay gated', async () => {
-    // the SPA's <script>/<link>/sprite subresources can't carry a token —
-    // static must be public or a tokened page boots to a blank shell
+  it('refuses non-loopback bind without TLS', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
+    dirs.push(stateDir)
+    expect(() => createDenServer(baseTestDenConfig(stateDir, { host: '0.0.0.0' }))).toThrow(
+      /TLS is required off-loopback/,
+    )
+  })
+
+  it('serves the viewer shell and pack art on loopback; mesh.json is not shadowed by static', async () => {
     const staticDir = mkdtempSync(join(tmpdir(), 'den-static-'))
     const packsDir = mkdtempSync(join(tmpdir(), 'den-packs-'))
     dirs.push(staticDir, packsDir)
     mkdirSync(join(staticDir, 'assets'))
     writeFileSync(join(staticDir, 'index.html'), '<html>shell</html>')
     writeFileSync(join(staticDir, 'assets', 'app.js'), 'js')
-    // nested app bundled under the root (den viewer inside a rivethub deploy)
     mkdirSync(join(staticDir, 'den'))
     writeFileSync(join(staticDir, 'den', 'index.html'), '<html>den shell</html>')
-    // a static file named like an API path must NOT shadow the gated route
     writeFileSync(join(staticDir, 'mesh.json'), '{"spoof":true}')
     mkdirSync(join(packsDir, 'default'))
     writeFileSync(join(packsDir, 'default', 'pack.json'), '{}')
 
-    const { base } = await start('sekrit', 60_000, { staticDir, packsDir })
+    const { base } = await start('', 60_000, { staticDir, packsDir })
     expect((await fetch(`${base}/index.html`)).status).toBe(200)
     expect((await fetch(`${base}/assets/app.js`)).status).toBe(200)
-    expect((await fetch(`${base}/`)).status).toBe(200) // SPA fallback
-    expect((await fetch(`${base}/mesh`)).status).toBe(200) // SPA fallback
-    // deep route under a nested app boots THAT app's shell, not the root's
+    expect((await fetch(`${base}/`)).status).toBe(200)
+    expect((await fetch(`${base}/mesh`)).status).toBe(200)
     expect(await (await fetch(`${base}/den/mesh`)).text()).toBe('<html>den shell</html>')
     expect(await (await fetch(`${base}/demo`)).text()).toBe('<html>shell</html>')
     expect((await fetch(`${base}/packs/default/pack.json`)).status).toBe(200)
-    expect((await fetch(`${base}/sessions`)).status).toBe(401)
-    expect((await fetch(`${base}/mesh.json`)).status).toBe(401) // not shadowed
-    expect((await fetch(`${base}/term/config`)).status).toBe(401)
+    // Static must not shadow the mesh API with a spoofed mesh.json file
+    const mesh = await fetch(`${base}/mesh.json`)
+    const body = mesh.status === 200 ? await mesh.json() : null
+    expect(body).not.toEqual({ spoof: true })
   })
 })
 
@@ -300,20 +286,14 @@ describe('gateway route mounts (G0)', () => {
     },
   }
 
-  it('serves mounted routes behind the bearer gate', async () => {
-    const { base } = await start('sekret', 60_000, { extraRoutes: [ping] })
-    const unauthorized = await fetch(`${base}/api/ping`)
-    expect(unauthorized.status).toBe(401)
-    const ok = await fetch(`${base}/api/ping`, {
-      headers: { authorization: 'Bearer sekret' },
-    })
+  it('serves mounted routes on loopback without a client cert', async () => {
+    const { base } = await start('', 60_000, { extraRoutes: [ping] })
+    const ok = await fetch(`${base}/api/ping`)
     expect(ok.status).toBe(200)
     expect(await ok.json()).toEqual({ pong: true })
   })
 
-  it('extraUpgrades WS mounts are rejected tokenless when a token is set (4e regression)', async () => {
-    // Upgrade dispatch must stay BEHIND authorized() — a refactor that moves
-    // it ahead would expose /api/notifications/ws on tokened nodes.
+  it('extraUpgrades WS mounts still go through authorized() (loopback allows)', async () => {
     const seen: string[] = []
     const upgrade = {
       path: '/api/notifications/ws',
@@ -327,7 +307,7 @@ describe('gateway route mounts (G0)', () => {
         socket.destroy()
       },
     }
-    const { base } = await start('sekret', 60_000, { extraUpgrades: [upgrade] })
+    const { base } = await start('', 60_000, { extraUpgrades: [upgrade] })
     const wsUrl = base.replace('http', 'ws') + '/api/notifications/ws'
 
     const attempt = (url: string): Promise<'open' | 'rejected'> =>
@@ -340,10 +320,8 @@ describe('gateway route mounts (G0)', () => {
         ws.on('error', () => resolve('rejected'))
       })
 
+    // loopback authorized → upgrade handler runs and destroys → rejected from client view
     expect(await attempt(wsUrl)).toBe('rejected')
-    expect(seen).toEqual([])
-    // token via query param (the browser path) reaches the mount
-    expect(await attempt(`${wsUrl}?token=sekret`)).toBe('rejected') // handler destroys, but it WAS handled
     expect(seen).toEqual(['handled'])
   })
 
@@ -375,7 +353,7 @@ describe('gateway route mounts (G0)', () => {
     expect(body.sessions).toHaveLength(1)
   })
 
-  it('OpenAI /v1 mounts honor the bearer gate and CORS', async () => {
+  it('OpenAI /v1 mounts work on loopback with CORS', async () => {
     const v1 = {
       prefix: '/v1',
       handler: (
@@ -396,16 +374,12 @@ describe('gateway route mounts (G0)', () => {
         res.writeHead(404).end()
       },
     }
-    const { base } = await start('sekret', 60_000, { extraRoutes: [v1] })
-    expect((await fetch(`${base}/v1/models`)).status).toBe(401)
-    const ok = await fetch(`${base}/v1/models`, {
-      headers: { authorization: 'Bearer sekret' },
-    })
+    const { base } = await start('', 60_000, { extraRoutes: [v1] })
+    const ok = await fetch(`${base}/v1/models`)
     expect(ok.status).toBe(200)
     expect(ok.headers.get('access-control-allow-origin')).toBe('*')
     expect(await ok.json()).toMatchObject({ object: 'list' })
 
-    // OPTIONS preflight advertises the bridge conversation header
     const pre = await fetch(`${base}/v1/models`, { method: 'OPTIONS' })
     expect(pre.status).toBe(204)
     const allow = pre.headers.get('access-control-allow-headers') ?? ''
@@ -556,17 +530,9 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     }
   })
 
-  it('is behind the bearer gate (401 without the token)', async () => {
-    const { base } = await start('sekret', 60_000, { term: true })
-    expect((await post(base, '/term/inject', { session: 'x', text: 'hi' })).status).toBe(401)
-    // with the token it reaches the handler (409 = no live harness)
-    const ok = await post(
-      base,
-      '/term/inject',
-      { session: 'x', text: 'hi' },
-      { authorization: 'Bearer sekret' },
-    )
-    expect(ok.status).toBe(409)
+  it('inject reaches the handler on loopback (409 when no live harness)', async () => {
+    const { base } = await start('', 60_000, { term: true })
+    expect((await post(base, '/term/inject', { session: 'x', text: 'hi' })).status).toBe(409)
   })
 
   it('409s injecting into an exited-but-lingering harness', async () => {

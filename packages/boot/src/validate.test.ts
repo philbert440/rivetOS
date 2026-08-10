@@ -842,7 +842,8 @@ describe('den', () => {
       enabled: true,
       host: '0.0.0.0',
       port: 5174,
-      token: 'a-long-secret',
+      tls_cert: '/rivet-shared/rivet-ca/issued/node.crt',
+      tls_key: '/rivet-shared/rivet-ca/issued/node.key',
       terminal: { enabled: true },
       packs_dir: '/opt/rivetos/packages/den-packs/packs',
       static_dir: '/opt/rivetos/apps/den/dist',
@@ -916,19 +917,19 @@ describe('den', () => {
 
   // --- terminal security gate (mirrors den-server's startup gate) ---------
 
-  it('requires a token when terminals are enabled on a non-loopback host', () => {
+  it('requires tls_cert when terminals are enabled on a non-loopback host', () => {
     const cfg = validConfig()
     cfg.den = { enabled: true, host: '0.0.0.0', terminal: { enabled: true } }
-    assertError(validateConfig(cfg), 'den.token', /token.*required|required when/i)
+    assertError(validateConfig(cfg), 'den.tls_cert', /tls_cert.*required|required when/i)
   })
 
-  it('allows token-less terminals on the default (loopback) host', () => {
+  it('allows TLS-less terminals on the default (loopback) host', () => {
     const cfg = validConfig()
     cfg.den = { enabled: true, terminal: { enabled: true } }
     assertValid(validateConfig(cfg))
   })
 
-  it('allows token-less terminals on an explicit loopback host', () => {
+  it('allows TLS-less terminals on an explicit loopback host', () => {
     for (const host of ['127.0.0.1', '::1', 'localhost']) {
       const cfg = validConfig()
       cfg.den = { enabled: true, host, terminal: { enabled: true } }
@@ -936,13 +937,19 @@ describe('den', () => {
     }
   })
 
-  it('allows exposed terminals when a token is set', () => {
+  it('allows exposed terminals when tls_cert is set', () => {
     const cfg = validConfig()
-    cfg.den = { enabled: true, host: '0.0.0.0', token: 'secret', terminal: { enabled: true } }
+    cfg.den = {
+      enabled: true,
+      host: '0.0.0.0',
+      tls_cert: '/path/to/node.crt',
+      tls_key: '/path/to/node.key',
+      terminal: { enabled: true },
+    }
     assertValid(validateConfig(cfg))
   })
 
-  it('allows an exposed host without terminals and without a token', () => {
+  it('allows an exposed host without terminals and without TLS', () => {
     const cfg = validConfig()
     cfg.den = { enabled: true, host: '0.0.0.0' }
     assertValid(validateConfig(cfg))

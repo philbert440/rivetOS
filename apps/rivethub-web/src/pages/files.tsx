@@ -32,7 +32,6 @@ type Notice = { kind: 'ok' | 'err'; text: string }
 
 export function FilesPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const connected = useGatewayReady()
   const queryClient = useQueryClient()
   const [path, setPath] = useState('')
@@ -46,7 +45,7 @@ export function FilesPage(): JSX.Element {
   const dragDepth = useRef(0)
 
   const listing = useQuery({
-    queryKey: ['files', baseUrl, token ?? '', path],
+    queryKey: ['files', baseUrl, path],
     queryFn: ({ signal }) => useConnection.getState().gateway.filesList(path, signal),
     enabled: connected,
   })
@@ -58,8 +57,8 @@ export function FilesPage(): JSX.Element {
   }, [path])
 
   const refresh = useCallback(async (): Promise<void> => {
-    await queryClient.invalidateQueries({ queryKey: ['files', baseUrl, token ?? '', path] })
-  }, [queryClient, baseUrl, token, path])
+    await queryClient.invalidateQueries({ queryKey: ['files', baseUrl, path] })
+  }, [queryClient, baseUrl, path])
 
   const showNotice = (n: Notice): void => setNotice(n)
 

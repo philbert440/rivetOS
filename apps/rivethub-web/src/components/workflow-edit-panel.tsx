@@ -91,7 +91,6 @@ export function WorkflowEditPanel(props: {
 }): JSX.Element {
   const { workflowId, editPath, onDirtyChange } = props
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const queryClient = useQueryClient()
 
   const [selected, setSelected] = useState(() => joinRel(editPath, 'workflow.yaml'))
@@ -110,7 +109,7 @@ export function WorkflowEditPanel(props: {
   }, [dirty, onDirtyChange])
 
   const treeQuery = useQuery({
-    queryKey: ['workflow-edit-tree', baseUrl, token ?? '', editPath],
+    queryKey: ['workflow-edit-tree', baseUrl, editPath],
     queryFn: () => listTree(editPath),
   })
 
@@ -166,13 +165,13 @@ export function WorkflowEditPanel(props: {
       setFileText(text)
       setDirty(false)
       await queryClient.invalidateQueries({
-        queryKey: ['workflow-edit-tree', baseUrl, token ?? '', editPath],
+        queryKey: ['workflow-edit-tree', baseUrl, editPath],
       })
       await queryClient.invalidateQueries({
-        queryKey: ['workflow', baseUrl, token ?? '', workflowId],
+        queryKey: ['workflow', baseUrl, workflowId],
       })
     },
-    [selected, queryClient, baseUrl, token, editPath, workflowId],
+    [selected, queryClient, baseUrl, editPath, workflowId],
   )
 
   const onValidate = async (): Promise<void> => {
@@ -300,7 +299,7 @@ export function WorkflowEditPanel(props: {
                 setFileText(t)
                 setDirty(false)
                 void queryClient.invalidateQueries({
-                  queryKey: ['workflow', baseUrl, token ?? '', workflowId],
+                  queryKey: ['workflow', baseUrl, workflowId],
                 })
               }}
               onDirtyChange={setDirty}

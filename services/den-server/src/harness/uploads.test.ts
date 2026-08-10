@@ -358,11 +358,12 @@ describe('staged upload TTL sweep', () => {
 
 // -- auth ---------------------------------------------------------------------
 
-function denConfig(stateDir: string, token: string): DenConfig {
+function denConfig(stateDir: string): DenConfig {
   return {
     port: 0,
     host: '127.0.0.1',
-    token,
+    token: '',
+    tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
     stateDir,
     staticDir: '',
     packsDir: '',
@@ -388,9 +389,9 @@ function denConfig(stateDir: string, token: string): DenConfig {
 }
 
 describe('upload auth', () => {
-  it('rides the den server bearer gate like every other /api route', async () => {
+  it('accepts uploads on loopback without a client cert', async () => {
     const stateDir = tempDir('den-uploads-auth-')
-    const den = createDenServer(denConfig(stateDir, 'sekrit'), {
+    const den = createDenServer(denConfig(stateDir), {
       ptySpawn: null,
       skipBuiltinHarnessDrivers: true,
     })
@@ -399,21 +400,9 @@ describe('upload auth', () => {
     const { port } = den.server.address() as AddressInfo
     const base = `http://127.0.0.1:${String(port)}`
 
-    const anon = await fetch(`${base}/api/uploads?name=x.txt`, { method: 'POST', body: 'x' })
-    expect(anon.status).toBe(401)
-    expect(existsSync(join(stateDir, 'uploads'))).toBe(false)
-
-    const wrong = await fetch(`${base}/api/uploads?name=x.txt`, {
-      method: 'POST',
-      body: 'x',
-      headers: { Authorization: 'Bearer nope' },
-    })
-    expect(wrong.status).toBe(401)
-
     const ok = await fetch(`${base}/api/uploads?name=x.txt`, {
       method: 'POST',
       body: 'hello',
-      headers: { Authorization: 'Bearer sekrit' },
     })
     expect(ok.status).toBe(201)
     const { uri } = (await ok.json()) as { uri: string }

@@ -25,15 +25,14 @@ import { useNotifications } from './stores/notifications.js'
 
 function RootLayout(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const connectNotifications = useNotifications((s) => s.connect)
 
   // App-lifetime notifications socket (escalations etc.) — root-level so
   // toasts fire on any page.
   useEffect(() => {
-    connectNotifications(`${baseUrl}|${token ?? ''}`)
+    connectNotifications(baseUrl)
     return () => useNotifications.getState().disconnect()
-  }, [baseUrl, token, connectNotifications])
+  }, [baseUrl, connectNotifications])
 
   return (
     <div className="flex h-full">

@@ -43,6 +43,7 @@ async function start(overrides: Partial<DenConfig> = {}): Promise<{ den: DenServ
     port: 0,
     host: '127.0.0.1',
     token: '',
+    tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
     stateDir,
     staticDir: '',
     packsDir: '',
@@ -193,9 +194,9 @@ describe('mesh view', () => {
     const file = join(tmp(), 'mesh.json')
     writeMesh(file, { peer: node('peer', { metadata: { denUrl: peerBase } }) })
 
-    const { base } = await start({ meshFile: file, token: 'sekrit' })
-    expect((await fetch(`${base}/mesh.json`)).status).toBe(401)
-    const res = await fetch(`${base}/mesh.json`, { headers: { authorization: 'Bearer sekrit' } })
+    const { base } = await start({ meshFile: file })
+    // loopback — mTLS not required; API serves the mesh file
+    const res = await fetch(`${base}/mesh.json`)
     expect(res.status).toBe(200)
     const body = (await res.json()) as MeshOverview
     expect(body.nodes).toHaveLength(1)
