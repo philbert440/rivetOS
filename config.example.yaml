@@ -32,11 +32,20 @@ providers:
   #   # default_tool_choice: auto           # auto | none | required
   #   # verify_model_on_init: true          # probe /v1/models at boot
 
-channels:
-  discord:
-    # bot_token via env: DISCORD_BOT_TOKEN
-    owner_id: ""
-    channel_bindings: {}
+# ---------------------------------------------------------------------------
+# Channels — human UX is Hub (gateway + rivethub), not social bots.
+#
+# Phase 5 removed telegram / discord / voice-discord plugins. Leftover
+# `channels.telegram:` (etc.) in fleet config is an unknown-channel WARNING
+# at boot; registration is skipped (package gone) and nodes do not crash-loop.
+#
+# Optional: agent-to-agent mesh channel (still supported).
+# channels:
+#   agent:
+#     port: 3100
+#     agent_id: opus
+#     # peers:
+#     #   peer-name: { url: https://other-node:3100 }
 
 # ---------------------------------------------------------------------------
 # Plugins — npm package names of rivetos plugins to load.
@@ -58,9 +67,7 @@ channels:
 #   - "@rivetos/provider-ollama"
 #   - "@rivetos/provider-vllm"
 #   - "@rivetos/provider-llama-server"
-#   - "@rivetos/channel-telegram"
-#   - "@rivetos/channel-discord"
-#   - "@rivetos/channel-voice-discord"
+#   - "@rivetos/channel-agent"
 #   - "@rivetos/tool-shell"
 #   - "@rivetos/tool-file"
 #   - "@rivetos/tool-search"

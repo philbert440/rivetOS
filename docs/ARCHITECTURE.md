@@ -35,7 +35,7 @@ Web / Desktop / Android
 | **Rivet** (this node) | Sessions identity, capture/memory, den, mesh, tasks, gateway HTTP+WS, Hub/Android/desktop clients |
 | **Clients** (Hub web, desktop, Android) | Full clients of the **same** gateway — not separate agent runtimes |
 
-**Out of product scope (Phase 0 freeze):** social channels as first-class UX (Telegram, Discord, voice-discord — **deprecated**, still in tree until prune); AI-SDK chat as the interactive product loop (AI SDK remains for non-harness / headless / provider plugins only until an optional later ProviderPort extract).
+**Out of product scope (Phase 0 freeze):** social channels as first-class UX (Telegram, Discord, voice-discord — **removed** in Phase 5); AI-SDK chat as the interactive product loop (AI SDK remains for non-harness / headless / provider plugins only until an optional later ProviderPort extract).
 
 **Not Rivet's job:** re-implementing a coding tool loop that competes with the harnesses.
 
@@ -97,7 +97,7 @@ Web / Desktop / Android
 │                                                       │                  │
 │  Secondary path (non-product interactive):            │                  │
 │    AI-SDK providers · headless tools · agent channel  │                  │
-│    Deprecated: Telegram / Discord / voice-discord     │                  │
+│    Removed (Phase 5): Telegram / Discord / voice     │                  │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -461,10 +461,7 @@ rivetOS/
     nx-plugin/
   plugins/
     channels/
-      telegram/                  ← DEPRECATED (Phase 0)
-      discord/                   ← DEPRECATED (Phase 0)
-      voice-discord/             ← DEPRECATED (Phase 0)
-      agent/                     ← mesh / inter-agent HTTP — kept
+      agent/                     ← mesh agent-to-agent (social channels removed Phase 5)
     providers/                   ← headless / AI-SDK interactive demotion
       anthropic/ google/ xai/ ollama/ vllm/ llama-server/
       claude-cli/                ← provider + claude-code task executor
@@ -552,7 +549,7 @@ Reference implementation: `plugins/providers/anthropic/`
 ### Channel — receives and sends messages
 
 > **Deprecated for product interactive UX (Phase 0).** Telegram, Discord, and
-> voice-discord remain in the tree and still implement this interface so existing
+> Social channel plugins were removed in Phase 5; Hub is the human UX path.
 > installs keep working, but they are not first-class product surface. Do not
 > invest in feature parity. Removal is a Phase 5 prune item.
 >
@@ -580,7 +577,7 @@ Key details:
 - `edit()` supports overflow — returns `EditResult` with primary + overflow message IDs
 - Message splitting, typing indicators, and platform limits are the channel's responsibility
 
-Reference implementations: `plugins/channels/telegram/` (deprecated), `plugins/channels/agent/` (mesh).
+Reference implementation: `plugins/channels/agent/` (mesh). Social channels removed in Phase 5.
 
 ### Tool — an action the agent can take
 
@@ -664,18 +661,11 @@ drawer rows. Bare UUIDs are probed across uuid-shaped stores (claude, then
 grok, …); kimi natives are `session_<uuid>` and **must** be sent canonical —
 the bare-uuid probe never claims them.
 
-### Secondary: static channel binding
+### Secondary: social channel binding — removed (Phase 5)
 
-```yaml
-# DEPRECATED product path — social channels
-channels:
-  discord:
-    channel_bindings:
-      "channel_id_1": opus
-      "channel_id_2": grok
-```
-
-Message arrives in channel → agent by binding → provider by agent config.
+Telegram / Discord / voice-discord plugins are gone. Human messages arrive via
+the gateway (Hub clients), not social bots. Stale `channels.discord:` keys in
+config warn as unknown channel types and are not registered.
 
 ### Inter-agent messaging (local)
 
@@ -813,15 +803,9 @@ providers:
   xai:
     model: grok-4-1-fast-reasoning
 
-# Social channels — DEPRECATED (Phase 0). Prefer Hub/gateway.
-# Still accepted by config so existing installs boot.
+# Social channels removed Phase 5. Human UX: RivetHub / gateway.
+# Optional agent mesh channel (not social UX):
 channels:
-  telegram:
-    owner_id: "your-telegram-user-id"
-  discord:
-    channel_bindings:
-      "channel_id": opus
-  # agent channel is NOT deprecated — mesh / inter-agent
   agent:
     port: 3100
     secret: ${RIVETOS_AGENT_SECRET}
@@ -909,7 +893,7 @@ When documenting mesh peers, use hostnames or documentation address space
 |---------|--------|----------|
 | Telegram channel | **Deprecated** | Keep section/config for existing installs; no new features; remove when prune lands |
 | Discord channel | **Deprecated** | Same |
-| voice-discord | **Deprecated** | Same |
+| voice-discord | **Removed (Phase 5)** | Package deleted |
 | AI-SDK interactive as product loop | Demoted | Headless / provider plugins only |
 | `claude-cli` task executor target name | Deprecated alias | Prefer `claude-code` |
 | `RIVETOS_SESSION_KEY=task:<id>` write override | Deprecated | Use `RIVETOS_TASK_ID` + capture association |

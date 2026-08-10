@@ -27,12 +27,12 @@ providers:
     #   mistral:7b        — fast and lightweight
     #   codellama:34b     — code-focused
 
-channels:
-  # Telegram — simple 1:1 chat
-  telegram:
-    owner_id: "YOUR_TELEGRAM_USER_ID"
-    # Bot token via env: TELEGRAM_BOT_TOKEN
-
+# Channels: social bots (telegram/discord/voice-discord) were removed in Phase 5.
+# Human UX is RivetHub (gateway clients). Optional agent mesh:
+# channels:
+#   agent:
+#     port: 3100
+#     agent_id: opus
 memory:
   postgres:
     # Connection string via env: RIVETOS_PG_URL

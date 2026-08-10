@@ -9,12 +9,12 @@
  *     "executor": "@rivetos/nx:serve",
  *     "options": {
  *       "agent": "opus",
- *       "channel": "telegram"
+ *       "channel": "agent"
  *     }
  *   }
  *
  * Or from CLI:
- *   nx run channel-telegram:serve --agent=opus
+ *   nx run channel-agent:serve --agent=opus
  */
 
 import { execSync, type ExecSyncOptions } from 'node:child_process'

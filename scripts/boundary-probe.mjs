@@ -13,9 +13,9 @@ import { unlinkSync, writeFileSync } from 'node:fs'
 
 const probes = [
   {
-    name: 'domain axis: telegram (runtime) → memory-postgres must FAIL',
-    project: '@rivetos/channel-telegram',
-    file: 'plugins/channels/telegram/src/boundary-probe.ts',
+    name: 'domain axis: agent channel (runtime) → memory-postgres must FAIL',
+    project: '@rivetos/channel-agent',
+    file: 'plugins/channels/agent/src/boundary-probe.ts',
     code: "import type { PostgresMemoryConfig } from '@rivetos/memory-postgres'\nexport type _P = PostgresMemoryConfig\n",
     expectViolation: true,
   },

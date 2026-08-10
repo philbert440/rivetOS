@@ -73,10 +73,9 @@ providers:
     model: claude-sonnet-4-6
     max_tokens: 8192
 
-channels:
-  discord:
-    channel_bindings:
-      "YOUR_CHANNEL_ID": myagent
+# channels: social bots removed in Phase 5 — use RivetHub
+# optional agent mesh: channels.agent: { port: 3100, agent_id: opus }
+
 
 memory:
   postgres:
@@ -93,7 +92,6 @@ Edit `.env`:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
-DISCORD_BOT_TOKEN=...
 RIVETOS_PG_URL=postgresql://rivetos:rivetos@localhost:5432/rivetos
 ```
 
@@ -266,8 +264,7 @@ You are a helpful AI assistant named Rivet.
 
 Once your agent is running, talk to it through whichever channel you configured:
 
-**Discord:** Send a message in a bound channel (one listed under `channels.discord.channel_bindings`).
-**Telegram:** Message your bot directly, if you configured `channels.telegram`.
+**Hub:** Open RivetHub pointed at this node's gateway and start a harness session.
 
 > The agent HTTP channel (`POST /api/message`) is an mTLS-authenticated endpoint for **inter-agent / mesh delegation**, not a casual chat API — it expects a `{ fromAgent, message }` envelope over HTTPS with client certs. See [Mesh Networking](/guides/mesh/).
 

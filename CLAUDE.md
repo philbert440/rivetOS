@@ -47,7 +47,7 @@ Conventional Commits, scoped by area. Examples from recent history:
 - `fix(memory_stats): bucket unsummarized by compactor eligibility`
 - `feat(heartbeat): migrate scheduler to graphile-worker`
 - `build(deps): sync lockfile — bump devalue 5.8.0→5.8.1`
-- `refactor(channel-telegram): rewrite on @chat-adapter/telegram`
+- `refactor(channel-agent): tighten mTLS peer handshake`
 
 Body should explain **why** (what was broken / what motivated the change),
 not just **what** (the diff already shows that).

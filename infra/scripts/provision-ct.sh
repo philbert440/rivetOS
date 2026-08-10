@@ -46,8 +46,6 @@ DEFAULT_MODEL=""      # Model name (auto-set per provider if empty)
 BASE_URL=""           # Base URL for ollama / openai-compat
 RESTORE_FROM=""       # Path to backup tarball for workspace restoration
 SECRETS_FROM=""       # IP of existing CT to pull shared secrets from
-TELEGRAM_TOKEN=""     # Telegram bot token (written directly to .env)
-DISCORD_TOKEN=""      # Discord bot token (written directly to .env)
 DEPLOY_METHOD="git"   # git (default) or rsync
 GIT_REPO="https://github.com/philbert440/rivetOS.git"
 DRY_RUN=false
@@ -92,8 +90,6 @@ while [[ $# -gt 0 ]]; do
         --base-url)      BASE_URL="$2";      shift 2;;
         --restore)       RESTORE_FROM="$2";  shift 2;;
         --secrets-from)  SECRETS_FROM="$2";  shift 2;;
-        --telegram-token) TELEGRAM_TOKEN="$2"; shift 2;;
-        --discord-token) DISCORD_TOKEN="$2"; shift 2;;
         --deploy-method) DEPLOY_METHOD="$2"; shift 2;;
         --git-repo)      GIT_REPO="$2";      shift 2;;
         --shared-mount)  SHARED_MOUNT="$2";  shift 2;;
@@ -121,8 +117,6 @@ Config Generation:
   --model       Model name (default: auto per provider)
   --base-url    Base URL for ollama / openai-compat providers
   --secrets-from IP  Pull shared secrets (PG, embed, xAI) from existing CT
-  --telegram-token   Telegram bot token for this agent
-  --discord-token    Discord bot token for this agent
 
 Deployment:
   --deploy-method    git (default) or rsync
@@ -184,12 +178,6 @@ if [[ -z "$DEFAULT_MODEL" ]]; then
         *)              DEFAULT_MODEL="default";;
     esac
 fi
-
-# Auto-set telegram token env var name
-case "$PROVIDER_NAME" in
-    xai) TELEGRAM_TOKEN_VAR="RIVETOS_TELEGRAM_TOKEN";;
-    *)   TELEGRAM_TOKEN_VAR="TELEGRAM_BOT_TOKEN";;
-esac
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -656,8 +644,7 @@ GENERATED_CONFIG=$(cat "$TEMPLATE_FILE" \
     | sed "s|%%AGENT_NAME%%|${AGENT_NAME}|g" \
     | sed "s|%%PROVIDER_NAME%%|${PROVIDER_NAME}|g" \
     | sed "s|%%DEFAULT_MODEL%%|${DEFAULT_MODEL}|g" \
-    | sed "s|%%BASE_URL%%|${BASE_URL}|g" \
-    | sed "s|%%TELEGRAM_TOKEN_VAR%%|${TELEGRAM_TOKEN_VAR}|g")
+    | sed "s|%%BASE_URL%%|${BASE_URL}|g")
 
 # Check if there are leftover template variables
 REMAINING=$(echo "$GENERATED_CONFIG" | grep -o '%%[A-Z_]*%%' | sort -u || true)
@@ -696,7 +683,7 @@ if [[ -n "$SECRETS_FROM" ]]; then
 
     if [[ -n "$DONOR_ENV" ]]; then
         # Extract shared secrets from donor
-        for SECRET_KEY in RIVETOS_PG_URL RIVETOS_EMBED_URL XAI_API_KEY GOOGLE_API_KEY GOOGLE_CSE_ID GOOGLE_CSE_API_KEY ANTHROPIC_API_KEY DISCORD_BOT_TOKEN; do
+        for SECRET_KEY in RIVETOS_PG_URL RIVETOS_EMBED_URL XAI_API_KEY GOOGLE_API_KEY GOOGLE_CSE_ID GOOGLE_CSE_API_KEY ANTHROPIC_API_KEY; do
             DONOR_VALUE=$(echo "$DONOR_ENV" | grep "^${SECRET_KEY}=" | head -1 | cut -d'=' -f2-)
             if [[ -n "$DONOR_VALUE" ]]; then
                 # Replace placeholder in generated env, or add if missing
@@ -709,18 +696,6 @@ if [[ -n "$SECRETS_FROM" ]]; then
     else
         warn "  Could not pull secrets from ${SECRETS_FROM}"
     fi
-fi
-
-# Override telegram token if provided directly
-if [[ -n "$TELEGRAM_TOKEN" ]]; then
-    # Replace whichever telegram token var exists in the env
-    GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=${TELEGRAM_TOKEN}|")
-    GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|^RIVETOS_TELEGRAM_TOKEN=.*|RIVETOS_TELEGRAM_TOKEN=${TELEGRAM_TOKEN}|")
-fi
-
-# Override discord token if provided directly
-if [[ -n "$DISCORD_TOKEN" ]]; then
-    GENERATED_ENV=$(echo "$GENERATED_ENV" | sed "s|^DISCORD_BOT_TOKEN=.*|DISCORD_BOT_TOKEN=${DISCORD_TOKEN}|")
 fi
 
 # Check for remaining placeholders

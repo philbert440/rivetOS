@@ -1771,11 +1771,11 @@ beside the poll buys little.
 
 ---
 
-## Phase 5 — Docs, channel deprecation, prune
+## Phase 5 — Docs, channel prune
 
-- [ ] Docs: `ARCHITECTURE` + hub setup = harness-first node OS
-- [ ] Finalize Telegram / Discord / voice-discord deprecation in docs and config examples (decision announced at Phase 0; executed here)
-- [ ] Remove channel plugins when no longer required for install
+- [x] Docs: `ARCHITECTURE` + hub setup = harness-first node OS
+- [x] Remove Telegram / Discord / voice-discord channel plugins (packages deleted; stale `channels.telegram:` etc. → unknown-channel **warning**, not crash)
+- [x] Update config examples, init wizard, doctor/plugins probes, publish pipeline
 - [ ] Demote provider plugins for interactive use (docs + defaults)
 - [ ] God-file splits **as touched**: task/store, den devices/server, boot agents
 - [ ] AI SDK stays until optional ProviderPort extract
@@ -1803,7 +1803,7 @@ beside the poll buys little.
 1. **Node control plane:** four harnesses via `HarnessDriver`, one `SessionId` model, gateway list/start/resume/turn/interrupt/approvals/stream. **Driver work complete** as of `kimi-code`: `GET /api/harnesses` lists all four on a real node, each a thin `PtyHarnessDriver` subclass, each with honest flags. Two of the four (`hermes`, `kimi-code`) refuse `start` because their harness has no flag to pin a new session's id — recorded as a harness limitation, not a contract gap.
 2. **Clients:** web + desktop + Android full per-node harness UX on that contract.
 3. **Capture/memory:** all four hosts keyed by canonical `SessionId` (aliases for rotations/legacy).
-4. **Channels:** deprecated in product docs; removed or inert per Phase 5.
+4. **Channels:** social channel plugins **removed** (Phase 5); Hub is the product path; `channels.agent` remains for mesh.
 5. **Repo:** CI trustworthy (real tests + typecheck); docs describe harness-first node OS; Claude is the reference driver others match.
 
 **Risk:** capture/den code that assumes Rivet-minted `session_key` shapes without harness prefix — migrate with aliases; do not dual-write forever. Capture stays harness-adjacent (hooks/transcript/plugins), not AI-SDK-adjacent.

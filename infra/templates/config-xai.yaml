@@ -20,18 +20,13 @@ providers:
   xai:
     model: %%DEFAULT_MODEL%%
     max_tokens: 8192
-channels:
-  telegram:
-    owner_id: '8093148723'
-    bot_token: ${%%TELEGRAM_TOKEN_VAR%%}
-    allowed_users:
-      - '8093148723'
-  discord:
-    owner_id: '254134661196939264'
-    allowed_guilds:
-      - '1090284486945681430'
-    channel_bindings:
-      '1474965558851145793': grok
+
+# Channels: social bots (telegram/discord/voice-discord) were removed in Phase 5.
+# Human UX is RivetHub (gateway clients). Optional agent mesh:
+# channels:
+#   agent:
+#     port: 3100
+#     agent_id: opus
 memory:
   postgres:
     connection_string: ${RIVETOS_PG_URL}

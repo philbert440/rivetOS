@@ -1,6 +1,6 @@
 # Single Agent — Simplest setup
 #
-# One agent, one provider, one channel. Good for personal use.
+# One agent, one provider. Chat via RivetHub / gateway.
 # Copy to config.yaml and fill in your values.
 
 runtime:
@@ -18,12 +18,12 @@ providers:
     max_tokens: 8192
     # API key via env: ANTHROPIC_API_KEY
 
-channels:
-  discord:
-    channel_bindings:
-      "YOUR_CHANNEL_ID": assistant
-    # Bot token via env: DISCORD_BOT_TOKEN
-
+# Channels: social bots (telegram/discord/voice-discord) were removed in Phase 5.
+# Human UX is RivetHub (gateway clients). Optional agent mesh:
+# channels:
+#   agent:
+#     port: 3100
+#     agent_id: opus
 memory:
   postgres:
     # Connection string via env: RIVETOS_PG_URL

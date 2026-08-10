@@ -93,15 +93,16 @@ function checkChannelAuth(
 ): { ok: boolean; detail: string } {
   if (config.bot_token) return { ok: true, detail: 'bot_token in config' }
 
-  const envVarMap: Record<string, string> = {
-    telegram: 'TELEGRAM_BOT_TOKEN',
-    discord: 'DISCORD_BOT_TOKEN',
-    'voice-discord': 'DISCORD_BOT_TOKEN',
+  // Social channel env-token maps (telegram/discord/voice-discord) were
+  // removed in Phase 5. Agent mesh channel uses mTLS / secret, not a bot token.
+  if (name === 'agent') {
+    if (config.tls || config.secret || config.port !== undefined) {
+      return { ok: true, detail: 'agent mesh channel configured' }
+    }
+    return { ok: true, detail: 'no bot token required' }
   }
 
-  const envVar = envVarMap[name]
-  if (envVar && process.env[envVar]) return { ok: true, detail: `${envVar} set` }
-  return { ok: false, detail: envVar ? `${envVar} not set` : 'unknown auth' }
+  return { ok: false, detail: 'unknown auth' }
 }
 
 function checkMemoryAuth(
