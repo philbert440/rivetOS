@@ -132,7 +132,7 @@ export function NodeSwitcher(): JSX.Element {
             </div>
           )}
           <div className="mt-2 border-t border-line px-2 pt-2 text-[10px] text-ink-dim">
-            add / token: Settings
+            add node: Settings
           </div>
         </div>
       )}

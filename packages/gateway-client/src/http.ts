@@ -54,7 +54,7 @@ export async function request<T>(
   opts: RequestOptions = {},
 ): Promise<T> {
   const headers: Record<string, string> = {}
-  if (config.token) headers.authorization = `Bearer ${config.token}`
+  // No Authorization / ?token= — gateway auth is mTLS device certs only.
   if (opts.body !== undefined) headers['content-type'] = 'application/json'
 
   // Single error surface: network/DNS/TLS failures and malformed 2xx JSON
@@ -63,6 +63,10 @@ export async function request<T>(
   // caller's own signal, not a gateway failure.
   let res: Response
   try {
+    // Client certs: browsers use the OS/browser store (no fetch option).
+    // Node/native callers that need explicit PEM material should pass a custom
+    // fetch bound to an undici Agent — this package stays dependency-free for
+    // the web bundle (see GatewayClientConfig.tls).
     res = await fetch(buildUrl(config.baseUrl, path, opts.query), {
       method: opts.method ?? 'GET',
       headers,

@@ -6,7 +6,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { RivetGateway } from '@rivetos/gateway-client'
-import { useConnection, tokenFor } from '../stores/connection.js'
+import { useConnection } from '../stores/connection.js'
 import { useWikiSettings } from '../stores/wiki-settings.js'
 import { isValidGatewayUrl } from './gateway-url.js'
 import { datahubBaseFromMesh } from './wiki-base.js'
@@ -41,17 +41,13 @@ export function useWikiEndpoint(): {
 
   return useMemo(() => {
     if (settingsBase) {
-      // Prefer a saved token for that origin (same sessionStorage scheme as
-      // the node roster); datahub is usually tokenless.
-      const token = tokenFor(settingsBase)
       return {
         endpoint: {
           baseUrl: settingsBase,
           source: 'settings' as const,
           gateway: new RivetGateway({
             baseUrl: settingsBase,
-            token,
-            authMode: token ? 'bearer' : 'none',
+            authMode: 'mtls',
           }),
         },
         pending: false,
@@ -69,15 +65,13 @@ export function useWikiEndpoint(): {
 
     const fromMesh = mesh.data ? datahubBaseFromMesh(mesh.data.nodes) : null
     if (fromMesh) {
-      const token = tokenFor(fromMesh)
       return {
         endpoint: {
           baseUrl: fromMesh,
           source: 'mesh' as const,
           gateway: new RivetGateway({
             baseUrl: fromMesh,
-            token,
-            authMode: token ? 'bearer' : 'none',
+            authMode: 'mtls',
           }),
         },
         pending: false,

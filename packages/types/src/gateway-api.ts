@@ -38,20 +38,39 @@ export interface GatewayErrorResponse {
 }
 
 /**
- * Reserved for the client config / future auth phases. v1 supports 'none'
- * (tokenless LAN) and 'bearer' (gateway-token-file); 'device' is a
- * placeholder for per-device minting later.
+ * Gateway auth is Rivet CA device client certificates (mTLS).
+ * - `none` — loopback / same-origin only (no client identity)
+ * - `mtls` — device leaf installed in the TLS stack (browser OS store, or
+ *   explicit cert/key for Node/native clients)
  */
-export type GatewayAuthMode = 'none' | 'bearer' | 'device'
+export type GatewayAuthMode = 'none' | 'mtls'
+
+export interface GatewayTlsClientConfig {
+  /** PEM client certificate (device leaf from `rivet-ca.sh issue-client`). */
+  cert: string
+  /** Matching private key PEM — never log or commit. */
+  key: string
+  /** Optional CA chain when the platform does not already trust the Rivet CA. */
+  ca?: string
+}
 
 export interface GatewayClientConfig {
-  /** Origin of the node's gateway, e.g. `http://10.0.0.5:8080`. */
+  /** Origin of the node's gateway, e.g. `https://192.0.2.112:5174`. */
   baseUrl: string
-  /** Bearer token; sent as `Authorization` on HTTP and `?token=` on WS. */
-  token?: string
-  /** Self-describing auth posture; defaults to 'bearer' when token is set,
-   *  'none' otherwise. */
+  /**
+   * Bearer gateway auth is gone — use device mTLS. Field is intentionally
+   * absent (`never`) so TypeScript rejects new token assignments.
+   */
+  token?: never
+  /** Auth posture; defaults to `mtls` when `tls` is set, else `none`. */
   authMode?: GatewayAuthMode
+  /**
+   * Optional PEM material for native Node agents that build their own
+   * undici Agent / custom fetch. Not consumed by gateway-client itself
+   * (keeps the package browser-safe with zero deps). Browsers install the
+   * device cert in the OS store after admin enrollment.
+   */
+  tls?: GatewayTlsClientConfig
 }
 
 // ---------------------------------------------------------------------------

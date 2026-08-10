@@ -130,10 +130,10 @@ describe('RivetGateway HTTP', () => {
     expect(captured.auth).toBeUndefined()
   })
 
-  it('sends the bearer token when configured', async () => {
-    const gw = new RivetGateway({ baseUrl, token: 'sekrit' })
+  it('does not send Authorization (mTLS only)', async () => {
+    const gw = new RivetGateway({ baseUrl })
     await gw.listSessions()
-    expect(captured.auth).toBe('Bearer sekrit')
+    expect(captured.auth).toBeUndefined()
   })
 
   it('creates a task with wait query and JSON body', async () => {

@@ -66,7 +66,9 @@ export const KNOWN_DEN_KEYS = new Set([
   'enabled',
   'host',
   'port',
-  'token',
+  'token', // legacy; ignored — gateway auth is device mTLS via tls_cert/tls_key
+  'tls_cert',
+  'tls_key',
   'terminal',
   'packs_dir',
   'static_dir',

@@ -18,7 +18,6 @@ vi.mock('./connection.js', () => ({
   useConnection: {
     getState: () => ({
       baseUrl: 'http://gateway.test',
-      token: undefined,
       gateway: {
         watchSessions: (
           onFrame: (frame: unknown) => void,

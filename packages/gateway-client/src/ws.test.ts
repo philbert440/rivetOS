@@ -14,7 +14,7 @@ async function listen(wss: WebSocketServer): Promise<number> {
 const hasPlatformWs = typeof (globalThis as { WebSocket?: unknown }).WebSocket === 'function'
 
 describe('subscribe', () => {
-  it.runIf(hasPlatformWs)('receives frames and appends token + query', async () => {
+  it.runIf(hasPlatformWs)('receives frames and appends session query (no token)', async () => {
     const wss = new WebSocketServer({ port: 0 })
     const port = await listen(wss)
     const seenUrls: string[] = []
@@ -35,7 +35,7 @@ describe('subscribe', () => {
     const frames: SessionWsFrame[] = []
     await new Promise<void>((resolve) => {
       const sub = subscribe<SessionWsFrame>(
-        { baseUrl: `http://127.0.0.1:${port}`, token: 'tok' },
+        { baseUrl: `http://127.0.0.1:${port}`,  },
         {
           path: '/api/sessions/ws',
           query: { session: 'lobby' },
@@ -50,7 +50,7 @@ describe('subscribe', () => {
 
     expect(frames[0]).toMatchObject({ kind: 'message', text: 'hi' })
     expect(seenUrls[0]).toContain('session=lobby')
-    expect(seenUrls[0]).toContain('token=tok')
+    expect(seenUrls[0]).not.toContain('token=')
     wss.close()
   })
 

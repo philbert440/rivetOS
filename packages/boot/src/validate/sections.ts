@@ -600,12 +600,10 @@ export function validateMesh(mesh: Record<string, unknown>, issues: ValidationIs
 // ---------------------------------------------------------------------------
 // Den — rivet-den per-node server (deploy + mesh advertising)
 //
-// The terminal token rule mirrors den-server's own startup security gate
-// (services/den-server/src/server.ts): terminals spawn shells as the service
-// user, so exposing them off-loopback without a bearer token would hang an
-// unauthenticated shell on the network. den-server force-disables terminals
-// at runtime in that state; we reject the config here so the mistake is
-// caught at config-validate/deploy time, not at first click.
+// Off-loopback terminals require gateway TLS (device mTLS via den.tls_cert /
+// den.tls_key). Bearer den.token is gone. den-server refuses to bind off
+// loopback without TLS; we reject the config here so the mistake is caught at
+// config-validate/deploy time, not at first click.
 // ---------------------------------------------------------------------------
 
 export function validateDen(den: Record<string, unknown>, issues: ValidationIssue[]): void {
@@ -791,26 +789,28 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
     })
   }
 
-  // SECURITY GATE — token required when terminals are exposed off loopback.
+  // SECURITY GATE — TLS required when terminals are exposed off loopback.
   // Only enforced when den.enabled (a disabled section deploys nothing);
   // den-server's own runtime gate remains the backstop.
   const host = typeof den.host === 'string' ? den.host.trim() : '127.0.0.1'
-  const hasToken = typeof den.token === 'string' && den.token.length > 0
+  const hasTls =
+    typeof (den as { tls_cert?: string }).tls_cert === 'string' &&
+    Boolean((den as { tls_cert?: string }).tls_cert?.trim())
   if (
     den.enabled === true &&
     terminalEnabled &&
     !terminalOpen &&
     !DEN_LOOPBACK_HOSTS.has(host) &&
-    !hasToken
+    !hasTls
   ) {
     issues.push({
       severity: 'error',
-      path: `${path}.token`,
+      path: `${path}.tls_cert`,
       message:
-        '"den.token" is required when den.terminal.enabled is true and den.host is not loopback ' +
-        '(127.0.0.1/::1/localhost) — an exposed token-less terminal would hang an unauthenticated ' +
-        'shell on the network. Set den.token, bind den.host to loopback, or explicitly opt out ' +
-        'with den.terminal.open: true on a trusted private network.',
+        '"den.tls_cert" (and den.tls_key) is required when den.terminal.enabled is true and den.host is not loopback ' +
+        '(127.0.0.1/::1/localhost) — an exposed terminal without TLS would hang an unauthenticated ' +
+        'shell on the network. Set den.tls_cert/tls_key, bind den.host to loopback, disable terminals, ' +
+        'or set den.terminal.open: true on a trusted private network.',
     })
   }
 }

@@ -212,6 +212,7 @@ export type {
   GatewayErrorResponse,
   GatewayAuthMode,
   GatewayClientConfig,
+  GatewayTlsClientConfig,
   SessionSummary,
   SessionMessage,
   MessageUsage,

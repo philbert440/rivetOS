@@ -61,6 +61,7 @@ async function start(
     port: 0,
     host: '127.0.0.1',
     token: '',
+    tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
     stateDir,
     staticDir: '',
     packsDir: '',
@@ -304,35 +305,12 @@ describe('term endpoints', () => {
     expect((await fetch(`${base}/healthz`)).status).toBe(200)
   })
 
-  it('security gate: no token + non-loopback host forces terminals off (503), never a crash', async () => {
-    // enabled + token + 0.0.0.0 → allowed
-    const withToken = await start({ host: '0.0.0.0', token: 'sekrit' })
-    const auth = { authorization: 'Bearer sekrit' }
-    expect((await post(withToken.base, '/term', { command: 'shell' }, auth)).status).toBe(201)
+  it('security gate: non-loopback without TLS refuses to construct the server', async () => {
+    // Off-loopback plain HTTP is a hard fail — never serves Hub/API unauthenticated.
+    await expect(start({ host: '0.0.0.0' })).rejects.toThrow(/TLS is required off-loopback/)
 
-    // enabled + NO token + 0.0.0.0 → hard 503 on every term endpoint
-    const exposed = await start({ host: '0.0.0.0', token: '' })
-    for (const req of [
-      post(exposed.base, '/term', {}),
-      fetch(`${exposed.base}/term/config`),
-      fetch(`${exposed.base}/term/list`),
-      fetch(`${exposed.base}/term?id=x`, { method: 'DELETE' }),
-    ]) {
-      const res = await req
-      expect(res.status).toBe(503)
-      expect(((await res.json()) as { error: string }).error).toBe(
-        'terminal disabled: RIVETOS_DEN_TOKEN required when host is not loopback',
-      )
-    }
-    // the event relay keeps working — the gate only takes terminals down
-    expect((await post(exposed.base, '/event', { v: 1, session: 's', type: 'session.end' })).status).toBe(200)
-
-    // enabled + no token + 0.0.0.0 + explicit open flag → allowed (trusted LAN)
-    const open = await start({ host: '0.0.0.0', token: '' }, { open: true })
-    expect((await post(open.base, '/term', { command: 'shell' })).status).toBe(201)
-
-    // enabled + no token + loopback → fine (mesh-internal default posture)
-    const loopback = await start({ host: '127.0.0.1', token: '' })
+    // loopback → fine
+    const loopback = await start({ host: '127.0.0.1' })
     expect((await post(loopback.base, '/term', { command: 'shell' })).status).toBe(201)
 
     // term disabled → 503 for actions, config reports enabled:false
@@ -346,12 +324,9 @@ describe('term endpoints', () => {
     expect(cfg.enabled).toBe(false)
   })
 
-  it('term endpoints sit behind the bearer-auth gate', async () => {
-    const { base } = await start({ token: 'sekrit' })
-    expect((await fetch(`${base}/term/config`)).status).toBe(401)
-    expect((await post(base, '/term', {})).status).toBe(401)
-    expect(
-      (await fetch(`${base}/term/config`, { headers: { authorization: 'Bearer sekrit' } })).status,
-    ).toBe(200)
+  it('term endpoints work on loopback without a client cert', async () => {
+    const { base } = await start()
+    expect((await fetch(`${base}/term/config`)).status).toBe(200)
+    expect((await post(base, '/term', { command: 'shell' })).status).toBe(201)
   })
 })

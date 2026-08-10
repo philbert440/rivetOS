@@ -1,53 +1,39 @@
 /**
- * Boot-time `?node=<baseUrl>` (+ optional `?token=`) — used by the Android
- * drawer (and deep links) to open the LOCAL hub already pointed at a chosen
- * peer. Contract:
+ * Boot-time `?node=<baseUrl>` — used by the Android drawer (and deep links)
+ * to open the local hub already pointed at a chosen peer. Contract:
  *   Android:  navigate → `http://127.0.0.1:5174/?node=<urlencoded denUrl>`
  *   Hub:      setConnection(denUrl) + roster add, then strip query params.
  *
- * When `?token=` is absent, the existing per-node sessionStorage bearer is
- * preserved (same as switchTo) — Android drawer selects never pass a token.
+ * `?token=` is ignored (bearer auth removed — device mTLS only).
  * Never navigates the document; only repoints the gateway client.
  */
 
 import { gatewayOrigin } from './gateway-url.js'
 
 export interface BootNodeHandlers {
-  setConnection: (baseUrl: string, token?: string) => void
+  setConnection: (baseUrl: string) => void
   addNode: (node: { name: string; baseUrl: string }) => void
-  /**
-   * Look up a previously-stored bearer for this node. Required so `?node=`
-   * without `?token=` does not wipe sessionStorage via setConnection.
-   */
-  tokenFor: (baseUrl: string) => string | undefined
 }
 
 /**
- * Parse `node` / `token` from a query string, repoint connection + roster.
- * Returns the canonical origin when applied, else null.
+ * Parse `node` from a query string (legacy `token` param is discarded).
+ * Returns the canonical origin when present, else null.
  */
 export function parseBootNodeParam(search: string): {
   baseUrl: string
-  token?: string
 } | null {
   const raw = search.startsWith('?') ? search.slice(1) : search
   const params = new URLSearchParams(raw)
   const nodeRaw = params.get('node')
   if (!nodeRaw) return null
-  // URLSearchParams already percent-decodes once
   const origin = gatewayOrigin(nodeRaw.trim())
   if (!origin) return null
-  const token = params.get('token')?.trim() || undefined
-  return { baseUrl: origin, token }
+  return { baseUrl: origin }
 }
 
 /**
- * Apply boot `?node=` (and optional `?token=`), add to roster, strip params
- * from the address bar via history.replaceState. No-op when param absent
- * or invalid. Returns true when a connection was set.
- *
- * Token policy: only an explicit `?token=` overwrites the stored bearer.
- * Otherwise `tokenFor(baseUrl)` is passed so setConnection does not wipe.
+ * Apply boot `?node=`, add to roster, strip params from the address bar via
+ * history.replaceState. No-op when param absent or invalid.
  */
 export function applyBootNodeParam(
   handlers: BootNodeHandlers,
@@ -61,9 +47,7 @@ export function applyBootNodeParam(
   const parsed = parseBootNodeParam(search)
   if (!parsed) return false
 
-  // Explicit ?token= wins; otherwise preserve the saved per-node bearer.
-  const token = parsed.token !== undefined ? parsed.token : handlers.tokenFor(parsed.baseUrl)
-  handlers.setConnection(parsed.baseUrl, token)
+  handlers.setConnection(parsed.baseUrl)
   let host: string
   try {
     host = new URL(parsed.baseUrl).host

@@ -140,15 +140,14 @@ function migrateSessionKey(baseUrl: string, from: string, to: string): void {
 
 export function ChatPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const chat = useChat()
 
   // One socket for the whole page; reconnect (and reset per-gateway state)
   // when the endpoint identity changes.
   useEffect(() => {
-    chat.connect(`${baseUrl}|${token ?? ''}`)
+    chat.connect(baseUrl)
     return () => useChat.getState().disconnect()
-  }, [baseUrl, token])
+  }, [baseUrl])
 
   const connected = useGatewayReady()
   // The drawer lists the node's harness sessions straight from their on-disk
@@ -160,7 +159,7 @@ export function ChatPage(): JSX.Element {
   const queryClient = useQueryClient()
   const sessionsDirty = useChat((s) => s.sessionsDirty)
   const harnessQuery = useQuery({
-    queryKey: ['harness-sessions', baseUrl, token ?? ''],
+    queryKey: ['harness-sessions', baseUrl],
     queryFn: ({ signal }) => useConnection.getState().gateway.harnessSessions(signal),
     refetchInterval: 120_000,
     enabled: connected,
@@ -169,7 +168,7 @@ export function ChatPage(): JSX.Element {
   // The node's driver registry + capability sheet. Rarely changes (drivers
   // register at boot), so it is cached hard and only re-read per endpoint.
   const registryQuery = useQuery({
-    queryKey: ['harnesses', baseUrl, token ?? ''],
+    queryKey: ['harnesses', baseUrl],
     queryFn: ({ signal }) => useConnection.getState().gateway.harnesses(signal),
     staleTime: 300_000,
     enabled: connected,
@@ -181,12 +180,7 @@ export function ChatPage(): JSX.Element {
   // back to the legacy scan alone — that is the no-regression path.
   // Key is shared with the registry-stream merge path below — setQueryData
   // must hit the same entry the useQuery reads.
-  const planeQueryKey = [
-    'harness-plane-sessions',
-    baseUrl,
-    token ?? '',
-    descriptors?.length ?? 0,
-  ] as const
+  const planeQueryKey = ['harness-plane-sessions', baseUrl, descriptors?.length ?? 0] as const
   const planeQuery = useQuery({
     queryKey: planeQueryKey,
     queryFn: ({ signal }) =>
@@ -196,12 +190,12 @@ export function ChatPage(): JSX.Element {
   })
 
   const invalidateSessions = (): void => {
-    void queryClient.invalidateQueries({ queryKey: ['harness-sessions', baseUrl, token ?? ''] })
+    void queryClient.invalidateQueries({ queryKey: ['harness-sessions', baseUrl] })
     void queryClient.invalidateQueries({ queryKey: ['harness-plane-sessions', baseUrl] })
   }
   useEffect(() => {
     if (sessionsDirty > 0) invalidateSessions()
-  }, [sessionsDirty, baseUrl, token, queryClient])
+  }, [sessionsDirty, baseUrl, queryClient])
 
   // Registry stream: `session-created` / `session-updated` across every driver
   // so the drawer live-updates instead of polling (contract § gateway surface).
@@ -237,7 +231,7 @@ export function ChatPage(): JSX.Element {
     return () => sub.close()
     // planeQueryKey fields are baseUrl/token/descriptors.length — listed
     // explicitly so the effect rebinds when the endpoint or driver set changes.
-  }, [connected, hasDrivers, baseUrl, token, queryClient, descriptors?.length])
+  }, [connected, hasDrivers, baseUrl, queryClient, descriptors?.length])
 
   const items = chatItems({
     drafts: chat.drafts,
@@ -518,7 +512,6 @@ function ActiveSession(props: {
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
 
   // per-conversation model + effort (persisted). Keyed per node + thread, with
   // the pre-canonical key as a read fallback; writes land on the new key.
@@ -585,7 +578,7 @@ function ActiveSession(props: {
   // API agent / node without a harness file). seed() MERGES so live WS frames
   // that raced in are kept.
   const backfill = useQuery({
-    queryKey: ['session-messages', baseUrl, token ?? '', props.sessionId, wsEpoch],
+    queryKey: ['session-messages', baseUrl, props.sessionId, wsEpoch],
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.sessionMessages(props.sessionId, signal),
     enabled: storeEmpty,
@@ -601,7 +594,7 @@ function ActiveSession(props: {
   // memory conversation. Same enable gate as ring.
   const ringEmpty = backfill.isSuccess && backfill.data.messages.length === 0
   const coldBackfill = useQuery({
-    queryKey: ['conv-messages', baseUrl, token ?? '', props.sessionId, wsEpoch],
+    queryKey: ['conv-messages', baseUrl, props.sessionId, wsEpoch],
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.conversationMessages(props.sessionId, signal),
     enabled: storeEmpty && ringEmpty,
@@ -970,11 +963,9 @@ function ActiveSession(props: {
   // The viewer bundle matches `?session=` against the ROOM keys in its own den
   // snapshot, so this is the one hub→id handoff that does not go through a
   // den-server edge and has to be projected onto the den's key space.
-  // ?token= rides along for token-gated gateways — an iframe can't carry a
-  // bearer header (den viewer net.ts keeps it across routes).
-  const denUrl =
-    `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(denRoomKey(props.sessionId))}` +
-    (token ? `&token=${encodeURIComponent(token)}` : '')
+  // Den viewer is same-origin under the gateway; device mTLS is on the TLS
+  // session (no ?token=).
+  const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(denRoomKey(props.sessionId))}`
 
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">

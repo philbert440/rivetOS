@@ -13,7 +13,7 @@ import { routeTree } from './routes.js'
 import { applyBootNodeParam } from './lib/boot-node-param.js'
 import { installClipboardBridge } from './lib/clipboard.js'
 import { maybeRedirectToRemoteUi } from './lib/remote-ui.js'
-import { tokenFor, useConnection } from './stores/connection.js'
+import { useConnection } from './stores/connection.js'
 
 // Selection copy (Ctrl/Cmd+C, context menu) must ride Tauri/Android IPC on
 // shells where the WebView's native clipboard is broken or absent.
@@ -36,17 +36,15 @@ if (!rootEl) throw new Error('missing #root element')
 
 // Boot: never leave the local/bundled dist for a remote node's UI.
 // 1) Adopt last-active remote into the gateway (repoint only).
-// 2) Honor ?node= / ?token= (Android drawer deep-link).
+// 2) Honor ?node= (Android drawer deep-link). Auth is device mTLS.
 // 3) Mount React.
 void maybeRedirectToRemoteUi((baseUrl) => {
   const { baseUrl: current, setConnection } = useConnection.getState()
-  // Preserve any saved bearer for this node (setConnection clears when token omitted).
-  if (!current) setConnection(baseUrl, tokenFor(baseUrl))
+  if (!current) setConnection(baseUrl)
 }).then(() => {
   applyBootNodeParam({
-    setConnection: (url, token) => useConnection.getState().setConnection(url, token),
+    setConnection: (url) => useConnection.getState().setConnection(url),
     addNode: (node) => useConnection.getState().addNode(node),
-    tokenFor,
   })
   createRoot(rootEl).render(
     <StrictMode>

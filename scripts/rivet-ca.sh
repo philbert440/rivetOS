@@ -19,14 +19,16 @@
 #     │   └── openssl.cnf       config used by `openssl ca`
 #     ├── crl.pem               regenerated on every revoke
 #     └── issued/
-#         ├── <node-id>.{crt,key}                 server cert, multi-SAN
-#         └── <agent-id>@<node-id>.{crt,key}      client cert
+#         ├── <node-id>.{crt,key}                 server cert, multi-SAN (mesh/gateway)
+#         ├── <agent-id>@<node-id>.{crt,key}      mesh agent client cert
+#         └── device-<id>.{crt,key}               Hub/device client cert (OU=client)
 #
 # Subcommands:
 #   init                              generate root (idempotent: bails if exists)
 #   issue-intermediate                generate intermediate signed by root
 #   issue-node <node-id> [san ...]    issue server cert with SANs
-#   issue-agent <agent-id> <node-id>  issue client cert
+#   issue-agent <agent-id> <node-id>  issue mesh agent client cert
+#   issue-client <device-id>          issue Hub/device client cert (admin enroll)
 #   revoke <cn>                       revoke a leaf, rebuild CRL
 #   crl                               regenerate CRL (no revoke)
 #   verify <cert-path>                verify a cert against the chain
@@ -263,6 +265,42 @@ cmd_issue_agent() {
   log "  expires: $(openssl x509 -in "$crt" -noout -enddate | cut -d= -f2)"
 }
 
+# Hub / Android / desktop device leaves. Same intermediate as mesh; role is
+# OU=client + CN=device:<id>. Private key stays on the device (or operator
+# handoff); never commit issued/*.key to git.
+cmd_issue_client() {
+  local device_id="${1:-}"
+  [[ -n "$device_id" ]] || err "usage: issue-client <device-id>   (e.g. pixel-phil, desk-chrome)"
+  # Safe filename: alnum, dash, underscore only
+  if [[ ! "$device_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    err "device-id must be alphanumeric / . _ - (got: $device_id)"
+  fi
+  ensure_dirs
+  write_int_cnf
+
+  local cn="device:${device_id}"
+  local file_id="device-${device_id}"
+  local key="$ISSUED_DIR/${file_id}.key"
+  local crt="$ISSUED_DIR/${file_id}.crt"
+  local csr="$ISSUED_DIR/${file_id}.csr"
+
+  [[ -f "$key" ]] || { openssl genrsa -out "$key" 2048; chmod 600 "$key"; }
+
+  openssl req -new -sha256 -key "$key" -out "$csr" \
+    -subj "/O=$ORG/OU=client/CN=${cn}"
+
+  openssl ca -batch -notext \
+    -config "$INT_DIR/openssl.cnf" \
+    -extensions v3_client \
+    -days "$DAYS_LEAF" \
+    -in "$csr" -out "$crt"
+
+  rm -f "$csr"
+  log "issued device client cert: $crt  (CN=$cn OU=client)"
+  log "  install on the device only — do not publish the .key"
+  log "  expires: $(openssl x509 -in "$crt" -noout -enddate | cut -d= -f2)"
+}
+
 cmd_revoke() {
   local cn="${1:-}"
   [[ -n "$cn" ]] || err "usage: revoke <cn>   (e.g. ct111.mesh, opus@ct111)"
@@ -315,6 +353,7 @@ main() {
     issue-intermediate)  cmd_issue_intermediate "$@" ;;
     issue-node)          cmd_issue_node "$@" ;;
     issue-agent)         cmd_issue_agent "$@" ;;
+    issue-client)        cmd_issue_client "$@" ;;
     revoke)              cmd_revoke "$@" ;;
     crl)                 cmd_crl "$@" ;;
     verify)              cmd_verify "$@" ;;

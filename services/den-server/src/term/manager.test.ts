@@ -78,6 +78,7 @@ function makeManager(
     port: extra.port ?? 5199,
     host: '127.0.0.1',
     token: extra.token ?? '',
+    tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
     stateDir,
     staticDir: '',
     packsDir: '',

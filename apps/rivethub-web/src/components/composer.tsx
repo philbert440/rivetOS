@@ -44,7 +44,6 @@ export function Composer(props: {
   const taRef = useRef<HTMLTextAreaElement>(null)
   const connected = props.wsStatus === 'open'
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
 
   // Cancel-recall: the parent pushes a cancelled queue item's text back into
   // the draft (prepended, so an in-progress draft isn't clobbered).
@@ -64,7 +63,7 @@ export function Composer(props: {
 
   // Model dropdown (Claude Code / grok Build / local + mesh) from the catalog.
   const catalog = useQuery({
-    queryKey: ['catalog-agents', baseUrl, token ?? ''],
+    queryKey: ['catalog-agents', baseUrl],
     queryFn: ({ signal }) => useConnection.getState().gateway.catalogAgents(signal),
     staleTime: 300_000,
   })

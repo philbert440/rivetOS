@@ -1,0 +1,72 @@
+# Gateway auth — Rivet CA device mTLS
+
+Gateway (den-server / RivetHub API) access uses the **same Rivet CA** as the mesh.
+Bearer tokens (`den.token`, `RIVETOS_DEN_TOKEN`, `?token=`, `Authorization: Bearer`)
+are **removed**.
+
+## Roles
+
+| Leaf | Issue | CN | OU | Use |
+|------|-------|----|----|-----|
+| Node | `rivet-ca.sh issue-node <id>` | `<id>.mesh` | — | TLS **server** on gateway + mesh |
+| Device | `rivet-ca.sh issue-client <device-id>` | `device:<device-id>` | `client` | TLS **client** (Hub desktop, Android, browser) |
+| Agent | `rivet-ca.sh issue-agent <a> <node>` | `<a>@<node>` | — | Mesh agent identity (not Hub) |
+
+Private keys under `/rivet-shared/rivet-ca/issued/*.key` are **operator secrets**.
+Never commit them. Device keys leave the CA host only via secure handoff to the device.
+
+## Node config
+
+```yaml
+den:
+  enabled: true
+  host: 0.0.0.0
+  port: 5174
+  # Paths to the node leaf (same cert as mesh issue-node for this node_name)
+  tls_cert: /rivet-shared/rivet-ca/issued/ct112.crt
+  tls_key: /rivet-shared/rivet-ca/issued/ct112.key
+  # defaults to intermediate/chain.pem
+  # tls_ca: /rivet-shared/rivet-ca/intermediate/chain.pem
+```
+
+Env equivalents: `RIVETOS_DEN_TLS_CERT`, `RIVETOS_DEN_TLS_KEY`, `RIVETOS_DEN_TLS_CA`,
+`RIVETOS_DEN_TLS_REQUIRE_CLIENT` (default on).
+
+**Loopback** (`den.host: 127.0.0.1`) may run plain HTTP without client certs for
+local node processes (hooks, embed). **Off-loopback without TLS refuses to bind.**
+
+## Enroll a device (admin)
+
+On the CA host (typically datahub / CT110):
+
+```bash
+/opt/rivetos/scripts/rivet-ca.sh issue-client pixel-phil
+# → issued/device-pixel-phil.{crt,key}
+```
+
+Install the cert+key (or a PKCS#12 export) into:
+
+- **Browser / desktop OS** certificate store (client auth)
+- **Android** app keystore (follow-up wiring)
+- **Never** publish the key in chat, git, or world-readable NFS paths
+
+Revoke:
+
+```bash
+/opt/rivetos/scripts/rivet-ca.sh revoke 'device:pixel-phil'
+/opt/rivetos/scripts/rivet-ca.sh crl
+```
+
+Nodes should reload CA/CRL on a schedule (or restart) so revocations stick.
+
+## Clients
+
+- **RivetHub web**: open `https://<node>:5174`; browser picks the device client cert.
+- **gateway-client (Node)**: optional `tls: { cert, key, ca }` PEM strings on `GatewayClientConfig`.
+- **Same-origin** Hub served by den still requires mTLS when the page is loaded over HTTPS with `requestCert`.
+
+## WireGuard device enroll
+
+`POST /api/devices/enroll` one-time tokens remain **pairing** for WireGuard mesh
+membership. They are not gateway application auth and are not a substitute for
+device client certificates.
