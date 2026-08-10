@@ -13,6 +13,110 @@ type ProbeState =
   | { kind: 'ok'; node: string; agents: number }
   | { kind: 'fail'; message: string }
 
+/**
+ * Saved-node roster editor: rename or repoint a node in place instead of
+ * remove + re-add (which loses list position and, for the active node,
+ * drops the connection first). Editing the active node's URL repoints live.
+ */
+function SavedNodesSection(): JSX.Element {
+  const { baseUrl, roster, updateNode, removeNode } = useConnection()
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState('')
+  const [draftNodeUrl, setDraftNodeUrl] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const beginEdit = (name: string, url: string): void => {
+    setEditing(url)
+    setDraftName(name)
+    setDraftNodeUrl(url)
+    setNotice('')
+  }
+
+  const commitEdit = (): void => {
+    if (editing === null) return
+    const url = draftNodeUrl.trim().replace(/\/+$/, '')
+    if (!isValidGatewayUrl(url)) {
+      setNotice('✗ invalid gateway URL (http(s)://host[:port] only)')
+      return
+    }
+    if (!draftName.trim()) {
+      setNotice('✗ name required')
+      return
+    }
+    const wasActive = editing === baseUrl
+    updateNode(editing, { name: draftName.trim(), baseUrl: url })
+    // Repointing the live connection invalidates every cached response.
+    if (wasActive && url !== editing) void queryClient.invalidateQueries()
+    setEditing(null)
+    setNotice('✓ saved')
+  }
+
+  return (
+    <>
+      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+        Saved nodes
+      </h2>
+      {roster.length === 0 && <p className="text-xs text-ink-dim">No saved nodes yet.</p>}
+      {roster.map((n) =>
+        editing === n.baseUrl ? (
+          <div key={n.baseUrl} className="mb-2 rounded border border-line bg-panel p-2">
+            <input
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              placeholder="Name"
+              className="mb-1 w-full rounded border border-line bg-panel-2 px-2 py-1 font-mono text-xs outline-none focus:border-em"
+            />
+            <input
+              value={draftNodeUrl}
+              onChange={(e) => setDraftNodeUrl(e.target.value)}
+              placeholder="https://node-host:5174"
+              className="mb-2 w-full rounded border border-line bg-panel-2 px-2 py-1 font-mono text-xs outline-none focus:border-em"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={commitEdit}
+                className="rounded bg-em-dim px-3 py-1 text-xs font-medium text-bg hover:bg-em"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setEditing(null)}
+                className="rounded border border-line px-3 py-1 text-xs hover:border-em"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div key={n.baseUrl} className="mb-1 flex items-center gap-2">
+            <span className="flex-1 truncate font-mono text-xs" title={n.baseUrl}>
+              {n.baseUrl === baseUrl ? '● ' : '○ '}
+              {n.name}
+              <span className="ml-2 text-ink-dim">{n.baseUrl}</span>
+            </span>
+            <button
+              onClick={() => beginEdit(n.name, n.baseUrl)}
+              className="rounded border border-line px-2 py-0.5 text-xs text-ink-dim hover:border-em hover:text-ink"
+              aria-label={`edit ${n.name}`}
+            >
+              Edit
+            </button>
+            <button
+              onClick={() => removeNode(n.baseUrl)}
+              className="rounded border border-line px-2 py-0.5 text-xs text-ink-dim hover:border-em hover:text-red"
+              aria-label={`remove ${n.name}`}
+            >
+              Remove
+            </button>
+          </div>
+        ),
+      )}
+      {notice && <p className="mt-1 font-mono text-[10px] text-ink-dim">{notice}</p>}
+    </>
+  )
+}
+
 export function SettingsPage(): JSX.Element {
   const { baseUrl, setConnection } = useConnection()
   const queryClient = useQueryClient()
@@ -94,6 +198,8 @@ export function SettingsPage(): JSX.Element {
         )}
         {probe.kind === 'fail' && <span className="text-red">✗ {probe.message}</span>}
       </div>
+
+      <SavedNodesSection />
 
       <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
         Memory wiki (datahub)

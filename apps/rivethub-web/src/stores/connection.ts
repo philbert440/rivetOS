@@ -44,6 +44,13 @@ interface ConnectionState {
   /** Switch to a roster node. */
   switchTo: (baseUrl: string) => void
   addNode: (node: RosterNode) => void
+  /**
+   * Edit a saved node in place (position kept). If the edit collides with
+   * another row's URL, that other row is absorbed — two rows for one
+   * endpoint would fork baseUrl-keyed state. Editing the ACTIVE node's URL
+   * repoints the live connection.
+   */
+  updateNode: (oldBaseUrl: string, node: RosterNode) => void
   removeNode: (baseUrl: string) => void
 }
 
@@ -186,6 +193,29 @@ export const useConnection = create<ConnectionState>((set, get) => {
       ].slice(-ROSTER_MAX)
       saveRoster(roster)
       set({ roster })
+    },
+
+    updateNode(oldBaseUrl: string, node: RosterNode): void {
+      const from = normalize(oldBaseUrl)
+      const to = normalize(node.baseUrl)
+      if (!isValidGatewayUrl(to)) return
+      const name = node.name.trim()
+      if (!name) return
+      const roster = get().roster
+      const idx = roster.findIndex((n) => normalize(n.baseUrl) === from)
+      if (idx === -1) return
+      const next = roster
+        // absorb any OTHER row already at the target URL — see interface doc
+        .filter((n, i) => i === idx || normalize(n.baseUrl) !== to)
+        .map((n) => (normalize(n.baseUrl) === from ? { name, baseUrl: to } : n))
+      saveRoster(next)
+      set({ roster: next })
+      if (get().baseUrl === from && to !== from) {
+        localStorage.setItem(BASE_KEY, to)
+        rememberRemoteUi(localStorage, to)
+        set({ baseUrl: to, gateway: makeGateway(to) })
+        upgradeTransport(to, set, get)
+      }
     },
 
     removeNode(rawUrl: string): void {
