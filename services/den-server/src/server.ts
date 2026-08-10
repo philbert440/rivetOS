@@ -25,8 +25,10 @@
 //   GET  /v1/models             OpenAI list (agent id = model id; gateway mount)
 //   POST /v1/chat/completions   OpenAI chat (SSE or JSON; gateway mount)
 //
-// Auth: when config.token is set, every endpoint except /healthz requires
-// `Authorization: Bearer <token>` (WS: same header, or ?token= for browsers).
+// Auth: Rivet CA device client certificates (mTLS). Bearer tokens and
+// `?token=` are not accepted. Loopback plain HTTP is allowed for the local
+// node process; off-loopback requires TLS + a device leaf (OU=client /
+// CN=device:*). See auth.ts and scripts/rivet-ca.sh issue-client.
 //
 // Stream messages that are NOT protocol AgentEvents (viewers must handle
 // them before reducing): `{type:'snapshot',...}` on connect, and
@@ -34,6 +36,7 @@
 // (evictTtlMs after session.end).
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
 import { hostname } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
@@ -80,6 +83,7 @@ import {
   type AliasRestoreResult,
   type RotationBreadcrumbSource,
 } from './harness/alias-restore.js'
+import { isGatewayAuthorized, isLoopbackHost } from './auth.js'
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
@@ -431,33 +435,22 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   }
 
   // ── terminals (opt-in) ─────────────────────────────────────────────────
-  // SECURITY GATE: RIVETOS_DEN_TERM=1 with no auth token on a non-loopback
-  // host would hang an unauthenticated shell (running as the service user)
-  // on the network. Force terminals off and say so loudly — but never crash:
-  // Restart=on-failure would loop the whole den over a config mistake.
-  // RIVETOS_DEN_TERM_OPEN=1 is the explicit operator opt-out for trusted
-  // private networks — the gate stands down, the log line stays.
-  const LOOPBACK_HOSTS = ['127.0.0.1', '::1', 'localhost']
+  // Off-loopback shells require gateway TLS + device client certs (same gate
+  // as the rest of the API). Without TLS paths, terminals stay off unless
+  // the bind is loopback.
+  const tlsReady =
+    Boolean(config.tls.certPath?.trim()) && Boolean(config.tls.keyPath?.trim())
   const termGateError =
-    config.term.enabled &&
-    !config.term.open &&
-    !config.token &&
-    !LOOPBACK_HOSTS.includes(config.host)
-      ? 'terminal disabled: RIVETOS_DEN_TOKEN required when host is not loopback'
+    config.term.enabled && !tlsReady && !isLoopbackHost(config.host)
+      ? 'terminal disabled: gateway TLS (RIVETOS_DEN_TLS_CERT/KEY) required when host is not loopback'
       : ''
   const termEnabled = config.term.enabled && !termGateError
   if (termGateError)
     console.error(
       `[den-server] SECURITY: refusing to enable terminals — RIVETOS_DEN_TERM is set but ` +
-        `RIVETOS_DEN_TOKEN is empty and host ${config.host} is not loopback. ` +
-        `Set RIVETOS_DEN_TOKEN, bind to 127.0.0.1, or opt out with RIVETOS_DEN_TERM_OPEN=1 ` +
-        `on a trusted network.`,
-    )
-  if (termEnabled && config.term.open && !config.token && !LOOPBACK_HOSTS.includes(config.host))
-    console.warn(
-      `[den-server] terminals are OPEN (tokenless on ${config.host}) by explicit ` +
-        `RIVETOS_DEN_TERM_OPEN — anything that can reach this port can spawn a shell ` +
-        `as this user.`,
+        `TLS is not configured and host ${config.host} is not loopback. ` +
+        `Set RIVETOS_DEN_TLS_CERT + RIVETOS_DEN_TLS_KEY (node cert) and enroll devices ` +
+        `with rivet-ca.sh issue-client, or bind den.host to loopback.`,
     )
 
   const rosterProvider = createRosterProvider(config.term.configFile)
@@ -570,36 +563,24 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   })
 
   // Attachment staging for remote clients (POST /api/uploads). Rides the same
-  // bearer gate as the rest of the harness surface — no separate tokenless
-  // opt-out like term/files/audio, because a caller who can reach this can
-  // already reach POST /turns, which spawns and drives a harness. The disk
-  // exposure is bounded instead: a per-upload cap plus a TTL sweep.
+  // mTLS gate as the rest of the harness surface. The disk exposure is bounded
+  // by a per-upload cap plus a TTL sweep.
   const uploadRoutes = createUploadRoutes({
     dir: config.uploads?.dir || join(config.stateDir, 'uploads'),
     ...(config.uploads ? { maxBytes: config.uploads.maxBytes, ttlMs: config.uploads.ttlMs } : {}),
     log: console.error,
   })
 
-  // MicBridge (host mic → virtual node input). Same tokenless gate pattern as
-  // terminals: off-loopback without token requires RIVETOS_DEN_AUDIO_OPEN.
+  // MicBridge — same off-loopback rule as terminals (gateway TLS required).
   const audioGateError =
-    config.audio.enabled &&
-    !config.audio.open &&
-    !config.token &&
-    !LOOPBACK_HOSTS.includes(config.host)
-      ? 'audio disabled: RIVETOS_DEN_TOKEN required when host is not loopback'
+    config.audio.enabled && !tlsReady && !isLoopbackHost(config.host)
+      ? 'audio disabled: gateway TLS required when host is not loopback'
       : ''
   const audioEnabled = config.audio.enabled && !audioGateError
   if (audioGateError)
     console.error(
       `[den-server] SECURITY: refusing to enable MicBridge — RIVETOS_DEN_AUDIO is set but ` +
-        `RIVETOS_DEN_TOKEN is empty and host ${config.host} is not loopback. ` +
-        `Set RIVETOS_DEN_TOKEN, bind to 127.0.0.1, or opt out with RIVETOS_DEN_AUDIO_OPEN=1.`,
-    )
-  if (audioEnabled && config.audio.open && !config.token && !LOOPBACK_HOSTS.includes(config.host))
-    console.warn(
-      `[den-server] MicBridge is OPEN (tokenless on ${config.host}) by explicit ` +
-        `RIVETOS_DEN_AUDIO_OPEN — anything that can reach this port can stream mic PCM.`,
+        `TLS is not configured and host ${config.host} is not loopback.`,
     )
   const audioDir = config.audio.dir || join(config.stateDir, 'audio')
   const micBridge = audioEnabled
@@ -622,19 +603,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     enabled: () => audioEnabled,
   })
 
-  // Shared filestore browser (/files/*, aliased /api/files/*) — fenced to
-  // config.filesRoot; empty root = routes off. Same tokenless-exposure gate
-  // as terminals: unauthenticated R/W on a non-loopback bind needs the
-  // explicit RIVETOS_DEN_FILES_OPEN opt-out.
+  // Shared filestore — off-loopback needs gateway TLS like every other API.
   const filesGateError =
-    config.filesRoot && !config.filesOpen && !config.token && !LOOPBACK_HOSTS.includes(config.host)
-      ? 'files disabled: RIVETOS_DEN_TOKEN required when host is not loopback (or opt out with RIVETOS_DEN_FILES_OPEN=1 on a trusted network)'
+    config.filesRoot && !tlsReady && !isLoopbackHost(config.host)
+      ? 'files disabled: gateway TLS required when host is not loopback'
       : ''
   if (filesGateError)
     console.error(
       `[den-server] SECURITY: refusing to enable /api/files — files root is set but ` +
-        `RIVETOS_DEN_TOKEN is empty and host ${config.host} is not loopback. ` +
-        `Set RIVETOS_DEN_TOKEN, bind to 127.0.0.1, or opt out with RIVETOS_DEN_FILES_OPEN=1.`,
+        `TLS is not configured and host ${config.host} is not loopback.`,
     )
   const filesRoutes =
     config.filesRoot && !filesGateError
@@ -651,8 +628,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       return pty ? { ...s, pty } : s
     })
 
-  // Mesh device enrollment (Settings → Devices). Bearer-gated except the
-  // one-time-token enroll redemption, which is matched before the gate.
+  // Mesh device enrollment (Settings → Devices). mTLS-gated except the
+  // one-time WireGuard enroll redemption (pairing), matched before the gate.
   const devicesRoutes = config.devices?.enabled
     ? createDevicesRoutes({
         config: config.devices,
@@ -662,11 +639,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       })
     : null
 
-  const authorized = (req: IncomingMessage, url: URL): boolean => {
-    if (!config.token) return true
-    const header = req.headers.authorization ?? ''
-    return header === `Bearer ${config.token}` || url.searchParams.get('token') === config.token
-  }
+  const authorized = (req: IncomingMessage, _url: URL): boolean =>
+    isGatewayAuthorized(req, {
+      tlsConfigured: tlsReady,
+      requireClientCert: config.tls.requireClientCert,
+    })
 
   const serveStatic = (res: ServerResponse, root: string, rel: string): boolean => {
     const norm = normalize(rel).replace(/^([/\\])+/, '')
@@ -734,7 +711,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     }
   }
 
-  const server = createServer((req, res) => {
+  const requestHandler = (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://localhost')
       canonicalize(url)
@@ -750,11 +727,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         json(res, 200, { ok: true, sessions: Object.keys(state.rooms).length, name: hostname() })
         return
       }
-      // Static viewer + pack art are served WITHOUT auth: the SPA's own
-      // <script>/<link>/sprite subresources can't carry a bearer token, so
-      // gating them just breaks the app shell (blank page) without protecting
-      // anything sensitive. Session data, events, layouts, mesh, and
-      // terminals all stay behind the gate below.
+      // Static viewer + pack art: served after TLS handshake. With mTLS the
+      // connection already proves device enrollment; subresources share that
+      // connection so they do not need a second app-layer credential.
       // Landing redirect (3e): '/' → config.rootRedirect (e.g. /wiki on the
       // datahub node) — before static so the SPA shell doesn't swallow it.
       if (config.rootRedirect && url.pathname === '/' && req.method === 'GET') {
@@ -816,7 +791,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         return
       }
 
-      // Gateway route mounts (G0): longest prefix wins; behind the bearer
+      // Gateway route mounts (G0): longest prefix wins; behind the mTLS
       // gate, ahead of den's own API routes.
       if (opts.extraRoutes?.length) {
         const route = opts.extraRoutes
@@ -833,7 +808,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         }
       }
 
-      // Mesh devices (behind the bearer gate)
+      // Mesh devices (behind the mTLS gate)
       if (url.pathname === '/api/devices' || url.pathname.startsWith('/api/devices/')) {
         if (!devicesRoutes)
           return json(res, 503, { error: 'device enrollment disabled on this node' })
@@ -842,7 +817,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         return json(res, 404, { error: 'not found' })
       }
 
-      // Harness control plane (behind the bearer gate). Runs alongside the
+      // Harness control plane (behind the mTLS gate). Runs alongside the
       // legacy /term/harness-sessions/* endpoints the hub still uses — the
       // design doc prunes those in Phase 5, not here.
       if (
@@ -856,7 +831,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         return json(res, 404, { error: 'not found' })
       }
 
-      // Harness attachment staging (behind the bearer gate). Turns remote
+      // Harness attachment staging (behind the mTLS gate). Turns remote
       // client bytes into a node-local path a UserTurn can reference.
       if (url.pathname === '/api/uploads' || url.pathname.startsWith('/api/uploads/')) {
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
@@ -1152,7 +1127,47 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       console.error('request failed:', e)
       if (!res.headersSent) json(res, 500, { error: 'internal error' })
     })
-  })
+  }
+
+  // Plain HTTP only for loopback. Off-loopback without TLS refuses to listen
+  // so a misconfigured node never serves Hub/API to the LAN unauthenticated.
+  if (!tlsReady && !isLoopbackHost(config.host)) {
+    throw new Error(
+      `[den-server] refusing to bind ${config.host}: gateway TLS is required off-loopback ` +
+        `(set RIVETOS_DEN_TLS_CERT + RIVETOS_DEN_TLS_KEY to the node cert from rivet-ca issue-node; ` +
+        `enroll clients with rivet-ca issue-client). Or bind den.host to 127.0.0.1.`,
+    )
+  }
+
+  let server: Server
+  if (tlsReady) {
+    const cert = readFileSync(config.tls.certPath)
+    const key = readFileSync(config.tls.keyPath)
+    const ca = existsSync(config.tls.caPath) ? readFileSync(config.tls.caPath) : undefined
+    if (!ca) {
+      throw new Error(
+        `[den-server] TLS CA chain missing at ${config.tls.caPath} — cannot verify device client certs`,
+      )
+    }
+    server = createHttpsServer(
+      {
+        cert,
+        key,
+        ca,
+        // Require a client cert and verify against our CA. Loopback clients
+        // may omit it; isGatewayAuthorized still allows them.
+        requestCert: config.tls.requireClientCert,
+        rejectUnauthorized: config.tls.requireClientCert,
+      },
+      requestHandler,
+    )
+    console.error(
+      `[den-server] HTTPS + client certs (requireClientCert=${config.tls.requireClientCert}) ` +
+        `cert=${config.tls.certPath}`,
+    )
+  } else {
+    server = createServer(requestHandler)
+  }
 
   // noServer + manual upgrade so auth runs before the WS handshake completes
   const wss = new WebSocketServer({ noServer: true })

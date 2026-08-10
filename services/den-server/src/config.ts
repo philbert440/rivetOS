@@ -23,10 +23,8 @@ export interface DenTermConfig {
   /** Opt-in master switch — terminals are OFF unless RIVETOS_DEN_TERM=1/on.
    *  Spawning a shell as the service user is a deliberate act, never a default. */
   enabled: boolean
-  /** RIVETOS_DEN_TERM_OPEN=1: explicit operator opt-out of the tokenless
-   *  security gate — terminals stay enabled with no token off-loopback.
-   *  For trusted private networks; anything that can reach the port can
-   *  then spawn a shell as the service user. Loudly logged, never default. */
+  /** @deprecated Tokenless LAN open. Ignored: terminals require gateway mTLS
+   *  (or loopback) like the rest of the API. Kept for config parse compat. */
   open: boolean
   /** Operator-owned command roster (see term/roster.ts). Re-read lazily, so
    *  edits don't need a restart. */
@@ -58,7 +56,7 @@ export interface DenTermConfig {
 export interface DenAudioConfig {
   /** Opt-in master switch — OFF unless RIVETOS_DEN_AUDIO=1/on. */
   enabled: boolean
-  /** RIVETOS_DEN_AUDIO_OPEN=1: allow tokenless off-loopback (trusted LAN). */
+  /** @deprecated Tokenless LAN open — ignored; MicBridge uses gateway mTLS. */
   open: boolean
   /** Runtime dir for FIFO + audit (default: $stateDir/audio). Empty = derive. */
   dir: string
@@ -68,12 +66,30 @@ export interface DenAudioConfig {
   sampleRate: number
 }
 
+/** TLS for the gateway. When set, den listens with HTTPS and (by default)
+ *  requires a Rivet CA device client certificate for non-loopback clients.
+ *  Bearer tokens are not supported — enroll devices with `rivet-ca.sh issue-client`. */
+export interface DenTlsFileConfig {
+  /** Path to the node server certificate (PEM). */
+  certPath: string
+  /** Path to the matching private key (PEM). */
+  keyPath: string
+  /** Path to the CA chain used to verify client certs (default: Rivet intermediate chain). */
+  caPath: string
+  /** Require a verified device client cert off-loopback (default true). */
+  requireClientCert: boolean
+}
+
 export interface DenConfig {
   port: number
   host: string
-  /** Bearer token required on every non-health endpoint when set. Mesh nodes
-   *  behind the LAN can leave it empty; the hosted tier must not. */
+  /**
+   * @deprecated Removed. Gateway auth is Rivet CA client certificates only.
+   * Kept optional on the type during load so old env still parses; always "".
+   */
   token: string
+  /** HTTPS + mTLS client auth. Empty paths = plain HTTP (loopback only). */
+  tls: DenTlsFileConfig
   /** Directory for persisted state (per-viewer layouts). */
   stateDir: string
   /** Built viewer app to serve at / (optional). */
@@ -97,9 +113,7 @@ export interface DenConfig {
   /** Shared filestore root for /api/files/* (browse/download/upload).
    *  Empty string disables the routes entirely. */
   filesRoot: string
-  /** RIVETOS_DEN_FILES_OPEN=1: explicit opt-out of the tokenless security
-   *  gate for /api/files/* — same trusted-LAN posture as term.open. Without
-   *  it, tokenless non-loopback nodes get files routes refused, not exposed. */
+  /** @deprecated Tokenless files open — ignored; files use gateway mTLS. */
   filesOpen: boolean
   /** Mesh device enrollment (/api/devices/*, Settings → Devices). Optional
    *  so hand-built test configs predating the feature stay valid. */
@@ -168,13 +182,32 @@ export interface DenDevicesConfig {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
+  const defaultCa =
+    env.RIVETOS_DEN_TLS_CA?.trim() ||
+    env.RIVET_CA_CHAIN?.trim() ||
+    '/rivet-shared/rivet-ca/intermediate/chain.pem'
+  // Client cert required unless explicitly set to 0/off/false.
+  const requireClientRaw = (env.RIVETOS_DEN_TLS_REQUIRE_CLIENT ?? '1').trim().toLowerCase()
+  const requireClientCert = !(
+    requireClientRaw === '0' ||
+    requireClientRaw === 'off' ||
+    requireClientRaw === 'false' ||
+    requireClientRaw === 'no'
+  )
   return {
     port: intEnv(env, 'RIVETOS_DEN_PORT', 5174),
-    // fail safe: loopback unless explicitly exposed — the default token is
-    // empty, so 0.0.0.0 out of the box would be unauthenticated on all
-    // interfaces. Mesh deployments set RIVETOS_DEN_HOST=0.0.0.0.
+    // fail safe: loopback unless explicitly exposed. Off-loopback needs TLS
+    // + device client certs (see auth.ts) — plain 0.0.0.0 HTTP is rejected at
+    // listen time when tls paths are empty.
     host: env.RIVETOS_DEN_HOST ?? '127.0.0.1',
-    token: env.RIVETOS_DEN_TOKEN ?? '',
+    // Bearer removed — always empty. Old RIVETOS_DEN_TOKEN env is ignored.
+    token: '',
+    tls: {
+      certPath: env.RIVETOS_DEN_TLS_CERT?.trim() || '',
+      keyPath: env.RIVETOS_DEN_TLS_KEY?.trim() || '',
+      caPath: defaultCa,
+      requireClientCert,
+    },
     stateDir: env.RIVETOS_DEN_STATE_DIR ?? join(homedir(), '.rivetos', 'den'),
     staticDir: env.RIVETOS_DEN_STATIC_DIR ?? '',
     rootRedirect: env.RIVETOS_DEN_ROOT_REDIRECT ?? '',

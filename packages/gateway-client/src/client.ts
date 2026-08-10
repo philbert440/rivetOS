@@ -417,7 +417,7 @@ export class RivetGateway {
    * Attach URL for WS /api/terminal/ws (binary protocol — hello JSON frame,
    * then scrollback/live bytes; see den-server term/ws.ts). The caller opens
    * the socket itself (xterm needs raw binary; the subscribe() helper is
-   * JSON-frame-only). Token rides ?token= like every gateway WS.
+   * JSON-frame-only). Auth is mTLS (device client cert).
    */
   terminalWsUrl(attach: { id?: string; session?: string }): string {
     const u = new URL(
@@ -427,7 +427,6 @@ export class RivetGateway {
     u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
     if (attach.id) u.searchParams.set('id', attach.id)
     if (attach.session) u.searchParams.set('session', attach.session)
-    if (this.config.token) u.searchParams.set('token', this.config.token)
     return u.toString()
   }
 
@@ -611,7 +610,6 @@ export class RivetGateway {
       this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
     )
     u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
-    if (this.config.token) u.searchParams.set('token', this.config.token)
     return u.toString()
   }
 
@@ -621,7 +619,7 @@ export class RivetGateway {
     return request(this.config, '/api/files/list', { query: { path }, signal })
   }
 
-  /** Browser download/open URL for one file. Token rides ?token= (same
+  /** Browser download/open URL for one file. mTLS (same
    *  pattern as terminalWsUrl — an <a href>/window.open can't carry a
    *  bearer header). */
   fileDownloadUrl(path: string): string {
@@ -630,7 +628,6 @@ export class RivetGateway {
       this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
     )
     u.searchParams.set('path', path)
-    if (this.config.token) u.searchParams.set('token', this.config.token)
     return u.toString()
   }
 
@@ -645,7 +642,7 @@ export class RivetGateway {
     try {
       res = await fetch(url, {
         method: 'GET',
-        headers: this.config.token ? { authorization: `Bearer ${this.config.token}` } : undefined,
+        headers: undefined,
         signal,
       })
     } catch (err: unknown) {
@@ -705,7 +702,6 @@ export class RivetGateway {
     u.searchParams.set('name', name)
     if (opts.overwrite) u.searchParams.set('overwrite', '1')
     const headers: Record<string, string> = { 'content-type': 'application/octet-stream' }
-    if (this.config.token) headers.authorization = `Bearer ${this.config.token}`
     let res: Response
     try {
       res = await fetch(u.toString(), {
@@ -779,7 +775,7 @@ export class RivetGateway {
   // -- health -----------------------------------------------------------------
 
   /** Cheap reachability probe (den-server /healthz, never token-gated) —
-   *  sent tokenless so the credential never rides a probe. */
+   *  tokenless probe — no client cert required for /healthz. */
   async health(signal?: AbortSignal): Promise<boolean> {
     try {
       await request({ baseUrl: this.config.baseUrl }, '/healthz', { signal })

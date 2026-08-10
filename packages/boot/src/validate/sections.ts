@@ -795,7 +795,10 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
   // Only enforced when den.enabled (a disabled section deploys nothing);
   // den-server's own runtime gate remains the backstop.
   const host = typeof den.host === 'string' ? den.host.trim() : '127.0.0.1'
-  const hasToken = typeof den.token === 'string' && den.token.length > 0
+  // Off-loopback terminals need gateway TLS (device mTLS), not a bearer token.
+  const hasToken =
+    typeof (den as { tls_cert?: string }).tls_cert === 'string' &&
+    Boolean((den as { tls_cert?: string }).tls_cert?.trim())
   if (
     den.enabled === true &&
     terminalEnabled &&
@@ -807,9 +810,9 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
       severity: 'error',
       path: `${path}.token`,
       message:
-        '"den.token" is required when den.terminal.enabled is true and den.host is not loopback ' +
+        '"den.tls_cert" (and den.tls_key) is required when den.terminal.enabled is true and den.host is not loopback ' +
         '(127.0.0.1/::1/localhost) — an exposed token-less terminal would hang an unauthenticated ' +
-        'shell on the network. Set den.token, bind den.host to loopback, or explicitly opt out ' +
+        'shell on the network. Set den.tls_cert/tls_key, bind den.host to loopback, or disable terminals. ' +
         'with den.terminal.open: true on a trusted private network.',
     })
   }

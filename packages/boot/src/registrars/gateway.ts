@@ -9,10 +9,9 @@
  * unit is somehow still holding the port, we log loudly and skip — the den
  * routes keep being served by the old unit until the next update pass.
  *
- * Token: den.token from config when set; otherwise a per-node token is
- * generated once at ~/.rivetos/gateway.token (0600) and reused —
- * `rivetos gateway token` prints it for clients. Private-LAN posture:
- * loopback binds may run tokenless, exactly like the standalone server did.
+ * Auth: Rivet CA device client certificates (mTLS). den.token / bearer
+ * tokens are removed. Off-loopback requires RIVETOS_DEN_TLS_CERT/KEY (node
+ * leaf from issue-node) + clients enrolled via issue-client.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -20,7 +19,6 @@ import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { randomBytes } from 'node:crypto'
 import { logger, createGatewayChannel, createOpenAICompatRoute, type Runtime } from '@rivetos/core'
 import type { GatewayRoute, HarnessDriver, SessionWsFrame } from '@rivetos/types'
 
@@ -33,19 +31,18 @@ import type { RivetConfig } from '../config.js'
 
 const log = logger('Boot:Gateway')
 
+/** @deprecated Bearer gateway tokens removed — use rivet-ca issue-client. */
 export const GATEWAY_TOKEN_FILE = join(homedir(), '.rivetos', 'gateway.token')
 
-/** Read-or-mint the per-node gateway token (0600). Exported for the CLI. */
-export function ensureGatewayToken(file: string = GATEWAY_TOKEN_FILE): string {
-  if (existsSync(file)) {
-    const token = readFileSync(file, 'utf8').trim()
-    if (token) return token
-  }
-  mkdirSync(join(homedir(), '.rivetos'), { recursive: true })
-  const token = randomBytes(24).toString('base64url')
-  writeFileSync(file, token + '\n', { mode: 0o600 })
-  log.info(`Generated gateway token at ${file}`)
-  return token
+/**
+ * @deprecated No longer mints or reads bearer tokens. Throws so callers that
+ * still invoke `rivetos gateway token` fail loudly instead of inventing secrets.
+ */
+export function ensureGatewayToken(_file: string = GATEWAY_TOKEN_FILE): string {
+  throw new Error(
+    'Gateway bearer tokens are removed. Enroll devices with: rivet-ca.sh issue-client <device-id> ' +
+      'and configure den TLS (RIVETOS_DEN_TLS_CERT/KEY). See docs/GATEWAY-MTLS.md',
+  )
 }
 
 /**
@@ -178,6 +175,31 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     const value = process.env[key]?.trim()
     if (value) env[key] = value
   }
+
+  // Gateway mTLS — node leaf + CA chain for verifying device client certs.
+  // Prefer explicit den.tls_* config; fall back to mesh issue-node paths.
+  const nodeName = config.mesh?.node_name?.trim()
+  const defaultCert = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : ''
+  const defaultKey = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.key` : ''
+  const cert =
+    (den as { tls_cert?: string }).tls_cert?.trim() ||
+    process.env.RIVETOS_DEN_TLS_CERT?.trim() ||
+    (existsSync(defaultCert) ? defaultCert : '')
+  const key =
+    (den as { tls_key?: string }).tls_key?.trim() ||
+    process.env.RIVETOS_DEN_TLS_KEY?.trim() ||
+    (existsSync(defaultKey) ? defaultKey : '')
+  const ca =
+    (den as { tls_ca?: string }).tls_ca?.trim() ||
+    process.env.RIVETOS_DEN_TLS_CA?.trim() ||
+    '/rivet-shared/rivet-ca/intermediate/chain.pem'
+  if (cert) env.RIVETOS_DEN_TLS_CERT = cert
+  if (key) env.RIVETOS_DEN_TLS_KEY = key
+  if (ca) env.RIVETOS_DEN_TLS_CA = ca
+  if ((den as { tls_require_client?: boolean }).tls_require_client === false) {
+    env.RIVETOS_DEN_TLS_REQUIRE_CLIENT = '0'
+  }
+
   return env
 }
 
@@ -262,17 +284,8 @@ export async function registerGateway(
 
   const env = buildGatewayEnv(config, installRoot)
   const denConfig = loadDenConfig({ ...env })
-  // Token semantics UNCHANGED from the standalone server: den.token from
-  // config or tokenless. Nodes like ct112/ct114 run 0.0.0.0 + terminal.open
-  // with tokenless hook ingest — auto-generating a token here would 401
-  // their /event POSTs on deploy. The generated ~/.rivetos/gateway.token
-  // (rivetos gateway token) is OPT-IN plumbing for RivetHub clients later;
-  // the gateway only uses it when den.token is set to the literal string
-  // 'gateway-token-file'.
-  denConfig.token =
-    config.den.token?.trim() === 'gateway-token-file'
-      ? ensureGatewayToken()
-      : (config.den.token?.trim() ?? '')
+  // Bearer removed: denConfig.token is always empty from loadConfig.
+  // TLS paths come from den.tls_* / env in buildGatewayEnv.
 
   const den = createDenServer(denConfig, {
     extraRoutes: [...extraRoutes, ...gatewayChannel.routes, openaiRoute],

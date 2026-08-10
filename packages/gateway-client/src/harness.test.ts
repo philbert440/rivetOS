@@ -239,19 +239,19 @@ describe('harness control plane — session operations', () => {
 })
 
 describe('harness control plane — websockets', () => {
-  it('puts the session segment (and the token) in the query string', () => {
+  it('puts the session segment in the query string (no token)', () => {
     const urls: string[] = []
     const factory = (url: string): never => {
       urls.push(url)
       throw new Error('stop') // URL is all this asserts; no socket needed
     }
-    const client = new RivetGateway({ baseUrl, token: 'tok' })
+    const client = new RivetGateway({ baseUrl })
     expect(() => client.watchHarnessSession(PATH_SID, () => {}, { factory })).toThrow('stop')
     const parsed = new URL(urls[0])
     expect(parsed.protocol).toBe('ws:')
     expect(parsed.pathname).toBe('/api/harness-sessions/ws')
     expect(parsed.searchParams.get('session')).toBe(encodeSessionIdSegment(PATH_SID))
-    expect(parsed.searchParams.get('token')).toBe('tok')
+    expect(parsed.searchParams.get('token')).toBeNull()
   })
 
   it('filters the registry stream by harness id, and omits the filter when absent', () => {

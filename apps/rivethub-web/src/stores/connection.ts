@@ -1,15 +1,15 @@
 /**
  * Connection state: which node's gateway this client talks to, plus the
- * saved roster for the 4h node switcher. Defaults to the origin that served
- * the app (den-server serves us, so same-origin just works tokenless on the
- * LAN).
+ * saved roster for the node switcher. Defaults to the origin that served
+ * the app when that origin is http(s).
  *
- * Storage split, deliberate: the roster ({name, baseUrl}[]) and the active
- * baseUrl persist in localStorage; tokens live in sessionStorage keyed per
- * node (never bundled, gone when the tab dies). Switching nodes re-points
- * the RivetGateway — chat/notification stores watch the endpoint identity
- * and reset themselves (per-gateway session ids, #299). The UI dist never
- * leaves the local origin; only the gateway baseUrl changes.
+ * Auth is Rivet CA device client certificates (mTLS). Browsers present the
+ * enrolled device cert from the OS/browser store — there is no bearer token.
+ * Unenrolled devices cannot complete the TLS handshake on a correctly
+ * configured node.
+ *
+ * Storage: roster + active baseUrl in localStorage. Legacy rivethub.token.*
+ * sessionStorage keys are cleared on setConnection.
  */
 
 import { create } from 'zustand'
@@ -30,11 +30,10 @@ export interface RosterNode {
 
 interface ConnectionState {
   baseUrl: string
-  token?: string
   gateway: RivetGateway
   roster: RosterNode[]
-  setConnection: (baseUrl: string, token?: string) => void
-  /** Switch to a roster node (its saved token rides along). */
+  setConnection: (baseUrl: string) => void
+  /** Switch to a roster node. */
   switchTo: (baseUrl: string) => void
   addNode: (node: RosterNode) => void
   removeNode: (baseUrl: string) => void
@@ -44,19 +43,22 @@ const normalize = (url: string): string => url.trim().replace(/\/+$/, '')
 
 const ROSTER_MAX = 20
 
-/** Per-node bearer from sessionStorage (gone when the tab dies). */
-export function tokenFor(baseUrl: string): string | undefined {
-  return sessionStorage.getItem(TOKEN_PREFIX + normalize(baseUrl)) ?? undefined
+/** @deprecated Bearer tokens removed — always undefined. */
+export function tokenFor(_baseUrl: string): string | undefined {
+  return undefined
 }
 
-/** One-time migration: pre-4h stored a single token under
- *  'rivethub.gatewayToken'; adopt it for the active node (#304). */
-function migrateLegacyToken(baseUrl: string): void {
-  const legacy = sessionStorage.getItem('rivethub.gatewayToken')
-  if (legacy && !sessionStorage.getItem(TOKEN_PREFIX + baseUrl)) {
-    sessionStorage.setItem(TOKEN_PREFIX + baseUrl, legacy)
+function scrubLegacyTokens(): void {
+  try {
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const k = sessionStorage.key(i)
+      if (k?.startsWith(TOKEN_PREFIX) || k === 'rivethub.gatewayToken') {
+        sessionStorage.removeItem(k)
+      }
+    }
+  } catch {
+    /* private mode */
   }
-  if (legacy) sessionStorage.removeItem('rivethub.gatewayToken')
 }
 
 function loadRoster(): RosterNode[] {
@@ -72,7 +74,7 @@ function loadRoster(): RosterNode[] {
       if (typeof name !== 'string' || name.trim() === '') continue
       if (typeof baseUrl !== 'string' || !isValidGatewayUrl(normalize(baseUrl))) continue
       const url = normalize(baseUrl)
-      if (seen.has(url)) continue // legacy trailing-slash dupes collapse here
+      if (seen.has(url)) continue
       seen.add(url)
       nodes.push({ name, baseUrl: url })
       if (nodes.length >= ROSTER_MAX) break
@@ -87,19 +89,14 @@ function saveRoster(roster: RosterNode[]): void {
   localStorage.setItem(ROSTER_KEY, JSON.stringify(roster))
 }
 
-function makeGateway(baseUrl: string, token?: string): RivetGateway {
-  return new RivetGateway({ baseUrl, token, authMode: token ? 'bearer' : 'none' })
+function makeGateway(baseUrl: string): RivetGateway {
+  return new RivetGateway({ baseUrl, authMode: 'mtls' })
 }
 
-/** The served origin only counts as a gateway when it's http(s) — under the
- *  Tauri desktop shell it's tauri://localhost (no gateway there), so the app
- *  starts unconfigured and prompts for a node (#4j smoke). */
 function defaultBaseUrl(): string {
   const stored = localStorage.getItem(BASE_KEY)
   if (stored) {
     const s = normalize(stored)
-    // a poisoned/stale non-http value (e.g. tauri://localhost) must not slip
-    // past the origin guard (#306).
     return isValidGatewayUrl(s) ? s : ''
   }
   const origin = normalize(window.location.origin)
@@ -108,49 +105,38 @@ function defaultBaseUrl(): string {
 
 export const useConnection = create<ConnectionState>((set, get) => {
   const baseUrl = defaultBaseUrl()
-  if (baseUrl) migrateLegacyToken(baseUrl)
-  const token = tokenFor(baseUrl)
+  scrubLegacyTokens()
   return {
     baseUrl,
-    token,
-    gateway: makeGateway(baseUrl, token),
+    gateway: makeGateway(baseUrl),
     roster: loadRoster(),
 
-    setConnection(rawUrl: string, nextToken?: string): void {
+    setConnection(rawUrl: string): void {
       const nextBaseUrl = normalize(rawUrl)
       localStorage.setItem(BASE_KEY, nextBaseUrl)
-      if (nextToken) sessionStorage.setItem(TOKEN_PREFIX + nextBaseUrl, nextToken)
-      else sessionStorage.removeItem(TOKEN_PREFIX + nextBaseUrl)
-      // Persist last-active for bundled-shell boot adoption (no navigation).
+      scrubLegacyTokens()
       if (isValidGatewayUrl(nextBaseUrl)) rememberRemoteUi(localStorage, nextBaseUrl)
       set({
         baseUrl: nextBaseUrl,
-        token: nextToken,
-        gateway: makeGateway(nextBaseUrl, nextToken),
+        gateway: makeGateway(nextBaseUrl),
       })
     },
 
     switchTo(rawUrl: string): void {
       const nextBaseUrl = normalize(rawUrl)
-      // Defense in depth: only http(s) roster members are switchable — the
-      // UI already restricts this, the store enforces it (#304 review).
       if (!isValidGatewayUrl(nextBaseUrl)) return
       if (!get().roster.some((n) => n.baseUrl === nextBaseUrl)) return
-      const nextToken = tokenFor(nextBaseUrl)
       localStorage.setItem(BASE_KEY, nextBaseUrl)
       if (isValidGatewayUrl(nextBaseUrl)) rememberRemoteUi(localStorage, nextBaseUrl)
       set({
         baseUrl: nextBaseUrl,
-        token: nextToken,
-        gateway: makeGateway(nextBaseUrl, nextToken),
+        gateway: makeGateway(nextBaseUrl),
       })
     },
 
     addNode(node: RosterNode): void {
       if (!isValidGatewayUrl(normalize(node.baseUrl))) return
       const url = normalize(node.baseUrl)
-      // Keep a friendly roster name if already present — ?node= boot re-adds
-      // with host:port every time and must not clobber a user/mesh label.
       const existing = get().roster.find((n) => normalize(n.baseUrl) === url)
       const roster = [
         ...get().roster.filter((n) => normalize(n.baseUrl) !== url),
@@ -164,8 +150,6 @@ export const useConnection = create<ConnectionState>((set, get) => {
       const url = normalize(rawUrl)
       const roster = get().roster.filter((n) => normalize(n.baseUrl) !== url)
       saveRoster(roster)
-      // Removed node ⇒ its credential goes too (#304 review).
-      sessionStorage.removeItem(TOKEN_PREFIX + url)
       set({ roster })
     },
   }

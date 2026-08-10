@@ -112,6 +112,7 @@ function baseConfig(stateDir: string, term: Partial<DenTermConfig> = {}): DenCon
     port: 0,
     host: '127.0.0.1',
     token: '',
+    tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
     stateDir,
     staticDir: '',
     packsDir: '',
@@ -381,31 +382,28 @@ describe('WS /term attach protocol', () => {
     expect(await upgradeResult(port, '')).toBe('rejected')
   })
 
-  it('destroys upgrades without a valid token; accepts ?token= like /ws', async () => {
-    const { port, base } = await start({ token: 'sekrit' })
+  it('accepts term WS upgrades on loopback without a client cert', async () => {
+    const { port, base } = await start()
     const res = await fetch(`${base}/term`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer sekrit' },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ command: 'shell' }),
     })
     const pty = (await res.json()) as SpawnedPty
-    expect(await upgradeResult(port, `id=${pty.id}`)).toBe('rejected')
-    expect(await upgradeResult(port, `id=${pty.id}&token=wrong`)).toBe('rejected')
-    expect(await upgradeResult(port, `id=${pty.id}&token=sekrit`)).toBe('open')
+    expect(await upgradeResult(port, `id=${pty.id}`)).toBe('open')
   })
 
-  it('destroys upgrades when terminals are disabled, gated or node-pty is absent', async () => {
+  it('destroys upgrades when terminals are disabled or node-pty is absent', async () => {
     const disabled = await start({}, { enabled: false })
     expect(await upgradeResult(disabled.port, 'id=pty-x')).toBe('rejected')
 
-    // security gate: enabled + no token + non-loopback → terminals forced off
-    const gated = await start({ host: '0.0.0.0', token: '' })
-    expect(await upgradeResult(gated.port, 'id=pty-x')).toBe('rejected')
+    // non-loopback without TLS refuses to construct the server entirely
+    await expect(start({ host: '0.0.0.0' })).rejects.toThrow(/TLS is required off-loopback/)
 
     const noPty = await start({}, {}, { ptySpawn: null })
     expect(await upgradeResult(noPty.port, 'id=pty-x')).toBe('rejected')
 
-    // the /ws channel is untouched by any of it
+    // the /ws channel is untouched by terminal disable
     const ok = new WebSocket(`ws://127.0.0.1:${disabled.port}/ws`)
     sockets.push(ok)
     await new Promise((r, j) => {

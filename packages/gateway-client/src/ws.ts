@@ -4,7 +4,7 @@
  *
  * Uses the platform WebSocket (browser / node ≥22 undici) through a minimal
  * structural type so the package needs neither lib.dom nor the 'ws' package
- * at runtime. Auth rides `?token=` — browsers cannot set headers on WS.
+ * at runtime. Auth is mTLS on the TLS session (no ?token=).
  */
 
 import type { GatewayClientConfig } from '@rivetos/types'
@@ -63,9 +63,7 @@ export function subscribe<TFrame>(
     for (const [key, value] of Object.entries(opts.query ?? {})) {
       if (value !== undefined) u.searchParams.set(key, value)
     }
-    // Operators note: the token appears in server/proxy access logs — the
-    // unavoidable browser tradeoff (no WS headers). LAN-trust posture today.
-    if (config.token) u.searchParams.set('token', config.token)
+    // Auth is mTLS on the TLS session — no ?token= query param.
     return u.toString()
   }
 
