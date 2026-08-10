@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { transportBase } from './mtls-proxy.js'
 
 /** Prettify a node hostname into a human label: `rivet-grok` → `Rivet-Grok`,
  *  `rivet-cfo` → `Rivet-Cfo`. Splits on hyphens/dots, title-cases each part. */
@@ -30,7 +31,10 @@ export function useNodeName(baseUrl: string): string | undefined {
     gcTime: 3_600_000,
     retry: false,
     queryFn: async ({ signal }): Promise<string | null> => {
-      const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/healthz`, { signal })
+      // Desktop mTLS (#491): https gateways are reached via the shell's
+      // loopback identity pipe; everywhere else this resolves to baseUrl.
+      const base = await transportBase(baseUrl.replace(/\/+$/, ''))
+      const res = await fetch(`${base.replace(/\/+$/, '')}/healthz`, { signal })
       if (!res.ok) return null
       const body = (await res.json()) as { name?: unknown }
       return typeof body.name === 'string' && body.name ? prettifyNodeName(body.name) : null

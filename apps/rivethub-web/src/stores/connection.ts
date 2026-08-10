@@ -16,6 +16,7 @@ import { create } from 'zustand'
 import { RivetGateway } from '@rivetos/gateway-client'
 import { isValidGatewayUrl } from '../lib/gateway-url.js'
 import { rememberRemoteUi } from '../lib/remote-ui.js'
+import { transportBase } from '../lib/mtls-proxy.js'
 
 export { isValidGatewayUrl } from '../lib/gateway-url.js'
 
@@ -93,6 +94,23 @@ function makeGateway(baseUrl: string): RivetGateway {
   return new RivetGateway({ baseUrl, authMode: 'mtls' })
 }
 
+/**
+ * Desktop mTLS (#491): swap an https gateway for its loopback identity pipe
+ * once the shell resolves one. The direct gateway set synchronously covers
+ * the await gap (and stays when the bridge declines — browsers, http nodes).
+ */
+function upgradeTransport(
+  baseUrl: string,
+  set: (partial: Partial<ConnectionState>) => void,
+  get: () => ConnectionState,
+): void {
+  void transportBase(baseUrl).then((transport) => {
+    if (transport === baseUrl) return
+    if (get().baseUrl !== baseUrl) return // switched nodes while resolving
+    set({ gateway: makeGateway(transport) })
+  })
+}
+
 function defaultBaseUrl(): string {
   const stored = localStorage.getItem(BASE_KEY)
   if (stored) {
@@ -106,6 +124,9 @@ function defaultBaseUrl(): string {
 export const useConnection = create<ConnectionState>((set, get) => {
   const baseUrl = defaultBaseUrl()
   scrubLegacyTokens()
+  queueMicrotask(() => {
+    upgradeTransport(baseUrl, set, get)
+  })
   return {
     baseUrl,
     gateway: makeGateway(baseUrl),
@@ -120,6 +141,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
         baseUrl: nextBaseUrl,
         gateway: makeGateway(nextBaseUrl),
       })
+      upgradeTransport(nextBaseUrl, set, get)
     },
 
     switchTo(rawUrl: string): void {
@@ -132,6 +154,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
         baseUrl: nextBaseUrl,
         gateway: makeGateway(nextBaseUrl),
       })
+      upgradeTransport(nextBaseUrl, set, get)
     },
 
     addNode(node: RosterNode): void {
