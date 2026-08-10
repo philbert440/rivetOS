@@ -8,7 +8,7 @@
 import { writeFile, mkdir, access, readFile, readdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { stringify as toYaml } from 'yaml'
-import type { WizardState, WizardAgent, WizardChannel } from './types.js'
+import type { WizardState, WizardAgent } from './types.js'
 import { PROVIDER_ENV_KEYS } from './agents.js'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -84,14 +84,8 @@ function buildConfigYaml(state: WizardState): string {
   }
   config.providers = providers
 
-  // Channels
-  if (state.channels.length > 0) {
-    const channels: Record<string, Record<string, unknown>> = {}
-    for (const ch of state.channels) {
-      channels[ch.type] = buildChannelConfig(ch)
-    }
-    config.channels = channels
-  }
+  // Channels: social bots removed in Phase 5. Human UX is RivetHub.
+  // Optional agent mesh can be added manually under channels.agent.
 
   // Memory
   config.memory = {
@@ -141,22 +135,6 @@ function buildProviderConfig(agent: WizardAgent): Record<string, unknown> {
   return config
 }
 
-function buildChannelConfig(channel: WizardChannel): Record<string, unknown> {
-  const config: Record<string, unknown> = {
-    owner_id: channel.ownerId,
-  }
-
-  if (channel.type === 'telegram') {
-    config.allowed_users = [channel.ownerId]
-  }
-
-  if (channel.type === 'discord') {
-    config.channel_bindings = {}
-  }
-
-  return config
-}
-
 function buildDeploymentConfig(state: WizardState): Record<string, unknown> {
   // Only `target` is read anywhere at runtime; nested keys were write-only.
   return { target: state.deployment }
@@ -186,15 +164,6 @@ function buildEnvFile(state: WizardState): EnvEntry[] {
       if (envKey) {
         entries.push({ key: envKey, value: agent.apiKey, comment: `${agent.provider} provider` })
       }
-    }
-  }
-
-  // Channel tokens
-  for (const ch of state.channels) {
-    if (ch.type === 'discord') {
-      entries.push({ key: 'DISCORD_BOT_TOKEN', value: ch.botToken, comment: 'Discord bot' })
-    } else {
-      entries.push({ key: 'TELEGRAM_BOT_TOKEN', value: ch.botToken, comment: 'Telegram bot' })
     }
   }
 

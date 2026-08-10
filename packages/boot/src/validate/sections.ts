@@ -472,16 +472,6 @@ export function validateChannels(
         })
       }
     }
-
-    if (name === 'discord' && channel.channel_bindings !== undefined) {
-      if (typeof channel.channel_bindings !== 'object' || Array.isArray(channel.channel_bindings)) {
-        issues.push({
-          severity: 'error',
-          path: `${path}.channel_bindings`,
-          message: '"channel_bindings" must be an object mapping channel IDs to agent IDs',
-        })
-      }
-    }
   }
 }
 

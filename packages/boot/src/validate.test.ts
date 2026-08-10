@@ -415,23 +415,29 @@ describe('Config Validation', () => {
   // =========================================================================
 
   describe('channels', () => {
-    it('accepts valid channel config', () => {
+    it('accepts valid agent channel config', () => {
       const cfg = validConfig()
       cfg.channels = {
-        telegram: { owner_id: '123', allowed_users: ['123'] },
+        agent: { port: 3100, agent_id: 'opus' },
       }
       const result = validateConfig(cfg)
       assertValid(result)
     })
 
-    it('warns on unknown channel type', () => {
+    it('warns on unknown channel type (including removed social channels)', () => {
+      // Phase 5: telegram/discord/voice-discord were removed. Stale fleet
+      // config with channels.telegram: must warn, not hard-error.
       const cfg = validConfig()
-      cfg.channels = { slack: { token: 'xoxb-...' } }
+      cfg.channels = { telegram: { owner_id: '123' } }
       const result = validateConfig(cfg)
-      assertWarning(result, 'channels.slack', 'Unknown channel type')
+      assertWarning(result, 'channels.telegram', 'Unknown channel type')
+      assert.equal(result.errors.length, 0, 'stale social-channel config must not error boot')
+
+      cfg.channels = { slack: { token: 'xoxb-...' } }
+      assertWarning(validateConfig(cfg), 'channels.slack', 'Unknown channel type')
     })
 
-    it('warns on hardcoded bot token', () => {
+    it('warns on hardcoded bot token even for unknown channels', () => {
       const cfg = validConfig()
       cfg.channels = {
         telegram: { bot_token: '1234567890:ABCdefGHIjklMNOpqrsTUVwxyz' },
@@ -440,22 +446,13 @@ describe('Config Validation', () => {
       assertWarning(result, 'channels.telegram.bot_token', 'hardcoded bot token')
     })
 
-    it('validates discord channel_bindings type', () => {
-      const cfg = validConfig()
-      cfg.channels = {
-        discord: { channel_bindings: 'not-an-object' },
-      }
-      const result = validateConfig(cfg)
-      assertError(result, 'channels.discord.channel_bindings', 'must be an object')
-    })
-
     it('warns on unknown keys in known channel', () => {
       const cfg = validConfig()
       cfg.channels = {
-        telegram: { owner_id: '123', webhook_url: 'http://...' },
+        agent: { port: 3100, agent_id: 'opus', webhook_url: 'http://...' },
       }
       const result = validateConfig(cfg)
-      assertWarning(result, 'channels.telegram.webhook_url', 'Unknown key')
+      assertWarning(result, 'channels.agent.webhook_url', 'Unknown key')
     })
   })
 
@@ -598,7 +595,9 @@ describe('Config Validation', () => {
       assertError(result, 'runtime.heartbeats[0].agent', 'Heartbeat agent "grok" is not defined')
     })
 
-    it('errors when discord channel_binding references undefined agent', () => {
+    it('stale social channel bindings do not hard-error (Phase 5 prune)', () => {
+      // Removed plugins: leftover discord/telegram keys warn as unknown types
+      // only — agent-binding cross-refs for those channels are gone.
       const cfg = validConfig()
       cfg.channels = {
         discord: {
@@ -606,22 +605,12 @@ describe('Config Validation', () => {
             '123456': 'grok',
           },
         },
-      }
-      const result = validateConfig(cfg)
-      assertError(
-        result,
-        'channels.discord.channel_bindings.123456',
-        'references agent "grok" which is not defined',
-      )
-    })
-
-    it('errors when telegram agent references undefined agent', () => {
-      const cfg = validConfig()
-      cfg.channels = {
         telegram: { agent: 'gemini', owner_id: '123' },
       }
       const result = validateConfig(cfg)
-      assertError(result, 'channels.telegram.agent', 'Telegram agent "gemini" is not defined')
+      assert.equal(result.errors.length, 0)
+      assertWarning(result, 'channels.discord', 'Unknown channel type')
+      assertWarning(result, 'channels.telegram', 'Unknown channel type')
     })
 
     it('passes with all cross-references resolved', () => {
@@ -640,10 +629,7 @@ describe('Config Validation', () => {
           xai: { model: 'grok-4-1-fast-reasoning', max_tokens: 8192 },
         },
         channels: {
-          discord: {
-            channel_bindings: { '111': 'opus', '222': 'grok' },
-          },
-          telegram: { agent: 'opus', owner_id: '123' },
+          agent: { port: 3100, agent_id: 'opus' },
         },
       }
       const result = validateConfig(cfg)
@@ -686,11 +672,7 @@ describe('Config Validation', () => {
           vllm: { base_url: 'http://192.168.1.50:8000/v1', model: 'rivet-v0.1', temperature: 0.4 },
         },
         channels: {
-          telegram: { owner_id: '123456', allowed_users: ['123456'] },
-          discord: {
-            owner_id: '789',
-            channel_bindings: { '111': 'opus', '222': 'grok', '333': 'gemini' },
-          },
+          agent: { port: 3100, agent_id: 'opus' },
         },
         memory: {
           postgres: { connection_string: '${RIVETOS_PG_URL}' },

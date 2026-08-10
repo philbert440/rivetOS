@@ -23,12 +23,13 @@ providers:
     # Context window size for /context stats and compaction thresholds.
     # Match what your Ollama daemon advertises for the chosen model.
     context_window: 32000
-channels:
-  telegram:
-    owner_id: '8093148723'
-    bot_token: ${%%TELEGRAM_TOKEN_VAR%%}
-    allowed_users:
-      - '8093148723'
+
+# Channels: social bots (telegram/discord/voice-discord) were removed in Phase 5.
+# Human UX is RivetHub (gateway clients). Optional agent mesh:
+# channels:
+#   agent:
+#     port: 3100
+#     agent_id: opus
 memory:
   postgres:
     connection_string: ${RIVETOS_PG_URL}

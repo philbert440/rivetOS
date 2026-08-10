@@ -24,7 +24,7 @@ description: Build and point RivetHub at a RivetOS node gateway
 **Primary interactive path:** harness sessions on the node
 (`claude-code`, `grok-build`, `kimi-code`, `hermes`) via the gateway contract.
 
-**Not product path:** Telegram / Discord / voice-discord (deprecated). Prefer Hub.
+**Removed (Phase 5):** Telegram / Discord / voice-discord channel plugins are gone. Hub is the product path. Leftover `channels.telegram:` in config is a validation warning only (no crash-loop).
 
 ---
 

@@ -262,57 +262,19 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
   ]),
 }
 
-/** Keys for the local (GERTY) voice backend — shared by `voice` and `voice-discord`. */
-const VOICE_LOCAL_KEYS = [
-  'provider',
-  'agent',
-  'channel_id',
-  'voice_channel_id',
-  'speaker',
-  'gerty_host',
-  'stt_url',
-  'tts_url',
-  'stt_model',
-  'tts_model',
-  'voice_instruct',
-  'language',
-  'sample_rate',
-  'silence_ms',
-  'tts_max_new_tokens',
-] as const
-
+/**
+ * Known channel types and their config keys.
+ *
+ * Social channels (telegram / discord / voice-discord) were removed in Phase 5.
+ * A stale `channels.telegram:` (etc.) is an **unknown channel type warning**, not
+ * a hard error — registration is skipped because the package is gone, so nodes
+ * do not crash-loop on leftover fleet config.
+ *
+ * Product path for human interaction is Hub (gateway + rivethub). The only
+ * first-party channel plugin remaining is agent-to-agent mesh.
+ */
 export const KNOWN_CHANNELS: Partial<Record<string, Set<string>>> = {
-  telegram: new Set(['bot_token', 'owner_id', 'allowed_users', 'agent']),
-  discord: new Set([
-    'bot_token',
-    'owner_id',
-    'allowed_guilds',
-    'allowed_channels',
-    'allowed_users',
-    'channel_bindings',
-    'mention_only',
-    'mention_only_channels',
-  ]),
-  voice: new Set([
-    'bot_token',
-    'xai_api_key',
-    'guild_id',
-    'allowed_users',
-    'voice',
-    'instructions',
-    'transcript_dir',
-    ...VOICE_LOCAL_KEYS,
-  ]),
-  'voice-discord': new Set([
-    'bot_token',
-    'xai_api_key',
-    'guild_id',
-    'allowed_users',
-    'voice',
-    'instructions',
-    'transcript_dir',
-    ...VOICE_LOCAL_KEYS,
-  ]),
+  agent: new Set(['port', 'host', 'secret', 'agentId', 'agent_id', 'peers', 'tls']),
 }
 
 export const KNOWN_HEARTBEAT_KEYS = new Set([

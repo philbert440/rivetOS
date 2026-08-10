@@ -27,16 +27,9 @@ export async function reviewConfig(state: WizardState): Promise<boolean> {
     lines.push(parts.join('  →  '))
   }
 
-  // Channels
+  // Channels — social bots removed Phase 5; Hub is the human path
   lines.push('')
-  if (state.channels.length === 0) {
-    lines.push('Channels:  terminal only')
-  } else {
-    lines.push('Channels:')
-    for (const ch of state.channels) {
-      lines.push(`  ${ch.type}  →  token set, owner: ${ch.ownerId}`)
-    }
-  }
+  lines.push('Channels:  RivetHub / gateway (social bots removed Phase 5)')
 
   // Infrastructure
   lines.push('')

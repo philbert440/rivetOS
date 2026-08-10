@@ -54,7 +54,7 @@ npm run typecheck                       # tsc --noEmit all packages
 
 # ── Single package ───────────────────────────────────────
 npx nx run core:test                    # Test @rivetos/core only
-npx nx run channel-telegram:lint        # Lint the Telegram channel plugin
+npx nx run channel-agent:lint        # Lint the agent mesh channel plugin
 npx nx run provider-anthropic:build     # Build the Anthropic provider
 npx nx run tool-shell:test              # Test the shell tool plugin
 
@@ -77,8 +77,7 @@ Core packages use their directory name. Plugins use the directory name without t
 | `packages/core` | `core` | `npx nx run core:test` |
 | `packages/boot` | `boot` | `npx nx run boot:build` |
 | `packages/cli` | `cli` | `npx nx run cli:build` |
-| `plugins/channels/telegram` | `channel-telegram` | `npx nx run channel-telegram:lint` |
-| `plugins/channels/discord` | `channel-discord` | `npx nx run channel-discord:test` |
+| `plugins/channels/agent` | `channel-agent` | `npx nx run channel-agent:lint` |
 | `plugins/providers/anthropic` | `provider-anthropic` | `npx nx run provider-anthropic:build` |
 | `plugins/providers/google` | `provider-google` | `npx nx run provider-google:lint` |
 | `plugins/providers/xai` | `provider-xai` | `npx nx run provider-xai:test` |
@@ -141,7 +140,7 @@ All commits must follow [Conventional Commits](https://www.conventionalcommits.o
 Scope is optional but encouraged for plugin work:
 
 ```
-feat(channel-telegram): add inline keyboard support
+feat(channel-agent): improve mesh peer discovery
 fix(provider-anthropic): handle 529 overloaded responses
 docs: update Nx commands in CONTRIBUTING.md
 test(core): add agent loop abort tests

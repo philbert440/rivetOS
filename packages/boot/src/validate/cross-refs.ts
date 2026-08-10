@@ -53,32 +53,9 @@ export function validateCrossReferences(
     }
   }
 
-  // Discord channel_bindings agent refs must exist
-  const channels = (cfg.channels ?? {}) as Record<
-    string,
-    Record<string, unknown> | null | undefined
-  >
-  const discord = channels.discord
-  if (discord && typeof discord.channel_bindings === 'object' && discord.channel_bindings) {
-    const bindings = discord.channel_bindings as Record<string, string>
-    for (const [channelId, agentId] of Object.entries(bindings)) {
-      if (typeof agentId === 'string' && !agentIds.has(agentId)) {
-        issues.push({
-          severity: 'error',
-          path: `channels.discord.channel_bindings.${channelId}`,
-          message: `Channel binding references agent "${agentId}" which is not defined in [agents]. Available: ${[...agentIds].join(', ') || '(none)'}`,
-        })
-      }
-    }
-  }
-
-  // Telegram agent ref must exist
-  const telegram = channels.telegram
-  if (telegram && typeof telegram.agent === 'string' && !agentIds.has(telegram.agent)) {
-    issues.push({
-      severity: 'error',
-      path: 'channels.telegram.agent',
-      message: `Telegram agent "${telegram.agent}" is not defined in [agents]. Available: ${[...agentIds].join(', ') || '(none)'}`,
-    })
-  }
+  // Social channel agent-binding cross-checks (discord channel_bindings,
+  // telegram.agent) were removed with those plugins in Phase 5. Stale
+  // channels.telegram / channels.discord keys only produce the generic
+  // "unknown channel type" warning from validateChannels — they must not
+  // hard-error boot.
 }

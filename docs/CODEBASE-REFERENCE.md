@@ -64,10 +64,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   └── claude-cli/          # Drives `claude` CLI via stream-json + embedded MCP bridge
 │   │
 │   ├── channels/                # Messaging surface adapters
-│   │   ├── discord/             # Discord (edit, react, embed, overflow, bindings)
-│   │   ├── telegram/            # Telegram (owner gate, inline queries)
-│   │   ├── agent/               # Agent-to-agent HTTPS/mTLS channel (delegation target)
-│   │   └── voice-discord/       # Discord voice (xAI Realtime API, STT/TTS)
+│   │   └── agent/               # Agent-to-agent mesh (HTTPS/mTLS); social channels removed Phase 5
 │   │
 │   ├── tools/                   # Agent capabilities
 │   │   ├── shell/               # Shell execution (cwd, timeout, danger detection)
@@ -698,7 +695,7 @@ providers:
   anthropic: { model: claude-sonnet-4-6, max_tokens: 16384 }
 
 channels:
-  discord: { channel_bindings: { "123": "opus" } }
+  agent: { port: 3100, agent_id: "opus" }
 
 memory:
   postgres: { connection_string: "${RIVETOS_PG_URL}" }
@@ -754,9 +751,9 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 
 1. **Compiled bundle now standard** — `npm run build` produces an esbuild bundle in `dist/`. The unified `rivetos` image runs the bundle, not source via `tsx`. Some legacy paths still allow running from source for dev.
 
-2. **Root `package.json` still has one runtime dep** — `yaml`. `discord.js`, `grammy`, and `pg` have all moved to the packages that actually use them; `yaml` is the last holdout and should follow.
+2. **Root `package.json` still has one runtime dep** — `yaml`. `pg` has moved to the packages that actually use them; `yaml` is the last holdout and should follow.
 
-3. **Voice plugin lifecycle quirk** — `voice-discord` isn't a Channel, it manages its own lifecycle. With the manifest contract this is now a clean `registerShutdown` call, but the plugin still owns its session lifecycle internally rather than going through the runtime's channel registry.
+3. **Social channels removed (Phase 5)** — telegram / discord / voice-discord packages deleted. Stale config keys warn as unknown channel types.
 
 4. **Per-kind registrars deleted** — `boot/registrars/{providers,channels,tools,memory}.ts` were collapsed into a single manifest-driven `plugins.ts` (PR-B). Any references in user code or external docs to the old per-kind registrars are stale.
 

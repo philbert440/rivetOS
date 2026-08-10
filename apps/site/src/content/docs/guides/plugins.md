@@ -91,7 +91,7 @@ Boot has **no per-plugin knowledge.** Every kind of plugin goes through the same
 
 A plugin is *discovered* by `package.json#rivetos`, but only *activated* when:
 
-- **Provider / channel / memory / transport** — its name appears in the matching config section (`config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`). Channels also accept a legacy alias: `voice-discord` matches `config.channels.voice`.
+- **Provider / channel / memory / transport** — its name appears in the matching config section (`config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`). Social channel plugins (telegram/discord/voice-discord) were **removed** in Phase 5; only `agent` (mesh) remains first-party.
 - **Tool** — always activated (tools decide internally whether their config is sufficient — e.g. `mcp-client` skips itself when no servers are configured).
 
 ---
@@ -167,10 +167,7 @@ The runtime calls `edit()` repeatedly while streaming. Channels handle:
 
 | Channel | Path | Notable |
 |---|---|---|
-| Discord | `plugins/channels/discord/` | Streaming edits, overflow, reactions, embeds |
-| Telegram | `plugins/channels/telegram/` | Owner gate, inline keyboards, 4096-char splitting |
 | Agent | `plugins/channels/agent/` | HTTPS/mTLS inter-agent + mesh endpoints |
-| Voice (Discord) | `plugins/channels/voice-discord/` | xAI Realtime API + Opus codec |
 
 ---
 

@@ -35,25 +35,13 @@ providers:
   google:
     model: gemini-2.5-pro
     max_tokens: 8192
-channels:
-  telegram:
-    owner_id: '8093148723'
-    allowed_users:
-      - '8093148723'
-  discord:
-    owner_id: '254134661196939264'
-    allowed_guilds:
-      - '1090284486945681430'
-    channel_bindings:
-      '1474965430371225703': opus
-      '1474965558851145793': grok
-      '1474965544942960764': gemini
-      '1476988677392699432': opus
-      '1474965445214867638': opus
-      '1474965459609845760': opus
-      '1474965472825835550': opus
-      '1474965487514550415': opus
-      '1475532518982942782': opus
+
+# Channels: social bots (telegram/discord/voice-discord) were removed in Phase 5.
+# Human UX is RivetHub (gateway clients). Optional agent mesh:
+# channels:
+#   agent:
+#     port: 3100
+#     agent_id: opus
 memory:
   postgres:
     connection_string: ${RIVETOS_PG_URL}

@@ -244,7 +244,7 @@ RivetOS ships with several skills out of the box:
 | Skill | Description |
 |-------|-------------|
 | `1password` | 1Password CLI integration |
-| `discord` | Discord bot management |
+| `discord` | _(historical)_ Discord bot management — channel plugin removed Phase 5 |
 | `excalidraw` | Diagram creation |
 | `gh-issues` | GitHub Issues workflow |
 | `github` | GitHub repository operations |
