@@ -128,22 +128,23 @@ function formatToolResult(update: any): string | null {
  *
  * Pure helper — exported for unit tests.
  */
-export function formatMissingJsonlMessage(
-  file: string,
-  opts?: { agent?: string | null },
-): string {
+export function formatMissingJsonlMessage(file: string, opts?: { agent?: string | null }): string {
   const agent = typeof opts?.agent === 'string' && opts.agent.trim() ? opts.agent.trim() : null
   const agentBit = agent ? ` agent=${agent}` : ''
 
   // Path shape → which machine likely owns the session files.
-  let layoutHint = ''
+  let layoutHint: string
   if (file.startsWith('/home/rivet/')) {
     layoutHint =
       'Path is under /home/rivet/ — fleet agent home. The JSONL almost certainly lives on the mesh node that ran that harness session (ctNNN / agent CT), not on the host serving this MCP query.'
   } else if (file.startsWith('/home/philip/') || file.startsWith('/Users/')) {
     layoutHint =
       'Path is a desk/user home directory. The JSONL is local to that machine’s interactive session store, not shared mesh storage.'
-  } else if (file.includes('/.grok/sessions/') || file.includes('/.claude/') || file.includes('/sessions/')) {
+  } else if (
+    file.includes('/.grok/sessions/') ||
+    file.includes('/.claude/') ||
+    file.includes('/sessions/')
+  ) {
     layoutHint =
       'Path looks like a per-host harness session store. Capture writes absolute paths on the node that produced the row.'
   } else {
@@ -161,7 +162,7 @@ export function formatMissingJsonlMessage(
   return (
     `Source JSONL not readable from this host (${file}).${agentBit}\n\n` +
     `${layoutHint}\n\n` +
-    `${nextSteps}`
+    nextSteps
   )
 }
 
@@ -272,8 +273,7 @@ export function createGetFullTool(pool: pg.Pool): Tool {
       // unrecoverable rather than a multi-host miss.
       if (!file.endsWith('.jsonl'))
         return `Source JSONL is gone or invalid (${file}) — the elided tail is unrecoverable.`
-      if (!existsSync(file))
-        return formatMissingJsonlMessage(file, { agent: row.agent })
+      if (!existsSync(file)) return formatMissingJsonlMessage(file, { agent: row.agent })
 
       let raw: string | null
       try {
@@ -284,8 +284,7 @@ export function createGetFullTool(pool: pg.Pool): Tool {
         // "this host cannot serve the file" — same multi-host recovery path.
         if (/EACCES|EPERM|permission denied/i.test(msg)) {
           return (
-            formatMissingJsonlMessage(file, { agent: row.agent }) +
-            `\n\n(underlying error: ${msg})`
+            formatMissingJsonlMessage(file, { agent: row.agent }) + `\n\n(underlying error: ${msg})`
           )
         }
         return `Failed reading ${file}:${String(line)}: ${msg}`
