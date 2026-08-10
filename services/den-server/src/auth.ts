@@ -129,7 +129,8 @@ export function isGatewayAuthorized(
     return sock.encrypted
   }
 
-  // Mutual TLS required: peer cert must verify (rejectUnauthorized) and be a device leaf
+  // Mutual TLS required: peer cert must verify (socket.authorized — the TLS
+  // layer verifies but never rejects, see server.ts) and be a device leaf
   if (!sock.authorized) return false
   const peer = sock.getPeerCertificate(true)
   return isDeviceClientCert(peer)
