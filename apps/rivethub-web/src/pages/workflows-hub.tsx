@@ -55,19 +55,18 @@ const LATCH_FAILSAFE_MS = 30_000
 
 export function WorkflowsHubPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const navigate = useNavigate()
   const connected = useGatewayReady()
 
   const defs = useQuery({
-    queryKey: ['workflows', baseUrl, token ?? ''],
+    queryKey: ['workflows', baseUrl],
     enabled: connected,
     queryFn: ({ signal }) => useConnection.getState().gateway.listWorkflows(signal),
     refetchInterval: LIST_POLL_MS,
   })
 
   const runs = useQuery({
-    queryKey: ['workflow-runs', baseUrl, token ?? ''],
+    queryKey: ['workflow-runs', baseUrl],
     enabled: connected,
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.listWorkflowRuns({ limit: 50 }, signal),
@@ -223,12 +222,11 @@ function ViewToggle(props: {
 export function WorkflowTriggerPage(): JSX.Element {
   const { workflowId } = useParams({ from: '/workflows/$workflowId' })
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const navigate = useNavigate()
   const connected = useGatewayReady()
 
   const def = useQuery({
-    queryKey: ['workflow', baseUrl, token ?? '', workflowId],
+    queryKey: ['workflow', baseUrl, workflowId],
     enabled: connected && Boolean(workflowId),
     queryFn: ({ signal }) => useConnection.getState().gateway.getWorkflow(workflowId, signal),
   })
@@ -456,13 +454,12 @@ function OutlineGraph(props: { outline: NonNullable<WorkflowDefSummary['outline'
 export function WorkflowRunDetailPage(): JSX.Element {
   const { runId } = useParams({ from: '/workflows/runs/$runId' })
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const connected = useGatewayReady()
 
   const detail = useQuery({
-    queryKey: ['workflow-run', baseUrl, token ?? '', runId],
+    queryKey: ['workflow-run', baseUrl, runId],
     enabled: connected && Boolean(runId),
     queryFn: ({ signal }) => useConnection.getState().gateway.getWorkflowRun(runId, signal),
     refetchInterval: (q) => {
@@ -506,7 +503,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
   // Pure projection — no new run endpoints; reuses getWorkflow.
   const workflowId = run?.workflowId
   const def = useQuery({
-    queryKey: ['workflow', baseUrl, token ?? '', workflowId ?? ''],
+    queryKey: ['workflow', baseUrl, workflowId ?? ''],
     enabled: connected && Boolean(workflowId),
     queryFn: ({ signal }) => useConnection.getState().gateway.getWorkflow(workflowId!, signal),
     staleTime: 60_000,
@@ -526,9 +523,9 @@ export function WorkflowRunDetailPage(): JSX.Element {
     try {
       await useConnection.getState().gateway.killWorkflowRun(runId)
       await queryClient.invalidateQueries({
-        queryKey: ['workflow-run', baseUrl, token ?? '', runId],
+        queryKey: ['workflow-run', baseUrl, runId],
       })
-      await queryClient.invalidateQueries({ queryKey: ['workflow-runs', baseUrl, token ?? ''] })
+      await queryClient.invalidateQueries({ queryKey: ['workflow-runs', baseUrl] })
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -583,7 +580,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
               gate={payload.openGate}
               onResumed={async () => {
                 await queryClient.invalidateQueries({
-                  queryKey: ['workflow-run', baseUrl, token ?? '', runId],
+                  queryKey: ['workflow-run', baseUrl, runId],
                 })
               }}
             />
@@ -609,7 +606,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
                         .getState()
                         .gateway.resumeWorkflowRun(runId, { gateResponse: {} })
                       await queryClient.invalidateQueries({
-                        queryKey: ['workflow-run', baseUrl, token ?? '', runId],
+                        queryKey: ['workflow-run', baseUrl, runId],
                       })
                     } catch (err) {
                       // A rejected request means no detached resume is in

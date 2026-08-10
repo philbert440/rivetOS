@@ -43,7 +43,6 @@ function evalColor(verdict: string): string {
 
 export function TasksPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [statusFilter, setStatusFilter] = useState<TaskStatus | ''>('')
@@ -51,7 +50,7 @@ export function TasksPage(): JSX.Element {
   const connected = useGatewayReady()
 
   const tasks = useQuery({
-    queryKey: ['tasks', baseUrl, token ?? '', statusFilter],
+    queryKey: ['tasks', baseUrl, statusFilter],
     enabled: connected,
     queryFn: ({ signal }) =>
       useConnection
@@ -94,7 +93,7 @@ export function TasksPage(): JSX.Element {
         <TaskCreateForm
           onCreated={(id) => {
             setShowCreate(false)
-            void queryClient.invalidateQueries({ queryKey: ['tasks', baseUrl, token ?? ''] })
+            void queryClient.invalidateQueries({ queryKey: ['tasks', baseUrl] })
             void navigate({ to: '/tasks/$taskId', params: { taskId: id } })
           }}
           onCancel={() => setShowCreate(false)}
@@ -153,7 +152,6 @@ function TaskCreateForm(props: {
   onCancel: () => void
 }): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const [goal, setGoal] = useState('')
   const [agentId, setAgentId] = useState('')
   const [criteriaText, setCriteriaText] = useState('')
@@ -161,7 +159,7 @@ function TaskCreateForm(props: {
   const [error, setError] = useState<string | undefined>()
 
   const catalog = useQuery({
-    queryKey: ['catalog-agents', baseUrl, token ?? ''],
+    queryKey: ['catalog-agents', baseUrl],
     queryFn: ({ signal }) => useConnection.getState().gateway.catalogAgents(signal),
     staleTime: 60_000,
   })
@@ -268,7 +266,6 @@ function TaskCreateForm(props: {
 export function TaskDetailPage(): JSX.Element {
   const { taskId } = useParams({ from: '/tasks/$taskId' })
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const queryClient = useQueryClient()
   const [steerText, setSteerText] = useState('')
   const [acting, setActing] = useState(false)
@@ -276,7 +273,7 @@ export function TaskDetailPage(): JSX.Element {
 
   const connected = useGatewayReady()
   const task = useQuery({
-    queryKey: ['task', baseUrl, token ?? '', taskId],
+    queryKey: ['task', baseUrl, taskId],
     queryFn: ({ signal }) => useConnection.getState().gateway.getTask(taskId, signal),
     refetchInterval: 10_000,
     enabled: connected,
@@ -294,8 +291,8 @@ export function TaskDetailPage(): JSX.Element {
       await fn()
       // detail AND list — navigating back must not show pre-action status
       // for a poll interval (#303 review)
-      await queryClient.invalidateQueries({ queryKey: ['task', baseUrl, token ?? '', taskId] })
-      await queryClient.invalidateQueries({ queryKey: ['tasks', baseUrl, token ?? ''] })
+      await queryClient.invalidateQueries({ queryKey: ['task', baseUrl, taskId] })
+      await queryClient.invalidateQueries({ queryKey: ['tasks', baseUrl] })
       return true
     } catch (err) {
       setActionError((err as Error).message)

@@ -23,12 +23,11 @@ function relTime(ts?: number): string {
 
 export function DensPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const token = useConnection((s) => s.token)
   const connected = useGatewayReady()
   const [selected, setSelected] = useState<string | undefined>()
 
   const sessions = useQuery({
-    queryKey: ['den-sessions', baseUrl, token ?? ''],
+    queryKey: ['den-sessions', baseUrl],
     queryFn: ({ signal }) => useConnection.getState().gateway.denSessions(signal),
     refetchInterval: 10_000,
     enabled: connected,
@@ -39,11 +38,9 @@ export function DensPage(): JSX.Element {
     return <div className="p-8 font-mono text-sm text-red">{sessions.error.message}</div>
 
   const list = sessions.data?.sessions ?? []
-  // ?token= rides along for token-gated gateways (den viewer net.ts keeps it
-  // across routes); iframes can't carry a bearer header.
+  // Den viewer is same-origin under the gateway; device mTLS is on the TLS session.
   const denUrl = (id: string): string =>
-    `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(id)}` +
-    (token ? `&token=${encodeURIComponent(token)}` : '')
+    `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(id)}`
 
   return (
     <div className="flex h-full">
