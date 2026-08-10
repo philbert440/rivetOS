@@ -14,10 +14,9 @@ type ProbeState =
   | { kind: 'fail'; message: string }
 
 export function SettingsPage(): JSX.Element {
-  const { baseUrl, token, setConnection } = useConnection()
+  const { baseUrl, setConnection } = useConnection()
   const queryClient = useQueryClient()
   const [draftUrl, setDraftUrl] = useState(baseUrl)
-  const [draftToken, setDraftToken] = useState(token ?? '')
   const [probe, setProbe] = useState<ProbeState>({ kind: 'idle' })
   const { wikiBaseUrl, setWikiBaseUrl } = useWikiSettings()
   const [draftWiki, setDraftWiki] = useState(wikiBaseUrl)
@@ -27,7 +26,7 @@ export function SettingsPage(): JSX.Element {
     setProbe({ kind: 'testing' })
     const gw = new RivetGateway({
       baseUrl: draftUrl.trim().replace(/\/+$/, ''),
-      token: draftToken.trim() || undefined,
+      authMode: 'mtls',
     })
     if (!(await gw.health())) {
       setProbe({ kind: 'fail', message: 'unreachable (healthz failed)' })
@@ -47,10 +46,10 @@ export function SettingsPage(): JSX.Element {
       setProbe({ kind: 'fail', message: 'invalid gateway URL (http(s)://host[:port] only)' })
       return
     }
-    setConnection(url, draftToken.trim() || undefined)
+    setConnection(url)
     // Saved endpoints join the switcher roster (name = host, editable later).
     useConnection.getState().addNode({ name: new URL(url).host, baseUrl: url })
-    // Drop every cached response from the previous endpoint/credential.
+    // Drop every cached response from the previous endpoint.
     void queryClient.invalidateQueries()
   }
 
@@ -62,20 +61,14 @@ export function SettingsPage(): JSX.Element {
       <input
         value={draftUrl}
         onChange={(e) => setDraftUrl(e.target.value)}
-        placeholder="http://node-host:5174"
-        className="mb-4 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
+        placeholder="https://node-host:5174"
+        className="mb-2 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
       />
-
-      <label className="mb-1 block text-xs text-ink-dim">
-        Bearer token (only if the node gates its gateway)
-      </label>
-      <input
-        value={draftToken}
-        onChange={(e) => setDraftToken(e.target.value)}
-        type="password"
-        autoComplete="off"
-        className="mb-6 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
-      />
+      <p className="mb-6 text-xs text-ink-dim">
+        Auth is a Rivet CA <span className="font-mono">device:</span> client certificate installed
+        on this browser/OS (see <span className="font-mono">docs/GATEWAY-MTLS.md</span>). Bearer
+        tokens are no longer used.
+      </p>
 
       <div className="flex items-center gap-3">
         <button
