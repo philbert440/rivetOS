@@ -62,7 +62,8 @@ export function useWikiEndpoint(): {
   return useMemo(() => {
     if (!picked) {
       if (!settingsBase && !chatReady) return { endpoint: null, pending: false, needNode: true }
-      if (mesh.isLoading || mesh.isFetching) return { endpoint: null, pending: true, needNode: false }
+      if (mesh.isLoading || mesh.isFetching)
+        return { endpoint: null, pending: true, needNode: false }
       return { endpoint: null, pending: false, needNode: false }
     }
     if (!transport.data) {
