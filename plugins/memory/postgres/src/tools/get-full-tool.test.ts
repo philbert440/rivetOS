@@ -3,8 +3,43 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type pg from 'pg'
-import { createGetFullTool, extractFullFromLine, readJsonlLine } from './get-full-tool.js'
+import {
+  createGetFullTool,
+  extractFullFromLine,
+  formatMissingJsonlMessage,
+  readJsonlLine,
+} from './get-full-tool.js'
 import { truncationHint } from './helpers.js'
+
+describe('formatMissingJsonlMessage', () => {
+  it('never claims the tail is unrecoverable for a multi-host miss', () => {
+    const msg = formatMissingJsonlMessage(
+      '/home/rivet/.grok/sessions/%2Fhome%2Frivet/019fcf25/updates.jsonl',
+      { agent: 'rivet-claude' },
+    )
+    expect(msg).toContain('not readable from this host')
+    expect(msg).toContain('agent=rivet-claude')
+    expect(msg).toContain('/home/rivet/')
+    expect(msg).toContain('Next steps')
+    expect(msg).toContain('16K capture cap')
+    expect(msg).not.toMatch(/unrecoverable/i)
+    expect(msg).not.toMatch(/gone or invalid/i)
+  })
+
+  it('flags desk-user home paths distinctly', () => {
+    const msg = formatMissingJsonlMessage(
+      '/home/philip/.grok/sessions/foo/updates.jsonl',
+    )
+    expect(msg).toContain('desk/user home')
+    expect(msg).not.toMatch(/unrecoverable/i)
+  })
+
+  it('still guides when the path shape is unfamiliar', () => {
+    const msg = formatMissingJsonlMessage('/var/tmp/weird/updates.jsonl')
+    expect(msg).toContain('absolute paths')
+    expect(msg).toContain('Next steps')
+  })
+})
 
 describe('extractFullFromLine', () => {
   it('extracts full Bash output from a session update line', () => {
@@ -129,6 +164,7 @@ describe('createGetFullTool end-to-end (stub pool + real temp JSONL)', () => {
       content: 'preview…',
       tool_name: 'Bash',
       tool_result: 'preview…',
+      agent: 'rivet-grok',
       metadata: {
         truncated: true,
         session_jsonl_path: file,
@@ -142,5 +178,27 @@ describe('createGetFullTool end-to-end (stub pool + real temp JSONL)', () => {
     expect(out).toContain('## Full payload for row-1')
     expect(out).toContain(big)
     expect(out).toContain('[exit_code=0]')
+  })
+
+  it('guides multi-host recovery when the JSONL is not on this host', async () => {
+    const row = {
+      id: 'row-remote',
+      content: 'preview…',
+      tool_name: 'Bash',
+      tool_result: 'preview…',
+      agent: 'rivet-claude',
+      metadata: {
+        truncated: true,
+        session_jsonl_path: '/home/rivet/.grok/sessions/remote-node/updates.jsonl',
+        session_jsonl_line: 12,
+        full_tool_result_length: 40_000,
+      },
+    }
+    const pool = { query: async () => ({ rows: [row] }) } as unknown as pg.Pool
+    const out = await createGetFullTool(pool).execute({ id: 'row-remote' })
+    expect(out).toContain('not readable from this host')
+    expect(out).toContain('agent=rivet-claude')
+    expect(out).toContain('Next steps')
+    expect(out).not.toMatch(/unrecoverable/i)
   })
 })

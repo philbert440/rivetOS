@@ -3,7 +3,8 @@
 Ports the coverage of ``plugins/memory/postgres/src/tools/get-full-tool.test.ts``
 (JSONL re-derivation + truncation hint) and adds handler-level tests over the
 fake-client pattern from ``test_recall.py``: not-truncated rows, missing disk
-pointers, gone files, and a full recovery round-trip from a real temp JSONL.
+pointers, multi-host missing-file guidance, and a full recovery round-trip from
+a real temp JSONL.
 """
 
 from __future__ import annotations
@@ -198,10 +199,25 @@ def test_unknown_id_soft_response():
     assert out.startswith("No message with id")
 
 
+def test_format_missing_jsonl_never_says_unrecoverable():
+    from rivet_memory.get_full import format_missing_jsonl_message
+
+    msg = format_missing_jsonl_message(
+        "/home/rivet/.grok/sessions/remote/updates.jsonl",
+        agent="rivet-claude",
+    )
+    assert "not readable from this host" in msg
+    assert "agent=rivet-claude" in msg
+    assert "Next steps" in msg
+    assert "unrecoverable" not in msg.lower()
+    assert "gone or invalid" not in msg.lower()
+
+
 def test_not_truncated_row_returns_stored_payload():
     from rivet_memory.get_full import get_full_tool
 
-    row = ("m1", "stored content", "Bash", "stored result", {})
+    # id, content, tool_name, tool_result, agent, metadata
+    row = ("m1", "stored content", "Bash", "stored result", "rivet-grok", {})
     out = get_full_tool(_FakeClient([row]), {"id": "m1"})
     assert "row was not truncated" in out
     assert "stored content" in out
@@ -211,22 +227,25 @@ def test_not_truncated_row_returns_stored_payload():
 def test_truncated_without_pointer_is_unrecoverable():
     from rivet_memory.get_full import get_full_tool
 
-    row = ("m1", "…", None, None, {"truncated": True})
+    row = ("m1", "…", None, None, None, {"truncated": True})
     out = get_full_tool(_FakeClient([row]), {"id": "m1"})
     assert "no disk pointer" in out
 
 
-def test_truncated_with_missing_file_is_unrecoverable():
+def test_truncated_with_missing_file_guides_multinode_recovery():
     from rivet_memory.get_full import get_full_tool
 
     meta = {
         "truncated": True,
-        "session_jsonl_path": "/nonexistent/updates.jsonl",
+        "session_jsonl_path": "/home/rivet/.grok/sessions/remote/updates.jsonl",
         "session_jsonl_line": 3,
     }
-    row = ("m1", "…", None, None, meta)
+    row = ("m1", "…", "Bash", "preview…", "rivet-claude", meta)
     out = get_full_tool(_FakeClient([row]), {"id": "m1"})
-    assert "gone or invalid" in out
+    assert "not readable from this host" in out
+    assert "agent=rivet-claude" in out
+    assert "Next steps" in out
+    assert "unrecoverable" not in out.lower()
 
 
 def test_full_recovery_round_trip(tmp_path):
@@ -259,7 +278,7 @@ def test_full_recovery_round_trip(tmp_path):
         "session_jsonl_line": 1,
         "full_tool_result_length": len(big),
     }
-    row = ("m1", "truncated preview…", "Bash", "truncated…", meta)
+    row = ("m1", "truncated preview…", "Bash", "truncated…", "rivet-grok", meta)
     out = get_full_tool(_FakeClient([row]), {"id": "m1"})
     assert "## Full payload for m1" in out
     assert big in out
