@@ -73,8 +73,8 @@ export function parseCertSubject(cert: PeerCertificate | undefined | null): {
     const o = sub as Record<string, string | string[] | undefined>
     const cnRaw = o.CN ?? o.cn ?? ''
     const ouRaw = o.OU ?? o.ou ?? ''
-    const cn = Array.isArray(cnRaw) ? (cnRaw[0] ?? '') : String(cnRaw)
-    const ou = Array.isArray(ouRaw) ? (ouRaw[0] ?? '') : String(ouRaw)
+    const cn = Array.isArray(cnRaw) ? (cnRaw[0] ?? '') : cnRaw
+    const ou = Array.isArray(ouRaw) ? (ouRaw[0] ?? '') : ouRaw
     return { cn: cn.trim(), ou: ou.trim() }
   }
   return { cn: '', ou: '' }
@@ -126,7 +126,7 @@ export function isGatewayAuthorized(
   if (!opts.requireClientCert) {
     // TLS without client auth: encrypt-only (not recommended for product;
     // kept for explicit lab opt-out). Remote is allowed if TLS completed.
-    return sock.encrypted === true
+    return Boolean(sock.encrypted)
   }
 
   // Mutual TLS required: peer cert must verify (rejectUnauthorized) and be a device leaf

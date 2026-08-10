@@ -58,17 +58,17 @@ export interface GatewayClientConfig {
   /** Origin of the node's gateway, e.g. `https://192.0.2.112:5174`. */
   baseUrl: string
   /**
-   * @deprecated Removed. Bearer gateway auth is gone — use device mTLS.
-   * Optional field retained only so old call sites typecheck until updated;
-   * clients must not send Authorization / ?token=.
+   * Bearer gateway auth is gone — use device mTLS. Field is intentionally
+   * absent (`never`) so TypeScript rejects new token assignments.
    */
   token?: never
   /** Auth posture; defaults to `mtls` when `tls` is set, else `none`. */
   authMode?: GatewayAuthMode
   /**
-   * Node/native only: PEM material for undici/fetch client certs.
-   * Browsers use the OS/browser certificate store instead (user installs the
-   * device cert once after admin enrollment).
+   * Optional PEM material for native Node agents that build their own
+   * undici Agent / custom fetch. Not consumed by gateway-client itself
+   * (keeps the package browser-safe with zero deps). Browsers install the
+   * device cert in the OS store after admin enrollment.
    */
   tls?: GatewayTlsClientConfig
 }

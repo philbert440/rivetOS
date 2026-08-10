@@ -438,8 +438,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // Off-loopback shells require gateway TLS + device client certs (same gate
   // as the rest of the API). Without TLS paths, terminals stay off unless
   // the bind is loopback.
-  const tlsReady =
-    Boolean(config.tls.certPath?.trim()) && Boolean(config.tls.keyPath?.trim())
+  const tlsReady = Boolean(config.tls.certPath.trim()) && Boolean(config.tls.keyPath.trim())
   const termGateError =
     config.term.enabled && !tlsReady && !isLoopbackHost(config.host)
       ? 'terminal disabled: gateway TLS (RIVETOS_DEN_TLS_CERT/KEY) required when host is not loopback'

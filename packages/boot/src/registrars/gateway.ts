@@ -14,7 +14,7 @@
  * leaf from issue-node) + clients enrolled via issue-client.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
@@ -31,12 +31,12 @@ import type { RivetConfig } from '../config.js'
 
 const log = logger('Boot:Gateway')
 
-/** @deprecated Bearer gateway tokens removed — use rivet-ca issue-client. */
+/** Historical path for removed bearer tokens — do not write here. */
 export const GATEWAY_TOKEN_FILE = join(homedir(), '.rivetos', 'gateway.token')
 
 /**
- * @deprecated No longer mints or reads bearer tokens. Throws so callers that
- * still invoke `rivetos gateway token` fail loudly instead of inventing secrets.
+ * No longer mints or reads bearer tokens. Throws so callers that still invoke
+ * `rivetos gateway token` fail loudly instead of inventing secrets.
  */
 export function ensureGatewayToken(_file: string = GATEWAY_TOKEN_FILE): string {
   throw new Error(

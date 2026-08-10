@@ -43,7 +43,7 @@ const normalize = (url: string): string => url.trim().replace(/\/+$/, '')
 
 const ROSTER_MAX = 20
 
-/** @deprecated Bearer tokens removed — always undefined. */
+/** Bearer tokens removed — always returns undefined. */
 export function tokenFor(_baseUrl: string): string | undefined {
   return undefined
 }

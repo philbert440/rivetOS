@@ -23,8 +23,7 @@ export interface DenTermConfig {
   /** Opt-in master switch — terminals are OFF unless RIVETOS_DEN_TERM=1/on.
    *  Spawning a shell as the service user is a deliberate act, never a default. */
   enabled: boolean
-  /** @deprecated Tokenless LAN open. Ignored: terminals require gateway mTLS
-   *  (or loopback) like the rest of the API. Kept for config parse compat. */
+  /** Ignored: terminals require gateway mTLS (or loopback). Kept for config parse. */
   open: boolean
   /** Operator-owned command roster (see term/roster.ts). Re-read lazily, so
    *  edits don't need a restart. */
@@ -56,7 +55,7 @@ export interface DenTermConfig {
 export interface DenAudioConfig {
   /** Opt-in master switch — OFF unless RIVETOS_DEN_AUDIO=1/on. */
   enabled: boolean
-  /** @deprecated Tokenless LAN open — ignored; MicBridge uses gateway mTLS. */
+  /** Ignored; MicBridge uses gateway mTLS. Kept for config parse. */
   open: boolean
   /** Runtime dir for FIFO + audit (default: $stateDir/audio). Empty = derive. */
   dir: string
@@ -84,8 +83,8 @@ export interface DenConfig {
   port: number
   host: string
   /**
-   * @deprecated Removed. Gateway auth is Rivet CA client certificates only.
-   * Kept optional on the type during load so old env still parses; always "".
+   * Always empty — gateway auth is Rivet CA client certificates only.
+   * Field retained so older test configs that still pass `token: ''` typecheck.
    */
   token: string
   /** HTTPS + mTLS client auth. Empty paths = plain HTTP (loopback only). */
@@ -113,7 +112,7 @@ export interface DenConfig {
   /** Shared filestore root for /api/files/* (browse/download/upload).
    *  Empty string disables the routes entirely. */
   filesRoot: string
-  /** @deprecated Tokenless files open — ignored; files use gateway mTLS. */
+  /** Ignored; files use gateway mTLS. Kept for config parse. */
   filesOpen: boolean
   /** Mesh device enrollment (/api/devices/*, Settings → Devices). Optional
    *  so hand-built test configs predating the feature stay valid. */
