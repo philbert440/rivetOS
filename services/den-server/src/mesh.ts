@@ -57,6 +57,9 @@ export interface MeshViewOptions {
   cacheMs: number
   /** Per-peer /healthz probe budget (ms). */
   probeTimeoutMs?: number
+  /** PEM bundle for verifying https peers (the Rivet CA chain). '' / missing
+   *  file = system trust only, so private-CA peers show offline. */
+  caPath?: string
   /** Which roster entry is this process — default $RIVETOS_DEN_NODE_ID, else
    *  os.hostname(). No id matching = no `latest` anywhere, which is fine. */
   localNodeId?: string
@@ -131,18 +134,52 @@ function denUrlFor(id: string, node: MeshFileNode): string | null {
   return null
 }
 
+/**
+ * GET a peer's /healthz body. http URLs go through fetch; https URLs use
+ * node:https directly so the private Rivet CA (opts.caPath) can be trusted
+ * without process-wide NODE_EXTRA_CA_CERTS. Client certs are not needed:
+ * /healthz is never auth-gated.
+ */
+async function getHealthz(denUrl: string, timeoutMs: number, ca: string | null): Promise<string> {
+  const url = new URL(`${denUrl}/healthz`)
+  if (url.protocol !== 'https:') {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+    if (!res.ok) throw new Error(`status ${String(res.status)}`)
+    return res.text()
+  }
+  const { request } = await import('node:https')
+  return new Promise<string>((resolve, reject) => {
+    const req = request(url, { ...(ca ? { ca } : {}), timeout: timeoutMs }, (res) => {
+      if ((res.statusCode ?? 0) < 200 || (res.statusCode ?? 0) >= 300) {
+        res.resume()
+        reject(new Error(`status ${String(res.statusCode)}`))
+        return
+      }
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+      res.on('error', reject)
+    })
+    req.on('timeout', () => req.destroy(new Error('timeout')))
+    req.on('error', reject)
+    req.end()
+  })
+}
+
 async function probe(
   denUrl: string,
   timeoutMs: number,
+  ca: string | null,
 ): Promise<{ online: boolean; sessions: number | null }> {
   try {
-    const res = await fetch(`${denUrl}/healthz`, { signal: AbortSignal.timeout(timeoutMs) })
-    if (!res.ok) return { online: false, sessions: null }
-    const body = (await res.json()) as { ok?: boolean; sessions?: number }
+    const body = JSON.parse(await getHealthz(denUrl, timeoutMs, ca)) as {
+      ok?: boolean
+      sessions?: number
+    }
     if (body.ok !== true) return { online: false, sessions: null }
     return { online: true, sessions: typeof body.sessions === 'number' ? body.sessions : null }
   } catch {
-    // refused, timed out, or not JSON — all the same to the viewer
+    // refused, timed out, bad cert, or not JSON — all the same to the viewer
     return { online: false, sessions: null }
   }
 }
@@ -151,6 +188,16 @@ export function createMeshView(opts: MeshViewOptions): MeshView {
   const probeTimeoutMs = opts.probeTimeoutMs ?? 1500
   const localNodeId = opts.localNodeId ?? process.env.RIVETOS_DEN_NODE_ID ?? hostname()
   const paths = meshFilePaths(opts.meshFile)
+  // CA is read once per process — cert rotation on /rivet-shared is picked up
+  // by the service restart that a rotation already requires. Only a SUCCESSFUL
+  // read is memoized: a transient NFS hiccup must not pin every https peer
+  // offline until restart.
+  let caCache: string | null = null
+  const loadCa = async (): Promise<string | null> => {
+    if (caCache !== null || !opts.caPath) return caCache
+    caCache = await readFile(opts.caPath, 'utf8').catch(() => null)
+    return caCache
+  }
 
   const build = async (): Promise<MeshOverview | null> => {
     const file = await loadMeshFile(paths)
@@ -162,9 +209,10 @@ export function createMeshView(opts: MeshViewOptions): MeshView {
       const denUrl = denUrlFor(id, node)
       if (denUrl) enabled.push({ id, name: node.name ?? id, denUrl })
     }
+    const ca = await loadCa()
     const nodes = await Promise.all(
       enabled.map(async ({ id, name, denUrl }): Promise<MeshDenNode> => {
-        const { online, sessions } = await probe(denUrl, probeTimeoutMs)
+        const { online, sessions } = await probe(denUrl, probeTimeoutMs, ca)
         const out: MeshDenNode = { id, name, denUrl, online, sessions }
         // `latest` comes straight from this process's reducer state — the
         // only node we can answer for without another round-trip

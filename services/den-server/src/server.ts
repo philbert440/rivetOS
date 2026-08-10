@@ -390,6 +390,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const meshView = createMeshView({
     meshFile: config.meshFile,
     cacheMs: config.meshCacheMs,
+    // Trust the Rivet CA for https peers (#491) — peers' node leaves don't
+    // chain to system roots, so without this every TLS peer shows offline.
+    caPath: config.tls.caPath,
     // `latest` is only answerable for our own sessions; peers just get probed
     getLocalLatest: () => {
       const sessions = listSessions(state)

@@ -15,6 +15,7 @@ import { sshExec, sshExecQuiet } from '../../lib/ssh.js'
 import {
   parseDenSettings,
   denProbeHost,
+  denProbeCmd,
   retireDenUnitRemote,
   verifyGatewayRemote,
 } from './den-deploy.js'
@@ -86,12 +87,36 @@ describe('parseDenSettings', () => {
       termOpen: false,
       staticDir: '/srv/den/dist',
       packsDir: '/opt/rivetos/packages/den-packs/packs',
+      tlsCert: '',
+      tlsCa: '/rivet-shared/rivet-ca/intermediate/chain.pem',
     })
   })
 
   it('falls back to the default port on out-of-range values', () => {
     const s = parseDenSettings('den:\n  enabled: true\n  port: 99999\n', ROOT)
     expect(s.port).toBe(5174)
+  })
+
+  it('reads explicit den.tls_* paths', () => {
+    const s = parseDenSettings(
+      'den:\n  enabled: true\n  tls_cert: /x/n.crt\n  tls_key: /x/n.key\n  tls_ca: /x/chain.pem\n',
+      ROOT,
+    )
+    expect(s.tlsCert).toBe('/x/n.crt')
+    expect(s.tlsCa).toBe('/x/chain.pem')
+  })
+
+  it('stays plain-http when the cert resolves but the key does not (probe must track the gateway)', () => {
+    const s = parseDenSettings('den:\n  enabled: true\n  tls_cert: /x/n.crt\n', ROOT)
+    expect(s.tlsCert).toBe('')
+  })
+
+  it('stays plain-http when mesh.node_name has no issued cert on disk', () => {
+    const s = parseDenSettings(
+      'mesh:\n  node_name: no-such-node-xyz\nden:\n  enabled: true\n',
+      ROOT,
+    )
+    expect(s.tlsCert).toBe('')
   })
 })
 
@@ -101,6 +126,23 @@ describe('denProbeHost', () => {
     expect(denProbeHost('::')).toBe('127.0.0.1')
     expect(denProbeHost('127.0.0.1')).toBe('127.0.0.1')
     expect(denProbeHost('192.0.2.10')).toBe('192.0.2.10')
+  })
+})
+
+describe('denProbeCmd', () => {
+  it('probes plain http when the den has no TLS material', () => {
+    const s = parseDenSettings('den:\n  enabled: true\n  host: 0.0.0.0\n', ROOT)
+    expect(denProbeCmd(s)).toBe('curl -fsS -m 3 http://127.0.0.1:5174/healthz')
+  })
+
+  it('probes https with the CA bundle when TLS is configured (#491)', () => {
+    const s = parseDenSettings(
+      'den:\n  enabled: true\n  host: 0.0.0.0\n  tls_cert: /x/n.crt\n  tls_key: /x/n.key\n',
+      ROOT,
+    )
+    expect(denProbeCmd(s)).toBe(
+      'curl -fsS -m 3 --cacert /rivet-shared/rivet-ca/intermediate/chain.pem https://127.0.0.1:5174/healthz',
+    )
   })
 })
 
