@@ -2,6 +2,7 @@ package dev.rivet.app.data.tls
 
 import java.io.ByteArrayInputStream
 import java.security.KeyStore
+import java.security.Principal
 import java.security.cert.X509Certificate
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -166,5 +167,39 @@ object DeviceIdentityCrypto {
         // RFC 2253: CN=value, possibly quoted. Prefer the first CN= segment.
         val match = Regex("""(?:^|,)CN=([^,]+)""").find(dn)
         return match?.groupValues?.get(1)?.trim()?.trim('"')?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * Subject DNs of Rivet CAs that should authorize offering the device client cert.
+     * Includes bag CA entries, chain intermediates, and the leaf issuer.
+     */
+    fun rivetCaIssuerNames(materials: DeviceIdentityMaterials): Set<String> {
+        val names = LinkedHashSet<String>()
+        materials.caCertificates.forEach { names.add(it.subjectX500Principal.name) }
+        val keyAlias = materials.keyStore.aliases().asSequence()
+            .firstOrNull { materials.keyStore.isKeyEntry(it) }
+        if (keyAlias != null) {
+            val chain = materials.keyStore.getCertificateChain(keyAlias)
+            val leaf = chain?.getOrNull(0) as? X509Certificate
+            leaf?.issuerX500Principal?.name?.let { names.add(it) }
+            chain?.drop(1)?.forEach { cert ->
+                (cert as? X509Certificate)?.subjectX500Principal?.name?.let { names.add(it) }
+            }
+        }
+        return names
+    }
+
+    /**
+     * Whether a TLS CertificateRequest's acceptable-issuers list includes a Rivet CA
+     * we imported. Empty/null issuer lists → false (do not present the device cert
+     * to arbitrary peers that ask for "any" client cert).
+     */
+    fun shouldPresentClientCert(
+        requestIssuers: Array<out Principal>?,
+        rivetCaSubjects: Collection<String>,
+    ): Boolean {
+        if (requestIssuers.isNullOrEmpty()) return false
+        if (rivetCaSubjects.isEmpty()) return false
+        return requestIssuers.any { principal -> principal.name in rivetCaSubjects }
     }
 }

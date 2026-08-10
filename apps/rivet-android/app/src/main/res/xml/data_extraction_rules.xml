@@ -17,6 +17,14 @@
     <exclude
       domain="sharedpref"
       path="rivet_device_identity.xml" />
+    <!-- Tink keysets for EncryptedSharedPreferences: master key is hardware-bound
+         and never restores; restoring keysets alone crashes create() on next launch. -->
+    <exclude
+      domain="sharedpref"
+      path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml" />
+    <exclude
+      domain="sharedpref"
+      path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml" />
   </cloud-backup>
   <device-transfer>
     <exclude
@@ -28,5 +36,11 @@
     <exclude
       domain="sharedpref"
       path="rivet_device_identity.xml" />
+    <exclude
+      domain="sharedpref"
+      path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml" />
+    <exclude
+      domain="sharedpref"
+      path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml" />
   </device-transfer>
 </data-extraction-rules>

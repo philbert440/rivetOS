@@ -277,6 +277,9 @@ internal class DenTermClient(
                 // imported PKCS#12. Bound by DI; no-op until then (http dens ok).
                 with(RivetTls) { builder.applyRivetTls() }
                 val c = builder.build()
+                // Drop pooled TLS sessions when identity is imported/removed so the
+                // next handshake presents the new cert (abbreviated resume won't).
+                RivetTls.boundStore()?.addChangeListener { c.connectionPool.evictAll() }
                 shared = c
                 return c
             }

@@ -163,11 +163,11 @@ val dataSourceModule = module {
     }
 
     single {
+        // No DeviceIdentityStore: MCP dials arbitrary third-party endpoints.
         McpManager(
             settingsStore = get(),
             appScope = get(),
             filesManager = get(),
-            identityStore = get(),
         )
     }
 
@@ -230,7 +230,11 @@ val dataSourceModule = module {
             .addInterceptor(HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.HEADERS
             })
-            .build().also { SearchService.init(it, get()) }
+            .build().also { client ->
+                SearchService.init(client, get())
+                // Fresh identity must re-handshake; drop pooled sessions that hold the old cert.
+                identityStore.addChangeListener { client.connectionPool.evictAll() }
+            }
     }
 
     single {

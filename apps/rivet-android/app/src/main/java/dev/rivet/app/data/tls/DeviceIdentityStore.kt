@@ -6,13 +6,16 @@ import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.io.File
+import java.net.Socket
 import java.security.Principal
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.X509ExtendedKeyManager
+import javax.net.ssl.X509ExtendedTrustManager
 import javax.net.ssl.X509KeyManager
 import javax.net.ssl.X509TrustManager
 import javax.net.ssl.SSLSocketFactory
@@ -38,6 +41,22 @@ class DeviceIdentityStore(context: Context) {
     @Volatile
     private var cached: DeviceIdentityMaterials? = null
 
+    /** Bumped on import/clear so composed managers rebuild once, not every handshake. */
+    private val generation = AtomicInteger(0)
+
+    /** Generation for which materials() already failed (avoid re-parse forever). */
+    @Volatile
+    private var failedGeneration: Int = -1
+
+    @Volatile
+    private var composedKeyManager: X509KeyManager? = null
+
+    @Volatile
+    private var composedTrustManager: X509TrustManager? = null
+
+    @Volatile
+    private var composedGeneration: Int = -1
+
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
     /** True when a device p12 is present on disk. */
@@ -52,6 +71,7 @@ class DeviceIdentityStore(context: Context) {
      * Import a PKCS#12 from the SAF picker. Replaces any previous identity.
      * @return summary of the new leaf.
      * @throws IllegalArgumentException on bad passphrase / missing key.
+     * @throws IllegalStateException when the passphrase vault commit fails.
      */
     fun importPkcs12(bytes: ByteArray, passphrase: String): DeviceCertSummary {
         val password = passphrase.toCharArray()
@@ -62,8 +82,15 @@ class DeviceIdentityStore(context: Context) {
         }
         synchronized(lock) {
             p12File.outputStream().use { it.write(bytes) }
-            vault.edit().putString(KEY_PASSPHRASE, passphrase).commit()
+            val committed = vault.edit().putString(KEY_PASSPHRASE, passphrase).commit()
+            if (!committed) {
+                // Roll back the bag so hasIdentity() stays consistent with the vault.
+                p12File.delete()
+                throw IllegalStateException("Failed to persist device identity passphrase")
+            }
+            cached?.password?.fill('\u0000')
             cached = materials
+            invalidateComposedLocked()
         }
         notifyChanged()
         return materials.summary
@@ -76,6 +103,7 @@ class DeviceIdentityStore(context: Context) {
             cached = null
             if (p12File.exists()) p12File.delete()
             vault.edit().remove(KEY_PASSPHRASE).commit()
+            invalidateComposedLocked()
         }
         notifyChanged()
     }
@@ -87,10 +115,13 @@ class DeviceIdentityStore(context: Context) {
     fun materials(): DeviceIdentityMaterials? {
         synchronized(lock) {
             cached?.let { return it }
+            val gen = generation.get()
+            if (failedGeneration == gen) return null
             if (!p12File.isFile || p12File.length() == 0L) return null
             val pass = vault.getString(KEY_PASSPHRASE, null) ?: return null
             val bytes = runCatching { p12File.readBytes() }.getOrElse {
                 Log.w(TAG, "failed to read device.p12")
+                failedGeneration = gen
                 return null
             }
             val password = pass.toCharArray()
@@ -98,7 +129,11 @@ class DeviceIdentityStore(context: Context) {
                 DeviceIdentityCrypto.parsePkcs12(bytes, password).also { cached = it }
             } catch (e: Exception) {
                 Log.w(TAG, "failed to unlock device.p12: ${e.message}")
+                failedGeneration = gen
                 null
+            } finally {
+                // parsePkcs12 copies the char array into materials; zero our local copy.
+                password.fill('\u0000')
             }
         }
     }
@@ -130,26 +165,88 @@ class DeviceIdentityStore(context: Context) {
         listeners.forEach { runCatching { it.invoke() } }
     }
 
+    private fun invalidateComposedLocked() {
+        generation.incrementAndGet()
+        failedGeneration = -1
+        composedKeyManager = null
+        composedTrustManager = null
+        composedGeneration = -1
+    }
+
     /**
-     * KeyManager that presents the imported device leaf when present, and
-     * otherwise offers nothing (platform default: no client cert).
+     * Only offer the device client cert when the peer's CertificateRequest lists
+     * an acceptable issuer that matches our imported Rivet CA. Empty issuer lists
+     * (common "any client cert" servers) → do not present.
+     */
+    private fun shouldPresentClientCert(issuers: Array<out Principal>?): Boolean {
+        val mats = materials() ?: return false
+        return DeviceIdentityCrypto.shouldPresentClientCert(
+            issuers,
+            DeviceIdentityCrypto.rivetCaIssuerNames(mats),
+        )
+    }
+
+    private fun keyManagerDelegate(): X509KeyManager? {
+        val gen = generation.get()
+        if (composedGeneration == gen && composedKeyManager != null) {
+            return composedKeyManager
+        }
+        synchronized(lock) {
+            if (composedGeneration == gen && composedKeyManager != null) {
+                return composedKeyManager
+            }
+            val mats = materials()
+            val km = mats?.keyManagers()?.filterIsInstance<X509KeyManager>()?.firstOrNull()
+            ensureTrustComposedLocked(mats)
+            composedKeyManager = km
+            composedGeneration = gen
+            return km
+        }
+    }
+
+    private fun trustManagerDelegate(): X509TrustManager {
+        val gen = generation.get()
+        composedTrustManager?.let { if (composedGeneration == gen) return it }
+        synchronized(lock) {
+            if (composedGeneration == gen) {
+                composedTrustManager?.let { return it }
+            }
+            val mats = materials()
+            val tm = ensureTrustComposedLocked(mats)
+            composedKeyManager = mats?.keyManagers()?.filterIsInstance<X509KeyManager>()?.firstOrNull()
+            composedGeneration = gen
+            return tm
+        }
+    }
+
+    private fun ensureTrustComposedLocked(mats: DeviceIdentityMaterials?): X509TrustManager {
+        val extra = mats?.caCertificates.orEmpty()
+        val tm = DeviceIdentityCrypto.systemPlusExtraTrustManager(extra)
+        composedTrustManager = tm
+        return tm
+    }
+
+    /**
+     * KeyManager that presents the imported device leaf only when the peer's
+     * CertificateRequest acceptable-issuers include the Rivet CA. Otherwise
+     * offers nothing (unenrolled path / non-gateway TLS peers).
      */
     private val dynamicKeyManager: X509ExtendedKeyManager = object : X509ExtendedKeyManager() {
-        private fun delegate(): X509KeyManager? {
-            val mats = materials() ?: return null
-            return mats.keyManagers()
-                .filterIsInstance<X509KeyManager>()
-                .firstOrNull()
-        }
+        private fun delegate(): X509KeyManager? = keyManagerDelegate()
 
-        override fun getClientAliases(keyType: String?, issuers: Array<out Principal>?): Array<String>? =
-            delegate()?.getClientAliases(keyType, issuers)
+        override fun getClientAliases(keyType: String?, issuers: Array<out Principal>?): Array<String>? {
+            if (!shouldPresentClientCert(issuers)) return null
+            return delegate()?.getClientAliases(keyType, issuers)
+        }
 
         override fun chooseClientAlias(
             keyType: Array<out String>?,
             issuers: Array<out Principal>?,
-            socket: java.net.Socket?,
-        ): String? = delegate()?.chooseClientAlias(keyType, issuers, socket)
+            socket: Socket?,
+        ): String? {
+            if (!shouldPresentClientCert(issuers)) return null
+            return delegate()?.chooseClientAlias(keyType, issuers, socket)
+        }
 
         override fun getServerAliases(keyType: String?, issuers: Array<out Principal>?): Array<String>? =
             delegate()?.getServerAliases(keyType, issuers)
@@ -157,7 +254,7 @@ class DeviceIdentityStore(context: Context) {
         override fun chooseServerAlias(
             keyType: String?,
             issuers: Array<out Principal>?,
-            socket: java.net.Socket?,
+            socket: Socket?,
         ): String? = delegate()?.chooseServerAlias(keyType, issuers, socket)
 
         override fun getCertificateChain(alias: String?): Array<X509Certificate>? =
@@ -171,6 +268,7 @@ class DeviceIdentityStore(context: Context) {
             issuers: Array<out Principal>?,
             engine: SSLEngine?,
         ): String? {
+            if (!shouldPresentClientCert(issuers)) return null
             val d = delegate()
             return if (d is X509ExtendedKeyManager) {
                 d.chooseEngineClientAlias(keyType, issuers, engine)
@@ -193,11 +291,12 @@ class DeviceIdentityStore(context: Context) {
         }
     }
 
-    private val dynamicTrustManager: X509TrustManager = object : X509TrustManager {
-        private fun current(): X509TrustManager {
-            val extra = materials()?.caCertificates.orEmpty()
-            return DeviceIdentityCrypto.systemPlusExtraTrustManager(extra)
-        }
+    /**
+     * Extended trust wrapper so OkHttp/Conscrypt keep session-aware checks,
+     * CT enforcement, and Network Security Config behavior on the unenrolled path.
+     */
+    private val dynamicTrustManager: X509ExtendedTrustManager = object : X509ExtendedTrustManager() {
+        private fun current(): X509TrustManager = trustManagerDelegate()
 
         override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {
             current().checkClientTrusted(chain, authType)
@@ -205,6 +304,50 @@ class DeviceIdentityStore(context: Context) {
 
         override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
             current().checkServerTrusted(chain, authType)
+        }
+
+        override fun checkClientTrusted(
+            chain: Array<X509Certificate>,
+            authType: String,
+            socket: Socket,
+        ) {
+            when (val tm = current()) {
+                is X509ExtendedTrustManager -> tm.checkClientTrusted(chain, authType, socket)
+                else -> tm.checkClientTrusted(chain, authType)
+            }
+        }
+
+        override fun checkServerTrusted(
+            chain: Array<X509Certificate>,
+            authType: String,
+            socket: Socket,
+        ) {
+            when (val tm = current()) {
+                is X509ExtendedTrustManager -> tm.checkServerTrusted(chain, authType, socket)
+                else -> tm.checkServerTrusted(chain, authType)
+            }
+        }
+
+        override fun checkClientTrusted(
+            chain: Array<X509Certificate>,
+            authType: String,
+            engine: SSLEngine,
+        ) {
+            when (val tm = current()) {
+                is X509ExtendedTrustManager -> tm.checkClientTrusted(chain, authType, engine)
+                else -> tm.checkClientTrusted(chain, authType)
+            }
+        }
+
+        override fun checkServerTrusted(
+            chain: Array<X509Certificate>,
+            authType: String,
+            engine: SSLEngine,
+        ) {
+            when (val tm = current()) {
+                is X509ExtendedTrustManager -> tm.checkServerTrusted(chain, authType, engine)
+                else -> tm.checkServerTrusted(chain, authType)
+            }
         }
 
         override fun getAcceptedIssuers(): Array<X509Certificate> = current().acceptedIssuers
@@ -221,7 +364,28 @@ class DeviceIdentityStore(context: Context) {
 
         private const val KEY_PASSPHRASE = "p12_passphrase"
 
+        /**
+         * Tink keyset SharedPreferences files used by EncryptedSharedPreferences.
+         * Hardware-bound MasterKey never restores; leftover keysets crash create().
+         */
+        private val TINK_KEYSET_PREFS = listOf(
+            "__androidx_security_crypto_encrypted_prefs_key_keyset__",
+            "__androidx_security_crypto_encrypted_prefs_value_keyset__",
+        )
+
         private fun openVault(context: Context): SharedPreferences {
+            return try {
+                createVault(context)
+            } catch (e: Exception) {
+                // Classic restore pitfall: keysets restored, MasterKey not. Also
+                // covers Keystore eviction after lockscreen removal.
+                Log.w(TAG, "vault open failed; wipe-and-recreate: ${e.message}")
+                wipeVaultState(context)
+                createVault(context)
+            }
+        }
+
+        private fun createVault(context: Context): SharedPreferences {
             val masterKey = MasterKey.Builder(context)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .build()
@@ -232,6 +396,15 @@ class DeviceIdentityStore(context: Context) {
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
             )
+        }
+
+        private fun wipeVaultState(context: Context) {
+            runCatching { context.deleteSharedPreferences(VAULT_FILE) }
+            TINK_KEYSET_PREFS.forEach { name ->
+                runCatching { context.deleteSharedPreferences(name) }
+            }
+            // Passphrase is gone; orphaned bag would only confuse hasIdentity().
+            runCatching { File(context.filesDir, P12_FILE).delete() }
         }
     }
 }

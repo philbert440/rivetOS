@@ -38,8 +38,6 @@ import dev.rivet.app.data.datastore.SettingsStore
 import dev.rivet.app.data.datastore.getCurrentAssistant
 import dev.rivet.app.data.files.FilesManager
 import dev.rivet.app.data.files.saveUploadFromBytes
-import dev.rivet.app.data.tls.DeviceIdentityStore
-import dev.rivet.app.data.tls.RivetTls.applyRivetTls
 import dev.rivet.app.utils.JsonInstant
 import dev.rivet.app.utils.checkDifferent
 import okhttp3.OkHttpClient
@@ -53,11 +51,15 @@ private const val MAX_RECONNECT_ATTEMPTS = 5
 private const val BASE_RECONNECT_DELAY_MS = 1000L
 private const val MAX_RECONNECT_DELAY_MS = 30000L
 
+/**
+ * MCP endpoint manager. Uses a plain OkHttp client on purpose: servers are
+ * arbitrary user-configured third-party URLs, so device gateway mTLS must not
+ * be applied here (would offer the Rivet client cert to any peer that asks).
+ */
 class McpManager(
     private val settingsStore: SettingsStore,
     private val appScope: AppScope,
     private val filesManager: FilesManager,
-    identityStore: DeviceIdentityStore? = null,
 ) {
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -65,9 +67,6 @@ class McpManager(
         .writeTimeout(120, TimeUnit.SECONDS)
         .followSslRedirects(true)
         .followRedirects(true)
-        .let { builder ->
-            if (identityStore != null) builder.applyRivetTls(identityStore) else builder
-        }
         .build()
 
     private val client = HttpClient(OkHttp) {

@@ -118,4 +118,31 @@ class DeviceIdentityCryptoTest {
         )!![0] as X509Certificate
         assertEquals("device:test-pixel", DeviceIdentityCrypto.commonName(leaf))
     }
+
+    @Test
+    fun `client cert is not offered when CertificateRequest has empty issuers`() {
+        val materials = DeviceIdentityCrypto.parsePkcs12(loadFixture(), passphrase)
+        val rivet = DeviceIdentityCrypto.rivetCaIssuerNames(materials)
+        assertFalse(rivet.isEmpty())
+        assertFalse(DeviceIdentityCrypto.shouldPresentClientCert(null, rivet))
+        assertFalse(DeviceIdentityCrypto.shouldPresentClientCert(emptyArray(), rivet))
+    }
+
+    @Test
+    fun `client cert is offered only when Rivet CA is among acceptable issuers`() {
+        val materials = DeviceIdentityCrypto.parsePkcs12(loadFixture(), passphrase)
+        val rivet = DeviceIdentityCrypto.rivetCaIssuerNames(materials)
+        val ca = materials.caCertificates.first()
+        assertTrue(
+            DeviceIdentityCrypto.shouldPresentClientCert(
+                arrayOf(ca.subjectX500Principal),
+                rivet,
+            ),
+        )
+        // Unrelated peer CA (e.g. public Let's Encrypt style subject) → withhold.
+        val foreign = javax.security.auth.x500.X500Principal("CN=Some Other CA,O=Example")
+        assertFalse(
+            DeviceIdentityCrypto.shouldPresentClientCert(arrayOf(foreign), rivet),
+        )
+    }
 }
