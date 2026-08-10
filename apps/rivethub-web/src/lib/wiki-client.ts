@@ -10,6 +10,7 @@ import { useConnection } from '../stores/connection.js'
 import { useWikiSettings } from '../stores/wiki-settings.js'
 import { isValidGatewayUrl } from './gateway-url.js'
 import { datahubBaseFromMesh } from './wiki-base.js'
+import { transportBase } from './mtls-proxy.js'
 
 export interface WikiEndpoint {
   baseUrl: string
@@ -39,46 +40,44 @@ export function useWikiEndpoint(): {
     staleTime: 60_000,
   })
 
+  // The wiki base's IDENTITY (what the UI shows / keys on), before transport.
+  const picked = useMemo((): { baseUrl: string; source: 'settings' | 'mesh' } | null => {
+    if (settingsBase) return { baseUrl: settingsBase, source: 'settings' }
+    if (!chatReady) return null
+    const fromMesh = mesh.data ? datahubBaseFromMesh(mesh.data.nodes) : null
+    return fromMesh ? { baseUrl: fromMesh, source: 'mesh' } : null
+  }, [settingsBase, chatReady, mesh.data])
+
+  // Desktop mTLS (#491): an https datahub must ride the shell's loopback
+  // identity pipe like every other gateway — a fourth RivetGateway
+  // construction dialing WebKitGTK directly would silently fail its mTLS.
+  // Browsers / http bases resolve to the base itself instantly.
+  const transport = useQuery({
+    queryKey: ['wiki-transport', picked?.baseUrl ?? ''],
+    enabled: picked !== null,
+    staleTime: Infinity,
+    queryFn: () => transportBase(picked?.baseUrl ?? ''),
+  })
+
   return useMemo(() => {
-    if (settingsBase) {
-      return {
-        endpoint: {
-          baseUrl: settingsBase,
-          source: 'settings' as const,
-          gateway: new RivetGateway({
-            baseUrl: settingsBase,
-            authMode: 'mtls',
-          }),
-        },
-        pending: false,
-        needNode: false,
-      }
+    if (!picked) {
+      if (!settingsBase && !chatReady) return { endpoint: null, pending: false, needNode: true }
+      if (mesh.isLoading || mesh.isFetching)
+        return { endpoint: null, pending: true, needNode: false }
+      return { endpoint: null, pending: false, needNode: false }
     }
-
-    if (!chatReady) {
-      return { endpoint: null, pending: false, needNode: true }
-    }
-
-    if (mesh.isLoading || mesh.isFetching) {
+    if (!transport.data) {
+      // resolving the pipe (a frame or two inside Tauri; instant elsewhere)
       return { endpoint: null, pending: true, needNode: false }
     }
-
-    const fromMesh = mesh.data ? datahubBaseFromMesh(mesh.data.nodes) : null
-    if (fromMesh) {
-      return {
-        endpoint: {
-          baseUrl: fromMesh,
-          source: 'mesh' as const,
-          gateway: new RivetGateway({
-            baseUrl: fromMesh,
-            authMode: 'mtls',
-          }),
-        },
-        pending: false,
-        needNode: false,
-      }
+    return {
+      endpoint: {
+        baseUrl: picked.baseUrl,
+        source: picked.source,
+        gateway: new RivetGateway({ baseUrl: transport.data, authMode: 'mtls' }),
+      },
+      pending: false,
+      needNode: false,
     }
-
-    return { endpoint: null, pending: false, needNode: false }
-  }, [settingsBase, chatReady, mesh.isLoading, mesh.isFetching, mesh.data])
+  }, [picked, transport.data, settingsBase, chatReady, mesh.isLoading, mesh.isFetching])
 }

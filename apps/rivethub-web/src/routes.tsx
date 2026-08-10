@@ -25,6 +25,9 @@ import { useNotifications } from './stores/notifications.js'
 
 function RootLayout(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
+  // Desktop mTLS (#491): rebind when the gateway swaps onto the loopback
+  // identity pipe (baseUrl unchanged) — see connection.ts transportEpoch.
+  const transportEpoch = useConnection((s) => s.transportEpoch)
   const connectNotifications = useNotifications((s) => s.connect)
 
   // App-lifetime notifications socket (escalations etc.) — root-level so
@@ -32,7 +35,7 @@ function RootLayout(): JSX.Element {
   useEffect(() => {
     connectNotifications(baseUrl)
     return () => useNotifications.getState().disconnect()
-  }, [baseUrl, connectNotifications])
+  }, [baseUrl, transportEpoch, connectNotifications])
 
   return (
     <div className="flex h-full">

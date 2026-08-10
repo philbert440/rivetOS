@@ -16,6 +16,19 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
+mod proxy;
+
+/// Web-side bridge for gateway mTLS (#491): the app swaps an https gateway
+/// base for a loopback byte-pipe that carries the device client cert. See
+/// proxy.rs for the identity material layout.
+#[tauri::command]
+async fn mtls_proxy_port(
+    state: tauri::State<'_, proxy::ProxyState>,
+    target: String,
+) -> Result<u16, String> {
+    proxy::proxy_port(&state, target).await
+}
+
 /// Monotonic suffix for additional window labels (main is "main").
 static WINDOW_SEQ: AtomicU32 = AtomicU32::new(1);
 
@@ -103,7 +116,17 @@ pub fn run() {
                 })
                 .build(),
         )
+        .invoke_handler(tauri::generate_handler![mtls_proxy_port])
         .setup(|app| {
+            // Device identity for gateway mTLS lives under the app config dir
+            // (e.g. ~/.config/dev.rivetos.rivethub/mtls/) — device.crt,
+            // device.key, ca.pem, copied there by the admin at enroll time.
+            let identity_dir = app
+                .path()
+                .app_config_dir()
+                .map(|d| d.join("mtls"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("mtls"));
+            app.manage(proxy::ProxyState::new(identity_dir));
             // Registration can fail silently when another app owns the
             // combo (the plugin swallows per-shortcut conflicts) — summon
             // just "doesn't work" with no signal. Verify and at least say so.

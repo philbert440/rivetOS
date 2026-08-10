@@ -140,6 +140,11 @@ function migrateSessionKey(baseUrl: string, from: string, to: string): void {
 
 export function ChatPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
+  // Desktop mTLS (#491): bumps when the gateway swaps onto the loopback
+  // identity pipe with baseUrl unchanged — without it in the deps this
+  // socket would stay on the pre-pipe gateway (which cannot authenticate)
+  // for the whole session. Same-identity reconnects preserve chat state.
+  const transportEpoch = useConnection((s) => s.transportEpoch)
   const chat = useChat()
 
   // One socket for the whole page; reconnect (and reset per-gateway state)
@@ -147,7 +152,7 @@ export function ChatPage(): JSX.Element {
   useEffect(() => {
     chat.connect(baseUrl)
     return () => useChat.getState().disconnect()
-  }, [baseUrl])
+  }, [baseUrl, transportEpoch])
 
   const connected = useGatewayReady()
   // The drawer lists the node's harness sessions straight from their on-disk
@@ -230,8 +235,9 @@ export function ChatPage(): JSX.Element {
     })
     return () => sub.close()
     // planeQueryKey fields are baseUrl/token/descriptors.length — listed
-    // explicitly so the effect rebinds when the endpoint or driver set changes.
-  }, [connected, hasDrivers, baseUrl, queryClient, descriptors?.length])
+    // explicitly so the effect rebinds when the endpoint or driver set
+    // changes. transportEpoch rebinds it onto the mTLS pipe gateway.
+  }, [connected, hasDrivers, baseUrl, transportEpoch, queryClient, descriptors?.length])
 
   const items = chatItems({
     drafts: chat.drafts,
