@@ -1156,10 +1156,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cert,
         key,
         ca,
-        // Require a client cert and verify against our CA. Loopback clients
-        // may omit it; isGatewayAuthorized still allows them.
+        // Request and VERIFY the client cert against our CA, but never kill
+        // the connection at the TLS layer: under TLS 1.3 rejectUnauthorized
+        // sends `certificate required` to every certless client, which
+        // breaks the documented open surfaces — /healthz (deploy probe, mesh
+        // peer probes) and loopback callers (den hooks) — before the app
+        // layer ever runs. Enforcement lives in isGatewayAuthorized: remote
+        // API access requires socket.authorized && a device leaf, so an
+        // absent, expired, or foreign cert is still refused everything but
+        // liveness. (Found live on the ct113 canary, 2026-08-10.)
         requestCert: config.tls.requireClientCert,
-        rejectUnauthorized: config.tls.requireClientCert,
+        rejectUnauthorized: false,
       },
       requestHandler,
     )
