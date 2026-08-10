@@ -672,9 +672,26 @@ object NodeRosterDefaults {
 
     fun normalizeDenUrl(url: String): String = url.trim().trimEnd('/')
 
+    /**
+     * Build a den base url from the add-node dialog's host + port.
+     *
+     * Gateways are https-only since the mTLS cutover (#491/#493): a typed
+     * scheme is respected, and bare hosts default to https — except loopback,
+     * where the on-device node really does serve plain http. The old
+     * behavior (force http, even stripping an explicit https://) locked the
+     * app out of every remote node with an "unexpected end of stream".
+     */
     fun buildDenUrl(host: String, port: Int): String {
-        val h = host.trim().removePrefix("http://").removePrefix("https://").trimEnd('/')
-        return normalizeDenUrl("http://$h:$port")
+        val trimmed = host.trim().trimEnd('/')
+        val explicit = when {
+            trimmed.startsWith("https://") -> "https"
+            trimmed.startsWith("http://") -> "http"
+            else -> null
+        }
+        val h = trimmed.removePrefix("http://").removePrefix("https://").trimEnd('/')
+        val loopback = h == "127.0.0.1" || h == "localhost" || h == "::1"
+        val scheme = explicit ?: if (loopback) "http" else "https"
+        return normalizeDenUrl("$scheme://$h:$port")
     }
 }
 
