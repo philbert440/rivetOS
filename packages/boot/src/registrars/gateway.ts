@@ -178,29 +178,47 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
 
   // Gateway mTLS — node leaf + CA chain for verifying device client certs.
   // Prefer explicit den.tls_* config; fall back to mesh issue-node paths.
-  const nodeName = config.mesh?.node_name?.trim()
-  const defaultCert = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : ''
-  const defaultKey = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.key` : ''
-  const cert =
-    (den as { tls_cert?: string }).tls_cert?.trim() ||
-    process.env.RIVETOS_DEN_TLS_CERT?.trim() ||
-    (existsSync(defaultCert) ? defaultCert : '')
-  const key =
-    (den as { tls_key?: string }).tls_key?.trim() ||
-    process.env.RIVETOS_DEN_TLS_KEY?.trim() ||
-    (existsSync(defaultKey) ? defaultKey : '')
-  const ca =
-    (den as { tls_ca?: string }).tls_ca?.trim() ||
-    process.env.RIVETOS_DEN_TLS_CA?.trim() ||
-    '/rivet-shared/rivet-ca/intermediate/chain.pem'
-  if (cert) env.RIVETOS_DEN_TLS_CERT = cert
-  if (key) env.RIVETOS_DEN_TLS_KEY = key
-  if (ca) env.RIVETOS_DEN_TLS_CA = ca
+  const tls = resolveDenTls(config)
+  if (tls.cert) env.RIVETOS_DEN_TLS_CERT = tls.cert
+  if (tls.key) env.RIVETOS_DEN_TLS_KEY = tls.key
+  if (tls.ca) env.RIVETOS_DEN_TLS_CA = tls.ca
   if ((den as { tls_require_client?: boolean }).tls_require_client === false) {
     env.RIVETOS_DEN_TLS_REQUIRE_CLIENT = '0'
   }
 
   return env
+}
+
+/**
+ * Resolve the gateway's TLS material: explicit den.tls_* config → env →
+ * mesh issue-node auto paths on /rivet-shared. Single source of truth for
+ * buildGatewayEnv and for the mesh registrar's advertised denUrl scheme —
+ * the two must agree or peers probe the wrong protocol.
+ */
+export function resolveDenTls(config: RivetConfig): { cert: string; key: string; ca: string } {
+  const den = (config.den ?? {}) as { tls_cert?: string; tls_key?: string; tls_ca?: string }
+  const nodeName = config.mesh?.node_name?.trim()
+  const defaultCert = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : ''
+  const defaultKey = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.key` : ''
+  const cert =
+    den.tls_cert?.trim() ||
+    process.env.RIVETOS_DEN_TLS_CERT?.trim() ||
+    (existsSync(defaultCert) ? defaultCert : '')
+  const key =
+    den.tls_key?.trim() ||
+    process.env.RIVETOS_DEN_TLS_KEY?.trim() ||
+    (existsSync(defaultKey) ? defaultKey : '')
+  const ca =
+    den.tls_ca?.trim() ||
+    process.env.RIVETOS_DEN_TLS_CA?.trim() ||
+    '/rivet-shared/rivet-ca/intermediate/chain.pem'
+  return { cert, key, ca }
+}
+
+/** True when the embedded gateway will serve HTTPS (den-server tlsReady). */
+export function denTlsConfigured(config: RivetConfig): boolean {
+  const { cert, key } = resolveDenTls(config)
+  return Boolean(cert) && Boolean(key)
 }
 
 /**

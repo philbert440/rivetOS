@@ -70,3 +70,25 @@ Nodes should reload CA/CRL on a schedule (or restart) so revocations stick.
 `POST /api/devices/enroll` one-time tokens remain **pairing** for WireGuard mesh
 membership. They are not gateway application auth and are not a substitute for
 device client certificates.
+
+## Operability (post-#491 rollout pieces)
+
+- **Node leaf SANs**: issue node certs with `IP:127.0.0.1` (plus the LAN IP)
+  so loopback https — the deploy health probe, den hooks, spawned harnesses —
+  passes hostname verification:
+  `rivet-ca.sh issue-node ct112 DNS:ct112 IP:192.0.2.112 IP:127.0.0.1`
+  SANs must cover **both** `127.0.0.1` and whatever host the node advertises
+  on the mesh (`mesh.advertise_host` — LAN or overlay IP): peers verify the
+  advertised name, local probes verify loopback. **Re-issue every node leaf
+  to this shape BEFORE the fleet cutover** — leaves minted before this scheme
+  fail deploy verification with a hostname error, not a scheme error.
+- **Deploy probe**: `rivetos update` probes `https://…/healthz --cacert
+  <chain>` automatically when the den resolves TLS material (explicit
+  `den.tls_*` or the issue-node auto path).
+- **Den hooks** (claude-code / hermes / kimi): default fan-out covers both
+  loopback schemes; https posts verify against `RIVET_DEN_CA` (default
+  `/rivet-shared/rivet-ca/intermediate/chain.pem`). Explicit `RIVET_DEN_URL`
+  values must name the right scheme themselves.
+- **Mesh view**: nodes with gateway TLS advertise `metadata.denUrl =
+  https://<host>:<port>` in mesh.json; peer /healthz probes verify against
+  `den.tls_ca`. `/healthz` needs no client cert anywhere.
