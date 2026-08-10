@@ -664,10 +664,19 @@ object NodeRosterDefaults {
 
     fun isLocalNode(node: RosterNode): Boolean = isLocalDenUrl(node.denUrl)
 
+    /**
+     * Local-node semantics: loopback host on the on-device den port.
+     *
+     * Accepts `127.0.0.1`, `localhost`, and bracketed/`::1` IPv6, and either
+     * scheme — so a row typed as `localhost` (or `https://localhost`) does not
+     * fork into a second "remote" entry for this device (#497 follow-up).
+     */
     fun isLocalDenUrl(url: String): Boolean {
         val n = normalizeDenUrl(url)
         val port = dev.rivet.app.runtime.RivetRuntime.DEN_PORT
-        return n == "http://127.0.0.1:$port" || n == "http://localhost:$port"
+        val parsed = parseDenUrl(n) ?: return false
+        if (parsed.port != port) return false
+        return isLoopbackHost(parsed.host)
     }
 
     fun normalizeDenUrl(url: String): String = url.trim().trimEnd('/')
@@ -676,22 +685,157 @@ object NodeRosterDefaults {
      * Build a den base url from the add-node dialog's host + port.
      *
      * Gateways are https-only since the mTLS cutover (#491/#493): a typed
-     * scheme is respected, and bare hosts default to https — except loopback,
-     * where the on-device node really does serve plain http. The old
-     * behavior (force http, even stripping an explicit https://) locked the
-     * app out of every remote node with an "unexpected end of stream".
+     * scheme is respected (case-insensitive), and bare hosts default to https
+     * — except loopback, where the on-device node really does serve plain http.
+     * Bracket bare IPv6 literals (`::1`, `2001:db8::1`) so the result is a
+     * valid URL.
      */
     fun buildDenUrl(host: String, port: Int): String {
         val trimmed = host.trim().trimEnd('/')
+        val lower = trimmed.lowercase()
         val explicit = when {
-            trimmed.startsWith("https://") -> "https"
-            trimmed.startsWith("http://") -> "http"
+            lower.startsWith("https://") -> "https"
+            lower.startsWith("http://") -> "http"
             else -> null
         }
-        val h = trimmed.removePrefix("http://").removePrefix("https://").trimEnd('/')
-        val loopback = h == "127.0.0.1" || h == "localhost" || h == "::1"
+        var h = if (explicit != null) {
+            trimmed.substring(explicit.length + 3)
+        } else {
+            trimmed
+        }.trimEnd('/')
+        // Strip a trailing :port the user may have pasted into the host field
+        // only when clearly IPv4/hostname:port — bare IPv6 keeps its colons.
+        h = bracketIpv6Host(h)
+        val loopback = isLoopbackHost(h)
         val scheme = explicit ?: if (loopback) "http" else "https"
         return normalizeDenUrl("$scheme://$h:$port")
+    }
+
+    /**
+     * One-time upgrade: rewrite saved non-loopback `http://` roster rows to
+     * `https://` (the fleet is https-only after the mTLS cutover). Loopback
+     * stays http. Dedupes by normalized denUrl, keeping the first occurrence.
+     */
+    fun migrateRosterHttps(roster: List<RosterNode>): List<RosterNode> {
+        val migrated = roster.map { node ->
+            val n = normalizeDenUrl(node.denUrl)
+            val next = rewriteNonLoopbackHttpToHttps(n)
+            if (next == n) node else node.copy(denUrl = next)
+        }
+        return dedupeRoster(migrated)
+    }
+
+    /** Drop later rows that share a normalized denUrl (first wins). */
+    fun dedupeRoster(roster: List<RosterNode>): List<RosterNode> {
+        val seen = LinkedHashSet<String>()
+        return roster.filter { node ->
+            val key = normalizeDenUrl(node.denUrl)
+            if (key.isBlank() || key in seen) false else {
+                seen.add(key)
+                true
+            }
+        }
+    }
+
+    /**
+     * Edit [oldDenUrl] in place: replace that row with [updated] at the same
+     * index. Absorb any OTHER row already at the target denUrl so two rows
+     * cannot fork state. Returns null when [oldDenUrl] is missing or [updated]
+     * is invalid.
+     */
+    fun updateRosterInPlace(
+        roster: List<RosterNode>,
+        oldDenUrl: String,
+        updated: RosterNode,
+    ): List<RosterNode>? {
+        val from = normalizeDenUrl(oldDenUrl)
+        val to = normalizeDenUrl(updated.denUrl)
+        val name = updated.name.trim()
+        if (to.isBlank() || name.isBlank()) return null
+        val idx = roster.indexOfFirst { normalizeDenUrl(it.denUrl) == from }
+        if (idx < 0) return null
+        // Drop other rows already at `to` (not the row being edited).
+        val next = ArrayList<RosterNode>(roster.size)
+        for ((i, node) in roster.withIndex()) {
+            if (i == idx) {
+                next.add(RosterNode(name = name, denUrl = to))
+            } else if (normalizeDenUrl(node.denUrl) != to) {
+                next.add(node)
+            }
+            // else: absorb collision — skip the other row
+        }
+        return next
+    }
+
+    /** Host/port/scheme fields for the edit form. Null when unparseable. */
+    data class DenParts(val scheme: String, val host: String, val port: Int)
+
+    fun parseDenUrl(url: String): DenParts? {
+        val n = normalizeDenUrl(url)
+        if (n.isBlank()) return null
+        val scheme = when {
+            n.startsWith("https://", ignoreCase = true) -> "https"
+            n.startsWith("http://", ignoreCase = true) -> "http"
+            else -> return null
+        }
+        val rest = n.substring(scheme.length + 3)
+        if (rest.isBlank()) return null
+        val host: String
+        val portStr: String?
+        if (rest.startsWith("[")) {
+            val close = rest.indexOf(']')
+            if (close <= 1) return null
+            host = rest.substring(0, close + 1)
+            val after = rest.substring(close + 1)
+            portStr = if (after.startsWith(":")) after.drop(1) else null
+        } else {
+            val colon = rest.lastIndexOf(':')
+            if (colon > 0 && rest.indexOf(':') == colon) {
+                // Single colon → host:port (IPv4 / hostname)
+                host = rest.substring(0, colon)
+                portStr = rest.substring(colon + 1)
+            } else if (colon > 0) {
+                // Multiple colons without brackets — bare IPv6, no port
+                host = bracketIpv6Host(rest)
+                portStr = null
+            } else {
+                host = rest
+                portStr = null
+            }
+        }
+        val port = portStr?.toIntOrNull()
+            ?: dev.rivet.app.runtime.RivetRuntime.DEN_PORT
+        if (port !in 1..65535) return null
+        val bareHost = host.removePrefix("[").removeSuffix("]")
+        if (bareHost.isBlank()) return null
+        return DenParts(scheme = scheme, host = host, port = port)
+    }
+
+    fun isLoopbackHost(host: String): Boolean {
+        val h = host.trim().removePrefix("[").removeSuffix("]").lowercase()
+        return h == "127.0.0.1" || h == "localhost" || h == "::1"
+    }
+
+    /**
+     * Wrap bare IPv6 literals in `[]`. Leave already-bracketed, IPv4, and
+     * hostnames alone. A host that already ends with `]:port` is returned as-is.
+     */
+    fun bracketIpv6Host(host: String): String {
+        val h = host.trim()
+        if (h.startsWith("[")) return h
+        // IPv6 has at least two colons; IPv4 has none (or one with port, handled
+        // by callers that strip port first). Hostnames never contain ':'.
+        if (h.count { it == ':' } < 2) return h
+        return "[$h]"
+    }
+
+    /** Non-loopback `http://` → `https://`; everything else unchanged. */
+    fun rewriteNonLoopbackHttpToHttps(denUrl: String): String {
+        val n = normalizeDenUrl(denUrl)
+        if (!n.startsWith("http://", ignoreCase = true)) return n
+        val parsed = parseDenUrl(n) ?: return n
+        if (isLoopbackHost(parsed.host)) return n
+        return normalizeDenUrl("https://${parsed.host}:${parsed.port}")
     }
 }
 

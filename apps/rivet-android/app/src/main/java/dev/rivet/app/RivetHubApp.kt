@@ -120,11 +120,29 @@ class RivetHubApp : Application() {
             runCatching {
                 val store = get<SettingsStore>()
                 val current = store.settingsFlowRaw.first()
+                // #497 follow-up: one-time rewrite of saved non-loopback http://
+                // roster rows to https:// (fleet is https-only after mTLS).
+                val migratedRoster = dev.rivet.app.data.datastore.NodeRosterDefaults
+                    .migrateRosterHttps(
+                        current.nodeRoster.ifEmpty {
+                            dev.rivet.app.data.datastore.NodeRosterDefaults.seed()
+                        },
+                    )
+                val migratedActive = dev.rivet.app.data.datastore.NodeRosterDefaults
+                    .rewriteNonLoopbackHttpToHttps(
+                        current.activeNodeDenUrl.ifBlank {
+                            dev.rivet.app.data.datastore.NodeRosterDefaults.localDenUrl()
+                        },
+                    )
+                val afterRoster = current.copy(
+                    nodeRoster = migratedRoster,
+                    activeNodeDenUrl = migratedActive,
+                )
                 val fixed = dev.rivet.app.data.datastore.NodeChatBackend
-                    .reconcileActiveNodeBaseUrl(current)
+                    .reconcileActiveNodeBaseUrl(afterRoster)
                 if (fixed != current) {
                     store.update(fixed)
-                    Log.i(TAG, "reconcileNodeChatBackend: aligned Rivet baseUrl to active node")
+                    Log.i(TAG, "reconcileNodeChatBackend: roster https migrate + baseUrl align")
                 }
             }.onFailure {
                 Log.e(TAG, "reconcileNodeChatBackend failed", it)

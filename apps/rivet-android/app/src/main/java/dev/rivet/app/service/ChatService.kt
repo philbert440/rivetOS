@@ -93,6 +93,8 @@ import dev.rivet.app.data.datastore.NodeRosterDefaults
 import dev.rivet.app.data.datastore.RIVET_GROK_MODEL_ID
 import dev.rivet.app.data.datastore.Settings
 import dev.rivet.app.data.datastore.SettingsStore
+import dev.rivet.app.data.session.GatewaySessionsClient
+import dev.rivet.app.data.session.SessionTitles
 import dev.rivet.app.runtime.RivetRuntime
 import dev.rivet.app.data.datastore.findModelById
 import dev.rivet.app.data.datastore.findProvider
@@ -628,45 +630,115 @@ class ChatService(
         val settings = settingsStore.settingsFlowRaw.first()
         val den = settings.activeNodeDenUrl
         if (den.isBlank() || NodeRosterDefaults.isLocalDenUrl(den)) return
-        // Don't clobber an in-flight /v1 turn mid-stream.
+        // Don't clobber an in-flight turn mid-stream.
         if (this.sessions[conversationId]?.getJob()?.isActive == true) return
         // Only touch sessions the den actually owns (avoid wiping a phone draft UUID).
         val remoteSessions = DenHarnessClient.tryList(den, tokenForNode(den))
         val hit = remoteSessions.firstOrNull {
             it.id.equals(conversationId.toString(), ignoreCase = true)
-        } ?: return
-        if (force) {
-            importHarnessSession(hit.id, hit.title, hit.command, force = true)
+        }
+        if (hit != null) {
+            if (force) {
+                importHarnessSession(hit.id, hit.title, hit.command, force = true)
+                return
+            }
+            // Soft path: fetch transcript and append turns that cleanly extend the thread.
+            val tx = DenHarnessClient.tryTranscript(den, hit.id, tokenForNode(den)) ?: return
+            val command = tx.command.ifBlank { hit.command }.ifBlank { "grok" }
+            val modelId = modelUuidForHarnessCommand(command)
+            val turns = tx.turns.mapNotNull { turn ->
+                val role = when (turn.role.lowercase()) {
+                    "user" -> MessageRole.USER
+                    "assistant" -> MessageRole.ASSISTANT
+                    else -> return@mapNotNull null
+                }
+                val text = turn.text
+                if (text.isBlank()) null else SessionTurn(role, text)
+            }
+            if (turns.isEmpty()) return
+            val conv = getConversationFlow(conversationId).value
+            if (harnessTurnsMatch(conv, turns)) {
+                selectHarnessModel(settings, command)
+                return
+            }
+            val merged = mergeTranscriptTurns(conv.currentMessages, turns, modelId) ?: return
+            if (merged.size <= conv.currentMessages.size) return
+            saveConversation(conversationId, conv.updateCurrentMessages(merged))
+            selectHarnessModel(settings, command)
+            Log.i(
+                TAG,
+                "remote soft-sync $conversationId: +${merged.size - conv.currentMessages.size} " +
+                    "from harness ($command)",
+            )
             return
         }
-        // Soft path: fetch transcript and append turns that cleanly extend the thread.
-        val tx = DenHarnessClient.tryTranscript(den, hit.id, tokenForNode(den)) ?: return
-        val command = tx.command.ifBlank { hit.command }.ifBlank { "grok" }
-        val modelId = modelUuidForHarnessCommand(command)
-        val turns = tx.turns.mapNotNull { turn ->
-            val role = when (turn.role.lowercase()) {
+        // Not a harness store row — try the gateway session channel (create/attach
+        // path for phone-started and gateway-loop conversations).
+        importGatewaySessionMessages(conversationId, den, force)
+    }
+
+    /**
+     * Attach to a gateway session by id (= conversation UUID): pull the ring
+     * transcript and paint it. No-op when the id is unknown on the node.
+     */
+    private suspend fun importGatewaySessionMessages(
+        conversationId: Uuid,
+        den: String,
+        force: Boolean,
+    ) {
+        val sessionId = conversationId.toString()
+        val listed = GatewaySessionsClient.tryList(den, tokenForNode(den))
+        if (listed.none { it.id.equals(sessionId, ignoreCase = true) }) return
+        val msgs = withContext(Dispatchers.IO) {
+            runCatching {
+                GatewaySessionsClient(den, tokenForNode(den)).messages(sessionId)
+            }.getOrNull()
+        } ?: return
+        if (msgs.isEmpty()) return
+        val turns = msgs.mapNotNull { m ->
+            val role = when (m.role.lowercase()) {
                 "user" -> MessageRole.USER
                 "assistant" -> MessageRole.ASSISTANT
                 else -> return@mapNotNull null
             }
-            val text = turn.text
-            if (text.isBlank()) null else SessionTurn(role, text)
+            if (m.text.isBlank()) null else SessionTurn(role, m.text)
         }
         if (turns.isEmpty()) return
         val conv = getConversationFlow(conversationId).value
-        if (harnessTurnsMatch(conv, turns)) {
-            selectHarnessModel(settings, command)
-            return
+        if (!force && harnessTurnsMatch(conv, turns)) return
+        val settings = settingsStore.settingsFlowRaw.first()
+        val modelId = settings.chatModelId
+        val firstUser = turns.firstOrNull { it.role == MessageRole.USER }?.text.orEmpty()
+        val title = conv.title.ifBlank { SessionTitles.fromFirstUserMessage(firstUser) }
+        if (force) {
+            val nodes = turns.map { turn ->
+                UIMessage(
+                    role = turn.role,
+                    parts = listOf(UIMessagePart.Text(turn.text)),
+                ).let { msg ->
+                    if (turn.role == MessageRole.ASSISTANT) msg.copy(modelId = modelId) else msg
+                }.toMessageNode()
+            }
+            saveConversation(
+                conversationId,
+                conv.copy(
+                    title = title,
+                    messageNodes = nodes,
+                    newConversation = false,
+                    updateAt = java.time.Instant.now(),
+                ),
+            )
+        } else {
+            val merged = mergeTranscriptTurns(conv.currentMessages, turns, modelId) ?: return
+            if (merged.size <= conv.currentMessages.size) return
+            saveConversation(
+                conversationId,
+                conv.updateCurrentMessages(merged).copy(
+                    title = title.ifBlank { conv.title },
+                ),
+            )
         }
-        val merged = mergeTranscriptTurns(conv.currentMessages, turns, modelId) ?: return
-        if (merged.size <= conv.currentMessages.size) return
-        saveConversation(conversationId, conv.updateCurrentMessages(merged))
-        selectHarnessModel(settings, command)
-        Log.i(
-            TAG,
-            "remote soft-sync $conversationId: +${merged.size - conv.currentMessages.size} " +
-                "from harness ($command)",
-        )
+        Log.i(TAG, "gateway session attach $sessionId turns=${turns.size} force=$force")
     }
 
     /** True when [existing] already mirrors harness [turns] (role + text). */
@@ -775,6 +847,25 @@ class ChatService(
                     ?: settings.getCurrentAssistant()
                 val processedContent = preprocessUserInputParts(content, assistant)
 
+                // Remote node, unbound: use the gateway session channel
+                // (POST /api/sessions/:id/messages) so the turn is a real den
+                // session both surfaces can list — not a bare /v1 one-shot.
+                // Local on-device chat keeps the bridge /v1 path unchanged.
+                if (answer &&
+                    isRemoteActiveNode() &&
+                    isAgentSessionConversation(conversationId)
+                ) {
+                    sendRemoteGatewaySessionTurn(
+                        conversationId = conversationId,
+                        conversation = currentConversation,
+                        settings = settings,
+                        assistant = assistant,
+                        processedContent = processedContent,
+                    )
+                    _generationDoneFlow.emit(conversationId)
+                    return@launch
+                }
+
                 // 添加消息到列表
                 val newConversation = currentConversation.copy(
                     messageNodes = currentConversation.messageNodes + UIMessage(
@@ -798,6 +889,90 @@ class ChatService(
         // cancelPrevious=false: for agent-session conversations the previous job must keep
         // running (the new job queues behind it above); for others we cancel inside the job.
         session.setJob(job, cancelPrevious = false)
+    }
+
+    /**
+     * Create/attach a den session id (= conversation UUID) and send one turn
+     * through `POST /api/sessions/:id/messages?wait=1`, matching RivetHub web's
+     * gateway session channel. Titles are derived from the first user message.
+     * Opening a conversation already listed by the node uses the same id, so
+     * this attaches rather than forking.
+     */
+    private suspend fun sendRemoteGatewaySessionTurn(
+        conversationId: Uuid,
+        conversation: Conversation,
+        settings: Settings,
+        assistant: Assistant,
+        processedContent: List<UIMessagePart>,
+    ) {
+        val den = remoteDenUrl()
+            ?: throw IOException("no remote den URL")
+        val text = processedContent.filterIsInstance<UIMessagePart.Text>()
+            .joinToString("\n") { it.text }
+            .trim()
+        if (text.isEmpty()) return
+
+        val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId)
+        val agent = model?.modelId
+        val sessionId = conversationId.toString()
+
+        // Optimistic user bubble + title from first user message (like web).
+        val titled = if (conversation.title.isBlank()) {
+            SessionTitles.fromFirstUserMessage(text)
+        } else {
+            conversation.title
+        }
+        val withUser = conversation.copy(
+            title = titled,
+            messageNodes = conversation.messageNodes + UIMessage(
+                role = MessageRole.USER,
+                parts = processedContent,
+            ).toMessageNode(),
+            newConversation = false,
+            updateAt = java.time.Instant.now(),
+        )
+        saveConversation(conversationId, withUser)
+
+        // Placeholder assistant while we long-poll the gateway turn.
+        val pendingAssistant = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(UIMessagePart.Text("")),
+        ).let { msg ->
+            model?.id?.let { msg.copy(modelId = it) } ?: msg
+        }
+        saveConversation(
+            conversationId,
+            withUser.copy(
+                messageNodes = withUser.messageNodes + pendingAssistant.toMessageNode(),
+            ),
+        )
+
+        val client = GatewaySessionsClient(den, tokenForNode(den))
+        val reply = withContext(Dispatchers.IO) {
+            client.postAndWait(
+                sessionId = sessionId,
+                text = text,
+                agent = agent,
+            )
+        }
+
+        val assistantMsg = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(UIMessagePart.Text(reply.text)),
+        ).let { msg ->
+            model?.id?.let { msg.copy(modelId = it) } ?: msg
+        }
+        // Replace the empty placeholder with the real reply (last node).
+        val nodes = withUser.messageNodes.toMutableList()
+        nodes.add(assistantMsg.toMessageNode())
+        saveConversation(
+            conversationId,
+            withUser.copy(
+                messageNodes = nodes,
+                updateAt = java.time.Instant.now(),
+            ),
+        )
+        Log.i(TAG, "gateway session turn on $sessionId agent=$agent chars=${reply.text.length}")
     }
 
     /**
