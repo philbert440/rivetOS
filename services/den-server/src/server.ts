@@ -734,8 +734,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       // createHttpsServer options), so static shares the SAME app-layer gate
       // as the API: enrolled devices and loopback pass, an unenrolled remote
       // gets nothing — "if the admin did not enroll the device, Hub must not
-      // work" includes the shell itself. Only /healthz stays open above.
-      if (!authorized(req, url)) {
+      // work" includes the shell itself. Two carve-outs stay open above the
+      // gate: /healthz (liveness) and the one-time WireGuard enroll
+      // redemption — a not-yet-enrolled device MUST reach it, and its
+      // pairing token is the auth (see auth.ts rule 4).
+      if (!(devicesRoutes && url.pathname === '/api/devices/enroll') && !authorized(req, url)) {
         json(res, 401, { error: 'unauthorized' })
         return
       }
