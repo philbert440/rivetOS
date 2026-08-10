@@ -180,11 +180,7 @@ export function ChatPage(): JSX.Element {
   // back to the legacy scan alone — that is the no-regression path.
   // Key is shared with the registry-stream merge path below — setQueryData
   // must hit the same entry the useQuery reads.
-  const planeQueryKey = [
-    'harness-plane-sessions',
-    baseUrl,
-    descriptors?.length ?? 0,
-  ] as const
+  const planeQueryKey = ['harness-plane-sessions', baseUrl, descriptors?.length ?? 0] as const
   const planeQuery = useQuery({
     queryKey: planeQueryKey,
     queryFn: ({ signal }) =>
@@ -969,8 +965,7 @@ function ActiveSession(props: {
   // den-server edge and has to be projected onto the den's key space.
   // Den viewer is same-origin under the gateway; device mTLS is on the TLS
   // session (no ?token=).
-  const denUrl =
-    `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(denRoomKey(props.sessionId))}`
+  const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(denRoomKey(props.sessionId))}`
 
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">
