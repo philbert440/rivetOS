@@ -63,7 +63,9 @@ export async function request<T>(
   // caller's own signal, not a gateway failure.
   let res: Response
   try {
-    const init: RequestInit & { dispatcher?: unknown } = {
+    // Keep init untyped against undici's Dispatcher — nested undici vs
+    // undici-types versions disagree on Agent.assignability in CI.
+    const init: Record<string, unknown> = {
       method: opts.method ?? 'GET',
       headers,
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
@@ -72,8 +74,17 @@ export async function request<T>(
     // Node undici: attach client cert when provided (browsers use OS store).
     if (config.tls?.cert && config.tls?.key && typeof process !== 'undefined') {
       try {
-        const { Agent } = await import('undici')
-        init.dispatcher = new Agent({
+        const undici = (await import('undici')) as {
+          Agent: new (opts: {
+            connect: {
+              cert: string
+              key: string
+              ca?: string
+              rejectUnauthorized: boolean
+            }
+          }) => unknown
+        }
+        init.dispatcher = new undici.Agent({
           connect: {
             cert: config.tls.cert,
             key: config.tls.key,
@@ -85,7 +96,7 @@ export async function request<T>(
         // undici unavailable (browser bundle) — rely on platform TLS
       }
     }
-    res = await fetch(buildUrl(config.baseUrl, path, opts.query), init)
+    res = await fetch(buildUrl(config.baseUrl, path, opts.query), init as RequestInit)
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') throw err
     const msg = err instanceof Error ? err.message : String(err)
