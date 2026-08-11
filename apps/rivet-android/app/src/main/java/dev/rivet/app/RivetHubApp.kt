@@ -120,11 +120,35 @@ class RivetHubApp : Application() {
             runCatching {
                 val store = get<SettingsStore>()
                 val current = store.settingsFlowRaw.first()
+                // #497 / #499: one-shot rewrite of saved non-loopback http://
+                // roster rows to https://. Gated by rosterHttpsMigrated so a
+                // deliberate http:// Edit after migration is not flipped again.
+                val afterRoster = if (current.rosterHttpsMigrated) {
+                    current
+                } else {
+                    val migratedRoster = dev.rivet.app.data.datastore.NodeRosterDefaults
+                        .migrateRosterHttps(
+                            current.nodeRoster.ifEmpty {
+                                dev.rivet.app.data.datastore.NodeRosterDefaults.seed()
+                            },
+                        )
+                    val migratedActive = dev.rivet.app.data.datastore.NodeRosterDefaults
+                        .rewriteNonLoopbackHttpToHttps(
+                            current.activeNodeDenUrl.ifBlank {
+                                dev.rivet.app.data.datastore.NodeRosterDefaults.localDenUrl()
+                            },
+                        )
+                    current.copy(
+                        nodeRoster = migratedRoster,
+                        activeNodeDenUrl = migratedActive,
+                        rosterHttpsMigrated = true,
+                    )
+                }
                 val fixed = dev.rivet.app.data.datastore.NodeChatBackend
-                    .reconcileActiveNodeBaseUrl(current)
+                    .reconcileActiveNodeBaseUrl(afterRoster)
                 if (fixed != current) {
                     store.update(fixed)
-                    Log.i(TAG, "reconcileNodeChatBackend: aligned Rivet baseUrl to active node")
+                    Log.i(TAG, "reconcileNodeChatBackend: roster https migrate + baseUrl align")
                 }
             }.onFailure {
                 Log.e(TAG, "reconcileNodeChatBackend failed", it)

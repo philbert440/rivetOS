@@ -43,6 +43,7 @@ import com.dokar.sonner.ToastType
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.Delete01
+import me.rerere.hugeicons.stroke.Edit02
 import me.rerere.hugeicons.stroke.Key01
 import me.rerere.hugeicons.stroke.ServerStack01
 import dev.rivet.ai.provider.ProviderManager
@@ -196,6 +197,8 @@ fun NodeSwitcher(
                 val url = NodeRosterDefaults.normalizeDenUrl(node.denUrl)
                 if (url.isBlank()) return@NodeSwitcherSheet
                 val next = ensureLocalSeeded(roster).toMutableList()
+                // Dedupe on normalized denUrl at add time (#497 follow-up) —
+                // re-adding the same endpoint must not fork roster state.
                 if (next.none { NodeRosterDefaults.normalizeDenUrl(it.denUrl) == url }) {
                     next.add(node.copy(denUrl = url))
                 }
@@ -211,10 +214,100 @@ fun NodeSwitcher(
                 // Roster-only; do not change active/provider unless active was blank.
                 onUpdateSettings(
                     settings.copy(
-                        nodeRoster = next,
+                        nodeRoster = NodeRosterDefaults.dedupeRoster(next),
                         activeNodeDenUrl = settings.activeNodeDenUrl.ifBlank { url },
                     )
                 )
+            },
+            onEdit = { oldNode, updated, token ->
+                if (NodeRosterDefaults.isLocalNode(oldNode)) return@NodeSwitcherSheet
+                val oldUrl = NodeRosterDefaults.normalizeDenUrl(oldNode.denUrl)
+                val newUrl = NodeRosterDefaults.normalizeDenUrl(updated.denUrl)
+                if (newUrl.isBlank() || updated.name.isBlank()) return@NodeSwitcherSheet
+                val editNode = updated.copy(denUrl = newUrl)
+                // Move the bearer with the row when the URL changes.
+                if (oldUrl != newUrl) {
+                    val existing = nodeTokens.tokenFor(oldUrl)
+                    nodeTokens.remove(oldUrl)
+                    nodeAuth.forget(oldUrl)
+                    val toStore = token?.trim()?.takeIf { it.isNotEmpty() } ?: existing
+                    if (!toStore.isNullOrBlank()) {
+                        nodeTokens.put(newUrl, toStore)
+                    }
+                    tokenEpoch++
+                } else if (!token.isNullOrBlank()) {
+                    nodeTokens.put(newUrl, token)
+                    tokenEpoch++
+                }
+                val wasActive =
+                    NodeRosterDefaults.normalizeDenUrl(settings.activeNodeDenUrl) == oldUrl
+                if (!wasActive) {
+                    // Store-relative write so concurrent token/add edits are not clobbered (#499).
+                    scope.launch {
+                        settingsStore.update { current ->
+                            val seeded = ensureLocalSeeded(
+                                current.nodeRoster.ifEmpty { NodeRosterDefaults.seed() },
+                            )
+                            val next = NodeRosterDefaults.updateRosterInPlace(
+                                seeded,
+                                oldUrl,
+                                editNode,
+                            ) ?: return@update current
+                            current.copy(nodeRoster = next)
+                        }
+                    }
+                    return@NodeSwitcherSheet
+                }
+                // Active row edited (possibly to a new URL) — repoint chat.
+                switching = true
+                scope.launch {
+                    try {
+                        NodeChatBackend.switchNode(
+                            settingsStore = settingsStore,
+                            denUrl = newUrl,
+                            listModels = { probe ->
+                                providerManager.getProviderByType(probe).listModels(probe)
+                            },
+                            transform = { current ->
+                                val seeded = ensureLocalSeeded(
+                                    current.nodeRoster.ifEmpty { NodeRosterDefaults.seed() },
+                                )
+                                val next = NodeRosterDefaults.updateRosterInPlace(
+                                    seeded,
+                                    oldUrl,
+                                    editNode,
+                                ) ?: current.nodeRoster
+                                current.copy(nodeRoster = next)
+                            },
+                        )
+                        toaster.show(
+                            message = "Updated ${updated.name}",
+                            type = ToastType.Success,
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        // Persist roster edit only — do NOT move activeNodeDenUrl
+                        // without baseUrl (invariant). Probe failed so leave
+                        // active + baseUrl where they are (#499).
+                        settingsStore.update { current ->
+                            val seeded = ensureLocalSeeded(
+                                current.nodeRoster.ifEmpty { NodeRosterDefaults.seed() },
+                            )
+                            val next = NodeRosterDefaults.updateRosterInPlace(
+                                seeded,
+                                oldUrl,
+                                editNode,
+                            ) ?: return@update current
+                            current.copy(nodeRoster = next)
+                        }
+                        toaster.show(
+                            message = "Saved edit; can't reach ${updated.name}: ${e.message ?: "unreachable"}",
+                            type = ToastType.Error,
+                        )
+                    } finally {
+                        switching = false
+                    }
+                }
             },
             onRemove = { node ->
                 if (NodeRosterDefaults.isLocalNode(node)) return@NodeSwitcherSheet
@@ -278,6 +371,7 @@ private fun NodeSwitcherSheet(
     tokenedNodes: Set<String>,
     onSelect: (RosterNode) -> Unit,
     onAdd: (RosterNode, String?) -> Unit,
+    onEdit: (old: RosterNode, updated: RosterNode, token: String?) -> Unit,
     onRemove: (RosterNode) -> Unit,
     onSetToken: (RosterNode, String?) -> Unit,
     onDismiss: () -> Unit,
@@ -287,6 +381,7 @@ private fun NodeSwitcherSheet(
         enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded),
     )
     var showAddForm by remember { mutableStateOf(false) }
+    var nodeToEdit by remember { mutableStateOf<RosterNode?>(null) }
     var nodeToRemove by remember { mutableStateOf<RosterNode?>(null) }
     var nodeToToken by remember { mutableStateOf<RosterNode?>(null) }
 
@@ -370,6 +465,20 @@ private fun NodeSwitcherSheet(
                         }
                         if (!isLocal) {
                             IconButton(
+                                onClick = {
+                                    showAddForm = false
+                                    nodeToEdit = node
+                                },
+                                enabled = !switching,
+                            ) {
+                                Icon(
+                                    HugeIcons.Edit02,
+                                    contentDescription = "Edit ${node.name}",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            IconButton(
                                 onClick = { nodeToToken = node },
                                 enabled = !switching,
                             ) {
@@ -403,28 +512,47 @@ private fun NodeSwitcherSheet(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-            if (!showAddForm) {
-                TextButton(
-                    onClick = { showAddForm = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !switching,
-                ) {
-                    Icon(
-                        HugeIcons.Add01,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+            when {
+                nodeToEdit != null -> {
+                    val editing = nodeToEdit!!
+                    AddNodeForm(
+                        title = "Edit node",
+                        submitLabel = "Save",
+                        initial = editing,
+                        onCancel = { nodeToEdit = null },
+                        onSubmit = { node, token ->
+                            onEdit(editing, node, token)
+                            nodeToEdit = null
+                        },
                     )
-                    Spacer(Modifier.size(8.dp))
-                    Text("Add node")
                 }
-            } else {
-                AddNodeForm(
-                    onCancel = { showAddForm = false },
-                    onSubmit = { node, token ->
-                        onAdd(node, token)
-                        showAddForm = false
-                    },
-                )
+                !showAddForm -> {
+                    TextButton(
+                        onClick = {
+                            nodeToEdit = null
+                            showAddForm = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !switching,
+                    ) {
+                        Icon(
+                            HugeIcons.Add01,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.size(8.dp))
+                        Text("Add node")
+                    }
+                }
+                else -> {
+                    AddNodeForm(
+                        onCancel = { showAddForm = false },
+                        onSubmit = { node, token ->
+                            onAdd(node, token)
+                            showAddForm = false
+                        },
+                    )
+                }
             }
         }
     }
@@ -549,13 +677,30 @@ private fun authNotice(state: NodeAuthState): String? = when (state) {
 
 @Composable
 private fun AddNodeForm(
+    title: String = "Add node",
+    submitLabel: String = "Add",
+    initial: RosterNode? = null,
     onCancel: () -> Unit,
     onSubmit: (RosterNode, String?) -> Unit,
 ) {
-    var name by remember { mutableStateOf("") }
-    var host by remember { mutableStateOf("") }
-    var port by remember { mutableStateOf(RivetRuntime.DEN_PORT.toString()) }
-    var token by remember { mutableStateOf("") }
+    val parts = remember(initial?.denUrl) {
+        initial?.denUrl?.let { NodeRosterDefaults.parseDenUrl(it) }
+    }
+    // Preserve scheme on edit: re-prefix the host field when the saved row
+    // was http so buildDenUrl does not force https on a deliberate override.
+    val hostPrefill = when {
+        parts == null -> ""
+        parts.scheme.equals("http", ignoreCase = true) &&
+            !NodeRosterDefaults.isLoopbackHost(parts.host) ->
+            "http://${parts.host}"
+        else -> parts.host
+    }
+    var name by remember(initial?.denUrl) { mutableStateOf(initial?.name.orEmpty()) }
+    var host by remember(initial?.denUrl) { mutableStateOf(hostPrefill) }
+    var port by remember(initial?.denUrl) {
+        mutableStateOf((parts?.port ?: RivetRuntime.DEN_PORT).toString())
+    }
+    var token by remember(initial?.denUrl) { mutableStateOf("") }
     val portInt = port.toIntOrNull()
     val canSubmit = name.isNotBlank() && host.isNotBlank() && portInt != null && portInt in 1..65535
 
@@ -564,7 +709,7 @@ private fun AddNodeForm(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = "Add node",
+            text = title,
             style = MaterialTheme.typography.titleMedium,
         )
         OutlinedTextField(
@@ -594,7 +739,15 @@ private fun AddNodeForm(
         OutlinedTextField(
             value = token,
             onValueChange = { token = it },
-            label = { Text("Token (only if the node gates its gateway)") },
+            label = {
+                Text(
+                    if (initial == null) {
+                        "Token (only if the node gates its gateway)"
+                    } else {
+                        "Token (optional — leave blank to keep existing)"
+                    },
+                )
+            },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
             visualTransformation = PasswordVisualTransformation(),
@@ -620,7 +773,7 @@ private fun AddNodeForm(
                 },
                 enabled = canSubmit,
             ) {
-                Text("Add")
+                Text(submitLabel)
             }
         }
         Spacer(Modifier.height(8.dp))
