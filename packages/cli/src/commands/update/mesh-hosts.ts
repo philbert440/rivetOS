@@ -3,7 +3,12 @@
  *
  * Non-fatal by design: a drifted hosts file should not fail a deploy.
  * Failures must still be visible — silent local catch hid sudo/mesh-file
- * problems for months while the remote path already warned.
+ * problems for months while the remote path already warned (#461).
+ *
+ * Call sites:
+ * - `rivetos update --mesh` local bare-metal step + each remote node
+ * - single-node `rivetos update` bare-metal/manual (added 2026-08-11; was a
+ *   gap so desk/lone-CT updates never refreshed the mesh hosts block)
  */
 
 import { execSync } from 'node:child_process'
