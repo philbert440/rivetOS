@@ -182,7 +182,25 @@ class GatewaySessionsClient(
         private const val WAIT_CALL_TIMEOUT_SEC = 140L
         const val DEFAULT_WAIT_MS = 120_000L
 
+        /**
+         * Soft list for attach/sync. Swallows transport errors so a down node
+         * does not crash the poll — but logs auth failures (401/403) so a bad
+         * or missing bearer is visible rather than looking like "no sessions".
+         */
         fun tryList(denUrl: String, token: String? = null): List<SessionSummary> =
-            runCatching { GatewaySessionsClient(denUrl, token).listSessions() }.getOrDefault(emptyList())
+            runCatching { GatewaySessionsClient(denUrl, token).listSessions() }
+                .onFailure { err ->
+                    val msg = err.message.orEmpty()
+                    if (msg.contains("401") || msg.contains("403") ||
+                        msg.contains("Unauthorized", ignoreCase = true) ||
+                        msg.contains("Forbidden", ignoreCase = true)
+                    ) {
+                        android.util.Log.w(
+                            "GatewaySessions",
+                            "tryList auth failure for $denUrl: $msg",
+                        )
+                    }
+                }
+                .getOrDefault(emptyList())
     }
 }

@@ -8,10 +8,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * buildDenUrl / isLocalDenUrl / roster surgery (mTLS cutover + #497 follow-ups):
+ * buildDenUrl / isLocalDenUrl / roster surgery (mTLS cutover + #497 / #499):
  * bare remote hosts default to https, loopback stays http, scheme is
- * case-insensitive, IPv6 is bracketed, and saved http:// remote rows migrate
- * to https once.
+ * case-insensitive, IPv6 is bracketed, host:port paste strips, unparseable
+ * ports return null, normalize lowercases scheme/host, and saved http://
+ * remote rows migrate to https once.
  */
 class NodeRosterDefaultsTest {
     @Test
@@ -73,6 +74,28 @@ class NodeRosterDefaultsTest {
     }
 
     @Test
+    fun buildDenUrlStripsPastedTrailingPort() {
+        // host:port paste must not become host:port:dialogPort
+        assertEquals(
+            "https://192.0.2.10:5174",
+            NodeRosterDefaults.buildDenUrl("192.0.2.10:9999", 5174),
+        )
+        assertEquals(
+            "https://ct112.mesh:5174",
+            NodeRosterDefaults.buildDenUrl("ct112.mesh:9999", 5174),
+        )
+        assertEquals(
+            "https://[2001:db8::1]:5174",
+            NodeRosterDefaults.buildDenUrl("[2001:db8::1]:9999", 5174),
+        )
+        // Bare IPv6 keeps colons (not a host:port paste).
+        assertEquals(
+            "https://[2001:db8::1]:5174",
+            NodeRosterDefaults.buildDenUrl("2001:db8::1", 5174),
+        )
+    }
+
+    @Test
     fun localNodeSemanticsIncludeLocalhostAndIpv6() {
         val port = dev.rivet.app.runtime.RivetRuntime.DEN_PORT
         val local = NodeRosterDefaults.buildDenUrl("127.0.0.1", port)
@@ -82,6 +105,8 @@ class NodeRosterDefaultsTest {
         assertTrue(NodeRosterDefaults.isLocalDenUrl("http://[::1]:$port"))
         // Wrong port is not local even on loopback.
         assertFalse(NodeRosterDefaults.isLocalDenUrl("http://127.0.0.1:9"))
+        // Garbage port must not default to DEN_PORT and misclassify as local.
+        assertFalse(NodeRosterDefaults.isLocalDenUrl("http://127.0.0.1:garbage"))
         // Remote is never local.
         assertFalse(NodeRosterDefaults.isLocalDenUrl("https://192.0.2.10:$port"))
     }
@@ -96,7 +121,7 @@ class NodeRosterDefaultsTest {
             RosterNode("loop", "http://localhost:5174"),
         )
         val next = NodeRosterDefaults.migrateRosterHttps(roster)
-        assertEquals(local.denUrl, next[0].denUrl)
+        assertEquals(NodeRosterDefaults.normalizeDenUrl(local.denUrl), next[0].denUrl)
         assertEquals("https://192.0.2.10:5174", next[1].denUrl)
         assertEquals("desk", next[1].name)
         assertEquals("https://ct112.mesh:5174", next[2].denUrl)
@@ -114,6 +139,15 @@ class NodeRosterDefaultsTest {
         assertEquals("https://192.0.2.10:5174", next[0].denUrl)
         // First wins for name.
         assertEquals("old", next[0].name)
+    }
+
+    @Test
+    fun migrateRosterHttpsDoesNotRewriteGarbagePort() {
+        // Unparseable port must not become DEN_PORT under https during migration.
+        val roster = listOf(RosterNode("bad", "http://192.0.2.10:notaport"))
+        val next = NodeRosterDefaults.migrateRosterHttps(roster)
+        assertEquals(1, next.size)
+        assertEquals("http://192.0.2.10:notaport", next[0].denUrl)
     }
 
     @Test
@@ -182,6 +216,29 @@ class NodeRosterDefaultsTest {
     }
 
     @Test
+    fun parseDenUrlUnparseablePortReturnsNull() {
+        assertNull(NodeRosterDefaults.parseDenUrl("http://192.0.2.10:abc"))
+        assertNull(NodeRosterDefaults.parseDenUrl("http://127.0.0.1:garbage"))
+        assertNull(NodeRosterDefaults.parseDenUrl("https://[::1]:notaport"))
+        // Absent port still defaults to DEN_PORT.
+        val noPort = NodeRosterDefaults.parseDenUrl("https://192.0.2.10")
+        assertNotNull(noPort)
+        assertEquals(dev.rivet.app.runtime.RivetRuntime.DEN_PORT, noPort!!.port)
+    }
+
+    @Test
+    fun normalizeDenUrlLowercasesSchemeAndHost() {
+        assertEquals(
+            "http://localhost:4820",
+            NodeRosterDefaults.normalizeDenUrl("HTTP://LOCALHOST:4820"),
+        )
+        assertEquals(
+            "https://ct112.mesh:5174",
+            NodeRosterDefaults.normalizeDenUrl("HTTPS://CT112.MESH:5174/"),
+        )
+    }
+
+    @Test
     fun addTimeDedupeOnNormalizedDenUrl() {
         val roster = listOf(
             RosterNode("a", "https://192.0.2.10:5174/"),
@@ -190,5 +247,17 @@ class NodeRosterDefaultsTest {
         val deduped = NodeRosterDefaults.dedupeRoster(roster)
         assertEquals(1, deduped.size)
         assertEquals("a", deduped[0].name)
+    }
+
+    @Test
+    fun dedupeRosterCollapsesCaseVariants() {
+        val roster = listOf(
+            RosterNode("a", "HTTP://LOCALHOST:4820"),
+            RosterNode("b", "http://localhost:4820"),
+        )
+        val deduped = NodeRosterDefaults.dedupeRoster(roster)
+        assertEquals(1, deduped.size)
+        assertEquals("a", deduped[0].name)
+        assertEquals("http://localhost:4820", NodeRosterDefaults.normalizeDenUrl(deduped[0].denUrl))
     }
 }

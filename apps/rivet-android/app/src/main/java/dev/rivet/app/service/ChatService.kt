@@ -680,6 +680,12 @@ class ChatService(
     /**
      * Attach to a gateway session by id (= conversation UUID): pull the ring
      * transcript and paint it. No-op when the id is unknown on the node.
+     *
+     * Force path never wholesale-replaces a fuller local transcript with a
+     * shorter ring window — merge/append when the ring is a partial window,
+     * full replace only when the ring is at least as long as local (#499).
+     * Re-checks the mid-stream job guard after the network await and again
+     * immediately before [saveConversation].
      */
     private suspend fun importGatewaySessionMessages(
         conversationId: Uuid,
@@ -689,12 +695,16 @@ class ChatService(
         val sessionId = conversationId.toString()
         val listed = GatewaySessionsClient.tryList(den, tokenForNode(den))
         if (listed.none { it.id.equals(sessionId, ignoreCase = true) }) return
+        // Job may have started while tryList suspended.
+        if (this.sessions[conversationId]?.getJob()?.isActive == true) return
         val msgs = withContext(Dispatchers.IO) {
             runCatching {
                 GatewaySessionsClient(den, tokenForNode(den)).messages(sessionId)
             }.getOrNull()
         } ?: return
         if (msgs.isEmpty()) return
+        // Re-check after the messages await before mutating Room.
+        if (this.sessions[conversationId]?.getJob()?.isActive == true) return
         val turns = msgs.mapNotNull { m ->
             val role = when (m.role.lowercase()) {
                 "user" -> MessageRole.USER
@@ -710,7 +720,9 @@ class ChatService(
         val modelId = settings.chatModelId
         val firstUser = turns.firstOrNull { it.role == MessageRole.USER }?.text.orEmpty()
         val title = conv.title.ifBlank { SessionTitles.fromFirstUserMessage(firstUser) }
-        if (force) {
+        val localSize = conv.currentMessages.size
+        if (force && turns.size >= localSize) {
+            // Ring is complete enough to supersede local — full paint.
             val nodes = turns.map { turn ->
                 UIMessage(
                     role = turn.role,
@@ -719,6 +731,7 @@ class ChatService(
                     if (turn.role == MessageRole.ASSISTANT) msg.copy(modelId = modelId) else msg
                 }.toMessageNode()
             }
+            if (this.sessions[conversationId]?.getJob()?.isActive == true) return
             saveConversation(
                 conversationId,
                 conv.copy(
@@ -729,8 +742,11 @@ class ChatService(
                 ),
             )
         } else {
+            // Soft path, or force with a shorter ring: append-only merge so a
+            // capped ring never erases older local turns.
             val merged = mergeTranscriptTurns(conv.currentMessages, turns, modelId) ?: return
             if (merged.size <= conv.currentMessages.size) return
+            if (this.sessions[conversationId]?.getJob()?.isActive == true) return
             saveConversation(
                 conversationId,
                 conv.updateCurrentMessages(merged).copy(
@@ -855,14 +871,27 @@ class ChatService(
                     isRemoteActiveNode() &&
                     isAgentSessionConversation(conversationId)
                 ) {
-                    sendRemoteGatewaySessionTurn(
-                        conversationId = conversationId,
-                        conversation = currentConversation,
-                        settings = settings,
-                        assistant = assistant,
-                        processedContent = processedContent,
-                    )
-                    _generationDoneFlow.emit(conversationId)
+                    try {
+                        sendRemoteGatewaySessionTurn(
+                            conversationId = conversationId,
+                            conversation = currentConversation,
+                            settings = settings,
+                            assistant = assistant,
+                            processedContent = processedContent,
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        addError(
+                            e,
+                            conversationId,
+                            title = context.getString(R.string.error_title_send_message),
+                        )
+                    } finally {
+                        // Always clear the in-flight indicator — even when
+                        // postAndWait times out or the empty placeholder was
+                        // replaced / dropped (#499).
+                        _generationDoneFlow.emit(conversationId)
+                    }
                     return@launch
                 }
 
@@ -897,6 +926,10 @@ class ChatService(
      * gateway session channel. Titles are derived from the first user message.
      * Opening a conversation already listed by the node uses the same id, so
      * this attaches rather than forking.
+     *
+     * On failure/timeout: re-pull the ring (server often finishes after a client
+     * 504/socket timeout), paint a recovered assistant reply when present, else
+     * drop the empty placeholder so the transcript stays soft-syncable (#499).
      */
     private suspend fun sendRemoteGatewaySessionTurn(
         conversationId: Uuid,
@@ -948,21 +981,55 @@ class ChatService(
         )
 
         val client = GatewaySessionsClient(den, tokenForNode(den))
-        val reply = withContext(Dispatchers.IO) {
-            client.postAndWait(
+        try {
+            val reply = withContext(Dispatchers.IO) {
+                client.postAndWait(
+                    sessionId = sessionId,
+                    text = text,
+                    agent = agent,
+                )
+            }
+            paintGatewayAssistantReply(conversationId, withUser, reply.text, model?.id)
+            Log.i(TAG, "gateway session turn on $sessionId agent=$agent chars=${reply.text.length}")
+        } catch (e: Exception) {
+            // Timeout / HTTP error: server-side turn may still have completed.
+            val recovered = recoverGatewayAssistantReply(
+                client = client,
                 sessionId = sessionId,
-                text = text,
-                agent = agent,
+                userText = text,
             )
+            if (!recovered.isNullOrBlank()) {
+                paintGatewayAssistantReply(conversationId, withUser, recovered, model?.id)
+                Log.i(
+                    TAG,
+                    "gateway session turn recovered after error on $sessionId " +
+                        "chars=${recovered.length}: ${e.message}",
+                )
+            } else {
+                // Drop empty placeholder — keeps Room aligned for soft-sync.
+                saveConversation(
+                    conversationId,
+                    withUser.copy(updateAt = java.time.Instant.now()),
+                )
+                Log.w(TAG, "gateway session turn failed on $sessionId: ${e.message}")
+                throw e
+            }
         }
+    }
 
+    private suspend fun paintGatewayAssistantReply(
+        conversationId: Uuid,
+        withUser: Conversation,
+        replyText: String,
+        modelId: Uuid?,
+    ) {
         val assistantMsg = UIMessage(
             role = MessageRole.ASSISTANT,
-            parts = listOf(UIMessagePart.Text(reply.text)),
+            parts = listOf(UIMessagePart.Text(replyText)),
         ).let { msg ->
-            model?.id?.let { msg.copy(modelId = it) } ?: msg
+            modelId?.let { msg.copy(modelId = it) } ?: msg
         }
-        // Replace the empty placeholder with the real reply (last node).
+        // Rebuild from withUser (not the placeholder save) so no duplicate node.
         val nodes = withUser.messageNodes.toMutableList()
         nodes.add(assistantMsg.toMessageNode())
         saveConversation(
@@ -972,7 +1039,38 @@ class ChatService(
                 updateAt = java.time.Instant.now(),
             ),
         )
-        Log.i(TAG, "gateway session turn on $sessionId agent=$agent chars=${reply.text.length}")
+    }
+
+    /**
+     * After a failed postAndWait, re-pull the ring and return the assistant
+     * text that follows the just-sent user turn when present.
+     */
+    private suspend fun recoverGatewayAssistantReply(
+        client: GatewaySessionsClient,
+        sessionId: String,
+        userText: String,
+    ): String? = withContext(Dispatchers.IO) {
+        val msgs = runCatching { client.messages(sessionId) }.getOrNull() ?: return@withContext null
+        if (msgs.isEmpty()) return@withContext null
+        val userNorm = userText.trim().replace(Regex("\\s+"), " ")
+        // Walk from the end: find our user turn, then the next assistant with text.
+        for (i in msgs.indices.reversed()) {
+            val m = msgs[i]
+            if (m.role.equals("user", ignoreCase = true)) {
+                val t = m.text.trim().replace(Regex("\\s+"), " ")
+                if (t == userNorm || (t.isNotEmpty() && (t.contains(userNorm) || userNorm.contains(t)))) {
+                    val next = msgs.getOrNull(i + 1) ?: return@withContext null
+                    if (next.role.equals("assistant", ignoreCase = true) && next.text.isNotBlank()) {
+                        return@withContext next.text
+                    }
+                    return@withContext null
+                }
+            }
+        }
+        // Fallback: last non-blank assistant if the ring grew past the user alone.
+        msgs.lastOrNull {
+            it.role.equals("assistant", ignoreCase = true) && it.text.isNotBlank()
+        }?.text
     }
 
     /**

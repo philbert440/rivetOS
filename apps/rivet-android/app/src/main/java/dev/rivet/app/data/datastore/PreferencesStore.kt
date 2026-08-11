@@ -163,6 +163,8 @@ class SettingsStore(
         // Native node switcher roster (drawer): saved peers + active den URL
         val NODE_ROSTER = stringPreferencesKey("node_roster")
         val ACTIVE_NODE_DEN_URL = stringPreferencesKey("active_node_den_url")
+        // One-shot: non-loopback http:// roster rows rewritten to https:// (#497 / #499)
+        val ROSTER_HTTPS_MIGRATED = booleanPreferencesKey("roster_https_migrated")
 
         // 统计
         val LAUNCH_COUNT = intPreferencesKey("launch_count")
@@ -266,6 +268,7 @@ class SettingsStore(
                 activeNodeDenUrl = preferences[ACTIVE_NODE_DEN_URL]
                     ?.takeIf { it.isNotBlank() }
                     ?: NodeRosterDefaults.localDenUrl(),
+                rosterHttpsMigrated = preferences[ROSTER_HTTPS_MIGRATED] == true,
             )
         }
         .map {
@@ -455,6 +458,7 @@ class SettingsStore(
             preferences[MESH_CONFIG] = JsonInstant.encodeToString(settings.meshConfig)
             preferences[NODE_ROSTER] = JsonInstant.encodeToString(settings.nodeRoster)
             preferences[ACTIVE_NODE_DEN_URL] = settings.activeNodeDenUrl
+            preferences[ROSTER_HTTPS_MIGRATED] = settings.rosterHttpsMigrated
         }
     }
 
@@ -630,6 +634,12 @@ data class Settings(
      * Rivet provider from this — local → bridge :8765/v1, remote → {denUrl}/v1.
      */
     val activeNodeDenUrl: String = "",
+    /**
+     * One-shot gate for [NodeRosterDefaults.migrateRosterHttps]: once true, cold start
+     * must not rewrite deliberate non-loopback `http://` roster rows the user saved
+     * via Edit (#499).
+     */
+    val rosterHttpsMigrated: Boolean = false,
 ) {
     companion object {
         // 构造一个用于初始化的settings, 但它不能用于保存，防止使用初始值存储
@@ -679,7 +689,29 @@ object NodeRosterDefaults {
         return isLoopbackHost(parsed.host)
     }
 
-    fun normalizeDenUrl(url: String): String = url.trim().trimEnd('/')
+    /**
+     * Canonical form for roster keys / comparison.
+     *
+     * Lowercases scheme and host so `HTTP://LOCALHOST:4820` and
+     * `http://localhost:4820` collapse to one row (#499). Path/userinfo are
+     * not expected on den URLs; port and IPv6 brackets are preserved.
+     */
+    fun normalizeDenUrl(url: String): String {
+        val raw = url.trim().trimEnd('/')
+        if (raw.isEmpty()) return raw
+        val parsed = parseDenUrl(raw)
+        if (parsed != null) {
+            val hostKey = parsed.host.lowercase()
+            return "${parsed.scheme.lowercase()}://$hostKey:${parsed.port}"
+        }
+        // Unparseable: still trim + lowercase scheme prefix so dedupe is stable.
+        val lower = raw.lowercase()
+        return when {
+            lower.startsWith("https://") -> "https://" + raw.substring(8).trimEnd('/')
+            lower.startsWith("http://") -> "http://" + raw.substring(7).trimEnd('/')
+            else -> raw
+        }
+    }
 
     /**
      * Build a den base url from the add-node dialog's host + port.
@@ -689,6 +721,10 @@ object NodeRosterDefaults {
      * — except loopback, where the on-device node really does serve plain http.
      * Bracket bare IPv6 literals (`::1`, `2001:db8::1`) so the result is a
      * valid URL.
+     *
+     * Strips a trailing `:port` the user may have pasted into the host field
+     * (IPv4/`hostname:port` or `[ipv6]:port`) so the dialog port is not
+     * doubled as `host:port:port`.
      */
     fun buildDenUrl(host: String, port: Int): String {
         val trimmed = host.trim().trimEnd('/')
@@ -703,12 +739,38 @@ object NodeRosterDefaults {
         } else {
             trimmed
         }.trimEnd('/')
-        // Strip a trailing :port the user may have pasted into the host field
-        // only when clearly IPv4/hostname:port — bare IPv6 keeps its colons.
+        h = stripTrailingPortFromHostField(h)
         h = bracketIpv6Host(h)
         val loopback = isLoopbackHost(h)
         val scheme = explicit ?: if (loopback) "http" else "https"
         return normalizeDenUrl("$scheme://$h:$port")
+    }
+
+    /**
+     * Drop a trailing `:port` pasted into the host field. IPv4 / hostname with
+     * a single colon → strip when the suffix is numeric. Bracketed IPv6 with
+     * `]:port` → keep brackets only. Bare IPv6 (multiple colons, no brackets)
+     * is left alone so [bracketIpv6Host] can wrap it.
+     */
+    fun stripTrailingPortFromHostField(host: String): String {
+        val h = host.trim()
+        if (h.isEmpty()) return h
+        if (h.startsWith("[")) {
+            val close = h.indexOf(']')
+            if (close > 0 && close + 1 < h.length && h[close + 1] == ':') {
+                val portPart = h.substring(close + 2)
+                if (portPart.toIntOrNull() != null) return h.substring(0, close + 1)
+            }
+            return h
+        }
+        val firstColon = h.indexOf(':')
+        val lastColon = h.lastIndexOf(':')
+        // Exactly one colon → host:port (not bare IPv6).
+        if (firstColon > 0 && firstColon == lastColon) {
+            val portPart = h.substring(firstColon + 1)
+            if (portPart.toIntOrNull() != null) return h.substring(0, firstColon)
+        }
+        return h
     }
 
     /**
@@ -771,7 +833,8 @@ object NodeRosterDefaults {
     data class DenParts(val scheme: String, val host: String, val port: Int)
 
     fun parseDenUrl(url: String): DenParts? {
-        val n = normalizeDenUrl(url)
+        // Trim only — do not call normalizeDenUrl (it uses parseDenUrl).
+        val n = url.trim().trimEnd('/')
         if (n.isBlank()) return null
         val scheme = when {
             n.startsWith("https://", ignoreCase = true) -> "https"
@@ -803,8 +866,13 @@ object NodeRosterDefaults {
                 portStr = null
             }
         }
-        val port = portStr?.toIntOrNull()
-            ?: dev.rivet.app.runtime.RivetRuntime.DEN_PORT
+        // Absent port → den default. Present-but-garbage → null (never silently
+        // rewrite "host:abc" to DEN_PORT during migration / isLocalDenUrl).
+        val port = if (portStr == null) {
+            dev.rivet.app.runtime.RivetRuntime.DEN_PORT
+        } else {
+            portStr.toIntOrNull() ?: return null
+        }
         if (port !in 1..65535) return null
         val bareHost = host.removePrefix("[").removeSuffix("]")
         if (bareHost.isBlank()) return null

@@ -224,12 +224,7 @@ fun NodeSwitcher(
                 val oldUrl = NodeRosterDefaults.normalizeDenUrl(oldNode.denUrl)
                 val newUrl = NodeRosterDefaults.normalizeDenUrl(updated.denUrl)
                 if (newUrl.isBlank() || updated.name.isBlank()) return@NodeSwitcherSheet
-                val seeded = ensureLocalSeeded(roster)
-                val next = NodeRosterDefaults.updateRosterInPlace(
-                    seeded,
-                    oldUrl,
-                    updated.copy(denUrl = newUrl),
-                ) ?: return@NodeSwitcherSheet
+                val editNode = updated.copy(denUrl = newUrl)
                 // Move the bearer with the row when the URL changes.
                 if (oldUrl != newUrl) {
                     val existing = nodeTokens.tokenFor(oldUrl)
@@ -247,7 +242,20 @@ fun NodeSwitcher(
                 val wasActive =
                     NodeRosterDefaults.normalizeDenUrl(settings.activeNodeDenUrl) == oldUrl
                 if (!wasActive) {
-                    onUpdateSettings(settings.copy(nodeRoster = next))
+                    // Store-relative write so concurrent token/add edits are not clobbered (#499).
+                    scope.launch {
+                        settingsStore.update { current ->
+                            val seeded = ensureLocalSeeded(
+                                current.nodeRoster.ifEmpty { NodeRosterDefaults.seed() },
+                            )
+                            val next = NodeRosterDefaults.updateRosterInPlace(
+                                seeded,
+                                oldUrl,
+                                editNode,
+                            ) ?: return@update current
+                            current.copy(nodeRoster = next)
+                        }
+                    }
                     return@NodeSwitcherSheet
                 }
                 // Active row edited (possibly to a new URL) — repoint chat.
@@ -261,6 +269,14 @@ fun NodeSwitcher(
                                 providerManager.getProviderByType(probe).listModels(probe)
                             },
                             transform = { current ->
+                                val seeded = ensureLocalSeeded(
+                                    current.nodeRoster.ifEmpty { NodeRosterDefaults.seed() },
+                                )
+                                val next = NodeRosterDefaults.updateRosterInPlace(
+                                    seeded,
+                                    oldUrl,
+                                    editNode,
+                                ) ?: current.nodeRoster
                                 current.copy(nodeRoster = next)
                             },
                         )
@@ -270,8 +286,20 @@ fun NodeSwitcher(
                         )
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        // Still persist the roster edit; leave baseUrl as-is on probe fail.
-                        onUpdateSettings(settings.copy(nodeRoster = next, activeNodeDenUrl = newUrl))
+                        // Persist roster edit only — do NOT move activeNodeDenUrl
+                        // without baseUrl (invariant). Probe failed so leave
+                        // active + baseUrl where they are (#499).
+                        settingsStore.update { current ->
+                            val seeded = ensureLocalSeeded(
+                                current.nodeRoster.ifEmpty { NodeRosterDefaults.seed() },
+                            )
+                            val next = NodeRosterDefaults.updateRosterInPlace(
+                                seeded,
+                                oldUrl,
+                                editNode,
+                            ) ?: return@update current
+                            current.copy(nodeRoster = next)
+                        }
                         toaster.show(
                             message = "Saved edit; can't reach ${updated.name}: ${e.message ?: "unreachable"}",
                             type = ToastType.Error,
