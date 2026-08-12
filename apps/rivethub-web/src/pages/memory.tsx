@@ -12,6 +12,7 @@ import { useQuery } from '@tanstack/react-query'
 import { GatewayError } from '@rivetos/gateway-client'
 import type { WikiIndexEntry, WikiPageResponse } from '@rivetos/types'
 import { NotConnected } from '../components/not-connected.js'
+import { MemoryHubNav } from '../memory/MemoryHubNav.js'
 import { WikiMarkdown } from '../components/wiki-markdown.js'
 import { useWikiEndpoint } from '../lib/wiki-client.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
@@ -519,6 +520,13 @@ export function MemoryTopicPage(): JSX.Element {
   }
   if (!endpoint) return <WikiNotConfigured needNode={false} />
 
+  const wrap = (inner: JSX.Element): JSX.Element => (
+    <div className="flex h-full min-h-0 flex-col">
+      <MemoryHubNav tab="wiki" gateway={endpoint.gateway} />
+      <div className="min-h-0 flex-1 overflow-hidden">{inner}</div>
+    </div>
+  )
+
   const shellProps = {
     endpointLabel: endpoint.baseUrl.replace(/^https?:\/\//, ''),
     search: q,
@@ -532,10 +540,10 @@ export function MemoryTopicPage(): JSX.Element {
   if (page.isError) {
     const err = page.error
     const notFound = err instanceof GatewayError && err.status === 404
-    return (
+    return wrap(
       <WikiShell {...shellProps}>
         <div className="mx-auto max-w-3xl px-6 py-8">
-          <Link to="/memory" className="text-sm text-em hover:underline">
+          <Link to="/memory" search={{ tab: 'wiki' }} className="text-sm text-em hover:underline">
             ← Main page
           </Link>
           <div className={`mt-4 text-sm ${notFound ? 'text-ink-dim' : 'text-red'}`}>
@@ -552,19 +560,19 @@ export function MemoryTopicPage(): JSX.Element {
             )}
           </div>
         </div>
-      </WikiShell>
+      </WikiShell>,
     )
   }
 
   if (!page.data) {
-    return (
+    return wrap(
       <WikiShell {...shellProps}>
         <div className="p-8 text-sm text-ink-dim">loading…</div>
-      </WikiShell>
+      </WikiShell>,
     )
   }
 
-  return (
+  return wrap(
     <WikiShell {...shellProps}>
       <ArticleBody
         page={page.data}
@@ -579,7 +587,7 @@ export function MemoryTopicPage(): JSX.Element {
           })
         }}
       />
-    </WikiShell>
+    </WikiShell>,
   )
 }
 
@@ -598,7 +606,7 @@ function ArticleBody(props: {
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-8 lg:px-10">
-      <Link to="/memory" className="text-sm text-ink-dim hover:text-em">
+      <Link to="/memory" search={{ tab: 'wiki' }} className="text-sm text-ink-dim hover:text-em">
         ← Main page
       </Link>
 

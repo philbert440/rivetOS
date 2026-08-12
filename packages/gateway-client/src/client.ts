@@ -27,6 +27,10 @@ import type {
   WikiGapsResponse,
   WikiIndexResponse,
   WikiPageResponse,
+  MemorySearchResponse,
+  MemoryBrowseResponse,
+  MemoryStatsResponse,
+  MemoryHealthResponse,
   DevicesListResponse,
   DeviceOpenResponse,
   WorkflowsListResponse,
@@ -347,6 +351,46 @@ export class RivetGateway {
       raw: true,
       signal,
     })
+  }
+
+  // -- memory (datahub Search / Browse / Stats) --------------------------------
+
+  memorySearch(
+    query: {
+      q: string
+      scope?: 'messages' | 'summaries' | 'both'
+      limit?: number
+    },
+    signal?: AbortSignal,
+  ): Promise<MemorySearchResponse> {
+    return request(this.config, '/api/memory/search', {
+      query: query as Record<string, QueryValue>,
+      signal,
+    })
+  }
+
+  memoryBrowse(
+    query: {
+      role?: string
+      agent?: string
+      tool_name?: string
+      window?: string
+      limit?: number
+    } = {},
+    signal?: AbortSignal,
+  ): Promise<MemoryBrowseResponse> {
+    return request(this.config, '/api/memory/browse', {
+      query: query as Record<string, QueryValue>,
+      signal,
+    })
+  }
+
+  memoryStats(signal?: AbortSignal): Promise<MemoryStatsResponse> {
+    return request(this.config, '/api/memory/stats', { signal })
+  }
+
+  memoryHealth(signal?: AbortSignal): Promise<MemoryHealthResponse> {
+    return request(this.config, '/api/memory/health', { signal })
   }
 
   // -- mesh devices (Settings → Devices) --------------------------------------
