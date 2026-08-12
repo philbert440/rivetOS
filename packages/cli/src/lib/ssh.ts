@@ -80,6 +80,65 @@ export function sshExec(
 }
 
 /**
+ * Like `sshExec`, but pipes stdout/stderr so the caller can format them.
+ *
+ * Use this for short, non-fatal remote steps (e.g. mesh hosts heal) where
+ * inherit-stdio + "exited with code N" hides the real sudo/script error.
+ * Failure Errors carry `stderr`, `stdout`, and `status` for formatExecFailure.
+ */
+export function sshExecCapture(
+  host: string,
+  command: string,
+  label: string,
+  timeoutMs: number,
+  sshUser = 'rivet',
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolvePromise, reject) => {
+    const proc = spawn('ssh', [...SSH_BASE_OPTS, `${sshUser}@${host}`, command], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, HOME: process.env.HOME ?? '/root' },
+    })
+
+    let stdout = ''
+    let stderr = ''
+    proc.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += typeof chunk === 'string' ? chunk : chunk.toString('utf-8')
+    })
+    proc.stderr?.on('data', (chunk: Buffer | string) => {
+      stderr += typeof chunk === 'string' ? chunk : chunk.toString('utf-8')
+    })
+
+    const fail = (message: string, status: number | null): Error => {
+      const err = new Error(message) as Error & {
+        stdout: string
+        stderr: string
+        status: number | null
+      }
+      err.stdout = stdout
+      err.stderr = stderr
+      err.status = status
+      return err
+    }
+
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL')
+      reject(fail(`${label} timed out after ${String(Math.round(timeoutMs / 1000))}s`, null))
+    }, timeoutMs)
+
+    proc.on('error', (err) => {
+      clearTimeout(timer)
+      reject(fail(`${label} spawn error: ${err.message}`, null))
+    })
+
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolvePromise({ stdout, stderr })
+      else reject(fail(`${label} exited with code ${String(code)}`, code))
+    })
+  })
+}
+
+/**
  * Quick SSH command that returns stdout, or empty string on failure.
  * Used for non-critical checks like reading the remote commit SHA.
  */

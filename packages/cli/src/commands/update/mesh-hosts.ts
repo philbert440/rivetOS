@@ -9,6 +9,9 @@
  * - `rivetos update --mesh` local bare-metal step + each remote node
  * - single-node `rivetos update` bare-metal/manual (added 2026-08-11; was a
  *   gap so desk/lone-CT updates never refreshed the mesh hosts block)
+ *
+ * Remotes must capture SSH stderr: inherit-stdio left only "exited with
+ * code N" in the skip line.
  */
 
 import { execSync } from 'node:child_process'
@@ -62,6 +65,18 @@ export function formatExecFailure(err: unknown): string {
 }
 
 /**
+ * Human-facing skip reason for a failed hosts heal (local or remote).
+ * Adds a passwordless-sudo hint when the error is the usual no-TTY gap.
+ */
+export function formatMeshHostsSkipDetail(err: unknown): string {
+  const detail = formatExecFailure(err)
+  if (/password is required|a terminal is required|no tty|a password is required/i.test(detail)) {
+    return `${detail} — configure passwordless sudo for setup-mesh-hosts.sh, or re-run as root`
+  }
+  return detail
+}
+
+/**
  * Local command to refresh the RivetOS mesh block in /etc/hosts.
  * Uses `sudo -n` when not root so agent/no-TTY runs fail fast instead of
  * hanging on a password prompt (or failing opaquely with "needs a terminal").
@@ -112,11 +127,7 @@ export function healLocalMeshHosts(opts: {
     })
     return { ok: true }
   } catch (err: unknown) {
-    let detail = formatExecFailure(err)
-    // Nudge when the failure is the usual passwordless-sudo gap.
-    if (/password is required|a terminal is required|no tty|a password is required/i.test(detail)) {
-      detail = `${detail} — configure passwordless sudo for setup-mesh-hosts.sh, or re-run as root`
-    }
+    const detail = formatMeshHostsSkipDetail(err)
     console.log(`${tag}⚠️  /etc/hosts mesh block update skipped: ${detail}`)
     return { ok: false, detail }
   }

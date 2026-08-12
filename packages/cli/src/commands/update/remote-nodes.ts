@@ -10,9 +10,9 @@
 
 import { execSync } from 'node:child_process'
 import { buildMeshDispatcher } from '../../lib/mtls.js'
-import { sshExec, sshExecQuiet, resolveSshUser, isSafeArg } from '../../lib/ssh.js'
+import { sshExec, sshExecCapture, sshExecQuiet, resolveSshUser, isSafeArg } from '../../lib/ssh.js'
 import { retireDenUnitRemote, verifyGatewayRemote } from './den-deploy.js'
-import { buildRemoteMeshHostsCommand } from './mesh-hosts.js'
+import { buildRemoteMeshHostsCommand, formatMeshHostsSkipDetail } from './mesh-hosts.js'
 import type { UpdateOptions, NodeUpdateResult } from './types.js'
 
 /**
@@ -210,9 +210,9 @@ export async function gitUpdateNodeAsync(
     const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
 
     // Heal /etc/hosts mesh block on infra nodes too (non-fatal).
-    // sudo -n so missing passwordless sudo fails fast with a clear warning.
+    // Capture stderr — inherit-stdio left only "exited with code N".
     try {
-      await sshExec(
+      await sshExecCapture(
         host,
         buildRemoteMeshHostsCommand(sshUser),
         `${tag} mesh-hosts`,
@@ -220,7 +220,9 @@ export async function gitUpdateNodeAsync(
         sshUser,
       )
     } catch (err: unknown) {
-      console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
+      console.log(
+        `    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${formatMeshHostsSkipDetail(err)}`,
+      )
     }
 
     // Discover and restart worker services
@@ -343,10 +345,19 @@ export async function gitUpdateNodeAsync(
 
   // Step 4.5: heal /etc/hosts mesh block from /rivet-shared/mesh.json
   // Non-fatal — drift in /etc/hosts shouldn't block a deploy, but must warn.
+  // Capture stderr so the skip line names sudo/script/mesh-file, not just exit code.
   try {
-    await sshExec(host, buildRemoteMeshHostsCommand(sshUser), `${tag} mesh-hosts`, 15_000, sshUser)
+    await sshExecCapture(
+      host,
+      buildRemoteMeshHostsCommand(sshUser),
+      `${tag} mesh-hosts`,
+      15_000,
+      sshUser,
+    )
   } catch (err: unknown) {
-    console.log(`    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${(err as Error).message}`)
+    console.log(
+      `    ${tag} ⚠️  /etc/hosts mesh block update skipped: ${formatMeshHostsSkipDetail(err)}`,
+    )
   }
 
   // Step 5: restart service. G0: retire any standalone rivet-den unit FIRST —
