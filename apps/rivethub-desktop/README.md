@@ -48,22 +48,25 @@ and the generated `gen/` are gitignored.
   toast still covers the focused case. No Tauri dependency leaks into the web
   package.
 
-## Thin shell: the binary no longer goes stale
+## Thin shell: repoint, never navigate
 
-Once a node is configured, the bundled app **redirects itself to that node's
-live-served UI** (den-server serves rivethub-web) whenever the node answers
-`/healthz` — so web updates ride `rivetos update --mesh` and this binary only
-needs rebuilding when the native layer (tray/shortcuts/notifications) changes.
-The bundled dist demotes to a first-run / node-down fallback.
+The webview always runs the **bundled** web dist — it never navigates to
+a node's live-served UI. Switching nodes only repoints the gateway
+client at the chosen node's baseUrl (`switch-mode.ts` in rivethub-web),
+so the roster and other localStorage state live under one origin no
+matter which node is active.
 
-- The capability grants the notification/event IPC to remote LAN origins
-  (`http://*:*`), so escalation notifications and the tray unread mirror keep
-  working after the cutover.
-- Escape hatch: launch with `?local=1` on the URL (or clear
-  `rivethub.remoteUi` from the bundled origin's localStorage) to stay on the
-  bundled dist while debugging a broken node deploy.
-- Same-origin serving means the redirected app is auto-configured for that
-  node; other nodes re-add to the roster once (per-origin storage).
+- Last-active node: the web app records it under `rivethub.remoteUi` and
+  re-adopts it at boot without any page navigation (`remote-ui.ts`).
+  Escape hatch: launch with `?local=1` to skip adopting the stored node
+  while debugging a broken deploy.
+- https/mTLS gateways: WebKitGTK can't present a TLS client certificate,
+  so the shell runs one 127.0.0.1 byte-pipe per https gateway
+  (`src-tauri/src/proxy.rs`) that wraps every connection in TLS with the
+  enrolled device identity; the web app transparently swaps an https
+  gateway base for its loopback port.
+- Because the dist is bundled, web updates now ship with a shell rebuild
+  — this binary is only as fresh as its last build.
 
 ## Not in v1
 
