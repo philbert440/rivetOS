@@ -20,8 +20,11 @@
 //   file on disk beside it.
 // - `.mesh` names resolve at connect time with no pinning; the LAN resolver
 //   is trusted (certificate verification still gates the far end).
+// - Live listeners are capped (MAX_LISTENERS, oldest evicted): a gateway
+//   dialed once must not hold an identity-serving loopback socket open for
+//   process lifetime just because the roster grew.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,9 +36,62 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName}
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
+/// Cap on live gateway listeners: without one, every https gateway ever
+/// dialed keeps an identity-serving loopback socket open for process
+/// lifetime. 8 is generous for a real roster; past it the oldest is evicted.
+const MAX_LISTENERS: usize = 8;
+
+struct ListenerEntry {
+    port: u16,
+    /// Accept-loop task. Aborted on eviction so the OS listener dies WITH
+    /// its map entry — an orphaned listener would keep serving the device
+    /// identity on an unrecorded port, the leak the lock discipline in
+    /// proxy_port exists to prevent.
+    accept: tauri::async_runtime::JoinHandle<()>,
+}
+
+/// Live listeners keyed by normalized gateway base, plus insertion order for
+/// eviction. Generic over the entry so the eviction policy is unit-testable
+/// without a runtime. FIFO rather than LRU: the cap is a leak bound, not a
+/// working-set policy. Known trade-off: the web side caches a resolved port
+/// for the page's lifetime (mtls-proxy.ts), so evicting a gateway a window
+/// is still using breaks that window's pipe until reload — acceptable when
+/// hitting the cap means dialing 9+ distinct https gateways in one run.
+struct ListenerSet<T> {
+    entries: HashMap<String, T>,
+    order: VecDeque<String>,
+}
+
+impl<T> ListenerSet<T> {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&T> {
+        self.entries.get(key)
+    }
+
+    /// Insert `key`, evicting the OLDEST listener to `on_evict` when the cap
+    /// is exceeded. Callers insert only after a `get` miss under the same
+    /// lock, so duplicate keys never reach this.
+    fn insert(&mut self, key: String, entry: T, mut on_evict: impl FnMut(String, T)) {
+        self.order.push_back(key.clone());
+        self.entries.insert(key, entry);
+        while self.order.len() > MAX_LISTENERS {
+            let oldest = self.order.pop_front().expect("order mirrors entries");
+            if let Some(evicted) = self.entries.remove(&oldest) {
+                on_evict(oldest, evicted);
+            }
+        }
+    }
+}
+
 pub struct ProxyState {
-    /// target base url (normalized, e.g. "https://192.0.2.7:5174") → loopback port
-    ports: Mutex<HashMap<String, u16>>,
+    /// target base url (normalized, e.g. "https://192.0.2.7:5174") → its loopback listener
+    listeners: Mutex<ListenerSet<ListenerEntry>>,
     /// Only a WORKING connector is cached — failures (no identity yet) fall
     /// through to a fresh disk read next call, so enrollment recovers live.
     connector: Mutex<Option<TlsConnector>>,
@@ -45,7 +101,7 @@ pub struct ProxyState {
 impl ProxyState {
     pub fn new(identity_dir: PathBuf) -> Self {
         Self {
-            ports: Mutex::new(HashMap::new()),
+            listeners: Mutex::new(ListenerSet::new()),
             connector: Mutex::new(None),
             identity_dir,
         }
@@ -84,12 +140,35 @@ fn load_pem_certs(path: &PathBuf) -> Result<Vec<CertificateDer<'static>>, String
     Ok(certs)
 }
 
+/// The key IS the device identity: warn (never fail) when a sloppy enroll
+/// left it group/world-readable. Warn-only because group-readable can be a
+/// deliberate sharing choice, and http nodes must keep working regardless.
+#[cfg(unix)]
+fn warn_key_permissions(key_path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(key_path) {
+        let mode = meta.permissions().mode();
+        if mode & 0o077 != 0 {
+            eprintln!(
+                "RivetHub mtls-proxy: {} is group/world-readable (mode {:04o}) — \
+                 chmod 600 recommended",
+                key_path.display(),
+                mode & 0o777
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_key_permissions(_key_path: &std::path::Path) {}
+
 fn build_connector(dir: &PathBuf) -> Result<TlsConnector, String> {
     let cert_path = dir.join("device.crt");
     let key_path = dir.join("device.key");
     let ca_path = dir.join("ca.pem");
 
     let certs = load_pem_certs(&cert_path)?;
+    warn_key_permissions(&key_path);
     let key_data =
         std::fs::read(&key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
     let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_data.as_slice())
@@ -181,13 +260,13 @@ pub async fn proxy_port(state: &ProxyState, target: String) -> Result<u16, Strin
     let (host, port) = parse_target(&target)?;
     let key = format!("https://{host}:{port}");
 
-    // The ports lock is held across check + bind + spawn + insert: multiple
-    // windows (each webview has its own JS-side cache) can race the same
-    // target, and a lost race would leak an orphaned listener that still
+    // The listeners lock is held across check + bind + spawn + insert:
+    // multiple windows (each webview has its own JS-side cache) can race the
+    // same target, and a lost race would leak an orphaned listener that still
     // serves the device identity on an unrecorded port.
-    let mut ports = state.ports.lock().await;
-    if let Some(p) = ports.get(&key) {
-        return Ok(*p);
+    let mut listeners = state.listeners.lock().await;
+    if let Some(entry) = listeners.get(&key) {
+        return Ok(entry.port);
     }
 
     let connector = {
@@ -209,7 +288,7 @@ pub async fn proxy_port(state: &ProxyState, target: String) -> Result<u16, Strin
         .map_err(|e| format!("bind loopback: {e}"))?;
     let local: SocketAddr = listener.local_addr().map_err(|e| e.to_string())?;
 
-    tauri::async_runtime::spawn(async move {
+    let accept = tauri::async_runtime::spawn(async move {
         loop {
             match listener.accept().await {
                 Ok((client, _)) => {
@@ -228,8 +307,21 @@ pub async fn proxy_port(state: &ProxyState, target: String) -> Result<u16, Strin
         }
     });
 
-    ports.insert(key, local.port());
-    Ok(local.port())
+    let local_port = local.port();
+    listeners.insert(
+        key,
+        ListenerEntry {
+            port: local_port,
+            accept,
+        },
+        |evicted_target, evicted| {
+            evicted.accept.abort();
+            eprintln!(
+                "RivetHub mtls-proxy: evicted {evicted_target} (listener cap {MAX_LISTENERS})"
+            );
+        },
+    );
+    Ok(local_port)
 }
 
 #[cfg(test)]
@@ -265,5 +357,25 @@ mod tests {
         assert_eq!(parse_target("https://[fd00::7]").unwrap(), ("fd00::7".into(), 5174)); // secret-scan-allow
         assert!(parse_target("https://[2001:db8::1]:5174").is_err()); // public v6 refused
         assert!(parse_target("https://[fd00::7").is_err()); // unclosed bracket — secret-scan-allow
+    }
+
+    #[test]
+    fn listener_set_evicts_oldest_past_cap() {
+        let mut set: ListenerSet<u16> = ListenerSet::new();
+        let mut evicted: Vec<String> = Vec::new();
+        for i in 0..MAX_LISTENERS {
+            set.insert(format!("https://10.0.0.{i}:5174"), i as u16, |t, _| {
+                evicted.push(t);
+            });
+        }
+        assert!(evicted.is_empty(), "at cap, nothing evicted yet");
+        // One past the cap evicts the first-inserted and only that one.
+        set.insert("https://ct112.mesh:5174".into(), 9999, |t, _| {
+            evicted.push(t);
+        });
+        assert_eq!(evicted, ["https://10.0.0.0:5174"]);
+        assert!(set.get("https://10.0.0.0:5174").is_none());
+        assert!(set.get("https://10.0.0.7:5174").is_some());
+        assert_eq!(set.get("https://ct112.mesh:5174"), Some(&9999));
     }
 }
