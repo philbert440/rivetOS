@@ -210,10 +210,9 @@ export function SettingsPage(): JSX.Element {
         Memory wiki (datahub)
       </h2>
       <p className="mb-3 text-xs text-ink-dim">
-        Datahub holds the mesh memory wiki (summaries as topic pages). Hub reads{' '}
-        <span className="font-mono">/api/wiki</span> on this origin — not an iframe of{' '}
-        <span className="font-mono">/wiki</span>. Blank = discover datahub from the mesh roster of
-        the connected node.
+        Datahub holds memory Search, Browse, Stats, and the wiki. Hub reads{' '}
+        <span className="font-mono">/api/memory</span> and <span className="font-mono">/api/wiki</span>{' '}
+        on this origin. Blank = discover datahub from the mesh roster of the connected node.
       </p>
       <label className="mb-1 block text-xs text-ink-dim">
         Datahub gateway origin (http(s)://host[:port] only)

@@ -58,7 +58,7 @@ import { WorkflowEngine, DEFAULT_CASE_DIR_ROOT } from '@rivetos/workflows'
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
 import pg from 'pg'
 import type { GatewayRoute, HarnessId, MeshConfig, MeshRegistry } from '@rivetos/types'
-import { WikiIndex } from '@rivetos/memory-postgres'
+import { WikiIndex, createMemoryApiRoute } from '@rivetos/memory-postgres'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
 import { denTlsConfigured } from './gateway.js'
@@ -605,6 +605,10 @@ export async function registerAgentTools(
     gatewayRoutes.push(
       createWikiApiRoute({ index: wikiIndex }),
       createWikiHtmlRoute({ index: wikiIndex, nodeName: config.mesh?.node_name }),
+      createMemoryApiRoute({
+        pool,
+        embedEndpoint: embedEndpoint || undefined,
+      }),
     )
   }
   gatewayRoutes.push(

@@ -17,7 +17,7 @@ Rail: Conversations (`/`), Terminal, Den — separator — Memory, Files, Tasks,
 
 - **Terminal** (`/terminal`) lands on the node's open-PTY list (click to attach); the tab bar remains the quick switcher.
 - **Den** (`/dens`) lists the node's live den sessions (`GET /api/events/sessions` → `gateway.denSessions()`), embedded viewer iframe on pick. Replaced the old `/den/` link-out.
-- **Memory** (`/memory`, `/memory/$slug`) = **Wikipedia-style** native Hub UI over datahub `GET /api/wiki` (no iframe). Main page / A–Z index / recent / gaps; article with infobox, TOC, section headings, history, See also, categories; `[[slug]]` + red links for missing topics. Datahub origin in Settings (`rivethub.wikiUrl`); blank → mesh-discover datahub.
+- **Memory** (`/memory`, `/memory?tab=wiki|browse|stats`, `/memory/$slug`) = hub: **Search / Wiki / Browse / Stats**. Wiki tab is the existing encyclopedia over datahub `GET /api/wiki`. Search/Browse/Stats hit datahub `GET /api/memory/*` (same origin resolution). Hits deep-link Conversations via `/?session=`. Datahub origin in Settings (`rivethub.wikiUrl`); blank → mesh-discover datahub.
 - **Dropdowns** use `Select` (Radix Popover) — not native `<select>` (WebKitGTK paints OS menus). Matches Model/Effort/Node pickers.
 - **Tasks** (`/tasks`, `/tasks/$taskId`) = list/filter, detail (steer/kill), and **in-UI create** (goal + agent from catalog local+mesh + optional criteria lines → `POST /api/tasks`; navigates to detail). Create is no longer chat-only.
 - **Workflows** (`/workflows`, `/workflows/$workflowId`) = Product-Map-style graph (nodes with inputs/outputs/tools/capability). Local catalog (localStorage) seeded from fixtures; editable drag/layout + inspector contracts + edges; pure IR in `src/lib/workflows/`; no runner yet.
@@ -117,7 +117,8 @@ cd apps/rivethub-desktop && cargo tauri build   # or dev
 ## Key files
 
 - `src/pages/chat.tsx` — seamless session, terminal/den modes, queue pump
-- `src/pages/memory.tsx` — native wiki home + topic (article/history/raw)
+- `src/memory/` — Search / Browse / Stats hub (TenPAL back-port)
+- `src/pages/memory.tsx` — wiki encyclopedia (Wiki tab + `/memory/$slug`)
 - `src/pages/tasks.tsx` — list + create form + detail
 - `src/lib/task-create.ts` — criteria lines + agent options (local+mesh)
 - `src/lib/wiki-base.ts`, `wiki-client.ts` — datahub origin, mesh discovery, `[[slug]]`

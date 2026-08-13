@@ -105,6 +105,21 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
       res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' })
       return res.end('# raw markdown')
     }
+    if (path === '/api/memory/search') {
+      return respond(200, {
+        query: 'loopback',
+        scope: 'both',
+        degraded: null,
+        results: [],
+      })
+    }
+    if (path === '/api/memory/health') {
+      return respond(200, {
+        status: 'ok',
+        embeddings: { status: 'ok' },
+        embedQueueDepth: 0,
+      })
+    }
     if (path === '/api/tasks/missing') return respond(404, { error: 'no task missing' })
     respond(500, { error: `unhandled ${req.method} ${path}` })
   })
@@ -170,6 +185,14 @@ describe('RivetGateway HTTP', () => {
   it('returns raw markdown verbatim', async () => {
     const gw = new RivetGateway({ baseUrl })
     expect(await gw.wikiRaw('some-slug')).toBe('# raw markdown')
+  })
+
+  it('searches memory and reads health', async () => {
+    const gw = new RivetGateway({ baseUrl })
+    const search = await gw.memorySearch({ q: 'loopback' })
+    expect(search.query).toBe('loopback')
+    const health = await gw.memoryHealth()
+    expect(health.status).toBe('ok')
   })
 
   it('throws GatewayError with the wire error message', async () => {
