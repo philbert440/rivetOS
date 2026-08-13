@@ -84,6 +84,9 @@ const memoryTopicRoute = createRoute({
 const filesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/files',
+  validateSearch: (search: Record<string, unknown>): { path?: string } => ({
+    path: typeof search.path === 'string' && search.path ? search.path : undefined,
+  }),
   component: FilesPage,
 })
 

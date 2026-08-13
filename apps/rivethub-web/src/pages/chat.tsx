@@ -19,7 +19,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
-import { useSearch } from '@tanstack/react-router'
+import { useSearch, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApprovalDecision, HarnessSessionSummary, SessionMessage } from '@rivetos/types'
 import { uuidv4 } from '../lib/uuid.js'
@@ -260,10 +260,26 @@ export function ChatPage(): JSX.Element {
   )
   const active = useChat((s) => s.active)
   const setActive = useChat((s) => s.setActive)
+  const navigate = useNavigate()
   const { session: sessionFromUrl } = useSearch({ from: '/' })
+  // Bidirectional ?session= sync. One effect, one direction at a time,
+  // arbitrated by lastUrlRef so the two never fight:
+  //   - URL changed (first load, deep link, back/forward) → URL wins.
+  //   - Selection changed in the store (drawer click, rekey adoption,
+  //     boundary close) → written back to the URL, replace-only, so
+  //     refresh/share works without stuffing history.
+  const lastUrlRef = useRef<string | undefined>(undefined)
   useEffect(() => {
-    if (sessionFromUrl) setActive(sessionFromUrl)
-  }, [sessionFromUrl, setActive])
+    if (sessionFromUrl !== lastUrlRef.current) {
+      lastUrlRef.current = sessionFromUrl
+      if (sessionFromUrl) setActive(sessionFromUrl)
+      return
+    }
+    if (active !== sessionFromUrl) {
+      lastUrlRef.current = active
+      void navigate({ to: '/', search: active ? { session: active } : {}, replace: true })
+    }
+  }, [sessionFromUrl, active, setActive, navigate])
   // Tolerant lookup: the open thread's key changes under the selection when
   // the plane adopts a draft (bare uuid → canonical) or a driver rotates the
   // native id. The rekey effect below moves the conversation onto the new
