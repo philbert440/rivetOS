@@ -9,6 +9,7 @@ import {
   buildLocalMeshHostsCommand,
   buildRemoteMeshHostsCommand,
   formatExecFailure,
+  formatMeshHostsSkipDetail,
   healLocalMeshHosts,
   isProcessRoot,
   DEFAULT_MESH_FILE,
@@ -47,6 +48,39 @@ describe('formatExecFailure', () => {
   it('falls back to message, then status', () => {
     expect(formatExecFailure({ message: 'boom' })).toBe('boom')
     expect(formatExecFailure({ status: 1 })).toBe('exited with code 1')
+  })
+})
+
+describe('formatMeshHostsSkipDetail', () => {
+  it('adds a passwordless-sudo hint for sudo password errors', () => {
+    expect(
+      formatMeshHostsSkipDetail({
+        stderr: 'sudo: a password is required\n',
+        message: 'mesh-hosts exited with code 1',
+        status: 1,
+      }),
+    ).toMatch(/password is required.*passwordless sudo/)
+  })
+
+  it('adds the same hint for no-TTY sudo failures', () => {
+    expect(formatMeshHostsSkipDetail({ stderr: 'sudo: a terminal is required to read the password' })).toMatch(
+      /terminal is required.*passwordless sudo/,
+    )
+  })
+
+  it('passes through script stderr without a sudo hint', () => {
+    expect(
+      formatMeshHostsSkipDetail({
+        stderr: '[setup-mesh-hosts] ERROR: mesh file not readable\n',
+        message: 'mesh-hosts exited with code 1',
+      }),
+    ).toBe('[setup-mesh-hosts] ERROR: mesh file not readable')
+  })
+
+  it('falls back to exit-code message when no stdio was captured', () => {
+    expect(formatMeshHostsSkipDetail({ message: 'mesh-hosts exited with code 1', status: 1 })).toBe(
+      'mesh-hosts exited with code 1',
+    )
   })
 })
 
