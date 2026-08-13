@@ -1,12 +1,20 @@
 import type { JSX } from 'react'
-import type { MemoryHealthResponse, MemoryStatsResponse } from '@rivetos/types'
+import { useQuery } from '@tanstack/react-query'
 import type { RivetGateway } from '@rivetos/gateway-client'
 import { compactNumber } from './format.js'
-import { useAsync } from './use-async.js'
 
 export function HealthTile(props: { gateway: RivetGateway; compact?: boolean }): JSX.Element {
-  const health = useAsync<MemoryHealthResponse>(() => props.gateway.memoryHealth(), [props.gateway])
-  const stats = useAsync<MemoryStatsResponse>(() => props.gateway.memoryStats(), [props.gateway])
+  // Keyed on the gateway's own base — the tile is mounted by MemoryHubNav
+  // with the datahub endpoint's client, not the chat node's.
+  const baseUrl = props.gateway.config.baseUrl
+  const health = useQuery({
+    queryKey: ['memory-health', baseUrl],
+    queryFn: ({ signal }) => props.gateway.memoryHealth(signal),
+  })
+  const stats = useQuery({
+    queryKey: ['memory-stats', baseUrl],
+    queryFn: ({ signal }) => props.gateway.memoryStats(signal),
+  })
 
   const h = health.data
   const s = stats.data

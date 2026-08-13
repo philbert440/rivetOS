@@ -1,13 +1,14 @@
 import { useState, type JSX } from 'react'
-import type { MemoryBrowseResponse } from '@rivetos/types'
+import { useQuery } from '@tanstack/react-query'
 import type { RivetGateway } from '@rivetos/gateway-client'
 import { Select } from '../components/select.js'
 import { Button } from '../components/ui/button.js'
 import { preview, relativeTime, roleClass, shortTime } from './format.js'
-import { useAsync } from './use-async.js'
 
 export function BrowseView(props: {
   gateway: RivetGateway
+  /** Endpoint identity (datahub baseUrl) — the query-key discriminator. */
+  baseUrl: string
   onOpenSession?: (sessionId: string) => void
 }): JSX.Element {
   const [role, setRole] = useState('')
@@ -15,16 +16,20 @@ export function BrowseView(props: {
   const [window, setWindow] = useState('')
   const [limit, setLimit] = useState(50)
 
-  const res = useAsync<MemoryBrowseResponse>(
-    () =>
-      props.gateway.memoryBrowse({
-        role: role || undefined,
-        agent: agent || undefined,
-        window: window || undefined,
-        limit,
-      }),
-    [role, agent, window, limit, props.gateway],
-  )
+  // Connection gating happens one level up (MemoryHubPage) — see SearchView.
+  const res = useQuery({
+    queryKey: ['memory-browse', props.baseUrl, role, agent, window, limit],
+    queryFn: ({ signal }) =>
+      props.gateway.memoryBrowse(
+        {
+          role: role || undefined,
+          agent: agent || undefined,
+          window: window || undefined,
+          limit,
+        },
+        signal,
+      ),
+  })
 
   return (
     <div className="pane">
@@ -32,7 +37,7 @@ export function BrowseView(props: {
         className="searchbar"
         onSubmit={(e) => {
           e.preventDefault()
-          res.reload()
+          void res.refetch()
         }}
       >
         <Select
@@ -83,9 +88,9 @@ export function BrowseView(props: {
         </Button>
       </form>
 
-      {res.loading && <p className="muted pad">Loading…</p>}
+      {res.isLoading && <p className="muted pad">Loading…</p>}
       {res.error && <div className="banner bad">{res.error.message}</div>}
-      {res.data && res.data.messages.length === 0 && !res.loading && (
+      {res.data && res.data.messages.length === 0 && !res.isLoading && (
         <div className="empty">
           <strong>No messages match these filters</strong>
           Widen the window or drop the role / agent filter.

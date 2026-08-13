@@ -58,13 +58,25 @@ export function MemoryHubPage(): JSX.Element {
         ) : (
           <div className="rivet-memory-surfaces p-4">
             {tab === 'search' && (
-              <SearchView gateway={endpoint.gateway} onOpenSession={openSession} />
+              <SearchView
+                gateway={endpoint.gateway}
+                baseUrl={endpoint.baseUrl}
+                onOpenSession={openSession}
+              />
             )}
             {tab === 'browse' && (
-              <BrowseView gateway={endpoint.gateway} onOpenSession={openSession} />
+              <BrowseView
+                gateway={endpoint.gateway}
+                baseUrl={endpoint.baseUrl}
+                onOpenSession={openSession}
+              />
             )}
             {tab === 'stats' && (
-              <StatsView gateway={endpoint.gateway} onOpenSession={openSession} />
+              <StatsView
+                gateway={endpoint.gateway}
+                baseUrl={endpoint.baseUrl}
+                onOpenSession={openSession}
+              />
             )}
           </div>
         )}
