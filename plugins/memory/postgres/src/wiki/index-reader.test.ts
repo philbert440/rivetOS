@@ -13,7 +13,8 @@ import { applyPatch } from '@rivetos/wiki-core'
 import { WikiIndex } from './index-reader.js'
 import { WIKI_PIPELINE_VERSION } from './prompts.js'
 
-const TEST_PG_URL = process.env.RIVETOS_WIKI_TEST_PG_URL ?? process.env.RIVETOS_TASKS_TEST_PG_URL ?? ''
+const TEST_PG_URL =
+  process.env.RIVETOS_WIKI_TEST_PG_URL ?? process.env.RIVETOS_TASKS_TEST_PG_URL ?? ''
 const describeIf = TEST_PG_URL ? describe : describe.skip
 
 describeIf('WikiIndex (PG)', () => {
@@ -30,9 +31,7 @@ describeIf('WikiIndex (PG)', () => {
       max: 5,
       options: `-c search_path=${schema},public`,
     })
-    await pool.query(
-      'CREATE TABLE ros_summaries (id UUID PRIMARY KEY DEFAULT gen_random_uuid())',
-    )
+    await pool.query('CREATE TABLE ros_summaries (id UUID PRIMARY KEY DEFAULT gen_random_uuid())')
     const sql5 = readFileSync(resolve(__dirname, '../schema/migrations/0005_wiki.sql'), 'utf8')
     await pool.query(sql5)
     const sql6 = readFileSync(
