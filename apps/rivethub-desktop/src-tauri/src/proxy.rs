@@ -26,7 +26,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::io::copy_bidirectional;
@@ -162,7 +162,7 @@ fn warn_key_permissions(key_path: &std::path::Path) {
 #[cfg(not(unix))]
 fn warn_key_permissions(_key_path: &std::path::Path) {}
 
-fn build_connector(dir: &PathBuf) -> Result<TlsConnector, String> {
+fn build_connector(dir: &Path) -> Result<TlsConnector, String> {
     let cert_path = dir.join("device.crt");
     let key_path = dir.join("device.key");
     let ca_path = dir.join("ca.pem");
