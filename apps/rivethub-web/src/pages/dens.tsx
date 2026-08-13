@@ -23,6 +23,10 @@ function relTime(ts?: number): string {
 
 export function DensPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
+  // Desktop mTLS pipe: API fetch uses gateway.config.baseUrl (loopback), but
+  // the iframe is a separate TLS session. Point it at the same transport or
+  // WebKit hits https://node:5174 with no client cert and the den 401s.
+  const dialOrigin = useConnection((s) => s.gateway.config.baseUrl)
   const connected = useGatewayReady()
   const [selected, setSelected] = useState<string | undefined>()
 
@@ -38,9 +42,8 @@ export function DensPage(): JSX.Element {
     return <div className="p-8 font-mono text-sm text-red">{sessions.error.message}</div>
 
   const list = sessions.data?.sessions ?? []
-  // Den viewer is same-origin under the gateway; device mTLS is on the TLS session.
   const denUrl = (id: string): string =>
-    `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(id)}`
+    `${dialOrigin.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(id)}`
 
   return (
     <div className="flex h-full">
@@ -59,7 +62,7 @@ export function DensPage(): JSX.Element {
       </div>
       {selected ? (
         <iframe
-          key={`${baseUrl}|${selected}`}
+          key={`${dialOrigin}|${selected}`}
           src={denUrl(selected)}
           title="den"
           className="h-full min-w-0 flex-1 border-0 bg-panel"

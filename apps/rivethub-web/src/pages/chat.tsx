@@ -523,6 +523,7 @@ function ActiveSession(props: {
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
   const baseUrl = useConnection((s) => s.baseUrl)
+  const dialOrigin = useConnection((s) => s.gateway.config.baseUrl)
 
   // per-conversation model + effort (persisted). Keyed per node + thread, with
   // the pre-canonical key as a read fallback; writes land on the new key.
@@ -974,9 +975,10 @@ function ActiveSession(props: {
   // The viewer bundle matches `?session=` against the ROOM keys in its own den
   // snapshot, so this is the one hub→id handoff that does not go through a
   // den-server edge and has to be projected onto the den's key space.
-  // Den viewer is same-origin under the gateway; device mTLS is on the TLS
-  // session (no ?token=).
-  const denUrl = `${baseUrl.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(denRoomKey(props.sessionId))}`
+  // Use the dial origin (desktop mTLS loopback pipe), not the https node URL —
+  // an iframe to https://node:5174 is a new TLS session and WebKit cannot
+  // present the device cert, so the den returns 401.
+  const denUrl = `${dialOrigin.replace(/\/+$/, '')}/den/?session=${encodeURIComponent(denRoomKey(props.sessionId))}`
 
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">
@@ -1076,7 +1078,7 @@ function ActiveSession(props: {
         // Embedded, not a link-out: replaces the chat/terminal area so the
         // toggle bar (the way back) stays put. Same session as chat/terminal.
         <iframe
-          key={props.sessionId}
+          key={`${dialOrigin}|${props.sessionId}`}
           src={denUrl}
           title="den"
           className="min-h-0 flex-1 border-0 bg-bg"
