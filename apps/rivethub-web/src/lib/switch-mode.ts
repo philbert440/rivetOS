@@ -6,8 +6,8 @@
 
 import { gatewayOrigin } from './gateway-url.js'
 
-/** Kept for callers that branch on mode; only `'repoint'` is produced. */
-export type NodeSwitchMode = 'navigate' | 'repoint'
+/** Only one switch mode exists: repoint. */
+export type NodeSwitchMode = 'repoint'
 
 /** True when running inside the Tauri shell (withGlobalTauri). */
 export function isTauriShell(
@@ -19,11 +19,8 @@ export function isTauriShell(
 /**
  * Always repoint — desktop Tauri, browser Hub, and Android WebView all keep
  * the local dist and rebuild the gateway to the chosen node's baseUrl.
- * (`'navigate'` remains in the type for callers; it is never returned.)
  */
-export function nodeSwitchMode(
-  _g: { __TAURI__?: unknown } = globalThis as { __TAURI__?: unknown },
-): NodeSwitchMode {
+export function nodeSwitchMode(): NodeSwitchMode {
   return 'repoint'
 }
 
@@ -32,13 +29,10 @@ export function nodeSwitchMode(
  * Returns null when the URL is not a valid http(s) origin (#304 / #330).
  * Always canonicalizes to `origin` (no path/query/hash).
  */
-export function resolveNodeSwitch(
-  hubUrl: string,
-  g: { __TAURI__?: unknown } = globalThis as { __TAURI__?: unknown },
-): { mode: NodeSwitchMode; url: string } | null {
+export function resolveNodeSwitch(hubUrl: string): { mode: NodeSwitchMode; url: string } | null {
   const origin = gatewayOrigin(hubUrl)
   if (!origin) return null
-  return { mode: nodeSwitchMode(g), url: origin }
+  return { mode: nodeSwitchMode(), url: origin }
 }
 
 /**
@@ -49,12 +43,8 @@ export function resolveNodeSwitch(
 export function performNodeSwitch(
   hubUrl: string,
   switchTo: (url: string) => void,
-  opts?: {
-    g?: { __TAURI__?: unknown }
-  },
 ): { mode: NodeSwitchMode; url: string } | null {
-  const g = opts?.g ?? (globalThis as { __TAURI__?: unknown })
-  const resolved = resolveNodeSwitch(hubUrl, g)
+  const resolved = resolveNodeSwitch(hubUrl)
   if (!resolved) return null
   switchTo(resolved.url)
   return resolved
