@@ -83,7 +83,12 @@ import {
   type AliasRestoreResult,
   type RotationBreadcrumbSource,
 } from './harness/alias-restore.js'
-import { isGatewayAuthorized, isLoopbackHost } from './auth.js'
+import {
+  isGatewayAuthorized,
+  isLoopbackHost,
+  wantsHtmlUnauthorized,
+  UNAUTHORIZED_HTML,
+} from './auth.js'
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
@@ -316,6 +321,15 @@ export interface DenServerOptions {
 const json = (res: ServerResponse, code: number, body: unknown): void => {
   res.writeHead(code, { 'Content-Type': 'application/json', ...CORS })
   res.end(JSON.stringify(body))
+}
+
+const unauthorized = (req: IncomingMessage, res: ServerResponse, url: URL): void => {
+  if (wantsHtmlUnauthorized(req, url.pathname)) {
+    res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', ...CORS })
+    res.end(UNAUTHORIZED_HTML)
+    return
+  }
+  json(res, 401, { error: 'unauthorized' })
 }
 
 // Buffer.concat before decoding: per-chunk toString would corrupt a
@@ -739,7 +753,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       // redemption — a not-yet-enrolled device MUST reach it, and its
       // pairing token is the auth (see auth.ts rule 4).
       if (!(devicesRoutes && url.pathname === '/api/devices/enroll') && !authorized(req, url)) {
-        json(res, 401, { error: 'unauthorized' })
+        unauthorized(req, res, url)
         return
       }
       // Landing redirect (3e): '/' → config.rootRedirect (e.g. /wiki on the
@@ -799,7 +813,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         if (await devicesRoutes.handleEnroll(req, res, url)) return
       }
       if (!authorized(req, url)) {
-        json(res, 401, { error: 'unauthorized' })
+        unauthorized(req, res, url)
         return
       }
 

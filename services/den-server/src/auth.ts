@@ -143,3 +143,45 @@ export function clientDevice(req: IncomingMessage): DeviceIdentity | null {
   if (!sock.authorized) return null
   return deviceIdentityFromCert(sock.getPeerCertificate(true))
 }
+
+/**
+ * Browser navigations send Accept: text/html. fetch() / curl default to
+ * * / * or application/json — those stay on the JSON 401 so API clients
+ * do not parse an HTML body.
+ */
+export function wantsHtmlUnauthorized(req: IncomingMessage, pathname: string): boolean {
+  const method = (req.method ?? 'GET').toUpperCase()
+  if (method !== 'GET' && method !== 'HEAD') return false
+  if (pathname.startsWith('/api/')) return false
+  const raw = req.headers.accept
+  const accept = Array.isArray(raw) ? raw.join(',') : (raw ?? '')
+  return accept.includes('text/html')
+}
+
+/** Self-contained 401 page. No IPs, no enrollment secrets. */
+export const UNAUTHORIZED_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>RivetHub — device certificate required</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background:#111; color:#ddd;
+         max-width:40rem; margin:12vh auto; padding:0 1.5rem; line-height:1.55; }
+  h1 { font-size:1.15rem; color:#e8c547; font-weight:600; }
+  code { background:#1c1c1c; padding:0.1em 0.4em; border-radius:4px; font-size:0.92em; }
+  .muted { color:#888; font-size:0.9rem; }
+</style>
+</head>
+<body>
+<h1>Device certificate required</h1>
+<p>This gateway only accepts enrolled devices. Clicking through the padlock /
+certificate warning trusts the <em>server</em> CA — it is not a client certificate.</p>
+<p>Open <strong>RivetHub desktop</strong> (it presents your device identity),
+or import a device PKCS#12 issued with <code>rivet-ca.sh issue-client</code>
+into this browser and reload.</p>
+<p class="muted">Liveness is at <code>/healthz</code> and does not need a client cert.</p>
+</body>
+</html>
+`

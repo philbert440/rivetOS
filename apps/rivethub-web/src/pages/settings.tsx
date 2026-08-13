@@ -221,7 +221,7 @@ export function SettingsPage(): JSX.Element {
       <input
         value={draftWiki}
         onChange={(e) => setDraftWiki(e.target.value)}
-        placeholder="http://datahub-host"
+        placeholder="https://datahub-host:5174"
         className="mb-3 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
       />
       <div className="flex items-center gap-3">
