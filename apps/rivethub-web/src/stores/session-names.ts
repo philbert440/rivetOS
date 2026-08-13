@@ -5,21 +5,10 @@
  */
 
 import { create } from 'zustand'
+import { persist, type PersistStorage } from 'zustand/middleware'
 
 const KEY = 'rivethub.sessionNames'
 const MAX = 500
-
-function load(): Record<string, string | undefined> {
-  try {
-    const raw = localStorage.getItem(KEY)
-    const parsed: unknown = raw ? JSON.parse(raw) : {}
-    return parsed && typeof parsed === 'object'
-      ? (parsed as Record<string, string | undefined>)
-      : {}
-  } catch {
-    return {}
-  }
-}
 
 interface SessionNamesState {
   /** values are `| undefined` because bare index access IS undefined for a
@@ -32,24 +21,58 @@ interface SessionNamesState {
   set: (key: string, name: string) => void
 }
 
-export const useSessionNames = create<SessionNamesState>((set, getState) => ({
-  byKey: load(),
-  get: (key) => getState().byKey[key],
-  set: (key, name) =>
-    set((s) => {
-      const trimmed = name.trim()
-      const next = trimmed
-        ? { ...s.byKey, [key]: trimmed }
-        : Object.fromEntries(Object.entries(s.byKey).filter(([k]) => k !== key))
-      // cap growth: keep the most-recently-touched entries
-      const keys = Object.keys(next)
-      const capped =
-        keys.length > MAX ? Object.fromEntries(keys.slice(-MAX).map((k) => [k, next[k]])) : next
-      try {
-        localStorage.setItem(KEY, JSON.stringify(capped))
-      } catch {
-        /* storage full/disabled — keep in-memory */
+type Persisted = Pick<SessionNamesState, 'byKey'>
+
+/** The on-disk format predates the persist middleware and must keep working:
+ *  the raw `byKey` record, no `{ state, version }` envelope. */
+const storage: PersistStorage<Persisted> = {
+  getItem: (name) => {
+    try {
+      const raw = localStorage.getItem(name)
+      const parsed: unknown = raw ? JSON.parse(raw) : {}
+      return {
+        state: {
+          byKey:
+            parsed && typeof parsed === 'object'
+              ? (parsed as Record<string, string | undefined>)
+              : {},
+        },
+        version: 0,
       }
-      return { byKey: capped }
+    } catch {
+      return { state: { byKey: {} }, version: 0 }
+    }
+  },
+  setItem: (name, value) => {
+    try {
+      localStorage.setItem(name, JSON.stringify(value.state.byKey))
+    } catch {
+      /* storage full / disabled — keep the in-memory value */
+    }
+  },
+  removeItem: (name) => {
+    localStorage.removeItem(name)
+  },
+}
+
+export const useSessionNames = create<SessionNamesState>()(
+  persist(
+    (set, getState) => ({
+      byKey: {},
+      get: (key) => getState().byKey[key],
+      set: (key, name) =>
+        set((s) => {
+          const trimmed = name.trim()
+          const next = trimmed
+            ? { ...s.byKey, [key]: trimmed }
+            : Object.fromEntries(Object.entries(s.byKey).filter(([k]) => k !== key))
+          // cap growth: keep the most-recently-touched entries
+          const keys = Object.keys(next)
+          const capped =
+            keys.length > MAX ? Object.fromEntries(keys.slice(-MAX).map((k) => [k, next[k]])) : next
+          return { byKey: capped }
+        }),
     }),
-}))
+    { name: KEY, storage, partialize: (s) => ({ byKey: s.byKey }) },
+  ),
+)

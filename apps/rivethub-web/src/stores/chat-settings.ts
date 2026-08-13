@@ -6,6 +6,7 @@
  */
 
 import { create } from 'zustand'
+import { persist, type PersistStorage } from 'zustand/middleware'
 import type { ThinkingLevel } from '@rivetos/types'
 
 export interface ChatSettings {
@@ -16,18 +17,6 @@ export interface ChatSettings {
 
 const KEY = 'rivethub.chatSettings'
 const DEFAULT: ChatSettings = { agent: '', effort: 'medium' }
-
-function load(): Record<string, ChatSettings | undefined> {
-  try {
-    const raw = localStorage.getItem(KEY)
-    const parsed: unknown = raw ? JSON.parse(raw) : {}
-    return parsed && typeof parsed === 'object'
-      ? (parsed as Record<string, ChatSettings | undefined>)
-      : {}
-  } catch {
-    return {}
-  }
-}
 
 interface SettingsState {
   /** values are `| undefined` — see session-names.ts */
@@ -40,39 +29,72 @@ interface SettingsState {
   clear: (key: string) => void
 }
 
-export const useChatSettings = create<SettingsState>((set, getState) => ({
-  byKey: load(),
-  get: (key) => getState().byKey[key] ?? DEFAULT,
-  set: (key, patch) =>
-    set((s) => {
-      let next = { ...s.byKey, [key]: { ...(s.byKey[key] ?? DEFAULT), ...patch } }
-      // Cap growth: keep the most-recently-touched N (the updated key is
-      // re-inserted last, so slicing the tail keeps it) — #310 review.
-      const MAX = 200
-      const keys = Object.keys(next)
-      if (keys.length > MAX) {
-        next = Object.fromEntries(keys.slice(-MAX).map((k) => [k, next[k]]))
-      }
-      try {
-        localStorage.setItem(KEY, JSON.stringify(next))
-      } catch {
-        // storage full / disabled — keep the in-memory value, lose persistence
-      }
-      return { byKey: next }
-    }),
+type Persisted = Pick<SettingsState, 'byKey'>
 
-  clear: (key) =>
-    set((s) => {
-      if (!(key in s.byKey)) return s
-      const next = Object.fromEntries(Object.entries(s.byKey).filter(([k]) => k !== key))
-      try {
-        localStorage.setItem(KEY, JSON.stringify(next))
-      } catch {
-        /* storage full/disabled — keep in-memory */
+/**
+ * The on-disk format predates the persist middleware and must keep working:
+ * the raw `byKey` record, no `{ state, version }` envelope. Storage errors
+ * (full / disabled) keep the in-memory value and lose persistence, as before.
+ */
+const storage: PersistStorage<Persisted> = {
+  getItem: (name) => {
+    try {
+      const raw = localStorage.getItem(name)
+      const parsed: unknown = raw ? JSON.parse(raw) : {}
+      return {
+        state: {
+          byKey:
+            parsed && typeof parsed === 'object'
+              ? (parsed as Record<string, ChatSettings | undefined>)
+              : {},
+        },
+        version: 0,
       }
-      return { byKey: next }
+    } catch {
+      return { state: { byKey: {} }, version: 0 }
+    }
+  },
+  setItem: (name, value) => {
+    try {
+      localStorage.setItem(name, JSON.stringify(value.state.byKey))
+    } catch {
+      /* storage full / disabled — keep the in-memory value */
+    }
+  },
+  removeItem: (name) => {
+    localStorage.removeItem(name)
+  },
+}
+
+export const useChatSettings = create<SettingsState>()(
+  persist(
+    (set, getState) => ({
+      byKey: {},
+      get: (key) => getState().byKey[key] ?? DEFAULT,
+      set: (key, patch) =>
+        set((s) => {
+          let next = { ...s.byKey, [key]: { ...(s.byKey[key] ?? DEFAULT), ...patch } }
+          // Cap growth: keep the most-recently-touched N (the updated key is
+          // re-inserted last, so slicing the tail keeps it) — #310 review.
+          const MAX = 200
+          const keys = Object.keys(next)
+          if (keys.length > MAX) {
+            next = Object.fromEntries(keys.slice(-MAX).map((k) => [k, next[k]]))
+          }
+          return { byKey: next }
+        }),
+
+      clear: (key) =>
+        set((s) => {
+          if (!(key in s.byKey)) return s
+          return {
+            byKey: Object.fromEntries(Object.entries(s.byKey).filter(([k]) => k !== key)),
+          }
+        }),
     }),
-}))
+    { name: KEY, storage, partialize: (s) => ({ byKey: s.byKey }) },
+  ),
+)
 
 export const EFFORTS: { value: ThinkingLevel; label: string }[] = [
   { value: 'off', label: 'no thinking' },
