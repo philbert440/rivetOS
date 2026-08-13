@@ -289,7 +289,7 @@ export class WikiIndex {
         `SELECT * FROM ros_wiki_topics
          WHERE entities && $1::text[]
          ORDER BY (
-           SELECT COUNT(*)::int
+           SELECT COUNT(DISTINCT val)::int
            FROM unnest(entities) AS e(val)
            WHERE val = ANY($1::text[])
          ) DESC, updated_at DESC

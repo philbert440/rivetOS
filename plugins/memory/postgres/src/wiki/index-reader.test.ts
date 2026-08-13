@@ -152,6 +152,9 @@ describeIf('WikiIndex (PG)', () => {
         verifiedAt: '2026-07-07T00:00:00Z',
       }),
     )
+    // Recency must favor the weaker match so this fails if ORDER BY drops
+    // the intersection-count term and only keeps updated_at DESC.
+    await pool.query(`UPDATE ros_wiki_topics SET updated_at = now() WHERE slug = 'deckard-40b'`)
     const richerEntity = await index.resolveTopicIdentity('session-shaped-extract', {
       entities: ['model:deckard-40b', 'host:pve3'],
     })
