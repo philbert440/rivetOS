@@ -60,7 +60,15 @@ export function SearchView(props: {
         </div>
       )}
       {res.loading && query && <p className="muted pad">Searching…</p>}
-      {res.error && <div className="banner bad">{res.error.message}</div>}
+      {res.error && (
+        <div className="banner bad">
+          {/401|unauthorized/i.test(res.error.message)
+            ? 'Datahub refused the request (401). In the desktop app this should ride the mTLS pipe — quit RivetHub from the tray and relaunch. In a browser, import the device certificate; “proceed” on the padlock warning is not a client cert.'
+            : /unreachable|fetch|empty/i.test(res.error.message)
+              ? 'Cannot reach datahub. Dens are HTTPS-only — a stored http:// datahub URL will fail. Set Settings → Memory wiki to https://<datahub-host>:5174.'
+              : res.error.message}
+        </div>
+      )}
 
       {res.data?.degraded && (
         <div className="banner warn">

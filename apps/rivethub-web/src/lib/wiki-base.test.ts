@@ -4,24 +4,26 @@ import {
   headingId,
   isValidWikiBase,
   normalizeWikiBase,
+  preferHttpsOrigin,
   tocFromMarkdown,
   wikiLinksToMarkdown,
 } from './wiki-base.js'
 
 describe('normalizeWikiBase', () => {
-  it('accepts bare origins', () => {
-    expect(normalizeWikiBase('http://192.168.1.10')).toBe('http://192.168.1.10')
-    expect(normalizeWikiBase('http://192.168.1.10:80/')).toBe('http://192.168.1.10')
+  it('accepts bare origins and upgrades LAN http to https', () => {
+    expect(normalizeWikiBase('http://192.168.1.10')).toBe('https://192.168.1.10')
+    expect(normalizeWikiBase('http://192.168.1.10:80/')).toBe('https://192.168.1.10')
     expect(normalizeWikiBase('https://datahub.example.com')).toBe('https://datahub.example.com')
+    expect(normalizeWikiBase('http://127.0.0.1:5174')).toBe('http://127.0.0.1:5174')
   })
 
   it('migrates legacy /wiki iframe URLs to origin', () => {
-    expect(normalizeWikiBase('http://192.168.1.10/wiki')).toBe('http://192.168.1.10')
-    expect(normalizeWikiBase('http://192.168.1.10:5174/wiki/')).toBe('http://192.168.1.10:5174')
+    expect(normalizeWikiBase('http://192.168.1.10/wiki')).toBe('https://192.168.1.10')
+    expect(normalizeWikiBase('http://192.168.1.10:5174/wiki/')).toBe('https://192.168.1.10:5174')
   })
 
   it('strips any path/query/hash to origin', () => {
-    expect(normalizeWikiBase('http://192.168.1.10/wiki?q=x#frag')).toBe('http://192.168.1.10')
+    expect(normalizeWikiBase('http://192.168.1.10/wiki?q=x#frag')).toBe('https://192.168.1.10')
   })
 
   it('rejects junk', () => {
@@ -58,7 +60,7 @@ describe('datahubBaseFromMesh', () => {
           sessions: null,
         },
       ]),
-    ).toBe('http://192.168.1.110')
+    ).toBe('https://192.168.1.110')
   })
 
   it('returns null when absent', () => {
@@ -73,6 +75,12 @@ describe('datahubBaseFromMesh', () => {
         },
       ]),
     ).toBeNull()
+  })
+})
+
+describe('preferHttpsOrigin', () => {
+  it('leaves loopback on http', () => {
+    expect(preferHttpsOrigin('http://127.0.0.1:5174')).toBe('http://127.0.0.1:5174')
   })
 })
 

@@ -9,10 +9,24 @@
 import type { MeshDenNode } from '@rivetos/types'
 import { gatewayOrigin, isValidGatewayUrl } from './gateway-url.js'
 
+/** Upgrade stale http:// LAN origins. Loopback stays http for local hooks. */
+export function preferHttpsOrigin(origin: string): string {
+  try {
+    const u = new URL(origin)
+    if (u.protocol !== 'http:') return origin
+    const host = u.hostname.toLowerCase()
+    if (host === '127.0.0.1' || host === 'localhost' || host === '::1') return origin
+    u.protocol = 'https:'
+    return u.origin
+  } catch {
+    return origin
+  }
+}
+
 /**
  * Normalize a user/settings value to a bare gateway origin.
- * Migrates legacy iframe URLs like `http://host/wiki` → `http://host`.
- * Returns '' for empty/invalid input.
+ * Migrates legacy iframe URLs like `http://host/wiki` → `https://host`
+ * (LAN). Returns '' for empty/invalid input.
  */
 export function normalizeWikiBase(raw: string): string {
   const trimmed = raw.trim()
@@ -24,7 +38,8 @@ export function normalizeWikiBase(raw: string): string {
     if (u.username || u.password) return ''
     // Origin only — drop /wiki or any other path/query/hash
     const origin = u.origin
-    return isValidGatewayUrl(origin) || isValidGatewayUrl(`${origin}/`) ? origin : ''
+    const ok = isValidGatewayUrl(origin) || isValidGatewayUrl(`${origin}/`)
+    return ok ? preferHttpsOrigin(origin) : ''
   } catch {
     return ''
   }
@@ -45,7 +60,8 @@ export function datahubBaseFromMesh(nodes: readonly MeshDenNode[]): string | nul
     return id === 'datahub' || name === 'datahub' || name.includes('datahub')
   })
   if (!hit) return null
-  return gatewayOrigin(hit.denUrl)
+  const origin = gatewayOrigin(hit.denUrl)
+  return origin ? preferHttpsOrigin(origin) : null
 }
 
 /** Convert `[[slug]]` wiki links to in-app markdown links. */
