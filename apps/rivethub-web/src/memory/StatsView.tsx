@@ -8,9 +8,7 @@ export function StatsView(props: {
   gateway: RivetGateway
   onOpenSession?: (sessionId: string) => void
 }): JSX.Element {
-  const health = useAsync<MemoryHealthResponse>(() => props.gateway.memoryHealth(), [
-    props.gateway,
-  ])
+  const health = useAsync<MemoryHealthResponse>(() => props.gateway.memoryHealth(), [props.gateway])
   const stats = useAsync<MemoryStatsResponse>(() => props.gateway.memoryStats(), [props.gateway])
 
   const h = health.data

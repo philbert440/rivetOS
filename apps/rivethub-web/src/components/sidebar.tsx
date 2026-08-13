@@ -1,14 +1,6 @@
 import type { JSX } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import {
-  Bell,
-  Folder,
-  Library,
-  ListChecks,
-  MessageSquare,
-  Settings,
-  Workflow,
-} from 'lucide-react'
+import { Bell, Folder, Library, ListChecks, MessageSquare, Settings, Workflow } from 'lucide-react'
 import { useNotifications } from '../stores/notifications.js'
 import { NodeSwitcher } from './node-switcher.js'
 import { DenBot } from './den-bot.js'
@@ -31,11 +23,7 @@ const SECONDARY_NAV = [
 
 const SETTINGS = { to: '/settings', label: 'Settings', icon: Settings } as const
 
-function NavLink(props: {
-  to: string
-  label: string
-  icon: typeof MessageSquare
-}): JSX.Element {
+function NavLink(props: { to: string; label: string; icon: typeof MessageSquare }): JSX.Element {
   const Icon = props.icon
   return (
     <Link

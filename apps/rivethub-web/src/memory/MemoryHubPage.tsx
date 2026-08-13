@@ -17,7 +17,7 @@ export type { MemoryTab } from './MemoryHubNav.js'
 
 export function MemoryHubPage(): JSX.Element {
   const navigate = useNavigate()
-  const search = useSearch({ strict: false }) as { tab?: MemoryTab }
+  const search = useSearch({ strict: false })
   const tab: MemoryTab = search.tab ?? 'search'
   const { endpoint, pending, needNode } = useWikiEndpoint()
 
@@ -34,9 +34,8 @@ export function MemoryHubPage(): JSX.Element {
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <div className="text-sm font-semibold text-em">Memory</div>
         <p className="max-w-md text-sm text-ink-dim">
-          Point RivetHub at datahub so Search, Wiki, Browse, and Stats can read the memory
-          store. Set the datahub gateway URL in Settings, or connect a node that lists datahub
-          on the mesh.
+          Point RivetHub at datahub so Search, Wiki, Browse, and Stats can read the memory store.
+          Set the datahub gateway URL in Settings, or connect a node that lists datahub on the mesh.
         </p>
         <Link
           to="/settings"

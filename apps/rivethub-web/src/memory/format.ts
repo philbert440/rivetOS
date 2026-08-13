@@ -3,7 +3,7 @@
 export function relativeTime(iso: string | null | undefined, now = Date.now()): string {
   if (!iso) return '—'
   const t = Date.parse(iso)
-  if (!Number.isFinite(t)) return String(iso).slice(0, 10)
+  if (!Number.isFinite(t)) return iso.slice(0, 10)
   const secs = Math.max(0, (now - t) / 1000)
   if (secs < 60) return 'just now'
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
@@ -15,7 +15,7 @@ export function relativeTime(iso: string | null | undefined, now = Date.now()): 
 export function shortTime(iso: string | null | undefined): string {
   if (!iso) return '—'
   const t = Date.parse(iso)
-  if (!Number.isFinite(t)) return String(iso)
+  if (!Number.isFinite(t)) return iso
   return new Date(t).toLocaleString(undefined, {
     month: 'short',
     day: 'numeric',

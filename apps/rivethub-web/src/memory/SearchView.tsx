@@ -80,9 +80,7 @@ export function SearchView(props: {
         <div className="banner warn">
           <strong>Keyword match only.</strong> Meaning-based ranking is offline, so results match
           the words you typed — not “similar ideas.”
-          {res.data.degraded.reason && (
-            <div className="mono small">{res.data.degraded.reason}</div>
-          )}
+          {res.data.degraded.reason && <div className="mono small">{res.data.degraded.reason}</div>}
         </div>
       )}
 
