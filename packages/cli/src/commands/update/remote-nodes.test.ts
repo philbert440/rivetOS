@@ -6,11 +6,12 @@ vi.mock('../../lib/ssh.js', () => ({
   resolveSshUser: vi.fn(() => 'rivet'),
   isSafeArg: vi.fn(() => true),
   sshExec: vi.fn(),
+  sshExecCapture: vi.fn(),
   sshExecQuiet: vi.fn(),
 }))
 vi.mock('../../lib/mtls.js', () => ({ buildMeshDispatcher: vi.fn() }))
 
-import { sshExec, sshExecQuiet } from '../../lib/ssh.js'
+import { sshExec, sshExecCapture, sshExecQuiet } from '../../lib/ssh.js'
 import {
   gitUpdateNodeAsync,
   probeRemoteInstallWritable,
@@ -19,6 +20,7 @@ import {
 import type { UpdateOptions } from './types.js'
 
 const sshExecMock = vi.mocked(sshExec)
+const sshExecCaptureMock = vi.mocked(sshExecCapture)
 const sshExecQuietMock = vi.mocked(sshExecQuiet)
 
 const OPTS: UpdateOptions = {
@@ -67,6 +69,7 @@ function stubQuiet(
 
 beforeEach(() => {
   vi.clearAllMocks()
+  sshExecCaptureMock.mockResolvedValue({ stdout: '', stderr: '' })
   vi.spyOn(console, 'log').mockImplementation(() => undefined)
   vi.spyOn(console, 'warn').mockImplementation(() => undefined)
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -223,5 +226,59 @@ describe('gitUpdateNodeAsync — datahub worker restart resilience', () => {
     expect(res.success).toBe(false)
     expect(res.failedStep).toBe('worker:rivet-embedder.service')
     expect(res.workers).toEqual(['rivet-compactor.service'])
+  })
+})
+
+describe('gitUpdateNodeAsync — remote mesh-hosts stderr', () => {
+  function passwordRequiredErr(): Error {
+    return Object.assign(new Error('[ct112] mesh-hosts exited with code 1'), {
+      stderr: 'sudo: a password is required\n',
+      stdout: '',
+      status: 1,
+    })
+  }
+
+  it('infra path: skip warning includes captured stderr + sudo hint (not just exit code)', async () => {
+    sshExecMock.mockResolvedValue(undefined)
+    sshExecCaptureMock.mockRejectedValue(passwordRequiredErr())
+    stubQuiet({ 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' })
+
+    const res = await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false)
+
+    expect(res.success).toBe(true)
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /\[datahub\].*\/etc\/hosts mesh block update skipped:.*password is required.*passwordless sudo/,
+      ),
+    )
+    expect(sshExecCaptureMock).toHaveBeenCalledOnce()
+    expect(sshExecCaptureMock.mock.calls[0]![1]).toContain('setup-mesh-hosts.sh')
+  })
+
+  it('agent path: same captured skip warning; deploy still succeeds', async () => {
+    sshExecMock.mockResolvedValue(undefined)
+    sshExecCaptureMock.mockRejectedValue(passwordRequiredErr())
+    stubQuiet({})
+
+    const res = await gitUpdateNodeAsync('192.0.2.110', 'ct112', OPTS, true)
+
+    expect(res.success).toBe(true)
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /\[ct112\].*\/etc\/hosts mesh block update skipped:.*password is required.*passwordless sudo/,
+      ),
+    )
+  })
+
+  it('does not warn when remote hosts heal succeeds', async () => {
+    sshExecMock.mockResolvedValue(undefined)
+    sshExecCaptureMock.mockResolvedValue({ stdout: '', stderr: '' })
+    stubQuiet({ 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' })
+
+    await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false)
+
+    expect(console.log).not.toHaveBeenCalledWith(
+      expect.stringMatching(/\/etc\/hosts mesh block update skipped/),
+    )
   })
 })
