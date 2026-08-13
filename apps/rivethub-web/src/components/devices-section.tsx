@@ -119,7 +119,7 @@ export function DevicesSection(): JSX.Element | null {
       <p className="mb-4 text-xs text-ink-dim">
         Phones and other devices enrolled on the mesh through this node.
         {list.data && !list.data.relayConfigured && (
-          <span className="text-amber-400">
+          <span className="text-warn">
             {' '}
             Relay driver not configured — enrollments record here, but the WireGuard peer must be
             added by hand.

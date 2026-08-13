@@ -34,7 +34,7 @@ function Badge(props: { lastVerified?: string }): JSX.Element {
     s.kind === 'fresh'
       ? 'border-em text-em'
       : s.kind === 'aging'
-        ? 'border-amber-500/80 text-amber-400'
+        ? 'border-warn/80 text-warn'
         : 'border-red text-red'
   return (
     <span className={cn('rounded-full border bg-bg px-2 py-0.5 font-mono text-[10px]', color)}>
