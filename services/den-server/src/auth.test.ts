@@ -5,18 +5,20 @@ import {
   isGatewayAuthorized,
   isLoopbackHost,
   parseCertSubject,
+  wantsHtmlUnauthorized,
 } from './auth.js'
 import type { IncomingMessage } from 'node:http'
 import type { PeerCertificate, TLSSocket } from 'node:tls'
 
-function fakeReq(remote: string, peer?: Partial<PeerCertificate> & { authorized?: boolean }): IncomingMessage {
+function fakeReq(
+  remote: string,
+  peer?: Partial<PeerCertificate> & { authorized?: boolean },
+): IncomingMessage {
   const sock = {
     remoteAddress: remote,
     encrypted: peer !== undefined,
     authorized: peer?.authorized ?? false,
-    getPeerCertificate: peer
-      ? () => peer as PeerCertificate
-      : undefined,
+    getPeerCertificate: peer ? () => peer as PeerCertificate : undefined,
   } as unknown as TLSSocket
   return { socket: sock } as IncomingMessage
 }
@@ -47,7 +49,9 @@ describe('parseCertSubject / isDeviceClientCert', () => {
   })
 
   it('parses string subjects', () => {
-    expect(parseCertSubject({ subject: '/O=Rivet/OU=client/CN=device:x' } as unknown as PeerCertificate)).toEqual({
+    expect(
+      parseCertSubject({ subject: '/O=Rivet/OU=client/CN=device:x' } as unknown as PeerCertificate),
+    ).toEqual({
       cn: 'device:x',
       ou: 'client',
     })
@@ -123,5 +127,23 @@ describe('isLoopbackHost', () => {
     expect(isLoopbackHost('127.0.0.1')).toBe(true)
     expect(isLoopbackHost('::1')).toBe(true)
     expect(isLoopbackHost('0.0.0.0')).toBe(false)
+  })
+})
+
+describe('wantsHtmlUnauthorized', () => {
+  function req(method: string, accept?: string): IncomingMessage {
+    return { method, headers: { accept } } as IncomingMessage
+  }
+
+  it('serves HTML only for browser document GETs', () => {
+    expect(wantsHtmlUnauthorized(req('GET', 'text/html,application/xhtml+xml'), '/')).toBe(true)
+    expect(wantsHtmlUnauthorized(req('HEAD', 'text/html'), '/den/')).toBe(true)
+  })
+
+  it('keeps JSON for APIs, POST, and clients without text/html', () => {
+    expect(wantsHtmlUnauthorized(req('GET', 'text/html'), '/api/memory/stats')).toBe(false)
+    expect(wantsHtmlUnauthorized(req('POST', 'text/html'), '/')).toBe(false)
+    expect(wantsHtmlUnauthorized(req('GET', '*/*'), '/')).toBe(false)
+    expect(wantsHtmlUnauthorized(req('GET'), '/')).toBe(false)
   })
 })

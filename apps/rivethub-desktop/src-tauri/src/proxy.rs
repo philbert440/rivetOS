@@ -132,7 +132,8 @@ fn parse_target(target: &str) -> Result<(String, u16), String> {
             .ok_or_else(|| format!("unclosed v6 bracket in {target}"))?;
         let port = match after.strip_prefix(':') {
             Some(p) => p.parse::<u16>().map_err(|_| format!("bad port in {target}"))?,
-            None if after.is_empty() => 443,
+            // Dens listen on 5174. Implicit https://[v6] must not fall to 443.
+            None if after.is_empty() => 5174,
             None => return Err(format!("bad v6 authority in {target}")),
         };
         (h.to_string(), port)
@@ -141,7 +142,7 @@ fn parse_target(target: &str) -> Result<(String, u16), String> {
             Some((h, p)) if !h.contains(':') => {
                 (h.to_string(), p.parse::<u16>().map_err(|_| format!("bad port in {target}"))?)
             }
-            _ => (rest.to_string(), 443),
+            _ => (rest.to_string(), 5174),
         }
     };
     if host.is_empty() {
@@ -256,12 +257,12 @@ mod tests {
         assert_eq!(parse_target("https://192.0.2.7:5174"), Err("refusing to proxy device identity to 192.0.2.7".into()));
         assert_eq!(parse_target("https://10.0.0.7:5174").unwrap(), ("10.0.0.7".into(), 5174));
         assert_eq!(parse_target("https://ct112.mesh:5174/").unwrap(), ("ct112.mesh".into(), 5174));
-        assert_eq!(parse_target("https://ct112.mesh").unwrap(), ("ct112.mesh".into(), 443));
+        assert_eq!(parse_target("https://ct112.mesh").unwrap(), ("ct112.mesh".into(), 5174));
         assert!(parse_target("http://10.0.0.7:5174").is_err());
         assert!(parse_target("https://10.0.0.7:5174/den").is_err());
         // bracketed v6 — ULA overlay with explicit port (generic RFC4193 examples, secret-scan-allow)
         assert_eq!(parse_target("https://[fd00::7]:5174").unwrap(), ("fd00::7".into(), 5174)); // secret-scan-allow
-        assert_eq!(parse_target("https://[fd00::7]").unwrap(), ("fd00::7".into(), 443)); // secret-scan-allow
+        assert_eq!(parse_target("https://[fd00::7]").unwrap(), ("fd00::7".into(), 5174)); // secret-scan-allow
         assert!(parse_target("https://[2001:db8::1]:5174").is_err()); // public v6 refused
         assert!(parse_target("https://[fd00::7").is_err()); // unclosed bracket — secret-scan-allow
     }
