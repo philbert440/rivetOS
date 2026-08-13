@@ -35,6 +35,13 @@ import { HarnessApprovalCard } from '../components/harness-approval-card.js'
 import { questionsFromLiveTools } from '../lib/ask-user.js'
 import { harnessAccent } from '../lib/harness-colors.js'
 import { attachHarnessSession } from '../lib/harness-attach.js'
+import { createPtyEnsurer } from '../lib/pty-ensure.js'
+import {
+  createOutboundPump,
+  startStaleTurnRelease,
+  type OutboundPump,
+  type OutboundPumpStore,
+} from '../lib/outbound-pump.js'
 import {
   applyRegistryEventToPlaneSessions,
   chatItems,
@@ -58,26 +65,24 @@ import { useSessionNames } from '../stores/session-names.js'
 const EMPTY_OUTBOUND: OutboundItem[] = []
 const EMPTY_MESSAGES: SessionMessage[] = []
 
-/** How long the queue pump waits for an injected turn's first stream frame
- *  before deciding the harness isn't bridging and letting the queue flow. */
-const INJECT_LATCH_MS = 6_000
-/** A busy live turn with no frames for this long and no tool running is
- *  treated as ended (harnesses that never bridge done — see stale-release).
- *  Generous on purpose: the bridge is BLOCK-granular for claude (a long
- *  no-tool generation is silent between blocks), so short windows
- *  false-positive on healthy turns (grok review, PR #338). */
-const STALE_TURN_MS = 120_000
-/** First backoff after a `turn_in_flight` rejection; doubles per attempt. */
-const TURN_RETRY_MS = 1_500
-const TURN_RETRY_MAX_MS = 30_000
-/**
- * Give up auto-retrying after this many rejections. A harness parked on a TUI
- * permission prompt is mid-turn indefinitely, and hammering it forever is
- * worse than leaving the message queued with its inject button.
- */
-const TURN_RETRY_ATTEMPTS = 6
 /** Pause between a control-plane interrupt and the turn that displaced it. */
 const INTERRUPT_SETTLE_MS = 400
+
+/** Adapter handing the extracted pump (lib/outbound-pump.ts) the chat-store
+ *  slice it drives — reads go through getState() so the pump always sees the
+ *  latest queue/live state. */
+const pumpStore: OutboundPumpStore = {
+  queue: (sid) => useChat.getState().outbound[sid],
+  liveIsBusy: (sid) => useChat.getState().liveIsBusy(sid),
+  live: (sid) => useChat.getState().live[sid],
+  liveTs: (sid) => useChat.getState().liveTs[sid],
+  markSending: (sid, id) => useChat.getState().markOutboundSending(sid, id),
+  dequeue: (sid, id) => useChat.getState().dequeueOutbound(sid, id),
+  requeue: (sid, id) => useChat.getState().requeueOutbound(sid, id),
+  fail: (sid, id) => useChat.getState().failOutbound(sid, id),
+  beginLive: (sid, activity) => useChat.getState().beginLive(sid, activity),
+  clearLive: (sid) => useChat.getState().clearLive(sid),
+}
 
 // A draft id IS a UUID so it can become the harness's native session id
 // (claude --session-id requires a UUID). It stays bare until the control plane
@@ -658,19 +663,12 @@ function ActiveSession(props: {
   // spawn-or-get a PTY whose denSession IS props.sessionId, so chat (inject +
   // bridge), terminal (this PTY), and den (?session) are one live harness.
   // Idempotent server-side; the client guard avoids UI churn on double calls.
-  // Single-flight: the spawn effect, chat sends, and StrictMode double-mounts
-  // can all call ensurePty concurrently — they must share ONE spawn request,
-  // not race two past the termPtyRef check (grok review, PR #349).
-  const ptyPromiseRef = useRef<Promise<string> | null>(null)
-  const ensurePty = (): Promise<string> => {
-    if (termPtyRef.current) return Promise.resolve(termPtyRef.current)
-    ptyPromiseRef.current ??= doEnsurePty().finally(() => {
-      ptyPromiseRef.current = null
-    })
-    return ptyPromiseRef.current
-  }
-
-  const doEnsurePty = async (): Promise<string> => {
+  // The single-flight mutex is lib/pty-ensure.ts (the spawn effect, chat
+  // sends, and StrictMode double-mounts must share ONE spawn request, not
+  // race two past the termPtyRef check — grok review, PR #349); the ref
+  // indirection keeps the ensurer on the latest spawn closure (the model
+  // dropdown changes the command between renders).
+  const spawnPty = async (): Promise<string> => {
     if (termPtyRef.current) return termPtyRef.current
     const gw = useConnection.getState().gateway
     // A harness session (already in the store) resumes; a fresh conversation
@@ -691,6 +689,14 @@ function ActiveSession(props: {
     termPtyRef.current = p.id
     return p.id
   }
+  const spawnPtyRef = useRef(spawnPty)
+  spawnPtyRef.current = spawnPty
+  const ensurePtyRef = useRef<(() => Promise<string>) | null>(null)
+  ensurePtyRef.current ??= createPtyEnsurer({
+    current: () => termPtyRef.current,
+    spawn: () => spawnPtyRef.current(),
+  })
+  const ensurePty = ensurePtyRef.current
 
   // Terminal mode (including on open — it's the default) reveals the
   // conversation's harness: spawn-or-get whenever terminal is active with no
@@ -725,30 +731,31 @@ function ActiveSession(props: {
   }
 
   // Seamless chat send: enqueue + serial inject. The queue is visible in the
-  // transcript (queued / sending badges + inject/cancel). We only auto-inject
-  // the next turn when the previous agent turn is truly streaming (tools/text)
-  // — a pre-inject "working…" placeholder must not stall the queue forever
-  // (Hermes often never bridges a done event).
+  // transcript (queued / sending badges + inject/cancel). The pump itself —
+  // single-flight latch, inject latch, turn_in_flight backoff, stale-turn
+  // release — is lib/outbound-pump.ts; injectRef keeps it on the latest
+  // injectOne closure (gate/canonicalId change between renders).
   const enqueueOutbound = useChat((s) => s.enqueueOutbound)
-  const markOutboundSending = useChat((s) => s.markOutboundSending)
-  const dequeueOutbound = useChat((s) => s.dequeueOutbound)
-  const requeueOutbound = useChat((s) => s.requeueOutbound)
-  const failOutbound = useChat((s) => s.failOutbound)
   const cancelOutbound = useChat((s) => s.cancelOutbound)
-  const beginLive = useChat((s) => s.beginLive)
   const clearLive = useChat((s) => s.clearLive)
   const liveIsBusy = useChat((s) => s.liveIsBusy)
   const outbound = useChat((s) => s.outbound[props.sessionId] ?? EMPTY_OUTBOUND)
   const pendingAsk = useChat((s) => s.ask[props.sessionId])
   const dismissAsk = useChat((s) => s.dismissAsk)
-  const pumping = useRef(false)
   const composerRef = useRef<ComposerHandle | null>(null)
-  /** `turn_in_flight` attempts per queued turn, and the one pending retry. */
-  const turnRetries = useRef(new Map<string, number>())
-  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const injectRef = useRef<(text: string, interrupt: boolean) => Promise<void>>(() =>
+    Promise.resolve(),
+  )
+  const pumpRef = useRef<OutboundPump | null>(null)
+  pumpRef.current ??= createOutboundPump({
+    sessionId: props.sessionId,
+    store: pumpStore,
+    inject: (text, interrupt) => injectRef.current(text, interrupt),
+    isTurnInFlight,
+  })
   useEffect(
     () => () => {
-      if (retryTimer.current) clearTimeout(retryTimer.current)
+      pumpRef.current?.dispose()
     },
     [],
   )
@@ -798,78 +805,10 @@ function ActiveSession(props: {
     }
   }
 
-  const pumpOutbound = async (opts?: { forceId?: string; interrupt?: boolean }): Promise<void> => {
-    if (pumping.current) return
-    const state = useChat.getState()
-    const q = state.outbound[props.sessionId] ?? []
-    if (!opts?.forceId && q.some((o) => o.status === 'sending')) return
-    // Real stream in flight → wait (unless user force-injects a specific id).
-    if (!opts?.forceId && state.liveIsBusy(props.sessionId)) return
-    const next = opts?.forceId
-      ? q.find((o) => o.id === opts.forceId)
-      : q.find((o) => o.status === 'queued')
-    if (!next) return
+  injectRef.current = injectOne
 
-    pumping.current = true
-    markOutboundSending(props.sessionId, next.id)
-    beginLive(props.sessionId, 'working…')
-    try {
-      await injectOne(next.text, opts?.interrupt === true)
-      dequeueOutbound(props.sessionId, next.id)
-      turnRetries.current.delete(next.id)
-      // Hold the pump until the harness's stream latches busy. The hook chain
-      // (UserPromptSubmit → den → bridge) is normally sub-second, but a big
-      // context can take seconds to first frame — draining the next queued
-      // message in that window double-injects into a working harness. Only if
-      // nothing EVER latches (no hooks / dead bridge) do we drop the
-      // placeholder and let the queue flow.
-      const deadline = Date.now() + INJECT_LATCH_MS
-      while (Date.now() < deadline && !useChat.getState().liveIsBusy(props.sessionId)) {
-        await new Promise((r) => setTimeout(r, 250))
-      }
-      if (!useChat.getState().liveIsBusy(props.sessionId)) {
-        clearLive(props.sessionId)
-      }
-    } catch (err) {
-      pumping.current = false
-      if (isTurnInFlight(err)) {
-        // Not a failure: v1 drivers never queue, so a mid-turn send is simply
-        // "not yet". Put the turn back in the queue (bubble intact) and let
-        // the retry timer / next live change pick it up.
-        requeueOutbound(props.sessionId, next.id)
-        // Only the pre-inject placeholder goes: a real streaming turn is
-        // exactly WHY the driver said no, and dropping its bubble would blank
-        // the reply the user is watching.
-        if (!useChat.getState().liveIsBusy(props.sessionId)) clearLive(props.sessionId)
-        // Backoff, bounded: a harness sitting on a TUI permission prompt is
-        // mid-turn until a human answers it, and a fixed-interval retry would
-        // POST at it until the tab closes. After the cap the turn stays queued
-        // and the user's inject button is the (interrupting) manual retry.
-        const attempts = (turnRetries.current.get(next.id) ?? 0) + 1
-        turnRetries.current.set(next.id, attempts)
-        if (attempts <= TURN_RETRY_ATTEMPTS) {
-          const delay = Math.min(TURN_RETRY_MS * 2 ** (attempts - 1), TURN_RETRY_MAX_MS)
-          if (retryTimer.current) clearTimeout(retryTimer.current)
-          retryTimer.current = setTimeout(() => {
-            retryTimer.current = undefined
-            void pumpOutbound().catch(() => undefined)
-          }, delay)
-        }
-        return
-      }
-      turnRetries.current.delete(next.id)
-      failOutbound(props.sessionId, next.id)
-      clearLive(props.sessionId)
-      // Try the next queued message after a failure.
-      void pumpOutbound().catch(() => undefined)
-      throw err
-    }
-    pumping.current = false
-    // Drain further queued turns when not blocked by a real stream.
-    if (!useChat.getState().liveIsBusy(props.sessionId)) {
-      void pumpOutbound().catch(() => undefined)
-    }
-  }
+  const pumpOutbound = (opts?: { forceId?: string; interrupt?: boolean }): Promise<void> =>
+    pumpRef.current!.pump(opts)
 
   // When a live turn ends (or the queue grows while idle), inject the next.
   useEffect(() => {
@@ -877,32 +816,15 @@ function ActiveSession(props: {
     void pumpOutbound().catch(() => undefined)
   }, [live, outbound.length, props.sessionId])
 
-  // Stale-turn release: turn.end (Stop hook) now ends Claude/grok turns
-  // properly, but a harness that never bridges done (Hermes) would leave the
-  // live slot busy forever and starve the queue. If no stream frame lands for
-  // STALE_TURN_MS with no tool running (a silent long Bash is still a real
-  // turn), declare the turn over so queued messages flow. Only armed while
-  // something is actually queued — releasing is for the pump, not the view,
-  // and a false positive on an idle queue would just kill a healthy bubble.
+  // Stale-turn release: the watcher itself is lib/outbound-pump.ts. Armed
+  // only while something is actually queued — releasing is for the pump, not
+  // the view, and a false positive on an idle queue would just kill a healthy
+  // bubble.
   const hasQueued = outbound.some((o) => o.status === 'queued')
   useEffect(() => {
     if (!live || !hasQueued) return
-    const timer = setInterval(() => {
-      const s = useChat.getState()
-      const L = s.live[props.sessionId]
-      if (!L) return
-      // Placeholder-only turns are the pump's latch window, not ours — and
-      // liveTs may still be the PREVIOUS turn's last frame, which would
-      // release instantly.
-      if (!(L.text || L.tools.length > 0 || L.reasoningText)) return
-      const last = s.liveTs[props.sessionId] ?? 0
-      const toolRunning = L.tools.some((t) => t.status === 'running')
-      if (!toolRunning && last > 0 && Date.now() - last > STALE_TURN_MS) {
-        clearLive(props.sessionId)
-      }
-    }, 5_000)
-    return () => clearInterval(timer)
-  }, [live, hasQueued, props.sessionId, clearLive])
+    return startStaleTurnRelease(pumpStore, props.sessionId)
+  }, [live, hasQueued, props.sessionId])
 
   const sendToHarness = (body: string): Promise<void> => {
     enqueueOutbound(props.sessionId, body)
@@ -926,7 +848,7 @@ function ActiveSession(props: {
     if (item?.text) composerRef.current?.prepend(item.text)
     // If we cancelled the in-flight item, free the pump.
     if (!useChat.getState().outbound[props.sessionId]?.some((o) => o.status === 'sending')) {
-      pumping.current = false
+      pumpRef.current?.reset()
       void pumpOutbound().catch(() => undefined)
     }
   }
