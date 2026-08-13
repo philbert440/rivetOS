@@ -280,10 +280,19 @@ export class WikiIndex {
 
     // 4. Entity overlap
     if (opts?.entities && opts.entities.length > 0) {
+      // Prefer topics that share the most entities. Use unnest + ANY for the
+      // intersection size — Postgres has no `text[] & text[]` (that is intarray
+      // only); the old `cardinality(entities & $1)` form raised
+      // "operator does not exist: text[] & text[]" and killed every extract-wiki
+      // job whose patch shared entities with an existing topic (~9.5k dead jobs).
       const { rows } = await this.pool.query<PgTopicRow>(
         `SELECT * FROM ros_wiki_topics
          WHERE entities && $1::text[]
-         ORDER BY cardinality(entities & $1::text[]) DESC, updated_at DESC
+         ORDER BY (
+           SELECT COUNT(DISTINCT val)::int
+           FROM unnest(entities) AS e(val)
+           WHERE val = ANY($1::text[])
+         ) DESC, updated_at DESC
          LIMIT 3`,
         [opts.entities],
       )

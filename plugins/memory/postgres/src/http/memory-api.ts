@@ -77,10 +77,7 @@ function intParam(url: URL, name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback
 }
 
-async function sessionKeys(
-  pool: pg.Pool,
-  conversationIds: string[],
-): Promise<Map<string, string>> {
+async function sessionKeys(pool: pg.Pool, conversationIds: string[]): Promise<Map<string, string>> {
   const ids = [...new Set(conversationIds.filter(Boolean))]
   const map = new Map<string, string>()
   if (ids.length === 0) return map
@@ -303,11 +300,7 @@ async function handleStats(res: ServerResponse, pool: pg.Pool): Promise<void> {
   json(res, 200, body)
 }
 
-async function handleHealth(
-  res: ServerResponse,
-  pool: pg.Pool,
-  embedOk: boolean,
-): Promise<void> {
+async function handleHealth(res: ServerResponse, pool: pg.Pool, embedOk: boolean): Promise<void> {
   const queue = await pool.query<{ n: string }>(`
     SELECT (
       (SELECT COUNT(*) FROM ros_messages WHERE embedding IS NULL AND content IS NOT NULL AND LENGTH(content) > 0)
