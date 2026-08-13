@@ -1,6 +1,8 @@
 import { useState, type JSX } from 'react'
 import type { MemorySearchResponse } from '@rivetos/types'
 import type { RivetGateway } from '@rivetos/gateway-client'
+import { Select } from '../components/select.js'
+import { Button } from '../components/ui/button.js'
 import { preview, relativeTime } from './format.js'
 import { useAsync } from './use-async.js'
 
@@ -37,20 +39,24 @@ export function SearchView(props: {
           placeholder="Search messages and summaries…"
           onChange={(e) => setInput(e.target.value)}
         />
-        <select
+        <Select
           value={scope}
-          onChange={(e) => setScope(e.target.value as typeof scope)}
-          aria-label="scope"
-        >
-          <option value="both">everything</option>
-          <option value="messages">messages</option>
-          <option value="summaries">summaries</option>
-        </select>
+          title="scope"
+          label="Scope"
+          onChange={(v) => setScope(v as typeof scope)}
+          options={[
+            { value: 'both', label: 'everything' },
+            { value: 'messages', label: 'messages' },
+            { value: 'summaries', label: 'summaries' },
+          ]}
+        />
         <label className="small check">
           <input type="checkbox" checked={verbose} onChange={(e) => setVerbose(e.target.checked)} />
           scores
         </label>
-        <button type="submit">Search</button>
+        <Button type="submit" size="sm">
+          Search
+        </Button>
       </form>
 
       {!query && (
@@ -60,15 +66,21 @@ export function SearchView(props: {
         </div>
       )}
       {res.loading && query && <p className="muted pad">Searching…</p>}
-      {res.error && <div className="banner bad">{res.error.message}</div>}
+      {res.error && (
+        <div className="banner bad">
+          {/401|unauthorized/i.test(res.error.message)
+            ? 'Datahub refused the request (401). In the desktop app this should ride the mTLS pipe — quit RivetHub from the tray and relaunch. In a browser, import the device certificate; “proceed” on the padlock warning is not a client cert.'
+            : /unreachable|fetch|empty/i.test(res.error.message)
+              ? 'Cannot reach datahub. Dens are HTTPS-only — a stored http:// datahub URL will fail. Set Settings → Memory wiki to https://<datahub-host>:5174.'
+              : res.error.message}
+        </div>
+      )}
 
       {res.data?.degraded && (
         <div className="banner warn">
           <strong>Keyword match only.</strong> Meaning-based ranking is offline, so results match
           the words you typed — not “similar ideas.”
-          {res.data.degraded.reason && (
-            <div className="mono small">{res.data.degraded.reason}</div>
-          )}
+          {res.data.degraded.reason && <div className="mono small">{res.data.degraded.reason}</div>}
         </div>
       )}
 

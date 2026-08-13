@@ -5,9 +5,7 @@ import { compactNumber } from './format.js'
 import { useAsync } from './use-async.js'
 
 export function HealthTile(props: { gateway: RivetGateway; compact?: boolean }): JSX.Element {
-  const health = useAsync<MemoryHealthResponse>(() => props.gateway.memoryHealth(), [
-    props.gateway,
-  ])
+  const health = useAsync<MemoryHealthResponse>(() => props.gateway.memoryHealth(), [props.gateway])
   const stats = useAsync<MemoryStatsResponse>(() => props.gateway.memoryStats(), [props.gateway])
 
   const h = health.data

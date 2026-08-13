@@ -34,6 +34,24 @@ body {
   background-size: 32px 32px;
 }
 
+/* TenPAL memory surfaces use short tokens; alias onto Rivet brand. */
+:root {
+  --bg: var(--color-bg);
+  --panel: var(--color-panel);
+  --panel-2: var(--color-panel-2);
+  --line: var(--color-line);
+  --ink: var(--color-ink);
+  --ink-dim: var(--color-ink-dim);
+  --em: var(--color-em);
+  --warn: var(--color-em);
+  --bad: var(--color-red);
+  --user: var(--color-em);
+  --assistant: #d0d0d0;
+  --tool: #8b98a9;
+  --system: #6a7380;
+  --mono: var(--font-mono);
+}
+
 /* Memory hub Search / Browse / Stats (ported from TenPAL, Rivet tokens) */
 .rivet-memory-surfaces {
   color: var(--color-ink);
@@ -249,4 +267,65 @@ body {
   border-radius: 999px;
   border: 1px solid var(--color-em);
   color: var(--color-em);
+}
+
+/* Wiki index / article (TenPAL WikiView classes, Rivet tokens) */
+.rivet-memory-surfaces .wiki-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 4px 0 10px;
+}
+.rivet-memory-surfaces .wiki-index { list-style: none; margin: 0; padding: 0; }
+.rivet-memory-surfaces .wiki-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  color: inherit;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font: inherit;
+}
+.rivet-memory-surfaces .wiki-row:hover { border-color: var(--color-em); }
+.rivet-memory-surfaces .wiki-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rivet-memory-surfaces .wiki-row-title { font-weight: 600; }
+.rivet-memory-surfaces .wiki-row-snippet { margin-top: 4px; line-height: 1.45; }
+.rivet-memory-surfaces .wiki-page-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.rivet-memory-surfaces .wiki-title { margin: 0 0 6px; font-size: 1.4rem; line-height: 1.25; }
+.rivet-memory-surfaces .wiki-lead {
+  border-left: 2px solid var(--color-em);
+  padding: 2px 0 2px 12px;
+  margin: 14px 0;
+}
+.rivet-memory-surfaces .wiki-article,
+.rivet-memory-surfaces .wiki-history,
+.rivet-memory-surfaces .wiki-sources { margin-top: 22px; }
+.rivet-memory-surfaces .wiki-section-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-ink-dim);
+}
+.rivet-memory-surfaces .wiki-link {
+  background: none;
+  border: 0;
+  color: var(--color-em);
+  padding: 0;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
