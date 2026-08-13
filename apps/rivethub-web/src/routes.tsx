@@ -11,7 +11,8 @@ import { Toasts } from './components/toasts.js'
 import { ChatPage } from './pages/chat.js'
 import { DensPage } from './pages/dens.js'
 import { FilesPage } from './pages/files.js'
-import { MemoryPage, MemoryTopicPage } from './pages/memory.js'
+import { MemoryHubPage } from './memory/MemoryHubPage.js'
+import { MemoryTopicPage } from './pages/memory.js'
 import { SettingsPage } from './pages/settings.js'
 import { TerminalPage } from './pages/terminal.js'
 import { TaskDetailPage, TasksPage } from './pages/tasks.js'
@@ -55,6 +56,9 @@ const rootRoute = createRootRoute({
 const chatRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  validateSearch: (search: Record<string, unknown>): { session?: string } => ({
+    session: typeof search.session === 'string' && search.session ? search.session : undefined,
+  }),
   component: ChatPage,
 })
 
@@ -73,7 +77,16 @@ const densRoute = createRoute({
 const memoryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/memory',
-  component: MemoryPage,
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { tab?: 'search' | 'wiki' | 'browse' | 'stats' } => {
+    const tab = search.tab
+    if (tab === 'search' || tab === 'wiki' || tab === 'browse' || tab === 'stats') {
+      return { tab }
+    }
+    return {}
+  },
+  component: MemoryHubPage,
 })
 
 const memoryTopicRoute = createRoute({

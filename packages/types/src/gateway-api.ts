@@ -364,6 +364,71 @@ export interface WikiGapsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// /api/memory — Hub Search / Browse / Stats over the memory plugin
+// ---------------------------------------------------------------------------
+
+export interface MemorySearchHit {
+  id: string
+  source: 'message' | 'summary'
+  content: string
+  createdAt: string
+  score: number
+  role?: string
+  agent?: string
+  kind?: string
+  toolName?: string | null
+  conversationId?: string
+  /** Harness / capture session key — Chat deep-link when present. */
+  sessionId?: string | null
+}
+
+export interface MemorySearchResponse {
+  query: string
+  scope: 'messages' | 'summaries' | 'both'
+  degraded: { reason: string; effect: string } | null
+  results: MemorySearchHit[]
+}
+
+export interface MemoryBrowseMessage {
+  id: string
+  role: string
+  agent: string
+  content: string
+  createdAt: string
+  conversationId: string
+  sessionId?: string | null
+  toolName?: string | null
+}
+
+export interface MemoryBrowseResponse {
+  messages: MemoryBrowseMessage[]
+}
+
+export interface MemoryStatsResponse {
+  conversations: number
+  messages: number
+  toolCalls: number
+  summaries: number
+  embedQueueDepth: number
+  embeddedMessages: number
+  failedEmbeddings: number
+  topTools: { tool: string; count: number }[]
+  recentSessions: {
+    sessionId: string
+    title: string | null
+    agent: string
+    lastActive: string
+    messages: number
+  }[]
+}
+
+export interface MemoryHealthResponse {
+  status: 'ok' | 'degraded' | 'error'
+  embeddings: { status: 'ok' | 'unavailable'; error?: string; impact?: string }
+  embedQueueDepth: number
+}
+
+// ---------------------------------------------------------------------------
 // /api/mesh — den roster projection (distinct from mesh.ts MeshRegistry)
 // ---------------------------------------------------------------------------
 

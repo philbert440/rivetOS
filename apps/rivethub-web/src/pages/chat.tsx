@@ -19,6 +19,7 @@
  */
 
 import { useEffect, useRef, useState, type JSX } from 'react'
+import { useSearch } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApprovalDecision, HarnessSessionSummary, SessionMessage } from '@rivetos/types'
 import { uuidv4 } from '../lib/uuid.js'
@@ -246,6 +247,10 @@ export function ChatPage(): JSX.Element {
   })
   const active = useChat((s) => s.active)
   const setActive = useChat((s) => s.setActive)
+  const { session: sessionFromUrl } = useSearch({ from: '/' })
+  useEffect(() => {
+    if (sessionFromUrl) setActive(sessionFromUrl)
+  }, [sessionFromUrl, setActive])
   // Tolerant lookup: the open thread's key changes under the selection when
   // the plane adopts a draft (bare uuid → canonical) or a driver rotates the
   // native id. The rekey effect below moves the conversation onto the new
