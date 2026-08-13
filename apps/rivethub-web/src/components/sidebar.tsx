@@ -6,8 +6,8 @@ import { NodeSwitcher } from './node-switcher.js'
 import { DenBot } from './den-bot.js'
 
 /** Primary views — top of the rail. Conversations first; Memory and Files
- *  next as the day-to-day workspace. Terminal / Den stay routable for deep
- *  links but are no longer in the rail (immersive surfaces, rarely the entry).
+ *  next as the day-to-day workspace. The standalone Terminal / Den pages are
+ *  gone: chat embeds both as per-session modes, which is the only entry.
  *  Lucide icons match the TenPAL rail. */
 const PRIMARY_NAV = [
   { to: '/', label: 'Conversations', icon: MessageSquare },
