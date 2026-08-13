@@ -323,6 +323,18 @@ export default async function update(): Promise<void> {
     console.log('  ✅ Build complete')
   }
 
+  // Step 3.5: heal /etc/hosts mesh block from mesh.json.
+  // meshRollingUpdate already heals local + remotes under --mesh; single-node
+  // `rivetos update` used to skip this entirely (#461 residual), so a desk or
+  // lone CT could finish a successful update with drifted .mesh DNS.
+  // Non-fatal — always warn on failure (same helper as the mesh path).
+  if (deployment === 'manual' || deployment === 'bare-metal') {
+    healLocalMeshHosts({
+      scriptPath: resolve(ROOT, 'infra/scripts/setup-mesh-hosts.sh'),
+      tag: '  ',
+    })
+  }
+
   // Step 4: Restart
   // G0: retire the standalone rivet-den unit BEFORE restarting rivetos —
   // the gateway (embedded den) binds the same port on startup.
