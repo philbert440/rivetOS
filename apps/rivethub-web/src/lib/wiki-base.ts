@@ -9,14 +9,52 @@
 import type { MeshDenNode } from '@rivetos/types'
 import { gatewayOrigin, isValidGatewayUrl } from './gateway-url.js'
 
-/** Upgrade stale http:// LAN origins. Loopback stays http for local hooks. */
+/** Den listen port. Implicit http/https defaults (80/443) are never this. */
+export const DEN_PORT = 5174
+
+function isLoopbackHost(host: string): boolean {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1'
+}
+
+/**
+ * LAN / mesh hosts whose den lives on DEN_PORT. Public names keep URL
+ * defaults so a typed `https://example.com` is not rewritten.
+ */
+export function isLanDenHost(host: string): boolean {
+  const h = host.toLowerCase()
+  if (h.endsWith('.mesh')) return true
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h)
+  if (!m) return false
+  const a = Number(m[1])
+  const b = Number(m[2])
+  if (a === 10) return true
+  if (a === 192 && b === 168) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  // CGNAT 100.64/10 — some WG overlays
+  if (a === 100 && b >= 64 && b <= 127) return true
+  return false
+}
+
+/**
+ * Upgrade stale http:// LAN origins and pin implicit ports to 5174.
+ *
+ * `http://lan-host` → URL.origin after an https rewrite is `:443`. The
+ * desktop mTLS pipe then connects there and gets connection refused.
+ * Loopback stays http for local hooks. An explicit non-default port is kept.
+ */
 export function preferHttpsOrigin(origin: string): string {
   try {
     const u = new URL(origin)
-    if (u.protocol !== 'http:') return origin
     const host = u.hostname.toLowerCase()
-    if (host === '127.0.0.1' || host === 'localhost' || host === '::1') return origin
-    u.protocol = 'https:'
+    if (u.protocol === 'http:') {
+      if (isLoopbackHost(host)) return origin
+      u.protocol = 'https:'
+    } else if (u.protocol !== 'https:') {
+      return origin
+    }
+    if (!isLoopbackHost(host) && isLanDenHost(host) && u.port === '') {
+      u.port = String(DEN_PORT)
+    }
     return u.origin
   } catch {
     return origin
@@ -25,7 +63,7 @@ export function preferHttpsOrigin(origin: string): string {
 
 /**
  * Normalize a user/settings value to a bare gateway origin.
- * Migrates legacy iframe URLs like `http://host/wiki` → `https://host`
+ * Migrates legacy iframe URLs like `http://host/wiki` → `https://host:5174`
  * (LAN). Returns '' for empty/invalid input.
  */
 export function normalizeWikiBase(raw: string): string {

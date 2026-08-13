@@ -62,6 +62,10 @@ Nodes should reload CA/CRL on a schedule (or restart) so revocations stick.
 ## Clients
 
 - **RivetHub web**: open `https://<node>:5174`; browser picks the device client cert.
+  Clicking through the padlock / “not private” warning only trusts the *server*
+  CA — it is not enrollment. Without an imported device PKCS#12 the page is 401
+  (HTML for browser navigations, JSON for APIs). Use RivetHub desktop, or
+  import `rivet-ca.sh issue-client` material into the browser and reload.
 - **gateway-client (Node)**: optional `tls: { cert, key, ca }` PEM strings on `GatewayClientConfig`.
 - **Same-origin** Hub served by den still requires mTLS when the page is loaded over HTTPS with `requestCert`.
 

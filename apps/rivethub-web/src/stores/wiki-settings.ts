@@ -14,13 +14,18 @@ import { normalizeWikiBase } from '../lib/wiki-base.js'
 const KEY = 'rivethub.wikiUrl'
 
 interface WikiSettingsState {
-  /** Datahub gateway origin, e.g. http://datahub-host. '' = unset. */
+  /** Datahub gateway origin, e.g. https://datahub-host:5174. '' = unset. */
   wikiBaseUrl: string
   setWikiBaseUrl: (url: string) => void
 }
 
 function loadStored(): string {
-  return normalizeWikiBase(localStorage.getItem(KEY) ?? '')
+  const raw = localStorage.getItem(KEY) ?? ''
+  const url = normalizeWikiBase(raw)
+  // Persist http://lan-host → https://lan-host:5174 so a later reader that
+  // skips normalize cannot send the desktop pipe at :443 again.
+  if (url && url !== raw) localStorage.setItem(KEY, url)
+  return url
 }
 
 export const useWikiSettings = create<WikiSettingsState>((set) => ({
