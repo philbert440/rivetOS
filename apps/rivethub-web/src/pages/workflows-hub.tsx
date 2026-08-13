@@ -21,6 +21,8 @@ import type {
 } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
+import { SegmentedControl } from '../components/segmented-control.js'
+import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { WorkflowContractForm } from '../components/workflow-contract-form.js'
 import { WorkflowGraph } from '../components/workflow-graph.js'
 import { WorkflowEditPanel } from '../components/workflow-edit-panel.js'
@@ -183,38 +185,6 @@ function StatusChip(props: { status: string }): JSX.Element {
   return <span className={`shrink-0 font-mono text-xs ${color}`}>{label}</span>
 }
 
-/** Timeline | Graph segment control — matches hub mono chip idiom. */
-function ViewToggle(props: {
-  value: 'timeline' | 'graph'
-  onChange: (v: 'timeline' | 'graph') => void
-}): JSX.Element {
-  const btn = (id: 'timeline' | 'graph', label: string) => {
-    const active = props.value === id
-    return (
-      <button
-        type="button"
-        onClick={() => props.onChange(id)}
-        aria-pressed={active}
-        className={`rounded px-2.5 py-1 font-mono text-[11px] ${
-          active ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
-        }`}
-      >
-        {label}
-      </button>
-    )
-  }
-  return (
-    <div
-      className="inline-flex gap-0.5 rounded border border-line p-0.5"
-      role="group"
-      aria-label="Run view"
-    >
-      {btn('timeline', 'Timeline')}
-      {btn('graph', 'Graph')}
-    </div>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // Trigger form
 // ---------------------------------------------------------------------------
@@ -239,8 +209,9 @@ export function WorkflowTriggerPage(): JSX.Element {
   const [pageMode, setPageMode] = useState<'run' | 'edit'>('run')
   /** Unsaved-edit tracking from the edit panel — guards leaving edit mode. */
   const editDirtyRef = useRef(false)
+  const discardDialog = useConfirmDialog()
   const switchMode = useCallback(
-    (next: 'run' | 'edit') => {
+    async (next: 'run' | 'edit') => {
       // Clicking the already-active chip must be a pure no-op — clearing the
       // dirty ref here would disarm the guard without any re-render to
       // re-report dirty (same-value setState bails).
@@ -248,14 +219,14 @@ export function WorkflowTriggerPage(): JSX.Element {
       if (
         pageMode === 'edit' &&
         editDirtyRef.current &&
-        !window.confirm('Discard unsaved changes?')
+        !(await discardDialog.confirm('Discard unsaved changes?'))
       ) {
         return
       }
       editDirtyRef.current = false
       setPageMode(next)
     },
-    [pageMode],
+    [pageMode, discardDialog.confirm],
   )
 
   const fields: WorkflowField[] = def.data?.workflow.input ?? []
@@ -315,6 +286,7 @@ export function WorkflowTriggerPage(): JSX.Element {
 
   return (
     <div className={`mx-auto px-6 py-8 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`}>
+      {discardDialog.element}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <Link
           to="/workflows"
@@ -323,38 +295,22 @@ export function WorkflowTriggerPage(): JSX.Element {
           ← workflows
         </Link>
         {def.data && (
-          <div
-            className="inline-flex gap-0.5 rounded border border-line p-0.5"
-            role="group"
-            aria-label="Workflow page mode"
-          >
-            <button
-              type="button"
-              aria-pressed={pageMode === 'run'}
-              onClick={() => switchMode('run')}
-              className={`rounded px-2.5 py-1 font-mono text-[11px] ${
-                pageMode === 'run' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
-              }`}
-            >
-              Run
-            </button>
-            <button
-              type="button"
-              aria-pressed={pageMode === 'edit'}
-              disabled={!editPath}
-              title={
-                editPath
+          <SegmentedControl
+            ariaLabel="Workflow page mode"
+            value={pageMode}
+            onChange={(v) => void switchMode(v)}
+            options={[
+              { value: 'run', label: 'Run' },
+              {
+                value: 'edit',
+                label: 'Edit',
+                disabled: !editPath,
+                title: editPath
                   ? `Edit files under ${editPath}`
-                  : 'Def is not under the files root — edit disabled'
-              }
-              onClick={() => editPath && switchMode('edit')}
-              className={`rounded px-2.5 py-1 font-mono text-[11px] disabled:opacity-40 ${
-                pageMode === 'edit' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
-              }`}
-            >
-              Edit
-            </button>
-          </div>
+                  : 'Def is not under the files root — edit disabled',
+              },
+            ]}
+          />
         )}
       </div>
 
@@ -510,6 +466,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
   })
 
   const [detailView, setDetailView] = useState<'timeline' | 'graph'>('timeline')
+  const killDialog = useConfirmDialog()
 
   const graph = useMemo(
     () => projectGraph(def.data?.workflow.outline, payload?.journal ?? []),
@@ -517,7 +474,8 @@ export function WorkflowRunDetailPage(): JSX.Element {
   )
 
   const onKill = async (): Promise<void> => {
-    if (!window.confirm(`Kill run “${runId}”? Child runs cascade.`)) return
+    if (!(await killDialog.confirm(`Kill run “${runId}”? Child runs cascade.`, { danger: true })))
+      return
     setKilling(true)
     setActionError(undefined)
     try {
@@ -537,6 +495,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
+      {killDialog.element}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <Link
           to="/workflows"
@@ -676,7 +635,15 @@ export function WorkflowRunDetailPage(): JSX.Element {
                   </span>
                 )}
               </h2>
-              <ViewToggle value={detailView} onChange={setDetailView} />
+              <SegmentedControl
+                ariaLabel="Run view"
+                value={detailView}
+                onChange={setDetailView}
+                options={[
+                  { value: 'timeline', label: 'Timeline' },
+                  { value: 'graph', label: 'Graph' },
+                ]}
+              />
             </div>
 
             {detailView === 'timeline' ? (

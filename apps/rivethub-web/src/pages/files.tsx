@@ -15,6 +15,7 @@ import { Select } from '../components/select.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
+import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { FileEditor } from '../components/file-editor.js'
 
 function fmtSize(bytes: number): string {
@@ -55,6 +56,7 @@ export function FilesPage(): JSX.Element {
   const [dragging, setDragging] = useState(false)
   const [notice, setNotice] = useState<Notice | undefined>()
   const [busy, setBusy] = useState(false)
+  const dialog = useConfirmDialog()
   const dragDepth = useRef(0)
 
   const listing = useQuery({
@@ -100,7 +102,7 @@ export function FilesPage(): JSX.Element {
         ok += 1
       } catch (err) {
         if (err instanceof GatewayError && err.status === 409) {
-          if (window.confirm(`${file.name} already exists — overwrite?`)) {
+          if (await dialog.confirm(`${file.name} already exists — overwrite?`)) {
             try {
               await gateway.filesUpload(path, file.name, file, { overwrite: true })
               ok += 1
@@ -125,7 +127,7 @@ export function FilesPage(): JSX.Element {
   }
 
   const mkdir = async (): Promise<void> => {
-    const name = window.prompt('New folder name')
+    const name = await dialog.prompt('New folder name')
     if (!name?.trim()) return
     setBusy(true)
     try {
@@ -140,7 +142,7 @@ export function FilesPage(): JSX.Element {
   }
 
   const renameOne = async (entry: FileEntry): Promise<void> => {
-    const next = window.prompt('Rename to', entry.name)
+    const next = await dialog.prompt('Rename to', { defaultValue: entry.name })
     if (!next?.trim() || next.trim() === entry.name) return
     const from = joinRel(path, entry.name)
     const to = joinRel(path, next.trim())
@@ -165,7 +167,7 @@ export function FilesPage(): JSX.Element {
   const deleteSelected = async (): Promise<void> => {
     const names = [...selected]
     if (names.length === 0) return
-    if (!window.confirm(`Delete ${String(names.length)} item(s)?`)) return
+    if (!(await dialog.confirm(`Delete ${String(names.length)} item(s)?`, { danger: true }))) return
     setBusy(true)
     const errors: string[] = []
     for (const name of names) {
@@ -178,7 +180,7 @@ export function FilesPage(): JSX.Element {
           err instanceof GatewayError &&
           err.status === 409 &&
           entry?.type === 'dir' &&
-          window.confirm(`${name}/ is not empty — delete recursively?`)
+          (await dialog.confirm(`${name}/ is not empty — delete recursively?`, { danger: true }))
         ) {
           try {
             await gateway.filesDelete(rel, { recursive: true })
@@ -290,6 +292,7 @@ export function FilesPage(): JSX.Element {
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropFiles}
     >
+      {dialog.element}
       {/* Breadcrumbs */}
       <div className="flex flex-wrap items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 font-mono text-xs">
         <button

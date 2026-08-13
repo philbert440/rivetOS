@@ -90,7 +90,7 @@ export function BrowseView(props: {
 
       {res.isLoading && <p className="muted pad">Loading…</p>}
       {res.error && <div className="banner bad">{res.error.message}</div>}
-      {res.data && res.data.messages.length === 0 && !res.isLoading && (
+      {res.data && res.data.messages.length === 0 && (
         <div className="empty">
           <strong>No messages match these filters</strong>
           Widen the window or drop the role / agent filter.

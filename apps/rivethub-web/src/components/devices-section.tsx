@@ -10,6 +10,7 @@ import QRCode from 'qrcode'
 import type { DeviceOpenResponse } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { useGatewayReady } from './not-connected.js'
+import { useConfirmDialog } from './confirm-dialog.js'
 
 function fmtHandshake(ms: number | null): string {
   if (!ms) return 'never'
@@ -78,6 +79,7 @@ export function DevicesSection(): JSX.Element | null {
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
   const [openEnroll, setOpenEnroll] = useState<DeviceOpenResponse | null>(null)
+  const revokeDialog = useConfirmDialog()
 
   const list = useQuery({
     queryKey: ['devices'],
@@ -115,6 +117,7 @@ export function DevicesSection(): JSX.Element | null {
 
   return (
     <section className="mt-10">
+      {revokeDialog.element}
       <h2 className="mb-1 font-mono text-base font-semibold text-em">Devices</h2>
       <p className="mb-4 text-xs text-ink-dim">
         Phones and other devices enrolled on the mesh through this node.
@@ -145,8 +148,15 @@ export function DevicesSection(): JSX.Element | null {
               </div>
               <button
                 onClick={() => {
-                  if (window.confirm(`Revoke "${d.name}"? It loses mesh access immediately.`))
-                    revoke.mutate(d.id)
+                  void (async () => {
+                    if (
+                      await revokeDialog.confirm(
+                        `Revoke "${d.name}"? It loses mesh access immediately.`,
+                        { danger: true },
+                      )
+                    )
+                      revoke.mutate(d.id)
+                  })()
                 }}
                 disabled={revoke.isPending}
                 className="rounded border border-line px-2 py-1 text-xs text-red-400 hover:border-red-400 disabled:opacity-50"

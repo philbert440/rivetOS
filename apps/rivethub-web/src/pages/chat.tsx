@@ -56,6 +56,7 @@ import {
 } from '../lib/harness-chat.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
+import { SegmentedControl } from '../components/segmented-control.js'
 import { Pencil, Square } from 'lucide-react'
 import { useSessionNames } from '../stores/session-names.js'
 
@@ -968,26 +969,22 @@ function ActiveSession(props: {
         {/* [Terminal | Chat | Den] — three views of ONE session, ordered by
             immersion (terminal is home); the bar stays visible so the den
             never takes over with no way back. */}
-        <span className="flex shrink-0 overflow-hidden rounded-md border border-line">
-          <button
-            onClick={enterTerminal}
-            className={`px-2.5 py-1 font-mono text-[11px] ${mode === 'terminal' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
-          >
-            Terminal
-          </button>
-          <button
-            onClick={() => setMode('chat')}
-            className={`border-l border-line px-2.5 py-1 font-mono text-[11px] ${mode === 'chat' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
-          >
-            Chat
-          </button>
-          <button
-            onClick={() => setMode('den')}
-            title="the den for this conversation"
-            className={`border-l border-line px-2.5 py-1 font-mono text-[11px] ${mode === 'den' ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'}`}
-          >
-            ▦ Den
-          </button>
+        <span className="shrink-0">
+          <SegmentedControl
+            ariaLabel="Session view"
+            value={mode}
+            onChange={(v) => {
+              // Terminal goes through enterTerminal: a parked ('failed')
+              // spawn gate re-arms the spawn effect.
+              if (v === 'terminal') enterTerminal()
+              else setMode(v)
+            }}
+            options={[
+              { value: 'terminal', label: 'Terminal' },
+              { value: 'chat', label: 'Chat' },
+              { value: 'den', label: '▦ Den', title: 'the den for this conversation' },
+            ]}
+          />
         </span>
       </div>
       {mode === 'chat' ? (
