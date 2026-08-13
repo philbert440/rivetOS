@@ -1,37 +1,39 @@
 import type { JSX } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Bell } from 'lucide-react'
+import { Bell, Folder, Library, ListChecks, MessageSquare, Settings, Workflow } from 'lucide-react'
 import { useNotifications } from '../stores/notifications.js'
 import { NodeSwitcher } from './node-switcher.js'
 import { DenBot } from './den-bot.js'
 
 /** Primary views — top of the rail. Conversations first; Memory and Files
  *  next as the day-to-day workspace. Terminal / Den stay routable for deep
- *  links but are no longer in the rail (immersive surfaces, rarely the entry). */
+ *  links but are no longer in the rail (immersive surfaces, rarely the entry).
+ *  Lucide icons match the TenPAL rail. */
 const PRIMARY_NAV = [
-  { to: '/', label: 'Conversations', icon: '💬' },
-  { to: '/memory', label: 'Memory', icon: '◈' },
-  { to: '/files', label: 'Files', icon: '▤' },
+  { to: '/', label: 'Conversations', icon: MessageSquare },
+  { to: '/memory', label: 'Memory', icon: Library },
+  { to: '/files', label: 'Files', icon: Folder },
 ] as const
 
 /** Ops tools — below the separator. */
 const SECONDARY_NAV = [
-  { to: '/tasks', label: 'Tasks', icon: '☑' },
-  { to: '/workflows', label: 'Workflows', icon: '⬡' },
+  { to: '/tasks', label: 'Tasks', icon: ListChecks },
+  { to: '/workflows', label: 'Workflows', icon: Workflow },
 ] as const
 
-const SETTINGS = { to: '/settings', label: 'Settings', icon: '⚙' } as const
+const SETTINGS = { to: '/settings', label: 'Settings', icon: Settings } as const
 
-function NavLink(props: { to: string; label: string; icon: string }): JSX.Element {
+function NavLink(props: { to: string; label: string; icon: typeof MessageSquare }): JSX.Element {
+  const Icon = props.icon
   return (
     <Link
       to={props.to}
-      className="rounded px-3 py-2 text-sm"
+      className="flex items-center rounded px-3 py-2 text-sm"
       activeProps={{ className: 'bg-panel-2 text-em' }}
       inactiveProps={{ className: 'text-ink-dim hover:bg-panel-2 hover:text-ink' }}
       activeOptions={{ exact: props.to === '/' }}
     >
-      <span className="mr-2 inline-block w-5 text-center font-mono">{props.icon}</span>
+      <Icon className="mr-2 size-4 shrink-0" aria-hidden />
       {props.label}
     </Link>
   )
