@@ -68,6 +68,15 @@ matter which node is active.
 - Because the dist is bundled, web updates now ship with a shell rebuild
   — this binary is only as fresh as its last build.
 
+## CSP: the broad `frame-src` is deliberate
+
+`tauri.conf.json` sets `frame-src http: https:`. The Den feature embeds
+node-served pages in iframes (`dens.tsx`, and chat's den mode in
+`chat.tsx`), and those iframe srcs are gateway URLs — plain http on the
+LAN, or the shell's 127.0.0.1 mTLS pipe for https nodes. Tightening to
+`'self'` would blank every Den. tauri.conf.json is plain JSON (no
+comments), so the rationale lives here.
+
 ## Not in v1
 
 Auto-update of the native shell itself (needs signing/update-server infra —
