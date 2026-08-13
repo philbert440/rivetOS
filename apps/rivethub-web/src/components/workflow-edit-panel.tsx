@@ -10,6 +10,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { WorkflowDiagnostic, WorkflowField } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { FileEditor } from './file-editor.js'
+import { Select } from './select.js'
 import { baseName, joinRel } from '../lib/files-ui.js'
 import {
   agentFieldsFromConfig,
@@ -614,17 +615,16 @@ function FieldTable(props: {
               onChange={(e) => props.onChange(i, { name: e.target.value })}
               placeholder="name"
             />
-            <select
-              className="rounded border border-line bg-panel-2 px-1 py-0.5 font-mono text-xs"
+            <Select
               value={f.type}
-              onChange={(e) => props.onChange(i, { type: e.target.value as WorkflowField['type'] })}
-            >
-              {['string', 'number', 'boolean', 'json', 'file'].map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
+              title="type"
+              className="min-w-[5rem]"
+              onChange={(v) => props.onChange(i, { type: v as WorkflowField['type'] })}
+              options={['string', 'number', 'boolean', 'json', 'file'].map((t) => ({
+                value: t,
+                label: t,
+              }))}
+            />
             <label className="flex items-center gap-1 font-mono text-[10px] text-ink-dim">
               <input
                 type="checkbox"

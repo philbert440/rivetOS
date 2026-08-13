@@ -1,6 +1,8 @@
 import { useState, type JSX } from 'react'
 import type { MemorySearchResponse } from '@rivetos/types'
 import type { RivetGateway } from '@rivetos/gateway-client'
+import { Select } from '../components/select.js'
+import { Button } from '../components/ui/button.js'
 import { preview, relativeTime } from './format.js'
 import { useAsync } from './use-async.js'
 
@@ -37,20 +39,24 @@ export function SearchView(props: {
           placeholder="Search messages and summaries…"
           onChange={(e) => setInput(e.target.value)}
         />
-        <select
+        <Select
           value={scope}
-          onChange={(e) => setScope(e.target.value as typeof scope)}
-          aria-label="scope"
-        >
-          <option value="both">everything</option>
-          <option value="messages">messages</option>
-          <option value="summaries">summaries</option>
-        </select>
+          title="scope"
+          label="Scope"
+          onChange={(v) => setScope(v as typeof scope)}
+          options={[
+            { value: 'both', label: 'everything' },
+            { value: 'messages', label: 'messages' },
+            { value: 'summaries', label: 'summaries' },
+          ]}
+        />
         <label className="small check">
           <input type="checkbox" checked={verbose} onChange={(e) => setVerbose(e.target.checked)} />
           scores
         </label>
-        <button type="submit">Search</button>
+        <Button type="submit" size="sm">
+          Search
+        </Button>
       </form>
 
       {!query && (

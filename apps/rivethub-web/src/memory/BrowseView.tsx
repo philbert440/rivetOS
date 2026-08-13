@@ -1,6 +1,8 @@
 import { useState, type JSX } from 'react'
 import type { MemoryBrowseResponse } from '@rivetos/types'
 import type { RivetGateway } from '@rivetos/gateway-client'
+import { Select } from '../components/select.js'
+import { Button } from '../components/ui/button.js'
 import { preview, relativeTime, roleClass, shortTime } from './format.js'
 import { useAsync } from './use-async.js'
 
@@ -33,36 +35,52 @@ export function BrowseView(props: {
           res.reload()
         }}
       >
-        <select value={role} onChange={(e) => setRole(e.target.value)} aria-label="role">
-          <option value="">all roles</option>
-          <option value="user">user</option>
-          <option value="assistant">assistant</option>
-          <option value="tool">tool</option>
-          <option value="system">system</option>
-        </select>
+        <Select
+          value={role}
+          title="role"
+          label="Role"
+          onChange={setRole}
+          options={[
+            { value: '', label: 'all roles' },
+            { value: 'user', label: 'user' },
+            { value: 'assistant', label: 'assistant' },
+            { value: 'tool', label: 'tool' },
+            { value: 'system', label: 'system' },
+          ]}
+        />
         <input
           type="text"
           value={agent}
           placeholder="agent (optional)"
           onChange={(e) => setAgent(e.target.value)}
         />
-        <select value={window} onChange={(e) => setWindow(e.target.value)} aria-label="window">
-          <option value="">any time</option>
-          <option value="today">today</option>
-          <option value="yesterday">yesterday</option>
-          <option value="last_7d">last 7 days</option>
-          <option value="last_14d">last 14 days</option>
-        </select>
-        <select
-          value={limit}
-          onChange={(e) => setLimit(Number(e.target.value))}
-          aria-label="limit"
-        >
-          <option value={25}>25</option>
-          <option value={50}>50</option>
-          <option value={100}>100</option>
-        </select>
-        <button type="submit">Refresh</button>
+        <Select
+          value={window}
+          title="window"
+          label="Window"
+          onChange={setWindow}
+          options={[
+            { value: '', label: 'any time' },
+            { value: 'today', label: 'today' },
+            { value: 'yesterday', label: 'yesterday' },
+            { value: 'last_7d', label: 'last 7 days' },
+            { value: 'last_14d', label: 'last 14 days' },
+          ]}
+        />
+        <Select
+          value={String(limit)}
+          title="limit"
+          label="Limit"
+          onChange={(v) => setLimit(Number(v))}
+          options={[
+            { value: '25', label: '25' },
+            { value: '50', label: '50' },
+            { value: '100', label: '100' },
+          ]}
+        />
+        <Button type="submit" size="sm" variant="outline">
+          Refresh
+        </Button>
       </form>
 
       {res.loading && <p className="muted pad">Loading…</p>}
