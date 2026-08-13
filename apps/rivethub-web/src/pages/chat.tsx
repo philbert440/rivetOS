@@ -18,7 +18,7 @@
  * The split is per-session and automatic; there is no mode to pick.
  */
 
-import { useEffect, useRef, useState, type JSX } from 'react'
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useSearch } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApprovalDecision, HarnessSessionSummary, SessionMessage } from '@rivetos/types'
@@ -146,14 +146,18 @@ export function ChatPage(): JSX.Element {
   // socket would stay on the pre-pipe gateway (which cannot authenticate)
   // for the whole session. Same-identity reconnects preserve chat state.
   const transportEpoch = useConnection((s) => s.transportEpoch)
-  const chat = useChat()
+  // Fine-grained selectors, NOT `useChat()`: subscribing the page to the
+  // whole store would re-render the drawer + session view on every streaming
+  // frame of the active turn.
+  const connect = useChat((s) => s.connect)
+  const drafts = useChat((s) => s.drafts)
 
   // One socket for the whole page; reconnect (and reset per-gateway state)
   // when the endpoint identity changes.
   useEffect(() => {
-    chat.connect(baseUrl)
+    connect(baseUrl)
     return () => useChat.getState().disconnect()
-  }, [baseUrl, transportEpoch])
+  }, [baseUrl, transportEpoch, connect])
 
   const connected = useGatewayReady()
   // The drawer lists the node's harness sessions straight from their on-disk
@@ -240,11 +244,15 @@ export function ChatPage(): JSX.Element {
     // changes. transportEpoch rebinds it onto the mTLS pipe gateway.
   }, [connected, hasDrivers, baseUrl, transportEpoch, queryClient, descriptors?.length])
 
-  const items = chatItems({
-    drafts: chat.drafts,
-    harnessSessions: planeQuery.data ?? [],
-    legacySessions: harnessQuery.data?.sessions ?? [],
-  })
+  const items = useMemo(
+    () =>
+      chatItems({
+        drafts,
+        harnessSessions: planeQuery.data ?? [],
+        legacySessions: harnessQuery.data?.sessions ?? [],
+      }),
+    [drafts, planeQuery.data, harnessQuery.data?.sessions],
+  )
   const active = useChat((s) => s.active)
   const setActive = useChat((s) => s.setActive)
   const { session: sessionFromUrl } = useSearch({ from: '/' })
@@ -933,10 +941,21 @@ function ActiveSession(props: {
     return !!(L && (L.text || L.tools.length > 0 || L.reasoningText))
   })
   const lastMsg = messages.at(-1)
-  const shownMessages =
-    liveBusy && lastMsg?.role === 'assistant' && lastMsg.id.startsWith('harness:')
-      ? messages.slice(0, -1)
-      : messages
+  const shownMessages = useMemo(
+    () =>
+      liveBusy && lastMsg?.role === 'assistant' && lastMsg.id.startsWith('harness:')
+        ? messages.slice(0, -1)
+        : messages,
+    [liveBusy, lastMsg, messages],
+  )
+  // Memoized per-render derivations: ContextBar / Transcript re-render on
+  // identity, and a fresh array each frame would defeat that on every
+  // streaming tick.
+  const transcriptTexts = useMemo(() => messages.map((m) => m.text), [messages])
+  const outboundStatus = useMemo(
+    () => Object.fromEntries(outbound.map((o) => [o.id, o.status])),
+    [outbound],
+  )
 
   // Capability-gated affordances. `canInterrupt` is the driver's own flag —
   // hidden rather than shown-and-501'd when the node has no interrupt path.
@@ -994,7 +1013,7 @@ function ActiveSession(props: {
           model={
             contextSource?.model || lastAssistant?.model || settings?.agent || props.harnessCommand
           }
-          transcriptTexts={messages.map((m) => m.text)}
+          transcriptTexts={transcriptTexts}
         />
         {/* Interrupt is the driver's capability, not a UI preference: shown
             only when the control plane owns this session AND reports one. */}
@@ -1040,7 +1059,7 @@ function ActiveSession(props: {
             messages={shownMessages}
             accent={harnessAccent(props.harnessCommand ?? settings?.agent)}
             live={live}
-            outbound={Object.fromEntries(outbound.map((o) => [o.id, o.status]))}
+            outbound={outboundStatus}
             onInjectOutbound={onInjectOutbound}
             onCancelOutbound={onCancelOutbound}
           />
