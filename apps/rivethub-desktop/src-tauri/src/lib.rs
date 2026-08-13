@@ -129,7 +129,11 @@ pub fn run() {
             app.manage(proxy::ProxyState::new(identity_dir));
             // Registration can fail silently when another app owns the
             // combo (the plugin swallows per-shortcut conflicts) — summon
-            // just "doesn't work" with no signal. Verify and at least say so.
+            // just "doesn't work" with no signal. Verify and say so: stderr
+            // for whoever launched from a terminal, and the tray tooltip for
+            // the GUI case, where a dead summon is otherwise indistinguishable
+            // from "app is broken".
+            let mut failed_shortcuts: Vec<&str> = Vec::new();
             {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 for (combo, label) in [
@@ -147,9 +151,21 @@ pub fn run() {
                             "RivetHub: global shortcut {label} was NOT registered — \
                              another application probably owns it"
                         );
+                        failed_shortcuts.push(label);
                     }
                 }
             }
+            // Base tooltip: the unread mirror below rebuilds from this, so a
+            // shortcut-conflict warning survives unread-count changes instead
+            // of being overwritten by the first rivethub:unread event.
+            let base_tip = if failed_shortcuts.is_empty() {
+                "RivetHub".to_string()
+            } else {
+                format!(
+                    "RivetHub — shortcut conflict: {} not registered",
+                    failed_shortcuts.join(", ")
+                )
+            };
             let show = MenuItem::with_id(app, "show", "Show RivetHub", true, None::<&str>)?;
             // no accelerator hint: the real binding is the global Ctrl+Shift+N
             // (registered above); a "CmdOrCtrl+N" hint here would mislead.
@@ -160,7 +176,7 @@ pub fn run() {
 
             let tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().expect("bundled icon").clone())
-                .tooltip("RivetHub")
+                .tooltip(&base_tip)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -195,9 +211,9 @@ pub fn run() {
                         .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
                         .unwrap_or(0);
                     let tip = if count == 0 {
-                        "RivetHub".to_string()
+                        base_tip.clone()
                     } else {
-                        format!("RivetHub — {count} unread")
+                        format!("{base_tip} — {count} unread")
                     };
                     let _ = tray.set_tooltip(Some(&tip));
                 });

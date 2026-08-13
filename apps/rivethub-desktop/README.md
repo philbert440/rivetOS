@@ -38,8 +38,8 @@ and the generated `gen/` are gitignored.
   RivetHub window over the same app; each has its own view (own active
   conversation), sharing the node roster via localStorage.
 - **Global shortcut** — `Ctrl+Shift+R` toggles the main window from anywhere.
-  Registration failures (another app owns the combo) are logged to stderr
-  instead of failing silently.
+  Registration failures (another app owns the combo) are surfaced in the tray
+  tooltip and logged to stderr instead of failing silently.
 - **Single instance** — launching the AppImage again summons the existing
   window instead of spawning a second tray.
 - **Notifications** — the web app feature-detects `window.__TAURI__`
