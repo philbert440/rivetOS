@@ -139,6 +139,25 @@ describeIf('WikiIndex (PG)', () => {
     })
     expect(byEntity.match?.slug).toBe('deckard-40b')
     expect(byEntity.reason).toBe('entity')
+
+    // Prefer the topic with the larger entity intersection (regression for
+    // `text[] & text[]` — that operator does not exist; ranking must use
+    // unnest/ANY). Two parents share one entity; only one shares both.
+    await index.upsertTopic(
+      applyPatch(undefined, {
+        action: 'create',
+        slug: 'deckard-40b-fp8',
+        title: 'Deckard 40B FP8',
+        addEntities: ['model:deckard-40b', 'host:pve3'],
+        currentState: 'FP8 variant on pve3.',
+        verifiedAt: '2026-07-07T00:00:00Z',
+      }),
+    )
+    const richerEntity = await index.resolveTopicIdentity('session-shaped-extract', {
+      entities: ['model:deckard-40b', 'host:pve3'],
+    })
+    expect(richerEntity.match?.slug).toBe('deckard-40b-fp8')
+    expect(richerEntity.reason).toBe('entity')
   })
 
   it('provenance + extraction idempotency roundtrip', async () => {
