@@ -11,12 +11,8 @@ interface DialogRequest {
 }
 
 /**
- * Themed confirm/prompt dialogs on Rivet tokens.
- *
- * **Not** `window.confirm` / `window.prompt`: WebKitGTK (desktop shell)
- * paints native GTK message boxes that ignore our CSS and look like OS
- * chrome — the same argument select.tsx makes for dropdowns. Promise-based,
- * so call sites keep their sequential `if (await confirm(...))` shape.
+ * Themed Promise dialogs because `window.confirm` / `window.prompt` paint
+ * native GTK message boxes in the desktop shell.
  */
 export function useConfirmDialog(): {
   confirm: (message: string, opts?: { confirmLabel?: string; danger?: boolean }) => Promise<boolean>
