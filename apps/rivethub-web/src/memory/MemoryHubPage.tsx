@@ -49,7 +49,7 @@ export function MemoryHubPage(): JSX.Element {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <MemoryHubNav tab={tab} gateway={endpoint.gateway} />
+      <MemoryHubNav tab={tab} gateway={endpoint.gateway} baseUrl={endpoint.baseUrl} />
       <div className="min-h-0 flex-1 overflow-y-auto">
         {tab === 'wiki' ? (
           <div className="rivet-memory-surfaces min-h-full">

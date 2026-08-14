@@ -523,7 +523,7 @@ export function MemoryTopicPage(): JSX.Element {
 
   const wrap = (inner: JSX.Element): JSX.Element => (
     <div className="flex h-full min-h-0 flex-col">
-      <MemoryHubNav tab="wiki" gateway={endpoint.gateway} />
+      <MemoryHubNav tab="wiki" gateway={endpoint.gateway} baseUrl={endpoint.baseUrl} />
       <div className="min-h-0 flex-1 overflow-hidden">{inner}</div>
     </div>
   )

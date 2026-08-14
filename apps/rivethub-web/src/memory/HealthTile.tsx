@@ -3,16 +3,21 @@ import { useQuery } from '@tanstack/react-query'
 import type { RivetGateway } from '@rivetos/gateway-client'
 import { compactNumber } from './format.js'
 
-export function HealthTile(props: { gateway: RivetGateway; compact?: boolean }): JSX.Element {
-  // Keyed on the gateway's own base — the tile is mounted by MemoryHubNav
-  // with the datahub endpoint's client, not the chat node's.
-  const baseUrl = props.gateway.config.baseUrl
+export function HealthTile(props: {
+  gateway: RivetGateway
+  /** Datahub identity (endpoint.baseUrl) — the query key, same as
+   *  Search/Browse/Stats. NOT gateway.config.baseUrl: on desktop that is the
+   *  mTLS loopback pipe, a transport detail that would split the cache (and
+   *  collide two wiki identities sharing one pipe). */
+  baseUrl: string
+  compact?: boolean
+}): JSX.Element {
   const health = useQuery({
-    queryKey: ['memory-health', baseUrl],
+    queryKey: ['memory-health', props.baseUrl],
     queryFn: ({ signal }) => props.gateway.memoryHealth(signal),
   })
   const stats = useQuery({
-    queryKey: ['memory-stats', baseUrl],
+    queryKey: ['memory-stats', props.baseUrl],
     queryFn: ({ signal }) => props.gateway.memoryStats(signal),
   })
 
