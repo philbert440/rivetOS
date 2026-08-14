@@ -155,18 +155,16 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
       view.destroy()
       viewRef.current = null
     }
-    // mount once; path/theme updates apply via compartments below
+    // mount once; path updates apply via compartments below
   }, [])
 
-  // Language / theme / editable compartments
+  // Language / editable compartments
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
     view.dispatch({
       effects: [
         langComp.current.reconfigure(langExtension(languageForPath(path))),
-        // Dark-only app: oneDark is the single theme path.
-        themeComp.current.reconfigure(oneDark),
         editableComp.current.reconfigure(EditorView.editable.of(!readOnly)),
       ],
     })
