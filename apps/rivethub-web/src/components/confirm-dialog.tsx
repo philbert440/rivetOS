@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type JSX } from 'react'
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 
 interface DialogRequest {
   kind: 'confirm' | 'prompt'
@@ -75,6 +75,51 @@ export function useConfirmDialog(): {
   // undefined for prompt (matching `window.prompt`'s null).
   const cancelValue = current?.kind === 'confirm' ? false : undefined
 
+  const dialogRef = useRef<HTMLFormElement | null>(null)
+
+  // Focus on open (and on each queued dialog's promotion): the prompt input,
+  // else the submit/danger button — Enter confirms and Escape cancels without
+  // a click into the dialog first (the common path for delete/kill/revoke).
+  useEffect(() => {
+    if (!current) return
+    const el = dialogRef.current
+    const target =
+      current.kind === 'prompt'
+        ? el?.querySelector('input')
+        : el?.querySelector<HTMLElement>('button[type="submit"]')
+    target?.focus()
+  }, [current])
+
+  // Document-level keys: the dialog claims aria-modal exclusivity, so Escape
+  // cancels and Tab cycles within it even when focus never landed inside.
+  useEffect(() => {
+    if (!current) return
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        settle(current.kind === 'confirm' ? false : undefined)
+        return
+      }
+      if (e.key !== 'Tab') return
+      e.preventDefault()
+      const el = dialogRef.current
+      const focusables = el
+        ? Array.from(el.querySelectorAll<HTMLElement>('input, button')).filter(
+            (n) => !n.hasAttribute('disabled'),
+          )
+        : []
+      if (focusables.length === 0) return
+      const idx = focusables.indexOf(document.activeElement as HTMLElement)
+      const next =
+        idx === -1
+          ? focusables[e.shiftKey ? focusables.length - 1 : 0]
+          : focusables[(idx + (e.shiftKey ? -1 : 1) + focusables.length) % focusables.length]
+      next?.focus()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [current, settle])
+
   const element = current ? (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
@@ -82,14 +127,13 @@ export function useConfirmDialog(): {
       onClick={() => settle(cancelValue)}
     >
       <form
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={current.message}
+        tabIndex={-1}
         className="w-80 rounded-md border border-line bg-panel p-4 shadow-lg"
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') settle(cancelValue)
-        }}
         onSubmit={(e) => {
           e.preventDefault()
           settle(current.kind === 'prompt' ? input : true)
@@ -98,7 +142,6 @@ export function useConfirmDialog(): {
         <p className="mb-3 text-sm text-ink">{current.message}</p>
         {current.kind === 'prompt' && (
           <input
-            autoFocus
             value={input}
             onChange={(e) => setInput(e.target.value)}
             className="mb-3 w-full rounded border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none focus:border-em"
