@@ -83,24 +83,41 @@ export interface OutboundPumpOptions {
 export interface OutboundPump {
   pump(opts?: { forceId?: string; interrupt?: boolean }): Promise<void>
   /**
-   * Drop the single-flight latch. The latch is what stops a cancelled
-   * in-flight item's settled promise from double-pumping — the cancel path
-   * clears it and re-pumps for the rest of the queue.
+   * Drop the single-flight latch — but only when `id` is the in-flight send.
+   * The latch is what stops a second inject during the post-inject settle
+   * window: by then the item is already dequeued, so a cancel of any OTHER
+   * queued bubble must not clear it (that was the double-inject hole). When
+   * the id IS the in-flight send, the generation bump orphans that pump()'s
+   * trailing store writes so the cancel path's re-pump starts clean.
    */
-  reset(): void
-  /** Release the pending retry timer (unmount). */
+  reset(id: string): void
+  /**
+   * Terminal teardown (the pump is never pumped again): abort the latch loop
+   * and the pending retry. A superseded pump() skips its trailing clearLive /
+   * drain-pump — they belong to the generation that got torn down.
+   */
   dispose(): void
 }
 
 export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
   const { sessionId, store } = opts
   let pumping = false
+  /** Id of the send between markSending and inject resolution — the only
+   *  item `reset(id)` will free the latch for. Undefined during the latch
+   *  window (the item is dequeued by then; its bubble is gone). */
+  let inFlight: string | undefined
+  /** Bumped by reset/dispose. A pump() that finds its generation superseded
+   *  aborts the latch loop and skips every trailing store write — `pumping`
+   *  and `inFlight` may already belong to a NEWER pump() by then. */
+  let generation = 0
+  /** Terminal: a disposed pump never pumps again. */
+  let disposed = false
   /** `turn_in_flight` attempts per queued turn, and the one pending retry. */
   const turnRetries = new Map<string, number>()
   let retryTimer: ReturnType<typeof setTimeout> | undefined
 
   const pump = async (pumpOpts?: { forceId?: string; interrupt?: boolean }): Promise<void> => {
-    if (pumping) return
+    if (disposed || pumping) return
     const q = store.queue(sessionId) ?? []
     if (!pumpOpts?.forceId && q.some((o) => o.status === 'sending')) return
     // Real stream in flight → wait (unless user force-injects a specific id).
@@ -111,22 +128,33 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
     if (!next) return
 
     pumping = true
+    inFlight = next.id
+    const gen = generation
+    const superseded = (): boolean => gen !== generation
     store.markSending(sessionId, next.id)
     store.beginLive(sessionId, 'working…')
     try {
       await opts.inject(next.text, pumpOpts?.interrupt === true)
+      // Cancelled/disposed mid-inject: a newer generation owns `pumping` and
+      // the live slot — leave both alone.
+      if (superseded()) return
       store.dequeue(sessionId, next.id)
       turnRetries.delete(next.id)
+      inFlight = undefined
       // Hold the pump until the harness's stream latches busy (see header).
       const deadline = Date.now() + INJECT_LATCH_MS
       while (Date.now() < deadline && !store.liveIsBusy(sessionId)) {
         await new Promise((r) => setTimeout(r, LATCH_POLL_MS))
+        if (superseded()) return
       }
       if (!store.liveIsBusy(sessionId)) {
         store.clearLive(sessionId)
       }
     } catch (err) {
+      // Superseded first: `pumping` / `inFlight` may be a newer pump()'s.
+      if (superseded()) return
       pumping = false
+      inFlight = undefined
       if (opts.isTurnInFlight(err)) {
         // Not a failure: put the turn back in the queue (bubble intact) and
         // let the retry timer / next live change pick it up.
@@ -164,10 +192,21 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
 
   return {
     pump,
-    reset: () => {
+    reset: (id) => {
+      // Only the in-flight send's own cancel frees the latch — cancelling an
+      // already-dequeued (latch-window) or never-started item must not, or a
+      // cancel of a queued bubble would re-arm the pump inside the very
+      // window the latch exists to protect.
+      if (id !== inFlight) return
+      generation += 1
+      inFlight = undefined
       pumping = false
     },
     dispose: () => {
+      disposed = true
+      generation += 1
+      inFlight = undefined
+      pumping = false
       if (retryTimer) clearTimeout(retryTimer)
     },
   }

@@ -85,6 +85,47 @@ const pumpStore: OutboundPumpStore = {
   clearLive: (sid) => useChat.getState().clearLive(sid),
 }
 
+type InjectSink = (text: string, interrupt: boolean) => Promise<void>
+
+/**
+ * One outbound pump per conversation, for the app lifetime. ActiveSession
+ * remounts on every session switch (it is keyed by session id), and a
+ * per-mount pump drops the single-flight/inject latch — the only
+ * double-inject guard — exactly in the window it exists to protect: the old
+ * pump keeps latching (its trailing clearLive nukes whatever the new pump
+ * started) while the new pump sees a non-busy placeholder and injects
+ * (PR #507 review). The view rebinds the inject sink on every (re)mount;
+ * nothing disposes these (dispose is the terminal teardown, exercised by the
+ * pump tests).
+ */
+const outboundPumps = new Map<string, { pump: OutboundPump; sink: { current: InjectSink } }>()
+
+function outboundPumpFor(sessionId: string): {
+  pump: OutboundPump
+  sink: { current: InjectSink }
+} {
+  let entry = outboundPumps.get(sessionId)
+  if (!entry) {
+    // Rejects until a mounted view binds its inject: a pump firing with no
+    // view (a retry timer outliving the component) must fail the bubble
+    // visibly, never report a silent success and drop the message.
+    const sink: { current: InjectSink } = {
+      current: () => Promise.reject(new Error('no mounted session view')),
+    }
+    entry = {
+      sink,
+      pump: createOutboundPump({
+        sessionId,
+        store: pumpStore,
+        inject: (text, interrupt) => sink.current(text, interrupt),
+        isTurnInFlight,
+      }),
+    }
+    outboundPumps.set(sessionId, entry)
+  }
+  return entry
+}
+
 // A draft id IS a UUID so it can become the harness's native session id
 // (claude --session-id requires a UUID). It stays bare until the control plane
 // adopts the session and hands back a canonical `<harness-id>:<uuid>`.
@@ -758,8 +799,10 @@ function ActiveSession(props: {
   // Seamless chat send: enqueue + serial inject. The queue is visible in the
   // transcript (queued / sending badges + inject/cancel). The pump itself —
   // single-flight latch, inject latch, turn_in_flight backoff, stale-turn
-  // release — is lib/outbound-pump.ts; injectRef keeps it on the latest
-  // injectOne closure (gate/canonicalId change between renders).
+  // release — is lib/outbound-pump.ts and lives in the module-level registry
+  // above so the latch survives this component's remounts; the sink rebind
+  // keeps it on the latest injectOne closure (gate/canonicalId change
+  // between renders AND between mounts).
   const enqueueOutbound = useChat((s) => s.enqueueOutbound)
   const cancelOutbound = useChat((s) => s.cancelOutbound)
   const clearLive = useChat((s) => s.clearLive)
@@ -768,22 +811,7 @@ function ActiveSession(props: {
   const pendingAsk = useChat((s) => s.ask[props.sessionId])
   const dismissAsk = useChat((s) => s.dismissAsk)
   const composerRef = useRef<ComposerHandle | null>(null)
-  const injectRef = useRef<(text: string, interrupt: boolean) => Promise<void>>(() =>
-    Promise.resolve(),
-  )
-  const pumpRef = useRef<OutboundPump | null>(null)
-  pumpRef.current ??= createOutboundPump({
-    sessionId: props.sessionId,
-    store: pumpStore,
-    inject: (text, interrupt) => injectRef.current(text, interrupt),
-    isTurnInFlight,
-  })
-  useEffect(
-    () => () => {
-      pumpRef.current?.dispose()
-    },
-    [],
-  )
+  const pumpEntry = outboundPumpFor(props.sessionId)
 
   // Ask card content: the live turn's ask tool wins (question just streamed
   // in); after the turn ends the store's stashed copy keeps the card up until
@@ -830,10 +858,10 @@ function ActiveSession(props: {
     }
   }
 
-  injectRef.current = injectOne
+  pumpEntry.sink.current = injectOne
 
   const pumpOutbound = (opts?: { forceId?: string; interrupt?: boolean }): Promise<void> =>
-    pumpRef.current!.pump(opts)
+    pumpEntry.pump.pump(opts)
 
   // When a live turn ends (or the queue grows while idle), inject the next.
   useEffect(() => {
@@ -871,11 +899,11 @@ function ActiveSession(props: {
     const item = useChat.getState().outbound[props.sessionId]?.find((o) => o.id === id)
     cancelOutbound(props.sessionId, id)
     if (item?.text) composerRef.current?.prepend(item.text)
-    // If we cancelled the in-flight item, free the pump.
-    if (!useChat.getState().outbound[props.sessionId]?.some((o) => o.status === 'sending')) {
-      pumpRef.current?.reset()
-      void pumpOutbound().catch(() => undefined)
-    }
+    // Free the pump only when the cancelled id IS the in-flight send — the
+    // pump itself decides (a cancel of another queued bubble must not drop
+    // the inject latch). The re-pump no-ops while the latch holds.
+    pumpEntry.pump.reset(id)
+    void pumpOutbound().catch(() => undefined)
   }
 
   // While a live turn streams, the store may already carry its partial solid

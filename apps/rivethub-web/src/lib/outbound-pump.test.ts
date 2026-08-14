@@ -171,6 +171,127 @@ describe('createOutboundPump', () => {
     expect(injects).toBe(TURN_RETRY_ATTEMPTS + 1)
     expect(s.items).toEqual([queued('a')])
   })
+
+  it('keeps the inject latch when a DIFFERENT queued item is cancelled mid-latch', async () => {
+    const s = fakeStore()
+    s.items = [queued('a'), queued('b'), queued('c')]
+    const injected: string[] = []
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: (text) => {
+        injected.push(text)
+        return Promise.resolve()
+      },
+      isTurnInFlight: () => false,
+    })
+    const p = pump.pump()
+    // 'a' injected, item dequeued, pump inside the 6s latch window.
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(injected).toEqual(['a'])
+    // The reviewed hole: onCancelOutbound('b') finds no 'sending' row (a's
+    // item is already dequeued) and used to reset() + re-pump, injecting 'c'
+    // inside the latch window. reset() must no-op for any id but the
+    // in-flight send's, and the re-pump must bounce off the latch.
+    s.items = s.items.filter((o) => o.id !== 'b') // cancelOutbound
+    pump.reset('b')
+    void pump.pump().catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(injected).toEqual(['a'])
+    // Once the latch expires (nothing ever latched busy), the placeholder
+    // drops and the queue drains — 'c' injects then, not before.
+    await vi.advanceTimersByTimeAsync(20_000)
+    await p
+    expect(injected).toEqual(['a', 'c'])
+    expect(s.items).toEqual([])
+  })
+
+  it('reset() of the in-flight id frees the pump and orphans its trailing writes', async () => {
+    const s = fakeStore()
+    s.items = [queued('a'), queued('b')]
+    const injected: string[] = []
+    let resolveA!: () => void
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: (text) => {
+        injected.push(text)
+        if (text === 'a') {
+          return new Promise<void>((r) => {
+            resolveA = r
+          })
+        }
+        return Promise.resolve()
+      },
+      isTurnInFlight: () => false,
+    })
+    const p = pump.pump()
+    expect(injected).toEqual(['a']) // 'a' sending, inject still pending
+    // Cancel the in-flight send itself: the store drops it, reset('a') frees
+    // the latch, and the cancel path's re-pump picks up 'b' immediately.
+    s.items = s.items.filter((o) => o.id !== 'a') // cancelOutbound
+    pump.reset('a')
+    void pump.pump().catch(() => undefined)
+    expect(injected).toEqual(['a', 'b'])
+    // When the orphaned inject finally settles, its trailing dequeue /
+    // clearLive / drain must NOT run — they belong to the superseded
+    // generation and would clobber the turn the new pump just started.
+    resolveA()
+    await vi.advanceTimersByTimeAsync(20_000)
+    await p
+    expect(s.calls).not.toContain('dequeue:a')
+    expect(injected).toEqual(['a', 'b'])
+    expect(s.items).toEqual([])
+  })
+
+  it('dispose() aborts the latch loop — no trailing clearLive, no drain — and is terminal', async () => {
+    const s = fakeStore()
+    s.items = [queued('a'), queued('b')]
+    const injected: string[] = []
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: (text) => {
+        injected.push(text)
+        return Promise.resolve()
+      },
+      isTurnInFlight: () => false,
+    })
+    const p = pump.pump()
+    await vi.advanceTimersByTimeAsync(1_000) // 'a' injected, inside the latch
+    expect(injected).toEqual(['a'])
+    pump.dispose()
+    await vi.advanceTimersByTimeAsync(20_000)
+    await p
+    // The latch's trailing clearLive and the drain-pump are skipped…
+    expect(injected).toEqual(['a'])
+    expect(s.calls).not.toContain('clearLive')
+    expect(s.items).toEqual([queued('b')])
+    // …and a disposed pump never pumps again.
+    await pump.pump()
+    expect(injected).toEqual(['a'])
+  })
+
+  it('dispose() cancels a pending turn_in_flight retry', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    let injects = 0
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => {
+        injects += 1
+        return Promise.reject(TURN_IN_FLIGHT)
+      },
+      isTurnInFlight: (err) => err === TURN_IN_FLIGHT,
+    })
+    await pump.pump()
+    expect(injects).toBe(1) // retry scheduled for TURN_RETRY_MS out
+    pump.dispose()
+    await vi.advanceTimersByTimeAsync(TURN_RETRY_MAX_MS * 4)
+    expect(injects).toBe(1)
+    expect(s.items).toEqual([queued('a')])
+  })
 })
 
 describe('startStaleTurnRelease', () => {
