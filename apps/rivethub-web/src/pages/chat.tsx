@@ -265,22 +265,30 @@ export function ChatPage(): JSX.Element {
   const { session: sessionFromUrl } = useSearch({ from: '/' })
   // Bidirectional ?session= sync. One effect, one direction at a time,
   // arbitrated by lastUrlRef so the two never fight:
-  //   - URL changed (first load, deep link, back/forward) → URL wins.
+  //   - URL changed (first load, deep link, back/forward) → URL wins. A
+  //     CLEARED param wins too: back/forward or a shared `/` must drop the
+  //     selection, or the UI keeps showing a thread the address bar disowns
+  //     (and a refresh then loses).
   //   - Selection changed in the store (drawer click, rekey adoption,
   //     boundary close) → written back to the URL, replace-only, so
-  //     refresh/share works without stuffing history.
+  //     refresh/share works without stuffing history. Draft ids are never
+  //     written: drafts are memory-only, so a bookmarked `/?session=<uuid>`
+  //     would remount ActiveSession for a conversation the drawer no longer
+  //     has. The URL picks the thread up once the plane adopts it and the
+  //     rekey effect moves `active` onto the canonical key.
   const lastUrlRef = useRef<string | undefined>(undefined)
   useEffect(() => {
     if (sessionFromUrl !== lastUrlRef.current) {
       lastUrlRef.current = sessionFromUrl
-      if (sessionFromUrl) setActive(sessionFromUrl)
+      setActive(sessionFromUrl)
       return
     }
-    if (active !== sessionFromUrl) {
-      lastUrlRef.current = active
-      void navigate({ to: '/', search: active ? { session: active } : {}, replace: true })
+    const urlTarget = active !== undefined && !drafts.includes(active) ? active : undefined
+    if (urlTarget !== sessionFromUrl) {
+      lastUrlRef.current = urlTarget
+      void navigate({ to: '/', search: urlTarget ? { session: urlTarget } : {}, replace: true })
     }
-  }, [sessionFromUrl, active, setActive, navigate])
+  }, [sessionFromUrl, active, drafts, setActive, navigate])
   // Tolerant lookup: the open thread's key changes under the selection when
   // the plane adopts a draft (bare uuid → canonical) or a driver rotates the
   // native id. The rekey effect below moves the conversation onto the new
