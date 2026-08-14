@@ -36,28 +36,6 @@ function langExtension(lang: EditorLanguage) {
   }
 }
 
-/** App is dark-only today; prefer one-dark. Light = basic (no oneDark). */
-function useDarkTheme(): boolean {
-  const [dark, setDark] = useState(() => {
-    if (typeof document === 'undefined') return true
-    if (document.documentElement.classList.contains('light')) return false
-    if (document.documentElement.dataset.theme === 'light') return false
-    return true
-  })
-  useEffect(() => {
-    const root = document.documentElement
-    const sync = (): void => {
-      if (root.classList.contains('light') || root.dataset.theme === 'light') setDark(false)
-      else setDark(true)
-    }
-    sync()
-    const mo = new MutationObserver(sync)
-    mo.observe(root, { attributes: true, attributeFilter: ['class', 'data-theme'] })
-    return () => mo.disconnect()
-  }, [])
-  return dark
-}
-
 export interface FileEditorProps {
   /** Root-relative path under the files API. */
   path: string
@@ -95,7 +73,6 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
     readOnly: forceReadOnly,
   } = props
 
-  const dark = useDarkTheme()
   const hostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const langComp = useRef(new Compartment())
@@ -161,7 +138,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
         basicSetup,
         saveKey,
         langComp.current.of(langExtension(languageForPath(path))),
-        themeComp.current.of(dark ? oneDark : []),
+        themeComp.current.of(oneDark),
         editableComp.current.of(EditorView.editable.of(!readOnly)),
         EditorView.theme({
           '&': { height: '100%', fontSize: '12px' },
@@ -178,21 +155,20 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
       view.destroy()
       viewRef.current = null
     }
-    // mount once; path/theme updates apply via compartments below
+    // mount once; path updates apply via compartments below
   }, [])
 
-  // Language / theme / editable compartments
+  // Language / editable compartments
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
     view.dispatch({
       effects: [
         langComp.current.reconfigure(langExtension(languageForPath(path))),
-        themeComp.current.reconfigure(dark ? oneDark : []),
         editableComp.current.reconfigure(EditorView.editable.of(!readOnly)),
       ],
     })
-  }, [path, dark, readOnly])
+  }, [path, readOnly])
 
   // Load file when path changes (uncontrolled mode)
   useEffect(() => {

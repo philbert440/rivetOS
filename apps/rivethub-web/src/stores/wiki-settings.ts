@@ -9,6 +9,7 @@
  */
 
 import { create } from 'zustand'
+import { persist, type PersistStorage } from 'zustand/middleware'
 import { normalizeWikiBase } from '../lib/wiki-base.js'
 
 const KEY = 'rivethub.wikiUrl'
@@ -19,21 +20,35 @@ interface WikiSettingsState {
   setWikiBaseUrl: (url: string) => void
 }
 
-function loadStored(): string {
-  const raw = localStorage.getItem(KEY) ?? ''
-  const url = normalizeWikiBase(raw)
-  // Persist http://lan-host → https://lan-host:5174 so a later reader that
-  // skips normalize cannot send the desktop pipe at :443 again.
-  if (url && url !== raw) localStorage.setItem(KEY, url)
-  return url
+type Persisted = Pick<WikiSettingsState, 'wikiBaseUrl'>
+
+/** On-disk format is the bare normalized URL string (removed when unset), no envelope. */
+const storage: PersistStorage<Persisted> = {
+  getItem: (name) => {
+    const raw = localStorage.getItem(name) ?? ''
+    const url = normalizeWikiBase(raw)
+    // Persist http://lan-host → https://lan-host:5174 so a later reader that
+    // skips normalize cannot send the desktop pipe at :443 again.
+    if (url && url !== raw) localStorage.setItem(name, url)
+    return { state: { wikiBaseUrl: url }, version: 0 }
+  },
+  setItem: (name, value) => {
+    if (value.state.wikiBaseUrl) localStorage.setItem(name, value.state.wikiBaseUrl)
+    else localStorage.removeItem(name)
+  },
+  removeItem: (name) => {
+    localStorage.removeItem(name)
+  },
 }
 
-export const useWikiSettings = create<WikiSettingsState>((set) => ({
-  wikiBaseUrl: loadStored(),
-  setWikiBaseUrl(raw: string): void {
-    const url = normalizeWikiBase(raw)
-    if (url) localStorage.setItem(KEY, url)
-    else localStorage.removeItem(KEY)
-    set({ wikiBaseUrl: url })
-  },
-}))
+export const useWikiSettings = create<WikiSettingsState>()(
+  persist(
+    (set) => ({
+      wikiBaseUrl: '',
+      setWikiBaseUrl(raw: string): void {
+        set({ wikiBaseUrl: normalizeWikiBase(raw) })
+      },
+    }),
+    { name: KEY, storage, partialize: (s) => ({ wikiBaseUrl: s.wikiBaseUrl }) },
+  ),
+)

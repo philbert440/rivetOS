@@ -56,7 +56,7 @@ function makeComponents(knownSlugs?: Set<string>): Components {
               openExternal(href)
             }
           }}
-          className={cn('text-[#79c0ff] underline underline-offset-2 hover:opacity-90', className)}
+          className={cn('text-link underline underline-offset-2 hover:opacity-90', className)}
         >
           {children}
         </a>
@@ -95,7 +95,7 @@ function makeComponents(knownSlugs?: Set<string>): Components {
       }
       return (
         <code
-          className="rounded bg-[#161b22] px-1.5 py-0.5 font-mono text-[0.88em] text-em"
+          className="rounded bg-code-bg px-1.5 py-0.5 font-mono text-[0.88em] text-em"
           {...props}
         >
           {children}
@@ -103,7 +103,7 @@ function makeComponents(knownSlugs?: Set<string>): Components {
       )
     },
     pre: ({ children }) => (
-      <pre className="my-3 overflow-x-auto rounded-md border border-line bg-[#161b22] p-3 font-mono text-[13px] leading-relaxed">
+      <pre className="my-3 overflow-x-auto rounded-md border border-line bg-code-bg p-3 font-mono text-[13px] leading-relaxed">
         {children}
       </pre>
     ),
