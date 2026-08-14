@@ -20,10 +20,14 @@
 //   file on disk beside it.
 // - `.mesh` names resolve at connect time with no pinning; the LAN resolver
 //   is trusted (certificate verification still gates the far end).
+// - Live listeners are capped (MAX_LISTENERS, stalest evicted): a gateway
+//   dialed once must not hold an identity-serving loopback socket open for
+//   process lifetime just because the roster grew. See ListenerSet for why
+//   the eviction order cannot strand the pipe the UI is actually using.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::io::copy_bidirectional;
@@ -33,9 +37,84 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName}
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
+/// Cap on live gateway listeners: without one, every https gateway ever
+/// dialed keeps an identity-serving loopback socket open for process
+/// lifetime. The web roster caps at 20 (ROSTER_MAX) and the node picker
+/// additionally probes every discovered mesh row, so 32 covers a full roster
+/// plus mesh headroom; past it the STALEST listener is evicted (see
+/// ListenerSet for why that is never the pipe in active use).
+const MAX_LISTENERS: usize = 32;
+
+struct ListenerEntry {
+    port: u16,
+    /// Accept-loop task. Aborted on eviction so the OS listener dies WITH
+    /// its map entry — an orphaned listener would keep serving the device
+    /// identity on an unrecorded port, the leak the lock discipline in
+    /// proxy_port exists to prevent.
+    accept: tauri::async_runtime::JoinHandle<()>,
+}
+
+/// Live listeners keyed by normalized gateway base, kept in LRU order (back
+/// = most recently active). Recency is touched on every resolve (`get`) and
+/// on every accepted connection: the pipe the UI is bound to carries constant
+/// traffic, while the node picker's per-row name probes go stale right after
+/// their one fetch — so eviction past the cap takes an idle probe, never the
+/// live pipe. Should a page's cached port be evicted anyway, the web side
+/// (mtls-proxy.ts) detects the dead loopback port on its next resolve and
+/// re-invokes for a fresh listener: eviction is recoverable, not a brick.
+struct ListenerSet<T> {
+    entries: HashMap<String, T>,
+    order: VecDeque<String>,
+}
+
+impl<T> ListenerSet<T> {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    /// Look up `key`, marking it most-recently-used on a hit: a window
+    /// (re)asking for a port is activity, same as a connection.
+    fn get(&mut self, key: &str) -> Option<&T> {
+        self.touch(key);
+        self.entries.get(key)
+    }
+
+    /// Move `key` to the most-recent position. No-op for unknown keys — an
+    /// evicted listener's accept loop is aborted, but a connection accepted
+    /// just before the abort can still touch after eviction.
+    fn touch(&mut self, key: &str) {
+        if !self.entries.contains_key(key) {
+            return;
+        }
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            if let Some(k) = self.order.remove(pos) {
+                self.order.push_back(k);
+            }
+        }
+    }
+
+    /// Insert `key`, evicting the STALEST listener to `on_evict` when the cap
+    /// is exceeded. Callers insert only after a `get` miss under the same
+    /// lock, so duplicate keys never reach this.
+    fn insert(&mut self, key: String, entry: T, mut on_evict: impl FnMut(String, T)) {
+        self.order.push_back(key.clone());
+        self.entries.insert(key, entry);
+        while self.order.len() > MAX_LISTENERS {
+            let stalest = self.order.pop_front().expect("order mirrors entries");
+            if let Some(evicted) = self.entries.remove(&stalest) {
+                on_evict(stalest, evicted);
+            }
+        }
+    }
+}
+
 pub struct ProxyState {
-    /// target base url (normalized, e.g. "https://192.0.2.7:5174") → loopback port
-    ports: Mutex<HashMap<String, u16>>,
+    /// target base url (normalized, e.g. "https://192.0.2.7:5174") → its loopback listener.
+    /// Arc so accept loops can LRU-touch their own entry on each connection.
+    listeners: Arc<Mutex<ListenerSet<ListenerEntry>>>,
     /// Only a WORKING connector is cached — failures (no identity yet) fall
     /// through to a fresh disk read next call, so enrollment recovers live.
     connector: Mutex<Option<TlsConnector>>,
@@ -45,7 +124,7 @@ pub struct ProxyState {
 impl ProxyState {
     pub fn new(identity_dir: PathBuf) -> Self {
         Self {
-            ports: Mutex::new(HashMap::new()),
+            listeners: Arc::new(Mutex::new(ListenerSet::new())),
             connector: Mutex::new(None),
             identity_dir,
         }
@@ -84,12 +163,35 @@ fn load_pem_certs(path: &PathBuf) -> Result<Vec<CertificateDer<'static>>, String
     Ok(certs)
 }
 
-fn build_connector(dir: &PathBuf) -> Result<TlsConnector, String> {
+/// The key IS the device identity: warn (never fail) when a sloppy enroll
+/// left it group/world-readable. Warn-only because group-readable can be a
+/// deliberate sharing choice, and http nodes must keep working regardless.
+#[cfg(unix)]
+fn warn_key_permissions(key_path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(key_path) {
+        let mode = meta.permissions().mode();
+        if mode & 0o077 != 0 {
+            eprintln!(
+                "RivetHub mtls-proxy: {} is group/world-readable (mode {:04o}) — \
+                 chmod 600 recommended",
+                key_path.display(),
+                mode & 0o777
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_key_permissions(_key_path: &std::path::Path) {}
+
+fn build_connector(dir: &Path) -> Result<TlsConnector, String> {
     let cert_path = dir.join("device.crt");
     let key_path = dir.join("device.key");
     let ca_path = dir.join("ca.pem");
 
     let certs = load_pem_certs(&cert_path)?;
+    warn_key_permissions(&key_path);
     let key_data =
         std::fs::read(&key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
     let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_data.as_slice())
@@ -181,13 +283,13 @@ pub async fn proxy_port(state: &ProxyState, target: String) -> Result<u16, Strin
     let (host, port) = parse_target(&target)?;
     let key = format!("https://{host}:{port}");
 
-    // The ports lock is held across check + bind + spawn + insert: multiple
-    // windows (each webview has its own JS-side cache) can race the same
-    // target, and a lost race would leak an orphaned listener that still
+    // The listeners lock is held across check + bind + spawn + insert:
+    // multiple windows (each webview has its own JS-side cache) can race the
+    // same target, and a lost race would leak an orphaned listener that still
     // serves the device identity on an unrecorded port.
-    let mut ports = state.ports.lock().await;
-    if let Some(p) = ports.get(&key) {
-        return Ok(*p);
+    let mut listeners = state.listeners.lock().await;
+    if let Some(entry) = listeners.get(&key) {
+        return Ok(entry.port);
     }
 
     let connector = {
@@ -209,27 +311,49 @@ pub async fn proxy_port(state: &ProxyState, target: String) -> Result<u16, Strin
         .map_err(|e| format!("bind loopback: {e}"))?;
     let local: SocketAddr = listener.local_addr().map_err(|e| e.to_string())?;
 
-    tauri::async_runtime::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((client, _)) => {
-                    let connector = connector.clone();
-                    let host = host.clone();
-                    tauri::async_runtime::spawn(pipe(client, connector, host, port));
-                }
-                Err(e) => {
-                    // Transient (EMFILE, ECONNABORTED…): don't kill the pipe —
-                    // the port stays cached web-side, a dead loop would brick
-                    // this gateway until relaunch. Back off briefly and retry.
-                    eprintln!("RivetHub mtls-proxy: accept on :{}: {e}", local.port());
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let accept = {
+        let listeners = Arc::clone(&state.listeners);
+        let key = key.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((client, _)) => {
+                        // LRU-touch on every connection: the pipe the UI is
+                        // bound to carries constant traffic, so it is always
+                        // most-recent and unreachable by eviction; one-shot
+                        // name probes go stale and become the victims.
+                        listeners.lock().await.touch(&key);
+                        let connector = connector.clone();
+                        let host = host.clone();
+                        tauri::async_runtime::spawn(pipe(client, connector, host, port));
+                    }
+                    Err(e) => {
+                        // Transient (EMFILE, ECONNABORTED…): don't kill the pipe —
+                        // the port stays cached web-side, a dead loop would brick
+                        // this gateway until relaunch. Back off briefly and retry.
+                        eprintln!("RivetHub mtls-proxy: accept on :{}: {e}", local.port());
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
                 }
             }
-        }
-    });
+        })
+    };
 
-    ports.insert(key, local.port());
-    Ok(local.port())
+    let local_port = local.port();
+    listeners.insert(
+        key,
+        ListenerEntry {
+            port: local_port,
+            accept,
+        },
+        |evicted_target, evicted| {
+            evicted.accept.abort();
+            eprintln!(
+                "RivetHub mtls-proxy: evicted {evicted_target} (listener cap {MAX_LISTENERS})"
+            );
+        },
+    );
+    Ok(local_port)
 }
 
 #[cfg(test)]
@@ -265,5 +389,75 @@ mod tests {
         assert_eq!(parse_target("https://[fd00::7]").unwrap(), ("fd00::7".into(), 5174)); // secret-scan-allow
         assert!(parse_target("https://[2001:db8::1]:5174").is_err()); // public v6 refused
         assert!(parse_target("https://[fd00::7").is_err()); // unclosed bracket — secret-scan-allow
+    }
+
+    #[test]
+    fn listener_set_evicts_stalest_past_cap() {
+        let mut set: ListenerSet<u16> = ListenerSet::new();
+        let mut evicted: Vec<String> = Vec::new();
+        for i in 0..MAX_LISTENERS {
+            set.insert(format!("https://10.0.0.{i}:5174"), i as u16, |t, _| {
+                evicted.push(t);
+            });
+        }
+        assert!(evicted.is_empty(), "at cap, nothing evicted yet");
+        // One past the cap evicts the stalest (no activity: first-inserted)
+        // and only that one.
+        set.insert("https://ct112.mesh:5174".into(), 9999, |t, _| {
+            evicted.push(t);
+        });
+        assert_eq!(evicted, ["https://10.0.0.0:5174"]);
+        assert!(set.get("https://10.0.0.0:5174").is_none());
+        assert!(set.get("https://10.0.0.7:5174").is_some());
+        assert_eq!(set.get("https://ct112.mesh:5174"), Some(&9999));
+    }
+
+    #[test]
+    fn listener_set_get_refreshes_recency() {
+        let mut set: ListenerSet<u16> = ListenerSet::new();
+        let mut evicted: Vec<String> = Vec::new();
+        for i in 0..MAX_LISTENERS {
+            set.insert(format!("https://10.0.0.{i}:5174"), i as u16, |t, _| {
+                evicted.push(t);
+            });
+        }
+        // Re-asking for the first-inserted entry (a window re-resolving its
+        // port) makes it most-recent: the SECOND-oldest is evicted instead.
+        assert!(set.get("https://10.0.0.0:5174").is_some());
+        set.insert("https://ct112.mesh:5174".into(), 9999, |t, _| {
+            evicted.push(t);
+        });
+        assert_eq!(evicted, ["https://10.0.0.1:5174"]);
+        assert!(set.get("https://10.0.0.0:5174").is_some());
+    }
+
+    #[test]
+    fn listener_set_touch_keeps_active_listener() {
+        // The live-pipe scenario from the picker-open review: one active
+        // gateway (touched on every accepted connection) plus a popover's
+        // worth of one-shot name probes. Past the cap the stalest PROBE is
+        // evicted — never the listener carrying traffic.
+        let mut set: ListenerSet<u16> = ListenerSet::new();
+        let mut evicted: Vec<String> = Vec::new();
+        set.insert("https://10.0.0.1:5174".into(), 1, |t, _| {
+            evicted.push(t);
+        });
+        for i in 0..MAX_LISTENERS - 1 {
+            set.insert(format!("https://10.0.1.{i}:5174"), i as u16, |t, _| {
+                evicted.push(t);
+            });
+        }
+        // A connection lands on the FIRST-inserted (boot node) listener,
+        // then one more probe pushes past the cap.
+        set.touch("https://10.0.0.1:5174");
+        set.insert("https://ct112.mesh:5174".into(), 9999, |t, _| {
+            evicted.push(t);
+        });
+        assert_eq!(evicted, ["https://10.0.1.0:5174"]); // generic RFC1918 example, secret-scan-allow
+        assert!(set.get("https://10.0.0.1:5174").is_some());
+        // Touching an evicted/unknown key is a no-op (a connection accepted
+        // just before its listener's abort).
+        set.touch("https://10.0.1.0:5174"); // secret-scan-allow
+        assert_eq!(evicted, ["https://10.0.1.0:5174"]); // secret-scan-allow
     }
 }
