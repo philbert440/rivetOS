@@ -1,13 +1,14 @@
 import { useState, type JSX } from 'react'
-import type { MemorySearchResponse } from '@rivetos/types'
+import { useQuery } from '@tanstack/react-query'
 import type { RivetGateway } from '@rivetos/gateway-client'
 import { Select } from '../components/select.js'
 import { Button } from '../components/ui/button.js'
 import { preview, relativeTime } from './format.js'
-import { useAsync } from './use-async.js'
 
 export function SearchView(props: {
   gateway: RivetGateway
+  /** Endpoint identity (datahub baseUrl) — the query-key discriminator. */
+  baseUrl: string
   onOpenSession?: (sessionId: string) => void
 }): JSX.Element {
   const [input, setInput] = useState('')
@@ -15,13 +16,15 @@ export function SearchView(props: {
   const [scope, setScope] = useState<'both' | 'messages' | 'summaries'>('both')
   const [verbose, setVerbose] = useState(false)
 
-  const res = useAsync<MemorySearchResponse | undefined>(
-    () =>
-      query
-        ? props.gateway.memorySearch({ q: query, scope, limit: 20 })
-        : Promise.resolve(undefined),
-    [query, scope, props.gateway],
-  )
+  // Connection gating happens one level up: MemoryHubPage renders the
+  // needNode / resolving / unconfigured screens, so reaching this component
+  // means the endpoint resolved. `enabled` here only parks the query until
+  // the user submits a search.
+  const res = useQuery({
+    queryKey: ['memory-search', props.baseUrl, query, scope],
+    enabled: query !== '',
+    queryFn: ({ signal }) => props.gateway.memorySearch({ q: query, scope, limit: 20 }, signal),
+  })
 
   return (
     <div className="pane">
@@ -65,7 +68,7 @@ export function SearchView(props: {
           Messages and summaries on datahub. Open a hit to jump into that session.
         </div>
       )}
-      {res.loading && query && <p className="muted pad">Searching…</p>}
+      {res.isLoading && query && <p className="muted pad">Searching…</p>}
       {res.error && (
         <div className="banner bad">
           {/401|unauthorized/i.test(res.error.message)

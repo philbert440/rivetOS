@@ -14,7 +14,12 @@ const TABS: { id: MemoryTab; label: string; icon: typeof Search }[] = [
 ]
 
 /** Shared tab strip — also mounted on `/memory/$slug` so a topic is still the hub. */
-export function MemoryHubNav(props: { tab: MemoryTab; gateway?: RivetGateway }): JSX.Element {
+export function MemoryHubNav(props: {
+  tab: MemoryTab
+  gateway?: RivetGateway
+  /** Datahub identity the health tile keys its queries on. */
+  baseUrl?: string
+}): JSX.Element {
   const navigate = useNavigate()
   function setTab(next: MemoryTab): void {
     void navigate({
@@ -40,9 +45,9 @@ export function MemoryHubNav(props: { tab: MemoryTab; gateway?: RivetGateway }):
           {label}
         </button>
       ))}
-      {props.gateway && (
+      {props.gateway && props.baseUrl && (
         <div className="ml-auto hidden sm:block">
-          <HealthTile gateway={props.gateway} compact />
+          <HealthTile gateway={props.gateway} baseUrl={props.baseUrl} compact />
         </div>
       )}
     </nav>

@@ -14,6 +14,7 @@ import type { WikiIndexEntry, WikiPageResponse } from '@rivetos/types'
 import { NotConnected } from '../components/not-connected.js'
 import { MemoryHubNav } from '../memory/MemoryHubNav.js'
 import { WikiMarkdown } from '../components/wiki-markdown.js'
+import { SegmentedControl } from '../components/segmented-control.js'
 import { useWikiEndpoint } from '../lib/wiki-client.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { cn } from '../lib/utils.js'
@@ -34,7 +35,7 @@ function Badge(props: { lastVerified?: string }): JSX.Element {
     s.kind === 'fresh'
       ? 'border-em text-em'
       : s.kind === 'aging'
-        ? 'border-amber-500/80 text-amber-400'
+        ? 'border-warn/80 text-warn'
         : 'border-red text-red'
   return (
     <span className={cn('rounded-full border bg-bg px-2 py-0.5 font-mono text-[10px]', color)}>
@@ -522,7 +523,7 @@ export function MemoryTopicPage(): JSX.Element {
 
   const wrap = (inner: JSX.Element): JSX.Element => (
     <div className="flex h-full min-h-0 flex-col">
-      <MemoryHubNav tab="wiki" gateway={endpoint.gateway} />
+      <MemoryHubNav tab="wiki" gateway={endpoint.gateway} baseUrl={endpoint.baseUrl} />
       <div className="min-h-0 flex-1 overflow-hidden">{inner}</div>
     </div>
   )
@@ -617,26 +618,21 @@ function ArticleBody(props: {
         From RivetOS memory — the distilled record of what is currently true.
       </p>
 
-      <nav className="mt-4 flex flex-wrap gap-4 border-b border-line text-sm">
-        {(['article', 'history', 'raw'] as const).map((v) => (
-          <button
-            key={v}
-            type="button"
-            onClick={() => props.setView(v)}
-            className={cn(
-              'border-b-2 pb-2 capitalize',
-              props.view === v
-                ? 'border-em text-em'
-                : 'border-transparent text-ink-dim hover:text-ink',
-            )}
-          >
-            {v}
-          </button>
-        ))}
+      <nav className="mt-4 flex flex-wrap items-center gap-4 border-b border-line pb-2 text-sm">
+        <SegmentedControl
+          ariaLabel="Topic view"
+          value={props.view}
+          onChange={props.setView}
+          options={[
+            { value: 'article', label: 'Article' },
+            { value: 'history', label: 'History' },
+            { value: 'raw', label: 'Raw' },
+          ]}
+        />
         <button
           type="button"
           onClick={props.onCopy}
-          className="ml-auto pb-2 font-mono text-[11px] text-ink-dim hover:text-em"
+          className="ml-auto font-mono text-[11px] text-ink-dim hover:text-em"
         >
           {props.copied ? 'copied' : 'copy md'}
         </button>

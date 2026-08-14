@@ -11,6 +11,7 @@ import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
+import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { criteriaFromLines, taskAgentOptions } from '../lib/task-create.js'
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
@@ -270,6 +271,7 @@ export function TaskDetailPage(): JSX.Element {
   const [steerText, setSteerText] = useState('')
   const [acting, setActing] = useState(false)
   const [actionError, setActionError] = useState<string | undefined>()
+  const killDialog = useConfirmDialog()
 
   const connected = useGatewayReady()
   const task = useQuery({
@@ -308,6 +310,7 @@ export function TaskDetailPage(): JSX.Element {
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
+      {killDialog.element}
       <div className="mb-1 font-mono text-[11px] text-ink-dim">{t.id}</div>
       <h1 className="mb-4 text-lg">{t.goal}</h1>
 
@@ -388,8 +391,10 @@ export function TaskDetailPage(): JSX.Element {
             </button>
             <button
               onClick={() => {
-                if (window.confirm(`Kill task ${taskId}?`))
-                  void act(() => useConnection.getState().gateway.killTask(taskId))
+                void (async () => {
+                  if (await killDialog.confirm(`Kill task ${taskId}?`, { danger: true }))
+                    await act(() => useConnection.getState().gateway.killTask(taskId))
+                })()
               }}
               disabled={acting}
               className="rounded border border-red/40 px-3 py-2 text-sm text-red hover:border-red disabled:opacity-40"

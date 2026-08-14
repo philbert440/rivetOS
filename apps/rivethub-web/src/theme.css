@@ -13,6 +13,11 @@
   --color-ink: #e6edf3;
   --color-ink-dim: #8b98a9;
   --color-red: #f87171;
+  /* warning amber — NOT emerald (the old --warn alias lied) */
+  --color-warn: #fbbf24;
+  /* external-link blue + code-surface background (GitHub-dark pair) */
+  --color-link: #79c0ff;
+  --color-code-bg: #161b22;
   --font-sans: 'DM Sans', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
@@ -43,7 +48,7 @@ body {
   --ink: var(--color-ink);
   --ink-dim: var(--color-ink-dim);
   --em: var(--color-em);
-  --warn: var(--color-em);
+  --warn: var(--color-warn);
   --bad: var(--color-red);
   --user: var(--color-em);
   --assistant: #d0d0d0;
@@ -57,7 +62,9 @@ body {
   color: var(--color-ink);
   font-size: 14px;
 }
-.rivet-memory-surfaces .pane { padding: 4px 2px 24px; }
+.rivet-memory-surfaces .pane {
+  padding: 4px 2px 24px;
+}
 .rivet-memory-surfaces .pane-head.row {
   display: flex;
   justify-content: space-between;
@@ -65,7 +72,10 @@ body {
   gap: 12px;
   margin-bottom: 14px;
 }
-.rivet-memory-surfaces button { font: inherit; cursor: pointer; }
+.rivet-memory-surfaces button {
+  font: inherit;
+  cursor: pointer;
+}
 .rivet-memory-surfaces .searchbar {
   display: flex;
   flex-wrap: wrap;
@@ -84,7 +94,9 @@ body {
   padding: 7px 10px;
   outline: none;
 }
-.rivet-memory-surfaces .searchbar input:focus { border-color: var(--color-em); }
+.rivet-memory-surfaces .searchbar input:focus {
+  border-color: var(--color-em);
+}
 .rivet-memory-surfaces .searchbar select,
 .rivet-memory-surfaces .searchbar button[type='submit'] {
   background: var(--color-panel-2);
@@ -98,7 +110,11 @@ body {
   border-color: var(--color-em);
   color: var(--color-em);
 }
-.rivet-memory-surfaces .hits { list-style: none; margin: 0; padding: 0; }
+.rivet-memory-surfaces .hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
 .rivet-memory-surfaces .hit {
   border: 1px solid var(--color-line);
   border-radius: 8px;
@@ -106,8 +122,13 @@ body {
   margin-bottom: 8px;
   background: var(--color-panel);
 }
-.rivet-memory-surfaces .hit-click { padding: 0; overflow: hidden; }
-.rivet-memory-surfaces .hit-click:hover { border-color: var(--color-em); }
+.rivet-memory-surfaces .hit-click {
+  padding: 0;
+  overflow: hidden;
+}
+.rivet-memory-surfaces .hit-click:hover {
+  border-color: var(--color-em);
+}
 .rivet-memory-surfaces .hit-btn {
   display: block;
   width: 100%;
@@ -118,7 +139,9 @@ body {
   padding: 10px 12px;
   font: inherit;
 }
-.rivet-memory-surfaces .hit-btn:disabled { cursor: default; }
+.rivet-memory-surfaces .hit-btn:disabled {
+  cursor: default;
+}
 .rivet-memory-surfaces .hit-head {
   display: flex;
   align-items: center;
@@ -131,7 +154,9 @@ body {
   word-break: break-word;
   line-height: 1.45;
 }
-.rivet-memory-surfaces .open-hint { color: var(--color-em); }
+.rivet-memory-surfaces .open-hint {
+  color: var(--color-em);
+}
 .rivet-memory-surfaces .banner {
   margin: 8px 0;
   padding: 8px 10px;
@@ -140,13 +165,29 @@ body {
   background: var(--color-panel-2);
   font-size: 12px;
 }
-.rivet-memory-surfaces .banner.warn { border-color: var(--color-em); color: #b7f7d8; }
-.rivet-memory-surfaces .banner.bad { border-color: var(--color-red); color: #fecaca; }
-.rivet-memory-surfaces .muted { color: var(--color-ink-dim); }
-.rivet-memory-surfaces .mono { font-family: var(--font-mono); }
-.rivet-memory-surfaces .small { font-size: 12px; }
-.rivet-memory-surfaces .grow { flex: 1; }
-.rivet-memory-surfaces .pad { padding: 12px 2px; }
+.rivet-memory-surfaces .banner.warn {
+  border-color: var(--color-em);
+  color: #b7f7d8;
+}
+.rivet-memory-surfaces .banner.bad {
+  border-color: var(--color-red);
+  color: #fecaca;
+}
+.rivet-memory-surfaces .muted {
+  color: var(--color-ink-dim);
+}
+.rivet-memory-surfaces .mono {
+  font-family: var(--font-mono);
+}
+.rivet-memory-surfaces .small {
+  font-size: 12px;
+}
+.rivet-memory-surfaces .grow {
+  flex: 1;
+}
+.rivet-memory-surfaces .pad {
+  padding: 12px 2px;
+}
 .rivet-memory-surfaces .check {
   display: inline-flex;
   align-items: center;
@@ -177,14 +218,31 @@ body {
   border: 1px solid var(--color-line);
   color: var(--color-ink-dim);
 }
-.rivet-memory-surfaces .tag-sum { border-color: var(--color-em); color: var(--color-em); }
-.rivet-memory-surfaces .tag-msg { border-color: var(--color-ink-dim); }
-.rivet-memory-surfaces .tag-tool { color: var(--color-ink-dim); }
-.rivet-memory-surfaces .tag-warn { border-color: var(--color-em); color: var(--color-em); }
-.rivet-memory-surfaces .role-user { border-color: var(--color-em); color: var(--color-em); }
-.rivet-memory-surfaces .role-assistant { color: var(--color-ink); }
+.rivet-memory-surfaces .tag-sum {
+  border-color: var(--color-em);
+  color: var(--color-em);
+}
+.rivet-memory-surfaces .tag-msg {
+  border-color: var(--color-ink-dim);
+}
+.rivet-memory-surfaces .tag-tool {
+  color: var(--color-ink-dim);
+}
+.rivet-memory-surfaces .tag-warn {
+  border-color: var(--color-em);
+  color: var(--color-em);
+}
+.rivet-memory-surfaces .role-user {
+  border-color: var(--color-em);
+  color: var(--color-em);
+}
+.rivet-memory-surfaces .role-assistant {
+  color: var(--color-ink);
+}
 .rivet-memory-surfaces .role-tool,
-.rivet-memory-surfaces .role-system { color: var(--color-ink-dim); }
+.rivet-memory-surfaces .role-system {
+  color: var(--color-ink-dim);
+}
 .rivet-memory-surfaces button.ghost {
   background: none;
   border: 1px solid var(--color-line);
@@ -226,7 +284,9 @@ body {
   color: var(--color-ink-dim);
   margin-top: 2px;
 }
-.rivet-memory-surfaces .stat-section { margin-top: 22px; }
+.rivet-memory-surfaces .stat-section {
+  margin-top: 22px;
+}
 .rivet-memory-surfaces .stat-section h3 {
   margin: 0 0 8px;
   font-size: 12px;
@@ -234,7 +294,11 @@ body {
   letter-spacing: 0.04em;
   color: var(--color-ink-dim);
 }
-.rivet-memory-surfaces .stat-list { list-style: none; margin: 0; padding: 0; }
+.rivet-memory-surfaces .stat-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
 .rivet-memory-surfaces .stat-list li {
   display: flex;
   justify-content: space-between;
@@ -244,8 +308,15 @@ body {
   font-size: 13px;
 }
 
-.health.compact { padding: 0; border: 0; }
-.health.compact .health-row { display: flex; align-items: center; gap: 6px; }
+.health.compact {
+  padding: 0;
+  border: 0;
+}
+.health.compact .health-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .health.compact .dot {
   width: 8px;
   height: 8px;
@@ -253,11 +324,21 @@ body {
   background: var(--color-ink-dim);
   flex: 0 0 8px;
 }
-.health.compact .dot.good { background: var(--color-em); }
-.health.compact .dot.warn { background: var(--color-em); }
-.health.compact .dot.bad { background: var(--color-red); }
-.health.compact .muted { color: var(--color-ink-dim); }
-.health.compact .small { font-size: 12px; }
+.health.compact .dot.good {
+  background: var(--color-em);
+}
+.health.compact .dot.warn {
+  background: var(--color-warn);
+}
+.health.compact .dot.bad {
+  background: var(--color-red);
+}
+.health.compact .muted {
+  color: var(--color-ink-dim);
+}
+.health.compact .small {
+  font-size: 12px;
+}
 .health.compact .tag {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -276,7 +357,11 @@ body {
   justify-content: space-between;
   margin: 4px 0 10px;
 }
-.rivet-memory-surfaces .wiki-index { list-style: none; margin: 0; padding: 0; }
+.rivet-memory-surfaces .wiki-index {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
 .rivet-memory-surfaces .wiki-row {
   display: block;
   width: 100%;
@@ -289,22 +374,33 @@ body {
   margin-bottom: 8px;
   font: inherit;
 }
-.rivet-memory-surfaces .wiki-row:hover { border-color: var(--color-em); }
+.rivet-memory-surfaces .wiki-row:hover {
+  border-color: var(--color-em);
+}
 .rivet-memory-surfaces .wiki-row-top {
   display: flex;
   align-items: baseline;
   gap: 8px;
   flex-wrap: wrap;
 }
-.rivet-memory-surfaces .wiki-row-title { font-weight: 600; }
-.rivet-memory-surfaces .wiki-row-snippet { margin-top: 4px; line-height: 1.45; }
+.rivet-memory-surfaces .wiki-row-title {
+  font-weight: 600;
+}
+.rivet-memory-surfaces .wiki-row-snippet {
+  margin-top: 4px;
+  line-height: 1.45;
+}
 .rivet-memory-surfaces .wiki-page-nav {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 14px;
 }
-.rivet-memory-surfaces .wiki-title { margin: 0 0 6px; font-size: 1.4rem; line-height: 1.25; }
+.rivet-memory-surfaces .wiki-title {
+  margin: 0 0 6px;
+  font-size: 1.4rem;
+  line-height: 1.25;
+}
 .rivet-memory-surfaces .wiki-lead {
   border-left: 2px solid var(--color-em);
   padding: 2px 0 2px 12px;
@@ -312,7 +408,9 @@ body {
 }
 .rivet-memory-surfaces .wiki-article,
 .rivet-memory-surfaces .wiki-history,
-.rivet-memory-surfaces .wiki-sources { margin-top: 22px; }
+.rivet-memory-surfaces .wiki-sources {
+  margin-top: 22px;
+}
 .rivet-memory-surfaces .wiki-section-title {
   margin: 0 0 8px;
   font-size: 12px;

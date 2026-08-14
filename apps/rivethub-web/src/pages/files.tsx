@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate, useSearch } from '@tanstack/react-router'
 import type { FileEntry } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
@@ -13,6 +14,8 @@ import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
+import { useGateway } from '../lib/use-gateway.js'
+import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { FileEditor } from '../components/file-editor.js'
 
 function fmtSize(bytes: number): string {
@@ -33,8 +36,19 @@ type Notice = { kind: 'ok' | 'err'; text: string }
 export function FilesPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const connected = useGatewayReady()
+  const gateway = useGateway()
   const queryClient = useQueryClient()
-  const [path, setPath] = useState('')
+  const navigate = useNavigate()
+  // The current directory lives in ?path= so a location survives refresh and
+  // is shareable; navigation pushes history (back = up a directory).
+  const { path: pathFromUrl } = useSearch({ from: '/files' })
+  const path = pathFromUrl ?? ''
+  const setPath = useCallback(
+    (next: string): void => {
+      void navigate({ to: '/files', search: next ? { path: next } : {} })
+    },
+    [navigate],
+  )
   const [filter, setFilter] = useState('')
   const [sort, setSort] = useState<SortKey>('name')
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
@@ -42,6 +56,7 @@ export function FilesPage(): JSX.Element {
   const [dragging, setDragging] = useState(false)
   const [notice, setNotice] = useState<Notice | undefined>()
   const [busy, setBusy] = useState(false)
+  const dialog = useConfirmDialog()
   const dragDepth = useRef(0)
 
   const listing = useQuery({
@@ -77,21 +92,19 @@ export function FilesPage(): JSX.Element {
 
   if (!connected) return <NotConnected />
 
-  const gateway = () => useConnection.getState().gateway
-
   const upload = async (files: FileList | File[]): Promise<void> => {
     setBusy(true)
     let ok = 0
     const errors: string[] = []
     for (const file of Array.from(files)) {
       try {
-        await gateway().filesUpload(path, file.name, file)
+        await gateway.filesUpload(path, file.name, file)
         ok += 1
       } catch (err) {
         if (err instanceof GatewayError && err.status === 409) {
-          if (window.confirm(`${file.name} already exists — overwrite?`)) {
+          if (await dialog.confirm(`${file.name} already exists — overwrite?`)) {
             try {
-              await gateway().filesUpload(path, file.name, file, { overwrite: true })
+              await gateway.filesUpload(path, file.name, file, { overwrite: true })
               ok += 1
               continue
             } catch (err2) {
@@ -114,11 +127,11 @@ export function FilesPage(): JSX.Element {
   }
 
   const mkdir = async (): Promise<void> => {
-    const name = window.prompt('New folder name')
+    const name = await dialog.prompt('New folder name')
     if (!name?.trim()) return
     setBusy(true)
     try {
-      await gateway().filesMkdir(path, name.trim())
+      await gateway.filesMkdir(path, name.trim())
       await refresh()
       showNotice({ kind: 'ok', text: `created ${name.trim()}/` })
     } catch (err) {
@@ -129,13 +142,13 @@ export function FilesPage(): JSX.Element {
   }
 
   const renameOne = async (entry: FileEntry): Promise<void> => {
-    const next = window.prompt('Rename to', entry.name)
+    const next = await dialog.prompt('Rename to', { defaultValue: entry.name })
     if (!next?.trim() || next.trim() === entry.name) return
     const from = joinRel(path, entry.name)
     const to = joinRel(path, next.trim())
     setBusy(true)
     try {
-      await gateway().filesRename(from, to)
+      await gateway.filesRename(from, to)
       setSelected((s) => {
         const n = new Set(s)
         n.delete(entry.name)
@@ -154,23 +167,23 @@ export function FilesPage(): JSX.Element {
   const deleteSelected = async (): Promise<void> => {
     const names = [...selected]
     if (names.length === 0) return
-    if (!window.confirm(`Delete ${String(names.length)} item(s)?`)) return
+    if (!(await dialog.confirm(`Delete ${String(names.length)} item(s)?`, { danger: true }))) return
     setBusy(true)
     const errors: string[] = []
     for (const name of names) {
       const rel = joinRel(path, name)
       const entry = (listing.data?.entries ?? []).find((e) => e.name === name)
       try {
-        await gateway().filesDelete(rel)
+        await gateway.filesDelete(rel)
       } catch (err) {
         if (
           err instanceof GatewayError &&
           err.status === 409 &&
           entry?.type === 'dir' &&
-          window.confirm(`${name}/ is not empty — delete recursively?`)
+          (await dialog.confirm(`${name}/ is not empty — delete recursively?`, { danger: true }))
         ) {
           try {
-            await gateway().filesDelete(rel, { recursive: true })
+            await gateway.filesDelete(rel, { recursive: true })
             continue
           } catch (err2) {
             errors.push(`${name}: ${(err2 as Error).message}`)
@@ -204,7 +217,7 @@ export function FilesPage(): JSX.Element {
     const to = joinRel(joinRel(path, destDirName), srcName)
     setBusy(true)
     try {
-      await gateway().filesRename(from, to)
+      await gateway.filesRename(from, to)
       setSelected(new Set())
       await refresh()
       showNotice({ kind: 'ok', text: `moved ${srcName} → ${destDirName}/` })
@@ -227,7 +240,7 @@ export function FilesPage(): JSX.Element {
   }
 
   const copyUrls = async (): Promise<void> => {
-    const gw = gateway()
+    const gw = gateway
     const lines = [...selected]
       .map((n) => {
         const e = (listing.data?.entries ?? []).find((x) => x.name === n)
@@ -279,6 +292,7 @@ export function FilesPage(): JSX.Element {
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropFiles}
     >
+      {dialog.element}
       {/* Breadcrumbs */}
       <div className="flex flex-wrap items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 font-mono text-xs">
         <button
@@ -475,7 +489,7 @@ export function FilesPage(): JSX.Element {
                                   let ok = 0
                                   for (const file of Array.from(ev.dataTransfer.files)) {
                                     try {
-                                      await gateway().filesUpload(dir, file.name, file)
+                                      await gateway.filesUpload(dir, file.name, file)
                                       ok += 1
                                     } catch (err) {
                                       showNotice({ kind: 'err', text: (err as Error).message })
@@ -519,7 +533,7 @@ export function FilesPage(): JSX.Element {
                           onDoubleClick={() => {
                             if (e.type === 'file') {
                               window.open(
-                                gateway().fileDownloadUrl(child),
+                                gateway.fileDownloadUrl(child),
                                 '_blank',
                                 'noopener,noreferrer',
                               )
@@ -555,7 +569,7 @@ export function FilesPage(): JSX.Element {
           <PreviewPane
             path={previewPath}
             onClose={() => setPreviewPath(undefined)}
-            downloadUrl={gateway().fileDownloadUrl(previewPath)}
+            downloadUrl={gateway.fileDownloadUrl(previewPath)}
             size={
               (listing.data?.entries ?? []).find((e) => joinRel(path, e.name) === previewPath)?.size
             }

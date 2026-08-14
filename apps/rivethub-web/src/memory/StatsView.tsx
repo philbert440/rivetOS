@@ -1,15 +1,23 @@
 import type { JSX } from 'react'
-import type { MemoryHealthResponse, MemoryStatsResponse } from '@rivetos/types'
+import { useQuery } from '@tanstack/react-query'
 import type { RivetGateway } from '@rivetos/gateway-client'
 import { compactNumber, relativeTime } from './format.js'
-import { useAsync } from './use-async.js'
 
 export function StatsView(props: {
   gateway: RivetGateway
+  /** Endpoint identity (datahub baseUrl) — the query-key discriminator. */
+  baseUrl: string
   onOpenSession?: (sessionId: string) => void
 }): JSX.Element {
-  const health = useAsync<MemoryHealthResponse>(() => props.gateway.memoryHealth(), [props.gateway])
-  const stats = useAsync<MemoryStatsResponse>(() => props.gateway.memoryStats(), [props.gateway])
+  // Connection gating happens one level up (MemoryHubPage) — see SearchView.
+  const health = useQuery({
+    queryKey: ['memory-health', props.baseUrl],
+    queryFn: ({ signal }) => props.gateway.memoryHealth(signal),
+  })
+  const stats = useQuery({
+    queryKey: ['memory-stats', props.baseUrl],
+    queryFn: ({ signal }) => props.gateway.memoryStats(signal),
+  })
 
   const h = health.data
   const s = stats.data
@@ -23,8 +31,8 @@ export function StatsView(props: {
           type="button"
           className="ghost"
           onClick={() => {
-            health.reload()
-            stats.reload()
+            void health.refetch()
+            void stats.refetch()
           }}
         >
           refresh

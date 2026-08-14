@@ -11,6 +11,7 @@ import type { WorkflowDiagnostic, WorkflowField } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { FileEditor } from './file-editor.js'
 import { Select } from './select.js'
+import { useConfirmDialog } from './confirm-dialog.js'
 import { baseName, joinRel } from '../lib/files-ui.js'
 import {
   agentFieldsFromConfig,
@@ -104,6 +105,7 @@ export function WorkflowEditPanel(props: {
   const [validating, setValidating] = useState(false)
   const [loadError, setLoadError] = useState<string | undefined>()
   const [textLoading, setTextLoading] = useState(true)
+  const discardDialog = useConfirmDialog()
 
   useEffect(() => {
     onDirtyChange?.(dirty)
@@ -156,8 +158,10 @@ export function WorkflowEditPanel(props: {
   }, [selected, editPath])
 
   const onSelectFile = (path: string): void => {
-    if (dirty && !window.confirm('Discard unsaved changes?')) return
-    setSelected(path)
+    void (async () => {
+      if (dirty && !(await discardDialog.confirm('Discard unsaved changes?'))) return
+      setSelected(path)
+    })()
   }
 
   const saveText = useCallback(
@@ -195,14 +199,18 @@ export function WorkflowEditPanel(props: {
 
   const jumpToDiagnostic = (d: WorkflowDiagnostic): void => {
     const abs = diagnosticAbsolutePath(editPath, d.file)
-    if (dirty && abs !== selected && !window.confirm('Discard unsaved changes?')) return
-    setSelected(abs)
+    void (async () => {
+      if (dirty && abs !== selected && !(await discardDialog.confirm('Discard unsaved changes?')))
+        return
+      setSelected(abs)
+    })()
   }
 
   const showFormToggle = isManifestPath(editPath, selected) || isAgentPath(editPath, selected)
 
   return (
     <div className="flex min-h-[28rem] flex-col rounded border border-line bg-panel/40">
+      {discardDialog.element}
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
         <span className="font-mono text-xs text-ink-dim">edit · {editPath}</span>
         <button
