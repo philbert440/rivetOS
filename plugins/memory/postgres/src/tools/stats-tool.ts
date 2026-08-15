@@ -126,19 +126,31 @@ export function createStatsTool(pool: pg.Pool): Tool {
         // Embedding queue — messages count content OR tool_result so tool rows
         // with placeholder-only content are not invisible to the backlog metric
         // (parity with embed-target / enqueue-unembedded after #440 residual).
+        // Rows embed-target classified as unembeddable (media markers, base64
+        // payloads) are excluded from "pending" — they will never embed by
+        // design and otherwise show up as a permanent false backlog.
         const embedQueue = await pool.query<EmbedQueueRow>(`
           SELECT
             (SELECT COUNT(*) FROM ros_messages
               WHERE embedding IS NULL
+                AND embed_status IS DISTINCT FROM 'unembeddable'
                 AND (
                   (content IS NOT NULL AND LENGTH(content) > 0)
                   OR (tool_result IS NOT NULL AND LENGTH(tool_result) > 0)
                 )) AS msg_queue,
-            (SELECT COUNT(*) FROM ros_summaries WHERE embedding IS NULL AND content IS NOT NULL) AS sum_queue
+            (SELECT COUNT(*) FROM ros_summaries
+              WHERE embedding IS NULL
+                AND embed_status IS DISTINCT FROM 'unembeddable'
+                AND content IS NOT NULL) AS sum_queue,
+            (SELECT COUNT(*) FROM ros_messages
+              WHERE embedding IS NULL AND embed_status = 'unembeddable') +
+            (SELECT COUNT(*) FROM ros_summaries
+              WHERE embedding IS NULL AND embed_status = 'unembeddable') AS unembeddable
         `)
         const eq = embedQueue.rows[0]
         const msgQueue = Number(eq.msg_queue)
         const sumQueue = Number(eq.sum_queue)
+        const unembeddable = Number(eq.unembeddable)
         const queueTotal = msgQueue + sumQueue
         const queueStatus =
           queueTotal === 0
@@ -150,7 +162,10 @@ export function createStatsTool(pool: pg.Pool): Tool {
         sections.push(
           `\n**Embedding queue:** ${queueStatus}` +
             `\n  Messages awaiting embedding: ${msgQueue.toLocaleString()}` +
-            `\n  Summaries awaiting embedding: ${sumQueue.toLocaleString()}`,
+            `\n  Summaries awaiting embedding: ${sumQueue.toLocaleString()}` +
+            (unembeddable > 0
+              ? `\n  Unembeddable (excluded by design): ${unembeddable.toLocaleString()}`
+              : ''),
         )
 
         // Embedding coverage
