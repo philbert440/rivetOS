@@ -244,7 +244,8 @@ Mesh:
 
 Memory:
   rivetos memory backfill-tool-synth   Synthesize content for historical tool calls
-  rivetos memory queue-status     Show graphile-worker job queue state
+  rivetos memory queue-status          Show graphile-worker job queue state
+  rivetos memory retry-failed          Reset dead graphile jobs after a code fix
   rivetos db ...                  Low-level DB inspection helpers
 
 Development:

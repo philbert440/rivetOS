@@ -147,6 +147,7 @@ export function helpText(): string {
   Memory:
     rivetos memory backfill-tool-synth  Enqueue historical tool calls for synthesis
     rivetos memory queue-status         Show graphile-worker job queue state
+    rivetos memory retry-failed         Reset dead graphile jobs (after a code fix)
 
   Database:
     rivetos db migrate                  Apply pending Postgres migrations
