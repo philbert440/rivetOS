@@ -176,6 +176,7 @@ export interface SummaryKindRow {
 export interface EmbedQueueRow {
   msg_queue: string
   sum_queue: string
+  unembeddable: string
 }
 
 export interface EmbedCoverageRow {
