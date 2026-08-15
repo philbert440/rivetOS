@@ -324,6 +324,7 @@ rivetos keys rotate|list|status       # Manage mesh keys
 # Memory & database
 rivetos memory queue-status           # Show graphile-worker job queue
 rivetos memory backfill-tool-synth    # Enqueue historical tool calls for synthesis
+rivetos memory retry-failed --task extract-wiki --dry-run  # Plan reset of dead jobs
 rivetos db migrate|status             # Run / inspect schema migrations
 
 # Containers & service

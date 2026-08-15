@@ -232,10 +232,14 @@ rivetos memory backfill-tool-synth
 
 # Plan only (count candidates, no enqueue)
 rivetos memory backfill-tool-synth --dry-run
+
+# After deploying a code fix that made a whole class of jobs die at max_attempts
+# (e.g. extract-wiki after a SQL bug), reset those dead rows so workers retry:
+rivetos memory retry-failed --task extract-wiki --error 'text[] &' --dry-run
+rivetos memory retry-failed --task extract-wiki --error 'text[] &'
 ```
 
-Failed jobs (after `max_attempts=3`) remain in graphile-worker's `_private_jobs` table with `attempts=max_attempts`. Use `queue-status` to surface them; operators can re-enqueue manually if needed.
-
+Failed jobs (after `max_attempts`) remain in graphile-worker's `_private_jobs` table with `attempts >= max_attempts` and `is_available = false`. `queue-status` surfaces counts + a sample `last_error`. `retry-failed` clears `attempts` / `last_error` / locks on matching rows (requires `--task`) so workers pick them up again without losing `job_key` identity.
 ## What We're NOT Building
 
 - No vector database (pgvector in PostgreSQL is sufficient)
