@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -79,5 +79,34 @@ describe('WikiWriter', () => {
     )
     expect(applied.page.currentState).toBe('v3 from extractor')
     expect(applied.page.history.some((h) => h.body.includes('human-edited truth'))).toBe(true)
+  })
+
+  it('serializes concurrent apply (COMPACT_CONCURRENCY>1 regression)', async () => {
+    // Without the write lock, parallel git add/commit races on index.lock and
+    // fails with "Unable to create '.../.git/index.lock'".
+    const n = 8
+    const results = await Promise.all(
+      Array.from({ length: n }, (_, i) =>
+        writer.apply(
+          {
+            action: 'create',
+            slug: `concurrent-topic-${i}`,
+            title: `Concurrent ${i}`,
+            currentState: `state-${i}`,
+            verifiedAt: '2026-08-15T00:00:00Z',
+          },
+          { summaryId: `aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa${String(i).padStart(2, '0')}` },
+        ),
+      ),
+    )
+    expect(results).toHaveLength(n)
+    const shas = new Set(results.map((r) => r.gitSha))
+    expect(shas.size).toBe(n)
+    for (let i = 0; i < n; i++) {
+      const md = await readFile(join(root, 'topics', `concurrent-topic-${i}.md`), 'utf8')
+      expect(md).toContain(`state-${i}`)
+    }
+    // Lock file must not leak after writers finish.
+    expect(existsSync(join(root, '.wiki-writer.lock'))).toBe(false)
   })
 })

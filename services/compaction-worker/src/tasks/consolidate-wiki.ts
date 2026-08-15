@@ -149,62 +149,47 @@ export const consolidateWikiTask: Task = async (payload, helpers) => {
       ]),
     ]
 
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(writer.pagePath(canonicalSlug), serializeWikiPage(mergedPage))
-    await index.upsertTopic(mergedPage)
+    // Serialize fs+git with extract-wiki / recompile (COMPACT_CONCURRENCY>1).
+    await writer.withLock(async () => {
+      const { writeFile } = await import('node:fs/promises')
+      await writeFile(writer.pagePath(canonicalSlug), serializeWikiPage(mergedPage))
 
+      for (const loser of losers) {
+        const path = writer.pagePath(loser)
+        if (existsSync(path)) {
+          await unlink(path)
+          try {
+            await writer.git('rm', '-f', join('topics', `${loser}.md`)).catch(async () => {
+              // file may already be untracked after unlink
+              await writer.git('add', '-u', join('topics', `${loser}.md`)).catch(() => undefined)
+            })
+          } catch {
+            /* best-effort git rm */
+          }
+        }
+      }
+
+      try {
+        await writer.git('add', join('topics', `${canonicalSlug}.md`))
+        await writer
+          .git(
+            'commit',
+            '-m',
+            `wiki(${canonicalSlug}): consolidate ${losers.length} near-duplicate topics\n\nMerged: ${losers.join(', ')}\nPipeline: wiki-v6-consolidate`,
+          )
+          .catch(() => undefined) // empty commit ok
+      } catch (err: unknown) {
+        helpers.logger.warn(
+          `consolidate-wiki: git commit failed for ${canonicalSlug}: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    })
+
+    await index.upsertTopic(mergedPage)
     for (const loser of losers) {
       await index.setRedirect(loser, canonicalSlug)
       await index.deleteTopic(loser)
-      const path = writer.pagePath(loser)
-      if (existsSync(path)) {
-        await unlink(path)
-        // stage deletion in git
-        try {
-          // WikiWriter git helper is private — shell via writer root
-          const { execFile } = await import('node:child_process')
-          const { promisify } = await import('node:util')
-          const execFileAsync = promisify(execFile)
-          await execFileAsync('git', ['-C', config.wikiDir, 'rm', '-f', join('topics', `${loser}.md`)]).catch(
-            async () => {
-              // file may already be untracked after unlink
-              await execFileAsync('git', [
-                '-C',
-                config.wikiDir,
-                'add',
-                '-u',
-                join('topics', `${loser}.md`),
-              ]).catch(() => undefined)
-            },
-          )
-        } catch {
-          /* best-effort git rm */
-        }
-      }
       pagesRemoved++
-    }
-
-    try {
-      const { execFile } = await import('node:child_process')
-      const { promisify } = await import('node:util')
-      const execFileAsync = promisify(execFile)
-      await execFileAsync('git', [
-        '-C',
-        config.wikiDir,
-        'add',
-        join('topics', `${canonicalSlug}.md`),
-      ])
-      await execFileAsync('git', [
-        '-C',
-        config.wikiDir,
-        'commit',
-        '-m',
-        `wiki(${canonicalSlug}): consolidate ${losers.length} near-duplicate topics\n\nMerged: ${losers.join(', ')}\nPipeline: wiki-v6-consolidate`,
-      ]).catch(() => undefined) // empty commit ok
-    } catch (err: unknown) {
-      helpers.logger.warn(
-        `consolidate-wiki: git commit failed for ${canonicalSlug}: ${err instanceof Error ? err.message : String(err)}`,
-      )
     }
 
     merged++

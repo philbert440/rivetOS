@@ -2,7 +2,8 @@
  * extract-wiki task (phase 3c / memory v6) — mine one leaf summary into
  * durable topic-page patches. New consumer of compaction output: enqueued
  * after each leaf insert (and by backfill), gated on WIKI_EXTRACTION,
- * idempotent on summary_id, per-slug write serialization via WikiWriter.
+ * idempotent on summary_id; wiki fs+git serialized via WikiWriter.withLock
+ * (COMPACT_CONCURRENCY may be >1 — concurrent git add races without it).
  *
  * Memory v6: hard identity gate (entity/stem/alias/search) so session-shaped
  * slugs fold into canonical durable topics; every apply cites the source leaf.
