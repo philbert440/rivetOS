@@ -3,8 +3,11 @@
 Jetpack Compose client for rivet-team. **Apache-2.0**. Written new — not a
 fork of `apps/rivet-android` (AGPL RikkaHub) and not a copy of that tree.
 
-Same product as rivet-team-web: sidebar of personas, one thread, stub
-gateway so a reviewer can send a message and see a working chip + reply.
+Phone-first messaging app: **who is this** → **roster of personas as
+contacts** → **one thread**. That IA is the OpenMausBot / Grok Bot shape
+(bots you talk to like chats). Source is ours; do not vendor OpenMausBot.
+
+Stub gateway so a reviewer can send a message and see a working chip + reply.
 
 ## Assemble
 

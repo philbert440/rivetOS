@@ -5,21 +5,29 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-private val Em = Color(0xFF34D399)
-private val Bg = Color(0xFF0D1117)
-private val Panel = Color(0xFF131A22)
-private val Ink = Color(0xFFE6EDF3)
-private val InkDim = Color(0xFF8B98A9)
+/** Messaging-app chrome (near-black, like Grok Bot / OpenMausBot) + Rivet emerald. */
+internal object TeamColors {
+    val App = Color(0xFF070707)
+    val Panel = Color(0xFF111111)
+    val Raised = Color(0xFF2F2F2F)
+    val Card = Color(0xFF262626)
+    val Inset = Color(0xFF191919)
+    val Hairline = Color(0xFF333333)
+    val Ink = Color(0xFFFCFCFC)
+    val InkDim = Color(0x99FCFCFC)
+    val Em = Color(0xFF34D399)
+    val BubbleUser = Color(0xFF5A5A5A)
+}
 
 private val Scheme = darkColorScheme(
-    primary = Em,
-    onPrimary = Bg,
-    background = Bg,
-    onBackground = Ink,
-    surface = Panel,
-    onSurface = Ink,
-    onSurfaceVariant = InkDim,
-    outline = Color(0xFF253041),
+    primary = TeamColors.Em,
+    onPrimary = TeamColors.App,
+    background = TeamColors.App,
+    onBackground = TeamColors.Ink,
+    surface = TeamColors.Panel,
+    onSurface = TeamColors.Ink,
+    onSurfaceVariant = TeamColors.InkDim,
+    outline = TeamColors.Hairline,
 )
 
 @Composable
