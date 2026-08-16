@@ -215,10 +215,9 @@ export function createPgTeamSchemaAdmin(cfg: {
         if (exists.rows[0]?.exists) {
           await client.query(`ALTER ROLE ${roleId} NOLOGIN`)
           await client
-            .query(
-              `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1`,
-              [role],
-            )
+            .query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1`, [
+              role,
+            ])
             .catch(() => {})
           await client.query(`DROP OWNED BY ${roleId}`)
           await client.query(`DROP ROLE IF EXISTS ${roleId}`)
@@ -465,7 +464,7 @@ export function createTeamUsersRoutes(opts: {
         res.end()
         return true
       }
-      if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' }), true
+      if (req.method !== 'POST') return (json(res, 405, { error: 'method not allowed' }), true)
       let body: TeamPairRedeemRequest
       try {
         body = (await readJson(req)) as TeamPairRedeemRequest
@@ -474,7 +473,7 @@ export function createTeamUsersRoutes(opts: {
         return true
       }
       const code = (body.code ?? '').trim().toLowerCase()
-      if (!code) return json(res, 400, { error: 'code required' }), true
+      if (!code) return (json(res, 400, { error: 'code required' }), true)
       const result = withState((state) => {
         const row = state.pairing.find((p) => p.code === code)
         if (!row || row.redeemedAt || row.expiresAt < now()) return null
@@ -496,7 +495,7 @@ export function createTeamUsersRoutes(opts: {
         }
         return out
       })
-      if (!result) return json(res, 400, { error: 'invalid or expired code' }), true
+      if (!result) return (json(res, 400, { error: 'invalid or expired code' }), true)
       log(`[team] redeemed pair code for user ${result.user.handle}`)
       json(res, 200, result)
       return true
@@ -536,6 +535,11 @@ export function createTeamUsersRoutes(opts: {
           return true
         }
         const displayName = (body.displayName ?? handle).trim().slice(0, 80) || handle
+        // Conflict check BEFORE mint: ensureUserSchema rotates the role password.
+        if (loadState(file).users.some((u) => u.handle === handle)) {
+          json(res, 409, { error: 'handle taken' })
+          return true
+        }
         let mintedUrl: string | undefined
         try {
           if (admin) {
@@ -561,7 +565,7 @@ export function createTeamUsersRoutes(opts: {
           state.personas.push(...defaultPersonas(user.id))
           return user
         })
-        if (created === 'exists') return json(res, 409, { error: 'handle taken' }), true
+        if (created === 'exists') return (json(res, 409, { error: 'handle taken' }), true)
         const out: TeamUserResponse = { user: publicUser(created) }
         json(res, 201, out)
         return true
@@ -583,7 +587,7 @@ export function createTeamUsersRoutes(opts: {
           const out: TeamPairStartResponse = { code: row.code, expiresAt: row.expiresAt }
           return out
         })
-        if (!created) return json(res, 404, { error: 'user not found' }), true
+        if (!created) return (json(res, 404, { error: 'user not found' }), true)
         json(res, 200, created)
         return true
       }
@@ -593,7 +597,7 @@ export function createTeamUsersRoutes(opts: {
         const dev = requireDevice(req, url, res, state)
         if (!dev) return true
         const user = state.users.find((u) => u.id === dev.userId)
-        if (!user) return json(res, 404, { error: 'user not found' }), true
+        if (!user) return (json(res, 404, { error: 'user not found' }), true)
         const out: TeamMeResponse = {
           user: publicUser(user),
           device: { id: dev.id, userId: dev.userId, label: dev.label, createdAt: dev.createdAt },
@@ -625,7 +629,7 @@ export function createTeamUsersRoutes(opts: {
           return true
         }
         const name = (body.name ?? '').trim().slice(0, 80)
-        if (!name) return json(res, 400, { error: 'name required' }), true
+        if (!name) return (json(res, 400, { error: 'name required' }), true)
         const persona = withState((state) => {
           const p: TeamPersona = {
             id: uuid(),
@@ -655,7 +659,7 @@ export function createTeamUsersRoutes(opts: {
           return true
         }
         const content = (body.content ?? '').trim()
-        if (!content) return json(res, 400, { error: 'content required' }), true
+        if (!content) return (json(res, 400, { error: 'content required' }), true)
         const note = withState((state) => {
           const owns = state.personas.some(
             (p) => p.id === body.personaId && p.userId === dev.userId,
@@ -672,7 +676,7 @@ export function createTeamUsersRoutes(opts: {
           state.notes.push(n)
           return n
         })
-        if (!note) return json(res, 404, { error: 'persona not found' }), true
+        if (!note) return (json(res, 404, { error: 'persona not found' }), true)
         json(res, 201, { note })
         return true
       }

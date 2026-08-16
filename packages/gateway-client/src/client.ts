@@ -364,7 +364,7 @@ export class RivetGateway {
     signal?: AbortSignal,
   ): Promise<MemorySearchResponse> {
     return request(this.config, '/api/memory/search', {
-      query: query as Record<string, QueryValue>,
+      query: query,
       signal,
     })
   }
@@ -380,7 +380,7 @@ export class RivetGateway {
     signal?: AbortSignal,
   ): Promise<MemoryBrowseResponse> {
     return request(this.config, '/api/memory/browse', {
-      query: query as Record<string, QueryValue>,
+      query: query,
       signal,
     })
   }

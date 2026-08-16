@@ -260,6 +260,43 @@ describe('team pairing vs den bearer', () => {
   })
 })
 
+describe('team schema mint', () => {
+  it('does not remint when the handle is already taken', async () => {
+    let mintCalls = 0
+    const schemaAdmin = {
+      async ensureUserSchema(handle: string) {
+        mintCalls += 1
+        return {
+          schema: teamSchemaName(handle),
+          role: teamRoleName(handle),
+          url: `postgres://rivet_team_${handle}:x@127.0.0.1/rivetos`,
+        }
+      },
+      async dropUserSchema() {},
+    }
+    const routes = createTeamUsersRoutes({
+      stateDir: tmpState(),
+      denToken: '',
+      schemaAdmin,
+    })
+    const srv = await listen(routes)
+    try {
+      const first = await json<TeamUserResponse>(srv.base, 'POST', '/api/team/users', {
+        body: { handle: 'phil', displayName: 'Phil' },
+      })
+      expect(first.status).toBe(201)
+      expect(mintCalls).toBe(1)
+      const second = await json(srv.base, 'POST', '/api/team/users', {
+        body: { handle: 'PHIL', displayName: 'Also Phil' },
+      })
+      expect(second.status).toBe(409)
+      expect(mintCalls).toBe(1)
+    } finally {
+      await srv.close()
+    }
+  })
+})
+
 describe('team store file', () => {
   it('writes team-users.json owner-only', async () => {
     const dir = tmpState()

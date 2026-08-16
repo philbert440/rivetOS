@@ -650,9 +650,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const teamUsersRoutes = createTeamUsersRoutes({
     stateDir: config.stateDir,
     denToken: config.token,
-    schemaAdmin: (config.teamPgAdminUrl ?? "").trim()
+    schemaAdmin: (config.teamPgAdminUrl ?? '').trim()
       ? createPgTeamSchemaAdmin({
-          adminUrl: (config.teamPgAdminUrl ?? "").trim(),
+          adminUrl: (config.teamPgAdminUrl ?? '').trim(),
           log: console.error,
         })
       : null,
@@ -769,8 +769,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       // work" includes the shell itself. Carve-outs above the gate: /healthz, the one-time WireGuard enroll
       // redemption — a not-yet-enrolled device MUST reach it, and its
       // pairing token is the auth (see auth.ts rule 4).
-      const teamApi =
-        url.pathname === '/api/team' || url.pathname.startsWith('/api/team/')
+      const teamApi = url.pathname === '/api/team' || url.pathname.startsWith('/api/team/')
       if (
         !(devicesRoutes && url.pathname === '/api/devices/enroll') &&
         !teamApi &&
