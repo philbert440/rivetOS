@@ -513,6 +513,22 @@ describe('term manager', () => {
     expect(procs[0].kills).toEqual(['SIGHUP'])
   })
 
+  it('activity while attached re-arms idle; the last detach still restarts a full window', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ idleTtlMs: 1000, detachedTtlMs: 60_000 })
+    const pty = manager.spawn('shell', 80, 24, '')
+    const detach = manager.attach(pty.id, () => {})!
+    vi.advanceTimersByTime(5000) // suspended (fired, saw a viewer, no timer)
+    expect(manager.write(pty.id, 'x')).toBe(true) // re-arms a timer while attached
+    vi.advanceTimersByTime(5000) // fires again, still attached → still alive
+    expect(procs[0].kills).toEqual([])
+    detach()
+    vi.advanceTimersByTime(999)
+    expect(procs[0].kills).toEqual([])
+    vi.advanceTimersByTime(1)
+    expect(procs[0].kills).toEqual(['SIGHUP'])
+  })
+
   it('re-attaching before the restarted idle window elapses suspends it again', () => {
     vi.useFakeTimers()
     const { manager, procs } = makeManager({ idleTtlMs: 1000, detachedTtlMs: 60_000 })

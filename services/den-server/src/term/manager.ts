@@ -132,9 +132,10 @@ export interface TermManager {
   ptyForSession(denSession: string): string | undefined
   /** SIGHUP → SIGKILL(3s); exited records are reaped immediately. false = unknown id. */
   kill(id: string): boolean
-  /** Subscribe to live output; cancels the detached-TTL reaper while at least
-   *  one subscriber is attached. `onExit` (optional) fires once when the
-   *  child exits, after the final output has fanned out. Returns a detach fn;
+  /** Subscribe to live output; holds off BOTH the detached-TTL and idle-TTL
+   *  reapers while at least one subscriber is attached (the last detach
+   *  restarts both windows). `onExit` (optional) fires once when the child
+   *  exits, after the final output has fanned out. Returns a detach fn;
    *  null = unknown id. */
   attach(id: string, cb: DataSubscriber, onExit?: ExitSubscriber): (() => void) | null
   scrollback(id: string): Buffer | undefined
@@ -632,6 +633,14 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         clearTimeout(r.detachTimer)
         r.detachTimer = undefined
       }
+      // Suspend the idle reaper on the 0→1 transition too (not only when it
+      // next fires) so "attached ⇒ no idle timer" holds immediately and
+      // symmetrically with the detached-TTL above. Activity while attached
+      // may re-arm it; the fire-time attached check makes that harmless.
+      if (r.idleTimer) {
+        clearTimeout(r.idleTimer)
+        r.idleTimer = undefined
+      }
       let detached = false
       return () => {
         if (detached) return
@@ -640,7 +649,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         if (onExit) r.exitWatchers.delete(onExit)
         if (r.attached.size === 0) {
           armDetachedTtl(r)
-          // Idle reaper was suspended while attached — restart its window now.
+          // Last viewer gone: (re)start the idle window from now — whether
+          // the reaper was suspended or a re-armed timer is still pending.
           armIdleTtl(r, now())
         }
       }
