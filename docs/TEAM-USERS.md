@@ -55,3 +55,15 @@ mesh cert yet. After redeem, the app stores `deviceToken` and sends
 ## Out of scope here
 
 Live model turns, household shared memory, voice, mTLS for the team app.
+
+
+## QA (two people)
+
+1. Start den-server on loopback (file store is enough).
+2. Create two users: `curl -s -X POST localhost:5174/api/team/users -d '{"handle":"phil","displayName":"Phil"}' -H 'content-type: application/json'`
+   and again for `alex`.
+3. Pair each: `POST /api/team/users/:id/pair` then redeem on two browsers.
+4. Send a note as phil (`POST /api/team/notes`). Search as alex for the same text — empty.
+5. Optional: set `RIVETOS_TEAM_PG_ADMIN_URL` on a **non-prod** datahub role and confirm `team_u_phil` exists and `rivet_team_phil` cannot `SELECT` `ros_messages`.
+
+Do not point a household device at the shared `rivet_phil` / `ros_messages` DSN.
