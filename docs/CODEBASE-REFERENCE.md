@@ -95,7 +95,10 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   ├── den/                     # rivet-den companion renderer
 │   ├── rivethub-web/            # RivetHub web client
 │   ├── rivethub-desktop/        # RivetHub Tauri desktop shell
-│   ├── rivet-android/           # RivetHub Android client
+│   ├── rivet-android/           # RivetHub Android client (AGPL)
+│   ├── rivet-team-web/          # rivet-team web — persona sidebar + live thread
+│   ├── rivet-team-desktop/      # rivet-team Tauri desktop shell
+│   ├── rivet-team-android/      # rivet-team Android (Apache-2.0 Compose)
 │   └── site/                    # Astro docs site (rivetos.dev)
 │
 ├── infra/                       # Container Dockerfiles + Compose + provisioning scripts
