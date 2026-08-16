@@ -66,6 +66,7 @@ import {
 } from './term/harness-sessions.js'
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes } from './devices.js'
+import { createPgTeamSchemaAdmin, createTeamUsersRoutes } from './team-users.js'
 import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
 import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-driver.js'
 import { createClaudeStoreHost } from './harness/claude-store.js'
@@ -646,6 +647,23 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
   // Mesh device enrollment (Settings → Devices). mTLS-gated except the
   // one-time WireGuard enroll redemption (pairing), matched before the gate.
+  const teamUsersRoutes = createTeamUsersRoutes({
+    stateDir: config.stateDir,
+    denToken: config.token,
+    schemaAdmin: (config.teamPgAdminUrl ?? '').trim()
+      ? createPgTeamSchemaAdmin({
+          adminUrl: (config.teamPgAdminUrl ?? '').trim(),
+          log: console.error,
+        })
+      : null,
+    isOperator: (req) =>
+      isGatewayAuthorized(req, {
+        tlsConfigured: tlsReady,
+        requireClientCert: config.tls.requireClientCert,
+      }),
+    log: console.error,
+  })
+
   const devicesRoutes = config.devices?.enabled
     ? createDevicesRoutes({
         config: config.devices,
@@ -748,11 +766,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       // createHttpsServer options), so static shares the SAME app-layer gate
       // as the API: enrolled devices and loopback pass, an unenrolled remote
       // gets nothing — "if the admin did not enroll the device, Hub must not
-      // work" includes the shell itself. Two carve-outs stay open above the
-      // gate: /healthz (liveness) and the one-time WireGuard enroll
+      // work" includes the shell itself. Carve-outs above the gate: /healthz, the one-time WireGuard enroll
       // redemption — a not-yet-enrolled device MUST reach it, and its
       // pairing token is the auth (see auth.ts rule 4).
-      if (!(devicesRoutes && url.pathname === '/api/devices/enroll') && !authorized(req, url)) {
+      const teamApi = url.pathname === '/api/team' || url.pathname.startsWith('/api/team/')
+      if (
+        !(devicesRoutes && url.pathname === '/api/devices/enroll') &&
+        !teamApi &&
+        !authorized(req, url)
+      ) {
         unauthorized(req, res, url)
         return
       }
@@ -811,6 +833,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       if (devicesRoutes && url.pathname === '/api/devices/enroll') {
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await devicesRoutes.handleEnroll(req, res, url)) return
+      }
+      if (url.pathname === '/api/team' || url.pathname.startsWith('/api/team/')) {
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (url.pathname === '/api/team/pair/redeem') {
+          if (await teamUsersRoutes.handleRedeem(req, res, url)) return
+        }
+        if (await teamUsersRoutes.handle(req, res, url)) return
+        return json(res, 404, { error: 'not found' })
       }
       if (!authorized(req, url)) {
         unauthorized(req, res, url)
