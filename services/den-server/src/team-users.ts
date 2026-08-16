@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, join } from 'node:path'
 import pg from 'pg'
+import { withRosterFileLock } from './devices.js'
 import type {
   TeamCreateUserRequest,
   TeamDevice,
@@ -392,6 +393,18 @@ function teamTokenFrom(req: IncomingMessage): string {
   return ''
 }
 
+function makeMutex(): <T>(fn: () => T | Promise<T>) => Promise<T> {
+  let tail: Promise<unknown> = Promise.resolve()
+  return <T>(fn: () => T | Promise<T>): Promise<T> => {
+    const run = tail.then(fn, fn)
+    tail = run.then(
+      () => {},
+      () => {},
+    )
+    return run
+  }
+}
+
 export interface TeamUsersRoutes {
   /** Unauthenticated pair redeem. Call BEFORE the den bearer gate. */
   handleRedeem(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean>
@@ -415,23 +428,27 @@ export function createTeamUsersRoutes(opts: {
   const log = opts.log ?? (() => {})
   const admin = opts.schemaAdmin ?? null
   const denToken = opts.denToken
+  const processMutex = makeMutex()
+  const lockPath = `${file}.lock`
 
-  const withState = <T>(fn: (state: FileState) => T): T => {
-    const state = loadState(file)
-    const result = fn(state)
-    saveState(file, state)
-    return result
-  }
+  const withState = async <T>(fn: (state: FileState) => T): Promise<T> =>
+    processMutex(() =>
+      withRosterFileLock(lockPath, () => {
+        const state = loadState(file)
+        const result = fn(state)
+        saveState(file, state)
+        return result
+      }),
+    )
 
-  const requireOperator = (req: IncomingMessage, url: URL, res: ServerResponse): boolean => {
+  const requireOperator = (req: IncomingMessage, res: ServerResponse): boolean => {
     if (opts.isOperator?.(req)) return true
     if (!denToken) {
       if (!opts.isOperator) return true
     } else {
       const header = req.headers.authorization ?? ''
       const m = TEAM_BEARER.exec(header)
-      const q = url.searchParams.get('token') ?? ''
-      const got = m?.[1] ?? q
+      const got = m?.[1] ?? ''
       if (got && tokenEqual(got, denToken)) return true
     }
     json(res, 401, { error: 'operator token required' })
@@ -474,7 +491,7 @@ export function createTeamUsersRoutes(opts: {
       }
       const code = (body.code ?? '').trim().toLowerCase()
       if (!code) return (json(res, 400, { error: 'code required' }), true)
-      const result = withState((state) => {
+      const result = await withState((state) => {
         const row = state.pairing.find((p) => p.code === code)
         if (!row || row.redeemedAt || row.expiresAt < now()) return null
         const user = state.users.find((u) => u.id === row.userId)
@@ -510,7 +527,7 @@ export function createTeamUsersRoutes(opts: {
       }
 
       if (url.pathname === '/api/team/users' && req.method === 'GET') {
-        if (!requireOperator(req, url, res)) return true
+        if (!requireOperator(req, res)) return true
         const body: TeamUsersListResponse = {
           users: loadState(file).users.map(publicUser),
         }
@@ -519,7 +536,7 @@ export function createTeamUsersRoutes(opts: {
       }
 
       if (url.pathname === '/api/team/users' && req.method === 'POST') {
-        if (!requireOperator(req, url, res)) return true
+        if (!requireOperator(req, res)) return true
         let body: TeamCreateUserRequest
         try {
           body = (await readJson(req)) as TeamCreateUserRequest
@@ -550,7 +567,7 @@ export function createTeamUsersRoutes(opts: {
           json(res, 502, { error: `schema mint failed: ${(err as Error).message}` })
           return true
         }
-        const created = withState((state) => {
+        const created = await withState((state) => {
           if (state.users.some((u) => u.handle === handle)) return 'exists' as const
           const user: StoredUser = {
             id: uuid(),
@@ -573,9 +590,9 @@ export function createTeamUsersRoutes(opts: {
 
       const pairStart = url.pathname.match(/^\/api\/team\/users\/([^/]+)\/pair$/)
       if (pairStart && req.method === 'POST') {
-        if (!requireOperator(req, url, res)) return true
+        if (!requireOperator(req, res)) return true
         const userId = decodeURIComponent(pairStart[1])
-        const created = withState((state) => {
+        const created = await withState((state) => {
           const user = state.users.find((u) => u.id === userId)
           if (!user) return null
           const row: PairingCode = {
@@ -630,7 +647,7 @@ export function createTeamUsersRoutes(opts: {
         }
         const name = (body.name ?? '').trim().slice(0, 80)
         if (!name) return (json(res, 400, { error: 'name required' }), true)
-        const persona = withState((state) => {
+        const persona = await withState((state) => {
           const p: TeamPersona = {
             id: uuid(),
             userId: dev.userId,
@@ -660,7 +677,7 @@ export function createTeamUsersRoutes(opts: {
         }
         const content = (body.content ?? '').trim()
         if (!content) return (json(res, 400, { error: 'content required' }), true)
-        const note = withState((state) => {
+        const note = await withState((state) => {
           const owns = state.personas.some(
             (p) => p.id === body.personaId && p.userId === dev.userId,
           )

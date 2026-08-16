@@ -26,6 +26,8 @@ On datahub Postgres, when `RIVETOS_TEAM_PG_ADMIN_URL` is set:
 
 The team role is never granted `ros_*`. File-backed `team-users.json` is
 the default so the API works without datahub (tests / first boot).
+Writes take the same in-process mutex + O_EXCL file lock as the device
+roster so two concurrent note posts cannot drop a row.
 
 ## HTTP
 
@@ -55,6 +57,14 @@ mesh cert yet. After redeem, the app stores `deviceToken` and sends
 
 Live model turns, household shared memory, voice, mTLS for the team app.
 
+
+## Dev proxy / operator
+
+den-server treats loopback as operator. The rivet-team Vite app on `:5180`
+proxies `/api` to that loopback den (`RIVETTEAM_DEV_GATEWAY`, default
+`:5174`), so **any browser that can reach the Vite port can mint users**
+via "New person" with no extra credential. Fine on a home/dev box. Do not
+point that proxy at a shared or LAN-exposed den.
 
 ## QA (two people)
 

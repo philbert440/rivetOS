@@ -298,6 +298,50 @@ describe('team schema mint', () => {
 })
 
 describe('team store file', () => {
+  it('keeps both notes when two writes race', async () => {
+    const routes = createTeamUsersRoutes({ stateDir: tmpState(), denToken: '' })
+    const srv = await listen(routes)
+    try {
+      const created = await json<TeamUserResponse>(srv.base, 'POST', '/api/team/users', {
+        body: { handle: 'phil', displayName: 'Phil' },
+      })
+      const pair = await json<TeamPairStartResponse>(
+        srv.base,
+        'POST',
+        `/api/team/users/${created.body.user.id}/pair`,
+      )
+      const red = await json<TeamPairRedeemResponse>(srv.base, 'POST', '/api/team/pair/redeem', {
+        body: { code: pair.body.code },
+      })
+      const personas = await json<TeamPersonasResponse>(srv.base, 'GET', '/api/team/personas', {
+        token: red.body.deviceToken,
+      })
+      const personaId = personas.body.personas[0].id
+      const [a, b] = await Promise.all([
+        json(srv.base, 'POST', '/api/team/notes', {
+          token: red.body.deviceToken,
+          body: { personaId, role: 'user', content: 'race-a' },
+        }),
+        json(srv.base, 'POST', '/api/team/notes', {
+          token: red.body.deviceToken,
+          body: { personaId, role: 'user', content: 'race-b' },
+        }),
+      ])
+      expect(a.status).toBe(201)
+      expect(b.status).toBe(201)
+      const search = await json<TeamNotesSearchResponse>(
+        srv.base,
+        'GET',
+        '/api/team/notes/search?q=race&limit=20',
+        { token: red.body.deviceToken },
+      )
+      const texts = search.body.notes.map((n) => n.content).sort()
+      expect(texts).toEqual(['race-a', 'race-b'])
+    } finally {
+      await srv.close()
+    }
+  })
+
   it('writes team-users.json owner-only', async () => {
     const dir = tmpState()
     const routes = createTeamUsersRoutes({ stateDir: dir, denToken: '' })
