@@ -6,6 +6,16 @@ Persona sidebar + one live thread. Stack matches rivethub-web
 From this directory: install JS deps, then start the Vite dev server
 (port 5180). Unit tests cover the stub gateway.
 
+Local-mode "Who is this" is click-to-sign-in with no password — isolation
+is by `userId` in this browser profile, not a credential. The session
+`deviceToken` (when live) is stored in plaintext `localStorage`; do not
+sync this origin onto a shared machine.
+
+The Vite `:5180` proxy forwards `/api` to loopback den-server
+(`RIVETTEAM_DEV_GATEWAY`, default `:5174`). Loopback is operator, so any
+browser that can reach `:5180` can mint household users. Home/dev only —
+do not share that proxy.
+
 When dropped into rivetOS, add this folder to root workspaces.
 
 
