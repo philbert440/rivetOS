@@ -518,9 +518,9 @@ describe('term manager', () => {
     const { manager, procs } = makeManager({ idleTtlMs: 1000, detachedTtlMs: 60_000 })
     const pty = manager.spawn('shell', 80, 24, '')
     const detach = manager.attach(pty.id, () => {})!
-    vi.advanceTimersByTime(5000) // suspended (fired, saw a viewer, no timer)
+    vi.advanceTimersByTime(5000) // quiet while attached — timer was cleared on attach
     expect(manager.write(pty.id, 'x')).toBe(true) // re-arms a timer while attached
-    vi.advanceTimersByTime(5000) // fires again, still attached → still alive
+    vi.advanceTimersByTime(5000) // fires, sees a viewer → suspends, still alive
     expect(procs[0].kills).toEqual([])
     detach()
     vi.advanceTimersByTime(999)

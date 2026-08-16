@@ -322,14 +322,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     r.detachTimer.unref?.()
   }
 
-  /** Activity-based auto-close: re-arm from lastActivityTs every time activity
-   *  lands (stdout, inject, write). Attached viewers DO hold this off — a
-   *  quiet harness with a terminal tab open on it stays alive (the tab is the
-   *  activity signal that matters); the previous "attached does not protect"
-   *  policy read as RivetHub randomly dying mid-session. The clock restarts
-   *  from `from` (default lastActivityTs; the last detach passes now()) so
-   *  closing a tab on a long-quiet harness starts a fresh idle window rather
-   *  than killing it on the spot — the detached-TTL governs that case. 0 = off. */
+  /** Activity-based auto-close: re-arm from `from` (default lastActivityTs)
+   *  every time activity lands (stdout, inject, write). Attached viewers
+   *  suspend it; the last detach re-arms from now() — NOT lastActivityTs — so
+   *  closing a tab on a long-quiet harness starts a fresh window instead of
+   *  killing on the spot (the detached-TTL governs that case). 0 = off. */
   const armIdleTtl = (r: PtyRecord, from: number = r.lastActivityTs): void => {
     if (r.idleTimer) {
       clearTimeout(r.idleTimer)
