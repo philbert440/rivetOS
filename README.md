@@ -121,7 +121,10 @@ rivetOS/
 │   ├── den/            # rivet-den companion renderer
 │   ├── rivethub-web/   # RivetHub web client
 │   ├── rivethub-desktop/ # RivetHub Tauri desktop shell
-│   ├── rivet-android/  # RivetHub Android client
+│   ├── rivet-android/  # RivetHub Android client (AGPL RikkaHub fork)
+│   ├── rivet-team-web/ # rivet-team web — persona sidebar + live thread
+│   ├── rivet-team-desktop/ # rivet-team Tauri desktop shell
+│   ├── rivet-team-android/ # rivet-team Android (Apache-2.0 Compose)
 │   └── site/           # Astro docs site
 ├── infra/              # Container Dockerfiles, Compose files, provisioning scripts
 └── docs/               # Full documentation (incl. example configs under docs/examples/)
@@ -289,6 +292,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 [Apache License 2.0](LICENSE)
 
 ### License boundary — `apps/rivet-android`
+
+`apps/rivet-team-android` is a **new Apache-2.0** Jetpack Compose client, not
+a copy of this fork. Do not copy AGPL sources from `apps/rivet-android/` into it.
 
 The Android client (`apps/rivet-android`) is **vendored source** — a RikkaHub
 fork licensed **AGPL-3.0**, a different license than the rest of this

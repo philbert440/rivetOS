@@ -1,0 +1,10 @@
+{
+  "name": "@rivetos/rivet-team-android",
+  "version": "0.1.0",
+  "private": true,
+  "description": "rivet-team Android — Jetpack Compose, Apache-2.0. Not a RikkaHub fork.",
+  "license": "Apache-2.0",
+  "nx": {
+    "tags": ["scope:app", "type:app", "domain:interfaces"]
+  }
+}

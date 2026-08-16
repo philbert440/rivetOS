@@ -1,0 +1,30 @@
+@import 'tailwindcss';
+
+/* Same Rivet brand tokens as rivethub-web (emerald on dark, DM Sans).
+   rivet-team is sibling chrome — no Hub rail, no blueprint-as-IA. */
+@theme {
+  --color-em: #34d399;
+  --color-em-dim: #10b981;
+  --color-bg: #0d1117;
+  --color-panel: #131a22;
+  --color-panel-2: #1a232e;
+  --color-line: #253041;
+  --color-ink: #e6edf3;
+  --color-ink-dim: #8b98a9;
+  --color-red: #f87171;
+  --color-warn: #fbbf24;
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
