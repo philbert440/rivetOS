@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -254,6 +254,24 @@ describe('team pairing vs den bearer', () => {
       })
       expect(me.status).toBe(200)
       expect(me.body.user.handle).toBe('alex')
+    } finally {
+      await srv.close()
+    }
+  })
+})
+
+describe('team store file', () => {
+  it('writes team-users.json owner-only', async () => {
+    const dir = tmpState()
+    const routes = createTeamUsersRoutes({ stateDir: dir, denToken: '' })
+    const srv = await listen(routes)
+    try {
+      const created = await json<TeamUserResponse>(srv.base, 'POST', '/api/team/users', {
+        body: { handle: 'phil', displayName: 'Phil' },
+      })
+      expect(created.status).toBe(201)
+      const mode = statSync(join(dir, 'team-users.json')).mode & 0o777
+      expect(mode).toBe(0o600)
     } finally {
       await srv.close()
     }

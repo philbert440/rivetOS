@@ -13,7 +13,7 @@
  * same posture as /api/devices/enroll.
  */
 
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, join } from 'node:path'
@@ -149,7 +149,7 @@ CREATE POLICY notes_owner ON ${s}.notes
 }
 
 export interface TeamSchemaAdmin {
-  ensureUserSchema(handle: string): Promise<{ schema: string; role: string }>
+  ensureUserSchema(handle: string): Promise<{ schema: string; role: string; url: string }>
   dropUserSchema(handle: string): Promise<void>
 }
 
@@ -192,8 +192,13 @@ export function createPgTeamSchemaAdmin(cfg: {
         await client.query(`REVOKE ALL ON SCHEMA public FROM ${roleId}`)
         await client.query(userSchemaSql(schema, role))
       })
+      const url = new URL(cfg.adminUrl)
+      url.username = role
+      url.password = password
       log(`[team] ensured schema ${schema} role ${role}`)
-      return { schema, role }
+      // DSN is returned so a later connect-as-role path can use it.
+      // Never put this on the public TeamUser wire.
+      return { schema, role, url: url.toString() }
     },
 
     async dropUserSchema(handle) {
@@ -235,8 +240,13 @@ interface StoredDevice extends TeamDevice {
   token: string
 }
 
+interface StoredUser extends TeamUser {
+  /** Minted role DSN when RIVETOS_TEAM_PG_ADMIN_URL is set. Never public. */
+  pgUrl?: string
+}
+
 interface FileState {
-  users: TeamUser[]
+  users: StoredUser[]
   pairing: PairingCode[]
   devices: StoredDevice[]
   personas: TeamPersona[]
@@ -260,7 +270,7 @@ function token(): string {
 }
 
 function pairCode(): string {
-  return randomBytes(4).toString('hex')
+  return randomBytes(16).toString('hex')
 }
 
 function defaultPersonas(userId: string): TeamPersona[] {
@@ -316,9 +326,10 @@ function loadState(file: string): FileState {
 }
 
 function saveState(file: string, state: FileState): void {
-  mkdirSync(dirname(file), { recursive: true })
+  // File holds live device tokens (and optional minted DSNs); owner-only.
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(state, null, 2))
+  writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 })
   renameSync(tmp, file)
 }
 
@@ -367,13 +378,19 @@ const readJson = (req: IncomingMessage, limit = 32 * 1024): Promise<unknown> =>
     req.on('error', reject)
   })
 
-function teamTokenFrom(req: IncomingMessage, url: URL): string {
+const tokenEqual = (a: string, b: string): boolean => {
+  const ba = Buffer.from(a)
+  const bb = Buffer.from(b)
+  return ba.length === bb.length && timingSafeEqual(ba, bb)
+}
+
+function teamTokenFrom(req: IncomingMessage): string {
   const header = req.headers.authorization ?? ''
   const m = TEAM_BEARER.exec(header)
   if (m) return m[1]
   const named = req.headers['x-rivet-team-token']
   if (typeof named === 'string' && named) return named
-  return url.searchParams.get('teamToken') ?? ''
+  return ''
 }
 
 export interface TeamUsersRoutes {
@@ -416,14 +433,14 @@ export function createTeamUsersRoutes(opts: {
       const m = TEAM_BEARER.exec(header)
       const q = url.searchParams.get('token') ?? ''
       const got = m?.[1] ?? q
-      if (got === denToken) return true
+      if (got && tokenEqual(got, denToken)) return true
     }
     json(res, 401, { error: 'operator token required' })
     return false
   }
 
   const deviceFor = (state: FileState, tok: string): StoredDevice | undefined =>
-    tok ? state.devices.find((d) => d.token === tok) : undefined
+    tok ? state.devices.find((d) => tokenEqual(d.token, tok)) : undefined
 
   const requireDevice = (
     req: IncomingMessage,
@@ -431,7 +448,7 @@ export function createTeamUsersRoutes(opts: {
     res: ServerResponse,
     state: FileState,
   ): StoredDevice | undefined => {
-    const tok = teamTokenFrom(req, url)
+    const tok = teamTokenFrom(req)
     const dev = deviceFor(state, tok)
     if (!dev) {
       json(res, 401, { error: 'team device token required' })
@@ -519,21 +536,26 @@ export function createTeamUsersRoutes(opts: {
           return true
         }
         const displayName = (body.displayName ?? handle).trim().slice(0, 80) || handle
+        let mintedUrl: string | undefined
         try {
-          if (admin) await admin.ensureUserSchema(handle)
+          if (admin) {
+            const minted = await admin.ensureUserSchema(handle)
+            mintedUrl = minted.url
+          }
         } catch (err) {
           json(res, 502, { error: `schema mint failed: ${(err as Error).message}` })
           return true
         }
         const created = withState((state) => {
           if (state.users.some((u) => u.handle === handle)) return 'exists' as const
-          const user: TeamUser = {
+          const user: StoredUser = {
             id: uuid(),
             handle,
             displayName,
             schemaName: teamSchemaName(handle),
             roleName: teamRoleName(handle),
             createdAt: now(),
+            ...(mintedUrl ? { pgUrl: mintedUrl } : {}),
           }
           state.users.push(user)
           state.personas.push(...defaultPersonas(user.id))
