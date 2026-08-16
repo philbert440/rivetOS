@@ -113,6 +113,9 @@ export const extractWikiTask: Task = async (payload, helpers) => {
     }))
 
     const summaryDate = (summary.latest_at ?? summary.created_at).toISOString().slice(0, 10)
+    // callLlm throws LlmCallError with the real reason (network, HTTP, truncated,
+    // empty). Do not collapse that into "empty LLM response" — graphile last_error
+    // is how operators filter retry-failed after an outage.
     const raw = await callLlm(
       WIKI_EXTRACT_SYSTEM_PROMPT,
       formatExtractionPrompt({
@@ -127,7 +130,6 @@ export const extractWikiTask: Task = async (payload, helpers) => {
       // it as an empty response and failed the job.
       { minChars: 2 },
     )
-    if (!raw) throw new Error('empty LLM response')
 
     const verifiedAt = (summary.latest_at ?? summary.created_at).toISOString()
     const { patches, rejected } = parseWikiPatches(raw, verifiedAt)
