@@ -19,8 +19,9 @@
 //   anything else            ignored (forward compatibility)
 //
 // Reattach: a closed browser tab detaches but never kills — the manager's
-// detached TTL owns the PTY's fate, and reattaching cancels the reaper and
-// replays scrollback byte-exactly.
+// detached TTL (and, from the last detach, a fresh idle-TTL window) owns the
+// PTY's fate; reattaching cancels both reapers and replays scrollback
+// byte-exactly.
 //
 // Backpressure, two tiers: a single client buffered past MAX_BUFFERED is
 // terminated (same rule as the /ws fanout — a reader that far behind is dead

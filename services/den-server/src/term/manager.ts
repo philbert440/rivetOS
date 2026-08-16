@@ -11,7 +11,10 @@
 //
 // Attachment (attach(id, cb, onExit?)) feeds live output + the exit
 // notification to a subscriber (the WS /term channel in term/ws.ts) and holds
-// off the detached-TTL reaper while at least one subscriber is attached.
+// off BOTH reapers while at least one subscriber is attached: the detached-TTL
+// (by definition) and the idle-TTL — a harness someone is looking at is never
+// SIGHUP'd out from under them for being quiet. The idle clock restarts on the
+// last detach.
 
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
@@ -88,7 +91,8 @@ interface PtyRecord {
   exitCode?: number | null
   detachTimer?: NodeJS.Timeout
   /** Fires when lastActivityTs is older than idleTtlMs (activity-based
-   *  auto-close; attached viewers do not hold this off). */
+   *  auto-close). Suspended while a viewer is attached; re-armed with a full
+   *  window on the last detach. */
   idleTimer?: NodeJS.Timeout
   sigkillTimer?: NodeJS.Timeout
   reapTimer?: NodeJS.Timeout
@@ -128,9 +132,10 @@ export interface TermManager {
   ptyForSession(denSession: string): string | undefined
   /** SIGHUP → SIGKILL(3s); exited records are reaped immediately. false = unknown id. */
   kill(id: string): boolean
-  /** Subscribe to live output; cancels the detached-TTL reaper while at least
-   *  one subscriber is attached. `onExit` (optional) fires once when the
-   *  child exits, after the final output has fanned out. Returns a detach fn;
+  /** Subscribe to live output; holds off BOTH the detached-TTL and idle-TTL
+   *  reapers while at least one subscriber is attached (the last detach
+   *  restarts both windows). `onExit` (optional) fires once when the child
+   *  exits, after the final output has fanned out. Returns a detach fn;
    *  null = unknown id. */
   attach(id: string, cb: DataSubscriber, onExit?: ExitSubscriber): (() => void) | null
   scrollback(id: string): Buffer | undefined
@@ -317,17 +322,19 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     r.detachTimer.unref?.()
   }
 
-  /** Activity-based auto-close: re-arm from lastActivityTs every time activity
-   *  lands (stdout, inject, write). Attached viewers do NOT hold this off —
-   *  a terminal tab left open on a quiet harness still expires. 0 = off. */
-  const armIdleTtl = (r: PtyRecord): void => {
+  /** Activity-based auto-close: re-arm from `from` (default lastActivityTs)
+   *  every time activity lands (stdout, inject, write). Attached viewers
+   *  suspend it; the last detach re-arms from now() — NOT lastActivityTs — so
+   *  closing a tab on a long-quiet harness starts a fresh window instead of
+   *  killing on the spot (the detached-TTL governs that case). 0 = off. */
+  const armIdleTtl = (r: PtyRecord, from: number = r.lastActivityTs): void => {
     if (r.idleTimer) {
       clearTimeout(r.idleTimer)
       r.idleTimer = undefined
     }
     const ttl = config.term.idleTtlMs
     if (ttl <= 0 || r.state !== 'running') return
-    const remaining = r.lastActivityTs + ttl - now()
+    const remaining = from + ttl - now()
     r.idleTimer = setTimeout(
       () => {
         r.idleTimer = undefined
@@ -338,6 +345,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           armIdleTtl(r)
           return
         }
+        // Attached viewer → suspend (no timer) until the last detach re-arms.
+        if (r.attached.size > 0) return
         audit('kill', r, { reason: 'idle-ttl' })
         escalate(r)
       },
@@ -621,13 +630,26 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         clearTimeout(r.detachTimer)
         r.detachTimer = undefined
       }
+      // Suspend the idle reaper on the 0→1 transition too (not only when it
+      // next fires) so "attached ⇒ no idle timer" holds immediately and
+      // symmetrically with the detached-TTL above. Activity while attached
+      // may re-arm it; the fire-time attached check makes that harmless.
+      if (r.idleTimer) {
+        clearTimeout(r.idleTimer)
+        r.idleTimer = undefined
+      }
       let detached = false
       return () => {
         if (detached) return
         detached = true
         r.attached.delete(cb)
         if (onExit) r.exitWatchers.delete(onExit)
-        if (r.attached.size === 0) armDetachedTtl(r)
+        if (r.attached.size === 0) {
+          armDetachedTtl(r)
+          // Last viewer gone: (re)start the idle window from now — whether
+          // the reaper was suspended or a re-armed timer is still pending.
+          armIdleTtl(r, now())
+        }
       }
     },
 
