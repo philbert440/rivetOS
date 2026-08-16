@@ -112,6 +112,8 @@ export const recompileWikiTask: Task = async (payload, helpers) => {
 
       const today = new Date().toISOString().slice(0, 10)
       const verifiedAt = new Date().toISOString()
+      // callLlm throws LlmCallError with the real failure reason (not a generic
+      // "empty LLM response") so graphile last_error stays actionable.
       const raw = await callLlm(
         WIKI_RECOMPILE_SYSTEM_PROMPT,
         formatRecompilePrompt({
@@ -128,7 +130,6 @@ export const recompileWikiTask: Task = async (payload, helpers) => {
         Math.max(WIKI_EXTRACT_MAX_TOKENS, 8000),
         { minChars: 2 },
       )
-      if (!raw) throw new Error('empty LLM response')
 
       const { patch, rejected } = parseRecompileResult(raw, slug, verifiedAt)
       if (!patch) {
