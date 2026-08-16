@@ -16,25 +16,39 @@ export interface MemoryNote {
 }
 
 const PREFIX = 'rivet-team.memory.'
+const memoryByUser = new Map<string, MemoryNote[]>()
 
 function load(userId: string): MemoryNote[] {
-  if (typeof localStorage === 'undefined') return []
+  const cached = memoryByUser.get(userId)
+  if (cached) return cached
+  let notes: MemoryNote[] = []
   try {
-    const raw = localStorage.getItem(PREFIX + userId)
-    const parsed: unknown = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed) ? (parsed as MemoryNote[]) : []
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(PREFIX + userId)
+      const parsed: unknown = raw ? JSON.parse(raw) : []
+      if (Array.isArray(parsed)) notes = parsed as MemoryNote[]
+    }
   } catch {
-    return []
+    notes = []
   }
+  memoryByUser.set(userId, notes)
+  return notes
 }
 
 function save(userId: string, notes: MemoryNote[]): void {
-  if (typeof localStorage === 'undefined') return
+  const clipped = notes.slice(-200)
+  memoryByUser.set(userId, clipped)
   try {
-    localStorage.setItem(PREFIX + userId, JSON.stringify(notes.slice(-200)))
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(PREFIX + userId, JSON.stringify(clipped))
+    }
   } catch {
     /* quota / private mode */
   }
+}
+
+export function resetMemory(): void {
+  memoryByUser.clear()
 }
 
 export function appendMemory(note: Omit<MemoryNote, 'id' | 'createdAt'>): MemoryNote {

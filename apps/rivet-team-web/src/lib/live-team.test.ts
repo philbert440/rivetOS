@@ -6,10 +6,11 @@ afterEach(() => {
 })
 
 describe('live team client', () => {
-  it('maps personas from /api/team', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
+  it('maps personas from /api/team and sends the device bearer', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      expect(headers.get('authorization')).toBe('Bearer tok')
+      return {
         ok: true,
         json: async () => ({
           personas: [
@@ -22,12 +23,14 @@ describe('live team client', () => {
             },
           ],
         }),
-      })),
-    )
+      }
+    })
+    vi.stubGlobal('fetch', fetchMock)
     const personas = await livePersonas('tok')
     expect(personas).toHaveLength(1)
     expect(personas[0].name).toBe('Kitchen')
     expect(personas[0].systemPrompt).toBe('cook')
+    expect(fetchMock).toHaveBeenCalled()
   })
 
   it('posts a note and searches', async () => {

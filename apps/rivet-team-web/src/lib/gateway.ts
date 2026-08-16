@@ -1,17 +1,11 @@
 /**
  * The gateway surface rivet-team talks to.
  *
- * Method names, paths, and return types match `@rivetos/gateway-client`
- * RivetGateway for the session + memory subset:
- *   GET  /api/sessions
- *   GET  /api/sessions/:id/messages
- *   POST /api/sessions/:id/messages
- *   WS   /api/sessions/ws
- *   GET  /api/memory/search
- *   GET  /healthz
- *
- * Personas are team-local this slice (user-specific roster, not a gateway
- * resource yet). Household memory and voice are out of scope.
+ * Session turn methods keep RivetGateway names (`postMessage`, `watchSessions`)
+ * so a later per-user bind can swap the stub. Notes/memory for this app are
+ * **not** `GET /api/memory/search` (that is the agent corpus). They go through
+ * `/api/team/notes*` keyed by the signed-in user. Household memory and voice
+ * stay out of scope.
  */
 
 import type {
@@ -39,7 +33,8 @@ export interface TeamGateway {
     opts?: WatchOptions,
   ): Subscription
   memorySearch(
-    query: { q: string; scope?: 'messages' | 'summaries' | 'both'; limit?: number },
+    userId: string,
+    query: { q: string; limit?: number },
     signal?: AbortSignal,
   ): Promise<MemorySearchResponse>
   health(signal?: AbortSignal): Promise<boolean>

@@ -60,9 +60,10 @@ fun TeamApp() {
         return
     }
     val gateway = remember { StubGateway.shared }
-    val personas = remember(user) { gateway.listPersonas(user!!.id) }
-    var selected by remember { mutableStateOf(personas.firstOrNull()) }
-    val messages = remember { mutableStateListOf<TeamMessage>() }
+    val current = user!!
+    val personas = remember(current.id) { gateway.listPersonas(current.id) }
+    var selected by remember(current.id) { mutableStateOf(personas.firstOrNull()) }
+    val messages = remember(current.id) { mutableStateListOf<TeamMessage>() }
     var working by remember { mutableStateOf<String?>(null) }
     var draft by remember { mutableStateOf("") }
 
@@ -90,6 +91,8 @@ fun TeamApp() {
             personas = personas,
             selected = selected,
             onSelect = { selected = it },
+            onSwitchPerson = { user = null },
+            userLabel = "${current.displayName} @${current.handle}",
             modifier = Modifier.width(220.dp).fillMaxHeight(),
         )
         Column(Modifier.weight(1f).fillMaxHeight()) {
@@ -104,7 +107,7 @@ fun TeamApp() {
                     val text = draft.trim()
                     if (text.isEmpty()) return@Composer
                     draft = ""
-                    gateway.postMessage(p.threadId, text, user!!.id)
+                    gateway.postMessage(p.threadId, text, current.id)
                 },
             )
         }
@@ -116,6 +119,8 @@ private fun PersonaRail(
     personas: List<Persona>,
     selected: Persona?,
     onSelect: (Persona) -> Unit,
+    onSwitchPerson: () -> Unit,
+    userLabel: String,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
@@ -149,7 +154,11 @@ private fun PersonaRail(
             Spacer(Modifier.height(4.dp))
         }
         Spacer(Modifier.weight(1f))
+        Text(userLabel, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp)
         Text("gateway stub", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp)
+        Button(onClick = onSwitchPerson, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+            Text("Switch person")
+        }
     }
 }
 

@@ -23,6 +23,7 @@ interface TeamState {
   wsStatus: WsStatus
   working: boolean
   memoryNotes: number
+  lastError: string | null
   selectPersona: (id: string) => void
   send: (text: string) => Promise<void>
   refreshMemory: () => void
@@ -47,12 +48,8 @@ async function persistNote(
   content: string,
 ): Promise<void> {
   if (token) {
-    try {
-      await liveCreateNote(token, { personaId: persona.id, role, content })
-      return
-    } catch {
-      /* fall through to local */
-    }
+    await liveCreateNote(token, { personaId: persona.id, role, content })
+    return
   }
   appendMemory({ userId, content, role, agent: persona.id })
 }
@@ -69,6 +66,7 @@ export const useTeam = create<TeamState>((set, get) => ({
   wsStatus: 'closed',
   working: false,
   memoryNotes: 0,
+  lastError: null,
 
   refreshMemory() {
     const { deviceToken, userId } = get()
@@ -116,7 +114,13 @@ export const useTeam = create<TeamState>((set, get) => ({
           }))
           if (frame.role === 'assistant') {
             void persistNote(get().deviceToken, userId, persona, 'assistant', frame.text)
-            get().refreshMemory()
+              .then(() => {
+                useTeam.setState({ lastError: null })
+                get().refreshMemory()
+              })
+              .catch((err: Error) => {
+                useTeam.setState({ lastError: err.message })
+              })
           }
         }
       },
@@ -129,7 +133,13 @@ export const useTeam = create<TeamState>((set, get) => ({
     const { selectedId, personas, userId, deviceToken } = get()
     const persona = personas.find((p) => p.id === selectedId)
     if (!persona) return
-    await persistNote(deviceToken, userId, persona, 'user', text)
+    try {
+      await persistNote(deviceToken, userId, persona, 'user', text)
+      set({ lastError: null })
+    } catch (err) {
+      set({ lastError: (err as Error).message })
+      return
+    }
     await getGateway().postMessage(persona.threadId, { text, userId, agent: persona.id })
     get().refreshMemory()
   },
@@ -155,6 +165,7 @@ export async function bootTeam(user?: TeamUser, deviceToken?: string): Promise<v
     live,
     personas,
     memoryNotes: 0,
+    lastError: null,
   })
   useTeam.getState().refreshMemory()
   const first = personas[0]

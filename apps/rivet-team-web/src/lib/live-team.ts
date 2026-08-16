@@ -62,7 +62,7 @@ export async function liveCreateNote(
 export async function liveSearchNotes(token: string, q = ''): Promise<LiveNote[]> {
   const qs = new URLSearchParams()
   if (q) qs.set('q', q)
-  qs.set('limit', '50')
+  qs.set('limit', '200')
   const body = await read<{ notes: LiveNote[] }>(`/api/team/notes/search?${qs}`, {
     headers: headers(token),
   })

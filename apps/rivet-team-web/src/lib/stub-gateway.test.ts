@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { createStubGateway } from './stub-gateway.js'
-import { SAMPLE_PERSONAS } from './seed.js'
+import { SAMPLE_PERSONAS, samplePersonasFor } from './seed.js'
 import type { SessionWsFrame } from './types.js'
 
 describe('createStubGateway', () => {
@@ -31,5 +31,20 @@ describe('createStubGateway', () => {
     const messages = frames.filter((f) => f.kind === 'message')
     expect(messages.some((m) => m.kind === 'message' && m.role === 'user')).toBe(true)
     expect(messages.some((m) => m.kind === 'message' && m.role === 'assistant')).toBe(true)
+  })
+
+  it('keeps thread ids and memorySearch scoped per user', async () => {
+    const { appendMemory, resetMemory } = await import('./memory.js')
+    resetMemory()
+    const g = createStubGateway()
+    const aThreads = samplePersonasFor('user-aaaa').map((p) => p.threadId)
+    const bThreads = samplePersonasFor('user-bbbb').map((p) => p.threadId)
+    expect(aThreads.some((id) => bThreads.includes(id))).toBe(false)
+    appendMemory({ userId: 'user-aaaa', content: 'alpha secret', role: 'user', agent: 'p' })
+    appendMemory({ userId: 'user-bbbb', content: 'beta only', role: 'user', agent: 'p' })
+    const a = await g.memorySearch('user-aaaa', { q: 'secret' })
+    const b = await g.memorySearch('user-bbbb', { q: 'secret' })
+    expect(a.hits).toHaveLength(1)
+    expect(b.hits).toHaveLength(0)
   })
 })

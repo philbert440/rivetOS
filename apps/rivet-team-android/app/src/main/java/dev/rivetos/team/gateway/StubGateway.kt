@@ -14,7 +14,7 @@ class StubGateway(
 ) : TeamGateway {
     private val threads = mutableMapOf<String, MutableList<TeamMessage>>()
     private val watchers = mutableMapOf<String, CopyOnWriteArrayList<(GatewayEvent) -> Unit>>()
-    private val memory = mutableListOf<String>()
+    private val memory = mutableMapOf<String, MutableList<String>>()
     private val main = Handler(Looper.getMainLooper())
 
     override fun listPersonas(userId: String): List<Persona> =
@@ -52,7 +52,7 @@ class StubGateway(
                 ts = System.currentTimeMillis(),
             )
             threads.getOrPut(sessionId) { mutableListOf() }.add(reply)
-            memory.add("${persona?.name}: ${text.take(160)}")
+            memory.getOrPut(userId) { mutableListOf() }.add("${persona?.name}: ${text.take(160)}")
             emit(sessionId, GatewayEvent.Done)
             emit(sessionId, GatewayEvent.Message(reply))
         }, 450)
@@ -67,7 +67,7 @@ class StubGateway(
     override fun memorySearch(userId: String, q: String): List<String> {
         val needle = q.lowercase()
         if (needle.isBlank()) return emptyList()
-        return memory.filter { it.lowercase().contains(needle) }
+        return memory[userId].orEmpty().filter { it.lowercase().contains(needle) }
     }
 
     private fun emit(sessionId: String, event: GatewayEvent) {

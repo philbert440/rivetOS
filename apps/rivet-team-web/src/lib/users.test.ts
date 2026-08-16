@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { createLocalUser, listLocalUsers, resetLocalUsers } from './users.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createLocalUser, listLocalUsers, resetLocalUsers, tryCreateLiveUser } from './users.js'
 
 describe('local team users', () => {
   afterEach(() => {
@@ -19,5 +19,17 @@ describe('local team users', () => {
     createLocalUser('phil', 'Phil')
     expect(() => createLocalUser('PHIL', 'Other')).toThrow(/taken|invalid/)
     expect(() => createLocalUser('ros_messages', 'Nope')).toThrow(/invalid/)
+  })
+
+  it('does not fall back to local when the live API returns 409', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'handle taken' }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(tryCreateLiveUser('phil', 'Phil')).rejects.toThrow(/handle taken/)
+    expect(listLocalUsers()).toEqual([])
+    vi.unstubAllGlobals()
   })
 })

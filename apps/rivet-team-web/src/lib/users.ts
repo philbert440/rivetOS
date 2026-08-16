@@ -80,6 +80,8 @@ export function loadSession(): TeamSession | null {
 
 export function saveSession(session: TeamSession | null): void {
   if (typeof localStorage === 'undefined') return
+  // deviceToken is a long-lived household bearer. Fine on a trusted LAN
+  // browser profile; do not sync this origin to a shared machine.
   if (!session) localStorage.removeItem(SESSION_KEY)
   else localStorage.setItem(SESSION_KEY, JSON.stringify(session))
 }
@@ -118,16 +120,48 @@ export function createLocalUser(handle: string, displayName: string): TeamUser {
   return user
 }
 
+export class LiveTeamError extends Error {
+  status?: number
+  kind: 'http' | 'network'
+  constructor(message: string, opts: { status?: number; kind: 'http' | 'network' }) {
+    super(message)
+    this.status = opts.status
+    this.kind = opts.kind
+  }
+}
+
+function isOffline(err: unknown): boolean {
+  if (!(err instanceof LiveTeamError)) return true
+  if (err.kind === 'network') return true
+  const status = err.status ?? 0
+  return status === 404 || status >= 500
+}
+
 async function liveJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: {
-      'content-type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  })
-  const body = (await res.json()) as T & { error?: string }
-  if (!res.ok) throw new Error(body.error || `team api ${res.status}`)
+  let res: Response
+  try {
+    res = await fetch(path, {
+      ...init,
+      headers: {
+        'content-type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    })
+  } catch (err) {
+    throw new LiveTeamError((err as Error).message || 'network error', { kind: 'network' })
+  }
+  let body: T & { error?: string }
+  try {
+    body = (await res.json()) as T & { error?: string }
+  } catch {
+    throw new LiveTeamError(`team api ${res.status}`, { status: res.status, kind: 'http' })
+  }
+  if (!res.ok) {
+    throw new LiveTeamError(body.error || `team api ${res.status}`, {
+      status: res.status,
+      kind: 'http',
+    })
+  }
   return body
 }
 
@@ -135,22 +169,25 @@ export async function tryCreateLiveUser(
   handle: string,
   displayName: string,
 ): Promise<TeamSession | null> {
+  let created: { user: TeamUser }
   try {
-    const created = await liveJson<{ user: TeamUser }>('/api/team/users', {
+    created = await liveJson<{ user: TeamUser }>('/api/team/users', {
       method: 'POST',
       body: JSON.stringify({ handle, displayName }),
     })
-    const pair = await liveJson<{ code: string }>(`/api/team/users/${created.user.id}/pair`, {
-      method: 'POST',
-    })
-    const redeemed = await liveJson<{ user: TeamUser; deviceToken: string }>(
-      '/api/team/pair/redeem',
-      { method: 'POST', body: JSON.stringify({ code: pair.code, label: 'rivet-team-web' }) },
-    )
-    return { user: redeemed.user, deviceToken: redeemed.deviceToken, source: 'live' }
-  } catch {
-    return null
+  } catch (err) {
+    if (isOffline(err)) return null
+    throw err
   }
+  // User exists on the server now — do not invent a local twin if pair fails.
+  const pair = await liveJson<{ code: string }>(`/api/team/users/${created.user.id}/pair`, {
+    method: 'POST',
+  })
+  const redeemed = await liveJson<{ user: TeamUser; deviceToken: string }>(
+    '/api/team/pair/redeem',
+    { method: 'POST', body: JSON.stringify({ code: pair.code, label: 'rivet-team-web' }) },
+  )
+  return { user: redeemed.user, deviceToken: redeemed.deviceToken, source: 'live' }
 }
 
 export async function tryRedeemLive(code: string): Promise<TeamSession | null> {
@@ -160,8 +197,9 @@ export async function tryRedeemLive(code: string): Promise<TeamSession | null> {
       { method: 'POST', body: JSON.stringify({ code, label: 'rivet-team-web' }) },
     )
     return { user: redeemed.user, deviceToken: redeemed.deviceToken, source: 'live' }
-  } catch {
-    return null
+  } catch (err) {
+    if (isOffline(err)) return null
+    throw err
   }
 }
 

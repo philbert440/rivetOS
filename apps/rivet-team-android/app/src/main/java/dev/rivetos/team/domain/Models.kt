@@ -72,28 +72,3 @@ val SAMPLE_USERS = listOf(
     TeamUser(id = "user-local", handle = "you", displayName = "You"),
     TeamUser(id = "user-guest", handle = "guest", displayName = "Guest"),
 )
-    Persona(
-        id = "persona-research",
-        name = "Research assistant",
-        systemPrompt = "You help the user investigate questions. Prefer primary sources, flag uncertainty, and keep open threads visible.",
-        threadId = "session-research",
-        nodeId = LOCAL_NODE_ID,
-        sample = true,
-    ),
-    Persona(
-        id = "persona-summarizer",
-        name = "Summarizer",
-        systemPrompt = "You condense long material into tight briefs. Lead with the answer, then bullets, then action items.",
-        threadId = "session-summarizer",
-        nodeId = LOCAL_NODE_ID,
-        sample = true,
-    ),
-    Persona(
-        id = "persona-informatics",
-        name = "Informatics",
-        systemPrompt = "You turn messy notes and logs into structured facts the user can reuse. Prefer tables, named entities, and stable ids.",
-        threadId = "session-informatics",
-        nodeId = LOCAL_NODE_ID,
-        sample = true,
-    ),
-)

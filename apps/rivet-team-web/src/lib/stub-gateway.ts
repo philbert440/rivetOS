@@ -132,8 +132,8 @@ export function createStubGateway(config: GatewayClientConfig = { baseUrl: 'http
       }
     },
 
-    async memorySearch(query): Promise<MemorySearchResponse> {
-      return searchMemory(LOCAL_USER_ID, query)
+    async memorySearch(userId, query): Promise<MemorySearchResponse> {
+      return searchMemory(userId, query)
     },
 
     async health(): Promise<boolean> {
