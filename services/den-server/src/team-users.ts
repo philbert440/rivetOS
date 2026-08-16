@@ -682,7 +682,7 @@ export function createTeamUsersRoutes(opts: {
         const dev = requireDevice(req, url, res, state)
         if (!dev) return true
         const q = (url.searchParams.get('q') ?? '').trim().toLowerCase()
-        const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
+        const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
         const notes = state.notes.filter((n) => {
           if (n.userId !== dev.userId) return false
           if (!q) return true
