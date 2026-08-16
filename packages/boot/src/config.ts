@@ -243,8 +243,8 @@ export interface DenSection {
     /** Explicit opt-out of the tokenless security gate (trusted LAN only). */
     open?: boolean
     /** Auto-close a harness PTY after this many ms with no activity
-     *  (output / inject / write). Maps to RIVETOS_DEN_TERM_IDLE_TTL_MS.
-     *  Default 1800000 (30 min); 0 disables. */
+     *  (output / inject / write) and no viewer attached. Maps to
+     *  RIVETOS_DEN_TERM_IDLE_TTL_MS. Default 1800000 (30 min); 0 disables. */
     idle_ttl_ms?: number
   }
   /** Override for the SpritePack root served at /packs/ (default: <install>/packages/den-packs/packs) */
