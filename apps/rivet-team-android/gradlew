@@ -1,0 +1,5 @@
+#!/bin/sh
+# Minimal Gradle wrapper launcher. Full script can be regenerated with:
+#   gradle wrapper --gradle-version 8.11.1
+APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec java -classpath "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"

@@ -1,0 +1,23 @@
+{
+  "name": "@rivetos/rivet-team-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "rivet-team desktop — thin Tauri 2 shell over rivet-team-web",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  },
+  "nx": {
+    "tags": ["scope:app", "type:app", "domain:interfaces"],
+    "targets": {
+      "build": {
+        "dependsOn": ["@rivetos/rivet-team-web:build"]
+      }
+    }
+  }
+}
