@@ -114,4 +114,27 @@ describe('callLlm', () => {
     )
     await expect(callLlm('sys', 'user', 100, { minChars: 2 })).resolves.toBe('[]')
   })
+
+  it('labels an abort as timeout, not unreachable', async () => {
+    fetchMock.mockRejectedValue(new DOMException('This operation was aborted', 'AbortError'))
+    const err = await callLlm('sys', 'user', 100).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LlmCallError)
+    expect(String((err as Error).message)).toMatch(/timed out after 5000ms/)
+    expect(String((err as Error).message)).not.toMatch(/unreachable/)
+  })
+
+  it('labels a malformed 200 body as invalid JSON, not unreachable', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => {
+        throw new SyntaxError('Unexpected token < in JSON')
+      },
+    } as unknown as Response)
+    const err = await callLlm('sys', 'user', 100).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LlmCallError)
+    expect(String((err as Error).message)).toMatch(/invalid JSON/)
+    expect(String((err as Error).message)).not.toMatch(/unreachable/)
+  })
 })

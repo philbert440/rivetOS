@@ -44,15 +44,21 @@ export class LlmCallError extends Error {
   }
 }
 
-function formatNetworkError(err: unknown): string {
+function formatAttemptError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err)
+  // Our own AbortController — the endpoint may be fine, just slow.
+  if (err instanceof Error && err.name === 'AbortError') {
+    return `LLM timed out after ${String(LLM_TIMEOUT_MS)}ms at ${config.llmUrl}`
+  }
+  // The endpoint answered but the body was not JSON — "unreachable" would
+  // send ops chasing the wrong failure class.
+  if (err instanceof SyntaxError) {
+    return `LLM returned invalid JSON at ${config.llmUrl} (${msg})`
+  }
   // undici uses "fetch failed" with the real cause on `error.cause`.
+  const rawCause = err instanceof Error ? err.cause : undefined
   const cause =
-    err instanceof Error && err.cause instanceof Error
-      ? err.cause.message
-      : err instanceof Error && err.cause
-        ? String(err.cause)
-        : null
+    rawCause instanceof Error ? rawCause.message : typeof rawCause === 'string' ? rawCause : null
   const detail = cause && !msg.includes(cause) ? `${msg}: ${cause}` : msg
   return `LLM unreachable at ${config.llmUrl} (${detail})`
 }
@@ -113,7 +119,9 @@ export async function callLlm(
       }
 
       if (!response.ok) {
-        lastError = new Error(`LLM HTTP ${response.status}: ${response.statusText || 'server error'}`)
+        lastError = new Error(
+          `LLM HTTP ${response.status}: ${response.statusText || 'server error'}`,
+        )
         if (attempt < LLM_RETRIES) {
           const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
           console.error(
@@ -163,7 +171,7 @@ export async function callLlm(
       // LlmCallError from the 4xx path — rethrow as-is (no further retries).
       if (err instanceof LlmCallError) throw err
 
-      lastError = new Error(formatNetworkError(err))
+      lastError = new Error(formatAttemptError(err))
       if (attempt < LLM_RETRIES) {
         const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
         console.error(
