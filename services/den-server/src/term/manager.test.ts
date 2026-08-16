@@ -479,15 +479,49 @@ describe('term manager', () => {
     expect(procs[0].kills).toEqual(['SIGHUP'])
   })
 
-  it('kills an idle pty after idleTtlMs even when a viewer is attached', () => {
+  it('kills an idle pty after idleTtlMs when nobody is attached', () => {
     vi.useFakeTimers()
     const { manager, procs } = makeManager({ idleTtlMs: 1000, detachedTtlMs: 60_000 })
-    const pty = manager.spawn('shell', 80, 24, '')
-    manager.attach(pty.id, () => {}) // attached must not protect from idle
+    manager.spawn('shell', 80, 24, '')
     vi.advanceTimersByTime(999)
     expect(procs[0].kills).toEqual([])
     vi.advanceTimersByTime(1)
     expect(procs[0].kills).toEqual(['SIGHUP'])
+  })
+
+  it('an attached viewer suspends the idle TTL; the last detach restarts a full window', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ idleTtlMs: 1000, detachedTtlMs: 60_000 })
+    const pty = manager.spawn('shell', 80, 24, '')
+    const detachA = manager.attach(pty.id, () => {})!
+    const detachB = manager.attach(pty.id, () => {})!
+    // Quiet for many idle windows with a viewer open — must NOT be reaped
+    // (this was the RivetHub "[process exited 129]" report: harness SIGHUP'd
+    // out from under an open terminal tab after 30 quiet minutes).
+    vi.advanceTimersByTime(10_000)
+    expect(procs[0].kills).toEqual([])
+    detachA()
+    vi.advanceTimersByTime(10_000)
+    expect(procs[0].kills).toEqual([]) // one viewer still attached
+    detachB()
+    // Last detach: idle window restarts from now, NOT from the stale
+    // lastActivityTs — closing a tab on a long-quiet harness must not kill it
+    // on the spot (that is the detached-TTL's job, 60s here).
+    vi.advanceTimersByTime(999)
+    expect(procs[0].kills).toEqual([])
+    vi.advanceTimersByTime(1)
+    expect(procs[0].kills).toEqual(['SIGHUP'])
+  })
+
+  it('re-attaching before the restarted idle window elapses suspends it again', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ idleTtlMs: 1000, detachedTtlMs: 60_000 })
+    const pty = manager.spawn('shell', 80, 24, '')
+    manager.attach(pty.id, () => {})!()
+    vi.advanceTimersByTime(900)
+    manager.attach(pty.id, () => {}) // back before the window closes
+    vi.advanceTimersByTime(10_000)
+    expect(procs[0].kills).toEqual([])
   })
 
   it('activity (inject / write / output) re-arms the idle TTL', () => {
