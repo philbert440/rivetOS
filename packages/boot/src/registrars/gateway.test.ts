@@ -156,10 +156,14 @@ describe('buildGatewayEnv — device enrollment', () => {
     vi.stubEnv('RIVETOS_DEN_UPLOAD_DIR', '/var/lib/rivetos/staging')
     vi.stubEnv('RIVETOS_DEN_UPLOAD_MAX_BYTES', '52428800')
     vi.stubEnv('RIVETOS_DEN_UPLOAD_TTL_MS', '3600000')
+    vi.stubEnv('RIVETOS_TEAM_PG_ADMIN_URL', 'postgres://admin:s3cret@192.0.2.50:5432/team')
     const env = buildGatewayEnv(base({}), '/opt/rivetos')
     expect(env.RIVETOS_DEN_UPLOAD_DIR).toBe('/var/lib/rivetos/staging')
     expect(env.RIVETOS_DEN_UPLOAD_MAX_BYTES).toBe('52428800')
     expect(env.RIVETOS_DEN_UPLOAD_TTL_MS).toBe('3600000')
+    expect(env.RIVETOS_TEAM_PG_ADMIN_URL).toBe(
+      'postgres://admin:s3cret@192.0.2.50:5432/team',
+    )
   })
 
   it('omits the upload knobs when the process env is silent (den defaults win)', () => {
@@ -167,6 +171,7 @@ describe('buildGatewayEnv — device enrollment', () => {
     expect(env.RIVETOS_DEN_UPLOAD_DIR).toBeUndefined()
     expect(env.RIVETOS_DEN_UPLOAD_MAX_BYTES).toBeUndefined()
     expect(env.RIVETOS_DEN_UPLOAD_TTL_MS).toBeUndefined()
+    expect(env.RIVETOS_TEAM_PG_ADMIN_URL).toBeUndefined()
   })
 
   it('omits PG admin env when devices is on but admin URL is unset', () => {

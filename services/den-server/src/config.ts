@@ -129,6 +129,11 @@ export interface DenConfig {
    * as `devices`: hand-built test configs predating the field stay valid.
    */
   pgUrl?: string
+  /**
+   * CREATEROLE URL for per-user team schemas on datahub. Empty = file store
+   * only (tests / first boot). Env: RIVETOS_TEAM_PG_ADMIN_URL.
+   */
+  teamPgAdminUrl?: string
 }
 
 /** Staging area for remote-client harness attachments (see harness/uploads.ts). */
@@ -267,5 +272,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     // the top level because it is no longer a devices-only concern: the alias
     // reconstructor reads it with no relation to device enrollment.
     pgUrl: env.RIVETOS_PG_URL ?? '',
+    teamPgAdminUrl: env.RIVETOS_TEAM_PG_ADMIN_URL ?? '',
   }
 }

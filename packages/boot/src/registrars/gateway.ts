@@ -171,6 +171,7 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     'RIVETOS_DEN_UPLOAD_DIR',
     'RIVETOS_DEN_UPLOAD_MAX_BYTES',
     'RIVETOS_DEN_UPLOAD_TTL_MS',
+    'RIVETOS_TEAM_PG_ADMIN_URL',
   ] as const) {
     const value = process.env[key]?.trim()
     if (value) env[key] = value
