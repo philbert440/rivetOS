@@ -137,11 +137,14 @@ async function compactLeaf(
     `[CompactWorker] Leaf: ${messages.rows.length} messages for ${conversationId.slice(0, 8)}`,
   )
 
-  const summaryText = await callLlm(LEAF_SYSTEM_PROMPT, formatted, LEAF_MAX_TOKENS)
-  if (!summaryText) {
+  let summaryText: string
+  try {
+    summaryText = await callLlm(LEAF_SYSTEM_PROMPT, formatted, LEAF_MAX_TOKENS)
+  } catch (err) {
     const failures = recordFailure(conversationId)
+    const msg = err instanceof Error ? err.message : String(err)
     console.error(
-      `[CompactWorker] Empty leaf summary for ${conversationId.slice(0, 8)} (failure ${failures}/${breakerThreshold})`,
+      `[CompactWorker] Leaf LLM failed for ${conversationId.slice(0, 8)}: ${msg} (failure ${failures}/${breakerThreshold})`,
     )
     return 0
   }
@@ -230,9 +233,14 @@ async function compactParentLevel(
     `[CompactWorker] ${cfg.label}: ${children.rows.length} ${cfg.childKind}s for ${conversationId.slice(0, 8)}`,
   )
 
-  const summaryText = await callLlm(cfg.systemPrompt, formatted, cfg.maxTokens)
-  if (!summaryText) {
-    console.error(`[CompactWorker] Empty ${cfg.kind} summary for ${conversationId}`)
+  let summaryText: string
+  try {
+    summaryText = await callLlm(cfg.systemPrompt, formatted, cfg.maxTokens)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(
+      `[CompactWorker] ${cfg.kind} LLM failed for ${conversationId.slice(0, 8)}: ${msg}`,
+    )
     return 0
   }
 

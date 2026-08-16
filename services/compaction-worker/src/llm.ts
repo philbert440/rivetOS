@@ -2,7 +2,11 @@
  * Hardened LLM call — undici dispatcher with explicit timeouts, retries on
  * 5xx + transient errors, no retries on 4xx.
  *
- * Returns the LLM response content, or null if the call failed after retries.
+ * On success returns the response content. On terminal failure throws
+ * `LlmCallError` with the *real* last failure reason (network, HTTP status,
+ * truncated, empty/short). Callers that previously treated every null as
+ * "empty LLM response" were poisoning graphile `last_error` — live extract-wiki
+ * dead piles said "empty" while the journal logged "fetch failed".
  *
  * Ported from plugins/memory/postgres/workers/compaction/index.js#callLlm.
  */
@@ -29,6 +33,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** Terminal LLM failure after retries — message is safe for graphile last_error. */
+export class LlmCallError extends Error {
+  readonly attempts: number
+
+  constructor(message: string, attempts: number) {
+    super(message)
+    this.name = 'LlmCallError'
+    this.attempts = attempts
+  }
+}
+
+function formatNetworkError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err)
+  // undici uses "fetch failed" with the real cause on `error.cause`.
+  const cause =
+    err instanceof Error && err.cause instanceof Error
+      ? err.cause.message
+      : err instanceof Error && err.cause
+        ? String(err.cause)
+        : null
+  const detail = cause && !msg.includes(cause) ? `${msg}: ${cause}` : msg
+  return `LLM unreachable at ${config.llmUrl} (${detail})`
+}
+
 /**
  * `minChars` guards against thinking-mode models that burn the whole budget on
  * reasoning and return nothing usable. It defaults to 20, which is right for
@@ -43,7 +71,7 @@ export async function callLlm(
   userContent: string,
   maxTokens: number,
   opts: { minChars?: number } = {},
-): Promise<string | null> {
+): Promise<string> {
   const minChars = opts.minChars ?? 20
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (config.llmApiKey) {
@@ -61,6 +89,7 @@ export async function callLlm(
   })
 
   let lastError: Error | null = null
+  const totalAttempts = LLM_RETRIES + 1
 
   for (let attempt = 0; attempt <= LLM_RETRIES; attempt++) {
     const ctrl = new AbortController()
@@ -76,18 +105,19 @@ export async function callLlm(
       })
 
       if (!response.ok && response.status < 500) {
-        console.error(
-          `[CompactWorker] LLM ${response.status}: ${response.statusText} (not retrying)`,
+        // 4xx — not retryable. Throw immediately with a clear status.
+        throw new LlmCallError(
+          `LLM HTTP ${response.status}: ${response.statusText || 'client error'} (not retrying)`,
+          attempt + 1,
         )
-        return null
       }
 
       if (!response.ok) {
-        lastError = new Error(`HTTP ${response.status}: ${response.statusText}`)
+        lastError = new Error(`LLM HTTP ${response.status}: ${response.statusText || 'server error'}`)
         if (attempt < LLM_RETRIES) {
           const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
           console.error(
-            `[CompactWorker] LLM ${response.status}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
+            `[CompactWorker] ${lastError.message}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
           )
           await sleep(delay)
           continue
@@ -115,7 +145,7 @@ export async function callLlm(
         lastError = new Error(
           truncated
             ? `LLM response truncated at max_tokens=${String(maxTokens)}`
-            : 'Empty or too-short LLM response',
+            : `Empty or too-short LLM response (minChars=${String(minChars)}, got ${content ? content.trim().length : 0})`,
         )
         if (attempt < LLM_RETRIES) {
           const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
@@ -130,11 +160,14 @@ export async function callLlm(
 
       return content
     } catch (err) {
-      lastError = err as Error
+      // LlmCallError from the 4xx path — rethrow as-is (no further retries).
+      if (err instanceof LlmCallError) throw err
+
+      lastError = new Error(formatNetworkError(err))
       if (attempt < LLM_RETRIES) {
         const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
         console.error(
-          `[CompactWorker] LLM error: ${(err as Error).message}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
+          `[CompactWorker] LLM error: ${lastError.message}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
         )
         await sleep(delay)
         continue
@@ -145,8 +178,7 @@ export async function callLlm(
     }
   }
 
-  console.error(
-    `[CompactWorker] LLM call failed after ${LLM_RETRIES + 1} attempts: ${lastError?.message}`,
-  )
-  return null
+  const message = lastError?.message ?? 'LLM call failed'
+  console.error(`[CompactWorker] LLM call failed after ${totalAttempts} attempts: ${message}`)
+  throw new LlmCallError(message, totalAttempts)
 }
