@@ -1,11 +1,12 @@
 /**
  * rivet-team UI state: selected persona, one live thread, working chip.
- * Gateway I/O goes through TeamGateway (stub this slice).
+ * Turns stay on the stub. Personas/notes use /api/team when paired.
  */
 
 import { create } from 'zustand'
 import { getGateway } from '../lib/gateway.js'
-import { memoryCount } from '../lib/memory.js'
+import { appendMemory, memoryCount } from '../lib/memory.js'
+import { liveCreateNote, livePersonas, liveSearchNotes } from '../lib/live-team.js'
 import type { Persona, Subscription, TeamMessage, WsStatus } from '../lib/types.js'
 import { LOCAL_NODE_ID, LOCAL_USER_ID } from '../lib/types.js'
 import type { TeamUser } from '../lib/users.js'
@@ -14,6 +15,8 @@ interface TeamState {
   userId: string
   userHandle: string
   userName: string
+  deviceToken: string | null
+  live: boolean
   personas: Persona[]
   selectedId: string | null
   messages: TeamMessage[]
@@ -36,10 +39,30 @@ function tag(persona: Persona, userId: string, msg: { id: string; sessionId: str
   }
 }
 
+async function persistNote(
+  token: string | null,
+  userId: string,
+  persona: Persona,
+  role: string,
+  content: string,
+): Promise<void> {
+  if (token) {
+    try {
+      await liveCreateNote(token, { personaId: persona.id, role, content })
+      return
+    } catch {
+      /* fall through to local */
+    }
+  }
+  appendMemory({ userId, content, role, agent: persona.id })
+}
+
 export const useTeam = create<TeamState>((set, get) => ({
   userId: LOCAL_USER_ID,
   userHandle: 'local',
   userName: 'Local',
+  deviceToken: null,
+  live: false,
   personas: [],
   selectedId: null,
   messages: [],
@@ -48,7 +71,16 @@ export const useTeam = create<TeamState>((set, get) => ({
   memoryNotes: 0,
 
   refreshMemory() {
-    set({ memoryNotes: memoryCount(get().userId) })
+    const { deviceToken, userId } = get()
+    if (deviceToken) {
+      void liveSearchNotes(deviceToken, '').then((notes) => {
+        if (get().userId === userId) set({ memoryNotes: notes.length })
+      }).catch(() => {
+        set({ memoryNotes: memoryCount(userId) })
+      })
+      return
+    }
+    set({ memoryNotes: memoryCount(userId) })
   },
 
   selectPersona(id: string) {
@@ -82,7 +114,10 @@ export const useTeam = create<TeamState>((set, get) => ({
             messages: s.messages.some((m) => m.id === next.id) ? s.messages : [...s.messages, next],
             working: frame.role === 'assistant' ? false : s.working,
           }))
-          if (frame.role === 'assistant') get().refreshMemory()
+          if (frame.role === 'assistant') {
+            void persistNote(get().deviceToken, userId, persona, 'assistant', frame.text)
+            get().refreshMemory()
+          }
         }
       },
       persona.threadId,
@@ -91,24 +126,37 @@ export const useTeam = create<TeamState>((set, get) => ({
   },
 
   async send(text: string) {
-    const { selectedId, personas, userId } = get()
+    const { selectedId, personas, userId, deviceToken } = get()
     const persona = personas.find((p) => p.id === selectedId)
     if (!persona) return
+    await persistNote(deviceToken, userId, persona, 'user', text)
     await getGateway().postMessage(persona.threadId, { text, userId, agent: persona.id })
+    get().refreshMemory()
   },
 }))
 
-export function bootTeam(user?: TeamUser): void {
+export async function bootTeam(user?: TeamUser, deviceToken?: string): Promise<void> {
   const userId = user?.id ?? LOCAL_USER_ID
-  const g = getGateway()
-  const personas = g.listPersonas(userId)
+  let personas = getGateway().listPersonas(userId)
+  let live = false
+  if (deviceToken) {
+    try {
+      personas = await livePersonas(deviceToken)
+      live = true
+    } catch {
+      live = false
+    }
+  }
   useTeam.setState({
     userId,
     userHandle: user?.handle ?? 'local',
     userName: user?.displayName ?? 'Local',
+    deviceToken: deviceToken ?? null,
+    live,
     personas,
-    memoryNotes: memoryCount(userId),
+    memoryNotes: 0,
   })
+  useTeam.getState().refreshMemory()
   const first = personas[0]
   if (first) useTeam.getState().selectPersona(first.id)
 }

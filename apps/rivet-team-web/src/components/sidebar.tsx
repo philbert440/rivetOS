@@ -11,6 +11,7 @@ export function Sidebar(): JSX.Element {
   const wsStatus = useTeam((s) => s.wsStatus)
   const userName = useTeam((s) => s.userName)
   const userHandle = useTeam((s) => s.userHandle)
+  const live = useTeam((s) => s.live)
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-panel/80">
@@ -58,7 +59,7 @@ export function Sidebar(): JSX.Element {
       <div className="border-t border-line px-4 py-3 text-[11px] text-ink-dim">
         <div>Memory · {memoryNotes} notes (this person only)</div>
         <div className="mt-1 font-mono">
-          gateway {wsStatus}
+          {live ? 'store live' : 'store local'} · {wsStatus}
           <span className="ml-2 text-ink-dim/80">stub turns</span>
         </div>
         <button

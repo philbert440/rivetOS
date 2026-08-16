@@ -7,7 +7,7 @@
  */
 
 import type { TeamGateway } from './gateway.js'
-import { appendMemory, searchMemory } from './memory.js'
+import { searchMemory } from './memory.js'
 import { personaByThread, samplePersonasFor } from './seed.js'
 import type {
   GatewayClientConfig,
@@ -111,12 +111,6 @@ export function createStubGateway(config: GatewayClientConfig = { baseUrl: 'http
           event: { type: 'done', content: '' },
         })
         emit({ kind: 'message', ...reply })
-        appendMemory({
-          userId,
-          content: `${persona?.name ?? 'persona'}: ${body.text.slice(0, 160)}`,
-          role: 'user',
-          agent: persona?.id ?? sessionId,
-        })
       }, delay)
 
       return { accepted: true, session: sessionId }

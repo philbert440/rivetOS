@@ -26,14 +26,14 @@ function Root(): JSX.Element {
   const [session, setSession] = useState<TeamSession | null>(() => loadSession())
   if (!session) {
     return <UserGate onReady={(next) => {
-      bootTeam(next.user)
-      setSession(next)
+      void bootTeam(next.user, next.deviceToken).then(() => setSession(next))
     }} />
   }
   return <TeamPage />
 }
 
-bootTeam(loadSession()?.user)
+const existing = loadSession()
+void bootTeam(existing?.user, existing?.deviceToken)
 
 const rootEl = document.getElementById('root')
 if (!rootEl) throw new Error('missing #root element')

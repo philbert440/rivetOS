@@ -5,7 +5,9 @@
   "identifier": "dev.rivetos.rivetteam",
   "build": {
     "frontendDist": "../../rivet-team-web/dist",
-    "devUrl": "http://127.0.0.1:5180"
+    "devUrl": "http://127.0.0.1:5180",
+    "beforeDevCommand": "npm run dev --prefix ../rivet-team-web",
+    "beforeBuildCommand": "npm run build --prefix ../rivet-team-web"
   },
   "app": {
     "withGlobalTauri": true,
