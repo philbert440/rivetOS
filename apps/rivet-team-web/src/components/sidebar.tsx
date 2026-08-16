@@ -1,5 +1,6 @@
 import type { JSX } from 'react'
 import { cn, initials } from '../lib/utils.js'
+import { saveSession } from '../lib/users.js'
 import { useTeam } from '../stores/team.js'
 
 export function Sidebar(): JSX.Element {
@@ -8,12 +9,16 @@ export function Sidebar(): JSX.Element {
   const selectPersona = useTeam((s) => s.selectPersona)
   const memoryNotes = useTeam((s) => s.memoryNotes)
   const wsStatus = useTeam((s) => s.wsStatus)
+  const userName = useTeam((s) => s.userName)
+  const userHandle = useTeam((s) => s.userHandle)
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-panel/80">
       <div className="px-4 py-4">
         <div className="font-mono text-sm font-semibold tracking-wide text-em">rivet-team</div>
-        <p className="mt-1 text-xs text-ink-dim">Personas · one thread each</p>
+        <p className="mt-1 text-xs text-ink-dim">
+          {userName} · @{userHandle}
+        </p>
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 px-2" aria-label="Personas">
@@ -51,11 +56,21 @@ export function Sidebar(): JSX.Element {
       </nav>
 
       <div className="border-t border-line px-4 py-3 text-[11px] text-ink-dim">
-        <div>Memory · {memoryNotes} notes (shared, local)</div>
+        <div>Memory · {memoryNotes} notes (this person only)</div>
         <div className="mt-1 font-mono">
           gateway {wsStatus}
-          <span className="ml-2 text-ink-dim/80">stub</span>
+          <span className="ml-2 text-ink-dim/80">stub turns</span>
         </div>
+        <button
+          type="button"
+          className="mt-2 text-[11px] text-em hover:underline"
+          onClick={() => {
+            saveSession(null)
+            window.location.reload()
+          }}
+        >
+          Switch person
+        </button>
       </div>
     </aside>
   )

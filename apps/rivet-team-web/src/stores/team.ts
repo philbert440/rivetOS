@@ -8,9 +8,12 @@ import { getGateway } from '../lib/gateway.js'
 import { memoryCount } from '../lib/memory.js'
 import type { Persona, Subscription, TeamMessage, WsStatus } from '../lib/types.js'
 import { LOCAL_NODE_ID, LOCAL_USER_ID } from '../lib/types.js'
+import type { TeamUser } from '../lib/users.js'
 
 interface TeamState {
   userId: string
+  userHandle: string
+  userName: string
   personas: Persona[]
   selectedId: string | null
   messages: TeamMessage[]
@@ -35,6 +38,8 @@ function tag(persona: Persona, userId: string, msg: { id: string; sessionId: str
 
 export const useTeam = create<TeamState>((set, get) => ({
   userId: LOCAL_USER_ID,
+  userHandle: 'local',
+  userName: 'Local',
   personas: [],
   selectedId: null,
   messages: [],
@@ -93,10 +98,17 @@ export const useTeam = create<TeamState>((set, get) => ({
   },
 }))
 
-export function bootTeam(): void {
+export function bootTeam(user?: TeamUser): void {
+  const userId = user?.id ?? LOCAL_USER_ID
   const g = getGateway()
-  const personas = g.listPersonas(LOCAL_USER_ID)
-  useTeam.setState({ personas, memoryNotes: memoryCount(LOCAL_USER_ID) })
+  const personas = g.listPersonas(userId)
+  useTeam.setState({
+    userId,
+    userHandle: user?.handle ?? 'local',
+    userName: user?.displayName ?? 'Local',
+    personas,
+    memoryNotes: memoryCount(userId),
+  })
   const first = personas[0]
   if (first) useTeam.getState().selectPersona(first.id)
 }

@@ -37,14 +37,30 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.rivetos.team.domain.Persona
+import dev.rivetos.team.domain.SAMPLE_USERS
 import dev.rivetos.team.domain.TeamMessage
+import dev.rivetos.team.domain.TeamUser
 import dev.rivetos.team.gateway.GatewayEvent
 import dev.rivetos.team.gateway.StubGateway
 
 @Composable
 fun TeamApp() {
+    var user by remember { mutableStateOf<TeamUser?>(null) }
+    if (user == null) {
+        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp)) {
+            Text("Who is this?", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.titleLarge)
+            Text("Each person has their own personas and memory.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            Spacer(Modifier.height(16.dp))
+            SAMPLE_USERS.forEach { u ->
+                Button(onClick = { user = u }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Text("${u.displayName}  @${u.handle}")
+                }
+            }
+        }
+        return
+    }
     val gateway = remember { StubGateway.shared }
-    val personas = remember { gateway.listPersonas(StubGateway.USER) }
+    val personas = remember(user) { gateway.listPersonas(user!!.id) }
     var selected by remember { mutableStateOf(personas.firstOrNull()) }
     val messages = remember { mutableStateListOf<TeamMessage>() }
     var working by remember { mutableStateOf<String?>(null) }
@@ -88,7 +104,7 @@ fun TeamApp() {
                     val text = draft.trim()
                     if (text.isEmpty()) return@Composer
                     draft = ""
-                    gateway.postMessage(p.threadId, text, StubGateway.USER)
+                    gateway.postMessage(p.threadId, text, user!!.id)
                 },
             )
         }

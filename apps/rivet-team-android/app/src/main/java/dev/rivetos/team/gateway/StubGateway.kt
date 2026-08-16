@@ -17,13 +17,16 @@ class StubGateway(
     private val memory = mutableListOf<String>()
     private val main = Handler(Looper.getMainLooper())
 
-    override fun listPersonas(userId: String): List<Persona> = SAMPLE_PERSONAS
+    override fun listPersonas(userId: String): List<Persona> =
+        dev.rivetos.team.domain.samplePersonasFor(userId)
 
     override fun sessionMessages(sessionId: String): List<TeamMessage> =
         threads[sessionId]?.toList() ?: emptyList()
 
     override fun postMessage(sessionId: String, text: String, userId: String) {
-        val persona = SAMPLE_PERSONAS.firstOrNull { it.threadId == sessionId }
+        val persona = threads[sessionId]?.firstOrNull()?.let { msg ->
+            dev.rivetos.team.domain.samplePersonasFor(msg.userId).firstOrNull { it.threadId == sessionId }
+        } ?: SAMPLE_PERSONAS.firstOrNull { it.threadId == sessionId }
         val user = TeamMessage(
             id = UUID.randomUUID().toString(),
             sessionId = sessionId,

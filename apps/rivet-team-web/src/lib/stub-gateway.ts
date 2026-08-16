@@ -8,7 +8,7 @@
 
 import type { TeamGateway } from './gateway.js'
 import { appendMemory, searchMemory } from './memory.js'
-import { personaByThread, SAMPLE_PERSONAS } from './seed.js'
+import { personaByThread, samplePersonasFor } from './seed.js'
 import type {
   GatewayClientConfig,
   MemorySearchResponse,
@@ -58,7 +58,7 @@ export function createStubGateway(config: GatewayClientConfig = { baseUrl: 'http
 
     async listSessions(): Promise<SessionsListResponse> {
       return {
-        sessions: SAMPLE_PERSONAS.map((p) => {
+        sessions: samplePersonasFor(LOCAL_USER_ID).map((p) => {
           const msgs = threads.get(p.threadId) ?? []
           return {
             id: p.threadId,
@@ -146,8 +146,8 @@ export function createStubGateway(config: GatewayClientConfig = { baseUrl: 'http
       return true
     },
 
-    listPersonas(_userId: string): Persona[] {
-      return SAMPLE_PERSONAS
+    listPersonas(userId: string): Persona[] {
+      return samplePersonasFor(userId)
     },
   }
 }
