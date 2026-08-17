@@ -17,7 +17,7 @@ declare global {
     };
     dictation: {
       available: boolean;
-      engine: "apple-speech" | "none";
+      engine: "apple-speech" | "web-speech" | "none";
       onDevice: boolean;
       reasonCode?: string;
     };

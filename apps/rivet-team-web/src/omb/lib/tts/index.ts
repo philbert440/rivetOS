@@ -46,6 +46,12 @@ export class Speaker {
     for (const watcher of [...this.watchers]) watcher(next)
   }
 
+  isSpeaking(messageId?: string): boolean {
+    if (this.snapshot.status === 'idle') return false
+    if (messageId) return this.snapshot.messageId === messageId
+    return this.snapshot.status === 'speaking' || this.snapshot.status === 'preparing'
+  }
+
   stop() {
     this.token += 1
     globalThis.window?.speechSynthesis?.cancel()

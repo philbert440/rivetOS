@@ -1,3 +1,11 @@
+import { webSpeechAvailable } from './speech'
+
+function browserDictation(): DesktopCapabilities['dictation'] {
+  return webSpeechAvailable()
+    ? { available: true, engine: 'web-speech', onDevice: false }
+    : { available: false, engine: 'none', onDevice: false, reasonCode: 'no-web-speech' }
+}
+
 const browserCapabilities: DesktopCapabilities = {
   host: {
     platform: "other",
@@ -11,11 +19,8 @@ const browserCapabilities: DesktopCapabilities = {
     interaction: "none",
     reasonCode: "desktop-app-required",
   },
-  dictation: {
-    available: false,
-    engine: "none",
-    onDevice: false,
-    reasonCode: "desktop-app-required",
+  get dictation() {
+    return browserDictation()
   },
   localComputer: {
     available: false,
@@ -27,12 +32,12 @@ const browserCapabilities: DesktopCapabilities = {
 let cached: DesktopCapabilities | null = null;
 
 export function browserDesktopCapabilities(): DesktopCapabilities {
-  return browserCapabilities;
+  return { ...browserCapabilities, dictation: browserDictation() };
 }
 
 export function initialDesktopCapabilities(): DesktopCapabilities {
   const platform = window.ogb?.platform;
-  if (!platform) return browserCapabilities;
+  if (!platform) return browserDesktopCapabilities();
   const isMac = platform === "darwin";
   return {
     ...browserCapabilities,
@@ -42,22 +47,22 @@ export function initialDesktopCapabilities(): DesktopCapabilities {
       label: platform === "darwin" ? "macOS" : platform === "linux" ? "Linux" : platform === "win32" ? "Windows" : "Desktop",
     },
     windowChrome: isMac ? "mac-inset" : "native",
-    dictation: {
-      available: isMac,
-      engine: isMac ? "apple-speech" : "none",
-      onDevice: isMac,
-      ...(!isMac ? { reasonCode: "unsupported-platform" } : {}),
-    },
+    dictation: isMac
+      ? { available: true, engine: "apple-speech", onDevice: true }
+      : browserDictation(),
   };
 }
 
 export async function loadDesktopCapabilities(): Promise<DesktopCapabilities> {
   if (cached) return cached;
-  if (!window.ogb?.getCapabilities) return browserCapabilities;
+  if (!window.ogb?.getCapabilities) return browserDesktopCapabilities();
   try {
     cached = await window.ogb.getCapabilities();
   } catch {
-    cached = browserCapabilities;
+    cached = browserDesktopCapabilities();
+  }
+  if (!cached.dictation.available && webSpeechAvailable()) {
+    cached = { ...cached, dictation: browserDictation() };
   }
   return cached;
 }

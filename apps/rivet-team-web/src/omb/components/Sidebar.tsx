@@ -137,26 +137,26 @@ function groupPreview(group: Group, bots: Bot[]): string {
   return last.from ? `${last.from.name}: ${text}` : text;
 }
 
-/** Room avatar: 2–3 overlapping mauses in the same 56px slot a bot gets. */
+/** Room avatar: 2–3 overlapping faces in the same 36px slot a persona gets. */
 function StackedMauses({ members }: { members: Bot[] }) {
   if (members.length <= 1) {
     const b = members[0];
     return (
-      <div className="flex size-14 shrink-0 items-center justify-center">
-        {b ? <MausAvatar color={b.color} state="happy" size={56} /> : <Users size={24} className="text-ink-secondary" />}
+      <div className="flex size-9 shrink-0 items-center justify-center">
+        {b ? <MausAvatar color={b.color} state="happy" size={36} /> : <Users size={16} className="text-ink-secondary" />}
       </div>
     );
   }
   const shown = members.slice(0, 3);
   const extra = members.length - shown.length;
   return (
-    <div className="flex size-14 shrink-0 items-center justify-center">
-      <div className="flex items-center -space-x-3">
+    <div className="flex size-9 shrink-0 items-center justify-center">
+      <div className="flex items-center -space-x-2">
         {shown.map((b) => (
-          <MausAvatar key={b.id} color={b.color} state="happy" size={30} />
+          <MausAvatar key={b.id} color={b.color} state="happy" size={22} />
         ))}
         {extra > 0 && (
-          <span className="z-10 flex size-[22px] items-center justify-center rounded-full border border-hairline/40 bg-raised text-[10px] font-medium text-ink-secondary">
+          <span className="z-10 flex size-[16px] items-center justify-center rounded-full border border-hairline/40 bg-raised text-[9px] font-medium text-ink-secondary">
             +{extra}
           </span>
         )}
@@ -180,7 +180,7 @@ function GroupListItem({ group, onMenu }: { group: Group; onMenu: (menu: { group
         onMenu({ groupId: group.id, x: e.clientX, y: e.clientY });
       }}
       className={cn(
-        "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left",
+        "flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left",
         selected ? "bg-raised" : "hover:bg-raised/50",
       )}
     >
@@ -812,7 +812,7 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
         onMenu({ botId: bot.id, x: e.clientX, y: e.clientY });
       }}
       className={cn(
-        "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left",
+        "flex w-full items-center gap-2.5 rounded-xl border px-3 py-2 text-left",
         bot.chiefOfStaff
           ? selected
             ? "border-accent/40 bg-accent/15"
@@ -825,7 +825,7 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
       <MausAvatar
         color={bot.color}
         state={stateForBot({ ...bot, messages: visible })}
-        size={56}
+        size={36}
         motion={mascotMotion?.kind ?? "none"}
         motionKey={mascotMotion?.nonce ?? 0}
       />

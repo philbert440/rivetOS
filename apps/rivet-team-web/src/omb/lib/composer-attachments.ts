@@ -98,9 +98,10 @@ export async function attachmentsFromDroppedFiles<T extends DroppedFile>(
         try {
           return { attachment: pasteAttachment(await file.text()) };
         } catch {
-          // Treat an unreadable browser drag like any other pathless file.
+          // Fall through and keep the file as a named chip.
         }
       }
+      if (file.name) return { attachment: fileAttachment(file.name, file.name, file.size) };
       return { rejectedName: file.name };
     }),
   );

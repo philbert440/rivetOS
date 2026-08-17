@@ -9,6 +9,7 @@ import { resetLocalUsers } from './lib/users.js'
 import { resetMemory } from './lib/memory.js'
 import { nodeIdForBot, probeNodeComputer } from './omb/lib/node-computer.js'
 import { Speaker } from './omb/lib/tts/index.js'
+import { attachmentsFromDroppedFiles } from './omb/lib/composer-attachments.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -63,6 +64,34 @@ describe('node computer / voice / memory surfaces', () => {
     for (const call of fetchSpy.mock.calls) {
       expect(String(call[0])).not.toMatch(/elevenlabs/i)
     }
+  })
+
+  it('attaches pathless browser files by name or inlined text', async () => {
+    const text = await attachmentsFromDroppedFiles(
+      [{ name: 'notes.txt', size: 5, type: 'text/plain', text: async () => 'hello' }],
+      () => '',
+    )
+    expect(text.attachments[0]?.kind).toBe('paste')
+    const pic = await attachmentsFromDroppedFiles(
+      [{ name: 'pic.png', size: 12, type: 'image/png', text: async () => 'x' }],
+      () => '',
+    )
+    expect(pic.attachments[0]).toMatchObject({ kind: 'file', name: 'pic.png', path: 'pic.png' })
+  })
+
+  it('composer shows attach and dictate, call is a real phone button', () => {
+    const composer = readFileSync(join(root, 'src/omb/components/Composer.tsx'), 'utf8')
+    const call = readFileSync(join(root, 'src/omb/components/CallView.tsx'), 'utf8')
+    const sidebar = readFileSync(join(root, 'src/omb/components/Sidebar.tsx'), 'utf8')
+    expect(composer).toMatch(/Paperclip/)
+    expect(composer).toMatch(/Attach files/)
+    expect(composer).toMatch(/Start dictation/)
+    expect(composer).not.toMatch(/capabilities\.dictation\.available && \(/)
+    expect(call).toMatch(/export function CallButton/)
+    expect(call).toMatch(/<Phone /)
+    expect(call).not.toMatch(/export function CallButton\([^)]*\): null/)
+    expect(sidebar).toMatch(/size=\{36\}/)
+    expect(sidebar).not.toMatch(/size=\{56\}/)
   })
 
   it('PluginsPanel is memory/wiki, ComputerPanel is node-bound', () => {

@@ -154,10 +154,12 @@ export function SettingsModal() {
             {section === 'voice' && (
               <Card
                 title="Rivet voice"
-                subtitle="Speak uses den /api/tts/speak when present, then this device's voice stack. Not ElevenLabs."
+                subtitle="Mic in the composer, call in the header, speak on replies. Den /api/tts/speak when present, then this device. Not ElevenLabs."
               >
                 <p className="text-[14px] text-ink">
-                  {voiceStackReady() || state.config?.tts?.ready ? 'Ready — hover a reply and tap speak.' : 'No voice stack on this client.'}
+                  {voiceStackReady() || state.config?.tts?.ready
+                    ? 'Ready — paperclip attaches files, mic dictates, phone starts a call, speak reads a reply.'
+                    : 'No voice stack on this client.'}
                 </p>
               </Card>
             )}

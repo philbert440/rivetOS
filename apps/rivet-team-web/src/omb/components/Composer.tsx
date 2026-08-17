@@ -1,12 +1,13 @@
 import { track } from "@/lib/analytics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Clock, Mic, Square, Users, X } from "lucide-react";
+import { ArrowUp, Clock, Mic, Paperclip, Square, Users, X } from "lucide-react";
 import { useStore, visibleMessages, type Bot, type Group } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useComposerDraft } from "@/lib/drafts";
 import { MausAvatar } from "./Avatar";
 import { ComposerAttachments } from "./ComposerAttachments";
 import {
+  attachmentsFromDroppedFiles,
   composeMessage,
   isLongPaste,
   pasteAttachment,
@@ -14,6 +15,7 @@ import {
 } from "@/lib/composer-attachments";
 import { normalizeState } from "@/lib/mascot";
 import { groupComposerHint } from "@/lib/group-routing";
+import { dictationAvailable, onSpeechEnd, onSpeechTranscript, speechStart, speechStop } from "@/lib/speech";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 
@@ -80,6 +82,7 @@ export function Composer({
   const [highlight, setHighlight] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null); // Esc'd this @
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   // what was typed before the mic went on — partials append after it
   const baseText = useRef("");
 
@@ -161,47 +164,60 @@ export function Composer({
     }
   }, [busy, queued, bot, group, dispatch]);
 
-  // native dictation: partials stream into the input while the Swift
-  // helper runs; the final transcript stays in the box, ready to edit/send
+  // Dictation: den/ogb when present, else this device's Web Speech stack.
   useEffect(() => {
     if (!recording) return;
-    const bridge = window.ogb;
-    if (!bridge) {
+    if (!dictationAvailable() && !capabilities.dictation.available) {
       setRecording(false);
+      setSpeechError("Dictation isn't available on this device.");
       return;
     }
     setSpeechError(null);
-    const offTranscript = bridge.onSpeechTranscript((line) => {
+    const offTranscript = onSpeechTranscript((line) => {
+      if (line.error) {
+        setSpeechError("Dictation stopped. Check microphone permission.");
+        return;
+      }
       if (typeof line.text === "string") {
         const base = baseText.current;
         setText(base ? `${base} ${line.text}` : line.text);
       }
     });
-    const offEnd = bridge.onSpeechEnd(({ code }) => {
+    const offEnd = onSpeechEnd(({ code }) => {
       setRecording(false);
-      if (code === 2) {
-        setSpeechError("Dictation is only available on macOS for now.");
-      } else if (code === 1) {
-        setSpeechError(
-          "Dictation needs Microphone + Speech Recognition access — System Settings → Privacy & Security.",
-        );
-      }
+      if (code === 2) setSpeechError("Dictation isn't available on this device.");
+      else if (code === 1) setSpeechError("Microphone or speech recognition was denied.");
     });
-    void bridge.speechStart();
+    void speechStart().catch(() => {
+      setRecording(false);
+      setSpeechError("The microphone could not start.");
+    });
     return () => {
       offTranscript();
       offEnd();
-      void bridge.speechStop();
+      speechStop();
     };
-  }, [recording]);
+  }, [recording, capabilities.dictation.available]);
 
   const toggleMic = () => {
-    if (!capabilities.dictation.available || !window.ogb) {
-      setSpeechError("Dictation isn't available in this build.");
+    if (recording) {
+      setRecording(false);
+      return;
+    }
+    if (!dictationAvailable() && !capabilities.dictation.available) {
+      setSpeechError("Dictation isn't available on this device.");
       return;
     }
     baseText.current = text.trim();
-    setRecording((r) => !r);
+    setRecording(true);
+  };
+
+  const pickFiles = async (list: FileList | null) => {
+    const files = Array.from(list ?? []);
+    if (!files.length) return;
+    const pathFor = (file: File) => window.ogb?.getPathForFile?.(file) ?? "";
+    const { attachments: next } = await attachmentsFromDroppedFiles(files, pathFor);
+    if (next.length) addAttachments(next);
   };
 
   return (
@@ -283,7 +299,29 @@ export function Composer({
           onAdd={addAttachments}
           onRemove={removeAttachment}
         />
-        <div className="flex items-end gap-2 rounded-3xl border border-hairline/40 bg-raised/60 py-2 pl-3 pr-2">
+        <div className="flex items-end gap-2 rounded-3xl border border-hairline/40 bg-raised/60 py-2 pl-2 pr-2">
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          className="sr-only"
+          aria-hidden
+          tabIndex={-1}
+          onChange={(e) => {
+            void pickFiles(e.target.files);
+            e.currentTarget.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={Boolean(approval)}
+          aria-label="Attach files"
+          title="Attach files"
+          className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
+        >
+          <Paperclip size={16} />
+        </button>
         <textarea
           ref={inputRef}
           rows={1}
@@ -370,7 +408,7 @@ export function Composer({
             <Square size={14} className="fill-current" />
           </button>
         )}
-        {!busy && !hasContent && capabilities.dictation.available && (
+        {!busy && !hasContent && (
           <button
             onClick={toggleMic}
             aria-label={recording ? "Stop dictation" : "Start dictation"}
