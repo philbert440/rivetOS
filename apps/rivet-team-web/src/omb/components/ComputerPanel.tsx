@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Loader2, Monitor, X } from 'lucide-react'
 import { useStore, type Bot } from '@/state/store'
 import { cn } from '@/lib/cn'
+import { loadTeamAppSettings } from '@/lib/team-settings'
 import { nodeIdForBot, probeNodeComputer, spawnNodeShell, type NodeComputerStatus } from '@/lib/node-computer'
 
 /** Right-side computer slot. Bound to the persona's Rivet node, not Box. */
@@ -12,6 +13,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [ptyId, setPtyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const nodeId = nodeIdForBot(bot.id)
+  const desktopUrl = loadTeamAppSettings().desktopUrl.trim()
 
   useEffect(() => {
     let alive = true
@@ -52,8 +54,23 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       </header>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4">
         <p className="text-[13px] text-ink-secondary">
-          Bound to node <span className="font-mono text-ink">{nodeId}</span>
+          Shell on node <span className="font-mono text-ink">{nodeId}</span>. Desktop is the one household GUI every persona shares.
         </p>
+        {desktopUrl ? (
+          <a
+            href={desktopUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="block overflow-hidden rounded-xl border border-hairline"
+          >
+            <iframe title="Shared household desktop" src={desktopUrl} className="h-48 w-full bg-inset" />
+            <div className="px-3 py-2 text-[12px] text-accent">Open shared desktop</div>
+          </a>
+        ) : (
+          <p className="rounded-xl bg-raised/50 px-3 py-2 text-[13px] text-ink-secondary">
+            No shared desktop URL yet. Set it in Settings → Node. One Ubuntu GUI for the whole house — not a desktop on each agent LXC.
+          </p>
+        )}
         {!status && (
           <div className="flex items-center gap-2 text-[13px] text-ink-secondary">
             <Loader2 size={14} className="animate-spin" />

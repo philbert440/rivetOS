@@ -139,12 +139,15 @@ export function SettingsModal() {
 
             {section === 'computer' && (
               <Card
-                title="Node computer"
-                subtitle="Each persona is bound to a Rivet node. The computer panel talks to that den's /api/terminal — not a cloud box."
+                title="Shared desktop"
+                subtitle="One Ubuntu GUI for every persona. Agent LXCs stay headless. Shell still opens on the persona's den."
               >
-                <p className="text-[13px] text-ink-secondary">
-                  Open a chat, then the monitor icon, to probe that persona's node.
-                </p>
+                <input
+                  className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink"
+                  value={saved.desktopUrl}
+                  onChange={(e) => persist({ desktopUrl: e.target.value })}
+                  placeholder="https://desktop.lan:6080/vnc.html"
+                />
               </Card>
             )}
 

@@ -18,6 +18,7 @@ describe('settings surfaces', () => {
     expect(src).toMatch(/export function SettingsModal/)
     expect(src).toMatch(/This person/)
     expect(src).toMatch(/Datahub \/ wiki/)
+    expect(src).toMatch(/Shared desktop/)
     expect(src).not.toMatch(/ApiKeyRow/)
   })
 })
