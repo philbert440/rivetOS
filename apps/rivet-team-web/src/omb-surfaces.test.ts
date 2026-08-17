@@ -90,7 +90,7 @@ describe('node computer / voice / memory surfaces', () => {
     expect(call).toMatch(/export function CallButton/)
     expect(call).toMatch(/<Phone /)
     expect(call).not.toMatch(/export function CallButton\([^)]*\): null/)
-    expect(sidebar).toMatch(/size=\{36\}/)
+    expect(sidebar).toMatch(/size=\{40\}/)
     expect(sidebar).not.toMatch(/size=\{56\}/)
   })
 

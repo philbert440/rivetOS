@@ -38,7 +38,7 @@ export function PersonaFace(props: {
   size?: number
   title?: string
 }): JSX.Element {
-  const size = props.size ?? 56
+  const size = props.size ?? 40
   const accent = personaAccent(props.personaId)
   return (
     <span
@@ -51,7 +51,7 @@ export function PersonaFace(props: {
         style={{ boxShadow: `inset 0 0 0 2px ${accent}` }}
         aria-hidden
       />
-      <DenBot className="size-[78%]" decorative />
+      <DenBot className="size-[70%]" decorative />
     </span>
   )
 }

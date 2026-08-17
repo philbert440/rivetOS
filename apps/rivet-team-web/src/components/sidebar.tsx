@@ -63,7 +63,7 @@ export function Sidebar(props: { className?: string }): JSX.Element {
                 active ? 'bg-raised' : 'hover:bg-raised/50',
               )}
             >
-              <PersonaFace personaId={p.id} size={36} />
+              <PersonaFace personaId={p.id} size={40} />
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline justify-between gap-2">
                   <span className="truncate text-[15px] font-semibold text-ink">{p.name}</span>

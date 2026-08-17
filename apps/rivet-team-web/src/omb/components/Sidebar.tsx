@@ -137,23 +137,23 @@ function groupPreview(group: Group, bots: Bot[]): string {
   return last.from ? `${last.from.name}: ${text}` : text;
 }
 
-/** Room avatar: 2–3 overlapping faces in the same 36px slot a persona gets. */
+/** Room avatar: 2–3 overlapping faces in the same 40px slot a persona gets. */
 function StackedMauses({ members }: { members: Bot[] }) {
   if (members.length <= 1) {
     const b = members[0];
     return (
-      <div className="flex size-9 shrink-0 items-center justify-center">
-        {b ? <MausAvatar color={b.color} state="happy" size={36} /> : <Users size={16} className="text-ink-secondary" />}
+      <div className="flex size-10 shrink-0 items-center justify-center">
+        {b ? <MausAvatar color={b.color} state="happy" size={40} /> : <Users size={16} className="text-ink-secondary" />}
       </div>
     );
   }
   const shown = members.slice(0, 3);
   const extra = members.length - shown.length;
   return (
-    <div className="flex size-9 shrink-0 items-center justify-center">
+    <div className="flex size-10 shrink-0 items-center justify-center">
       <div className="flex items-center -space-x-2">
         {shown.map((b) => (
-          <MausAvatar key={b.id} color={b.color} state="happy" size={22} />
+          <MausAvatar key={b.id} color={b.color} state="happy" size={24} />
         ))}
         {extra > 0 && (
           <span className="z-10 flex size-[16px] items-center justify-center rounded-full border border-hairline/40 bg-raised text-[9px] font-medium text-ink-secondary">
@@ -825,7 +825,7 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
       <MausAvatar
         color={bot.color}
         state={stateForBot({ ...bot, messages: visible })}
-        size={36}
+        size={40}
         motion={mascotMotion?.kind ?? "none"}
         motionKey={mascotMotion?.nonce ?? 0}
       />

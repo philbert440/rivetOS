@@ -77,8 +77,8 @@ export const MausAvatar = memo(
           alt=""
           draggable={false}
           style={{
-            width: '78%',
-            height: '78%',
+            width: '70%',
+            height: '70%',
             objectFit: 'contain',
             imageRendering: 'pixelated',
           }}
