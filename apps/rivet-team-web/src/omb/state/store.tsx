@@ -313,7 +313,13 @@ function reducer(state: AppState, action: Action): AppState {
     case "toggleComputer":
       return { ...state, computerOpen: action.open ?? !state.computerOpen };
     case "toggleAppSettings":
-      return { ...state, appSettingsOpen: action.open ?? !state.appSettingsOpen };
+      return {
+        ...state,
+        appSettingsOpen: action.open ?? !state.appSettingsOpen,
+        appSettingsSection: (action.section as AppSettingsSection | undefined) ?? state.appSettingsSection,
+      };
+    case "configStatus":
+      return { ...state, config: action.config ?? state.config };
     case "showRoutines":
       return { ...state, activeView: "routines" };
     case "error":
@@ -341,6 +347,13 @@ export async function sendOnTeamGateway(botId: string, text: string): Promise<vo
 export async function api(path: string, _init?: RequestInit): Promise<any> {
   if (/\/api\/bots\/[^/]+\/messages/.test(path) || path.startsWith("/api/threads/")) {
     throw new Error("chat goes through team gateway, not OpenMausBot harness");
+  }
+  if (path === "/api/tts/voices") {
+    const synth = globalThis.window?.speechSynthesis;
+    const voices = synth
+      ? synth.getVoices().map((v) => ({ id: v.voiceURI, label: v.name, description: v.lang }))
+      : [];
+    return { voices };
   }
   return {};
 }

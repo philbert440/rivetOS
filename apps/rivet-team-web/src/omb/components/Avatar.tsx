@@ -44,9 +44,10 @@ export const MausAvatar = memo(
       size?: number
       motion?: MausMotion
       motionKey?: number
+      animated?: boolean
       className?: string
     }
-  >(function MausAvatar({ color, size = 56, motion, state, motionKey, className }, ref) {
+  >(function MausAvatar({ color, size = 56, motion, state, motionKey, animated = true, className }, ref) {
     const hex = MAUS_COLORS[color] ?? MAUS_COLORS.green
     return (
       <span
@@ -67,7 +68,7 @@ export const MausAvatar = memo(
           borderRadius: '9999px',
           flexShrink: 0,
           boxShadow: `inset 0 0 0 2px ${hex}`,
-          ...motionStyle(motion, state),
+          ...(animated ? motionStyle(motion, state) : {}),
         }}
         aria-hidden
       >
