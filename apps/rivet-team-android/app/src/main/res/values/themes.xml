@@ -1,7 +1,7 @@
 <resources>
     <style name="Theme.RivetTeam" parent="android:Theme.Material.NoActionBar">
-        <item name="android:statusBarColor">#0D1117</item>
-        <item name="android:navigationBarColor">#0D1117</item>
-        <item name="android:windowBackground">#0D1117</item>
+        <item name="android:statusBarColor">#070707</item>
+        <item name="android:navigationBarColor">#070707</item>
+        <item name="android:windowBackground">#070707</item>
     </style>
 </resources>

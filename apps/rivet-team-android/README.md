@@ -1,29 +1,27 @@
 # @rivetos/rivet-team-android
 
-Jetpack Compose client for rivet-team. **Apache-2.0**. Written new — not a
-fork of `apps/rivet-android` (AGPL RikkaHub) and not a copy of that tree.
+WebView host for rivet-team-web. **Apache-2.0**. Not a fork of
+`apps/rivet-android` (AGPL RikkaHub).
 
-Phone-first messaging app: **who is this** → **roster of personas as
-contacts** → **one thread**. That IA is the OpenMausBot / Grok Bot shape
-(bots you talk to like chats). Source is ours; do not vendor OpenMausBot.
-
-Stub gateway so a reviewer can send a message and see a working chip + reply.
+The UI is the OpenMausBot messaging shell, talking to the rivet-team
+stub/live gateway. Faces are Rivet den-bot, not OpenMausBot mascots.
+Do not vendor OpenMausBot source.
 
 ## Assemble
 
-Needs Android SDK 35 + JDK 17. From this directory, after generating the
-wrapper (Android Studio Import, or `gradle wrapper` if you have Gradle 8.11):
+Needs Android SDK 35 + JDK 17, and a Vite build of `../rivet-team-web`
+copied to `app/src/main/assets/www`.
 
+    (cd ../rivet-team-web && npm install && npm run build)
+    rm -rf app/src/main/assets/www
+    mkdir -p app/src/main/assets
+    cp -a ../rivet-team-web/dist app/src/main/assets/www
     ./gradlew :app:assembleDebug
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`
-
-This slice ships `gradle-wrapper.properties` (Gradle 8.11.1) and project
-files. If `gradlew` is missing, open the folder in Android Studio and let
-it generate the wrapper, or run `gradle wrapper --gradle-version 8.11.1`.
 
 ## License boundary
 
 - This directory: Apache-2.0 (see LICENSE).
 - Do not copy source from `apps/rivet-android`.
-- Do not vendor OpenMausBot.
+- Do not vendor OpenMausBot (harness, Electron, cursor avatar).

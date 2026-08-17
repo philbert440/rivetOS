@@ -1,18 +1,21 @@
 @import 'tailwindcss';
 
-/* Same Rivet brand tokens as rivethub-web (emerald on dark, DM Sans).
-   rivet-team is sibling chrome — no Hub rail, no blueprint-as-IA. */
+/* OpenMausBot / Grok Bot chrome. Rivet den-bot is the face, not their mascot. */
 @theme {
+  --color-app: #070707;
+  --color-panel: #111111;
+  --color-raised: #2f2f2f;
+  --color-raised-hover: #3d3d3d;
+  --color-card: #262626;
+  --color-inset: #191919;
+  --color-hairline: #333333;
+  --color-ink: #fcfcfc;
+  --color-ink-secondary: #fcfcfc99;
+  --color-accent: #1084fe;
   --color-em: #34d399;
-  --color-em-dim: #10b981;
-  --color-bg: #0d1117;
-  --color-panel: #131a22;
-  --color-panel-2: #1a232e;
-  --color-line: #253041;
-  --color-ink: #e6edf3;
-  --color-ink-dim: #8b98a9;
-  --color-red: #f87171;
-  --color-warn: #fbbf24;
+  --color-success: #38d591;
+  --color-danger: #ff5667;
+  --color-bubble-user: #5a5a5a;
   --font-sans: 'DM Sans', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
@@ -24,7 +27,19 @@ body,
 }
 
 body {
-  background-color: var(--color-bg);
+  background-color: var(--color-app);
   color: var(--color-ink);
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+@keyframes caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }

@@ -11,6 +11,11 @@ import type { Persona, Subscription, TeamMessage, WsStatus } from '../lib/types.
 import { LOCAL_NODE_ID, LOCAL_USER_ID } from '../lib/types.js'
 import type { TeamUser } from '../lib/users.js'
 
+export interface MessagePreview {
+  text: string
+  ts: number
+}
+
 interface TeamState {
   userId: string
   userHandle: string
@@ -20,11 +25,12 @@ interface TeamState {
   personas: Persona[]
   selectedId: string | null
   messages: TeamMessage[]
+  previews: Record<string, MessagePreview>
   wsStatus: WsStatus
   working: boolean
   memoryNotes: number
   lastError: string | null
-  selectPersona: (id: string) => void
+  selectPersona: (id: string | null) => void
   send: (text: string) => Promise<void>
   refreshMemory: () => void
 }
@@ -54,6 +60,22 @@ async function persistNote(
   appendMemory({ userId, content, role, agent: persona.id })
 }
 
+async function hydratePreviews(personas: Persona[]): Promise<Record<string, MessagePreview>> {
+  const g = getGateway()
+  const entries = await Promise.all(
+    personas.map(async (p) => {
+      const res = await g.sessionMessages(p.threadId)
+      const last = res.messages.at(-1)
+      return last ? ([p.id, { text: last.text, ts: last.ts }] as const) : null
+    }),
+  )
+  const previews: Record<string, MessagePreview> = {}
+  for (const e of entries) {
+    if (e) previews[e[0]] = e[1]
+  }
+  return previews
+}
+
 export const useTeam = create<TeamState>((set, get) => ({
   userId: LOCAL_USER_ID,
   userHandle: 'local',
@@ -63,6 +85,7 @@ export const useTeam = create<TeamState>((set, get) => ({
   personas: [],
   selectedId: null,
   messages: [],
+  previews: {},
   wsStatus: 'closed',
   working: false,
   memoryNotes: 0,
@@ -81,7 +104,13 @@ export const useTeam = create<TeamState>((set, get) => ({
     set({ memoryNotes: memoryCount(userId) })
   },
 
-  selectPersona(id: string) {
+  selectPersona(id: string | null) {
+    if (id === null) {
+      sub?.close()
+      sub = undefined
+      set({ selectedId: null, messages: [], working: false, wsStatus: 'closed' })
+      return
+    }
     const { personas, userId } = get()
     const persona = personas.find((p) => p.id === id)
     if (!persona) return
@@ -111,6 +140,10 @@ export const useTeam = create<TeamState>((set, get) => ({
           set((s) => ({
             messages: s.messages.some((m) => m.id === next.id) ? s.messages : [...s.messages, next],
             working: frame.role === 'assistant' ? false : s.working,
+            previews: {
+              ...s.previews,
+              [persona.id]: { text: next.text, ts: next.ts },
+            },
           }))
           if (frame.role === 'assistant') {
             void persistNote(get().deviceToken, userId, persona, 'assistant', frame.text)
@@ -157,6 +190,7 @@ export async function bootTeam(user?: TeamUser, deviceToken?: string): Promise<v
       live = false
     }
   }
+  const previews = await hydratePreviews(personas)
   useTeam.setState({
     userId,
     userHandle: user?.handle ?? 'local',
@@ -164,12 +198,14 @@ export async function bootTeam(user?: TeamUser, deviceToken?: string): Promise<v
     deviceToken: deviceToken ?? null,
     live,
     personas,
+    selectedId: null,
+    messages: [],
+    working: false,
+    previews,
     memoryNotes: 0,
     lastError: null,
   })
   useTeam.getState().refreshMemory()
-  const first = personas[0]
-  if (first) useTeam.getState().selectPersona(first.id)
 }
 
 export { LOCAL_NODE_ID }

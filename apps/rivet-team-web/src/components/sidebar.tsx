@@ -1,83 +1,104 @@
-import type { JSX } from 'react'
-import { cn, initials } from '../lib/utils.js'
+import { useMemo, useState, type JSX } from 'react'
 import { saveSession } from '../lib/users.js'
+import { cn, formatTime } from '../lib/utils.js'
 import { useTeam } from '../stores/team.js'
+import { PersonaFace } from './den-bot.js'
 
-export function Sidebar(): JSX.Element {
+export function Sidebar(props: { className?: string }): JSX.Element {
   const personas = useTeam((s) => s.personas)
   const selectedId = useTeam((s) => s.selectedId)
   const selectPersona = useTeam((s) => s.selectPersona)
-  const memoryNotes = useTeam((s) => s.memoryNotes)
-  const wsStatus = useTeam((s) => s.wsStatus)
+  const previews = useTeam((s) => s.previews)
+  const working = useTeam((s) => s.working)
   const userName = useTeam((s) => s.userName)
   const userHandle = useTeam((s) => s.userHandle)
   const live = useTeam((s) => s.live)
   const lastError = useTeam((s) => s.lastError)
+  const [query, setQuery] = useState('')
+
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return personas.filter((p) => {
+      if (!q) return true
+      const preview = previews[p.id]?.text ?? p.systemPrompt
+      return p.name.toLowerCase().includes(q) || preview.toLowerCase().includes(q)
+    })
+  }, [personas, previews, query])
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-panel/80">
-      <div className="px-4 py-4">
-        <div className="font-mono text-sm font-semibold tracking-wide text-em">rivet-team</div>
-        <p className="mt-1 text-xs text-ink-dim">
-          {userName} · @{userHandle}
-        </p>
+    <aside
+      className={cn(
+        'flex h-full min-h-0 w-full flex-col bg-panel md:w-[320px] md:shrink-0 md:border-r md:border-hairline',
+        props.className,
+      )}
+    >
+      <div className="flex items-center justify-between px-5 pt-4 pb-2">
+        <div className="text-[22px] font-semibold text-ink">rivet-team</div>
       </div>
-
-      <nav className="flex flex-1 flex-col gap-1 px-2" aria-label="Personas">
-        {personas.map((p) => {
+      <div className="px-4 pb-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search"
+          className="w-full rounded-[14px] bg-inset px-3.5 py-2.5 text-[15px] text-ink outline-none placeholder:text-ink-secondary"
+        />
+      </div>
+      <nav className="min-h-0 flex-1 overflow-y-auto px-2" aria-label="Personas">
+        {rows.map((p) => {
           const active = p.id === selectedId
+          const last = previews[p.id]
+          const preview =
+            working && active
+              ? 'Working…'
+              : last?.text.replace(/\s+/g, ' ').slice(0, 72) ||
+                p.systemPrompt.split('.')[0] ||
+                'Say hello'
           return (
             <button
               key={p.id}
               type="button"
               onClick={() => selectPersona(p.id)}
               className={cn(
-                'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm',
-                active ? 'bg-panel-2 text-ink' : 'text-ink-dim hover:bg-panel-2 hover:text-ink',
+                'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left',
+                active ? 'bg-raised' : 'hover:bg-raised/50',
               )}
             >
-              <span
-                className={cn(
-                  'flex size-8 shrink-0 items-center justify-center rounded-full font-mono text-[11px]',
-                  active ? 'bg-em/15 text-em' : 'bg-panel-2 text-ink-dim',
-                )}
-                aria-hidden
-              >
-                {initials(p.name)}
-              </span>
+              <PersonaFace personaId={p.id} size={56} />
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium">{p.name}</span>
-                <span className="block truncate text-[11px] text-ink-dim">
-                  {p.sample ? 'sample · ' : ''}
-                  {p.nodeId}
+                <span className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-[15px] font-semibold text-ink">{p.name}</span>
+                  {last && (
+                    <span className="shrink-0 text-xs text-ink-secondary">{formatTime(last.ts)}</span>
+                  )}
                 </span>
+                <span className="block truncate text-[13px] text-ink-secondary">{preview}</span>
               </span>
             </button>
           )
         })}
       </nav>
-
-      <div className="border-t border-line px-4 py-3 text-[11px] text-ink-dim">
-        <div>
-          Memory · {memoryNotes}
-          {memoryNotes >= 200 ? '+' : ''} notes (this person only)
-        </div>
-        {lastError && <div className="mt-1 text-red-400">{lastError}</div>}
-        <div className="mt-1 font-mono">
-          {live ? 'store live' : 'store local'} · {wsStatus}
-          <span className="ml-2 text-ink-dim/80">stub turns</span>
+      <div className="flex items-center gap-3 border-t border-hairline px-4 py-3">
+        <span className="flex size-9 items-center justify-center rounded-full bg-em/15 text-[12px] font-semibold text-em">
+          {userName.slice(0, 2).toUpperCase()}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[14px] font-medium text-ink">{userName}</div>
+          <div className="truncate text-[12px] text-ink-secondary">
+            @{userHandle} · {live ? 'store live' : 'stub · this person only'}
+          </div>
         </div>
         <button
           type="button"
-          className="mt-2 text-[11px] text-em hover:underline"
+          className="text-[14px] font-medium text-em"
           onClick={() => {
             saveSession(null)
             window.location.reload()
           }}
         >
-          Switch person
+          Switch
         </button>
       </div>
+      {lastError && <div className="px-4 pb-3 text-[12px] text-danger">{lastError}</div>}
     </aside>
   )
 }

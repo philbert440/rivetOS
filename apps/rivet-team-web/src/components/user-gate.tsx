@@ -56,44 +56,46 @@ export function UserGate({ onReady }: { onReady: (session: TeamSession) => void 
   }
 
   return (
-    <div className="flex h-full items-center justify-center bg-bg px-4">
-      <div className="w-full max-w-md rounded-2xl border border-line bg-panel p-6">
-        <div className="font-mono text-sm font-semibold tracking-wide text-em">rivet-team</div>
-        <h1 className="mt-2 text-xl font-medium text-ink">Who is this?</h1>
-        <p className="mt-1 text-sm text-ink-dim">
-          Each person has their own personas and memory. They do not share the
-          lab corpus.
+    <div className="flex h-full items-center justify-center bg-app px-5">
+      <div className="w-full max-w-md">
+        <div className="text-[13px] font-semibold tracking-wide text-em">rivet-team</div>
+        <h1 className="mt-2 text-[28px] font-semibold text-ink">Who is this?</h1>
+        <p className="mt-2 text-[15px] text-ink-secondary">
+          Each person has their own chats and notes. They do not share a corpus.
         </p>
 
         {existing.length > 0 && (
-          <div className="mt-4 flex flex-col gap-2">
+          <div className="mt-6 flex flex-col gap-2">
             {existing.map((u) => (
               <button
                 key={u.id}
                 type="button"
-                className="rounded-lg border border-line px-3 py-2 text-left text-sm text-ink hover:bg-panel-2"
+                className="flex items-center justify-between rounded-2xl bg-card px-4 py-3.5 text-left"
                 onClick={() => finish(signInLocal(u))}
               >
-                <span className="font-medium">{u.displayName}</span>
-                <span className="ml-2 font-mono text-[11px] text-ink-dim">{u.handle}</span>
+                <span>
+                  <span className="block text-[16px] font-semibold text-ink">{u.displayName}</span>
+                  <span className="font-mono text-[12px] text-ink-secondary">@{u.handle}</span>
+                </span>
+                <span className="text-[14px] font-medium text-em">Continue</span>
               </button>
             ))}
           </div>
         )}
 
-        <form className="mt-5 flex flex-col gap-2" onSubmit={(e) => void onCreate(e)}>
-          <div className="text-[11px] font-mono uppercase tracking-wide text-ink-dim">
+        <form className="mt-6 flex flex-col gap-2" onSubmit={(e) => void onCreate(e)}>
+          <div className="text-[11px] font-mono uppercase tracking-wide text-ink-secondary">
             New person
           </div>
           <input
-            className="rounded-lg border border-line bg-bg px-3 py-2 text-sm text-ink"
+            className="rounded-xl border border-hairline bg-inset px-3 py-2.5 text-sm text-ink outline-none"
             placeholder="handle (alex)"
             value={handle}
             onChange={(e) => setHandle(e.target.value)}
             required
           />
           <input
-            className="rounded-lg border border-line bg-bg px-3 py-2 text-sm text-ink"
+            className="rounded-xl border border-hairline bg-inset px-3 py-2.5 text-sm text-ink outline-none"
             placeholder="display name"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
@@ -101,18 +103,18 @@ export function UserGate({ onReady }: { onReady: (session: TeamSession) => void 
           <button
             type="submit"
             disabled={busy}
-            className="rounded-lg bg-em/20 px-3 py-2 text-sm text-em"
+            className="rounded-xl bg-accent px-3 py-2.5 text-sm font-medium text-white disabled:opacity-50"
           >
             Continue
           </button>
         </form>
 
         <form className="mt-5 flex flex-col gap-2" onSubmit={(e) => void onRedeem(e)}>
-          <div className="text-[11px] font-mono uppercase tracking-wide text-ink-dim">
+          <div className="text-[11px] font-mono uppercase tracking-wide text-ink-secondary">
             I have a pairing code
           </div>
           <input
-            className="rounded-lg border border-line bg-bg px-3 py-2 font-mono text-sm text-ink"
+            className="rounded-xl border border-hairline bg-inset px-3 py-2.5 font-mono text-sm text-ink outline-none"
             placeholder="code from the other device"
             value={code}
             onChange={(e) => setCode(e.target.value)}
@@ -120,13 +122,13 @@ export function UserGate({ onReady }: { onReady: (session: TeamSession) => void 
           <button
             type="submit"
             disabled={busy || !code.trim()}
-            className="rounded-lg border border-line px-3 py-2 text-sm text-ink"
+            className="rounded-xl border border-hairline px-3 py-2.5 text-sm text-ink"
           >
             Redeem
           </button>
         </form>
 
-        {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+        {error && <p className="mt-3 text-sm text-danger">{error}</p>}
       </div>
     </div>
   )

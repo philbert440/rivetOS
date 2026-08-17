@@ -24,6 +24,7 @@ describe('bootTeam user switch', () => {
       messages: [],
       memoryNotes: 0,
       lastError: null,
+      previews: {},
     })
   })
 

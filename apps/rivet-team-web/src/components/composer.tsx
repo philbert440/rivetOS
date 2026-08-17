@@ -1,4 +1,4 @@
-import { useRef, useState, type JSX, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import { ArrowUp } from 'lucide-react'
 import { useTeam } from '../stores/team.js'
 
@@ -7,7 +7,16 @@ export function Composer(): JSX.Element {
   const [sending, setSending] = useState(false)
   const send = useTeam((s) => s.send)
   const selectedId = useTeam((s) => s.selectedId)
+  const personas = useTeam((s) => s.personas)
+  const persona = personas.find((p) => p.id === selectedId)
   const taRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    const el = taRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [text])
 
   const submit = async (): Promise<void> => {
     const trimmed = text.trim()
@@ -23,7 +32,7 @@ export function Composer(): JSX.Element {
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       void submit()
     }
@@ -31,32 +40,32 @@ export function Composer(): JSX.Element {
 
   return (
     <form
-      className="border-t border-line bg-panel/90 p-3"
+      className="bg-app px-3 pb-[max(12px,env(safe-area-inset-bottom))] pt-2 md:px-5"
       onSubmit={(e) => {
         e.preventDefault()
         void submit()
       }}
     >
-      <div className="flex items-end gap-2 rounded-xl border border-line bg-bg px-3 py-2">
+      <div className="mx-auto flex max-w-[900px] items-end gap-2 rounded-3xl border border-hairline/40 bg-raised/60 py-2 pr-2 pl-4">
         <textarea
           ref={taRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}
           rows={1}
-          placeholder="Message this persona…"
-          className="max-h-40 min-h-10 flex-1 resize-none bg-transparent py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim"
+          placeholder={persona ? `Message ${persona.name}` : 'Message'}
+          aria-label={persona ? `Message ${persona.name}` : 'Message'}
+          className="max-h-40 w-full resize-none self-center bg-transparent py-1 text-[15px] leading-6 text-ink outline-none placeholder:text-ink-secondary"
         />
         <button
           type="submit"
           disabled={!text.trim() || sending || !selectedId}
           aria-label="Send"
-          className="mb-0.5 flex size-8 items-center justify-center rounded-lg bg-em text-bg disabled:opacity-40"
+          className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-white disabled:bg-raised disabled:text-ink-secondary"
         >
           <ArrowUp className="size-4" />
         </button>
       </div>
-      <p className="mt-1.5 px-1 text-[11px] text-ink-dim">Enter to send · Shift+Enter for a new line</p>
     </form>
   )
 }
