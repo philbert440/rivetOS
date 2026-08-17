@@ -45,9 +45,11 @@ export const MausAvatar = memo(
       motion?: MausMotion
       motionKey?: number
       animated?: boolean
+      trackPointer?: boolean
+      label?: string
       className?: string
     }
-  >(function MausAvatar({ color, size = 56, motion, state, motionKey, animated = true, className }, ref) {
+  >(function MausAvatar({ color, size = 56, motion, state, motionKey, animated = true, label, className }, ref) {
     const hex = MAUS_COLORS[color] ?? MAUS_COLORS.green
     return (
       <span
@@ -70,7 +72,8 @@ export const MausAvatar = memo(
           boxShadow: `inset 0 0 0 2px ${hex}`,
           ...(animated ? motionStyle(motion, state) : {}),
         }}
-        aria-hidden
+        aria-hidden={!label}
+        aria-label={label}
       >
         <img
           src={denBotUrl}

@@ -17,6 +17,10 @@ import {
 import { getGateway } from "../../lib/gateway.js";
 import { useTeam } from "../../stores/team.js";
 import type { MausColor, MausMotion } from "@/lib/mascot";
+import type { Routine, RoutineInput, RoutineRun } from "@/lib/routines";
+import { finishRun, handleRoutineApi, listRoutines } from "@/lib/team-routines";
+
+export type { Routine, RoutineInput, RoutineRun } from "@/lib/routines";
 
 export type { MausColor } from "@/lib/mascot";
 
@@ -163,16 +167,7 @@ export interface InstanceInfo {
 
 export type AppSettingsSection = "general" | "connections" | "voice" | "computer";
 
-export interface Routine {
-  id: string;
-}
-export type RoutineInput = Record<string, unknown>;
-export interface RoutineRun {
-  id: string;
-  scheduledFor: number;
-  status: string;
-  seenAt?: number | null;
-}
+
 export interface WebhookTrigger {
   id: string;
 }
@@ -322,6 +317,28 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, config: action.config ?? state.config };
     case "showRoutines":
       return { ...state, activeView: "routines" };
+    case "routinesHydrated":
+      return { ...state, routines: action.routines ?? [], routineRuns: action.runs ?? [] };
+    case "routinePatched": {
+      const next = action.routine as Routine;
+      const exists = state.routines.some((routine) => routine.id === next.id);
+      return {
+        ...state,
+        routines: exists
+          ? state.routines.map((routine) => (routine.id === next.id ? next : routine))
+          : [next, ...state.routines],
+      };
+    }
+    case "routineDeleted":
+      return { ...state, routines: state.routines.filter((routine) => routine.id !== action.routineId) };
+    case "routineRunPatched": {
+      const next = action.run as RoutineRun;
+      const exists = state.routineRuns.some((run) => run.id === next.id);
+      const runs = exists
+        ? state.routineRuns.map((run) => (run.id === next.id ? next : run))
+        : [next, ...state.routineRuns];
+      return { ...state, routineRuns: runs.sort((a, b) => b.scheduledFor - a.scheduledFor) };
+    }
     case "error":
       return { ...state, error: action.message };
     case "connected":
@@ -355,6 +372,20 @@ export async function api(path: string, _init?: RequestInit): Promise<any> {
       : [];
     return { voices };
   }
+  const routines = handleRoutineApi(path, _init);
+  if (routines) {
+    const body = routines.body as { routine?: Routine; run?: RoutineRun };
+    if (/\/api\/routines\/[^/]+\/run$/.test(path) && body.routine?.prompt && body.routine.botId) {
+      void sendOnTeamGateway(body.routine.botId, body.routine.prompt)
+        .then(() => {
+          if (body.run) finishRun(body.run.id, { status: "completed", finishedAt: Date.now() });
+        })
+        .catch(() => {
+          if (body.run) finishRun(body.run.id, { status: "failed", finishedAt: Date.now(), error: "send failed" });
+        });
+    }
+    return routines.body;
+  }
   return {};
 }
 
@@ -387,6 +418,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef(state);
   stateRef.current = state;
   const [stream] = useState<StreamState>(EMPTY_STREAM);
+
+  useEffect(() => {
+    const bag = listRoutines();
+    rawDispatch({ type: "routinesHydrated", routines: bag.routines, runs: bag.runs });
+  }, []);
 
   useEffect(() => {
     const g = getGateway();
@@ -459,6 +495,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         void sendOnTeamGateway(action.botId, action.text).catch((err: Error) => {
           rawDispatch({ type: "error", message: err.message });
         });
+      }
+      if (action.type === "deleteRoutine") {
+        void api(`/api/routines/${action.routineId}`, { method: "DELETE" }).catch((err: Error) => {
+          rawDispatch({ type: "error", message: err.message });
+        });
+      }
+      if (action.type === "updateRoutine") {
+        void api(`/api/routines/${action.routineId}`, {
+          method: "PATCH",
+          body: JSON.stringify(action.patch),
+        })
+          .then((res) => res.routine && rawDispatch({ type: "routinePatched", routine: res.routine }))
+          .catch((err: Error) => rawDispatch({ type: "error", message: err.message }));
+      }
+      if (action.type === "runRoutine") {
+        void api(`/api/routines/${action.routineId}/run`, { method: "POST" })
+          .then((res) => {
+            if (res.run) rawDispatch({ type: "routineRunPatched", run: res.run });
+            if (res.routine) rawDispatch({ type: "routinePatched", routine: res.routine });
+          })
+          .catch((err: Error) => rawDispatch({ type: "error", message: err.message }));
+      }
+      if (action.type === "markRoutineRunSeen") {
+        void api(`/api/routine-runs/${action.runId}/seen`, { method: "POST" })
+          .then((res) => res.run && rawDispatch({ type: "routineRunPatched", run: res.run }))
+          .catch(() => {});
       }
     };
     return wrapped;

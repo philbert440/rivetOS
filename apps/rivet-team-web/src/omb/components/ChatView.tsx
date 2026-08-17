@@ -719,6 +719,13 @@ export function ChatView({ bot }: { bot: Bot }) {
               Stop
             </button>
           )}
+          <button
+            onClick={() => dispatch({ type: "toggleSettings", open: true })}
+            title="Edit profile"
+            className="flex items-center gap-1 rounded-full border border-hairline/40 px-2.5 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
+          >
+            <Pencil size={12} /> Profile
+          </button>
           <TaskPicker bot={bot} />
           <ModelPicker bot={bot} />
           <CallButton bot={bot} />

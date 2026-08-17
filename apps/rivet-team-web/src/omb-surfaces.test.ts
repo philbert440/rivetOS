@@ -79,6 +79,17 @@ describe('node computer / voice / memory surfaces', () => {
     expect(pic.attachments[0]).toMatchObject({ kind: 'file', name: 'pic.png', path: 'pic.png' })
   })
 
+  it('header has Profile like Task, Automations page is not a stub', () => {
+    const chat = readFileSync(join(root, 'src/omb/components/ChatView.tsx'), 'utf8')
+    const routines = readFileSync(join(root, 'src/omb/components/RoutinesPage.tsx'), 'utf8')
+    expect(chat).toMatch(/Edit profile/)
+    expect(chat).toMatch(/Profile/)
+    expect(chat).toMatch(/TaskPicker/)
+    expect(routines).toMatch(/export function RoutinesPage/)
+    expect(routines).toMatch(/New schedule/)
+    expect(routines).not.toMatch(/export function RoutinesPage\(\): null/)
+  })
+
   it('composer shows attach and dictate, call is a real phone button', () => {
     const composer = readFileSync(join(root, 'src/omb/components/Composer.tsx'), 'utf8')
     const call = readFileSync(join(root, 'src/omb/components/CallView.tsx'), 'utf8')
