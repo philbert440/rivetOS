@@ -244,6 +244,7 @@ const initialState: AppState = {
   config: {
     composio: { configured: false },
     box: { configured: false },
+    tts: { configured: true, ready: true, voice: "rivet" },
     profile: { name: "household", email: "" },
   },
   selectedId: "",

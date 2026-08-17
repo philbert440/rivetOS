@@ -9,7 +9,7 @@ describe('roster/thread faces are Rivet den-bot', () => {
   it('Avatar.tsx loads den-bot.png and does not import CursorAvatar', () => {
     const src = readFileSync(join(root, 'src/omb/components/Avatar.tsx'), 'utf8')
     expect(src).toMatch(/den-bot\.png/)
-    expect(src).not.toMatch(/CursorAvatar/)
+    expect(src).not.toMatch(/import .*CursorAvatar/)
     expect(src).not.toMatch(/maus-engine/)
   })
 
