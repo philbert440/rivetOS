@@ -105,7 +105,8 @@ async function existingOrdinals(
 export async function ingestSession(
   memory: PostgresMemory,
   input: IngestSessionInput,
-): Promise<{
+): Promise<
+  {
     session_id: string
     ingested: number
     skipped: number
