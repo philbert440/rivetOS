@@ -1,13 +1,7 @@
 {
   "mcpServers": {
     "rivetos": {
-      "command": "node",
-      "args": ["/opt/rivetos/services/mcp-sidecar/dist/cli.js", "--stdio"],
-      "env": {
-        "RIVETOS_MCP_STDIO": "1",
-        "RIVETOS_MEMORY_SOURCE": "grokbot",
-        "RIVETOS_MEMORY_CHANNEL": "grokbot"
-      }
+      "command": "/opt/rivetos/integrations/grok-bot/rivet-memory/bin/rivet-memory-mcp.sh"
     }
   }
 }
