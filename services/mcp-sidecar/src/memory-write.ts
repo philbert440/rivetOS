@@ -106,11 +106,12 @@ export async function ingestSession(
   memory: PostgresMemory,
   input: IngestSessionInput,
 ): Promise<{
-  session_id: string
-  ingested: number
-  skipped: number
-  ids: string[]
-} & MemoryWriteTags> {
+    session_id: string
+    ingested: number
+    skipped: number
+    ids: string[]
+  } & MemoryWriteTags
+> {
   const tags = resolveMemoryWriteTags({
     source: input.source,
     agent: input.agent,
@@ -154,10 +155,7 @@ export async function ingestSession(
   }
 }
 
-export function createMemoryWriteTools(
-  memory: PostgresMemory,
-  prefix = '',
-): ToolRegistration[] {
+export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): ToolRegistration[] {
   const appendTool: Tool = {
     name: 'memory_append',
     description:
