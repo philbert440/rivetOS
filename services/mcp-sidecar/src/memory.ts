@@ -31,6 +31,8 @@ export interface MemoryToolsOptions {
   embedModel?: string
   /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */
   prefix?: string
+  /** When true, also register memory_append / memory_ingest_session. */
+  enableWrite?: boolean
 }
 
 export interface MemoryToolsHandle {
@@ -116,7 +118,7 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         'a generic file reader. Mirrors the in-process `memory_get_full` tool.',
       annotations: { readOnlyHint: true, idempotentHint: true },
     }),
-    ...createMemoryWriteTools(memory, prefix),
+    ...(options.enableWrite ? createMemoryWriteTools(memory, prefix) : []),
   ]
 
   return {
