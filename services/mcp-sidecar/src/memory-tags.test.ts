@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resolveMemoryWriteTags } from './memory-write.js'
 
 const KEYS = [
@@ -8,16 +8,19 @@ const KEYS = [
   'RIVETOS_MEMORY_CHANNEL',
 ] as const
 
-afterEach(() => {
+function clearTagEnv(): void {
   for (const k of KEYS) delete process.env[k]
-})
+}
+
+beforeEach(clearTagEnv)
+afterEach(clearTagEnv)
 
 describe('resolveMemoryWriteTags', () => {
-  it('defaults source/agent/channel', () => {
+  it('defaults source/agent/channel to mcp', () => {
     expect(resolveMemoryWriteTags({})).toEqual({
       source: 'mcp',
-      agent: 'grokbot',
-      channel: 'grokbot',
+      agent: 'mcp',
+      channel: 'mcp',
     })
   })
 
@@ -41,7 +44,7 @@ describe('resolveMemoryWriteTags', () => {
     })
   })
 
-  it('reads Grok Bot launcher env when args omitted', () => {
+  it('reads launcher env when args omitted', () => {
     process.env.RIVETOS_MEMORY_SOURCE = 'grokbot'
     process.env.RIVETOS_MEMORY_AGENT = 'Engineer'
     process.env.RIVETOS_MEMORY_PERSONA = 'Developer'
