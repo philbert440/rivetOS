@@ -21,6 +21,7 @@ import {
   type StuckJobRow,
   type TreeDepthRow,
   type FreshnessRow,
+  sqlNotHeartbeatConversation,
 } from './helpers.js'
 
 // Mirrors compaction-worker's COMPACT_LEAF_BATCH default. Used for bucketing
@@ -199,6 +200,9 @@ export function createStatsTool(pool: pg.Pool): Tool {
         //                reaches STALE_MINUTES (if >= STALE_MIN_BATCH); a singleton tail
         //                never compacts by design.
         // The filter (LENGTH > 10 OR tool_name IS NOT NULL) matches enqueue-idle.ts.
+        // Heartbeat sessions are excluded in lockstep with enqueue-idle /
+        // getContextForTurn / extract-wiki — they are not a compaction backlog.
+        const notHeartbeat = sqlNotHeartbeatConversation('c')
         const buckets = await pool.query<UnsummarizedBucketRow>(
           `WITH per_conv AS (
              SELECT c.id AS conversation_id, c.updated_at,
@@ -209,6 +213,7 @@ export function createStatsTool(pool: pg.Pool): Tool {
              WHERE ss.summary_id IS NULL
                AND ((m.content IS NOT NULL AND LENGTH(m.content) > 10)
                     OR m.tool_name IS NOT NULL)
+               AND ${notHeartbeat}
              GROUP BY c.id
            )
            SELECT
@@ -275,6 +280,7 @@ export function createStatsTool(pool: pg.Pool): Tool {
             WHERE ss.summary_id IS NULL
               AND ((m.content IS NOT NULL AND LENGTH(m.content) > 10)
                    OR m.tool_name IS NOT NULL)
+              AND ${notHeartbeat}
             GROUP BY c.id, c.agent, c.updated_at
            HAVING (COUNT(m.id) >= $2
                    AND (COUNT(m.id) >= $1
