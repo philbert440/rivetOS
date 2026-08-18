@@ -64,12 +64,14 @@ describeIfPg('memory data-plane (Phase 1.A slice 3)', () => {
     })
   })
 
-  it('lists all four memory tools alongside echo', async () => {
+  it('lists memory tools alongside echo', async () => {
     const names = (await client.listTools()).map((t) => t.name)
     expect(names).toContain('memory_search')
     expect(names).toContain('memory_browse')
     expect(names).toContain('memory_stats')
     expect(names).toContain('memory_get_full')
+    expect(names).toContain('memory_append')
+    expect(names).toContain('memory_ingest_session')
     expect(names).toContain('echo')
   })
 
