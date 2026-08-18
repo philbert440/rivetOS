@@ -2,18 +2,23 @@
 
 RivetOS shared memory for Cursor Grok Bot agents, not the Grok Build CLI.
 Sibling of integrations/grok/rivet-memory. That plugin stays as-is.
+
 Query and write the same Postgres store. Ingest sessions tagged source=grokbot plus agent and persona.
 Full mesh mTLS join is out of scope.
 
 ## Query
 
-Point Cursor MCP at the sidecar with env RIVETOS_MEMORY_SOURCE=grokbot and RIVETOS_MEMORY_CHANNEL=grokbot.
-See .mcp.json in this directory. Tools: memory_search, memory_browse, memory_stats, memory_get_full.
+Point Cursor at bin/rivet-memory-mcp.sh (loads ~/.rivetos/.env, then starts the sidecar).
+See .mcp.json. Tools: memory_search, memory_browse, memory_stats, memory_get_full.
 
 ## Write
 
-memory_append and memory_ingest_session. Pass agent and persona on each call. Leave source unset so it stays grokbot.
-Offline ingest: node bin/ingest-session.mjs --session-id ID --agent NAME file.jsonl
+The launcher sets RIVETOS_MCP_ENABLE_MEMORY_WRITE=1 and grokbot tag env vars.
+Use memory_append or memory_ingest_session. Pass agent and persona on each call.
+Ingest skips ordinals already stored for that session.
+
+Offline: node bin/ingest-session.mjs --session-id ID --agent NAME [--persona P] file.jsonl
+That calls the same ingestSession() as the sidecar (requires a built checkout).
 
 ## Related
 
