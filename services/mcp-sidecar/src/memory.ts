@@ -1,6 +1,6 @@
 /**
  * Memory data-plane tools — `memory_search`, `memory_browse`,
- * `memory_stats`, `memory_get_full`.
+ * `memory_stats`, `memory_get_full`, plus Grok Bot write tools.
  *
  * Wraps the in-process tools exported by `@rivetos/memory-postgres` so external
  * MCP clients (claude-cli, MCP Inspector, Grok Build, etc.) can hit the same
@@ -20,6 +20,7 @@ import { z } from 'zod'
 
 import type { ToolRegistration } from '@rivetos/mcp'
 import { adaptRivetTool } from '@rivetos/mcp'
+import { createMemoryWriteTools } from './memory-write.js'
 
 export interface MemoryToolsOptions {
   /** Postgres connection string (e.g. value of `RIVETOS_PG_URL`). Required. */
@@ -115,6 +116,7 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         'a generic file reader. Mirrors the in-process `memory_get_full` tool.',
       annotations: { readOnlyHint: true, idempotentHint: true },
     }),
+    ...createMemoryWriteTools(memory, prefix),
   ]
 
   return {
