@@ -186,7 +186,9 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
       if (tags.persona) metadata.persona = tags.persona
       const toolName = typeof args.tool_name === 'string' ? args.tool_name : undefined
       const toolArgs =
-        args.tool_args != null && typeof args.tool_args === 'object' && !Array.isArray(args.tool_args)
+        args.tool_args != null &&
+        typeof args.tool_args === 'object' &&
+        !Array.isArray(args.tool_args)
           ? (args.tool_args as Record<string, unknown>)
           : undefined
       const toolResult = typeof args.tool_result === 'string' ? args.tool_result : undefined
