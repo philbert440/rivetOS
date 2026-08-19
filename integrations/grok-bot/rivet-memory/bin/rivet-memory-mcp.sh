@@ -5,11 +5,20 @@
 # tools (memory_search, memory_browse, memory_stats, etc.) to Cursor Grok Bot via MCP.
 #
 # Usage in Grok Bot:
-#   Add to project .mcp.json:
+#   As a plugin (${CURSOR_PLUGIN_ROOT} expands when installed):
 #     {
 #       "mcpServers": {
 #         "rivetos": {
 #           "command": "${CURSOR_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh"
+#         }
+#       }
+#     }
+#
+#   Or point directly at the script (manual setup):
+#     {
+#       "mcpServers": {
+#         "rivetos": {
+#           "command": "/opt/rivetos/integrations/grok-bot/rivet-memory/bin/rivet-memory-mcp.sh"
 #         }
 #       }
 #     }

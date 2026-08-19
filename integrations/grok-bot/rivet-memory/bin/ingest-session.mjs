@@ -73,7 +73,7 @@ try {
   const result = await writeMod.ingestSession(memory, {
     sessionId,
     messages: parsed,
-    agent: values.agent || 'grokbot',
+    agent: values.agent || 'rivet-grokbot',
     persona: values.persona,
     source: process.env.RIVETOS_MEMORY_SOURCE || 'grokbot',
     channel: process.env.RIVETOS_MEMORY_CHANNEL || 'grokbot',

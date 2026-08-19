@@ -12,7 +12,7 @@
  * are covered by unit tests in `@rivetos/memory-postgres`.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { defaultEchoTool } from '@rivetos/mcp'
 import {
   connectV2,
@@ -242,6 +242,20 @@ describeIfPg('memory write tools (Phase 1.A slice 3 — gated)', () => {
 describeIfPg('ingestSession function (Phase 1.A slice 3)', () => {
   let memory: { close: () => Promise<void> }
 
+  const TAG_KEYS = [
+    'RIVETOS_MEMORY_SOURCE',
+    'RIVETOS_MEMORY_AGENT',
+    'RIVETOS_MEMORY_CHANNEL',
+    'RIVETOS_MEMORY_PERSONA',
+  ] as const
+
+  function clearTagEnv(): void {
+    for (const k of TAG_KEYS) delete process.env[k]
+  }
+
+  beforeEach(clearTagEnv)
+  afterEach(clearTagEnv)
+
   beforeAll(async () => {
     const { PostgresMemory } = await import('@rivetos/memory-postgres')
     memory = new PostgresMemory({
@@ -313,32 +327,19 @@ describeIfPg('ingestSession function (Phase 1.A slice 3)', () => {
       embedModel: process.env.RIVETOS_EMBED_MODEL,
     })
 
-    const oldSource = process.env.RIVETOS_MEMORY_SOURCE
-    const oldAgent = process.env.RIVETOS_MEMORY_AGENT
-    const oldChannel = process.env.RIVETOS_MEMORY_CHANNEL
-
     process.env.RIVETOS_MEMORY_SOURCE = 'env-test-source'
     process.env.RIVETOS_MEMORY_AGENT = 'env-test-agent'
     process.env.RIVETOS_MEMORY_CHANNEL = 'env-test-channel'
 
-    try {
-      const sessionId = `test-env-defaults-${Date.now()}`
-      const result = await ingestSession(testMemory, {
-        sessionId,
-        messages: [{ role: 'user' as const, content: 'Test message' }],
-      })
+    const sessionId = `test-env-defaults-${Date.now()}`
+    const result = await ingestSession(testMemory, {
+      sessionId,
+      messages: [{ role: 'user' as const, content: 'Test message' }],
+    })
 
-      expect(result.source).toBe('env-test-source')
-      expect(result.agent).toBe('env-test-agent')
-      expect(result.channel).toBe('env-test-channel')
-    } finally {
-      if (oldSource !== undefined) process.env.RIVETOS_MEMORY_SOURCE = oldSource
-      else delete process.env.RIVETOS_MEMORY_SOURCE
-      if (oldAgent !== undefined) process.env.RIVETOS_MEMORY_AGENT = oldAgent
-      else delete process.env.RIVETOS_MEMORY_AGENT
-      if (oldChannel !== undefined) process.env.RIVETOS_MEMORY_CHANNEL = oldChannel
-      else delete process.env.RIVETOS_MEMORY_CHANNEL
-    }
+    expect(result.source).toBe('env-test-source')
+    expect(result.agent).toBe('env-test-agent')
+    expect(result.channel).toBe('env-test-channel')
 
     await testMemory.close()
   })
