@@ -10,7 +10,10 @@ Full mesh mTLS join is out of scope.
 ## Query
 
 Point Cursor at bin/rivet-memory-mcp.sh (loads ~/.rivetos/.env, then starts the sidecar).
-See .mcp.json. Tools: memory_search, memory_browse, memory_stats, memory_get_full.
+See .mcp.json for examples. Tools: memory_search, memory_browse, memory_stats, memory_get_full.
+
+When installed as a Grok Bot plugin, use `${CURSOR_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh`.
+When pointing directly at the script, use the absolute path: `/opt/rivetos/integrations/grok-bot/rivet-memory/bin/rivet-memory-mcp.sh`.
 
 ## Write
 
