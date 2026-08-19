@@ -18,7 +18,7 @@ When pointing directly at the script, use the absolute path: `/opt/rivetos/integ
 ## Write
 
 The launcher sets RIVETOS_MCP_ENABLE_MEMORY_WRITE=1 and default tag env vars (agent=rivet-grokbot, source/channel=grokbot).
-Use memory_append or memory_ingest_session. Pass persona on each call when relevant; agent defaults to rivet-grokbot and should not be overridden.
+Use memory_append or memory_ingest_session. Pass role (user, assistant, system, or tool) on each memory_append call, and persona when relevant; agent defaults to rivet-grokbot and should not be overridden.
 Ingest skips ordinals already stored for that session.
 
 Offline: node bin/ingest-session.mjs --session-id ID --agent rivet-grokbot [--persona P] file.jsonl
