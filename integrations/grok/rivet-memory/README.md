@@ -198,6 +198,7 @@ This makes the full rivet-memory experience (including capture) available for an
 
 - Claude Code sibling: `../claude-code/rivet-memory/`
 - Hermes sibling: `../hermes/rivet-memory/`
+- Grok Bot sibling (Cursor agents, `source=grokbot`): `../grok-bot/rivet-memory/`
 - Core memory design: `/docs/MEMORY-DESIGN.md`
 - The 2026-05-23 WAP-DHCP incident is the canonical case study for why this discipline exists.
 
