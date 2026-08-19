@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "rivetos": {
-      "command": "/opt/rivetos/integrations/grok-bot/rivet-memory/bin/rivet-memory-mcp.sh"
+      "command": "${CURSOR_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh"
     }
   }
 }
