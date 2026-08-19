@@ -58,7 +58,13 @@ const roleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
 export const memoryAppendInputSchema = {
   session_id: z.string().min(1).describe('Session / conversation key to append to'),
   content: z.string().min(1).describe('Message text'),
-  role: roleSchema.optional(),
+  role: roleSchema.describe('Message role — user, assistant, system, or tool'),
+  tool_name: z.string().optional().describe('Tool name (for assistant tool-call messages)'),
+  tool_args: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe('Tool arguments as JSON object (for assistant tool-call messages)'),
+  tool_result: z.string().optional().describe('Tool result (for tool-role messages)'),
   agent: z.string().optional(),
   persona: z.string().optional(),
   source: z.string().optional(),
@@ -102,6 +108,9 @@ async function existingOrdinals(
   return found
 }
 
+// TODO: memory_ingest_session messages still can't carry tool fields (toolName,
+// toolArgs, toolResult) and still default role to 'assistant'. Consider
+// extending IngestMessage interface and schema to match memory_append parity.
 export async function ingestSession(
   memory: PostgresMemory,
   input: IngestSessionInput,
@@ -165,21 +174,31 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
     async execute(args) {
       const sessionId = asString(args.session_id).trim()
       const content = asString(args.content)
-      const role = asString(args.role) || 'assistant'
+      const role = asString(args.role)
       if (!sessionId) throw new Error('memory_append: session_id is required')
       if (!content) throw new Error('memory_append: content is required')
+      if (!role) throw new Error('memory_append: role is required')
       if (!['user', 'assistant', 'system', 'tool'].includes(role)) {
         throw new Error('memory_append: role must be user|assistant|system|tool')
       }
       const tags = tagsFromArgs(args)
       const metadata: Record<string, unknown> = { source: tags.source }
       if (tags.persona) metadata.persona = tags.persona
+      const toolName = typeof args.tool_name === 'string' ? args.tool_name : undefined
+      const toolArgs =
+        args.tool_args != null && typeof args.tool_args === 'object' && !Array.isArray(args.tool_args)
+          ? (args.tool_args as Record<string, unknown>)
+          : undefined
+      const toolResult = typeof args.tool_result === 'string' ? args.tool_result : undefined
       const id = await memory.append({
         sessionId,
         agent: tags.agent,
         channel: tags.channel,
         role: role as 'user' | 'assistant' | 'system' | 'tool',
         content,
+        toolName,
+        toolArgs,
+        toolResult,
         metadata,
       })
       return JSON.stringify({ id, session_id: sessionId, ...tags })
