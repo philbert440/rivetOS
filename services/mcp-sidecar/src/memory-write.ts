@@ -146,7 +146,7 @@ export async function ingestSession(
     }
     const metadata: Record<string, unknown> = { source: tags.source, ordinal: i }
     if (tags.persona) metadata.persona = tags.persona
-    
+
     // Guard against invalid dates: schema validates ISO strings, but runtime
     // Date objects or edge cases could still produce Invalid Date. Skip rather
     // than poison the entire ingest mid-loop.
@@ -155,14 +155,14 @@ export async function ingestSession(
       const candidate = new Date(item.createdAt)
       if (Number.isNaN(candidate.getTime())) {
         console.warn(
-          `[ingestSession] Invalid createdAt for message ${i} in session ${input.sessionId}: ${item.createdAt}`,
+          `[ingestSession] Invalid createdAt for message ${i} in session ${input.sessionId}: ${String(item.createdAt)}`,
         )
         skipped += 1
         continue
       }
       createdAt = candidate
     }
-    
+
     ids.push(
       await memory.append({
         sessionId: input.sessionId,
