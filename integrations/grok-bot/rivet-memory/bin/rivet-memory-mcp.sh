@@ -4,10 +4,24 @@
 # This script provides a consistent, clean way to expose the RivetOS memory
 # tools (memory_search, memory_browse, memory_stats, etc.) to Cursor Grok Bot via MCP.
 #
-# Usage in Grok:
-#   Add to ~/.grok/config.toml or project .mcp.json:
-#     [mcp_servers.rivetos]
-#     command = "/path/to/rivetos/integrations/grok/rivet-memory/bin/rivet-memory-mcp.sh"
+# Usage in Grok Bot:
+#   As a plugin (${CURSOR_PLUGIN_ROOT} expands when installed):
+#     {
+#       "mcpServers": {
+#         "rivetos": {
+#           "command": "${CURSOR_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh"
+#         }
+#       }
+#     }
+#
+#   Or point directly at the script (manual setup):
+#     {
+#       "mcpServers": {
+#         "rivetos": {
+#           "command": "/opt/rivetos/integrations/grok-bot/rivet-memory/bin/rivet-memory-mcp.sh"
+#         }
+#       }
+#     }
 #
 # stdout is reserved for the JSON-RPC channel.
 # All diagnostics and errors go to stderr.
