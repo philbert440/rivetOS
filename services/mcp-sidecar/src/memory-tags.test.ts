@@ -32,13 +32,13 @@ describe('resolveMemoryWriteTags', () => {
     expect(
       resolveMemoryWriteTags({
         source: 'grokbot',
-        agent: 'Engineer',
+        agent: 'rivet-grokbot',
         persona: 'Developer',
         channel: 'grokbot',
       }),
     ).toEqual({
       source: 'grokbot',
-      agent: 'Engineer',
+      agent: 'rivet-grokbot',
       persona: 'Developer',
       channel: 'grokbot',
     })
@@ -46,12 +46,12 @@ describe('resolveMemoryWriteTags', () => {
 
   it('reads launcher env when args omitted', () => {
     process.env.RIVETOS_MEMORY_SOURCE = 'grokbot'
-    process.env.RIVETOS_MEMORY_AGENT = 'Engineer'
+    process.env.RIVETOS_MEMORY_AGENT = 'rivet-grokbot'
     process.env.RIVETOS_MEMORY_PERSONA = 'Developer'
     process.env.RIVETOS_MEMORY_CHANNEL = 'grokbot'
     expect(resolveMemoryWriteTags({})).toEqual({
       source: 'grokbot',
-      agent: 'Engineer',
+      agent: 'rivet-grokbot',
       persona: 'Developer',
       channel: 'grokbot',
     })

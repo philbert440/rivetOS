@@ -43,7 +43,7 @@ fi
 # Grok Bot write-tag defaults. Sidecar write tools stay gated.
 export RIVETOS_MEMORY_SOURCE="${RIVETOS_MEMORY_SOURCE:-grokbot}"
 export RIVETOS_MEMORY_CHANNEL="${RIVETOS_MEMORY_CHANNEL:-grokbot}"
-export RIVETOS_MEMORY_AGENT="${RIVETOS_MEMORY_AGENT:-grokbot}"
+export RIVETOS_MEMORY_AGENT="${RIVETOS_MEMORY_AGENT:-rivet-grokbot}"
 export RIVETOS_MCP_ENABLE_MEMORY_WRITE="${RIVETOS_MCP_ENABLE_MEMORY_WRITE:-1}"
 
 # Tell the MCP server we're running in stdio mode.

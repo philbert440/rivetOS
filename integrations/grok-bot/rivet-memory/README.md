@@ -3,7 +3,8 @@
 RivetOS shared memory for Cursor Grok Bot agents, not the Grok Build CLI.
 Sibling of integrations/grok/rivet-memory. That plugin stays as-is.
 
-Query and write the same Postgres store. Ingest sessions tagged source=grokbot plus agent and persona.
+Query and write the same Postgres store. Ingest sessions tagged source=grokbot, agent=rivet-grokbot, and optional persona.
+Convention: agent stays rivet-grokbot (ros_messages.agent / ros_conversations.agent key); persona varies per Grok Bot personality and lives in metadata only.
 Full mesh mTLS join is out of scope.
 
 ## Query
@@ -13,15 +14,16 @@ See .mcp.json. Tools: memory_search, memory_browse, memory_stats, memory_get_ful
 
 ## Write
 
-The launcher sets RIVETOS_MCP_ENABLE_MEMORY_WRITE=1 and grokbot tag env vars.
-Use memory_append or memory_ingest_session. Pass agent and persona on each call.
+The launcher sets RIVETOS_MCP_ENABLE_MEMORY_WRITE=1 and default tag env vars (agent=rivet-grokbot, source/channel=grokbot).
+Use memory_append or memory_ingest_session. Pass persona on each call when relevant; agent defaults to rivet-grokbot and should not be overridden.
 Ingest skips ordinals already stored for that session.
 
-Offline: node bin/ingest-session.mjs --session-id ID --agent NAME [--persona P] file.jsonl
+Offline: node bin/ingest-session.mjs --session-id ID --agent rivet-grokbot [--persona P] file.jsonl
 That calls the same ingestSession() as the sidecar (requires a built checkout).
 
 ## Related
 
 - Grok Build sibling (do not break): ../grok/rivet-memory/
 - Claude Code sibling: ../claude-code/rivet-memory/
+- Kimi Code sibling: ../kimi/rivet-memory/ (same agent-stays-fixed convention)
 - Sidecar: services/mcp-sidecar/
