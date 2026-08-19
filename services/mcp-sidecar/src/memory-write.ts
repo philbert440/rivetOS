@@ -182,7 +182,9 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
         throw new Error('memory_append: role must be user|assistant|system|tool')
       }
       if (!content && !toolName && role !== 'tool') {
-        throw new Error('memory_append: content is required (or provide tool_name for tool-call messages)')
+        throw new Error(
+          'memory_append: content is required (or provide tool_name for tool-call messages)',
+        )
       }
       const tags = tagsFromArgs(args)
       const metadata: Record<string, unknown> = { source: tags.source }
