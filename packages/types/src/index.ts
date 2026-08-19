@@ -208,6 +208,7 @@ export {
 export { MODEL_DEFAULTS } from './defaults.js'
 export type { ProviderName } from './defaults.js'
 export type { GatewayRoute, GatewayHandle } from './gateway.js'
+export { mergeTranscriptWindow } from './gateway-api.js'
 export type {
   GatewayErrorResponse,
   GatewayAuthMode,

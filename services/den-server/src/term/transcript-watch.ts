@@ -21,7 +21,7 @@
 
 import { watch, type FSWatcher } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import type { SessionWsFrame, TranscriptWsFrame } from '@rivetos/types'
+import { mergeTranscriptWindow, type SessionWsFrame, type TranscriptWsFrame } from '@rivetos/types'
 import {
   harnessStoreDirs,
   readHarnessStoreAt,
@@ -55,6 +55,8 @@ export interface TranscriptWatcher {
 interface Watched {
   refs: number
   rev: number
+  /** last emitted turns (pinned prefix + current window) — client-visible */
+  turns: TranscriptWsFrame['turns']
   /** per-turn JSON signatures of the last emitted parse — diffing basis */
   sigs: string[]
   command: string
@@ -111,21 +113,16 @@ export function createTranscriptWatcher(
     }
   }
 
-  const emitDelta = (
+  const emitFrame = (
     session: string,
     s: Watched,
-    turnsSigs: string[],
+    from: number,
     turns: TranscriptWsFrame['turns'],
     command: string,
+    truncated: boolean,
   ): void => {
-    // First index where old and new disagree; unchanged prefix is not resent.
-    let from = 0
-    const max = Math.min(s.sigs.length, turnsSigs.length)
-    while (from < max && s.sigs[from] === turnsSigs[from]) from++
-    if (from === turnsSigs.length && turnsSigs.length === s.sigs.length && s.command === command) {
-      return // nothing changed
-    }
-    s.sigs = turnsSigs
+    s.turns = turns
+    s.sigs = turns.map((turn) => JSON.stringify(turn))
     s.command = command
     s.rev += 1
     emit({
@@ -136,7 +133,26 @@ export function createTranscriptWatcher(
       turns: turns.slice(from),
       total: turns.length,
       command,
+      ...(truncated ? { truncatedBefore: true as const } : {}),
     })
+  }
+
+  const emitDelta = (
+    session: string,
+    s: Watched,
+    turns: TranscriptWsFrame['turns'],
+    command: string,
+    truncated: boolean,
+  ): void => {
+    const turnsSigs = turns.map((turn) => JSON.stringify(turn))
+    // First index where old and new disagree; unchanged prefix is not resent.
+    let from = 0
+    const max = Math.min(s.sigs.length, turnsSigs.length)
+    while (from < max && s.sigs[from] === turnsSigs[from]) from++
+    if (from === turnsSigs.length && turnsSigs.length === s.sigs.length && s.command === command) {
+      return // nothing changed
+    }
+    emitFrame(session, s, from, turns, command, truncated)
   }
 
   // Cross-closure state changes (close(), a change event marking dirty during
@@ -186,22 +202,11 @@ export function createTranscriptWatcher(
           }
         }
         if (!isLive(session, s)) return
-        const sigs = t.turns.map((turn) => JSON.stringify(turn))
+        const merged = mergeTranscriptWindow(s.turns, t.turns, t.truncated === true)
         if (pendingSnapshot) {
-          s.sigs = sigs
-          s.command = t.command
-          s.rev += 1
-          emit({
-            kind: 'transcript',
-            session,
-            rev: s.rev,
-            from: 0,
-            turns: t.turns,
-            total: t.turns.length,
-            command: t.command,
-          })
+          emitFrame(session, s, 0, merged, t.command, t.truncated === true)
         } else {
-          emitDelta(session, s, sigs, t.turns, t.command)
+          emitDelta(session, s, merged, t.command, t.truncated === true)
         }
         pendingSnapshot = false
       } while (stillDirty(session))
@@ -312,6 +317,7 @@ export function createTranscriptWatcher(
       const s: Watched = {
         refs: 1,
         rev: 0,
+        turns: [],
         sigs: [],
         command: '',
         parsing: false,

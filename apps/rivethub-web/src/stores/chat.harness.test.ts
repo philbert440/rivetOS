@@ -152,6 +152,57 @@ describe('syncHarnessTranscript', () => {
   })
 })
 
+describe('transcript tail pin (truncatedBefore)', () => {
+  const frame = (
+    rev: number,
+    texts: string[],
+    extra: { truncatedBefore?: true; from?: number; total?: number } = {},
+  ) => ({
+    kind: 'transcript' as const,
+    session: KEY,
+    rev,
+    from: extra.from ?? 0,
+    turns: texts.map((text, i) => turn(i % 2 === 0 ? 'user' : 'assistant', text)),
+    total: extra.total ?? texts.length,
+    command: 'claude',
+    ...(extra.truncatedBefore ? { truncatedBefore: true as const } : {}),
+  })
+
+  beforeEach(() => {
+    socket.onFrame = undefined
+    socket.sent = []
+    useChat.getState().addDraft(KEY)
+    useChat.getState().connect('gw')
+  })
+
+  it('pins earlier turns when a truncated from=0 snapshot would wipe them', () => {
+    socket.onFrame?.(frame(1, ['a', 'b', 'c', 'd', 'e']))
+    expect(useChat.getState().transcripts[KEY]?.turns.map((t) => t.text)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+    ])
+
+    socket.onFrame?.(frame(2, ['c', 'd', 'e', 'f'], { truncatedBefore: true, total: 4 }))
+    expect(useChat.getState().transcripts[KEY]?.turns.map((t) => t.text)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+      'f',
+    ])
+  })
+
+  it('still replaces on a non-truncated from=0 snapshot', () => {
+    socket.onFrame?.(frame(1, ['a', 'b', 'c']))
+    socket.onFrame?.(frame(2, ['only-window']))
+    expect(useChat.getState().transcripts[KEY]?.turns.map((t) => t.text)).toEqual(['only-window'])
+  })
+})
+
 describe('approvals slice', () => {
   it('queues requests oldest-first, dedupes, and retires on resolution', () => {
     const chat = useChat.getState()
@@ -222,7 +273,11 @@ describe('setLive', () => {
           status: 'done',
           args: {
             questions: [
-              { question: 'Which auth?', header: 'Auth', options: [{ label: 'JWT' }, { label: 'session' }] },
+              {
+                question: 'Which auth?',
+                header: 'Auth',
+                options: [{ label: 'JWT' }, { label: 'session' }],
+              },
             ],
           },
         },
@@ -231,10 +286,7 @@ describe('setLive', () => {
     expect(useChat.getState().ask[KEY]).toBeUndefined()
 
     chat.setLive(KEY, undefined) // turn-complete
-    expect(useChat.getState().ask[KEY]?.[0].options.map((o) => o.label)).toEqual([
-      'JWT',
-      'session',
-    ])
+    expect(useChat.getState().ask[KEY]?.[0].options.map((o) => o.label)).toEqual(['JWT', 'session'])
   })
 
   it('retires the ask card once a user turn commits (answered in the TUI)', () => {
@@ -264,7 +316,9 @@ describe('setLive', () => {
 
 describe('all-sessions socket ownership (the mutex)', () => {
   const OTHER = 'unbound-session'
-  const streaming = (text: string): { text: string; reasoning: boolean; reasoningText: string; tools: [] } => ({
+  const streaming = (
+    text: string,
+  ): { text: string; reasoning: boolean; reasoningText: string; tools: [] } => ({
     text,
     reasoning: false,
     reasoningText: '',
@@ -318,7 +372,9 @@ describe('all-sessions socket ownership (the mutex)', () => {
 })
 
 describe('canonical thread keys (§ Session identity mapping)', () => {
-  const streaming = (text: string): { text: string; reasoning: boolean; reasoningText: string; tools: [] } => ({
+  const streaming = (
+    text: string,
+  ): { text: string; reasoning: boolean; reasoningText: string; tools: [] } => ({
     text,
     reasoning: false,
     reasoningText: '',

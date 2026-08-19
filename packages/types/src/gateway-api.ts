@@ -152,6 +152,11 @@ export interface SessionPostReply {
  * turn deltas — the store file is the single source of truth, so chat can
  * never drift from the TUI. `from` is the splice index into the turn array;
  * a frame with from=0 is a full snapshot (always sent first after a watch).
+ *
+ * When the on-disk store exceeds the parse window the reader seeks to the
+ * last 8 MiB, so `turns[0]` is no longer the session's first turn. The
+ * server stamps `truncatedBefore` and both sides pin any earlier turns
+ * already held rather than treating from=0 as a wipe.
  */
 export interface TranscriptWsFrame {
   kind: 'transcript'
@@ -166,6 +171,43 @@ export interface TranscriptWsFrame {
   total: number
   /** which harness store produced the turns ('' = none found yet) */
   command: string
+  /** Disk parse was a tail window — `turns[0]` is not the session start.
+   *  Clients must pin earlier turns they already have (see mergeTranscriptWindow). */
+  truncatedBefore?: true
+}
+
+/**
+ * Pin turns already held when a later parse is an 8 MiB sliding tail.
+ *
+ * The on-disk reader seeks to `size - TRANSCRIPT_MAX_BYTES`, so once a store
+ * grows past the cap the parsed array drops its prefix. A from=0 splice of
+ * that window silently shortens chat. If `next[0]` is found inside `prev`
+ * (and the overlapping region matches), keep `prev`'s prefix and graft
+ * `next` on at the overlap.
+ *
+ * `truncated` false → `next` is the full file; return it as-is.
+ */
+export function mergeTranscriptWindow<T>(
+  prev: readonly T[],
+  next: readonly T[],
+  truncated: boolean,
+): T[] {
+  if (!truncated || prev.length === 0 || next.length === 0) return [...next]
+  const sig = (t: T): string => JSON.stringify(t)
+  const next0 = sig(next[0] as T)
+  let overlap = -1
+  for (let i = 0; i < prev.length; i++) {
+    if (sig(prev[i] as T) === next0) {
+      overlap = i
+      break
+    }
+  }
+  if (overlap < 0) return [...next]
+  const overlapLen = Math.min(prev.length - overlap, next.length)
+  for (let j = 1; j < overlapLen; j++) {
+    if (sig(prev[overlap + j] as T) !== sig(next[j] as T)) return [...next]
+  }
+  return [...prev.slice(0, overlap), ...next]
 }
 
 /** Frames on WS /api/sessions/ws (server → client). */
@@ -607,6 +649,8 @@ export interface HarnessTranscriptResponse {
   /** Which harness produced the turns, or '' if none found. */
   command: string
   turns: HarnessTranscriptTurn[]
+  /** Present when the on-disk store exceeded the parse window (tail only). */
+  truncated?: true
 }
 
 // ---------------------------------------------------------------------------

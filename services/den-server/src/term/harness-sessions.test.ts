@@ -12,10 +12,12 @@ import {
   readHarnessTranscript,
   readKimiTranscript,
   resolveHarnessStore,
+  setTranscriptMaxBytesForTest,
 } from './harness-sessions.js'
 
 const dirs: string[] = []
 afterEach(() => {
+  setTranscriptMaxBytesForTest()
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
   delete process.env.CLAUDE_CONFIG_DIR
   delete process.env.GROK_HOME
@@ -182,7 +184,11 @@ describe('listHarnessSessions', () => {
     process.env.GROK_HOME = grokBase
 
     const sessions = await listHarnessSessions(['claude', 'grok'])
-    expect(sessions[0]).toMatchObject({ command: 'grok', id: 'aaaa-1111', title: 'plan the migration' })
+    expect(sessions[0]).toMatchObject({
+      command: 'grok',
+      id: 'aaaa-1111',
+      title: 'plan the migration',
+    })
     expect(sessions.some((s) => s.command === 'claude')).toBe(true)
     // sorted last-updated first across harnesses
     expect(sessions[0].updatedAt).toBeGreaterThan(sessions[sessions.length - 1].updatedAt)
@@ -318,7 +324,10 @@ describe('listHarnessSessions', () => {
     const id = 'session_55555555-5555-4555-8555-555555555555'
     const dir = join(home, 'sessions', 'wd_rivet_abc123', id)
     mkdirSync(join(dir, 'agents', 'main'), { recursive: true })
-    writeFileSync(join(dir, 'state.json'), JSON.stringify({ id, version: 2, createdAt: 9, updatedAt: 9 }))
+    writeFileSync(
+      join(dir, 'state.json'),
+      JSON.stringify({ id, version: 2, createdAt: 9, updatedAt: 9 }),
+    )
     writeFileSync(
       join(dir, 'agents', 'main', 'wire.jsonl'),
       [
@@ -326,7 +335,10 @@ describe('listHarnessSessions', () => {
         // that a line spanning chunk boundaries is reassembled rather than
         // split into two unparseable halves
         JSON.stringify({ type: 'config.update', systemPrompt: 'x'.repeat(200_000) }),
-        JSON.stringify({ type: 'turn.prompt', input: [{ type: 'text', text: 'y'.repeat(50_000) }] }),
+        JSON.stringify({
+          type: 'turn.prompt',
+          input: [{ type: 'text', text: 'y'.repeat(50_000) }],
+        }),
         JSON.stringify({
           type: 'context.append_message',
           message: {
@@ -398,6 +410,24 @@ describe('listHarnessSessions', () => {
 })
 
 describe('readHarnessTranscript', () => {
+  it('stamps truncated when the store exceeds the parse window', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-trunc-'))
+    dirs.push(base)
+    const id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    const lines = Array.from({ length: 12 }, (_, i) =>
+      JSON.stringify({ type: 'user', message: { content: `turn-${String(i)}-${'x'.repeat(20)}` } }),
+    )
+    writeFileSync(join(dir, `${id}.jsonl`), lines.join('\n') + '\n')
+    process.env.CLAUDE_CONFIG_DIR = base
+    setTranscriptMaxBytesForTest(180)
+    const t = await readHarnessTranscript(id)
+    expect(t.truncated).toBe(true)
+    expect(t.turns.length).toBeGreaterThan(0)
+    expect(t.turns[0]?.text).not.toBe('turn-0-xxxxxxxxxxxxxxxxxxxx')
+  })
+
   it('reads Claude user/assistant turns and skips sidechains + wrappers', async () => {
     const base = mkdtempSync(join(tmpdir(), 'claude-tx-'))
     dirs.push(base)
@@ -413,7 +443,10 @@ describe('readHarnessTranscript', () => {
           type: 'assistant',
           message: {
             model: 'claude-opus-4',
-            content: [{ type: 'text', text: 'hi there' }, { type: 'thinking', text: 'x' }],
+            content: [
+              { type: 'text', text: 'hi there' },
+              { type: 'thinking', text: 'x' },
+            ],
             usage: {
               input_tokens: 1000,
               output_tokens: 40,
@@ -544,7 +577,9 @@ describe('readHarnessTranscript', () => {
         JSON.stringify({ type: 'user', message: { content: 'real question' } }),
         JSON.stringify({
           type: 'user',
-          message: { content: '<task-notification>\n<task-id>a1b2</task-id>\n</task-notification>' },
+          message: {
+            content: '<task-notification>\n<task-id>a1b2</task-id>\n</task-notification>',
+          },
         }),
         JSON.stringify({ type: 'user', isMeta: true, message: { content: 'meta noise' } }),
         JSON.stringify({
@@ -766,7 +801,11 @@ describe('readHarnessTranscript', () => {
           // kimi records a real isError, unlike den's tool.end — so a resynced
           // transcript can report a failed tool honestly where the live stream
           // cannot.
-          event: { type: 'tool.result', toolCallId: 'Bash_0', result: { output: 'boom', isError: true } },
+          event: {
+            type: 'tool.result',
+            toolCallId: 'Bash_0',
+            result: { output: 'boom', isError: true },
+          },
         },
         {
           type: 'context.append_loop_event',

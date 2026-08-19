@@ -4,12 +4,14 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { SessionWsFrame, TranscriptWsFrame } from '@rivetos/types'
 import { createTranscriptWatcher, type TranscriptWatcher } from './transcript-watch.js'
+import { setTranscriptMaxBytesForTest } from './harness-sessions.js'
 
 const dirs: string[] = []
 let watcher: TranscriptWatcher | undefined
 afterEach(() => {
   watcher?.close()
   watcher = undefined
+  setTranscriptMaxBytesForTest()
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
   delete process.env.CLAUDE_CONFIG_DIR
   delete process.env.GROK_HOME
@@ -71,9 +73,7 @@ describe('createTranscriptWatcher', () => {
 
     // Store grows (a new turn lands) → a delta frame covering just the tail.
     appendFileSync(file, userLine('second question'))
-    const delta = await until(() =>
-      transcripts(frames).find((f) => f.rev === snap.rev + 1),
-    )
+    const delta = await until(() => transcripts(frames).find((f) => f.rev === snap.rev + 1))
     expect(delta.from).toBe(2)
     expect(delta.turns.map((t) => t.text)).toEqual(['second question'])
     expect(delta.total).toBe(3)
@@ -225,6 +225,36 @@ describe('createTranscriptWatcher', () => {
     expect(recovered.turns.some((t) => t.text === 'after rotation' || t.text === 'recovered')).toBe(
       true,
     )
+  })
+
+  it('pins earlier turns when the on-disk parse slides to an 8MiB tail', async () => {
+    const { dir } = claudeStore()
+    const id = 'aaaaaaaa-0000-0000-0000-000000000007'
+    const file = join(dir, `${id}.jsonl`)
+    const prefix = userLine('keep-me') + assistantLine('also-keep')
+    const fat = userLine(`later-${'x'.repeat(40)}`) + assistantLine(`tail-${'x'.repeat(40)}`)
+    // Seek lands inside the first jsonl line so the next parse drops
+    // `keep-me` but keeps `also-keep` as the overlap for pinning.
+    setTranscriptMaxBytesForTest(
+      fat.length + prefix.length - Math.floor(userLine('keep-me').length / 2),
+    )
+    writeFileSync(file, prefix)
+
+    const frames: SessionWsFrame[] = []
+    watcher = createTranscriptWatcher((f) => frames.push(f), FAST)
+    watcher.watch(id)
+    const snap = await until(() => transcripts(frames).find((f) => f.from === 0 && f.total === 2))
+    expect(snap.turns.map((t) => t.text)).toEqual(['keep-me', 'also-keep'])
+    expect(snap.truncatedBefore).toBeUndefined()
+
+    appendFileSync(file, fat)
+    const delta = await until(() => transcripts(frames).find((f) => f.rev === snap.rev + 1))
+    expect(delta.truncatedBefore).toBe(true)
+    // Client-visible reconstruction: prefix + new tail, not a wipe to the window.
+    const visible = [...snap.turns.slice(0, delta.from), ...delta.turns]
+    expect(visible.map((t) => t.text)[0]).toBe('keep-me')
+    expect(visible.some((t) => t.text.startsWith('tail-'))).toBe(true)
+    expect(visible.length).toBeGreaterThanOrEqual(3)
   })
 
   it('store-dir changes emit a debounced sessions-dirty for the drawer', async () => {

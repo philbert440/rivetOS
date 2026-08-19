@@ -22,11 +22,12 @@
  */
 
 import { create } from 'zustand'
-import type {
-  HarnessTranscriptTurn,
-  SessionMessage,
-  SessionWsFrame,
-  TranscriptWsFrame,
+import {
+  mergeTranscriptWindow,
+  type HarnessTranscriptTurn,
+  type SessionMessage,
+  type SessionWsFrame,
+  type TranscriptWsFrame,
 } from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
 import { isValidGatewayUrl, useConnection } from './connection.js'
@@ -279,14 +280,24 @@ function applyTranscriptFrame(s: ChatState, frame: TranscriptWsFrame): Partial<C
   const sid = frame.session
   const cur = s.transcripts[sid]
   let turns: HarnessTranscriptTurn[]
+  let pinned = false
   if (frame.from === 0) {
-    turns = frame.turns // full snapshot — always applicable
+    if (frame.truncatedBefore && cur && cur.turns.length > 0) {
+      // Tail-window snapshot after a den restart / new watch: pin earlier
+      // turns we already have instead of wiping chat down to the last 8 MiB.
+      turns = mergeTranscriptWindow(cur.turns, frame.turns, true)
+      pinned = turns.length > frame.turns.length
+    } else {
+      turns = frame.turns // full snapshot — always applicable
+    }
   } else if (cur && frame.rev === cur.rev + 1 && cur.turns.length >= frame.from) {
     turns = [...cur.turns.slice(0, frame.from), ...frame.turns]
   } else {
     return null // missed a delta — caller requests a snapshot
   }
-  if (turns.length !== frame.total) return null
+  // `total` is the server's view. After a client-side pin it is the window
+  // size, not the reconstructed length — skip the guard in that case.
+  if (!pinned && turns.length !== frame.total) return null
   return transcriptPatch(s, sid, turns, frame.turns, frame.command, frame.rev)
 }
 
