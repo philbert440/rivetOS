@@ -4,10 +4,24 @@
 # This script provides a consistent, clean way to expose the RivetOS memory
 # tools (memory_search, memory_browse, memory_stats, etc.) to Cursor Grok Bot via MCP.
 #
-# Usage in Grok:
-#   Add to ~/.grok/config.toml or project .mcp.json:
-#     [mcp_servers.rivetos]
-#     command = "/path/to/rivetos/integrations/grok/rivet-memory/bin/rivet-memory-mcp.sh"
+# Usage in Grok Bot:
+#   As a plugin (${CURSOR_PLUGIN_ROOT} expands when installed):
+#     {
+#       "mcpServers": {
+#         "rivetos": {
+#           "command": "${CURSOR_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh"
+#         }
+#       }
+#     }
+#
+#   Or point directly at the script (manual setup):
+#     {
+#       "mcpServers": {
+#         "rivetos": {
+#           "command": "/opt/rivetos/integrations/grok-bot/rivet-memory/bin/rivet-memory-mcp.sh"
+#         }
+#       }
+#     }
 #
 # stdout is reserved for the JSON-RPC channel.
 # All diagnostics and errors go to stderr.
@@ -43,7 +57,7 @@ fi
 # Grok Bot write-tag defaults. Sidecar write tools stay gated.
 export RIVETOS_MEMORY_SOURCE="${RIVETOS_MEMORY_SOURCE:-grokbot}"
 export RIVETOS_MEMORY_CHANNEL="${RIVETOS_MEMORY_CHANNEL:-grokbot}"
-export RIVETOS_MEMORY_AGENT="${RIVETOS_MEMORY_AGENT:-grokbot}"
+export RIVETOS_MEMORY_AGENT="${RIVETOS_MEMORY_AGENT:-rivet-grokbot}"
 export RIVETOS_MCP_ENABLE_MEMORY_WRITE="${RIVETOS_MCP_ENABLE_MEMORY_WRITE:-1}"
 
 # Tell the MCP server we're running in stdio mode.

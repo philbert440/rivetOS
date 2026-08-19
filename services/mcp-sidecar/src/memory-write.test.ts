@@ -83,7 +83,8 @@ describeIfPg('memory write tools', () => {
 
     expect(result.isError).toBe(true)
     const content = result.content as Array<{ type: string; text?: string }>
-    expect(content[0]?.text).toContain('role is required')
+    // Error can be from zod validation ("Required") or runtime check ("role is required")
+    expect(content[0]?.text).toMatch(/role|Required/i)
   })
 
   it('memory_append accepts and stores tool fields', async () => {
@@ -432,11 +433,15 @@ describeIfPg('memory_ingest_session timestamp preservation', () => {
 
     // First message has explicit timestamp
     expect(result.rows[0].content).toBe('With explicit timestamp')
-    expect(Math.abs(result.rows[0].created_at.getTime() - explicitTime.getTime())).toBeLessThan(1000)
+    expect(Math.abs(result.rows[0].created_at.getTime() - explicitTime.getTime())).toBeLessThan(
+      1000,
+    )
 
     // Second message uses NOW()
     expect(result.rows[1].content).toBe('Without timestamp')
-    expect(result.rows[1].created_at.getTime()).toBeGreaterThanOrEqual(beforeInsert.getTime() - 1000)
+    expect(result.rows[1].created_at.getTime()).toBeGreaterThanOrEqual(
+      beforeInsert.getTime() - 1000,
+    )
     expect(result.rows[1].created_at.getTime()).toBeLessThanOrEqual(afterInsert.getTime() + 1000)
   })
 
@@ -473,7 +478,9 @@ describeIfPg('memory_ingest_session timestamp preservation', () => {
 
     expect(result.rows.length).toBe(1)
     const expectedTime = new Date(timestampStr)
-    expect(Math.abs(result.rows[0].created_at.getTime() - expectedTime.getTime())).toBeLessThan(1000)
+    expect(Math.abs(result.rows[0].created_at.getTime() - expectedTime.getTime())).toBeLessThan(
+      1000,
+    )
   })
 
   it('skips messages with invalid date strings', async () => {
