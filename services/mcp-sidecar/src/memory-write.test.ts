@@ -82,7 +82,8 @@ describeIfPg('memory write tools', () => {
 
     expect(result.isError).toBe(true)
     const content = result.content as Array<{ type: string; text?: string }>
-    expect(content[0]?.text).toContain('role is required')
+    // Error can be from zod validation ("Required") or runtime check ("role is required")
+    expect(content[0]?.text).toMatch(/role|Required/i)
   })
 
   it('memory_append accepts and stores tool fields', async () => {

@@ -14,7 +14,7 @@ See .mcp.json. Tools: memory_search, memory_browse, memory_stats, memory_get_ful
 ## Write
 
 The launcher sets RIVETOS_MCP_ENABLE_MEMORY_WRITE=1 and grokbot tag env vars.
-Use memory_append or memory_ingest_session. Pass agent and persona on each call.
+Use memory_append or memory_ingest_session. Pass role (user, assistant, system, or tool), agent, and persona on each memory_append call.
 Ingest skips ordinals already stored for that session.
 
 Offline: node bin/ingest-session.mjs --session-id ID --agent NAME [--persona P] file.jsonl
