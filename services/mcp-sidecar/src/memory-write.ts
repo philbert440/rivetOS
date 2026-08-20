@@ -148,7 +148,11 @@ const roleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
 
 export const memoryAppendInputSchema = {
   session_id: z.string().min(1).describe('Session / conversation key to append to'),
-  content: z.string().describe('Message text (may be empty for tool-call messages with tool_name)'),
+  content: z
+    .string()
+    .describe(
+      'Message text (may be empty for tool-call messages with tool_name). Content longer than 16,000 chars is truncated; the elided tail is unrecoverable.',
+    ),
   role: roleSchema.describe('Message role — user, assistant, system, or tool'),
   tool_name: z.string().optional().describe('Tool name (for assistant tool-call messages)'),
   tool_args: z
