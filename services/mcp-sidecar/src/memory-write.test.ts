@@ -17,7 +17,7 @@ import {
 } from '@rivetos/mcp-v2'
 import { createMemoryTools, type MemoryToolsHandle } from './memory.js'
 import { PostgresMemory } from '@rivetos/memory-postgres'
-import { ingestSession, type IngestSessionInput } from './memory-write.js'
+import { ingestSession, truncateContent, type IngestSessionInput } from './memory-write.js'
 
 const PG_URL = process.env.RIVETOS_PG_URL ?? ''
 const describeIfPg = PG_URL ? describe : describe.skip
@@ -531,3 +531,220 @@ describeIfPg('memory_ingest_session timestamp preservation', () => {
     expect(messages.rows[1].content).toBe('Valid message after invalid date')
   })
 })
+
+describe('truncateContent (unit tests, DB-free)', () => {
+  const MAX_CONTENT = 16000
+  const TRUNCATION_MARKER = '\n…[truncated]'
+
+  it('does not truncate content shorter than MAX_CONTENT', () => {
+    const shortContent = 'Short message'
+    const metadata: Record<string, unknown> = {}
+
+    const result = truncateContent(shortContent, metadata)
+
+    expect(result).toBe(shortContent)
+    expect(metadata.full_content_length).toBeUndefined()
+    expect(metadata.truncated).toBeUndefined()
+  })
+
+  it('truncates content longer than MAX_CONTENT and records metadata', () => {
+    const longContent = 'x'.repeat(20000)
+    const metadata: Record<string, unknown> = {}
+
+    const result = truncateContent(longContent, metadata)
+
+    expect(result.endsWith(TRUNCATION_MARKER)).toBe(true)
+    expect(result.length).toBeLessThanOrEqual(MAX_CONTENT + TRUNCATION_MARKER.length)
+    expect(metadata.full_content_length).toBe(20000)
+    expect(metadata.truncated).toBe(true)
+  })
+
+  it('does not truncate content exactly at MAX_CONTENT boundary', () => {
+    const boundaryContent = 'x'.repeat(MAX_CONTENT)
+    const metadata: Record<string, unknown> = {}
+
+    const result = truncateContent(boundaryContent, metadata)
+
+    expect(result).toBe(boundaryContent)
+    expect(metadata.full_content_length).toBeUndefined()
+    expect(metadata.truncated).toBeUndefined()
+  })
+
+  it('backs off one unit when splitting a high surrogate pair', () => {
+    // Create content with emoji (surrogate pair) at the boundary
+    const beforeEmoji = 'x'.repeat(15999)
+    const emoji = '😀' // U+1F600, encoded as surrogate pair 0xD83D 0xDE00
+    const afterEmoji = 'x'.repeat(100)
+    const content = beforeEmoji + emoji + afterEmoji
+    const metadata: Record<string, unknown> = {}
+
+    const result = truncateContent(content, metadata)
+
+    // Should back off to avoid splitting the emoji
+    expect(result.length).toBe(15999 + TRUNCATION_MARKER.length)
+    expect(result).toBe(beforeEmoji + TRUNCATION_MARKER)
+    expect(result.includes(emoji)).toBe(false)
+    expect(metadata.truncated).toBe(true)
+  })
+
+  it('skips truncation when content already ends with marker', () => {
+    const alreadyTruncated = 'x'.repeat(10000) + TRUNCATION_MARKER
+    const metadata: Record<string, unknown> = {}
+
+    const result = truncateContent(alreadyTruncated, metadata)
+
+    // Should return as-is
+    expect(result).toBe(alreadyTruncated)
+    // Should not overwrite metadata
+    expect(metadata.full_content_length).toBeUndefined()
+    expect(metadata.truncated).toBeUndefined()
+  })
+
+  it('truncates tool_result with field prefix', () => {
+    const longToolResult = 'y'.repeat(18000)
+    const metadata: Record<string, unknown> = {}
+
+    const result = truncateContent(longToolResult, metadata, 'tool_result')
+
+    expect(result.endsWith(TRUNCATION_MARKER)).toBe(true)
+    expect(metadata.full_tool_result_length).toBe(18000)
+    expect(metadata.truncated).toBe(true)
+  })
+})
+
+describeIfPg('memory write truncation (integration)', () => {
+  let memory: PostgresMemory
+  const TEST_AGENT = `test-truncation-${Date.now()}`
+  const MAX_CONTENT = 16000
+
+  beforeAll(async () => {
+    memory = new PostgresMemory({ connectionString: PG_URL })
+    expect(await memory.isHealthy()).toBe(true)
+  })
+
+  afterAll(async () => {
+    const pool = memory.getPool()
+    await pool.query(`DELETE FROM ros_messages WHERE agent = $1`, [TEST_AGENT])
+    await pool.query(`DELETE FROM ros_conversations WHERE agent = $1`, [TEST_AGENT])
+    await pool.end()
+  })
+
+  it('ingestSession truncates content and returns truncation info', async () => {
+    const longContent = 'x'.repeat(20000)
+    const sessionId = `test-trunc-${Date.now()}`
+
+    const result = await ingestSession(memory, {
+      sessionId,
+      messages: [{ role: 'user', content: longContent }],
+      source: 'test',
+      agent: TEST_AGENT,
+      channel: 'test-channel',
+    })
+
+    expect(result.ingested).toBe(1)
+    expect(result.truncated).toBe(true)
+    expect(result.full_content_length).toBe(20000)
+
+    const messageId = result.ids[0]
+    const row = await memory.getPool().query<{
+      content: string
+      metadata: Record<string, unknown>
+    }>('SELECT content, metadata FROM ros_messages WHERE id = $1', [messageId])
+
+    expect(row.rows.length).toBe(1)
+    const { content, metadata } = row.rows[0]
+
+    expect(content.endsWith('\n…[truncated]')).toBe(true)
+    expect(content.length).toBeLessThanOrEqual(MAX_CONTENT + '\n…[truncated]'.length)
+    expect(metadata.full_content_length).toBe(20000)
+    expect(metadata.truncated).toBe(true)
+  })
+
+  it('ingestSession does not truncate short content', async () => {
+    const shortContent = 'Short message'
+    const sessionId = `test-short-${Date.now()}`
+
+    const result = await ingestSession(memory, {
+      sessionId,
+      messages: [{ role: 'user', content: shortContent }],
+      source: 'test',
+      agent: TEST_AGENT,
+      channel: 'test-channel',
+    })
+
+    expect(result.ingested).toBe(1)
+    expect(result.truncated).toBeUndefined()
+    expect(result.full_content_length).toBeUndefined()
+
+    const messageId = result.ids[0]
+    const row = await memory.getPool().query<{
+      content: string
+      metadata: Record<string, unknown>
+    }>('SELECT content, metadata FROM ros_messages WHERE id = $1', [messageId])
+
+    expect(row.rows.length).toBe(1)
+    const { content, metadata } = row.rows[0]
+
+    expect(content).toBe(shortContent)
+    expect(metadata.full_content_length).toBeUndefined()
+    expect(metadata.truncated).toBeUndefined()
+  })
+
+  it('memory_append via MCP truncates content and tool_result', async () => {
+    const longContent = 'a'.repeat(17000)
+    const longToolResult = 'b'.repeat(18000)
+    const sessionId = `test-append-trunc-${Date.now()}`
+
+    const memoryHandle = createMemoryTools({ pgUrl: PG_URL, enableWrite: true })
+    const server = createV2McpServer({
+      host: '127.0.0.1',
+      port: 0,
+      tools: memoryHandle.tools,
+    })
+    await server.start()
+
+    const client = await connectV2({
+      name: 'truncation-test',
+      url: `http://127.0.0.1:${String(server.port)}/mcp`,
+    })
+
+    try {
+      const result = await client.callToolRaw('memory_append', {
+        session_id: sessionId,
+        content: longContent,
+        role: 'tool',
+        tool_result: longToolResult,
+        agent: TEST_AGENT,
+        channel: 'test-channel',
+      })
+
+      expect(result.isError).not.toBe(true)
+      const content = result.content as Array<{ type: string; text?: string }>
+      const response = JSON.parse(content[0]?.text ?? '{}')
+
+      expect(response.truncated).toBe(true)
+      expect(response.full_content_length).toBeGreaterThan(MAX_CONTENT)
+
+      // Verify both content and tool_result were truncated in DB
+      const row = await memory.getPool().query<{
+        content: string
+        tool_result: string
+        metadata: Record<string, unknown>
+      }>('SELECT content, tool_result, metadata FROM ros_messages WHERE id = $1', [response.id])
+
+      expect(row.rows.length).toBe(1)
+      const { content: storedContent, tool_result, metadata } = row.rows[0]
+
+      expect(storedContent.endsWith('\n…[truncated]')).toBe(true)
+      expect(tool_result.endsWith('\n…[truncated]')).toBe(true)
+      expect(metadata.full_content_length).toBe(17000)
+      expect(metadata.full_tool_result_length).toBe(18000)
+      expect(metadata.truncated).toBe(true)
+    } finally {
+      await client.close().catch(() => {})
+      await server.close().catch(() => {})
+      await memoryHandle.close().catch(() => {})
+    }
+  })
+})
+
