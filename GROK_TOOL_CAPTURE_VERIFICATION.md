@@ -1,8 +1,8 @@
-# Grok Build Tool Capture Verification
+# Grok Build + Kimi Capture Verification
 
 ## Summary
 
-This document verifies that the Grok Build (`rivet-grok`) memory capture system properly stores tool calls and all other relevant session data in the RivetOS memory database.
+This document verifies that both Grok Build (`rivet-grok`) and Kimi (`rivet-kimi`) memory capture systems properly store tool calls, thinking/reasoning, and assistant replies in the RivetOS memory database.
 
 ## Current State
 
@@ -167,24 +167,124 @@ Expected: Mix of user/assistant/tool rows with tool rows showing toolName popula
 
 3. **Session file permissions**: The capture worker must have read access to `~/.grok/sessions/`. If Grok runs as a different user, ensure file permissions allow the rivetos service to read session files.
 
-## Comparison with Claude / Kimi
+## Kimi Capture Fix
 
-| Feature | Claude | Kimi | Grok Build (current) |
-|---------|--------|------|----------------------|
+### Problem
+
+Kimi traces were incomplete:
+- ❌ Thinking/reasoning was missing
+- ❌ Assistant replies were missing or incomplete
+
+### Root Cause
+
+Hook payloads (`Stop`, `PostToolUse`) carry no reply text. The old capture only extracted:
+- User prompts from `UserPromptSubmit` hooks
+- Tool calls from `PostToolUse` hooks
+- No assistant text
+- No thinking
+
+### Solution
+
+Kimi stores full conversations in `wire.jsonl` files at:
+```
+~/.kimi-code/sessions/<workspace>/<session_id>/agents/<slot>/wire.jsonl
+```
+
+The capture now:
+1. Reads `wire.jsonl` files (when available)
+2. Parses `context.append_loop_event` → `content.part` events
+3. Extracts:
+   - `part.type = "text"` → `role=assistant` (assistant reply)
+   - `part.type = "think"` → `role=assistant` with `[thinking]` prefix
+4. Combines with hook messages (user + tool)
+
+### Event Mapping
+
+| Wire Event | Extracted As |
+|-----------|--------------|
+| `context.append_loop_event` → `content.part` (type=text) | `role=assistant` with part.text |
+| `context.append_loop_event` → `content.part` (type=think) | `role=assistant` with `[thinking] ${part.think}` |
+| Hook: `UserPromptSubmit` | `role=user` (unchanged) |
+| Hook: `PostToolUse` | `role=tool` (unchanged) |
+
+### Test Coverage
+
+```bash
+cd integrations/kimi/rivet-memory/capture
+npm test
+```
+
+New tests verify:
+- ✅ parseWireJsonl extracts thinking with `[thinking]` prefix
+- ✅ parseWireJsonl extracts assistant text
+- ✅ Both use `role=assistant`
+- ✅ Timestamps are monotonically increasing
+- ✅ Malformed lines are skipped gracefully
+- ✅ Tool calls from hooks continue to work
+
+## Comparison with Claude
+
+| Feature | Claude | Kimi (fixed) | Grok Build |
+|---------|--------|--------------|------------|
 | Tool name | ✅ | ✅ | ✅ |
 | Tool args | ✅ | ✅ | ✅ |
 | Tool result | ✅ | ✅ | ✅ |
-| Assistant replies | ✅ | ⚠️ (hook-limited) | ✅ |
-| Thinking/reasoning | ✅ | ❌ | ✅ |
-| Capture source | JSONL transcript | Hook payloads | JSONL transcript |
+| Assistant replies | ✅ | ✅ | ✅ |
+| Thinking/reasoning | ✅ | ✅ | ✅ |
+| Capture source | JSONL transcript | Hook + wire.jsonl | JSONL transcript |
 
-Grok Build capture is now **on par with Claude** in terms of completeness.
+**All three systems are now on par** in terms of completeness.
+
+## Kimi-Specific Verification
+
+### 1. Run Kimi tests
+
+```bash
+cd integrations/kimi/rivet-memory/capture
+npm test
+```
+
+**Expected**: All 85+ checks pass, including new wire.jsonl parser tests.
+
+### 2. Check production data
+
+```bash
+psql $RIVETOS_PG_URL -c "
+  SELECT role, COUNT(*) as count,
+         COUNT(*) FILTER (WHERE content LIKE '[thinking]%') as thinking_count
+  FROM ros_messages
+  WHERE agent = 'rivet-kimi' AND channel = 'kimi-code'
+    AND created_at > NOW() - INTERVAL '7 days'
+  GROUP BY role
+  ORDER BY count DESC;
+"
+```
+
+**Expected**: 
+- `role=assistant` rows should exist (previously: 0)
+- `thinking_count` should be > 0 for assistant rows
+- `role=tool` rows should have `tool_name` populated (unchanged)
+
+### 3. Browse recent Kimi session
+
+```bash
+# Using the rivet-memory MCP tool:
+memory_browse(agent="rivet-kimi", limit=50)
+```
+
+**Expected**: Mix of user/assistant/tool rows with:
+- Assistant replies visible
+- Thinking content with `[thinking]` prefix
+- Tool calls with toolName populated
 
 ## Action Items
 
 - [ ] Verify deployment to production hosts
-- [ ] Confirm hooks are installed and firing (`~/.grok/hooks/`)
-- [ ] Check recent database rows for tool_name population
+- [ ] Confirm hooks are installed and firing
+  - Grok: `~/.grok/hooks/`
+  - Kimi: `~/.kimi-code/hooks/` or `~/.kimi/hooks/`
+- [ ] Check recent database rows for tool_name population (Grok)
+- [ ] Check recent database rows for assistant + thinking rows (Kimi)
 - [ ] Re-ingest historical sessions if needed (optional)
 
 ## References
