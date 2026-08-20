@@ -1,10 +1,15 @@
 /**
  * Integration tests for memory write tools — `memory_append` and
- * `memory_ingest_session`.
+ * `memory_ingest_session` with idempotency guarantees.
  *
  * Requires a live Postgres with the RivetOS schema. Skips automatically when
  * `RIVETOS_PG_URL` is not set so local dev / CI without a DB doesn't see
  * spurious failures.
+ *
+ * Tests the idempotency fixes for concurrent ingests:
+ * - memory_append with event_id deduplication (append domain)
+ * - memory_ingest_session with advisory locks and ordinal + event_id dedupe (ingest domain)
+ * - Separate hash domains prevent ingest rows from blocking append
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
@@ -17,7 +22,13 @@ import {
 } from '@rivetos/mcp-v2'
 import { createMemoryTools, type MemoryToolsHandle } from './memory.js'
 import { PostgresMemory } from '@rivetos/memory-postgres'
-import { ingestSession, type IngestSessionInput } from './memory-write.js'
+import {
+  ingestSession,
+  ingestEventId,
+  appendEventId,
+  createMemoryWriteTools,
+  type IngestSessionInput,
+} from './memory-write.js'
 
 const PG_URL = process.env.RIVETOS_PG_URL ?? ''
 const describeIfPg = PG_URL ? describe : describe.skip
@@ -225,7 +236,7 @@ describeIfPg('memory write tools', () => {
 
 describeIfPg('memory_ingest_session timestamp preservation', () => {
   let memory: PostgresMemory
-  const TEST_AGENT = `test-ingest-${Date.now()}`
+  const TEST_AGENT = `test-ingest-ts-${Date.now()}`
 
   beforeAll(async () => {
     memory = new PostgresMemory({ connectionString: PG_URL })
@@ -529,5 +540,372 @@ describeIfPg('memory_ingest_session timestamp preservation', () => {
     expect(messages.rows.length).toBe(2)
     expect(messages.rows[0].content).toBe('Valid message before invalid date')
     expect(messages.rows[1].content).toBe('Valid message after invalid date')
+  })
+})
+
+describeIfPg('memory write idempotency', () => {
+  let memory: PostgresMemory
+  const TEST_AGENT = `test-idempotency-${Date.now()}`
+
+  beforeAll(() => {
+    memory = new PostgresMemory({ connectionString: PG_URL })
+  })
+
+  afterAll(async () => {
+    const pool = memory.getPool()
+    await pool.query(`DELETE FROM ros_messages WHERE agent = $1`, [TEST_AGENT])
+    await pool.query(`DELETE FROM ros_conversations WHERE agent = $1`, [TEST_AGENT])
+    await memory.close()
+  })
+
+  it('ingestEventId includes ordinal to prevent data loss on repeated text', () => {
+    const eventId1 = ingestEventId({
+      sessionId: 'test-session',
+      agent: 'test-agent',
+      role: 'user',
+      content: 'ok',
+      ordinal: 0,
+    })
+    const eventId2 = ingestEventId({
+      sessionId: 'test-session',
+      agent: 'test-agent',
+      role: 'user',
+      content: 'ok',
+      ordinal: 1,
+    })
+    // Same content but different ordinals → different hashes
+    expect(eventId1).not.toBe(eventId2)
+    expect(eventId1).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('appendEventId has separate domain from ingestEventId', () => {
+    const ingestId = ingestEventId({
+      sessionId: 'test-session',
+      agent: 'test-agent',
+      role: 'user',
+      content: 'test',
+      ordinal: 0,
+    })
+    const appendId = appendEventId({
+      sessionId: 'test-session',
+      agent: 'test-agent',
+      role: 'user',
+      content: 'test',
+    })
+    // Different hash domains ensure ingest doesn't block append
+    expect(ingestId).not.toBe(appendId)
+  })
+
+  it('memory_ingest_session skips duplicate ordinals on re-ingest', async () => {
+    const sessionId = `test-ingest-ordinals-${Date.now()}`
+    const input: IngestSessionInput = {
+      sessionId,
+      messages: [
+        { role: 'user', content: 'First message' },
+        { role: 'assistant', content: 'Second message' },
+        { role: 'user', content: 'Third message' },
+      ],
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    }
+
+    // First ingest
+    const result1 = await ingestSession(memory, input)
+    expect(result1.ingested).toBe(3)
+    expect(result1.skipped).toBe(0)
+    expect(result1.ids.length).toBe(3)
+
+    // Re-ingest the same session — all should be skipped by ordinal
+    const result2 = await ingestSession(memory, input)
+    expect(result2.ingested).toBe(0)
+    expect(result2.skipped).toBe(3)
+    expect(result2.ids.length).toBe(0)
+  })
+
+  it('memory_ingest_session skips duplicate event_ids (includes ordinal)', async () => {
+    const sessionId = `test-ingest-event-id-${Date.now()}`
+    const input: IngestSessionInput = {
+      sessionId,
+      messages: [
+        { role: 'user', content: 'Message A' },
+        { role: 'user', content: 'Message B' },
+      ],
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    }
+
+    // First ingest
+    const result1 = await ingestSession(memory, input)
+    expect(result1.ingested).toBe(2)
+    expect(result1.skipped).toBe(0)
+
+    // Re-ingest: event_ids match even though we're calling again
+    const result2 = await ingestSession(memory, input)
+    expect(result2.ingested).toBe(0)
+    expect(result2.skipped).toBe(2)
+  })
+
+  it('memory_ingest_session does NOT skip when only content matches (ordinal differs)', async () => {
+    const sessionId = `test-ingest-repeated-text-${Date.now()}`
+    const input: IngestSessionInput = {
+      sessionId,
+      messages: [
+        { role: 'user', content: 'ok' },
+        { role: 'user', content: 'ok' }, // repeated text, different ordinal
+      ],
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    }
+
+    const result = await ingestSession(memory, input)
+    // Both should be ingested because ordinals differ (0 vs 1)
+    expect(result.ingested).toBe(2)
+    expect(result.skipped).toBe(0)
+  })
+
+  it('memory_append with explicit event_id skips duplicates', async () => {
+    const sessionId = `test-append-event-id-${Date.now()}`
+    const tools = createMemoryWriteTools(memory)
+    const appendTool = tools.find((t) => t.name === 'memory_append')
+    expect(appendTool).toBeDefined()
+
+    const eventId = appendEventId({
+      sessionId,
+      agent: TEST_AGENT,
+      role: 'user',
+      content: 'Unique message',
+    })
+
+    // First append with explicit event_id
+    const result1 = await appendTool!.tool.execute({
+      session_id: sessionId,
+      content: 'Unique message',
+      role: 'user',
+      event_id: eventId,
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+    const parsed1 = JSON.parse(result1 as string)
+    expect(parsed1.skipped).toBeUndefined()
+    expect(parsed1.id).toBeDefined()
+    expect(parsed1.event_id).toBe(eventId)
+
+    const firstId = parsed1.id
+
+    // Second append with the same event_id
+    const result2 = await appendTool!.tool.execute({
+      session_id: sessionId,
+      content: 'Unique message',
+      role: 'user',
+      event_id: eventId,
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+    const parsed2 = JSON.parse(result2 as string)
+    expect(parsed2.skipped).toBe(true)
+    expect(parsed2.event_id).toBe(eventId)
+    expect(parsed2.id).toBe(firstId) // M2: returns existing row id
+  })
+
+  it('memory_append without event_id generates content-hash and deduplicates', async () => {
+    const sessionId = `test-append-auto-event-id-${Date.now()}`
+    const tools = createMemoryWriteTools(memory)
+    const appendTool = tools.find((t) => t.name === 'memory_append')
+    expect(appendTool).toBeDefined()
+
+    // First append without event_id
+    const result1 = await appendTool!.tool.execute({
+      session_id: sessionId,
+      content: 'Auto dedupe message',
+      role: 'user',
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+    const parsed1 = JSON.parse(result1 as string)
+    expect(parsed1.skipped).toBeUndefined()
+    expect(parsed1.id).toBeDefined()
+    expect(parsed1.event_id).toBeDefined()
+
+    const generatedEventId = parsed1.event_id
+    const firstId = parsed1.id
+
+    // Second append with the same content (should auto-generate same event_id)
+    const result2 = await appendTool!.tool.execute({
+      session_id: sessionId,
+      content: 'Auto dedupe message',
+      role: 'user',
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+    const parsed2 = JSON.parse(result2 as string)
+    expect(parsed2.skipped).toBe(true)
+    expect(parsed2.event_id).toBe(generatedEventId)
+    expect(parsed2.id).toBe(firstId) // M2: returns existing row id
+  })
+
+  it('ingest and append have separate hash domains', async () => {
+    const sessionId = `test-hash-domains-${Date.now()}`
+
+    // Ingest a message
+    const ingestResult = await ingestSession(memory, {
+      sessionId,
+      messages: [{ role: 'user', content: 'domain test' }],
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+    expect(ingestResult.ingested).toBe(1)
+
+    // Append the same content (different hash domain)
+    const tools = createMemoryWriteTools(memory)
+    const appendTool = tools.find((t) => t.name === 'memory_append')!
+    const appendResult = await appendTool.tool.execute({
+      session_id: sessionId,
+      content: 'domain test',
+      role: 'user',
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+    const parsed = JSON.parse(appendResult as string)
+    // Should NOT be skipped because hash domains differ
+    expect(parsed.skipped).toBeUndefined()
+    expect(parsed.id).toBeDefined()
+  })
+
+  it('concurrent memory_ingest_session calls are serialized by advisory lock', async () => {
+    const sessionId = `test-concurrent-ingest-${Date.now()}`
+    const input: IngestSessionInput = {
+      sessionId,
+      messages: [
+        { role: 'user', content: 'Concurrent A' },
+        { role: 'user', content: 'Concurrent B' },
+      ],
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    }
+
+    // Launch two concurrent ingests
+    const [result1, result2] = await Promise.all([
+      ingestSession(memory, input),
+      ingestSession(memory, input),
+    ])
+
+    // One should ingest, one should skip
+    const totalIngested = result1.ingested + result2.ingested
+    const totalSkipped = result1.skipped + result2.skipped
+
+    expect(totalIngested).toBe(2)
+    expect(totalSkipped).toBe(2)
+    expect(result1.ids.length + result2.ids.length).toBe(2)
+  })
+
+  it('role is required for memory_append', async () => {
+    const tools = createMemoryWriteTools(memory)
+    const appendTool = tools.find((t) => t.name === 'memory_append')!
+
+    await expect(
+      appendTool.tool.execute({
+        session_id: 'test',
+        content: 'test',
+        // role missing
+        agent: TEST_AGENT,
+      }),
+    ).rejects.toThrow('role is required')
+  })
+
+  it('role is required for memory_ingest_session messages', async () => {
+    const sessionId = `test-role-required-${Date.now()}`
+
+    await expect(
+      ingestSession(memory, {
+        sessionId,
+        messages: [
+          { role: 'user', content: 'has role' },
+          { content: 'missing role' } as any, // intentionally bad
+        ],
+        agent: TEST_AGENT,
+      }),
+    ).rejects.toThrow('role is required')
+  })
+
+  it('C2/H2: event_id checked before ordinal, allows session extension', async () => {
+    const sessionId = `test-event-id-before-ordinal-${Date.now()}`
+
+    // First ingest: A at 0, B at 1
+    const result1 = await ingestSession(memory, {
+      sessionId,
+      messages: [
+        { role: 'user', content: 'A' },
+        { role: 'user', content: 'B' },
+      ],
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+    expect(result1.ingested).toBe(2)
+    expect(result1.skipped).toBe(0)
+
+    // Second ingest: [C, A, B] at ordinals 0, 1, 2
+    // Ordinals 0 and 1 exist, but C's event_id is new, so C should be ingested
+    // A and B should be skipped by event_id (before ordinal check)
+    const result2 = await ingestSession(memory, {
+      sessionId,
+      messages: [
+        { role: 'user', content: 'C' },
+        { role: 'user', content: 'A' },
+        { role: 'user', content: 'B' },
+      ],
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+    expect(result2.ingested).toBe(1) // C ingested
+    expect(result2.skipped).toBe(2) // A, B skipped
+  })
+
+  it('M1: empty or whitespace event_id normalized to undefined', async () => {
+    const sessionId = `test-empty-event-id-${Date.now()}`
+    const tools = createMemoryWriteTools(memory)
+    const appendTool = tools.find((t) => t.name === 'memory_append')!
+
+    // Append with empty event_id
+    const result1 = await appendTool.tool.execute({
+      session_id: sessionId,
+      content: 'Message 1',
+      role: 'user',
+      event_id: '',
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+    const parsed1 = JSON.parse(result1 as string)
+    expect(parsed1.id).toBeDefined()
+
+    // Append with whitespace event_id
+    const result2 = await appendTool.tool.execute({
+      session_id: sessionId,
+      content: 'Message 2',
+      role: 'user',
+      event_id: '   ',
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+    const parsed2 = JSON.parse(result2 as string)
+    expect(parsed2.id).toBeDefined()
+
+    // Both should have auto-generated event_ids (not shared empty key)
+    expect(parsed1.event_id).not.toBe('')
+    expect(parsed2.event_id).not.toBe('')
+    expect(parsed1.event_id).not.toBe(parsed2.event_id)
   })
 })
