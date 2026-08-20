@@ -25,6 +25,8 @@ import {
   pickContentText,
   findSessionDir,
   deriveSessionKey,
+  parseWireJsonl,
+  readWireJsonl,
   CAPTURE_AGENT,
   CAPTURE_CHANNEL,
 } from '../src/kimi-memory-capture.ts'
@@ -428,6 +430,70 @@ console.log('\n— --hook spool e2e —')
   const missing = path.join(os.tmpdir(), `nonexistent-spool-${Date.now()}.json`)
   const r = run(['--worker', missing])
   check('--worker handles missing file', r.status === 0, `status=${r.status}`)
+}
+
+// =============================================================================
+// Layer 6: wire.jsonl parser (thinking + assistant text)
+// =============================================================================
+console.log('\n— parseWireJsonl (thinking + assistant text) —')
+{
+  // Minimal synthetic wire.jsonl with thinking and assistant text
+  const wireJsonl = `
+{"type":"metadata","protocol_version":"1.4","created_at":1780000000000}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"think-1","turnId":"0","step":1,"part":{"type":"think","think":"Let me analyze the request"}},"time":1780000000030}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"text-1","turnId":"0","step":1,"part":{"type":"text","text":"I'll help you with that"}},"time":1780000000040}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"think-2","turnId":"0","step":2,"part":{"type":"think","think":"Need to verify this approach"}},"time":1780000000050}
+  `.trim()
+
+  const msgs = parseWireJsonl(wireJsonl, 'test-session', 'main')
+  check('parseWireJsonl extracts 3 messages', msgs.length === 3, `got ${msgs.length}`)
+
+  const thinking = msgs.filter(m => m.content.startsWith('[thinking] '))
+  check('parseWireJsonl extracts 2 thinking rows', thinking.length === 2, `got ${thinking.length}`)
+  check('thinking rows are role=assistant', thinking.every(m => m.role === 'assistant'))
+  check('thinking has [thinking] prefix', thinking[0]?.content === '[thinking] Let me analyze the request')
+
+  const text = msgs.filter(m => !m.content.startsWith('[thinking] '))
+  check('parseWireJsonl extracts 1 text row', text.length === 1, `got ${text.length}`)
+  check('text row is role=assistant', text[0]?.role === 'assistant')
+  check('text has no [thinking] prefix', text[0]?.content === "I'll help you with that")
+
+  check('all rows have eventId', msgs.every(m => m.eventId && m.eventId.length === 64))
+  check('all rows have eventTs', msgs.every(m => m.eventTs && m.eventTs.length > 0))
+  check('all rows have createdAt', msgs.every(m => m.createdAt && m.createdAt.length > 0))
+  check('all rows have source=kimi-wire', msgs.every(m => m.extra?.source === 'kimi-wire'))
+  check('all rows have partType', msgs.every(m => m.extra?.partType === 'think' || m.extra?.partType === 'text'))
+
+  // Monotonic timestamp nudging
+  const timestamps = msgs.map(m => new Date(m.createdAt!).getTime())
+  check('timestamps are strictly increasing', 
+    timestamps.every((t, i) => i === 0 || t > timestamps[i - 1]),
+    `timestamps=${timestamps.join(',')}`)
+}
+
+console.log('\n— parseWireJsonl (empty file) —')
+{
+  const msgs = parseWireJsonl('', 'sess', 'main')
+  check('empty file yields no messages', msgs.length === 0)
+}
+
+console.log('\n— parseWireJsonl (malformed lines ignored) —')
+{
+  const wireJsonl = `
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"ok-1","part":{"type":"text","text":"before"}},"time":1780000000010}
+not json
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"ok-2","part":{"type":"text","text":"after"}},"time":1780000000020}
+  `.trim()
+  const msgs = parseWireJsonl(wireJsonl, 'sess', 'main')
+  check('malformed line skipped, valid lines parsed', msgs.length === 2, `got ${msgs.length}`)
+  check('first message is "before"', msgs[0]?.content === 'before')
+  check('second message is "after"', msgs[1]?.content === 'after')
+}
+
+console.log('\n— readWireJsonl (no session dir) —')
+{
+  const result = readWireJsonl('00000000-0000-0000-0000-000000000000')
+  check('readWireJsonl returns found=false for unknown session', result.found === false)
 }
 
 // Dedup simulation (in-memory): same messagesFromHookPayload twice → same ids

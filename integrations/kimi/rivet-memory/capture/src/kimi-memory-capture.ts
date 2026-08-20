@@ -65,9 +65,9 @@ export function resolveKimiHomes(): string[] {
 }
 
 /**
- * Optional session transcript roots. Empty until live discovery of where
- * kimi-code writes session files. When set, processOp may prefer JSONL
- * ingest (slice-by-count) over pure hook-payload extraction.
+ * Session transcript roots where kimi-code writes wire.jsonl files.
+ * Layout: <root>/<workspace>/<session_id>/agents/<slot>/wire.jsonl
+ * where workspace is typically "wd_<label>_<hash>".
  */
 export const SESSIONS_ROOT_CANDIDATES = (): string[] =>
   resolveKimiHomes().flatMap(h => [
@@ -106,6 +106,8 @@ export interface PendingMessage {
   /** Stored as metadata.event_id; content-hash for dedup. */
   eventId: string
   eventTs?: string | null
+  /** created_at timestamp to use (after monotonic nudge for wire.jsonl). */
+  createdAt?: string | null
   extra?: Record<string, unknown>
 }
 
@@ -223,6 +225,134 @@ export function contentHashEventId(parts: {
     parts.sourceEvent ?? '',
   ].join('\0')
   return crypto.createHash('sha256').update(material, 'utf8').digest('hex')
+}
+
+// ---------------------------------------------------------------------------
+// wire.jsonl parser (for thinking + assistant text)
+// ---------------------------------------------------------------------------
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function asString(v: unknown): string | null {
+  return typeof v === 'string' && v.length > 0 ? v : null
+}
+
+/**
+ * Parse wire.jsonl to extract assistant text and thinking that hooks never carry.
+ * Mirrors the backfill tool's parseWire, but simplified for live-capture use:
+ * - No tool rows (hooks already capture those)
+ * - No user rows (hooks already capture those)
+ * - Only assistant text + thinking
+ * 
+ * Returns messages in wire order with monotonic created_at nudging.
+ */
+export function parseWireJsonl(
+  text: string,
+  sessionId: string,
+  agentSlot: string = 'main'
+): PendingMessage[] {
+  const out: PendingMessage[] = []
+  let lastMs = 0
+
+  const push = (msg: Omit<PendingMessage, 'createdAt'>, wireMs: number): void => {
+    const ms = wireMs > lastMs ? wireMs : lastMs + 1
+    lastMs = ms
+    out.push({ ...msg, createdAt: new Date(ms).toISOString() })
+  }
+
+  const lines = text.split('\n')
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) continue
+
+    let obj: unknown
+    try {
+      obj = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!isRecord(obj)) continue
+
+    const type = asString(obj.type)
+    const wireMs = typeof obj.time === 'number' && Number.isFinite(obj.time) ? obj.time : null
+    const eventTs = wireMs !== null ? new Date(wireMs).toISOString() : null
+
+    if (type !== 'context.append_loop_event' || wireMs === null || !eventTs) {
+      continue
+    }
+
+    const event = isRecord(obj.event) ? obj.event : null
+    if (!event) continue
+
+    const eventType = asString(event.type)
+    if (eventType !== 'content.part') continue
+
+    const part = isRecord(event.part) ? event.part : null
+    const partType = part ? asString(part.type) : null
+    const uuid = asString(event.uuid)
+    if (!part || !partType || !uuid) continue
+
+    if (partType !== 'text' && partType !== 'think') continue
+
+    const body = asString(partType === 'text' ? part.text : part.think)
+    if (!body) continue
+
+    // `[thinking] ` prefix matches rivet-claude and grok-build convention
+    const content = partType === 'think' ? `[thinking] ${body}` : body
+    const sourceEvent = `wire:content.part:${uuid}`
+    const eventId = contentHashEventId({
+      sessionId,
+      role: 'assistant',
+      content,
+      sourceEvent,
+    })
+
+    push(
+      {
+        role: 'assistant',
+        content,
+        eventId,
+        eventTs,
+        extra: {
+          sourceEvent: 'wire:content.part',
+          agentSlot,
+          partType,
+          uuid,
+          source: 'kimi-wire',
+          ...(typeof event.turnId === 'string' || typeof event.turnId === 'number'
+            ? { turnId: String(event.turnId) }
+            : {}),
+          ...(typeof event.step === 'number' ? { step: event.step } : {}),
+        },
+      },
+      wireMs
+    )
+  }
+
+  return out
+}
+
+/**
+ * Find and read the wire.jsonl file for a session.
+ * Returns { found: true, content: string } or { found: false }.
+ */
+export function readWireJsonl(sessionId: string, workspaceHint?: string): { found: boolean; content?: string } {
+  const sessionDir = findSessionDir(sessionId, workspaceHint)
+  if (!sessionDir) return { found: false }
+
+  // Try main agent slot first, then agent-0, agent-1, etc.
+  const slots = ['main', 'agent-0', 'agent-1', 'agent-2', 'agent-3']
+  for (const slot of slots) {
+    const wirePath = path.join(sessionDir, 'agents', slot, 'wire.jsonl')
+    try {
+      if (fs.existsSync(wirePath)) {
+        return { found: true, content: fs.readFileSync(wirePath, 'utf8') }
+      }
+    } catch {}
+  }
+
+  return { found: false }
 }
 
 // ---------------------------------------------------------------------------
@@ -545,10 +675,14 @@ async function insertMessage(
     meta.truncated = true
   }
 
+  // Use m.createdAt when available (from wire.jsonl monotonic nudge),
+  // otherwise fall back to now() for hook-only messages.
+  const createdAtValue = m.createdAt ?? null
+
   await client.query(
     `INSERT INTO ros_messages
        (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, now()))`,
     [
       conversationId,
       CAPTURE_AGENT,
@@ -559,6 +693,7 @@ async function insertMessage(
       m.toolArgs != null ? JSON.stringify(m.toolArgs) : null,
       toolResultStored,
       JSON.stringify(meta),
+      createdAtValue,
     ]
   )
   return 'inserted'
@@ -608,9 +743,21 @@ export function enqueue(op: CaptureOp): void {
 // Worker: process one spool op
 // ---------------------------------------------------------------------------
 async function processOp(op: CaptureOp): Promise<void> {
-  const messages = messagesFromHookPayload(op.sourceEvent, op.sessionId, op.payload)
+  // Extract messages from hook payload (user prompts + tool calls)
+  const hookMessages = messagesFromHookPayload(op.sourceEvent, op.sessionId, op.payload)
+
+  // Try to read wire.jsonl for assistant text + thinking
+  const workspaceHint = pickString(op.payload, 'cwd', 'working_directory', 'workingDirectory')
+  const wireResult = readWireJsonl(op.sessionId, workspaceHint)
+  const wireMessages = wireResult.found && wireResult.content
+    ? parseWireJsonl(wireResult.content, op.sessionId)
+    : []
+
+  // Combine: hook messages (user + tool) + wire messages (assistant + thinking)
+  const messages = [...hookMessages, ...wireMessages]
+
   if (messages.length === 0 && !op.finalize) {
-    log(`process ${op.sessionId}: no messages extracted from ${op.sourceEvent}`)
+    log(`process ${op.sessionId}: no messages extracted from ${op.sourceEvent} (hook=${hookMessages.length} wire=${wireMessages.length})`)
     return
   }
 
@@ -671,7 +818,7 @@ async function processOp(op: CaptureOp): Promise<void> {
 
     await client.query('COMMIT')
     log(
-      `process ${sessionKey}: event=${op.sourceEvent} msgs=${messages.length} inserted=${inserted} skipped=${skipped}${op.finalize ? ' finalized' : ''}`
+      `process ${sessionKey}: event=${op.sourceEvent} msgs=${messages.length} (hook=${hookMessages.length} wire=${wireMessages.length}) inserted=${inserted} skipped=${skipped}${op.finalize ? ' finalized' : ''}`
     )
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
