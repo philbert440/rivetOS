@@ -223,10 +223,7 @@ export async function ingestSession(
     const truncatedContent = truncateContent(content, metadata)
     if (metadata.truncated) anyTruncated = true
     if (metadata.full_content_length) {
-      maxFullLength = Math.max(
-        maxFullLength ?? 0,
-        metadata.full_content_length as number,
-      )
+      maxFullLength = Math.max(maxFullLength ?? 0, metadata.full_content_length as number)
     }
 
     ids.push(
