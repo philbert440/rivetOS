@@ -178,6 +178,8 @@ export class PostgresMemory implements Memory {
 
     if (providedClient) {
       // Use the provided client (already in a transaction)
+      // Note: this.connected is not updated when using a borrowed client, as the
+      // connection health is managed by the caller.
       client = providedClient
     } else {
       // Acquire our own client

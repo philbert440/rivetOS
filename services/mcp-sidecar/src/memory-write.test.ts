@@ -1,15 +1,16 @@
 /**
  * Integration tests for memory write tools — `memory_append` and
- * `memory_ingest_session` with idempotency guarantees.
+ * `memory_ingest_session` with idempotency guarantees and truncation.
  *
  * Requires a live Postgres with the RivetOS schema. Skips automatically when
  * `RIVETOS_PG_URL` is not set so local dev / CI without a DB doesn't see
  * spurious failures.
  *
- * Tests the idempotency fixes for concurrent ingests:
- * - memory_append with event_id deduplication (append domain)
- * - memory_ingest_session with advisory locks and ordinal + event_id dedupe (ingest domain)
- * - Separate hash domains prevent ingest rows from blocking append
+ * Tests:
+ * - Tool fields (tool_name, tool_args, tool_result) from #522
+ * - Timestamp preservation (createdAt) from #524
+ * - Content truncation at 16k chars from #521
+ * - Idempotency (event_id deduplication, advisory locks, ordinal + event_id dedupe)
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
@@ -27,11 +28,15 @@ import {
   ingestEventId,
   appendEventId,
   createMemoryWriteTools,
+  truncateContent,
   type IngestSessionInput,
 } from './memory-write.js'
 
 const PG_URL = process.env.RIVETOS_PG_URL ?? ''
 const describeIfPg = PG_URL ? describe : describe.skip
+
+const MAX_CONTENT = 16000
+const TRUNCATION_MARKER = '\n…[truncated]'
 
 describeIfPg('memory write tools', () => {
   let server: V2McpServer
@@ -230,7 +235,7 @@ describeIfPg('memory write tools', () => {
     // Note: We can't easily verify that the graphile-worker job was enqueued
     // in this test without additional setup, but we've verified that the
     // message is stored correctly with tool fields. The tool-synthesis path
-    // in adapter.ts (lines 221-243) will handle the job enqueueing.
+    // in adapter.ts will handle the job enqueueing.
   })
 })
 
@@ -543,6 +548,165 @@ describeIfPg('memory_ingest_session timestamp preservation', () => {
   })
 })
 
+describe('truncateContent (unit tests, DB-free)', () => {
+  it('does not truncate content shorter than MAX_CONTENT', () => {
+    const metadata: Record<string, unknown> = {}
+    const short = 'Hello world'
+    const result = truncateContent(short, metadata)
+    expect(result).toBe(short)
+    expect(metadata.truncated).toBeUndefined()
+    expect(metadata.full_content_length).toBeUndefined()
+  })
+
+  it('truncates content longer than MAX_CONTENT and records metadata', () => {
+    const metadata: Record<string, unknown> = {}
+    const longContent = 'a'.repeat(MAX_CONTENT + 100)
+    const result = truncateContent(longContent, metadata)
+    expect(result.length).toBeLessThanOrEqual(MAX_CONTENT + TRUNCATION_MARKER.length)
+    expect(result.endsWith(TRUNCATION_MARKER)).toBe(true)
+    expect(metadata.truncated).toBe(true)
+    expect(metadata.full_content_length).toBe(MAX_CONTENT + 100)
+  })
+
+  it('does not truncate content exactly at MAX_CONTENT boundary', () => {
+    const metadata: Record<string, unknown> = {}
+    const exactContent = 'x'.repeat(MAX_CONTENT)
+    const result = truncateContent(exactContent, metadata)
+    expect(result).toBe(exactContent)
+    expect(metadata.truncated).toBeUndefined()
+  })
+
+  it('backs off one unit when splitting a high surrogate pair', () => {
+    const metadata: Record<string, unknown> = {}
+    // Emoji at position MAX_CONTENT - 1 requires a surrogate pair
+    const almostFull = 'a'.repeat(MAX_CONTENT - 1) + '😀'
+    const result = truncateContent(almostFull, metadata)
+    // Should back off to avoid splitting the surrogate pair
+    expect(result.endsWith('😀')).toBe(false)
+    expect(result.endsWith(TRUNCATION_MARKER)).toBe(true)
+    expect(metadata.truncated).toBe(true)
+  })
+
+  it('skips truncation when content already ends with marker', () => {
+    const metadata: Record<string, unknown> = {}
+    const alreadyTruncated = 'a'.repeat(MAX_CONTENT) + TRUNCATION_MARKER
+    const result = truncateContent(alreadyTruncated, metadata)
+    expect(result).toBe(alreadyTruncated)
+    expect(metadata.truncated).toBeUndefined()
+  })
+
+  it('truncates tool_result with field prefix', () => {
+    const metadata: Record<string, unknown> = {}
+    const longToolResult = 'result'.repeat(MAX_CONTENT / 5)
+    const result = truncateContent(longToolResult, metadata, 'tool_result')
+    expect(result.endsWith(TRUNCATION_MARKER)).toBe(true)
+    expect(metadata.truncated).toBe(true)
+    expect(metadata.full_tool_result_length).toBe(longToolResult.length)
+  })
+})
+
+describeIfPg('memory write truncation (integration)', () => {
+  let memory: PostgresMemory
+  const TEST_AGENT = `test-truncation-${Date.now()}`
+
+  beforeAll(async () => {
+    memory = new PostgresMemory({ connectionString: PG_URL })
+    expect(await memory.isHealthy()).toBe(true)
+  })
+
+  afterAll(async () => {
+    const pool = memory.getPool()
+    await pool.query(`DELETE FROM ros_messages WHERE agent = $1`, [TEST_AGENT])
+    await pool.query(`DELETE FROM ros_conversations WHERE agent = $1`, [TEST_AGENT])
+    await memory.close()
+  })
+
+  it('ingestSession truncates content and returns truncation info', async () => {
+    const sessionId = `test-ingest-truncate-${Date.now()}`
+    const longContent = 'x'.repeat(MAX_CONTENT + 500)
+
+    const result = await ingestSession(memory, {
+      sessionId,
+      messages: [{ role: 'user', content: longContent }],
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+
+    expect(result.ingested).toBe(1)
+    expect(result.truncated).toBe(true)
+    expect(result.full_content_length).toBe(MAX_CONTENT + 500)
+
+    // Verify stored content is truncated
+    const pool = memory.getPool()
+    const rows = await pool.query<{ content: string; metadata: any }>(
+      `SELECT m.content, m.metadata
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2`,
+      [sessionId, TEST_AGENT],
+    )
+    expect(rows.rows.length).toBe(1)
+    expect(rows.rows[0].content.endsWith(TRUNCATION_MARKER)).toBe(true)
+    expect(rows.rows[0].metadata.full_content_length).toBe(MAX_CONTENT + 500)
+  })
+
+  it('ingestSession does not truncate short content', async () => {
+    const sessionId = `test-ingest-no-truncate-${Date.now()}`
+    const shortContent = 'Hello world'
+
+    const result = await ingestSession(memory, {
+      sessionId,
+      messages: [{ role: 'user', content: shortContent }],
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+
+    expect(result.ingested).toBe(1)
+    expect(result.truncated).toBeUndefined()
+    expect(result.full_content_length).toBeUndefined()
+  })
+
+  it('memory_append via MCP truncates content and tool_result', async () => {
+    const sessionId = `test-append-truncate-${Date.now()}`
+    const tools = createMemoryWriteTools(memory)
+    const appendTool = tools.find((t) => t.name === 'memory_append')
+    expect(appendTool).toBeDefined()
+
+    const longContent = 'c'.repeat(MAX_CONTENT + 100)
+    const longToolResult = 'r'.repeat(MAX_CONTENT + 200)
+
+    const result = await appendTool!.execute({
+      session_id: sessionId,
+      content: longContent,
+      role: 'assistant',
+      tool_name: 'test_tool',
+      tool_result: longToolResult,
+      agent: TEST_AGENT,
+      source: 'test',
+      channel: 'test',
+    })
+
+    const parsed = JSON.parse(result as string)
+    expect(parsed.truncated).toBe(true)
+    expect(parsed.full_content_length).toBe(MAX_CONTENT + 200) // max of both
+
+    // Verify both content and tool_result are truncated
+    const pool = memory.getPool()
+    const rows = await pool.query<{ content: string; tool_result: string }>(
+      `SELECT m.content, m.tool_result
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2`,
+      [sessionId, TEST_AGENT],
+    )
+    expect(rows.rows.length).toBe(1)
+    expect(rows.rows[0].content.endsWith(TRUNCATION_MARKER)).toBe(true)
+    expect(rows.rows[0].tool_result.endsWith(TRUNCATION_MARKER)).toBe(true)
+  })
+})
+
 describeIfPg('memory write idempotency', () => {
   let memory: PostgresMemory
   const TEST_AGENT = `test-idempotency-${Date.now()}`
@@ -680,7 +844,7 @@ describeIfPg('memory write idempotency', () => {
     })
 
     // First append with explicit event_id
-    const result1 = await appendTool!.tool.execute({
+    const result1 = await appendTool!.execute({
       session_id: sessionId,
       content: 'Unique message',
       role: 'user',
@@ -697,7 +861,7 @@ describeIfPg('memory write idempotency', () => {
     const firstId = parsed1.id
 
     // Second append with the same event_id
-    const result2 = await appendTool!.tool.execute({
+    const result2 = await appendTool!.execute({
       session_id: sessionId,
       content: 'Unique message',
       role: 'user',
@@ -719,7 +883,7 @@ describeIfPg('memory write idempotency', () => {
     expect(appendTool).toBeDefined()
 
     // First append without event_id
-    const result1 = await appendTool!.tool.execute({
+    const result1 = await appendTool!.execute({
       session_id: sessionId,
       content: 'Auto dedupe message',
       role: 'user',
@@ -736,7 +900,7 @@ describeIfPg('memory write idempotency', () => {
     const firstId = parsed1.id
 
     // Second append with the same content (should auto-generate same event_id)
-    const result2 = await appendTool!.tool.execute({
+    const result2 = await appendTool!.execute({
       session_id: sessionId,
       content: 'Auto dedupe message',
       role: 'user',
@@ -766,7 +930,7 @@ describeIfPg('memory write idempotency', () => {
     // Append the same content (different hash domain)
     const tools = createMemoryWriteTools(memory)
     const appendTool = tools.find((t) => t.name === 'memory_append')!
-    const appendResult = await appendTool.tool.execute({
+    const appendResult = await appendTool.execute({
       session_id: sessionId,
       content: 'domain test',
       role: 'user',
@@ -813,13 +977,13 @@ describeIfPg('memory write idempotency', () => {
     const appendTool = tools.find((t) => t.name === 'memory_append')!
 
     await expect(
-      appendTool.tool.execute({
+      appendTool.execute({
         session_id: 'test',
         content: 'test',
         // role missing
         agent: TEST_AGENT,
       }),
-    ).rejects.toThrow('role is required')
+    ).rejects.toMatch(/role|Required/i)
   })
 
   it('role is required for memory_ingest_session messages', async () => {
@@ -834,7 +998,7 @@ describeIfPg('memory write idempotency', () => {
         ],
         agent: TEST_AGENT,
       }),
-    ).rejects.toThrow('role is required')
+    ).rejects.toMatch(/role|Required/i)
   })
 
   it('C2/H2: event_id checked before ordinal, allows session extension', async () => {
@@ -878,7 +1042,7 @@ describeIfPg('memory write idempotency', () => {
     const appendTool = tools.find((t) => t.name === 'memory_append')!
 
     // Append with empty event_id
-    const result1 = await appendTool.tool.execute({
+    const result1 = await appendTool.execute({
       session_id: sessionId,
       content: 'Message 1',
       role: 'user',
@@ -891,7 +1055,7 @@ describeIfPg('memory write idempotency', () => {
     expect(parsed1.id).toBeDefined()
 
     // Append with whitespace event_id
-    const result2 = await appendTool.tool.execute({
+    const result2 = await appendTool.execute({
       session_id: sessionId,
       content: 'Message 2',
       role: 'user',

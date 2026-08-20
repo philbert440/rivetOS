@@ -6,6 +6,9 @@ import { adaptRivetTool } from '@rivetos/mcp'
 import crypto from 'node:crypto'
 import type { PoolClient } from 'pg'
 
+const MAX_CONTENT = 16000 // keep in sync with integrations/grok/rivet-memory/capture
+const TRUNCATION_MARKER = '\n…[truncated]'
+
 export interface MemoryWriteTags {
   source: string
   agent: string
@@ -30,6 +33,40 @@ export interface IngestSessionInput {
 
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+/**
+ * Truncate content to MAX_CONTENT chars, recording original length in metadata.
+ * Matches the pattern from integrations/grok/rivet-memory/capture. Exported for testing.
+ *
+ * Skips truncation when content already ends with TRUNCATION_MARKER to avoid
+ * double-truncation on re-ingest (a stored truncated row is up to 16,013 units).
+ *
+ * Backs off one unit if we'd split a UTF-16 high surrogate (0xD800–0xDBFF).
+ * Low surrogates (0xDC00–0xDFFF) are the second half of a complete pair, so
+ * backing off there would incorrectly split the pair.
+ */
+export function truncateContent(
+  content: string,
+  metadata: Record<string, unknown>,
+  fieldPrefix = '',
+): string {
+  if (content.length <= MAX_CONTENT) return content
+  // Skip if already truncated (e.g. re-ingest from DB)
+  if (content.endsWith(TRUNCATION_MARKER)) {
+    // Preserve existing full_content_length if present
+    return content
+  }
+  const fullLengthKey = fieldPrefix ? `full_${fieldPrefix}_length` : 'full_content_length'
+  metadata[fullLengthKey] = content.length
+  metadata.truncated = true
+  let cutAt = MAX_CONTENT
+  // Back off one unit if we'd split a UTF-16 high surrogate (0xD800–0xDBFF).
+  const charCode = content.charCodeAt(cutAt - 1)
+  if (charCode >= 0xd800 && charCode <= 0xdbff) {
+    cutAt -= 1
+  }
+  return content.slice(0, cutAt) + TRUNCATION_MARKER
 }
 
 /**
@@ -118,7 +155,12 @@ export const memoryAppendInputSchema = {
     .record(z.string(), z.unknown())
     .optional()
     .describe('Tool arguments as JSON object (for assistant tool-call messages)'),
-  tool_result: z.string().optional().describe('Tool result (for tool-role messages)'),
+  tool_result: z
+    .string()
+    .optional()
+    .describe(
+      'Tool result (for tool-role messages). Results longer than 16,000 chars are truncated; the elided tail is unrecoverable.',
+    ),
   event_id: z.string().optional().describe('Optional idempotency key — skip if already present'),
   agent: z.string().optional(),
   persona: z.string().optional(),
@@ -132,7 +174,12 @@ export const memoryIngestSessionInputSchema = {
     .array(
       z.object({
         role: roleSchema,
-        content: z.string().min(1),
+        content: z
+          .string()
+          .min(1)
+          .describe(
+            'Message text. Content longer than 16,000 chars is truncated; the elided tail is unrecoverable.',
+          ),
         // Wire schema: ISO string only — Date objects cannot cross JSON-RPC and
         // z.date() is not representable in JSON Schema (breaks tools/list).
         created_at: z.iso.datetime({ offset: true }).optional(),
@@ -185,6 +232,8 @@ export async function ingestSession(
     ingested: number
     skipped: number
     ids: string[]
+    truncated?: boolean
+    full_content_length?: number
   } & MemoryWriteTags
 > {
   const tags = resolveMemoryWriteTags({
@@ -211,6 +260,8 @@ export async function ingestSession(
 
     const ids: string[] = []
     let skipped = 0
+    let anyTruncated = false
+    let maxFullLength: number | undefined
 
     for (const [i, item] of input.messages.entries()) {
       const role = item.role
@@ -221,11 +272,12 @@ export async function ingestSession(
       }
 
       // Ingest-domain event_id includes ordinal (prevents data loss on repeated text)
+      // Hash the PRE-truncation content so retry of oversized payload dedupes correctly
       const eventId = ingestEventId({
         sessionId: input.sessionId,
         agent: tags.agent,
         role,
-        content,
+        content, // pre-truncation
         ordinal: i,
       })
 
@@ -254,6 +306,13 @@ export async function ingestSession(
       }
       if (tags.persona) metadata.persona = tags.persona
 
+      // Truncate content after hashing
+      const truncatedContent = truncateContent(content, metadata)
+      if (metadata.truncated) anyTruncated = true
+      if (metadata.full_content_length) {
+        maxFullLength = Math.max(maxFullLength ?? 0, metadata.full_content_length as number)
+      }
+
       // Guard against invalid dates: schema validates ISO strings, but runtime
       // Date objects or edge cases could still produce Invalid Date. Skip rather
       // than poison the entire ingest mid-loop.
@@ -277,7 +336,7 @@ export async function ingestSession(
           agent: tags.agent,
           channel: tags.channel,
           role,
-          content,
+          content: truncatedContent,
           metadata,
           createdAt,
         },
@@ -291,13 +350,27 @@ export async function ingestSession(
 
     await client.query('COMMIT')
 
-    return {
+    const result: {
+      session_id: string
+      ingested: number
+      skipped: number
+      ids: string[]
+      truncated?: boolean
+      full_content_length?: number
+    } & MemoryWriteTags = {
       session_id: input.sessionId,
       ingested: ids.length,
       skipped,
       ids,
       ...tags,
     }
+
+    if (anyTruncated) {
+      result.truncated = true
+      if (maxFullLength) result.full_content_length = maxFullLength
+    }
+
+    return result
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     throw err
@@ -310,7 +383,7 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
   const appendTool: Tool = {
     name: 'memory_append',
     description:
-      'Append one message to RivetOS memory. Tags source/agent/persona from args or env. Optional event_id for idempotency.',
+      'Append one message to RivetOS memory. Tags source/agent/persona from args or env. Optional event_id for idempotency. Content and tool_result are capped at 16,000 chars; the elided tail is unrecoverable. Returns truncated+full_content_length when truncation occurs.',
     parameters: {},
     async execute(args) {
       const sessionId = asString(args.session_id).trim()
@@ -337,13 +410,14 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
       const tags = tagsFromArgs(args)
 
       // Append-domain event_id (no ordinal — collapsing identical appends is OK)
+      // Hash the PRE-truncation content so retry of oversized payload dedupes correctly
       const eventId =
         eventIdArg ??
         appendEventId({
           sessionId,
           agent: tags.agent,
           role,
-          content,
+          content, // pre-truncation
           toolName,
         })
 
@@ -379,6 +453,9 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
         const metadata: Record<string, unknown> = { source: tags.source, event_id: eventId }
         if (tags.persona) metadata.persona = tags.persona
 
+        // Truncate content and tool_result after hashing
+        const truncatedContent = truncateContent(content, metadata)
+
         const toolArgs =
           args.tool_args != null &&
           typeof args.tool_args === 'object' &&
@@ -386,6 +463,9 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
             ? (args.tool_args as Record<string, unknown>)
             : undefined
         const toolResult = typeof args.tool_result === 'string' ? args.tool_result : undefined
+        const truncatedToolResult = toolResult
+          ? truncateContent(toolResult, metadata, 'tool_result')
+          : undefined
 
         // Append using the locked client (avoids self-deadlock, makes ROLLBACK real)
         const id = await memory.append(
@@ -394,17 +474,34 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
             agent: tags.agent,
             channel: tags.channel,
             role: role as 'user' | 'assistant' | 'system' | 'tool',
-            content,
+            content: truncatedContent,
             toolName,
             toolArgs,
-            toolResult,
+            toolResult: truncatedToolResult,
             metadata,
           },
           { client },
         )
 
         await client.query('COMMIT')
-        return JSON.stringify({ id, event_id: eventId, session_id: sessionId, ...tags })
+
+        const result: Record<string, unknown> = {
+          id,
+          event_id: eventId,
+          session_id: sessionId,
+          ...tags,
+        }
+
+        if (metadata.truncated) {
+          result.truncated = true
+          const contentLen = metadata.full_content_length as number | undefined
+          const toolResultLen = metadata.full_tool_result_length as number | undefined
+          if (contentLen || toolResultLen) {
+            result.full_content_length = Math.max(contentLen ?? 0, toolResultLen ?? 0)
+          }
+        }
+
+        return JSON.stringify(result)
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {})
         throw err
@@ -417,7 +514,7 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
   const ingestTool: Tool = {
     name: 'memory_ingest_session',
     description:
-      'Ingest a session into RivetOS memory. Skips ordinals and event_ids already stored for that session.',
+      'Ingest a session into RivetOS memory. Skips ordinals and event_ids already stored for that session. Content is capped at 16,000 chars; the elided tail is unrecoverable. Returns truncated+full_content_length when truncation occurs.',
     parameters: {},
     async execute(args) {
       const sessionId = asString(args.session_id).trim()
