@@ -90,7 +90,7 @@ standalone; use whatever your config/`den.port` advertises).
 Authenticate with the bearer token configured on the node (Settings → node, or
 `?token=` on first load where supported).
 
-### Dev mode (Vite)
+### Dev mode (vite)
 
 ```bash
 # Terminal A: node / den-server with CORS + token

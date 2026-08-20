@@ -204,7 +204,7 @@ providers:
 
 **Auth:** Set `ANTHROPIC_API_KEY` in `.env`. For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (below), which delegates auth to the `claude` binary.
 
-### XAI (Grok)
+### XAI (grok)
 
 ```yaml
 providers:
@@ -221,7 +221,7 @@ providers:
 | `context_window` | number | — | Override the model's context-window size (advanced). |
 | `max_output_tokens` | number | — | Hard cap on output tokens. |
 
-### Google (Gemini)
+### Google (gemini)
 
 ```yaml
 providers:

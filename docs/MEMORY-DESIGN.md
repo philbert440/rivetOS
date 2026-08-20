@@ -117,7 +117,7 @@ CREATE TABLE ros_summary_sources (
 );
 ```
 
-## Short-term memory (Session injection)
+## Short-term memory (session injection)
 
 ### What gets injected into the system prompt each turn:
 
@@ -142,7 +142,7 @@ Token budget: ~4000 tokens for injected context. Fill with highest-scoring resul
 ### Access frequency tracking:
 When a message or summary is returned in a search result, increment its access count. Frequently-accessed memories decay slower (Ebbinghaus reinforcement).
 
-## Long-term memory (Agent tools)
+## Long-term memory (agent tools)
 
 ### Consolidated tool surface (3 tools)
 

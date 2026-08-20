@@ -573,7 +573,7 @@ rivetos start
             └── heartbeatRunner.start() # Scheduled agent execution
 ```
 
-### Message flow (Single turn)
+### Message flow (single turn)
 
 ```
 Channel receives message

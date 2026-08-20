@@ -409,7 +409,7 @@ Set up a cron job:
 
 ## Resource requirements
 
-### Minimum (Single agent, Docker)
+### Minimum (single agent, Docker)
 
 - **CPU:** 1 core
 - **RAM:** 1 GB (512 MB for agent + 512 MB for Postgres)
@@ -421,7 +421,7 @@ Set up a cron job:
 - **RAM:** 2-4 GB (512 MB per agent + 512 MB for Postgres)
 - **Disk:** 10 GB (room for database growth and skills)
 
-### Proxmox (Per container)
+### Proxmox (per container)
 
 - **Agent CT:** 512 MB RAM, 1 vCPU, 2 GB disk
 - **Datahub CT:** 1 GB RAM, 1 vCPU, 10 GB disk

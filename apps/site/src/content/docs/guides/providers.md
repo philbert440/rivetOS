@@ -20,9 +20,9 @@ RivetOS ships with six provider plugins:
 
 ---
 
-## Anthropic (Claude)
+## Anthropic (claude)
 
-### 1. get an API key
+### 1. Get an API key
 
 1. Go to the [Anthropic Console](https://console.anthropic.com/)
 2. Sign up or log in
@@ -31,7 +31,7 @@ RivetOS ships with six provider plugins:
 
 Prefer subscription/OAuth auth over an API key? Use the **`claude-cli` provider** instead; it drives the local `claude` binary (Claude Code CLI), which owns the OAuth flow. Run `claude login` once via the CLI itself; RivetOS does not handle the OAuth handshake. See the `claude-cli` provider in the [Configuration Reference](/reference/config/).
 
-### 2. configure
+### 2. Configure
 
 Add your key to `.env`:
 
@@ -88,16 +88,16 @@ When `default_thinking` is set on the agent, the provider requests extended thin
 
 ---
 
-## XAI (Grok)
+## XAI (grok)
 
-### 1. get an API key
+### 1. Get an API key
 
 1. Go to [console.x.ai](https://console.x.ai/)
 2. Sign up or log in
 3. Create an API key
 4. Copy the key (starts with `xai-`)
 
-### 2. configure
+### 2. Configure
 
 Add your key to `.env`:
 
@@ -143,16 +143,16 @@ When `store: true` (default), xAI stores the conversation server-side. Each turn
 
 ---
 
-## Google (Gemini)
+## Google (gemini)
 
-### 1. get an API key
+### 1. Get an API key
 
 1. Go to [Google AI Studio](https://aistudio.google.com/apikey)
 2. Click **Create API Key**
 3. Select or create a Google Cloud project
 4. Copy the key
 
-### 2. configure
+### 2. Configure
 
 Add your key to `.env`:
 
@@ -202,11 +202,11 @@ agents:
 
 ---
 
-## Ollama (Local models)
+## Ollama (local models)
 
 [Ollama](https://ollama.com/) runs models locally on your machine. No API key needed, no usage costs, just hardware.
 
-### 1. install Ollama
+### 1. Install Ollama
 
 ```bash
 # Linux
@@ -218,7 +218,7 @@ brew install ollama
 # Or download from https://ollama.com/download
 ```
 
-### 2. pull a model
+### 2. Pull a model
 
 ```bash
 ollama pull qwen2.5:32b
@@ -226,7 +226,7 @@ ollama pull qwen2.5:32b
 
 Browse available models at [ollama.com/library](https://ollama.com/library).
 
-### 3. configure
+### 3. Configure
 
 No `.env` needed; Ollama runs locally without authentication.
 
@@ -264,7 +264,7 @@ agents:
 
 ---
 
-## VLLM (Local / self-hosted)
+## VLLM (local / self-hosted)
 
 Dedicated provider for a vLLM server. Exposes the full vLLM surface: sampling
 extensions (`top_k`, `min_p`, `repetition_penalty`, `min_tokens`),
@@ -311,7 +311,7 @@ with a `--reasoning-parser`; the AI SDK reasoning surface consumes `reasoning_co
 
 ---
 
-## Llama.cpp llama-server (Local)
+## Llama.cpp llama-server (local)
 
 Dedicated provider for llama.cpp's `llama-server`. Deliberately lean: the standard
 OpenAI sampling knobs plus llama.cpp's `top_k` / `min_p` and a generic `extra_body`

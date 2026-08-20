@@ -20,7 +20,7 @@ Agents should treat these boundaries as hard contracts. Never assume or hallucin
 
 ---
 
-## 1. runtime directory: `/opt/rivetos/`
+## 1. Runtime directory: `/opt/rivetos/`
 
 The immutable RivetOS installation. The CLI binary, compiled core, built-in plugins, and runtime dependencies live here.
 
@@ -50,7 +50,7 @@ rivetos plugins list
 
 ---
 
-## 2. config & workspace: `~/.rivetos/`
+## 2. Config & workspace: `~/.rivetos/`
 
 The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos` plus a persistent workspace. The systemd service runs as the `rivet` user, so this resolves to `/home/rivet/.rivetos/`.
 
@@ -91,7 +91,7 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 
 ---
 
-## 3. shared collaboration: `/rivet-shared/`
+## 3. Shared collaboration: `/rivet-shared/`
 
 Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent) shared by every agent on the mesh, typically also mounted on the human's workstation. Neutral territory , not tied to any single agent's config.
 

@@ -100,7 +100,7 @@ Raw PCM matching the negotiated format (default **s16le mono 16 kHz**).
 
 ---
 
-## Node runtime (Path A: shim)
+## Node runtime (path A: shim)
 
 ```
 $stateDir/audio/

@@ -19,7 +19,7 @@ Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or *
 
 > **Note:** `npm install` automatically builds all packages via postinstall. No separate build step needed.
 
-## Option A: interactive setup (Recommended)
+## Option A: interactive setup (recommended)
 
 The `rivetos init` wizard walks you through everything: deployment target, agent configuration, API keys, channels, and generates your config automatically.
 
@@ -41,9 +41,9 @@ After the wizard completes, your agent is running.
 
 ---
 
-## Option B: Docker (Manual)
+## Option B: Docker (manual)
 
-### 1. clone and install
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git
@@ -51,7 +51,7 @@ cd rivetOS
 npm install
 ```
 
-### 2. create your config
+### 2. Create your config
 
 ```bash
 cp config.example.yaml config.yaml
@@ -82,7 +82,7 @@ memory:
     # Connection string is set via RIVETOS_PG_URL env var
 ```
 
-### 3. set up secrets
+### 3. Set up secrets
 
 ```bash
 cp .env.example .env
@@ -120,7 +120,7 @@ npx rivetos status
 npx rivetos logs --follow
 ```
 
-### 5. verify
+### 5. Verify
 
 ```bash
 # Run diagnostics
@@ -132,11 +132,11 @@ npx rivetos test
 
 ---
 
-## Option C: bare-metal (No Docker)
+## Option C: bare-metal (no Docker)
 
 Run RivetOS directly on your machine. You'll need PostgreSQL running separately.
 
-### 1. clone and install
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git
@@ -144,7 +144,7 @@ cd rivetOS
 npm install
 ```
 
-### 2. set up PostgreSQL
+### 2. Set up PostgreSQL
 
 RivetOS needs PostgreSQL 16+ with the pgvector extension.
 
@@ -161,7 +161,7 @@ createdb rivetos
 psql rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
-### 3. create config and secrets
+### 3. Create config and secrets
 
 ```bash
 cp config.example.yaml config.yaml
@@ -170,7 +170,7 @@ cp .env.example .env
 
 Edit both files as described in Option B, steps 2-3.
 
-### 4. create workspace
+### 4. Create workspace
 
 ```bash
 mkdir -p ~/.rivetos/workspace/memory
@@ -188,13 +188,13 @@ Add your workspace files (templates ship under `workspace-templates/` in the rep
 
 See the [Workspace Files](#workspace-files) section below for details.
 
-### 5. start
+### 5. Start
 
 ```bash
 npx rivetos start
 ```
 
-### 6. install as a system service (optional)
+### 6. Install as a system service (optional)
 
 ```bash
 # Generate a systemd unit
@@ -290,7 +290,7 @@ In any channel, you can use slash commands:
 
 ---
 
-## CLI reference (Quick)
+## CLI reference (quick)
 
 ```bash
 # Setup
