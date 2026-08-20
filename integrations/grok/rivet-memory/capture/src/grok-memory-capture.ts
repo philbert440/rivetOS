@@ -565,10 +565,23 @@ async function insertMessage(
   if (toolResultTruncated && toolResultFull) meta.full_tool_result_length = toolResultFull.length
   if (contentTruncated || toolResultTruncated) meta.truncated = true
 
+  // Use eventTs for created_at when available, falling back to now().
+  // This preserves the original wall-clock timestamp from the Grok event
+  // so ORDER BY created_at reflects the true chronological order.
+  // Defensive: if eventTs is malformed, fall back to null (DB defaults to NOW())
+  // to preserve the never-fail property.
+  let createdAt: string | null = null
+  if (m.eventTs) {
+    const parsedMs = Date.parse(m.eventTs)
+    if (!Number.isNaN(parsedMs)) {
+      createdAt = m.eventTs
+    }
+  }
+
   await client.query(
     `INSERT INTO ros_messages
        (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, now()))`,
     [
       conversationId,
       CAPTURE_AGENT,
@@ -579,6 +592,7 @@ async function insertMessage(
       m.toolArgs != null ? JSON.stringify(m.toolArgs) : null,
       toolResultStored,
       JSON.stringify(meta),
+      createdAt,
     ]
   )
 }
