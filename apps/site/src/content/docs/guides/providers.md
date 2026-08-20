@@ -22,7 +22,7 @@ RivetOS ships with six provider plugins:
 
 ## Anthropic (Claude)
 
-### 1. Get an API Key
+### 1. get an API key
 
 1. Go to the [Anthropic Console](https://console.anthropic.com/)
 2. Sign up or log in
@@ -31,7 +31,7 @@ RivetOS ships with six provider plugins:
 
 Prefer subscription/OAuth auth over an API key? Use the **`claude-cli` provider** instead; it drives the local `claude` binary (Claude Code CLI), which owns the OAuth flow. Run `claude login` once via the CLI itself; RivetOS does not handle the OAuth handshake. See the `claude-cli` provider in the [Configuration Reference](/reference/config/).
 
-### 2. Configure
+### 2. configure
 
 Add your key to `.env`:
 
@@ -53,7 +53,7 @@ agents:
     default_thinking: medium
 ```
 
-### Config Options
+### Config options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -65,7 +65,7 @@ agents:
 
 > For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (it drives the local `claude` binary and owns the OAuth flow).
 
-### Thinking Levels
+### Thinking levels
 
 When `default_thinking` is set on the agent, the provider requests extended thinking with a token budget:
 
@@ -88,16 +88,16 @@ When `default_thinking` is set on the agent, the provider requests extended thin
 
 ---
 
-## xAI (Grok)
+## XAI (Grok)
 
-### 1. Get an API Key
+### 1. get an API key
 
 1. Go to [console.x.ai](https://console.x.ai/)
 2. Sign up or log in
 3. Create an API key
 4. Copy the key (starts with `xai-`)
 
-### 2. Configure
+### 2. configure
 
 Add your key to `.env`:
 
@@ -117,7 +117,7 @@ agents:
     provider: xai
 ```
 
-### Config Options
+### Config options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -128,7 +128,7 @@ agents:
 | `store` | boolean | `true` | Server-side conversation storage. When enabled, only new messages are sent each turn |
 | `timeout_ms` | number | `3600000` | Request timeout in milliseconds (default: 1 hour for reasoning) |
 
-### Conversation Caching
+### Conversation caching
 
 When `store: true` (default), xAI stores the conversation server-side. Each turn only sends new messages, reducing token usage and latency. The provider manages `previous_response_id` automatically.
 
@@ -145,14 +145,14 @@ When `store: true` (default), xAI stores the conversation server-side. Each turn
 
 ## Google (Gemini)
 
-### 1. Get an API Key
+### 1. get an API key
 
 1. Go to [Google AI Studio](https://aistudio.google.com/apikey)
 2. Click **Create API Key**
 3. Select or create a Google Cloud project
 4. Copy the key
 
-### 2. Configure
+### 2. configure
 
 Add your key to `.env`:
 
@@ -173,7 +173,7 @@ agents:
     default_thinking: medium
 ```
 
-### Config Options
+### Config options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -182,7 +182,7 @@ agents:
 | `max_tokens` | number | `8192` | Maximum output tokens |
 | `base_url` | string | `https://generativelanguage.googleapis.com/v1beta` | API endpoint |
 
-### Thinking Levels
+### Thinking levels
 
 | Level | Budget |
 |-------|--------|
@@ -202,11 +202,11 @@ agents:
 
 ---
 
-## Ollama (Local Models)
+## Ollama (Local models)
 
 [Ollama](https://ollama.com/) runs models locally on your machine. No API key needed, no usage costs, just hardware.
 
-### 1. Install Ollama
+### 1. install Ollama
 
 ```bash
 # Linux
@@ -218,7 +218,7 @@ brew install ollama
 # Or download from https://ollama.com/download
 ```
 
-### 2. Pull a Model
+### 2. pull a model
 
 ```bash
 ollama pull qwen2.5:32b
@@ -226,7 +226,7 @@ ollama pull qwen2.5:32b
 
 Browse available models at [ollama.com/library](https://ollama.com/library).
 
-### 3. Configure
+### 3. configure
 
 No `.env` needed; Ollama runs locally without authentication.
 
@@ -242,7 +242,7 @@ agents:
     local: true    # Extended context (tokens are free)
 ```
 
-### Config Options
+### Config options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -264,7 +264,7 @@ agents:
 
 ---
 
-## vLLM (Local / self-hosted)
+## VLLM (Local / self-hosted)
 
 Dedicated provider for a vLLM server. Exposes the full vLLM surface: sampling
 extensions (`top_k`, `min_p`, `repetition_penalty`, `min_tokens`),
@@ -292,7 +292,7 @@ Leave `model: default` and the provider auto-selects the served model (and adopt
 its context window) from `/v1/models`. For native `<think>` reasoning, start vLLM
 with a `--reasoning-parser`; the AI SDK reasoning surface consumes `reasoning_content`.
 
-### Config Options
+### Config options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -311,7 +311,7 @@ with a `--reasoning-parser`; the AI SDK reasoning surface consumes `reasoning_co
 
 ---
 
-## llama.cpp llama-server (Local)
+## Llama.cpp llama-server (Local)
 
 Dedicated provider for llama.cpp's `llama-server`. Deliberately lean: the standard
 OpenAI sampling knobs plus llama.cpp's `top_k` / `min_p` and a generic `extra_body`
@@ -338,7 +338,7 @@ For native `<think>` reasoning, start `llama-server` with `--reasoning-format de
 so it emits `reasoning_content`. Set `LLAMA_SERVER_API_KEY` only if you started the
 server with `--api-key`.
 
-### Config Options
+### Config options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -358,7 +358,7 @@ server with `--api-key`.
 
 
 
-## Checking Provider Health
+## Checking provider health
 
 ```bash
 # Run provider connectivity checks
@@ -373,7 +373,7 @@ npx rivetos status
 
 ---
 
-## Next Steps
+## Next steps
 
 - **[Channel Setup](/guides/channels/)**: Connect your agents to Discord, Telegram, voice
 - **[Configuration Reference](/reference/config/)**: full option tables for all config sections

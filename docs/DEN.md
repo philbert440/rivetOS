@@ -1,4 +1,4 @@
-# rivet-den: watch your agent work
+# Rivet-den: watch your agent work
 
 A live pixel-art diorama of an agent session. Lifecycle hooks translate what
 the agent is doing into a small event protocol: prompts, tool calls, plans,
@@ -159,7 +159,7 @@ the workspace, copy the unit, write `den.env` yourself, and tag the mesh
 entry manually (see "Mesh view" above; manual tags survive only on entries
 the runtime doesn't own).
 
-### node-pty ABI runbook
+### Node-pty ABI runbook
 
 `node-pty` (the terminal backend) is a native module: its compiled binary
 must match the node binary that runs the service; the unit's

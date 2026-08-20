@@ -10,7 +10,7 @@ Common issues and fixes. Start with `rivetos doctor`; it checks everything.
 
 ---
 
-## Quick Diagnostics
+## Quick diagnostics
 
 ```bash
 npx rivetos doctor          # 12-category health check
@@ -22,7 +22,7 @@ npx rivetos logs --level error  # Errors only
 
 ---
 
-## Agent Won't Start
+## Agent won't start
 
 ### "Config validation failed"
 
@@ -72,7 +72,7 @@ npx rivetos start
 
 ---
 
-## Agent Won't Respond
+## Agent won't respond
 
 ### Check the basics
 
@@ -81,7 +81,7 @@ npx rivetos start
 3. **Is the API key valid?** Check `.env`; keys must not have quotes or trailing whitespace
 4. **Is the channel connected?** Check `npx rivetos logs` for connection errors
 
-### "429 Too Many Requests" or "529 Overloaded"
+### "429 too many requests" or "529 overloaded"
 
 The provider is rate limiting you or overloaded.
 
@@ -112,7 +112,7 @@ Common cause: the provider returned an empty response (often a content filter is
 
 ---
 
-## Database Issues
+## Database issues
 
 ### "Connection refused" to PostgreSQL
 
@@ -176,7 +176,7 @@ sudo -u postgres psql rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
 ---
 
-## Docker Issues
+## Docker issues
 
 ### Containers won't build
 
@@ -229,7 +229,7 @@ ls -la workspace/
 
 ---
 
-## Channel Issues
+## Channel issues
 
 ### Social channel bots removed (Phase 5)
 
@@ -243,7 +243,7 @@ Leftover `channels.telegram:` / `channels.discord:` only produce an
 ---
 
 
-## Mesh Issues
+## Mesh issues
 
 ### "No mesh peers found"
 
@@ -271,7 +271,7 @@ Common causes:
 
 ---
 
-## Update Issues
+## Update issues
 
 ### "git pull failed"
 
@@ -332,7 +332,7 @@ Common causes:
 
 ---
 
-## `rivetos doctor` Output Guide
+## `rivetos doctor` output guide
 
 The doctor command runs 12 categories of checks:
 
@@ -358,7 +358,7 @@ npx rivetos doctor --json | jq '.checks[] | select(.status == "fail")'
 
 ---
 
-## Getting Help
+## Getting help
 
 1. **Check this guide**: most issues are covered above
 2. **Run diagnostics**: `rivetos doctor` and `rivetos test` catch most problems

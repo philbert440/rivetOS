@@ -34,7 +34,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **LTS releases**: Pin a version. It won't break for 12 months.
 - **Apache 2.0**: no CLA, no dual-licensing, no surprises. Patent grant included.
 
-## Quick Start
+## Quick start
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git
@@ -92,7 +92,7 @@ See [Getting Started](docs/GETTING-STARTED.md) for the full guide.
 
 **Dependency rule:** Everything points inward. Plugins → Types. Domain → Types. Every plugin is registered the same way, discovery plus `manifest.register()`. `boot` additionally lists four workspace packages (`provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`) as direct dependencies so a default install always has them on disk, and imports specific symbols from them.
 
-## Monorepo Structure
+## Monorepo structure
 
 ```
 rivetOS/
@@ -202,7 +202,7 @@ memory:
 
 API keys always go in `.env`, never in config files. See [Config Reference](docs/CONFIG-REFERENCE.md) for every option.
 
-## Workspace Files
+## Workspace files
 
 Markdown files injected into the agent's system prompt:
 
@@ -216,7 +216,7 @@ Markdown files injected into the agent's system prompt:
 | `HEARTBEAT.md` | Background task instructions |
 | `memory/YYYY-MM-DD.md` | Daily notes for continuity |
 
-## CLI Reference
+## CLI reference
 
 ```
 Setup:

@@ -1,4 +1,4 @@
-# rivet-team users on datahub
+# Rivet-team users on datahub
 
 Household humans are **users**. Each user owns personas and notes. They do
 not share the Rivet agent memory corpus (`ros_messages` and friends).

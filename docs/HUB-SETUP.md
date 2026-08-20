@@ -1,4 +1,4 @@
-# RivetHub Setup Guide
+# RivetHub setup guide
 
 > Point Hub web (and desktop) at a RivetOS node gateway. Hub is the node's face;
 > not a separate agent runtime.

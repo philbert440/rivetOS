@@ -1,4 +1,4 @@
-# RivetOS Architecture
+# RivetOS architecture
 
 > **Harness-first node OS.** RivetOS is a per-node control plane for coding harnesses.
 > The harness owns the coding loop. Rivet owns sessions, identity, capture/memory,
@@ -41,7 +41,7 @@ Web / Desktop / Android
 
 ---
 
-## Design Principles
+## Design principles
 
 1. **Harness owns the loop**: Interactive coding is the host harness. Rivet adapts, does not replace.
 2. **One SessionId, four drivers**: Canonical `<harness-id>:<native-session-id>` everywhere (capture, den, hub, tasks, gateway). No dual key schemes.
@@ -57,7 +57,7 @@ Web / Desktop / Android
 
 ---
 
-## System Overview: Control Plane
+## System overview: control plane
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -103,7 +103,7 @@ Web / Desktop / Android
 
 ---
 
-## Ownership Split
+## Ownership split
 
 ### What the harness does
 
@@ -130,7 +130,7 @@ RivetHub (web + Tauri desktop) and Android are **remote faces of the node**. The
 
 ---
 
-## Four Harness Drivers
+## Four harness drivers
 
 Contract types live in `@rivetos/types` (`harness.ts`, `harness-session-id.ts`).
 Implementations live under `services/den-server/src/harness/`. All four are thin
@@ -214,7 +214,7 @@ den dispatches by literal path prefixes (no dynamic segments). Contract names ma
 
 ---
 
-## Clean Architecture Layers
+## Clean architecture layers
 
 The plugin/domain split remains the internal structure of the runtime. The **product** path no longer bottoms out at "channel → provider → AgentLoop" for interactive coding; that stack is the secondary / headless path.
 
@@ -301,9 +301,9 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 
 ---
 
-## Domain Model
+## Domain model
 
-### Core Concepts
+### Core concepts
 
 ```
 Harness      — external coding host (claude-code | grok-build | kimi-code | hermes)
@@ -321,7 +321,7 @@ Task         — scheduled/on-demand work unit; harness-session executor spawns 
 Den          — live room visualization of harness activity via AgentEvent protocol
 ```
 
-### Value Objects
+### Value objects
 
 ```
 Message      — { role, content, toolCalls?, toolCallId? }
@@ -354,7 +354,7 @@ FileMeshRegistry — owns mesh node registration, heartbeat, pruning.
 
 ---
 
-## Interactive Lifecycle (primary: harness)
+## Interactive lifecycle (primary: harness)
 
 ```
 1. Client (Hub / Android / desktop) opens or resumes a SessionId
@@ -375,7 +375,7 @@ Notice: Rivet never runs the coding tool loop for these sessions. It routes, ide
 
 ---
 
-## Message Lifecycle (secondary: channel + AI SDK)
+## Message lifecycle (secondary: channel + AI SDK)
 
 > Used for headless provider turns, mesh agent channel, heartbeats, and
 > **deprecated** social channels. Not the product interactive path.
@@ -406,7 +406,7 @@ The domain layer never touches I/O. It works with interfaces. The application la
 
 ---
 
-## Monorepo Structure
+## Monorepo structure
 
 ```
 rivetOS/
@@ -493,7 +493,7 @@ Skills are not part of the source tree. They are user-managed and live under the
 
 ---
 
-## Plugin Interfaces
+## Plugin interfaces
 
 ### HarnessDriver: control-plane contract (primary)
 
@@ -628,7 +628,7 @@ after every other plugin has registered.
 
 Reference implementation: `plugins/transports/mcp-server/`
 
-### Plugin Manifest Contract
+### Plugin manifest contract
 
 Every plugin's `index.ts` exports a `manifest: PluginManifest`:
 
@@ -651,7 +651,7 @@ calls `manifest.register(ctx)`. One manifest-driven loader handles every plugin 
 
 ---
 
-## Routing Model
+## Routing model
 
 ### Primary: harness routing
 
@@ -681,7 +681,7 @@ the remote node. Delegation is transparent via HTTP to the remote agent channel.
 
 ---
 
-## Interrupt Model
+## Interrupt model
 
 ### Harness path
 
@@ -691,17 +691,17 @@ the remote node. Delegation is transparent via HTTP to the remote agent channel.
 
 ### Secondary path (AgentLoop)
 
-#### /stop: Abort current turn
+#### /stop: abort current turn
 - Each turn creates an `AbortController`
 - `/stop` calls `abort()` on it
 - `AbortSignal` passed to Provider `chatStream()`, Tool `execute()`, checked between iterations
 - Response: immediate
 
-#### /steer: Inject mid-turn context
+#### /steer: inject mid-turn context
 - Pushes onto the AgentLoop's steer queue
 - Seen as a system message on the next tool iteration
 
-#### /new: Fresh session
+#### /new: fresh session
 - Aborts active turn (if any)
 - Clears in-memory conversation history
 - Transcript in postgres is unaffected
@@ -712,7 +712,7 @@ call is cancelled mid-flight.
 
 ---
 
-## Hook System
+## Hook system
 
 Composable async pipeline with priority ordering (0-99):
 
@@ -751,7 +751,7 @@ Env contract for real executors: `RIVETOS_TASK_ID` set, inherited
 
 ---
 
-## Memory and Capture
+## Memory and capture
 
 - Capture plugins (under `integrations/*/rivet-memory`) write under canonical `SessionId` where possible.
 - Mesh-shared DB: disambiguate by `agent` column; native id entropy is the collision defense.
@@ -836,9 +836,9 @@ Den / gateway env (selection): `RIVETOS_DEN_HOST`, `RIVETOS_DEN_TOKEN`,
 
 ---
 
-## Deployment Model
+## Deployment model
 
-### Container-First Architecture
+### Container-first architecture
 
 RivetOS ships as container images built from source. The container IS the
 security boundary; agents can only touch what is inside their container.
@@ -854,7 +854,7 @@ security boundary; agents can only touch what is inside their container.
 **Update model:** Pull source → rebuild containers from source tree → restart.
 Plugins live in the source tree and survive updates automatically.
 
-### Deployment Targets
+### Deployment targets
 
 | Target | Implementation | Use Case |
 |--------|---------------|----------|
@@ -868,7 +868,7 @@ healthy; agent and workers wait on migrate success.
 
 ---
 
-## Multi-Agent Mesh
+## Multi-agent mesh
 
 Multiple RivetOS instances form a mesh for cross-instance collaboration:
 
@@ -887,7 +887,7 @@ When documenting mesh peers, use hostnames or documentation address space
 
 ---
 
-## Deprecated Surfaces (Phase 0 → Phase 5)
+## Deprecated surfaces (Phase 0 → Phase 5)
 
 | Surface | Status | Guidance |
 |---------|--------|----------|
@@ -903,7 +903,7 @@ When documenting mesh peers, use hostnames or documentation address space
 
 ---
 
-## LTS Strategy
+## LTS strategy
 
 - **main** branch: current development
 - **lts/X.Y** branches: frozen releases

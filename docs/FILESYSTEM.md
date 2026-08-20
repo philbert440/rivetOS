@@ -1,4 +1,4 @@
-# RivetOS Filesystem Layout: Canonical Reference
+# RivetOS filesystem layout: canonical reference
 
 > **This document is the source of truth for where things live in RivetOS.**
 > It should be read by every agent before any file, directory, or path operation.
@@ -16,7 +16,7 @@ Agents should treat these boundaries as hard contracts. Never assume or hallucin
 
 ---
 
-## 1. Runtime Directory: `/opt/rivetos/`
+## 1. runtime directory: `/opt/rivetos/`
 
 The immutable RivetOS installation. The CLI binary, compiled core, built-in plugins, and runtime dependencies live here.
 
@@ -46,7 +46,7 @@ rivetos plugins list
 
 ---
 
-## 2. Config & Workspace: `~/.rivetos/`
+## 2. config & workspace: `~/.rivetos/`
 
 The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos` plus a persistent workspace. The systemd service runs as the `rivet` user, so this resolves to `/home/rivet/.rivetos/`.
 
@@ -87,7 +87,7 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 
 ---
 
-## 3. Shared Collaboration: `/rivet-shared/`
+## 3. shared collaboration: `/rivet-shared/`
 
 Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent) shared by every agent on the mesh, typically also mounted on the human's workstation. Neutral territory , not tied to any single agent's config.
 
@@ -117,7 +117,7 @@ Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent
 
 ---
 
-## Quick Decision Matrix
+## Quick decision matrix
 
 | Task / File Type | Correct Directory | Why |
 |---|---|---|
@@ -134,7 +134,7 @@ Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent
 
 ---
 
-## Enforcement Rules
+## Enforcement rules
 
 1. **Verify directory purpose** before any `ls`, `cat`, `>`, `rm`, `mv`, or tool call involving a new path.
 2. If a path doesn't clearly match one of the three categories above, **stop and ask the human** (or consult this file).
@@ -144,7 +144,7 @@ Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent
 
 ---
 
-## Source of Truth
+## Source of truth
 
 - **Canonical version:** `docs/FILESYSTEM.md` in the `rivetOS` repo.
 - **Per-instance mirror:** copied by `rivetos init` into `<workspace>/FILESYSTEM.md`.

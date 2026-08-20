@@ -1,4 +1,4 @@
-# Configuration Reference
+# Configuration reference
 
 RivetOS uses a single YAML config file for all settings. API keys and secrets go in `.env`, never in the config file.
 
@@ -11,7 +11,7 @@ RivetOS uses a single YAML config file for all settings. API keys and secrets go
 
 ---
 
-## Quick Example
+## Quick example
 
 ```yaml
 runtime:
@@ -37,7 +37,7 @@ memory:
 
 ---
 
-## Environment Variable Resolution
+## Environment variable resolution
 
 Any string value can reference environment variables with `${VAR_NAME}`:
 
@@ -200,7 +200,7 @@ providers:
 
 **Auth:** Set `ANTHROPIC_API_KEY` in `.env`. For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (below), which delegates auth to the `claude` binary.
 
-### xAI (Grok)
+### XAI (Grok)
 
 ```yaml
 providers:
@@ -252,7 +252,7 @@ providers:
 | `context_window` | number | — | Override the context-window size reported to the runtime (advanced). |
 | `max_output_tokens` | number | — | Hard cap on output tokens. |
 
-### vllm
+### Vllm
 
 Dedicated provider for a vLLM server. Exposes the full vLLM surface.
 
@@ -295,7 +295,7 @@ providers:
 | `chat_template_kwargs` | object | — | vLLM chat-template kwargs (passthrough). |
 | `extra_body` | object | — | Arbitrary JSON merged into the request body (vLLM passthrough). |
 
-### llama-server
+### Llama-server
 
 Dedicated provider for llama.cpp's `llama-server`. Lean by design: standard OpenAI sampling plus llama.cpp's `top_k` / `min_p` and a generic `extra_body` escape hatch. None of the vLLM-only machinery (no `mm_processor_kwargs`, `chat_template_kwargs`, `repetition_penalty`, `min_tokens`, or video).
 
@@ -331,7 +331,7 @@ providers:
 | `name` | string | — | Display name for the provider. |
 | `extra_body` | object | — | Arbitrary JSON merged into the request body (e.g. `grammar`, `n_probs`). |
 
-### claude-cli
+### Claude-cli
 
 Drives the local `claude` binary (Claude Code CLI) using the user's subscription OAuth token, the sanctioned third-party-harness pattern per Anthropic's April 2026 policy. The CLI owns auth, session caching, and the wire protocol; this provider drives it via `stream-json` and brings up a per-spawn embedded MCP server that exposes every executable RivetOS tool to claude-cli through `--mcp-config`.
 
@@ -503,7 +503,7 @@ mcp:
       autoReconnect: true
 ```
 
-### MCP Server Config
+### MCP server config
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -539,7 +539,7 @@ deployment:
 
 ---
 
-## Environment Variables
+## Environment variables
 
 These are typically set in `.env`:
 
@@ -558,6 +558,6 @@ These are typically set in `.env`:
 
 ---
 
-## Full Annotated Example
+## Full annotated example
 
 See [`config.example.yaml`](../config.example.yaml) in the repository root for a complete annotated config file with all options commented.

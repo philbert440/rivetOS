@@ -1,8 +1,8 @@
-# RivetOS Memory System Design
+# RivetOS memory system design
 
 > Our system, our rules.
 
-## Design Principles
+## Design principles
 
 1. **Every word persists**: full transcripts of every conversation, every tool call, every response. Never deleted.
 2. **Smart retrieval, not smart storage**: store everything flat, use scoring to surface what matters.
@@ -44,7 +44,7 @@
 
 ## Schema (ros_* prefix)
 
-### messages
+### Messages
 The immutable transcript. Every message ever sent or received.
 
 ```sql
@@ -65,7 +65,7 @@ CREATE TABLE ros_messages (
 );
 ```
 
-### conversations
+### Conversations
 Group messages into sessions.
 
 ```sql
@@ -84,7 +84,7 @@ CREATE TABLE ros_conversations (
 );
 ```
 
-### summaries
+### Summaries
 Compacted summaries of message groups. Forms a DAG for drill-down.
 
 ```sql
@@ -105,7 +105,7 @@ CREATE TABLE ros_summaries (
 );
 ```
 
-### summary_sources
+### Summary_sources
 Links summaries to their source messages.
 
 ```sql
@@ -117,7 +117,7 @@ CREATE TABLE ros_summary_sources (
 );
 ```
 
-## Short-Term Memory (Session Injection)
+## Short-term memory (Session injection)
 
 ### What gets injected into the system prompt each turn:
 
@@ -142,9 +142,9 @@ Token budget: ~4000 tokens for injected context. Fill with highest-scoring resul
 ### Access frequency tracking:
 When a message or summary is returned in a search result, increment its access count. Frequently-accessed memories decay slower (Ebbinghaus reinforcement).
 
-## Long-Term Memory (Agent Tools)
+## Long-term memory (Agent tools)
 
-### Consolidated Tool Surface (3 tools)
+### Consolidated tool surface (3 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -154,7 +154,7 @@ When a message or summary is returned in a search result, increment its access c
 
 Consolidated from the original 6-tool design (`memory_grep`, `memory_expand`, `memory_describe`, `memory_expand_query`) down to 3 tools that require less LLM orchestration.
 
-## Background Processing
+## Background processing
 
 ### Embedder
 - Runs on a timer (configurable interval)
@@ -179,7 +179,7 @@ Periodically summarize old messages into the summary DAG:
 
 This creates a tree: root → branches → leaves → source messages. The `memory_search` tool auto-expands this tree.
 
-## v5 Memory-Quality Pipeline
+## V5 memory-quality pipeline
 
 The v5 pipeline (April 2026) replaces the original cloud-model-tuned compactor with a local-first, thinking-model architecture optimized for faithfulness and searchability.
 
@@ -240,7 +240,7 @@ rivetos memory retry-failed --task extract-wiki --error 'text[] &'
 ```
 
 Failed jobs (after `max_attempts`) remain in graphile-worker's `_private_jobs` table with `attempts >= max_attempts` and `is_available = false`. `queue-status` surfaces counts + a sample `last_error`. `retry-failed` clears `attempts` / `last_error` / locks on matching rows (requires `--task`) so workers pick them up again without losing `job_key` identity.
-## What We're NOT Building
+## What we're NOT building
 
 - No vector database (pgvector in PostgreSQL is sufficient)
 - No external embedding API (Nemotron on GERTY is local and free)

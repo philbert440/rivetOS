@@ -14,7 +14,7 @@ Thanks for your interest in contributing! This guide covers development setup, t
 - **npm** (comes with Node)
 - **Git**
 
-## Getting Started
+## Getting started
 
 1. **Fork** the repo on GitHub
 2. **Clone** your fork:
@@ -124,7 +124,7 @@ These are defined in `nx.json` and available on every package:
 
 The `^` prefix means "run this target on dependencies first." So `nx run boot:build` will first build `types` and `core` (its dependencies), then build `boot`.
 
-## Conventional Commits
+## Conventional commits
 
 All commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
 
@@ -148,7 +148,7 @@ chore: update Nx to 22.7
 refactor(core): extract TurnHandler from runtime
 ```
 
-## Code Style
+## Code style
 
 - **TypeScript**: strict mode, no `any` unless unavoidable
 - **ESLint**: flat config in `eslint.config.mjs`, shared across all packages
@@ -164,7 +164,7 @@ npx nx run core:lint                    # Just core
 npx nx affected -t lint                 # Only changed packages
 ```
 
-## Architecture Rules
+## Architecture rules
 
 RivetOS follows a strict layered architecture:
 
@@ -189,7 +189,7 @@ Types → Domain → Runtime → Boot
 
 **Platform-specific concerns stay in plugins.** Message splitting, typing indicators, API format differences belong in the channel or provider plugin, not in the runtime.
 
-## Adding a New Plugin
+## Adding a new plugin
 
 The recommended way to add a plugin is with the `@rivetos/nx` generator:
 
@@ -291,7 +291,7 @@ npx nx affected -t test
 npx nx run core:test -- --coverage
 ```
 
-## Creating a Pull Request
+## Creating a pull request
 
 The recommended way to create a PR is with the `@rivetos/nx` PR generator:
 
@@ -329,7 +329,7 @@ If you're not using the PR generator, verify before submitting:
 
 **CI runs lint, typecheck, test, and build** (via `nx affected`) on every PR, plus boundary probes and a secrets scan. If your changes break any of them, the PR will be blocked.
 
-## Plugin Discovery
+## Plugin discovery
 
 RivetOS uses convention-based plugin discovery. Every plugin declares itself in `package.json`:
 
@@ -352,7 +352,7 @@ runtime:
     - /path/to/my/plugins
 ```
 
-## Working with Containers
+## Working with containers
 
 RivetOS ships as container images built from source.
 
@@ -384,7 +384,7 @@ Containers are stateless. All data lives on the host:
 
 See [infra/containers/DATA-PERSISTENCE.md](infra/containers/DATA-PERSISTENCE.md) for details.
 
-## Writing Skills
+## Writing skills
 
 Skills are markdown documents, not code. Anyone can contribute skills.
 
@@ -398,7 +398,7 @@ npx rivetos skill validate my-skill
 
 See [docs/SKILLS.md](/guides/skills/) for the full guide.
 
-## Reporting Issues
+## Reporting issues
 
 Use the [bug report](https://github.com/philbert440/rivetOS/issues/new?template=bug_report.md) or [feature request](https://github.com/philbert440/rivetOS/issues/new?template=feature_request.md) templates.
 

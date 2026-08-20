@@ -19,7 +19,7 @@ Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or *
 
 > **Note:** `npm install` automatically builds all packages via postinstall. No separate build step needed.
 
-## Option A: Interactive Setup (Recommended)
+## Option A: interactive setup (Recommended)
 
 The `rivetos init` wizard walks you through everything: deployment target, agent configuration, API keys, channels, and generates your config automatically.
 
@@ -43,7 +43,7 @@ After the wizard completes, your agent is running.
 
 ## Option B: Docker (Manual)
 
-### 1. Clone and install
+### 1. clone and install
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git
@@ -51,7 +51,7 @@ cd rivetOS
 npm install
 ```
 
-### 2. Create your config
+### 2. create your config
 
 ```bash
 cp config.example.yaml config.yaml
@@ -82,7 +82,7 @@ memory:
     # Connection string is set via RIVETOS_PG_URL env var
 ```
 
-### 3. Set up secrets
+### 3. set up secrets
 
 ```bash
 cp .env.example .env
@@ -120,7 +120,7 @@ npx rivetos status
 npx rivetos logs --follow
 ```
 
-### 5. Verify
+### 5. verify
 
 ```bash
 # Run diagnostics
@@ -132,11 +132,11 @@ npx rivetos test
 
 ---
 
-## Option C: Bare-Metal (No Docker)
+## Option C: bare-metal (No Docker)
 
 Run RivetOS directly on your machine. You'll need PostgreSQL running separately.
 
-### 1. Clone and install
+### 1. clone and install
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git
@@ -144,7 +144,7 @@ cd rivetOS
 npm install
 ```
 
-### 2. Set up PostgreSQL
+### 2. set up PostgreSQL
 
 RivetOS needs PostgreSQL 16+ with the pgvector extension.
 
@@ -161,7 +161,7 @@ createdb rivetos
 psql rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
-### 3. Create config and secrets
+### 3. create config and secrets
 
 ```bash
 cp config.example.yaml config.yaml
@@ -170,7 +170,7 @@ cp .env.example .env
 
 Edit both files as described in Option B, steps 2-3.
 
-### 4. Create workspace
+### 4. create workspace
 
 ```bash
 mkdir -p ~/.rivetos/workspace/memory
@@ -188,13 +188,13 @@ Add your workspace files (templates ship under `workspace-templates/` in the rep
 
 See the [Workspace Files](#workspace-files) section below for details.
 
-### 5. Start
+### 5. start
 
 ```bash
 npx rivetos start
 ```
 
-### 6. Install as a system service (optional)
+### 6. install as a system service (optional)
 
 ```bash
 # Generate a systemd unit
@@ -206,11 +206,11 @@ npx rivetos service start
 
 ---
 
-## Workspace Files
+## Workspace files
 
 Workspace files are markdown documents injected into the agent's system prompt. They define who the agent is and how it behaves.
 
-### Required Files
+### Required files
 
 **`CORE.md`**: agent identity, personality, values, and behavioral rules.
 ```markdown
@@ -248,7 +248,7 @@ You are a helpful AI assistant named Rivet.
 3. Get to work
 ```
 
-### Optional Files
+### Optional files
 
 **`MEMORY.md`**: a lightweight index into the memory system. The agent uses this to know what to search for.
 
@@ -260,7 +260,7 @@ You are a helpful AI assistant named Rivet.
 
 ---
 
-## First Conversation
+## First conversation
 
 Once your agent is running, talk to it through whichever channel you configured:
 
@@ -268,7 +268,7 @@ Once your agent is running, talk to it through whichever channel you configured:
 
 > The agent HTTP channel (`POST /api/message`) is an mTLS-authenticated endpoint for **inter-agent / mesh delegation**, not a casual chat API; it expects a `{ fromAgent, message }` envelope over HTTPS with client certs. See [Mesh Networking](/guides/mesh/).
 
-### Useful Commands
+### Useful commands
 
 In any channel, you can use slash commands:
 
@@ -290,7 +290,7 @@ In any channel, you can use slash commands:
 
 ---
 
-## CLI Reference (Quick)
+## CLI reference (Quick)
 
 ```bash
 # Setup
@@ -340,7 +340,7 @@ rivetos skills list
 
 ---
 
-## Next Steps
+## Next steps
 
 - **[Channel Setup](/guides/channels/)**: Connect to Discord, Telegram, voice, and agent-to-agent messaging
 - **[Provider Setup](/guides/providers/)**: Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
@@ -354,7 +354,7 @@ rivetos skills list
 
 ---
 
-## Quick Troubleshooting
+## Quick troubleshooting
 
 **Agent doesn't respond?**
 - Run `npx rivetos doctor` to check connectivity

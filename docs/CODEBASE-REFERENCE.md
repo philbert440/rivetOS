@@ -1,11 +1,11 @@
-# RivetOS Codebase Reference
+# RivetOS codebase reference
 
 > Living document. Updated as the codebase evolves. Read this before building anything.
 > Last updated: 2026-08-08 (docs staleness sweep: package tree, roles, CI, test inventory)
 
 ---
 
-## Table of Contents
+## Table of contents
 
 1. [Overview](#overview)
 2. [Monorepo Structure](#monorepo-structure)
@@ -34,7 +34,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 
 ---
 
-## Monorepo Structure
+## Monorepo structure
 
 ```
 /opt/rivetos/
@@ -120,7 +120,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 
 ---
 
-## Package Dependency Graph
+## Package dependency graph
 
 Workspace dependencies as declared in each `package.json` (`@rivetos/*` only):
 
@@ -322,9 +322,9 @@ Generates: `plugins/{type}/{name}/` with `package.json`, `tsconfig.json`, `src/i
 
 ---
 
-## Plugin Architecture
+## Plugin architecture
 
-### Plugin Categories
+### Plugin categories
 
 All plugins follow the same pattern: a class implementing an interface from `@rivetos/types`, dynamically imported by a registrar in `@rivetos/boot`.
 
@@ -336,7 +336,7 @@ All plugins follow the same pattern: a class implementing an interface from `@ri
 | Memory     | `Memory`   | `boot/registrars/plugins.ts` (via `manifest.register`) |
 | Transport  | (no core interface — plugin opens its own listening surface) | `boot/registrars/plugins.ts` — registers shutdown + `onRegistrationComplete` to enumerate the finalized tool set |
 
-### Provider Plugin Pattern
+### Provider plugin pattern
 
 ```typescript
 export class ExampleProvider implements Provider {
@@ -355,7 +355,7 @@ export class ExampleProvider implements Provider {
 
 All providers implement streaming via `chatStream()` (AsyncIterable). The non-streaming `chat()` is optional; the AgentLoop always uses `chatStream()`.
 
-### Channel Plugin Pattern
+### Channel plugin pattern
 
 ```typescript
 export class ExampleChannel implements Channel {
@@ -375,7 +375,7 @@ export class ExampleChannel implements Channel {
 
 The `edit()` method handles overflow internally: if text exceeds platform limits, the channel splits it and manages overflow message IDs.
 
-### Tool Plugin Pattern
+### Tool plugin pattern
 
 ```typescript
 export class ExampleTool implements Tool {
@@ -391,7 +391,7 @@ export class ExampleTool implements Tool {
 
 Tools can return plain text or multimodal content (text + images as `ContentPart[]`).
 
-### Memory Plugin Pattern
+### Memory plugin pattern
 
 ```typescript
 export class ExampleMemory implements Memory {
@@ -404,7 +404,7 @@ export class ExampleMemory implements Memory {
 }
 ```
 
-### Plugin Package Convention
+### Plugin package convention
 
 Every plugin lives at `plugins/{category}/{name}/` and has:
 - `package.json` with name `@rivetos/{category}-{name}`
@@ -416,7 +416,7 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 
 ## Infrastructure
 
-### Container Images
+### Container images
 
 **Unified `rivetos` image** (`infra/containers/rivetos/Dockerfile`):
 - Single Node 24 Alpine image, non-root user (`rivetos`), tini init
@@ -444,7 +444,7 @@ Named volume: `rivetos-pgdata`. Dependency ordering: only `migrate` waits on `da
 
 Both workers sit behind the `workers` profile, so a bare `docker compose up` brings up only `datahub`, `migrate`, and `agent`. Each needs an inference endpoint the compose file cannot guess (`RIVETOS_EMBED_URL` / `RIVETOS_COMPACTOR_URL`) and exits 1 on boot without one; supply those, then `docker compose --profile workers up`.
 
-### Memory Workers (graphile-worker daemons)
+### Memory workers (graphile-worker daemons)
 
 Embedding and compaction run as **`graphile-worker` daemons deployed alongside Datahub**
 (`services/embedding-worker/`, `services/compaction-worker/`). Both pull from a
@@ -534,7 +534,7 @@ cron, `enqueue-wiki-backfill` (`*/10 * * * *`), queues leaves that were never mi
 **Source:** `services/embedding-worker/` and `services/compaction-worker/` (TS, graphile-worker tasks)
 **Setup:** Schema DDL lives at `plugins/memory/postgres/src/schema/migrations/` and is applied at boot. Worker services run as their own systemd units; graphile-worker installs its own schema lazily on first connection.
 
-### Data Persistence
+### Data persistence
 
 Containers are stateless. All user data lives on volumes:
 
@@ -550,9 +550,9 @@ Containers are stateless. All user data lives on volumes:
 
 ---
 
-## Runtime Lifecycle
+## Runtime lifecycle
 
-### Boot Sequence
+### Boot sequence
 
 ```
 rivetos start
@@ -573,7 +573,7 @@ rivetos start
             └── heartbeatRunner.start() # Scheduled agent execution
 ```
 
-### Message Flow (Single Turn)
+### Message flow (Single turn)
 
 ```
 Channel receives message
@@ -603,7 +603,7 @@ Channel receives message
             └── memory.append() (user + assistant messages)
 ```
 
-### Streaming Behavior
+### Streaming behavior
 
 - **ONE streaming text message per turn**: sent on first text chunk, edited as more arrives
 - **Throttled edits**: 600ms minimum between Discord edit calls
@@ -612,7 +612,7 @@ Channel receives message
 - **Tool calls**: ONE consolidated tool log message, edited in-place (max 8 lines shown)
 - **Errors**: only thing that sends a NEW message mid-turn
 
-### Hook System
+### Hook system
 
 16 lifecycle events, priority-ordered (0-99, lower first), async pipelines:
 
@@ -637,9 +637,9 @@ Channel receives message
 
 ---
 
-## Patterns & Conventions
+## Patterns & conventions
 
-### Coding Standards
+### Coding standards
 
 - **TypeScript strict mode**: always
 - **ES2023 target, Node16 module resolution**
@@ -648,7 +648,7 @@ Channel receives message
 - **`index.ts` barrel exports**: every package re-exports from `src/index.ts`
 - **Tests co-located**: `foo.ts` → `foo.test.ts` in same directory
 
-### Naming Conventions
+### Naming conventions
 
 - **Packages:** `@rivetos/{name}` (npm scope)
 - **Plugins:** `@rivetos/{category}-{name}` (e.g., `@rivetos/provider-anthropic`)
@@ -659,7 +659,7 @@ Channel receives message
 - **Constants:** UPPER_SNAKE (`SILENT_RESPONSES`, `CORE_FILES`)
 - **Loggers:** `const log = logger('ComponentName')`
 
-### Architecture Rules
+### Architecture rules
 
 1. **`types` is near the bottom**: everything depends on it; it depends only on `den-protocol`
 2. **Domain layer is pure**: no I/O, no `fs`, no `fetch`. Only interfaces.
@@ -672,14 +672,14 @@ Channel receives message
 9. **One message queue per session**: no shared queues, no race conditions
 10. **Hooks are the extension point**: safety, auto-actions, observability all use hooks
 
-### Error Handling
+### Error handling
 
 - **RivetError hierarchy**: typed errors with codes, severity, retryable flag
 - **ProviderError**: HTTP-aware, observed by `provider:error` hooks
 - **Reconnection manager**: exponential backoff for channel disconnects
 - **Hook error modes**: `continue` (log & proceed), `abort` (stop pipeline), `retry`
 
-### Config Shape
+### Config shape
 
 ```yaml
 runtime:
@@ -719,14 +719,14 @@ under `infra/scripts/`, not by nested config keys. Anything other than `target` 
 
 ## Testing
 
-### Test Framework
+### Test framework
 
 - **Vitest 4.x**: fast, TypeScript-native, Node assert compatible
 - **Co-located tests**: `foo.ts` → `foo.test.ts`
 - **No external test deps**: uses `node:assert/strict`, no chai/jest matchers
 - **Run:** `nx run-many -t test` or `nx test @rivetos/core`
 
-### Test Coverage
+### Test coverage
 
 Tests are co-located, so the current inventory is always one command away rather than a
 table that rots:
@@ -740,7 +740,7 @@ Coverage is broadest in `core/domain` (loop, hooks, delegation, queue, router, s
 safety), `boot` (config validation, discovery, registrars), the memory plugin (adapter,
 scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 
-### Untested Areas
+### Untested areas
 
 - Infra provisioning scripts (Docker, Proxmox)
 - Container builds
@@ -748,7 +748,7 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 
 ---
 
-## Known Issues & Tech Debt
+## Known issues & tech debt
 
 ### Architecture
 
@@ -778,9 +778,9 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 
 ---
 
-## File Index
+## File index
 
-### Core Loop
+### Core loop
 
 | What | Where |
 |------|-------|
@@ -791,7 +791,7 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 | Stream → channel delivery | `packages/core/src/runtime/streaming.ts` |
 | Session management | `packages/core/src/runtime/sessions.ts` |
 
-### Hooks & Safety
+### Hooks & safety
 
 | What | Where |
 |------|-------|
@@ -800,7 +800,7 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 | Auto-actions (format, lint, test) | `packages/core/src/domain/auto-actions.ts` |
 | Session hooks (start, summary) | `packages/core/src/domain/session-hooks.ts` |
 
-### Multi-Agent
+### Multi-agent
 
 | What | Where |
 |------|-------|
@@ -810,7 +810,7 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 | Mesh delegation | `packages/core/src/domain/mesh-delegation.ts` |
 | Agent HTTP channel | `plugins/channels/agent/src/index.ts` |
 
-### Config & Boot
+### Config & boot
 
 | What | Where |
 |------|-------|
@@ -827,7 +827,7 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 | Init wizard | `packages/cli/src/commands/init/` |
 | All other commands | `packages/cli/src/commands/*.ts` |
 
-### Type Definitions
+### Type definitions
 
 | What | Where |
 |------|-------|

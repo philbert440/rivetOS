@@ -10,7 +10,7 @@ if that agent runs on different hardware or uses a different LLM provider.
 
 ---
 
-## How It Works
+## How it works
 
 Every mesh-enabled node runs an **agent channel**, an HTTPS server that
 receives delegated tasks and routes them to the local `DelegationEngine`. When
@@ -42,7 +42,7 @@ coordination service needed.
 
 ---
 
-## mTLS Authentication: Phase 0.5
+## MTLS authentication: Phase 0.5
 
 Starting from Phase 0.5, **all mesh agent-channel traffic is mutual TLS**.
 There is no plaintext fallback and no bearer-token authentication on the
@@ -146,7 +146,7 @@ certificate; connections without one are rejected before any HTTP code runs.
 
 ---
 
-## Audit / Logging
+## Audit / logging
 
 Every accepted request logs `peer.cn=<nodeName>`. You can grep for it in
 `journalctl -u rivetos` or wherever your log sink is:

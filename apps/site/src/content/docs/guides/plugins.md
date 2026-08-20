@@ -8,7 +8,7 @@ RivetOS supports five plugin types: **Providers** (talk to LLMs), **Channels** (
 
 ---
 
-## Quick Start: Scaffold a Plugin
+## Quick start: scaffold a plugin
 
 ```bash
 npx rivetos plugin init
@@ -22,7 +22,7 @@ This creates `plugins/{category}/{name}/` with `package.json`, `tsconfig.json`, 
 
 ---
 
-## Architecture Rules
+## Architecture rules
 
 1. **Depend on `@rivetos/types` only.** Plugins do not import from `@rivetos/core` or `@rivetos/boot`. (The MCP server transport is the exception; it ships a binary that runs outside the runtime. The memory plugin's workers are not an exception at all: they are separate packages under `services/`, not part of the plugin.)
 2. **Export a `manifest: PluginManifest` const.** This is the entry point boot uses.
@@ -45,7 +45,7 @@ Boot scans every `plugins/*/*/package.json` (and any `plugin_dirs` from config).
 
 ---
 
-## The Manifest Contract
+## The manifest contract
 
 ```typescript
 import type { PluginManifest, RegistrationContext } from '@rivetos/types'
@@ -96,7 +96,7 @@ A plugin is *discovered* by `package.json#rivetos`, but only *activated* when:
 
 ---
 
-## Provider Plugin
+## Provider plugin
 
 ```typescript
 interface Provider {
@@ -138,7 +138,7 @@ interface LLMChunk {
 
 ---
 
-## Channel Plugin
+## Channel plugin
 
 ```typescript
 interface Channel {
@@ -171,7 +171,7 @@ The runtime calls `edit()` repeatedly while streaming. Channels handle:
 
 ---
 
-## Tool Plugin
+## Tool plugin
 
 ```typescript
 interface Tool extends ToolDefinition {
@@ -204,7 +204,7 @@ The memory plugin (`@rivetos/memory-postgres`) additionally registers `memory_se
 
 ---
 
-## Memory Plugin
+## Memory plugin
 
 ```typescript
 interface Memory {
@@ -223,7 +223,7 @@ See [MEMORY-DESIGN.md](/reference/memory-design/) for the full design.
 
 ---
 
-## Transport Plugin
+## Transport plugin
 
 Transports expose RivetOS to external clients. They have no `core` interface; the plugin opens its own listening surface (HTTP, stdio, gRPC, …) inside `manifest.register()`.
 
@@ -271,7 +271,7 @@ Co-locate tests next to source: `src/index.ts` → `src/index.test.ts`. The fram
 
 ---
 
-## Package Structure
+## Package structure
 
 ```
 plugins/{category}/{name}/

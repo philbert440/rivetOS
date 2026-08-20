@@ -1,4 +1,4 @@
-# MCP & Mesh Auth: Single-CA Trust Model
+# MCP & mesh auth: Single-CA trust model
 
 **Status:** Design (Phase 0 of MCP overhaul)
 **Spec owner:** `/rivet-shared/plans/mcp-architecture-overhaul.md`
@@ -81,7 +81,7 @@ Certs cannot be used to impersonate another agent.
 - **Root lifetime:** 10 years. Key offline after bootstrap.
 - **Intermediate lifetime:** 5 years. Rotated mid-life.
 
-## Bootstrap Path (the one place `mesh.secret` still lives)
+## Bootstrap path (the one place `mesh.secret` still lives)
 
 > ⚠️ **DESIGN PROPOSAL, NOT IMPLEMENTED.** The `datahub:/enroll` CSR flow
 > below describes the intended auto-enrollment path; no code implements it
@@ -98,7 +98,7 @@ Certs cannot be used to impersonate another agent.
 One release after cutover, `mesh.secret` is renamed `bootstrap.secret` and
 gated to `datahub:/enroll` only; no other endpoint will accept it.
 
-## Phase Map
+## Phase map
 
 | Phase | Action |
 |---|---|
