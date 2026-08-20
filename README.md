@@ -90,7 +90,7 @@ See [Getting Started](docs/GETTING-STARTED.md) for the full guide.
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**Dependency rule:** Everything points inward. Plugins → Types. Domain → Types. Every plugin is registered the same way, discovery plus `manifest.register()`. `boot` additionally lists four workspace packages (`provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`) as direct dependencies so a default install always has them on disk, and imports specific symbols from them.
+**Dependency rule:** Everything points inward. Plugins → Types. Domain → Types. Every plugin is registered the same way, discovery plus `manifest.register()`. `boot` additionally lists five workspace packages (`provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`, `harness-kimi-code`) as direct dependencies so a default install always has them on disk, and imports specific symbols from them.
 
 ## Monorepo structure
 

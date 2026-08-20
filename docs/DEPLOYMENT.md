@@ -34,11 +34,11 @@ docker compose -f infra/docker/rivetos/docker-compose.yml up -d
 
 ### Multi-agent
 
-The unified Compose stack ships a single `agent` service. Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh (see [Mesh Networking](mesh.md)) rather than as N agent services in one Compose file. The CLI's `rivetos agent add` and `rivetos init --join` walk you through this.
+The unified Compose stack ships a single `agent` service. Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh rather than as N agent services in one Compose file. See [Mesh Networking](mesh.md). The CLI's `rivetos agent add` and `rivetos init --join` walk you through this.
 
 ### Docker Compose architecture
 
-The unified stack runs five services off two images: upstream `pgvector/pgvector:pg16` for the database and a single role-dispatched runtime image (`rivetos`). Schema is applied by the `migrate` role at stack startup ; there is no custom datahub image to build or push. Only `migrate` and `agent` are CLI roles; the two memory workers ship in the same image but run as plain node processes and sit behind the `workers` compose profile, so a bare `up` skips them.
+The unified stack runs five services off two images: upstream `pgvector/pgvector:pg16` for the database and a single role-dispatched runtime image (`rivetos`). Schema is applied by the `migrate` role at stack startup; there is no custom datahub image to build or push. Only `migrate` and `agent` are CLI roles; the two memory workers ship in the same image but run as plain node processes and sit behind the `workers` compose profile, so a bare `up` skips them.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -239,7 +239,7 @@ When an agent receives a `delegate_task` targeting an agent that isn't local:
 4. Remote agent processes the task
 5. Result returned to the requesting agent
 
-This is transparent: the requesting agent doesn't know or care whether the delegate is local or remote.
+The requesting agent doesn't know or care whether the delegate is local or remote.
 
 ### Mesh configuration
 

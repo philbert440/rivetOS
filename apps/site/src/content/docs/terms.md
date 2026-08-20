@@ -13,7 +13,7 @@ RivetOS is open-source software released for research and experimentation. It is
 
 ## Your responsibility
 
-You run RivetOS on your own infrastructure, with the providers and models you choose and configure. You are responsible for how you deploy it, what you connect it to, what you allow your agents to do, and the consequences of running it. Anything an agent does on your systems  (commands it runs, messages it sends, data it touches, money it spends) is yours to supervise and contain.
+You run RivetOS on your own infrastructure, with the providers and models you choose and configure. You are responsible for how you deploy it, what you connect it to, what you allow your agents to do, and the consequences of running it. Anything an agent does on your systems is yours to supervise and contain: commands it runs, messages it sends, data it touches, money it spends.
 
 ## No liability
 

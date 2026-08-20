@@ -20,7 +20,7 @@ collective. Every inter-node hop is mTLS, signed by this one CA:
 - **Mesh agent-channel** (replaces the current shared-secret HMAC on `:3000`)
 - **Runtime-RPC** (the Phase-2 south-bound channel from MCP → runtime nodes)
 
-The legacy shared secret (`mesh.secret`) survives only as **bootstrap**, a
+The legacy shared secret (`mesh.secret`) survives only as **bootstrap**. A
 brand-new node uses it once to prove identity and pull its first cert, then
 never again.
 

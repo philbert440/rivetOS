@@ -17,7 +17,7 @@ Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or *
 
 ## Option A: interactive setup (recommended)
 
-The `rivetos init` wizard walks you through everything: deployment target, agent configuration, API keys, channels, and generates your config automatically.
+The `rivetos init` wizard walks you through deployment target, agent configuration, API keys, and channels, then generates your config automatically.
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git

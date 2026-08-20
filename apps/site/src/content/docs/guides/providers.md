@@ -20,7 +20,7 @@ RivetOS ships with six provider plugins:
 
 ---
 
-## Anthropic (claude)
+## Anthropic (Claude)
 
 ### 1. Get an API key
 
@@ -88,7 +88,7 @@ When `default_thinking` is set on the agent, the provider requests extended thin
 
 ---
 
-## XAI (grok)
+## xAI (Grok)
 
 ### 1. Get an API key
 
@@ -143,7 +143,7 @@ When `store: true` (default), xAI stores the conversation server-side. Each turn
 
 ---
 
-## Google (gemini)
+## Google (Gemini)
 
 ### 1. Get an API key
 
@@ -264,7 +264,7 @@ agents:
 
 ---
 
-## VLLM (local / self-hosted)
+## vLLM (local / self-hosted)
 
 Dedicated provider for a vLLM server. Exposes the full vLLM surface: sampling
 extensions (`top_k`, `min_p`, `repetition_penalty`, `min_tokens`),
@@ -311,7 +311,7 @@ with a `--reasoning-parser`; the AI SDK reasoning surface consumes `reasoning_co
 
 ---
 
-## Llama.cpp llama-server (local)
+## llama.cpp llama-server (local)
 
 Dedicated provider for llama.cpp's `llama-server`. Deliberately lean: the standard
 OpenAI sampling knobs plus llama.cpp's `top_k` / `min_p` and a generic `extra_body`

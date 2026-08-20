@@ -78,7 +78,7 @@ device client certificates.
 ## Operability (post-#491 rollout pieces)
 
 - **Node leaf SANs**: issue node certs with `IP:127.0.0.1` (plus the LAN IP)
-  so loopback https (the deploy health probe, den hooks, spawned harnesses)
+  so loopback https, used by the deploy health probe, den hooks, and spawned harnesses,
   passes hostname verification:
   `rivet-ca.sh issue-node ct112 DNS:ct112 IP:192.0.2.112 IP:127.0.0.1`
   SANs must cover **both** `127.0.0.1` and whatever host the node advertises

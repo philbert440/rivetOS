@@ -87,7 +87,7 @@ The provider is rate limiting you or overloaded.
 
 The agent hit the safety cap (default: 100 iterations per turn).
 
-**Fix:** This is usually correct behavior: the agent was in a loop. If you need more iterations for a specific task:
+**Fix:** This is usually correct behavior. The agent was in a loop. If you need more iterations for a specific task:
 
 ```yaml
 runtime:

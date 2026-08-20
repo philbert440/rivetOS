@@ -4,7 +4,7 @@ sidebar:
   order: 3
 description: Build and point RivetHub at a RivetOS node gateway
 ---
-> Point Hub web (and desktop) at a RivetOS node gateway. Hub is the node's face;
+> Point Hub web (and desktop) at a RivetOS node gateway. Hub is the node's face,
 > not a separate agent runtime.
 >
 > Architecture frame: [ARCHITECTURE.md](/reference/architecture/).
@@ -94,7 +94,7 @@ standalone; use whatever your config/`den.port` advertises).
 Authenticate with the bearer token configured on the node (Settings → node, or
 `?token=` on first load where supported).
 
-### Dev mode (vite)
+### Dev mode (Vite)
 
 ```bash
 # Terminal A: node / den-server with CORS + token

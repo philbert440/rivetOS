@@ -89,7 +89,7 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 
 ## 3. Shared collaboration: `/rivet-shared/`
 
-Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent) shared by every agent on the mesh, typically also mounted on the human's workstation. Neutral territory , not tied to any single agent's config.
+Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent) shared by every agent on the mesh, typically also mounted on the human's workstation. Neutral territory, not tied to any single agent's config.
 
 **What belongs:**
 

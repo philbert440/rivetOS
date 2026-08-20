@@ -661,7 +661,7 @@ drawer rows. Bare UUIDs are probed across uuid-shaped stores (claude, then
 grok, …); kimi natives are `session_<uuid>` and **must** be sent canonical;
 the bare-uuid probe never claims them.
 
-### Secondary: social channel binding: removed (Phase 5)
+### Secondary: social channel binding, removed in Phase 5
 
 Telegram / Discord / voice-discord plugins are gone. Human messages arrive via
 the gateway (Hub clients), not social bots. Stale `channels.discord:` keys in

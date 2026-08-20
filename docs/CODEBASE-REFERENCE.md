@@ -380,7 +380,7 @@ export class ExampleChannel implements Channel {
 }
 ```
 
-The `edit()` method handles overflow internally: if text exceeds platform limits, the channel splits it and manages overflow message IDs.
+The `edit()` method handles overflow internally. If text exceeds platform limits, the channel splits it and manages overflow message IDs.
 
 ### Tool plugin pattern
 
@@ -671,7 +671,7 @@ Channel receives message
 1. **`types` is near the bottom**: everything depends on it; it depends only on `den-protocol`
 2. **Domain layer is pure**: no I/O, no `fs`, no `fetch`. Only interfaces.
 3. **Application layer wires I/O**: runtime/, boot/registrars/
-4. **Plugins are discovered and registered via `manifest.register()`**, without exception, including `provider-claude-cli` and `memory-postgres`. `boot` additionally declares four workspace packages in its `package.json` so they are always installed, and imports specific symbols from them; that is an installation edge, not a registration shortcut
+4. **Plugins are discovered and registered via `manifest.register()`**, without exception, including `provider-claude-cli` and `memory-postgres`. `boot` additionally declares five workspace packages in its `package.json` so they are always installed, and imports specific symbols from them; that is an installation edge, not a registration shortcut
 5. **Late binding for tools**: composite tools get tool executors as closures, not direct refs
 6. **Config is YAML, not code**: all user-facing config in `config.yaml`
 7. **Secrets in `.env`**: never in config YAML, never in container images

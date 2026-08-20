@@ -1,4 +1,4 @@
-# Rivet-den: watch your agent work
+# rivet-den: watch your agent work
 
 A live pixel-art diorama of an agent session. Lifecycle hooks translate what
 the agent is doing into a small event protocol: prompts, tool calls, plans,
@@ -56,9 +56,9 @@ Default pack weighs ~8.6MB of pre-keyed PNGs served once and cached;
 ## Mesh view
 
 One den-server runs per node; `GET /mesh.json` (auth-gated like every other
-endpoint) is how a viewer sees them all. The server reads the mesh roster
-(`RIVETOS_DEN_MESH_FILE` if set, else `/rivet-shared/mesh.json`, else
-`~/.rivetos/mesh.json`), projects the den-enabled nodes, probes each one's
+endpoint) is how a viewer sees them all. The server reads the mesh roster from `RIVETOS_DEN_MESH_FILE` if set, else
+`/rivet-shared/mesh.json`, else `~/.rivetos/mesh.json`, then projects the
+den-enabled nodes, probes each one's
 den `/healthz` in parallel (1.5s budget per peer), and answers:
 
 ```json
@@ -159,7 +159,7 @@ the workspace, copy the unit, write `den.env` yourself, and tag the mesh
 entry manually (see "Mesh view" above; manual tags survive only on entries
 the runtime doesn't own).
 
-### Node-pty ABI runbook
+### node-pty ABI runbook
 
 `node-pty` (the terminal backend) is a native module: its compiled binary
 must match the node binary that runs the service; the unit's
@@ -240,7 +240,7 @@ per tab. There is no reduced-motion mode yet.
 ## Accessibility
 
 The chat stream and narration panel are DOM text (screen-reader reachable);
-the room itself (whiteboard, terminal, activity) is canvas and currently
+the room's whiteboard, terminal, and activity layers are canvas and currently
 invisible to assistive tech. Future polish: mirror whiteboard/terminal state
 into an `aria-live` region and honor `prefers-reduced-motion`.
 

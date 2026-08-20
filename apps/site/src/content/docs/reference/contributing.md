@@ -373,7 +373,7 @@ The Postgres datahub uses upstream `pgvector/pgvector:pg16` directly; schema is 
 docker compose -f infra/docker/rivetos/docker-compose.yml up -d
 ```
 
-Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh (see `docs/mesh.md`) rather than as N agent services in one Compose file.
+Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh rather than as N agent services in one Compose file. See `docs/mesh.md`.
 
 ### Data persistence
 

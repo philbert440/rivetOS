@@ -200,7 +200,7 @@ providers:
 
 **Auth:** Set `ANTHROPIC_API_KEY` in `.env`. For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (below), which delegates auth to the `claude` binary.
 
-### XAI (grok)
+### xAI (Grok)
 
 ```yaml
 providers:
@@ -217,7 +217,7 @@ providers:
 | `context_window` | number | — | Override the model's context-window size (advanced). |
 | `max_output_tokens` | number | — | Hard cap on output tokens. |
 
-### Google (gemini)
+### Google (Gemini)
 
 ```yaml
 providers:
@@ -252,7 +252,7 @@ providers:
 | `context_window` | number | — | Override the context-window size reported to the runtime (advanced). |
 | `max_output_tokens` | number | — | Hard cap on output tokens. |
 
-### Vllm
+### vllm
 
 Dedicated provider for a vLLM server. Exposes the full vLLM surface.
 
@@ -295,7 +295,7 @@ providers:
 | `chat_template_kwargs` | object | — | vLLM chat-template kwargs (passthrough). |
 | `extra_body` | object | — | Arbitrary JSON merged into the request body (vLLM passthrough). |
 
-### Llama-server
+### llama-server
 
 Dedicated provider for llama.cpp's `llama-server`. Lean by design: standard OpenAI sampling plus llama.cpp's `top_k` / `min_p` and a generic `extra_body` escape hatch. None of the vLLM-only machinery (no `mm_processor_kwargs`, `chat_template_kwargs`, `repetition_penalty`, `min_tokens`, or video).
 
@@ -331,7 +331,7 @@ providers:
 | `name` | string | — | Display name for the provider. |
 | `extra_body` | object | — | Arbitrary JSON merged into the request body (e.g. `grammar`, `n_probs`). |
 
-### Claude-cli
+### claude-cli
 
 Drives the local `claude` binary (Claude Code CLI) using the user's subscription OAuth token, the sanctioned third-party-harness pattern per Anthropic's April 2026 policy. The CLI owns auth, session caching, and the wire protocol; this provider drives it via `stream-json` and brings up a per-spawn embedded MCP server that exposes every executable RivetOS tool to claude-cli through `--mcp-config`.
 
@@ -485,7 +485,7 @@ The transport is only activated when the matching `transports.<name>` slice is p
 
 ## `mcp`
 
-**Outbound** Model Context Protocol: RivetOS *connects to* external MCP servers and exposes their tools to agents (the inverse of the `transports.mcp` plugin above).
+**Outbound** Model Context Protocol. RivetOS *connects to* external MCP servers and exposes their tools to agents (the inverse of the `transports.mcp` plugin above).
 
 ```yaml
 mcp:

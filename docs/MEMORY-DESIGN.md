@@ -44,7 +44,7 @@
 
 ## Schema (ros_* prefix)
 
-### Messages
+### messages
 The immutable transcript. Every message ever sent or received.
 
 ```sql
@@ -65,7 +65,7 @@ CREATE TABLE ros_messages (
 );
 ```
 
-### Conversations
+### conversations
 Group messages into sessions.
 
 ```sql
@@ -84,7 +84,7 @@ CREATE TABLE ros_conversations (
 );
 ```
 
-### Summaries
+### summaries
 Compacted summaries of message groups. Forms a DAG for drill-down.
 
 ```sql
@@ -105,7 +105,7 @@ CREATE TABLE ros_summaries (
 );
 ```
 
-### Summary_sources
+### summary_sources
 Links summaries to their source messages.
 
 ```sql
@@ -153,7 +153,7 @@ When a message or summary is returned in a search result, increment its access c
 | `memory_stats` | System health diagnostics. Embedding queue depth, unsummarized message counts, compaction status, summary tree depth, embedding coverage. |
 | `memory_get_full` | Recover the full payload of a capture-truncated row by id. Rows written by capture workers carry a disk pointer (`session_jsonl_path`/`line`); rows written through the sidecar write tools do not, and their elided tails are unrecoverable. |
 
-Consolidated from the original 6-tool design (`memory_grep`, `memory_expand`, `memory_describe`, `memory_expand_query`) down to this surface that require less LLM orchestration.
+Consolidated from the original 6-tool design (`memory_grep`, `memory_expand`, `memory_describe`, `memory_expand_query`) down to this surface, which needs less LLM orchestration.
 
 ## Write surface (MCP sidecar)
 
@@ -193,7 +193,7 @@ Periodically summarize old messages into the summary DAG:
 
 This creates a tree: root → branches → leaves → source messages. The `memory_search` tool auto-expands this tree.
 
-## V5 memory-quality pipeline
+## v5 memory-quality pipeline
 
 The v5 pipeline (April 2026) replaces the original cloud-model-tuned compactor with a local-first, thinking-model architecture optimized for faithfulness and searchability.
 
@@ -229,11 +229,11 @@ The v5 pipeline synthesizes natural-language content for them, a single past-ten
 
 **Two synthesis paths:**
 
-1. **Async (live path)**: `adapter.ts` calls `graphile_worker.add_job('synthesize-tool-call', …)` on insert when content is empty and `tool_name` is set. The compaction-worker service consumes the job and writes content back. Non-blocking ; inserts never fail on synthesis errors. Dedup via `job_key` so duplicate enqueues coalesce.
+1. **Async (live path)**: `adapter.ts` calls `graphile_worker.add_job('synthesize-tool-call', …)` on insert when content is empty and `tool_name` is set. The compaction-worker service consumes the job and writes content back. Non-blocking; inserts never fail on synthesis errors. Dedup via `job_key` so duplicate enqueues coalesce.
 
 2. **CLI backfill (historical)**: `rivetos memory backfill-tool-synth` enqueues a `synthesize-tool-call` job for each historical empty row. Idempotent; already-enqueued messages dedupe via `job_key`. Concurrency, retries, and rate limiting are handled by graphile-worker on the compaction-worker side.
 
-The shared helper (`synthesizeToolCallContent` in `plugins/memory/postgres/src/tool-synth.ts`) uses a hardened undici client and the same prompt as the compactor. Model-agnostic ; point `TOOL_SYNTH_ENDPOINT` / `TOOL_SYNTH_MODEL` at any OpenAI-compatible endpoint.
+The shared helper (`synthesizeToolCallContent` in `plugins/memory/postgres/src/tool-synth.ts`) uses a hardened undici client and the same prompt as the compactor. Model-agnostic; point `TOOL_SYNTH_ENDPOINT` / `TOOL_SYNTH_MODEL` at any OpenAI-compatible endpoint.
 
 ### Operations
 
