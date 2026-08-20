@@ -172,20 +172,32 @@ export class PostgresMemory implements Memory {
   // append — INSERT into ros_messages + update ros_conversations
   // -----------------------------------------------------------------------
 
-  async append(entry: MemoryEntry): Promise<string> {
-    let client: pg.PoolClient | undefined
-    try {
-      client = await this.pool.connect()
-      this.connected = true
-    } catch (err: unknown) {
-      this.connected = false
-      throw new MemoryError('MEMORY_CONNECTION_FAILED', 'Failed to connect to memory database', {
-        cause: err instanceof Error ? err : undefined,
-      })
+  async append(entry: MemoryEntry, options?: { client?: pg.PoolClient }): Promise<string> {
+    const providedClient = options?.client
+    let client: pg.PoolClient
+
+    if (providedClient) {
+      // Use the provided client (already in a transaction)
+      // Note: this.connected is not updated when using a borrowed client, as the
+      // connection health is managed by the caller.
+      client = providedClient
+    } else {
+      // Acquire our own client
+      try {
+        client = await this.pool.connect()
+        this.connected = true
+      } catch (err: unknown) {
+        this.connected = false
+        throw new MemoryError('MEMORY_CONNECTION_FAILED', 'Failed to connect to memory database', {
+          cause: err instanceof Error ? err : undefined,
+        })
+      }
     }
 
     try {
-      await client.query('BEGIN')
+      if (!providedClient) {
+        await client.query('BEGIN')
+      }
 
       const convId = await this.ensureConversation(
         client,
@@ -242,10 +254,14 @@ export class PostgresMemory implements Memory {
         }
       }
 
-      await client.query('COMMIT')
+      if (!providedClient) {
+        await client.query('COMMIT')
+      }
       return result.rows[0].id
     } catch (err) {
-      await client.query('ROLLBACK').catch(() => {}) // fire-and-forget — rollback after primary failure
+      if (!providedClient) {
+        await client.query('ROLLBACK').catch(() => {}) // fire-and-forget — rollback after primary failure
+      }
       throw new MemoryError(
         'MEMORY_QUERY_FAILED',
         `Memory append failed: ${(err as Error).message}`,
@@ -255,7 +271,9 @@ export class PostgresMemory implements Memory {
         },
       )
     } finally {
-      client.release()
+      if (!providedClient) {
+        client.release()
+      }
     }
   }
 
