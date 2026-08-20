@@ -11,15 +11,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 2026-08-20
-
-**Memory write surface (MCP sidecar).** External MCP clients can now write memory: `memory_append` and `memory_ingest_session`, gated behind `RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`. Concurrency-safe idempotent ingest (shared per-session advisory lock, content-hash `event_id` dedupe with ordinal), per-message `created_at` preservation, 16k content/tool_result caps with `truncated` reported to the caller, and tool-call fields (`tool_name`/`tool_args`/`tool_result`) on append. **Breaking:** `memory_ingest_session` messages now require `role`; the silent `assistant` default is gone. Shipped as the Grok Bot memory bridge (`integrations/grok-bot/rivet-memory/`) plus six follow-ups (#517, #520–#525).
-
-**Team-shared skills.** `/rivet-shared/skills` is the standard shared skill directory across the mesh (runtime `skill_dirs` + sidecar `RIVETOS_SKILL_DIRS`); first shared skill is `unslop`.
-
 ## [Unreleased]
 
 ### Added
+- Memory write surface (MCP sidecar): `memory_append` and `memory_ingest_session`, gated behind `RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`. Concurrency-safe idempotent ingest (shared per-session advisory lock, content-hash `event_id` dedupe with ordinal), per-message `created_at` preservation, 16k content/`tool_result` caps with `truncated` reported to the caller, tool-call fields on append. **Breaking: `memory_ingest_session` messages now require `role`; the silent `assistant` default is gone.** Shipped as the Grok Bot memory bridge (`integrations/grok-bot/rivet-memory/`) in #517 and follow-ups #520-#525.
+- Team-shared skills: `/rivet-shared/skills` is the standard shared skill directory across the mesh (runtime `skill_dirs` + sidecar `RIVETOS_SKILL_DIRS`); first shared skill is `unslop`.
 - Self-registering plugin manifest (`PluginManifest` + `register(ctx)`); single manifest-driven loader replaces the four per-kind registrars.
 - New plugin category `transport`. First transport: `@rivetos/mcp-server` (StreamableHTTP, exposes `memory_*`, `web_*`, `skill_*`, runtime tools).
 - Providers `@rivetos/provider-vllm` (full vLLM surface: sampling extensions, `mm_processor_kwargs`/`chat_template_kwargs`, video, native `reasoning_content`, `verify_model_on_init`) and `@rivetos/provider-llama-server` (lean llama.cpp client; `top_k`/`min_p` + `extra_body` escape hatch). Both do strict message ordering and `/v1/models` auto-discovery. These replace the earlier single `openai-compat` provider (split into two so each can carry backend-specific code); the boot validator hard-errors on `provider: openai-compat` with a migration hint pointing at `vllm`/`llama-server`.
