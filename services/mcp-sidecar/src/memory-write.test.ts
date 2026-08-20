@@ -17,6 +17,7 @@ import {
 } from '@rivetos/mcp-v2'
 import { createMemoryTools, type MemoryToolsHandle } from './memory.js'
 import { PostgresMemory } from '@rivetos/memory-postgres'
+import { ingestSession, type IngestSessionInput } from './memory-write.js'
 
 const PG_URL = process.env.RIVETOS_PG_URL ?? ''
 const describeIfPg = PG_URL ? describe : describe.skip
@@ -219,5 +220,314 @@ describeIfPg('memory write tools', () => {
     // in this test without additional setup, but we've verified that the
     // message is stored correctly with tool fields. The tool-synthesis path
     // in adapter.ts (lines 221-243) will handle the job enqueueing.
+  })
+})
+
+describeIfPg('memory_ingest_session timestamp preservation', () => {
+  let memory: PostgresMemory
+  const TEST_AGENT = `test-ingest-${Date.now()}`
+
+  beforeAll(async () => {
+    memory = new PostgresMemory({ connectionString: PG_URL })
+    expect(await memory.isHealthy()).toBe(true)
+  })
+
+  afterAll(async () => {
+    const pool = memory.getPool()
+    await pool.query(`DELETE FROM ros_messages WHERE agent = $1`, [TEST_AGENT])
+    await pool.query(`DELETE FROM ros_conversations WHERE agent = $1`, [TEST_AGENT])
+    await pool.end()
+  })
+
+  it('preserves original timestamps when provided', async () => {
+    const sessionId = `test-session-${Date.now()}`
+
+    // Create messages with specific timestamps (spaced 1 hour apart)
+    const baseTime = new Date('2024-01-01T12:00:00Z')
+    const input: IngestSessionInput = {
+      sessionId,
+      agent: TEST_AGENT,
+      channel: 'test',
+      source: 'test',
+      messages: [
+        {
+          role: 'user',
+          content: 'First message',
+          createdAt: new Date(baseTime.getTime()),
+        },
+        {
+          role: 'assistant',
+          content: 'Second message',
+          createdAt: new Date(baseTime.getTime() + 3600000), // +1 hour
+        },
+        {
+          role: 'user',
+          content: 'Third message',
+          createdAt: new Date(baseTime.getTime() + 7200000), // +2 hours
+        },
+      ],
+    }
+
+    await ingestSession(memory, input)
+
+    // Retrieve the messages and verify they maintain chronological order
+    const pool = memory.getPool()
+    const result = await pool.query<{
+      content: string
+      role: string
+      created_at: Date
+    }>(
+      `SELECT m.content, m.role, m.created_at
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2
+       ORDER BY m.created_at ASC`,
+      [sessionId, TEST_AGENT],
+    )
+
+    expect(result.rows.length).toBe(3)
+    expect(result.rows[0].content).toBe('First message')
+    expect(result.rows[1].content).toBe('Second message')
+    expect(result.rows[2].content).toBe('Third message')
+
+    // Verify timestamps are preserved (within 1 second tolerance for DB rounding)
+    expect(Math.abs(result.rows[0].created_at.getTime() - baseTime.getTime())).toBeLessThan(1000)
+    expect(
+      Math.abs(result.rows[1].created_at.getTime() - (baseTime.getTime() + 3600000)),
+    ).toBeLessThan(1000)
+    expect(
+      Math.abs(result.rows[2].created_at.getTime() - (baseTime.getTime() + 7200000)),
+    ).toBeLessThan(1000)
+  })
+
+  it('preserves order when messages arrive out of chronological order', async () => {
+    const sessionId = `test-session-ooo-${Date.now()}`
+
+    // Messages with timestamps NOT in insertion order (simulating delayed user message)
+    const baseTime = new Date('2024-01-02T10:00:00Z')
+    const input: IngestSessionInput = {
+      sessionId,
+      agent: TEST_AGENT,
+      channel: 'test',
+      source: 'test',
+      messages: [
+        {
+          role: 'assistant',
+          content: 'Assistant responds first (timestamp T+2)',
+          createdAt: new Date(baseTime.getTime() + 7200000), // T+2 hours
+        },
+        {
+          role: 'user',
+          content: 'User message arrives late (timestamp T+0)',
+          createdAt: new Date(baseTime.getTime()), // T+0 (earlier!)
+        },
+        {
+          role: 'tool',
+          content: 'Tool call in middle (timestamp T+1)',
+          createdAt: new Date(baseTime.getTime() + 3600000), // T+1 hour
+        },
+      ],
+    }
+
+    await ingestSession(memory, input)
+
+    // Retrieve ordered by created_at — should be chronological, not insertion order
+    const pool = memory.getPool()
+    const result = await pool.query<{
+      content: string
+      role: string
+    }>(
+      `SELECT m.content, m.role
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2
+       ORDER BY m.created_at ASC`,
+      [sessionId, TEST_AGENT],
+    )
+
+    expect(result.rows.length).toBe(3)
+    // Should be in timestamp order, not insertion order
+    expect(result.rows[0].content).toBe('User message arrives late (timestamp T+0)')
+    expect(result.rows[1].content).toBe('Tool call in middle (timestamp T+1)')
+    expect(result.rows[2].content).toBe('Assistant responds first (timestamp T+2)')
+  })
+
+  it('uses NOW() for messages without timestamps', async () => {
+    const sessionId = `test-session-no-ts-${Date.now()}`
+    const beforeInsert = new Date()
+
+    const input: IngestSessionInput = {
+      sessionId,
+      agent: TEST_AGENT,
+      channel: 'test',
+      source: 'test',
+      messages: [
+        {
+          role: 'user',
+          content: 'Message without timestamp',
+        },
+      ],
+    }
+
+    await ingestSession(memory, input)
+    const afterInsert = new Date()
+
+    // Verify timestamp is recent (between before and after)
+    const pool = memory.getPool()
+    const result = await pool.query<{
+      created_at: Date
+    }>(
+      `SELECT m.created_at
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2`,
+      [sessionId, TEST_AGENT],
+    )
+
+    expect(result.rows.length).toBe(1)
+    const createdAt = result.rows[0].created_at
+    expect(createdAt.getTime()).toBeGreaterThanOrEqual(beforeInsert.getTime() - 1000)
+    expect(createdAt.getTime()).toBeLessThanOrEqual(afterInsert.getTime() + 1000)
+  })
+
+  it('handles mixed timestamps and non-timestamps', async () => {
+    const sessionId = `test-session-mixed-${Date.now()}`
+    const explicitTime = new Date('2024-01-03T15:30:00Z')
+    const beforeInsert = new Date()
+
+    const input: IngestSessionInput = {
+      sessionId,
+      agent: TEST_AGENT,
+      channel: 'test',
+      source: 'test',
+      messages: [
+        {
+          role: 'user',
+          content: 'With explicit timestamp',
+          createdAt: explicitTime,
+        },
+        {
+          role: 'assistant',
+          content: 'Without timestamp',
+        },
+      ],
+    }
+
+    await ingestSession(memory, input)
+    const afterInsert = new Date()
+
+    const pool = memory.getPool()
+    const result = await pool.query<{
+      content: string
+      created_at: Date
+    }>(
+      `SELECT m.content, m.created_at
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2
+       ORDER BY m.metadata->>'ordinal' ASC`,
+      [sessionId, TEST_AGENT],
+    )
+
+    expect(result.rows.length).toBe(2)
+
+    // First message has explicit timestamp
+    expect(result.rows[0].content).toBe('With explicit timestamp')
+    expect(Math.abs(result.rows[0].created_at.getTime() - explicitTime.getTime())).toBeLessThan(
+      1000,
+    )
+
+    // Second message uses NOW()
+    expect(result.rows[1].content).toBe('Without timestamp')
+    expect(result.rows[1].created_at.getTime()).toBeGreaterThanOrEqual(
+      beforeInsert.getTime() - 1000,
+    )
+    expect(result.rows[1].created_at.getTime()).toBeLessThanOrEqual(afterInsert.getTime() + 1000)
+  })
+
+  it('handles ISO timestamp strings', async () => {
+    const sessionId = `test-session-iso-${Date.now()}`
+    const timestampStr = '2024-01-04T08:15:30.000Z'
+
+    const input: IngestSessionInput = {
+      sessionId,
+      agent: TEST_AGENT,
+      channel: 'test',
+      source: 'test',
+      messages: [
+        {
+          role: 'user',
+          content: 'With ISO string timestamp',
+          createdAt: timestampStr,
+        },
+      ],
+    }
+
+    await ingestSession(memory, input)
+
+    const pool = memory.getPool()
+    const result = await pool.query<{
+      created_at: Date
+    }>(
+      `SELECT m.created_at
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2`,
+      [sessionId, TEST_AGENT],
+    )
+
+    expect(result.rows.length).toBe(1)
+    const expectedTime = new Date(timestampStr)
+    expect(Math.abs(result.rows[0].created_at.getTime() - expectedTime.getTime())).toBeLessThan(
+      1000,
+    )
+  })
+
+  it('skips messages with invalid date strings', async () => {
+    const sessionId = `test-session-invalid-${Date.now()}`
+
+    const input: IngestSessionInput = {
+      sessionId,
+      agent: TEST_AGENT,
+      channel: 'test',
+      source: 'test',
+      messages: [
+        {
+          role: 'user',
+          content: 'Valid message before invalid date',
+        },
+        {
+          role: 'assistant',
+          content: 'Message with invalid date',
+          createdAt: 'garbage-not-a-date' as any, // Schema validation would catch this, but test runtime guard
+        },
+        {
+          role: 'user',
+          content: 'Valid message after invalid date',
+        },
+      ],
+    }
+
+    const result = await ingestSession(memory, input)
+
+    // Should skip the message with invalid date
+    expect(result.skipped).toBe(1)
+    expect(result.ingested).toBe(2)
+
+    const pool = memory.getPool()
+    const messages = await pool.query<{
+      content: string
+    }>(
+      `SELECT m.content
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2
+       ORDER BY m.metadata->>'ordinal' ASC`,
+      [sessionId, TEST_AGENT],
+    )
+
+    expect(messages.rows.length).toBe(2)
+    expect(messages.rows[0].content).toBe('Valid message before invalid date')
+    expect(messages.rows[1].content).toBe('Valid message after invalid date')
   })
 })

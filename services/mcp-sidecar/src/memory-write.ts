@@ -14,6 +14,7 @@ export interface MemoryWriteTags {
 export interface IngestMessage {
   role?: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  createdAt?: Date | string
 }
 
 export interface IngestSessionInput {
@@ -78,6 +79,9 @@ export const memoryIngestSessionInputSchema = {
       z.object({
         role: roleSchema.optional(),
         content: z.string().min(1),
+        // Wire schema: ISO string only — Date objects cannot cross JSON-RPC and
+        // z.date() is not representable in JSON Schema (breaks tools/list).
+        created_at: z.iso.datetime({ offset: true }).optional(),
       }),
     )
     .min(1),
@@ -144,6 +148,23 @@ export async function ingestSession(
     }
     const metadata: Record<string, unknown> = { source: tags.source, ordinal: i }
     if (tags.persona) metadata.persona = tags.persona
+
+    // Guard against invalid dates: schema validates ISO strings, but runtime
+    // Date objects or edge cases could still produce Invalid Date. Skip rather
+    // than poison the entire ingest mid-loop.
+    let createdAt: Date | undefined
+    if (item.createdAt) {
+      const candidate = new Date(item.createdAt)
+      if (Number.isNaN(candidate.getTime())) {
+        console.warn(
+          `[ingestSession] Invalid createdAt for message ${i} in session ${input.sessionId}: ${String(item.createdAt)}`,
+        )
+        skipped += 1
+        continue
+      }
+      createdAt = candidate
+    }
+
     ids.push(
       await memory.append({
         sessionId: input.sessionId,
@@ -152,6 +173,7 @@ export async function ingestSession(
         role,
         content,
         metadata,
+        createdAt,
       }),
     )
     seen.add(i)
@@ -234,10 +256,14 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
         if (!['user', 'assistant', 'system', 'tool'].includes(role)) {
           throw new Error('memory_ingest_session: invalid role')
         }
-        messages.push({
+        const msg: IngestMessage = {
           role: role as IngestMessage['role'],
           content,
-        })
+        }
+        if (rec.created_at) {
+          msg.createdAt = rec.created_at as Date | string
+        }
+        messages.push(msg)
       }
       const result = await ingestSession(memory, {
         sessionId,
