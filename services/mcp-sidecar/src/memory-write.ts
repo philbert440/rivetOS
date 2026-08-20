@@ -172,6 +172,8 @@ export const memoryAppendInputSchema = {
   channel: z.string().optional(),
 } satisfies z.ZodRawShape
 
+// TODO: memory_ingest_session messages still can't carry tool fields
+// (tool_name/tool_args/tool_result) — memory_append has them; extend for parity.
 export const memoryIngestSessionInputSchema = {
   session_id: z.string().min(1),
   messages: z
@@ -253,6 +255,9 @@ export async function ingestSession(
   try {
     // Advisory lock + transaction for concurrent-ingest safety (grok/kimi pattern)
     await client.query('BEGIN')
+    // CONVENTION (load-bearing): every ros_messages writer — grok/kimi capture
+    // workers and both sidecar write tools — takes pg_advisory_xact_lock on
+    // hashtext(session_key) before check-then-insert. New writers MUST too.
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [input.sessionId])
 
     // Fetch existing ordinals and event_ids once (performance: single query)
@@ -430,6 +435,7 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
       const client = await pool.connect()
       try {
         await client.query('BEGIN')
+        // Same lock convention as ingestSession — see comment there.
         await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionId])
 
         // M2: Check if event_id exists and return existing row id on skip

@@ -1027,9 +1027,12 @@ describeIfPg('memory write idempotency', () => {
     expect(result1.ingested).toBe(2)
     expect(result1.skipped).toBe(0)
 
-    // Second ingest: [C, A, B] at ordinals 0, 1, 2
-    // Ordinals 0 and 1 exist, but C's event_id is new, so C should be ingested
-    // A and B should be skipped by event_id (before ordinal check)
+    // Second ingest: [C, A, B] at ordinals 0, 1, 2 — actual behavior (N1):
+    // C@0: event_id new but ordinal 0 taken -> warn+skip (ordinal conflict surfaced).
+    // A@1: event_id new (A now at ordinal 1, hash includes ordinal) but ordinal 1
+    //      taken -> warn+skip. B@2: ordinal free -> ingested (a second B row —
+    //      head-shifted re-ingests duplicate tail rows; known, non-blocking).
+    // Net: ingested=1, skipped=2.
     const result2 = await ingestSession(memory, {
       sessionId,
       messages: [
