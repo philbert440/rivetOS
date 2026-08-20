@@ -1,0 +1,17 @@
+{
+  "name": "rivetos",
+  "description": "RivetOS extensions for Cursor Grok Bot: persistent cross-agent memory (recall + gated write tools) backed by the shared RivetOS datahub.",
+  "owner": {
+    "name": "RivetOS",
+    "url": "https://github.com/philbert440/rivetOS"
+  },
+  "plugins": [
+    {
+      "name": "rivet-memory-grokbot",
+      "description": "RivetOS memory for Grok Bot. MCP recall (memory_search/browse/stats/get_full, wiki) plus gated write tools (memory_append, memory_ingest_session) against the same Postgres store every Rivet agent shares. Requires a built RivetOS checkout at /opt/rivetos (or RIVETOS_ROOT) and ~/.rivetos/.env with RIVETOS_PG_URL.",
+      "source": "./integrations/grok-bot/rivet-memory",
+      "category": "productivity",
+      "homepage": "https://github.com/philbert440/rivetOS"
+    }
+  ]
+}
