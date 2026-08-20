@@ -145,9 +145,9 @@ drivers disabled or older nodes.
 4. **"+ new"** stays a local draft; first turn pins id through the term/roster path;
    control plane **adopts** the session. Hub does not call `startSession` for all harnesses
    (hermes/kimi refuse start).
-5. **Attachments** — staging exists (`POST /api/uploads`) but PTY drivers reject
+5. **Attachments**: staging exists (`POST /api/uploads`) but PTY drivers reject
    attachment turns; picker still uses legacy path where applicable.
-6. **Thinking** — `reasoning-delta` folds into the live turn (capped in the hub store).
+6. **Thinking**: `reasoning-delta` folds into the live turn (capped in the hub store).
    kimi has no live thinking/assistant deltas; resync transcript for text.
 7. **Canonical SessionId** rides on control-plane calls; drawer row keys may still be bare native id (den join key).
 

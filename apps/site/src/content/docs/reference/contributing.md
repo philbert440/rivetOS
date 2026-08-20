@@ -150,11 +150,11 @@ refactor(core): extract TurnHandler from runtime
 
 ## Code Style
 
-- **TypeScript** — strict mode, no `any` unless unavoidable
-- **ESLint** — flat config in `eslint.config.mjs`, shared across all packages
-- **No default exports** — use named exports everywhere
+- **TypeScript**: strict mode, no `any` unless unavoidable
+- **ESLint**: flat config in `eslint.config.mjs`, shared across all packages
+- **No default exports**: use named exports everywhere
 - **Interfaces over types** for plugin contracts (defined in `@rivetos/types`)
-- **No barrel re-exports** in plugins — keep dependency graphs clean
+- **No barrel re-exports** in plugins: keep dependency graphs clean
 
 Run the linter before committing:
 
@@ -174,18 +174,18 @@ Types → Domain → Runtime → Boot
 
 **The most important rule:** Plugins depend on `@rivetos/types` only. Never on `@rivetos/core`, never on other plugins, never on boot.
 
-- `packages/types` — Interfaces and contracts. Its only workspace dependency is `@rivetos/den-protocol`.
-- `packages/core/src/domain` — Pure domain logic. Depends on types only.
-- `packages/core/src/runtime/` — Application layer. Thin compositor with focused modules:
+- `packages/types`: Interfaces and contracts. Its only workspace dependency is `@rivetos/den-protocol`.
+- `packages/core/src/domain`: Pure domain logic. Depends on types only.
+- `packages/core/src/runtime/`: Application layer. Thin compositor with focused modules:
   - `runtime.ts` — registration, routing, lifecycle
   - `turn-handler.ts` — single message turn processing
   - `media.ts` — attachment resolution and multimodal content
   - `streaming.ts` — stream events → channel delivery
   - `sessions.ts` — session lifecycle and history
   - `commands.ts` — slash command processing
-- `packages/boot/` — Composition root. The only layer that knows concrete plugin types. Uses registrars to wire everything.
-- `packages/cli/` — Command-line interface. Imports from `@rivetos/boot`.
-- `plugins/*` — Implement interfaces from `@rivetos/types`. No cross-plugin imports.
+- `packages/boot/`: Composition root. The only layer that knows concrete plugin types. Uses registrars to wire everything.
+- `packages/cli/`: Command-line interface. Imports from `@rivetos/boot`.
+- `plugins/*`: Implement interfaces from `@rivetos/types`. No cross-plugin imports.
 
 **Platform-specific concerns stay in plugins.** Message splitting, typing indicators, API format differences — these belong in the channel or provider plugin, not in the runtime.
 
@@ -216,7 +216,7 @@ After scaffolding:
 
 1. **Implement** the interface in `src/index.ts` — the stub has TODO comments for each method.
 2. **Register** the plugin in `packages/boot/` via a registrar.
-3. **Write tests** — the skeleton test file is ready to fill in.
+3. **Write tests**: the skeleton test file is ready to fill in.
 4. **Verify:**
    ```bash
    npx nx run <project-name>:lint
@@ -380,7 +380,7 @@ Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh — see
 Containers are stateless. All data lives on the host:
 - `~/.rivetos/config.yaml` — configuration (bind mount, read-only)
 - `~/.rivetos/.env` — secrets (bind mount, read-only)
-- `rivetos-pgdata` — PostgreSQL (named volume)
+- `rivetos-pgdata`: PostgreSQL (named volume)
 
 See [infra/containers/DATA-PERSISTENCE.md](infra/containers/DATA-PERSISTENCE.md) for details.
 

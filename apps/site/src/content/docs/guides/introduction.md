@@ -42,9 +42,9 @@ Multiple agents running across one or more hosts, sharing a datahub (database + 
 
 ## What RivetOS is NOT
 
-- **Not a framework** — it's a runtime. You configure it, you don't code against it (unless you're writing plugins).
-- **Not a chatbot builder** — it's infrastructure for persistent AI agents that do real work.
-- **Not cloud-only** — it runs on your laptop, your homelab, or your cloud. Your data stays where you put it.
+- **Not a framework**: it's a runtime. You configure it, you don't code against it (unless you're writing plugins).
+- **Not a chatbot builder**: it's infrastructure for persistent AI agents that do real work.
+- **Not cloud-only**: it runs on your laptop, your homelab, or your cloud. Your data stays where you put it.
 
 ## Next steps
 

@@ -1,6 +1,6 @@
 # RivetHub Setup Guide
 
-> Point Hub web (and desktop) at a RivetOS node gateway. Hub is the node's face —
+> Point Hub web (and desktop) at a RivetOS node gateway. Hub is the node's face;
 > not a separate agent runtime.
 >
 > Architecture frame: [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -85,7 +85,7 @@ node services/den-server/dist/index.js
 ```
 
 Open the node URL in a browser (default den port is commonly `5174` when run
-standalone — use whatever your config/`den.port` advertises).
+standalone; use whatever your config/`den.port` advertises).
 
 Authenticate with the bearer token configured on the node (Settings → node, or
 `?token=` on first load where supported).
@@ -99,7 +99,7 @@ npx nx dev @rivetos/rivethub-web
 ```
 
 Point the Hub connection/settings at your gateway origin (scheme + host + port
-only — no path/userinfo). `isValidGatewayUrl` rejects poisoned roster URLs.
+only, no path/userinfo). `isValidGatewayUrl` rejects poisoned roster URLs.
 
 ---
 
@@ -114,7 +114,7 @@ origin; local dist stays put (never navigate to a peer's served UI for code).
 - Mesh dens: roster entries with `capabilities: ["den"]` and `metadata.denPort`
   or `metadata.denUrl` appear via `GET /mesh.json`
 
-Use hostnames or documentation addresses in examples — do not commit lab private IPs.
+Use hostnames or documentation addresses in examples; do not commit lab private IPs.
 
 ---
 
@@ -141,9 +141,9 @@ drivers disabled or older nodes.
 4. **"+ new"** stays a local draft; first turn pins id through the term/roster path;
    control plane **adopts** the session. Hub does not call `startSession` for all harnesses
    (hermes/kimi refuse start).
-5. **Attachments** — staging exists (`POST /api/uploads`) but PTY drivers reject
+5. **Attachments**: staging exists (`POST /api/uploads`) but PTY drivers reject
    attachment turns; picker still uses legacy path where applicable.
-6. **Thinking** — `reasoning-delta` folds into the live turn (capped in the hub store).
+6. **Thinking**: `reasoning-delta` folds into the live turn (capped in the hub store).
    kimi has no live thinking/assistant deltas; resync transcript for text.
 7. **Canonical SessionId** rides on control-plane calls; drawer row keys may still be bare native id (den join key).
 
@@ -167,7 +167,7 @@ drivers disabled or older nodes.
 ## Tasks from Hub
 
 Create tasks in-UI (goal + agent/harness from catalog + optional criteria).
-Catalog entries for `harness-session` include `harnessId` and `implemented` —
+Catalog entries for `harness-session` include `harnessId` and `implemented`;
 grey options that are honest rejections (e.g. grok-build / hermes executors).
 
 Implemented headless executors today: `claude-code`, `kimi-code`. Prefer those
@@ -234,16 +234,16 @@ npx nx test @rivetos/rivethub-web
 - **Token-gated nodes:** without bearer, harness and most APIs 401. Configure token on both den and Hub.
 - **Double-fold:** bound sessions must not also fold the all-sessions socket (Hub mutex on `harnessBound`).
 - **turn_in_flight:** server rejects overlapping turns; Hub client-queues with bounded backoff.
-- **Secrets in tool args:** bridge summarizers redact patterns — do not log raw tool input in issues.
-- **CI secrets scan** blocks real lab `10.x` addresses in committed tests — use documentation ranges or hostnames.
+- **Secrets in tool args:** bridge summarizers redact patterns; do not log raw tool input in issues.
+- **CI secrets scan** blocks real lab `10.x` addresses in committed tests; use documentation ranges or hostnames.
 - **Android** uses the same gateway contract in Kotlin; uploads UI and registry-stream drawer merge still deferred there.
 
 ---
 
 ## Related
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — harness-first node OS
-- [DEN.md](DEN.md) — den viewer and protocol
-- [GETTING-STARTED.md](GETTING-STARTED.md) — install RivetOS
-- [DEPLOYMENT.md](DEPLOYMENT.md) — Docker / Proxmox / mesh
-- [plans/harness-control-plane.md](plans/harness-control-plane.md) — As-built hub binding
+- [ARCHITECTURE.md](ARCHITECTURE.md): harness-first node OS
+- [DEN.md](DEN.md): den viewer and protocol
+- [GETTING-STARTED.md](GETTING-STARTED.md): install RivetOS
+- [DEPLOYMENT.md](DEPLOYMENT.md): Docker / Proxmox / mesh
+- [plans/harness-control-plane.md](plans/harness-control-plane.md): as-built hub binding

@@ -62,9 +62,9 @@ aliases. One cert, one rotation, every service on the node is covered.
 
 ## Identity
 
-- **Node server cert** — CN = `<node-id>.mesh` (e.g. `ct111.mesh`)
-- **Internal agent client cert** — CN = `<agent-id>@<node-id>` (e.g. `opus@ct111`)
-- **External user client cert** — CN = `<user>@external` (Phase 4 only)
+- **Node server cert**: CN = `<node-id>.mesh` (e.g. `ct111.mesh`)
+- **Internal agent client cert**: CN = `<agent-id>@<node-id>` (e.g. `opus@ct111`)
+- **External user client cert**: CN = `<user>@external` (Phase 4 only)
 
 The MCP server's `rivetos/session.attach` handler validates the presented
 cert's CN matches the claimed `agent_id`. The runtime-RPC server does the same.

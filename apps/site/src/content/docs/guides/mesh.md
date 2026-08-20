@@ -42,7 +42,7 @@ coordination service needed.
 
 ---
 
-## mTLS Authentication — Phase 0.5
+## mTLS Authentication: Phase 0.5
 
 Starting from Phase 0.5, **all mesh agent-channel traffic is mutual TLS**.
 There is no plaintext fallback and no bearer-token authentication on the

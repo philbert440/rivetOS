@@ -1,4 +1,4 @@
-# MicBridge — host mic as a native node input
+# MicBridge: host mic as a native node input
 
 **Status:** design + Phase 0 spike + Phase 1 scaffold (2026-07-27)  
 **Goal:** the RivetHub host microphone appears as a normal default capture
@@ -38,14 +38,14 @@ native voice UIs. MicBridge makes the host mic look **local** on the node.
 
 1. **Sibling of `/term`**, not a mesh task: same den bearer gate, node
    switcher repoints `baseUrl`, exclusive single publisher.
-2. **Software-only capture** — no kernel sound, no USB passthrough. LXC
+2. **Software-only capture**: no kernel sound, no USB passthrough. LXC
    nodes without `/dev/snd` are first-class.
 3. **Stream only while armed** (push-to-talk / voice session) for privacy
    and bandwidth.
 4. **Two sink backends** (same protocol):
    - **Path A (recommended for CTs):** FIFO + drop-in `pw-record` shim that
      reads MicBridge and writes PCM to stdout. Zero apt deps if Node is
-     present; satisfies Grok’s recorder probe.
+     present; satisfies Grok's recorder probe.
    - **Path B (optional):** real PipeWire/Pulse `module-pipe-source` (or
      equivalent) named `RivetHub Mic` when the stack is installed.
 
@@ -66,7 +66,7 @@ native voice UIs. MicBridge makes the host mic look **local** on the node.
 WS /audio/mic          (alias /api/audio/mic)
 ```
 
-Auth: same as `/term` — `Authorization: Bearer …` or `?token=` **before**
+Auth: same as `/term`: `Authorization: Bearer …` or `?token=` **before**
 the handshake completes.
 
 #### Client → server (JSON text frames)
@@ -94,13 +94,13 @@ Raw PCM matching the negotiated format (default **s16le mono 16 kHz**).
 - One exclusive publisher per node; second client gets `busy` (steal is a
   later opt-in).
 - Binary frames before a successful `hello`/`ready` are ignored.
-- WS close → release lock, stop writing, audit “disarmed”.
+- WS close → release lock, stop writing, audit "disarmed".
 - Max buffered PCM: drop oldest if the sink cannot keep up (never stall the
   Hub event loop unboundedly).
 
 ---
 
-## Node runtime (Path A — shim)
+## Node runtime (Path A: shim)
 
 ```
 $stateDir/audio/
@@ -114,13 +114,13 @@ $stateDir/audio/
 1. Open the MicBridge FIFO (or connect to the local sink).
 2. Write raw PCM to stdout until EOF / SIGTERM.
 3. If no publisher yet, emit silence (zeros) so capture tools do not exit
-   immediately — Grok treats “exited immediately” as failure.
+   immediately; Grok treats "exited immediately" as failure.
 
-Grok’s doctor probes for a recorder on `PATH`; once the shim exists,
+Grok's doctor probes for a recorder on `PATH`; once the shim exists,
 `voice.no-input-device` should clear. Dictation then reads live frames when
 Hub is armed.
 
-### Path B — PipeWire/Pulse (optional)
+### Path B: PipeWire/Pulse (optional)
 
 ```bash
 sudo apt install pipewire pipewire-pulse pipewire-bin pulseaudio-utils
@@ -137,7 +137,7 @@ Not required for Phase 0–1 if the shim is on `PATH`.
 1. Capture host mic (`getUserMedia` + AudioWorklet → s16le).
 2. Open `gateway.audioMicWsUrl()` on the **active node**.
 3. Global `Ctrl+Space` / `F8` **arms** the stream (and optionally injects
-   Grok’s voice key into the focused PTY so one gesture starts both).
+   Grok's voice key into the focused PTY so one gesture starts both).
 4. On node switch while armed: stop old WS, open new, re-arm or require
    re-press (prefer re-press for safety).
 

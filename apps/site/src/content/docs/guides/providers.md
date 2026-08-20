@@ -375,6 +375,6 @@ npx rivetos status
 
 ## Next Steps
 
-- **[Channel Setup](/guides/channels/)** — Connect your agents to Discord, Telegram, voice
+- **[Channel Setup](/guides/channels/)**: Connect your agents to Discord, Telegram, voice
 - **[Configuration Reference](/reference/config/)** — Full option tables for all config sections
-- **[Plugin Development](/guides/plugins/)** — Build your own provider plugin
+- **[Plugin Development](/guides/plugins/)**: Build your own provider plugin

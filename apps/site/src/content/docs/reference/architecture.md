@@ -47,21 +47,21 @@ Web / Desktop / Android
 
 ## Design Principles
 
-1. **Harness owns the loop** — Interactive coding is the host harness. Rivet adapts, does not replace.
-2. **One SessionId, four drivers** — Canonical `<harness-id>:<native-session-id>` everywhere (capture, den, hub, tasks, gateway). No dual key schemes.
-3. **Honest capability flags** — Drivers advertise what is actually wired. Unsupported methods return typed `capability_unsupported` (HTTP 501). UIs gate on flags.
-4. **Domain-Driven Design** — Core domain is pure business logic. No framework dependencies, no I/O, no platform specifics. Plugins adapt the outside world to the domain.
-5. **Clean Architecture** — Dependencies point inward. Core knows nothing about Telegram, Discord, PostgreSQL, or Anthropic. Plugins know about core, never the reverse.
-6. **Stability over features** — LTS releases. A working version stays working.
-7. **Own every line** — Apache 2.0 licensed. No CLA, no dual-licensing. Fork-friendly. Patent grant included.
-8. **Boring technology** — TypeScript, Node.js, Nx. No experiments in the foundation.
-9. **Example-driven extensibility** — Core plugins and the Claude harness driver are the reference. Adding a driver or plugin should be obvious from reading an existing one.
-10. **Container-first deployment** — The container IS the product. Security via isolation, not sandboxing.
-11. **Source-based updates** — Pull source → rebuild from source tree (plugins included) → restart. Forks and custom plugins are first-class citizens.
+1. **Harness owns the loop**: Interactive coding is the host harness. Rivet adapts, does not replace.
+2. **One SessionId, four drivers**: Canonical `<harness-id>:<native-session-id>` everywhere (capture, den, hub, tasks, gateway). No dual key schemes.
+3. **Honest capability flags**: Drivers advertise what is actually wired. Unsupported methods return typed `capability_unsupported` (HTTP 501). UIs gate on flags.
+4. **Domain-Driven Design**: Core domain is pure business logic. No framework dependencies, no I/O, no platform specifics. Plugins adapt the outside world to the domain.
+5. **Clean Architecture**: Dependencies point inward. Core knows nothing about Telegram, Discord, PostgreSQL, or Anthropic. Plugins know about core, never the reverse.
+6. **Stability over features**: LTS releases. A working version stays working.
+7. **Own every line**: Apache 2.0 licensed. No CLA, no dual-licensing. Fork-friendly. Patent grant included.
+8. **Boring technology**: TypeScript, Node.js, Nx. No experiments in the foundation.
+9. **Example-driven extensibility**: Core plugins and the Claude harness driver are the reference. Adding a driver or plugin should be obvious from reading an existing one.
+10. **Container-first deployment**: The container IS the product. Security via isolation, not sandboxing.
+11. **Source-based updates**: Pull source → rebuild from source tree (plugins included) → restart. Forks and custom plugins are first-class citizens.
 
 ---
 
-## System Overview — Control Plane
+## System Overview: Control Plane
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -212,9 +212,9 @@ den dispatches by literal path prefixes (no dynamic segments). Contract names ma
 
 ### Clients on the plane
 
-- **Hub chat** (`apps/rivethub-web`) — per-session bind via `@rivetos/gateway-client`; harness rows stream on harness WS; unclaimed rows keep legacy gateway chat. Capability-gated Stop; approvals false today. See [HUB-SETUP.md](/guides/hub-setup/).
-- **Desktop** — Tauri v2 shell over the same Hub dist.
-- **Android** — Kotlin re-implementation of the same semantics (`HarnessControlPlaneClient`, etc.); no on-device agent loop. Uploads UI and `session-created` fast path deferred.
+- **Hub chat** (`apps/rivethub-web`): per-session bind via `@rivetos/gateway-client`; harness rows stream on harness WS; unclaimed rows keep legacy gateway chat. Capability-gated Stop; approvals false today. See [HUB-SETUP.md](/guides/hub-setup/).
+- **Desktop**: Tauri v2 shell over the same Hub dist.
+- **Android**: Kotlin re-implementation of the same semantics (`HarnessControlPlaneClient`, etc.); no on-device agent loop. Uploads UI and `session-created` fast path deferred.
 
 ---
 
@@ -358,7 +358,7 @@ FileMeshRegistry — owns mesh node registration, heartbeat, pruning.
 
 ---
 
-## Interactive Lifecycle (primary — harness)
+## Interactive Lifecycle (primary: harness)
 
 ```
 1. Client (Hub / Android / desktop) opens or resumes a SessionId
@@ -379,7 +379,7 @@ Notice: Rivet never runs the coding tool loop for these sessions. It routes, ide
 
 ---
 
-## Message Lifecycle (secondary — channel + AI SDK)
+## Message Lifecycle (secondary: channel + AI SDK)
 
 > Used for headless provider turns, mesh agent channel, heartbeats, and
 > **deprecated** social channels. Not the product interactive path.
@@ -499,7 +499,7 @@ Skills are not part of the source tree — they are user-managed and live under 
 
 ## Plugin Interfaces
 
-### HarnessDriver — control-plane contract (primary)
+### HarnessDriver: control-plane contract (primary)
 
 ```typescript
 export const HARNESS_IDS = ['claude-code', 'grok-build', 'kimi-code', 'hermes'] as const;
@@ -530,7 +530,7 @@ Gateway and Hub never talk to harness binaries directly — only through drivers
 Reference implementation: `services/den-server/src/harness/claude-driver.ts`.
 Shared suite: `harness/test/driver-conformance.ts` (rotation).
 
-### Provider — talks to an LLM (secondary / headless)
+### Provider: talks to an LLM (secondary / headless)
 
 ```typescript
 interface Provider {
@@ -550,7 +550,7 @@ sessions (those are harness-owned).
 
 Reference implementation: `plugins/providers/anthropic/`
 
-### Channel — receives and sends messages
+### Channel: receives and sends messages
 
 > **Deprecated for product interactive UX (Phase 0).** Telegram, Discord, and
 > Social channel plugins were removed in Phase 5; Hub is the human UX path.
@@ -578,12 +578,12 @@ interface Channel {
 
 Key details:
 - `send()` takes a full `OutboundMessage` object
-- `edit()` supports overflow — returns `EditResult` with primary + overflow message IDs
+- `edit()` supports overflow: returns `EditResult` with primary + overflow message IDs
 - Message splitting, typing indicators, and platform limits are the channel's responsibility
 
 Reference implementation: `plugins/channels/agent/` (mesh). Social channels removed in Phase 5.
 
-### Tool — an action the agent can take
+### Tool: an action the agent can take
 
 ```typescript
 interface Tool extends ToolDefinition {
@@ -601,7 +601,7 @@ agent name, etc.
 
 Reference implementation: `plugins/tools/shell/`
 
-### Memory — persistent storage and retrieval
+### Memory: persistent storage and retrieval
 
 ```typescript
 interface Memory {
@@ -623,7 +623,7 @@ Reference implementation: `plugins/memory/postgres/`
 Schema: `plugins/memory/postgres/src/schema/migrations/` (source of truth).
 Workers: `services/embedding-worker/`, `services/compaction-worker/`.
 
-### Transport — exposes RivetOS over an inbound protocol
+### Transport: exposes RivetOS over an inbound protocol
 
 Transports have no `core` interface — each opens its own listening surface.
 `manifest.register(ctx)` binds the surface and registers shutdown via
@@ -665,7 +665,7 @@ drawer rows. Bare UUIDs are probed across uuid-shaped stores (claude, then
 grok, …); kimi natives are `session_<uuid>` and **must** be sent canonical —
 the bare-uuid probe never claims them.
 
-### Secondary: social channel binding — removed (Phase 5)
+### Secondary: social channel binding: removed (Phase 5)
 
 Telegram / Discord / voice-discord plugins are gone. Human messages arrive via
 the gateway (Hub clients), not social bots. Stale `channels.discord:` keys in
@@ -695,17 +695,17 @@ the remote node. Delegation is transparent via HTTP to the remote agent channel.
 
 ### Secondary path (AgentLoop)
 
-#### /stop — Abort current turn
+#### /stop: Abort current turn
 - Each turn creates an `AbortController`
 - `/stop` calls `abort()` on it
 - `AbortSignal` passed to Provider `chatStream()`, Tool `execute()`, checked between iterations
 - Response: immediate
 
-#### /steer — Inject mid-turn context
+#### /steer: Inject mid-turn context
 - Pushes onto the AgentLoop's steer queue
 - Seen as a system message on the next tool iteration
 
-#### /new — Fresh session
+#### /new: Fresh session
 - Aborts active turn (if any)
 - Clears in-memory conversation history
 - Transcript in postgres is unaffected
@@ -726,11 +726,11 @@ Composable async pipeline with priority ordering (0-99):
 `compact:after`, `delegation:before`, `delegation:after`
 
 **Built-in hooks (wired via boot registrars):**
-- **Safety hooks** — Shell danger blocker (P10), workspace fence (P15), custom rules (P20), audit logger (P90)
+- **Safety hooks**: Shell danger blocker (P10), workspace fence (P15), custom rules (P20), audit logger (P90)
   - Audit logger appends to `<workspace>/.data/audit/<date>.jsonl`. No rotation or retention:
     audit logs accumulate indefinitely; operators prune manually.
-- **Auto-actions** — Post-tool format/lint/test/git-check (opt-in)
-- **Session hooks** — Daily context loading, session summaries, auto-commit, pre/post-compact
+- **Auto-actions**: Post-tool format/lint/test/git-check (opt-in)
+- **Session hooks**: Daily context loading, session summaries, auto-commit, pre/post-compact
 
 Harness-side hooks (claude/grok/kimi/hermes den + memory integrations) are
 **outside** this pipeline — they feed den AgentEvents and capture, not the AI-SDK hook bus.

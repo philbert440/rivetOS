@@ -1,7 +1,7 @@
 # RivetOS Codebase Reference
 
 > Living document. Updated as the codebase evolves. Read this before building anything.
-> Last updated: 2026-08-08 (docs staleness sweep — package tree, roles, CI, test inventory)
+> Last updated: 2026-08-08 (docs staleness sweep: package tree, roles, CI, test inventory)
 
 ---
 
@@ -28,7 +28,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 **Key Numbers:**
 - ~63k lines of source code in `packages/` + `plugins/` (excluding tests)
 - 13 packages, 19 plugins across 5 categories (provider, channel, tool, memory, transport)
-- One unified `rivetos` container image with `--role agent | migrate` — no separate datahub image (Datahub is upstream `pgvector/pgvector:pg16`)
+- One unified `rivetos` container image with `--role agent | migrate`, no separate datahub image (Datahub is upstream `pgvector/pgvector:pg16`)
 - Node.js 22+ (24 used in CI/containers), TypeScript 6, ES2023 target
 - Nx monorepo with npm workspaces
 
@@ -165,7 +165,7 @@ infra/                  ← Build artifacts only — no @rivetos/* runtime deps
 `@rivetos/den-protocol`, which supplies the den event contract that the runtime types
 reference. Beyond that, if you need a class or function, it goes in `core`.
 
-**What `boot` declares in `package.json`.** Four workspace packages are listed as direct dependencies of `boot` — `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, and `@rivetos/workflows` — so a default install always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the two that are also plugins — the claude-cli provider and the memory-postgres backend — are still registered the same way as every other plugin, through discovery and `manifest.register()`.
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code`. A default install therefore always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`.
 
 ---
 
@@ -202,7 +202,7 @@ dependency is `@rivetos/den-protocol`.
 | `errors.ts` | `RivetError` hierarchy (Channel, Memory, Config, Tool, Delegation, Runtime) |
 | `utils.ts` | `splitMessage`, `getTextContent`, `hasImages`, tool result helpers |
 
-**Exception:** `ProviderError` and `RivetError` (and subclasses) are classes exported from types. This is the one place types has runtime code — because errors need to be `instanceof`-checkable across package boundaries.
+**Exception:** `ProviderError` and `RivetError` (and subclasses) are classes exported from types. This is the one place types has runtime code, because errors need to be `instanceof`-checkable across package boundaries.
 
 ### `@rivetos/boot`
 
@@ -229,7 +229,7 @@ Each plugin package exports `manifest: PluginManifest` from its `index.ts`. `reg
 
 The runtime engine. Split into two layers:
 
-**Domain Layer** (`src/domain/`) — Pure business logic, no I/O:
+**Domain Layer** (`src/domain/`). Pure business logic, no I/O:
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -250,7 +250,7 @@ The runtime engine. Split into two layers:
 | `skills/` | 1,337 | Skill discovery, matching, manage tool, frontmatter parsing |
 | `constants.ts` | 9 | Silent response strings |
 
-**Application Layer** (`src/runtime/`) — Wires domain + I/O:
+**Application Layer** (`src/runtime/`). Wires domain + I/O:
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -278,7 +278,7 @@ indefinitely and operators are expected to prune them manually.
 - Scoped by component: `logger('Router')` → `[Router] message`
 - Levels: error, warn, info, debug
 - Set via `RIVETOS_LOG_LEVEL` and `RIVETOS_LOG_FORMAT` env vars
-- Understands `RivetError` — extracts code, severity into structured output
+- Understands `RivetError`: extracts code, severity into structured output
 
 ### `@rivetos/cli`
 
@@ -353,7 +353,7 @@ export class ExampleProvider implements Provider {
 }
 ```
 
-All providers implement streaming via `chatStream()` (AsyncIterable). The non-streaming `chat()` is optional — the AgentLoop always uses `chatStream()`.
+All providers implement streaming via `chatStream()` (AsyncIterable). The non-streaming `chat()` is optional; the AgentLoop always uses `chatStream()`.
 
 ### Channel Plugin Pattern
 
@@ -373,7 +373,7 @@ export class ExampleChannel implements Channel {
 }
 ```
 
-The `edit()` method handles overflow internally — if text exceeds platform limits, the channel splits it and manages overflow message IDs.
+The `edit()` method handles overflow internally: if text exceeds platform limits, the channel splits it and manages overflow message IDs.
 
 ### Tool Plugin Pattern
 
@@ -421,8 +421,8 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 **Unified `rivetos` image** (`infra/containers/rivetos/Dockerfile`):
 - Single Node 24 Alpine image, non-root user (`rivetos`), tini init
 - Built once with `npm run build` (esbuild bundle in `dist/`)
-- Dispatched at runtime via `--role agent | migrate` (`packages/cli/src/commands/start.ts`). `agent` is the default. `RIVETOS_ROLE` seeds the role, but an explicit `--role` flag overrides it — the flag wins, not the env var. An unknown value exits with `unknown role`, whether it came from the flag or from `RIVETOS_ROLE`.
-- The `services/{embedding,compaction}-worker` dists ship in the image too, but they are not roles — run them directly (`node services/embedding-worker/dist/index.js`).
+- Dispatched at runtime via `--role agent | migrate` (`packages/cli/src/commands/start.ts`). `agent` is the default. `RIVETOS_ROLE` seeds the role, but an explicit `--role` flag overrides it; the flag wins, not the env var. An unknown value exits with `unknown role`, whether it came from the flag or from `RIVETOS_ROLE`.
+- The `services/{embedding,compaction}-worker` dists ship in the image too, but they are not roles; run them directly (`node services/embedding-worker/dist/index.js`).
 - Healthcheck: hits `/health/live` on the agent role; the migrate role skips the check
 - Workspace and config mounted as volumes
 
@@ -434,11 +434,11 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 
 The canonical stack lives at `infra/docker/rivetos/docker-compose.yml` and defines five services:
 
-- `datahub` — Postgres + pgvector (image: `pgvector/pgvector:pg16`, upstream)
-- `migrate` — one-shot, applies pending migrations and exits (image: `rivetos`, role: `migrate`)
-- `embedding-worker` — `graphile-worker` daemon, `node services/embedding-worker/dist/index.js` (image: `rivetos`, profile: `workers`)
-- `compaction-worker` — `graphile-worker` daemon, `node services/compaction-worker/dist/index.js` (image: `rivetos`, profile: `workers`)
-- `agent` — runtime that drives channels + providers (image: `rivetos`, role: `agent`)
+- `datahub`: Postgres + pgvector (image: `pgvector/pgvector:pg16`, upstream)
+- `migrate`: one-shot, applies pending migrations and exits (image: `rivetos`, role: `migrate`)
+- `embedding-worker`: `graphile-worker` daemon, `node services/embedding-worker/dist/index.js` (image: `rivetos`, profile: `workers`)
+- `compaction-worker`: `graphile-worker` daemon, `node services/compaction-worker/dist/index.js` (image: `rivetos`, profile: `workers`)
+- `agent`: runtime that drives channels + providers (image: `rivetos`, role: `agent`)
 
 Named volume: `rivetos-pgdata`. Dependency ordering: only `migrate` waits on `datahub` being healthy; the workers and `agent` each wait solely on `migrate` completing successfully (`service_completed_successfully`), so they inherit the database gate transitively rather than declaring it.
 
@@ -448,7 +448,7 @@ Both workers sit behind the `workers` profile, so a bare `docker compose up` bri
 
 Embedding and compaction run as **`graphile-worker` daemons deployed alongside Datahub**
 (`services/embedding-worker/`, `services/compaction-worker/`). Both pull from a
-Postgres-backed job queue rather than holding a `LISTEN` connection — the earlier
+Postgres-backed job queue rather than holding a `LISTEN` connection; the earlier
 LISTEN/NOTIFY pumps under `plugins/memory/postgres/workers/` were replaced. No agent node
 runs background memory jobs; the workers are the sole consumers.
 
@@ -498,14 +498,14 @@ runs background memory jobs; the workers are the sole consumers.
 1. INSERT into `ros_messages` / `ros_summaries` → `notify_embedding_queue()` trigger → `graphile_worker.add_job('embed-target', …)`, skipped when content is empty
 2. graphile-worker picks the job up in the embedding-worker → calls the configured embed endpoint (`RIVETOS_EMBED_URL` / `RIVETOS_EMBED_MODEL`)
 3. Writes the vector back to the source row
-4. graphile-worker handles retry/backoff/dedup — deduped by `job_key = 'embed-<table>-<id>'`, `max_attempts => 5`
+4. graphile-worker handles retry/backoff/dedup, deduped by `job_key = 'embed-<table>-<id>'`, `max_attempts => 5`
 5. An `enqueue-unembedded` cron (every 10 min) re-queues rows left with a NULL embedding and no live job
 
 **Compaction flow (one enqueue path):**
 
 All compaction enqueueing lives in the worker's `enqueue-idle` cron
 (`services/compaction-worker/src/tasks/enqueue-idle.ts`, `*/5 * * * *`). There is no
-Postgres trigger — `check_compaction_threshold` and `enqueue_idle_sessions()` are
+Postgres trigger: `check_compaction_threshold` and `enqueue_idle_sessions()` are
 deliberately absent from the baseline schema. Each tick enqueues up to 10 conversations,
 picking any whose unsummarized messages satisfy one of three clauses:
 
@@ -526,7 +526,7 @@ Hierarchy: messages → leaf summaries → branch summaries → root summaries (
 be searched by. `rivetos memory backfill-tool-synth` enqueues the same task for historical
 rows.
 
-**Wiki extraction:** the compaction worker also owns the memory wiki — `extract-wiki`
+**Wiki extraction:** the compaction worker also owns the memory wiki; `extract-wiki`
 mines durable topic patches out of leaf summaries, `consolidate-wiki` merges near-duplicate
 topics, and `recompile-wiki` rebuilds a topic's Summary + Article from history. A second
 cron, `enqueue-wiki-backfill` (`*/10 * * * *`), queues leaves that were never mined.
@@ -605,12 +605,12 @@ Channel receives message
 
 ### Streaming Behavior
 
-- **ONE streaming text message per turn** — sent on first text chunk, edited as more arrives
-- **Throttled edits** — 600ms minimum between Discord edit calls
-- **Overflow is the channel's job** — `edit()` handles splitting
-- **Reasoning** — shown as inline italics if visible, "🧠 Thinking..." indicator if hidden
-- **Tool calls** — ONE consolidated tool log message, edited in-place (max 8 lines shown)
-- **Errors** — only thing that sends a NEW message mid-turn
+- **ONE streaming text message per turn**: sent on first text chunk, edited as more arrives
+- **Throttled edits**: 600ms minimum between Discord edit calls
+- **Overflow is the channel's job**: `edit()` handles splitting
+- **Reasoning**: shown as inline italics if visible, "🧠 Thinking..." indicator if hidden
+- **Tool calls**: ONE consolidated tool log message, edited in-place (max 8 lines shown)
+- **Errors**: only thing that sends a NEW message mid-turn
 
 ### Hook System
 
@@ -641,12 +641,12 @@ Channel receives message
 
 ### Coding Standards
 
-- **TypeScript strict mode** — always
+- **TypeScript strict mode**: always
 - **ES2023 target, Node16 module resolution**
-- **`.js` extensions in imports** — required for Node16 ESM
-- **No default exports in packages** — named exports only (except CLI commands use `export default`)
-- **`index.ts` barrel exports** — every package re-exports from `src/index.ts`
-- **Tests co-located** — `foo.ts` → `foo.test.ts` in same directory
+- **`.js` extensions in imports**: required for Node16 ESM
+- **No default exports in packages**: named exports only (except CLI commands use `export default`)
+- **`index.ts` barrel exports**: every package re-exports from `src/index.ts`
+- **Tests co-located**: `foo.ts` → `foo.test.ts` in same directory
 
 ### Naming Conventions
 
@@ -661,23 +661,23 @@ Channel receives message
 
 ### Architecture Rules
 
-1. **`types` is near the bottom** — everything depends on it; it depends only on `den-protocol`
-2. **Domain layer is pure** — no I/O, no `fs`, no `fetch`. Only interfaces.
-3. **Application layer wires I/O** — runtime/, boot/registrars/
-4. **Plugins are discovered and registered via `manifest.register()`** — without exception, including `provider-claude-cli` and `memory-postgres`. `boot` additionally declares four workspace packages in its `package.json` so they are always installed, and imports specific symbols from them; that is an installation edge, not a registration shortcut
-5. **Late binding for tools** — composite tools get tool executors as closures, not direct refs
-6. **Config is YAML, not code** — all user-facing config in `config.yaml`
-7. **Secrets in `.env`** — never in config YAML, never in container images
-8. **Containers are stateless** — all data on volumes/bind mounts
-9. **One message queue per session** — no shared queues, no race conditions
-10. **Hooks are the extension point** — safety, auto-actions, observability all use hooks
+1. **`types` is near the bottom**: everything depends on it; it depends only on `den-protocol`
+2. **Domain layer is pure**: no I/O, no `fs`, no `fetch`. Only interfaces.
+3. **Application layer wires I/O**: runtime/, boot/registrars/
+4. **Plugins are discovered and registered via `manifest.register()`**, without exception, including `provider-claude-cli` and `memory-postgres`. `boot` additionally declares four workspace packages in its `package.json` so they are always installed, and imports specific symbols from them; that is an installation edge, not a registration shortcut
+5. **Late binding for tools**: composite tools get tool executors as closures, not direct refs
+6. **Config is YAML, not code**: all user-facing config in `config.yaml`
+7. **Secrets in `.env`**: never in config YAML, never in container images
+8. **Containers are stateless**: all data on volumes/bind mounts
+9. **One message queue per session**: no shared queues, no race conditions
+10. **Hooks are the extension point**: safety, auto-actions, observability all use hooks
 
 ### Error Handling
 
-- **RivetError hierarchy** — typed errors with codes, severity, retryable flag
-- **ProviderError** — HTTP-aware, observed by `provider:error` hooks
-- **Reconnection manager** — exponential backoff for channel disconnects
-- **Hook error modes** — `continue` (log & proceed), `abort` (stop pipeline), `retry`
+- **RivetError hierarchy**: typed errors with codes, severity, retryable flag
+- **ProviderError**: HTTP-aware, observed by `provider:error` hooks
+- **Reconnection manager**: exponential backoff for channel disconnects
+- **Hook error modes**: `continue` (log & proceed), `abort` (stop pipeline), `retry`
 
 ### Config Shape
 
@@ -712,7 +712,7 @@ deployment:             # Optional — `target` is the only key consumed at runt
 ```
 
 Provisioning itself is driven by the Compose files under `infra/docker/` and the scripts
-under `infra/scripts/` — not by nested config keys. Anything other than `target` inside
+under `infra/scripts/`, not by nested config keys. Anything other than `target` inside
 `deployment:` is reported as unknown by config validation.
 
 ---
@@ -721,9 +721,9 @@ under `infra/scripts/` — not by nested config keys. Anything other than `targe
 
 ### Test Framework
 
-- **Vitest 4.x** — fast, TypeScript-native, Node assert compatible
-- **Co-located tests** — `foo.ts` → `foo.test.ts`
-- **No external test deps** — uses `node:assert/strict`, no chai/jest matchers
+- **Vitest 4.x**: fast, TypeScript-native, Node assert compatible
+- **Co-located tests**: `foo.ts` → `foo.test.ts`
+- **No external test deps**: uses `node:assert/strict`, no chai/jest matchers
 - **Run:** `nx run-many -t test` or `nx test @rivetos/core`
 
 ### Test Coverage
@@ -752,29 +752,29 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 
 ### Architecture
 
-1. **Compiled bundle now standard** — `npm run build` produces an esbuild bundle in `dist/`. The unified `rivetos` image runs the bundle, not source via `tsx`. Some legacy paths still allow running from source for dev.
+1. **Compiled bundle now standard**: `npm run build` produces an esbuild bundle in `dist/`. The unified `rivetos` image runs the bundle, not source via `tsx`. Some legacy paths still allow running from source for dev.
 
-2. **Root `package.json` still has one runtime dep** — `yaml`. `pg` has moved to the packages that actually use them; `yaml` is the last holdout and should follow.
+2. **Root `package.json` still has one runtime dep**: `yaml`. `pg` has moved to the packages that actually use them; `yaml` is the last holdout and should follow.
 
-3. **Social channels removed (Phase 5)** — telegram / discord / voice-discord packages deleted. Stale config keys warn as unknown channel types.
+3. **Social channels removed (Phase 5)**: telegram / discord / voice-discord packages deleted. Stale config keys warn as unknown channel types.
 
-4. **Per-kind registrars deleted** — `boot/registrars/{providers,channels,tools,memory}.ts` were collapsed into a single manifest-driven `plugins.ts` (PR-B). Any references in user code or external docs to the old per-kind registrars are stale.
+4. **Per-kind registrars deleted**: `boot/registrars/{providers,channels,tools,memory}.ts` were collapsed into a single manifest-driven `plugins.ts` (PR-B). Any references in user code or external docs to the old per-kind registrars are stale.
 
-5. **Schema lives next to the plugin** — `plugins/memory/postgres/src/schema/migrations/` is the source of truth for SQL DDL. The unified image's `migrate` role applies it at stack startup.
+5. **Schema lives next to the plugin**: `plugins/memory/postgres/src/schema/migrations/` is the source of truth for SQL DDL. The unified image's `migrate` role applies it at stack startup.
 
 ### Config
 
-6. **YAML snake_case vs TypeScript camelCase** — Config uses `default_agent`, types use `defaultAgent`. The mapping happens in `boot/index.ts` manually. No automated snake→camel conversion.
+6. **YAML snake_case vs TypeScript camelCase**: Config uses `default_agent`, types use `defaultAgent`. The mapping happens in `boot/index.ts` manually. No automated snake→camel conversion.
 
-7. **Provider config is untyped** — Each provider's config is `Record<string, unknown>` in the raw config. Type safety is only enforced in the provider constructor.
+7. **Provider config is untyped**: Each provider's config is `Record<string, unknown>` in the raw config. Type safety is only enforced in the provider constructor.
 
 ### Infrastructure
 
-8. **CI builds packages and containers in one pipeline** — `pipeline.yml` runs `secrets-scan` → `ci` (lint, boundary probes, typecheck, test, build), then fans out to `publish-npm` and `containers` in parallel, with `notify-ops` gated on both. `containers` builds the single unified `infra/containers/rivetos/Dockerfile` — there is no build matrix and no datahub image.
+8. **CI builds packages and containers in one pipeline**: `pipeline.yml` runs `secrets-scan` → `ci` (lint, boundary probes, typecheck, test, build), then fans out to `publish-npm` and `containers` in parallel, with `notify-ops` gated on both. `containers` builds the single unified `infra/containers/rivetos/Dockerfile`; there is no build matrix and no datahub image.
 
-9. **Multi-arch container builds not implemented** — Dockerfiles are amd64 only. Buildx for arm64 is planned but not done.
+9. **Multi-arch container builds not implemented**: Dockerfiles are amd64 only. Buildx for arm64 is planned but not done.
 
-10. **No code-driven IaC layer** — provisioning is fully script-and-Compose driven (`infra/scripts/` + `infra/docker/`). The Pulumi-based `@rivetos/infra` was removed in PR-H; nothing replaces it.
+10. **No code-driven IaC layer**: provisioning is fully script-and-Compose driven (`infra/scripts/` + `infra/docker/`). The Pulumi-based `@rivetos/infra` was removed in PR-H; nothing replaces it.
 
 ---
 

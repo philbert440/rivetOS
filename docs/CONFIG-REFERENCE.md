@@ -297,7 +297,7 @@ providers:
 
 ### llama-server
 
-Dedicated provider for llama.cpp's `llama-server`. Lean by design — standard OpenAI sampling plus llama.cpp's `top_k` / `min_p` and a generic `extra_body` escape hatch. None of the vLLM-only machinery (no `mm_processor_kwargs`, `chat_template_kwargs`, `repetition_penalty`, `min_tokens`, or video).
+Dedicated provider for llama.cpp's `llama-server`. Lean by design: standard OpenAI sampling plus llama.cpp's `top_k` / `min_p` and a generic `extra_body` escape hatch. None of the vLLM-only machinery (no `mm_processor_kwargs`, `chat_template_kwargs`, `repetition_penalty`, `min_tokens`, or video).
 
 For native `<think>` reasoning, start `llama-server` with `--reasoning-format deepseek`.
 
@@ -333,7 +333,7 @@ providers:
 
 ### claude-cli
 
-Drives the local `claude` binary (Claude Code CLI) using the user's subscription OAuth token — the sanctioned third-party-harness pattern per Anthropic's April 2026 policy. The CLI owns auth, session caching, and the wire protocol; this provider drives it via `stream-json` and brings up a per-spawn embedded MCP server that exposes every executable RivetOS tool to claude-cli through `--mcp-config`.
+Drives the local `claude` binary (Claude Code CLI) using the user's subscription OAuth token, the sanctioned third-party-harness pattern per Anthropic's April 2026 policy. The CLI owns auth, session caching, and the wire protocol; this provider drives it via `stream-json` and brings up a per-spawn embedded MCP server that exposes every executable RivetOS tool to claude-cli through `--mcp-config`.
 
 ```yaml
 providers:
@@ -348,7 +348,7 @@ providers:
 | `model` | string | — | Model alias to pass to the CLI. |
 | `extra_args` | string[] | `[]` | Additional CLI flags (advanced). |
 
-**Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow — the CLI does.
+**Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow; the CLI does.
 
 ---
 
@@ -359,14 +359,14 @@ Messaging channel configuration. Each key is a channel type / plugin name.
 > **Phase 5:** Telegram, Discord, and voice-discord channel plugins were **removed**.
 > Human UX is RivetHub. Optional remaining first-party channel: `channels.agent` (mesh).
 > Stale `channels.telegram:` / `channels.discord:` / `channels.voice*` in fleet config yields an
-> **unknown channel type warning** at boot — registration is skipped; nodes do not crash-loop.
+> **unknown channel type warning** at boot; registration is skipped; nodes do not crash-loop.
 
 ### Agent (HTTP)
 
 Inter-agent communication channel. Enables delegation between agents and mesh networking.
 
 > **Note:** for cross-node (mesh) auth, `secret` is superseded by mutual TLS
-> (`mesh.tls`) as of Phase 0.5 — configure `mesh:` for node-to-node traffic.
+> (`mesh.tls`) as of Phase 0.5; configure `mesh:` for node-to-node traffic.
 > The standalone `channels.agent` plugin **still enforces** its bearer
 > `secret` when configured; it is deprecated, not dead. The plugin's fate is
 > decided when the gateway subsumes agent HTTP ingress (phase 1/5).
@@ -466,7 +466,7 @@ Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (def
 
 ## `transports`
 
-Inbound surfaces that expose RivetOS tools to external clients. Currently: the MCP server transport (`@rivetos/mcp-server`) — a StreamableHTTP MCP server that exposes `memory_*`, `web_*`, `skill_*`, and runtime tools to any MCP-speaking client (Claude Code, Cursor, etc.).
+Inbound surfaces that expose RivetOS tools to external clients. Currently: the MCP server transport (`@rivetos/mcp-server`), a StreamableHTTP MCP server that exposes `memory_*`, `web_*`, `skill_*`, and runtime tools to any MCP-speaking client (Claude Code, Cursor, etc.).
 
 ```yaml
 transports:
@@ -485,7 +485,7 @@ The transport is only activated when the matching `transports.<name>` slice is p
 
 ## `mcp`
 
-**Outbound** Model Context Protocol — RivetOS *connects to* external MCP servers and exposes their tools to agents (the inverse of the `transports.mcp` plugin above).
+**Outbound** Model Context Protocol: RivetOS *connects to* external MCP servers and exposes their tools to agents (the inverse of the `transports.mcp` plugin above).
 
 ```yaml
 mcp:

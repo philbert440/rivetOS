@@ -212,9 +212,9 @@ Agent uses skill_manage:
 ### Creating Skills
 
 Skills can be created by:
-- **You** — manually create directories with `SKILL.md` files
-- **The agent** — via `skill_manage create` during conversation
-- **The learning loop** — the review loop can extract patterns into skills automatically
+- **You**: manually create directories with `SKILL.md` files
+- **The agent**: via `skill_manage create` during conversation
+- **The learning loop**: the review loop can extract patterns into skills automatically
 
 ### Versioning
 

@@ -91,8 +91,8 @@ Boot has **no per-plugin knowledge.** Every kind of plugin goes through the same
 
 A plugin is *discovered* by `package.json#rivetos`, but only *activated* when:
 
-- **Provider / channel / memory / transport** — its name appears in the matching config section (`config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`). Social channel plugins (telegram/discord/voice-discord) were **removed** in Phase 5; only `agent` (mesh) remains first-party.
-- **Tool** — always activated (tools decide internally whether their config is sufficient — e.g. `mcp-client` skips itself when no servers are configured).
+- **Provider / channel / memory / transport**: its name appears in the matching config section (`config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`). Social channel plugins (telegram/discord/voice-discord) were **removed** in Phase 5; only `agent` (mesh) remains first-party.
+- **Tool**: always activated (tools decide internally whether their config is sufficient — e.g. `mcp-client` skips itself when no servers are configured).
 
 ---
 
@@ -159,9 +159,9 @@ interface Channel {
 
 The runtime calls `edit()` repeatedly while streaming. Channels handle:
 
-- **Throttling** — don't hit the platform on every token
-- **Splitting** — when text exceeds the platform limit, split into overflow messages and report the IDs back via `EditResult`
-- **Typing** — show while the agent is working
+- **Throttling**: don't hit the platform on every token
+- **Splitting**: when text exceeds the platform limit, split into overflow messages and report the IDs back via `EditResult`
+- **Typing**: show while the agent is working
 
 ### Reference implementations
 
@@ -185,9 +185,9 @@ interface ToolDefinition {
 }
 ```
 
-- `signal` — `AbortSignal` from the turn. Honor it.
-- `context` — workspace path, agent name, config, etc.
-- `ToolResult` — `string` for text, `ContentPart[]` for multimodal (text + images).
+- `signal`: `AbortSignal` from the turn. Honor it.
+- `context`: workspace path, agent name, config, etc.
+- `ToolResult`: `string` for text, `ContentPart[]` for multimodal (text + images).
 
 ### Reference implementations
 

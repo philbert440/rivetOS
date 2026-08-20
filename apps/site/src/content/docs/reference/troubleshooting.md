@@ -360,8 +360,8 @@ npx rivetos doctor --json | jq '.checks[] | select(.status == "fail")'
 
 ## Getting Help
 
-1. **Check this guide** — most issues are covered above
-2. **Run diagnostics** — `rivetos doctor` and `rivetos test` catch most problems
-3. **Check logs** — `rivetos logs --level error` shows what went wrong
-4. **Search issues** — [github.com/philbert440/rivetOS/issues](https://github.com/philbert440/rivetOS/issues)
-5. **File a bug** — include `rivetos doctor --json` output and relevant logs
+1. **Check this guide**: most issues are covered above
+2. **Run diagnostics**: `rivetos doctor` and `rivetos test` catch most problems
+3. **Check logs**: `rivetos logs --level error` shows what went wrong
+4. **Search issues**: [github.com/philbert440/rivetOS/issues](https://github.com/philbert440/rivetOS/issues)
+5. **File a bug**: include `rivetos doctor --json` output and relevant logs

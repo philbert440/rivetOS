@@ -1,6 +1,6 @@
 # Skills Guide
 
-Skills are reusable knowledge, workflows, and procedures that agents can discover and use. Unlike plugins (which are code), skills are **markdown documents** — anyone can write one without programming.
+Skills are reusable knowledge, workflows, and procedures that agents can discover and use. Unlike plugins (which are code), skills are **markdown documents**; anyone can write one without programming.
 
 ---
 
@@ -208,9 +208,9 @@ Agent uses skill_manage:
 ### Creating Skills
 
 Skills can be created by:
-- **You** — manually create directories with `SKILL.md` files
-- **The agent** — via `skill_manage create` during conversation
-- **The learning loop** — the review loop can extract patterns into skills automatically
+- **You**: manually create directories with `SKILL.md` files
+- **The agent**: via `skill_manage create` during conversation
+- **The learning loop**: the review loop can extract patterns into skills automatically
 
 ### Versioning
 
@@ -261,7 +261,7 @@ RivetOS ships with several skills out of the box:
 ## Best Practices
 
 1. **Be specific with triggers.** `deploy, production, release` is better than `code, stuff, things`.
-2. **Write for the agent, not for humans.** The skill is context the agent reads — include exact commands, API formats, and decision rules.
+2. **Write for the agent, not for humans.** The skill is context the agent reads; include exact commands, API formats, and decision rules.
 3. **One concern per skill.** A skill for "GitHub" and a separate skill for "deployment" is better than one mega-skill.
 4. **Include examples.** Show the agent exactly what the output should look like.
 5. **Update, don't duplicate.** Use `skill_manage edit` to improve existing skills rather than creating overlapping ones.

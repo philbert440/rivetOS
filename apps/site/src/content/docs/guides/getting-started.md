@@ -31,11 +31,11 @@ npx rivetos init
 ```
 
 The wizard will:
-1. **Detect your environment** — Docker available? Proxmox? How much memory?
-2. **Choose deployment target** — Docker (recommended), Proxmox, or manual
-3. **Configure agents** — pick a provider, enter your API key, choose a model
-4. **Configure channels** — Discord, Telegram, or terminal-only
-5. **Review and deploy** — summary of your choices, then one-click deploy
+1. **Detect your environment**: Docker available? Proxmox? How much memory?
+2. **Choose deployment target**: Docker (recommended), Proxmox, or manual
+3. **Configure agents**: pick a provider, enter your API key, choose a model
+4. **Configure channels**: Discord, Telegram, or terminal-only
+5. **Review and deploy**: summary of your choices, then one-click deploy
 
 After the wizard completes, your agent is running.
 
@@ -342,14 +342,14 @@ rivetos skills list
 
 ## Next Steps
 
-- **[Channel Setup](/guides/channels/)** — Connect to Discord, Telegram, voice, and agent-to-agent messaging
-- **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
-- **[Mesh Networking](/guides/mesh/)** — Multi-node fleets with mTLS delegation
+- **[Channel Setup](/guides/channels/)**: Connect to Discord, Telegram, voice, and agent-to-agent messaging
+- **[Provider Setup](/guides/providers/)**: Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
+- **[Mesh Networking](/guides/mesh/)**: Multi-node fleets with mTLS delegation
 - **[Configuration Reference](/reference/config/)** — Every config option explained
 - **[Architecture](/reference/architecture/)** — How the system works
-- **[Plugins](/guides/plugins/)** — How to write your own channel, provider, or tool
-- **[Skills](/guides/skills/)** — How to write and share skills
-- **[Deployment](/guides/deployment/)** — Docker, Proxmox, multi-agent, networking
+- **[Plugins](/guides/plugins/)**: How to write your own channel, provider, or tool
+- **[Skills](/guides/skills/)**: How to write and share skills
+- **[Deployment](/guides/deployment/)**: Docker, Proxmox, multi-agent, networking
 - **[Troubleshooting](/reference/troubleshooting/)** — Common issues and fixes
 
 ---
@@ -368,7 +368,7 @@ rivetos skills list
 
 **Memory search returns nothing?**
 - Check PostgreSQL connection: `npx rivetos test --quick`
-- Embeddings may still be processing — check `npx rivetos status` for queue depth
+- Embeddings may still be processing: check `npx rivetos status` for queue depth
 
 **Can't find config?**
 - Default location: `./config.yaml` or `~/.rivetos/config.yaml`

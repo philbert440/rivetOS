@@ -9,30 +9,30 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-6.x-blue.svg)](https://www.typescriptlang.org)
 [![Nx](https://img.shields.io/badge/Nx-22-blue.svg)](https://nx.dev)
 
-RivetOS is a personal AI agent runtime built for reliability. A tiny, stable core routes messages between channels and LLM providers. Everything else — providers, channels, tools, memory — is a plugin.
+RivetOS is a personal AI agent runtime built for reliability. A tiny, stable core routes messages between channels and LLM providers. Everything else is a plugin: providers, channels, tools, memory.
 
 **Container-first.** The container IS the product. Security via isolation, setup via wizard, updates via source rebuild. One config file drives everything.
 
 ## Features
 
-- **Tiny core, fat plugins** — The runtime kernel is a small, stable surface: a loop, a router, a queue, a hook pipeline. Everything else is swappable.
-- **Streaming-first** — `AsyncIterable<StreamEvent>` from every provider. Responses stream in real-time.
-- **7 LLM providers** — Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, vLLM, llama-server (llama.cpp), claude-cli (Claude Code subscription).
-- **4 channel plugins** — Discord, Telegram, Agent (HTTP inter-agent), Voice (xAI Realtime).
-- **MCP transport plugin** — Expose RivetOS tools (memory, web, skills) to external MCP clients over StreamableHTTP.
-- **20+ built-in tools** — Shell, file I/O, search, web, memory, skills, interaction, MCP client, delegation, sub-agents.
-- **Multi-agent mesh** — Delegate tasks across agents. Local or remote. Transparent routing.
-- **Hook system** — Composable pipeline for safety, auto-actions, session lifecycle.
-- **Interactive setup** — `rivetos init` walks you through everything step by step.
-- **Container deployment** — Docker Compose or Proxmox LXC. Images built from source, plugins included.
-- **Source-based updates** — `rivetos update` pulls, rebuilds, restarts. Forks and custom plugins are first-class.
-- **Full control surface** — `/stop`, `/steer`, `/new`, `/status`, `/model`, `/think`, `/context`.
-- **Interrupt that works** — `AbortController` propagated to every API call and tool.
-- **Persistent memory** — PostgreSQL + pgvector. Hybrid FTS + vector search. Summary DAG. Learning loop.
-- **rivet-den** — a live pixel-art diorama of your agent at work. [Watch the demo](docs/DEN.md).
-- **Structured observability** — JSON logging, runtime metrics, health endpoints, `rivetos doctor`.
-- **LTS releases** — Pin a version. It won't break for 12 months.
-- **Apache 2.0** — No CLA, no dual-licensing, no surprises. Patent grant included.
+- **Tiny core, fat plugins**: The runtime kernel is a small, stable surface: a loop, a router, a queue, a hook pipeline. Everything else is swappable.
+- **Streaming-first**: `AsyncIterable<StreamEvent>` from every provider. Responses stream in real-time.
+- **7 LLM providers**: Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, vLLM, llama-server (llama.cpp), claude-cli (Claude Code subscription).
+- **4 channel plugins**: Discord, Telegram, Agent (HTTP inter-agent), Voice (xAI Realtime).
+- **MCP transport plugin**: Expose RivetOS tools (memory, web, skills) to external MCP clients over StreamableHTTP.
+- **20+ built-in tools**: Shell, file I/O, search, web, memory, skills, interaction, MCP client, delegation, sub-agents.
+- **Multi-agent mesh**: Delegate tasks across agents. Local or remote. Transparent routing.
+- **Hook system**: Composable pipeline for safety, auto-actions, session lifecycle.
+- **Interactive setup**: `rivetos init` walks you through everything step by step.
+- **Container deployment**: Docker Compose or Proxmox LXC. Images built from source, plugins included.
+- **Source-based updates**: `rivetos update` pulls, rebuilds, restarts. Forks and custom plugins are first-class.
+- **Full control surface**: `/stop`, `/steer`, `/new`, `/status`, `/model`, `/think`, `/context`.
+- **Interrupt that works**: `AbortController` propagated to every API call and tool.
+- **Persistent memory**: PostgreSQL + pgvector. Hybrid FTS + vector search. Summary DAG. Learning loop.
+- **rivet-den**: a live pixel-art diorama of your agent at work. [Watch the demo](docs/DEN.md).
+- **Structured observability**: JSON logging, runtime metrics, health endpoints, `rivetos doctor`.
+- **LTS releases**: Pin a version. It won't break for 12 months.
+- **Apache 2.0**: no CLA, no dual-licensing, no surprises. Patent grant included.
 
 ## Quick Start
 
@@ -90,7 +90,7 @@ See [Getting Started](docs/GETTING-STARTED.md) for the full guide.
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**Dependency rule:** Everything points inward. Plugins → Types. Domain → Types. Every plugin is registered the same way — discovery plus `manifest.register()`. `boot` additionally lists four workspace packages (`provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`) as direct dependencies so a default install always has them on disk, and imports specific symbols from them.
+**Dependency rule:** Everything points inward. Plugins → Types. Domain → Types. Every plugin is registered the same way, discovery plus `manifest.register()`. `boot` additionally lists four workspace packages (`provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`) as direct dependencies so a default install always has them on disk, and imports specific symbols from them.
 
 ## Monorepo Structure
 
@@ -152,7 +152,7 @@ Skills are user-managed and live outside the source tree (default: `~/.rivetos/w
 |--------|-------------|
 | `channel-agent` | HTTP inter-agent messaging and mesh endpoints |
 
-Social channel plugins (`channel-telegram`, `channel-discord`, `channel-voice-discord`) were **removed in Phase 5**. Human UX is RivetHub via the node gateway. Stale `channels.telegram:` (etc.) in config is a validation warning only — boot does not crash-loop.
+Social channel plugins (`channel-telegram`, `channel-discord`, `channel-voice-discord`) were **removed in Phase 5**. Human UX is RivetHub via the node gateway. Stale `channels.telegram:` (etc.) in config is a validation warning only; boot does not crash-loop.
 
 ### Tools
 
@@ -200,7 +200,7 @@ memory:
   postgres: {}
 ```
 
-API keys always via `.env` — never in config files. See [Config Reference](docs/CONFIG-REFERENCE.md) for every option.
+API keys always go in `.env`, never in config files. See [Config Reference](docs/CONFIG-REFERENCE.md) for every option.
 
 ## Workspace Files
 
@@ -277,26 +277,26 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 
 ## Documentation
 
-- [Getting Started](docs/GETTING-STARTED.md) — Zero to running in 5 minutes
-- [Architecture](docs/ARCHITECTURE.md) — System design and plugin model
-- [Config Reference](docs/CONFIG-REFERENCE.md) — Every config option explained
-- [Plugins](docs/PLUGINS.md) — How to write channels, providers, and tools
-- [Skills](docs/SKILLS.md) — How to write and share skills
-- [Deployment](docs/DEPLOYMENT.md) — Docker, Proxmox, multi-agent, backup
-- [Troubleshooting](docs/TROUBLESHOOTING.md) — Common issues and fixes
-- [rivet-den](docs/DEN.md) — Live agent diorama: quickstart, protocol, pack spec, art pipeline
-- [Examples](docs/examples/) — Ready-to-use config files
+- [Getting Started](docs/GETTING-STARTED.md): zero to running in 5 minutes
+- [Architecture](docs/ARCHITECTURE.md): system design and plugin model
+- [Config Reference](docs/CONFIG-REFERENCE.md): every config option explained
+- [Plugins](docs/PLUGINS.md): how to write channels, providers, and tools
+- [Skills](docs/SKILLS.md): how to write and share skills
+- [Deployment](docs/DEPLOYMENT.md): Docker, Proxmox, multi-agent, backup
+- [Troubleshooting](docs/TROUBLESHOOTING.md): common issues and fixes
+- [rivet-den](docs/DEN.md): live agent diorama (quickstart, protocol, pack spec, art pipeline)
+- [Examples](docs/examples/): Ready-to-use config files
 
 ## License
 
 [Apache License 2.0](LICENSE)
 
-### License boundary — `apps/rivet-android`
+### License boundary: `apps/rivet-android`
 
 `apps/rivet-team-android` is a **new Apache-2.0** Jetpack Compose client, not
 a copy of this fork. Do not copy AGPL sources from `apps/rivet-android/` into it.
 
-The Android client (`apps/rivet-android`) is **vendored source** — a RikkaHub
+The Android client (`apps/rivet-android`) is **vendored source**, a RikkaHub
 fork licensed **AGPL-3.0**, a different license than the rest of this
 repository (Apache-2.0). Its `LICENSE` lives in that directory and governs it.
 The boundary rules:
@@ -304,14 +304,14 @@ The boundary rules:
 - It is **Gradle-built, not npm/nx-built**: a minimal `package.json` (no JS
   dependencies) registers it in the nx graph for DDD tags and boundary
   enforcement only. Its real targets are `apk`/`apk-release`/`check`/`verify`
-  (gradle wrappers) — deliberately not `build`/`test`/`lint`, so CI's
+  (gradle wrappers), deliberately not `build`/`test`/`lint`, so CI's
   Android-SDK-less nx sweeps skip it. Builds happen where an SDK lives, same
   posture as `apps/rivethub-desktop`.
 - Dependency direction is **one-way**: the Android app may consume this
   repo's published artifacts and gateway APIs; **no code may be copied FROM
   the AGPL-licensed `apps/rivet-android/` tree INTO the Apache-2.0 tree.**
 - RivetHub web/desktop reimplement the client UX against the same gateway
-  contracts (`@rivetos/types` gateway-api) — shared design, independent code.
+  contracts (`@rivetos/types` gateway-api): shared design, independent code.
 
 ---
 

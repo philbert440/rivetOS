@@ -12,7 +12,7 @@ not share the Rivet agent memory corpus (`ros_messages` and friends).
 | Node / agent | compute only — not an identity |
 
 Default isolation is **private**. A shared household corpus is a later,
-opt-in third store — not `WHERE user_id` on the agent tables.
+opt-in third store, not `WHERE user_id` on the agent tables.
 
 ## Store
 
@@ -50,7 +50,7 @@ mesh cert yet. After redeem, the app stores `deviceToken` and sends
 
 ## Env
 
-- `RIVETOS_TEAM_PG_ADMIN_URL` — CREATEROLE URL; empty = file store only.
+- `RIVETOS_TEAM_PG_ADMIN_URL`: CREATEROLE URL; empty = file store only.
   Never ship this in builds or QRs. Routes are always mounted.
 
 ## Out of scope here
@@ -72,13 +72,13 @@ point that proxy at a shared or LAN-exposed den.
 2. Create two users: `curl -s -X POST localhost:5174/api/team/users -d '{"handle":"phil","displayName":"Phil"}' -H 'content-type: application/json'`
    and again for `alex`.
 3. Pair each: `POST /api/team/users/:id/pair` then redeem on two browsers.
-4. Send a note as phil (`POST /api/team/notes`). Search as alex for the same text — empty.
+4. Send a note as phil (`POST /api/team/notes`). Search as alex for the same text: empty.
 5. Optional: set `RIVETOS_TEAM_PG_ADMIN_URL` on a **non-prod** datahub role and confirm `team_u_phil` exists and `rivet_team_phil` cannot `SELECT` `ros_messages`.
 
 Do not point a household device at the shared `rivet_phil` / `ros_messages` DSN.
 
 `dropUserSchema` exists on the admin driver for revoke/cleanup. There is no
-HTTP DELETE user route yet — do not look for one.
+HTTP DELETE user route yet; do not look for one.
 
 When the admin URL is set, the minted role DSN is stored only in
 `team-users.json` (mode 0600) and is never returned on the public user wire.

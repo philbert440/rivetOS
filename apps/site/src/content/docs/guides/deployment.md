@@ -437,9 +437,9 @@ Set up a cron job:
 ### Health Endpoint
 
 Each agent exposes:
-- `GET /health` — Full runtime status (agents, providers, channels, memory, metrics)
-- `GET /health/live` — Simple liveness check (returns 200)
-- `GET /metrics` — Raw metrics (turns, tool calls, tokens, latency)
+- `GET /health`: Full runtime status (agents, providers, channels, memory, metrics)
+- `GET /health/live`: Simple liveness check (returns 200)
+- `GET /metrics`: Raw metrics (turns, tool calls, tokens, latency)
 
 ### CLI Checks
 

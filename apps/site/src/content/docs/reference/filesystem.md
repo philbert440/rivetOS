@@ -20,15 +20,15 @@ Agents should treat these boundaries as hard contracts. Never assume or hallucin
 
 ---
 
-## 1. Runtime Directory — `/opt/rivetos/`
+## 1. Runtime Directory: `/opt/rivetos/`
 
 The immutable RivetOS installation. The CLI binary, compiled core, built-in plugins, and runtime dependencies live here.
 
 **What belongs:**
 
 - `bin/rivetos` (CLI entry point)
-- `packages/` (compiled core — `types`, `core`, `boot`, `cli`)
-- `plugins/` (built-in plugins — channels, providers, tools, memory, transports)
+- `packages/` (compiled core: `types`, `core`, `boot`, `cli`)
+- `plugins/` (built-in plugins: channels, providers, tools, memory, transports)
 - `node_modules/` (runtime dependencies)
 - `package.json`, `package-lock.json`
 - Container files (`infra/docker/rivetos/docker-compose.yml`, `infra/containers/...`)
@@ -50,7 +50,7 @@ rivetos plugins list
 
 ---
 
-## 2. Config & Workspace — `~/.rivetos/`
+## 2. Config & Workspace: `~/.rivetos/`
 
 The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos` plus a persistent workspace. The systemd service runs as the `rivet` user, so this resolves to `/home/rivet/.rivetos/`.
 
@@ -58,7 +58,7 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 
 - `config.yaml` — primary configuration (`runtime.workspace`, agents, providers, channels, memory, MCP, etc.)
 - `.env` — secrets and environment variables (API keys, DB URLs, tokens). **Never commit.**
-- `workspace/` — the directory referenced by `runtime.workspace`:
+- `workspace/`: the directory referenced by `runtime.workspace`:
   - `CORE.md` — identity, personality, operating values (injected every turn)
   - `USER.md` — who the human is
   - `WORKSPACE.md` — operating rules, safety boundaries
@@ -67,7 +67,7 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
   - `HEARTBEAT.md` — background task checklist (injected on heartbeat turns only)
   - `FILESYSTEM.md` — mirror of this guide
   - `memory/YYYY-MM-DD.md` — daily rolling notes
-  - `skills/` — per-instance skill directories (optional)
+  - `skills/`: per-instance skill directories (optional)
 
 **Agent rules:**
 
@@ -91,13 +91,13 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 
 ---
 
-## 3. Shared Collaboration — `/rivet-shared/`
+## 3. Shared Collaboration: `/rivet-shared/`
 
 Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent) shared by every agent on the mesh, typically also mounted on the human's workstation. Neutral territory — not tied to any single agent's config.
 
 **What belongs:**
 
-- `RivetOS/` — the shared clone of the source tree (development and PRs happen here; runtimes run from `/opt/rivetos/`)
+- `RivetOS/`: the shared clone of the source tree (development and PRs happen here; runtimes run from `/opt/rivetos/`)
 - Project plans, roadmaps, specifications (`*.md`, diagrams)
 - Shared repositories or project directories
 - Research notes, meeting summaries, decision logs
