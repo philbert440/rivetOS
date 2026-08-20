@@ -32,6 +32,15 @@ import {
   type IngestSessionInput,
 } from './memory-write.js'
 
+/** Unwrap adaptRivetTool's structured result back to the tool's JSON string. */
+function toolText(result: unknown): string {
+  if (typeof result === 'string') return result
+  const r = result as { content?: Array<{ type: string; text?: string }> }
+  const text = r.content?.find((c) => c.type === 'text')?.text
+  if (text == null) throw new Error('no text content in tool result')
+  return text
+}
+
 const PG_URL = process.env.RIVETOS_PG_URL ?? ''
 const describeIfPg = PG_URL ? describe : describe.skip
 
@@ -688,7 +697,7 @@ describeIfPg('memory write truncation (integration)', () => {
       channel: 'test',
     })
 
-    const parsed = JSON.parse(result as string)
+    const parsed = JSON.parse(toolText(result))
     expect(parsed.truncated).toBe(true)
     expect(parsed.full_content_length).toBe(MAX_CONTENT + 200) // max of both
 
@@ -853,7 +862,7 @@ describeIfPg('memory write idempotency', () => {
       source: 'test',
       channel: 'test',
     })
-    const parsed1 = JSON.parse(result1 as string)
+    const parsed1 = JSON.parse(toolText(result1))
     expect(parsed1.skipped).toBeUndefined()
     expect(parsed1.id).toBeDefined()
     expect(parsed1.event_id).toBe(eventId)
@@ -870,7 +879,7 @@ describeIfPg('memory write idempotency', () => {
       source: 'test',
       channel: 'test',
     })
-    const parsed2 = JSON.parse(result2 as string)
+    const parsed2 = JSON.parse(toolText(result2))
     expect(parsed2.skipped).toBe(true)
     expect(parsed2.event_id).toBe(eventId)
     expect(parsed2.id).toBe(firstId) // M2: returns existing row id
@@ -891,7 +900,7 @@ describeIfPg('memory write idempotency', () => {
       source: 'test',
       channel: 'test',
     })
-    const parsed1 = JSON.parse(result1 as string)
+    const parsed1 = JSON.parse(toolText(result1))
     expect(parsed1.skipped).toBeUndefined()
     expect(parsed1.id).toBeDefined()
     expect(parsed1.event_id).toBeDefined()
@@ -908,7 +917,7 @@ describeIfPg('memory write idempotency', () => {
       source: 'test',
       channel: 'test',
     })
-    const parsed2 = JSON.parse(result2 as string)
+    const parsed2 = JSON.parse(toolText(result2))
     expect(parsed2.skipped).toBe(true)
     expect(parsed2.event_id).toBe(generatedEventId)
     expect(parsed2.id).toBe(firstId) // M2: returns existing row id
@@ -938,7 +947,7 @@ describeIfPg('memory write idempotency', () => {
       source: 'test',
       channel: 'test',
     })
-    const parsed = JSON.parse(appendResult as string)
+    const parsed = JSON.parse(toolText(appendResult))
     // Should NOT be skipped because hash domains differ
     expect(parsed.skipped).toBeUndefined()
     expect(parsed.id).toBeDefined()
@@ -983,7 +992,7 @@ describeIfPg('memory write idempotency', () => {
         // role missing
         agent: TEST_AGENT,
       }),
-    ).rejects.toMatch(/role|Required/i)
+    ).rejects.toThrow(/role/i)
   })
 
   it('role is required for memory_ingest_session messages', async () => {
@@ -998,7 +1007,7 @@ describeIfPg('memory write idempotency', () => {
         ],
         agent: TEST_AGENT,
       }),
-    ).rejects.toMatch(/role|Required/i)
+    ).rejects.toThrow(/role/i)
   })
 
   it('C2/H2: event_id checked before ordinal, allows session extension', async () => {
@@ -1051,7 +1060,7 @@ describeIfPg('memory write idempotency', () => {
       source: 'test',
       channel: 'test',
     })
-    const parsed1 = JSON.parse(result1 as string)
+    const parsed1 = JSON.parse(toolText(result1))
     expect(parsed1.id).toBeDefined()
 
     // Append with whitespace event_id
@@ -1064,7 +1073,7 @@ describeIfPg('memory write idempotency', () => {
       source: 'test',
       channel: 'test',
     })
-    const parsed2 = JSON.parse(result2 as string)
+    const parsed2 = JSON.parse(toolText(result2))
     expect(parsed2.id).toBeDefined()
 
     // Both should have auto-generated event_ids (not shared empty key)
