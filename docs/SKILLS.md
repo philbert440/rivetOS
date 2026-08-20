@@ -100,6 +100,10 @@ runtime:
     - /rivet-shared/skills          # Team-shared skills (optional)
 ```
 
+Team-shared skills are how a mesh standardizes behavior: drop a skill in the shared directory once and every node that lists it picks it up. The first entry in `skill_dirs` is where `skill_manage create` writes, so keep the node-local directory first and the shared directory last. The MCP sidecar resolves its own skill directories separately, from `RIVETOS_SKILL_DIRS` (colon-separated) in the environment, falling back to `~/.rivetos/skills`; set it in `~/.rivetos/.env` so harness sessions see shared skills too.
+
+The reference team-shared skill is `unslop` (`/rivet-shared/skills/unslop/` on a running mesh): 31 rules for cutting AI tells from prose, ported from [pstack-claude](https://github.com/michael-denyer/pstack-claude) (MIT). Every agent applies it before publishing prose a human will read.
+
 ### Discovery flow
 
 ```

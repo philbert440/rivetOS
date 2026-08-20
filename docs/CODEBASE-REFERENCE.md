@@ -101,6 +101,13 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   ├── rivet-team-android/      # rivet-team Android (Apache-2.0 Compose)
 │   └── site/                    # Astro docs site (rivetos.dev)
 │
+├── integrations/                # Per-harness memory + den bridges (installed onto harness hosts)
+│   ├── claude-code/             # rivet-memory (marketplace plugin: hooks capture, MCP recall) + rivet-den
+│   ├── grok/                    # Grok Build CLI: JSONL-ingest capture worker + skills + rivet-den
+│   ├── grok-bot/                # Cursor Grok Bot: MCP recall + gated sidecar write tools (no auto-capture yet)
+│   ├── kimi/                    # Kimi Code CLI: TOML hooks, payload capture worker, backfill + rivet-den
+│   └── hermes/                  # Hermes: in-process Python provider (capture + prefetch injection)
+│
 ├── infra/                       # Container Dockerfiles + Compose + provisioning scripts
 │   ├── containers/
 │   │   ├── rivetos/             # Unified runtime image — built once, dispatched via `--role`

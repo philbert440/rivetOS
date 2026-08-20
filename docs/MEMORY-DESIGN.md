@@ -144,15 +144,29 @@ When a message or summary is returned in a search result, increment its access c
 
 ## Long-term memory (agent tools)
 
-### Consolidated tool surface (3 tools)
+### Consolidated tool surface (4 tools)
 
 | Tool | Description |
 |------|-------------|
 | `memory_search` | Unified search + auto-expand. Searches messages + summaries, auto-expands top summary hits to children/source messages. Supports FTS/trigram/regex modes, agent/date filters, optional LLM synthesis. |
 | `memory_browse` | Chronological message browsing. For reviewing sessions and catching up on activity. |
 | `memory_stats` | System health diagnostics. Embedding queue depth, unsummarized message counts, compaction status, summary tree depth, embedding coverage. |
+| `memory_get_full` | Recover the full payload of a capture-truncated row by id. Rows written by capture workers carry a disk pointer (`session_jsonl_path`/`line`); rows written through the sidecar write tools do not, and their elided tails are unrecoverable. |
 
-Consolidated from the original 6-tool design (`memory_grep`, `memory_expand`, `memory_describe`, `memory_expand_query`) down to 3 tools that require less LLM orchestration.
+Consolidated from the original 6-tool design (`memory_grep`, `memory_expand`, `memory_describe`, `memory_expand_query`) down to this surface that require less LLM orchestration.
+
+## Write surface (MCP sidecar)
+
+External MCP clients can write memory through two gated sidecar tools (added 2026-08 for the Grok Bot bridge, usable by any harness):
+
+| Tool | Description |
+|------|-------------|
+| `memory_append` | Append one message. `role` is required; `content` may be empty only for tool-call messages (`tool_name`/`tool_result` present), which feed the tool-synthesis pipeline. Accepts an optional `event_id` idempotency key; without one, a content-hash key is generated (identical repeated appends collapse by design; pass distinct `event_id`s to store true repeats). |
+| `memory_ingest_session` | Bulk-ingest a transcript. Each message requires `role` (**breaking change 2026-08-20**: the old silent `assistant` default is gone, because role is dedupe-hash material) and may carry an ISO `created_at`, preserved into the row so recall order survives replay. Idempotent: per-message event_ids include the ordinal, so retries skip stored rows while repeated identical lines still ingest. |
+
+Both tools register only when `RIVETOS_MCP_ENABLE_MEMORY_WRITE=1` (the write surface is off by default, like `shell` and `file_write`). Tags (`source`/`agent`/`channel`/`persona`) resolve from call args, then `RIVETOS_MEMORY_*` env, then `mcp` defaults; integration launchers pin them (the Grok Bot launcher sets `agent=rivet-grokbot`). Content and `tool_result` are capped at 16,000 chars with `truncated`/`full_content_length` reported back to the caller; unlike capture-worker truncation there is no disk pointer, so the tail is gone. Decide before writing.
+
+**Writer convention (load-bearing):** every `ros_messages` writer, capture workers and sidecar tools alike, takes `pg_advisory_xact_lock(hashtext(session_key))` before check-then-insert. Dedupe is convention-enforced, not schema-enforced; a new writer that skips the lock can race in duplicates.
 
 ## Background processing
 
