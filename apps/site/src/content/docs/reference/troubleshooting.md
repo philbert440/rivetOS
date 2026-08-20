@@ -4,7 +4,7 @@ sidebar:
   order: 3
 description: Common issues and how to fix them
 ---
-Common issues and fixes. Start with `rivetos doctor` — it checks everything.
+Common issues and fixes. Start with `rivetos doctor`; it checks everything.
 
 > The unified Compose stack lives at `infra/docker/rivetos/docker-compose.yml`. Throughout this doc, bare `docker compose ...` examples assume you've either passed `-f infra/docker/rivetos/docker-compose.yml` or exported `COMPOSE_FILE=infra/docker/rivetos/docker-compose.yml` from the repo root.
 
@@ -78,20 +78,20 @@ npx rivetos start
 
 1. **Is the agent running?** `npx rivetos status`
 2. **Is the provider reachable?** `npx rivetos test`
-3. **Is the API key valid?** Check `.env` — keys must not have quotes or trailing whitespace
+3. **Is the API key valid?** Check `.env`; keys must not have quotes or trailing whitespace
 4. **Is the channel connected?** Check `npx rivetos logs` for connection errors
 
 ### "429 Too Many Requests" or "529 Overloaded"
 
 The provider is rate limiting you or overloaded.
 
-**Fix:** Provider fallback chains were removed in the AI SDK migration, and there is no circuit breaker in front of providers — a rate-limited provider keeps being retried by the AI SDK's own retry policy. If a provider is down or throttling you, switch the agent's `provider:` setting until it recovers.
+**Fix:** Provider fallback chains were removed in the AI SDK migration, and there is no circuit breaker in front of providers; a rate-limited provider keeps being retried by the AI SDK's own retry policy. If a provider is down or throttling you, switch the agent's `provider:` setting until it recovers.
 
 ### "Maximum tool iterations reached"
 
 The agent hit the safety cap (default: 100 iterations per turn).
 
-**Fix:** This is usually correct behavior — the agent was in a loop. If you need more iterations for a specific task:
+**Fix:** This is usually correct behavior: the agent was in a loop. If you need more iterations for a specific task:
 
 ```yaml
 runtime:
@@ -238,7 +238,7 @@ see reconnect loops or bot-token errors, remove those keys from `config.yaml`
 and use RivetHub against the node gateway instead.
 
 Leftover `channels.telegram:` / `channels.discord:` only produce an
-**unknown channel type warning** at boot — they do not crash-loop the node.
+**unknown channel type warning** at boot; they do not crash-loop the node.
 
 ---
 
@@ -295,7 +295,7 @@ docker compose up -d
 
 ### Agent lost its workspace after update
 
-This should not happen — workspace files are on bind mounts. Check:
+This should not happen; workspace files are on bind mounts. Check:
 
 ```bash
 # Verify mount

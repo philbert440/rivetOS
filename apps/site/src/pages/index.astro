@@ -1,5 +1,5 @@
 ---
-// rivetos.dev landing — custom page, brand design system (emerald-on-dark,
+// rivetos.dev landing: custom page, brand design system (emerald-on-dark,
 // DM Sans + JetBrains Mono, blueprint grid). Docs remain Starlight; this
 // replaces only the splash. Assets self-hosted except Google Fonts.
 import demoGif from '../assets/den-demo.gif'
@@ -12,10 +12,10 @@ const GH = 'https://github.com/philbert440/rivetos'
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RivetOS — run your own agents, watch them work</title>
+    <title>RivetOS: run your own agents, watch them work</title>
     <meta
       name="description"
-      content="A lightweight agent runtime you self-host. Persistent memory, a multi-agent mesh, pluggable providers and channels — and a live pixel diorama of your agent at work."
+      content="A lightweight agent runtime you self-host. Persistent memory, a multi-agent mesh, pluggable providers and channels, plus a live pixel diorama of your agent at work."
     />
     <meta property="og:title" content="RivetOS" />
     <meta property="og:description" content="Run your own agents. Watch them work." />
@@ -44,7 +44,7 @@ const GH = 'https://github.com/philbert440/rivetos'
       <div class="hero-copy">
         <h1>Run your own agents.<br /><em>Watch them work.</em></h1>
         <p class="tagline">
-          RivetOS is a lightweight agent runtime you self-host — a tiny stable core, everything
+          RivetOS is a lightweight agent runtime you self-host: a tiny stable core, everything
           else a plugin. Persistent memory, a multi-agent mesh, seven LLM providers, and a live
           diorama of what your agent is doing right now.
         </p>
@@ -66,7 +66,7 @@ const GH = 'https://github.com/philbert440/rivetos'
           loading="eager"
         />
         <figcaption>
-          rivet-den — your session, live: plans on the whiteboard, real commands on the terminal,
+          rivet-den, your session live: plans on the whiteboard, real commands on the terminal,
           compaction is a nap.
         </figcaption>
       </figure>
@@ -78,7 +78,7 @@ const GH = 'https://github.com/philbert440/rivetos'
           <h2><span class="index">01</span> Runs on your hardware</h2>
           <p>
             The container is the product: Docker on a laptop, LXC on Proxmox, one config file.
-            Providers are plugins — Anthropic, xAI, Google, or fully local via Ollama, vLLM, and
+            Providers are plugins: Anthropic, xAI, Google, or fully local via Ollama, vLLM, and
             llama.cpp. Your keys, your GPUs, your rules.
           </p>
         </div>
@@ -115,7 +115,7 @@ const GH = 'https://github.com/philbert440/rivetos'
         <div class="act-copy">
           <h2><span class="index">03</span> A fleet, not a bot</h2>
           <p>
-            Run one agent or several — different models, one shared memory. Agents delegate to
+            Run one agent or several: different models, one shared memory. Agents delegate to
             each other over an mTLS mesh: the reasoning model plans, the fast one executes, the
             local one stays free. Same runtime on every node.
           </p>
@@ -161,7 +161,7 @@ const GH = 'https://github.com/philbert440/rivetos'
 </html>
 
 <style>
-  /* Rivet brand tokens (canonical — see design system) */
+  /* Rivet brand tokens (canonical; see design system) */
   :root {
     --bg: #101412;
     --fg: #e8ede5;
@@ -194,7 +194,7 @@ const GH = 'https://github.com/philbert440/rivetos'
     color: var(--fg);
     font-family: var(--font-sans);
     line-height: 1.6;
-    /* blueprint grid — the signature motif */
+    /* blueprint grid, the signature motif */
     background-image:
       linear-gradient(var(--border) 1px, transparent 1px),
       linear-gradient(90deg, var(--border) 1px, transparent 1px);

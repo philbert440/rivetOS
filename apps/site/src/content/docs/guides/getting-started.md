@@ -21,7 +21,7 @@ Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or *
 
 ## Option A: Interactive Setup (Recommended)
 
-The `rivetos init` wizard walks you through everything — deployment target, agent configuration, API keys, channels, and generates your config automatically.
+The `rivetos init` wizard walks you through everything: deployment target, agent configuration, API keys, channels, and generates your config automatically.
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git
@@ -176,7 +176,7 @@ Edit both files as described in Option B, steps 2-3.
 mkdir -p ~/.rivetos/workspace/memory
 ```
 
-Add your workspace files (templates ship under `workspace-templates/` in the repo — `rivetos init` copies them in for you):
+Add your workspace files (templates ship under `workspace-templates/` in the repo; `rivetos init` copies them in for you):
 
 | File | Purpose | Required? |
 |---|---|---|
@@ -212,7 +212,7 @@ Workspace files are markdown documents injected into the agent's system prompt. 
 
 ### Required Files
 
-**`CORE.md`** — Agent identity, personality, values, and behavioral rules.
+**`CORE.md`**: agent identity, personality, values, and behavioral rules.
 ```markdown
 # CORE.md — Who You Are
 
@@ -224,7 +224,7 @@ You are a helpful AI assistant named Rivet.
 - Ask before making destructive changes
 ```
 
-**`USER.md`** — Information about the person the agent is helping.
+**`USER.md`**: information about the person the agent is helping.
 ```markdown
 # USER.md — About Your Human
 
@@ -233,7 +233,7 @@ You are a helpful AI assistant named Rivet.
 - **Preferences:** TypeScript, Next.js, direct communication
 ```
 
-**`WORKSPACE.md`** — Operating rules, safety boundaries, and conventions.
+**`WORKSPACE.md`**: operating rules, safety boundaries, and conventions.
 ```markdown
 # WORKSPACE.md — Operating Rules
 
@@ -250,13 +250,13 @@ You are a helpful AI assistant named Rivet.
 
 ### Optional Files
 
-**`MEMORY.md`** — A lightweight index into the memory system. The agent uses this to know what to search for.
+**`MEMORY.md`**: a lightweight index into the memory system. The agent uses this to know what to search for.
 
-**`CAPABILITIES.md`** — Extended reference for tools, skills, and infrastructure. Included in the system prompt for local models where token cost isn't a concern.
+**`CAPABILITIES.md`**: extended reference for tools, skills, and infrastructure. Included in the system prompt for local models where token cost isn't a concern.
 
-**`HEARTBEAT.md`** — Instructions for periodic background tasks. Only injected during heartbeat turns, not regular conversation.
+**`HEARTBEAT.md`**: instructions for periodic background tasks. Only injected during heartbeat turns, not regular conversation.
 
-**`memory/YYYY-MM-DD.md`** — Daily notes. The agent reads recent daily notes for context continuity between sessions.
+**`memory/YYYY-MM-DD.md`**: daily notes. The agent reads recent daily notes for context continuity between sessions.
 
 ---
 
@@ -266,7 +266,7 @@ Once your agent is running, talk to it through whichever channel you configured:
 
 **Hub:** Open RivetHub pointed at this node's gateway and start a harness session.
 
-> The agent HTTP channel (`POST /api/message`) is an mTLS-authenticated endpoint for **inter-agent / mesh delegation**, not a casual chat API — it expects a `{ fromAgent, message }` envelope over HTTPS with client certs. See [Mesh Networking](/guides/mesh/).
+> The agent HTTP channel (`POST /api/message`) is an mTLS-authenticated endpoint for **inter-agent / mesh delegation**, not a casual chat API; it expects a `{ fromAgent, message }` envelope over HTTPS with client certs. See [Mesh Networking](/guides/mesh/).
 
 ### Useful Commands
 
@@ -345,12 +345,12 @@ rivetos skills list
 - **[Channel Setup](/guides/channels/)**: Connect to Discord, Telegram, voice, and agent-to-agent messaging
 - **[Provider Setup](/guides/providers/)**: Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
 - **[Mesh Networking](/guides/mesh/)**: Multi-node fleets with mTLS delegation
-- **[Configuration Reference](/reference/config/)** — Every config option explained
-- **[Architecture](/reference/architecture/)** — How the system works
+- **[Configuration Reference](/reference/config/)**: every config option explained
+- **[Architecture](/reference/architecture/)**: how the system works
 - **[Plugins](/guides/plugins/)**: How to write your own channel, provider, or tool
 - **[Skills](/guides/skills/)**: How to write and share skills
 - **[Deployment](/guides/deployment/)**: Docker, Proxmox, multi-agent, networking
-- **[Troubleshooting](/reference/troubleshooting/)** — Common issues and fixes
+- **[Troubleshooting](/reference/troubleshooting/)**: common issues and fixes
 
 ---
 

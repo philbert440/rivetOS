@@ -1,6 +1,6 @@
 ---
 title: Channels
-description: Channel plugins — social bots removed; agent mesh remains
+description: Channel plugins: social bots removed; agent mesh remains
 ---
 
 # Channels
@@ -29,7 +29,7 @@ Remove the stale keys when convenient. `rivetos doctor` no longer probes Discord
 
 ## Remaining first-party channel: agent (mesh)
 
-`@rivetos/channel-agent` (`plugins/channels/agent/`) is the agent-to-agent mesh channel. It is **not** social UX — it is for cross-node messaging over mTLS.
+`@rivetos/channel-agent` (`plugins/channels/agent/`) is the agent-to-agent mesh channel. It is **not** social UX; it is for cross-node messaging over mTLS.
 
 ```yaml
 channels:

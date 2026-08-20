@@ -12,7 +12,7 @@ description: Single-CA mTLS trust model for MCP and mesh
 
 ## TL;DR
 
-One X.509 CA — **`rivet-ca`** — is the trust root for the entire Rivet
+One X.509 CA, **`rivet-ca`**, is the trust root for the entire Rivet
 collective. Every inter-node hop is mTLS, signed by this one CA:
 
 - **MCP server ↔ clients** (internal agents + eventually Claude Desktop / Cursor)
@@ -20,7 +20,7 @@ collective. Every inter-node hop is mTLS, signed by this one CA:
 - **Mesh agent-channel** (replaces the current shared-secret HMAC on `:3000`)
 - **Runtime-RPC** (the Phase-2 south-bound channel from MCP → runtime nodes)
 
-The legacy shared secret (`mesh.secret`) survives only as **bootstrap** — a
+The legacy shared secret (`mesh.secret`) survives only as **bootstrap**, a
 brand-new node uses it once to prove identity and pull its first cert, then
 never again.
 
@@ -87,10 +87,10 @@ Certs cannot be used to impersonate another agent.
 
 ## Bootstrap Path (the one place `mesh.secret` still lives)
 
-> ⚠️ **DESIGN PROPOSAL — NOT IMPLEMENTED.** The `datahub:/enroll` CSR flow
+> ⚠️ **DESIGN PROPOSAL, NOT IMPLEMENTED.** The `datahub:/enroll` CSR flow
 > below describes the intended auto-enrollment path; no code implements it
 > today. Nodes are provisioned with certs out of band (`provision-ct.sh`).
-> This section is the target design, not current behavior — don't script
+> This section is the target design, not current behavior; don't script
 > against `datahub:/enroll` yet.
 
 1. New node spins up with `mesh.secret` in its env.
@@ -100,7 +100,7 @@ Certs cannot be used to impersonate another agent.
 5. **Every subsequent call is mTLS.** `mesh.secret` is never sent again.
 
 One release after cutover, `mesh.secret` is renamed `bootstrap.secret` and
-gated to `datahub:/enroll` only — no other endpoint will accept it.
+gated to `datahub:/enroll` only; no other endpoint will accept it.
 
 ## Phase Map
 
@@ -125,13 +125,13 @@ gated to `datahub:/enroll` only — no other endpoint will accept it.
 - **Per-agent allow-lists.** Auth says *who you are*; allow-lists say *what
   you're allowed to call*. Still required.
 - **MEMORY.md secrecy convention.** Client-side filtering of sensitive
-  memory hits stays on the agent side by design — MCP server doesn't know
+  memory hits stays on the agent side by design; the MCP server doesn't know
   which results are sensitive.
 
 ## Open follow-ups
 
 - Should agent client certs rotate independently of node certs, or piggyback?
-  *Lean: piggyback — one rotation event per node, all agents on that node
+  *Lean: piggyback, one rotation event per node, all agents on that node
   re-issued at the same time.*
 - HSM-backed root key storage once the collective has anything worth
   protecting. Fine without it during the design phase.

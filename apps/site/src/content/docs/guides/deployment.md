@@ -38,11 +38,11 @@ docker compose -f infra/docker/rivetos/docker-compose.yml up -d
 
 ### Multi-Agent
 
-The unified Compose stack ships a single `agent` service. Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh — see [Mesh Networking](/guides/mesh/) — rather than as N agent services in one Compose file. The CLI's `rivetos agent add` and `rivetos init --join` walk you through this.
+The unified Compose stack ships a single `agent` service. Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh (see [Mesh Networking](/guides/mesh/)) rather than as N agent services in one Compose file. The CLI's `rivetos agent add` and `rivetos init --join` walk you through this.
 
 ### Docker Compose Architecture
 
-The unified stack runs five services off two images: upstream `pgvector/pgvector:pg16` for the database and a single role-dispatched runtime image (`rivetos`). Schema is applied by the `migrate` role at stack startup — there is no custom datahub image to build or push. Only `migrate` and `agent` are CLI roles; the two memory workers ship in the same image but run as plain node processes and sit behind the `workers` compose profile, so a bare `up` skips them.
+The unified stack runs five services off two images: upstream `pgvector/pgvector:pg16` for the database and a single role-dispatched runtime image (`rivetos`). Schema is applied by the `migrate` role at stack startup ; there is no custom datahub image to build or push. Only `migrate` and `agent` are CLI roles; the two memory workers ship in the same image but run as plain node processes and sit behind the `workers` compose profile, so a bare `up` skips them.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -144,7 +144,7 @@ deployment:
 
 Use the provisioning scripts under `infra/scripts/` and the Compose files under
 `infra/docker/` to stand up containers on each node. There is no
-unified `rivetos infra` command — provisioning is intentionally script-driven so
+unified `rivetos infra` command; provisioning is intentionally script-driven so
 you keep full control over Proxmox/Docker semantics.
 
 ### Proxmox Architecture
@@ -243,7 +243,7 @@ When an agent receives a `delegate_task` targeting an agent that isn't local:
 4. Remote agent processes the task
 5. Result returned to the requesting agent
 
-This is transparent — the requesting agent doesn't know or care whether the delegate is local or remote.
+This is transparent: the requesting agent doesn't know or care whether the delegate is local or remote.
 
 ### Mesh Configuration
 
@@ -458,4 +458,4 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget -qO- http://localhost:3100/health/live || exit 1
 ```
 
-Docker Compose uses this for dependency ordering — agents wait for the datahub to be healthy before starting.
+Docker Compose uses this for dependency ordering; agents wait for the datahub to be healthy before starting.

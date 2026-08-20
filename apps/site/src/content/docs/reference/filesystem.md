@@ -16,7 +16,7 @@ RivetOS separates its files across three root directories by concern:
 | `~/.rivetos/` (typically `/home/rivet/.rivetos/`) | Personal config + workspace for this instance | The agent + its human |
 | `/rivet-shared/` (or equivalent NFS mount) | Shared dev + multi-agent collaboration | Any agent, shared |
 
-Agents should treat these boundaries as hard contracts. Never assume or hallucinate paths — if unsure, consult this file.
+Agents should treat these boundaries as hard contracts. Never assume or hallucinate paths. If unsure, consult this file.
 
 ---
 
@@ -56,17 +56,17 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 
 **What belongs:**
 
-- `config.yaml` — primary configuration (`runtime.workspace`, agents, providers, channels, memory, MCP, etc.)
-- `.env` — secrets and environment variables (API keys, DB URLs, tokens). **Never commit.**
+- `config.yaml`: primary configuration (`runtime.workspace`, agents, providers, channels, memory, MCP, etc.)
+- `.env`: secrets and environment variables (API keys, DB URLs, tokens). **Never commit.**
 - `workspace/`: the directory referenced by `runtime.workspace`:
-  - `CORE.md` — identity, personality, operating values (injected every turn)
-  - `USER.md` — who the human is
-  - `WORKSPACE.md` — operating rules, safety boundaries
-  - `MEMORY.md` — lightweight context index (main sessions only — see note in the file)
-  - `CAPABILITIES.md` — tools + skills inventory
-  - `HEARTBEAT.md` — background task checklist (injected on heartbeat turns only)
-  - `FILESYSTEM.md` — mirror of this guide
-  - `memory/YYYY-MM-DD.md` — daily rolling notes
+  - `CORE.md`: identity, personality, operating values (injected every turn)
+  - `USER.md`: who the human is
+  - `WORKSPACE.md`: operating rules, safety boundaries
+  - `MEMORY.md`: lightweight context index (main sessions only; see note in the file)
+  - `CAPABILITIES.md`: tools + skills inventory
+  - `HEARTBEAT.md`: background task checklist (injected on heartbeat turns only)
+  - `FILESYSTEM.md`: mirror of this guide
+  - `memory/YYYY-MM-DD.md`: daily rolling notes
   - `skills/`: per-instance skill directories (optional)
 
 **Agent rules:**
@@ -74,7 +74,7 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 - **Full read/write access** for self-management.
 - Primary location for updating your identity, rules, memory, and daily context.
 - Use `ToolContext.workspace` path when available; otherwise resolve to `config.yaml`'s `runtime.workspace` value.
-- Keep this directory clean and well-organized — the files here are injected into your context on every turn.
+- Keep this directory clean and well-organized; the files here are injected into your context on every turn.
 
 **Default config:** `runtime.workspace: ~/.rivetos/workspace` (init wizard sets this; `~` expands to `$HOME`).
 
@@ -93,7 +93,7 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 
 ## 3. Shared Collaboration: `/rivet-shared/`
 
-Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent) shared by every agent on the mesh, typically also mounted on the human's workstation. Neutral territory — not tied to any single agent's config.
+Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent) shared by every agent on the mesh, typically also mounted on the human's workstation. Neutral territory , not tied to any single agent's config.
 
 **What belongs:**
 

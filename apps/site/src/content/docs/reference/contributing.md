@@ -10,7 +10,7 @@ Thanks for your interest in contributing! This guide covers development setup, t
 
 ## Prerequisites
 
-- **Node.js ≥ 22** (24 is used in CI and containers) — [download](https://nodejs.org)
+- **Node.js ≥ 22** (24 is used in CI and containers): [download](https://nodejs.org)
 - **npm** (comes with Node)
 - **Git**
 
@@ -177,17 +177,17 @@ Types → Domain → Runtime → Boot
 - `packages/types`: Interfaces and contracts. Its only workspace dependency is `@rivetos/den-protocol`.
 - `packages/core/src/domain`: Pure domain logic. Depends on types only.
 - `packages/core/src/runtime/`: Application layer. Thin compositor with focused modules:
-  - `runtime.ts` — registration, routing, lifecycle
-  - `turn-handler.ts` — single message turn processing
-  - `media.ts` — attachment resolution and multimodal content
-  - `streaming.ts` — stream events → channel delivery
-  - `sessions.ts` — session lifecycle and history
-  - `commands.ts` — slash command processing
+  - `runtime.ts`: registration, routing, lifecycle
+  - `turn-handler.ts`: single message turn processing
+  - `media.ts`: attachment resolution and multimodal content
+  - `streaming.ts`: stream events → channel delivery
+  - `sessions.ts`: session lifecycle and history
+  - `commands.ts`: slash command processing
 - `packages/boot/`: Composition root. The only layer that knows concrete plugin types. Uses registrars to wire everything.
 - `packages/cli/`: Command-line interface. Imports from `@rivetos/boot`.
 - `plugins/*`: Implement interfaces from `@rivetos/types`. No cross-plugin imports.
 
-**Platform-specific concerns stay in plugins.** Message splitting, typing indicators, API format differences — these belong in the channel or provider plugin, not in the runtime.
+**Platform-specific concerns stay in plugins.** Message splitting, typing indicators, API format differences belong in the channel or provider plugin, not in the runtime.
 
 ## Adding a New Plugin
 
@@ -214,7 +214,7 @@ npx nx g @rivetos/nx:plugin --type=tool --name=database --description="SQL query
 
 After scaffolding:
 
-1. **Implement** the interface in `src/index.ts` — the stub has TODO comments for each method.
+1. **Implement** the interface in `src/index.ts`; the stub has TODO comments for each method.
 2. **Register** the plugin in `packages/boot/` via a registrar.
 3. **Write tests**: the skeleton test file is ready to fill in.
 4. **Verify:**
@@ -343,7 +343,7 @@ RivetOS uses convention-based plugin discovery. Every plugin declares itself in 
 }
 ```
 
-Boot scans `plugins/*/package.json` for the `rivetos` field. Config determines which plugins load. You don't need to edit any registrar files — just add the manifest and reference the plugin in config.
+Boot scans `plugins/*/package.json` for the `rivetos` field. Config determines which plugins load. You don't need to edit any registrar files; just add the manifest and reference the plugin in config.
 
 For user plugins outside the monorepo, add their directory to config:
 ```yaml
@@ -364,7 +364,7 @@ npx rivetos build
 npx nx build container-rivetos
 ```
 
-The Postgres datahub uses upstream `pgvector/pgvector:pg16` directly — schema is applied by the `migrate` role at stack startup, so there is no custom datahub image to build.
+The Postgres datahub uses upstream `pgvector/pgvector:pg16` directly; schema is applied by the `migrate` role at stack startup, so there is no custom datahub image to build.
 
 ### Run the stack
 
@@ -373,13 +373,13 @@ The Postgres datahub uses upstream `pgvector/pgvector:pg16` directly — schema 
 docker compose -f infra/docker/rivetos/docker-compose.yml up -d
 ```
 
-Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh — see `docs/mesh.md` — rather than as N agent services in one Compose file.
+Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh (see `docs/mesh.md`) rather than as N agent services in one Compose file.
 
 ### Data persistence
 
 Containers are stateless. All data lives on the host:
-- `~/.rivetos/config.yaml` — configuration (bind mount, read-only)
-- `~/.rivetos/.env` — secrets (bind mount, read-only)
+- `~/.rivetos/config.yaml`: configuration (bind mount, read-only)
+- `~/.rivetos/.env`: secrets (bind mount, read-only)
 - `rivetos-pgdata`: PostgreSQL (named volume)
 
 See [infra/containers/DATA-PERSISTENCE.md](infra/containers/DATA-PERSISTENCE.md) for details.

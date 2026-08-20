@@ -2,7 +2,7 @@
 title: Provider Setup
 sidebar:
   order: 6
-description: How to configure LLM providers — Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
+description: How to configure LLM providers: Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
 ---
 
 Providers connect your agents to large language models. Each provider plugin handles API authentication, streaming, tool calling format differences, and thinking/reasoning support so your agent config stays clean.
@@ -29,7 +29,7 @@ RivetOS ships with six provider plugins:
 3. Go to **API Keys** → **Create Key**
 4. Copy the key (starts with `sk-ant-`)
 
-Prefer subscription/OAuth auth over an API key? Use the **`claude-cli` provider** instead — it drives the local `claude` binary (Claude Code CLI), which owns the OAuth flow. Run `claude login` once via the CLI itself; RivetOS does not handle the OAuth handshake. See the `claude-cli` provider in the [Configuration Reference](/reference/config/).
+Prefer subscription/OAuth auth over an API key? Use the **`claude-cli` provider** instead; it drives the local `claude` binary (Claude Code CLI), which owns the OAuth flow. Run `claude login` once via the CLI itself; RivetOS does not handle the OAuth handshake. See the `claude-cli` provider in the [Configuration Reference](/reference/config/).
 
 ### 2. Configure
 
@@ -204,7 +204,7 @@ agents:
 
 ## Ollama (Local Models)
 
-[Ollama](https://ollama.com/) runs models locally on your machine. No API key needed, no usage costs — just hardware.
+[Ollama](https://ollama.com/) runs models locally on your machine. No API key needed, no usage costs, just hardware.
 
 ### 1. Install Ollama
 
@@ -228,7 +228,7 @@ Browse available models at [ollama.com/library](https://ollama.com/library).
 
 ### 3. Configure
 
-No `.env` needed — Ollama runs locally without authentication.
+No `.env` needed; Ollama runs locally without authentication.
 
 ```yaml
 providers:
@@ -255,7 +255,7 @@ agents:
 
 ### Tips
 
-- **Set `local: true` on the agent** — this includes extended workspace context (CAPABILITIES.md, daily notes) since tokens are free with local inference.
+- **Set `local: true` on the agent**; this includes extended workspace context (CAPABILITIES.md, daily notes) since tokens are free with local inference.
 - **`num_ctx`** is critical for tool-using agents. Most models default to 2048-4096 tokens, which isn't enough. Set `8192` or higher.
 - **`keep_alive`** controls how long the model stays in VRAM after the last request. Set to `0` to unload immediately, or `24h` to keep it warm.
 - **Remote Ollama:** If Ollama runs on a different machine, change `base_url` to point at it (e.g., `http://192.0.2.50:11434`).
@@ -315,7 +315,7 @@ with a `--reasoning-parser`; the AI SDK reasoning surface consumes `reasoning_co
 
 Dedicated provider for llama.cpp's `llama-server`. Deliberately lean: the standard
 OpenAI sampling knobs plus llama.cpp's `top_k` / `min_p` and a generic `extra_body`
-escape hatch (grammar, `n_probs`, …). It carries none of the vLLM-only machinery —
+escape hatch (grammar, `n_probs`, …). It carries none of the vLLM-only machinery;
 use the `vllm` provider for that.
 
 Start a server: `llama-server -m <model.gguf> --port 8080 [--reasoning-format deepseek]`.
@@ -376,5 +376,5 @@ npx rivetos status
 ## Next Steps
 
 - **[Channel Setup](/guides/channels/)**: Connect your agents to Discord, Telegram, voice
-- **[Configuration Reference](/reference/config/)** — Full option tables for all config sections
+- **[Configuration Reference](/reference/config/)**: full option tables for all config sections
 - **[Plugin Development](/guides/plugins/)**: Build your own provider plugin

@@ -8,7 +8,7 @@ description: RivetOS as a harness-first per-node control plane
 > The harness owns the coding loop. Rivet owns sessions, identity, capture/memory,
 > den, mesh, tasks, and the gateway contract.
 >
-> Last updated: 2026-08-09 (Phase 5 docs rewrite — harness control plane as product frame;
+> Last updated: 2026-08-09 (Phase 5 docs rewrite: harness control plane as product frame;
 > preserves accuracy from the #453 staleness sweep).
 >
 > Product plan: [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md).
@@ -37,9 +37,9 @@ Web / Desktop / Android
 |-----|------|
 | **Harness** (Claude Code, Grok Build, Kimi Code, Hermes) | Coding loop: tools, model turns, approvals UI inside the TUI, interrupt, native session store |
 | **Rivet** (this node) | Sessions identity, capture/memory, den, mesh, tasks, gateway HTTP+WS, Hub/Android/desktop clients |
-| **Clients** (Hub web, desktop, Android) | Full clients of the **same** gateway — not separate agent runtimes |
+| **Clients** (Hub web, desktop, Android) | Full clients of the **same** gateway, not separate agent runtimes |
 
-**Out of product scope (Phase 0 freeze):** social channels as first-class UX (Telegram, Discord, voice-discord — **removed** in Phase 5); AI-SDK chat as the interactive product loop (AI SDK remains for non-harness / headless / provider plugins only until an optional later ProviderPort extract).
+**Out of product scope (Phase 0 freeze):** social channels as first-class UX (Telegram, Discord, voice-discord, **removed** in Phase 5); AI-SDK chat as the interactive product loop (AI SDK remains for non-harness / headless / provider plugins only until an optional later ProviderPort extract).
 
 **Not Rivet's job:** re-implementing a coding tool loop that competes with the harnesses.
 
@@ -161,7 +161,7 @@ Flags reflect what is actually available on the node, not aspirations:
 | `listSessions` | true | store scan |
 
 All four reject `cwd`/`model` on `startSession` (roster-owned) and attachments on
-`sendUserTurn` with `capability_unsupported` — a PTY paste cannot hand a file to
+`sendUserTurn` with `capability_unsupported`. A PTY paste cannot hand a file to
 a TUI. Upload staging (`POST /api/uploads`) exists for clients; no PTY driver
 consumes staged URIs yet.
 
@@ -181,7 +181,7 @@ SessionId = <harness-id> ":" <native-session-id>
 - Gateway path params use `enc(SessionId)` = **unpadded base64url** of the UTF-8 SessionId.
 - Capture key: `ros_conversations.session_key` = exact `SessionId` (with `agent`).
 - Legacy shapes (bare uuid, Claude path-fallback) resolve as **aliases** on the read path; write-side full canonicalization is still landing (see plan).
-- **Rotation:** driver emits `session-updated` with `previousSessionId`; control plane stores alias, re-keys live subscriptions, retires old id from `listSessions`. Hermes is the real rotating customer; capture writes a durable breadcrumb (`metadata.kind='session-rotation'`). Registry aliases are in-memory — breadcrumb is the durable link across restarts.
+- **Rotation:** driver emits `session-updated` with `previousSessionId`; control plane stores alias, re-keys live subscriptions, retires old id from `listSessions`. Hermes is the real rotating customer; capture writes a durable breadcrumb (`metadata.kind='session-rotation'`). Registry aliases are in-memory; the breadcrumb is the durable link across restarts.
 - **Tasks:** harness spawns write under canonical SessionId + `ros_conversations.task_id`; `Memory.getTaskHistory` unions by `task_id` **or** legacy `session_key = 'task:<id>'`. `RIVETOS_SESSION_KEY=task:<id>` write override is deprecated (still honored for in-flight deploys).
 
 Full normative rules: [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md) § Session identity.
@@ -208,7 +208,7 @@ den dispatches by literal path prefixes (no dynamic segments). Contract names ma
 
 **Why `/api/harness-sessions` not `/api/sessions`:** `/api/sessions` is owned by the gateway chat channel handler. **Why WS on query string:** upgrade mounts match exact paths.
 
-**Stream continuity:** `subscribe` is an at-most-once live tail from attach time — no replay. Clients hard-resync from transcript on every (re)connect.
+**Stream continuity:** `subscribe` is an at-most-once live tail from attach time, no replay. Clients hard-resync from transcript on every (re)connect.
 
 ### Clients on the plane
 
@@ -301,7 +301,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 
 **Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types. **No plugin depends on `@rivetos/core`.** Providers reach the shared AI SDK adapter through `@rivetos/aisdk`.
 
-**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot` — `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code` (the kimi task executor) — so a default install always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the two that are also plugins — the claude-cli provider and the memory-postgres backend — are still registered the same way as every other plugin, through discovery and `manifest.register()`.
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code` (the kimi task executor). A default install therefore always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`.
 
 ---
 
@@ -489,9 +489,9 @@ rivetOS/
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
 
-Skills are not part of the source tree — they are user-managed and live under the runtime workspace (default `~/.rivetos/workspace/skills/`). See [Skills](/guides/skills/).
+Skills are not part of the source tree. They are user-managed and live under the runtime workspace (default `~/.rivetos/workspace/skills/`). See [Skills](/guides/skills/).
 
-**Container roles:** the unified `rivetos` image accepts `--role agent | migrate` only. Datahub is upstream `pgvector/pgvector:pg16` — there is no custom datahub image. Flag `--role` wins over env `RIVETOS_ROLE` (env seeds; flag overwrites). An invalid `RIVETOS_ROLE` is rejected at startup — it fails loudly (`unknown role`, exit 1) rather than silently booting an agent.
+**Container roles:** the unified `rivetos` image accepts `--role agent | migrate` only. Datahub is upstream `pgvector/pgvector:pg16`; there is no custom datahub image. Flag `--role` wins over env `RIVETOS_ROLE` (env seeds; flag overwrites). An invalid `RIVETOS_ROLE` is rejected at startup, failing loudly (`unknown role`, exit 1) rather than silently booting an agent.
 
 **Workers** are separate long-running processes (Compose profile `workers` or systemd), not "Datahub services". They pull jobs from a Postgres-backed graphile-worker queue (INSERT triggers + crons), not LISTEN/NOTIFY.
 
@@ -526,7 +526,7 @@ export interface HarnessDriver {
 }
 ```
 
-Gateway and Hub never talk to harness binaries directly — only through drivers.
+Gateway and Hub never talk to harness binaries directly, only through drivers.
 Reference implementation: `services/den-server/src/harness/claude-driver.ts`.
 Shared suite: `harness/test/driver-conformance.ts` (rotation).
 
@@ -545,7 +545,7 @@ interface Provider {
 ```
 
 The primary method is `chatStream()`. Providers power the AI-SDK AgentLoop path,
-heartbeats, and some task/chat-loop executors — **not** Hub interactive coding
+heartbeats, and some task/chat-loop executors, **not** Hub interactive coding
 sessions (those are harness-owned).
 
 Reference implementation: `plugins/providers/anthropic/`
@@ -557,7 +557,7 @@ Reference implementation: `plugins/providers/anthropic/`
 > installs keep working, but they are not first-class product surface. Do not
 > invest in feature parity. Removal is a Phase 5 prune item.
 >
-> **Exception:** the **agent** channel (`@rivetos/channel-agent`) stays — it is
+> **Exception:** the **agent** channel (`@rivetos/channel-agent`) stays; it is
 > the mesh / inter-agent HTTP surface, not a social bot.
 
 ```typescript
@@ -625,7 +625,7 @@ Workers: `services/embedding-worker/`, `services/compaction-worker/`.
 
 ### Transport: exposes RivetOS over an inbound protocol
 
-Transports have no `core` interface — each opens its own listening surface.
+Transports have no `core` interface; each opens its own listening surface.
 `manifest.register(ctx)` binds the surface and registers shutdown via
 `ctx.registerShutdown()`. Use `ctx.onRegistrationComplete()` to enumerate tools
 after every other plugin has registered.
@@ -662,7 +662,7 @@ calls `manifest.register(ctx)`. One manifest-driven loader handles every plugin 
 Client or task supplies `SessionId` (or bare native id on legacy UI keys) →
 gateway / registry resolves harness → driver method. Hub badges harness id on
 drawer rows. Bare UUIDs are probed across uuid-shaped stores (claude, then
-grok, …); kimi natives are `session_<uuid>` and **must** be sent canonical —
+grok, …); kimi natives are `session_<uuid>` and **must** be sent canonical;
 the bare-uuid probe never claims them.
 
 ### Secondary: social channel binding: removed (Phase 5)
@@ -733,7 +733,7 @@ Composable async pipeline with priority ordering (0-99):
 - **Session hooks**: Daily context loading, session summaries, auto-commit, pre/post-compact
 
 Harness-side hooks (claude/grok/kimi/hermes den + memory integrations) are
-**outside** this pipeline — they feed den AgentEvents and capture, not the AI-SDK hook bus.
+**outside** this pipeline; they feed den AgentEvents and capture, not the AI-SDK hook bus.
 
 ---
 
@@ -760,7 +760,7 @@ Env contract for real executors: `RIVETOS_TASK_ID` set, inherited
 - Capture plugins (under `integrations/*/rivet-memory`) write under canonical `SessionId` where possible.
 - Mesh-shared DB: disambiguate by `agent` column; native id entropy is the collision defense.
 - Hermes rotation: alias + breadcrumb (not close+new). Predecessor stays open until true session end.
-- Compaction / embedding: graphile-worker jobs from SQL triggers and crons in the worker packages — not LISTEN/NOTIFY.
+- Compaction / embedding: graphile-worker jobs from SQL triggers and crons in the worker packages, not LISTEN/NOTIFY.
 - Wiki extraction lives on the compaction-worker task set.
 
 See [MEMORY-DESIGN.md](/reference/memory-design/).
@@ -832,7 +832,7 @@ deployment:
 #       cwd: /path/to/work
 ```
 
-`target` is the only key consumed at runtime under `deployment:` — provisioning
+`target` is the only key consumed at runtime under `deployment:`; provisioning
 is driven by Compose under `infra/docker/` and scripts under `infra/scripts/`.
 
 Den / gateway env (selection): `RIVETOS_DEN_HOST`, `RIVETOS_DEN_TOKEN`,
@@ -845,7 +845,7 @@ Den / gateway env (selection): `RIVETOS_DEN_HOST`, `RIVETOS_DEN_TOKEN`,
 ### Container-First Architecture
 
 RivetOS ships as container images built from source. The container IS the
-security boundary — agents can only touch what is inside their container.
+security boundary; agents can only touch what is inside their container.
 
 **Data persistence:** Containers are stateless. All persistent data lives on the host via bind mounts and named volumes:
 - `./workspace/` or `~/.rivetos/workspace/` → agent workspace files
@@ -878,16 +878,16 @@ Multiple RivetOS instances form a mesh for cross-instance collaboration:
 
 - **Registry:** File-based `mesh.json` with heartbeat and pruning
 - **Discovery:** Seed nodes or mDNS-based auto-discovery
-- **Delegation:** Transparent routing — `delegate_task` checks local agents first, then mesh peers
+- **Delegation:** transparent routing; `delegate_task` checks local agents first, then mesh peers
 - **Join flow:** `rivetos init --join <host>` discovers existing datahub and registers with the mesh
 - **Fleet updates:** `rivetos update --mesh` rolls updates across mesh nodes with health checks
 - **Den mesh:** den-enabled nodes advertise den port/url for multi-node dens
 
 Sessions remain **node-local** uniqueness (`SessionId` on one node). Mesh
-addresses sessions as `{nodeId, sessionId}` only if needed later — not required today.
+addresses sessions as `{nodeId, sessionId}` only if needed later, not required today.
 
 When documenting mesh peers, use hostnames or documentation address space
-(e.g. `192.0.2.0/24`) — never lab private inventory IPs in committed docs.
+(e.g. `192.0.2.0/24`), never lab private inventory IPs in committed docs.
 
 ---
 

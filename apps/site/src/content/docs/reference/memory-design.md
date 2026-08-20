@@ -171,7 +171,7 @@ Periodically summarize old messages into the summary DAG:
 
 1. **Trigger**: Check for conversations with unsummarized messages exceeding threshold
 2. **Batch**: Take the oldest unsummarized messages from that conversation
-3. **Summarize**: Send to Rivet Local — preserve key decisions, technical details, action items, state changes
+3. **Summarize**: Send to Rivet Local; preserve key decisions, technical details, action items, state changes
 4. **Store**: Insert summary with parent_id linking to the conversation's latest summary
 5. **Link**: Insert summary_sources rows connecting the summary to its source messages
 6. **Embed**: Queue the summary for embedding
@@ -215,15 +215,15 @@ All three share a common rule set: **exhaustiveness** (cover every distinct topi
 
 Many assistant messages in the corpus contain only `tool_name` + `tool_args` with empty content. These rows cannot be embedded (empty text) and fall through every search path.
 
-The v5 pipeline synthesizes natural-language content for them — a single past-tense sentence describing what was called — which makes them findable by both FTS and vector search.
+The v5 pipeline synthesizes natural-language content for them, a single past-tense sentence describing what was called, which makes them findable by both FTS and vector search.
 
 **Two synthesis paths:**
 
-1. **Async (live path)**: `adapter.ts` calls `graphile_worker.add_job('synthesize-tool-call', …)` on insert when content is empty and `tool_name` is set. The compaction-worker service consumes the job and writes content back. Non-blocking — inserts never fail on synthesis errors. Dedup via `job_key` so duplicate enqueues coalesce.
+1. **Async (live path)**: `adapter.ts` calls `graphile_worker.add_job('synthesize-tool-call', …)` on insert when content is empty and `tool_name` is set. The compaction-worker service consumes the job and writes content back. Non-blocking ; inserts never fail on synthesis errors. Dedup via `job_key` so duplicate enqueues coalesce.
 
-2. **CLI backfill (historical)**: `rivetos memory backfill-tool-synth` enqueues a `synthesize-tool-call` job for each historical empty row. Idempotent — already-enqueued messages dedupe via `job_key`. Concurrency, retries, and rate limiting are handled by graphile-worker on the compaction-worker side.
+2. **CLI backfill (historical)**: `rivetos memory backfill-tool-synth` enqueues a `synthesize-tool-call` job for each historical empty row. Idempotent; already-enqueued messages dedupe via `job_key`. Concurrency, retries, and rate limiting are handled by graphile-worker on the compaction-worker side.
 
-The shared helper (`synthesizeToolCallContent` in `plugins/memory/postgres/src/tool-synth.ts`) uses a hardened undici client and the same prompt as the compactor. Model-agnostic — point `TOOL_SYNTH_ENDPOINT` / `TOOL_SYNTH_MODEL` at any OpenAI-compatible endpoint.
+The shared helper (`synthesizeToolCallContent` in `plugins/memory/postgres/src/tool-synth.ts`) uses a hardened undici client and the same prompt as the compactor. Model-agnostic ; point `TOOL_SYNTH_ENDPOINT` / `TOOL_SYNTH_MODEL` at any OpenAI-compatible endpoint.
 
 ### Operations
 
