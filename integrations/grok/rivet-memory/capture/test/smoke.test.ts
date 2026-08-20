@@ -266,4 +266,115 @@ if (failed > 0) {
   console.error(`\n${failed} check(s) failed.`)
   process.exit(1)
 }
+
+// =============================================================================
+// Layer 5: timestamp preservation (DB integration test, opt-in)
+// =============================================================================
+console.log('\n— timestamp preservation (DB integration, requires RIVETOS_PG_URL) —')
+{
+  const PG_URL = process.env.RIVETOS_PG_URL
+  if (!PG_URL) {
+    console.log('  (skipped — set RIVETOS_PG_URL to run DB integration tests)')
+  } else {
+    // Import pg dynamically to avoid load-time failures when DB is unavailable
+    const pg = await import('pg')
+    const { Pool } = pg.default
+    const pool = new Pool({ connectionString: PG_URL })
+    const client = await pool.connect()
+    
+    try {
+      const sessionId = `test-ts-${Date.now()}`
+      const sessionKey = `grok-build:${sessionId}`
+      const AGENT = 'rivet-grok'
+      const CHANNEL = 'grok-build'
+      
+      // Create a test conversation
+      await client.query(
+        `INSERT INTO ros_conversations (session_key, agent, channel, title, settings, active, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, now(), now())`,
+        [sessionKey, AGENT, CHANNEL, 'Test timestamp preservation', '{}', true],
+      )
+      
+      const convId = (await client.query<{ id: string }>(
+        'SELECT id FROM ros_conversations WHERE session_key = $1 AND agent = $2',
+        [sessionKey, AGENT],
+      )).rows[0].id
+      
+      // Create messages with explicit timestamps using the eventTs logic
+      const baseTime = new Date('2024-06-15T14:30:00Z')
+      const timestamps = [
+        baseTime.toISOString(),
+        new Date(baseTime.getTime() + 3600000).toISOString(), // +1 hour
+        new Date(baseTime.getTime() + 7200000).toISOString(), // +2 hours
+      ]
+      
+      // Use the same pattern as insertMessage
+      for (let i = 0; i < 3; i++) {
+        const createdAt = timestamps[i]
+        await client.query(
+          `INSERT INTO ros_messages
+             (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, now()))`,
+          [
+            convId,
+            AGENT,
+            CHANNEL,
+            'user',
+            `Test message ${i + 1}`,
+            null,
+            null,
+            null,
+            JSON.stringify({ source: 'test', ordinal: i }),
+            createdAt,
+          ],
+        )
+      }
+      
+      // Verify timestamps are preserved (ORDER BY created_at)
+      const result = await client.query<{ content: string; created_at: Date }>(
+        `SELECT content, created_at FROM ros_messages
+         WHERE conversation_id = $1
+         ORDER BY created_at ASC`,
+        [convId],
+      )
+      
+      check('inserted 3 messages with explicit timestamps', result.rows.length === 3,
+        `got ${result.rows.length}`)
+      
+      if (result.rows.length === 3) {
+        check('first message has correct timestamp',
+          Math.abs(result.rows[0].created_at.getTime() - baseTime.getTime()) < 1000,
+          `diff=${result.rows[0].created_at.getTime() - baseTime.getTime()}ms`)
+        
+        check('messages are ordered by timestamp',
+          result.rows[0].content === 'Test message 1' &&
+          result.rows[1].content === 'Test message 2' &&
+          result.rows[2].content === 'Test message 3',
+          `order: ${result.rows.map(r => r.content).join(', ')}`)
+        
+        // Verify 1-hour spacing
+        const diff1 = result.rows[1].created_at.getTime() - result.rows[0].created_at.getTime()
+        check('messages have correct 1-hour spacing',
+          Math.abs(diff1 - 3600000) < 1000,
+          `diff=${diff1}ms, expected 3600000ms`)
+      }
+      
+      // Clean up
+      await client.query('DELETE FROM ros_messages WHERE conversation_id = $1', [convId])
+      await client.query('DELETE FROM ros_conversations WHERE id = $1', [convId])
+      
+    } catch (err) {
+      console.error(`  DB integration test error: ${err}`)
+      failed++
+    } finally {
+      client.release()
+      await pool.end()
+    }
+  }
+}
+
+if (failed > 0) {
+  console.error(`\n${failed} check(s) failed.`)
+  process.exit(1)
+}
 console.log('\nAll tests passed.')
