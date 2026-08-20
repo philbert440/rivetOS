@@ -5,7 +5,7 @@ sidebar:
 description: What is RivetOS and why does it exist?
 ---
 
-RivetOS is an open-source runtime for deploying AI agents as persistent, containerized services. It handles the boring parts so you can focus on what your agents actually do: provider connections, channel routing, memory persistence, tool execution, multi-agent coordination.
+RivetOS is an open-source runtime for deploying AI agents as persistent, containerized services. It handles the boring parts: provider connections, channel routing, memory persistence, tool execution, multi-agent coordination. You focus on what your agents actually do.
 
 ## What problems does it solve?
 

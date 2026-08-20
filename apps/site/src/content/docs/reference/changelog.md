@@ -6,15 +6,16 @@ description: Version history and release notes
 ---
 # Changelog
 
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+
 ## 2026-08-20
 
 **Memory write surface (MCP sidecar).** External MCP clients can now write memory: `memory_append` and `memory_ingest_session`, gated behind `RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`. Concurrency-safe idempotent ingest (shared per-session advisory lock, content-hash `event_id` dedupe with ordinal), per-message `created_at` preservation, 16k content/tool_result caps with `truncated` reported to the caller, and tool-call fields (`tool_name`/`tool_args`/`tool_result`) on append. **Breaking:** `memory_ingest_session` messages now require `role`; the silent `assistant` default is gone. Shipped as the Grok Bot memory bridge (`integrations/grok-bot/rivet-memory/`) plus six follow-ups (#517, #520–#525).
 
 **Team-shared skills.** `/rivet-shared/skills` is the standard shared skill directory across the mesh (runtime `skill_dirs` + sidecar `RIVETOS_SKILL_DIRS`); first shared skill is `unslop`.
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
