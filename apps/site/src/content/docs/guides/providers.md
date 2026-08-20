@@ -2,7 +2,7 @@
 title: Provider Setup
 sidebar:
   order: 6
-description: How to configure LLM providers: Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
+description: "How to configure LLM providers: Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli"
 ---
 
 Providers connect your agents to large language models. Each provider plugin handles API authentication, streaming, tool calling format differences, and thinking/reasoning support so your agent config stays clean.

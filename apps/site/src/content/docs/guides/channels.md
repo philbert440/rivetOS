@@ -1,6 +1,6 @@
 ---
 title: Channels
-description: Channel plugins: social bots removed; agent mesh remains
+description: "Channel plugins: social bots removed; agent mesh remains"
 ---
 
 # Channels

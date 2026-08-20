@@ -1,6 +1,6 @@
 ---
 title: Terms of Use
-description: The short version: RivetOS is a research project, provided as-is, use at your own risk.
+description: "The short version: RivetOS is a research project, provided as-is, use at your own risk."
 sidebar:
   hidden: true
 ---
