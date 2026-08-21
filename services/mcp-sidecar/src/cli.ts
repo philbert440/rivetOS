@@ -55,6 +55,11 @@
  *   RIVETOS_MCP_ENABLE_SEARCH=1    — enables `search_glob`,
  *                                    `search_grep` (read-only, off
  *                                    by default for symmetry; safe to enable).
+ *   RIVETOS_MCP_ENABLE_MEMORY_WRITE=1
+ *                                  — enables `memory_append` and
+ *                                    `memory_ingest_session` (write surface,
+ *                                    off by default). The Grok Bot launcher
+ *                                    sets this.
  *
  * Runtime-plane tools (delegate_task, subagent_*, ask_user, todo,
  * compact_context) and the claude-cli MCP bridge land in later slices.
@@ -101,6 +106,7 @@ async function main(): Promise<void> {
         pgUrl,
         embedEndpoint: process.env.RIVETOS_EMBED_URL,
         embedModel: process.env.RIVETOS_EMBED_MODEL,
+        enableWrite: process.env.RIVETOS_MCP_ENABLE_MEMORY_WRITE === '1',
       })
       tools.push(...handle.tools)
       cleanups.push(() => handle.close())
