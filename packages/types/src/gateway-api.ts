@@ -194,10 +194,10 @@ export function mergeTranscriptWindow<T>(
 ): T[] {
   if (!truncated || prev.length === 0 || next.length === 0) return [...next]
   const sig = (t: T): string => JSON.stringify(t)
-  const next0 = sig(next[0] as T)
+  const next0 = sig(next[0])
   let overlap = -1
   for (let i = 0; i < prev.length; i++) {
-    if (sig(prev[i] as T) === next0) {
+    if (sig(prev[i]) === next0) {
       overlap = i
       break
     }
@@ -205,7 +205,7 @@ export function mergeTranscriptWindow<T>(
   if (overlap < 0) return [...next]
   const overlapLen = Math.min(prev.length - overlap, next.length)
   for (let j = 1; j < overlapLen; j++) {
-    if (sig(prev[overlap + j] as T) !== sig(next[j] as T)) return [...next]
+    if (sig(prev[overlap + j]) !== sig(next[j])) return [...next]
   }
   return [...prev.slice(0, overlap), ...next]
 }
