@@ -41,10 +41,6 @@ packages/cli/workspace-templates/
 apps/rivethub-desktop/src-tauri/target/
 apps/rivethub-desktop/src-tauri/gen/
 
-# Tauri (rivet-team-desktop) build output
-apps/rivet-team-desktop/src-tauri/target/
-apps/rivet-team-desktop/src-tauri/gen/
-
 # RivetHub ships a hand-maintained bridge server as a .js asset (bespoke runtime
 # file, not a compiled build output). The blanket **/*.js above would drop it from
 # clean checkouts, breaking installBridge on fresh-build APKs. Force-track it.
