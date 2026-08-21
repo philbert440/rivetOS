@@ -66,7 +66,6 @@ import {
 } from './term/harness-sessions.js'
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes } from './devices.js'
-import { createPgTeamSchemaAdmin, createTeamUsersRoutes } from './team-users.js'
 import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
 import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-driver.js'
 import { createClaudeStoreHost } from './harness/claude-store.js'
@@ -647,23 +646,6 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
   // Mesh device enrollment (Settings → Devices). mTLS-gated except the
   // one-time WireGuard enroll redemption (pairing), matched before the gate.
-  const teamUsersRoutes = createTeamUsersRoutes({
-    stateDir: config.stateDir,
-    denToken: config.token,
-    schemaAdmin: (config.teamPgAdminUrl ?? '').trim()
-      ? createPgTeamSchemaAdmin({
-          adminUrl: (config.teamPgAdminUrl ?? '').trim(),
-          log: console.error,
-        })
-      : null,
-    isOperator: (req) =>
-      isGatewayAuthorized(req, {
-        tlsConfigured: tlsReady,
-        requireClientCert: config.tls.requireClientCert,
-      }),
-    log: console.error,
-  })
-
   const devicesRoutes = config.devices?.enabled
     ? createDevicesRoutes({
         config: config.devices,
@@ -833,14 +815,6 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       if (devicesRoutes && url.pathname === '/api/devices/enroll') {
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await devicesRoutes.handleEnroll(req, res, url)) return
-      }
-      if (url.pathname === '/api/team' || url.pathname.startsWith('/api/team/')) {
-        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
-        if (url.pathname === '/api/team/pair/redeem') {
-          if (await teamUsersRoutes.handleRedeem(req, res, url)) return
-        }
-        if (await teamUsersRoutes.handle(req, res, url)) return
-        return json(res, 404, { error: 'not found' })
       }
       if (!authorized(req, url)) {
         unauthorized(req, res, url)
