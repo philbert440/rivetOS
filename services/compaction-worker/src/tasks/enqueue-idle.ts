@@ -26,6 +26,11 @@
  * enqueued — compactLeaf cannot form a leaf below that floor, so enqueuing them
  * would be a no-op.
  *
+ * Heartbeat sessions (`session_key` LIKE 'heartbeat:%') are excluded: they are
+ * operational HEARTBEAT_OK noise, already skipped by getContextForTurn and
+ * extract-wiki. Compacting them wastes the LLM and shows up in memory_stats as
+ * a fake backlog / dead compact-conversation jobs when the LLM is down.
+ *
  * Replaces the SQL function enqueue_idle_sessions(idle_minutes, min_unsummarized)
  * which is dropped in step 9b.4 — the logic now lives entirely in the worker.
  *
@@ -34,7 +39,7 @@
  */
 
 import type { Task } from 'graphile-worker'
-import { MIN_BATCH_SIZE } from '@rivetos/memory-postgres'
+import { MIN_BATCH_SIZE, sqlNotHeartbeatConversation } from '@rivetos/memory-postgres'
 import { config } from '../config.js'
 
 interface IdleConvRow {
@@ -45,26 +50,19 @@ interface IdleConvRow {
 
 const ENQUEUE_LIMIT = 10
 
-export const enqueueIdleTask: Task = async (_payload, helpers) => {
-  const idleMinutes = config.idleMinutes
-  // A full leaf window is ready: summarize immediately regardless of activity.
-  const fullWindow = config.leafBatchSize
-  // The minimum unsummarized count that can still form a normal leaf summary.
-  const leafFloor = MIN_BATCH_SIZE
-  // Stale flush: after this long idle, summarize even a below-floor tail down
-  // to staleMinBatch messages.
-  const staleMinutes = config.staleMinutes
-  const staleFloor = config.staleMinBatch
-
-  await helpers.withPgClient(async (client) => {
-    const idleRows = await client.query<IdleConvRow>(
-      `SELECT c.id::text AS conversation_id, COUNT(m.id) AS unsummarized,
+/**
+ * Eligibility SELECT for the enqueue-idle cron.
+ * Exported so unit tests can lock the heartbeat exclusion and trigger clauses.
+ */
+export function enqueueIdleSelectSql(): string {
+  return `SELECT c.id::text AS conversation_id, COUNT(m.id) AS unsummarized,
               CASE WHEN COUNT(m.id) >= $2 THEN 'session_idle' ELSE 'session_stale' END AS trigger
          FROM ros_conversations c
          JOIN ros_messages m ON m.conversation_id = c.id
          LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
         WHERE ss.summary_id IS NULL
           AND ((m.content IS NOT NULL AND LENGTH(m.content) > 10) OR m.tool_name IS NOT NULL)
+          AND ${sqlNotHeartbeatConversation('c')}
         GROUP BY c.id
        HAVING (
                 COUNT(m.id) >= $2
@@ -78,9 +76,29 @@ export const enqueueIdleTask: Task = async (_payload, helpers) => {
                 AND c.updated_at < NOW() - ($4 || ' minutes')::interval
               )
         ORDER BY c.updated_at ASC
-        LIMIT $6`,
-      [idleMinutes, leafFloor, fullWindow, staleMinutes, staleFloor, ENQUEUE_LIMIT],
-    )
+        LIMIT $6`
+}
+
+export const enqueueIdleTask: Task = async (_payload, helpers) => {
+  const idleMinutes = config.idleMinutes
+  // A full leaf window is ready: summarize immediately regardless of activity.
+  const fullWindow = config.leafBatchSize
+  // The minimum unsummarized count that can still form a normal leaf summary.
+  const leafFloor = MIN_BATCH_SIZE
+  // Stale flush: after this long idle, summarize even a below-floor tail down
+  // to staleMinBatch messages.
+  const staleMinutes = config.staleMinutes
+  const staleFloor = config.staleMinBatch
+
+  await helpers.withPgClient(async (client) => {
+    const idleRows = await client.query<IdleConvRow>(enqueueIdleSelectSql(), [
+      idleMinutes,
+      leafFloor,
+      fullWindow,
+      staleMinutes,
+      staleFloor,
+      ENQUEUE_LIMIT,
+    ])
 
     if (idleRows.rows.length === 0) return
 
