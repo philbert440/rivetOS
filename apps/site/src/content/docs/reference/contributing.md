@@ -10,11 +10,11 @@ Thanks for your interest in contributing! This guide covers development setup, t
 
 ## Prerequisites
 
-- **Node.js ≥ 22** (24 is used in CI and containers) — [download](https://nodejs.org)
+- **Node.js ≥ 22** (24 is used in CI and containers): [download](https://nodejs.org)
 - **npm** (comes with Node)
 - **Git**
 
-## Getting Started
+## Getting started
 
 1. **Fork** the repo on GitHub
 2. **Clone** your fork:
@@ -124,7 +124,7 @@ These are defined in `nx.json` and available on every package:
 
 The `^` prefix means "run this target on dependencies first." So `nx run boot:build` will first build `types` and `core` (its dependencies), then build `boot`.
 
-## Conventional Commits
+## Conventional commits
 
 All commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
 
@@ -148,13 +148,13 @@ chore: update Nx to 22.7
 refactor(core): extract TurnHandler from runtime
 ```
 
-## Code Style
+## Code style
 
-- **TypeScript** — strict mode, no `any` unless unavoidable
-- **ESLint** — flat config in `eslint.config.mjs`, shared across all packages
-- **No default exports** — use named exports everywhere
+- **TypeScript**: strict mode, no `any` unless unavoidable
+- **ESLint**: flat config in `eslint.config.mjs`, shared across all packages
+- **No default exports**: use named exports everywhere
 - **Interfaces over types** for plugin contracts (defined in `@rivetos/types`)
-- **No barrel re-exports** in plugins — keep dependency graphs clean
+- **No barrel re-exports** in plugins: keep dependency graphs clean
 
 Run the linter before committing:
 
@@ -164,7 +164,7 @@ npx nx run core:lint                    # Just core
 npx nx affected -t lint                 # Only changed packages
 ```
 
-## Architecture Rules
+## Architecture rules
 
 RivetOS follows a strict layered architecture:
 
@@ -174,22 +174,22 @@ Types → Domain → Runtime → Boot
 
 **The most important rule:** Plugins depend on `@rivetos/types` only. Never on `@rivetos/core`, never on other plugins, never on boot.
 
-- `packages/types` — Interfaces and contracts. Its only workspace dependency is `@rivetos/den-protocol`.
-- `packages/core/src/domain` — Pure domain logic. Depends on types only.
-- `packages/core/src/runtime/` — Application layer. Thin compositor with focused modules:
-  - `runtime.ts` — registration, routing, lifecycle
-  - `turn-handler.ts` — single message turn processing
-  - `media.ts` — attachment resolution and multimodal content
-  - `streaming.ts` — stream events → channel delivery
-  - `sessions.ts` — session lifecycle and history
-  - `commands.ts` — slash command processing
-- `packages/boot/` — Composition root. The only layer that knows concrete plugin types. Uses registrars to wire everything.
-- `packages/cli/` — Command-line interface. Imports from `@rivetos/boot`.
-- `plugins/*` — Implement interfaces from `@rivetos/types`. No cross-plugin imports.
+- `packages/types`: Interfaces and contracts. Its only workspace dependency is `@rivetos/den-protocol`.
+- `packages/core/src/domain`: Pure domain logic. Depends on types only.
+- `packages/core/src/runtime/`: Application layer. Thin compositor with focused modules:
+  - `runtime.ts`: registration, routing, lifecycle
+  - `turn-handler.ts`: single message turn processing
+  - `media.ts`: attachment resolution and multimodal content
+  - `streaming.ts`: stream events → channel delivery
+  - `sessions.ts`: session lifecycle and history
+  - `commands.ts`: slash command processing
+- `packages/boot/`: Composition root. The only layer that knows concrete plugin types. Uses registrars to wire everything.
+- `packages/cli/`: Command-line interface. Imports from `@rivetos/boot`.
+- `plugins/*`: Implement interfaces from `@rivetos/types`. No cross-plugin imports.
 
-**Platform-specific concerns stay in plugins.** Message splitting, typing indicators, API format differences — these belong in the channel or provider plugin, not in the runtime.
+**Platform-specific concerns stay in plugins.** Message splitting, typing indicators, API format differences belong in the channel or provider plugin, not in the runtime.
 
-## Adding a New Plugin
+## Adding a new plugin
 
 The recommended way to add a plugin is with the `@rivetos/nx` generator:
 
@@ -214,9 +214,9 @@ npx nx g @rivetos/nx:plugin --type=tool --name=database --description="SQL query
 
 After scaffolding:
 
-1. **Implement** the interface in `src/index.ts` — the stub has TODO comments for each method.
+1. **Implement** the interface in `src/index.ts`; the stub has TODO comments for each method.
 2. **Register** the plugin in `packages/boot/` via a registrar.
-3. **Write tests** — the skeleton test file is ready to fill in.
+3. **Write tests**: the skeleton test file is ready to fill in.
 4. **Verify:**
    ```bash
    npx nx run <project-name>:lint
@@ -291,7 +291,7 @@ npx nx affected -t test
 npx nx run core:test -- --coverage
 ```
 
-## Creating a Pull Request
+## Creating a pull request
 
 The recommended way to create a PR is with the `@rivetos/nx` PR generator:
 
@@ -329,7 +329,7 @@ If you're not using the PR generator, verify before submitting:
 
 **CI runs lint, typecheck, test, and build** (via `nx affected`) on every PR, plus boundary probes and a secrets scan. If your changes break any of them, the PR will be blocked.
 
-## Plugin Discovery
+## Plugin discovery
 
 RivetOS uses convention-based plugin discovery. Every plugin declares itself in `package.json`:
 
@@ -343,7 +343,7 @@ RivetOS uses convention-based plugin discovery. Every plugin declares itself in 
 }
 ```
 
-Boot scans `plugins/*/package.json` for the `rivetos` field. Config determines which plugins load. You don't need to edit any registrar files — just add the manifest and reference the plugin in config.
+Boot scans `plugins/*/package.json` for the `rivetos` field. Config determines which plugins load. You don't need to edit any registrar files; just add the manifest and reference the plugin in config.
 
 For user plugins outside the monorepo, add their directory to config:
 ```yaml
@@ -352,7 +352,7 @@ runtime:
     - /path/to/my/plugins
 ```
 
-## Working with Containers
+## Working with containers
 
 RivetOS ships as container images built from source.
 
@@ -364,7 +364,7 @@ npx rivetos build
 npx nx build container-rivetos
 ```
 
-The Postgres datahub uses upstream `pgvector/pgvector:pg16` directly — schema is applied by the `migrate` role at stack startup, so there is no custom datahub image to build.
+The Postgres datahub uses upstream `pgvector/pgvector:pg16` directly; schema is applied by the `migrate` role at stack startup, so there is no custom datahub image to build.
 
 ### Run the stack
 
@@ -373,18 +373,18 @@ The Postgres datahub uses upstream `pgvector/pgvector:pg16` directly — schema 
 docker compose -f infra/docker/rivetos/docker-compose.yml up -d
 ```
 
-Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh — see `docs/mesh.md` — rather than as N agent services in one Compose file.
+Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh rather than as N agent services in one Compose file. See `docs/mesh.md`.
 
 ### Data persistence
 
 Containers are stateless. All data lives on the host:
-- `~/.rivetos/config.yaml` — configuration (bind mount, read-only)
-- `~/.rivetos/.env` — secrets (bind mount, read-only)
-- `rivetos-pgdata` — PostgreSQL (named volume)
+- `~/.rivetos/config.yaml`: configuration (bind mount, read-only)
+- `~/.rivetos/.env`: secrets (bind mount, read-only)
+- `rivetos-pgdata`: PostgreSQL (named volume)
 
 See [infra/containers/DATA-PERSISTENCE.md](infra/containers/DATA-PERSISTENCE.md) for details.
 
-## Writing Skills
+## Writing skills
 
 Skills are markdown documents, not code. Anyone can contribute skills.
 
@@ -398,7 +398,7 @@ npx rivetos skill validate my-skill
 
 See [docs/SKILLS.md](/guides/skills/) for the full guide.
 
-## Reporting Issues
+## Reporting issues
 
 Use the [bug report](https://github.com/philbert440/rivetOS/issues/new?template=bug_report.md) or [feature request](https://github.com/philbert440/rivetOS/issues/new?template=feature_request.md) templates.
 

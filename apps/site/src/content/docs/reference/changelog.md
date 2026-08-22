@@ -14,21 +14,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Memory write surface (MCP sidecar): `memory_append` and `memory_ingest_session`, gated behind `RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`. Concurrency-safe idempotent ingest (shared per-session advisory lock, content-hash `event_id` dedupe with ordinal), per-message `created_at` preservation, 16k content/`tool_result` caps with `truncated` reported to the caller, tool-call fields on append. **Breaking: `memory_ingest_session` messages now require `role`; the silent `assistant` default is gone.** Shipped as the Grok Bot memory bridge (`integrations/grok-bot/rivet-memory/`) in #517 and follow-ups #520-#525.
+- Team-shared skills: `/rivet-shared/skills` is the standard shared skill directory across the mesh (runtime `skill_dirs` + sidecar `RIVETOS_SKILL_DIRS`); first shared skill is `unslop`.
 - Self-registering plugin manifest (`PluginManifest` + `register(ctx)`); single manifest-driven loader replaces the four per-kind registrars.
 - New plugin category `transport`. First transport: `@rivetos/mcp-server` (StreamableHTTP, exposes `memory_*`, `web_*`, `skill_*`, runtime tools).
-- Providers `@rivetos/provider-vllm` (full vLLM surface — sampling extensions, `mm_processor_kwargs`/`chat_template_kwargs`, video, native `reasoning_content`, `verify_model_on_init`) and `@rivetos/provider-llama-server` (lean llama.cpp client — `top_k`/`min_p` + `extra_body` escape hatch). Both do strict message ordering and `/v1/models` auto-discovery. These replace the earlier single `openai-compat` provider (split into two so each can carry backend-specific code); the boot validator hard-errors on `provider: openai-compat` with a migration hint pointing at `vllm`/`llama-server`.
+- Providers `@rivetos/provider-vllm` (full vLLM surface: sampling extensions, `mm_processor_kwargs`/`chat_template_kwargs`, video, native `reasoning_content`, `verify_model_on_init`) and `@rivetos/provider-llama-server` (lean llama.cpp client; `top_k`/`min_p` + `extra_body` escape hatch). Both do strict message ordering and `/v1/models` auto-discovery. These replace the earlier single `openai-compat` provider (split into two so each can carry backend-specific code); the boot validator hard-errors on `provider: openai-compat` with a migration hint pointing at `vllm`/`llama-server`.
 - Provider `@rivetos/provider-claude-cli` (drives local `claude` via stream-json with embedded MCP bridge).
-- Mesh mTLS — agent channel is HTTPS with `requestCert: true, rejectUnauthorized: true`. New `mesh.tls` config field, `loadTlsConfig` helper, `.mesh` DNS preference, peer CN logging, test-CA fixtures, `agent-channel.test.ts` (8 tests). **Breaking: all mesh nodes must upgrade together.**
+- Mesh mTLS: agent channel is HTTPS with `requestCert: true, rejectUnauthorized: true`. New `mesh.tls` config field, `loadTlsConfig` helper, `.mesh` DNS preference, peer CN logging, test-CA fixtures, `agent-channel.test.ts` (8 tests). **Breaking: all mesh nodes must upgrade together.**
 - `docs/mesh.md`, `docs/CONFIG-REFERENCE.md` `## mesh` section.
 - Workspace templates at repo-root `workspace-templates/` (canonical `CORE.md`, `USER.md`, `WORKSPACE.md`, `MEMORY.md`, `CAPABILITIES.md`, `HEARTBEAT.md`, `FILESYSTEM.md`).
-- `docs/FILESYSTEM.md` — canonical filesystem layout reference.
-- Memory v5 pipeline — three new compactor prompts (leaf/branch/root) with thinking mode, rich message formatting (ISO timestamps + agent attribution), tool-call content synthesis (`synthesizeToolCallContent`), async `ros_tool_synth_queue` + drain job, `rivetos memory backfill-tool-synth` and `queue-status` CLI subcommands, hardened undici client, 28 new unit tests.
+- `docs/FILESYSTEM.md`: canonical filesystem layout reference.
+- Memory v5 pipeline: three new compactor prompts (leaf/branch/root) with thinking mode, rich message formatting (ISO timestamps + agent attribution), tool-call content synthesis (`synthesizeToolCallContent`), async `ros_tool_synth_queue` + drain job, `rivetos memory backfill-tool-synth` and `queue-status` CLI subcommands, hardened undici client, 28 new unit tests.
 
 ### Changed
 - Infra moved to top-level `infra/{containers,docker,scripts,templates}/`.
 - Memory schema relocated under the plugin (`plugins/memory/postgres/{schema,workers}/`).
 - Unified `rivetos` container image at `infra/containers/rivetos/Dockerfile` (`--role agent | datahub | mcp`). Canonical Compose stack: `infra/docker/rivetos/docker-compose.yml`.
-- Mode-aware plugin discovery — CLI-only modes no longer pull runtime-only plugins.
+- Mode-aware plugin discovery: CLI-only modes no longer pull runtime-only plugins.
 - `rivetos init` reads templates from canonical `workspace-templates/` (inline fallback retained).
 - Doc default workspace path → `~/.rivetos/workspace` (was `./workspace`).
 - Memory v5 token budgets raised to 7k/14k/20k (leaf/branch/root); source-message truncation removed; compactor model tag → `rivet-refined-v5`.
@@ -48,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CircuitState`, `CircuitBreakerConfig`, `CircuitBreakerStats`). Nothing ever constructed a breaker, so the
   registry was permanently empty and the `/health` `providers[].circuitBreaker` field and the matching
   `rivetos status` `(circuit: …)` suffix could never render; both are gone too. Audit logs are still written
-  to `<workspace>/.data/audit/<date>.jsonl` — they now grow without bound and operators prune them manually.
+  to `<workspace>/.data/audit/<date>.jsonl`; they now grow without bound and operators prune them manually.
 
 ## [0.4.0] - 2026-04-05
 
@@ -80,80 +82,80 @@ First public beta. Containerized distribution, reliability hardening, and launch
 ## [0.0.8] - 2026-04-03
 
 ### Changed
-- **License** — changed from MIT to Apache License 2.0. NOTICE file added.
-- **Documentation overhaul** — updated all markdown files to reflect current architecture and features.
+- **License**: changed from MIT to Apache License 2.0. NOTICE file added.
+- **Documentation overhaul**: updated all markdown files to reflect current architecture and features.
 - Deleted `CODE_OF_CONDUCT.md`, `REFACTOR_PROGRESS.md`, `docs/PHASE2.md`, `docs/MILESTONE-2-3-ANALYSIS.md` (obsolete).
 
 ## [0.0.7] - 2026-04-03
 
 ### Changed
-- **Runtime decomposition** — `runtime.ts` (576 lines) split into focused modules:
-  - `runtime.ts` (296 lines) — thin compositor, registration, routing, lifecycle
-  - `turn-handler.ts` (263 lines) — single message turn processing
-  - `media.ts` (105 lines) — attachment resolution, download, multimodal content
-  - `streaming.ts`, `sessions.ts`, `commands.ts` — already extracted, unchanged
+- **Runtime decomposition**: `runtime.ts` (576 lines) split into focused modules:
+  - `runtime.ts` (296 lines): thin compositor, registration, routing, lifecycle
+  - `turn-handler.ts` (263 lines): single message turn processing
+  - `media.ts` (105 lines): attachment resolution, download, multimodal content
+  - `streaming.ts`, `sessions.ts`, `commands.ts`: already extracted, unchanged
 - **Delegation/subagent/skills registration** moved from `Runtime.start()` to `boot/registrars/agents.ts` for consistency with other registrars.
 - Net -280 lines from runtime. Runtime no longer knows about images, base64, content parts, history management, hook execution, or memory appending.
 
 ## [0.0.6] - 2026-04-03
 
 ### Added
-- **Boot package** (`@rivetos/boot`) — composition root properly decomposed:
-  - `config.ts` — YAML config loading with env var resolution
-  - `validate.ts` — schema validation with structured error/warning reporting
-  - `lifecycle.ts` — PID file, signal handlers, shutdown
-  - `registrars/providers.ts` — provider instantiation
-  - `registrars/channels.ts` — channel instantiation
-  - `registrars/hooks.ts` — safety, fallback, auto-action, session hook wiring
-  - `registrars/tools.ts` — tool plugin registration
-  - `registrars/memory.ts` — memory backend wiring
-  - `registrars/agents.ts` — delegation, subagent, skills registration
-- **`typecheck` target** on all 21 nx packages — `tsc --noEmit` catches type errors independently per package.
-- **Typing indicators** for Discord channel plugin (same pattern as Telegram — channel-managed, runtime-agnostic).
-- **Message splitting** in channel plugins — Discord (2000 char) and Telegram (4096 char) handle overflow internally. Runtime has zero knowledge of message length limits.
-- **Safety cap fix** — when agent hits tool iteration limit, preserves the accumulated response text instead of replacing it with a generic message.
+- **Boot package** (`@rivetos/boot`): composition root properly decomposed:
+  - `config.ts`: YAML config loading with env var resolution
+  - `validate.ts`: schema validation with structured error/warning reporting
+  - `lifecycle.ts`: PID file, signal handlers, shutdown
+  - `registrars/providers.ts`: provider instantiation
+  - `registrars/channels.ts`: channel instantiation
+  - `registrars/hooks.ts`: safety, fallback, auto-action, session hook wiring
+  - `registrars/tools.ts`: tool plugin registration
+  - `registrars/memory.ts`: memory backend wiring
+  - `registrars/agents.ts`: delegation, subagent, skills registration
+- **`typecheck` target** on all 21 nx packages: `tsc --noEmit` catches type errors independently per package.
+- **Typing indicators** for Discord channel plugin (same pattern as Telegram: channel-managed, runtime-agnostic).
+- **Message splitting** in channel plugins: Discord (2000 char) and Telegram (4096 char) handle overflow internally. Runtime has zero knowledge of message length limits.
+- **Safety cap fix**: when agent hits tool iteration limit, preserves the accumulated response text instead of replacing it with a generic message.
 
 ### Changed
-- **CLI rewired** — imports from `@rivetos/boot` instead of `../../../../src/boot.js`. No more rootDir violations.
-- **Telegram typing refactored** — typing indicator management moved from internal `handleMessage()` wrapping to public `startTyping()`/`stopTyping()` methods, then back to channel-internal management (matching Discord's pattern). Runtime doesn't touch typing.
-- **21/21 packages typecheck clean** — fixed ~138 type errors across the monorepo (config types, tool result types, delegation types, missing tsconfigs).
+- **CLI rewired**: imports from `@rivetos/boot` instead of `../../../../src/boot.js`. No more rootDir violations.
+- **Telegram typing refactored**: typing indicator management moved from internal `handleMessage()` wrapping to public `startTyping()`/`stopTyping()` methods, then back to channel-internal management (matching Discord's pattern). Runtime doesn't touch typing.
+- **21/21 packages typecheck clean**: fixed ~138 type errors across the monorepo (config types, tool result types, delegation types, missing tsconfigs).
 
 ### Removed
-- **`src/boot.ts`** — 500-line god file replaced by `@rivetos/boot` package with 7 focused files.
-- **`src/config.ts`**, **`src/validate.ts`** — moved to `packages/boot/src/`.
+- **`src/boot.ts`**: 500-line god file replaced by `@rivetos/boot` package with 7 focused files.
+- **`src/config.ts`**, **`src/validate.ts`**: moved to `packages/boot/src/`.
 
 ## [0.0.5] - 2026-04-02
 
 ### Added
-- **`rivetos logs`** — tail runtime logs with filtering (`--lines`, `--follow`, `--since`, `--grep`, `--json`). Wraps `journalctl` for systemd service, falls back to log file reading.
-- **`rivetos skills list`** — discovers all skills from `skill_dirs`, parses SKILL.md frontmatter, shows name/description/trigger count.
-- **`rivetos plugins list`** — enumerates configured providers, channels, memory backends, and tools with status (configured / available / missing-key).
-- **`rivetos login`** — OAuth login for Anthropic subscription auth.
+- **`rivetos logs`**: tail runtime logs with filtering (`--lines`, `--follow`, `--since`, `--grep`, `--json`). Wraps `journalctl` for systemd service, falls back to log file reading.
+- **`rivetos skills list`**: discovers all skills from `skill_dirs`, parses SKILL.md frontmatter, shows name/description/trigger count.
+- **`rivetos plugins list`**: enumerates configured providers, channels, memory backends, and tools with status (configured / available / missing-key).
+- **`rivetos login`**: OAuth login for Anthropic subscription auth.
 
 ### Changed
-- **CLI extracted to `@rivetos/cli`** (`packages/cli/`) — independent Nx package with own `package.json`, `tsconfig.json`, build/test targets. Enables `nx run cli:build`, `nx run cli:test`, affected-only testing, and Nx caching. Old `src/cli/` removed.
+- **CLI extracted to `@rivetos/cli`** (`packages/cli/`): independent Nx package with own `package.json`, `tsconfig.json`, build/test targets. Enables `nx run cli:build`, `nx run cli:test`, affected-only testing, and Nx caching. Old `src/cli/` removed.
 - `@rivetos/cli` path alias added to `tsconfig.base.json`.
 - Root `bin` entry updated to point to `packages/cli/src/index.ts`.
 
 ### Milestone
-- **0.5 — CLI Tools: Complete.** All planned CLI commands shipped. `mesh list/ping/remove` moved to Milestone 6.6 (Fleet Management).
+- **0.5 CLI Tools: Complete.** All planned CLI commands shipped. `mesh list/ping/remove` moved to Milestone 6.6 (Fleet Management).
 
 ## [0.0.4] - 2026-04-02
 
 ### Added
-- **Config validation engine** (`packages/boot/src/validate.ts`) — schema validation on startup with structured error/warning reporting
+- **Config validation engine** (`packages/boot/src/validate.ts`): schema validation on startup with structured error/warning reporting
   - Missing required fields, invalid types, unknown keys
   - Cross-reference validation: agents ↔ providers, heartbeats, channel bindings, coding pipeline
   - Warns on hardcoded API keys/tokens in config (use env vars)
   - Warns on out-of-range values (temperature, max_tokens)
   - Human-readable error messages with config path and available options
-- **`rivetos config validate`** CLI command — dry-run config validation without starting the runtime
-- **Upgraded `rivetos doctor`** — now runs schema validation, config-aware env var checks, and provider connectivity tests
+- **`rivetos config validate`** CLI command: dry-run config validation without starting the runtime
+- **Upgraded `rivetos doctor`**: now runs schema validation, config-aware env var checks, and provider connectivity tests
 - 62 unit tests for config validation covering all sections, cross-references, edge cases
 - `ConfigValidationError` thrown on boot with formatted output when config is invalid
 
 ### Changed
-- `loadConfig()` now validates schema before resolving env vars — catches structural issues early
+- `loadConfig()` now validates schema before resolving env vars; this catches structural issues early
 - `rivetos doctor` version bumped to match package version
 - Root test script now includes validation tests alongside Nx project tests
 

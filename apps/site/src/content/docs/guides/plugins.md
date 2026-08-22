@@ -8,7 +8,7 @@ RivetOS supports five plugin types: **Providers** (talk to LLMs), **Channels** (
 
 ---
 
-## Quick Start: Scaffold a Plugin
+## Quick start: scaffold a plugin
 
 ```bash
 npx rivetos plugin init
@@ -22,12 +22,12 @@ This creates `plugins/{category}/{name}/` with `package.json`, `tsconfig.json`, 
 
 ---
 
-## Architecture Rules
+## Architecture rules
 
-1. **Depend on `@rivetos/types` only.** Plugins do not import from `@rivetos/core` or `@rivetos/boot`. (The MCP server transport is the exception — it ships a binary that runs outside the runtime. The memory plugin's workers are not an exception at all: they are separate packages under `services/`, not part of the plugin.)
+1. **Depend on `@rivetos/types` only.** Plugins do not import from `@rivetos/core` or `@rivetos/boot`. (The MCP server transport is the exception; it ships a binary that runs outside the runtime. The memory plugin's workers are not an exception at all: they are separate packages under `services/`, not part of the plugin.)
 2. **Export a `manifest: PluginManifest` const.** This is the entry point boot uses.
-3. **Declare `package.json#rivetos`.** This is what discovery reads — without importing the package.
-4. **Handle platform concerns internally.** Message splitting, rate limits, API quirks — all inside the plugin.
+3. **Declare `package.json#rivetos`.** This is what discovery reads, without importing the package.
+4. **Handle platform concerns internally.** Message splitting, rate limits, API quirks: all inside the plugin.
 
 ### `package.json#rivetos`
 
@@ -45,7 +45,7 @@ Boot scans every `plugins/*/*/package.json` (and any `plugin_dirs` from config).
 
 ---
 
-## The Manifest Contract
+## The manifest contract
 
 ```typescript
 import type { PluginManifest, RegistrationContext } from '@rivetos/types'
@@ -91,12 +91,12 @@ Boot has **no per-plugin knowledge.** Every kind of plugin goes through the same
 
 A plugin is *discovered* by `package.json#rivetos`, but only *activated* when:
 
-- **Provider / channel / memory / transport** — its name appears in the matching config section (`config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`). Social channel plugins (telegram/discord/voice-discord) were **removed** in Phase 5; only `agent` (mesh) remains first-party.
-- **Tool** — always activated (tools decide internally whether their config is sufficient — e.g. `mcp-client` skips itself when no servers are configured).
+- **Provider / channel / memory / transport**: its name appears in the matching config section (`config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`). Social channel plugins (telegram/discord/voice-discord) were **removed** in Phase 5; only `agent` (mesh) remains first-party.
+- **Tool**: always activated (tools decide internally whether their config is sufficient, e.g. `mcp-client` skips itself when no servers are configured).
 
 ---
 
-## Provider Plugin
+## Provider plugin
 
 ```typescript
 interface Provider {
@@ -138,7 +138,7 @@ interface LLMChunk {
 
 ---
 
-## Channel Plugin
+## Channel plugin
 
 ```typescript
 interface Channel {
@@ -159,9 +159,9 @@ interface Channel {
 
 The runtime calls `edit()` repeatedly while streaming. Channels handle:
 
-- **Throttling** — don't hit the platform on every token
-- **Splitting** — when text exceeds the platform limit, split into overflow messages and report the IDs back via `EditResult`
-- **Typing** — show while the agent is working
+- **Throttling**: don't hit the platform on every token
+- **Splitting**: when text exceeds the platform limit, split into overflow messages and report the IDs back via `EditResult`
+- **Typing**: show while the agent is working
 
 ### Reference implementations
 
@@ -171,7 +171,7 @@ The runtime calls `edit()` repeatedly while streaming. Channels handle:
 
 ---
 
-## Tool Plugin
+## Tool plugin
 
 ```typescript
 interface Tool extends ToolDefinition {
@@ -185,9 +185,9 @@ interface ToolDefinition {
 }
 ```
 
-- `signal` — `AbortSignal` from the turn. Honor it.
-- `context` — workspace path, agent name, config, etc.
-- `ToolResult` — `string` for text, `ContentPart[]` for multimodal (text + images).
+- `signal`: `AbortSignal` from the turn. Honor it.
+- `context`: workspace path, agent name, config, etc.
+- `ToolResult`: `string` for text, `ContentPart[]` for multimodal (text + images).
 
 ### Reference implementations
 
@@ -204,7 +204,7 @@ The memory plugin (`@rivetos/memory-postgres`) additionally registers `memory_se
 
 ---
 
-## Memory Plugin
+## Memory plugin
 
 ```typescript
 interface Memory {
@@ -217,15 +217,15 @@ interface Memory {
 }
 ```
 
-The PostgreSQL memory plugin (`plugins/memory/postgres/`) is the reference. It implements full transcript storage, hybrid FTS + vector search, summary DAG (hierarchical compaction), event-driven embedding and compaction workers (`services/embedding-worker/` and `services/compaction-worker/` — separate long-running `graphile-worker` daemons, run under Compose or systemd, that pull jobs from a Postgres-backed queue), temporal decay scoring, and a review loop for pattern extraction. SQL DDL lives co-located in `plugins/memory/postgres/src/schema/migrations/`.
+The PostgreSQL memory plugin (`plugins/memory/postgres/`) is the reference. It implements full transcript storage, hybrid FTS + vector search, summary DAG (hierarchical compaction), event-driven embedding and compaction workers (`services/embedding-worker/` and `services/compaction-worker/`; separate long-running `graphile-worker` daemons that run under Compose or systemd and pull jobs from a Postgres-backed queue), temporal decay scoring, and a review loop for pattern extraction. SQL DDL lives co-located in `plugins/memory/postgres/src/schema/migrations/`.
 
 See [MEMORY-DESIGN.md](/reference/memory-design/) for the full design.
 
 ---
 
-## Transport Plugin
+## Transport plugin
 
-Transports expose RivetOS to external clients. They have no `core` interface — the plugin opens its own listening surface (HTTP, stdio, gRPC, …) inside `manifest.register()`.
+Transports expose RivetOS to external clients. They have no `core` interface; the plugin opens its own listening surface (HTTP, stdio, gRPC, …) inside `manifest.register()`.
 
 ```typescript
 export const manifest: PluginManifest = {
@@ -256,7 +256,7 @@ transports:
     tls: true
 ```
 
-Reference: `plugins/transports/mcp-server/` — a StreamableHTTP MCP server exposing `memory_*`, `web_*`, `skill_*`, and runtime tools to external MCP clients.
+Reference: `plugins/transports/mcp-server/`, a StreamableHTTP MCP server exposing `memory_*`, `web_*`, `skill_*`, and runtime tools to external MCP clients.
 
 ---
 
@@ -271,7 +271,7 @@ Co-locate tests next to source: `src/index.ts` → `src/index.test.ts`. The fram
 
 ---
 
-## Package Structure
+## Package structure
 
 ```
 plugins/{category}/{name}/

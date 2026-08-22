@@ -5,7 +5,7 @@ sidebar:
 description: What is RivetOS and why does it exist?
 ---
 
-RivetOS is an open-source runtime for deploying AI agents as persistent, containerized services. It handles the boring parts — provider connections, channel routing, memory persistence, tool execution, multi-agent coordination — so you can focus on what your agents actually do.
+RivetOS is an open-source runtime for deploying AI agents as persistent, containerized services. It handles the boring parts: provider connections, channel routing, memory persistence, tool execution, multi-agent coordination. You focus on what your agents actually do.
 
 ## What problems does it solve?
 
@@ -13,7 +13,7 @@ RivetOS is an open-source runtime for deploying AI agents as persistent, contain
 
 **Multi-agent is hard.** Running multiple agents that share context, delegate tasks to each other, and collaborate on shared artifacts requires careful orchestration. RivetOS handles mesh networking, task delegation, and shared storage out of the box.
 
-**Deployment shouldn't be an afterthought.** Most agent frameworks assume you'll figure out hosting yourself. RivetOS is container-native from day one — `rivetos init` generates everything you need to deploy on Docker, Proxmox, or Kubernetes.
+**Deployment shouldn't be an afterthought.** Most agent frameworks assume you'll figure out hosting yourself. RivetOS is container-native from day one; `rivetos init` generates everything you need to deploy on Docker or Proxmox.
 
 **Agents should learn.** When an agent figures out how to do something, that knowledge should persist. RivetOS has a built-in skill system where agents create, store, and reuse learned procedures across sessions.
 
@@ -22,8 +22,8 @@ RivetOS is an open-source runtime for deploying AI agents as persistent, contain
 ### Agents
 An agent is a configured AI model with access to specific channels, tools, and memory. Each agent runs in its own container with its own workspace.
 
-### Channels
-How users communicate with agents. Discord, Telegram, Discord Voice, or agent-to-agent HTTP. Each channel is a plugin — swap them freely.
+### Harnesses
+The interactive coding loop. RivetOS adapts external coding hosts (Claude Code, Grok Build, Kimi Code, Hermes) through per-harness drivers; humans reach them through RivetHub via the node gateway. Agent-to-agent HTTP (the mesh channel) handles cross-node messaging; the old social channels (Discord, Telegram, voice) were removed in Phase 5.
 
 ### Providers
 The AI model backend. Anthropic, xAI, Google, Ollama (local), or llama.cpp server (native).
@@ -42,10 +42,10 @@ Multiple agents running across one or more hosts, sharing a datahub (database + 
 
 ## What RivetOS is NOT
 
-- **Not a framework** — it's a runtime. You configure it, you don't code against it (unless you're writing plugins).
-- **Not a chatbot builder** — it's infrastructure for persistent AI agents that do real work.
-- **Not cloud-only** — it runs on your laptop, your homelab, or your cloud. Your data stays where you put it.
+- **Not a framework**: it's a runtime. You configure it, you don't code against it (unless you're writing plugins).
+- **Not a chatbot builder**: it's infrastructure for persistent AI agents that do real work.
+- **Not cloud-only**: it runs on your laptop, your homelab, or your cloud. Your data stays where you put it.
 
 ## Next steps
 
-→ [Quick Start](/guides/getting-started/) — Get your first agent running in 5 minutes
+→ [Quick Start](/guides/getting-started/): get your first agent running in 5 minutes
