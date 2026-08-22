@@ -31,6 +31,12 @@ import type { WikiIndexLike } from './wiki-api.js'
 
 const log = logger('WikiHtml')
 
+/** Infobox / catbar display caps — hub pages still on disk may have thousands. */
+const INFOBOX_ALIASES_MAX = 8
+const INFOBOX_ENTITIES_MAX = 8
+const CATBAR_TAGS_MAX = 12
+const SEEALSO_DISPLAY_MAX = 16
+
 export interface WikiHtmlOptions {
   index: WikiIndexLike
   wikiDir?: string
@@ -239,6 +245,26 @@ function wikiLink(slug: string, ctx?: RenderCtx, label?: string): string {
 // Views
 // ---------------------------------------------------------------------------
 
+function infoboxItems(items: string[], max: number, render: (s: string) => string): string {
+  const shown = items.slice(0, max)
+  const extra = items.length - shown.length
+  const body = shown.map(render).join('<br>')
+  return extra > 0
+    ? `${body}<br><span class="muted">+${extra.toLocaleString('en')} more</span>`
+    : body
+}
+
+function catbarTags(tags: string[]): string {
+  const shown = tags.slice(0, CATBAR_TAGS_MAX)
+  const extra = tags.length - shown.length
+  const links = shown
+    .map((t) => `<a href="/wiki/_all?tag=${encodeURIComponent(t)}">${esc(t)}</a>`)
+    .join(' · ')
+  return extra > 0
+    ? `${links} · <span class="muted">+${extra.toLocaleString('en')} more</span>`
+    : links
+}
+
 function fmtDate(iso?: string): string {
   return iso ? iso.slice(0, 10) : '—'
 }
@@ -263,8 +289,8 @@ function renderArticle(
 <tr><th>Status</th><td>${staleness(meta.lastVerified)}</td></tr>
 <tr><th>Verified</th><td>${fmtDate(meta.lastVerified)}</td></tr>
 <tr><th>Updated</th><td>${fmtDate(updatedAt)}</td></tr>
-${meta.aliases.length > 0 ? `<tr><th>Aliases</th><td>${meta.aliases.map(esc).join('<br>')}</td></tr>` : ''}
-${meta.entities.length > 0 ? `<tr><th>Entities</th><td>${meta.entities.map((e) => `<code>${esc(e)}</code>`).join('<br>')}</td></tr>` : ''}
+${meta.aliases.length > 0 ? `<tr><th>Aliases</th><td>${infoboxItems(meta.aliases, INFOBOX_ALIASES_MAX, esc)}</td></tr>` : ''}
+${meta.entities.length > 0 ? `<tr><th>Entities</th><td>${infoboxItems(meta.entities, INFOBOX_ENTITIES_MAX, (e) => `<code>${esc(e)}</code>`)}</td></tr>` : ''}
 <tr><th>Sources</th><td>${String(meta.sources.reduce((n, s) => n + s.ids.length, 0))} linked</td></tr>
 </table></aside>`
 
@@ -295,20 +321,24 @@ ${citations
 </tbody></table>`
       : ''
   const categories =
-    meta.tags.length > 0
-      ? `<nav class="catbar">Categories: ${meta.tags.map((t) => `<a href="/wiki/_all?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join(' · ')}</nav>`
-      : ''
+    meta.tags.length > 0 ? `<nav class="catbar">Categories: ${catbarTags(meta.tags)}</nav>` : ''
   const article = (p.article ?? '').trim()
   const articleBlock =
     article !== ''
       ? `<h2>Article</h2>
 ${renderMarkdown(article, ctx)}`
       : ''
-  const seeAlso = [...new Set([...(p.seeAlso ?? []), ...(p.meta.related ?? [])])].filter(Boolean)
+  const seeAlso = [...new Set([...(p.seeAlso ?? []), ...(p.meta.related ?? [])])]
+    .filter(Boolean)
+    .slice(0, SEEALSO_DISPLAY_MAX)
+  const seeAlsoMore = Math.max(
+    0,
+    new Set([...(p.seeAlso ?? []), ...(p.meta.related ?? [])]).size - seeAlso.length,
+  )
   const seeAlsoBlock =
     seeAlso.length > 0
       ? `<h2>See also</h2>
-<ul class="seealso">${seeAlso.map((s) => `<li>${wikiLink(s, ctx)}</li>`).join('')}</ul>`
+<ul class="seealso">${seeAlso.map((s) => `<li>${wikiLink(s, ctx)}</li>`).join('')}${seeAlsoMore > 0 ? `<li class="muted">+${seeAlsoMore.toLocaleString('en')} more</li>` : ''}</ul>`
       : ''
 
   return `${infobox}
