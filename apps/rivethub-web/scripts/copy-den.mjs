@@ -18,7 +18,8 @@ if (!existsSync(join(denApp, 'index.html'))) {
   console.error(`copy-den: den app not found at ${denApp}`)
   process.exit(1)
 }
-execFileSync('npx', ['vite', 'build', '--base=/den/', '--outDir', target, '--emptyOutDir'], {
+const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+execFileSync(npxCmd, ['vite', 'build', '--base=/den/', '--outDir', target, '--emptyOutDir'], {
   cwd: denApp,
   stdio: 'inherit',
 })
