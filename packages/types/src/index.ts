@@ -311,21 +311,3 @@ export type {
   WorkflowKillResponse,
   WorkflowContractErrorResponse,
 } from './gateway-api.js'
-export type {
-  TeamUser,
-  TeamPersona,
-  TeamNote,
-  TeamDevice,
-  TeamCreateUserRequest,
-  TeamUserResponse,
-  TeamUsersListResponse,
-  TeamPairStartResponse,
-  TeamPairRedeemRequest,
-  TeamPairRedeemResponse,
-  TeamMeResponse,
-  TeamPersonaCreateRequest,
-  TeamPersonasResponse,
-  TeamPersonaResponse,
-  TeamNoteCreateRequest,
-  TeamNotesSearchResponse,
-} from './team-api.js'

@@ -1,6 +1,0 @@
-{
-  "identifier": "default",
-  "description": "rivet-team main window — core only this slice",
-  "windows": ["main"],
-  "permissions": ["core:default"]
-}
