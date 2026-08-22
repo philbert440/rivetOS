@@ -2,14 +2,20 @@ import { describe, it, expect } from 'vitest'
 import {
   applyArticlePatches,
   applyPatch,
+  ALIASES_MAX,
+  buildWikiSearchText,
+  capList,
   capSummary,
   demoteH2Headings,
+  ENTITIES_MAX,
   extractWikiLinks,
   mergePages,
   normalizeSlug,
   parseWikiPage,
+  RELATED_MAX,
   serializeWikiPage,
   SUMMARY_MAX_CHARS,
+  TAGS_MAX,
   WikiParseError,
 } from './index.js'
 import type { WikiPage } from './index.js'
@@ -108,7 +114,11 @@ describe('applyPatch', () => {
       action: 'update',
       slug: base.meta.slug,
       currentState: base.currentState,
-      historyEntry: { date: '2026-07-06', title: 'Phase 1 cutover shipped', body: base.history[0].body },
+      historyEntry: {
+        date: '2026-07-06',
+        title: 'Phase 1 cutover shipped',
+        body: base.history[0].body,
+      },
       addSources: base.meta.sources,
       verifiedAt: '2026-07-09T00:00:00Z',
     })
@@ -127,6 +137,82 @@ describe('applyPatch', () => {
     })
     expect(page.meta.aliases).toEqual(['task-engine', 'ros-tasks'])
     expect(page.meta.tags).toEqual(['rivetos', 'infrastructure'])
+  })
+
+  it('caps aliases/tags/entities/related after union (hub-page bloat)', () => {
+    const overflowAliases = Array.from({ length: ALIASES_MAX + 20 }, (_, i) => `alias-${i}`)
+    const overflowTags = Array.from({ length: TAGS_MAX + 10 }, (_, i) => `tag-${i}`)
+    const overflowEntities = Array.from({ length: ENTITIES_MAX + 10 }, (_, i) => `ent:${i}`)
+    const overflowRelated = Array.from({ length: RELATED_MAX + 10 }, (_, i) => `rel-${i}`)
+    const page = applyPatch(parseWikiPage(SAMPLE), {
+      action: 'update',
+      slug: 'rivetos-task-engine',
+      addAliases: overflowAliases,
+      addTags: overflowTags,
+      addEntities: overflowEntities,
+      addRelated: overflowRelated,
+      verifiedAt: '2026-07-09T00:00:00Z',
+    })
+    // Existing entries kept first, then new, then sliced.
+    expect(page.meta.aliases).toHaveLength(ALIASES_MAX)
+    expect(page.meta.aliases[0]).toBe('task-engine')
+    expect(page.meta.aliases[1]).toBe('alias-0')
+    expect(page.meta.aliases).not.toContain(`alias-${ALIASES_MAX + 5}`)
+    expect(page.meta.tags).toHaveLength(TAGS_MAX)
+    expect(page.meta.tags[0]).toBe('rivetos')
+    expect(page.meta.entities).toHaveLength(ENTITIES_MAX)
+    expect(page.meta.related).toHaveLength(RELATED_MAX)
+    expect(page.seeAlso).toHaveLength(RELATED_MAX)
+  })
+})
+
+describe('frontmatter list caps', () => {
+  it('serialize of an already-bloated page writes only the ceilings', () => {
+    const bloated = parseWikiPage(SAMPLE)
+    bloated.meta.aliases = Array.from({ length: 200 }, (_, i) => `a-${i}`)
+    bloated.meta.tags = Array.from({ length: 200 }, (_, i) => `t-${i}`)
+    bloated.meta.entities = Array.from({ length: 200 }, (_, i) => `e-${i}`)
+    bloated.meta.related = Array.from({ length: 200 }, (_, i) => `r-${i}`)
+    bloated.seeAlso = bloated.meta.related
+    const round = parseWikiPage(serializeWikiPage(bloated))
+    expect(round.meta.aliases).toHaveLength(ALIASES_MAX)
+    expect(round.meta.aliases[0]).toBe('a-0')
+    expect(round.meta.tags).toHaveLength(TAGS_MAX)
+    expect(round.meta.entities).toHaveLength(ENTITIES_MAX)
+    expect(round.meta.related.length).toBeLessThanOrEqual(RELATED_MAX)
+    expect(round.seeAlso.length).toBeLessThanOrEqual(RELATED_MAX)
+    // Second serialize is stable (no further loss).
+    expect(serializeWikiPage(round)).toBe(
+      serializeWikiPage(parseWikiPage(serializeWikiPage(round))),
+    )
+  })
+
+  it('mergePages caps identity lists when consolidating losers', () => {
+    const canonical = parseWikiPage(SAMPLE)
+    canonical.meta.aliases = Array.from({ length: ALIASES_MAX - 2 }, (_, i) => `keep-${i}`)
+    const loser = parseWikiPage(
+      SAMPLE.replace('slug: rivetos-task-engine', 'slug: ros-tasks-shard'),
+    )
+    loser.meta.aliases = Array.from({ length: 40 }, (_, i) => `loser-${i}`)
+    loser.meta.title = 'Ros Tasks Shard'
+    const merged = mergePages(canonical, [loser])
+    expect(merged.meta.aliases.length).toBeLessThanOrEqual(ALIASES_MAX)
+    expect(merged.meta.aliases[0]).toBe('keep-0')
+    // Loser slug is a useful alias and is unioned before the cap.
+    expect(merged.meta.aliases).toContain('ros-tasks-shard')
+  })
+
+  it('buildWikiSearchText does not embed overflow aliases', () => {
+    const page = parseWikiPage(SAMPLE)
+    page.meta.aliases = Array.from({ length: 200 }, (_, i) => `unique-alias-token-${i}`)
+    const text = buildWikiSearchText(page)
+    expect(text).toContain('unique-alias-token-0')
+    expect(text).not.toContain('unique-alias-token-199')
+  })
+
+  it('capList is a no-op under the ceiling', () => {
+    expect(capList(['a', 'b'], 8)).toEqual(['a', 'b'])
+    expect(capList(undefined, 8)).toEqual([])
   })
 })
 
@@ -400,7 +486,9 @@ vLLM on :8003.
     // Legacy on-disk history copied verbatim by mergePages, and a lead/article
     // written by hand — neither goes through applyPatch's demote.
     const canonical = parseWikiPage(SAMPLE)
-    const loser = parseWikiPage(SAMPLE.replace('slug: rivetos-task-engine', 'slug: ros-tasks-shard'))
+    const loser = parseWikiPage(
+      SAMPLE.replace('slug: rivetos-task-engine', 'slug: ros-tasks-shard'),
+    )
     loser.history = [{ date: '2026-07-01', title: 'legacy', body: '- x\n\n## Stray\n\nescaped' }]
     const merged = mergePages(canonical, [loser])
     const mergedRound = parseWikiPage(serializeWikiPage(merged))
