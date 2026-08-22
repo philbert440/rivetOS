@@ -46,6 +46,19 @@ export const SUMMARY_MAX_CHARS = 2400
 /** Article excerpt kept in search_text for FTS/embed (not full body). */
 export const SEARCH_ARTICLE_EXCERPT_CHARS = 1200
 
+/**
+ * Hard ceilings on identity lists. Extractor patches union unbounded aliases /
+ * tags / entities / related into hub topics (live `rivetos.md` has grown to
+ * thousands of each). Summary already has SUMMARY_MAX_CHARS; these lists did
+ * not, so YAML frontmatter and the HTML infobox dumped megabytes of synonyms
+ * before Summary. Keep established entries first (union order); drop overflow
+ * rather than spilling it into History.
+ */
+export const ALIASES_MAX = 32
+export const TAGS_MAX = 24
+export const ENTITIES_MAX = 32
+export const RELATED_MAX = 48
+
 export class WikiParseError extends Error {
   constructor(detail: string) {
     super(`invalid wiki page: ${detail}`)
@@ -95,16 +108,17 @@ export function parseWikiPage(input: string): WikiPage {
 }
 
 export function serializeWikiPage(page: WikiPage): string {
-  const related = union(page.meta.related || [], page.seeAlso || []).filter(
-    (s) => s !== page.meta.slug,
+  const related = capList(
+    union(page.meta.related || [], page.seeAlso || []).filter((s) => s !== page.meta.slug),
+    RELATED_MAX,
   )
   const meta: Record<string, unknown> = {
     ...(page.meta.extra ?? {}),
     title: page.meta.title,
     slug: page.meta.slug,
-    aliases: page.meta.aliases,
-    tags: page.meta.tags,
-    entities: page.meta.entities,
+    aliases: capList(page.meta.aliases, ALIASES_MAX),
+    tags: capList(page.meta.tags, TAGS_MAX),
+    entities: capList(page.meta.entities, ENTITIES_MAX),
     related,
     ...(page.meta.lastVerified ? { last_verified: page.meta.lastVerified } : {}),
     sources: page.meta.sources,
@@ -326,6 +340,7 @@ export function applyPatch(existing: WikiPage | undefined, patch: WikiPatch): Wi
   const links = extractWikiLinks(`${page.currentState}\n${page.article}`).filter((s) => s !== slug)
   page.meta.related = union(page.meta.related, links).filter((s) => s !== slug)
   page.seeAlso = union(page.seeAlso, page.meta.related).filter((s) => s !== slug)
+  capFrontmatterLists(page)
 
   return page
 }
@@ -430,6 +445,7 @@ export function mergePages(canonical: WikiPage, losers: WikiPage[]): WikiPage {
   const links = extractWikiLinks(`${out.currentState}\n${out.article}`).filter((s) => s !== self)
   out.meta.related = union(out.meta.related, links).filter((s) => s !== self)
   out.seeAlso = union(out.seeAlso, out.meta.related).filter((s) => s !== self)
+  capFrontmatterLists(out)
   return out
 }
 
@@ -484,10 +500,24 @@ export function demoteH2Headings(markdown: string): string {
 /** Lean search/embed surface: title + aliases + lead + short article excerpt. */
 export function buildWikiSearchText(page: WikiPage): string {
   const art = (page.article || '').trim().slice(0, SEARCH_ARTICLE_EXCERPT_CHARS)
-  const related = (page.meta.related || []).join(' ')
-  return [page.meta.title, page.meta.aliases.join(' '), page.currentState, art, related]
-    .join(' ')
-    .slice(0, 8_000)
+  const aliases = capList(page.meta.aliases, ALIASES_MAX).join(' ')
+  const related = capList(page.meta.related, RELATED_MAX).join(' ')
+  return [page.meta.title, aliases, page.currentState, art, related].join(' ').slice(0, 8_000)
+}
+
+/** Keep the first `max` unique entries; union order is oldest-first. */
+export function capList(list: string[] | undefined, max: number): string[] {
+  if (!list?.length) return []
+  return list.length <= max ? list : list.slice(0, max)
+}
+
+/** Mutate identity lists down to the write-side ceilings. */
+export function capFrontmatterLists(page: WikiPage): void {
+  page.meta.aliases = capList(page.meta.aliases, ALIASES_MAX)
+  page.meta.tags = capList(page.meta.tags, TAGS_MAX)
+  page.meta.entities = capList(page.meta.entities, ENTITIES_MAX)
+  page.meta.related = capList(page.meta.related, RELATED_MAX)
+  page.seeAlso = capList(page.seeAlso, RELATED_MAX)
 }
 
 /** Split ## Article body into ### subsections (+ optional lead before first ###). */

@@ -19,6 +19,8 @@ export {
   parseSeeAlso,
   mergeSummaryText,
   capSummary,
+  capList,
+  capFrontmatterLists,
   demoteH2Headings,
   buildWikiSearchText,
   splitArticleSections,
@@ -28,6 +30,10 @@ export {
   SUMMARY_SHRINK_FLOOR,
   SUMMARY_MAX_CHARS,
   SEARCH_ARTICLE_EXCERPT_CHARS,
+  ALIASES_MAX,
+  TAGS_MAX,
+  ENTITIES_MAX,
+  RELATED_MAX,
   WikiParseError,
 } from './page.js'
 export {

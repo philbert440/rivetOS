@@ -91,7 +91,10 @@ async function serve(): Promise<string> {
 describe('/api/wiki', () => {
   it('index, search, and gaps', async () => {
     const base = await serve()
-    const idx = (await (await fetch(`${base}/api/wiki`)).json()) as { total: number; topics: unknown[] }
+    const idx = (await (await fetch(`${base}/api/wiki`)).json()) as {
+      total: number
+      topics: unknown[]
+    }
     expect(idx.total).toBe(1)
     const search = (await (await fetch(`${base}/api/wiki?q=task+engine`)).json()) as {
       topics: Array<{ slug: string; excerpt: string }>
@@ -126,6 +129,23 @@ describe('/api/wiki', () => {
     expect((await fetch(`${base}/api/wiki/no-such-page`)).status).toBe(404)
     expect((await fetch(`${base}/api/wiki/Bad_Slug!`)).status).toBe(400)
     expect((await fetch(`${base}/api/wiki`, { method: 'POST' })).status).toBe(405)
+  })
+
+  it('caps aliases/tags/entities on already-bloated hub pages', async () => {
+    writeFileSync(join(wikiDir, 'topics', 'hub-bloat.md'), fatHubMarkdown())
+    const base = await serve()
+    const page = (await (await fetch(`${base}/api/wiki/hub-bloat`)).json()) as {
+      aliases: string[]
+      tags: string[]
+      entities: string[]
+      seeAlso: string[]
+    }
+    expect(page.aliases).toHaveLength(32)
+    expect(page.aliases[0]).toBe('alias-0')
+    expect(page.aliases).not.toContain('alias-49')
+    expect(page.tags).toHaveLength(24)
+    expect(page.entities).toHaveLength(32)
+    expect(page.seeAlso.length).toBeLessThanOrEqual(48)
   })
 })
 
@@ -171,4 +191,48 @@ describe('/wiki HTML', () => {
     const amp = renderMarkdown('see https://x.dev/?a=1&b=2 now')
     expect(amp).toContain('href="https://x.dev/?a=1&amp;b=2"')
   })
+
+  it('infobox and catbar do not dump thousands of aliases/tags', async () => {
+    writeFileSync(join(wikiDir, 'topics', 'hub-bloat.md'), fatHubMarkdown())
+    const base = await serve()
+    const html = await (await fetch(`${base}/wiki/hub-bloat`)).text()
+    expect(html).toContain('alias-0')
+    expect(html).toContain('alias-7')
+    expect(html).not.toContain('alias-8')
+    expect(html).toMatch(/\+42 more/)
+    expect(html).toContain('tag-0')
+    expect(html).not.toContain('tag-20')
+    expect(html).toContain('Hub Bloat')
+  })
 })
+
+function fatHubMarkdown(): string {
+  const aliases = Array.from({ length: 50 }, (_, i) => `  - alias-${i}`).join('\n')
+  const tags = Array.from({ length: 40 }, (_, i) => `  - tag-${i}`).join('\n')
+  const entities = Array.from({ length: 40 }, (_, i) => `  - ent:${i}`).join('\n')
+  const related = Array.from({ length: 60 }, (_, i) => `  - rel-${i}`).join('\n')
+  return `---
+title: Hub Bloat
+slug: hub-bloat
+aliases:
+${aliases}
+tags:
+${tags}
+entities:
+${entities}
+related:
+${related}
+sources: []
+---
+
+## Summary
+
+Lead about a hub topic.
+
+## History
+
+### 2026-08-22 — Grew too big
+
+- extractor unioned every synonym
+`
+}
