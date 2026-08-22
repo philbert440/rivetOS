@@ -1,4 +1,4 @@
-# Gateway auth — Rivet CA device mTLS
+# Gateway auth: Rivet CA device mTLS
 
 Gateway (den-server / RivetHub API) access uses the **same Rivet CA** as the mesh.
 Bearer tokens (`den.token`, `RIVETOS_DEN_TOKEN`, `?token=`, `Authorization: Bearer`)
@@ -62,8 +62,8 @@ Nodes should reload CA/CRL on a schedule (or restart) so revocations stick.
 ## Clients
 
 - **RivetHub web**: open `https://<node>:5174`; browser picks the device client cert.
-  Clicking through the padlock / “not private” warning only trusts the *server*
-  CA — it is not enrollment. Without an imported device PKCS#12 the page is 401
+  Clicking through the padlock / "not private" warning only trusts the *server*
+  CA; it is not enrollment. Without an imported device PKCS#12 the page is 401
   (HTML for browser navigations, JSON for APIs). Use RivetHub desktop, or
   import `rivet-ca.sh issue-client` material into the browser and reload.
 - **gateway-client (Node)**: optional `tls: { cert, key, ca }` PEM strings on `GatewayClientConfig`.
@@ -78,13 +78,13 @@ device client certificates.
 ## Operability (post-#491 rollout pieces)
 
 - **Node leaf SANs**: issue node certs with `IP:127.0.0.1` (plus the LAN IP)
-  so loopback https — the deploy health probe, den hooks, spawned harnesses —
+  so loopback https, used by the deploy health probe, den hooks, and spawned harnesses,
   passes hostname verification:
   `rivet-ca.sh issue-node ct112 DNS:ct112 IP:192.0.2.112 IP:127.0.0.1`
   SANs must cover **both** `127.0.0.1` and whatever host the node advertises
-  on the mesh (`mesh.advertise_host` — LAN or overlay IP): peers verify the
+  on the mesh (`mesh.advertise_host`, LAN or overlay IP): peers verify the
   advertised name, local probes verify loopback. **Re-issue every node leaf
-  to this shape BEFORE the fleet cutover** — leaves minted before this scheme
+  to this shape BEFORE the fleet cutover**; leaves minted before this scheme
   fail deploy verification with a hostname error, not a scheme error.
 - **Deploy probe**: `rivetos update` probes `https://…/healthz --cacert
   <chain>` automatically when the den resolves TLS material (explicit

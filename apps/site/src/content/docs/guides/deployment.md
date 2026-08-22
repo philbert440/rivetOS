@@ -10,11 +10,11 @@ RivetOS supports three deployment targets: **Docker** (recommended for most user
 
 ---
 
-## Docker Deployment
+## Docker deployment
 
 The simplest way to run RivetOS. Works on any machine with Docker.
 
-### Single Agent
+### Single agent
 
 ```bash
 # Clone and install (automatically builds all packages)
@@ -36,13 +36,13 @@ npx rivetos build
 docker compose -f infra/docker/rivetos/docker-compose.yml up -d
 ```
 
-### Multi-Agent
+### Multi-agent
 
-The unified Compose stack ships a single `agent` service. Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh — see [Mesh Networking](/guides/mesh/) — rather than as N agent services in one Compose file. The CLI's `rivetos agent add` and `rivetos init --join` walk you through this.
+The unified Compose stack ships a single `agent` service. Multi-agent fleets are deployed as separate hosts/CTs joined into a mesh rather than as N agent services in one Compose file. See [Mesh Networking](/guides/mesh/). The CLI's `rivetos agent add` and `rivetos init --join` walk you through this.
 
-### Docker Compose Architecture
+### Docker Compose architecture
 
-The unified stack runs five services off two images: upstream `pgvector/pgvector:pg16` for the database and a single role-dispatched runtime image (`rivetos`). Schema is applied by the `migrate` role at stack startup — there is no custom datahub image to build or push. Only `migrate` and `agent` are CLI roles; the two memory workers ship in the same image but run as plain node processes and sit behind the `workers` compose profile, so a bare `up` skips them.
+The unified stack runs five services off two images: upstream `pgvector/pgvector:pg16` for the database and a single role-dispatched runtime image (`rivetos`). Schema is applied by the `migrate` role at stack startup; there is no custom datahub image to build or push. Only `migrate` and `agent` are CLI roles; the two memory workers ship in the same image but run as plain node processes and sit behind the `workers` compose profile, so a bare `up` skips them.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -71,7 +71,7 @@ Volumes:
   ~/.rivetos/.env          → Secrets (bind mount, read-only)
 ```
 
-### Data Persistence
+### Data persistence
 
 Containers are stateless. All persistent data lives on the host:
 
@@ -98,7 +98,7 @@ npx rivetos update --version 0.8.2
 
 ---
 
-## Proxmox Deployment
+## Proxmox deployment
 
 For homelab setups with Proxmox VE. Each agent runs in its own LXC container.
 
@@ -144,10 +144,10 @@ deployment:
 
 Use the provisioning scripts under `infra/scripts/` and the Compose files under
 `infra/docker/` to stand up containers on each node. There is no
-unified `rivetos infra` command — provisioning is intentionally script-driven so
+unified `rivetos infra` command; provisioning is intentionally script-driven so
 you keep full control over Proxmox/Docker semantics.
 
-### Proxmox Architecture
+### Proxmox architecture
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -169,7 +169,7 @@ you keep full control over Proxmox/Docker semantics.
 └────────────────────────────────────────────────────────┘
 ```
 
-### Multi-Node Shared Storage
+### Multi-node shared storage
 
 The datahub node runs NFS to share `/rivet-shared/` across all agents:
 
@@ -199,11 +199,11 @@ npx rivetos update
 
 ---
 
-## Multi-Agent Mesh
+## Multi-agent mesh
 
 Multiple RivetOS instances can form a mesh for cross-instance collaboration.
 
-### Setting Up a Mesh
+### Setting up a mesh
 
 **First instance (seed node):**
 ```bash
@@ -217,7 +217,7 @@ npx rivetos init --join 192.168.1.101
 # Discovers the existing mesh and registers
 ```
 
-### Mesh Operations
+### Mesh operations
 
 ```bash
 # List all mesh nodes
@@ -233,7 +233,7 @@ npx rivetos mesh status
 npx rivetos mesh join 192.168.1.101
 ```
 
-### How Mesh Delegation Works
+### How mesh delegation works
 
 When an agent receives a `delegate_task` targeting an agent that isn't local:
 
@@ -243,9 +243,9 @@ When an agent receives a `delegate_task` targeting an agent that isn't local:
 4. Remote agent processes the task
 5. Result returned to the requesting agent
 
-This is transparent — the requesting agent doesn't know or care whether the delegate is local or remote.
+The requesting agent doesn't know or care whether the delegate is local or remote.
 
-### Mesh Configuration
+### Mesh configuration
 
 ```yaml
 # Agent channel config (enables mesh)
@@ -260,7 +260,7 @@ channels:
 
 ---
 
-## Bare-Metal Deployment
+## Bare-metal deployment
 
 Run RivetOS directly on your machine without containers.
 
@@ -280,7 +280,7 @@ cp .env.example .env
 npx rivetos start
 ```
 
-### Systemd Service
+### Systemd service
 
 ```bash
 # Generate the systemd unit (a per-user unit unless you run it as root)
@@ -301,7 +301,7 @@ npx rivetos service stop
 systemctl --user disable rivetos
 ```
 
-### PostgreSQL Setup
+### PostgreSQL setup
 
 You need PostgreSQL 16+ with pgvector running separately:
 
@@ -319,14 +319,14 @@ echo 'RIVETOS_PG_URL=postgresql://localhost:5432/rivetos' >> .env
 
 ## Networking
 
-### Port Reference
+### Port reference
 
 | Port | Service | Description |
 |------|---------|-------------|
 | 3100 | Agent HTTP | Agent channel (delegation, mesh, health) |
 | 5432 | PostgreSQL | Database (datahub only) |
 
-### Firewall Rules
+### Firewall rules
 
 For multi-instance setups, agents need to reach each other on port 3100 and the datahub on port 5432:
 
@@ -336,7 +336,7 @@ ufw allow from 192.168.1.0/24 to any port 3100
 ufw allow from 192.168.1.0/24 to any port 5432
 ```
 
-### DNS / Service Discovery
+### DNS / service discovery
 
 The mesh uses seed-node discovery by default. When you `rivetos init --join <host>`, the joining node contacts the seed's `/api/mesh/join` endpoint and receives the full registry of known peers.
 
@@ -344,9 +344,9 @@ mDNS auto-discovery is supported for future use but not yet implemented.
 
 ---
 
-## Backup & Restore
+## Backup & restore
 
-### What to Back Up
+### What to back up
 
 | Component | Location | Method |
 |-----------|----------|--------|
@@ -356,7 +356,7 @@ mDNS auto-discovery is supported for future use but not yet implemented.
 | Database | PostgreSQL | `pg_dump` |
 | Shared storage | `/rivet-shared/` or volume | File copy / rsync |
 
-### Backup Script
+### Backup script
 
 ```bash
 #!/bin/bash
@@ -401,7 +401,7 @@ rsync -a "$BACKUP_DIR/rivet-shared/" /rivet-shared/
 npx rivetos update
 ```
 
-### Automated Backups
+### Automated backups
 
 Set up a cron job:
 ```bash
@@ -411,37 +411,37 @@ Set up a cron job:
 
 ---
 
-## Resource Requirements
+## Resource requirements
 
-### Minimum (Single Agent, Docker)
+### Minimum (single agent, Docker)
 
 - **CPU:** 1 core
 - **RAM:** 1 GB (512 MB for agent + 512 MB for Postgres)
 - **Disk:** 2 GB (source + node_modules + database)
 
-### Recommended (Multi-Agent, Docker)
+### Recommended (multi-agent, Docker)
 
 - **CPU:** 2+ cores
 - **RAM:** 2-4 GB (512 MB per agent + 512 MB for Postgres)
 - **Disk:** 10 GB (room for database growth and skills)
 
-### Proxmox (Per Container)
+### Proxmox (per container)
 
 - **Agent CT:** 512 MB RAM, 1 vCPU, 2 GB disk
 - **Datahub CT:** 1 GB RAM, 1 vCPU, 10 GB disk
 
 ---
 
-## Health Monitoring
+## Health monitoring
 
-### Health Endpoint
+### Health endpoint
 
 Each agent exposes:
-- `GET /health` — Full runtime status (agents, providers, channels, memory, metrics)
-- `GET /health/live` — Simple liveness check (returns 200)
-- `GET /metrics` — Raw metrics (turns, tool calls, tokens, latency)
+- `GET /health`: Full runtime status (agents, providers, channels, memory, metrics)
+- `GET /health/live`: Simple liveness check (returns 200)
+- `GET /metrics`: Raw metrics (turns, tool calls, tokens, latency)
 
-### CLI Checks
+### CLI checks
 
 ```bash
 npx rivetos status           # Runtime overview
@@ -450,7 +450,7 @@ npx rivetos test             # Smoke test (provider, memory, tools)
 npx rivetos mesh ping        # Check all mesh peers
 ```
 
-### Docker Health Checks
+### Docker health checks
 
 The agent Dockerfile includes a built-in health check:
 ```
@@ -458,4 +458,4 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget -qO- http://localhost:3100/health/live || exit 1
 ```
 
-Docker Compose uses this for dependency ordering — agents wait for the datahub to be healthy before starting.
+Docker Compose uses this for dependency ordering; agents wait for the datahub to be healthy before starting.

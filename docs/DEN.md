@@ -1,8 +1,8 @@
-# rivet-den — watch your agent work
+# rivet-den: watch your agent work
 
 A live pixel-art diorama of an agent session. Lifecycle hooks translate what
-the agent is doing — prompts, tool calls, plans, thinking, compaction — into
-a small event protocol; a tiny server reduces those events into room state;
+the agent is doing into a small event protocol: prompts, tool calls, plans,
+thinking, compaction; a tiny server reduces those events into room state;
 a Pixi viewer renders the room: whiteboard plans get written, the terminal
 shows real commands, the robot walks to the desk to code, and context
 compaction is a nap in the bed.
@@ -24,21 +24,21 @@ node services/den-server/dist/index.js
 
 To stream a real session, install an adapter:
 
-- **Claude Code** — add the `rivet-den` plugin from the rivetos marketplace
+- **Claude Code**: add the `rivet-den` plugin from the rivetos marketplace
   (`integrations/claude-code/rivet-den/`); set `RIVET_DEN_URL` if the server
-  isn't on localhost. [Plugin README](../integrations/claude-code/rivet-den/README.md)
-  — read its "What the den shows" section before pointing it at a shared server.
-- **Grok Build** — hook set in `integrations/grok/rivet-den/`.
-- **Kimi Code CLI** — append `integrations/kimi/rivet-den/hooks/hooks.toml` to
+  isn't on localhost. [Plugin README](../integrations/claude-code/rivet-den/README.md) has a
+  "What the den shows" section; read it before pointing it at a shared server.
+- **Grok Build**: hook set in `integrations/grok/rivet-den/`.
+- **Kimi Code CLI**: append `integrations/kimi/rivet-den/hooks/hooks.toml` to
   `~/.kimi-code/config.toml`.
-  [README](../integrations/kimi/rivet-den/README.md) — kimi's hooks carry no
+  [README](../integrations/kimi/rivet-den/README.md): kimi's hooks carry no
   assistant reply and no thinking, so that room shows prompts, tools, plan and
   terminal but no agent messages; the `kimi-code` harness driver serves both out
   of kimi's own transcript instead.
 
 The server binds `127.0.0.1` by default; set `RIVETOS_DEN_HOST=0.0.0.0` (and
 ideally `RIVETOS_DEN_TOKEN`) to serve a LAN. Multiple viewers, multiple
-sessions, one server — the picker chooses which room drives the den.
+sessions, one server; the picker chooses which room drives the den.
 
 ## The moving parts
 
@@ -56,9 +56,9 @@ Default pack weighs ~8.6MB of pre-keyed PNGs served once and cached;
 ## Mesh view
 
 One den-server runs per node; `GET /mesh.json` (auth-gated like every other
-endpoint) is how a viewer sees them all. The server reads the mesh roster —
-`RIVETOS_DEN_MESH_FILE` if set, else `/rivet-shared/mesh.json`, else
-`~/.rivetos/mesh.json` — projects the den-enabled nodes, probes each one's
+endpoint) is how a viewer sees them all. The server reads the mesh roster from `RIVETOS_DEN_MESH_FILE` if set, else
+`/rivet-shared/mesh.json`, else `~/.rivetos/mesh.json`, then projects the
+den-enabled nodes, probes each one's
 den `/healthz` in parallel (1.5s budget per peer), and answers:
 
 ```json
@@ -73,14 +73,14 @@ den `/healthz` in parallel (1.5s budget per peer), and answers:
 ```
 
 The whole result is cached for `RIVETOS_DEN_MESH_CACHE_MS` (default 10s).
-`latest` appears only on the entry that is this process — `RIVETOS_DEN_NODE_ID`
+`latest` appears only on the entry that is this process; `RIVETOS_DEN_NODE_ID`
 (else the machine hostname) matched against roster node ids; when nothing
 matches, no entry carries a `latest`, which is fine. The endpoint is `/mesh.json`
 *with* the extension on purpose: the extensionless `/mesh` stays free for the
 viewer SPA's route.
 
 A node is den-enabled when its roster entry has `'den'` in `capabilities`, a
-`metadata.denPort`, or a full `metadata.denUrl` (http/https only — anything
+`metadata.denPort`, or a full `metadata.denUrl` (http/https only; anything
 else is ignored with a warning). The entry's top-level `port` is the agent
 channel, **not** the den, which is why the den port lives in metadata:
 
@@ -95,13 +95,13 @@ On RivetOS nodes this tagging is automatic: when the node's config has
 `den.enabled: true`, the runtime's mesh self-registration includes `'den'` in
 `capabilities` and `metadata: { denPort: <den.port> }` on every startup
 (`buildLocalNode()` call in `packages/boot/src/registrars/agents.ts`). That
-makes den discovery restart-proof by construction —
+makes den discovery restart-proof by construction:
 `FileMeshRegistry.register()` wholesale-replaces the node's roster entry, and
 the replacement is always derived from config.
 
 Hand-tagging is the fallback for den hosts the runtime doesn't own: non-RivetOS
 machines running a den-server, infra-role entries, hand-maintained nodes. Do
-not hand-tag a runtime-owned entry — the next restart rebuilds it from config
+not hand-tag a runtime-owned entry; the next restart rebuilds it from config
 and the edit evaporates (that is the feature; put the truth in the node's
 `den:` config section instead). (`rivetos mesh join` still registers a fresh
 empty-capability entry under a newly generated UUID id, which is its own kind
@@ -111,7 +111,7 @@ of roster noise, unrelated to den.)
 
 On mesh nodes the den is config-driven: add a `den:` section to
 `~/.rivetos/config.yaml` and run `rivetos update` (or `rivetos update --mesh`
-from any node — each node's own config decides what it gets).
+from any node; each node's own config decides what it gets).
 
 ```yaml
 den:
@@ -126,14 +126,14 @@ den:
 ```
 
 What the update's den stage does on a den-enabled node (locally, and over SSH
-for mesh peers — honoring per-node `sshUser`; non-linux platforms are skipped
+for mesh peers, honoring per-node `sshUser`; non-linux platforms are skipped
 like the rest of the update):
 
-1. builds `services/den-server` (workspace build — usually an nx cache hit),
+1. builds `services/den-server` (workspace build, usually an nx cache hit),
 2. installs/refreshes `/etc/systemd/system/rivet-den.service` from
    `services/den-server/rivet-den.service`,
 3. **generates** `~/.rivetos/den.env` from the `den:` section (host, port,
-   token, terminal flag, static/packs dirs). The file is config-managed —
+   token, terminal flag, static/packs dirs). The file is config-managed;
    its header says so, it is chmod 600 because the token lives there, and
    hand-edits are overwritten on the next update. Change `config.yaml`, not
    `den.env`,
@@ -141,28 +141,28 @@ like the rest of the update):
    below); a missing toolchain degrades to a warning,
 5. restarts `rivet-den.service` and probes `http://localhost:<port>/healthz`.
 
-Misconfigurations — most importantly terminals exposed off-loopback without a
-token — are rejected by `rivetos config validate` before any of this runs;
+Misconfigurations are rejected by `rivetos config validate` before any of
+this runs, most importantly terminals exposed off-loopback without a token;
 the validator mirrors den-server's own startup security gate.
 
 When `den.enabled` is false/absent but a `rivet-den.service` is already
-active, the update leaves it alone and prints a notice — no surprise
+active, the update leaves it alone and prints a notice, with no surprise
 teardowns. Retiring a den is an operator action:
 `sudo systemctl disable --now rivet-den`.
 
 A failed den stage never fails the node's rivetos update (den is auxiliary);
-it shows up as `⚠den` in the mesh summary table — check
+it shows up as `⚠den` in the mesh summary table; check
 `journalctl -u rivet-den` on the node.
 
 Hosts that aren't RivetOS installs can still run a den-server by hand: build
 the workspace, copy the unit, write `den.env` yourself, and tag the mesh
-entry manually (see "Mesh view" above — manual tags survive only on entries
+entry manually (see "Mesh view" above; manual tags survive only on entries
 the runtime doesn't own).
 
 ### node-pty ABI runbook
 
 `node-pty` (the terminal backend) is a native module: its compiled binary
-must match the node binary that runs the service — the unit's
+must match the node binary that runs the service; the unit's
 `ExecStart=/usr/bin/node`. An `npm install` done under a different node (nvm,
 asdf, homebrew) leaves a mismatched binary and every term endpoint answers
 503. The deploy stage rebuilds it with `/usr/bin` first on PATH so npm runs
@@ -179,15 +179,15 @@ toolchain error → install `make`, `g++`, `python3`, then re-run
 
 **Never rsync `node_modules` across nodes or architectures.** A
 `node_modules` copied from an x86 node to an ARM one (or across glibc/node
-versions) carries native binaries that won't load — node-pty is exactly the
+versions) carries native binaries that won't load; node-pty is exactly the
 kind of dependency that breaks. On mixed-arch meshes every node runs its own
 `npm install` and its own node-pty rebuild, which is precisely what
 `rivetos update` does; don't shortcut it with file sync.
 
 ### Terminal roster + security model
 
-Terminals are the den's sharpest edge — a shell running as the service user
-behind HTTP — so the whole model in one place:
+Terminals are the den's sharpest edge, a shell running as the service user
+behind HTTP, so the whole model in one place:
 
 - **Off by default.** `den.terminal.enabled: true` is a deliberate act, per
   node.
@@ -196,15 +196,15 @@ behind HTTP — so the whole model in one place:
   startup and force-disables terminals (loudly) if the state is ever reached
   anyway.
 - **Trusted-network opt-out.** `den.terminal.open: true` explicitly waives the
-  token requirement — for private LANs where convenience wins. Understand what
+  token requirement, for private LANs where convenience wins. Understand what
   it means: anything that can reach the port can spawn a shell as the service
   user. den-server logs the open state at startup; it is never the default.
-  (`token:` can then be omitted entirely — the whole den runs unauthenticated,
+  (`token:` can then be omitted entirely; the whole den runs unauthenticated,
   like the pre-2.0 prototype did.)
 - **Roster ownership.** The HTTP API accepts only command *keys* from the
   operator-owned roster (`~/.rivetos/den-term.json`); argv/cwd/env never
   travel over the wire in either direction, and every command is spawned
-  directly from its argv array — never through a shell. The roster is re-read
+  directly from its argv array, never through a shell. The roster is re-read
   lazily, so edits need no restart. Unlike `den.env`, the roster file is
   yours: the update never writes it.
 - **Audit log.** Every spawn/kill/exit appends a JSON line to
@@ -233,26 +233,26 @@ shape (per-entry `cwd`/`env`) and the PTY knobs.
 
 The viewer runs fine on phones (it camera-follows the character in portrait).
 Two honest notes: Pixi renders every animation frame, so a den left open in
-the foreground will use battery like a game would — background tabs throttle
+the foreground will use battery like a game would; background tabs throttle
 to nothing. On weak GPUs prefer the day shell (`?tod=day`) and one session
 per tab. There is no reduced-motion mode yet.
 
 ## Accessibility
 
 The chat stream and narration panel are DOM text (screen-reader reachable);
-the room itself — whiteboard, terminal, activity — is canvas and currently
+the room's whiteboard, terminal, and activity layers are canvas and currently
 invisible to assistive tech. Future polish: mirror whiteboard/terminal state
 into an `aria-live` region and honor `prefers-reduced-motion`.
 
 ## Roadmap
 
-- **rivetos-native emitters** — events straight from the runtime's hook
+- **rivetos-native emitters**: events straight from the runtime's hook
   pipeline (no CC/Grok adapter needed); next PR after this stack lands.
-- **Visual regression on packs** — render each pose/station headlessly and
+- **Visual regression on packs**: render each pose/station headlessly and
   diff against goldens, so art and anchor changes surface in review.
-- **Hosted den tier** — the CC plugin is deliberately self-contained (plain
+- **Hosted den tier**: the CC plugin is deliberately self-contained (plain
   Node, no rivetos install) so a hosted server + token is a copy-paste onboard.
-- **Pack marketplace** — `den-pack validate` is already the gatekeeper;
+- **Pack marketplace**: `den-pack validate` is already the gatekeeper;
   spec v1 is frozen; PACK.md is the authoring contract.
 
 ## Gateway (G0–G7)
@@ -262,10 +262,10 @@ The den server is embedded in the rivetos process as the per-node gateway
 aliases). Two G7 knobs:
 
 - **Serving a different web app at `/`** (e.g. rivethub-web in phase 4): set
-  `den.static_dir` to the built app's directory — the SPA fallback serves it
+  `den.static_dir` to the built app's directory; the SPA fallback serves it
   for every non-API path.
 - **Binding :80/:443 directly** (no reverse proxy): run `rivetos gateway caps`
   once (installs a systemd drop-in granting `CAP_NET_BIND_SERVICE` as an
-  ambient capability — note that processes the agent spawns, including den
+  ambient capability; note that processes the agent spawns, including den
   terminals, inherit it), set `den.port: 443`, restart. `rivetos gateway token` prints the bearer token
   for non-loopback clients when `den.token: gateway-token-file` is set.

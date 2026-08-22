@@ -1,12 +1,12 @@
 # Troubleshooting
 
-Common issues and fixes. Start with `rivetos doctor` — it checks everything.
+Common issues and fixes. Start with `rivetos doctor`; it checks everything.
 
 > The unified Compose stack lives at `infra/docker/rivetos/docker-compose.yml`. Throughout this doc, bare `docker compose ...` examples assume you've either passed `-f infra/docker/rivetos/docker-compose.yml` or exported `COMPOSE_FILE=infra/docker/rivetos/docker-compose.yml` from the repo root.
 
 ---
 
-## Quick Diagnostics
+## Quick diagnostics
 
 ```bash
 npx rivetos doctor          # 12-category health check
@@ -18,7 +18,7 @@ npx rivetos logs --level error  # Errors only
 
 ---
 
-## Agent Won't Start
+## Agent won't start
 
 ### "Config validation failed"
 
@@ -68,26 +68,26 @@ npx rivetos start
 
 ---
 
-## Agent Won't Respond
+## Agent won't respond
 
 ### Check the basics
 
 1. **Is the agent running?** `npx rivetos status`
 2. **Is the provider reachable?** `npx rivetos test`
-3. **Is the API key valid?** Check `.env` — keys must not have quotes or trailing whitespace
+3. **Is the API key valid?** Check `.env`; keys must not have quotes or trailing whitespace
 4. **Is the channel connected?** Check `npx rivetos logs` for connection errors
 
-### "429 Too Many Requests" or "529 Overloaded"
+### "429 too many requests" or "529 overloaded"
 
 The provider is rate limiting you or overloaded.
 
-**Fix:** Provider fallback chains were removed in the AI SDK migration, and there is no circuit breaker in front of providers — a rate-limited provider keeps being retried by the AI SDK's own retry policy. If a provider is down or throttling you, switch the agent's `provider:` setting until it recovers.
+**Fix:** Provider fallback chains were removed in the AI SDK migration, and there is no circuit breaker in front of providers; a rate-limited provider keeps being retried by the AI SDK's own retry policy. If a provider is down or throttling you, switch the agent's `provider:` setting until it recovers.
 
 ### "Maximum tool iterations reached"
 
 The agent hit the safety cap (default: 100 iterations per turn).
 
-**Fix:** This is usually correct behavior — the agent was in a loop. If you need more iterations for a specific task:
+**Fix:** This is usually correct behavior. The agent was in a loop. If you need more iterations for a specific task:
 
 ```yaml
 runtime:
@@ -108,7 +108,7 @@ Common cause: the provider returned an empty response (often a content filter is
 
 ---
 
-## Database Issues
+## Database issues
 
 ### "Connection refused" to PostgreSQL
 
@@ -172,7 +172,7 @@ sudo -u postgres psql rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
 ---
 
-## Docker Issues
+## Docker issues
 
 ### Containers won't build
 
@@ -225,7 +225,7 @@ ls -la workspace/
 
 ---
 
-## Channel Issues
+## Channel issues
 
 ### Social channel bots removed (Phase 5)
 
@@ -234,12 +234,12 @@ see reconnect loops or bot-token errors, remove those keys from `config.yaml`
 and use RivetHub against the node gateway instead.
 
 Leftover `channels.telegram:` / `channels.discord:` only produce an
-**unknown channel type warning** at boot — they do not crash-loop the node.
+**unknown channel type warning** at boot; they do not crash-loop the node.
 
 ---
 
 
-## Mesh Issues
+## Mesh issues
 
 ### "No mesh peers found"
 
@@ -267,7 +267,7 @@ Common causes:
 
 ---
 
-## Update Issues
+## Update issues
 
 ### "git pull failed"
 
@@ -291,7 +291,7 @@ docker compose up -d
 
 ### Agent lost its workspace after update
 
-This should not happen — workspace files are on bind mounts. Check:
+This should not happen; workspace files are on bind mounts. Check:
 
 ```bash
 # Verify mount
@@ -328,7 +328,7 @@ Common causes:
 
 ---
 
-## `rivetos doctor` Output Guide
+## `rivetos doctor` output guide
 
 The doctor command runs 12 categories of checks:
 
@@ -354,10 +354,10 @@ npx rivetos doctor --json | jq '.checks[] | select(.status == "fail")'
 
 ---
 
-## Getting Help
+## Getting help
 
-1. **Check this guide** — most issues are covered above
-2. **Run diagnostics** — `rivetos doctor` and `rivetos test` catch most problems
-3. **Check logs** — `rivetos logs --level error` shows what went wrong
-4. **Search issues** — [github.com/philbert440/rivetOS/issues](https://github.com/philbert440/rivetOS/issues)
-5. **File a bug** — include `rivetos doctor --json` output and relevant logs
+1. **Check this guide**: most issues are covered above
+2. **Run diagnostics**: `rivetos doctor` and `rivetos test` catch most problems
+3. **Check logs**: `rivetos logs --level error` shows what went wrong
+4. **Search issues**: [github.com/philbert440/rivetOS/issues](https://github.com/philbert440/rivetOS/issues)
+5. **File a bug**: include `rivetos doctor --json` output and relevant logs
