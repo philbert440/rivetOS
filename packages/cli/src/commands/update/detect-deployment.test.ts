@@ -177,4 +177,38 @@ describe('findOwnershipBlockers', () => {
     expect(blockers).toContain('node_modules')
     expect(blockers).not.toContain('(install root)')
   })
+
+  it('flags unwritable desktop Cargo target/ while npm paths stay writable', () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) {
+      return
+    }
+    const root = scratch()
+    mkdirSync(join(root, 'node_modules'), { recursive: true })
+    const cargoTarget = join(root, 'apps/rivethub-desktop/src-tauri/target')
+    mkdirSync(cargoTarget, { recursive: true })
+    chmodSync(cargoTarget, 0o555)
+    const blockers = findOwnershipBlockers(root)
+    expect(blockers).toContain('apps/rivethub-desktop/src-tauri/target')
+    expect(blockers).not.toContain('(install root)')
+    expect(blockers).not.toContain('node_modules')
+  })
+
+  it('flags unwritable rivet-team-desktop Cargo target/', () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) {
+      return
+    }
+    const root = scratch()
+    const cargoTarget = join(root, 'apps/rivet-team-desktop/src-tauri/target')
+    mkdirSync(cargoTarget, { recursive: true })
+    chmodSync(cargoTarget, 0o555)
+    const blockers = findOwnershipBlockers(root)
+    expect(blockers).toContain('apps/rivet-team-desktop/src-tauri/target')
+  })
+
+  it('ignores missing desktop Cargo target/ (not every install builds desktop)', () => {
+    const root = scratch()
+    mkdirSync(join(root, 'node_modules'), { recursive: true })
+    // No apps/*/src-tauri/target — should not invent blockers for absent paths.
+    expect(findOwnershipBlockers(root)).toEqual([])
+  })
 })

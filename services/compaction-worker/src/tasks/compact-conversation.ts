@@ -21,6 +21,7 @@ import {
   formatLeafPrompt,
   formatBranchPrompt,
   formatRootPrompt,
+  isHeartbeatSessionKey,
   type ConversationMeta,
   type CompactMessageRow,
   type SummaryRow,
@@ -56,9 +57,9 @@ interface PgClient {
 async function loadConversationMeta(
   client: PgClient,
   conversationId: string,
-): Promise<ConversationMeta> {
-  const { rows } = await client.query<ConversationMeta>(
-    `SELECT id::text AS id, agent, channel, channel_id, title
+): Promise<ConversationMeta & { session_key: string | null }> {
+  const { rows } = await client.query<ConversationMeta & { session_key: string | null }>(
+    `SELECT id::text AS id, agent, channel, channel_id, title, session_key
        FROM ros_conversations
       WHERE id = $1`,
     [conversationId],
@@ -67,6 +68,11 @@ async function loadConversationMeta(
     throw new Error(`Conversation not found: ${conversationId}`)
   }
   return rows[0]
+}
+
+/** True when this conversation is scheduled-heartbeat noise, not user work. */
+export function isHeartbeatConversation(meta: { session_key?: string | null }): boolean {
+  return isHeartbeatSessionKey(meta.session_key)
 }
 
 /** Run `fn` inside a BEGIN/COMMIT, rolling back (best-effort) on any throw. */
@@ -287,6 +293,12 @@ export const compactConversationTask: Task = async (payload, helpers) => {
 
   await helpers.withPgClient(async (client) => {
     const convMeta = await loadConversationMeta(client, conversationId)
+    if (isHeartbeatConversation(convMeta)) {
+      helpers.logger.info(
+        `[compact-conversation] skip heartbeat conversation ${conversationId.slice(0, 8)}`,
+      )
+      return
+    }
 
     let leafRound = 0
     let totalCreated = 0
