@@ -34,12 +34,58 @@ const IDLE_MINUTES = 15
 const STALE_MINUTES = 4 * 24 * 60
 const STALE_MIN_BATCH = 2
 
+/**
+ * Named blocks of the memory_stats markdown report.
+ *
+ * Alerts and queue/compaction health are assembled *before* the large
+ * per-agent/role census. MCP and capture layers truncate long tool results
+ * (heartbeat captures have been observed cutting off around Summaries), which
+ * previously hid stuck graphile jobs and compaction backlogs.
+ */
+export interface StatsReportBlocks {
+  headline: string
+  stuckJobs?: string
+  orphans?: string
+  embeddingQueue: string
+  unsummarized: string
+  eligibleConvs?: string
+  byAgent?: string
+  byRole?: string
+  conversations: string
+  summaries: string
+  embeddingCoverage: string
+  tree: string
+  freshness: string
+}
+
+export function assembleStatsReport(blocks: StatsReportBlocks): string {
+  const parts: string[] = ['## Memory System Health', blocks.headline]
+
+  if (blocks.stuckJobs) parts.push(blocks.stuckJobs)
+  if (blocks.orphans) parts.push(blocks.orphans)
+
+  parts.push(blocks.embeddingQueue, blocks.unsummarized)
+  if (blocks.eligibleConvs) parts.push(blocks.eligibleConvs)
+
+  if (blocks.byAgent) parts.push(blocks.byAgent)
+  if (blocks.byRole) parts.push(blocks.byRole)
+  parts.push(
+    blocks.conversations,
+    blocks.summaries,
+    blocks.embeddingCoverage,
+    blocks.tree,
+    blocks.freshness,
+  )
+
+  return parts.join('\n')
+}
+
 export function createStatsTool(pool: pg.Pool): Tool {
   return {
     name: 'memory_stats',
     description:
-      'Memory system health check — message/summary counts, embedding queue depth, ' +
-      'unsummarized messages, compaction status, missing summaries, and breakdowns by agent/role/kind. ' +
+      'Memory system health check — alerts first (stuck jobs, orphans), then embedding queue, ' +
+      'compaction status, then census breakdowns by agent/role/kind. ' +
       'Use to diagnose memory issues or check if background jobs are keeping up.',
     parameters: {
       type: 'object',
@@ -55,8 +101,6 @@ export function createStatsTool(pool: pg.Pool): Tool {
       const agentFilter = args.agent as string | undefined
 
       try {
-        const sections: string[] = ['## Memory System Health']
-
         const msgWhere = agentFilter ? 'WHERE agent = $1' : ''
         const msgParams = agentFilter ? [agentFilter] : []
 
@@ -67,61 +111,58 @@ export function createStatsTool(pool: pg.Pool): Tool {
           msgParams,
         )
         const mt = msgTotals.rows[0]
-        sections.push(
+        const headline =
           `\n**Messages:** ${Number(mt.total).toLocaleString()}` +
-            `\n**Date range:** ${fmtDate(mt.oldest)} → ${fmtDate(mt.newest)}`,
-        )
+          `\n**Date range:** ${fmtDate(mt.oldest)} → ${fmtDate(mt.newest)}`
 
         // Messages by agent
         const byAgent = await pool.query<AgentCountRow>(
           `SELECT agent, COUNT(*) AS count FROM ros_messages ${msgWhere} GROUP BY agent ORDER BY count DESC`,
           msgParams,
         )
-        if (byAgent.rows.length > 0) {
-          sections.push(
-            '\n**By agent:**\n' +
+        const byAgentSection =
+          byAgent.rows.length > 0
+            ? '\n**By agent:**\n' +
               byAgent.rows
                 .map((r) => `  ${r.agent}: ${Number(r.count).toLocaleString()}`)
-                .join('\n'),
-          )
-        }
+                .join('\n')
+            : undefined
 
         // Messages by role
         const byRole = await pool.query<RoleCountRow>(
           `SELECT role, COUNT(*) AS count FROM ros_messages ${msgWhere} GROUP BY role ORDER BY count DESC`,
           msgParams,
         )
-        if (byRole.rows.length > 0) {
-          sections.push(
-            '\n**By role:**\n' +
-              byRole.rows.map((r) => `  ${r.role}: ${Number(r.count).toLocaleString()}`).join('\n'),
-          )
-        }
+        const byRoleSection =
+          byRole.rows.length > 0
+            ? '\n**By role:**\n' +
+              byRole.rows.map((r) => `  ${r.role}: ${Number(r.count).toLocaleString()}`).join('\n')
+            : undefined
 
         // Conversations
         const convTotals = await pool.query<ConversationTotalRow>(
           `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE active) AS active FROM ros_conversations`,
         )
         const ct = convTotals.rows[0]
-        sections.push(`\n**Conversations:** ${ct.total} total, ${ct.active} active`)
+        const conversations = `\n**Conversations:** ${ct.total} total, ${ct.active} active`
 
         // Summary counts by kind
         const byKind = await pool.query<SummaryKindRow>(
           `SELECT kind, COUNT(*) AS count, MAX(depth) AS max_depth FROM ros_summaries GROUP BY kind ORDER BY count DESC`,
         )
+        let summaries: string
         if (byKind.rows.length > 0) {
           const totalSummaries = byKind.rows.reduce((sum, r) => sum + Number(r.count), 0)
-          sections.push(
+          summaries =
             `\n**Summaries:** ${totalSummaries.toLocaleString()} total\n` +
-              byKind.rows
-                .map(
-                  (r) =>
-                    `  ${r.kind}: ${Number(r.count).toLocaleString()} (max depth: ${String(r.max_depth)})`,
-                )
-                .join('\n'),
-          )
+            byKind.rows
+              .map(
+                (r) =>
+                  `  ${r.kind}: ${Number(r.count).toLocaleString()} (max depth: ${String(r.max_depth)})`,
+              )
+              .join('\n')
         } else {
-          sections.push('\n**Summaries:** 0 ⚠️ No summaries — compactor may not be running')
+          summaries = '\n**Summaries:** 0 ⚠️ No summaries — compactor may not be running'
         }
 
         // Embedding queue — messages count content OR tool_result so tool rows
@@ -160,14 +201,13 @@ export function createStatsTool(pool: pg.Pool): Tool {
               ? `⏳ ${String(queueTotal)} pending`
               : `⚠️ ${String(queueTotal)} pending (backlog)`
 
-        sections.push(
+        const embeddingQueue =
           `\n**Embedding queue:** ${queueStatus}` +
-            `\n  Messages awaiting embedding: ${msgQueue.toLocaleString()}` +
-            `\n  Summaries awaiting embedding: ${sumQueue.toLocaleString()}` +
-            (unembeddable > 0
-              ? `\n  Unembeddable (excluded by design): ${unembeddable.toLocaleString()}`
-              : ''),
-        )
+          `\n  Messages awaiting embedding: ${msgQueue.toLocaleString()}` +
+          `\n  Summaries awaiting embedding: ${sumQueue.toLocaleString()}` +
+          (unembeddable > 0
+            ? `\n  Unembeddable (excluded by design): ${unembeddable.toLocaleString()}`
+            : '')
 
         // Embedding coverage
         const msgEmbed = await pool.query<EmbedCoverageRow>(
@@ -182,11 +222,10 @@ export function createStatsTool(pool: pg.Pool): Tool {
           Number(me.total) > 0 ? ((Number(me.embedded) / Number(me.total)) * 100).toFixed(1) : '0'
         const sumPct =
           Number(se.total) > 0 ? ((Number(se.embedded) / Number(se.total)) * 100).toFixed(1) : '0'
-        sections.push(
+        const embeddingCoverage =
           `\n**Embedding coverage:**` +
-            `\n  Messages: ${Number(me.embedded).toLocaleString()}/${Number(me.total).toLocaleString()} (${msgPct}%)` +
-            `\n  Summaries: ${Number(se.embedded).toLocaleString()}/${Number(se.total).toLocaleString()} (${sumPct}%)`,
-        )
+          `\n  Messages: ${Number(me.embedded).toLocaleString()}/${Number(me.total).toLocaleString()} (${msgPct}%)` +
+          `\n  Summaries: ${Number(se.embedded).toLocaleString()}/${Number(se.total).toLocaleString()} (${sumPct}%)`
 
         // Unsummarized messages — bucketed by compactor eligibility.
         //   eligible:    will be picked by the next enqueue-idle pass
@@ -258,13 +297,12 @@ export function createStatsTool(pool: pg.Pool): Tool {
         // total is dominated by below-floor tails which the compactor will never
         // touch by design.
         const eligibleStatus = eligibleConvs === 0 ? '✅' : eligibleMsgs < 100 ? '⏳' : '⚠️'
-        sections.push(
+        const unsummarized =
           `\n**Unsummarized messages:** ${totalUnsum.toLocaleString()} total` +
-            `\n  Eligible for compaction: ${eligibleMsgs.toLocaleString()} msgs in ${eligibleConvs.toLocaleString()} convs ${eligibleStatus}` +
-            `\n    (≥${String(FULL_WINDOW)} unsummarized, OR ≥${String(MIN_BATCH_SIZE)} + idle ≥${String(IDLE_MINUTES)}m, OR ≥${String(STALE_MIN_BATCH)} + idle ≥${String(Math.round(STALE_MINUTES / 1440))}d)` +
-            `\n  Active tail: ${activeTailMsgs.toLocaleString()} msgs in ${activeTailConvs.toLocaleString()} convs (will flush when idle)` +
-            `\n  Below floor: ${belowFloorMsgs.toLocaleString()} msgs in ${belowFloorConvs.toLocaleString()} convs (<${String(STALE_MIN_BATCH)} qualifying, or not yet stale — won't compact yet)`,
-        )
+          `\n  Eligible for compaction: ${eligibleMsgs.toLocaleString()} msgs in ${eligibleConvs.toLocaleString()} convs ${eligibleStatus}` +
+          `\n    (≥${String(FULL_WINDOW)} unsummarized, OR ≥${String(MIN_BATCH_SIZE)} + idle ≥${String(IDLE_MINUTES)}m, OR ≥${String(STALE_MIN_BATCH)} + idle ≥${String(Math.round(STALE_MINUTES / 1440))}d)` +
+          `\n  Active tail: ${activeTailMsgs.toLocaleString()} msgs in ${activeTailConvs.toLocaleString()} convs (will flush when idle)` +
+          `\n  Below floor: ${belowFloorMsgs.toLocaleString()} msgs in ${belowFloorConvs.toLocaleString()} convs (<${String(STALE_MIN_BATCH)} qualifying, or not yet stale — won't compact yet)`
 
         // Top conversations the next enqueue-idle pass will pick (matches the
         // worker's own SELECT in enqueue-idle.ts, sorted oldest-first).
@@ -290,17 +328,16 @@ export function createStatsTool(pool: pg.Pool): Tool {
             ORDER BY c.updated_at ASC LIMIT 5`,
           [FULL_WINDOW, MIN_BATCH_SIZE, IDLE_MINUTES, STALE_MIN_BATCH, STALE_MINUTES],
         )
-        if (eligible.rows.length > 0) {
-          sections.push(
-            `\n**Top conversations eligible for compaction:**\n` +
+        const eligibleConvsSection =
+          eligible.rows.length > 0
+            ? `\n**Top conversations eligible for compaction:**\n` +
               eligible.rows
                 .map(
                   (r) =>
                     `  ${r.agent}: ${Number(r.unsummarized).toLocaleString()} unsummarized [${r.trigger}] (conv: ${r.conversation_id.slice(0, 8)}…)`,
                 )
-                .join('\n'),
-          )
-        }
+                .join('\n')
+            : undefined
 
         // Stuck graphile-worker jobs — silent rot. Skip gracefully if the
         // schema isn't present (e.g., test fixtures without the worker).
@@ -310,6 +347,7 @@ export function createStatsTool(pool: pg.Pool): Tool {
              WHERE table_schema='graphile_worker' AND table_name='_private_jobs'
            ) AS present`,
         )
+        let stuckJobs: string | undefined
         if (hasGraphileWorker.rows[0]?.present) {
           const stuck = await pool.query<StuckJobRow>(
             `SELECT t.identifier AS task,
@@ -323,16 +361,15 @@ export function createStatsTool(pool: pg.Pool): Tool {
               ORDER BY COUNT(*) DESC`,
           )
           if (stuck.rows.length > 0) {
-            sections.push(
+            stuckJobs =
               `\n**⚠️ Stuck queue jobs (at max attempts, won't retry):**\n` +
-                stuck.rows
-                  .map(
-                    (r) =>
-                      `  ${r.task}: ${Number(r.count).toLocaleString()} dead since ${fmtDate(r.oldest_run_at)}` +
-                      (r.sample_error ? ` — ${r.sample_error}` : ''),
-                  )
-                  .join('\n'),
-            )
+              stuck.rows
+                .map(
+                  (r) =>
+                    `  ${r.task}: ${Number(r.count).toLocaleString()} dead since ${fmtDate(r.oldest_run_at)}` +
+                    (r.sample_error ? ` — ${r.sample_error}` : ''),
+                )
+                .join('\n')
           }
         }
 
@@ -343,11 +380,10 @@ export function createStatsTool(pool: pg.Pool): Tool {
           WHERE ss.summary_id IS NULL AND s.kind = 'leaf'
         `)
         const orphanCount = Number(orphanSums.rows[0].count)
-        if (orphanCount > 0) {
-          sections.push(
-            `\n**⚠️ Orphan leaf summaries (no source messages):** ${String(orphanCount)}`,
-          )
-        }
+        const orphans =
+          orphanCount > 0
+            ? `\n**⚠️ Orphan leaf summaries (no source messages):** ${String(orphanCount)}`
+            : undefined
 
         // Summary tree depth
         const treeDepth = await pool.query<TreeDepthRow>(`
@@ -357,12 +393,11 @@ export function createStatsTool(pool: pg.Pool): Tool {
           FROM ros_summaries
         `)
         const td = treeDepth.rows[0]
-        sections.push(
+        const tree =
           `\n**Summary tree:**` +
-            `\n  Max depth: ${String(td.max_depth ?? 0)}` +
-            `\n  Root summaries: ${td.root_count}` +
-            `\n  Child summaries: ${td.child_count}`,
-        )
+          `\n  Max depth: ${String(td.max_depth ?? 0)}` +
+          `\n  Root summaries: ${td.root_count}` +
+          `\n  Child summaries: ${td.child_count}`
 
         // Freshness
         const freshness = await pool.query<FreshnessRow>(`
@@ -373,13 +408,26 @@ export function createStatsTool(pool: pg.Pool): Tool {
         const f = freshness.rows[0]
         const newestMsg = f.newest_message ? timeSince(f.newest_message) : 'never'
         const newestSum = f.newest_summary ? timeSince(f.newest_summary) : 'never'
-        sections.push(
+        const freshnessSection =
           `\n**Freshness:**` +
-            `\n  Newest message: ${newestMsg}` +
-            `\n  Newest summary: ${newestSum}`,
-        )
+          `\n  Newest message: ${newestMsg}` +
+          `\n  Newest summary: ${newestSum}`
 
-        return sections.join('\n')
+        return assembleStatsReport({
+          headline,
+          stuckJobs,
+          orphans,
+          embeddingQueue,
+          unsummarized,
+          eligibleConvs: eligibleConvsSection,
+          byAgent: byAgentSection,
+          byRole: byRoleSection,
+          conversations,
+          summaries,
+          embeddingCoverage,
+          tree,
+          freshness: freshnessSection,
+        })
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error)
         return `Stats query failed: ${msg}`
