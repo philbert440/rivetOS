@@ -173,6 +173,28 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
+ * Hot spots under the install tree checked for W_OK before `rivetos update`.
+ *
+ * Missing paths are ignored (npm/cargo will create them). Unwritable existing
+ * paths fail the preflight with a copy-paste chown.
+ *
+ * Cargo `target/` trees are included because desktop builds (rivethub +
+ * rivet-team) often leave them root- or foreign-owned after `sudo cargo` /
+ * cross-user deploys; the old list only covered npm/nx paths, so updates
+ * passed preflight and then died mid-cargo with EACCES.
+ */
+export const OWNERSHIP_PREFLIGHT_PATHS: readonly string[] = [
+  '.',
+  'node_modules',
+  'dist',
+  'packages',
+  '.nx',
+  '.git',
+  'apps/rivethub-desktop/src-tauri/target',
+  'apps/rivet-team-desktop/src-tauri/target',
+]
+
+/**
  * Paths under the install tree that the current user cannot write.
  *
  * Historical footgun: updates ran as `rivet` against trees left root-owned
@@ -185,7 +207,7 @@ async function fileExists(path: string): Promise<boolean> {
  */
 export function findOwnershipBlockers(
   root: string,
-  paths: string[] = ['.', 'node_modules', 'dist', 'packages', '.nx', '.git'],
+  paths: readonly string[] = OWNERSHIP_PREFLIGHT_PATHS,
 ): string[] {
   if (typeof process.getuid === 'function' && process.getuid() === 0) {
     return []

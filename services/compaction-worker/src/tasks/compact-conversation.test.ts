@@ -25,7 +25,12 @@ vi.mock('../config.js', () => ({
   },
 }))
 
-import { withTransaction, insertSummary, leafFloorFor } from './compact-conversation.js'
+import {
+  withTransaction,
+  insertSummary,
+  leafFloorFor,
+  isHeartbeatConversation,
+} from './compact-conversation.js'
 import { MIN_BATCH_SIZE } from '@rivetos/memory-postgres'
 
 describe('compact-conversation', () => {
@@ -44,6 +49,18 @@ describe('compact-conversation', () => {
     it('honors a custom staleMinBatch', () => {
       expect(leafFloorFor('session_stale', 1)).toBe(1)
       expect(leafFloorFor('session_stale', 3)).toBe(3)
+    })
+  })
+
+  describe('isHeartbeatConversation', () => {
+    it('skips scheduled heartbeat sessions', () => {
+      expect(isHeartbeatConversation({ session_key: 'heartbeat:rivet-claude' })).toBe(true)
+    })
+
+    it('compacts ordinary and null session keys', () => {
+      expect(isHeartbeatConversation({ session_key: 'grok-build' })).toBe(false)
+      expect(isHeartbeatConversation({ session_key: null })).toBe(false)
+      expect(isHeartbeatConversation({})).toBe(false)
     })
   })
 

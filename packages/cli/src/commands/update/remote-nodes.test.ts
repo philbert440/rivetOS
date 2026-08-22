@@ -101,6 +101,13 @@ describe('probeRemoteInstallWritable', () => {
     expect(res.blockers.every((b) => b.owner === 'root:root')).toBe(true)
     // Root label is the absolute install path; nested paths are absolute too.
     expect(res.blockers.some((b) => b.path === REMOTE_INSTALL_ROOT)).toBe(true)
+    // Desktop Cargo trees are part of the same preflight (when present remotely).
+    expect(
+      res.blockers.some((b) => b.path.endsWith('apps/rivethub-desktop/src-tauri/target')),
+    ).toBe(true)
+    expect(
+      res.blockers.some((b) => b.path.endsWith('apps/rivet-team-desktop/src-tauri/target')),
+    ).toBe(true)
   })
 
   it('rejects root paths that look like shell injection', () => {
