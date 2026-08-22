@@ -19,9 +19,9 @@ Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or *
 
 > **Note:** `npm install` automatically builds all packages via postinstall. No separate build step needed.
 
-## Option A: Interactive Setup (Recommended)
+## Option A: interactive setup (recommended)
 
-The `rivetos init` wizard walks you through everything — deployment target, agent configuration, API keys, channels, and generates your config automatically.
+The `rivetos init` wizard walks you through deployment target, agent configuration, API keys, and channels, then generates your config automatically.
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git
@@ -31,17 +31,17 @@ npx rivetos init
 ```
 
 The wizard will:
-1. **Detect your environment** — Docker available? Proxmox? How much memory?
-2. **Choose deployment target** — Docker (recommended), Proxmox, or manual
-3. **Configure agents** — pick a provider, enter your API key, choose a model
-4. **Configure channels** — Discord, Telegram, or terminal-only
-5. **Review and deploy** — summary of your choices, then one-click deploy
+1. **Detect your environment**: Docker available? Proxmox? How much memory?
+2. **Choose deployment target**: Docker (recommended), Proxmox, or manual
+3. **Configure agents**: pick a provider, enter your API key, choose a model
+4. **Configure channels**: Discord, Telegram, or terminal-only
+5. **Review and deploy**: summary of your choices, then one-click deploy
 
 After the wizard completes, your agent is running.
 
 ---
 
-## Option B: Docker (Manual)
+## Option B: Docker (manual)
 
 ### 1. Clone and install
 
@@ -132,7 +132,7 @@ npx rivetos test
 
 ---
 
-## Option C: Bare-Metal (No Docker)
+## Option C: bare-metal (no Docker)
 
 Run RivetOS directly on your machine. You'll need PostgreSQL running separately.
 
@@ -176,7 +176,7 @@ Edit both files as described in Option B, steps 2-3.
 mkdir -p ~/.rivetos/workspace/memory
 ```
 
-Add your workspace files (templates ship under `workspace-templates/` in the repo — `rivetos init` copies them in for you):
+Add your workspace files (templates ship under `workspace-templates/` in the repo; `rivetos init` copies them in for you):
 
 | File | Purpose | Required? |
 |---|---|---|
@@ -206,13 +206,13 @@ npx rivetos service start
 
 ---
 
-## Workspace Files
+## Workspace files
 
 Workspace files are markdown documents injected into the agent's system prompt. They define who the agent is and how it behaves.
 
-### Required Files
+### Required files
 
-**`CORE.md`** — Agent identity, personality, values, and behavioral rules.
+**`CORE.md`**: agent identity, personality, values, and behavioral rules.
 ```markdown
 # CORE.md — Who You Are
 
@@ -224,7 +224,7 @@ You are a helpful AI assistant named Rivet.
 - Ask before making destructive changes
 ```
 
-**`USER.md`** — Information about the person the agent is helping.
+**`USER.md`**: information about the person the agent is helping.
 ```markdown
 # USER.md — About Your Human
 
@@ -233,7 +233,7 @@ You are a helpful AI assistant named Rivet.
 - **Preferences:** TypeScript, Next.js, direct communication
 ```
 
-**`WORKSPACE.md`** — Operating rules, safety boundaries, and conventions.
+**`WORKSPACE.md`**: operating rules, safety boundaries, and conventions.
 ```markdown
 # WORKSPACE.md — Operating Rules
 
@@ -248,27 +248,27 @@ You are a helpful AI assistant named Rivet.
 3. Get to work
 ```
 
-### Optional Files
+### Optional files
 
-**`MEMORY.md`** — A lightweight index into the memory system. The agent uses this to know what to search for.
+**`MEMORY.md`**: a lightweight index into the memory system. The agent uses this to know what to search for.
 
-**`CAPABILITIES.md`** — Extended reference for tools, skills, and infrastructure. Included in the system prompt for local models where token cost isn't a concern.
+**`CAPABILITIES.md`**: extended reference for tools, skills, and infrastructure. Included in the system prompt for local models where token cost isn't a concern.
 
-**`HEARTBEAT.md`** — Instructions for periodic background tasks. Only injected during heartbeat turns, not regular conversation.
+**`HEARTBEAT.md`**: instructions for periodic background tasks. Only injected during heartbeat turns, not regular conversation.
 
-**`memory/YYYY-MM-DD.md`** — Daily notes. The agent reads recent daily notes for context continuity between sessions.
+**`memory/YYYY-MM-DD.md`**: daily notes. The agent reads recent daily notes for context continuity between sessions.
 
 ---
 
-## First Conversation
+## First conversation
 
 Once your agent is running, talk to it through whichever channel you configured:
 
 **Hub:** Open RivetHub pointed at this node's gateway and start a harness session.
 
-> The agent HTTP channel (`POST /api/message`) is an mTLS-authenticated endpoint for **inter-agent / mesh delegation**, not a casual chat API — it expects a `{ fromAgent, message }` envelope over HTTPS with client certs. See [Mesh Networking](/guides/mesh/).
+> The agent HTTP channel (`POST /api/message`) is an mTLS-authenticated endpoint for **inter-agent / mesh delegation**, not a casual chat API; it expects a `{ fromAgent, message }` envelope over HTTPS with client certs. See [Mesh Networking](/guides/mesh/).
 
-### Useful Commands
+### Useful commands
 
 In any channel, you can use slash commands:
 
@@ -290,7 +290,7 @@ In any channel, you can use slash commands:
 
 ---
 
-## CLI Reference (Quick)
+## CLI reference (quick)
 
 ```bash
 # Setup
@@ -340,21 +340,21 @@ rivetos skills list
 
 ---
 
-## Next Steps
+## Next steps
 
-- **[Channel Setup](/guides/channels/)** — Connect to Discord, Telegram, voice, and agent-to-agent messaging
-- **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
-- **[Mesh Networking](/guides/mesh/)** — Multi-node fleets with mTLS delegation
-- **[Configuration Reference](/reference/config/)** — Every config option explained
-- **[Architecture](/reference/architecture/)** — How the system works
-- **[Plugins](/guides/plugins/)** — How to write your own channel, provider, or tool
-- **[Skills](/guides/skills/)** — How to write and share skills
-- **[Deployment](/guides/deployment/)** — Docker, Proxmox, multi-agent, networking
-- **[Troubleshooting](/reference/troubleshooting/)** — Common issues and fixes
+- **[Channel Setup](/guides/channels/)**: Connect to Discord, Telegram, voice, and agent-to-agent messaging
+- **[Provider Setup](/guides/providers/)**: Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
+- **[Mesh Networking](/guides/mesh/)**: Multi-node fleets with mTLS delegation
+- **[Configuration Reference](/reference/config/)**: every config option explained
+- **[Architecture](/reference/architecture/)**: how the system works
+- **[Plugins](/guides/plugins/)**: How to write your own channel, provider, or tool
+- **[Skills](/guides/skills/)**: How to write and share skills
+- **[Deployment](/guides/deployment/)**: Docker, Proxmox, multi-agent, networking
+- **[Troubleshooting](/reference/troubleshooting/)**: common issues and fixes
 
 ---
 
-## Quick Troubleshooting
+## Quick troubleshooting
 
 **Agent doesn't respond?**
 - Run `npx rivetos doctor` to check connectivity
@@ -368,7 +368,7 @@ rivetos skills list
 
 **Memory search returns nothing?**
 - Check PostgreSQL connection: `npx rivetos test --quick`
-- Embeddings may still be processing — check `npx rivetos status` for queue depth
+- Embeddings may still be processing: check `npx rivetos status` for queue depth
 
 **Can't find config?**
 - Default location: `./config.yaml` or `~/.rivetos/config.yaml`

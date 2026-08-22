@@ -1,11 +1,11 @@
 ---
 title: Channels
-description: Channel plugins — social bots removed; agent mesh remains
+description: "Channel plugins: social bots removed; agent mesh remains"
 ---
 
 # Channels
 
-## Phase 5 — social channels removed
+## Phase 5: social channels removed
 
 RivetOS **removed** the first-party social channel plugins:
 
@@ -23,13 +23,13 @@ If a node still has `channels.telegram:`, `channels.discord:`, or `channels.voic
 
 1. Config validation emits an **unknown channel type warning** (not an error).
 2. Plugin discovery no longer finds those packages, so nothing is registered.
-3. The node **does not crash-loop** — boot continues with Hub/gateway and other plugins.
+3. The node **does not crash-loop**: boot continues with Hub/gateway and other plugins.
 
 Remove the stale keys when convenient. `rivetos doctor` no longer probes Discord/Telegram bot tokens.
 
 ## Remaining first-party channel: agent (mesh)
 
-`@rivetos/channel-agent` (`plugins/channels/agent/`) is the agent-to-agent mesh channel. It is **not** social UX — it is for cross-node messaging over mTLS.
+`@rivetos/channel-agent` (`plugins/channels/agent/`) is the agent-to-agent mesh channel. It is **not** social UX; it is for cross-node messaging over mTLS.
 
 ```yaml
 channels:

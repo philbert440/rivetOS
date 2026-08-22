@@ -16,19 +16,19 @@ RivetOS separates its files across three root directories by concern:
 | `~/.rivetos/` (typically `/home/rivet/.rivetos/`) | Personal config + workspace for this instance | The agent + its human |
 | `/rivet-shared/` (or equivalent NFS mount) | Shared dev + multi-agent collaboration | Any agent, shared |
 
-Agents should treat these boundaries as hard contracts. Never assume or hallucinate paths — if unsure, consult this file.
+Agents should treat these boundaries as hard contracts. Never assume or hallucinate paths. If unsure, consult this file.
 
 ---
 
-## 1. Runtime Directory — `/opt/rivetos/`
+## 1. Runtime directory: `/opt/rivetos/`
 
 The immutable RivetOS installation. The CLI binary, compiled core, built-in plugins, and runtime dependencies live here.
 
 **What belongs:**
 
 - `bin/rivetos` (CLI entry point)
-- `packages/` (compiled core — `types`, `core`, `boot`, `cli`)
-- `plugins/` (built-in plugins — channels, providers, tools, memory, transports)
+- `packages/` (compiled core: `types`, `core`, `boot`, `cli`)
+- `plugins/` (built-in plugins: channels, providers, tools, memory, transports)
 - `node_modules/` (runtime dependencies)
 - `package.json`, `package-lock.json`
 - Container files (`infra/docker/rivetos/docker-compose.yml`, `infra/containers/...`)
@@ -50,31 +50,31 @@ rivetos plugins list
 
 ---
 
-## 2. Config & Workspace — `~/.rivetos/`
+## 2. Config & workspace: `~/.rivetos/`
 
 The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos` plus a persistent workspace. The systemd service runs as the `rivet` user, so this resolves to `/home/rivet/.rivetos/`.
 
 **What belongs:**
 
-- `config.yaml` — primary configuration (`runtime.workspace`, agents, providers, channels, memory, MCP, etc.)
-- `.env` — secrets and environment variables (API keys, DB URLs, tokens). **Never commit.**
-- `workspace/` — the directory referenced by `runtime.workspace`:
-  - `CORE.md` — identity, personality, operating values (injected every turn)
-  - `USER.md` — who the human is
-  - `WORKSPACE.md` — operating rules, safety boundaries
-  - `MEMORY.md` — lightweight context index (main sessions only — see note in the file)
-  - `CAPABILITIES.md` — tools + skills inventory
-  - `HEARTBEAT.md` — background task checklist (injected on heartbeat turns only)
-  - `FILESYSTEM.md` — mirror of this guide
-  - `memory/YYYY-MM-DD.md` — daily rolling notes
-  - `skills/` — per-instance skill directories (optional)
+- `config.yaml`: primary configuration (`runtime.workspace`, agents, providers, channels, memory, MCP, etc.)
+- `.env`: secrets and environment variables (API keys, DB URLs, tokens). **Never commit.**
+- `workspace/`: the directory referenced by `runtime.workspace`:
+  - `CORE.md`: identity, personality, operating values (injected every turn)
+  - `USER.md`: who the human is
+  - `WORKSPACE.md`: operating rules, safety boundaries
+  - `MEMORY.md`: lightweight context index (main sessions only; see note in the file)
+  - `CAPABILITIES.md`: tools + skills inventory
+  - `HEARTBEAT.md`: background task checklist (injected on heartbeat turns only)
+  - `FILESYSTEM.md`: mirror of this guide
+  - `memory/YYYY-MM-DD.md`: daily rolling notes
+  - `skills/`: per-instance skill directories (optional)
 
 **Agent rules:**
 
 - **Full read/write access** for self-management.
 - Primary location for updating your identity, rules, memory, and daily context.
 - Use `ToolContext.workspace` path when available; otherwise resolve to `config.yaml`'s `runtime.workspace` value.
-- Keep this directory clean and well-organized — the files here are injected into your context on every turn.
+- Keep this directory clean and well-organized; the files here are injected into your context on every turn.
 
 **Default config:** `runtime.workspace: ~/.rivetos/workspace` (init wizard sets this; `~` expands to `$HOME`).
 
@@ -91,13 +91,13 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 
 ---
 
-## 3. Shared Collaboration — `/rivet-shared/`
+## 3. Shared collaboration: `/rivet-shared/`
 
-Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent) shared by every agent on the mesh, typically also mounted on the human's workstation. Neutral territory — not tied to any single agent's config.
+Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent) shared by every agent on the mesh, typically also mounted on the human's workstation. Neutral territory, not tied to any single agent's config.
 
 **What belongs:**
 
-- `RivetOS/` — the shared clone of the source tree (development and PRs happen here; runtimes run from `/opt/rivetos/`)
+- `RivetOS/`: the shared clone of the source tree (development and PRs happen here; runtimes run from `/opt/rivetos/`)
 - Project plans, roadmaps, specifications (`*.md`, diagrams)
 - Shared repositories or project directories
 - Research notes, meeting summaries, decision logs
@@ -121,7 +121,7 @@ Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent
 
 ---
 
-## Quick Decision Matrix
+## Quick decision matrix
 
 | Task / File Type | Correct Directory | Why |
 |---|---|---|
@@ -138,7 +138,7 @@ Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent
 
 ---
 
-## Enforcement Rules
+## Enforcement rules
 
 1. **Verify directory purpose** before any `ls`, `cat`, `>`, `rm`, `mv`, or tool call involving a new path.
 2. If a path doesn't clearly match one of the three categories above, **stop and ask the human** (or consult this file).
@@ -148,7 +148,7 @@ Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent
 
 ---
 
-## Source of Truth
+## Source of truth
 
 - **Canonical version:** `docs/FILESYSTEM.md` in the `rivetOS` repo.
 - **Per-instance mirror:** copied by `rivetos init` into `<workspace>/FILESYSTEM.md`.

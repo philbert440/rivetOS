@@ -1,6 +1,6 @@
 ---
 title: Privacy
-description: You run RivetOS on your own hardware and choose the models — your privacy is yours to control.
+description: You run RivetOS on your own hardware and choose the models. Your privacy is yours to control.
 sidebar:
   hidden: true
 ---
@@ -13,14 +13,14 @@ rivetos.dev is a static documentation site. RivetOS itself is software you insta
 
 ## Your data stays where you put it
 
-Memory, conversation history, secrets, and config live on **your** machines — your containers, your database, your filesystem. We never see them, because there's no "we" in the loop.
+Memory, conversation history, secrets, and config live on **your** machines: your containers, your database, your filesystem. We never see them, because there's no "we" in the loop.
 
 ## Models and providers are your choice
 
-You decide which providers RivetOS talks to. Point it at a cloud provider (Anthropic, OpenAI, xAI, Google, …) and your prompts and data go to that provider under *their* privacy terms — review them. Run fully local models on your own hardware and nothing leaves your network. Your privacy is determined by the models and providers you choose and how you configure them.
+You decide which providers RivetOS talks to. Point it at a cloud provider (Anthropic, OpenAI, xAI, Google, …) and your prompts and data go to that provider under *their* privacy terms. Review them. Run fully local models on your own hardware and nothing leaves your network. Your privacy is determined by the models and providers you choose and how you configure them.
 
 ## Third parties
 
-Any channels or tools you connect — Discord, Telegram, web search, MCP servers, and so on — are governed by their own privacy policies. RivetOS is the plumbing; what you plug into it is up to you.
+Any channels or tools you connect, such as web search or MCP servers, are governed by their own privacy policies. RivetOS is the plumbing; what you plug into it is up to you.
 
 In short: your privacy is your own. RivetOS is built so you keep control of it.

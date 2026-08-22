@@ -1,10 +1,10 @@
-# Skills Guide
+# Skills guide
 
-Skills are reusable knowledge, workflows, and procedures that agents can discover and use. Unlike plugins (which are code), skills are **markdown documents** — anyone can write one without programming.
+Skills are reusable knowledge, workflows, and procedures that agents can discover and use. Unlike plugins (which are code), skills are **markdown documents**; anyone can write one without programming.
 
 ---
 
-## What is a Skill?
+## What is a skill?
 
 A skill is a directory containing a `SKILL.md` file:
 
@@ -24,9 +24,9 @@ The agent discovers skills automatically, matches them to user messages by keywo
 
 ---
 
-## Writing a Skill
+## Writing a skill
 
-### Basic Structure
+### Basic structure
 
 ```markdown
 ---
@@ -65,7 +65,7 @@ Present weather data as:
 - Use °F for US users, °C for everyone else
 ```
 
-### Frontmatter Fields
+### Frontmatter fields
 
 The YAML frontmatter between `---` delimiters is parsed automatically:
 
@@ -78,7 +78,7 @@ The YAML frontmatter between `---` delimiters is parsed automatically:
 | `category` | No | Grouping category (e.g., `utilities`, `development`, `api`). |
 | `tags` | No | Comma-separated tags for additional categorization. |
 
-### No Frontmatter? No Problem.
+### No frontmatter? no problem.
 
 If you skip the `---` delimiters, the skill system falls back to:
 - **Name** → first markdown heading
@@ -87,7 +87,7 @@ If you skip the `---` delimiters, the skill system falls back to:
 
 ---
 
-## How Skills Are Discovered
+## How skills are discovered
 
 On boot, the skill manager scans every directory listed in `runtime.skill_dirs` (defaults to `~/.rivetos/workspace/skills/` if unset). For each subdirectory containing a `SKILL.md`, it parses the frontmatter and registers the skill.
 
@@ -100,7 +100,11 @@ runtime:
     - /rivet-shared/skills          # Team-shared skills (optional)
 ```
 
-### Discovery Flow
+Team-shared skills are how a mesh standardizes behavior: drop a skill in the shared directory once and every node that lists it picks it up. The first entry in `skill_dirs` is where `skill_manage create` writes, so keep the node-local directory first and the shared directory last. The MCP sidecar resolves its own skill directories separately, from `RIVETOS_SKILL_DIRS` (colon-separated) in the environment, falling back to `~/.rivetos/skills`; set it in `~/.rivetos/.env` so harness sessions see shared skills too.
+
+The reference team-shared skill is `unslop` (`/rivet-shared/skills/unslop/` on a running mesh): 31 rules for cutting AI tells from prose, ported from [pstack-claude](https://github.com/michael-denyer/pstack-claude) (MIT). Every agent applies it before publishing prose a human will read.
+
+### Discovery flow
 
 ```
 Boot
@@ -112,7 +116,7 @@ Boot
 
 ---
 
-## How Skills Are Matched
+## How skills are matched
 
 When a user sends a message, the skill system scores each skill against the message content:
 
@@ -125,7 +129,7 @@ This happens automatically via the `skill:before` hook. The agent sees the skill
 
 ---
 
-## Agent Tools for Skills
+## Agent tools for skills
 
 Agents have two built-in tools for managing skills:
 
@@ -147,7 +151,7 @@ Full CRUD for skills:
 | `read` | Read SKILL.md content (level 1) or include reference files (level 2) |
 | `write_file` | Write a reference file into the skill directory |
 
-### Example: Agent Creates a Skill
+### Example: agent creates a skill
 
 ```
 User: "Remember how to deploy to production — the process we just figured out."
@@ -175,7 +179,7 @@ Agent uses skill_manage:
 
 ---
 
-## Reference Files
+## Reference files
 
 Skills can include additional files beyond `SKILL.md`:
 
@@ -203,14 +207,14 @@ Agent uses skill_manage:
 
 ---
 
-## Skill Lifecycle
+## Skill lifecycle
 
-### Creating Skills
+### Creating skills
 
 Skills can be created by:
-- **You** — manually create directories with `SKILL.md` files
-- **The agent** — via `skill_manage create` during conversation
-- **The learning loop** — the review loop can extract patterns into skills automatically
+- **You**: manually create directories with `SKILL.md` files
+- **The agent**: via `skill_manage create` during conversation
+- **The learning loop**: the review loop can extract patterns into skills automatically
 
 ### Versioning
 
@@ -237,7 +241,7 @@ Skill content is validated before loading:
 
 ---
 
-## Built-In Skills
+## Built-in skills
 
 RivetOS ships with several skills out of the box:
 
@@ -258,10 +262,10 @@ RivetOS ships with several skills out of the box:
 
 ---
 
-## Best Practices
+## Best practices
 
 1. **Be specific with triggers.** `deploy, production, release` is better than `code, stuff, things`.
-2. **Write for the agent, not for humans.** The skill is context the agent reads — include exact commands, API formats, and decision rules.
+2. **Write for the agent, not for humans.** The skill is context the agent reads; include exact commands, API formats, and decision rules.
 3. **One concern per skill.** A skill for "GitHub" and a separate skill for "deployment" is better than one mega-skill.
 4. **Include examples.** Show the agent exactly what the output should look like.
 5. **Update, don't duplicate.** Use `skill_manage edit` to improve existing skills rather than creating overlapping ones.

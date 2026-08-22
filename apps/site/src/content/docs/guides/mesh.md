@@ -5,14 +5,14 @@ sidebar:
 description: Multi-node agent mesh with mTLS delegation
 ---
 RivetOS supports a multi-node mesh that lets agents delegate tasks to each other
-across instances. One node can ask another node's agent to handle a task — even
+across instances. One node can ask another node's agent to handle a task, even
 if that agent runs on different hardware or uses a different LLM provider.
 
 ---
 
-## How It Works
+## How it works
 
-Every mesh-enabled node runs an **agent channel** — an HTTPS server that
+Every mesh-enabled node runs an **agent channel**, an HTTPS server that
 receives delegated tasks and routes them to the local `DelegationEngine`. When
 one node needs an agent it doesn't host locally, it looks up the target node in
 the shared `mesh.json` registry and sends the task over mTLS.
@@ -29,7 +29,7 @@ the shared `mesh.json` registry and sends the task over mTLS.
 ### Shared registry
 
 All nodes read and write a single `mesh.json` file at `/rivet-shared/mesh.json`
-(NFS-mounted from the datahub CT). This is the source of truth — no extra
+(NFS-mounted from the datahub CT). This is the source of truth; no extra
 coordination service needed.
 
 ### Discovery modes
@@ -42,7 +42,7 @@ coordination service needed.
 
 ---
 
-## mTLS Authentication — Phase 0.5
+## mTLS authentication: Phase 0.5
 
 Starting from Phase 0.5, **all mesh agent-channel traffic is mutual TLS**.
 There is no plaintext fallback and no bearer-token authentication on the
@@ -146,7 +146,7 @@ certificate; connections without one are rejected before any HTTP code runs.
 
 ---
 
-## Audit / Logging
+## Audit / logging
 
 Every accepted request logs `peer.cn=<nodeName>`. You can grep for it in
 `journalctl -u rivetos` or wherever your log sink is:

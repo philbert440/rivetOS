@@ -6,13 +6,13 @@ description: Memory architecture, compaction, and retrieval design
 ---
 > Our system, our rules.
 
-## Design Principles
+## Design principles
 
-1. **Every word persists** — full transcripts of every conversation, every tool call, every response. Never deleted.
-2. **Smart retrieval, not smart storage** — store everything flat, use scoring to surface what matters.
-3. **Local-first processing** — Rivet Local (GERTY) handles embeddings and compaction. No cloud API dependency for memory.
-4. **Time-aware** — recent context matters more than old context. Ebbinghaus decay + access frequency.
-5. **Two memory layers** — short-term (session injection) and long-term (searchable archive).
+1. **Every word persists**: full transcripts of every conversation, every tool call, every response. Never deleted.
+2. **Smart retrieval, not smart storage**: store everything flat, use scoring to surface what matters.
+3. **Local-first processing**: Rivet Local (GERTY) handles embeddings and compaction. No cloud API dependency for memory.
+4. **Time-aware**: recent context matters more than old context. Ebbinghaus decay + access frequency.
+5. **Two memory layers**: short-term (session injection) and long-term (searchable archive).
 
 ## Architecture
 
@@ -121,15 +121,15 @@ CREATE TABLE ros_summary_sources (
 );
 ```
 
-## Short-Term Memory (Session Injection)
+## Short-term memory (session injection)
 
 ### What gets injected into the system prompt each turn:
 
-1. **Workspace files** — SOUL.md, IDENTITY.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md, today's daily notes
+1. **Workspace files**: SOUL.md, IDENTITY.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md, today's daily notes
 
-2. **Recent conversation** — last N messages from this session (via session history)
+2. **Recent conversation**: last N messages from this session (via session history)
 
-3. **Relevant context** — hybrid-scored retrieval:
+3. **Relevant context**: hybrid-scored retrieval:
 
 ```
 relevance = (fts_rank × 0.3) + (semantic_similarity × 0.3) + (temporal_score × 0.3) + (importance × 0.1)
@@ -146,19 +146,33 @@ Token budget: ~4000 tokens for injected context. Fill with highest-scoring resul
 ### Access frequency tracking:
 When a message or summary is returned in a search result, increment its access count. Frequently-accessed memories decay slower (Ebbinghaus reinforcement).
 
-## Long-Term Memory (Agent Tools)
+## Long-term memory (agent tools)
 
-### Consolidated Tool Surface (3 tools)
+### Consolidated tool surface (4 tools)
 
 | Tool | Description |
 |------|-------------|
 | `memory_search` | Unified search + auto-expand. Searches messages + summaries, auto-expands top summary hits to children/source messages. Supports FTS/trigram/regex modes, agent/date filters, optional LLM synthesis. |
 | `memory_browse` | Chronological message browsing. For reviewing sessions and catching up on activity. |
 | `memory_stats` | System health diagnostics. Embedding queue depth, unsummarized message counts, compaction status, summary tree depth, embedding coverage. |
+| `memory_get_full` | Recover the full payload of a capture-truncated row by id. Rows written by capture workers carry a disk pointer (`session_jsonl_path`/`line`); rows written through the sidecar write tools do not, and their elided tails are unrecoverable. |
 
-Consolidated from the original 6-tool design (`memory_grep`, `memory_expand`, `memory_describe`, `memory_expand_query`) down to 3 tools that require less LLM orchestration.
+Consolidated from the original 6-tool design (`memory_grep`, `memory_expand`, `memory_describe`, `memory_expand_query`) down to this surface, which needs less LLM orchestration.
 
-## Background Processing
+## Write surface (MCP sidecar)
+
+External MCP clients can write memory through two gated sidecar tools (added 2026-08 for the Grok Bot bridge, usable by any harness):
+
+| Tool | Description |
+|------|-------------|
+| `memory_append` | Append one message. `role` is required; `content` may be empty only for tool-call messages (`tool_name`/`tool_result` present), which feed the tool-synthesis pipeline. Accepts an optional `event_id` idempotency key; without one, a content-hash key is generated (identical repeated appends collapse by design; pass distinct `event_id`s to store true repeats). |
+| `memory_ingest_session` | Bulk-ingest a transcript. Each message requires `role` (**breaking change 2026-08-20**: the old silent `assistant` default is gone, because role is dedupe-hash material) and may carry an ISO `created_at`, preserved into the row so recall order survives replay. Idempotent: per-message event_ids include the ordinal, so retries skip stored rows while repeated identical lines still ingest. |
+
+Both tools register only when `RIVETOS_MCP_ENABLE_MEMORY_WRITE=1` (the write surface is off by default, like `shell` and `file_write`). Tags (`source`/`agent`/`channel`/`persona`) resolve from call args, then `RIVETOS_MEMORY_*` env, then `mcp` defaults; integration launchers pin them (the Grok Bot launcher sets `agent=rivet-grokbot`). Content and `tool_result` are capped at 16,000 chars with `truncated`/`full_content_length` reported back to the caller; unlike capture-worker truncation there is no disk pointer, so the tail is gone. Decide before writing.
+
+**Writer convention (load-bearing):** every `ros_messages` writer, capture workers and sidecar tools alike, takes `pg_advisory_xact_lock(hashtext(session_key))` before check-then-insert. Dedupe is convention-enforced, not schema-enforced; a new writer that skips the lock can race in duplicates.
+
+## Background processing
 
 ### Embedder
 - Runs on a timer (configurable interval)
@@ -171,7 +185,7 @@ Periodically summarize old messages into the summary DAG:
 
 1. **Trigger**: Check for conversations with unsummarized messages exceeding threshold
 2. **Batch**: Take the oldest unsummarized messages from that conversation
-3. **Summarize**: Send to Rivet Local — preserve key decisions, technical details, action items, state changes
+3. **Summarize**: Send to Rivet Local; preserve key decisions, technical details, action items, state changes
 4. **Store**: Insert summary with parent_id linking to the conversation's latest summary
 5. **Link**: Insert summary_sources rows connecting the summary to its source messages
 6. **Embed**: Queue the summary for embedding
@@ -183,7 +197,7 @@ Periodically summarize old messages into the summary DAG:
 
 This creates a tree: root → branches → leaves → source messages. The `memory_search` tool auto-expands this tree.
 
-## v5 Memory-Quality Pipeline
+## v5 memory-quality pipeline
 
 The v5 pipeline (April 2026) replaces the original cloud-model-tuned compactor with a local-first, thinking-model architecture optimized for faithfulness and searchability.
 
@@ -205,9 +219,9 @@ The v5 pipeline (April 2026) replaces the original cloud-model-tuned compactor w
 
 Three system prompts live in `plugins/memory/postgres/src/compactor/types.ts`:
 
-- `LEAF_SYSTEM_PROMPT` — summarize raw messages
-- `BRANCH_SYSTEM_PROMPT` — summarize leaves
-- `ROOT_SYSTEM_PROMPT` — summarize branches
+- `LEAF_SYSTEM_PROMPT`: summarize raw messages
+- `BRANCH_SYSTEM_PROMPT`: summarize leaves
+- `ROOT_SYSTEM_PROMPT`: summarize branches
 
 All three share a common rule set: **exhaustiveness** (cover every distinct topic), **no outside context** (never invent facts not in the source), **system-messages-first-class** (extract identifiers verbatim), and a LaTeX ban (plain Unicode only).
 
@@ -215,15 +229,15 @@ All three share a common rule set: **exhaustiveness** (cover every distinct topi
 
 Many assistant messages in the corpus contain only `tool_name` + `tool_args` with empty content. These rows cannot be embedded (empty text) and fall through every search path.
 
-The v5 pipeline synthesizes natural-language content for them — a single past-tense sentence describing what was called — which makes them findable by both FTS and vector search.
+The v5 pipeline synthesizes natural-language content for them, a single past-tense sentence describing what was called, which makes them findable by both FTS and vector search.
 
 **Two synthesis paths:**
 
-1. **Async (live path)** — `adapter.ts` calls `graphile_worker.add_job('synthesize-tool-call', …)` on insert when content is empty and `tool_name` is set. The compaction-worker service consumes the job and writes content back. Non-blocking — inserts never fail on synthesis errors. Dedup via `job_key` so duplicate enqueues coalesce.
+1. **Async (live path)**: `adapter.ts` calls `graphile_worker.add_job('synthesize-tool-call', …)` on insert when content is empty and `tool_name` is set. The compaction-worker service consumes the job and writes content back. Non-blocking; inserts never fail on synthesis errors. Dedup via `job_key` so duplicate enqueues coalesce.
 
-2. **CLI backfill (historical)** — `rivetos memory backfill-tool-synth` enqueues a `synthesize-tool-call` job for each historical empty row. Idempotent — already-enqueued messages dedupe via `job_key`. Concurrency, retries, and rate limiting are handled by graphile-worker on the compaction-worker side.
+2. **CLI backfill (historical)**: `rivetos memory backfill-tool-synth` enqueues a `synthesize-tool-call` job for each historical empty row. Idempotent; already-enqueued messages dedupe via `job_key`. Concurrency, retries, and rate limiting are handled by graphile-worker on the compaction-worker side.
 
-The shared helper (`synthesizeToolCallContent` in `plugins/memory/postgres/src/tool-synth.ts`) uses a hardened undici client and the same prompt as the compactor. Model-agnostic — point `TOOL_SYNTH_ENDPOINT` / `TOOL_SYNTH_MODEL` at any OpenAI-compatible endpoint.
+The shared helper (`synthesizeToolCallContent` in `plugins/memory/postgres/src/tool-synth.ts`) uses a hardened undici client and the same prompt as the compactor. Model-agnostic; point `TOOL_SYNTH_ENDPOINT` / `TOOL_SYNTH_MODEL` at any OpenAI-compatible endpoint.
 
 ### Operations
 
@@ -244,7 +258,7 @@ rivetos memory retry-failed --task extract-wiki --error 'text[] &'
 ```
 
 Failed jobs (after `max_attempts`) remain in graphile-worker's `_private_jobs` table with `attempts >= max_attempts` and `is_available = false`. `queue-status` surfaces counts + a sample `last_error`. `retry-failed` clears `attempts` / `last_error` / locks on matching rows (requires `--task`) so workers pick them up again without losing `job_key` identity.
-## What We're NOT Building
+## What we're NOT building
 
 - No vector database (pgvector in PostgreSQL is sufficient)
 - No external embedding API (Nemotron on GERTY is local and free)
