@@ -18,6 +18,15 @@ import { createRequire } from 'node:module'
 import type { HarnessTranscriptTool, HarnessTranscriptTurn } from '@rivetos/types'
 import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session-key.js'
 
+/** Cap full transcript reads — multi-MB jsonl is real; chat UI only needs turns. */
+export const DEFAULT_TRANSCRIPT_MAX_BYTES = 8 * 1024 * 1024
+let transcriptMaxBytes = DEFAULT_TRANSCRIPT_MAX_BYTES
+
+/** Test seam so watcher/parser tests can exercise the tail window without 8 MiB files. */
+export function setTranscriptMaxBytesForTest(bytes?: number): void {
+  transcriptMaxBytes = bytes ?? DEFAULT_TRANSCRIPT_MAX_BYTES
+}
+
 export interface HarnessSession {
   /** the harness's native session id (e.g. Claude Code's uuid) */
   id: string
@@ -776,10 +785,9 @@ export interface HarnessTranscript {
   /** which harness store produced the turns (or '' if none found) */
   command: string
   turns: HarnessTurn[]
+  /** Present when the on-disk store exceeded the parse window (tail only). */
+  truncated?: true
 }
-
-/** Cap full transcript reads — multi-MB jsonl is real; chat UI only needs turns. */
-const TRANSCRIPT_MAX_BYTES = 8 * 1024 * 1024
 
 /**
  * Pull display text out of a message content value (string or content blocks).
@@ -829,18 +837,22 @@ function extractTurnText(content: unknown, role: 'user' | 'assistant'): string |
   return text
 }
 
-async function parseJsonlObjects(file: string): Promise<Record<string, unknown>[]> {
+async function parseJsonlObjects(
+  file: string,
+): Promise<{ objects: Record<string, unknown>[]; truncated: boolean }> {
   let raw: string
+  let truncated = false
   try {
     const s = await stat(file)
-    if (s.size > TRANSCRIPT_MAX_BYTES) {
+    if (s.size > transcriptMaxBytes) {
       // Read the tail so we still get recent turns rather than failing hard.
       const fh = await open(file, 'r')
       try {
-        const start = Math.max(0, s.size - TRANSCRIPT_MAX_BYTES)
+        const start = Math.max(0, s.size - transcriptMaxBytes)
         const buf = Buffer.alloc(s.size - start)
         await fh.read(buf, 0, buf.length, start)
         raw = buf.toString('utf8')
+        truncated = start > 0
         // Drop partial first line after a mid-file seek.
         if (start > 0) {
           const nl = raw.indexOf('\n')
@@ -853,7 +865,7 @@ async function parseJsonlObjects(file: string): Promise<Record<string, unknown>[
       raw = await readFile(file, 'utf8')
     }
   } catch {
-    return []
+    return { objects: [], truncated: false }
   }
   const out: Record<string, unknown>[] = []
   for (const line of raw.split('\n')) {
@@ -865,19 +877,27 @@ async function parseJsonlObjects(file: string): Promise<Record<string, unknown>[
       // mid-write partial line (the harness appends incrementally) — skip
     }
   }
-  return out
+  return { objects: out, truncated }
 }
 
 async function parseJsonlTurns(
   file: string,
   pick: (obj: Record<string, unknown>) => HarnessTurn | null,
-): Promise<HarnessTurn[]> {
+): Promise<{ turns: HarnessTurn[]; truncated: boolean }> {
+  const { objects, truncated } = await parseJsonlObjects(file)
   const out: HarnessTurn[] = []
-  for (const obj of await parseJsonlObjects(file)) {
+  for (const obj of objects) {
     const turn = pick(obj)
     if (turn) out.push(turn)
   }
-  return out
+  return { turns: out, truncated }
+}
+
+function withTruncated<T extends { turns: HarnessTurn[] }>(
+  t: T,
+  truncated: boolean,
+): T & { truncated?: true } {
+  return truncated ? { ...t, truncated: true } : t
 }
 
 /** Keep the recent end of a long thinking trace — the UI collapses it anyway
@@ -1117,16 +1137,19 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
   if (wants('claude')) {
     const claudePath = await findClaudeJsonl(native)
     if (claudePath) {
-      const turns = claudeTurnsFromLines(await parseJsonlObjects(claudePath))
-      if (turns.length > 0) return { id, command: 'claude', turns }
+      const parsed = await parseJsonlObjects(claudePath)
+      const turns = claudeTurnsFromLines(parsed.objects)
+      if (turns.length > 0) return withTruncated({ id, command: 'claude', turns }, parsed.truncated)
     }
   }
 
   if (wants('grok')) {
     const grokPath = await findGrokChatHistory(native)
     if (grokPath) {
-      const turns = await parseJsonlTurns(grokPath, grokPickTurn)
-      if (turns.length > 0) return { id, command: 'grok', turns }
+      const parsed = await parseJsonlTurns(grokPath, grokPickTurn)
+      if (parsed.turns.length > 0) {
+        return withTruncated({ id, command: 'grok', turns: parsed.turns }, parsed.truncated)
+      }
     }
   }
 
@@ -1157,7 +1180,11 @@ export async function readClaudeTranscript(id: string): Promise<HarnessTranscrip
   if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
   const path = await findClaudeJsonl(id)
   if (!path) return { id, command: '', turns: [] }
-  return { id, command: 'claude', turns: claudeTurnsFromLines(await parseJsonlObjects(path)) }
+  const parsed = await parseJsonlObjects(path)
+  return withTruncated(
+    { id, command: 'claude', turns: claudeTurnsFromLines(parsed.objects) },
+    parsed.truncated,
+  )
 }
 
 /**
@@ -1321,7 +1348,11 @@ export async function readKimiTranscript(id: string): Promise<HarnessTranscript>
   const dir = kimiSessionDir(id)
   if (!dir) return { id, command: '', turns: [] }
   const wire = join(dir, 'agents', 'main', 'wire.jsonl')
-  return { id, command: 'kimi', turns: kimiTurnsFromLines(await parseJsonlObjects(wire)) }
+  const parsed = await parseJsonlObjects(wire)
+  return withTruncated(
+    { id, command: 'kimi', turns: kimiTurnsFromLines(parsed.objects) },
+    parsed.truncated,
+  )
 }
 
 /**
@@ -1337,7 +1368,8 @@ export async function readGrokTranscript(id: string): Promise<HarnessTranscript>
   if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
   const path = await findGrokChatHistory(id)
   if (!path) return { id, command: '', turns: [] }
-  return { id, command: 'grok', turns: await parseJsonlTurns(path, grokPickTurn) }
+  const parsed = await parseJsonlTurns(path, grokPickTurn)
+  return withTruncated({ id, command: 'grok', turns: parsed.turns }, parsed.truncated)
 }
 
 function grokPickTurn(obj: Record<string, unknown>): HarnessTurn | null {
@@ -1359,13 +1391,22 @@ export async function readHarnessStoreAt(
   id: string,
 ): Promise<HarnessTranscript> {
   if (ref.command === 'claude') {
-    return { id, command: 'claude', turns: claudeTurnsFromLines(await parseJsonlObjects(ref.path)) }
+    const parsed = await parseJsonlObjects(ref.path)
+    return withTruncated(
+      { id, command: 'claude', turns: claudeTurnsFromLines(parsed.objects) },
+      parsed.truncated,
+    )
   }
   if (ref.command === 'grok') {
-    return { id, command: 'grok', turns: await parseJsonlTurns(ref.path, grokPickTurn) }
+    const parsed = await parseJsonlTurns(ref.path, grokPickTurn)
+    return withTruncated({ id, command: 'grok', turns: parsed.turns }, parsed.truncated)
   }
   if (ref.command === 'kimi') {
-    return { id, command: 'kimi', turns: kimiTurnsFromLines(await parseJsonlObjects(ref.path)) }
+    const parsed = await parseJsonlObjects(ref.path)
+    return withTruncated(
+      { id, command: 'kimi', turns: kimiTurnsFromLines(parsed.objects) },
+      parsed.truncated,
+    )
   }
   // hermes reads by id rather than by path (one sqlite db holds every session)
   return { id, command: 'hermes', turns: readHermesTurns(denJoinKey(id)) }

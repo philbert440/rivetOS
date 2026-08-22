@@ -22,11 +22,12 @@
  */
 
 import { create } from 'zustand'
-import type {
-  HarnessTranscriptTurn,
-  SessionMessage,
-  SessionWsFrame,
-  TranscriptWsFrame,
+import {
+  mergeTranscriptWindow,
+  type HarnessTranscriptTurn,
+  type SessionMessage,
+  type SessionWsFrame,
+  type TranscriptWsFrame,
 } from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
 import { isValidGatewayUrl, useConnection } from './connection.js'
@@ -58,6 +59,9 @@ export interface TranscriptState {
   turns: HarnessTranscriptTurn[]
   /** '' = no on-disk store found (fresh draft / API-only session) */
   command: string
+  /** Client-side offset: how many turns we pinned before the server's window.
+   *  When >0, deltas arrive in server-relative index space and must be adjusted. */
+  offset: number
 }
 
 /** An approval the harness is blocked on (control-plane sessions only —
@@ -245,6 +249,7 @@ function transcriptPatch(
   changed: HarnessTranscriptTurn[],
   command: string,
   rev: number,
+  offset: number,
 ): Partial<ChatState> {
   const mapped = messagesFromHarnessTurns(sid, turns)
   const existing = s.messages[sid] ?? []
@@ -265,7 +270,7 @@ function transcriptPatch(
     }
   }
   return {
-    transcripts: { ...s.transcripts, [sid]: { rev, turns, command } },
+    transcripts: { ...s.transcripts, [sid]: { rev, turns, command, offset } },
     messages: { ...s.messages, [sid]: [...mapped, ...keptBubbles] },
   }
 }
@@ -279,15 +284,39 @@ function applyTranscriptFrame(s: ChatState, frame: TranscriptWsFrame): Partial<C
   const sid = frame.session
   const cur = s.transcripts[sid]
   let turns: HarnessTranscriptTurn[]
+  let offset = 0
   if (frame.from === 0) {
-    turns = frame.turns // full snapshot — always applicable
-  } else if (cur && frame.rev === cur.rev + 1 && cur.turns.length >= frame.from) {
-    turns = [...cur.turns.slice(0, frame.from), ...frame.turns]
+    if (frame.truncatedBefore && cur && cur.turns.length > 0) {
+      // Tail-window snapshot after a den restart / new watch: pin earlier
+      // turns we already have instead of wiping chat down to the last 8 MiB.
+      turns = mergeTranscriptWindow(cur.turns, frame.turns, true)
+      const pinned = turns.length > frame.turns.length
+      if (pinned) {
+        // Record how many turns we pinned: later deltas arrive in server-relative
+        // index space (the server only knows about the tail window), so we must
+        // adjust their splice index by this offset.
+        offset = turns.length - frame.total
+      }
+    } else {
+      // Full snapshot (non-truncated or initial load) — reset offset.
+      turns = frame.turns
+      offset = 0
+    }
+  } else if (cur && frame.rev === cur.rev + 1) {
+    // Delta: apply in server-relative space, adjusted by the pinned prefix.
+    const adjustedFrom = frame.from + cur.offset
+    if (cur.turns.length >= adjustedFrom) {
+      turns = [...cur.turns.slice(0, adjustedFrom), ...frame.turns]
+      offset = cur.offset // preserve existing offset
+    } else {
+      return null // index out of bounds
+    }
   } else {
     return null // missed a delta — caller requests a snapshot
   }
-  if (turns.length !== frame.total) return null
-  return transcriptPatch(s, sid, turns, frame.turns, frame.command, frame.rev)
+  // Validate total against the server's view (excluding our pinned prefix).
+  if (turns.length - offset !== frame.total) return null
+  return transcriptPatch(s, sid, turns, frame.turns, frame.command, frame.rev, offset)
 }
 
 export const useChat = create<ChatState>((set, get) => ({
@@ -583,7 +612,7 @@ export const useChat = create<ChatState>((set, get) => ({
       // source of truth for solid messages, so nothing else may append.
       transcripts: s.transcripts[sessionId]
         ? { ...s.transcripts, [sessionId]: { ...s.transcripts[sessionId], command: harnessId } }
-        : { ...s.transcripts, [sessionId]: { rev: 0, turns: [], command: harnessId } },
+        : { ...s.transcripts, [sessionId]: { rev: 0, turns: [], command: harnessId, offset: 0 } },
     })),
 
   unbindHarness: (sessionId) =>
@@ -616,6 +645,7 @@ export const useChat = create<ChatState>((set, get) => ({
         turns.slice(prefix),
         s.transcripts[sessionId]?.command || 'harness',
         (s.transcripts[sessionId]?.rev ?? 0) + 1,
+        0, // hard resync from HTTP — no client-side pinning
       )
       // A committed user turn at the tail IS the answer — retire the ask card
       // even when the user typed it into the TUI instead of the composer.
