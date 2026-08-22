@@ -35,6 +35,11 @@ export type { SummaryNode, ExpandResult } from './expand.js'
 
 export { createMemoryTools } from './tools/index.js'
 export type { MemoryToolsConfig } from './tools/index.js'
+export {
+  HEARTBEAT_SESSION_PREFIX,
+  isHeartbeatSessionKey,
+  sqlNotHeartbeatConversation,
+} from './tools/helpers.js'
 
 // Schema migration helpers — still needed by agent CTs to ensure columns exist
 export { ensureEmbedderSchema } from './embedder.js'

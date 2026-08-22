@@ -14,6 +14,8 @@ vi.mock('../config.js', () => ({
 
 vi.mock('@rivetos/memory-postgres', () => ({
   WIKI_PIPELINE_VERSION: 3,
+  sqlNotHeartbeatConversation: (alias = 'c') =>
+    `(${alias}.session_key IS NULL OR ${alias}.session_key NOT LIKE 'heartbeat:%')`,
 }))
 
 import { enqueueWikiBackfillTask, wikiBackfillSelectSql } from './enqueue-wiki-backfill.js'
@@ -32,6 +34,11 @@ describe('wikiBackfillSelectSql', () => {
   it('does not treat skipped as re-eligible by pipeline version', () => {
     // Skipped reasons (too short, heartbeat) are version-independent.
     expect(sql).not.toMatch(/status = 'skipped'/)
+  })
+
+  it('never backfills heartbeat conversations (extract-wiki would skip them)', () => {
+    expect(sql).toMatch(/LEFT JOIN ros_conversations c ON c\.id = s\.conversation_id/)
+    expect(sql).toMatch(/c\.session_key NOT LIKE 'heartbeat:%'/)
   })
 
   it('prefers never-attempted over failed over stale-pipeline upgrades', () => {
@@ -53,15 +60,11 @@ describe('enqueueWikiBackfillTask', () => {
     const addJob = vi.fn(async () => undefined)
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 
-    await enqueueWikiBackfillTask(
-      {},
-      {
-        withPgClient: async (fn: (client: { query: typeof query }) => Promise<void>) =>
-          fn({ query }),
-        addJob,
-        logger,
-      } as never,
-    )
+    await enqueueWikiBackfillTask({}, {
+      withPgClient: async (fn: (client: { query: typeof query }) => Promise<void>) => fn({ query }),
+      addJob,
+      logger,
+    } as never)
 
     expect(query).toHaveBeenCalledTimes(1)
     const [sql, params] = query.mock.calls[0] as [string, unknown[]]
@@ -85,15 +88,11 @@ describe('enqueueWikiBackfillTask', () => {
     const addJob = vi.fn(async () => undefined)
     const logger = { info: vi.fn() }
 
-    await enqueueWikiBackfillTask(
-      {},
-      {
-        withPgClient: async (fn: (client: { query: typeof query }) => Promise<void>) =>
-          fn({ query }),
-        addJob,
-        logger,
-      } as never,
-    )
+    await enqueueWikiBackfillTask({}, {
+      withPgClient: async (fn: (client: { query: typeof query }) => Promise<void>) => fn({ query }),
+      addJob,
+      logger,
+    } as never)
 
     expect(addJob).not.toHaveBeenCalled()
     expect(logger.info).not.toHaveBeenCalled()

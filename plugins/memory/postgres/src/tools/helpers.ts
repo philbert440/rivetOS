@@ -217,6 +217,26 @@ export interface StuckJobRow {
   sample_error: string | null
 }
 
+/**
+ * Scheduled heartbeat conversations use `session_key = 'heartbeat:<agent>'`.
+ * They are operational noise (HEARTBEAT_OK + tool chatter), not user work.
+ *
+ * getContextForTurn and extract-wiki already skip them. Compaction enqueue
+ * and memory_stats eligibility must too — otherwise heartbeats look like a
+ * compaction backlog and burn the compactor LLM (then fail as "dead jobs"
+ * when the LLM is down).
+ */
+export const HEARTBEAT_SESSION_PREFIX = 'heartbeat:'
+
+export function isHeartbeatSessionKey(key: string | null | undefined): boolean {
+  return typeof key === 'string' && key.startsWith(HEARTBEAT_SESSION_PREFIX)
+}
+
+/** SQL predicate: conversation alias `c` is not a heartbeat session. */
+export function sqlNotHeartbeatConversation(alias = 'c'): string {
+  return `(${alias}.session_key IS NULL OR ${alias}.session_key NOT LIKE '${HEARTBEAT_SESSION_PREFIX}%')`
+}
+
 export interface TreeDepthRow {
   max_depth: number | null
   root_count: string

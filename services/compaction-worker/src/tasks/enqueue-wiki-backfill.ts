@@ -11,10 +11,12 @@
  * nothing. Also mops up deploy-window dead jobs (#287 review) since failed
  * rows stay re-eligible, and re-mines leaves done under an older pipeline
  * contract (#420 residual — status-only filter left v1 done rows stranded).
+ * Heartbeat conversations are excluded up front (extract-wiki would skip
+ * them) so they do not occupy backfill slots.
  */
 
 import type { Task } from 'graphile-worker'
-import { WIKI_PIPELINE_VERSION } from '@rivetos/memory-postgres'
+import { WIKI_PIPELINE_VERSION, sqlNotHeartbeatConversation } from '@rivetos/memory-postgres'
 import { config } from '../config.js'
 
 /**
@@ -27,7 +29,9 @@ export function wikiBackfillSelectSql(): string {
   return `SELECT s.id, s.conversation_id
        FROM ros_summaries s
        LEFT JOIN ros_wiki_extractions e ON e.summary_id = s.id
+       LEFT JOIN ros_conversations c ON c.id = s.conversation_id
        WHERE s.kind = 'leaf'
+         AND ${sqlNotHeartbeatConversation('c')}
          AND (
            e.summary_id IS NULL
            -- failed rows re-sweep on a 24h backoff: a poison summary
