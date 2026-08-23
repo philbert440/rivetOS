@@ -20,6 +20,7 @@ export {
   mergeSummaryText,
   capSummary,
   capList,
+  capTail,
   capFrontmatterLists,
   demoteH2Headings,
   buildWikiSearchText,
@@ -34,6 +35,9 @@ export {
   TAGS_MAX,
   ENTITIES_MAX,
   RELATED_MAX,
+  SOURCES_MAX,
+  HISTORY_MAX,
+  CITATIONS_MAX,
   WikiParseError,
 } from './page.js'
 export {

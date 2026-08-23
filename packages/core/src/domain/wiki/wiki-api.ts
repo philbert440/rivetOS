@@ -15,7 +15,16 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ServerResponse } from 'node:http'
-import { ALIASES_MAX, ENTITIES_MAX, parseWikiPage, RELATED_MAX, TAGS_MAX } from '@rivetos/wiki-core'
+import {
+  ALIASES_MAX,
+  CITATIONS_MAX,
+  ENTITIES_MAX,
+  HISTORY_MAX,
+  parseWikiPage,
+  RELATED_MAX,
+  SOURCES_MAX,
+  TAGS_MAX,
+} from '@rivetos/wiki-core'
 import type {
   GatewayRoute,
   WikiGapsResponse,
@@ -158,15 +167,15 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
           currentState: page.currentState,
           article: page.article ?? '',
           seeAlso: (page.seeAlso ?? []).slice(0, RELATED_MAX),
-          history: page.history,
-          citations: page.citations.map((c) => ({
+          history: page.history.slice(0, HISTORY_MAX),
+          citations: page.citations.slice(0, CITATIONS_MAX).map((c) => ({
             summaryId: c.summaryId,
             date: c.date,
             kind: c.kind,
             note: c.note,
           })),
           markdown,
-          sources: page.meta.sources.map((s) => ({
+          sources: page.meta.sources.slice(-SOURCES_MAX).map((s) => ({
             kind: s.kind,
             ids: s.ids,
             conversationId: s.conversationId,

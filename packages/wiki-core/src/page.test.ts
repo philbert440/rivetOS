@@ -6,14 +6,18 @@ import {
   buildWikiSearchText,
   capList,
   capSummary,
+  capTail,
+  CITATIONS_MAX,
   demoteH2Headings,
   ENTITIES_MAX,
   extractWikiLinks,
+  HISTORY_MAX,
   mergePages,
   normalizeSlug,
   parseWikiPage,
   RELATED_MAX,
   serializeWikiPage,
+  SOURCES_MAX,
   SUMMARY_MAX_CHARS,
   TAGS_MAX,
   WikiParseError,
@@ -213,6 +217,67 @@ describe('frontmatter list caps', () => {
   it('capList is a no-op under the ceiling', () => {
     expect(capList(['a', 'b'], 8)).toEqual(['a', 'b'])
     expect(capList(undefined, 8)).toEqual([])
+  })
+
+  it('capTail keeps the newest (last) entries of an append-only list', () => {
+    expect(capTail(['a', 'b', 'c', 'd'], 2)).toEqual(['c', 'd'])
+    expect(capTail(['a', 'b'], 8)).toEqual(['a', 'b'])
+    expect(capTail(undefined, 8)).toEqual([])
+  })
+
+  it('serialize of bloated provenance writes only the ceilings', () => {
+    const bloated = parseWikiPage(SAMPLE)
+    bloated.meta.sources = Array.from({ length: SOURCES_MAX + 40 }, (_, i) => ({
+      kind: 'summary' as const,
+      ids: [`00000000-0000-0000-0000-${String(i).padStart(12, '0')}`],
+    }))
+    bloated.history = Array.from({ length: HISTORY_MAX + 20 }, (_, i) => ({
+      date: `2026-08-${String((i % 28) + 1).padStart(2, '0')}`,
+      title: `entry-${i}`,
+      body: `- note ${i}`,
+    }))
+    bloated.citations = Array.from({ length: CITATIONS_MAX + 20 }, (_, i) => ({
+      summaryId: `11111111-1111-1111-1111-${String(i).padStart(12, '0')}`,
+      date: '2026-08-22',
+      kind: 'leaf',
+    }))
+    const round = parseWikiPage(serializeWikiPage(bloated))
+    expect(round.meta.sources).toHaveLength(SOURCES_MAX)
+    // Oldest-first append: keep the newest tail, drop source-0.
+    expect(round.meta.sources[0].ids[0]).toContain(String(40).padStart(12, '0'))
+    expect(round.meta.sources.at(-1)?.ids[0]).toContain(String(SOURCES_MAX + 39).padStart(12, '0'))
+    expect(round.history).toHaveLength(HISTORY_MAX)
+    expect(round.history[0].title).toBe('entry-0')
+    expect(round.history).not.toContainEqual(expect.objectContaining({ title: 'entry-60' }))
+    expect(round.citations).toHaveLength(CITATIONS_MAX)
+    expect(round.citations[0].summaryId.endsWith(String(0).padStart(12, '0'))).toBe(true)
+    expect(serializeWikiPage(round)).toBe(
+      serializeWikiPage(parseWikiPage(serializeWikiPage(round))),
+    )
+  })
+
+  it('applyPatch caps sources/history/citations after union', () => {
+    const page = applyPatch(parseWikiPage(SAMPLE), {
+      action: 'update',
+      slug: 'rivetos-task-engine',
+      addSources: Array.from({ length: SOURCES_MAX + 10 }, (_, i) => ({
+        kind: 'summary' as const,
+        ids: [`22222222-2222-2222-2222-${String(i).padStart(12, '0')}`],
+      })),
+      addCitations: Array.from({ length: CITATIONS_MAX + 10 }, (_, i) => ({
+        summaryId: `33333333-3333-3333-3333-${String(i).padStart(12, '0')}`,
+        date: '2026-08-23',
+        kind: 'leaf',
+      })),
+      verifiedAt: '2026-08-23T00:00:00Z',
+    })
+    expect(page.meta.sources.length).toBeLessThanOrEqual(SOURCES_MAX)
+    expect(page.citations.length).toBeLessThanOrEqual(CITATIONS_MAX)
+    // Newest citations unshift, so the last added (index 0 of the overflow
+    // batch is added last → ends up first after unshifts, then cap keeps it).
+    expect(page.citations[0].summaryId.endsWith(String(CITATIONS_MAX + 9).padStart(12, '0'))).toBe(
+      true,
+    )
   })
 })
 
