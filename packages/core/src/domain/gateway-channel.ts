@@ -294,6 +294,8 @@ export function createGatewayChannel(opts?: {
   const pendingRaw = new Map<string, string>()
   /** Previous emitted reasoning for delta calculation (B3). */
   const pendingReasoning = new Map<string, string>()
+  /** Track harness per session for B5 scoping. */
+  const pendingHarness = new Map<string, string>()
   // Turn stats ride the FINAL message.agent block (Claude Code attaches them);
   // stash until the assistant turn is committed, then attach to the frame.
   const pendingStats = new Map<
@@ -674,7 +676,8 @@ export function createGatewayChannel(opts?: {
       const flushAssistant = (): void => {
         const raw = pendingRaw.get(sid) ?? pendingAssistant.get(sid)
         pendingRaw.delete(sid)
-        const text = raw ? splitHermesReasoning(raw).text : ''
+        const isHermes = pendingHarness.get(sid) === 'hermes'
+        const text = raw ? (isHermes ? splitHermesReasoning(raw).text : raw) : ''
         if (text) {
           const stats = pendingStats.get(sid)
           emitFrame({
@@ -693,6 +696,7 @@ export function createGatewayChannel(opts?: {
         }
         pendingAssistant.delete(sid)
         pendingReasoning.delete(sid)
+        pendingHarness.delete(sid)
         // clear stats on EVERY flush boundary, even with no committable text —
         // a stray stats-only event must never bleed into the next turn (grok
         // review).
@@ -731,6 +735,7 @@ export function createGatewayChannel(opts?: {
           const raw = (pendingRaw.get(sid) ?? '') + chunk
           pendingRaw.set(sid, raw)
           const isHermes = ev.harness === 'hermes'
+          if (isHermes && !pendingHarness.has(sid)) pendingHarness.set(sid, 'hermes')
           const split = isHermes ? splitHermesReasoning(raw) : { reasoning: '', text: raw }
           if (split.reasoning) {
             const prevReasoning = pendingReasoning.get(sid) ?? ''
