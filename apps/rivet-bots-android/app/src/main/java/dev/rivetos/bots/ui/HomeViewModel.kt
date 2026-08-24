@@ -83,8 +83,8 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
                 if (gen != refreshGen) return@launch // signed out mid-scan: publish nothing, open nothing
                 _state.update { if (gen != refreshGen) it else it.copy(bots = bots, loadedOnce = true) }
                 if (gen != refreshGen) return@launch
-                openWatches(bots, p)
-                loadPreviews(bots, p)
+                openWatches(bots, p, gen)
+                loadPreviews(bots, p, gen)
             } catch (e: Exception) {
                 if (gen != refreshGen) return@launch
                 _state.update { it.copy(error = e.message ?: BotRepository.friendly(e), loadedOnce = true) }
@@ -105,15 +105,16 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
         }
     }
 
-    private suspend fun loadPreviews(bots: List<Bot>, p: Prefs) = coroutineScope {
+    private suspend fun loadPreviews(bots: List<Bot>, p: Prefs, gen: Int) = coroutineScope {
         val found = bots.filter { it.online }.map { b ->
             async { c.bots.preview(b, sessionIdFor(b, p))?.let { b.id to it } }
         }.awaitAll().filterNotNull()
-        _state.update { it.copy(previews = it.previews + found) }
+        _state.update { if (gen != refreshGen) it else it.copy(previews = it.previews + found) }
     }
 
     /** One all-sessions WS per online node keeps the list live without polling. */
-    private fun openWatches(bots: List<Bot>, p: Prefs) {
+    private fun openWatches(bots: List<Bot>, p: Prefs, gen: Int) {
+        if (gen != refreshGen) return // signed out between the scan and here
         val wanted = bots.filter { it.online }.map { it.denUrl }.toSet()
             .associateBy { url -> "$url|${c.identity.generation()}|${p.strictHostnames}" }
         (watches.keys - wanted.keys).forEach { watches.remove(it)?.close() }

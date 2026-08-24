@@ -34,8 +34,8 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         val assistantSeq: Int = 0,
         /** True from send until the reply commits (or is promoted / errors / times out). */
         val inFlight: Boolean = false,
-        /** When the current turn was sent — only a reply newer than this closes it. */
-        val turnStartTs: Long = 0,
+        /** The text of the turn in flight — its committed row anchors "a reply that follows it". */
+        val turnText: String = "",
     ) {
         val canSend: Boolean get() = !inFlight && !loading
     }
@@ -81,8 +81,10 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
 
     /**
      * Transcript read merged with live rows. The turn closes only when the
-     * server holds a NEW assistant row newer than this turn's send — a
-     * transcript that merely ends on the previous reply proves nothing.
+     * server transcript holds a NEW assistant row that comes AFTER our own
+     * committed user row — server ordering, so device clock skew can't hold a
+     * finished turn open, and a history that merely ends on the previous
+     * reply proves nothing.
      */
     private fun fetch(sessionId: String): Job = viewModelScope.launch {
         try {
@@ -92,9 +94,10 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
             _state.update { s ->
                 val known = s.messages.map { it.id }.toHashSet()
                 val merged = mergeTranscript(msgs, s.messages)
-                val fresh = msgs.count { it.role == "assistant" && it.id !in known }
-                val last = msgs.lastOrNull() // the server's tail, not a live row
-                val replied = s.inFlight && fresh > 0 && last?.role == "assistant" && last.ts >= s.turnStartTs
+                val mine = msgs.indexOfLast { it.role == "user" && it.text == s.turnText }
+                val replied = s.inFlight && mine >= 0 &&
+                    msgs.drop(mine + 1).any { it.role == "assistant" && it.id !in known } &&
+                    msgs.lastOrNull()?.role == "assistant"
                 closed = replied
                 s.copy(
                     messages = merged, loading = false,
@@ -154,7 +157,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
             "tool_start" -> _state.update { it.copy(working = "Using ${e.content.ifBlank { "a tool" }}") }
             "tool_result" -> _state.update { it.copy(working = "Working…") }
             "status" -> _state.update { it.copy(working = e.content.ifBlank { it.working }) }
-            "error" -> { workingTimer?.cancel(); _state.update { it.copy(error = e.content, working = null, inFlight = false) } }
+            "error" -> { workingTimer?.cancel(); doneTimer?.cancel(); _state.update { it.copy(error = e.content, working = null, inFlight = false, pendingText = "") } }
             "done" -> {
                 workingTimer?.cancel()
                 _state.update { it.copy(working = null) }
@@ -174,7 +177,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
                                     id = "stream-${UUID.randomUUID()}", sessionId = s.sessionId,
                                     role = "assistant", text = s.pendingText, ts = System.currentTimeMillis(),
                                 ),
-                                pendingText = "", inFlight = false,
+                                pendingText = "", inFlight = false, assistantSeq = s.assistantSeq + 1,
                             )
                         }
                     }
@@ -191,7 +194,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         doneTimer?.cancel() // a promoter still pending from the previous turn must not touch this one's stream
         val now = System.currentTimeMillis()
         val local = SessionMessage(id = "local-${UUID.randomUUID()}", sessionId = sid, role = "user", text = t, ts = now)
-        _state.update { it.copy(messages = it.messages + local, error = null, working = "${bot.displayName} is working…", inFlight = true, turnStartTs = now) }
+        _state.update { it.copy(messages = it.messages + local, error = null, working = "${bot.displayName} is working…", inFlight = true, turnText = t) }
         viewModelScope.launch {
             try {
                 val p = c.settings.snapshot()

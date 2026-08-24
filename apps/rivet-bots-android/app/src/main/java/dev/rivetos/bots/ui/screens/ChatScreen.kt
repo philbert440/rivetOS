@@ -43,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,19 +79,17 @@ fun ChatScreen(
     var menu by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
 
-    // One jump to the tail when the transcript first loads; after that, follow new
-    // content only while the reader was already at the bottom (judged from the
-    // frame before it arrived) — never yank someone reading history.
-    val rowCount = s.messages.size + (if (s.pendingText.isNotEmpty()) 1 else 0) + (if (s.working != null) 1 else 0) +
-        (if (s.error != null) 1 else 0) + (if (s.ws != WsStatus.OPEN && !s.loading) 1 else 0)
-    var landed by remember(s.sessionId) { mutableStateOf(false) }
-    LaunchedEffect(rowCount, s.pendingText.length, s.loading) {
-        if (s.loading) return@LaunchedEffect
-        val wasAtBottom = !list.canScrollForward
-        if (!landed || wasAtBottom) {
-            landed = true
-            list.scrollToItem(rowCount) // index 0 is the header spacer; past-the-end coerces to the last row
-        }
+    // Bottom-anchored list (reverseLayout: newest row is index 0), so a keyboard
+    // opening keeps the tail in view by construction. `stick` follows new rows
+    // and is released only by a user drag away from the bottom; sending re-arms it.
+    var stick by remember(s.sessionId) { mutableStateOf(true) }
+    LaunchedEffect(list) {
+        snapshotFlow { list.isScrollInProgress to (list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset == 0) }
+            .collect { (dragging, atBottom) -> if (dragging) stick = atBottom else if (atBottom) stick = true }
+    }
+    val rowKey = s.messages.lastOrNull()?.id
+    LaunchedEffect(rowKey, s.messages.size, s.pendingText.length, s.working, s.error, s.loading) {
+        if (stick && !s.loading) list.scrollToItem(0)
     }
 
     Column(Modifier.fillMaxSize().background(Paper).statusBarsPadding().navigationBarsPadding().imePadding()) {
@@ -115,23 +114,24 @@ fun ChatScreen(
 
         LazyColumn(
             state = list,
+            reverseLayout = true,
             modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
         ) {
-            item { Spacer(Modifier.height(4.dp)) }
-            itemsIndexed(s.messages, key = { _, m -> m.id }) { i, m ->
-                val prev = s.messages.getOrNull(i - 1)
-                val showDivider = prev == null || m.ts - prev.ts > 30 * 60_000L
-                if (showDivider && m.ts > 0) {
+            // Index 0 is the bottom of the screen: transient rows first, then messages newest→oldest.
+            if (s.ws != WsStatus.OPEN && !s.loading) {
+                item(key = "ws") {
                     Text(
-                        TimeFmt.divider(m.ts), color = InkDim, fontSize = 12.sp,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        if (s.ws == WsStatus.CONNECTING) "Connecting…" else "Reconnecting to ${bot.nodeLabel}…",
+                        color = InkDim, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     )
                 }
-                Bubble(m)
             }
-            if (s.pendingText.isNotEmpty()) {
-                item(key = "pending") { Bubble(SessionMessage(id = "pending", role = "assistant", text = s.pendingText, ts = 0)) }
+            s.error?.let { err ->
+                item(key = "error") {
+                    Text(err, color = Danger, fontSize = 12.sp, modifier = Modifier.padding(vertical = 6.dp).clickable { vm.clearError() })
+                }
             }
             if (s.working != null) {
                 item(key = "working") {
@@ -145,27 +145,33 @@ fun ChatScreen(
                     }
                 }
             }
-            s.error?.let { err ->
-                item(key = "error") {
-                    Text(err, color = Danger, fontSize = 12.sp, modifier = Modifier.padding(vertical = 6.dp).clickable { vm.clearError() })
+            if (s.pendingText.isNotEmpty()) {
+                item(key = "pending") { Bubble(SessionMessage(id = "pending", role = "assistant", text = s.pendingText, ts = 0)) }
+            }
+            val msgs = s.messages
+            itemsIndexed(msgs.asReversed(), key = { _, m -> m.id }) { rev, m ->
+                val i = msgs.size - 1 - rev
+                val prev = msgs.getOrNull(i - 1)
+                val showDivider = prev == null || m.ts - prev.ts > 30 * 60_000L
+                // Reversed layout draws children bottom-up, so the divider sits above its bubble.
+                Column {
+                    if (showDivider && m.ts > 0) {
+                        Text(
+                            TimeFmt.divider(m.ts), color = InkDim, fontSize = 12.sp,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
+                    Bubble(m)
                 }
             }
-            if (s.ws != WsStatus.OPEN && !s.loading) {
-                item(key = "ws") {
-                    Text(
-                        if (s.ws == WsStatus.CONNECTING) "Connecting…" else "Reconnecting to ${bot.nodeLabel}…",
-                        color = InkDim, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    )
-                }
-            }
+            item { Spacer(Modifier.height(4.dp)) }
         }
 
         Composer(
             placeholder = "Ask ${bot.displayName}",
             value = draft,
             onValue = { draft = it },
-            onSend = { val t = draft; draft = ""; vm.send(t) },
+            onSend = { val t = draft; draft = ""; stick = true; vm.send(t) },
             canSend = s.canSend,
             onNewConversation = { vm.newConversation() },
             onComputer = onComputer,
