@@ -1,0 +1,26 @@
+{
+  "name": "rivet-memory",
+  "version": "0.1.0",
+  "description": "RivetOS persistent cross-agent memory for DeepSeek Harness. Live capture via Cordis session/event (no Claude-style hooks). Agent stamp rivet-deepseek.",
+  "keywords": [
+    "memory",
+    "recall",
+    "discipline",
+    "rivetos",
+    "mcp",
+    "cross-agent",
+    "deepseek",
+    "dsh",
+    "capture"
+  ],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "license": "MIT",
+  "author": {
+    "name": "RivetOS"
+  },
+  "dsh": {
+    "minVersion": "0.1.1-rc.2",
+    "provides": ["skills", "commands", "mcp", "agents", "session-event-capture"]
+  }
+}

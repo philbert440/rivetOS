@@ -1,0 +1,23 @@
+{
+  "type": "tool/result",
+  "seq": 31,
+  "time": 1787529300100,
+  "data": {
+    "turn": 1,
+    "step": 2,
+    "message": {
+      "source": { "kind": "tool", "callId": "call-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
+      "role": "user",
+      "id": "02bb524e-220e-4d3c-a8ea-1899030c8499",
+      "content": [
+        {
+          "type": "tool-result",
+          "toolCallId": "call-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+          "isError": false,
+          "content": [{ "type": "text", "text": "<path>/tmp/probe.txt</path>\n<content>\nCreated file\n</content>" }]
+        }
+      ]
+    }
+  },
+  "surfaceOp": "append"
+}
