@@ -59,6 +59,17 @@ export const TAGS_MAX = 24
 export const ENTITIES_MAX = 32
 export const RELATED_MAX = 48
 
+/**
+ * Provenance ceilings. Hub topics still dump thousands of extract-wiki
+ * sources (~762 KB YAML), History entries, and citation rows after the
+ * identity-list caps — that leftover is what still makes `rivetos.md`
+ * unreadable. Sources append oldest-first; History/Citations are newest-first.
+ * Keep the recent tail / head; drop overflow rather than spilling it.
+ */
+export const SOURCES_MAX = 64
+export const HISTORY_MAX = 48
+export const CITATIONS_MAX = 40
+
 export class WikiParseError extends Error {
   constructor(detail: string) {
     super(`invalid wiki page: ${detail}`)
@@ -121,20 +132,20 @@ export function serializeWikiPage(page: WikiPage): string {
     entities: capList(page.meta.entities, ENTITIES_MAX),
     related,
     ...(page.meta.lastVerified ? { last_verified: page.meta.lastVerified } : {}),
-    sources: page.meta.sources,
+    sources: capTail(page.meta.sources, SOURCES_MAX),
   }
   // Safety net: demote stray `## ` in every free-form body on the way out,
   // whatever path wrote it — legacy files, loser history copied verbatim by
   // mergePages, or a caller building a page by hand. applyPatch already
   // demotes what it writes; this guarantees the invariant for everything else:
   // a serialized page must always parse back to itself.
-  const history = page.history
+  const history = capList(page.history, HISTORY_MAX)
     .map(
       (h) =>
         `### ${h.date}${h.title ? ` — ${h.title}` : ''}\n\n${demoteH2Headings(h.body).trim()}\n`,
     )
     .join('\n')
-  const citations = page.citations || []
+  const citations = capList(page.citations, CITATIONS_MAX)
   const citationBlock =
     citations.length === 0
       ? ''
@@ -506,18 +517,27 @@ export function buildWikiSearchText(page: WikiPage): string {
 }
 
 /** Keep the first `max` unique entries; union order is oldest-first. */
-export function capList(list: string[] | undefined, max: number): string[] {
+export function capList<T>(list: T[] | undefined, max: number): T[] {
   if (!list?.length) return []
   return list.length <= max ? list : list.slice(0, max)
 }
 
-/** Mutate identity lists down to the write-side ceilings. */
+/** Keep the last `max` entries (newest tail of an oldest-first append list). */
+export function capTail<T>(list: T[] | undefined, max: number): T[] {
+  if (!list?.length) return []
+  return list.length <= max ? list : list.slice(list.length - max)
+}
+
+/** Mutate identity + provenance lists down to the write-side ceilings. */
 export function capFrontmatterLists(page: WikiPage): void {
   page.meta.aliases = capList(page.meta.aliases, ALIASES_MAX)
   page.meta.tags = capList(page.meta.tags, TAGS_MAX)
   page.meta.entities = capList(page.meta.entities, ENTITIES_MAX)
   page.meta.related = capList(page.meta.related, RELATED_MAX)
   page.seeAlso = capList(page.seeAlso, RELATED_MAX)
+  page.meta.sources = capTail(page.meta.sources, SOURCES_MAX)
+  page.history = capList(page.history, HISTORY_MAX)
+  page.citations = capList(page.citations, CITATIONS_MAX)
 }
 
 /** Split ## Article body into ### subsections (+ optional lead before first ###). */

@@ -24,7 +24,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ServerResponse } from 'node:http'
-import { parseWikiPage } from '@rivetos/wiki-core'
+import { HISTORY_MAX, parseWikiPage, SOURCES_MAX } from '@rivetos/wiki-core'
 import type { GatewayRoute } from '@rivetos/types'
 import { logger } from '../../logger.js'
 import type { WikiIndexLike } from './wiki-api.js'
@@ -353,18 +353,31 @@ ${categories}`
 }
 
 function renderHistoryView(p: ReturnType<typeof parseWikiPage>, ctx: RenderCtx): string {
-  const entries = p.history
+  const shownHistory = p.history.slice(0, HISTORY_MAX)
+  const historyExtra = p.history.length - shownHistory.length
+  const historyNote =
+    historyExtra > 0
+      ? `<p class="muted">Showing ${String(shownHistory.length)} most recent of ${p.history.length.toLocaleString('en')} entries.</p>`
+      : ''
+  const entries = shownHistory
     .map(
       (h) =>
         `<section class="hentry"><h3>${esc(h.date)}${h.title ? ` — ${esc(h.title)}` : ''}</h3>${renderMarkdown(h.body, ctx)}</section>`,
     )
     .join('\n')
-  const sources = p.meta.sources
+  const shownSources = p.meta.sources.slice(-SOURCES_MAX)
+  const sourceExtra = p.meta.sources.length - shownSources.length
+  const sources = shownSources
     .map((s) => `<li>${esc(s.kind)}: ${s.ids.map((i) => `<code>${esc(i)}</code>`).join(', ')}</li>`)
     .join('')
+  const sourceMore =
+    sourceExtra > 0
+      ? `<li class="muted">+${sourceExtra.toLocaleString('en')} older sources omitted</li>`
+      : ''
   return `<p><a href="/wiki/${esc(p.meta.slug)}">← article</a></p>
+${historyNote}
 ${entries || '<p class="muted">(no history)</p>'}
-<h2>Provenance</h2><ul>${sources || '<li class="muted">(none)</li>'}</ul>`
+<h2>Provenance</h2><ul>${sources || '<li class="muted">(none)</li>'}${sourceMore}</ul>`
 }
 
 function topicRow(t: Topic): string {

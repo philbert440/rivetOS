@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
-import { serializeWikiPage } from '@rivetos/wiki-core'
+import { CITATIONS_MAX, HISTORY_MAX, serializeWikiPage, SOURCES_MAX } from '@rivetos/wiki-core'
 import { createWikiApiRoute, type WikiIndexLike } from './wiki-api.js'
 import { createWikiHtmlRoute, renderMarkdown } from './wiki-html.js'
 
@@ -147,6 +147,23 @@ describe('/api/wiki', () => {
     expect(page.entities).toHaveLength(32)
     expect(page.seeAlso.length).toBeLessThanOrEqual(48)
   })
+
+  it('caps history/citations/sources on already-bloated hub pages', async () => {
+    writeFileSync(join(wikiDir, 'topics', 'hub-provenance.md'), fatProvenanceMarkdown())
+    const base = await serve()
+    const page = (await (await fetch(`${base}/api/wiki/hub-provenance`)).json()) as {
+      history: Array<{ title: string }>
+      citations: Array<{ summaryId: string }>
+      sources: Array<{ ids: string[] }>
+    }
+    expect(page.history).toHaveLength(HISTORY_MAX)
+    expect(page.history[0].title).toBe('entry-0')
+    expect(page.history.map((h) => h.title)).not.toContain(`entry-${HISTORY_MAX + 5}`)
+    expect(page.citations).toHaveLength(CITATIONS_MAX)
+    expect(page.sources).toHaveLength(SOURCES_MAX)
+    // Oldest-first sources: JSON keeps the newest tail.
+    expect(page.sources[0].ids[0]).toContain(String(20).padStart(12, '0'))
+  })
 })
 
 describe('/wiki HTML', () => {
@@ -204,6 +221,18 @@ describe('/wiki HTML', () => {
     expect(html).not.toContain('tag-20')
     expect(html).toContain('Hub Bloat')
   })
+
+  it('history view does not dump thousands of entries or sources', async () => {
+    writeFileSync(join(wikiDir, 'topics', 'hub-provenance.md'), fatProvenanceMarkdown())
+    const base = await serve()
+    const html = await (await fetch(`${base}/wiki/hub-provenance?view=history`)).text()
+    expect(html).toContain('entry-0')
+    expect(html).toContain(`Showing ${String(HISTORY_MAX)} most recent of`)
+    expect(html).not.toContain(`entry-${HISTORY_MAX + 5}`)
+    expect(html).toMatch(/\+\d[\d,]* older sources omitted/)
+    expect(html).not.toContain('00000000-0000-0000-0000-000000000000')
+    expect(html).toContain(`00000000-0000-0000-0000-${String(SOURCES_MAX + 19).padStart(12, '0')}`)
+  })
 })
 
 function fatHubMarkdown(): string {
@@ -234,5 +263,47 @@ Lead about a hub topic.
 ### 2026-08-22 — Grew too big
 
 - extractor unioned every synonym
+`
+}
+
+function fatProvenanceMarkdown(): string {
+  const sources = Array.from({ length: SOURCES_MAX + 20 }, (_, i) => {
+    const id = `00000000-0000-0000-0000-${String(i).padStart(12, '0')}`
+    return `  - kind: summary\n    ids:\n      - ${id}`
+  }).join('\n')
+  const history = Array.from(
+    { length: HISTORY_MAX + 20 },
+    (_, i) => `### 2026-08-22 — entry-${i}\n\n- note ${i}\n`,
+  ).join('\n')
+  const citations = [
+    '| Date | Kind | Summary | Note |',
+    '|------|------|---------|------|',
+    ...Array.from({ length: CITATIONS_MAX + 10 }, (_, i) => {
+      const id = `11111111-1111-1111-1111-${String(i).padStart(12, '0')}`
+      return `| 2026-08-22 | leaf | \`${id}\` | c-${i} |`
+    }),
+  ].join('\n')
+  return `---
+title: Hub Provenance
+slug: hub-provenance
+aliases: []
+tags: []
+entities: []
+related: []
+sources:
+${sources}
+---
+
+## Summary
+
+Lead about a hub topic whose provenance lists grew without a ceiling.
+
+## History
+
+${history}
+
+## Citations
+
+${citations}
 `
 }
