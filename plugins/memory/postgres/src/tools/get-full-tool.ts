@@ -17,7 +17,7 @@
  */
 
 import { createInterface } from 'node:readline'
-import { createReadStream, existsSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync } from 'node:fs'
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
 
@@ -166,14 +166,50 @@ export function formatMissingJsonlMessage(file: string, opts?: { agent?: string 
   )
 }
 
+/** True for capture transcripts memory_get_full knows how to re-read. */
+export function isCaptureTranscriptPath(file: string): boolean {
+  return file.endsWith('.jsonl') || file.endsWith('.jsonl.zstd') || file.endsWith('.jsonl.zst')
+}
+
+async function decompressZstd(buf: Buffer): Promise<string> {
+  // fzstd is a declared dependency of this plugin (package.json) so it resolves
+  // on every node — do NOT reach into an integration's node_modules. Node's
+  // built-in zlib zstd only yields the first frame, which corrupts multi-frame
+  // dsh transcripts, so fzstd (full multi-frame decode) is required.
+  try {
+    const mod = (await import('fzstd')) as {
+      decompress?: (b: Uint8Array) => Uint8Array
+      default?: { decompress?: (b: Uint8Array) => Uint8Array }
+    }
+    const decompress = mod.decompress ?? mod.default?.decompress
+    if (typeof decompress === 'function') return Buffer.from(decompress(buf)).toString('utf8')
+    throw new Error('fzstd loaded but exposes no decompress()')
+  } catch (err) {
+    throw new Error(
+      `zstd decoder unavailable (need fzstd for multi-frame session.jsonl.zstd): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      { cause: err },
+    )
+  }
+}
+
 /** Read a single 0-indexed line from a (potentially large) file without
  *  loading the whole thing. Exported for tests.
+ *
+ *  `.jsonl.zstd` / `.jsonl.zst` (dsh multi-frame transcripts) are fully
+ *  decompressed first — Node's zlib zstd only yields the first frame.
  *
  *  Resolve BEFORE rl.close(): close() emits 'close' synchronously, and at
  *  that moment `i` has not been incremented past lineIndex yet, so the
  *  close handler's `i <= lineIndex` guard would resolve(null) first and win
  *  the promise race — every successful match reported "line not found". */
 export async function readJsonlLine(file: string, lineIndex: number): Promise<string | null> {
+  if (file.endsWith('.zstd') || file.endsWith('.zst')) {
+    const text = await decompressZstd(readFileSync(file))
+    const lines = text.split('\n')
+    return lineIndex >= 0 && lineIndex < lines.length ? (lines[lineIndex] ?? null) : null
+  }
   return new Promise((resolve, reject) => {
     const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity })
     let i = 0
@@ -200,6 +236,44 @@ export function extractFullFromLine(raw: string): { content: string; toolResult:
   } catch {
     return { content: '', toolResult: null }
   }
+
+  // dsh SessionEvent (type is "user/message", "tool/call", …)
+  const eventType: unknown = j?.type
+  if (typeof eventType === 'string' && eventType.includes('/')) {
+    const data = j.data && typeof j.data === 'object' ? j.data : {}
+    if (eventType === 'user/message') {
+      return { content: extractText(data.content), toolResult: null }
+    }
+    if (eventType === 'assistant/message') {
+      const message = data.message && typeof data.message === 'object' ? data.message : data
+      return { content: extractText(message.content), toolResult: null }
+    }
+    if (eventType === 'tool/call') {
+      const name = typeof data.name === 'string' ? data.name : 'unknown'
+      const args = typeof data.arguments === 'string' ? data.arguments : null
+      return { content: `[tool] ${name}`, toolResult: args }
+    }
+    if (eventType === 'tool/result') {
+      const message = data.message && typeof data.message === 'object' ? data.message : data
+      const name =
+        typeof message.name === 'string'
+          ? message.name
+          : typeof data.name === 'string'
+            ? data.name
+            : 'unknown'
+      const rawContent = message.content
+      let result = extractText(rawContent)
+      if (Array.isArray(rawContent)) {
+        const nested = rawContent
+          .filter((p: any) => p && (p.type === 'tool-result' || p.type === 'tool_result'))
+          .map((p: any) => extractText(p.content))
+          .filter(Boolean)
+        if (nested.length > 0) result = nested.join('\n')
+      }
+      return { content: `[tool-result] ${name}`, toolResult: result || null }
+    }
+  }
+
   const update = j?.params?.update ?? j?.update ?? j
   const text = extractText(update?.content)
   const content = update?.sessionUpdate === 'agent_thought_chunk' ? `[thinking] ${text}` : text
@@ -269,9 +343,10 @@ export function createGetFullTool(pool: pg.Pool): Tool {
           'Row is truncated but carries no disk pointer (pre-#196 capture, or a non-grok source) — ' +
           'the elided tail is unrecoverable.'
         )
-      // Non-.jsonl pointer is a corrupt/unexpected metadata shape — treat as
-      // unrecoverable rather than a multi-host miss.
-      if (!file.endsWith('.jsonl'))
+      // Non-transcript pointer is a corrupt/unexpected metadata shape — treat
+      // as unrecoverable rather than a multi-host miss. dsh writes
+      // session.jsonl.zstd (multi-frame zstd); grok writes updates.jsonl.
+      if (!isCaptureTranscriptPath(file))
         return `Source JSONL is gone or invalid (${file}) — the elided tail is unrecoverable.`
       if (!existsSync(file)) return formatMissingJsonlMessage(file, { agent: row.agent })
 

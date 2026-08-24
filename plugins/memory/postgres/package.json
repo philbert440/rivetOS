@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/memory-postgres",
   "version": "0.4.0-beta.6",
-  "description": "RivetOS Memory System \u2014 hybrid-scored search, background compaction, summary DAG",
+  "description": "RivetOS Memory System — hybrid-scored search, background compaction, summary DAG",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,9 +18,10 @@
   },
   "dependencies": {
     "@rivetos/types": "0.4.0-beta.6",
+    "@rivetos/wiki-core": "0.4.0-beta.6",
+    "fzstd": "^0.1.1",
     "pg": "^8.22.0",
-    "undici": "^8.10.0",
-    "@rivetos/wiki-core": "0.4.0-beta.6"
+    "undici": "^8.10.0"
   },
   "rivetos": {
     "type": "memory",
