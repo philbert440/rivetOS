@@ -7,6 +7,7 @@ import {
   createGetFullTool,
   extractFullFromLine,
   formatMissingJsonlMessage,
+  isCaptureTranscriptPath,
   readJsonlLine,
 } from './get-full-tool.js'
 import { truncationHint } from './helpers.js'
@@ -99,6 +100,51 @@ describe('extractFullFromLine', () => {
   it('never throws on malformed lines', () => {
     expect(extractFullFromLine('not json')).toEqual({ content: '', toolResult: null })
     expect(extractFullFromLine('{}').content).toBe('')
+  })
+
+  it('extracts dsh user/assistant/tool SessionEvents', () => {
+    const user = JSON.stringify({
+      type: 'user/message',
+      seq: 7,
+      data: { content: [{ type: 'text', text: 'hello dsh' }], id: 'u1' },
+    })
+    expect(extractFullFromLine(user).content).toBe('hello dsh')
+
+    const assistant = JSON.stringify({
+      type: 'assistant/message',
+      seq: 21,
+      data: { message: { content: [{ type: 'text', text: 'dsh ok' }] } },
+    })
+    expect(extractFullFromLine(assistant).content).toBe('dsh ok')
+
+    const call = JSON.stringify({
+      type: 'tool/call',
+      seq: 30,
+      data: { name: 'bash', arguments: '{"command":"echo hi"}' },
+    })
+    expect(extractFullFromLine(call)).toEqual({
+      content: '[tool] bash',
+      toolResult: '{"command":"echo hi"}',
+    })
+
+    const result = JSON.stringify({
+      type: 'tool/result',
+      seq: 31,
+      data: { message: { name: 'bash', content: [{ type: 'text', text: 'hi\n' }] } },
+    })
+    expect(extractFullFromLine(result).content).toBe('[tool-result] bash')
+    expect(extractFullFromLine(result).toolResult).toBe('hi\n')
+  })
+})
+
+describe('isCaptureTranscriptPath', () => {
+  it('accepts grok jsonl and dsh zstd transcripts', () => {
+    expect(isCaptureTranscriptPath('/home/rivet/.grok/sessions/x/updates.jsonl')).toBe(true)
+    expect(
+      isCaptureTranscriptPath('/home/rivet/.dsh/sessions/ws/session-abc/session.jsonl.zstd'),
+    ).toBe(true)
+    expect(isCaptureTranscriptPath('/tmp/session.jsonl.zst')).toBe(true)
+    expect(isCaptureTranscriptPath('/tmp/notes.txt')).toBe(false)
   })
 })
 
