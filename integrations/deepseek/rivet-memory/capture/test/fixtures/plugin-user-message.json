@@ -1,0 +1,16 @@
+{
+  "type": "user/message",
+  "seq": 8,
+  "time": 1787529289678,
+  "data": {
+    "content": [{ "type": "text", "text": "Current runtime context. This snapshot supersedes earlier runtime-context snapshots." }],
+    "source": {
+      "kind": "plugin",
+      "plugin": "@deepseek-ai/dsh-system-prompt",
+      "form": "snapshot"
+    },
+    "role": "user",
+    "id": "47d56f4e-f1c0-4421-80e3-c8bc1ca81a18"
+  },
+  "surfaceOp": "append"
+}

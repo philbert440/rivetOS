@@ -1,0 +1,17 @@
+{
+  "type": "assistant/message",
+  "seq": 21,
+  "time": 1787529290769,
+  "data": {
+    "turn": 1,
+    "step": 1,
+    "message": {
+      "role": "assistant",
+      "content": [{ "type": "text", "text": "dsh ok" }],
+      "source": { "kind": "model", "provider": "deepseek-official", "model": "deepseek-v4-pro" },
+      "id": "890e75f7-769d-4af6-87d8-ed83f021322c"
+    },
+    "usage": { "inputTokens": 7619, "outputTokens": 4 }
+  },
+  "surfaceOp": "append"
+}

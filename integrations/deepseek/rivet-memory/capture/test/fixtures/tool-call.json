@@ -1,0 +1,12 @@
+{
+  "type": "tool/call",
+  "seq": 30,
+  "time": 1787529300000,
+  "data": {
+    "turn": 1,
+    "step": 2,
+    "callId": "call-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "name": "bash",
+    "arguments": "{\"command\":\"echo rivet-tool-probe\"}"
+  }
+}

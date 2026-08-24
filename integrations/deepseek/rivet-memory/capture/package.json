@@ -1,0 +1,19 @@
+{
+  "name": "@rivetos/deepseek-rivet-memory-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Capture worker for DeepSeek Harness rivet-memory. Ingests session/event payloads and zstd JSONL transcripts into the shared RivetOS memory store under agent='rivet-deepseek'.",
+  "license": "Apache-2.0",
+  "main": "deepseek-memory-capture.mjs",
+  "bin": {
+    "deepseek-rivet-memory-capture": "deepseek-memory-capture.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/smoke.test.mjs"
+  },
+  "dependencies": {
+    "fzstd": "^0.1.1",
+    "pg": "^8.22.0"
+  }
+}

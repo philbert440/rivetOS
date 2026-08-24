@@ -1,0 +1,12 @@
+{
+  "type": "user/message",
+  "seq": 7,
+  "time": 1787529289676,
+  "data": {
+    "content": [{ "type": "text", "text": "Reply with exactly these two words and nothing else: dsh ok" }],
+    "source": { "kind": "user" },
+    "role": "user",
+    "id": "31f87573-b8d6-4a8a-900d-994b313afc44"
+  },
+  "surfaceOp": "append"
+}
