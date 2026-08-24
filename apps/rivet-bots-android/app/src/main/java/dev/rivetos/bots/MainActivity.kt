@@ -53,15 +53,14 @@ class MainActivity : ComponentActivity() {
  * bot's socket alive for the process lifetime.
  */
 class ScreenStores : ViewModel() {
-    private val stores = HashMap<String, ViewModelStore>()
-    fun owner(key: String): ViewModelStoreOwner {
-        val store = stores.getOrPut(key) { ViewModelStore() }
-        return object : ViewModelStoreOwner { override val viewModelStore: ViewModelStore get() = store }
-    }
+    private class Owner : ViewModelStoreOwner { override val viewModelStore = ViewModelStore() }
+    private val owners = HashMap<String, Owner>()
+    /** Stable per key, so the CompositionLocal compares equal across recompositions. */
+    fun owner(key: String): ViewModelStoreOwner = owners.getOrPut(key) { Owner() }
     fun retainOnly(keys: Set<String>) {
-        (stores.keys - keys).forEach { stores.remove(it)?.clear() }
+        (owners.keys - keys).forEach { owners.remove(it)?.viewModelStore?.clear() }
     }
-    fun clearAll() { stores.values.forEach { it.clear() }; stores.clear() }
+    fun clearAll() { owners.values.forEach { it.viewModelStore.clear() }; owners.clear() }
     override fun onCleared() = clearAll()
 }
 

@@ -73,8 +73,10 @@ class Gateway(private val client: OkHttpClient, baseUrl: String) {
             client.newCall(req).execute().use { res ->
                 val text2 = res.body.string()
                 if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text2))
+                // A 2xx is the acceptance signal; an odd/empty body (a proxy, say) must not
+                // turn a turn that is already running server-side into a "send failed".
                 runCatching { wireJson.decodeFromString(SessionPostAccepted.serializer(), text2) }
-                    .getOrElse { throw GatewayException(res.code, "unexpected reply from gateway") }
+                    .getOrDefault(SessionPostAccepted(true, sessionId))
             }
         }
 

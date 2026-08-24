@@ -128,6 +128,7 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
     fun shutdown() {
         closeWatches()
         c.gateways.clear()
+        c.http.clear()
         _state.update { UiState(prefs = it.prefs) }
     }
 

@@ -47,7 +47,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
     private var doneTimer: Job? = null
     private var workingTimer: Job? = null
     private var fetchJob: Job? = null
-    private var everOpen = false
+    @Volatile private var everOpen = false
 
     init {
         if (initialSessionId != null) open(initialSessionId)
@@ -132,6 +132,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
     }
 
     private fun onStream(e: SessionFrame.Stream) {
+        if (e.type != "done" && e.type != "error") armWorkingTimeout(_state.value.sessionId) // liveness: any frame resets the idle deadline
         when (e.type) {
             "text" -> _state.update { it.copy(pendingText = it.pendingText + e.content, working = null) }
             "reasoning" -> _state.update { it.copy(working = "Thinking…") }
@@ -183,9 +184,11 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
     }
 
     /**
-     * A turn that produces no frames (socket down, harness died) must not spin
-     * forever: re-read the transcript early when the WS isn't open, then again
-     * at the deadline before giving up.
+     * Idle deadline, not a wall clock: (re)armed on send and on every stream
+     * frame, so a long tool-heavy turn never trips it while it's still talking.
+     * A turn that goes silent (socket down, harness died) gets an early
+     * transcript re-read when the WS isn't open, then a final one at the
+     * deadline before we give up.
      */
     private fun armWorkingTimeout(sid: String) {
         workingTimer?.cancel()
@@ -197,7 +200,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
             fetch(sid).join() // the reply may have committed while the socket was down
             _state.update { s ->
                 if (s.working == null) s
-                else s.copy(working = null, error = "No reply from ${bot.displayName} after ${WORKING_TIMEOUT_MS / 60_000} min. Try again.")
+                else s.copy(working = null, error = "${bot.displayName} went quiet for ${WORKING_TIMEOUT_MS / 60_000} min. Try again.")
             }
         }
     }

@@ -50,7 +50,7 @@ all-sessions WS → Computer screen shows the (empty) room. Cold claude-cli spaw
 - `GET /api/mesh` → `{updatedAt, nodes:[{id,name,denUrl,online,sessions}]}` ✔
 - `GET /api/catalog/agents` → `{agents:[{id,node,local,provider?,model?}]}` ✔ — remote agents only
   appear when the owning node advertised `agentDetails`; nodes missing from the catalog are probed
-  individually (`BotRepository.probeNode`), and a den-only node (datahub) is dropped because
+  individually (`BotRepository.probeNode`), and a den-only node (no chat gateway) is dropped because
   `/api/sessions` isn't served there.
 - Off-loopback requests without a device client cert → 401 `{"error":"unauthorized"}`; `/healthz` is open.
 - Den rooms are keyed by the harness's den session; a gateway turn on a node whose harness doesn't

@@ -15,6 +15,10 @@ class HttpFactory(private val identity: DeviceIdentityStore) {
     @Volatile private var cached: OkHttpClient? = null
     @Volatile private var cachedKey: String = ""
 
+    /** Sign-out: drop the client (and the SSLContext/KeyManager it carries) right away. */
+    @Synchronized
+    fun clear() { cached?.let { it.connectionPool.evictAll(); it.dispatcher.executorService.shutdown() }; cached = null; cachedKey = "" }
+
     fun client(strictHostnames: Boolean): OkHttpClient {
         val key = "${identity.generation()}:$strictHostnames"
         cached?.let { if (cachedKey == key) return it }
