@@ -15,9 +15,14 @@ class HttpFactory(private val identity: DeviceIdentityStore) {
     @Volatile private var cached: OkHttpClient? = null
     @Volatile private var cachedKey: String = ""
 
-    /** Sign-out: drop the client (and the SSLContext/KeyManager it carries) right away. */
+    /**
+     * Sign-out: drop the client (and the SSLContext/KeyManager it carries).
+     * Idle connections are evicted; the dispatcher is left alone — callers
+     * close their sockets first, and a Gateway that still holds this client
+     * must not find a dead executor under it.
+     */
     @Synchronized
-    fun clear() { cached?.let { it.connectionPool.evictAll(); it.dispatcher.executorService.shutdown() }; cached = null; cachedKey = "" }
+    fun clear() { cached?.connectionPool?.evictAll(); cached = null; cachedKey = "" }
 
     fun client(strictHostnames: Boolean): OkHttpClient {
         val key = "${identity.generation()}:$strictHostnames"

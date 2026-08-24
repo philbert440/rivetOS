@@ -146,7 +146,8 @@ fun App(c: AppContainer) {
             SettingsScreen(
                 c,
                 onBack = { nav.pop() },
-                onForget = { homeVm.shutdown(); stores.clearAll(); nav.replaceAll(Screen.SignIn) },
+                // Close screen sockets before the pool/client they were built on is dropped.
+                onForget = { stores.clearAll(); homeVm.shutdown(); nav.replaceAll(Screen.SignIn) },
                 onRosterChanged = { homeVm.refresh() },
             )
         }

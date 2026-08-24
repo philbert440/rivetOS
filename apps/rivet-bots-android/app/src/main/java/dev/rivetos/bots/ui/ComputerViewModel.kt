@@ -33,7 +33,10 @@ class ComputerViewModel(private val c: AppContainer, val bot: Bot, val sessionId
     private var refetch: Job? = null
 
     init {
-        val gw = c.gateways.get(bot.denUrl)
+        val gw = try { c.gateways.get(bot.denUrl) } catch (e: Exception) { null }
+        if (gw == null) {
+            _state.update { it.copy(loaded = true, error = c.identity.lastError?.let { "device certificate failed to load: $it" } ?: "no gateway") }
+        } else {
         load()
         watch = gw.watchDen(sessionId, onFrame = { f ->
             when (f) {
@@ -47,12 +50,13 @@ class ComputerViewModel(private val c: AppContainer, val bot: Bot, val sessionId
                 }
             }
         }, onStatus = { s -> _state.update { it.copy(ws = s) } })
+        }
     }
 
     private fun load() {
         viewModelScope.launch {
             try {
-                val room = c.gateways.get(bot.denUrl).denState(sessionId)
+                val room = c.gateways.get(bot.denUrl).denState(sessionId) // gateway() guarded in init; a later failure lands in the catch
                 _state.update { it.copy(room = room ?: it.room, loaded = true, error = null) }
             } catch (e: GatewayException) {
                 if (e.status == 404) _state.update { it.copy(loaded = true, error = null) } // no room yet — not an error

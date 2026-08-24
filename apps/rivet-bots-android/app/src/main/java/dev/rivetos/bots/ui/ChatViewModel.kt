@@ -51,13 +51,22 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
 
     init { open(initialSessionId) }
 
+    /** The node's gateway, or null (with the error surfaced) when the device identity won't load. */
+    private fun gateway(): dev.rivetos.bots.data.Gateway? = try {
+        c.gateways.get(bot.denUrl)
+    } catch (e: Exception) {
+        _state.update { it.copy(error = BotRepository.friendly(e), loading = false, working = null, inFlight = false) }
+        null
+    }
+
     private fun open(sessionId: String) {
         watch?.close()
         doneTimer?.cancel(); workingTimer?.cancel(); fetchJob?.cancel()
         everOpen = false
         _state.update { UiState(sessionId) }
+        val gw = gateway() ?: return
         fetchJob = fetch(sessionId)
-        watch = c.gateways.get(bot.denUrl).watchSessions(
+        watch = gw.watchSessions(
             sessionId,
             onFrame = { f -> onFrame(sessionId, f) },
             onStatus = { s ->
@@ -77,7 +86,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
      */
     private fun fetch(sessionId: String): Job = viewModelScope.launch {
         try {
-            val msgs = c.gateways.get(bot.denUrl).messages(sessionId)
+            val msgs = (gateway() ?: return@launch).messages(sessionId)
             if (_state.value.sessionId != sessionId) return@launch
             var closed = false
             _state.update { s ->
@@ -92,7 +101,8 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
                     pendingText = if (replied) "" else s.pendingText,
                     working = if (replied) null else s.working,
                     inFlight = if (replied) false else s.inFlight,
-                    assistantSeq = s.assistantSeq + fresh,
+                    // Historical rows are not "this turn's reply" — seq moves only when we accept one.
+                    assistantSeq = if (replied) s.assistantSeq + 1 else s.assistantSeq,
                 )
             }
             if (closed) { doneTimer?.cancel(); workingTimer?.cancel() }
@@ -157,7 +167,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
                     delay(1500)
                     _state.update { s ->
                         when {
-                            s.assistantSeq != seqAtDone -> s.copy(pendingText = "") // the real row landed
+                            s.assistantSeq != seqAtDone -> s.copy(pendingText = "", inFlight = false) // the real row landed
                             s.pendingText.isBlank() -> s.copy(inFlight = false)   // empty turn (tool-only) — release the composer
                             else -> s.copy(
                                 messages = s.messages + SessionMessage(
@@ -185,7 +195,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         viewModelScope.launch {
             try {
                 val p = c.settings.snapshot()
-                c.gateways.get(bot.denUrl).post(sid, t, p.handle, bot.sendAgent)
+                (gateway() ?: throw IllegalStateException(_state.value.error ?: "no gateway")).post(sid, t, p.handle, bot.sendAgent)
                 armWorkingTimeout(sid)
             } catch (e: Exception) {
                 _state.update { s -> s.copy(messages = s.messages.filter { it.id != local.id }, error = BotRepository.friendly(e), working = null, inFlight = false) }

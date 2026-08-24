@@ -81,15 +81,18 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
                 if (c.identity.summary() == null) throw BotRepository.DiscoveryFailed("Device certificate didn't load: ${c.identity.lastError ?: "unknown error"}. Re-import it in Settings.")
                 val bots = c.bots.discover(p.entryUrl, p.extraNodes)
                 if (gen != refreshGen) return@launch // signed out mid-scan: publish nothing, open nothing
-                _state.update { it.copy(bots = bots, loadedOnce = true) }
+                _state.update { if (gen != refreshGen) it else it.copy(bots = bots, loadedOnce = true) }
+                if (gen != refreshGen) return@launch
                 openWatches(bots, p)
                 loadPreviews(bots, p)
             } catch (e: Exception) {
                 if (gen != refreshGen) return@launch
                 _state.update { it.copy(error = e.message ?: BotRepository.friendly(e), loadedOnce = true) }
             } finally {
-                _state.update { it.copy(loading = false) }
-                if (refreshAgain) { refreshAgain = false; refresh() }
+                if (gen == refreshGen) {
+                    _state.update { it.copy(loading = false) }
+                    if (refreshAgain) { refreshAgain = false; refresh() }
+                } else refreshAgain = false
             }
         }
     }
