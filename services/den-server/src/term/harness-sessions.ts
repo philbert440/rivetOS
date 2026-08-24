@@ -795,11 +795,11 @@ export async function describeDshSession(id: string): Promise<HarnessSession | u
  * dsh transcripts are `session.jsonl.zstd` — compressed, no in-process
  * decompressor wired. Honest empty turns rather than a fake parse.
  */
-export async function readDshTranscript(id: string): Promise<HarnessTranscript> {
-  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
-  const dir = dshSessionDir(id)
-  if (!dir) return { id, command: '', turns: [] }
-  return { id, command: 'dsh', turns: [] }
+export function readDshTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..') || !dshSessionDir(id)) {
+    return Promise.resolve({ id, command: '', turns: [] })
+  }
+  return Promise.resolve({ id, command: 'dsh', turns: [] })
 }
 
 function dshSessionExists(id: string): boolean {

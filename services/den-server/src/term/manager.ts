@@ -190,7 +190,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * with `resumeFlag <id>`. Ids must be valid UUIDs (Claude requires it for
  * --session-id), so RivetHub generates UUID conversation ids.
  */
-const HARNESS_FLAGS: Record<string, { sessionFlag?: string; resumeFlag: string }> = {
+const HARNESS_FLAGS: Partial<Record<string, { sessionFlag?: string; resumeFlag: string }>> = {
   claude: { sessionFlag: '--session-id', resumeFlag: '--resume' },
   grok: { sessionFlag: '--session-id', resumeFlag: '--resume' },
   // Hermes can --resume an existing session but has NO flag to pin a NEW
@@ -236,7 +236,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       if (i >= 0) r.injectTimers.splice(i, 1)
       fire()
     }, atMs)
-    t.unref?.()
+    t.unref()
     r.injectTimers.push(t)
   }
 
@@ -312,7 +312,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       r.sigkillTimer = undefined
       if (r.state === 'running') r.proc.kill('SIGKILL')
     }, SIGKILL_DELAY_MS)
-    r.sigkillTimer.unref?.()
+    r.sigkillTimer.unref()
   }
 
   const armDetachedTtl = (r: PtyRecord): void => {
@@ -324,7 +324,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         escalate(r)
       }
     }, config.term.detachedTtlMs)
-    r.detachTimer.unref?.()
+    r.detachTimer.unref()
   }
 
   /** Activity-based auto-close: re-arm from `from` (default lastActivityTs)
@@ -357,7 +357,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       },
       Math.max(0, remaining),
     )
-    r.idleTimer.unref?.()
+    r.idleTimer.unref()
   }
 
   /** Bump lastActivityTs and re-arm the idle reaper. Shared by onData / inject / write. */
@@ -432,7 +432,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       r.reapTimer = undefined
       reap(r)
     }, config.term.exitLingerMs)
-    r.reapTimer.unref?.()
+    r.reapTimer.unref()
   }
 
   return {
@@ -473,7 +473,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // until the victim exits is acceptable for a soft cap.
         const victim = running
           .filter((r) => r.attached.size === 0 && r.ready && r.injectBuffer.length === 0)
-          .sort((a, b) => a.lastActivityTs - b.lastActivityTs)[0]
+          .sort((a, b) => a.lastActivityTs - b.lastActivityTs)
+          .at(0)
         if (!victim)
           throw new TermSpawnError('cap', `pty limit reached (${config.term.maxPtys}); all active`)
         audit('kill', victim, { reason: 'lru-evict' })
@@ -576,8 +577,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             // Continue the chain: a ready-path inject arriving right after the
             // flush must queue behind the last staggered turn, not race it.
             r.injectNextAtMs = now() + pending.length * submitDelayMs * 2
-          }, config.term.injectReadyMs ?? 500)
-          r.readyTimer.unref?.()
+          }, config.term.injectReadyMs)
+          r.readyTimer.unref()
         }
         appendScrollback(r, data)
         for (const cb of r.attached) cb(data)

@@ -53,8 +53,7 @@ export interface DeepseekStoreHost extends HarnessStoreHost {
 
 export type DeepseekDriverDeps = PtyHarnessDriverDeps<DeepseekStoreHost>
 
-const DSH_NATIVE_RE =
-  /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const DSH_NATIVE_RE = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function announcedNative(ev: DenAgentEventLike): string | undefined {
   const raw = ev.harnessSession

@@ -408,7 +408,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       state = { rooms, sessions }
       broadcast(JSON.stringify({ type: 'session.removed', v: 1, session }), session)
     }, config.evictTtlMs)
-    t.unref?.()
+    t.unref()
     evictTimers.set(session, t)
   }
 
@@ -517,7 +517,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // reflected without a restart (passed as a getter, not a snapshot).
   const rosterCwdFor = (key: string) => (): string => {
     const roster = rosterProvider.get()
-    return roster.commands[key]?.cwd ?? roster.cwd
+    if (!Object.hasOwn(roster.commands, key)) return roster.cwd
+    return roster.commands[key].cwd ?? roster.cwd
   }
   // The node's HarnessDriver registry (docs/plans/harness-control-plane.md).
   // All five built-in drivers formalize the machinery right above them — the
@@ -847,7 +848,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       if (opts.extraRoutes?.length) {
         const route = opts.extraRoutes
           .filter((r) => url.pathname === r.prefix || url.pathname.startsWith(r.prefix + '/'))
-          .sort((a, b) => b.prefix.length - a.prefix.length)[0]
+          .sort((a, b) => b.prefix.length - a.prefix.length)
+          .at(0)
         if (route) {
           // Gateway handlers use writeHead directly and know nothing about
           // CORS; set the same headers den's own routes send so cross-node
@@ -1084,7 +1086,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         {
           const m = url.pathname.match(/^\/term\/harness-sessions\/([^/]+)\/transcript$/)
           if (req.method === 'GET' && m) {
-            const id = decodeURIComponent(m[1] ?? '')
+            const id = decodeURIComponent(m.at(1) ?? '')
             const transcript = await readHarnessTranscript(id)
             return json(res, 200, transcript)
           }
@@ -1302,7 +1304,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     audioWs.heartbeat()
     harnessRoutes.heartbeat()
   }, 30_000)
-  heartbeat.unref?.()
+  heartbeat.unref()
 
   return {
     server,
