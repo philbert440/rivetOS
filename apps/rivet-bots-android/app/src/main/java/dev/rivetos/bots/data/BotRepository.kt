@@ -84,7 +84,9 @@ class BotRepository(private val gateways: GatewayPool) {
     companion object {
         fun hostOf(url: String): String = runCatching { java.net.URI(url).host ?: url }.getOrDefault(url)
 
-        fun friendly(e: Throwable): String = when (e) {
+        fun friendly(e: Throwable): String {
+            android.util.Log.w("RivetBots", "request failed", e) // logcat ground truth for field debugging
+            return when (e) {
             is javax.net.ssl.SSLHandshakeException -> "TLS handshake failed — check the device certificate and CA chain."
             is javax.net.ssl.SSLPeerUnverifiedException -> "Node certificate doesn't match its address (try relaxed hostname check)."
             is java.net.UnknownHostException -> "Host not found."
@@ -92,6 +94,7 @@ class BotRepository(private val gateways: GatewayPool) {
             is java.net.SocketTimeoutException -> "Timed out reaching the node."
             is GatewayException -> "HTTP ${e.status}: ${e.message}"
             else -> e.message ?: e.javaClass.simpleName
+        }
         }
     }
 }

@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -59,6 +60,7 @@ fun EnrollScreen(c: AppContainer, onBack: () -> Unit, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { if (url.isBlank()) url = c.settings.snapshot().entryUrl } // survive a process restart
     var pass by remember { mutableStateOf("") }
     var p12 by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
     var ca by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
