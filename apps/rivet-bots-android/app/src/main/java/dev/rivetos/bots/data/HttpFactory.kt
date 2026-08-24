@@ -39,6 +39,9 @@ class HttpFactory(private val identity: DeviceIdentityStore) {
             .pingInterval(Duration.ofSeconds(25))
             .retryOnConnectionFailure(true)
         val loaded = identity.load()
+        if (loaded == null && identity.hasIdentity()) {
+            throw IllegalStateException("device certificate failed to load: ${identity.lastError ?: "unknown"}")
+        }
         if (loaded != null) {
             val ctx = SSLContext.getInstance("TLS")
             ctx.init(loaded.keyManagers, loaded.trustManager?.let { arrayOf(it) }, null)

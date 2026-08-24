@@ -43,7 +43,7 @@ app/src/main/java/dev/rivetos/bots/
 Enroll with a real device p12 → roster of 10 bots across 8 nodes → two turns to Claude on a live node
 answered and rendered (stream chip → committed message) → home preview + time updated over the
 all-sessions WS → Computer screen shows the (empty) room. Cold claude-cli spawn on a node can take
-~2 min; the working chip now times out at 5 min with a refetch.
+~2 min; the working chip has a 3-minute idle deadline (re-armed by every stream frame) with transcript refetches.
 
 ## Contract facts verified against live nodes (2026-08-24)
 

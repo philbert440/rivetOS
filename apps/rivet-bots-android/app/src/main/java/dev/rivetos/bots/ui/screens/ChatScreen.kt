@@ -78,14 +78,17 @@ fun ChatScreen(
     var menu by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
 
-    // Follow new content only while the reader was already at the bottom (judged
-    // from the frame before this content arrived) — never yank someone reading
-    // history. The first transcript load always lands on the tail.
+    // One jump to the tail when the transcript first loads; after that, follow new
+    // content only while the reader was already at the bottom (judged from the
+    // frame before it arrived) — never yank someone reading history.
     val rowCount = s.messages.size + (if (s.pendingText.isNotEmpty()) 1 else 0) + (if (s.working != null) 1 else 0) +
         (if (s.error != null) 1 else 0) + (if (s.ws != WsStatus.OPEN && !s.loading) 1 else 0)
+    var landed by remember(s.sessionId) { mutableStateOf(false) }
     LaunchedEffect(rowCount, s.pendingText.length, s.loading) {
+        if (s.loading) return@LaunchedEffect
         val wasAtBottom = !list.canScrollForward
-        if (wasAtBottom || !s.loading && s.messages.isNotEmpty() && list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset == 0) {
+        if (!landed || wasAtBottom) {
+            landed = true
             list.scrollToItem(rowCount) // index 0 is the header spacer; past-the-end coerces to the last row
         }
     }

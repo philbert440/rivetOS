@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -52,7 +51,7 @@ class MainActivity : ComponentActivity() {
  * live WebSocket each; the plain activity store would keep every visited
  * bot's socket alive for the process lifetime.
  */
-class ScreenStores : ViewModel() {
+internal class ScreenStores : ViewModel() {
     private class Owner : ViewModelStoreOwner { override val viewModelStore = ViewModelStore() }
     private val owners = HashMap<String, Owner>()
     /** Stable per key, so the CompositionLocal compares equal across recompositions. */
@@ -66,7 +65,7 @@ class ScreenStores : ViewModel() {
 
 private fun Screen.storeKey(): String? = when (this) {
     is Screen.Chat -> "chat:${bot.id}"
-    is Screen.Computer -> "computer:${bot.id}:${sessionId ?: "current"}"
+    is Screen.Computer -> "computer:${bot.id}:$sessionId"
     else -> null
 }
 
@@ -105,7 +104,9 @@ fun App(c: AppContainer) {
         is Screen.Chat -> {
             val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
             CompositionLocalProvider(LocalViewModelStoreOwner provides stores.owner(s.storeKey()!!)) {
-                val vm: ChatViewModel = viewModel { ChatViewModel(c, s.bot) } // resolves its thread from persisted prefs
+                // `p` is the persisted prefs snapshot App is composed from — no in-memory copy, no async hop.
+                val sid = p.sessionOverrides[s.bot.id] ?: s.bot.defaultSessionId(c.identity.deviceTag())
+                val vm: ChatViewModel = viewModel { ChatViewModel(c, s.bot, sid) }
                 val cs by vm.state.collectAsState()
                 ChatScreen(
                     vm, s.bot,
@@ -118,8 +119,7 @@ fun App(c: AppContainer) {
         }
         is Screen.Computer -> {
             CompositionLocalProvider(LocalViewModelStoreOwner provides stores.owner(s.storeKey()!!)) {
-                val sid = s.sessionId ?: rememberResolvedSession(c, s.bot) ?: return@CompositionLocalProvider
-                val vm: ComputerViewModel = viewModel(key = sid) { ComputerViewModel(c, s.bot, sid) }
+                val vm: ComputerViewModel = viewModel(key = s.sessionId) { ComputerViewModel(c, s.bot, s.sessionId) }
                 ComputerScreen(vm, s.bot, onBack = { nav.pop() }, onProfile = { nav.push(Screen.Profile(s.bot)) })
             }
         }
@@ -128,7 +128,7 @@ fun App(c: AppContainer) {
             val hs by homeVm.state.collectAsState()
             ProfileScreen(
                 bot = s.bot,
-                sessionId = homeVm.sessionIdFor(s.bot),
+                sessionId = p.sessionOverrides[s.bot.id] ?: s.bot.defaultSessionId(c.identity.deviceTag()),
                 pinned = s.bot.id in hs.prefs.pinned,
                 hidden = s.bot.id in hs.prefs.hidden,
                 onBack = { nav.pop() },
@@ -136,7 +136,7 @@ fun App(c: AppContainer) {
                     nav.popTo { (it is Screen.Chat && it.bot.id == s.bot.id) || it is Screen.Home }
                     if (nav.current !is Screen.Chat) nav.push(Screen.Chat(s.bot))
                 },
-                onComputer = { nav.push(Screen.Computer(s.bot)) },
+                onComputer = { nav.push(Screen.Computer(s.bot, p.sessionOverrides[s.bot.id] ?: s.bot.defaultSessionId(c.identity.deviceTag()))) },
                 onTogglePin = { homeVm.togglePin(s.bot) },
                 onToggleHide = { homeVm.setHidden(s.bot, s.bot.id !in hs.prefs.hidden) },
             )
@@ -153,11 +153,3 @@ fun App(c: AppContainer) {
     }
 }
 
-/** The bot's current thread id from persisted prefs; null until read. */
-@Composable
-private fun rememberResolvedSession(c: AppContainer, bot: dev.rivetos.bots.domain.Bot): String? {
-    val sid by produceState<String?>(initialValue = null, bot.id) {
-        value = c.settings.snapshot().sessionOverrides[bot.id] ?: bot.defaultSessionId(c.identity.deviceTag())
-    }
-    return sid
-}

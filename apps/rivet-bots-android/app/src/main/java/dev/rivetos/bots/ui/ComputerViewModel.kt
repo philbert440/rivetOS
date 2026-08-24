@@ -38,7 +38,7 @@ class ComputerViewModel(private val c: AppContainer, val bot: Bot, val sessionId
         watch = gw.watchDen(sessionId, onFrame = { f ->
             when (f) {
                 // Only this thread's room — never another session's screen.
-                is DenFrame.Snapshot -> _state.update { it.copy(room = f.rooms[sessionId] ?: it.room, loaded = true) }
+                is DenFrame.Snapshot -> _state.update { val r = f.rooms[sessionId]; it.copy(room = r ?: it.room, loaded = true, error = if (r != null) null else it.error) }
                 is DenFrame.Event -> {
                     if (f.session.isNotBlank() && f.session != sessionId) return@watchDen
                     // Events are cheap to coalesce: re-read the reduced state shortly after.

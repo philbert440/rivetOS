@@ -20,12 +20,8 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
-/**
- * One bot thread. The session id is resolved from persisted prefs (not an
- * in-memory copy) so a "new conversation" started elsewhere is honoured on
- * the next open; pass [initialSessionId] to pin a specific thread.
- */
-class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId: String? = null) : ViewModel() {
+/** One bot thread. [initialSessionId] comes from the persisted prefs the caller already holds. */
+class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId: String) : ViewModel() {
     data class UiState(
         val sessionId: String,
         val messages: List<SessionMessage> = emptyList(),
@@ -36,11 +32,15 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         val loading: Boolean = true,
         /** Bumped on every committed assistant row — the done-promoter compares against it. */
         val assistantSeq: Int = 0,
+        /** True from send until the reply commits (or is promoted / errors / times out). */
+        val inFlight: Boolean = false,
+        /** When the current turn was sent — only a reply newer than this closes it. */
+        val turnStartTs: Long = 0,
     ) {
-        val canSend: Boolean get() = working == null && !loading
+        val canSend: Boolean get() = !inFlight && !loading
     }
 
-    private val _state = MutableStateFlow(UiState(initialSessionId ?: bot.defaultSessionId(c.identity.deviceTag())))
+    private val _state = MutableStateFlow(UiState(initialSessionId))
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var watch: Closeable? = null
@@ -49,13 +49,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
     private var fetchJob: Job? = null
     @Volatile private var everOpen = false
 
-    init {
-        if (initialSessionId != null) open(initialSessionId)
-        else viewModelScope.launch { open(resolveSessionId()) }
-    }
-
-    private suspend fun resolveSessionId(): String =
-        c.settings.snapshot().sessionOverrides[bot.id] ?: bot.defaultSessionId(c.identity.deviceTag())
+    init { open(initialSessionId) }
 
     private fun open(sessionId: String) {
         watch?.close()
@@ -76,22 +70,32 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         )
     }
 
-    /** Transcript read merged with live rows; a transcript ending in a reply closes the turn. */
+    /**
+     * Transcript read merged with live rows. The turn closes only when the
+     * server holds a NEW assistant row newer than this turn's send — a
+     * transcript that merely ends on the previous reply proves nothing.
+     */
     private fun fetch(sessionId: String): Job = viewModelScope.launch {
         try {
             val msgs = c.gateways.get(bot.denUrl).messages(sessionId)
             if (_state.value.sessionId != sessionId) return@launch
+            var closed = false
             _state.update { s ->
+                val known = s.messages.map { it.id }.toHashSet()
                 val merged = mergeTranscript(msgs, s.messages)
-                val replied = merged.lastOrNull()?.role == "assistant"
+                val fresh = msgs.count { it.role == "assistant" && it.id !in known }
+                val last = merged.lastOrNull()
+                val replied = s.inFlight && fresh > 0 && last?.role == "assistant" && last.ts >= s.turnStartTs
+                closed = replied
                 s.copy(
                     messages = merged, loading = false,
                     pendingText = if (replied) "" else s.pendingText,
                     working = if (replied) null else s.working,
-                    assistantSeq = if (replied) s.assistantSeq + 1 else s.assistantSeq,
+                    inFlight = if (replied) false else s.inFlight,
+                    assistantSeq = s.assistantSeq + fresh,
                 )
             }
-            if (_state.value.working == null) { doneTimer?.cancel(); workingTimer?.cancel() }
+            if (closed) { doneTimer?.cancel(); workingTimer?.cancel() }
             msgs.lastOrNull()?.let { c.settings.markSeen(bot.id, it.ts) }
         } catch (e: Exception) {
             if (_state.value.sessionId != sessionId) return@launch
@@ -115,6 +119,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
                         messages = list + m,
                         pendingText = if (assistant) "" else s.pendingText,
                         working = if (assistant) null else s.working,
+                        inFlight = if (assistant) false else s.inFlight,
                         assistantSeq = if (assistant) s.assistantSeq + 1 else s.assistantSeq,
                     )
                 }
@@ -139,7 +144,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
             "tool_start" -> _state.update { it.copy(working = "Using ${e.content.ifBlank { "a tool" }}") }
             "tool_result" -> _state.update { it.copy(working = "Working…") }
             "status" -> _state.update { it.copy(working = e.content.ifBlank { it.working }) }
-            "error" -> { workingTimer?.cancel(); _state.update { it.copy(error = e.content, working = null) } }
+            "error" -> { workingTimer?.cancel(); _state.update { it.copy(error = e.content, working = null, inFlight = false) } }
             "done" -> {
                 workingTimer?.cancel()
                 _state.update { it.copy(working = null) }
@@ -151,14 +156,17 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
                 doneTimer = viewModelScope.launch {
                     delay(1500)
                     _state.update { s ->
-                        if (s.assistantSeq != seqAtDone || s.pendingText.isBlank()) s.copy(pendingText = if (s.assistantSeq != seqAtDone) "" else s.pendingText)
-                        else s.copy(
-                            messages = s.messages + SessionMessage(
-                                id = "stream-${UUID.randomUUID()}", sessionId = s.sessionId,
-                                role = "assistant", text = s.pendingText, ts = System.currentTimeMillis(),
-                            ),
-                            pendingText = "",
-                        )
+                        when {
+                            s.assistantSeq != seqAtDone -> s.copy(pendingText = "") // the real row landed
+                            s.pendingText.isBlank() -> s.copy(inFlight = false)   // empty turn (tool-only) — release the composer
+                            else -> s.copy(
+                                messages = s.messages + SessionMessage(
+                                    id = "stream-${UUID.randomUUID()}", sessionId = s.sessionId,
+                                    role = "assistant", text = s.pendingText, ts = System.currentTimeMillis(),
+                                ),
+                                pendingText = "", inFlight = false,
+                            )
+                        }
                     }
                 }
             }
@@ -170,15 +178,16 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         val t = text.trim()
         if (t.isEmpty() || !_state.value.canSend) return
         val sid = _state.value.sessionId
-        val local = SessionMessage(id = "local-${UUID.randomUUID()}", sessionId = sid, role = "user", text = t, ts = System.currentTimeMillis())
-        _state.update { it.copy(messages = it.messages + local, error = null, working = "${bot.displayName} is working…") }
+        val now = System.currentTimeMillis()
+        val local = SessionMessage(id = "local-${UUID.randomUUID()}", sessionId = sid, role = "user", text = t, ts = now)
+        _state.update { it.copy(messages = it.messages + local, error = null, working = "${bot.displayName} is working…", inFlight = true, turnStartTs = now) }
         viewModelScope.launch {
             try {
                 val p = c.settings.snapshot()
                 c.gateways.get(bot.denUrl).post(sid, t, p.handle, bot.sendAgent)
                 armWorkingTimeout(sid)
             } catch (e: Exception) {
-                _state.update { s -> s.copy(messages = s.messages.filter { it.id != local.id }, error = BotRepository.friendly(e), working = null) }
+                _state.update { s -> s.copy(messages = s.messages.filter { it.id != local.id }, error = BotRepository.friendly(e), working = null, inFlight = false) }
             }
         }
     }
@@ -199,8 +208,8 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
             if (_state.value.sessionId != sid) return@launch
             fetch(sid).join() // the reply may have committed while the socket was down
             _state.update { s ->
-                if (s.working == null) s
-                else s.copy(working = null, error = "${bot.displayName} went quiet for ${WORKING_TIMEOUT_MS / 60_000} min. Try again.")
+                if (!s.inFlight) s
+                else s.copy(working = null, inFlight = false, error = "${bot.displayName} went quiet for ${WORKING_TIMEOUT_MS / 60_000} min. Try again.")
             }
         }
     }

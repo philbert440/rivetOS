@@ -81,7 +81,7 @@ fun HomeScreen(
     var searching by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf(false) }
     var addNode by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { if (s.bots.isEmpty() && !s.loading) vm.refresh() }
+    LaunchedEffect(Unit) { if ((s.bots.isEmpty() || s.error != null) && !s.loading) vm.refresh() }
 
     Column(Modifier.fillMaxSize().background(Paper).statusBarsPadding()) {
         Row(

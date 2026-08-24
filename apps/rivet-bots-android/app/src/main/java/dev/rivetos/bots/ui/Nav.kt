@@ -8,8 +8,7 @@ sealed interface Screen {
     data object Enroll : Screen
     data object Home : Screen
     data class Chat(val bot: Bot) : Screen
-    /** [sessionId] null = the bot's current thread (resolved from persisted prefs). */
-    data class Computer(val bot: Bot, val sessionId: String? = null) : Screen
+    data class Computer(val bot: Bot, val sessionId: String) : Screen
     data class Profile(val bot: Bot) : Screen
     data object Settings : Screen
 }

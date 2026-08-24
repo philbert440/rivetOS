@@ -50,6 +50,8 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
     /** Live watches keyed by "url|identityGen|strict" so a cert/TLS change retires the old sockets. */
     private val watches = HashMap<String, Closeable>()
     private var refreshAgain = false
+    /** Bumped by shutdown(); a refresh that started before the bump must not publish. */
+    @Volatile private var refreshGen = 0
 
     init {
         viewModelScope.launch {
@@ -69,6 +71,7 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
     fun refresh() {
         if (_state.value.loading) { refreshAgain = true; return }
         viewModelScope.launch {
+            val gen = refreshGen
             _state.update { it.copy(loading = true, error = null) }
             try {
                 val p = c.settings.snapshot() // never the empty default — prefs may not have emitted yet
@@ -77,10 +80,12 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
                 if (!c.identity.hasIdentity()) throw BotRepository.DiscoveryFailed("No device certificate — sign in again.")
                 if (c.identity.summary() == null) throw BotRepository.DiscoveryFailed("Device certificate didn't load: ${c.identity.lastError ?: "unknown error"}. Re-import it in Settings.")
                 val bots = c.bots.discover(p.entryUrl, p.extraNodes)
+                if (gen != refreshGen) return@launch // signed out mid-scan: publish nothing, open nothing
                 _state.update { it.copy(bots = bots, loadedOnce = true) }
                 openWatches(bots, p)
                 loadPreviews(bots, p)
             } catch (e: Exception) {
+                if (gen != refreshGen) return@launch
                 _state.update { it.copy(error = e.message ?: BotRepository.friendly(e), loadedOnce = true) }
             } finally {
                 _state.update { it.copy(loading = false) }
@@ -126,6 +131,7 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
 
     /** Sign-out: drop sockets, roster, and pooled TLS clients built on the old identity. */
     fun shutdown() {
+        refreshGen++
         closeWatches()
         c.gateways.clear()
         c.http.clear()

@@ -129,7 +129,7 @@ class WsSubscription(
         old?.cancel()
         onStatus(WsStatus.CONNECTING)
         val req = Request.Builder().url(url).build()
-        ws = client.newWebSocket(req, object : WebSocketListener() {
+        val socket = client.newWebSocket(req, object : WebSocketListener() {
             private fun live(): Boolean = !closed && myGen == generation
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (!live()) { webSocket.cancel(); return }
@@ -140,6 +140,8 @@ class WsSubscription(
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { if (live()) reconnect() }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { if (live()) reconnect() }
         })
+        ws = socket
+        if (closed) socket.cancel() // close() raced us between the check above and the publish
     }
 
     private fun reconnect() {
@@ -151,6 +153,7 @@ class WsSubscription(
             attempt += 1
             reconnectJob = scope.launch {
                 delay(backoff + Random.nextLong(0, 250))
+                reconnectJob = null // a failure raised from inside connect() must be able to schedule the next try
                 connect()
             }
         }
