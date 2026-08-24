@@ -84,7 +84,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
                 val known = s.messages.map { it.id }.toHashSet()
                 val merged = mergeTranscript(msgs, s.messages)
                 val fresh = msgs.count { it.role == "assistant" && it.id !in known }
-                val last = merged.lastOrNull()
+                val last = msgs.lastOrNull() // the server's tail, not a live row
                 val replied = s.inFlight && fresh > 0 && last?.role == "assistant" && last.ts >= s.turnStartTs
                 closed = replied
                 s.copy(
@@ -178,6 +178,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         val t = text.trim()
         if (t.isEmpty() || !_state.value.canSend) return
         val sid = _state.value.sessionId
+        doneTimer?.cancel() // a promoter still pending from the previous turn must not touch this one's stream
         val now = System.currentTimeMillis()
         val local = SessionMessage(id = "local-${UUID.randomUUID()}", sessionId = sid, role = "user", text = t, ts = now)
         _state.update { it.copy(messages = it.messages + local, error = null, working = "${bot.displayName} is working…", inFlight = true, turnStartTs = now) }
@@ -233,29 +234,22 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
 
 /**
  * Server transcript wins. Live rows survive only if the server hasn't got them
- * yet. A promoted reply (`stream-`) is dropped as soon as the server holds a
- * committed row with the same text; an optimistic send (`local-`) is dropped
- * once — and only once — a committed row with the same text can claim it, so
- * two identical sends keep two bubbles until both commit.
+ * yet. An optimistic send (`local-`) or promoted reply (`stream-`) is dropped
+ * once — and only once — a committed row with the same role+text can claim
+ * it, so two identical sends (or replies) keep two bubbles until both commit.
  */
 internal fun mergeTranscript(server: List<SessionMessage>, live: List<SessionMessage>): List<SessionMessage> {
     val ids = server.map { it.id }.toHashSet()
-    val serverTexts = server.map { it.role to it.text }.toHashSet()
     val claims = HashMap<Pair<String, String>, Int>()
     for (m in server) claims.merge(m.role to m.text, 1, Int::plus)
     // Committed live rows (ids the server also has) already consume their claim.
     for (m in live) if (m.id in ids) claims.merge(m.role to m.text, -1, Int::plus)
     val keep = live.filter { m ->
         if (m.id in ids) return@filter false
+        if (!(m.id.startsWith("local-") || m.id.startsWith("stream-"))) return@filter true
         val key = m.role to m.text
-        when {
-            m.id.startsWith("stream-") -> key !in serverTexts
-            m.id.startsWith("local-") -> {
-                val left = claims[key] ?: 0
-                if (left > 0) { claims[key] = left - 1; false } else true
-            }
-            else -> true
-        }
+        val left = claims[key] ?: 0
+        if (left > 0) { claims[key] = left - 1; false } else true
     }
     return (server + keep).sortedBy { it.ts }
 }

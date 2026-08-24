@@ -51,10 +51,18 @@ class MergeDuplicatesTest {
         assertEquals(listOf("m1", "m2"), mergeTranscript(serverBoth, merged).map { it.id })
     }
 
-    @Test fun `committed live rows do not double-claim`() {
+    @Test fun `a committed live row does not claim a later identical promoted reply`() {
+        // The WS commit handler drops a promoted twin at commit time; one that still
+        // coexists with its committed twin is a second identical reply and must stay.
         val committed = SessionMessage("m1", "s", "assistant", "yo", 20)
         val promoted = SessionMessage("stream-1", "s", "assistant", "yo", 30)
         val merged = mergeTranscript(listOf(committed), listOf(committed, promoted))
-        assertEquals(listOf("m1"), merged.map { it.id })
+        assertEquals(listOf("m1", "stream-1"), merged.map { it.id })
+    }
+
+    @Test fun `a promoted reply is claimed by its commit arriving via refetch`() {
+        val promoted = SessionMessage("stream-1", "s", "assistant", "yo", 30)
+        val server = listOf(SessionMessage("m1", "s", "assistant", "yo", 29))
+        assertEquals(listOf("m1"), mergeTranscript(server, listOf(promoted)).map { it.id })
     }
 }
