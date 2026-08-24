@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Android 16+ Local Network Protection: without this, the kernel drops
+         this uid's packets to RFC1918 destinations — the mesh — with no error
+         beyond a connect timeout (SYN-SENT, zero packets on the wire). -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
     <application
         android:name=".BotsApp"

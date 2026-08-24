@@ -39,8 +39,23 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        requestLocalNetworkAccess()
         val container = (application as BotsApp).container
         setContent { RivetBotsTheme { App(container) } }
+    }
+
+    /**
+     * Android 16+ Local Network Protection gates RFC1918 traffic behind
+     * ACCESS_LOCAL_NETWORK. Referenced by string so older platforms (and the
+     * emulator image) don't need the constant; no-op when already granted or
+     * the permission doesn't exist.
+     */
+    private fun requestLocalNetworkAccess() {
+        val perm = "android.permission.ACCESS_LOCAL_NETWORK"
+        runCatching { packageManager.getPermissionInfo(perm, 0) }.getOrNull() ?: return
+        if (checkSelfPermission(perm) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { }
+            .launch(perm)
     }
 }
 
