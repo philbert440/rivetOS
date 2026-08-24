@@ -5,6 +5,7 @@ import dev.rivetos.bots.data.BotRepository
 import dev.rivetos.bots.data.DeviceIdentityStore
 import dev.rivetos.bots.data.GatewayPool
 import dev.rivetos.bots.data.HttpFactory
+import dev.rivetos.bots.data.LanNetwork
 import dev.rivetos.bots.data.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,7 +17,8 @@ import kotlinx.coroutines.runBlocking
 class AppContainer(app: Application) {
     val settings = Settings(app)
     val identity = DeviceIdentityStore(app)
-    val http = HttpFactory(identity)
+    val lan = LanNetwork(app)
+    val http = HttpFactory(identity, lan)
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     @Volatile var strictHostnames: Boolean = true

@@ -105,7 +105,7 @@ class GatewayPool(private val http: HttpFactory, private val strict: () -> Boole
 
     @Synchronized
     fun get(baseUrl: String): Gateway {
-        val key = "${identity.generation()}:${strict()}"
+        val key = http.cacheKey(strict())
         val norm = baseUrl.trim().trimEnd('/')
         cache[norm]?.let { (k, g) -> if (k == key) return g }
         val g = Gateway(http.client(strict()), norm)

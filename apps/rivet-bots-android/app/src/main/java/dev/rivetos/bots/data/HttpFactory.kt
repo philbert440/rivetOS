@@ -11,7 +11,7 @@ import javax.net.ssl.SSLContext
  * material is available we fall back to the platform trust store (which will
  * reject a private Rivet CA — the UI surfaces that).
  */
-class HttpFactory(private val identity: DeviceIdentityStore) {
+class HttpFactory(private val identity: DeviceIdentityStore, private val lan: LanNetwork? = null) {
     @Volatile private var cached: OkHttpClient? = null
     @Volatile private var cachedKey: String = ""
 
@@ -24,8 +24,12 @@ class HttpFactory(private val identity: DeviceIdentityStore) {
     @Synchronized
     fun clear() { cached?.connectionPool?.evictAll(); cached = null; cachedKey = "" }
 
+    /** Part of every cache key: identity generation, TLS posture, and which LAN network sockets bind to. */
+    fun cacheKey(strictHostnames: Boolean): String =
+        "${identity.generation()}:$strictHostnames:${lan?.generation() ?: -1}"
+
     fun client(strictHostnames: Boolean): OkHttpClient {
-        val key = "${identity.generation()}:$strictHostnames"
+        val key = cacheKey(strictHostnames)
         cached?.let { if (cachedKey == key) return it }
         synchronized(this) {
             cached?.let { if (cachedKey == key) return it }
@@ -43,6 +47,9 @@ class HttpFactory(private val identity: DeviceIdentityStore) {
             .writeTimeout(Duration.ofSeconds(30))
             .pingInterval(Duration.ofSeconds(25))
             .retryOnConnectionFailure(true)
+        // Mesh nodes are LAN addresses: bind to WiFi/Ethernet when present, so a
+        // cellular default network (weak-WiFi demotion) can't black-hole them.
+        lan?.network?.let { b.socketFactory(it.socketFactory) }
         val loaded = identity.load()
         if (loaded == null && identity.hasIdentity()) {
             throw IllegalStateException("device certificate failed to load: ${identity.lastError ?: "unknown"}")
