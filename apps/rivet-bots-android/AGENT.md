@@ -78,12 +78,14 @@ all-sessions WS → Computer screen shows the (empty) room. Cold claude-cli spaw
 ## Gotchas
 
 - **Two network paths per gateway** (`HttpFactory.client(strict, bindLan)` → `Gateway.withClients`):
-  primary = the default network (Android routing, including an active VPN/WG), fallback = sockets bound
-  to the WiFi/Ethernet `Network`. HTTP calls retry once on the other path after a connect failure and the
-  gateway sticks to whichever worked; the WS alternates paths per reconnect attempt. Field-proven both
-  ways on the Pixel: a demoted-but-healthy WiFi needs the bind, while a flaky AP / not-yet-validated WiFi
-  makes the bound path a black hole and only the default path works. Clients re-key on identity/TLS/
-  network generation.
+  primary = the default network (Android routing, including an active VPN/WG), fallback = a
+  `LiveLanSocketFactory` that re-resolves `LanNetwork.current()` inside every `createSocket` (grok's
+  A/B proved a `Network.socketFactory` frozen onto a long-lived client dies with its netId on an
+  SSID/band hop — SYN-SENT, zero packets on the wire, while shell `nc` from the same phone works).
+  `current()` scans `allNetworks` preferring a WIFI/ETHERNET net that already holds a private IPv4.
+  HTTP calls retry once on the other path after a connect failure and the gateway sticks with the
+  winner; the WS alternates paths per reconnect attempt. Never cache a `Network` handle into anything
+  long-lived.
 
 - Don't hardcode mesh IPs anywhere in this tree (repo CI secret-scan + private-net rule); placeholders use 192.0.2.x.
 - `EncryptedSharedPreferences` is deprecated upstream but is what the sibling Hub app uses; swap for a
