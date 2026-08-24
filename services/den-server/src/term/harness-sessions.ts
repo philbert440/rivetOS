@@ -6,8 +6,9 @@
 //
 // Supports Claude Code (~/.claude/projects/<slug>/<id>.jsonl), grok Build
 // (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json), Hermes (a sqlite DB at
-// ~/.hermes/state.db) and Kimi Code
-// (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/). An unknown harness
+// ~/.hermes/state.db), Kimi Code
+// (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/) and DeepSeek
+// Harness (~/.dsh/sessions/<cwd-slug>/session-<uuid>/). An unknown harness
 // yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
@@ -684,6 +685,127 @@ function kimiSessionExists(id: string): boolean {
   return wdDirs.some((wd) => existsSync(join(root, wd, id)))
 }
 
+// ---- DeepSeek Harness: ~/.dsh/sessions/<cwd-slug>/session-<uuid>/ ----------
+
+/** ~/.dsh (respects DSH_HOME, which the CLI itself reads). */
+function dshHome(): string {
+  return process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+}
+
+function dshSessionsDir(): string {
+  return join(dshHome(), 'sessions')
+}
+
+/** dsh native ids are `session-<uuid>` — hyphen, not kimi's underscore. */
+const DSH_ID_PREFIX = 'session-'
+
+function dshSessionDir(id: string): string | undefined {
+  if (!id.startsWith(DSH_ID_PREFIX)) return undefined
+  const root = dshSessionsDir()
+  let slugs: string[]
+  try {
+    slugs = readdirSync(root)
+  } catch {
+    return undefined
+  }
+  for (const slug of slugs) {
+    const path = join(root, slug, id)
+    if (existsSync(path)) return path
+  }
+  return undefined
+}
+
+async function readDshSession(dir: string, id: string): Promise<HarnessSession | undefined> {
+  let mtime: number
+  let birth: number
+  try {
+    const st = await stat(dir)
+    if (!st.isDirectory()) return undefined
+    mtime = st.mtimeMs
+    birth = st.birthtimeMs || st.ctimeMs || st.mtimeMs
+  } catch {
+    return undefined
+  }
+  try {
+    const transcript = await stat(join(dir, 'session.jsonl.zstd'))
+    if (transcript.mtimeMs > mtime) mtime = transcript.mtimeMs
+  } catch {
+    /* dir exists before the transcript is flushed — still describable */
+  }
+  return {
+    id,
+    command: 'dsh',
+    // The zstd transcript is out-of-band capture's problem; the drawer
+    // label is the native id until a title source exists that we can read
+    // without pulling in a decompressor.
+    title: id,
+    updatedAt: Math.floor(mtime),
+    createdAt: Math.floor(birth),
+  }
+}
+
+async function listDshSessions(limit: number): Promise<HarnessSession[]> {
+  const root = dshSessionsDir()
+  let slugs: string[]
+  try {
+    slugs = await readdir(root)
+  } catch {
+    return []
+  }
+  const found: { id: string; path: string; mtime: number }[] = []
+  for (const slug of slugs) {
+    let entries: string[]
+    try {
+      entries = await readdir(join(root, slug))
+    } catch {
+      continue
+    }
+    for (const e of entries) {
+      if (!e.startsWith(DSH_ID_PREFIX)) continue
+      const path = join(root, slug, e)
+      try {
+        const st = await stat(path)
+        if (st.isDirectory()) found.push({ id: e, path, mtime: st.mtimeMs })
+      } catch {
+        /* vanished between readdir and stat */
+      }
+    }
+  }
+  found.sort((a, b) => b.mtime - a.mtime)
+  const out: HarnessSession[] = []
+  for (const f of found.slice(0, limit)) {
+    const row = await readDshSession(f.path, f.id)
+    if (row) out.push(row)
+  }
+  return out
+}
+
+/**
+ * Describe ONE dsh session by native id — the `deepseek-harness` driver's
+ * `getSession`, without paying a whole-store walk beyond finding the dir.
+ */
+export async function describeDshSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const dir = dshSessionDir(id)
+  if (!dir) return undefined
+  return readDshSession(dir, id)
+}
+
+/**
+ * dsh transcripts are `session.jsonl.zstd` — compressed, no in-process
+ * decompressor wired. Honest empty turns rather than a fake parse.
+ */
+export async function readDshTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const dir = dshSessionDir(id)
+  if (!dir) return { id, command: '', turns: [] }
+  return { id, command: 'dsh', turns: [] }
+}
+
+function dshSessionExists(id: string): boolean {
+  return dshSessionDir(id) !== undefined
+}
+
 /**
  * Does a harness already have an on-disk session with this id? Store existence
  * is the ground truth for choosing --resume (continue) vs --session-id (pin a
@@ -703,6 +825,7 @@ export function harnessSessionExists(command: string, id: string): boolean {
   if (!id || id.includes('/') || id.includes('..')) return false
   if (command === 'hermes') return hermesSessionExists(id) // sqlite lookup
   if (command === 'kimi') return kimiSessionExists(id) // session DIR under any workspace bucket
+  if (command === 'dsh') return dshSessionExists(id) // session DIR under any cwd-slug bucket
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -741,6 +864,7 @@ export async function listHarnessSessions(
   if (commands.includes('grok')) all.push(...(await listGrokSessions(limit)))
   if (commands.includes('hermes')) all.push(...listHermesSessions(limit))
   if (commands.includes('kimi')) all.push(...(await listKimiSessions(limit)))
+  if (commands.includes('dsh')) all.push(...(await listDshSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
@@ -1165,6 +1289,11 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     if (kimi.turns.length > 0) return { ...kimi, id }
   }
 
+  if (wants('dsh') && native.startsWith(DSH_ID_PREFIX)) {
+    const dsh = await readDshTranscript(native)
+    if (dsh.command === 'dsh') return { ...dsh, id }
+  }
+
   return { id, command: '', turns: [] }
 }
 
@@ -1408,6 +1537,10 @@ export async function readHarnessStoreAt(
       parsed.truncated,
     )
   }
+  if (ref.command === 'dsh') {
+    // zstd transcript — no decompressor in this process. Empty is honest.
+    return { id, command: 'dsh', turns: [] }
+  }
   // hermes reads by id rather than by path (one sqlite db holds every session)
   return { id, command: 'hermes', turns: readHermesTurns(denJoinKey(id)) }
 }
@@ -1415,7 +1548,7 @@ export async function readHarnessStoreAt(
 // ---- Store resolution for the transcript watcher ---------------------------
 
 export interface HarnessStoreRef {
-  command: 'claude' | 'grok' | 'hermes' | 'kimi'
+  command: 'claude' | 'grok' | 'hermes' | 'kimi' | 'dsh'
   /** The file to watch for changes (jsonl / chat_history / sqlite db). */
   path: string
 }
@@ -1449,6 +1582,10 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     const dir = kimiSessionDir(native)
     if (dir) return { command: 'kimi', path: join(dir, 'agents', 'main', 'wire.jsonl') }
   }
+  if (wants('dsh') && native.startsWith(DSH_ID_PREFIX)) {
+    const dir = dshSessionDir(native)
+    if (dir) return { command: 'dsh', path: join(dir, 'session.jsonl.zstd') }
+  }
   return undefined
 }
 
@@ -1460,6 +1597,7 @@ export function harnessStoreDirs(): string[] {
     grokSessionsDir(),
     join(hermesDbPath(), '..'),
     kimiSessionsDir(),
+    dshSessionsDir(),
   ]
   return candidates.filter((d) => existsSync(d))
 }

@@ -174,6 +174,7 @@ describe('term endpoints', () => {
     expect(body).toMatchObject({ enabled: true, default: 'claude', maxPtys: 4, active: 0 })
     expect(body.commands.map((c) => c.id).sort()).toEqual([
       'claude',
+      'dsh',
       'grok',
       'hermes',
       'kimi',

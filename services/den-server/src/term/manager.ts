@@ -201,6 +201,11 @@ const HARNESS_FLAGS: Record<string, { sessionFlag?: string; resumeFlag: string }
   // `-S, --session [id]` resumes an EXISTING session (an unknown id fails with
   // `Session "…" not found`) and there is no --session-id to pin a new one.
   kimi: { resumeFlag: '--session' },
+  // dsh (DeepSeek Harness) also mints its own id (`session-<uuid>` under
+  // ~/.dsh/sessions/). `--resume` is an APP flag after `--profile tui`, not a
+  // launcher pin — there is no --session-id. Fresh spawn: `dsh --profile tui`;
+  // reopen: `dsh --profile tui --resume <native-id>`.
+  dsh: { resumeFlag: '--resume' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:

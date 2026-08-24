@@ -85,6 +85,7 @@ const ROSTER_COMMAND: Record<HarnessId, string> = {
   'grok-build': 'grok',
   'kimi-code': 'kimi',
   hermes: 'hermes',
+  'deepseek-harness': 'dsh',
 }
 
 /** Native half of a canonical id; undefined when it doesn't parse. */

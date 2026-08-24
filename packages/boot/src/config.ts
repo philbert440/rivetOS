@@ -165,7 +165,7 @@ export interface TasksSection {
   eval?: TasksEvalSection
   /**
    * Per-harness settings for the `harness-session` executors, keyed by HARNESS
-   * id (`claude-code | grok-build | kimi-code | hermes`).
+   * id (`claude-code | grok-build | kimi-code | hermes | deepseek-harness`).
    *
    * Only harnesses whose executor reads it are affected; `claude-code` keeps
    * taking its binary from `providers.claude-cli` because the provider plugin
