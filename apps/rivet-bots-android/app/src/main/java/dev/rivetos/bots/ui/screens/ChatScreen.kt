@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.rivetos.bots.data.SessionMessage
 import dev.rivetos.bots.data.WsStatus
+import dev.rivetos.bots.data.visibleAssistantText
 import dev.rivetos.bots.domain.Bot
 import dev.rivetos.bots.ui.ChatViewModel
 import dev.rivetos.bots.ui.components.BotPill
@@ -197,7 +198,7 @@ private fun Bubble(m: SessionMessage) {
             modifier = Modifier.widthIn(max = 300.dp),
         ) {
             Text(
-                m.text.ifBlank { if (user) "" else "…" },
+                (if (user) m.text else visibleAssistantText(m.text)).ifBlank { if (user) "" else "…" },
                 color = if (user) cs.inverseOnSurface else cs.onSurface,
                 fontSize = 16.sp, lineHeight = 21.sp,
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),

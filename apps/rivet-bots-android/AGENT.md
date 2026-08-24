@@ -60,6 +60,13 @@ all-sessions WS → Computer screen shows the (empty) room. Cold claude-cli spaw
 - `GET /api/sessions` omits sessions with zero messages — expected; previews come from
   `/api/sessions/:id/messages` per bot.
 
+## Hermes reasoning box (2026-08-24)
+
+Hermes TUI paints `┌─ Reasoning ──┐` plus the thinking text into `assistant_response`.
+The den hook, gateway bridge, harness transcript read, and this app all strip it
+(`splitHermesReasoning` / `HermesReasoning.kt`). Live stream shows `Thinking…`; the
+bubble is the reply only. Already-stored boxed rows are cleaned on display.
+
 ## Open items / next
 
 1. **Physical-device smoke** (emulator pass is done): install the staged debug APK from the adb host,

@@ -91,6 +91,65 @@ const asText = (c) =>
           .join('')
       : ''
 
+// Keep in sync with packages/types/src/hermes-reasoning.ts — this hook is
+// copied to ~/.hermes/agent-hooks and cannot import the workspace package.
+const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g
+const HEADER = /^[\s]*[┌╭][─━\s]*\b(Reasoning|Thought|Thinking)\b/i
+const FOOTER = /^[\s]*[└╰][─━\s]+[┘╯][\s]*$/
+const BODY = /^[\s]*[│┃├┤]/
+
+function splitHermesReasoning(input) {
+  if (!input) return { reasoning: '', text: '' }
+  const lines = input.split(/\r?\n/)
+  const reasoning = []
+  const text = []
+  let i = 0
+  while (i < lines.length) {
+    const vis = lines[i].replace(ANSI, '')
+    if (!HEADER.test(vis)) {
+      text.push(lines[i])
+      i += 1
+      continue
+    }
+    const headerIdx = i
+    i += 1
+    let sawBox = false
+    let hasTerminator = false
+    while (i < lines.length) {
+      const v = lines[i].replace(ANSI, '')
+      if (FOOTER.test(v)) {
+        hasTerminator = true
+        i += 1
+        break
+      }
+      if (BODY.test(v)) {
+        sawBox = true
+        reasoning.push(v.replace(/^[\s]*[│┃├┤]\s?/, ''))
+        i += 1
+        continue
+      }
+      if (sawBox) {
+        reasoning.push(v)
+        i += 1
+        continue
+      }
+      if (!v.trim()) {
+        hasTerminator = true
+        i += 1
+        break
+      }
+      reasoning.push(v)
+      i += 1
+    }
+    if (!sawBox && !hasTerminator) {
+      text.push(lines[headerIdx])
+      for (const line of reasoning) text.push(line)
+      reasoning.length = 0
+    }
+  }
+  return { reasoning: reasoning.join('\n').trim(), text: text.join('\n').trim() }
+}
+
 async function main() {
   let raw = ''
   for await (const chunk of process.stdin) raw += chunk
@@ -180,10 +239,14 @@ async function main() {
       emit({ type: 'tool.end', tool: p.tool_name ?? undefined })
       break
     case 'post_llm_call': {
-      // the reply, straight from the payload — no transcript needed
+      // the reply, straight from the payload — no transcript needed.
+      // Hermes TUI still paints ┌─ Reasoning ──┐ into assistant_response;
+      // peel it off so Rivet Bot never shows the thinking box as chat.
       const reply = asText(extra.assistant_response ?? p.assistant_response ?? '')
+      const split = splitHermesReasoning(reply)
+      if (split.reasoning) emit({ type: 'thinking.delta', text: split.reasoning })
       emit({ type: 'thinking.end' })
-      if (reply.trim()) emit({ type: 'message.agent', text: reply })
+      if (split.text) emit({ type: 'message.agent', text: split.text })
       // post_llm_call fires ONCE per turn, after the tool loop produced the
       // final response (Hermes hooks docs) — so it IS the turn boundary. The
       // bridge commits the reply + emits done here, releasing RivetHub's send

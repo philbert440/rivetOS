@@ -78,7 +78,10 @@ class BotRepository(private val gateways: GatewayPool) {
     /** Last line of a bot's thread, or null when the node is unreachable / thread empty. */
     suspend fun preview(bot: Bot, sessionId: String): BotPreview? = withTimeoutOrNull(8_000) {
         runCatching { gateways.get(bot.denUrl).messages(sessionId) }.getOrNull()
-            ?.lastOrNull()?.let { BotPreview(it.text, it.ts, it.role) }
+            ?.lastOrNull()?.let {
+                val text = if (it.role == "assistant") visibleAssistantText(it.text) else it.text
+                BotPreview(text.ifBlank { "…" }, it.ts, it.role)
+            }
     }
 
     companion object {
