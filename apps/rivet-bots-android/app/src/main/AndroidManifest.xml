@@ -7,6 +7,7 @@
          beyond a connect timeout (SYN-SENT, zero packets on the wire). -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
+    <!-- Temporary: household noVNC desktop is plain HTTP. Flip usesCleartextTraffic back to false when that VM sits behind TLS. -->
     <application
         android:name=".BotsApp"
         android:allowBackup="false"
@@ -14,7 +15,7 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="false"
+        android:usesCleartextTraffic="true"
         android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.RivetBots">
         <activity

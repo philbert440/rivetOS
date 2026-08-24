@@ -26,6 +26,7 @@ data class Prefs(
     val sessionOverrides: Map<String, String> = emptyMap(),
     val lastSeen: Map<String, Long> = emptyMap(),
     val onboarded: Boolean = false,
+    val desktopUrl: String = "",
 )
 
 class Settings(context: Context) {
@@ -42,6 +43,7 @@ class Settings(context: Context) {
             sessionOverrides = decodeMap(p[SESSIONS]),
             lastSeen = decodeLongMap(p[LAST_SEEN]),
             onboarded = p[ONBOARDED] ?: false,
+            desktopUrl = p[DESKTOP_URL] ?: "",
         )
     }
 
@@ -73,6 +75,8 @@ class Settings(context: Context) {
         if ((cur[botId] ?: 0L) < ts) it[LAST_SEEN] = encodeLongMap(cur + (botId to ts))
     }
 
+    suspend fun setDesktopUrl(url: String) = ds.edit { it[DESKTOP_URL] = url.trim() }
+
     suspend fun clearAll() = ds.edit { it.clear() }
 
     companion object {
@@ -85,6 +89,7 @@ class Settings(context: Context) {
         private val SESSIONS = stringPreferencesKey("sessionOverrides")
         private val LAST_SEEN = stringPreferencesKey("lastSeen")
         private val ONBOARDED = booleanPreferencesKey("onboarded")
+        private val DESKTOP_URL = stringPreferencesKey("desktopUrl")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())

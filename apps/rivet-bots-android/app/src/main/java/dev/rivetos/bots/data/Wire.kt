@@ -151,3 +151,94 @@ fun parseDenFrame(text: String): DenFrame? {
     }
     return DenFrame.Event(type, el["session"]?.jsonPrimitive?.content ?: "")
 }
+
+// -- /api/terminal (den PTY surface; shapes from @rivetos/types gateway-api.ts) --
+
+@Serializable
+data class TermCommand(val id: String, val label: String = "", val room: Boolean = false)
+
+@Serializable
+data class TermConfigResponse(
+    val enabled: Boolean = false,
+    val default: String = "",
+    val maxPtys: Int = 0,
+    val active: Int = 0,
+    val commands: List<TermCommand> = emptyList(),
+)
+
+@Serializable
+data class TermSpawnRequest(
+    val command: String? = null,
+    val session: String? = null,
+    val resume: String? = null,
+    val cols: Int? = null,
+    val rows: Int? = null,
+)
+
+@Serializable
+data class TermSpawnResponse(
+    val id: String,
+    val denSession: String = "",
+    val command: String = "",
+    val pid: Int = 0,
+    val createdAt: Long = 0,
+)
+
+@Serializable
+data class PtyInfo(
+    val id: String,
+    val denSession: String = "",
+    val command: String = "",
+    val state: String = "running",
+    val pid: Int = 0,
+    val attached: Int = 0,
+    val exitCode: Int? = null,
+    val createdAt: Long = 0,
+    val lastOutputTs: Long? = null,
+    val cols: Int = 80,
+    val rows: Int = 24,
+)
+
+@Serializable
+data class TermListResponse(val ptys: List<PtyInfo> = emptyList())
+
+@Serializable
+data class TermHelloFrame(
+    val type: String = "hello",
+    val v: Int = 1,
+    val id: String = "",
+    val denSession: String = "",
+    val command: String = "",
+    val cols: Int = 80,
+    val rows: Int = 24,
+    val state: String = "running",
+    val exitCode: Int? = null,
+)
+
+@Serializable
+data class TermExitFrame(
+    val type: String = "exit",
+    val code: Int? = null,
+    val signal: String? = null,
+)
+
+@Serializable
+data class TermResizeFrame(val type: String = "resize", val cols: Int, val rows: Int)
+
+@Serializable
+data class TermKillFrame(val type: String = "kill")
+
+/** JSON text frames on WS /api/terminal/ws (binary frames are raw PTY bytes). */
+sealed interface TermFrame {
+    data class Hello(val frame: TermHelloFrame) : TermFrame
+    data class Exit(val frame: TermExitFrame) : TermFrame
+}
+
+fun parseTermFrame(text: String): TermFrame? {
+    val el = runCatching { wireJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return null
+    return when (el["type"]?.jsonPrimitive?.content) {
+        "hello" -> runCatching { TermFrame.Hello(wireJson.decodeFromJsonElement(TermHelloFrame.serializer(), el)) }.getOrNull()
+        "exit" -> runCatching { TermFrame.Exit(wireJson.decodeFromJsonElement(TermExitFrame.serializer(), el)) }.getOrNull()
+        else -> null
+    }
+}

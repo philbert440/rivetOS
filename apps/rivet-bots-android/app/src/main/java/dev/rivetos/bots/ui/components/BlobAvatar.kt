@@ -2,6 +2,7 @@ package dev.rivetos.bots.ui.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -18,12 +19,13 @@ import androidx.compose.ui.unit.Dp
 import dev.rivetos.bots.domain.BlobShape
 import dev.rivetos.bots.domain.BotLook
 import dev.rivetos.bots.ui.theme.Emerald
-import dev.rivetos.bots.ui.theme.InkDim
 import dev.rivetos.bots.ui.theme.Paper
 
 /**
  * A bot's face: a coloured silhouette with two white eye-marks, in the style
- * of the Grok Bot avatars. Deterministic per agent (see BotLooks).
+ * of the Grok Bot avatars. Deterministic per agent (see BotLooks). Silhouette
+ * colours and the white eyes are identity and never follow the theme; only the
+ * presence badge (page-coloured ring, grey offline dot) adapts.
  */
 @Composable
 fun BlobAvatar(
@@ -34,6 +36,8 @@ fun BlobAvatar(
     eyes: Boolean = true,
     online: Boolean? = null,
 ) {
+    val ring = MaterialTheme.colorScheme.background
+    val offline = MaterialTheme.colorScheme.onSurfaceVariant
     Canvas(modifier.size(size)) {
         val w = this.size.width
         val h = this.size.height
@@ -51,8 +55,8 @@ fun BlobAvatar(
         if (online != null) {
             val r = w * 0.14f
             val c = Offset(w - r * 1.1f, h - r * 1.1f)
-            drawCircle(Paper, r * 1.45f, c)
-            drawCircle(if (online) Emerald else InkDim, r, c)
+            drawCircle(ring, r * 1.45f, c)
+            drawCircle(if (online) Emerald else offline, r, c)
         }
     }
 }
