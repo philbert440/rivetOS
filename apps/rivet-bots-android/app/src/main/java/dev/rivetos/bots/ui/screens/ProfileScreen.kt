@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,10 +36,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.rivetos.bots.data.BotRepository
 import dev.rivetos.bots.domain.Bot
-import dev.rivetos.bots.domain.BotLooks
 import dev.rivetos.bots.ui.components.BlobAvatar
 import dev.rivetos.bots.ui.components.CircleIconButton
 import dev.rivetos.bots.ui.components.VSpace
+import dev.rivetos.bots.ui.rememberEffective
 
 @Composable
 fun ProfileScreen(
@@ -51,16 +52,22 @@ fun ProfileScreen(
     onComputer: () -> Unit,
     onTogglePin: () -> Unit,
     onToggleHide: () -> Unit,
+    onEdit: () -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
+    val shown = rememberEffective(bot)
     Column(Modifier.fillMaxSize().background(cs.background).systemBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
         VSpace(8)
-        CircleIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            CircleIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onEdit, modifier = Modifier.heightIn(min = 48.dp)) { Text("Edit") }
+        }
         VSpace(16)
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            BlobAvatar(BotLooks.forAgent(bot.agent), 96.dp, dimmed = !bot.online)
+            BlobAvatar(shown.look, 96.dp, dimmed = !bot.online)
             VSpace(14)
-            Text(bot.displayName, color = cs.onBackground, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+            Text(shown.displayName, color = cs.onBackground, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
             Text("on ${bot.nodeLabel}", color = cs.onSurfaceVariant, fontSize = 14.sp)
             VSpace(10)
             Row(

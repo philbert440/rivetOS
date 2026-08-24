@@ -19,12 +19,14 @@ app/src/main/java/dev/rivetos/bots/
   data/DeviceIdentity.kt  PKCS#12 store (filesDir) + passphrase vault (EncryptedSharedPreferences); KeyManager/TrustManager
   data/HttpFactory.kt   OkHttp client with device mTLS; strict-hostname toggle
   data/Gateway.kt       typed client: healthz/mesh/catalogAgents/sessions/messages/post/denState + reconnecting WS
-  data/Settings.kt      DataStore prefs: entryUrl, extraNodes, handle, strict, pinned, hidden, sessionOverrides, lastSeen
-  data/BotRepository.kt discover(entry, extras) → List<Bot>; preview(bot, sessionId)
+  data/Settings.kt      DataStore prefs: entryUrl, extraNodes, handle, strict, pinned, hidden, sessionOverrides, lastSeen, botEdits
+  data/BotEdit.kt       local name/color/shape override; Bot.effective(edit)
+  data/BotRepository.kt discover(entry, extras) → List<Bot>; preview; resolveSessionId; nodeSessions
+  data/SessionResolver.kt  first-open adopt + merge(/api/sessions + den names); Chat/Computer share it
   ui/HomeViewModel.kt   roster + previews + one all-sessions WS per online node; pin/hide/markSeen
-  ui/ChatViewModel.kt   thread + stream state machine (text/reasoning/tool_*/done), optimistic send, new conversation
-  ui/ComputerViewModel.kt den RoomState via state fetch + events WS (debounced refetch)
-  ui/screens/           SignIn, Enroll, Home, Chat, Computer, Profile, Settings
+  ui/ChatViewModel.kt   thread + stream state machine; first-open adopt; open(sid) follows override
+  ui/ComputerViewModel.kt Terminal-default; den + PTY; switchSession rebinds watches (no nav re-key)
+  ui/screens/           SignIn, Enroll, Home, Chat, Computer, Profile, EditBot, Settings
   ui/components/        BlobAvatar (Canvas faces), CircleIconButton, BotPill, PulsingDot, TimeFmt
 ```
 
@@ -67,6 +69,13 @@ The den hook, gateway bridge, harness transcript read, and this app all strip it
 (`splitHermesReasoning` / `HermesReasoning.kt`). Live stream shows `Thinking…`; the
 bubble is the reply only. Already-stored boxed rows are cleaned on display.
 
+## Entry node (datahub)
+
+The normal **entry URL** on Sign-in / Enroll is the **datahub gateway** (device
+setup + mesh roster). Discovery is `GET /api/mesh` on that entry, then each bot
+talks to its node's own `denUrl` for sessions / chat / den / terminal. Do not
+point the entry URL at a leaf node's chat gateway unless you mean to.
+
 ## Open items / next
 
 1. **Physical-device smoke** (emulator pass is done): install the staged debug APK from the adb host,
@@ -81,6 +90,10 @@ bubble is the reply only. Already-stored boxed rows are cleaned on display.
    identity parse errors surfaced, base-path-safe URLs, Computer never shows another room.
    Deferred from that round: markdown rendering, thinking transcript, approvals cards, CharArray
    passphrase plumbing, union-with-platform trust.
+8. **Desktop tab → remote-control client** (not built): replace the noVNC WebView
+   with a full RDP/VNC client (pointer, keyboard, clipboard) and **session
+   capture for teaching skills via the UI** — record the interaction and turn it
+   into skill artifacts. Roadmap only.
 
 ## Gotchas
 
@@ -98,11 +111,43 @@ bubble is the reply only. Already-stored boxed rows are cleaned on display.
 - `EncryptedSharedPreferences` is deprecated upstream but is what the sibling Hub app uses; swap for a
   Keystore-wrapped blob when androidx ships the replacement.
 - Session ids must not contain `:` (the gateway treats `harness:…` as a canonical SessionId).
+- ComputerViewModel.openDirtyWatch holds a node-wide `/api/sessions/ws` (null
+  session filter) for `sessions-dirty` while Computer is open. HomeViewModel
+  already has one all-sessions WS per online node, and it stays alive under
+  Computer. That is two reconnecting sockets per node (three with Chat's
+  per-session watch). Accepted: store scoping makes reuse messy; do not
+  restructure the watchers.
 
-## Computer tabs (Activity / Terminal / Desktop) — 2026-08-24
+## Computer tabs (Terminal / Activity / Desktop) — 2026-08-24
 
 `ComputerScreen` is three tabs. Public entry is unchanged: `ComputerScreen(vm, bot, onBack, onProfile)`.
+Default tab is **Terminal** (`ComputerTab` order is Terminal, Activity, Desktop).
+`ensureTerm()` runs from `selectTab`, from init after the session is adopted, and
+from a `LaunchedEffect` keyed on `sessionReady` so a first composition already
+on Terminal still attaches.
 
-- **Activity** — existing den RoomState body (bezel + plan + den `term` tail + last said).
 - **Terminal** — spawn-or-get `POST /api/terminal` with `{session, cols, rows}` then attach `WS /api/terminal/ws?id=`. Query params verified in den-server `term/ws.ts`: `id` or `session`. Framing: JSON hello → one binary scrollback → live binary → JSON exit. Client sends binary keystrokes and JSON `{type:resize}`; never `{type:kill}` (detach on leave). Dual-path mTLS via `TermWs` (`data/TermClient.kt`) using `Gateway.clients()`. Pure-Kotlin VT in `ui/term/AnsiTerminal.kt` (SGR 16/256/truecolor + bold, CR/LF/BS/TAB, ED/EL, CUP/CUU/CUD/CUF/CUB). OSC 10/11/12 color queries stripped; reports never forwarded. 5k-line scrollback, pinch font, tap IME, Esc/Tab/Ctrl+C/arrows.
-- **Desktop** — `Prefs.desktopUrl` (`Settings.setDesktopUrl`). Unset → inline field, placeholder `http://192.0.2.30:6080/vnc.html`. WebView (JS, wide viewport) stays composed at full size under the other tabs so noVNC survives switches; navigation locked to that host. Manifest `usesCleartextTraffic=true` is temporary until the desktop is behind TLS.
+- **Activity** — den RoomState body (bezel + plan + den `term` tail + last said) plus the **node session list** (`GET /api/sessions`, den snapshot names overlaid). Tapping a row or **New session** persists `setSessionOverride` and `ComputerViewModel.switchSession` rebinds den + PTY. List refreshes on Activity select, ON_RESUME, `sessions-dirty`, and den events.
+- **Desktop** — `Prefs.desktopUrl` (`Settings.setDesktopUrl`). Unset → inline field, placeholder `http://192.0.2.30:6080/vnc.html`. WebView (JS, wide viewport) stays composed at full size under the other tabs so noVNC survives switches; navigation locked to that host. Manifest `usesCleartextTraffic=true` is temporary until the desktop is behind TLS. Destined to become a native RDP/VNC client with session capture (roadmap #8); not built.
+
+## Session-first Computer (phase 3)
+
+A bot with no override used to mint `rivetbots-<tag>-<node>-<agent>` and spawn a
+brand-new PTY. Chat and Computer now share `BotRepository.resolveSessionId` →
+`SessionResolver.adopt`: override wins; else most-recent `GET /api/sessions`
+row (persist it); else mint, persist only when the node really returned an
+empty list. Failed fetch does not persist, so the next open retries.
+
+`switchSession` (not a nav storeKey change) is how selection rewires Computer:
+the public composable signature stays the same, and one VM owns close/reset/reopen
+of the den watch, TermWs, and AnsiScreen. Chat follows the new override via
+`MainActivity` `LaunchedEffect(override)` → `ChatViewModel.open(sid)` when the
+user returns to the thread.
+
+## Bot edits (local, 2026-08-24)
+
+Display name + blob color/shape are device-local (`Prefs.botEdits`, keyed by
+`bot.id`). No gateway API. `Bot.effective(edit)` is the one lookup; Compose
+reads `LocalBotEdits` so Home / Chat / Computer / Profile / BotPill stay in
+sync after save. Profile → Edit. Renames do not change `bot.id` or
+`defaultSessionId`.

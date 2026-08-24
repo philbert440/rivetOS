@@ -60,6 +60,7 @@ import dev.rivetos.bots.data.visibleAssistantText
 import dev.rivetos.bots.domain.Bot
 import dev.rivetos.bots.ui.ChatViewModel
 import dev.rivetos.bots.ui.components.BotPill
+import dev.rivetos.bots.ui.rememberEffective
 import dev.rivetos.bots.ui.components.CircleIconButton
 import dev.rivetos.bots.ui.components.PulsingDot
 import dev.rivetos.bots.ui.components.TimeFmt
@@ -73,6 +74,7 @@ fun ChatScreen(
     onComputer: () -> Unit,
 ) {
     val s by vm.state.collectAsState()
+    val shown = rememberEffective(bot)
     var draft by remember(s.sessionId) { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
@@ -150,7 +152,7 @@ fun ChatScreen(
             if (s.messages.isEmpty() && s.pendingText.isEmpty() && s.working == null && s.error == null && !s.loading) {
                 item(key = "empty") {
                     Text(
-                        "Say hello to ${bot.displayName}.",
+                        "Say hello to ${shown.displayName}.",
                         color = cs.onSurfaceVariant, fontSize = 14.sp,
                         modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp), textAlign = TextAlign.Center,
                     )
@@ -176,7 +178,7 @@ fun ChatScreen(
         }
 
         Composer(
-            placeholder = "Ask ${bot.displayName}",
+            placeholder = "Ask ${shown.displayName}",
             value = draft,
             onValue = { draft = it },
             onSend = { val t = draft; draft = ""; stick = true; vm.send(t) },

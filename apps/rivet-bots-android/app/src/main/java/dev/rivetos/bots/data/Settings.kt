@@ -27,6 +27,7 @@ data class Prefs(
     val lastSeen: Map<String, Long> = emptyMap(),
     val onboarded: Boolean = false,
     val desktopUrl: String = "",
+    val botEdits: Map<String, BotEdit> = emptyMap(),
 )
 
 class Settings(context: Context) {
@@ -44,6 +45,7 @@ class Settings(context: Context) {
             lastSeen = decodeLongMap(p[LAST_SEEN]),
             onboarded = p[ONBOARDED] ?: false,
             desktopUrl = p[DESKTOP_URL] ?: "",
+            botEdits = decodeEdits(p[BOT_EDITS]),
         )
     }
 
@@ -77,6 +79,13 @@ class Settings(context: Context) {
 
     suspend fun setDesktopUrl(url: String) = ds.edit { it[DESKTOP_URL] = url.trim() }
 
+    suspend fun setBotEdit(botId: String, edit: BotEdit) = ds.edit {
+        it[BOT_EDITS] = encodeEdits(decodeEdits(it[BOT_EDITS]) + (botId to edit))
+    }
+    suspend fun clearBotEdit(botId: String) = ds.edit {
+        it[BOT_EDITS] = encodeEdits(decodeEdits(it[BOT_EDITS]) - botId)
+    }
+
     suspend fun clearAll() = ds.edit { it.clear() }
 
     companion object {
@@ -90,14 +99,19 @@ class Settings(context: Context) {
         private val LAST_SEEN = stringPreferencesKey("lastSeen")
         private val ONBOARDED = booleanPreferencesKey("onboarded")
         private val DESKTOP_URL = stringPreferencesKey("desktopUrl")
+        private val BOT_EDITS = stringPreferencesKey("botEdits")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())
+        private val editMapSer = MapSerializer(String.serializer(), BotEdit.serializer())
         private fun decodeMap(s: String?): Map<String, String> =
             s?.let { runCatching { wireJson.decodeFromString(mapSer, it) }.getOrNull() } ?: emptyMap()
         private fun encodeMap(m: Map<String, String>): String = wireJson.encodeToString(mapSer, m)
         private fun decodeLongMap(s: String?): Map<String, Long> =
             s?.let { runCatching { wireJson.decodeFromString(longMapSer, it) }.getOrNull() } ?: emptyMap()
         private fun encodeLongMap(m: Map<String, Long>): String = wireJson.encodeToString(longMapSer, m)
+        private fun decodeEdits(s: String?): Map<String, BotEdit> =
+            s?.let { runCatching { wireJson.decodeFromString(editMapSer, it) }.getOrNull() } ?: emptyMap()
+        private fun encodeEdits(m: Map<String, BotEdit>): String = wireJson.encodeToString(editMapSer, m)
     }
 }

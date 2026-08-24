@@ -3,24 +3,28 @@ package dev.rivetos.bots.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.rivetos.bots.AppContainer
+import dev.rivetos.bots.data.BotEdit
 import dev.rivetos.bots.data.BotRepository
 import dev.rivetos.bots.data.SessionFrame
 import dev.rivetos.bots.data.SessionMessage
+import dev.rivetos.bots.data.SessionResolver
 import dev.rivetos.bots.data.WsStatus
+import dev.rivetos.bots.data.effective
 import dev.rivetos.bots.data.splitHermesReasoning
 import dev.rivetos.bots.data.visibleAssistantText
 import dev.rivetos.bots.domain.Bot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.Closeable
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 import java.util.UUID
+import kotlin.coroutines.cancellation.CancellationException
+import kotlin.coroutines.coroutineContext
 
 /** One bot thread. [initialSessionId] comes from the persisted prefs the caller already holds. */
 class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId: String) : ViewModel() {
@@ -52,8 +56,38 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
     private var workingTimer: Job? = null
     private var fetchJob: Job? = null
     @Volatile private var everOpen = false
+    @Volatile private var botEdits: Map<String, BotEdit> = emptyMap()
 
-    init { open(initialSessionId) }
+    init {
+        viewModelScope.launch { c.settings.prefs.collect { botEdits = it.botEdits } }
+        viewModelScope.launch { adoptThenOpen(initialSessionId) }
+    }
+
+    private fun shownName(): String = bot.effective(botEdits[bot.id]).displayName
+
+    private suspend fun adoptThenOpen(hint: String) {
+        val prefs = c.settings.snapshot()
+        val minted = bot.defaultSessionId(c.identity.deviceTag())
+        val pick = try {
+            c.bots.resolveSessionId(bot, prefs.sessionOverrides[bot.id], minted)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            coroutineContext.ensureActive()
+            open(prefs.sessionOverrides[bot.id] ?: hint)
+            return
+        }
+        coroutineContext.ensureActive()
+        // A New conversation tap during the fetch already wrote an override — keep it.
+        val now = c.settings.snapshot().sessionOverrides[bot.id]
+        if (!now.isNullOrBlank() && now != prefs.sessionOverrides[bot.id]) {
+            open(now)
+            return
+        }
+        if (pick.persist) c.settings.setSessionOverride(bot.id, pick.id)
+        coroutineContext.ensureActive()
+        open(pick.id)
+    }
 
     /** The node's gateway, or null (with the error surfaced) when the device identity won't load. */
     private fun gateway(): dev.rivetos.bots.data.Gateway? = try {
@@ -63,7 +97,8 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         null
     }
 
-    private fun open(sessionId: String) {
+    fun open(sessionId: String) {
+        if (sessionId == _state.value.sessionId && watch != null) return
         watch?.close()
         doneTimer?.cancel(); workingTimer?.cancel(); fetchJob?.cancel()
         everOpen = false
@@ -215,7 +250,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         doneTimer?.cancel() // a promoter still pending from the previous turn must not touch this one's stream
         val now = System.currentTimeMillis()
         val local = SessionMessage(id = "local-${UUID.randomUUID()}", sessionId = sid, role = "user", text = t, ts = now)
-        _state.update { it.copy(messages = it.messages + local, error = null, working = "${bot.displayName} is working…", inFlight = true, turnText = t) }
+        _state.update { it.copy(messages = it.messages + local, error = null, working = "${shownName()} is working…", inFlight = true, turnText = t) }
         viewModelScope.launch {
             try {
                 val p = c.settings.snapshot()
@@ -244,7 +279,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
             fetch(sid).join() // the reply may have committed while the socket was down
             _state.update { s ->
                 if (!s.inFlight) s
-                else s.copy(working = null, inFlight = false, error = "${bot.displayName} went quiet for ${WORKING_TIMEOUT_MS / 60_000} min. Try again.")
+                else s.copy(working = null, inFlight = false, error = "${shownName()} went quiet for ${WORKING_TIMEOUT_MS / 60_000} min. Try again.")
             }
         }
     }
@@ -253,8 +288,11 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
 
     /** Start a fresh thread with this bot (old one stays on the node). */
     fun newConversation() {
-        val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
-        val sid = bot.defaultSessionId(c.identity.deviceTag()) + "-" + stamp + "-" + UUID.randomUUID().toString().take(4)
+        val sid = SessionResolver.newSessionId(
+            bot.defaultSessionId(c.identity.deviceTag()),
+            SessionResolver.newStamp(),
+            UUID.randomUUID().toString().take(4),
+        )
         viewModelScope.launch {
             c.settings.setSessionOverride(bot.id, sid) // persisted before anything else keys on it
             open(sid)

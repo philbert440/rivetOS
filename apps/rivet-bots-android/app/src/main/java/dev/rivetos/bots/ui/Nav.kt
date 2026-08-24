@@ -10,10 +10,11 @@ sealed interface Screen {
     data class Chat(val bot: Bot) : Screen
     data class Computer(val bot: Bot, val sessionId: String) : Screen
     data class Profile(val bot: Bot) : Screen
+    data class EditBot(val bot: Bot) : Screen
     data object Settings : Screen
 }
 
-/** Hand-rolled back stack — six screens don't justify a navigation library. */
+/** Hand-rolled back stack — a handful of screens don't justify a navigation library. */
 class Nav(start: Screen) {
     val stack = mutableStateListOf<Screen>(start)
     val current: Screen get() = stack.last()
