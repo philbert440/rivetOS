@@ -49,7 +49,7 @@ class HttpFactory(private val identity: DeviceIdentityStore, private val lan: La
             .retryOnConnectionFailure(true)
         // Mesh nodes are LAN addresses: bind to WiFi/Ethernet when present, so a
         // cellular default network (weak-WiFi demotion) can't black-hole them.
-        lan?.network?.let { b.socketFactory(it.socketFactory) }
+        lan?.current()?.let { b.socketFactory(it.socketFactory) }
         val loaded = identity.load()
         if (loaded == null && identity.hasIdentity()) {
             throw IllegalStateException("device certificate failed to load: ${identity.lastError ?: "unknown"}")
