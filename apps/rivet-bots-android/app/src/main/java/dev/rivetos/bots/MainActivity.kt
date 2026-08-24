@@ -32,7 +32,6 @@ import dev.rivetos.bots.ui.screens.HomeScreen
 import dev.rivetos.bots.ui.screens.ProfileScreen
 import dev.rivetos.bots.ui.screens.SettingsScreen
 import dev.rivetos.bots.ui.screens.SignInScreen
-import dev.rivetos.bots.ui.theme.Paper
 import dev.rivetos.bots.ui.theme.RivetBotsTheme
 
 class MainActivity : ComponentActivity() {
@@ -89,7 +88,7 @@ fun App(c: AppContainer) {
     val prefs by c.settings.prefs.collectAsState(initial = null)
     val p = prefs
     if (p == null) {
-        Box(Modifier.fillMaxSize().background(Paper))
+        Box(Modifier.fillMaxSize().background(androidx.compose.material3.MaterialTheme.colorScheme.background))
         return
     }
     val nav = remember {

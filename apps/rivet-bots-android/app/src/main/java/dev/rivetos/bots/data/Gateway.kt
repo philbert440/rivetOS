@@ -130,6 +130,54 @@ class Gateway(
             parseDenFrame(text)?.let(onFrame)
         }
 
+    suspend fun termConfig(): TermConfigResponse =
+        get(listOf("api", "terminal", "config"), TermConfigResponse.serializer())
+
+    suspend fun termList(): TermListResponse =
+        get(listOf("api", "terminal", "list"), TermListResponse.serializer())
+
+    /**
+     * Spawn-or-get a PTY. Passing [session] joins it to this conversation
+     * (chat / den / terminal = three views of one session).
+     */
+    suspend fun termSpawn(session: String, cols: Int, rows: Int, command: String? = null): TermSpawnResponse =
+        withContext(Dispatchers.IO) {
+            val body = wireJson.encodeToString(
+                TermSpawnRequest.serializer(),
+                TermSpawnRequest(
+                    command = command,
+                    session = session,
+                    cols = cols.coerceIn(20, 500),
+                    rows = rows.coerceIn(5, 200),
+                ),
+            ).toRequestBody("application/json".toMediaType())
+            val req = Request.Builder().url(url(listOf("api", "terminal"))).post(body).build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                    wireJson.decodeFromString(TermSpawnResponse.serializer(), text)
+                }
+            }
+        }
+
+    /**
+     * Attach to a PTY. den-server accepts `?id=` or `?session=` (verified in
+     * term/ws.ts handleUpgrade). Prefer [ptyId] after a spawn so we do not
+     * race a missing session mapping.
+     */
+    fun watchTerm(
+        ptyId: String?,
+        sessionId: String? = null,
+        onText: (String) -> Unit,
+        onBinary: (ByteArray) -> Unit,
+        onStatus: (WsStatus) -> Unit = {},
+    ): TermWs = TermWs(
+        clients(),
+        url(listOf("api", "terminal", "ws"), mapOf("id" to ptyId, "session" to sessionId)).toString(),
+        onStatus, onText, onBinary,
+    )
+
 }
 
 enum class WsStatus { CONNECTING, OPEN, CLOSED }

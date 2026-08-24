@@ -11,11 +11,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,28 +32,29 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.rivetos.bots.domain.Bot
 import dev.rivetos.bots.domain.BotLooks
-import dev.rivetos.bots.ui.theme.Emerald
-import dev.rivetos.bots.ui.theme.Ink
-import dev.rivetos.bots.ui.theme.Panel
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-/** 40dp round grey button — the Grok Bot header/action affordance. */
+/**
+ * 40dp round grey button — the Grok Bot header/action affordance.
+ * Visual size stays compact; the hit area is padded to the 48dp minimum.
+ */
 @Composable
 fun CircleIconButton(
     icon: ImageVector,
     contentDescription: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    background: Color = Panel,
-    tint: Color = Ink,
+    background: Color = MaterialTheme.colorScheme.surfaceVariant,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
     size: Int = 40,
 ) {
     Box(
         modifier
+            .minimumInteractiveComponentSize()
             .size(size.dp)
             .clip(CircleShape)
             .background(background)
@@ -62,13 +65,14 @@ fun CircleIconButton(
     }
 }
 
-/** Header pill: tiny face + bot name, tappable → profile. */
+/** Header pill: tiny face + bot name, tappable → profile. `dark` pins the Computer room's always-dark look. */
 @Composable
 fun BotPill(bot: Bot, onClick: () -> Unit, dark: Boolean = false) {
     Row(
         Modifier
+            .minimumInteractiveComponentSize()
             .clip(CircleShape)
-            .background(if (dark) Color(0xFF26262A) else Panel)
+            .background(if (dark) Color(0xFF26262A) else MaterialTheme.colorScheme.surfaceVariant)
             .clickable(onClick = onClick)
             .padding(start = 8.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -77,7 +81,7 @@ fun BotPill(bot: Bot, onClick: () -> Unit, dark: Boolean = false) {
         Spacer(Modifier.width(8.dp))
         Text(
             bot.displayName,
-            color = if (dark) Color.White else Ink,
+            color = if (dark) Color.White else MaterialTheme.colorScheme.onSurface,
             fontSize = 15.sp,
             fontWeight = FontWeight.Medium,
         )
@@ -85,7 +89,7 @@ fun BotPill(bot: Bot, onClick: () -> Unit, dark: Boolean = false) {
 }
 
 @Composable
-fun PulsingDot(color: Color = Emerald, size: Int = 8) {
+fun PulsingDot(color: Color = MaterialTheme.colorScheme.tertiary, size: Int = 8) {
     val t = rememberInfiniteTransition(label = "pulse")
     val a by t.animateFloat(
         initialValue = 0.35f, targetValue = 1f,

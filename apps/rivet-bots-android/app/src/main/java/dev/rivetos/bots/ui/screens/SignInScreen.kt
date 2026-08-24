@@ -9,11 +9,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -28,9 +30,6 @@ import dev.rivetos.bots.domain.BotLook
 import dev.rivetos.bots.domain.BotLooks
 import dev.rivetos.bots.ui.components.BlobAvatar
 import dev.rivetos.bots.ui.components.VSpace
-import dev.rivetos.bots.ui.theme.Ink
-import dev.rivetos.bots.ui.theme.InkDim
-import dev.rivetos.bots.ui.theme.Paper
 
 private data class Floater(val agent: String, val x: Float, val y: Float, val size: Int, val phase: Int)
 
@@ -44,7 +43,7 @@ private val floaters = listOf(
     Floater("opus", 0.66f, 0.84f, 44, 6),
 )
 
-/** First-run splash: floating bot faces, name, one black pill. */
+/** First-run splash: floating bot faces, name, one inverted pill. */
 @Composable
 fun SignInScreen(onJoin: () -> Unit) {
     val t = rememberInfiniteTransition(label = "float")
@@ -52,7 +51,8 @@ fun SignInScreen(onJoin: () -> Unit) {
         initialValue = -6f, targetValue = 6f,
         animationSpec = infiniteRepeatable(tween(2600), RepeatMode.Reverse), label = "drift",
     )
-    BoxWithConstraints(Modifier.fillMaxSize().background(Paper)) {
+    val c = MaterialTheme.colorScheme
+    BoxWithConstraints(Modifier.fillMaxSize().background(c.background)) {
         val w = maxWidth; val h = maxHeight
         floaters.forEach { f ->
             val dir = if (f.phase % 2 == 0) 1f else -1f
@@ -62,17 +62,18 @@ fun SignInScreen(onJoin: () -> Unit) {
             )
         }
         Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Rivet Bots", color = Ink, fontSize = 34.sp, fontWeight = FontWeight.SemiBold)
+            Text("Rivet Bots", color = c.onBackground, fontSize = 34.sp, fontWeight = FontWeight.SemiBold)
             VSpace(8)
             Text(
                 "Your mesh of always-on\nagents that finish the work.",
-                color = InkDim, fontSize = 15.sp, textAlign = TextAlign.Center, lineHeight = 20.sp,
+                color = c.onSurfaceVariant, fontSize = 15.sp, textAlign = TextAlign.Center, lineHeight = 20.sp,
             )
             VSpace(22)
             Button(
                 onClick = onJoin,
                 shape = CircleShape,
-                colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Paper),
+                colors = ButtonDefaults.buttonColors(containerColor = c.inverseSurface, contentColor = c.inverseOnSurface),
+                modifier = Modifier.heightIn(min = 48.dp),
             ) { Text("Join mesh →", fontSize = 15.sp, fontWeight = FontWeight.Medium) }
         }
     }
