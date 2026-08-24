@@ -7,6 +7,8 @@ import dev.rivetos.bots.data.BotRepository
 import dev.rivetos.bots.data.SessionFrame
 import dev.rivetos.bots.data.SessionMessage
 import dev.rivetos.bots.data.WsStatus
+import dev.rivetos.bots.data.splitHermesReasoning
+import dev.rivetos.bots.data.visibleAssistantText
 import dev.rivetos.bots.domain.Bot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -26,6 +28,8 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         val sessionId: String,
         val messages: List<SessionMessage> = emptyList(),
         val pendingText: String = "",
+        /** Unsplit stream buffer so a Hermes box that arrives in chunks is peeled as a whole. */
+        val pendingRaw: String = "",
         val working: String? = null,
         val ws: WsStatus = WsStatus.CONNECTING,
         val error: String? = null,
@@ -88,20 +92,22 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
      */
     private fun fetch(sessionId: String): Job = viewModelScope.launch {
         try {
-            val msgs = (gateway() ?: return@launch).messages(sessionId)
+            val raw = (gateway() ?: return@launch).messages(sessionId)
+            val msgs = raw.map { sanitizeMessage(it) }.filter { it.role != "assistant" || it.text.isNotBlank() || !it.tools.isNullOrEmpty() }
             if (_state.value.sessionId != sessionId) return@launch
             var closed = false
             _state.update { s ->
                 val known = s.messages.map { it.id }.toHashSet()
                 val merged = mergeTranscript(msgs, s.messages)
-                val mine = msgs.indexOfLast { it.role == "user" && it.text == s.turnText }
+                val mine = raw.indexOfLast { it.role == "user" && it.text == s.turnText }
                 val replied = s.inFlight && mine >= 0 &&
-                    msgs.drop(mine + 1).any { it.role == "assistant" && it.id !in known } &&
-                    msgs.lastOrNull()?.role == "assistant"
+                    raw.drop(mine + 1).any { it.role == "assistant" && it.id !in known } &&
+                    raw.lastOrNull()?.role == "assistant"
                 closed = replied
                 s.copy(
                     messages = merged, loading = false,
                     pendingText = if (replied) "" else s.pendingText,
+                    pendingRaw = if (replied) "" else s.pendingRaw,
                     working = if (replied) null else s.working,
                     inFlight = if (replied) false else s.inFlight,
                     // Historical rows are not "this turn's reply" — seq moves only when we accept one.
@@ -120,8 +126,14 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         if (_state.value.sessionId != sessionId) return
         when (f) {
             is SessionFrame.Message -> {
-                val m = f.message
+                val incoming = f.message
+                val m = if (incoming.role == "assistant") incoming.copy(text = visibleAssistantText(incoming.text)) else incoming
                 if (m.sessionId.isNotBlank() && m.sessionId != sessionId) return
+                if (m.role == "assistant" && m.text.isBlank() && m.tools.isNullOrEmpty()) {
+                    doneTimer?.cancel(); workingTimer?.cancel()
+                    _state.update { it.copy(pendingText = "", pendingRaw = "", working = null, inFlight = false, assistantSeq = it.assistantSeq + 1) }
+                    return
+                }
                 _state.update { s ->
                     if (s.messages.any { it.id == m.id }) return@update s
                     // Drop ONE optimistic echo / promoted row that this committed row confirms.
@@ -131,6 +143,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
                     s.copy(
                         messages = list + m,
                         pendingText = if (assistant) "" else s.pendingText,
+                        pendingRaw = if (assistant) "" else s.pendingRaw,
                         working = if (assistant) null else s.working,
                         inFlight = if (assistant) false else s.inFlight,
                         assistantSeq = if (assistant) s.assistantSeq + 1 else s.assistantSeq,
@@ -152,12 +165,20 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
     private fun onStream(e: SessionFrame.Stream) {
         if (e.type != "done" && e.type != "error") armWorkingTimeout(_state.value.sessionId) // liveness: any frame resets the idle deadline
         when (e.type) {
-            "text" -> _state.update { it.copy(pendingText = it.pendingText + e.content, working = null) }
+            "text" -> _state.update {
+                val raw = it.pendingRaw + e.content
+                val split = splitHermesReasoning(raw)
+                it.copy(
+                    pendingRaw = raw,
+                    pendingText = split.text,
+                    working = if (split.reasoning.isNotEmpty()) "Thinking…" else null,
+                )
+            }
             "reasoning" -> _state.update { it.copy(working = "Thinking…") }
             "tool_start" -> _state.update { it.copy(working = "Using ${e.content.ifBlank { "a tool" }}") }
             "tool_result" -> _state.update { it.copy(working = "Working…") }
             "status" -> _state.update { it.copy(working = e.content.ifBlank { it.working }) }
-            "error" -> { workingTimer?.cancel(); doneTimer?.cancel(); _state.update { it.copy(error = e.content, working = null, inFlight = false, pendingText = "") } }
+            "error" -> { workingTimer?.cancel(); doneTimer?.cancel(); _state.update { it.copy(error = e.content, working = null, inFlight = false, pendingText = "", pendingRaw = "") } }
             "done" -> {
                 workingTimer?.cancel()
                 _state.update { it.copy(working = null) }
@@ -170,14 +191,14 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
                     delay(1500)
                     _state.update { s ->
                         when {
-                            s.assistantSeq != seqAtDone -> s.copy(pendingText = "", inFlight = false) // the real row landed
-                            s.pendingText.isBlank() -> s.copy(inFlight = false)   // empty turn (tool-only) — release the composer
+                            s.assistantSeq != seqAtDone -> s.copy(pendingText = "", pendingRaw = "", inFlight = false) // the real row landed
+                            s.pendingText.isBlank() -> s.copy(inFlight = false, pendingRaw = "")   // empty turn (tool-only) — release the composer
                             else -> s.copy(
                                 messages = s.messages + SessionMessage(
                                     id = "stream-${UUID.randomUUID()}", sessionId = s.sessionId,
                                     role = "assistant", text = s.pendingText, ts = System.currentTimeMillis(),
                                 ),
-                                pendingText = "", inFlight = false, assistantSeq = s.assistantSeq + 1,
+                                pendingText = "", pendingRaw = "", inFlight = false, assistantSeq = s.assistantSeq + 1,
                             )
                         }
                     }
@@ -244,6 +265,9 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
 
     companion object { const val WORKING_TIMEOUT_MS = 3 * 60_000L }
 }
+
+internal fun sanitizeMessage(m: SessionMessage): SessionMessage =
+    if (m.role == "assistant") m.copy(text = visibleAssistantText(m.text)) else m
 
 /**
  * Server transcript wins. Live rows survive only if the server hasn't got them

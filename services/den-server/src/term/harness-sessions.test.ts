@@ -11,6 +11,7 @@ import {
   harnessSessionExists,
   readGrokTranscript,
   readHarnessTranscript,
+  readHermesTranscript,
   readKimiTranscript,
   resolveHarnessStore,
   setTranscriptMaxBytesForTest,
@@ -289,6 +290,37 @@ describe('listHarnessSessions', () => {
     expect(sessions[0].command).toBe('hermes')
     expect(harnessSessionExists('hermes', 'sess_a')).toBe(true)
     expect(harnessSessionExists('hermes', 'nope')).toBe(false)
+    delete process.env.HERMES_HOME
+  })
+
+  it('strips a Hermes Reasoning box from the sqlite transcript', async () => {
+    let DatabaseSync: (new (p: string) => { exec(sql: string): void; close(): void }) | undefined
+    try {
+      ;({ DatabaseSync } = await import('node:sqlite'))
+    } catch {
+      return
+    }
+    const base = mkdtempSync(join(tmpdir(), 'hermes-box-'))
+    dirs.push(base)
+    const boxed = [
+      '┌─ Reasoning ──────────────────────────────────────────────────────────────────────────────────────┐',
+      '│ thinking about the leak',
+      '└──────────────────────────────────────────────────────────────────────────────────────────────────┘',
+      '',
+      'The reply.',
+    ].join('\n').replace(/'/g, "''")
+    const db = new DatabaseSync(join(base, 'state.db'))
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER);
+      CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT, timestamp INTEGER);
+      INSERT INTO sessions VALUES ('sess_box', 1000, 2000);
+      INSERT INTO messages VALUES ('sess_box','user','hi',1000);
+      INSERT INTO messages VALUES ('sess_box','assistant','${boxed}',1001);
+    `)
+    db.close()
+    process.env.HERMES_HOME = base
+    const tx = await readHermesTranscript('sess_box')
+    expect(tx.turns.map((t) => t.text)).toEqual(['hi', 'The reply.'])
     delete process.env.HERMES_HOME
   })
 

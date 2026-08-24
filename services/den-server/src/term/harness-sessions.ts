@@ -16,7 +16,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
-import type { HarnessTranscriptTool, HarnessTranscriptTurn } from '@rivetos/types'
+import { splitHermesReasoning, type HarnessTranscriptTool, type HarnessTranscriptTurn } from '@rivetos/types'
 import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session-key.js'
 
 /** Cap full transcript reads — multi-MB jsonl is real; chat UI only needs turns. */
@@ -956,6 +956,10 @@ function extractTurnText(content: unknown, role: 'user' | 'assistant'): string |
     text = (
       end >= 0 ? text.slice('<user_query>'.length, end) : text.slice('<user_query>'.length)
     ).trim()
+    if (!text) return null
+  }
+  if (role === 'assistant') {
+    text = splitHermesReasoning(text).text
     if (!text) return null
   }
   return text

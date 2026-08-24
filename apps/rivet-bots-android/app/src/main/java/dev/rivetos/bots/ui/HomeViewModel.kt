@@ -6,6 +6,7 @@ import dev.rivetos.bots.AppContainer
 import dev.rivetos.bots.data.BotRepository
 import dev.rivetos.bots.data.Prefs
 import dev.rivetos.bots.data.SessionFrame
+import dev.rivetos.bots.data.visibleAssistantText
 import dev.rivetos.bots.domain.Bot
 import dev.rivetos.bots.domain.BotPreview
 import kotlinx.coroutines.async
@@ -125,7 +126,8 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
                     val m = f.message
                     val prefs = _state.value.prefs
                     val bot = _state.value.bots.firstOrNull { it.denUrl == url && sessionIdFor(it, prefs) == m.sessionId } ?: return@watchSessions
-                    _state.update { it.copy(previews = it.previews + (bot.id to BotPreview(m.text, m.ts, m.role))) }
+                    val preview = if (m.role == "assistant") visibleAssistantText(m.text).ifBlank { "…" } else m.text
+                    _state.update { it.copy(previews = it.previews + (bot.id to BotPreview(preview, m.ts, m.role))) }
                 }
             })
         }

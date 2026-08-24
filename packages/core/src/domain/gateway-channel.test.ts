@@ -171,6 +171,36 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
     expect(got.some((f) => f.kind === 'message' && f.role === 'user')).toBe(true)
   })
 
+  it('strips a Hermes Reasoning box out of the committed reply', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-hermes`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    const boxed = [
+      '┌─ Reasoning ──────────────────────────────────────────────────────────────────────────────────────┐',
+      '│ The user wants this leak gone.',
+      '└──────────────────────────────────────────────────────────────────────────────────────────────────┘',
+      '',
+      'Done.',
+    ].join('\n')
+    gw.bridgeAgentEvent({ session: 'c-hermes', type: 'message.user', text: 'hi', ts: 1 })
+    gw.bridgeAgentEvent({ session: 'c-hermes', type: 'message.agent', text: boxed })
+    gw.bridgeAgentEvent({ session: 'c-hermes', type: 'turn.end' })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const assistant = got.filter((f) => f.kind === 'message' && f.role === 'assistant')
+    expect(assistant).toHaveLength(1)
+    expect(assistant[0].kind === 'message' && assistant[0].text).toBe('Done.')
+    expect(got.some((f) => f.kind === 'stream' && f.event.type === 'reasoning')).toBe(true)
+    const textEvents = got.filter((f) => f.kind === 'stream' && f.event.type === 'text')
+    expect(textEvents.every((f) => f.kind === 'stream' && !f.event.content.includes('┌─'))).toBe(
+      true,
+    )
+  })
+
   it('harness-injected wrappers never bubble as user messages', async () => {
     const { gw, port } = await start()
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-wrap`)
