@@ -75,6 +75,8 @@ import { HermesDriver } from './harness/hermes-driver.js'
 import { createHermesStoreHost } from './harness/hermes-store.js'
 import { KimiCodeDriver } from './harness/kimi-driver.js'
 import { createKimiStoreHost } from './harness/kimi-store.js'
+import { DeepseekHarnessDriver } from './harness/deepseek-driver.js'
+import { createDeepseekStoreHost } from './harness/deepseek-store.js'
 import { createHarnessRoutes } from './harness/routes.js'
 import { denJoinKey } from './harness/session-key.js'
 import { createUploadRoutes } from './harness/uploads.js'
@@ -95,10 +97,10 @@ import {
 export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcript-watch.js'
 
 // Harness control plane (docs/plans/harness-control-plane.md) — the registry,
-// the `claude-code` reference driver, the `grok-build`, `hermes` and
-// `kimi-code` drivers, the `PtyHarnessDriver` base the four share, and the
-// alias/codec helpers around them. Re-exported here so consumers have one
-// entry point.
+// the `claude-code` reference driver, the `grok-build`, `hermes`,
+// `kimi-code` and `deepseek-harness` drivers, the `PtyHarnessDriver` base
+// they share, and the alias/codec helpers around them. Re-exported here so
+// consumers have one entry point.
 export {
   createAliasStore,
   normalizeSessionId,
@@ -167,6 +169,15 @@ export {
   type KimiStoreHost,
 } from './harness/kimi-driver.js'
 export { createKimiStoreHost } from './harness/kimi-store.js'
+export {
+  DeepseekHarnessDriver,
+  DEEPSEEK_HARNESS_ID,
+  DEEPSEEK_ROSTER_COMMAND,
+  type DeepseekDriverDeps,
+  type DeepseekPtyHost,
+  type DeepseekStoreHost,
+} from './harness/deepseek-driver.js'
+export { createDeepseekStoreHost } from './harness/deepseek-store.js'
 export {
   PtyHarnessDriver,
   type HarnessPtyHost,
@@ -245,9 +256,9 @@ export interface DenServer {
   state(): DenState
   /**
    * Harness control plane (docs/plans/harness-control-plane.md): the node's
-   * `HarnessDriver` registry. `claude-code`, `grok-build` and `hermes` are
-   * registered here at boot; the remaining Phase 3 driver (kimi-code) registers
-   * through `DenServerOptions.harnessDrivers` or against this handle.
+   * `HarnessDriver` registry. The five built-in drivers (`claude-code`,
+   * `grok-build`, `hermes`, `kimi-code`, `deepseek-harness`) register here at
+   * boot. Extra drivers can still be added via `DenServerOptions.harnessDrivers`.
    */
   harnesses: HarnessRegistry
   /**
@@ -297,16 +308,16 @@ export interface DenServerOptions {
    */
   onAgentEvent?: (ev: { session: string; type: string; [k: string]: unknown }) => void
   /**
-   * Extra HarnessDrivers to register alongside the four built-in drivers
-   * (`claude-code`, `grok-build`, `hermes`, `kimi-code`).
+   * Extra HarnessDrivers to register alongside the five built-in drivers
+   * (`claude-code`, `grok-build`, `hermes`, `kimi-code`, `deepseek-harness`).
    */
   harnessDrivers?: HarnessDriver[]
   /**
    * Skip registering the built-in `claude-code` + `grok-build` + `hermes` +
-   * `kimi-code` drivers — tests that drive the registry with a fake, and nodes
-   * that want their own wiring. They are skipped together: they share the PTY host and
-   * the den event tap, so a node that replaces one is replacing that wiring for
-   * all of them.
+   * `kimi-code` + `deepseek-harness` drivers — tests that drive the registry
+   * with a fake, and nodes that want their own wiring. They are skipped
+   * together: they share the PTY host and the den event tap, so a node that
+   * replaces one is replacing that wiring for all of them.
    */
   skipBuiltinHarnessDrivers?: boolean
   /**
@@ -397,7 +408,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       state = { rooms, sessions }
       broadcast(JSON.stringify({ type: 'session.removed', v: 1, session }), session)
     }, config.evictTtlMs)
-    t.unref?.()
+    t.unref()
     evictTimers.set(session, t)
   }
 
@@ -506,19 +517,20 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // reflected without a restart (passed as a getter, not a snapshot).
   const rosterCwdFor = (key: string) => (): string => {
     const roster = rosterProvider.get()
-    return roster.commands[key]?.cwd ?? roster.cwd
+    if (!Object.hasOwn(roster.commands, key)) return roster.cwd
+    return roster.commands[key].cwd ?? roster.cwd
   }
   // The node's HarnessDriver registry (docs/plans/harness-control-plane.md).
-  // All four built-in drivers formalize the machinery right above them — the
+  // All five built-in drivers formalize the machinery right above them — the
   // term manager (spawn/--resume/inject/Esc), the harness's on-disk store, and
   // the den AgentEvent stream — behind the one contract, and share it through
   // `PtyHarnessDriver`. Capability flags follow what is ACTUALLY wired here: no
   // terminals on this node means no interrupt/resume, no den tap means no
-  // liveStream, and `approvals` is false for all four regardless (their
+  // liveStream, and `approvals` is false for all five regardless (their
   // permission prompts live inside their TUIs and never reach the den wire).
-  // `hermes` and `kimi-code` are the two that cannot pin a new session's id, so
-  // they refuse `startSession`, adopt sessions off the den stream, and report a
-  // room whose session changed as a rotation.
+  // `hermes`, `kimi-code` and `deepseek-harness` cannot pin a new session's id,
+  // so they refuse `startSession`, adopt sessions (den stream and/or store),
+  // and report a room whose session changed as a rotation.
   const harnesses = createHarnessRegistry()
   const denEventTap = (sink: (ev: DenAgentEventLike) => void): (() => void) => {
     denEventSinks.add(sink)
@@ -554,6 +566,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         cwd: rosterCwdFor('kimi'),
+        log: console.error,
+      }),
+      new DeepseekHarnessDriver({
+        store: createDeepseekStoreHost(),
+        pty: termEnabled ? () => ensureManager() : undefined,
+        // Tap is wired so a future harnessSession stamp can adopt a drawer
+        // spawn. dsh itself has no hook-fed events today; liveStream then
+        // reports the tap, not a fake assistant stream.
+        events: denEventTap,
+        cwd: rosterCwdFor('dsh'),
         log: console.error,
       }),
     )
@@ -826,7 +848,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       if (opts.extraRoutes?.length) {
         const route = opts.extraRoutes
           .filter((r) => url.pathname === r.prefix || url.pathname.startsWith(r.prefix + '/'))
-          .sort((a, b) => b.prefix.length - a.prefix.length)[0]
+          .sort((a, b) => b.prefix.length - a.prefix.length)
+          .at(0)
         if (route) {
           // Gateway handlers use writeHead directly and know nothing about
           // CORS; set the same headers den's own routes send so cross-node
@@ -1063,7 +1086,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         {
           const m = url.pathname.match(/^\/term\/harness-sessions\/([^/]+)\/transcript$/)
           if (req.method === 'GET' && m) {
-            const id = decodeURIComponent(m[1] ?? '')
+            const id = decodeURIComponent(m.at(1) ?? '')
             const transcript = await readHarnessTranscript(id)
             return json(res, 200, transcript)
           }
@@ -1281,7 +1304,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     audioWs.heartbeat()
     harnessRoutes.heartbeat()
   }, 30_000)
-  heartbeat.unref?.()
+  heartbeat.unref()
 
   return {
     server,

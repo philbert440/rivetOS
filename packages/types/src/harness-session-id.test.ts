@@ -72,6 +72,7 @@ describe('formatSessionId', () => {
       ['grok-build', 'sess_01HZX:2:3'],
       ['kimi-code', 'c7f2-uuid'],
       ['hermes', '9b41-uuid'],
+      ['deepseek-harness', 'session-86ffe759-cd7b-49a7-955d-c282631a935d'],
     ]
     for (const [harnessId, nativeSessionId] of cases) {
       const id = formatSessionId(harnessId, nativeSessionId)

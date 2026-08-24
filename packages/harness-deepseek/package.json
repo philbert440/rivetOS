@@ -1,0 +1,53 @@
+{
+  "name": "@rivetos/harness-deepseek",
+  "version": "0.4.0-beta.6",
+  "description": "deepseek-harness spawn surface — interactive `dsh --profile tui [--resume]`. Capture is out-of-band (Cordis plugin); this package does not register a headless HarnessExecutor.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/ package.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@rivetos/types": "0.4.0-beta.6"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "vitest": "^4.1.10"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git",
+    "directory": "packages/harness-deepseek"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "nx": {
+    "tags": [
+      "scope:adapter",
+      "type:lib",
+      "domain:runtime"
+    ]
+  }
+}
