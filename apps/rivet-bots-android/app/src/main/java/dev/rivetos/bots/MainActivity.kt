@@ -10,11 +10,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
@@ -44,26 +46,28 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * ViewModel stores scoped to back-stack entries. Chat/Computer VMs own a live
- * WebSocket each, so they must die with their screen — the activity store
- * would keep every visited bot's socket alive for the process lifetime.
+ * ViewModel stores scoped to back-stack entries, held by an activity-scoped
+ * ViewModel so they survive configuration changes and are cleared — sockets
+ * and all — exactly when the activity is finished. Chat/Computer VMs own a
+ * live WebSocket each; the plain activity store would keep every visited
+ * bot's socket alive for the process lifetime.
  */
-private class ScreenStores {
+class ScreenStores : ViewModel() {
     private val stores = HashMap<String, ViewModelStore>()
     fun owner(key: String): ViewModelStoreOwner {
         val store = stores.getOrPut(key) { ViewModelStore() }
         return object : ViewModelStoreOwner { override val viewModelStore: ViewModelStore get() = store }
     }
     fun retainOnly(keys: Set<String>) {
-        val gone = stores.keys - keys
-        gone.forEach { stores.remove(it)?.clear() }
+        (stores.keys - keys).forEach { stores.remove(it)?.clear() }
     }
     fun clearAll() { stores.values.forEach { it.clear() }; stores.clear() }
+    override fun onCleared() = clearAll()
 }
 
 private fun Screen.storeKey(): String? = when (this) {
     is Screen.Chat -> "chat:${bot.id}"
-    is Screen.Computer -> "computer:${bot.id}"
+    is Screen.Computer -> "computer:${bot.id}:${sessionId ?: "current"}"
     else -> null
 }
 
@@ -78,14 +82,11 @@ fun App(c: AppContainer) {
     val nav = remember {
         Nav(if (c.identity.hasIdentity() && p.entryUrl.isNotBlank() && p.onboarded) Screen.Home else Screen.SignIn)
     }
-    val stores = remember { ScreenStores() }
+    val stores: ScreenStores = viewModel(key = "screen-stores")
     BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
     // Drop VM stores (and their sockets) for entries that left the stack.
     val liveKeys = nav.stack.mapNotNull { it.storeKey() }.toSet()
-    DisposableEffect(liveKeys) {
-        stores.retainOnly(liveKeys)
-        onDispose { }
-    }
+    LaunchedEffect(liveKeys) { stores.retainOnly(liveKeys) }
 
     when (val s = nav.current) {
         Screen.SignIn -> SignInScreen(onJoin = { nav.push(Screen.Enroll) })
@@ -105,7 +106,7 @@ fun App(c: AppContainer) {
         is Screen.Chat -> {
             val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
             CompositionLocalProvider(LocalViewModelStoreOwner provides stores.owner(s.storeKey()!!)) {
-                val vm: ChatViewModel = viewModel { ChatViewModel(c, s.bot, homeVm.sessionIdFor(s.bot)) }
+                val vm: ChatViewModel = viewModel { ChatViewModel(c, s.bot) } // resolves its thread from persisted prefs
                 val cs by vm.state.collectAsState()
                 ChatScreen(
                     vm, s.bot,
@@ -118,7 +119,8 @@ fun App(c: AppContainer) {
         }
         is Screen.Computer -> {
             CompositionLocalProvider(LocalViewModelStoreOwner provides stores.owner(s.storeKey()!!)) {
-                val vm: ComputerViewModel = viewModel(key = s.sessionId) { ComputerViewModel(c, s.bot, s.sessionId) }
+                val sid = s.sessionId ?: rememberResolvedSession(c, s.bot) ?: return@CompositionLocalProvider
+                val vm: ComputerViewModel = viewModel(key = sid) { ComputerViewModel(c, s.bot, sid) }
                 ComputerScreen(vm, s.bot, onBack = { nav.pop() }, onProfile = { nav.push(Screen.Profile(s.bot)) })
             }
         }
@@ -135,7 +137,7 @@ fun App(c: AppContainer) {
                     nav.popTo { (it is Screen.Chat && it.bot.id == s.bot.id) || it is Screen.Home }
                     if (nav.current !is Screen.Chat) nav.push(Screen.Chat(s.bot))
                 },
-                onComputer = { nav.push(Screen.Computer(s.bot, homeVm.sessionIdFor(s.bot))) },
+                onComputer = { nav.push(Screen.Computer(s.bot)) },
                 onTogglePin = { homeVm.togglePin(s.bot) },
                 onToggleHide = { homeVm.setHidden(s.bot, s.bot.id !in hs.prefs.hidden) },
             )
@@ -150,4 +152,13 @@ fun App(c: AppContainer) {
             )
         }
     }
+}
+
+/** The bot's current thread id from persisted prefs; null until read. */
+@Composable
+private fun rememberResolvedSession(c: AppContainer, bot: dev.rivetos.bots.domain.Bot): String? {
+    val sid by produceState<String?>(initialValue = null, bot.id) {
+        value = c.settings.snapshot().sessionOverrides[bot.id] ?: bot.defaultSessionId(c.identity.deviceTag())
+    }
+    return sid
 }

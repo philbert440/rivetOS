@@ -75,6 +75,7 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
                 _state.update { it.copy(prefs = p) }
                 if (p.entryUrl.isBlank()) throw BotRepository.DiscoveryFailed("No entry node configured.")
                 if (!c.identity.hasIdentity()) throw BotRepository.DiscoveryFailed("No device certificate — sign in again.")
+                if (c.identity.summary() == null) throw BotRepository.DiscoveryFailed("Device certificate didn't load: ${c.identity.lastError ?: "unknown error"}. Re-import it in Settings.")
                 val bots = c.bots.discover(p.entryUrl, p.extraNodes)
                 _state.update { it.copy(bots = bots, loadedOnce = true) }
                 openWatches(bots, p)

@@ -68,12 +68,12 @@ all-sessions WS → Computer screen shows the (empty) room. Cold claude-cli spaw
 3. Approvals: Grok Bot surfaces approve/deny cards; our gateway has `/api/harness-sessions` approvals — not wired.
 4. Routines on the profile screen ↔ `/api/tasks` / workflows — not wired.
 5. `confirmValueChange` on SwipeToDismissBox is deprecated in this Material3; still works, revisit when M3 drops it.
+6. Push notifications — nothing yet; WS previews only update while the app is foregrounded.
 7. Review round 1 (grok + kimi, 2026-08-24) applied: per-screen VM stores, session-filtered frames,
    transcript merge on (re)connect, single-socket reconnect, watches keyed by identity generation,
    identity parse errors surfaced, base-path-safe URLs, Computer never shows another room.
    Deferred from that round: markdown rendering, thinking transcript, approvals cards, CharArray
    passphrase plumbing, union-with-platform trust.
-6. Push notifications — nothing yet; WS previews only update while the app is foregrounded.
 
 ## Gotchas
 

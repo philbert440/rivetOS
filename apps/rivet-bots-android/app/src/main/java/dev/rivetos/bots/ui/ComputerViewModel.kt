@@ -55,7 +55,7 @@ class ComputerViewModel(private val c: AppContainer, val bot: Bot, val sessionId
                 val room = c.gateways.get(bot.denUrl).denState(sessionId)
                 _state.update { it.copy(room = room ?: it.room, loaded = true, error = null) }
             } catch (e: GatewayException) {
-                if (e.status == 404) _state.update { it.copy(loaded = true) } // no room yet — not an error
+                if (e.status == 404) _state.update { it.copy(loaded = true, error = null) } // no room yet — not an error
                 else _state.update { it.copy(loaded = true, error = BotRepository.friendly(e)) }
             } catch (e: Exception) {
                 _state.update { it.copy(loaded = true, error = BotRepository.friendly(e)) }

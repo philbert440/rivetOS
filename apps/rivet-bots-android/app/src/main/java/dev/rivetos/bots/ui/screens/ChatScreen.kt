@@ -78,14 +78,16 @@ fun ChatScreen(
     var menu by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
 
-    // Follow new content only while the reader is already at the bottom — never yank
-    // someone who scrolled up to read history.
-    val rowCount = s.messages.size + (if (s.pendingText.isNotEmpty()) 1 else 0) + (if (s.working != null) 1 else 0)
-    LaunchedEffect(rowCount, s.pendingText.length) {
-        val info = list.layoutInfo
-        val nearBottom = info.totalItemsCount == 0 ||
-            (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 3
-        if (nearBottom && info.totalItemsCount > 0) list.animateScrollToItem(info.totalItemsCount - 1)
+    // Follow new content only while the reader was already at the bottom (judged
+    // from the frame before this content arrived) — never yank someone reading
+    // history. The first transcript load always lands on the tail.
+    val rowCount = s.messages.size + (if (s.pendingText.isNotEmpty()) 1 else 0) + (if (s.working != null) 1 else 0) +
+        (if (s.error != null) 1 else 0) + (if (s.ws != WsStatus.OPEN && !s.loading) 1 else 0)
+    LaunchedEffect(rowCount, s.pendingText.length, s.loading) {
+        val wasAtBottom = !list.canScrollForward
+        if (wasAtBottom || !s.loading && s.messages.isNotEmpty() && list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset == 0) {
+            list.scrollToItem(rowCount) // index 0 is the header spacer; past-the-end coerces to the last row
+        }
     }
 
     Column(Modifier.fillMaxSize().background(Paper).statusBarsPadding().navigationBarsPadding().imePadding()) {
@@ -161,6 +163,7 @@ fun ChatScreen(
             value = draft,
             onValue = { draft = it },
             onSend = { val t = draft; draft = ""; vm.send(t) },
+            canSend = s.canSend,
             onNewConversation = { vm.newConversation() },
             onComputer = onComputer,
         )
@@ -206,6 +209,7 @@ private fun Composer(
     onSend: () -> Unit,
     onNewConversation: () -> Unit,
     onComputer: () -> Unit,
+    canSend: Boolean,
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var plusMenu by remember { mutableStateOf(false) }
@@ -245,7 +249,10 @@ private fun Composer(
                     },
                 )
             } else {
-                CircleIconButton(Icons.Default.ArrowUpward, "Send", onSend, background = Ink, tint = Paper, size = 30)
+                CircleIconButton(
+                    Icons.Default.ArrowUpward, if (canSend) "Send" else "Waiting for reply",
+                    { if (canSend) onSend() }, background = if (canSend) Ink else InkDim, tint = Paper, size = 30,
+                )
             }
         }
     }

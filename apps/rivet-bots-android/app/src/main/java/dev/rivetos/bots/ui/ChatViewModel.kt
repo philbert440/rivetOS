@@ -20,7 +20,12 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
-class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId: String) : ViewModel() {
+/**
+ * One bot thread. The session id is resolved from persisted prefs (not an
+ * in-memory copy) so a "new conversation" started elsewhere is honoured on
+ * the next open; pass [initialSessionId] to pin a specific thread.
+ */
+class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId: String? = null) : ViewModel() {
     data class UiState(
         val sessionId: String,
         val messages: List<SessionMessage> = emptyList(),
@@ -29,9 +34,13 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         val ws: WsStatus = WsStatus.CONNECTING,
         val error: String? = null,
         val loading: Boolean = true,
-    )
+        /** Bumped on every committed assistant row — the done-promoter compares against it. */
+        val assistantSeq: Int = 0,
+    ) {
+        val canSend: Boolean get() = working == null && !loading
+    }
 
-    private val _state = MutableStateFlow(UiState(initialSessionId))
+    private val _state = MutableStateFlow(UiState(initialSessionId ?: bot.defaultSessionId(c.identity.deviceTag())))
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var watch: Closeable? = null
@@ -40,7 +49,13 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
     private var fetchJob: Job? = null
     private var everOpen = false
 
-    init { open(initialSessionId) }
+    init {
+        if (initialSessionId != null) open(initialSessionId)
+        else viewModelScope.launch { open(resolveSessionId()) }
+    }
+
+    private suspend fun resolveSessionId(): String =
+        c.settings.snapshot().sessionOverrides[bot.id] ?: bot.defaultSessionId(c.identity.deviceTag())
 
     private fun open(sessionId: String) {
         watch?.close()
@@ -52,6 +67,7 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
             sessionId,
             onFrame = { f -> onFrame(sessionId, f) },
             onStatus = { s ->
+                if (_state.value.sessionId != sessionId) return@watchSessions
                 _state.update { it.copy(ws = s) }
                 // The ring is process-local and the WS has no replay: after a
                 // reconnect, re-read the transcript to pick up anything missed.
@@ -60,12 +76,22 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         )
     }
 
-    /** Transcript read that merges with whatever live frames already landed. */
+    /** Transcript read merged with live rows; a transcript ending in a reply closes the turn. */
     private fun fetch(sessionId: String): Job = viewModelScope.launch {
         try {
             val msgs = c.gateways.get(bot.denUrl).messages(sessionId)
             if (_state.value.sessionId != sessionId) return@launch
-            _state.update { s -> s.copy(messages = mergeTranscript(msgs, s.messages), loading = false) }
+            _state.update { s ->
+                val merged = mergeTranscript(msgs, s.messages)
+                val replied = merged.lastOrNull()?.role == "assistant"
+                s.copy(
+                    messages = merged, loading = false,
+                    pendingText = if (replied) "" else s.pendingText,
+                    working = if (replied) null else s.working,
+                    assistantSeq = if (replied) s.assistantSeq + 1 else s.assistantSeq,
+                )
+            }
+            if (_state.value.working == null) { doneTimer?.cancel(); workingTimer?.cancel() }
             msgs.lastOrNull()?.let { c.settings.markSeen(bot.id, it.ts) }
         } catch (e: Exception) {
             if (_state.value.sessionId != sessionId) return@launch
@@ -81,12 +107,15 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
                 if (m.sessionId.isNotBlank() && m.sessionId != sessionId) return
                 _state.update { s ->
                     if (s.messages.any { it.id == m.id }) return@update s
-                    // Drop our optimistic echo / promoted stream text once the committed row lands.
-                    val list = s.messages.filterNot { it.role == m.role && it.text == m.text && (it.id.startsWith("local-") || it.id.startsWith("stream-")) }
+                    // Drop ONE optimistic echo / promoted row that this committed row confirms.
+                    val twin = s.messages.indexOfFirst { it.role == m.role && it.text == m.text && (it.id.startsWith("local-") || it.id.startsWith("stream-")) }
+                    val list = if (twin >= 0) s.messages.toMutableList().also { it.removeAt(twin) } else s.messages
+                    val assistant = m.role == "assistant"
                     s.copy(
                         messages = list + m,
-                        pendingText = if (m.role == "assistant") "" else s.pendingText,
-                        working = if (m.role == "assistant") null else s.working,
+                        pendingText = if (assistant) "" else s.pendingText,
+                        working = if (assistant) null else s.working,
+                        assistantSeq = if (assistant) s.assistantSeq + 1 else s.assistantSeq,
                     )
                 }
                 if (m.role == "assistant") {
@@ -113,14 +142,15 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
             "done" -> {
                 workingTimer?.cancel()
                 _state.update { it.copy(working = null) }
-                // The committed message frame normally follows; if it never does,
-                // promote the streamed text so the reply isn't lost. The promoted
-                // row is dropped again if the real frame shows up later.
+                // The committed message frame normally follows `done`. If none has
+                // landed 1.5s later, promote the streamed text so the reply isn't
+                // lost; the promoted row is swapped out if the real frame shows up.
+                val seqAtDone = _state.value.assistantSeq
                 doneTimer?.cancel()
                 doneTimer = viewModelScope.launch {
                     delay(1500)
                     _state.update { s ->
-                        if (s.pendingText.isBlank() || s.messages.lastOrNull()?.role == "assistant") s.copy(pendingText = "")
+                        if (s.assistantSeq != seqAtDone || s.pendingText.isBlank()) s.copy(pendingText = if (s.assistantSeq != seqAtDone) "" else s.pendingText)
                         else s.copy(
                             messages = s.messages + SessionMessage(
                                 id = "stream-${UUID.randomUUID()}", sessionId = s.sessionId,
@@ -134,9 +164,10 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         }
     }
 
+    /** One turn in flight per thread — the composer disables send while [UiState.canSend] is false. */
     fun send(text: String) {
         val t = text.trim()
-        if (t.isEmpty()) return
+        if (t.isEmpty() || !_state.value.canSend) return
         val sid = _state.value.sessionId
         val local = SessionMessage(id = "local-${UUID.randomUUID()}", sessionId = sid, role = "user", text = t, ts = System.currentTimeMillis())
         _state.update { it.copy(messages = it.messages + local, error = null, working = "${bot.displayName} is working…") }
@@ -151,17 +182,22 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
         }
     }
 
-    /** A turn that produces no frames (WS down, harness died) must not spin forever. */
+    /**
+     * A turn that produces no frames (socket down, harness died) must not spin
+     * forever: re-read the transcript early when the WS isn't open, then again
+     * at the deadline before giving up.
+     */
     private fun armWorkingTimeout(sid: String) {
         workingTimer?.cancel()
         workingTimer = viewModelScope.launch {
-            delay(WORKING_TIMEOUT_MS)
+            delay(3_000)
+            if (_state.value.sessionId == sid && _state.value.ws != WsStatus.OPEN) fetch(sid).join()
+            delay(WORKING_TIMEOUT_MS - 3_000)
             if (_state.value.sessionId != sid) return@launch
-            // One last transcript read — the reply may have committed while the socket was down.
-            fetch(sid).join()
+            fetch(sid).join() // the reply may have committed while the socket was down
             _state.update { s ->
                 if (s.working == null) s
-                else s.copy(working = null, error = "No reply from ${bot.displayName} after ${WORKING_TIMEOUT_MS / 60_000} min — pull to refresh or try again.")
+                else s.copy(working = null, error = "No reply from ${bot.displayName} after ${WORKING_TIMEOUT_MS / 60_000} min. Try again.")
             }
         }
     }
@@ -180,18 +216,34 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
 
     override fun onCleared() { watch?.close() }
 
-    companion object { const val WORKING_TIMEOUT_MS = 5 * 60_000L }
+    companion object { const val WORKING_TIMEOUT_MS = 3 * 60_000L }
 }
 
 /**
- * Server transcript wins; live rows survive only if the server hasn't got them
- * yet, and optimistic/promoted rows are dropped once their committed twin shows.
+ * Server transcript wins. Live rows survive only if the server hasn't got them
+ * yet. A promoted reply (`stream-`) is dropped as soon as the server holds a
+ * committed row with the same text; an optimistic send (`local-`) is dropped
+ * once — and only once — a committed row with the same text can claim it, so
+ * two identical sends keep two bubbles until both commit.
  */
 internal fun mergeTranscript(server: List<SessionMessage>, live: List<SessionMessage>): List<SessionMessage> {
     val ids = server.map { it.id }.toHashSet()
-    val texts = server.map { it.role to it.text }.toHashSet()
+    val serverTexts = server.map { it.role to it.text }.toHashSet()
+    val claims = HashMap<Pair<String, String>, Int>()
+    for (m in server) claims.merge(m.role to m.text, 1, Int::plus)
+    // Committed live rows (ids the server also has) already consume their claim.
+    for (m in live) if (m.id in ids) claims.merge(m.role to m.text, -1, Int::plus)
     val keep = live.filter { m ->
-        m.id !in ids && !((m.id.startsWith("local-") || m.id.startsWith("stream-")) && (m.role to m.text) in texts)
+        if (m.id in ids) return@filter false
+        val key = m.role to m.text
+        when {
+            m.id.startsWith("stream-") -> key !in serverTexts
+            m.id.startsWith("local-") -> {
+                val left = claims[key] ?: 0
+                if (left > 0) { claims[key] = left - 1; false } else true
+            }
+            else -> true
+        }
     }
     return (server + keep).sortedBy { it.ts }
 }

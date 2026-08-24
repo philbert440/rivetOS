@@ -97,7 +97,13 @@ class Gateway(private val client: OkHttpClient, baseUrl: String) {
 
 enum class WsStatus { CONNECTING, OPEN, CLOSED }
 
-/** Reconnecting WebSocket: base 500ms, doubling, capped at 15s, jittered. One socket, one pending reconnect. */
+/**
+ * Reconnecting WebSocket: base 500ms, doubling, capped at 15s, jittered.
+ * One socket at a time, identified by a generation number captured in its
+ * listener — no lock is held across OkHttp calls (its callbacks can re-enter
+ * from `cancel()`/`close()`), and a late `onOpen` from a superseded socket
+ * can't report OPEN or reset the backoff.
+ */
 class WsSubscription(
     private val client: OkHttpClient,
     private val url: String,
@@ -105,42 +111,40 @@ class WsSubscription(
     private val onText: (String) -> Unit,
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val lock = Any()
     @Volatile private var closed = false
-    private var ws: WebSocket? = null
-    private var reconnectJob: Job? = null
-    private var attempt = 0
+    @Volatile private var ws: WebSocket? = null
+    @Volatile private var generation = 0
+    @Volatile private var reconnectJob: Job? = null
+    @Volatile private var attempt = 0
 
     init { connect() }
 
     private fun connect() {
-        synchronized(lock) {
-            if (closed) return
-            reconnectJob?.cancel(); reconnectJob = null
-            ws?.cancel() // never two live sockets for one subscription
-            onStatus(WsStatus.CONNECTING)
-            val req = Request.Builder().url(url).build()
-            var self: WebSocket? = null
-            self = client.newWebSocket(req, object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
-                    if (closed) { webSocket.close(1000, null); return }
-                    attempt = 0
-                    onStatus(WsStatus.OPEN)
-                }
-                override fun onMessage(webSocket: WebSocket, text: String) { if (!closed && isCurrent(webSocket)) onText(text) }
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { if (isCurrent(webSocket)) reconnect() }
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { if (isCurrent(webSocket)) reconnect() }
-            })
-            ws = self
-        }
+        if (closed) return
+        val myGen = ++generation
+        val old = ws
+        ws = null
+        old?.cancel()
+        onStatus(WsStatus.CONNECTING)
+        val req = Request.Builder().url(url).build()
+        ws = client.newWebSocket(req, object : WebSocketListener() {
+            private fun live(): Boolean = !closed && myGen == generation
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!live()) { webSocket.cancel(); return }
+                attempt = 0
+                onStatus(WsStatus.OPEN)
+            }
+            override fun onMessage(webSocket: WebSocket, text: String) { if (live()) onText(text) }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { if (live()) reconnect() }
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { if (live()) reconnect() }
+        })
     }
 
-    private fun isCurrent(socket: WebSocket): Boolean = synchronized(lock) { socket === ws }
-
     private fun reconnect() {
-        synchronized(lock) {
-            onStatus(WsStatus.CLOSED)
-            if (closed || reconnectJob?.isActive == true) return
+        onStatus(WsStatus.CLOSED)
+        if (closed) return
+        synchronized(this) { // only guards the job handoff; no OkHttp call inside
+            if (reconnectJob?.isActive == true) return
             val backoff = minOf(500L shl minOf(attempt, 6), 15_000L)
             attempt += 1
             reconnectJob = scope.launch {
@@ -151,11 +155,9 @@ class WsSubscription(
     }
 
     override fun close() {
-        synchronized(lock) {
-            closed = true
-            reconnectJob?.cancel()
-            ws?.close(1000, null)
-        }
+        closed = true
+        reconnectJob?.cancel()
+        ws?.close(1000, null)
         scope.cancel()
     }
 }

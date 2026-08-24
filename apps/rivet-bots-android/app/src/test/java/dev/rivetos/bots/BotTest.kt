@@ -39,3 +39,22 @@ class BotTest {
         assertEquals(listOf("m1", "m2", "m9"), merged.map { it.id })
     }
 }
+
+class MergeDuplicatesTest {
+    @Test fun `identical sends each keep a bubble until their own commit lands`() {
+        val a = SessionMessage("local-a", "s", "user", "ok", 10)
+        val b = SessionMessage("local-b", "s", "user", "ok", 20)
+        val serverOne = listOf(SessionMessage("m1", "s", "user", "ok", 11))
+        val merged = mergeTranscript(serverOne, listOf(a, b))
+        assertEquals(listOf("m1", "local-b"), merged.map { it.id })
+        val serverBoth = serverOne + SessionMessage("m2", "s", "user", "ok", 21)
+        assertEquals(listOf("m1", "m2"), mergeTranscript(serverBoth, merged).map { it.id })
+    }
+
+    @Test fun `committed live rows do not double-claim`() {
+        val committed = SessionMessage("m1", "s", "assistant", "yo", 20)
+        val promoted = SessionMessage("stream-1", "s", "assistant", "yo", 30)
+        val merged = mergeTranscript(listOf(committed), listOf(committed, promoted))
+        assertEquals(listOf("m1"), merged.map { it.id })
+    }
+}

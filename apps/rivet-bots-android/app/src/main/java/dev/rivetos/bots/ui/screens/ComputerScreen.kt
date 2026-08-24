@@ -86,7 +86,9 @@ fun ComputerScreen(vm: ComputerViewModel, bot: Bot, onBack: () -> Unit, onProfil
                     color = DarkDim, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.weight(1f))
-                if (room == null) {
+                if (s.error != null) {
+                    Text("Can't reach the computer: ${s.error}", color = Color(0xFFF08A8E), fontSize = 14.sp, lineHeight = 19.sp)
+                } else if (room == null) {
                     Text(
                         if (s.loaded) "Nothing on screen yet.\nSend ${bot.displayName} a message." else "Connecting…",
                         color = DarkDim, fontSize = 15.sp, lineHeight = 20.sp,
