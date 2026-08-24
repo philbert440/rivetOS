@@ -292,6 +292,8 @@ export function createGatewayChannel(opts?: {
   /** Raw message.agent accumulation — split at emit/flush so a Hermes box
    *  that arrives in chunks is stripped as a whole, not per delta. */
   const pendingRaw = new Map<string, string>()
+  /** Previous emitted reasoning for delta calculation (B3). */
+  const pendingReasoning = new Map<string, string>()
   // Turn stats ride the FINAL message.agent block (Claude Code attaches them);
   // stash until the assistant turn is committed, then attach to the frame.
   const pendingStats = new Map<
@@ -690,6 +692,7 @@ export function createGatewayChannel(opts?: {
           })
         }
         pendingAssistant.delete(sid)
+        pendingReasoning.delete(sid)
         // clear stats on EVERY flush boundary, even with no committable text —
         // a stray stats-only event must never bleed into the next turn (grok
         // review).
@@ -727,22 +730,45 @@ export function createGatewayChannel(opts?: {
           const chunk = str('text')
           const raw = (pendingRaw.get(sid) ?? '') + chunk
           pendingRaw.set(sid, raw)
-          const split = splitHermesReasoning(raw)
+          const isHermes = ev.harness === 'hermes'
+          const split = isHermes ? splitHermesReasoning(raw) : { reasoning: '', text: raw }
           if (split.reasoning) {
-            emitFrame({
-              kind: 'stream',
-              session: sid,
-              event: { type: 'reasoning', content: split.reasoning },
-            })
+            const prevReasoning = pendingReasoning.get(sid) ?? ''
+            if (split.reasoning.startsWith(prevReasoning)) {
+              const reasoningDelta = split.reasoning.slice(prevReasoning.length)
+              if (reasoningDelta) {
+                emitFrame({
+                  kind: 'stream',
+                  session: sid,
+                  event: { type: 'reasoning', content: reasoningDelta },
+                })
+                pendingReasoning.set(sid, split.reasoning)
+              }
+            } else if (split.reasoning !== prevReasoning) {
+              emitFrame({
+                kind: 'stream',
+                session: sid,
+                event: { type: 'reasoning', content: split.reasoning },
+              })
+              pendingReasoning.set(sid, split.reasoning)
+            }
           }
           const prev = pendingAssistant.get(sid) ?? ''
           if (split.text.startsWith(prev)) {
             const delta = split.text.slice(prev.length)
             if (delta) {
-              emitFrame({ kind: 'stream', session: sid, event: { type: 'text', content: delta } })
+              emitFrame({
+                kind: 'stream',
+                session: sid,
+                event: { type: 'text', content: delta },
+              })
             }
           } else if (split.text && split.text !== prev) {
-            emitFrame({ kind: 'stream', session: sid, event: { type: 'text', content: split.text } })
+            emitFrame({
+              kind: 'stream',
+              session: sid,
+              event: { type: 'text', content: split.text },
+            })
           }
           pendingAssistant.set(sid, split.text)
           // the FINAL block of a turn may carry token stats (validated upstream

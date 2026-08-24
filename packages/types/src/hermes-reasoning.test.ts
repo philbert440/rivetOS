@@ -46,4 +46,20 @@ describe('splitHermesReasoning', () => {
     expect(splitHermesReasoning(raw)).toEqual({ reasoning: 'think', text: 'hi' })
     expect(stripAnsi(`\u001b[31mred\u001b[0m`)).toBe('red')
   })
+
+  it('B1: quiet-mode without blank line treats header as text if no terminator', () => {
+    const raw = [HEADER, 'thinking', 'actual reply'].join('\n')
+    expect(splitHermesReasoning(raw)).toEqual({
+      reasoning: '',
+      text: [HEADER, 'thinking', 'actual reply'].join('\n'),
+    })
+  })
+
+  it('B2: border-less line inside box consumes until footer', () => {
+    const raw = [HEADER, '│ thinking', 'plain line (no │)', '│ more thinking', FOOTER, 'reply'].join('\n')
+    expect(splitHermesReasoning(raw)).toEqual({
+      reasoning: 'thinking\nplain line (no │)\nmore thinking',
+      text: 'reply',
+    })
+  })
 })

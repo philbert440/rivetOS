@@ -16,7 +16,11 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
-import { splitHermesReasoning, type HarnessTranscriptTool, type HarnessTranscriptTurn } from '@rivetos/types'
+import {
+  splitHermesReasoning,
+  type HarnessTranscriptTool,
+  type HarnessTranscriptTurn,
+} from '@rivetos/types'
 import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session-key.js'
 
 /** Cap full transcript reads — multi-MB jsonl is real; chat UI only needs turns. */

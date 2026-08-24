@@ -14,9 +14,13 @@ export interface HermesSplit {
 
 /** CSI + OSC so a colour-wrapped box still matches. */
 export function stripAnsi(s: string): string {
-  return s
-    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
-    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+  return (
+    s
+      // eslint-disable-next-line no-control-regex
+      .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      // eslint-disable-next-line no-control-regex
+      .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+  )
 }
 
 const HEADER = /^[\s]*[┌╭][─━\s]*\b(Reasoning|Thought|Thinking)\b/i
@@ -36,11 +40,14 @@ export function splitHermesReasoning(input: string): HermesSplit {
       i += 1
       continue
     }
+    const headerIdx = i
     i += 1
     let sawBox = false
+    let hasTerminator = false
     while (i < lines.length) {
       const v = stripAnsi(lines[i])
       if (FOOTER.test(v)) {
+        hasTerminator = true
         i += 1
         break
       }
@@ -50,13 +57,23 @@ export function splitHermesReasoning(input: string): HermesSplit {
         i += 1
         continue
       }
-      if (sawBox) break
+      if (sawBox) {
+        reasoning.push(v)
+        i += 1
+        continue
+      }
       if (!v.trim()) {
+        hasTerminator = true
         i += 1
         break
       }
       reasoning.push(v)
       i += 1
+    }
+    if (!sawBox && !hasTerminator) {
+      text.push(lines[headerIdx])
+      for (const line of reasoning) text.push(line)
+      reasoning.length = 0
     }
   }
   return { reasoning: reasoning.join('\n').trim(), text: text.join('\n').trim() }

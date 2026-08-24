@@ -111,11 +111,14 @@ function splitHermesReasoning(input) {
       i += 1
       continue
     }
+    const headerIdx = i
     i += 1
     let sawBox = false
+    let hasTerminator = false
     while (i < lines.length) {
       const v = lines[i].replace(ANSI, '')
       if (FOOTER.test(v)) {
+        hasTerminator = true
         i += 1
         break
       }
@@ -125,13 +128,23 @@ function splitHermesReasoning(input) {
         i += 1
         continue
       }
-      if (sawBox) break
+      if (sawBox) {
+        reasoning.push(v)
+        i += 1
+        continue
+      }
       if (!v.trim()) {
+        hasTerminator = true
         i += 1
         break
       }
       reasoning.push(v)
       i += 1
+    }
+    if (!sawBox && !hasTerminator) {
+      text.push(lines[headerIdx])
+      for (const line of reasoning) text.push(line)
+      reasoning.length = 0
     }
   }
   return { reasoning: reasoning.join('\n').trim(), text: text.join('\n').trim() }

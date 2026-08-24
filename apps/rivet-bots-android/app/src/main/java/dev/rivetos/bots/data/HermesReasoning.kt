@@ -27,11 +27,14 @@ fun splitHermesReasoning(input: String): HermesSplit {
             i++
             continue
         }
+        val headerIdx = i
         i++
         var sawBox = false
+        var hasTerminator = false
         while (i < lines.size) {
             val v = stripAnsi(lines[i])
             if (FOOTER.matches(v)) {
+                hasTerminator = true
                 i++
                 break
             }
@@ -41,13 +44,23 @@ fun splitHermesReasoning(input: String): HermesSplit {
                 i++
                 continue
             }
-            if (sawBox) break
+            if (sawBox) {
+                reasoning.add(v)
+                i++
+                continue
+            }
             if (v.isBlank()) {
+                hasTerminator = true
                 i++
                 break
             }
             reasoning.add(v)
             i++
+        }
+        if (!sawBox && !hasTerminator) {
+            text.add(lines[headerIdx])
+            text.addAll(reasoning)
+            reasoning.clear()
         }
     }
     return HermesSplit(reasoning.joinToString("\n").trim(), text.joinToString("\n").trim())
